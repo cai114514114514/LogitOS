@@ -1,0 +1,10 @@
+POLARIS_PROBE_NEGCTL: 32-bit VRAM truncation and false MC coverage caught (three failures)
+POLARIS_PROBE: 89 checks, 0 failures
+FAIL GPU success preserves callback pixels without CPU overwrite
+FB_NATIVE_PRESENT_NEGCTL: CPU overwrite detected (exactly one failure)
+FB_NATIVE_PRESENT: 21 checks, 0 failures
+INTEL_BOOTFB_NEGCTL: foreign display was claimed (exactly one failure)
+INTEL_BOOTFB_NEGCTL: D3 display was accepted (exactly one failure)
+INTEL_BOOTFB_NEGCTL: all-ones PCI command was accepted (exactly one failure)
+INTEL_BOOTFB_NEGCTL: unowned LFB produced the three expected failures
+INTEL_BOOTFB: 31 checks, 0 failures

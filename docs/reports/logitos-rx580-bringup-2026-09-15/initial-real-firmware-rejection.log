@@ -1,0 +1,4 @@
+POLARIS_FIRMWARE_NEGCTL: v2 accepted as v1 (exactly one failure)
+POLARIS_FIRMWARE: 120 checks, 0 failures
+POLARIS_FW_FILE rejected file=build-rx580-firmware-input/polaris10_sdma.bin parser=-3
+make: *** [test-polaris-firmware-files] Error 1

@@ -1,0 +1,6 @@
+nasm -f bin -DLOADER_NATIVE -Ibuild-amd-present-live/bios-product/ -o build-amd-present-live/bios-product/loader.bin c/boot/bios/loader.asm
+python3 tools/mkiso.py build-amd-present-live/logit.iso --boot-image build-amd-present-live/bios-product/preload.bin \
+	    --loader build-amd-present-live/bios-product/loader.bin --kernel build-amd-present-live/kernel.elf
+mkiso: build-amd-present-live/logit.iso (8003584 bytes, BIOS El Torito no-emulation) -- BOOT.IMG (2048 bytes, padded to 2048)
+mkiso: loader 8186 bytes at native-CD LBA 218, preload patch LBA 218, blocks 4
+mkiso: kernel 7546936 bytes at native-CD LBA 222, loader patch LBA 222, blocks 3686

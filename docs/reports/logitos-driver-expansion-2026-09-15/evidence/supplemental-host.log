@@ -1,0 +1,47 @@
+NEGATIVE CONTROL tag: real guard removed; "FAIL reject stale CSW tag" observed
+NEGATIVE CONTROL signature: real guard removed; "FAIL reject wrong CSW signature" observed
+NEGATIVE CONTROL residue: real guard removed; "FAIL reject residue greater than requested data" observed
+NEGATIVE CONTROL csw-length: real guard removed; "FAIL reject truncated CSW" observed
+NEGATIVE CONTROL short-data: real guard removed; "FAIL reject fabricated full success after short data" observed
+NEGATIVE CONTROL phase: real guard removed; "FAIL phase error requires reset" observed
+NEGATIVE CONTROL block-residue: real guard removed; "FAIL block API rejects command-passed CSW with incomplete residue" observed
+NEGATIVE CONTROL flush: real guard removed; "FAIL block flush issues SYNCHRONIZE CACHE rather than success stub" observed
+usb-bot: 117 checks, 0 failures
+usb-storage: 124 checks, 0 failures
+[pci] 00:01.0 BAR0 probe refused: decode stayed enabled
+[pci] 00:01.0 BAR0 probe refused: decode stayed enabled
+[pci] 00:01.0 BAR0 restore failed; decode left off
+[pci] 00:01.0 BAR0 high restore failed; decode left off
+[pci] 00:01.0 BAR0 Command restore failed; decode=off
+
+PCI BAR safety: 5 checks, 0 failed
+FAIL: ignored decode-disable write is refused before BAR sizing
+
+PCI BAR safety: 1 checks, 1 failed
+negative control OK: neg-decode-readback
+[pci] 00:01.0 BAR0 probe refused: decode stayed enabled
+FAIL: partial decode-disable refusal restores complete PCI Command
+
+PCI BAR safety: 1 checks, 1 failed
+negative control OK: neg-partial-decode-recovery
+FAIL: failed BAR restore leaves decode off and publishes no resource
+
+PCI BAR safety: 1 checks, 1 failed
+negative control OK: neg-bar-restore-readback
+FAIL: failed 64-bit BAR high restore leaves decode off and publishes no resource
+
+PCI BAR safety: 1 checks, 1 failed
+negative control OK: neg-bar-high-restore-readback
+FAIL: failed Command restore leaves valid BAR decoded off and unpublished
+
+PCI BAR safety: 1 checks, 1 failed
+negative control OK: neg-command-restore-readback
+PCI BAR safety: positive plus 5 observed negative controls PASS
+EXPECTED-FAIL usb-hotplug ignore-csc: change interrupt without CSC leaves existing device untouched
+EXPECTED-FAIL usb-hotplug unlocked-detach: disconnect waits for in-flight class callback before remove
+usb-hotplug: 12 checks, 0 failures
+ACPI_INTEGRITY_NEGCTL: pre-fix parser accepted corrupt SDT and ACPI 2.0 RSDP (2 failures)
+ACPI-SIGNATURE-NEGCTL: accepting the wrong root kind reddened exactly one check
+ACPI_INTEGRITY: 15 checks, 0 failures
+HPET-NEGCTL-OK: unsafe GAS, block-ID, and revision acceptance each reddened the host gate
+hpet_test: 18 checks, 0 failed

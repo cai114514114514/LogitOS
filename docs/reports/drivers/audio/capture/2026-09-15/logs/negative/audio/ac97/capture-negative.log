@@ -1,0 +1,43 @@
+FAIL 456: capture_notifications == period + 1
+FAIL 456: capture_notifications == period + 1
+FAIL 456: capture_notifications == period + 1
+FAIL 456: capture_notifications == period + 1
+FAIL 456: capture_notifications == period + 1
+FAIL 456: capture_notifications == period + 1
+FAIL 456: capture_notifications == period + 1
+FAIL 456: capture_notifications == period + 1
+FAIL 456: capture_notifications == period + 1
+FAIL 456: capture_notifications == period + 1
+FAIL 456: capture_notifications == period + 1
+FAIL 456: capture_notifications == period + 1
+FAIL 456: capture_notifications == period + 1
+FAIL 456: capture_notifications == period + 1
+FAIL 456: capture_notifications == period + 1
+FAIL 456: capture_notifications == period + 1
+FAIL 456: capture_notifications == period + 1
+FAIL 456: capture_notifications == period + 1
+FAIL 456: capture_notifications == period + 1
+FAIL 456: capture_notifications == period + 1
+FAIL 456: capture_notifications == period + 1
+FAIL 456: capture_notifications == period + 1
+FAIL 456: capture_notifications == period + 1
+FAIL 456: capture_notifications == period + 1
+FAIL 456: capture_notifications == period + 1
+FAIL 456: capture_notifications == period + 1
+FAIL 456: capture_notifications == period + 1
+FAIL 456: capture_notifications == period + 1
+FAIL 456: capture_notifications == period + 1
+FAIL 456: capture_notifications == period + 1
+FAIL 456: capture_notifications == period + 1
+FAIL 456: capture_notifications == period + 1
+FAIL 456: capture_notifications == period + 1
+FAIL 456: capture_notifications == period + 1
+FAIL 456: capture_notifications == period + 1
+FAIL 456: capture_notifications == period + 1
+FAIL 456: capture_notifications == period + 1
+FAIL 456: capture_notifications == period + 1
+FAIL 456: capture_notifications == period + 1
+FAIL 456: capture_notifications == period + 1
+FAIL 465: notifications == 41 && capture_notifications == 40
+FAIL 472: capture_notifications == 3 && notifications == 41
+AC97_HOST: 13207 checks, 42 failures

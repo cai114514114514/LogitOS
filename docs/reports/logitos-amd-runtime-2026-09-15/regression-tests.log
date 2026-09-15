@@ -1,0 +1,12 @@
+INTEL_BOOTFB_NEGCTL: foreign display was claimed (exactly one failure)
+INTEL_BOOTFB_NEGCTL: D3 display was accepted (exactly one failure)
+INTEL_BOOTFB_NEGCTL: all-ones PCI command was accepted (exactly one failure)
+INTEL_BOOTFB_NEGCTL: unowned LFB produced the three expected failures
+INTEL_BOOTFB: 31 checks, 0 failures
+bilinear mismatch 17x13 at 8,6: got=007f8080 want=00808080
+BIT_EXACT: production separable loop matches frozen four-weight oracle in 5 scales
+=== fb_blit_surface_scaled vs _bl: cost, 1180x620 source, host ns, min of 15 ===
+  ~0.3x (354x186)    nearest      51000 ns     bilinear     196000 ns     bilinear/nearest = 3.84x
+  ~1.5x (1770x930)   nearest    1149000 ns     bilinear    3137000 ns     bilinear/nearest = 2.73x
+wrote fb_scale_bl_compare.ppm (952x248): LEFT nearest, RIGHT bilinear, both 472x248 from the same 1180x620 source
+wrote fb_scale_bl_zoom.ppm (728x360): 4x nearest-upsampled crop, LEFT nearest RIGHT bilinear

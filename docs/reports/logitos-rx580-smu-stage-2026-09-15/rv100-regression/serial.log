@@ -1,0 +1,273 @@
+LOGIT_BIOS_PRELOAD_OK
+LOGIT_BIOS_LOADER_NATIVE
+LOADER A20 VERIFY PASS
+LOADER KERNEL LOAD OK
+LOADER ENTER KERNEL
+LOGIT BOOT IDENTITY VERIFY promised=0000000040000000
+LOGIT_BOOT_NATIVE_OK version=0001
+[cpu] GenuineIntel -- Intel Xeon E312xx (Sandy Bridge)
+[cpu] 28/60 known features present: fpu tsc msr mce apic mca cmov clflush mmx fxsr sse sse2 htt sse3 pclmulqdq ssse3 cx16 sse4.1 sse4.2 x2apic popcnt aes xsave avx hypervisor nx rdtscp lm
+[cpu-platform] family=6 model=0x2a stepping=1 generation=other
+[cpu] topology: source=cpuid.0xb x2apic_id=0 package=0 core=0 thread=0 cpuid-addressable/package=2 cores/package=2 threads/core=1
+[cpu] hfi: hw=0 performance=0 efficiency=0 table-pages=0 current-lp-row=0 thread-director-hw=0 classes=0 (inventory only; no config MSR write)
+[cpu] apic: x2apic_hw=1 mode=xapic base=0xfee00000
+[cpu] cache: L1 type=1 size=32768 line=64 ways=8 shared=1
+[cpu] cache: L1 type=2 size=32768 line=64 ways=8 shared=1
+[cpu] cache: L2 type=3 size=4194304 line=64 ways=16 shared=1
+[cpu] cache: L3 type=3 size=16777216 line=64 ways=16 shared=2
+[cpu] mca: banks=10 ctl=1 cmci=0 tes=0 ser=1 (enumerated, not enabled)
+[cpu] tsc: invariant_hw=0
+[cpu] xsave: 832 B holds every supported state, xcr0 mask 0x7, osxsave=0
+[cpu] xstate: avx_hw=1 avx_os=0 osxsave=0 xcr0=0x0 abi=fxsave
+[cpu] aes-gcm backend: aesni (constant-time); rdrand=0 rdseed=0
+[cpu] aes-gcm 16 KiB: aesni=721000 cycles, c=7743000 cycles, speedup x10.73
+
+[logitos] long mode, C kernel running
+[rust] inflate selftest OK
+[prot] bsp: nx sup/ON  wxsplit ON  smep -/off  smap -/off
+[time] source=tsc 1000.296 MHz res=1ns  (invariant-tsc=no hypervisor=yes calib=pit-ch2)
+[time] fallback=pit 100 Hz res=10000000ns  timers=heap/128  mono=64-bit ns (wraps in 584 years)
+[time] calib samples(Hz) 1000296320 1008198188 999968593 -> median chosen
+[cpu] simd selftest: backend=aesni xmm_corrupt=0 (19 ticks) crypto_mismatch=0 kat=0 (724 rounds, 6 ticks)
+CPU_SIMD_SELFTEST_OK
+[physmap] metadata base=0x2ec8000 bytes=442272 kernel_end=0x2ec8000
+[mm] low: 118955 frames free (464 MiB), 12085 used, 0 shared, 0 bugs
+[physmap] ready: base=0xffff800000000000 high_pages=0 table_pages=4 low_free=118952 NX=1
+[mm] boot: 131040 frames total (511 MiB), 118952 free, 12088 used, 0 shared, 12088 refs (+0 saved = 0 KiB), 0 pinned, 0 bugs
+[physmap] boot: high_allocs=0 high_live=0 high_max=0x0 high_free=0 low_free=118952
+[mm] boot: metadata 431 KiB (bitmap + poison map + 2-byte refcounts + pins), poison level 1
+[mm] boot: 0 frames pinned against reclaim, 128 reserve frames (0 dips), 0 allocations refused
+[mm] low: 118699 frames free (463 MiB), 12341 used, 0 shared, 0 bugs
+[mm] low: 118443 frames free (462 MiB), 12597 used, 0 shared, 0 bugs
+[mm] low: 118187 frames free (461 MiB), 12853 used, 0 shared, 0 bugs
+[rmap] 131040 frames, 196560 nodes (3599 KiB total: 511 KiB heads + 3071 KiB nodes)
+[acpi] RSDP from the bootloader's multiboot2 tag
+[hpet] ready: base=0xfed00000 period=10000000fs counter=64-bit timers=3
+[time] HPET standby: invariant TSC remains active
+[logitos] interrupts + memory + gdt/tss online
+[mm] low: 117931 frames free (460 MiB), 13109 used, 0 shared, 0 bugs
+[mm] low: 117675 frames free (459 MiB), 13365 used, 0 shared, 0 bugs
+[pcache] up: 65520 page slots (262080 KiB ceiling), 32 file slots, 16384 buckets; tables 2112 KiB from the PMM (16 B/frame of RAM)
+[klog] ring 512 lines x 112 bytes; `cat /dev/kmsg`, `cat /dev/kstat`
+[pci] no MCFG; legacy 0xCF8 config ports (no extended caps)
+[pci] 5 function(s) enumerated across all buses
+[mm] low: 117419 frames free (458 MiB), 13621 used, 0 shared, 0 bugs
+[mm] low: 117163 frames free (457 MiB), 13877 used, 0 shared, 0 bugs
+[mm] low: 116907 frames free (456 MiB), 14133 used, 0 shared, 0 bugs
+[mm] low: 116651 frames free (455 MiB), 14389 used, 0 shared, 0 bugs
+[kheap] arena domain=physmap cpu=0xffff8000034d1000 phys=0x34d1000 bytes=4194304
+[kheap] grow #1: +4096 KiB -> arena 4096 KiB, live 0 KiB, free 4095 KiB, over-allocated 0 KiB
+[rust] png selftest OK
+[blk] 0 disks, 0 partitions; root = (none) (NO FILESYSTEM FOUND)
+[fs] mount FAILED
+[pcache] backend installed over c/fs/vfs.h (statx + vfs_pread, VFS-identity gated)
+[tls] trust store: 130 roots, 0 skipped
+[tls]   isrg_x1 isrg_x2 digicert_global_ca digicert_global_g2 digicert_global_g3
+[tls]   globalsign_r1 globalsign_r3 gts_r1 gts_r4 usertrust_rsa usertrust_ecc
+[tls]   amazon_root_1 amazon_root_3 dtrust_root3_2009 sslcom_ecc_2022
+[tls]   aaa_certificate_services accvraiz1 actalis_authentication_root_ca
+[tls]   affirmtrust_commercial affirmtrust_networking affirmtrust_premium
+[tls]   affirmtrust_premium_ecc amazon_root_ca_2 amazon_root_ca_4
+[tls]   atos_trustedroot_2011 autoridad_de_certificacion_firmaprofesional_cif_
+[tls]   baltimore_cybertrust_root buypass_class_2_root_ca buypass_class_3_root_ca
+[tls]   ca_disig_root_r2 certigna certigna_root_ca certsign certsign_sa
+[tls]   certum_trusted_network_ca cfca_ev_root chambers_of_commerce_root_2008
+[tls]   chunghwa_telecom_co comodo_certification_authority
+[tls]   comodo_ecc_certification_authority comodo_rsa_certification_authority
+[tls]   cybertrust_global_root d_trust_root_class_3_ca_2_ev_2009
+[tls]   digicert_assured_id_root_ca digicert_assured_id_root_g2
+[tls]   digicert_assured_id_root_g3 digicert_high_assurance_ev_root_ca
+[tls]   digicert_trusted_root_g4 e_szigno_root_ca_2017 e_tugra_certification_authority
+[tls]   ec_acc emsign_ecc_root_ca_c3 emsign_ecc_root_ca_g3 emsign_root_ca_c1
+[tls]   emsign_root_ca_g1 entrust_net_certification_authority_2048
+[tls]   entrust_root_certification_authority entrust_root_certification_authority_ec1
+[tls]   entrust_root_certification_authority_g2
+[tls]   entrust_root_certification_authority_g4 fnmt_rcm gdca_trustauth_r5_root
+[tls]   geotrust_global_ca geotrust_primary_certification_authority_g2
+[tls]   global_chambersign_root_2008 globalsign globalsign_1 globalsign_2 globalsign_3
+[tls]   go_daddy_root_certificate_authority_g2 gts_root_r2 gts_root_r3
+[tls]   hellenic_academic_and_research_institutions_ecc_
+[tls]   hellenic_academic_and_research_institutions_root
+[tls]   hellenic_academic_and_research_institutions_root_1 hongkong_post_root_ca_1
+[tls]   hongkong_post_root_ca_3 identrust_commercial_root_ca_1
+[tls]   identrust_public_sector_root_ca_1 izenpe_com microsec_e_szigno_root_ca_2009
+[tls]   microsoft_ecc_root_certificate_authority_2017
+[tls]   microsoft_rsa_root_certificate_authority_2017
+[tls]   naver_global_root_certification_authority
+[tls]   netlock_arany_class_gold_f_c5_91tan_c3_bas_c3_ad
+[tls]   network_solutions_certificate_authority oiste_wisekey_global_root_gb_ca
+[tls]   oiste_wisekey_global_root_gc_ca quovadis_root_ca_1_g3 quovadis_root_ca_2
+[tls]   quovadis_root_ca_2_g3 quovadis_root_ca_3 quovadis_root_ca_3_g3
+[tls]   quovadis_root_certification_authority secom_trust_net secom_trust_systems_co
+[tls]   secure_global_ca securesign_rootca11 securetrust_ca sonera_class2_ca
+[tls]   ssl_com_ev_root_certification_authority_ecc
+[tls]   ssl_com_ev_root_certification_authority_rsa_r2
+[tls]   ssl_com_root_certification_authority_ecc
+[tls]   ssl_com_root_certification_authority_rsa staat_der_nederlanden_ev_root_ca
+[tls]   staat_der_nederlanden_root_ca_g3 starfield_root_certificate_authority_g2
+[tls]   starfield_services_root_certificate_authority_g2 starfield_technologies
+[tls]   swisssign_gold_ca_g2 swisssign_silver_ca_g2 szafir_root_ca2
+[tls]   t_telesec_globalroot_class_2 t_telesec_globalroot_class_3
+[tls]   teliasonera_root_ca_v1 the_go_daddy_group trustcor_eca_1
+[tls]   trustcor_rootcert_ca_1 trustcor_rootcert_ca_2 trustis_limited
+[tls]   trustwave_global_certification_authority
+[tls]   trustwave_global_ecc_p256_certification_authorit
+[tls]   trustwave_global_ecc_p384_certification_authorit
+[tls]   tubitak_kamu_sm_ssl_kok_sertifikasi_surum_1 twca_global_root_ca
+[tls]   twca_root_certification_authority uca_extended_validation_root
+[tls]   uca_global_g2_root verisign_universal_root_certification_authority
+[tls]   xramp_global_certification_authority
+[net] no supported NIC found; networking disabled
+[net] if 1 lo flags up running loopback  127.0.0.1/8
+[text] /fonts/ui.ttf: not found
+[text] /fonts/mono.ttf: not found
+[text] /fonts/text.ttf: not found
+[text] /fonts/ui-bold.ttf: not found
+[text] /fonts/mono-bold.ttf: not found
+[mm] low: 116395 frames free (454 MiB), 14645 used, 0 shared, 0 bugs
+[mm] low: 116139 frames free (453 MiB), 14901 used, 0 shared, 0 bugs
+[mm] low: 115883 frames free (452 MiB), 15157 used, 0 shared, 0 bugs
+[mm] low: 115627 frames free (451 MiB), 15413 used, 0 shared, 0 bugs
+[mm] low: 115371 frames free (450 MiB), 15669 used, 0 shared, 0 bugs
+[mm] low: 115115 frames free (449 MiB), 15925 used, 0 shared, 0 bugs
+[wm] display 1024x768 px, scale 100%, desktop 1024x768 pt
+[ime] /ime/pinyin.dat: not found -- the input method is UNAVAILABLE;
+[ime] Shift+Space will pass through and ASCII input is unchanged
+[wm] pointer: composited into the frame (no cursor plane)
+[wm] dock 0 apps:
+[wm] menu title 0 LogitOS x0 8 y0 0 x1 46 y1 24
+[wm] menu title 1 File x0 62 y0 0 x1 90 y1 24
+[wm] menu title 2 View x0 106 y0 0 x1 134 y1 24
+[wm] fullframe seq=1 reasons=0x1 total_ns=11850489 ordinary_px=786432 ordinary_ns=5512367 glass_px=31284 glass_ns=4900548 present_px=786432 present_ns=1437574
+[logitos] desktop up; mouse + keyboard armed
+[acpi] MADT CPUs type0=2 type9=0 duplicate=0 rejected=0
+[lapic] mode=xapic id=0 source=IA32_APIC_BASE
+[smp] CPU 0 apic_id=0 topology=cpuid.0b pkg=0 core=0 thread=0 type=unknown native-valid=0 native=0 hybrid=0
+[smp] 2 CPU(s) detected, BSP apic_id=0
+[ioapic] device IRQs routed via I/O APIC
+[smp] CPU 1 apic_id=1 topology=cpuid.0b pkg=0 core=1 thread=0 type=unknown native-valid=0 native=0 hybrid=0
+[prot] ap: nx sup/ON  wxsplit ON  smep -/off  smap -/off
+[smp] CPU 1 apic_id=1 online
+[smp] 2/2 CPUs online
+[smp] topology logical=2 cores=2 p=0/0 e=0/0 unknown=2/2 mismatch=0 conflict=0
+[smp] scheduler topology policy=uniform-online-cpus
+[smp] parallel present on 2 cores (IPI 241)
+[amd-bootfb] 0000:00:02.0 1002:5159 mode=passive bootfb=1024x768 source=multiboot-lfb bar=0 lfb=0xf0000000/0x300000 cmd=0103 pm=none
+[amd-accel] family=RV100 pci=5159 stage=active engine=rv100-2d-canary-passed desktop=cpu commands=2 vram=16777216 scanout=0 canary=3145728 reads=672 writes=448 fill=ok copy=ok restore=ok
+[amd-bootfb] framebuffer retained; RV100 2D canary passed, desktop remains CPU-composited
+[dev] 0000:00:00.0 8086:1237 class=06.00.00 host-bridge  driver=-
+[dev] 0000:00:01.0 8086:7000 class=06.01.00 isa-bridge   driver=-
+[dev] 0000:00:01.1 8086:7010 class=01.01.80 ide          driver=- bar4=io:0xc100/0x10
+[dev] 0000:00:01.3 8086:7113 class=06.80.00 bridge       driver=-
+[dev] 0000:00:02.0 1002:5159 class=03.00.00 vga          driver=amd-bootfb bar0=0xf0000000/0x8000000 bar1=io:0xc000/0x100 bar2=0xfebf0000/0x4000
+[dev] 5 device(s), 1 bound, 4 unclaimed
+[dma] boot coherent=0 bytes=0 mappings=0 pins=0 direct=0 bounce=0 quarantine=0/0/0 high=0 max=0x0 stale=0 completed_direct=0 completed_high=0
+
+[wm] desktop live; launching apps as ring-3 processes
+[wm] no accounts on this machine: the desktop starts unauthenticated
+[wm] launch: not found
+[amd-present] completed=1 pixels=786432 commands=3 upload_bytes=3145728 scanout=0 scratch=3147776 pitch=4096 rects=1 verified=1
+[wm] fullframe seq=2 reasons=0x4000 total_ns=33603041 ordinary_px=786432 ordinary_ns=1201644 glass_px=31284 glass_ns=2761182 present_px=786432 present_ns=29640215
+[wm] ptr 512 384
+[amd-present] completed=2 pixels=811008 commands=4 upload_bytes=3244032 scanout=0 scratch=3147776 pitch=4096 rects=2 verified=1
+[wm] win 0 gone
+[wm] win 1 gone
+[wm] win 2 gone
+[wm] win 3 gone
+[wm] win 4 gone
+[wm] win 5 gone
+[wm] win 6 gone
+[wm] win 7 gone
+[wm] win 8 gone
+[wm] win 9 gone
+[wm] win 10 gone
+[wm] win 11 gone
+[wm] win 12 gone
+[wm] win 13 gone
+[wm] win 14 gone
+[wm] win 15 gone
+[amd-present] completed=4 pixels=835782 commands=6 upload_bytes=3343128 scanout=0 scratch=3147776 pitch=4096 rects=4 verified=1
+[wm] ptr 256 256
+[amd-present] completed=8 pixels=836574 commands=10 upload_bytes=3346296 scanout=0 scratch=3147776 pitch=4096 rects=8 verified=1
+[wm] perf t=1567 composites=8 ns=55274619 max=33603041 motions=4 curmoves=0 curns=0 full=2 rects=12 cpx=1623600 fpx=1623600 presns=37065014 torn=0 defer=0 late=0 drawmax=0 evdrop=0 evevict=0 inmerge=4 inevict=0 indrop=0/0 inback=0 inhwm=1 sdk_draws=786456
+[wm] locks calls=470 hold_ns=16029244 max_ns=9333234 render_locked=0
+[wm] locktag tag=boot num=257 calls=1 wall_ns=1227636 cpu_ns=1202643 max_wall_ns=1227636 max_cpu_ns=1202643 redispatches=0
+[wm] locktag tag=input num=258 calls=114 wall_ns=3217044 cpu_ns=2930139 max_wall_ns=716788 max_cpu_ns=711789 redispatches=0
+[wm] locktag tag=notify num=259 calls=114 wall_ns=520849 cpu_ns=469867 max_wall_ns=68979 max_cpu_ns=67980 redispatches=0
+[wm] locktag tag=frame num=260 calls=241 wall_ns=11063715 cpu_ns=10956752 max_wall_ns=9333234 max_cpu_ns=9331235 redispatches=0
+[wm] locktop rank=1 seq=73 tag=frame num=260 wall_ns=9333234 cpu_ns=9331235 redispatches=0
+[wm] locktop rank=2 seq=1 tag=boot num=257 wall_ns=1227636 cpu_ns=1202643 redispatches=0
+[wm] locktop rank=3 seq=328 tag=input num=258 wall_ns=716788 cpu_ns=711789 redispatches=0
+[wm] locktop rank=4 seq=32 tag=input num=258 wall_ns=631813 cpu_ns=629814 redispatches=0
+[wm] locktop rank=5 seq=272 tag=input num=258 wall_ns=354895 cpu_ns=352896 redispatches=0
+[wm] locktop rank=6 seq=2 tag=input num=258 wall_ns=221935 cpu_ns=221935 redispatches=0
+[amd-present] completed=16 pixels=862536 commands=18 upload_bytes=3450144 scanout=0 scratch=3147776 pitch=4096 rects=16 verified=1
+[wm] ptr 768 384
+[time] tickloss +18/s worstgap=175639us missed=18 of 200 expected (9.000% of the clock); uptime 2s
+[time] tickloss   worst gap: observed cpu 0 ra=0x201d7e2; tick on cpu 0, pid -1, in kernel
+[wm] ptr 256 384
+[time] accuracy n=32 late_us min=363 p50=5730 p90=9353 max=10973 (TCG; delivery is quantised to the 100Hz tick)
+[amd-present] completed=32 pixels=890082 commands=34 upload_bytes=3560328 scanout=0 scratch=3147776 pitch=4096 rects=32 verified=1
+[wm] ptr 768 256
+[wm] perf t=2569 composites=20 ns=65252662 max=33603041 motions=14 curmoves=0 curns=0 full=2 rects=34 cpx=1676712 fpx=1676712 presns=43134215 torn=0 defer=0 late=0 drawmax=0 evdrop=0 evevict=0 inmerge=14 inevict=0 indrop=0/0 inback=0 inhwm=1 sdk_draws=786466
+[wm] locks calls=1390 hold_ns=26435170 max_ns=9333234 render_locked=0
+[wm] locktag tag=boot num=257 calls=1 wall_ns=1227636 cpu_ns=1202643 max_wall_ns=1227636 max_cpu_ns=1202643 redispatches=0
+[wm] locktag tag=input num=258 calls=338 wall_ns=7500773 cpu_ns=6732022 max_wall_ns=716788 max_cpu_ns=711789 redispatches=0
+[wm] locktag tag=notify num=259 calls=338 wall_ns=1312625 cpu_ns=1128685 max_wall_ns=68979 max_cpu_ns=67980 redispatches=0
+[wm] locktag tag=frame num=260 calls=713 wall_ns=16394136 cpu_ns=16081235 max_wall_ns=9333234 max_cpu_ns=9331235 redispatches=0
+[wm] locktop rank=1 seq=73 tag=frame num=260 wall_ns=9333234 cpu_ns=9331235 redispatches=0
+[wm] locktop rank=2 seq=471 tag=frame num=260 wall_ns=3783879 cpu_ns=3780880 redispatches=0
+[wm] locktop rank=3 seq=1 tag=boot num=257 wall_ns=1227636 cpu_ns=1202643 redispatches=0
+[wm] locktop rank=4 seq=328 tag=input num=258 wall_ns=716788 cpu_ns=711789 redispatches=0
+[wm] locktop rank=5 seq=992 tag=input num=258 wall_ns=705791 cpu_ns=703791 redispatches=0
+[wm] locktop rank=6 seq=694 tag=input num=258 wall_ns=671801 cpu_ns=668802 redispatches=0
+[wm] ptr 256 384
+[wm] ptr 768 384
+[wm] ptr 256 256
+[wm] perf t=3576 composites=34 ns=72276581 max=33603041 motions=26 curmoves=0 curns=0 full=2 rects=60 cpx=1730616 fpx=1730616 presns=46111333 torn=0 defer=0 late=0 drawmax=0 evdrop=0 evevict=0 inmerge=26 inevict=0 indrop=0/0 inback=0 inhwm=1 sdk_draws=786476
+[wm] locks calls=1938 hold_ns=35829382 max_ns=9333234 render_locked=0
+[wm] locktag tag=boot num=257 calls=1 wall_ns=1227636 cpu_ns=1202643 max_wall_ns=1227636 max_cpu_ns=1202643 redispatches=0
+[wm] locktag tag=input num=258 calls=468 wall_ns=10827787 cpu_ns=9754117 max_wall_ns=716788 max_cpu_ns=711789 redispatches=0
+[wm] locktag tag=notify num=259 calls=468 wall_ns=1787480 cpu_ns=1538554 max_wall_ns=68979 max_cpu_ns=67980 redispatches=0
+[wm] locktag tag=frame num=260 calls=1001 wall_ns=21986479 cpu_ns=21557609 max_wall_ns=9333234 max_cpu_ns=9331235 redispatches=0
+[wm] locktop rank=1 seq=73 tag=frame num=260 wall_ns=9333234 cpu_ns=9331235 redispatches=0
+[wm] locktop rank=2 seq=1391 tag=frame num=260 wall_ns=4594639 cpu_ns=4591640 redispatches=0
+[wm] locktop rank=3 seq=471 tag=frame num=260 wall_ns=3783879 cpu_ns=3780880 redispatches=0
+[wm] locktop rank=4 seq=1 tag=boot num=257 wall_ns=1227636 cpu_ns=1202643 redispatches=0
+[wm] locktop rank=5 seq=328 tag=input num=258 wall_ns=716788 cpu_ns=711789 redispatches=0
+[wm] locktop rank=6 seq=992 tag=input num=258 wall_ns=705791 cpu_ns=703791 redispatches=0
+[amd-present] completed=64 pixels=969552 commands=66 upload_bytes=3878208 scanout=0 scratch=3147776 pitch=4096 rects=64 verified=1
+[wm] ptr 768 384
+[wm] ptr 256 384
+[waitq] 200 ms of waiting: sched_poll_wait spin re-tested 21 times / 0 dispatches; blocked sleeper 0 dispatches
+[waitq] sem items=192 mutex=1000/1000 softirqs=1 work=1 blocked_now=2
+
+WAITQ_SELFTEST_OK (0 failures)
+[wm] ptr 768 256
+[wm] perf t=4577 composites=49 ns=81710784 max=33603041 motions=39 curmoves=0 curns=0 full=2 rects=87 cpx=1784736 fpx=1784736 presns=51091857 torn=0 defer=0 late=0 drawmax=0 evdrop=0 evevict=0 inmerge=37 inevict=0 indrop=0/0 inback=0 inhwm=1 sdk_draws=786486
+[wm] locks calls=3560 hold_ns=47989784 max_ns=9333234 render_locked=0
+[wm] locktag tag=boot num=257 calls=1 wall_ns=1227636 cpu_ns=1202643 max_wall_ns=1227636 max_cpu_ns=1202643 redispatches=0
+[wm] locktag tag=input num=258 calls=866 wall_ns=15935267 cpu_ns=14304763 max_wall_ns=716788 max_cpu_ns=711789 redispatches=0
+[wm] locktag tag=notify num=259 calls=866 wall_ns=2954148 cpu_ns=2505278 max_wall_ns=68979 max_cpu_ns=67980 redispatches=0
+[wm] locktag tag=frame num=260 calls=1827 wall_ns=27872733 cpu_ns=27065981 max_wall_ns=9333234 max_cpu_ns=9331235 redispatches=0
+[wm] locktop rank=1 seq=73 tag=frame num=260 wall_ns=9333234 cpu_ns=9331235 redispatches=0
+[wm] locktop rank=2 seq=1391 tag=frame num=260 wall_ns=4594639 cpu_ns=4591640 redispatches=0
+[wm] locktop rank=3 seq=471 tag=frame num=260 wall_ns=3783879 cpu_ns=3780880 redispatches=0
+[wm] locktop rank=4 seq=1939 tag=frame num=260 wall_ns=3604932 cpu_ns=3602933 redispatches=0
+[wm] locktop rank=5 seq=1 tag=boot num=257 wall_ns=1227636 cpu_ns=1202643 redispatches=0
+[wm] locktop rank=6 seq=328 tag=input num=258 wall_ns=716788 cpu_ns=711789 redispatches=0
+[wm] ptr 256 384
+[wm] ptr 768 384
+[wm] ptr 512 384
+[wm] perf t=5578 composites=63 ns=89061604 max=33603041 motions=51 curmoves=0 curns=0 full=2 rects=111 cpx=1838280 fpx=1838280 presns=54096965 torn=0 defer=0 late=0 drawmax=0 evdrop=0 evevict=0 inmerge=45 inevict=0 indrop=0/0 inback=0 inhwm=1 sdk_draws=786496
+[wm] locks calls=5772 hold_ns=62641416 max_ns=9333234 render_locked=0
+[wm] locktag tag=boot num=257 calls=1 wall_ns=1227636 cpu_ns=1202643 max_wall_ns=1227636 max_cpu_ns=1202643 redispatches=0
+[wm] locktag tag=input num=258 calls=1412 wall_ns=21768537 cpu_ns=19438239 max_wall_ns=716788 max_cpu_ns=711789 redispatches=0
+[wm] locktag tag=notify num=259 calls=1412 wall_ns=4485679 cpu_ns=3765888 max_wall_ns=68979 max_cpu_ns=67980 redispatches=0
+[wm] locktag tag=frame num=260 calls=2947 wall_ns=35159564 cpu_ns=33823949 max_wall_ns=9333234 max_cpu_ns=9331235 redispatches=0
+[wm] locktop rank=1 seq=73 tag=frame num=260 wall_ns=9333234 cpu_ns=9331235 redispatches=0
+[wm] locktop rank=2 seq=1391 tag=frame num=260 wall_ns=4594639 cpu_ns=4591640 redispatches=0
+[wm] locktop rank=3 seq=3561 tag=frame num=260 wall_ns=4348711 cpu_ns=4345712 redispatches=0
+[wm] locktop rank=4 seq=471 tag=frame num=260 wall_ns=3783879 cpu_ns=3780880 redispatches=0
+[wm] locktop rank=5 seq=1939 tag=frame num=260 wall_ns=3604932 cpu_ns=3602933 redispatches=0
+[wm] locktop rank=6 seq=1 tag=boot num=257 wall_ns=1227636 cpu_ns=1202643 redispatches=0

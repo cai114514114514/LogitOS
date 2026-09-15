@@ -1,0 +1,9 @@
+PASS control: inherited stale touch anchor fails actual WM position assertion
+PASS control: omitted mode request prevents touchpad activation
+usb_hid_test: ok (QEMU usb-kbd and usb-mouse descriptors parse and decode; report-ID multiplexing; 12-bit cross-byte axes; Logical Maximum 0xFF; sign extension by Logical Minimum; truncated/Push-Pop/oversized/inverted descriptors rejected; full US keymap)
+usb-hid-generic: 95 checks, 0 failed; parser + real class bind/poll/remove + input consumers
+PASS control: first-interface-only binding failed the two-interface assertion
+PASS control: treating absolute coordinates as deltas failed tablet normalization
+usb_hid_test: ok (QEMU usb-kbd and usb-mouse descriptors parse and decode; report-ID multiplexing; 12-bit cross-byte axes; Logical Maximum 0xFF; sign extension by Logical Minimum; truncated/Push-Pop/oversized/inverted descriptors rejected; full US keymap)
+usb_input_extensions: PASS composite interfaces, multiplexed roles, modifier snapshots, absolute tablet, NKRO, protocol refusal
+usb_hid_test: ok (QEMU usb-kbd and usb-mouse descriptors parse and decode; report-ID multiplexing; 12-bit cross-byte axes; Logical Maximum 0xFF; sign extension by Logical Minimum; truncated/Push-Pop/oversized/inverted descriptors rejected; full US keymap)

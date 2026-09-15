@@ -1,0 +1,7 @@
+FAIL line 483: callbacks == 1 && sound->position(sound) == 1024
+FAIL line 485: callbacks == 3 && sound->position(sound) == 3072
+FAIL line 489: callbacks == 24 && sound->position(sound) == 24576
+FAIL line 504: callbacks == before + 1
+FAIL line 610: callbacks == 2
+FAIL line 621: callbacks == 3
+ES1370_HOST: 253291 checks, 6 failures

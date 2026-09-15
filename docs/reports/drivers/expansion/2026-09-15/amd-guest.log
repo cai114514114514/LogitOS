@@ -1,0 +1,2 @@
+PASS bios QEMU ati-vga bind + retained 1024x768 scanout (221 sampled colours)
+AMD_BOOTFB_GUEST: BIOS QEMU ati-vga path passed; physical AMD GPU unverified

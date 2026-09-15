@@ -1,0 +1,14 @@
+FAIL: ec_transport_read(&transport, 0x20, 2, &value) == EC_OK
+FAIL: value == 0x7b7a
+FAIL: model.command_reads == 2
+FAIL: model.early_writes == 0
+FAIL: ec_transport_write(&transport, 0x30, 2, 0x1234) == EC_OK
+FAIL: model.memory[0x30] == 0x34 && model.memory[0x31] == 0x12
+FAIL: model.command_writes == 2
+FAIL: ec_transport_read(&transport, 0, 8, &value) == EC_OK
+FAIL: value == 0x5d5c5f5e59585b5aull
+FAIL: ec_transport_write(&transport, 0, 8, 0x8877665544332211ull) == EC_OK
+FAIL: model.memory[0] == 0x11 && model.memory[7] == 0x88
+FAIL: ec_transport_read(&transport, 0, 1, &value) == EC_TIMEOUT
+FAIL: model.memory[0x30] == 0x34 && model.memory[0x31] == 0
+EC_TRANSPORT: 51 checks, 13 failures

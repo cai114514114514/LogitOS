@@ -1,0 +1,26 @@
+NATIVE_NEGCTL: missing HDP invalidate rejected
+NATIVE: 117 checks, 0 failures
+DESKTOP_NEGCTL: pixel/byte stride regression rejected
+DESKTOP success: 45 checks, 0 failures (wiring stubs; no protocol or hardware proof)
+DESKTOP no-boot: 5 checks, 0 failures (wiring stubs; no protocol or hardware proof)
+DESKTOP geometry: 5 checks, 0 failures (wiring stubs; no protocol or hardware proof)
+DESKTOP lease: 5 checks, 0 failures (wiring stubs; no protocol or hardware proof)
+DESKTOP bind: 6 checks, 0 failures (wiring stubs; no protocol or hardware proof)
+DESKTOP address: 7 checks, 0 failures (wiring stubs; no protocol or hardware proof)
+DESKTOP translation: 7 checks, 0 failures (wiring stubs; no protocol or hardware proof)
+DESKTOP runtime: 13 checks, 0 failures (wiring stubs; no protocol or hardware proof)
+test_ci_and_control_inventories (__main__.NestedMakeTests.test_ci_and_control_inventories) ... ok
+test_comment_recipe_and_partial_filename_are_not_edges (__main__.NestedMakeTests.test_comment_recipe_and_partial_filename_are_not_edges) ... ok
+test_continuations_multiple_paths_comments_and_cycle (__main__.NestedMakeTests.test_continuations_multiple_paths_comments_and_cycle) ... ok
+test_declared_exception_is_path_specific (__main__.NestedMakeTests.test_declared_exception_is_path_specific) ... ok
+test_missing_then_restored_edge (__main__.NestedMakeTests.test_missing_then_restored_edge) ... ok
+test_nested_link_prerequisites_are_checked (__main__.NestedMakeTests.test_nested_link_prerequisites_are_checked) ... ok
+test_same_leaf_is_not_same_fragment (__main__.NestedMakeTests.test_same_leaf_is_not_same_fragment) ... ok
+
+----------------------------------------------------------------------
+Ran 7 tests in 0.051s
+
+OK
+negative control: nested fragment without include is UNREACHABLE
+mk-wired: ok (362 fragments, 361 reachable from the Makefile, 1 declared)
+  declared: tests/schedneg.mk -- a `make -f` wrapper that includes the Makefile itself; including it back would recurse (see its own header)

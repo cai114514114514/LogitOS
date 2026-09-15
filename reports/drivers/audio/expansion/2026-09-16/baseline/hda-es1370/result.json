@@ -1,0 +1,85 @@
+{
+  "passed": false,
+  "device": "ES1370",
+  "output_device": "intel-hda",
+  "errors": [
+    "duplex playback did not retain its three-second length",
+    "playback frequency/phase continuity changed during capture"
+  ],
+  "native_rates": {
+    "capture": 48662,
+    "playback": 48000
+  },
+  "inputs": {
+    "iso_sha256": "481fb9f016e6aea28bcdae5f6e1d2cdb1332ec1cd87406f4cfdf7313957ef271",
+    "disk_sha256": "782ee74dc6e67c399de03ef90752ef451360fb51c8e9f0448df1df817d493798",
+    "backend_sha256": "e94f1d58d6222e8665336fdeadf448f478a216ede945077fb0898da776489878",
+    "original_disk_sha256": "782ee74dc6e67c399de03ef90752ef451360fb51c8e9f0448df1df817d493798"
+  },
+  "source_sha256": "7ccfeac23ea3fc3ab8d144bcecee64992f040bf3dd6cdaf4d5faf06cc2257a2a",
+  "qemu_version": "QEMU emulator version 11.0.0",
+  "qemu_exit": 0,
+  "backend_exit": 0,
+  "rec_open_lines": [
+    "REC_OPEN rate=48662 ch=2 fmt=0",
+    "REC_OPEN rate=48662 ch=2 fmt=0"
+  ],
+  "capture_extracted": true,
+  "pcm": {
+    "passed": false,
+    "errors": [
+      "duplex playback did not retain its three-second length",
+      "playback frequency/phase continuity changed during capture"
+    ],
+    "rounds": [
+      {
+        "round": 1,
+        "frames": 48662,
+        "match_byte_offset": 0,
+        "input_interval": [
+          0,
+          198272
+        ],
+        "sha256": "ed521457a8e87589d1a0cbc3747b6d6623eba014b60cf0024521968468e0d324"
+      },
+      {
+        "round": 2,
+        "frames": 48662,
+        "match_byte_offset": 198272,
+        "input_interval": [
+          198272,
+          396544
+        ],
+        "sha256": "c61a72a1684b24a8eedafcfdc530655f4cbe7b98afb2ab732bc8178b5aede77f"
+      }
+    ],
+    "playback": {
+      "passed": false,
+      "errors": [
+        "duplex playback did not retain its three-second length",
+        "playback frequency/phase continuity changed during capture"
+      ],
+      "signal_frames": 139904,
+      "zero_crossings": 583,
+      "bad_steps": 0
+    }
+  },
+  "artifacts": {
+    "source.pcm": "7ccfeac23ea3fc3ab8d144bcecee64992f040bf3dd6cdaf4d5faf06cc2257a2a",
+    "injected.pcm": "e03151593d5c700308117573587f9f63194820835b956d6d33151ef123604609",
+    "playback.pcm": "87d0b472c299bd3d55b147f1c568d309e0d52179d70137bd25169879e4c2f7fd",
+    "capture1.wav": "80c2edf1e8cb07ff95ae7e6b9b1f2c4d575ee7c207528f714a36249eb59dd186",
+    "capture2.wav": "ae13e0a82b44b0acf3abba97661d351563cb696fac2f3e6a6ba05db25144caf7",
+    "backend.log": "12895d7016330731b5363ed2b072d6588be13ab1ba7da33d8ebb8a8d081a6636",
+    "backend.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "serial.log": "5c7e69c5a791a01eb7c1753d159536b990aef69e6bc2beabe43b82e2e460cea6",
+    "qemu.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "harness": {
+    "/Users/wangzhe/system/LogitOS/tests/drivers/audio/capture/guest.py": "6beee43f515d1e2068f8a9796a1073ef808b8f0991dba7e7cb1407e4636a699f",
+    "/Users/wangzhe/system/LogitOS/tests/drivers/audio/capture/oracle.py": "c8a9100dbd415a39f59dbe58ca20c41fbcfb1839f7c52b919bf5d90bd888ce55",
+    "/Users/wangzhe/system/LogitOS/tests/drivers/audio/capture/backend.c": "fa760173b5de9310ddb0f67e174248079d8535d0f19cdc9732be8572505b8cca",
+    "/Users/wangzhe/system/LogitOS/tests/drivers/audio/capture/profiles.py": "ebcfc6d85530ae218c38e730eb19a4d25643ab2afb4cb744bd1ec626d27430df"
+  },
+  "original_disk_after_sha256": "782ee74dc6e67c399de03ef90752ef451360fb51c8e9f0448df1df817d493798"
+}

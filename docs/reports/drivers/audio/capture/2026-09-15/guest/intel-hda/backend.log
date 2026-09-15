@@ -1,0 +1,14 @@
+BACKEND_IN Init bytes=0 (507490614144, 0x10, true, false, 48000, 0x02, 4, 192000, false)
+BACKEND_READY
+BACKEND_IN SetEnabled bytes=0 (507490614144, false)
+BACKEND_OUT Init bytes=0 (507482940672, 0x10, true, false, 48000, 0x02, 4, 192000, false)
+BACKEND_OUT SetEnabled bytes=0 (507482940672, false)
+BACKEND_OUT SetVolume bytes=0 (507482940672, false, [0xff, 0xff])
+BACKEND_IN SetEnabled bytes=0 (507490614144, true)
+BACKEND_IN SetEnabled bytes=195840 (507490614144, false)
+BACKEND_OUT SetEnabled bytes=0 (507482940672, true)
+BACKEND_IN SetEnabled bytes=195840 (507490614144, true)
+BACKEND_IN SetEnabled bytes=391680 (507490614144, false)
+BACKEND_OUT SetEnabled bytes=942720 (507482940672, false)
+BACKEND_CLOSED IN
+BACKEND_CLOSED OUT

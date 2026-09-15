@@ -1,0 +1,14 @@
+AMD_RV100_NEGCTL: modern GPU reached legacy BARs (exactly one failure)
+AMD_RV100_NEGCTL: out-of-scanout fill submitted (exactly one failure)
+AMD_RV100_NEGCTL: corrupted runtime upload rejected by pixel oracle (exactly one failure)
+AMD_RV100: 604 checks, 0 failures
+FAIL GPU success preserves callback pixels without CPU overwrite
+FB_NATIVE_PRESENT_NEGCTL: CPU overwrite detected (exactly one failure)
+FB_NATIVE_PRESENT: 21 checks, 0 failures
+AMD_BOOTFB_NEGCTL: start-only ownership accepted partial overlap (exactly one failure)
+AMD_BOOTFB_NEGCTL: memory-decode-off device bound (exactly one failure)
+AMD_BOOTFB_NEGCTL: mixed memory/I-O BAR was accepted (exactly one failure)
+AMD_BOOTFB_NEGCTL: malformed PM capability was dereferenced (exactly one failure)
+AMD_BOOTFB: 59 checks, 0 failures
+mk-wired: ok (338 fragments, 337 reachable from the Makefile, 1 declared)
+  declared: tests/schedneg.mk -- a `make -f` wrapper that includes the Makefile itself; including it back would recurse (see its own header)

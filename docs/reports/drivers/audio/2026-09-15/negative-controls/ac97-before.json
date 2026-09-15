@@ -1,0 +1,81 @@
+{
+  "passed": false,
+  "device": "AC97",
+  "errors": [
+    "sndtest completion marker absent or unexpected",
+    "sndtest reported failure or missing card",
+    "guest device identity/native format does not match attached card",
+    "one-second signal length differs by more than 64 frames",
+    "silent or too short"
+  ],
+  "oracle_sources": {
+    "/Users/wangzhe/system/LogitOS/tests/drivers/audio/guest.py": "2fe6696e31579ecfb48e3a4719dcdcafe6761126db9886a6297351914051fe34",
+    "/Users/wangzhe/system/LogitOS/tests/drivers/audio/guest/oracle.py": "b164e9c1599b6dbc595fdf1d4788d698249bd016ccad9ecb5daea19ebe677f56"
+  },
+  "inputs": {
+    "iso": "/Users/wangzhe/system/LogitOS/build/drivers/audio/before-ac97/input.iso",
+    "iso_sha256": "8d569f3461f782fff83791f42f590dd32fd8e4dbfaa48f725b80e91ec23879dc",
+    "disk": "/Users/wangzhe/system/LogitOS/build/disk.img",
+    "disk_sha256": "112db0a4b69c2586542da084700959e53066ad61735a530ab2721bebebbc8cf5",
+    "disk_writes": "QEMU snapshot overlay"
+  },
+  "qemu_version": "QEMU emulator version 11.0.0",
+  "command": [
+    "/opt/homebrew/bin/qemu-system-x86_64",
+    "-cpu",
+    "max",
+    "-cdrom",
+    "/Users/wangzhe/system/LogitOS/build/drivers/audio/absence-ac97/input.iso",
+    "-drive",
+    "file=/Users/wangzhe/system/LogitOS/build/disk.img,format=raw,if=none,id=hd0,file.locking=off",
+    "-device",
+    "virtio-blk-pci,drive=hd0",
+    "-boot",
+    "d",
+    "-snapshot",
+    "-m",
+    "512M",
+    "-smp",
+    "4",
+    "-accel",
+    "tcg,thread=multi",
+    "-vga",
+    "none",
+    "-device",
+    "virtio-gpu-pci",
+    "-nic",
+    "none",
+    "-audiodev",
+    "wav,id=snd0,path=/Users/wangzhe/system/LogitOS/build/drivers/audio/absence-ac97/capture.wav,out.frequency=48000,out.channels=2,out.format=s16",
+    "-device",
+    "AC97,audiodev=snd0",
+    "-serial",
+    "stdio",
+    "-monitor",
+    "none",
+    "-display",
+    "none",
+    "-no-reboot",
+    "-qmp",
+    "unix:/var/folders/5n/cg5_2k414dj_mt1q9__6mx_r0000gn/T/audio-qmp-56gylul2/qmp.sock,server=on,wait=off"
+  ],
+  "command_sent": true,
+  "qemu_exit": 0,
+  "guest_info": "SNDTEST_INFO driver=none codec=- rate=0 ch=0",
+  "audio": {
+    "passed": false,
+    "errors": [
+      "one-second signal length differs by more than 64 frames",
+      "silent or too short"
+    ],
+    "metrics": {
+      "header_finalized": false,
+      "captured_frames": 0,
+      "signal_frames": 0,
+      "rate": 48000
+    }
+  },
+  "header_note": "QEMU left zero lengths; playable.wav repairs only RIFF/data sizes",
+  "playable_sha256": "4872b61c768dff943f9e021453d816f06e35adc8edd88ef183301f03e31b94a5",
+  "wav_sha256": "9bee48f4bd80fdc5339544699465b0af93e3f95c8ade823376f95019bb678aa8"
+}

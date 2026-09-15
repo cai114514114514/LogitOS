@@ -1,0 +1,5 @@
+FAIL line 572: capture_callbacks == 3
+FAIL line 576: capture_callbacks == 24 && delivered_input_bytes == 24u * 4096u
+FAIL line 590: capture_callbacks == before + 1
+FAIL line 615: capture_callbacks == old_capture_callbacks + 1
+ES1370_HOST: 154987 checks, 4 failures

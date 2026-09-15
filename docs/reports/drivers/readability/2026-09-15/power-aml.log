@@ -1,0 +1,82 @@
+POWER_AML_NEGCTL: wrong Kelvin conversion caused 3 real AML consumer failures
+starting uACPI, version 6.1.0
+RSDP 0x0000000000000100 00000014 v00 (LOGIT )
+RSDT 0x0000000000000200 00000028 v06 (LOGIT  POWERAML)
+DSDT 0x0000000000000800 0000010F v06 (LOGIT  POWERAML)
+FACP 0x0000000000000400 00000114 v06 (LOGIT  POWERAML)
+successfully loaded 1 AML blob, 21 ops in 0ms (avg 138157/s)
+namespace initialization done in 0ms: 2 devices, 1 thermal zones
+POWER_AML success: 25 checks, 0 failures
+starting uACPI, version 6.1.0
+RSDP 0x0000000000000100 00000014 v00 (LOGIT )
+RSDT 0x0000000000000200 00000028 v06 (LOGIT  POWERAML)
+DSDT 0x0000000000000800 0000010F v06 (LOGIT  POWERAML)
+FACP 0x0000000000000400 00000114 v06 (LOGIT  POWERAML)
+successfully loaded 1 AML blob, 21 ops in 0ms (avg 313432/s)
+namespace initialization done in 0ms: 2 devices, 1 thermal zones
+POWER_AML empty: 18 checks, 0 failures
+starting uACPI, version 6.1.0
+RSDP 0x0000000000000100 00000014 v00 (LOGIT )
+RSDT 0x0000000000000200 00000028 v06 (LOGIT  POWERAML)
+DSDT 0x0000000000000800 0000010F v06 (LOGIT  POWERAML)
+FACP 0x0000000000000400 00000114 v06 (LOGIT  POWERAML)
+successfully loaded 1 AML blob, 21 ops in 0ms (avg 333333/s)
+namespace initialization done in 0ms: 2 devices, 1 thermal zones
+POWER_AML unknown: 25 checks, 0 failures
+starting uACPI, version 6.1.0
+RSDP 0x0000000000000100 00000014 v00 (LOGIT )
+RSDT 0x0000000000000200 00000028 v06 (LOGIT  POWERAML)
+DSDT 0x0000000000000800 00000113 v06 (LOGIT  POWERAML)
+FACP 0x0000000000000400 00000114 v06 (LOGIT  POWERAML)
+successfully loaded 1 AML blob, 21 ops in 0ms (avg 313432/s)
+namespace initialization done in 0ms: 2 devices, 1 thermal zones
+POWER_AML bad-battery: 23 checks, 0 failures
+starting uACPI, version 6.1.0
+RSDP 0x0000000000000100 00000014 v00 (LOGIT )
+RSDT 0x0000000000000200 00000028 v06 (LOGIT  POWERAML)
+DSDT 0x0000000000000800 000000F4 v06 (LOGIT  POWERAML)
+FACP 0x0000000000000400 00000114 v06 (LOGIT  POWERAML)
+successfully loaded 1 AML blob, 20 ops in 0ms (avg 344827/s)
+namespace initialization done in 0ms: 2 devices, 1 thermal zones
+POWER_AML missing-battery-method: 23 checks, 0 failures
+starting uACPI, version 6.1.0
+RSDP 0x0000000000000100 00000014 v00 (LOGIT )
+RSDT 0x0000000000000200 00000028 v06 (LOGIT  POWERAML)
+DSDT 0x0000000000000800 00000104 v06 (LOGIT  POWERAML)
+FACP 0x0000000000000400 00000114 v06 (LOGIT  POWERAML)
+successfully loaded 1 AML blob, 21 ops in 0ms (avg 362068/s)
+namespace initialization done in 0ms: 2 devices, 1 thermal zones
+POWER_AML bad-temperature: 22 checks, 0 failures
+starting uACPI, version 6.1.0
+RSDP 0x0000000000000100 00000014 v00 (LOGIT )
+RSDT 0x0000000000000200 00000028 v06 (LOGIT  POWERAML)
+DSDT 0x0000000000000800 00000103 v06 (LOGIT  POWERAML)
+FACP 0x0000000000000400 00000114 v06 (LOGIT  POWERAML)
+successfully loaded 1 AML blob, 19 ops in 0ms (avg 395833/s)
+namespace initialization done in 0ms: 2 devices, 1 thermal zones
+unexpected 'Integer' object returned by method \._S5, expected type mask: 00000010
+error while evaluating _S5: object type mismatch
+POWER_AML bad-sleep: 25 checks, 0 failures
+starting uACPI, version 6.1.0
+RSDP 0x0000000000000100 00000014 v00 (LOGIT )
+RSDT 0x0000000000000200 00000028 v06 (LOGIT  POWERAML)
+DSDT 0x0000000000000800 0000010F v06 (LOGIT  POWERAML)
+FACP 0x0000000000000400 00000114 v06 (LOGIT  POWERAML)
+invalid table 'DSDT' (OEM ID 'LOGIT ' OEM Table ID 'POWERAML') checksum 1!
+unable to find DSDT: not found
+POWER_AML bad-checksum: 1 checks, 0 failures
+test_ci_and_control_inventories (__main__.NestedMakeTests.test_ci_and_control_inventories) ... ok
+test_comment_recipe_and_partial_filename_are_not_edges (__main__.NestedMakeTests.test_comment_recipe_and_partial_filename_are_not_edges) ... ok
+test_continuations_multiple_paths_comments_and_cycle (__main__.NestedMakeTests.test_continuations_multiple_paths_comments_and_cycle) ... ok
+test_declared_exception_is_path_specific (__main__.NestedMakeTests.test_declared_exception_is_path_specific) ... ok
+test_missing_then_restored_edge (__main__.NestedMakeTests.test_missing_then_restored_edge) ... ok
+test_nested_link_prerequisites_are_checked (__main__.NestedMakeTests.test_nested_link_prerequisites_are_checked) ... ok
+test_same_leaf_is_not_same_fragment (__main__.NestedMakeTests.test_same_leaf_is_not_same_fragment) ... ok
+
+----------------------------------------------------------------------
+Ran 7 tests in 0.049s
+
+OK
+negative control: nested fragment without include is UNREACHABLE
+mk-wired: ok (366 fragments, 365 reachable from the Makefile, 1 declared)
+  declared: tests/schedneg.mk -- a `make -f` wrapper that includes the Makefile itself; including it back would recurse (see its own header)

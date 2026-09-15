@@ -1,0 +1,3 @@
+FAIL: mix CLAMPS at the positive rail, does not wrap: got -5536 want 32767
+FAIL: mix clamps at the negative rail: got 5536 want -32768
+FAIL: audio pcm: 71 checks, 2 failures

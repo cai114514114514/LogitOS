@@ -1,0 +1,82 @@
+WIFI_NEGCTL: unauthenticated CCMP plaintext and PN advancement rejected
+WIFI_REKEY_NEGCTL: resetting installed GTK replay windows is detected
+WIFI_STATION: 312 checks, 0 failures
+WIFI_ADAPTER_NEGCTL: fabricated running link is detected
+[net] no supported NIC found; networking disabled
+[net] if 1 lo flags up running loopback  127.0.0.1/8
+WIFI_ADAPTER: 53 checks, 0 failures
+negative control ok: exactly 6 of 55 checks fail with one-NIC binding
+negative control ok: primary-only IRQ registration fails the real multi-NIC route check
+[net] virtio-net: found 1af4:1000 at 0000:00:04.0
+[net] NIC bound: eth0 = virtio-net  MAC 52:54:0:0:0:71  irq=10
+[net] e1000: found 8086:100e at 0000:00:03.0
+[net] NIC bound: eth1 = e1000  MAC 52:54:0:0:0:e1  irq=11
+[net] rtl8139: found 10ec:8139 at 0000:00:05.0
+[net] NIC bound: eth2 = rtl8139  MAC 52:54:0:0:0:39  irq=9
+[net] rtl8169: 10ec:8168 found but the interface table is full (NETIF_MAX=4); left unclaimed
+[net] if 1 lo flags up running loopback  127.0.0.1/8
+[net] if 2 eth0 flags up running broadcast  mac 52:54:0:0:0:71 drv virtio-net irq=10  [primary]
+[net] if 3 eth1 flags up running broadcast  mac 52:54:0:0:0:e1 drv e1000 irq=11
+[net] if 4 eth2 flags up running broadcast  mac 52:54:0:0:0:39 drv rtl8139 irq=9
+ok   netdev_init bound a NIC
+ok   late init cannot repeat the raw boot probe or duplicate interfaces
+ok   index RT_OIF_LO exists
+ok   index 1 is 'lo' -- registered before any card
+ok   lo carries NETIF_F_LOOPBACK
+ok   lo has no device: an interface is not a card
+ok   lo holds 127.0.0.1/8 -- the whole block, not a /32
+ok   netdev_loopback_ifindex agrees with route.h's constant
+ok   the table is full: lo plus three of the four cards
+ok   eth0 is the virtio NIC -- NIC-line priority, not enumeration order
+ok   eth1 is the e1000, which enumerated FIRST and is second in priority
+ok   eth2 is the rtl8139
+ok   the fourth card is refused: the table is full and says so
+ok   and the refused card is left UNCLAIMED for dev_probe_all to report
+ok   the primary NIC's index is route.h's RT_OIF_NIC0
+ok   netdev_primary_ifindex agrees
+ok   the interface copied the card's MAC
+ok   netdev_mac() is the PRIMARY's MAC, unchanged in meaning
+ok   netdev_name() is the primary's
+ok   netdev_present() still means 'a NIC is bound'
+ok   netdev_tx still goes to the primary card
+ok   netdev_tx_if(eth1) reaches the SECOND card -- unreachable before
+ok   netdev_tx_if refuses loopback: it has no card to hand bytes to
+ok   netdev_tx_if refuses an index that is not an interface
+ok   netdev_tx_if refuses index 0, which is never valid
+ok   netdev_rx_poll drains all three cards (1+2+4; no other subset sums to 7)
+ok   and does not touch the card that never bound
+ok   netdev_irq acks every card -- PCI INTx lines are shared
+ok   early callback installation keeps all NIC interrupt sources masked
+ok   legacy netdev_irq_line still reports the primary's firmware line
+[net] IRQ route: eth0 = virtio-net vector 97 via device model
+[net] IRQ route: eth1 = e1000 unavailable; polling
+[net] IRQ route: eth2 = rtl8139 vector 98 via device model
+ok   failed IRQ registration leaves that NIC polled and routes the others
+ok   every bound interrupt NIC uses device-model registration
+ok   NIC registration uses supported INTx and restores the global preference
+ok   a rejected IRQ request does not publish a callback or mode
+ok   unbound PCI cards and loopback do not acquire NIC interrupt handlers
+ok   only successfully routed NICs unmask their interrupt sources
+[net] IRQ route: eth1 = e1000 vector 96 via device model
+ok   retry wires only the failed NIC and reuses existing registrations
+ok   repeated NIC IRQ routing does not allocate duplicate handlers
+ok   retry arms the failed NIC once and repeat routing does not rearm others
+ok   registered callback dispatches only its own PCI NIC
+ok   detached or retiring PCI bindings do not enter stale NIC callbacks
+ok   an address can be given to an interface
+ok   and a SECOND one, which net_cfg.ip cannot represent at all
+ok   the interface holds both
+ok   re-adding an address updates its mask instead of consuming a slot
+ok   netif_src_for picks the address whose own prefix contains the dst
+ok   and the other one for the other subnet
+ok   a destination in neither prefix falls back to the first address
+ok   loopback sources from 127.0.0.1
+ok   an unknown interface has no source address, and says 0 rather than guessing
+ok   127.0.0.1 is ours
+ok   so is the SECOND address of the primary card
+ok   8.8.8.8 is not
+ok   a full address list refuses rather than overwriting an address
+ok   an address cannot be given to an interface that does not exist
+
+netif_test: 55 checks, 0 failed
+netif_test: ALL PASS

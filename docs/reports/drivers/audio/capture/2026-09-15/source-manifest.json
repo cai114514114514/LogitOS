@@ -1,0 +1,76 @@
+{
+  "recorded_at": "2026-09-15T15:50:21.422331+00:00",
+  "audio_sources": {
+    "c/drivers/audio/ac97/ac97.h": "c3bb77ab48129d6198ede80c09392ed7e4a42d1370bb28529aa6e641535619c2",
+    "c/drivers/audio/ac97/ac97_internal.h": "6ad354ed54b7d48c5770191fe3d28237906e7d36508dd1f439aa8da1701808c7",
+    "c/drivers/audio/ac97/ac97_regs.h": "cf7b8adf523578f6d11cbb6cb1f0f105c7371a3e2bd80bd06811cb88d60cc0e5",
+    "c/drivers/audio/ac97/capture.c": "a8eed52c62c0947febf8cab200c03c658f83a0bf70af3b9ea215dfe5e35b8761",
+    "c/drivers/audio/ac97/codec.c": "5c0e31268ea1d8b881eb026d2fc3de07d3f7176ea04a831c5bd1679e1bd67f02",
+    "c/drivers/audio/ac97/controller.c": "af04542848629dc93aef2eb972b619915a07d8f05d6396435c76f8202287b801",
+    "c/drivers/audio/ac97/pci.c": "c134e328557f9c9fe011cb64ea5882506c114e81004a12d0c41e8ef585e5ab6b",
+    "c/drivers/audio/ac97/ports.c": "e148673cc0ecf111d0bf76dbbe0ea1e163a30807d11fca49b5b7ef938a40a53a",
+    "c/drivers/audio/ac97/streams.c": "cee1b9a1424c5c4d23f40db413c459086f4a69db67b628456e7e6d8b6e1bae33",
+    "c/drivers/audio/es1370/codec.c": "2fab9062df9b33dbc556207a471e95849431abbf7fb4b8c9484fa1c832890337",
+    "c/drivers/audio/es1370/common.c": "15372bdde86f9d2d9836b0d5766ab8bd483255b1ab4058c1b7ee2ba61ffefa11",
+    "c/drivers/audio/es1370/driver.c": "ab36e1d8aed71e2e1558c5e44e81e6b201ad6039e3ed0a62219b02642d5a2463",
+    "c/drivers/audio/es1370/engine.c": "f72ca2c66f87aa3440434ccfd920761104ddf78a1f666100b82016f98e8b60d8",
+    "c/drivers/audio/es1370/es1370.h": "4715024a8e7a17ea4b11ee5bfd0f57cb4a78e223a514fd1525a5a71362d53c10",
+    "c/drivers/audio/es1370/es1370_internal.h": "005ca748da52572bcf9262e85be67beb66660e5c432abef270933c3eb4cd0544",
+    "c/drivers/audio/es1370/pcm.c": "f4b306820fbaf8f3186b61ce1e063f0e393d2ca8451ce209547acd9cac72f4a0",
+    "c/drivers/audio/es1370/registers.h": "9fbf2f5813412bff56ad4c6c823059941d58c2ec9f22c7702dbe1df46fa282a7",
+    "c/drivers/audio/hda.c": "a34e9c6cf7f548dd0486b790380fc62bcfceac1a3f50f969fdb1da0c2e1719c3",
+    "c/kernel/audio/capture.c": "81aac9b8a854c59ff8f766ea79e182727b926fbc50cd473bc8ba67336fe7754b",
+    "c/kernel/audio/mixer.c": "e83d8f2e6382a75a4aee41b2c672c2a9d4d35ad76709b4b6d4689a8cc1d18382",
+    "c/kernel/audio/pcm.c": "bf037c0765c02a59cc8307de500cb987d41a6ac34e3dd32d5adce2c9296d3c10",
+    "c/kernel/audio/snd.c": "f4224ec56f5498298d17616a7bdaa77ae0e4241e74dae0a596ea800bc452dc7a",
+    "c/kernel/audio/snd.h": "211c09121024db253ec43b6d3d23684c69a5ed5992758fd781f4a4bfe6aebd30",
+    "tests/drivers/audio/ac97/host_test.c": "ebb87d2f9dc424bb13e425cab00831d651ff497c1363d23110b8901a69af9f62",
+    "tests/drivers/audio/ac97/negative.py": "5474f4a046e1066b99c1e6be191a4c5277c00401174bd1042f9c6a3a11fff494",
+    "tests/drivers/audio/ac97/test.mk": "fca5564aaaff1f841ff7b1243db53399943dfa625fdeeb7336840e709365d185",
+    "tests/drivers/audio/capture/backend.c": "0cb57c7e5cbd6b9ee0e0ae759ec3c90cdaff1bdb165dbe27beb23fb97de233c7",
+    "tests/drivers/audio/capture/guest.py": "4e99bf2a501346ffe47c04a6877bc66a3df9f21bc0c9d0eb72cd82f9c09734b6",
+    "tests/drivers/audio/capture/oracle.py": "a3e43ec51d7c63720fea36e28db99e9d2b101b14c4419082bf2f12a9b0fe28a1",
+    "tests/drivers/audio/capture/tests.mk": "59242aa7538904c102e581337ad3beb9cb9cf4825f5176ae3331987edcfd1dee",
+    "tests/drivers/audio/es1370/stubs/io.h": "8b32941c9c32be561a2a04040987a2f466cace033d450beb230b863c939b1d48",
+    "tests/drivers/audio/es1370/test.c": "a50576a1d20e3e30d92e417f954bee392aac58b8eb26a28e88a19ae1328a1923",
+    "tests/drivers/audio/es1370/test.mk": "56fa65787f2f8d3f3f1766fae5876e29174ffbea64ef05591006e7a04adb5eec",
+    "tests/drivers/audio/framework/capture_test.c": "3fadaed0329e8ab8b590c1d0e7b1edc169883b3c175fec38e9898ccedc180a6b",
+    "tests/drivers/audio/framework/negative.py": "ad552ee105b600e28d16a743cf067a5a81a68489d812c9ea450312465d20f545",
+    "tests/drivers/audio/framework/stubs/kernel/sync/wait.h": "2ede5c1a1855e869046015993449a174dea910d9fa145cd0112df94c13c7c1ab",
+    "tests/drivers/audio/framework/stubs/kheap.h": "8085a86ebc6e8ef016ec32ca5f71d45844ae3ef1e088e4e4f98fee44e93d93ed",
+    "tests/drivers/audio/framework/stubs/kprintf.h": "86da970492f348f947d19d4d15504fda8f06fb8247c25f1021e6fdfd4bbb50be",
+    "tests/drivers/audio/framework/stubs/sched.h": "dfbaaa8b611a94ace6600008f3e5b71ac567151885a213d1eb9af6a5430aeedf",
+    "tests/drivers/audio/framework/stubs/spinlock.h": "d2eed705b163644a8f816170ddff8b9320cf181c160a45fe1f025cfeea23232d",
+    "tests/drivers/audio/framework/tests.mk": "449043041f935d10d0076aa20dbeafcbbfe90f236642263c1d0ddc8b07a538f8",
+    "tests/drivers/audio/guest/oracle.py": "b164e9c1599b6dbc595fdf1d4788d698249bd016ccad9ecb5daea19ebe677f56",
+    "tests/drivers/audio/guest.py": "8b5e6bcf7d283f7c01630a9ed13d65397c3470bc02a595b52f9583c21a8171e1",
+    "tests/drivers/audio/tests.mk": "6a132aa30f3c70ad4b7b365468469614d9287c127f01487c60644c03fcd9f5aa"
+  },
+  "context": {
+    "Makefile": "d49fdef4ccc39632ed5860bdcb5700b91879c0103ed3765e7ed5a9d75cfa07e1",
+    "tests/audio.mk": "a4a544d7325846dcd33a661895c210667c8daf3e26a71766adefdf3ff26786d9",
+    "tests/boot/lfs_extract.py": "d22d6a0eb6bbcaea73b7a5aad35451b21a3fed8dbe214e08366a78116317f963",
+    "c/apps/coreutils/rec.c": "a839f69cb7a0e12b0c9213b3a5cd62589dcba0c80f70b492b40653265c593f8a",
+    "c/apps/coreutils/sndtest.c": "a17fbb87903156699845f755d675bf9f40d608ce33dae29cb3b267bddada20cd"
+  },
+  "iso": {
+    "path": "build/drivers/audio/capture-kernel/logit.iso",
+    "sha256": "481fb9f016e6aea28bcdae5f6e1d2cdb1332ec1cd87406f4cfdf7313957ef271"
+  },
+  "template_disk": {
+    "path": "build/drivers/audio/capture-template/disk.img",
+    "sha256": "782ee74dc6e67c399de03ef90752ef451360fb51c8e9f0448df1df817d493798"
+  },
+  "backend": {
+    "path": "build/drivers/audio/capture-verify/audio-capture/backend",
+    "sha256": "58d0e764dba626890be63c7f8b6479af24e4e266e8f9ca04b675a293a214110e"
+  },
+  "original_template_disk": {
+    "path": "build/disk.img",
+    "sha256": "782ee74dc6e67c399de03ef90752ef451360fb51c8e9f0448df1df817d493798"
+  },
+  "template_fixture_paths_absent": [
+    "/capture1.wav",
+    "/capture2.wav"
+  ]
+}

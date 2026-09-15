@@ -1,0 +1,5 @@
+FAIL line 90: wifi_ccm_open(key, nonce, aad, 22, bad, 55, out, sizeof(out)) == -1
+FAIL line 91: memcmp(out, before, sizeof(out)) == 0
+FAIL line 250: wifi_station_receive(station, bad, sizeof(bad), -40) == -1 && radio.received == 0 && station->rx_pn[16] == 0
+FAIL line 252: wifi_station_receive(station, oracle_rx, sizeof(oracle_rx), -40) == 0 && radio.received == 1
+WIFI_STATION: 312 checks, 4 failures

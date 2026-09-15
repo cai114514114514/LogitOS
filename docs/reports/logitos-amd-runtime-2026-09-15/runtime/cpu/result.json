@@ -1,0 +1,116 @@
+{
+  "passed": true,
+  "mode": "cpu-control",
+  "iso": "/Users/wangzhe/system/LogitOS/build-amd-present-cpu/logit.iso",
+  "iso_sha256": "0d605b3224412dfc0687e45be6774973c579e45205b686fd11be8df62089aa48",
+  "qemu_version": "QEMU emulator version 11.0.0",
+  "qemu_device": "ati-vga,model=rv100,vgamem_mb=16,xres=1280,yres=800",
+  "pci_identity": {
+    "device": 20825,
+    "subsystem-vendor": 6900,
+    "vendor": 4098,
+    "subsystem": 4352
+  },
+  "startup_canary": {
+    "family": "RV100",
+    "pci": "5159",
+    "stage": "active",
+    "engine": "rv100-2d-canary-passed",
+    "desktop": "cpu",
+    "commands": "2",
+    "vram": "16777216",
+    "scanout": "0",
+    "canary": "3145728",
+    "reads": "672",
+    "writes": "448",
+    "fill": "ok",
+    "copy": "ok",
+    "restore": "ok"
+  },
+  "startup_trace": {
+    "cnfg_memsize_reads": 1,
+    "engine_status_reads": 9,
+    "canary_trigger_value": "0x7000d",
+    "canary_trigger_writes": 2,
+    "fill_master_writes": 1,
+    "copy_master_writes": 1,
+    "cache_flush_writes": 3,
+    "dst_height_width_tail": [
+      "ati_mm_write 4 0x143c  <- 0x7000d",
+      "ati_mm_write 4 0x143c  <- 0x7000d"
+    ]
+  },
+  "runtime_markers": [],
+  "completed_before_input": 0,
+  "input_moves": [
+    [
+      256,
+      256
+    ],
+    [
+      768,
+      384
+    ],
+    [
+      256,
+      384
+    ],
+    [
+      768,
+      256
+    ],
+    [
+      256,
+      384
+    ],
+    [
+      768,
+      384
+    ],
+    [
+      256,
+      256
+    ],
+    [
+      768,
+      384
+    ],
+    [
+      256,
+      384
+    ],
+    [
+      768,
+      256
+    ],
+    [
+      256,
+      384
+    ],
+    [
+      768,
+      384
+    ]
+  ],
+  "pointer_before": [
+    512,
+    384
+  ],
+  "pointer_after": [
+    512,
+    384
+  ],
+  "scanout": {
+    "width": 1024,
+    "height": 768,
+    "sample_colours": 221,
+    "lit_samples": 12288,
+    "samples": 12288
+  },
+  "physical_amd_gpu_verified": false,
+  "modern_amd_gpu_acceleration_verified": false,
+  "gpu_shader_compositing_verified": false,
+  "performance_speedup_measured": false,
+  "positive_assertion_rejected": "runtime-present-missing",
+  "visible_gpu_commands": 0
+}

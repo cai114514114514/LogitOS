@@ -1,0 +1,2 @@
+FAIL: stuck firmware RUN state blocks CRST and BME
+HDA_X79: 1 checks, 1 failures

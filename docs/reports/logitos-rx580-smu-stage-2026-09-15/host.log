@@ -1,0 +1,11 @@
+POLARIS_SMU_TOC_NEGCTL: swapped high/low GPU address words rejected by literal wire oracle
+POLARIS_SMU_TOC: 186 checks, 0 failures
+POLARIS_SMU_MAILBOX_NEGCTL: unsupported response accepted (exactly one failure)
+POLARIS_SMU_MAILBOX: 141 checks, 0 failures
+POLARIS_INTEGRATION_NEGCTL: read-only probe cannot register an acceleration presenter
+POLARIS_INTEGRATION: 259 checks, 0 failures
+POLARIS_FIRMWARE_NEGCTL: v2 accepted as v1 (exactly one failure)
+POLARIS_FIRMWARE_NEGCTL: v1.1 missing header extension accepted (exactly one failure)
+POLARIS_FIRMWARE: 132 checks, 0 failures
+POLARIS_SDMA_NEGCTL: SDMA v4 count-minus-one rejected by literal v3 oracle
+POLARIS_SDMA: 208 checks, 0 failures

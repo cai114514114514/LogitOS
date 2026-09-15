@@ -1,0 +1,14 @@
+{
+  "build/drivers/readability/logit.iso": {
+    "sha256": "41a81e8b0804aa8997f1e159d102407825c9e2a4e44e33310326f971b1755ba1",
+    "bytes": 9107456
+  },
+  "build/drivers/readability/kernel.elf": {
+    "sha256": "30ba40719c4ad19b1df5e3c8f307097969eddfebe1ee2614eae21abfe531f7cb",
+    "bytes": 8652424
+  },
+  "build/disk.img": {
+    "sha256": "ce7cdac87704d456cc629ee15c2c73d81b64f6847a0a7072ecef1d85f17786c0",
+    "bytes": 536870912
+  }
+}

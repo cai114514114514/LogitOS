@@ -1,0 +1,417 @@
+[
+  {
+    "path": "c/drivers/gpu/amd/bootfb.c",
+    "bytes": 8411,
+    "sha256": "e663d56de8285dbc43a038add11af1a8ada2754bff02a843549de24ec1a0f746"
+  },
+  {
+    "path": "c/drivers/gpu/amd/bootfb.h",
+    "bytes": 783,
+    "sha256": "1669a1fed127fdb521ef378bc448ac9b3123cde4bb1972df7f2f5f62fc33fba4"
+  },
+  {
+    "path": "c/drivers/gpu/amd/polaris/resource/README.md",
+    "bytes": 6343,
+    "sha256": "ff84a4291e167f40657982455918014707341e413ba9338b5e7125a4d9f75282"
+  },
+  {
+    "path": "c/drivers/gpu/amd/polaris/resource/atom.c",
+    "bytes": 7145,
+    "sha256": "632cb1d91a3f7b83bc578e8576b1d64eb7d706004d79d823f8c5c990bb605893"
+  },
+  {
+    "path": "c/drivers/gpu/amd/polaris/resource/atom.h",
+    "bytes": 1613,
+    "sha256": "7d482b361e6ed67cc120a5f4dd0221b6823cc3af7b303f7447a0341356880658"
+  },
+  {
+    "path": "c/drivers/gpu/amd/polaris/resource/device.c",
+    "bytes": 6844,
+    "sha256": "a49dcc30135b31e9b2452b969f2b05976a3d70f55ffae6461fb3cc25c9960925"
+  },
+  {
+    "path": "c/drivers/gpu/amd/polaris/resource/device.h",
+    "bytes": 1628,
+    "sha256": "ec186caa7ee770148b7e3f0be101caf5fedef114cbf85d84bfef7a28fe7bfedf"
+  },
+  {
+    "path": "c/drivers/gpu/amd/polaris/resource/files.c",
+    "bytes": 3904,
+    "sha256": "77a9c9ddb9e01bf4c1d5339e157ec0b826bd7c5bcd7d42f19b360d89cd0f1384"
+  },
+  {
+    "path": "c/drivers/gpu/amd/polaris/resource/files.h",
+    "bytes": 2010,
+    "sha256": "11794b057fb989458aa235e02a36ce4691bd131c56025bee4a6b7e0f87cf5a89"
+  },
+  {
+    "path": "c/drivers/net/netdev.c",
+    "bytes": 22356,
+    "sha256": "86575839f55620dbcccfb1a4d25763d7be69fdcce1a74a2312d66164d1f986c5"
+  },
+  {
+    "path": "c/drivers/net/netdev.h",
+    "bytes": 10498,
+    "sha256": "07ee6c0515e9f0554d65b86ccb420d56249e7396475071c665dcbd9b388c2e7c"
+  },
+  {
+    "path": "c/drivers/net/wifi/README.md",
+    "bytes": 5455,
+    "sha256": "4a0b77d14ddf31452534fc52960ccecfb7de4cce872f328ee2b4325f9adaa9d8"
+  },
+  {
+    "path": "c/drivers/net/wifi/adapter/netdev.c",
+    "bytes": 8160,
+    "sha256": "462e652a894b187579c21aada5cf957226e6e27a2084a9fde258f8459697427a"
+  },
+  {
+    "path": "c/drivers/net/wifi/adapter/netdev.h",
+    "bytes": 2109,
+    "sha256": "b6a72e5c7475c0fb1a3b74051ccbeac62a3ab55ca7c0e39423f722adcaec3e40"
+  },
+  {
+    "path": "c/drivers/net/wifi/data/frame.c",
+    "bytes": 7437,
+    "sha256": "a1ce72e908df9f9960895c5eb6d482e831223804d3989beeb80ef40562195226"
+  },
+  {
+    "path": "c/drivers/net/wifi/internal.h",
+    "bytes": 2997,
+    "sha256": "37b1cb44f0e1f43cd687d3eba0ed84687559f6cef7ed42c3c3f981defebd14f4"
+  },
+  {
+    "path": "c/drivers/net/wifi/management/association.c",
+    "bytes": 2954,
+    "sha256": "f168ac6608127a42678b552627e153f8b7c116467d2d6f04b28e00730da7b20c"
+  },
+  {
+    "path": "c/drivers/net/wifi/management/receive.c",
+    "bytes": 3903,
+    "sha256": "c6799ccc7192ec33e71a5ed3d232743e10b27e65a4c8529511df5d2adb2bd27b"
+  },
+  {
+    "path": "c/drivers/net/wifi/management/scan.c",
+    "bytes": 3738,
+    "sha256": "18131a331a90f511bf3306c6246a8f10ef7161585df71c21475c0402c7888f31"
+  },
+  {
+    "path": "c/drivers/net/wifi/protocol.h",
+    "bytes": 4090,
+    "sha256": "5a336ac8d61d433e5edc85ff730e7e89fd6544baac1a245eb07371dcf9f6c18f"
+  },
+  {
+    "path": "c/drivers/net/wifi/security/ccmp.c",
+    "bytes": 6272,
+    "sha256": "6695f330bd15c6733e9ff09abf8c786cc77a6b8b5661e59608b2e92ff1799468"
+  },
+  {
+    "path": "c/drivers/net/wifi/security/crypto.h",
+    "bytes": 1565,
+    "sha256": "fd3f1003da7a587bd8f2dd9ff7cac94ef4993d4fb0236bc4f7c46a517ec0a44c"
+  },
+  {
+    "path": "c/drivers/net/wifi/security/derivation.c",
+    "bytes": 4467,
+    "sha256": "46f366a5bf188d627232923c8afdb985c5661a635da171af19786b5312302b29"
+  },
+  {
+    "path": "c/drivers/net/wifi/security/group.c",
+    "bytes": 3192,
+    "sha256": "86a344c108acb1e3f0538385c5830271821623b9ec4d1f522ca84ae5506e1d0b"
+  },
+  {
+    "path": "c/drivers/net/wifi/security/handshake.c",
+    "bytes": 11043,
+    "sha256": "6faf6dfdd2637a408eb43acc78329314b520f4ff1f33ad74a11f666c6d30c2ea"
+  },
+  {
+    "path": "c/drivers/net/wifi/security/handshake.h",
+    "bytes": 995,
+    "sha256": "563f0c995bb57b93689587d37c4b70439f29d8d14694c96278d1f1cfd98782c7"
+  },
+  {
+    "path": "c/drivers/net/wifi/security/internal.h",
+    "bytes": 931,
+    "sha256": "6b78c3829267c26fc76b9790c44267df67846acdeeb490b23ef6c05f010167f7"
+  },
+  {
+    "path": "c/drivers/net/wifi/security/keydata.c",
+    "bytes": 1906,
+    "sha256": "f3701040e8b00faa7a1b8d92595e280b156a4a360d778eba94ef4358eedfbe38"
+  },
+  {
+    "path": "c/drivers/net/wifi/security/keywrap.c",
+    "bytes": 2098,
+    "sha256": "04938509a0264742a214d80c40e7daa9c3ba73ad73d1bf1cfdcc206c48814cef"
+  },
+  {
+    "path": "c/drivers/net/wifi/security/rsn.c",
+    "bytes": 1382,
+    "sha256": "96e7ef7167806971be590be16532c9478cdb6ed349fcb079c4297c489b41abd8"
+  },
+  {
+    "path": "c/drivers/net/wifi/station.c",
+    "bytes": 4630,
+    "sha256": "639811f38d1fa482627f864e24498f7cf09e4e7179ccb34b950fdb5e425aad17"
+  },
+  {
+    "path": "c/drivers/net/wifi/station.h",
+    "bytes": 4151,
+    "sha256": "cd340b33984e1ba35b643d41c7185d81f69ea14b5f58a6acc6df27cbc327de79"
+  },
+  {
+    "path": "c/drivers/power/README.md",
+    "bytes": 5439,
+    "sha256": "2cd189d8ee9a410064d975b4c6ac62cb2a4c7cefaaacab775664982c5a33c353"
+  },
+  {
+    "path": "c/drivers/power/acpi/devices.c",
+    "bytes": 10597,
+    "sha256": "f68664e1540f155ae0c7f8f2819452762f62fad306469e11c0f33833a9aa764b"
+  },
+  {
+    "path": "c/drivers/power/acpi/devices.h",
+    "bytes": 1950,
+    "sha256": "6735107663da2973d0ff2d16affdfab281f0398732f9919ebf9e4ad7d4c30e28"
+  },
+  {
+    "path": "c/drivers/power/acpi/ec/README.md",
+    "bytes": 5997,
+    "sha256": "8f54b0e1b69947842f90fa4d2a8825daccfda5dbb60c1c19b19d8ad9a58f5928"
+  },
+  {
+    "path": "c/drivers/power/acpi/ec/driver.c",
+    "bytes": 14510,
+    "sha256": "95777c6c7f99a077c16d6c849479c45f0eae064352e46b39c0ee7241216b6926"
+  },
+  {
+    "path": "c/drivers/power/acpi/ec/driver.h",
+    "bytes": 522,
+    "sha256": "9c2f7b5f05271413cffce4a1386dc62364e4b8145d9da0aff1921d4fba856a32"
+  },
+  {
+    "path": "c/drivers/power/acpi/ec/resources.c",
+    "bytes": 5292,
+    "sha256": "c25577d3ea2d74973e707d4a8ae13313fe3094b5d18d0d3b5b49d87fd9215ac9"
+  },
+  {
+    "path": "c/drivers/power/acpi/ec/resources.h",
+    "bytes": 504,
+    "sha256": "70c04a3c7fb4bb2fa09daaee993510f0125d159c4955f7525b910d73502592be"
+  },
+  {
+    "path": "c/drivers/power/acpi/ec/transport.c",
+    "bytes": 6496,
+    "sha256": "14f0365b8f713de1164e8a199410e2fd2e801d81c7b79f5d2cfaa320a4176b56"
+  },
+  {
+    "path": "c/drivers/power/acpi/ec/transport.h",
+    "bytes": 1821,
+    "sha256": "6574fc1f41a8120404f105efd593c77a5ca7a9215d25e89f6fae10daaa4080a6"
+  },
+  {
+    "path": "c/drivers/power/acpi/native.c",
+    "bytes": 24852,
+    "sha256": "2004a8809eb60a6bb464de29fbc2ef6695fba0def7cf142a799db5164d1bf309"
+  },
+  {
+    "path": "c/drivers/power/acpi/native.h",
+    "bytes": 334,
+    "sha256": "f616e514cc4eeceaab0650fa8cafc5729f477d0145b28583c17ee24813fae1d3"
+  },
+  {
+    "path": "c/drivers/usb/hid/README.md",
+    "bytes": 3213,
+    "sha256": "bb2bb6495ec4c720c62a5dc4c2daadc7c821acaf029630041deb790ff726b8f7"
+  },
+  {
+    "path": "c/drivers/usb/hid/feature.c",
+    "bytes": 6314,
+    "sha256": "0e4150f21ad728ac54fb3ab3f470e3e67b79cae2ce55013c56158dd78d4b2f7b"
+  },
+  {
+    "path": "c/drivers/usb/hid/feature.h",
+    "bytes": 419,
+    "sha256": "17455c076d73cd7fc787858e19191e3ce60d129a8f4f8b87723cf1d16df63055"
+  },
+  {
+    "path": "c/drivers/usb/hid/generic.c",
+    "bytes": 17886,
+    "sha256": "d9f9d3994e523d2a7fe48aec8838febf0347772b8bdfc9445cab5bd812e0877a"
+  },
+  {
+    "path": "c/drivers/usb/hid/generic.h",
+    "bytes": 2316,
+    "sha256": "70170a187aa74633a369606f12e0924b11a0c1bf3ee5d4241ca05163af99a019"
+  },
+  {
+    "path": "c/drivers/usb/hid_report.c",
+    "bytes": 26481,
+    "sha256": "ef66183411fa6ff4c89e787a9df7c5538411461c7ac72262aa5f3c765e9292a8"
+  },
+  {
+    "path": "c/drivers/usb/hid_report.h",
+    "bytes": 8354,
+    "sha256": "6ceb449786d3e46419f74e4c76234de8f9d72b875b4ea68fc61f4a018cac6021"
+  },
+  {
+    "path": "c/drivers/usb/usb_hid.c",
+    "bytes": 26060,
+    "sha256": "ac5d5c094b90b31674d3103714dfb945aa8c99e44d052e364dc704a2a5b300cf"
+  },
+  {
+    "path": "c/kernel/gui/wm.c",
+    "bytes": 346611,
+    "sha256": "c313504afa7649fb607e6edd68b5e91ec8d8eae336a88e526a0b2dc3ce6cf51f"
+  },
+  {
+    "path": "c/kernel/init/kmain.c",
+    "bytes": 11675,
+    "sha256": "115f43c532d3ccfdd205e52feaba804b1860000b996d3b2463b33ecbf3a6ff29"
+  },
+  {
+    "path": "c/kernel/init/power.c",
+    "bytes": 11714,
+    "sha256": "8574d3c66bde3df1658c6450b47f857284e2131e0400e9714b06bcce94bc16fe"
+  },
+  {
+    "path": "c/kernel/init/power.h",
+    "bytes": 2205,
+    "sha256": "8a345ec07a58dba921c0fe115fb54cbbab175e40e0d31df6f110c6bc4d9b2551"
+  },
+  {
+    "path": "tests/boot/run-power-test.sh",
+    "bytes": 14763,
+    "sha256": "316b9c34aeeca3c26ae0a532acc688adf6170b921d2f8af479e2021d2b995ae3"
+  },
+  {
+    "path": "tests/driver_expansion.mk",
+    "bytes": 3014,
+    "sha256": "9253834ded4b33b67e7624b9a06e5450e22d60b78e5befb0d8baa4deff5c13f0"
+  },
+  {
+    "path": "tests/drivers/power/acpi/ec/aml_test.c",
+    "bytes": 4528,
+    "sha256": "0094334e918342c5a8b613a5bf8f257fcf0afabc9e1f98fc9abe92a7837fb223"
+  },
+  {
+    "path": "tests/drivers/power/acpi/ec/board.c",
+    "bytes": 7591,
+    "sha256": "4f7d0ce8289d204c1a20a32348e4caf4009c69de93054f382ddf2cddbd81face"
+  },
+  {
+    "path": "tests/drivers/power/acpi/ec/board.h",
+    "bytes": 345,
+    "sha256": "40e427aaea86a82dd9354d28800ae9db7793411f05f18485353b7eabed249087"
+  },
+  {
+    "path": "tests/drivers/power/acpi/ec/fixture.py",
+    "bytes": 4619,
+    "sha256": "b7868cdc2db76efb5546c82102e5ee4252e4a59ba24ee17d4abb9cb33c491095"
+  },
+  {
+    "path": "tests/drivers/power/acpi/ec/model.c",
+    "bytes": 4296,
+    "sha256": "38102232dc3d6ecb7d776fadc491ad8fece0deb624a4a08bcc88776ba68117cc"
+  },
+  {
+    "path": "tests/drivers/power/acpi/ec/model.h",
+    "bytes": 1151,
+    "sha256": "e0a7f3ba2c9ea724a635925b1eee6e797596b465d905327c3dfb6a55f4797569"
+  },
+  {
+    "path": "tests/drivers/power/acpi/ec/test.c",
+    "bytes": 4903,
+    "sha256": "bde75a1d4068dec28b8102e5d28cff19c16974c617ae772893b9f32993493685"
+  },
+  {
+    "path": "tests/drivers/power/acpi/ec/test.mk",
+    "bytes": 4022,
+    "sha256": "6faec227bb9bb595c0cc145af0b53c983c36b288ef2cd3e22491ca58d79aa784"
+  },
+  {
+    "path": "tests/drivers/power/acpi/fixture.py",
+    "bytes": 4094,
+    "sha256": "dce8499a0d6982a4ec383c0be366d213890fec38998c2ac71b64451bb78e1f27"
+  },
+  {
+    "path": "tests/drivers/power/acpi/host.c",
+    "bytes": 10222,
+    "sha256": "b121cb5c029328fe6cf3c96c5639122f9f3219f166e2c4e2522ad1ed57754732"
+  },
+  {
+    "path": "tests/drivers/power/acpi/test.c",
+    "bytes": 3336,
+    "sha256": "0d45891818608eb123e1f608e699c3b9e92366d8e3b9dde74d1b47690386624a"
+  },
+  {
+    "path": "tests/drivers/power/acpi/test.mk",
+    "bytes": 2291,
+    "sha256": "fd58d74382c2cd5e1f87756f151530f4ca763481f0cdf5182a36b53f7b2e6fc1"
+  },
+  {
+    "path": "tests/drivers/usb/hid/fixtures.h",
+    "bytes": 1107,
+    "sha256": "09f6fdd57cc88107f2ff2a69bbe31e07595295c638457884c77184e9a6daaea7"
+  },
+  {
+    "path": "tests/drivers/usb/hid/generic.mk",
+    "bytes": 1856,
+    "sha256": "a222c208406d8b6cdafa37bc7fcf5e349932ba020036d8ec65d791047c16a927"
+  },
+  {
+    "path": "tests/drivers/usb/hid/generic_test.c",
+    "bytes": 18551,
+    "sha256": "9fa732688a967253222640efc813c4601302ab43bd39310ae3bbb1e3295cccf4"
+  },
+  {
+    "path": "tests/drivers/wifi/adapter_test.c",
+    "bytes": 6940,
+    "sha256": "b90d2f566e2d3e66540e4e60a3a8aee5055c846571f42fd3d777335a33cb3113"
+  },
+  {
+    "path": "tests/drivers/wifi/oracle.py",
+    "bytes": 7046,
+    "sha256": "8321663b66d504af5e79e3656ec9a077b1e2299d3281518a8ff34ae1fe1638f2"
+  },
+  {
+    "path": "tests/drivers/wifi/station_test.c",
+    "bytes": 14789,
+    "sha256": "359d12c7899e58d0ba8197b7e3450ee1c725f2acc91384116931a2a827d31f2f"
+  },
+  {
+    "path": "tests/drivers/wifi/tests.mk",
+    "bytes": 3407,
+    "sha256": "d310f2ac3de9b1739417bcb3f2e291096639e189d396715c1d33ae7eedb10482"
+  },
+  {
+    "path": "tests/gpu/amd/bootfb.mk",
+    "bytes": 5164,
+    "sha256": "f502f820aa150e814d0c5344d254dd0931638fbe687551464c69f85aded97bb2"
+  },
+  {
+    "path": "tests/gpu/amd/bootfb_test.c",
+    "bytes": 11372,
+    "sha256": "f445a4b02612904cdd2ecd9a75c6cd6b58866d1d0aee74c403e4fa0b87fbb4f1"
+  },
+  {
+    "path": "tests/gpu/amd/polaris/resource/gate.mk",
+    "bytes": 1826,
+    "sha256": "3079e8b9bdff7bb23560af95dfe76eef0a796500988f28b6bd349ddeb4a13894"
+  },
+  {
+    "path": "tests/gpu/amd/polaris/resource/test.c",
+    "bytes": 14893,
+    "sha256": "d4391ad27cc035faeeb28f55eb835c29bba8d5a8c39654f661899ef6c40d6d7a"
+  },
+  {
+    "path": "tests/gpu/amd/tests.mk",
+    "bytes": 1524,
+    "sha256": "a0c2b6bb7c216601ba550f48c27a1774b41450ce1f98c9a59aa07c4bb231dabe"
+  },
+  {
+    "path": "tests/usb_input_extensions.mk",
+    "bytes": 1914,
+    "sha256": "6f4a1584ba479aeedbdba95ba944a3e32664e76c1b2d01eb083a5f25fd360d94"
+  }
+]

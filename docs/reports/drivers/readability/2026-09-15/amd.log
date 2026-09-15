@@ -1,0 +1,10 @@
+POLARIS_SMU_MAILBOX_NEGCTL: unsupported response accepted (exactly one failure)
+POLARIS_SMU_MAILBOX: 141 checks, 0 failures
+POLARIS_SMU_TOC_NEGCTL: swapped high/low GPU address words rejected by literal wire oracle
+POLARIS_SMU_TOC: 186 checks, 0 failures
+POLARIS_SMU_STAGE_NEGCTL: corrupted second-engine payload rejected by independent copy oracle
+POLARIS_SMU_STAGE: 105 checks, 0 failures
+POLARIS_SMU_LOADER_NEGCTL: ACK without full SRAM firmware completion rejected
+POLARIS_SMU_LOADER: 94 checks, 0 failures
+POLARIS_RUNTIME_NEGCTL: corrupted staged MEC JT2 prevents composed driver activation
+POLARIS_RUNTIME: 92 checks, 0 failures (host protocol model; no physical GPU proof)

@@ -1,0 +1,46 @@
+PASS (negative control): clamp removed -> the suite failed, as required
+       FAIL: mix CLAMPS at the positive rail, does not wrap: got -5536 want 32767
+       FAIL: mix clamps at the negative rail: got 5536 want -32768
+       FAIL: audio pcm: 71 checks, 2 failures
+PASS: audio pcm: 71 checks, 0 failures
+HDA_X79_NEGCTL master-before-firmware-quiesce: exactly one observed failure: firmware DMA is stopped and read back before CRST and BME
+HDA_X79_NEGCTL ignore-stuck-firmware-run: exactly one observed failure: stuck firmware RUN state blocks CRST and BME
+HDA_X79_NEGCTL force-256-rings: exactly one observed failure: 16-entry-only command ring is negotiated and read back
+HDA_X79_NEGCTL accept-gpu-audio: exactly one observed failure: GTX 1050 display-function HDA is declined before X79 onboard audio
+HDA_X79_NEGCTL poison-singleton: exactly one observed failure: failed HDA probe clears the active instance for a later controller
+HDA_X79_NEGCTL free-unacked-dma: exactly one observed failure: unacknowledged controller reset retains hardware-owned DMA
+HDA_X79_NEGCTL remove-after-irq-failure: exactly one observed failure: failed IRQ teardown retains HDA callbacks and DMA
+HDA_X79_NEGCTL isr-early-return-on-remove: exactly one observed failure: removing ISR acknowledges both stream sources on every failed-release re-entry
+HDA_X79: 36 checks, 0 failures
+AC97_NEGCTL: stereo-frame descriptor length rejected
+AC97_POSITION_NEGCTL: double-counting terminal CIV is detected
+AC97_HOST: 10667 checks, 0 failures
+AC97_HOST: 5678 checks, 0 failures
+ES1370_NEGCTL: hardware PCM consumption without mixer period notifications rejected
+ES1370_HOST: 131460 checks, 0 failures
+AUDIO_ORACLE 48000-positive: PASS
+AUDIO_ORACLE 48000-silence: PASS
+AUDIO_ORACLE 48000-wrong-speed: PASS
+AUDIO_ORACLE 48000-swapped: PASS
+AUDIO_ORACLE 48000-short: PASS
+AUDIO_ORACLE 48000-repeated-period: PASS
+AUDIO_ORACLE 48000-damaged: PASS
+AUDIO_ORACLE 48000-wrong-rate: PASS
+AUDIO_ORACLE 48000-streaming-positive: PASS
+AUDIO_ORACLE 48000-streaming-damaged: PASS
+AUDIO_ORACLE 48000-streaming-short: PASS
+AUDIO_ORACLE 48000-only-riff-zero: PASS
+AUDIO_ORACLE 48000-only-data-zero: PASS
+AUDIO_ORACLE 48662-positive: PASS
+AUDIO_ORACLE 48662-silence: PASS
+AUDIO_ORACLE 48662-wrong-speed: PASS
+AUDIO_ORACLE 48662-swapped: PASS
+AUDIO_ORACLE 48662-short: PASS
+AUDIO_ORACLE 48662-repeated-period: PASS
+AUDIO_ORACLE 48662-damaged: PASS
+AUDIO_ORACLE 48662-wrong-rate: PASS
+AUDIO_ORACLE 48662-streaming-positive: PASS
+AUDIO_ORACLE 48662-streaming-damaged: PASS
+AUDIO_ORACLE 48662-streaming-short: PASS
+AUDIO_ORACLE 48662-only-riff-zero: PASS
+AUDIO_ORACLE 48662-only-data-zero: PASS

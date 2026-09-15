@@ -1,0 +1,3 @@
+FAIL 509: ac97_pci_probe(&device) < 0
+FAIL 510: delay_count == 1000 && !sound && !capture
+AC97_HOST: 123688 checks, 2 failures

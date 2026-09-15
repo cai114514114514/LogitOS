@@ -1,0 +1,182 @@
+LOGIT_BIOS_PRELOAD_OK
+LOGIT_BIOS_LOADER_MB2
+LOADER A20 VERIFY PASS
+LOADER KERNEL LOAD OK
+LOADER ENTER KERNEL
+[cpu] GenuineIntel -- Intel Xeon E312xx (Sandy Bridge)
+[cpu] 28/60 known features present: fpu tsc msr mce apic mca cmov clflush mmx fxsr sse sse2 htt sse3 pclmulqdq ssse3 cx16 sse4.1 sse4.2 x2apic popcnt aes xsave avx hypervisor nx rdtscp lm
+[cpu-platform] family=6 model=0x2a stepping=1 generation=other
+[cpu] topology: source=cpuid.0xb x2apic_id=0 package=0 core=0 thread=0 cpuid-addressable/package=2 cores/package=2 threads/core=1
+[cpu] hfi: hw=0 performance=0 efficiency=0 table-pages=0 current-lp-row=0 thread-director-hw=0 classes=0 (inventory only; no config MSR write)
+[cpu] apic: x2apic_hw=1 mode=xapic base=0xfee00000
+[cpu] cache: L1 type=1 size=32768 line=64 ways=8 shared=1
+[cpu] cache: L1 type=2 size=32768 line=64 ways=8 shared=1
+[cpu] cache: L2 type=3 size=4194304 line=64 ways=16 shared=1
+[cpu] cache: L3 type=3 size=16777216 line=64 ways=16 shared=2
+[cpu] mca: banks=10 ctl=1 cmci=0 tes=0 ser=1 (enumerated, not enabled)
+[cpu] tsc: invariant_hw=0
+[cpu] xsave: 832 B holds every supported state, xcr0 mask 0x7, osxsave=0
+[cpu] xstate: avx_hw=1 avx_os=0 osxsave=0 xcr0=0x0 abi=fxsave
+[cpu] aes-gcm backend: aesni (constant-time); rdrand=0 rdseed=0
+[cpu] aes-gcm 16 KiB: aesni=775000 cycles, c=7016000 cycles, speedup x9.05
+
+[logitos] long mode, C kernel running
+[rust] inflate selftest OK
+[prot] bsp: nx sup/ON  wxsplit ON  smep -/off  smap -/off
+[time] source=tsc 1000.114 MHz res=1ns  (invariant-tsc=no hypervisor=yes calib=pit-ch2)
+[time] fallback=pit 100 Hz res=10000000ns  timers=heap/128  mono=64-bit ns (wraps in 584 years)
+[time] calib samples(Hz) 1000660462 1000077835 1000114250 -> median chosen
+[cpu] simd selftest: backend=aesni xmm_corrupt=0 (20 ticks) crypto_mismatch=0 kat=0 (795 rounds, 6 ticks)
+CPU_SIMD_SELFTEST_OK
+[physmap] metadata base=0x2ec9000 bytes=442272 kernel_end=0x2ec9000
+[mm] low: 118954 frames free (464 MiB), 12086 used, 0 shared, 0 bugs
+[physmap] ready: base=0xffff800000000000 high_pages=0 table_pages=4 low_free=118951 NX=1
+[mm] boot: 131040 frames total (511 MiB), 118951 free, 12089 used, 0 shared, 12089 refs (+0 saved = 0 KiB), 0 pinned, 0 bugs
+[physmap] boot: high_allocs=0 high_live=0 high_max=0x0 high_free=0 low_free=118951
+[mm] boot: metadata 431 KiB (bitmap + poison map + 2-byte refcounts + pins), poison level 1
+[mm] boot: 0 frames pinned against reclaim, 128 reserve frames (0 dips), 0 allocations refused
+[mm] low: 118698 frames free (463 MiB), 12342 used, 0 shared, 0 bugs
+[mm] low: 118442 frames free (462 MiB), 12598 used, 0 shared, 0 bugs
+[mm] low: 118186 frames free (461 MiB), 12854 used, 0 shared, 0 bugs
+[rmap] 131040 frames, 196560 nodes (3599 KiB total: 511 KiB heads + 3071 KiB nodes)
+[acpi] RSDP from the bootloader's multiboot2 tag
+[hpet] ready: base=0xfed00000 period=10000000fs counter=64-bit timers=3
+[time] HPET standby: invariant TSC remains active
+[logitos] interrupts + memory + gdt/tss online
+[mm] low: 117930 frames free (460 MiB), 13110 used, 0 shared, 0 bugs
+[mm] low: 117674 frames free (459 MiB), 13366 used, 0 shared, 0 bugs
+[pcache] up: 65520 page slots (262080 KiB ceiling), 32 file slots, 16384 buckets; tables 2112 KiB from the PMM (16 B/frame of RAM)
+[klog] ring 512 lines x 112 bytes; `cat /dev/kmsg`, `cat /dev/kstat`
+[pci] no MCFG; legacy 0xCF8 config ports (no extended caps)
+[pci] 5 function(s) enumerated across all buses
+[mm] low: 117418 frames free (458 MiB), 13622 used, 0 shared, 0 bugs
+[mm] low: 117162 frames free (457 MiB), 13878 used, 0 shared, 0 bugs
+[mm] low: 116906 frames free (456 MiB), 14134 used, 0 shared, 0 bugs
+[mm] low: 116650 frames free (455 MiB), 14390 used, 0 shared, 0 bugs
+[kheap] arena domain=physmap cpu=0xffff8000034d2000 phys=0x34d2000 bytes=4194304
+[kheap] grow #1: +4096 KiB -> arena 4096 KiB, live 0 KiB, free 4095 KiB, over-allocated 0 KiB
+[rust] png selftest OK
+[blk] 0 disks, 0 partitions; root = (none) (NO FILESYSTEM FOUND)
+[fs] mount FAILED
+[pcache] backend installed over c/fs/vfs.h (statx + vfs_pread, VFS-identity gated)
+[tls] trust store: 130 roots, 0 skipped
+[tls]   isrg_x1 isrg_x2 digicert_global_ca digicert_global_g2 digicert_global_g3
+[tls]   globalsign_r1 globalsign_r3 gts_r1 gts_r4 usertrust_rsa usertrust_ecc
+[tls]   amazon_root_1 amazon_root_3 dtrust_root3_2009 sslcom_ecc_2022
+[tls]   aaa_certificate_services accvraiz1 actalis_authentication_root_ca
+[tls]   affirmtrust_commercial affirmtrust_networking affirmtrust_premium
+[tls]   affirmtrust_premium_ecc amazon_root_ca_2 amazon_root_ca_4
+[tls]   atos_trustedroot_2011 autoridad_de_certificacion_firmaprofesional_cif_
+[tls]   baltimore_cybertrust_root buypass_class_2_root_ca buypass_class_3_root_ca
+[tls]   ca_disig_root_r2 certigna certigna_root_ca certsign certsign_sa
+[tls]   certum_trusted_network_ca cfca_ev_root chambers_of_commerce_root_2008
+[tls]   chunghwa_telecom_co comodo_certification_authority
+[tls]   comodo_ecc_certification_authority comodo_rsa_certification_authority
+[tls]   cybertrust_global_root d_trust_root_class_3_ca_2_ev_2009
+[tls]   digicert_assured_id_root_ca digicert_assured_id_root_g2
+[tls]   digicert_assured_id_root_g3 digicert_high_assurance_ev_root_ca
+[tls]   digicert_trusted_root_g4 e_szigno_root_ca_2017 e_tugra_certification_authority
+[tls]   ec_acc emsign_ecc_root_ca_c3 emsign_ecc_root_ca_g3 emsign_root_ca_c1
+[tls]   emsign_root_ca_g1 entrust_net_certification_authority_2048
+[tls]   entrust_root_certification_authority entrust_root_certification_authority_ec1
+[tls]   entrust_root_certification_authority_g2
+[tls]   entrust_root_certification_authority_g4 fnmt_rcm gdca_trustauth_r5_root
+[tls]   geotrust_global_ca geotrust_primary_certification_authority_g2
+[tls]   global_chambersign_root_2008 globalsign globalsign_1 globalsign_2 globalsign_3
+[tls]   go_daddy_root_certificate_authority_g2 gts_root_r2 gts_root_r3
+[tls]   hellenic_academic_and_research_institutions_ecc_
+[tls]   hellenic_academic_and_research_institutions_root
+[tls]   hellenic_academic_and_research_institutions_root_1 hongkong_post_root_ca_1
+[tls]   hongkong_post_root_ca_3 identrust_commercial_root_ca_1
+[tls]   identrust_public_sector_root_ca_1 izenpe_com microsec_e_szigno_root_ca_2009
+[tls]   microsoft_ecc_root_certificate_authority_2017
+[tls]   microsoft_rsa_root_certificate_authority_2017
+[tls]   naver_global_root_certification_authority
+[tls]   netlock_arany_class_gold_f_c5_91tan_c3_bas_c3_ad
+[tls]   network_solutions_certificate_authority oiste_wisekey_global_root_gb_ca
+[tls]   oiste_wisekey_global_root_gc_ca quovadis_root_ca_1_g3 quovadis_root_ca_2
+[tls]   quovadis_root_ca_2_g3 quovadis_root_ca_3 quovadis_root_ca_3_g3
+[tls]   quovadis_root_certification_authority secom_trust_net secom_trust_systems_co
+[tls]   secure_global_ca securesign_rootca11 securetrust_ca sonera_class2_ca
+[tls]   ssl_com_ev_root_certification_authority_ecc
+[tls]   ssl_com_ev_root_certification_authority_rsa_r2
+[tls]   ssl_com_root_certification_authority_ecc
+[tls]   ssl_com_root_certification_authority_rsa staat_der_nederlanden_ev_root_ca
+[tls]   staat_der_nederlanden_root_ca_g3 starfield_root_certificate_authority_g2
+[tls]   starfield_services_root_certificate_authority_g2 starfield_technologies
+[tls]   swisssign_gold_ca_g2 swisssign_silver_ca_g2 szafir_root_ca2
+[tls]   t_telesec_globalroot_class_2 t_telesec_globalroot_class_3
+[tls]   teliasonera_root_ca_v1 the_go_daddy_group trustcor_eca_1
+[tls]   trustcor_rootcert_ca_1 trustcor_rootcert_ca_2 trustis_limited
+[tls]   trustwave_global_certification_authority
+[tls]   trustwave_global_ecc_p256_certification_authorit
+[tls]   trustwave_global_ecc_p384_certification_authorit
+[tls]   tubitak_kamu_sm_ssl_kok_sertifikasi_surum_1 twca_global_root_ca
+[tls]   twca_root_certification_authority uca_extended_validation_root
+[tls]   uca_global_g2_root verisign_universal_root_certification_authority
+[tls]   xramp_global_certification_authority
+[net] no supported NIC found; networking disabled
+[net] if 1 lo flags up running loopback  127.0.0.1/8
+[text] /fonts/ui.ttf: not found
+[text] /fonts/mono.ttf: not found
+[text] /fonts/text.ttf: not found
+[text] /fonts/ui-bold.ttf: not found
+[text] /fonts/mono-bold.ttf: not found
+[mm] low: 116394 frames free (454 MiB), 14646 used, 0 shared, 0 bugs
+[mm] low: 116138 frames free (453 MiB), 14902 used, 0 shared, 0 bugs
+[mm] low: 115882 frames free (452 MiB), 15158 used, 0 shared, 0 bugs
+[mm] low: 115626 frames free (451 MiB), 15414 used, 0 shared, 0 bugs
+[mm] low: 115370 frames free (450 MiB), 15670 used, 0 shared, 0 bugs
+[mm] low: 115114 frames free (449 MiB), 15926 used, 0 shared, 0 bugs
+[wm] display 1024x768 px, scale 100%, desktop 1024x768 pt
+[ime] /ime/pinyin.dat: not found -- the input method is UNAVAILABLE;
+[ime] Shift+Space will pass through and ASCII input is unchanged
+[wm] pointer: composited into the frame (no cursor plane)
+[wm] dock 0 apps:
+[wm] menu title 0 LogitOS x0 8 y0 0 x1 46 y1 24
+[wm] menu title 1 File x0 62 y0 0 x1 90 y1 24
+[wm] menu title 2 View x0 106 y0 0 x1 134 y1 24
+[logitos] desktop up; mouse + keyboard armed
+[acpi] MADT CPUs type0=2 type9=0 duplicate=0 rejected=0
+[lapic] mode=xapic id=0 source=IA32_APIC_BASE
+[smp] CPU 0 apic_id=0 topology=cpuid.0b pkg=0 core=0 thread=0 type=unknown native-valid=0 native=0 hybrid=0
+[smp] 2 CPU(s) detected, BSP apic_id=0
+[ioapic] device IRQs routed via I/O APIC
+[smp] CPU 1 apic_id=1 topology=cpuid.0b pkg=0 core=1 thread=0 type=unknown native-valid=0 native=0 hybrid=0
+[prot] ap: nx sup/ON  wxsplit ON  smep -/off  smap -/off
+[smp] CPU 1 apic_id=1 online
+[smp] 2/2 CPUs online
+[smp] topology logical=2 cores=2 p=0/0 e=0/0 unknown=2/2 mismatch=0 conflict=0
+[smp] scheduler topology policy=uniform-online-cpus
+[smp] parallel present on 2 cores (IPI 241)
+[nv-bootfb] 0000:00:02.0 1234:1111 QEMU stdvga (synthetic test alias) TEST-ONLY mode=passive bootfb=1024x768 source=multiboot-lfb bar=0 lfb=0xfd000000/0x300000 cmd=0103 pm=none bar0=0xfd000000/0x1000000/pref bar2=0xfebf0000/0x1000
+[nv-bootfb] framebuffer retained; no GPU command, modeset, clocks, DMA, IRQ or 3D
+[nv-accel] stage=5 blocker=wrong-device firmware=0/22 chipset=0 boot0=0 reads=0 writes=0 fallback=cpu
+[dev] 0000:00:00.0 8086:1237 class=06.00.00 host-bridge  driver=-
+[dev] 0000:00:01.0 8086:7000 class=06.01.00 isa-bridge   driver=-
+[dev] 0000:00:01.1 8086:7010 class=01.01.80 ide          driver=- bar4=io:0xc000/0x10
+[dev] 0000:00:01.3 8086:7113 class=06.80.00 bridge       driver=-
+[dev] 0000:00:02.0 1234:1111 class=03.00.00 vga          driver=nv-bootfb bar0=0xfd000000/0x1000000 bar2=0xfebf0000/0x1000
+[dev] 5 device(s), 1 bound, 4 unclaimed
+[dma] boot coherent=0 bytes=0 mappings=0 pins=0 direct=0 bounce=0 quarantine=0/0/0 high=0 max=0x0 stale=0 completed_direct=0 completed_high=0
+
+[wm] desktop live; launching apps as ring-3 processes
+[wm] no accounts on this machine: the desktop starts unauthenticated
+[wm] launch: not found
+[wm] ptr 512 384
+[wm] win 0 gone
+[wm] win 1 gone
+[wm] win 2 gone
+[wm] win 3 gone
+[wm] win 4 gone
+[wm] win 5 gone
+[wm] win 6 gone
+[wm] win 7 gone
+[wm] win 8 gone
+[wm] win 9 gone
+[wm] win 10 gone
+[wm] win 11 gone
+[wm] win 12 gone
+[wm] win 13 gone
+[wm] win 14 gone
+[wm] win 15 gone

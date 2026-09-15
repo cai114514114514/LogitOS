@@ -1,0 +1,467 @@
+AUDIO_CAPTURE_ORACLE: 52 positive/negative trajectory and lifecycle controls passed
+PASS (negative control): clamp removed -> the suite failed, as required
+       FAIL: mix CLAMPS at the positive rail, does not wrap: got -5536 want 32767
+       FAIL: mix clamps at the negative rail: got 5536 want -32768
+       FAIL: audio pcm: 71 checks, 2 failures
+PASS: audio pcm: 71 checks, 0 failures
+HDA_X79_NEGCTL master-before-firmware-quiesce: exactly one observed failure: firmware DMA is stopped and read back before CRST and BME
+HDA_X79_NEGCTL ignore-stuck-firmware-run: exactly one observed failure: stuck firmware RUN state blocks CRST and BME
+HDA_X79_NEGCTL force-256-rings: exactly one observed failure: 16-entry-only command ring is negotiated and read back
+HDA_X79_NEGCTL accept-gpu-audio: exactly one observed failure: GTX 1050 display-function HDA is declined before X79 onboard audio
+HDA_X79_NEGCTL poison-singleton: exactly one observed failure: failed HDA probe clears the active instance for a later controller
+HDA_X79_NEGCTL free-unacked-dma: exactly one observed failure: unacknowledged controller reset retains hardware-owned DMA
+HDA_X79_NEGCTL remove-after-irq-failure: exactly one observed failure: failed IRQ teardown retains HDA callbacks and DMA
+HDA_X79_NEGCTL isr-early-return-on-remove: exactly one observed failure: removing ISR acknowledges both stream sources on every failed-release re-entry
+HDA_X79: 36 checks, 0 failures
+AC97_NEGCTL: stereo-frame descriptor length rejected
+AC97_POSITION_NEGCTL: double-counting terminal CIV is detected
+AC97_CAPTURE_NEGCTL: discarded input period notifications are detected
+AC97_MODEL_NEGCTL: ignored ICH2 stereo-mode readback is detected
+AC97_CAPTURE_ONLY_NEGCTL: resetting the other playback owner is detected
+AC97_HOST: 125540 checks, 0 failures
+AC97_HOST: 120541 checks, 0 failures
+ES1370_NEGCTL: hardware PCM consumption without mixer period notifications rejected
+ES1370_CAPTURE_NEGCTL: DMA input without capture period publication rejected
+ES1370_HOST: 253319 checks, 0 failures
+CAPTURE_FRAMEWORK_NEGCTL: active-slot rejected
+CAPTURE_FRAMEWORK_NEGCTL: wrong-device rejected
+CAPTURE_FRAMEWORK: 273 checks, 0 failures
+PLAYBACK_FRAMEWORK_NEGCTL: reinitialize rejected
+PLAYBACK_FRAMEWORK_NEGCTL: wrong-device rejected
+PLAYBACK_FRAMEWORK_NEGCTL: active-slot rejected
+/bin/sh: line 1: 53968 Abort trap: 6           build/drivers/audio/expand-verify/playback-framework/scratch-channels > build/drivers/audio/expand-verify/playback-framework/scratch-channels.log 2>&1
+PLAYBACK_FRAMEWORK_NEGCTL: eight-channel input overflowed restored two-channel scratch
+PLAYBACK_FRAMEWORK: 200428 checks, 0 failures
+AUDIO_CAPTURE_GUEST: build/drivers/audio/expand-verify/audio-capture/guest.l5bJn0
+lfs_extract: /capture1.wav -> /Users/wangzhe/system/LogitOS/build/drivers/audio/expand-verify/audio-capture/guest.l5bJn0/intel-hda/capture1.wav, 192044 bytes
+lfs_extract: /capture2.wav -> /Users/wangzhe/system/LogitOS/build/drivers/audio/expand-verify/audio-capture/guest.l5bJn0/intel-hda/capture2.wav, 192044 bytes
+{
+  "passed": true,
+  "device": "intel-hda",
+  "output_device": "intel-hda",
+  "errors": [],
+  "native_rates": {
+    "capture": 48000,
+    "playback": 48000
+  },
+  "inputs": {
+    "iso_sha256": "9fac6a13724be0b3c4f6205c63ef157cd83937d8a6e0c03b0d79094bd62c03bb",
+    "disk_sha256": "782ee74dc6e67c399de03ef90752ef451360fb51c8e9f0448df1df817d493798",
+    "backend_sha256": "e94f1d58d6222e8665336fdeadf448f478a216ede945077fb0898da776489878",
+    "original_disk_sha256": "782ee74dc6e67c399de03ef90752ef451360fb51c8e9f0448df1df817d493798"
+  },
+  "source_sha256": "cd53f2c8c48f5554dae9110a6d20b3db3c6d07a0f05cde4b968f5c6eff9350fe",
+  "qemu_version": "QEMU emulator version 11.0.0",
+  "qemu_exit": 0,
+  "backend_exit": 0,
+  "rec_open_lines": [
+    "REC_OPEN rate=48000 ch=2 fmt=0",
+    "REC_OPEN rate=48000 ch=2 fmt=0"
+  ],
+  "capture_extracted": true,
+  "pcm": {
+    "passed": true,
+    "errors": [],
+    "rounds": [
+      {
+        "round": 1,
+        "frames": 48000,
+        "match_byte_offset": 0,
+        "input_interval": [
+          0,
+          195840
+        ],
+        "sha256": "4a49049d94461a7f948c058a8f019383d523b8e1eea586404506e0661577fdcc"
+      },
+      {
+        "round": 2,
+        "frames": 48000,
+        "match_byte_offset": 195840,
+        "input_interval": [
+          195840,
+          391680
+        ],
+        "sha256": "b1e1bbb6d189e9cf34259cd7886e3519c63695b09ffe087d2c466c0ce8d2ffe8"
+      }
+    ],
+    "playback": {
+      "passed": true,
+      "errors": [],
+      "signal_frames": 144000,
+      "zero_crossings": 600,
+      "bad_steps": 0
+    }
+  },
+  "artifacts": {
+    "source.pcm": "cd53f2c8c48f5554dae9110a6d20b3db3c6d07a0f05cde4b968f5c6eff9350fe",
+    "injected.pcm": "638fec9689d288b5c7f5c0ceec075e24aef87ee327274183002c6839b9f59100",
+    "playback.pcm": "0e8bc1cb1e8e49d0b909fd4e28a664f7e0130a553c6bd3996ea20d92ab2d2d46",
+    "capture1.wav": "a138357c200ce117e6789342ac3bd40bbf22636750e0b0eba0f5724d2b9bb915",
+    "capture2.wav": "4e14062905bcc72aa26d4e4f43248fa49edc31dbbfe135562f94c1e323924f92",
+    "backend.log": "aa8c5deebb6f66297096e3e800c5ef87963eab4999f68adf3b865219a88bc176",
+    "backend.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "serial.log": "945dceb9b0be4414f17db10b210e65d0d3560c99cee1c2d2c32cbc104be81f3d",
+    "qemu.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "harness": {
+    "/Users/wangzhe/system/LogitOS/tests/drivers/audio/capture/guest.py": "6beee43f515d1e2068f8a9796a1073ef808b8f0991dba7e7cb1407e4636a699f",
+    "/Users/wangzhe/system/LogitOS/tests/drivers/audio/capture/oracle.py": "564554401b0b1f5dd63c32d097b5fc9ad0c313514c2f36e3db7cb51dad5b6395",
+    "/Users/wangzhe/system/LogitOS/tests/drivers/audio/capture/backend.c": "fa760173b5de9310ddb0f67e174248079d8535d0f19cdc9732be8572505b8cca",
+    "/Users/wangzhe/system/LogitOS/tests/drivers/audio/capture/profiles.py": "ebcfc6d85530ae218c38e730eb19a4d25643ab2afb4cb744bd1ec626d27430df"
+  },
+  "original_disk_after_sha256": "782ee74dc6e67c399de03ef90752ef451360fb51c8e9f0448df1df817d493798"
+}
+lfs_extract: /capture1.wav -> /Users/wangzhe/system/LogitOS/build/drivers/audio/expand-verify/audio-capture/guest.l5bJn0/AC97/capture1.wav, 192044 bytes
+lfs_extract: /capture2.wav -> /Users/wangzhe/system/LogitOS/build/drivers/audio/expand-verify/audio-capture/guest.l5bJn0/AC97/capture2.wav, 192044 bytes
+{
+  "passed": true,
+  "device": "AC97",
+  "output_device": "AC97",
+  "errors": [],
+  "native_rates": {
+    "capture": 48000,
+    "playback": 48000
+  },
+  "inputs": {
+    "iso_sha256": "9fac6a13724be0b3c4f6205c63ef157cd83937d8a6e0c03b0d79094bd62c03bb",
+    "disk_sha256": "782ee74dc6e67c399de03ef90752ef451360fb51c8e9f0448df1df817d493798",
+    "backend_sha256": "e94f1d58d6222e8665336fdeadf448f478a216ede945077fb0898da776489878",
+    "original_disk_sha256": "782ee74dc6e67c399de03ef90752ef451360fb51c8e9f0448df1df817d493798"
+  },
+  "source_sha256": "cd53f2c8c48f5554dae9110a6d20b3db3c6d07a0f05cde4b968f5c6eff9350fe",
+  "qemu_version": "QEMU emulator version 11.0.0",
+  "qemu_exit": 0,
+  "backend_exit": 0,
+  "rec_open_lines": [
+    "REC_OPEN rate=48000 ch=[wm] anim open 2win 0 p 204 rect 112 71 1115 687 alpha 255 home 110 70 1120 690 damage  fmt=from 79 38 1260 805 c0ur 79 38 1260 805 sent 79 38 12",
+    "REC_OPEN rate=48000 ch=2 fmt=0"
+  ],
+  "capture_extracted": true,
+  "pcm": {
+    "passed": true,
+    "errors": [],
+    "rounds": [
+      {
+        "round": 1,
+        "frames": 48000,
+        "match_byte_offset": 0,
+        "input_interval": [
+          0,
+          193920
+        ],
+        "sha256": "221dec4db7c35a5175c9fb194cf325ed922ecb9f55f0ff0461c698bd85b8dab9"
+      },
+      {
+        "round": 2,
+        "frames": 48000,
+        "match_byte_offset": 193920,
+        "input_interval": [
+          193920,
+          387840
+        ],
+        "sha256": "1fab6fe8f06ab6f37d89e1b64e8714c9eccc74e438d0e4bdb9939c164bd38495"
+      }
+    ],
+    "playback": {
+      "passed": true,
+      "errors": [],
+      "signal_frames": 144000,
+      "zero_crossings": 600,
+      "bad_steps": 0
+    }
+  },
+  "artifacts": {
+    "source.pcm": "cd53f2c8c48f5554dae9110a6d20b3db3c6d07a0f05cde4b968f5c6eff9350fe",
+    "injected.pcm": "60286c1e17d92d06e08cf27e573d00dfbba9db599f6d43ee42f2a815d255d0f7",
+    "playback.pcm": "344327d438d5dc2cbf70e14f4f60f32b8bf32ed9192ce2662dd1c9f11bcc07a5",
+    "capture1.wav": "792fd214f4203a537a66d134d302b1fdd8969ee666fe0c247d696ed7e68d3749",
+    "capture2.wav": "060794e5dead65528c54373cab57a754eca46e5dd22e091636558e85906dd174",
+    "backend.log": "dfecf603630ae07c60d028f5adc8757b8039dc75f25ab69fd466cd1db39a0aac",
+    "backend.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "serial.log": "ba56d69cccf1480e8d6523daf56fc9917ebd1ca9616f7026c79351537fa4911b",
+    "qemu.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "harness": {
+    "/Users/wangzhe/system/LogitOS/tests/drivers/audio/capture/guest.py": "6beee43f515d1e2068f8a9796a1073ef808b8f0991dba7e7cb1407e4636a699f",
+    "/Users/wangzhe/system/LogitOS/tests/drivers/audio/capture/oracle.py": "564554401b0b1f5dd63c32d097b5fc9ad0c313514c2f36e3db7cb51dad5b6395",
+    "/Users/wangzhe/system/LogitOS/tests/drivers/audio/capture/backend.c": "fa760173b5de9310ddb0f67e174248079d8535d0f19cdc9732be8572505b8cca",
+    "/Users/wangzhe/system/LogitOS/tests/drivers/audio/capture/profiles.py": "ebcfc6d85530ae218c38e730eb19a4d25643ab2afb4cb744bd1ec626d27430df"
+  },
+  "original_disk_after_sha256": "782ee74dc6e67c399de03ef90752ef451360fb51c8e9f0448df1df817d493798"
+}
+lfs_extract: /capture1.wav -> /Users/wangzhe/system/LogitOS/build/drivers/audio/expand-verify/audio-capture/guest.l5bJn0/ES1370/capture1.wav, 194692 bytes
+lfs_extract: /capture2.wav -> /Users/wangzhe/system/LogitOS/build/drivers/audio/expand-verify/audio-capture/guest.l5bJn0/ES1370/capture2.wav, 194692 bytes
+{
+  "passed": true,
+  "device": "ES1370",
+  "output_device": "ES1370",
+  "errors": [],
+  "native_rates": {
+    "capture": 48662,
+    "playback": 48662
+  },
+  "inputs": {
+    "iso_sha256": "9fac6a13724be0b3c4f6205c63ef157cd83937d8a6e0c03b0d79094bd62c03bb",
+    "disk_sha256": "782ee74dc6e67c399de03ef90752ef451360fb51c8e9f0448df1df817d493798",
+    "backend_sha256": "e94f1d58d6222e8665336fdeadf448f478a216ede945077fb0898da776489878",
+    "original_disk_sha256": "782ee74dc6e67c399de03ef90752ef451360fb51c8e9f0448df1df817d493798"
+  },
+  "source_sha256": "7ccfeac23ea3fc3ab8d144bcecee64992f040bf3dd6cdaf4d5faf06cc2257a2a",
+  "qemu_version": "QEMU emulator version 11.0.0",
+  "qemu_exit": 0,
+  "backend_exit": 0,
+  "rec_open_lines": [
+    "REC_OPEN rate=48662 ch=2 fmt=0",
+    "REC_OPEN rate=48662 ch=2 fmt=0"
+  ],
+  "capture_extracted": true,
+  "pcm": {
+    "passed": true,
+    "errors": [],
+    "rounds": [
+      {
+        "round": 1,
+        "frames": 48662,
+        "match_byte_offset": 0,
+        "input_interval": [
+          0,
+          198272
+        ],
+        "sha256": "ed521457a8e87589d1a0cbc3747b6d6623eba014b60cf0024521968468e0d324"
+      },
+      {
+        "round": 2,
+        "frames": 48662,
+        "match_byte_offset": 198272,
+        "input_interval": [
+          198272,
+          396544
+        ],
+        "sha256": "c61a72a1684b24a8eedafcfdc530655f4cbe7b98afb2ab732bc8178b5aede77f"
+      }
+    ],
+    "playback": {
+      "passed": true,
+      "errors": [],
+      "signal_frames": 145987,
+      "zero_crossings": 600,
+      "bad_steps": 0
+    }
+  },
+  "artifacts": {
+    "source.pcm": "7ccfeac23ea3fc3ab8d144bcecee64992f040bf3dd6cdaf4d5faf06cc2257a2a",
+    "injected.pcm": "e03151593d5c700308117573587f9f63194820835b956d6d33151ef123604609",
+    "playback.pcm": "52e81a6cb1741d5d6016ffdb06dda911f594504d0e612e91a5034cca7bd95f5e",
+    "capture1.wav": "80c2edf1e8cb07ff95ae7e6b9b1f2c4d575ee7c207528f714a36249eb59dd186",
+    "capture2.wav": "ae13e0a82b44b0acf3abba97661d351563cb696fac2f3e6a6ba05db25144caf7",
+    "backend.log": "5f7f5fd500abd07a63c139f2942dc66df8897affdd2c5c4e47339a8857898095",
+    "backend.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "serial.log": "065b075baed1829d09eb6b705bd2b006d80bcc8ce286f64cd88c0d578689f15b",
+    "qemu.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "harness": {
+    "/Users/wangzhe/system/LogitOS/tests/drivers/audio/capture/guest.py": "6beee43f515d1e2068f8a9796a1073ef808b8f0991dba7e7cb1407e4636a699f",
+    "/Users/wangzhe/system/LogitOS/tests/drivers/audio/capture/oracle.py": "564554401b0b1f5dd63c32d097b5fc9ad0c313514c2f36e3db7cb51dad5b6395",
+    "/Users/wangzhe/system/LogitOS/tests/drivers/audio/capture/backend.c": "fa760173b5de9310ddb0f67e174248079d8535d0f19cdc9732be8572505b8cca",
+    "/Users/wangzhe/system/LogitOS/tests/drivers/audio/capture/profiles.py": "ebcfc6d85530ae218c38e730eb19a4d25643ab2afb4cb744bd1ec626d27430df"
+  },
+  "original_disk_after_sha256": "782ee74dc6e67c399de03ef90752ef451360fb51c8e9f0448df1df817d493798"
+}
+AUDIO_MULTICARD_GUEST: build/drivers/audio/expand-verify/audio-capture/multicard.HzqjrI
+lfs_extract: /capture1.wav -> /Users/wangzhe/system/LogitOS/build/drivers/audio/expand-verify/audio-capture/multicard.HzqjrI/AC97/capture1.wav, 192044 bytes
+lfs_extract: /capture2.wav -> /Users/wangzhe/system/LogitOS/build/drivers/audio/expand-verify/audio-capture/multicard.HzqjrI/AC97/capture2.wav, 192044 bytes
+{
+  "passed": true,
+  "device": "AC97",
+  "output_device": "intel-hda",
+  "errors": [],
+  "native_rates": {
+    "capture": 48000,
+    "playback": 48000
+  },
+  "inputs": {
+    "iso_sha256": "9fac6a13724be0b3c4f6205c63ef157cd83937d8a6e0c03b0d79094bd62c03bb",
+    "disk_sha256": "782ee74dc6e67c399de03ef90752ef451360fb51c8e9f0448df1df817d493798",
+    "backend_sha256": "e94f1d58d6222e8665336fdeadf448f478a216ede945077fb0898da776489878",
+    "original_disk_sha256": "782ee74dc6e67c399de03ef90752ef451360fb51c8e9f0448df1df817d493798"
+  },
+  "source_sha256": "cd53f2c8c48f5554dae9110a6d20b3db3c6d07a0f05cde4b968f5c6eff9350fe",
+  "qemu_version": "QEMU emulator version 11.0.0",
+  "qemu_exit": 0,
+  "backend_exit": 0,
+  "rec_open_lines": [
+    "REC_OPEN rate=48000 ch=2 fmt=0",
+    "REC_OPEN rate=48000 ch=2 fmt=0"
+  ],
+  "capture_extracted": true,
+  "pcm": {
+    "passed": true,
+    "errors": [],
+    "rounds": [
+      {
+        "round": 1,
+        "frames": 48000,
+        "match_byte_offset": 0,
+        "input_interval": [
+          0,
+          193920
+        ],
+        "sha256": "221dec4db7c35a5175c9fb194cf325ed922ecb9f55f0ff0461c698bd85b8dab9"
+      },
+      {
+        "round": 2,
+        "frames": 48000,
+        "match_byte_offset": 193920,
+        "input_interval": [
+          193920,
+          387840
+        ],
+        "sha256": "1fab6fe8f06ab6f37d89e1b64e8714c9eccc74e438d0e4bdb9939c164bd38495"
+      }
+    ],
+    "playback": {
+      "passed": true,
+      "errors": [],
+      "signal_frames": 144000,
+      "zero_crossings": 600,
+      "bad_steps": 0
+    }
+  },
+  "artifacts": {
+    "source.pcm": "cd53f2c8c48f5554dae9110a6d20b3db3c6d07a0f05cde4b968f5c6eff9350fe",
+    "injected.pcm": "60286c1e17d92d06e08cf27e573d00dfbba9db599f6d43ee42f2a815d255d0f7",
+    "playback.pcm": "768f1d194818301d9ff7f6319ab441160daf559a16c39e5c151abcdb68711a38",
+    "capture1.wav": "792fd214f4203a537a66d134d302b1fdd8969ee666fe0c247d696ed7e68d3749",
+    "capture2.wav": "060794e5dead65528c54373cab57a754eca46e5dd22e091636558e85906dd174",
+    "backend.log": "598aa67cf2adcf6258d7ef71509c331d9204ffb492c6f4f91f92ea8d4da8a936",
+    "backend.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "serial.log": "7a05ddd5098e35f4b6853016ee43f0b719af560e557e867c2cb6c38715fbcaab",
+    "qemu.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "harness": {
+    "/Users/wangzhe/system/LogitOS/tests/drivers/audio/capture/guest.py": "6beee43f515d1e2068f8a9796a1073ef808b8f0991dba7e7cb1407e4636a699f",
+    "/Users/wangzhe/system/LogitOS/tests/drivers/audio/capture/oracle.py": "564554401b0b1f5dd63c32d097b5fc9ad0c313514c2f36e3db7cb51dad5b6395",
+    "/Users/wangzhe/system/LogitOS/tests/drivers/audio/capture/backend.c": "fa760173b5de9310ddb0f67e174248079d8535d0f19cdc9732be8572505b8cca",
+    "/Users/wangzhe/system/LogitOS/tests/drivers/audio/capture/profiles.py": "ebcfc6d85530ae218c38e730eb19a4d25643ab2afb4cb744bd1ec626d27430df"
+  },
+  "original_disk_after_sha256": "782ee74dc6e67c399de03ef90752ef451360fb51c8e9f0448df1df817d493798"
+}
+lfs_extract: /capture1.wav -> /Users/wangzhe/system/LogitOS/build/drivers/audio/expand-verify/audio-capture/multicard.HzqjrI/ES1370/capture1.wav, 194692 bytes
+lfs_extract: /capture2.wav -> /Users/wangzhe/system/LogitOS/build/drivers/audio/expand-verify/audio-capture/multicard.HzqjrI/ES1370/capture2.wav, 194692 bytes
+{
+  "passed": true,
+  "device": "ES1370",
+  "output_device": "intel-hda",
+  "errors": [],
+  "native_rates": {
+    "capture": 48662,
+    "playback": 48000
+  },
+  "inputs": {
+    "iso_sha256": "9fac6a13724be0b3c4f6205c63ef157cd83937d8a6e0c03b0d79094bd62c03bb",
+    "disk_sha256": "782ee74dc6e67c399de03ef90752ef451360fb51c8e9f0448df1df817d493798",
+    "backend_sha256": "e94f1d58d6222e8665336fdeadf448f478a216ede945077fb0898da776489878",
+    "original_disk_sha256": "782ee74dc6e67c399de03ef90752ef451360fb51c8e9f0448df1df817d493798"
+  },
+  "source_sha256": "7ccfeac23ea3fc3ab8d144bcecee64992f040bf3dd6cdaf4d5faf06cc2257a2a",
+  "qemu_version": "QEMU emulator version 11.0.0",
+  "qemu_exit": 0,
+  "backend_exit": 0,
+  "rec_open_lines": [
+    "REC_OPEN rate=[wm] anim open win 0 p 182 rect 112 71 1115 687 alpha 255 home 110 70 1120 690 damage from 81 40 1258 804 cur 79 38 1260 805 sent 79 38 1260 805",
+    "REC_OPEN rate=48662 ch=2 fmt=0"
+  ],
+  "capture_extracted": true,
+  "pcm": {
+    "passed": true,
+    "errors": [],
+    "rounds": [
+      {
+        "round": 1,
+        "frames": 48662,
+        "match_byte_offset": 0,
+        "input_interval": [
+          0,
+          198272
+        ],
+        "sha256": "ed521457a8e87589d1a0cbc3747b6d6623eba014b60cf0024521968468e0d324"
+      },
+      {
+        "round": 2,
+        "frames": 48662,
+        "match_byte_offset": 198272,
+        "input_interval": [
+          198272,
+          396544
+        ],
+        "sha256": "c61a72a1684b24a8eedafcfdc530655f4cbe7b98afb2ab732bc8178b5aede77f"
+      }
+    ],
+    "playback": {
+      "passed": true,
+      "errors": [],
+      "signal_frames": 144000,
+      "zero_crossings": 600,
+      "bad_steps": 0
+    }
+  },
+  "artifacts": {
+    "source.pcm": "7ccfeac23ea3fc3ab8d144bcecee64992f040bf3dd6cdaf4d5faf06cc2257a2a",
+    "injected.pcm": "e03151593d5c700308117573587f9f63194820835b956d6d33151ef123604609",
+    "playback.pcm": "bc9cc72596ce23203dd5583258f11f3726977763117e91f3c53df8acb98f8f9e",
+    "capture1.wav": "80c2edf1e8cb07ff95ae7e6b9b1f2c4d575ee7c207528f714a36249eb59dd186",
+    "capture2.wav": "ae13e0a82b44b0acf3abba97661d351563cb696fac2f3e6a6ba05db25144caf7",
+    "backend.log": "f787f0ef206f4d2660db44b19e9ab9a6a94ea80c593f848f22185d70811a0087",
+    "backend.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "serial.log": "57ea2504ea2ca4af5f286ae0dbed6c9497850d59e27d2671dcec82b11820e053",
+    "qemu.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "harness": {
+    "/Users/wangzhe/system/LogitOS/tests/drivers/audio/capture/guest.py": "6beee43f515d1e2068f8a9796a1073ef808b8f0991dba7e7cb1407e4636a699f",
+    "/Users/wangzhe/system/LogitOS/tests/drivers/audio/capture/oracle.py": "564554401b0b1f5dd63c32d097b5fc9ad0c313514c2f36e3db7cb51dad5b6395",
+    "/Users/wangzhe/system/LogitOS/tests/drivers/audio/capture/backend.c": "fa760173b5de9310ddb0f67e174248079d8535d0f19cdc9732be8572505b8cca",
+    "/Users/wangzhe/system/LogitOS/tests/drivers/audio/capture/profiles.py": "ebcfc6d85530ae218c38e730eb19a4d25643ab2afb4cb744bd1ec626d27430df"
+  },
+  "original_disk_after_sha256": "782ee74dc6e67c399de03ef90752ef451360fb51c8e9f0448df1df817d493798"
+}
+AUDIO_ORACLE 48000-positive: PASS
+AUDIO_ORACLE 48000-silence: PASS
+AUDIO_ORACLE 48000-wrong-speed: PASS
+AUDIO_ORACLE 48000-swapped: PASS
+AUDIO_ORACLE 48000-short: PASS
+AUDIO_ORACLE 48000-repeated-period: PASS
+AUDIO_ORACLE 48000-damaged: PASS
+AUDIO_ORACLE 48000-wrong-rate: PASS
+AUDIO_ORACLE 48000-streaming-positive: PASS
+AUDIO_ORACLE 48000-streaming-damaged: PASS
+AUDIO_ORACLE 48000-streaming-short: PASS
+AUDIO_ORACLE 48000-only-riff-zero: PASS
+AUDIO_ORACLE 48000-only-data-zero: PASS
+AUDIO_ORACLE 48662-positive: PASS
+AUDIO_ORACLE 48662-silence: PASS
+AUDIO_ORACLE 48662-wrong-speed: PASS
+AUDIO_ORACLE 48662-swapped: PASS
+AUDIO_ORACLE 48662-short: PASS
+AUDIO_ORACLE 48662-repeated-period: PASS
+AUDIO_ORACLE 48662-damaged: PASS
+AUDIO_ORACLE 48662-wrong-rate: PASS
+AUDIO_ORACLE 48662-streaming-positive: PASS
+AUDIO_ORACLE 48662-streaming-damaged: PASS
+AUDIO_ORACLE 48662-streaming-short: PASS
+AUDIO_ORACLE 48662-only-riff-zero: PASS
+AUDIO_ORACLE 48662-only-data-zero: PASS
+test_ci_and_control_inventories (__main__.NestedMakeTests.test_ci_and_control_inventories) ... ok
+test_comment_recipe_and_partial_filename_are_not_edges (__main__.NestedMakeTests.test_comment_recipe_and_partial_filename_are_not_edges) ... ok
+test_continuations_multiple_paths_comments_and_cycle (__main__.NestedMakeTests.test_continuations_multiple_paths_comments_and_cycle) ... ok
+test_declared_exception_is_path_specific (__main__.NestedMakeTests.test_declared_exception_is_path_specific) ... ok
+test_missing_then_restored_edge (__main__.NestedMakeTests.test_missing_then_restored_edge) ... ok
+test_nested_link_prerequisites_are_checked (__main__.NestedMakeTests.test_nested_link_prerequisites_are_checked) ... ok
+test_same_leaf_is_not_same_fragment (__main__.NestedMakeTests.test_same_leaf_is_not_same_fragment) ... ok
+
+----------------------------------------------------------------------
+Ran 7 tests in 0.050s
+
+OK
+negative control: nested fragment without include is UNREACHABLE
+mk-wired: ok (378 fragments, 377 reachable from the Makefile, 1 declared)
+  declared: tests/schedneg.mk -- a `make -f` wrapper that includes the Makefile itself; including it back would recurse (see its own header)

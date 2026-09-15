@@ -1,0 +1,3 @@
+FAIL line 167: station->group_keys[2].replay[16] == 1
+FAIL line 168: wifi_station_receive(station, oracle_group_rx, sizeof(oracle_group_rx), -40) == -1
+WIFI_STATION: 312 checks, 2 failures

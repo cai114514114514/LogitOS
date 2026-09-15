@@ -171,3 +171,20 @@ work-*/
 # an UNTRACKED DIRECTORY. Directories are listed as one entry whose size is a
 # few hundred bytes. Size what you are about to commit, not what status prints.
 *.img
+
+# Binary evidence artifacts inside report archives. A report's value is its
+# reasoning and its numbers; the .aex it booted, the raw capture it recorded and
+# the wav it played back are REGENERABLE and weigh 32 MB against the 11 MB of
+# text around them. Every clone would carry them forever and removing one later
+# costs a filter-branch -- this repository has already paid that once, for a
+# 512 MB disk.img that reached a branch because a size check looked at tracked
+# paths and the offender sat inside an untracked directory.
+#
+# THE EVIDENCE CHAIN SURVIVES THIS, and that is the only reason the rule is
+# acceptable: each report's SHA256SUMS records the digest of every artifact it
+# excludes, so a claim can still be checked against a rebuilt binary. A report
+# that needs a byte-exact artifact kept must say so and commit it by name with
+# `git add -f`, not by loosening these globs.
+docs/reports/**/*.aex
+docs/reports/**/*.pcm
+docs/reports/**/*.wav

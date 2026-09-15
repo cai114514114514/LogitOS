@@ -1,0 +1,2 @@
+PASS guest: USB keyboard + absolute tablet, PS/2 absent; observed displacement (110, 51) (target 110,50; tolerance 1 pixel), stable click/release coordinates, shifted A/click and released-Shift a
+Evidence: /Users/wangzhe/system/LogitOS/build/drivers/expansion/kernel/usb-tablet-evidence

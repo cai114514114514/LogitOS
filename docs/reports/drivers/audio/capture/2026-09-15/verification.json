@@ -1,0 +1,13 @@
+{
+  "verified_at": "2026-09-15T15:57:33.042232+00:00",
+  "audio_sources_verified": 44,
+  "frozen_inputs_verified": [
+    "iso",
+    "backend",
+    "template_disk"
+  ],
+  "guest_artifact_hashes_verified": true,
+  "final_guest_root": "build/drivers/audio/capture-verify/audio-capture/guest.hK2rDc",
+  "before_controls_verified": true,
+  "note": "Shared context hashes are provenance; the acceptance identity is the frozen ISO, disk template, backend and the audio sources."
+}

@@ -1,0 +1,6 @@
+NV_BOOTFB_NEGCTL: broad Pascal ID rule misidentified MX150 (exactly one failure)
+NV_BOOTFB_NEGCTL: accepting D3 violated passive-probe contract (exactly one failure)
+NV_ACCEL_NEGCTL: missing firmware reached BAR map (exactly one failure)
+NV_ACCEL_NEGCTL: corrupt firmware reached BAR map (exactly one failure)
+NV_ACCEL_BRINGUP: 38 checks, 0 failures
+NV_BOOTFB: 56 checks, 0 failures

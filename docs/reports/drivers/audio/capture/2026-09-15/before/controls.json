@@ -1,0 +1,22 @@
+[
+  {
+    "device": "AC97",
+    "expected_failure_observed": true,
+    "exit_code": 1,
+    "failure": "REC_FAIL open=-1",
+    "clean_boot": true,
+    "backend_ready": true,
+    "old_iso_sha256": "f61ccff42352e9f7cb3060fa774c58a3f82c1eda498ba66a8d8a5e3167a58c5f",
+    "result": "before/AC97/result.json"
+  },
+  {
+    "device": "ES1370",
+    "expected_failure_observed": true,
+    "exit_code": 1,
+    "failure": "REC_FAIL open=-1",
+    "clean_boot": true,
+    "backend_ready": true,
+    "old_iso_sha256": "f61ccff42352e9f7cb3060fa774c58a3f82c1eda498ba66a8d8a5e3167a58c5f",
+    "result": "before/ES1370/result.json"
+  }
+]

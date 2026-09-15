@@ -1,0 +1,60 @@
+{
+  "passed": true,
+  "scope": "QEMU ATI RV100 2D command path; physical AMD hardware excluded",
+  "firmware": "bios",
+  "qemu_version": "QEMU emulator version 11.0.0",
+  "qemu_device": "ati-vga,model=rv100,vgamem_mb=16,xres=1280,yres=800",
+  "pci_identity": "1002:5159",
+  "pci_bdf": "0000:00:02.0",
+  "qmp_pci_identity": {
+    "device": 20825,
+    "subsystem-vendor": 6900,
+    "vendor": 4098,
+    "subsystem": 4352
+  },
+  "driver": "amd-bootfb",
+  "bootfb_marker": "[amd-bootfb] 0000:00:02.0 1002:5159 mode=passive bootfb=1024x768 source=multiboot-lfb bar=0 lfb=0xf0000000/0x300000 cmd=0103 pm=none",
+  "accel_fields": {
+    "family": "RV100",
+    "pci": "5159",
+    "stage": "active",
+    "engine": "rv100-2d-canary-passed",
+    "desktop": "cpu",
+    "commands": "2",
+    "vram": "16777216",
+    "scanout": "0",
+    "canary": "3145728",
+    "reads": "672",
+    "writes": "448",
+    "fill": "ok",
+    "copy": "ok",
+    "restore": "ok"
+  },
+  "qemu_trace": {
+    "cnfg_memsize_reads": 1,
+    "engine_status_reads": 9,
+    "canary_trigger_value": "0x7000d",
+    "canary_trigger_writes": 2,
+    "fill_master_writes": 1,
+    "copy_master_writes": 1,
+    "cache_flush_writes": 3,
+    "dst_height_width_tail": [
+      "ati_mm_write 4 0x143c  <- 0x7000d",
+      "ati_mm_write 4 0x143c  <- 0x7000d"
+    ]
+  },
+  "scanout": {
+    "width": 1024,
+    "height": 768,
+    "sample_colours": 221,
+    "lit_samples": 12288,
+    "samples": 12288
+  },
+  "iso": "/Users/wangzhe/system/LogitOS/build-gpu-coverage-final/logit.iso",
+  "iso_sha256": "adbced2ffcb09dbfb1618fd9945d1c89241d5d912507de60ff51704f4ee3870c",
+  "qemu_device_model_verified": true,
+  "rv100_fill_copy_canary_verified": true,
+  "canary_original_bytes_restored": true,
+  "physical_amd_gpu_verified": false,
+  "modern_amd_gpu_acceleration_verified": false
+}

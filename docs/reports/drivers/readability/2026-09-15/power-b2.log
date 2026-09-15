@@ -1,0 +1,355 @@
+LOGIT_BIOS_PRELOAD_OK
+LOGIT_BIOS_LOADER_NATIVE
+LOADER A20 VERIFY PASS
+LOADER KERNEL LOAD OK
+LOADER ENTER KERNEL
+LOGIT BOOT IDENTITY VERIFY promised=0000000040000000
+LOGIT_BOOT_NATIVE_OK version=0001
+[cpu] AuthenticAMD -- QEMU TCG CPU version 2.5+
+[cpu] 51/60 known features present: fpu tsc msr mce apic mca cmov clflush mmx fxsr sse sse2 htt sse3 pclmulqdq monitor ssse3 fma cx16 sse4.1 sse4.2 x2apic movbe popcnt aes xsave avx f16c rdrand hypervisor fsgsbase bmi1 avx2 smep bmi2 erms rdseed adx smap clflushopt sha_ni umip pku vaes rdpid lzcnt prefetchw nx pdpe1gb rdtscp lm
+[cpu-platform] family=6 model=0x6 stepping=3 generation=other
+[cpu] topology: source=cpuid.0xb x2apic_id=0 package=0 core=0 thread=0 cpuid-addressable/package=4 cores/package=4 threads/core=1
+[cpu] hfi: hw=0 performance=0 efficiency=0 table-pages=0 current-lp-row=0 thread-director-hw=0 classes=0 (inventory only; no config MSR write)
+[cpu] apic: x2apic_hw=1 mode=xapic base=0xfee00000
+[cpu] mca: banks=10 ctl=1 cmci=0 tes=0 ser=1 (enumerated, not enabled)
+[cpu] tsc: invariant_hw=0
+[cpu] xsave: 2696 B holds every supported state, xcr0 mask 0x21f, osxsave=0
+[cpu] xstate: avx_hw=1 avx_os=0 osxsave=0 xcr0=0x0 abi=fxsave
+[cpu] aes-gcm backend: aesni (constant-time); rdrand=1 rdseed=1
+[cpu] aes-gcm 16 KiB: aesni=751000 cycles, c=7166000 cycles, speedup x9.54
+
+[logitos] long mode, C kernel running
+[rust] inflate selftest OK
+[prot] bsp: nx sup/ON  wxsplit ON  smep sup/ON  smap sup/off
+[time] source=tsc 1000.114 MHz res=1ns  (invariant-tsc=no hypervisor=yes calib=pit-ch2)
+[time] fallback=pit 100 Hz res=10000000ns  timers=heap/128  mono=64-bit ns (wraps in 584 years)
+[time] calib samples(Hz) 1000478391 1000077835 1000114250 -> median chosen
+[cpu] simd selftest: backend=aesni xmm_corrupt=0 (20 ticks) crypto_mismatch=0 kat=0 (721 rounds, 6 ticks)
+CPU_SIMD_SELFTEST_OK
+[physmap] metadata base=0x2f05000 bytes=442266 kernel_end=0x2f05000
+[mm] low: 118891 frames free (464 MiB), 12146 used, 0 shared, 0 bugs
+[physmap] ready: base=0xffff800000000000 high_pages=0 table_pages=4 low_free=118888 NX=1
+[mm] boot: 131037 frames total (511 MiB), 118888 free, 12149 used, 0 shared, 12149 refs (+0 saved = 0 KiB), 0 pinned, 0 bugs
+[physmap] boot: high_allocs=0 high_live=0 high_max=0x0 high_free=0 low_free=118888
+[mm] boot: metadata 431 KiB (bitmap + poison map + 2-byte refcounts + pins), poison level 1
+[mm] boot: 0 frames pinned against reclaim, 128 reserve frames (0 dips), 0 allocations refused
+[mm] low: 118635 frames free (463 MiB), 12402 used, 0 shared, 0 bugs
+[mm] low: 118379 frames free (462 MiB), 12658 used, 0 shared, 0 bugs
+[mm] low: 118123 frames free (461 MiB), 12914 used, 0 shared, 0 bugs
+[rmap] 131037 frames, 196555 nodes (3599 KiB total: 511 KiB heads + 3071 KiB nodes)
+[acpi] RSDP from the bootloader's multiboot2 tag
+[hpet] ready: base=0xfed00000 period=10000000fs counter=64-bit timers=3
+[time] HPET standby: invariant TSC remains active
+[logitos] interrupts + memory + gdt/tss online
+[mm] low: 117867 frames free (460 MiB), 13170 used, 0 shared, 0 bugs
+[mm] low: 117611 frames free (459 MiB), 13426 used, 0 shared, 0 bugs
+[pcache] up: 65518 page slots (262072 KiB ceiling), 32 file slots, 16384 buckets; tables 2112 KiB from the PMM (16 B/frame of RAM)
+[klog] ring 512 lines x 112 bytes; `cat /dev/kmsg`, `cat /dev/kstat`
+[pci] no MCFG; legacy 0xCF8 config ports (no extended caps)
+[pci] 7 function(s) enumerated across all buses
+[mm] low: 117355 frames free (458 MiB), 13682 used, 0 shared, 0 bugs
+[mm] low: 117099 frames free (457 MiB), 13938 used, 0 shared, 0 bugs
+[mm] low: 116843 frames free (456 MiB), 14194 used, 0 shared, 0 bugs
+[mm] low: 116587 frames free (455 MiB), 14450 used, 0 shared, 0 bugs
+[kheap] arena domain=physmap cpu=0xffff80000350e000 phys=0x350e000 bytes=4194304
+[kheap] grow #1: +4096 KiB -> arena 4096 KiB, live 0 KiB, free 4095 KiB, over-allocated 0 KiB
+[rust] png selftest OK
+[virtio] 1050 up (0000:00:02.0, 2 queues)
+[dma] alloc 0000:00:02.0 cpu=0xffff80000390f000 dma=0x390f000 bytes=4096 mask=0xffffffffffffffff
+[virtio-dma] 0000:00:02.0 queue=0 cpu=0xffff80000390f000 dma=0x390f000 avail=0x3910000 used=0x3911000
+[virtio-dma] 0000:00:02.0 queue=1 cpu=0xffff800003912000 dma=0x3912000 avail=0x3913000 used=0x3914000
+[mm] low: 116331 frames free (454 MiB), 14706 used, 0 shared, 0 bugs
+[mm] low: 116075 frames free (453 MiB), 14962 used, 0 shared, 0 bugs
+[mm] low: 115819 frames free (452 MiB), 15218 used, 0 shared, 0 bugs
+[mm] low: 115563 frames free (451 MiB), 15474 used, 0 shared, 0 bugs
+[dma] virtio-gpu coherent=10 bytes=4132864 mappings=0 pins=0 direct=0 bounce=0 quarantine=0/0/0 high=0 max=0x3cfffff stale=0 completed_direct=0 completed_high=0
+[virtio-gpu] 1280x800, RAM fb @ 0xffff800003918000, cursor plane yes
+[virtio] 1001 up (0000:00:04.0, 4 queues)
+[dma] alloc 0000:00:04.0 cpu=0xffff800003d04000 dma=0x3d04000 bytes=4096 mask=0xffffffffffffffff
+[virtio-dma] 0000:00:04.0 queue=0 cpu=0xffff800003d04000 dma=0x3d04000 avail=0x3d05000 used=0x3d06000
+[dma] virtio-blk coherent=15 bytes=4165632 mappings=0 pins=0 direct=0 bounce=0 quarantine=0/0/0 high=0 max=0x3d07fff stale=0 completed_direct=0 completed_high=0
+[virtio-blk] ready, cache=writeback (barriers REQUIRED)
+[blk] vblk0: virtio-blk, 1048576 sectors (512.0 MiB)
+[dma] map 0000:00:04.0 cpu=0x2f04a80 dma=0x2f04a80 bytes=512 sg=1 bounce=0
+[part] vblk0: no partition table (raw filesystem image)
+[blk] 1 disk, 0 partitions; root = vblk0 (LogitFS superblock)
+[fsck] mount check: clean
+[fs] mounted
+[fs] /proc mounted
+[pcache] backend installed over c/fs/vfs.h (statx + vfs_pread, VFS-identity gated)
+[set] /etc/settings.conf: 3 keys
+SETTINGS_READY diag=0 keys=3
+SETTINGS_SELFTEST offsets=733 failures=0
+[tls] trust store: 130 roots, 0 skipped
+[tls]   isrg_x1 isrg_x2 digicert_global_ca digicert_global_g2 digicert_global_g3
+[tls]   globalsign_r1 globalsign_r3 gts_r1 gts_r4 usertrust_rsa usertrust_ecc
+[tls]   amazon_root_1 amazon_root_3 dtrust_root3_2009 sslcom_ecc_2022
+[tls]   aaa_certificate_services accvraiz1 actalis_authentication_root_ca
+[tls]   affirmtrust_commercial affirmtrust_networking affirmtrust_premium
+[tls]   affirmtrust_premium_ecc amazon_root_ca_2 amazon_root_ca_4
+[tls]   atos_trustedroot_2011 autoridad_de_certificacion_firmaprofesional_cif_
+[tls]   baltimore_cybertrust_root buypass_class_2_root_ca buypass_class_3_root_ca
+[tls]   ca_disig_root_r2 certigna certigna_root_ca certsign certsign_sa
+[tls]   certum_trusted_network_ca cfca_ev_root chambers_of_commerce_root_2008
+[tls]   chunghwa_telecom_co comodo_certification_authority
+[tls]   comodo_ecc_certification_authority comodo_rsa_certification_authority
+[tls]   cybertrust_global_root d_trust_root_class_3_ca_2_ev_2009
+[tls]   digicert_assured_id_root_ca digicert_assured_id_root_g2
+[tls]   digicert_assured_id_root_g3 digicert_high_assurance_ev_root_ca
+[tls]   digicert_trusted_root_g4 e_szigno_root_ca_2017 e_tugra_certification_authority
+[tls]   ec_acc emsign_ecc_root_ca_c3 emsign_ecc_root_ca_g3 emsign_root_ca_c1
+[tls]   emsign_root_ca_g1 entrust_net_certification_authority_2048
+[tls]   entrust_root_certification_authority entrust_root_certification_authority_ec1
+[tls]   entrust_root_certification_authority_g2
+[tls]   entrust_root_certification_authority_g4 fnmt_rcm gdca_trustauth_r5_root
+[tls]   geotrust_global_ca geotrust_primary_certification_authority_g2
+[tls]   global_chambersign_root_2008 globalsign globalsign_1 globalsign_2 globalsign_3
+[tls]   go_daddy_root_certificate_authority_g2 gts_root_r2 gts_root_r3
+[tls]   hellenic_academic_and_research_institutions_ecc_
+[tls]   hellenic_academic_and_research_institutions_root
+[tls]   hellenic_academic_and_research_institutions_root_1 hongkong_post_root_ca_1
+[tls]   hongkong_post_root_ca_3 identrust_commercial_root_ca_1
+[tls]   identrust_public_sector_root_ca_1 izenpe_com microsec_e_szigno_root_ca_2009
+[tls]   microsoft_ecc_root_certificate_authority_2017
+[tls]   microsoft_rsa_root_certificate_authority_2017
+[tls]   naver_global_root_certification_authority
+[tls]   netlock_arany_class_gold_f_c5_91tan_c3_bas_c3_ad
+[tls]   network_solutions_certificate_authority oiste_wisekey_global_root_gb_ca
+[tls]   oiste_wisekey_global_root_gc_ca quovadis_root_ca_1_g3 quovadis_root_ca_2
+[tls]   quovadis_root_ca_2_g3 quovadis_root_ca_3 quovadis_root_ca_3_g3
+[tls]   quovadis_root_certification_authority secom_trust_net secom_trust_systems_co
+[tls]   secure_global_ca securesign_rootca11 securetrust_ca sonera_class2_ca
+[tls]   ssl_com_ev_root_certification_authority_ecc
+[tls]   ssl_com_ev_root_certification_authority_rsa_r2
+[tls]   ssl_com_root_certification_authority_ecc
+[tls]   ssl_com_root_certification_authority_rsa staat_der_nederlanden_ev_root_ca
+[tls]   staat_der_nederlanden_root_ca_g3 starfield_root_certificate_authority_g2
+[tls]   starfield_services_root_certificate_authority_g2 starfield_technologies
+[tls]   swisssign_gold_ca_g2 swisssign_silver_ca_g2 szafir_root_ca2
+[tls]   t_telesec_globalroot_class_2 t_telesec_globalroot_class_3
+[tls]   teliasonera_root_ca_v1 the_go_daddy_group trustcor_eca_1
+[tls]   trustcor_rootcert_ca_1 trustcor_rootcert_ca_2 trustis_limited
+[tls]   trustwave_global_certification_authority
+[tls]   trustwave_global_ecc_p256_certification_authorit
+[tls]   trustwave_global_ecc_p384_certification_authorit
+[tls]   tubitak_kamu_sm_ssl_kok_sertifikasi_surum_1 twca_global_root_ca
+[tls]   twca_root_certification_authority uca_extended_validation_root
+[tls]   uca_global_g2_root verisign_universal_root_certification_authority
+[tls]   xramp_global_certification_authority
+[net] e1000: found 8086:100e at 0000:00:03.0
+[dma] alloc e1000 cpu=0xffff800003d08000 dma=0x3d08000 bytes=4096 mask=0xffffffffffffffff
+[e1000] link: UP 1000 Mb/s full duplex
+[e1000] up: mmio=0xfebc0000
+[net] NIC bound: eth0 = e1000  MAC 52:54:0:12:34:56  irq=11
+[net] if 1 lo flags up running loopback  127.0.0.1/8
+[net] if 2 eth0 flags up running broadcast  mac 52:54:0:12:34:56 drv e1000 irq=11  [primary]
+[netlock] acq 11 recursive 1 maxdepth 2 violations 0
+[ip6] link-local fe80::5054:ff:fe12:3456 tentative (dad)
+[netlock] acq 91 recursive 11 maxdepth 2 violations 0
+[netlock] acq 731 recursive 75 maxdepth 2 violations 0
+[ip6] dad ok fe80::5054:ff:fe12:3456/64
+[ip6] nd fe80::2 -> 52:56:00:00:00:02 stale
+[ip6] router fe80::2 lifetime 1800s
+[ip6] slaac fec0::5054:ff:fe12:3456/64 valid 86400s pref 14400s
+[dhcp] bound 10.0.2.15/24 gw 10.0.2.2 dns 10.0.2.3
+[eth] rx 5 (1990 B) arp 0 ip 3 ip6 2 vlan 0 bcast 3 mcast 2
+[eth] rx drops: runt 0 toolong 0 not-ours 0 vlan-bad 0 unhandled 0 (last type 0)
+[eth] tx 8 (1374 B) padded 1 toolong 0  loopback 0 dropped 0
+[arp] rx 0 (req 0 reply 0 grat 0 bad 0) tx (req 1 reply 0 ann 1)
+[arp] entries 0  evict 0 expire 0  queued 0 sent 0 dropped 0  unresolved 0 conflicts 0 poison-blocked 0
+[net] tcp timers: 10 ms ktimer -> SOFTIRQ_NET (independent of the WM loop)
+[mm] low: 115307 frames free (450 MiB), 15730 used, 0 shared, 0 bugs
+[mm] low: 115051 frames free (449 MiB), 15986 used, 0 shared, 0 bugs
+[mm] low: 114795 frames free (448 MiB), 16242 used, 0 shared, 0 bugs
+[mm] low: 114539 frames free (447 MiB), 16498 used, 0 shared, 0 bugs
+[kheap] arena domain=physmap cpu=0xffff800003d52000 phys=0x3d52000 bytes=4194304
+[kheap] grow #2: +4096 KiB -> arena 8192 KiB, live 2344 KiB, free 5845 KiB, over-allocated 27 KiB
+[text] /fonts/ui.ttf: 7655 glyphs, upem=1000
+[text] /fonts/mono.ttf: 97 glyphs, upem=1000
+[text] /fonts/text.ttf: 6253 glyphs, upem=2048
+[mm] low: 114283 frames free (446 MiB), 16754 used, 0 shared, 0 bugs
+[mm] low: 114027 frames free (445 MiB), 17010 used, 0 shared, 0 bugs
+[mm] low: 113771 frames free (444 MiB), 17266 used, 0 shared, 0 bugs
+[mm] low: 113515 frames free (443 MiB), 17522 used, 0 shared, 0 bugs
+[kheap] arena domain=physmap cpu=0xffff800004152000 phys=0x4152000 bytes=4194304
+[kheap] grow #3: +4096 KiB -> arena 12288 KiB, live 5266 KiB, free 7019 KiB, over-allocated 27 KiB
+[text] /fonts/ui-bold.ttf: 7655 glyphs, upem=1000
+[text] /fonts/mono-bold.ttf: 97 glyphs, upem=1000
+[mm] low: 113259 frames free (442 MiB), 17778 used, 0 shared, 0 bugs
+[mm] low: 113003 frames free (441 MiB), 18034 used, 0 shared, 0 bugs
+[mm] low: 112747 frames free (440 MiB), 18290 used, 0 shared, 0 bugs
+[mm] low: 112491 frames free (439 MiB), 18546 used, 0 shared, 0 bugs
+[mm] low: 112235 frames free (438 MiB), 18802 used, 0 shared, 0 bugs
+[mm] low: 111979 frames free (437 MiB), 19058 used, 0 shared, 0 bugs
+[mm] low: 111723 frames free (436 MiB), 19314 used, 0 shared, 0 bugs
+[mm] low: 111467 frames free (435 MiB), 19570 used, 0 shared, 0 bugs
+[wm] display 1280x800 px, scale 100%, desktop 1280x800 pt
+[mm] low: 111211 frames free (434 MiB), 19826 used, 0 shared, 0 bugs
+[mm] low: 110955 frames free (433 MiB), 20082 used, 0 shared, 0 bugs
+[mm] low: 110699 frames free (432 MiB), 20338 used, 0 shared, 0 bugs
+[mm] low: 110443 frames free (431 MiB), 20594 used, 0 shared, 0 bugs
+[kheap] arena domain=physmap cpu=0xffff800004d22000 phys=0x4d22000 bytes=4194304
+[kheap] grow #4: +4096 KiB -> arena 16384 KiB, live 7443 KiB, free 8938 KiB, over-allocated 28 KiB
+[ime] /ime/pinyin-qwen.dat: 1983418 bytes, 49000 pinyin keys -- Shift+Space toggles pinyin input
+[ime] learn: no /var/ime-learn.conf yet -- ranking is the dictionary's own frequency order until something is committed
+[wm] pointer: display cursor plane (motion does not composite)
+[wm] dock 10 apps: 0=clock.aex,shown 1=textedit.aex,shown 2=monitor.aex,shown 3=terminal.aex,shown 4=files.aex,shown 5=preview.aex,shown 6=studio.aex,shown 7=browser.aex,shown 8=settings.aex,shown 9=assistant.aex,shown
+[wm] menu title 0 LogitOS x0 8 y0 0 x1 102 y1 24
+[wm] menu title 1 File x0 118 y0 0 x1 170 y1 24
+[wm] menu title 2 View x0 186 y0 0 x1 247 y1 24
+[wm] fullframe seq=1 reasons=0x1 total_ns=22838389 ordinary_px=1024000 ordinary_ns=11915637 glass_px=86964 glass_ns=8586019 present_px=1024000 present_ns=2336733
+[logitos] desktop up; mouse + keyboard armed
+[acpi] MADT CPUs type0=4 type9=0 duplicate=0 rejected=0
+[lapic] mode=xapic id=0 source=IA32_APIC_BASE
+[smp] CPU 0 apic_id=0 topology=cpuid.0b pkg=0 core=0 thread=0 type=unknown native-valid=0 native=0 hybrid=0
+[smp] 4 CPU(s) detected, BSP apic_id=0
+[ioapic] device IRQs routed via I/O APIC
+[irq] 0000:00:03.0: intx vector 96 (e1000)
+[net] IRQ route: eth0 = e1000 vector 96 via device model
+[smp] CPU 1 apic_id=1 topology=cpuid.0b pkg=0 core=1 thread=0 type=unknown native-valid=0 native=0 hybrid=0
+[prot] ap: nx sup/ON  wxsplit ON  smep sup/ON  smap sup/off
+[smp] CPU 1 apic_id=1 online
+[smp] CPU 2 apic_id=2 topology=cpuid.0b pkg=0 core=2 thread=0 type=unknown native-valid=0 native=0 hybrid=0
+[prot] ap: nx sup/ON  wxsplit ON  smep sup/ON  smap sup/off
+[smp] CPU 2 apic_id=2 online
+[smp] CPU 3 apic_id=3 topology=cpuid.0b pkg=0 core=3 thread=0 type=unknown native-valid=0 native=0 hybrid=0
+[prot] ap: nx sup/ON  wxsplit ON  smep sup/ON  smap sup/off
+[smp] CPU 3 apic_id=3 online
+[smp] 4/4 CPUs online
+[smp] topology logical=4 cores=4 p=0/0 e=0/0 unknown=4/4 mismatch=0 conflict=0
+[smp] scheduler topology policy=uniform-online-cpus
+[smp] parallel present on 4 cores (IPI 241)
+[dev] 0000:00:00.0 8086:1237 class=06.00.00 host-bridge  driver=-
+[dev] 0000:00:01.0 8086:7000 class=06.01.00 isa-bridge   driver=-
+[dev] 0000:00:01.1 8086:7010 class=01.01.80 ide          driver=- bar4=io:0xc0c0/0x10
+[dev] 0000:00:01.3 8086:7113 class=06.80.00 bridge       driver=-
+[dev] 0000:00:02.0 1af4:1050 class=03.80.00 display      driver=virtio-gpu caps=msix,vndr, bar1=0xfebe0000/0x1000 bar4=0xfebf8000/0x4000
+[dev] 0000:00:03.0 8086:100e class=02.00.00 ethernet     driver=e1000 irq=intx/96 bar0=0xfebc0000/0x20000 bar1=io:0xc080/0x40
+[dev] 0000:00:04.0 1af4:1001 class=01.00.00 scsi         driver=virtio-blk caps=msix,vndr, bar0=io:0xc000/0x80 bar1=0xfebe1000/0x1000 bar4=0xfebfc000/0x4000
+[dev] 7 device(s), 3 bound, 4 unclaimed
+[dma] boot coherent=89 bytes=4468736 mappings=0 pins=0 direct=0 bounce=0 quarantine=0/0/0 high=0 max=0x3d51fff stale=0 completed_direct=10078720 completed_high=0
+
+LOGIT_BOOT_OK
+
+[wm] desktop live; launching apps as ring-3 processes
+[wm] no accounts on this machine: the desktop starts unauthenticated
+[aex] 'Finder' is unsigned: no AEX_T_SIG record. Loading anyway (log but allow) -- see the comment above the CRC check in aex.c for what a signature here would and would not mean.
+[mm] low: 110187 frames free (430 MiB), 20850 used, 0 shared, 0 bugs
+[exec] load files.aex: 0 pages file-backed in 0 areas, 285 copied
+[wm] launched Finder
+[sched] first-run tid 8 (Finder)
+[mm] low: 109931 frames free (429 MiB), 21106 used, 0 shared, 0 bugs
+[exec] load /bin/login: 0 pages file-backed in 0 areas, 42 copied
+[sched] first-run tid 9 (login)
+[mm] low: 109675 frames free (428 MiB), 21362 used, 0 shared, 0 bugs
+[mm] low: 109419 frames free (427 MiB), 21618 used, 0 shared, 0 bugs
+[mm] low: 109163 frames free (426 MiB), 21874 used, 0 shared, 0 bugs
+[mm] low: 108907 frames free (425 MiB), 22130 used, 0 shared, 0 bugs
+[kheap] arena domain=physmap cpu=0xffff80000527a000 phys=0x527a000 bytes=4194304
+[kheap] grow #5: +4096 KiB -> arena 20480 KiB, live 9942 KiB, free 10534 KiB, over-allocated 29 KiB
+login: no accounts on this machine (`login -a NAME` to create one)
+[execve] pid 2: /bin/sh loading
+[exec] load /bin/agentd: 0 pages file-backed in 0 areas, 101 copied
+[sched] first-run tid 10 (agentd)
+[wm] anim open win 0 p 8 rect 189 119 962 592 alpha 255 home 110 70 1120 690 damage from 164 91 1175 753 cur 158 87 1182 757 sent 158 87 1182 757
+[exec] load /bin/sh: 0 pages file-backed in 0 areas, 64 copied
+[swap] no eligible device -- swap is OFF (reclaim keeps the drop tier)
+[reclaim] watermarks: start below 4094 frames (15 MiB free), stop at 8189 (31 MiB); swap OFF (drop tier only)
+LogitOS shell -- type 'help'
+/ $ [wm] perf t=1649 composites=2 ns=25438092 max=22838389 motions=0 curmoves=1 curns=33996 full=1 rects=3 cpx=1054720 fpx=1054720 presns=2439722 torn=0 defer=1 late=0 drawmax=0 evdrop=0 evevict=0 inmerge=0 inevict=0 indrop=0/0 inback=0 inhwm=1 sdk_draws=1024140
+[wm] locks calls=18 hold_ns=11629672 max_ns=5387384 render_locked=0
+[wm] locktag tag=syscall num=3 calls=1 wall_ns=3173638 cpu_ns=3154640 max_wall_ns=3173638 max_cpu_ns=3154640 redispatches=0
+[wm] locktag tag=syscall num=4 calls=2 wall_ns=236974 cpu_ns=159982 max_wall_ns=212976 max_cpu_ns=139984 redispatches=0
+[wm] locktag tag=syscall num=41 calls=2 wall_ns=67993 cpu_ns=63993 max_wall_ns=37996 max_cpu_ns=36996 redispatches=0
+[wm] locktag tag=syscall num=70 calls=2 wall_ns=69992 cpu_ns=66993 max_wall_ns=67992 max_cpu_ns=65993 redispatches=0
+[wm] locktag tag=syscall num=71 calls=2 wall_ns=10999 cpu_ns=10000 max_wall_ns=8999 max_cpu_ns=8000 redispatches=0
+[wm] locktag tag=boot num=257 calls=3 wall_ns=6094304 cpu_ns=6060308 max_wall_ns=5387384 max_cpu_ns=5382385 redispatches=0
+[wm] locktag tag=input num=258 calls=2 wall_ns=358958 cpu_ns=354960 max_wall_ns=243972 max_cpu_ns=241972 redispatches=0
+[wm] locktag tag=notify num=259 calls=1 wall_ns=278968 cpu_ns=275968 max_wall_ns=278968 max_cpu_ns=275968 redispatches=0
+[wm] locktag tag=frame num=260 calls=3 wall_ns=1337846 cpu_ns=1331847 max_wall_ns=867901 max_cpu_ns=866901 redispatches=0
+[wm] locktop rank=1 seq=3 tag=boot num=257 wall_ns=5387384 cpu_ns=5382385 redispatches=0
+[wm] locktop rank=2 seq=5 tag=syscall num=3 wall_ns=3173638 cpu_ns=3154640 redispatches=0
+[wm] locktop rank=3 seq=15 tag=frame num=260 wall_ns=867901 cpu_ns=866901 redispatches=0
+[wm] locktop rank=4 seq=1 tag=boot num=257 wall_ns=633928 cpu_ns=605931 redispatches=0
+[wm] locktop rank=5 seq=17 tag=frame num=260 wall_ns=440949 cpu_ns=436950 redispatches=0
+[wm] locktop rank=6 seq=13 tag=notify num=259 wall_ns=278968 cpu_ns=275968 redispatches=0
+[wm] anim open win 0 p 89 rect 136 86 1067 657 alpha 255 home 110 70 1120 690 damage from 158 87 1182 757 cur 103 53 1236 790 sent 103 53 1236 790
+[wm] anim open win 0 p 94 rect 132 83 1076 663 alpha 255 home 110 70 1120 690 damage from 103 53 1236 790 cur 99 50 1241 793 sent 99 50 1241 793
+[wm] anim open win 0 p 105 rect 130 82 1080 665 alpha 255 home 110 70 1120 690 damage from 99 50 1241 793 cur 97 49 1243 794 sent 97 49 1243 794
+[wm] anim open win 0 p 120 rect 123 78 1093 673 alpha 255 home 110 70 1120 690 damage from 97 49 1243 794 cur 90 45 1249 798 sent 90 45 1249 798
+[wm] ptr 640 400
+[wm] anim open win 0 p 196 rect 112 71 1115 687 alpha 255 home 110 70 1120 690 damage from 90 45 1249 798 cur 79 38 1260 805 sent 79 38 1260 805
+[wm] anim open win 0 p 198 rect 112 71 1115 687 alpha 255 home 110 70 1120 690 damage from 79 38 1260 805 cur 79 38 1260 805 sent 79 38 1260 805
+[wm] anim open win 0 p 240 rect 110 70 1120 690 alpha 255 home 110 70 1120 690 damage from 79 38 1260 805 cur 77 37 1263 807 sent 77 37 1263 807
+[wm] anim open win 0 p 244 rect 110 70 1120 690 alpha 255 home 110 70 1120 690 damage from 77 37 1263 807 cur 77 37 1263 807 sent 77 37 1263 807
+[wm] anim open win 0 p 246 rect 110 70 1120 690 alpha 255 home 110 70 1120 690 damage from 77 37 1263 807 cur 77 37 1263 807 sent 77 37 1263 807
+[wm] anim open win 0 p 249 rect 110 70 1120 690 alpha 255 home 110 70 1120 690 damage from 77 37 1263 807 cur 77 37 1263 807 sent 77 37 1263 807
+[wm] anim open win 0 p 252 rect 110 70 1120 690 alpha 255 home 110 70 1120 690 damage from 77 37 1263 807 cur 77 37 1263 807 sent 77 37 1263 807
+[wm] win 0 frame 110 70 1120 690 content 1120 660 pt zoom 0 min 0 Finder
+[wm] win 1 gone
+[wm] win 2 gone
+[wm] win 3 gone
+[wm] win 4 gone
+[wm] win 5 gone
+[wm] win 6 gone
+[wm] win 7 gone
+[wm] win 8 gone
+[wm] win 9 gone
+[wm] win 10 gone
+[wm] win 11 gone
+[wm] win 12 gone
+[wm] win 13 gone
+[wm] win 14 gone
+[wm] win 15 gone
+[time] tickloss +5/s worstgap=43257us missed=5 of 201 expected (2.487% of the clock); uptime 2s
+[time] tickloss   worst gap: observed cpu 0 ra=0x201b482; tick on cpu 0, pid -1, in kernel
+[time] accuracy n=32 late_us min=149 p50=5187 p90=9142 max=9227 (TCG; delivery is quantised to the 100Hz tick)
+[wm] fullframe seq=2 reasons=0x2 total_ns=3000 ordinary_px=0 ordinary_ns=3000 glass_px=0 glass_ns=0 present_px=0 present_ns=0
+cat /pwprobe.txt
+[sched] first-run tid 21 (sh)
+[execve] pid 4: /bin/cat loading
+[exec] load /bin/cat: 0 pages file-backed in 0 areas, 51 copied
+[mm] fork: cow=on, 1 forks, 70 pages shared, 0 copied, 799 kcycles/fork; 108701 frames free, 0 shared, 0 bugs, 4 live
+POWERTEST-19809-1789480654
+/ $ echo PWTEST-BOOT2-DONE
+[sched] first-run tid 22 (sh)
+[execve] pid 5: /bin/echo loading
+[exec] load /bin/echo: 0 pages file-backed in 0 areas, 35 copied
+PWTEST-BOOT2-DONE
+/ $ [ip6] dad ok fec0::5054:ff:fe12:3456/64
+[sched] first-run tid 23 (agentd)
+[sched] first-run tid 24 (agentd)
+[sched] first-run tid 25 (agentd)
+AGENTD_READY model=deepseek-flash tasks=8
+[wm] perf t=2657 composites=192 ns=93036373 max=44635898 motions=0 curmoves=1 curns=33996 full=2 rects=193 cpx=2984485 fpx=2984485 presns=4809451 torn=1 defer=188 late=1 drawmax=70 evdrop=0 evevict=0 inmerge=0 inevict=0 indrop=0/0 inback=0 inhwm=1 sdk_draws=1024796
+[wm] locks calls=1853 hold_ns=33526178 max_ns=5387384 render_locked=0
+[wm] locktag tag=syscall num=3 calls=1 wall_ns=3173638 cpu_ns=3154640 max_wall_ns=3173638 max_cpu_ns=3154640 redispatches=0
+[wm] locktag tag=syscall num=4 calls=4 wall_ns=250973 cpu_ns=172981 max_wall_ns=212976 max_cpu_ns=139984 redispatches=0
+[wm] locktag tag=syscall num=5 calls=48 wall_ns=139983 cpu_ns=76990 max_wall_ns=30996 max_cpu_ns=29997 redispatches=0
+[wm] locktag tag=syscall num=7 calls=1 wall_ns=67992 cpu_ns=66992 max_wall_ns=67992 max_cpu_ns=66992 redispatches=0
+[wm] locktag tag=syscall num=8 calls=5 wall_ns=49994 cpu_ns=37996 max_wall_ns=25997 max_cpu_ns=24997 redispatches=0
+[wm] locktag tag=syscall num=38 calls=92 wall_ns=154977 cpu_ns=90989 max_wall_ns=7000 max_cpu_ns=5000 redispatches=0
+[wm] locktag tag=syscall num=40 calls=32 wall_ns=34993 cpu_ns=19998 max_wall_ns=3999 max_cpu_ns=2999 redispatches=0
+[wm] locktag tag=syscall num=41 calls=12 wall_ns=111989 cpu_ns=100991 max_wall_ns=37996 max_cpu_ns=36996 redispatches=0
+[wm] locktag tag=syscall num=70 calls=3 wall_ns=80990 cpu_ns=73992 max_wall_ns=67992 max_cpu_ns=65993 redispatches=0
+[wm] locktag tag=syscall num=71 calls=24 wall_ns=58989 cpu_ns=35997 max_wall_ns=8999 max_cpu_ns=8000 redispatches=0
+[wm] locktag tag=syscall num=72 calls=28 wall_ns=71993 cpu_ns=35999 max_wall_ns=8999 max_cpu_ns=3999 redispatches=0
+[wm] locktag tag=syscall num=165 calls=4 wall_ns=5000 cpu_ns=2000 max_wall_ns=2000 max_cpu_ns=0 redispatches=0
+[wm] locktag tag=boot num=257 calls=3 wall_ns=6094304 cpu_ns=6060308 max_wall_ns=5387384 max_cpu_ns=5382385 redispatches=0
+[wm] locktag tag=input num=258 calls=486 wall_ns=3214636 cpu_ns=2489712 max_wall_ns=243972 max_cpu_ns=241972 redispatches=0
+[wm] locktag tag=notify num=259 calls=243 wall_ns=1034882 cpu_ns=886899 max_wall_ns=278968 max_cpu_ns=275968 redispatches=0
+[wm] locktag tag=frame num=260 calls=867 wall_ns=18980845 cpu_ns=18525911 max_wall_ns=1902782 max_cpu_ns=1900783 redispatches=0
+[wm] locktop rank=1 seq=3 tag=boot num=257 wall_ns=5387384 cpu_ns=5382385 redispatches=0
+[wm] locktop rank=2 seq=5 tag=syscall num=3 wall_ns=3173638 cpu_ns=3154640 redispatches=0
+[wm] locktop rank=3 seq=122 tag=frame num=260 wall_ns=1902782 cpu_ns=1900783 redispatches=0
+[wm] locktop rank=4 seq=19 tag=frame num=260 wall_ns=1760799 cpu_ns=1756799 redispatches=0
+[wm] locktop rank=5 seq=349 tag=frame num=260 wall_ns=1714804 cpu_ns=1712805 redispatches=0
+[wm] locktop rank=6 seq=318 tag=frame num=260 wall_ns=1134870 cpu_ns=1133870 redispatches=0
+[sched] first-run tid 26 (agentd)
+[sched] first-run tid 27 (agentd)
+PROJECT_VIEW path=/docs tasks=3 first=1 phase=5
+[netlock] acq 5850 recursive 825 maxdepth 2 violations 0
+[waitq] 200 ms of waiting: sched_poll_wait spin re-tested 21 times / 0 dispatches; blocked sleeper 0 dispatches
+[waitq] sem items=192 mutex=1000/1000 softirqs=400 work=1 blocked_now=4
+
+WAITQ_SELFTEST_OK (0 failures)

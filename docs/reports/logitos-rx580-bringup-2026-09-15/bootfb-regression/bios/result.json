@@ -1,0 +1,14 @@
+{
+  "firmware": "bios",
+  "evidence": "qemu-ati-vga-1002:5046",
+  "bar": 0,
+  "width": 1024,
+  "height": 768,
+  "sample_colours": 221,
+  "lit_samples": 12288,
+  "samples": 12288,
+  "image": "/Users/wangzhe/system/LogitOS/build-rx580-bringup/logit.iso",
+  "image_sha256": "bb99ebfe56aacf32c47568e58a9936a6fa4ad63e4f5eea6bef8cbc612aa5f32d",
+  "physical_amd_gpu_verified": false,
+  "native_gpu_acceleration_verified": false
+}

@@ -1,0 +1,30 @@
+{
+  "passed": false,
+  "device": "AC97",
+  "errors": [
+    "rec reported failure"
+  ],
+  "inputs": {
+    "iso_sha256": "f61ccff42352e9f7cb3060fa774c58a3f82c1eda498ba66a8d8a5e3167a58c5f",
+    "disk_sha256": "782ee74dc6e67c399de03ef90752ef451360fb51c8e9f0448df1df817d493798",
+    "backend_sha256": "58d0e764dba626890be63c7f8b6479af24e4e266e8f9ca04b675a293a214110e",
+    "original_disk_sha256": "782ee74dc6e67c399de03ef90752ef451360fb51c8e9f0448df1df817d493798"
+  },
+  "source_sha256": "cd53f2c8c48f5554dae9110a6d20b3db3c6d07a0f05cde4b968f5c6eff9350fe",
+  "qemu_version": "QEMU emulator version 11.0.0",
+  "artifacts": {
+    "source.pcm": "cd53f2c8c48f5554dae9110a6d20b3db3c6d07a0f05cde4b968f5c6eff9350fe",
+    "injected.pcm": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "playback.pcm": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "backend.log": "c02ecea960ce7e2036dc0cd10df85ec31e0505e5a5b72737b3ff3c8210b468b5",
+    "backend.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "serial.log": "64c908a47b5341535a2aaf062a79a073e2edb45a8565c80703f2b6ec8f745a51",
+    "qemu.stderr": "27f9fab91d9034eaceca8aca5fa238ed958cb1a80a63cd5e0816a5e8d15e81da"
+  },
+  "harness": {
+    "/Users/wangzhe/system/LogitOS/tests/drivers/audio/capture/guest.py": "4e99bf2a501346ffe47c04a6877bc66a3df9f21bc0c9d0eb72cd82f9c09734b6",
+    "/Users/wangzhe/system/LogitOS/tests/drivers/audio/capture/oracle.py": "a3e43ec51d7c63720fea36e28db99e9d2b101b14c4419082bf2f12a9b0fe28a1",
+    "/Users/wangzhe/system/LogitOS/tests/drivers/audio/capture/backend.c": "0cb57c7e5cbd6b9ee0e0ae759ec3c90cdaff1bdb165dbe27beb23fb97de233c7"
+  },
+  "original_disk_after_sha256": "782ee74dc6e67c399de03ef90752ef451360fb51c8e9f0448df1df817d493798"
+}

@@ -1,0 +1,287 @@
+LOGIT_BIOS_PRELOAD_OK
+LOGIT_BIOS_LOADER_MB2
+LOADER A20 VERIFY PASS
+LOADER KERNEL LOAD OK
+LOADER ENTER KERNEL
+[cpu] AuthenticAMD -- QEMU TCG CPU version 2.5+
+[cpu] 51/60 known features present: fpu tsc msr mce apic mca cmov clflush mmx fxsr sse sse2 htt sse3 pclmulqdq monitor ssse3 fma cx16 sse4.1 sse4.2 x2apic movbe popcnt aes xsave avx f16c rdrand hypervisor fsgsbase bmi1 avx2 smep bmi2 erms rdseed adx smap clflushopt sha_ni umip pku vaes rdpid lzcnt prefetchw nx pdpe1gb rdtscp lm
+[cpu-platform] family=6 model=0x6 stepping=3 generation=other
+[cpu] topology: source=cpuid.0xb x2apic_id=0 package=0 core=0 thread=0 cpuid-addressable/package=4 cores/package=4 threads/core=1
+[cpu] hfi: hw=0 performance=0 efficiency=0 table-pages=0 current-lp-row=0 thread-director-hw=0 classes=0 (inventory only; no config MSR write)
+[cpu] apic: x2apic_hw=1 mode=xapic base=0xfee00000
+[cpu] mca: banks=10 ctl=1 cmci=0 tes=0 ser=1 (enumerated, not enabled)
+[cpu] tsc: invariant_hw=0
+[cpu] xsave: 2696 B holds every supported state, xcr0 mask 0x21f, osxsave=0
+[cpu] xstate: avx_hw=1 avx_os=0 osxsave=0 xcr0=0x0 abi=fxsave
+[cpu] aes-gcm backend: aesni (constant-time); rdrand=1 rdseed=1
+[cpu] aes-gcm 16 KiB: aesni=716000 cycles, c=6782000 cycles, speedup x9.47
+
+[logitos] long mode, C kernel running
+[rust] inflate selftest OK
+[prot] bsp: nx sup/ON  wxsplit ON  smep sup/ON  smap sup/off
+[time] source=tsc 1000.005 MHz res=1ns  (invariant-tsc=no hypervisor=yes calib=pit-ch2)
+[time] fallback=pit 100 Hz res=10000000ns  timers=heap/128  mono=64-bit ns (wraps in 584 years)
+[time] calib samples(Hz) 999859351 1000005007 1000005007 -> median chosen
+[cpu] simd selftest: backend=aesni xmm_corrupt=0 (19 ticks) crypto_mismatch=0 kat=0 (847 rounds, 6 ticks)
+CPU_SIMD_SELFTEST_OK
+[physmap] metadata base=0x2ec9000 bytes=884632 kernel_end=0x2ec9000
+[mm] low: 249914 frames free (976 MiB), 12194 used, 0 shared, 0 bugs
+[physmap] ready: base=0xffff800000000000 high_pages=0 table_pages=4 low_free=249911 NX=1
+[mm] boot: 262108 frames total (1023 MiB), 249911 free, 12197 used, 0 shared, 12197 refs (+0 saved = 0 KiB), 0 pinned, 0 bugs
+[physmap] boot: high_allocs=0 high_live=0 high_max=0x0 high_free=0 low_free=249911
+[mm] boot: metadata 863 KiB (bitmap + poison map + 2-byte refcounts + pins), poison level 1
+[mm] boot: 0 frames pinned against reclaim, 128 reserve frames (0 dips), 0 allocations refused
+[mm] low: 249658 frames free (975 MiB), 12450 used, 0 shared, 0 bugs
+[mm] low: 249402 frames free (974 MiB), 12706 used, 0 shared, 0 bugs
+[mm] low: 249146 frames free (973 MiB), 12962 used, 0 shared, 0 bugs
+[mm] low: 248890 frames free (972 MiB), 13218 used, 0 shared, 0 bugs
+[mm] low: 248634 frames free (971 MiB), 13474 used, 0 shared, 0 bugs
+[mm] low: 248378 frames free (970 MiB), 13730 used, 0 shared, 0 bugs
+[mm] low: 248122 frames free (969 MiB), 13986 used, 0 shared, 0 bugs
+[rmap] 262108 frames, 393162 nodes (7199 KiB total: 1023 KiB heads + 6143 KiB nodes)
+[acpi] RSDP from the bootloader's multiboot2 tag
+[hpet] ready: base=0xfed00000 period=10000000fs counter=64-bit timers=3
+[time] HPET standby: invariant TSC remains active
+[logitos] interrupts + memory + gdt/tss online
+[mm] low: 247866 frames free (968 MiB), 14242 used, 0 shared, 0 bugs
+[mm] low: 247610 frames free (967 MiB), 14498 used, 0 shared, 0 bugs
+[mm] low: 247354 frames free (966 MiB), 14754 used, 0 shared, 0 bugs
+[mm] low: 247098 frames free (965 MiB), 15010 used, 0 shared, 0 bugs
+[pcache] up: 131054 page slots (524216 KiB ceiling), 32 file slots, 32768 buckets; tables 4224 KiB from the PMM (16 B/frame of RAM)
+[klog] ring 512 lines x 112 bytes; `cat /dev/kmsg`, `cat /dev/kstat`
+[pci] no MCFG; legacy 0xCF8 config ports (no extended caps)
+[pci] 7 function(s) enumerated across all buses
+[mm] low: 246842 frames free (964 MiB), 15266 used, 0 shared, 0 bugs
+[mm] low: 246586 frames free (963 MiB), 15522 used, 0 shared, 0 bugs
+[mm] low: 246330 frames free (962 MiB), 15778 used, 0 shared, 0 bugs
+[mm] low: 246074 frames free (961 MiB), 16034 used, 0 shared, 0 bugs
+[kheap] arena domain=physmap cpu=0xffff800003ad2000 phys=0x3ad2000 bytes=4194304
+[kheap] grow #1: +4096 KiB -> arena 4096 KiB, live 0 KiB, free 4095 KiB, over-allocated 0 KiB
+[rust] png selftest OK
+[virtio] 1050 up (0000:00:02.0, 2 queues)
+[dma] alloc 0000:00:02.0 cpu=0xffff800003ed3000 dma=0x3ed3000 bytes=4096 mask=0xffffffffffffffff
+[virtio-dma] 0000:00:02.0 queue=0 cpu=0xffff800003ed3000 dma=0x3ed3000 avail=0x3ed4000 used=0x3ed5000
+[virtio-dma] 0000:00:02.0 queue=1 cpu=0xffff800003ed6000 dma=0x3ed6000 avail=0x3ed7000 used=0x3ed8000
+[mm] low: 245818 frames free (960 MiB), 16290 used, 0 shared, 0 bugs
+[mm] low: 245562 frames free (959 MiB), 16546 used, 0 shared, 0 bugs
+[mm] low: 245306 frames free (958 MiB), 16802 used, 0 shared, 0 bugs
+[mm] low: 245050 frames free (957 MiB), 17058 used, 0 shared, 0 bugs
+[dma] virtio-gpu coherent=10 bytes=4132864 mappings=0 pins=0 direct=0 bounce=0 quarantine=0/0/0 high=0 max=0x42c3fff stale=0 completed_direct=0 completed_high=0
+[virtio-gpu] 1280x800, RAM fb @ 0xffff800003edc000, cursor plane yes
+[virtio] 1001 up (0000:00:03.0, 4 queues)
+[dma] alloc 0000:00:03.0 cpu=0xffff8000042c8000 dma=0x42c8000 bytes=4096 mask=0xffffffffffffffff
+[virtio-dma] 0000:00:03.0 queue=0 cpu=0xffff8000042c8000 dma=0x42c8000 avail=0x42c9000 used=0x42ca000
+[dma] virtio-blk coherent=15 bytes=4165632 mappings=0 pins=0 direct=0 bounce=0 quarantine=0/0/0 high=0 max=0x42cbfff stale=0 completed_direct=0 completed_high=0
+[virtio-blk] ready, cache=writeback (barriers REQUIRED)
+[blk] vblk0: virtio-blk, 1048576 sectors (512.0 MiB)
+[dma] map 0000:00:03.0 cpu=0x2ec0a80 dma=0x2ec0a80 bytes=512 sg=1 bounce=0
+[part] vblk0: no partition table (raw filesystem image)
+[blk] 1 disk, 0 partitions; root = vblk0 (LogitFS superblock)
+[fsck] mount check: clean
+[fs] mounted
+[fs] /proc mounted
+[pcache] backend installed over c/fs/vfs.h (statx + vfs_pread, VFS-identity gated)
+[set] /etc/settings.conf: 0 keys, none stored (defaults)
+SETTINGS_READY diag=1 keys=0
+SETTINGS_SELFTEST offsets=733 failures=0
+[tls] trust store: 130 roots, 0 skipped
+[tls]   isrg_x1 isrg_x2 digicert_global_ca digicert_global_g2 digicert_global_g3
+[tls]   globalsign_r1 globalsign_r3 gts_r1 gts_r4 usertrust_rsa usertrust_ecc
+[tls]   amazon_root_1 amazon_root_3 dtrust_root3_2009 sslcom_ecc_2022
+[tls]   aaa_certificate_services accvraiz1 actalis_authentication_root_ca
+[tls]   affirmtrust_commercial affirmtrust_networking affirmtrust_premium
+[tls]   affirmtrust_premium_ecc amazon_root_ca_2 amazon_root_ca_4
+[tls]   atos_trustedroot_2011 autoridad_de_certificacion_firmaprofesional_cif_
+[tls]   baltimore_cybertrust_root buypass_class_2_root_ca buypass_class_3_root_ca
+[tls]   ca_disig_root_r2 certigna certigna_root_ca certsign certsign_sa
+[tls]   certum_trusted_network_ca cfca_ev_root chambers_of_commerce_root_2008
+[tls]   chunghwa_telecom_co comodo_certification_authority
+[tls]   comodo_ecc_certification_authority comodo_rsa_certification_authority
+[tls]   cybertrust_global_root d_trust_root_class_3_ca_2_ev_2009
+[tls]   digicert_assured_id_root_ca digicert_assured_id_root_g2
+[tls]   digicert_assured_id_root_g3 digicert_high_assurance_ev_root_ca
+[tls]   digicert_trusted_root_g4 e_szigno_root_ca_2017 e_tugra_certification_authority
+[tls]   ec_acc emsign_ecc_root_ca_c3 emsign_ecc_root_ca_g3 emsign_root_ca_c1
+[tls]   emsign_root_ca_g1 entrust_net_certification_authority_2048
+[tls]   entrust_root_certification_authority entrust_root_certification_authority_ec1
+[tls]   entrust_root_certification_authority_g2
+[tls]   entrust_root_certification_authority_g4 fnmt_rcm gdca_trustauth_r5_root
+[tls]   geotrust_global_ca geotrust_primary_certification_authority_g2
+[tls]   global_chambersign_root_2008 globalsign globalsign_1 globalsign_2 globalsign_3
+[tls]   go_daddy_root_certificate_authority_g2 gts_root_r2 gts_root_r3
+[tls]   hellenic_academic_and_research_institutions_ecc_
+[tls]   hellenic_academic_and_research_institutions_root
+[tls]   hellenic_academic_and_research_institutions_root_1 hongkong_post_root_ca_1
+[tls]   hongkong_post_root_ca_3 identrust_commercial_root_ca_1
+[tls]   identrust_public_sector_root_ca_1 izenpe_com microsec_e_szigno_root_ca_2009
+[tls]   microsoft_ecc_root_certificate_authority_2017
+[tls]   microsoft_rsa_root_certificate_authority_2017
+[tls]   naver_global_root_certification_authority
+[tls]   netlock_arany_class_gold_f_c5_91tan_c3_bas_c3_ad
+[tls]   network_solutions_certificate_authority oiste_wisekey_global_root_gb_ca
+[tls]   oiste_wisekey_global_root_gc_ca quovadis_root_ca_1_g3 quovadis_root_ca_2
+[tls]   quovadis_root_ca_2_g3 quovadis_root_ca_3 quovadis_root_ca_3_g3
+[tls]   quovadis_root_certification_authority secom_trust_net secom_trust_systems_co
+[tls]   secure_global_ca securesign_rootca11 securetrust_ca sonera_class2_ca
+[tls]   ssl_com_ev_root_certification_authority_ecc
+[tls]   ssl_com_ev_root_certification_authority_rsa_r2
+[tls]   ssl_com_root_certification_authority_ecc
+[tls]   ssl_com_root_certification_authority_rsa staat_der_nederlanden_ev_root_ca
+[tls]   staat_der_nederlanden_root_ca_g3 starfield_root_certificate_authority_g2
+[tls]   starfield_services_root_certificate_authority_g2 starfield_technologies
+[tls]   swisssign_gold_ca_g2 swisssign_silver_ca_g2 szafir_root_ca2
+[tls]   t_telesec_globalroot_class_2 t_telesec_globalroot_class_3
+[tls]   teliasonera_root_ca_v1 the_go_daddy_group trustcor_eca_1
+[tls]   trustcor_rootcert_ca_1 trustcor_rootcert_ca_2 trustis_limited
+[tls]   trustwave_global_certification_authority
+[tls]   trustwave_global_ecc_p256_certification_authorit
+[tls]   trustwave_global_ecc_p384_certification_authorit
+[tls]   tubitak_kamu_sm_ssl_kok_sertifikasi_surum_1 twca_global_root_ca
+[tls]   twca_root_certification_authority uca_extended_validation_root
+[tls]   uca_global_g2_root verisign_universal_root_certification_authority
+[tls]   xramp_global_certification_authority
+[net] no supported NIC found; networking disabled
+[net] if 1 lo flags up running loopback  127.0.0.1/8
+[mm] low: 244794 frames free (956 MiB), 17314 used, 0 shared, 0 bugs
+[mm] low: 244538 frames free (955 MiB), 17570 used, 0 shared, 0 bugs
+[mm] low: 244282 frames free (954 MiB), 17826 used, 0 shared, 0 bugs
+[mm] low: 244026 frames free (953 MiB), 18082 used, 0 shared, 0 bugs
+[kheap] arena domain=physmap cpu=0xffff8000042cc000 phys=0x42cc000 bytes=4194304
+[kheap] grow #2: +4096 KiB -> arena 8192 KiB, live 2339 KiB, free 5852 KiB, over-allocated 27 KiB
+[text] /fonts/ui.ttf: 7655 glyphs, upem=1000
+[text] /fonts/mono.ttf: 97 glyphs, upem=1000
+[text] /fonts/text.ttf: 6253 glyphs, upem=2048
+[mm] low: 243770 frames free (952 MiB), 18338 used, 0 shared, 0 bugs
+[mm] low: 243514 frames free (951 MiB), 18594 used, 0 shared, 0 bugs
+[mm] low: 243258 frames free (950 MiB), 18850 used, 0 shared, 0 bugs
+[mm] low: 243002 frames free (949 MiB), 19106 used, 0 shared, 0 bugs
+[kheap] arena domain=physmap cpu=0xffff8000046cc000 phys=0x46cc000 bytes=4194304
+[kheap] grow #3: +4096 KiB -> arena 12288 KiB, live 5260 KiB, free 7026 KiB, over-allocated 27 KiB
+[text] /fonts/ui-bold.ttf: 7655 glyphs, upem=1000
+[text] /fonts/mono-bold.ttf: 97 glyphs, upem=1000
+[mm] low: 242746 frames free (948 MiB), 19362 used, 0 shared, 0 bugs
+[mm] low: 242490 frames free (947 MiB), 19618 used, 0 shared, 0 bugs
+[mm] low: 242234 frames free (946 MiB), 19874 used, 0 shared, 0 bugs
+[mm] low: 241978 frames free (945 MiB), 20130 used, 0 shared, 0 bugs
+[mm] low: 241722 frames free (944 MiB), 20386 used, 0 shared, 0 bugs
+[mm] low: 241466 frames free (943 MiB), 20642 used, 0 shared, 0 bugs
+[mm] low: 241210 frames free (942 MiB), 20898 used, 0 shared, 0 bugs
+[wm] display 1280x800 px, scale 100%, desktop 1280x800 pt
+[mm] low: 240954 frames free (941 MiB), 21154 used, 0 shared, 0 bugs
+[mm] low: 240698 frames free (940 MiB), 21410 used, 0 shared, 0 bugs
+[mm] low: 240442 frames free (939 MiB), 21666 used, 0 shared, 0 bugs
+[mm] low: 240186 frames free (938 MiB), 21922 used, 0 shared, 0 bugs
+[kheap] arena domain=physmap cpu=0xffff80000529c000 phys=0x529c000 bytes=4194304
+[kheap] grow #4: +4096 KiB -> arena 16384 KiB, live 7437 KiB, free 8945 KiB, over-allocated 27 KiB
+[ime] /ime/pinyin-qwen.dat: 1983418 bytes, 49000 pinyin keys -- Shift+Space toggles pinyin input
+[ime] learn: no /var/ime-learn.conf yet -- ranking is the dictionary's own frequency order until something is committed
+[wm] pointer: display cursor plane (motion does not composite)
+[wm] dock 10 apps: 0=clock.aex,shown 1=textedit.aex,shown 2=monitor.aex,shown 3=terminal.aex,shown 4=files.aex,shown 5=preview.aex,shown 6=studio.aex,shown 7=browser.aex,shown 8=settings.aex,shown 9=assistant.aex,shown
+[wm] menu title 0 LogitOS x0 8 y0 0 x1 102 y1 24
+[wm] menu title 1 File x0 118 y0 0 x1 170 y1 24
+[wm] menu title 2 View x0 186 y0 0 x1 247 y1 24
+[logitos] desktop up; mouse + keyboard armed
+[acpi] MADT CPUs type0=4 type9=0 duplicate=0 rejected=0
+[lapic] mode=xapic id=0 source=IA32_APIC_BASE
+[smp] CPU 0 apic_id=0 topology=cpuid.0b pkg=0 core=0 thread=0 type=unknown native-valid=0 native=0 hybrid=0
+[smp] 4 CPU(s) detected, BSP apic_id=0
+[ioapic] device IRQs routed via I/O APIC
+[smp] CPU 1 apic_id=1 topology=cpuid.0b pkg=0 core=1 thread=0 type=unknown native-valid=0 native=0 hybrid=0
+[prot] ap: nx sup/ON  wxsplit ON  smep sup/ON  smap sup/off
+[smp] CPU 1 apic_id=1 online
+[smp] CPU 2 apic_id=2 topology=cpuid.0b pkg=0 core=2 thread=0 type=unknown native-valid=0 native=0 hybrid=0
+[prot] ap: nx sup/ON  wxsplit ON  smep sup/ON  smap sup/off
+[smp] CPU 2 apic_id=2 online
+[smp] CPU 3 apic_id=3 topology=cpuid.0b pkg=0 core=3 thread=0 type=unknown native-valid=0 native=0 hybrid=0
+[prot] ap: nx sup/ON  wxsplit ON  smep sup/ON  smap sup/off
+[smp] CPU 3 apic_id=3 online
+[smp] 4/4 CPUs online
+[smp] topology logical=4 cores=4 p=0/0 e=0/0 unknown=4/4 mismatch=0 conflict=0
+[smp] scheduler topology policy=uniform-online-cpus
+[smp] parallel present on 4 cores (IPI 241)
+[xhci] 0000:00:04.0 1b36:000d at 0xfebf0000: v1.00, 8 ports, 32 slots, 32-byte contexts
+[xhci] protocol USB 2.0 on ports 5..8
+[xhci] protocol USB 3.0 on ports 1..4
+[dma] alloc xhci cpu=0xffff80000569d000 dma=0x569d000 bytes=4096 mask=0xffffffffffffffff
+[xhci] running
+[usb] xhci hc=0 scanning 8 root ports
+[irq] 0000:00:04.0: msi-x vector 96 (xhci)
+USB_IRQ vec=96 mode=3
+USB_READY devices=0 drivers=3
+[dev] 0000:00:00.0 8086:1237 class=06.00.00 host-bridge  driver=-
+[dev] 0000:00:01.0 8086:7000 class=06.01.00 isa-bridge   driver=-
+[dev] 0000:00:01.1 8086:7010 class=01.01.80 ide          driver=- bar4=io:0xc080/0x10
+[dev] 0000:00:01.3 8086:7113 class=06.80.00 bridge       driver=-
+[dev] 0000:00:02.0 1af4:1050 class=03.80.00 display      driver=virtio-gpu caps=msix,vndr, bar1=0xfebf4000/0x1000 bar4=0xfebf8000/0x4000
+[dev] 0000:00:03.0 1af4:1001 class=01.00.00 scsi         driver=virtio-blk caps=msix,vndr, bar0=io:0xc000/0x80 bar1=0xfebf5000/0x1000 bar4=0xfebfc000/0x4000
+[dev] 0000:00:04.0 1b36:000d class=0c.03.30 usb          driver=xhci caps=msix, irq=msix/96 bar0=0xfebf0000/0x4000
+[dev] 7 device(s), 3 bound, 4 unclaimed
+[dma] boot coherent=18 bytes=4177920 mappings=0 pins=0 direct=0 bounce=0 quarantine=0/0/0 high=0 max=0x569ffff stale=0 completed_direct=10066432 completed_high=0
+
+LOGIT_BOOT_OK
+
+[wm] desktop live; launching apps as ring-3 processes
+[wm] no accounts on this machine: the desktop starts unauthenticated
+[mm] low: 239930 frames free (937 MiB), 22178 used, 0 shared, 0 bugs
+[aex] 'Finder' is unsigned: no AEX_T_SIG record. Loading anyway (log but allow) -- see the comment above the CRC check in aex.c for what a signature here would and would not mean.
+[mm] low: 239674 frames free (936 MiB), 22434 used, 0 shared, 0 bugs
+[exec] load files.aex: 0 pages file-backed in 0 areas, 284 copied
+[wm] launched Finder
+[sched] first-run tid 8 (Finder)
+[exec] load /bin/login: 0 pages file-backed in 0 areas, 42 copied
+[sched] first-run tid 9 (login)
+[mm] low: 239418 frames free (935 MiB), 22690 used, 0 shared, 0 bugs
+[mm] low: 239162 frames free (934 MiB), 22946 used, 0 shared, 0 bugs
+[mm] low: 238906 frames free (933 MiB), 23202 used, 0 shared, 0 bugs
+[mm] low: 238650 frames free (932 MiB), 23458 used, 0 shared, 0 bugs
+[kheap] arena domain=physmap cpu=0xffff8000057f8000 phys=0x57f8000 bytes=4194304
+[kheap] grow #5: +4096 KiB -> arena 20480 KiB, live 10068 KiB, free 10409 KiB, over-allocated 28 KiB
+login: no accounts on this machine (`login -a NAME` to create one)
+[execve] pid 2: /bin/sh loading
+[exec] load /bin/agentd: 0 pages file-backed in 0 areas, 101 copied
+[wm] anim open win 0 p 3 rect 195 123 949 584 alpha 255 home 110 70 1120 690 damage from 164 91 1175 753 cur 162 90 1177 754 sent 162 90 1177 754
+[sched] first-run tid 10 (agentd)
+[swap] no eligible device -- swap is OFF (reclaim keeps the drop tier)
+[reclaim] watermarks: start below 8190 frames (31 MiB free), stop at 16381 (63 MiB); swap OFF (drop tier only)
+[mm] low: 238394 frames free (931 MiB), 23714 used, 0 shared, 0 bugs
+[exec] load /bin/sh: 0 pages file-backed in 0 areas, 64 copied
+LogitOS shell -- type 'help'
+/ $ USB_DEV port=1 addr=1 speed=super vid=46f4 pid=0001 class=00 ifs=1 hc=0 parent=0 parent_port=0 depth=0
+USB_IF port=1 if=0 class=08 sub=06 proto=50 eps=2
+[usb-msc] LUN 0 cmd 0 failed transport=1 sense=6/29/0
+[wm] anim open win 0 p 112 rect 127 81 1085 668 alpha 255 home 110 70 1120 690 damage from 162 90 1177 754 cur 94 48 1245 796 sent 94 48 1245 796
+[wm] anim open win 0 p 121 rect 123 78 1093 673 alpha 255 home 110 70 1120 690 damage from 94 48 1245 796 cur 90 45 1249 798 sent 90 45 1249 798
+[usb-msc] disk=usb0 LUN=0 sectors=65536 sector=512
+[part] usb0: MBR -- 1 partition, 0 rejected
+[part]   usb0p1 lba 2048..10239  4.0 MiB  type 83 (Linux)
+[usb-msc] interface=0 max-lun=0 online=1
+[usb] if0 bound to driver 'usb-storage'
+USB_HOTPLUG hc=0 port=1 connected result=online
+[wm] ptr 640 400
+[wm] anim open win 0 p 224 rect 110 70 1120 690 alpha 255 home 110 70 1120 690 damage from 90 45 1249 798 cur 77 37 1263 807 sent 77 37 1263 807
+[wm] anim open win 0 p 227 rect 110 70 1120 690 alpha 255 home 110 70 1120 690 damage from 77 37 1263 807 cur 77 37 1263 807 sent 77 37 1263 807
+[wm] anim open win 0 p 230 rect 110 70 1120 690 alpha 255 home 110 70 1120 690 damage from 77 37 1263 807 cur 77 37 1263 807 sent 77 37 1263 807
+[wm] anim open win 0 p 235 rect 110 70 1120 690 alpha 255 home 110 70 1120 690 damage from 77 37 1263 807 cur 77 37 1263 807 sent 77 37 1263 807
+[wm] anim open win 0 p 238 rect 110 70 1120 690 alpha 255 home 110 70 1120 690 damage from 77 37 1263 807 cur 77 37 1263 807 sent 77 37 1263 807
+[wm] anim open win 0 p 241 rect 110 70 1120 690 alpha 255 home 110 70 1120 690 damage from 77 37 1263 807 cur 77 37 1263 807 sent 77 37 1263 807
+[wm] anim open win 0 p 244 rect 110 70 1120 690 alpha 255 home 110 70 1120 690 damage from 77 37 1263 807 cur 77 37 1263 807 sent 77 37 1263 807
+[wm] anim open win 0 p 248 rect 110 70 1120 690 alpha 255 home 110 70 1120 690 damage from 77 37 1263 807 cur 77 37 1263 807 sent 77 37 1263 807
+[wm] anim open win 0 p 251 rect 110 70 1120 690 alpha 255 home 110 70 1120 690 damage from 77 37 1263 807 cur 77 37 1263 807 sent 77 37 1263 807
+[wm] win 0 frame 110 70 1120 690 content 1120 660 pt zoom 0 min 0 Finder
+[wm] win 1 gone
+[wm] win 2 gone
+[wm] win 3 gone
+[wm] win 4 gone
+[wm] win 5 gone
+[wm] win 6 gone
+[wm] win 7 gone
+[wm] win 8 gone
+[wm] win 9 gone
+[wm] win 10 gone
+[wm] win 11 gone
+[wm] win 12 gone
+[wm] win 13 gone
+[wm] win 14 gone
+[wm] win 15 gone
+[usb-msc] interface=0 offline
+USB_HOTPLUG hc=0 port=1 disconnected removed=1

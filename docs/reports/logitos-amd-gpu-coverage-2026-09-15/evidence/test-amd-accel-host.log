@@ -1,0 +1,3 @@
+AMD_RV100_NEGCTL: modern GPU reached legacy BARs (exactly one failure)
+AMD_RV100_NEGCTL: out-of-scanout fill submitted (exactly one failure)
+AMD_RV100: 518 checks, 0 failures

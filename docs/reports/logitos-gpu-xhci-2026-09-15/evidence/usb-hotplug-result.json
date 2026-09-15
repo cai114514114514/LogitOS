@@ -1,0 +1,28 @@
+[
+  {
+    "controller": "xhci",
+    "qemu_accel": "tcg",
+    "root_port": 1,
+    "post_boot_attach": true,
+    "scsi_capacity_and_mbr_read": true,
+    "partition_published": "usb0p1",
+    "disconnect_removed_devices": 1,
+    "block_class_offline": true,
+    "iso_sha256": "4c7f651fea2dd10b19ff4fe72bbd4ca2ae17dcbd0dbbc1ed934c590f7d91403e",
+    "disk_sha256": "7a364ff778e8dcab65f4220988e5c8b86c209653133c26a8731d18acd9495a02",
+    "private_media_sha256": "bd1dc43f3c82a0d2fc2072d11de2459070d84c4f081e11b358ee3d71727a2182"
+  },
+  {
+    "controller": "ehci",
+    "qemu_accel": "tcg",
+    "root_port": 1,
+    "post_boot_attach": true,
+    "scsi_capacity_and_mbr_read": true,
+    "partition_published": "usb0p1",
+    "disconnect_removed_devices": 1,
+    "block_class_offline": true,
+    "iso_sha256": "4c7f651fea2dd10b19ff4fe72bbd4ca2ae17dcbd0dbbc1ed934c590f7d91403e",
+    "disk_sha256": "7a364ff778e8dcab65f4220988e5c8b86c209653133c26a8731d18acd9495a02",
+    "private_media_sha256": "bd1dc43f3c82a0d2fc2072d11de2459070d84c4f081e11b358ee3d71727a2182"
+  }
+]

@@ -1,0 +1,11 @@
+{
+  "firmware": "uefi",
+  "evidence": "synthetic-qemu-stdvga",
+  "bar": 0,
+  "width": 1280,
+  "height": 800,
+  "sample_colours": 228,
+  "lit_samples": 16000,
+  "samples": 16000,
+  "physical_gtx1050_verified": false
+}

@@ -1,0 +1,17 @@
+--- [none] guest said ---
+    [snd] no audio device found -- output is silent
+    [snd] no capture device found -- input is silent
+    SNDTEST_INFO driver=none codec=- rate=0 ch=0 period=0 periods=0 streams_max=0 irq=0
+    SNDTEST_NODEV open_returned=-1 (want -1)
+    SNDTEST_NODEV_OK
+ok  [none] booted, reported no device, degraded to silence
+    serial evidence: reports/drivers/audio/2026-09-15/no-device/none.21w3Iw
+--- [other] guest said ---
+    [snd] no audio device found -- output is silent
+    [snd] no capture device found -- input is silent
+    SNDTEST_INFO driver=none codec=- rate=0 ch=0 period=0 periods=0 streams_max=0 irq=0
+    SNDTEST_NODEV open_returned=-1 (want -1)
+    SNDTEST_NODEV_OK
+ok  [other] booted, reported no device, degraded to silence
+    serial evidence: reports/drivers/audio/2026-09-15/no-device/other.3k5TQi
+PASS: no sound card, and a card we do not drive, both degrade to silence

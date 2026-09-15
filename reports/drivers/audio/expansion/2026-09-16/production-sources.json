@@ -1,0 +1,15 @@
+{
+  "c/kernel/audio/mixer.c": "7f0d04b8583b2ab8ae2f27c1a8fe5ae91e6ccdf1801f69b01d15d6b4dbb791d3",
+  "c/kernel/audio/snd.h": "b1fb54a5b521fb781c28066777e69449a6f50f5ed98b18add4fdd86d7b9284c8",
+  "c/drivers/audio/ac97/ac97.h": "7602d96c2ffbc8229675c8a373658593ce3fb77194aaab056dae1a748cb1804e",
+  "c/drivers/audio/ac97/ac97_internal.h": "6ad354ed54b7d48c5770191fe3d28237906e7d36508dd1f439aa8da1701808c7",
+  "c/drivers/audio/ac97/ac97_models.h": "7bfa80f30e4c664e7fa5ca81a2b301852e84a8b28cd4bcfb47ba87309e4597c8",
+  "c/drivers/audio/ac97/ac97_regs.h": "359c610aed27a8e5df53c2db938512b3ce1ae9a6969297fdc64b01786bff65ba",
+  "c/drivers/audio/ac97/capture.c": "3c513684c4fe9445de9723b48b52e80f4d17966d609ed92c60d0e12482248ed8",
+  "c/drivers/audio/ac97/codec.c": "5c0e31268ea1d8b881eb026d2fc3de07d3f7176ea04a831c5bd1679e1bd67f02",
+  "c/drivers/audio/ac97/controller.c": "27efdcb732936d819cdd28694bbfbfe455296d99c3fa38b702ed41e0d62a26c1",
+  "c/drivers/audio/ac97/models.c": "3211d0e86ab697e1747f2d98467418ad9c7650964befe80d86e6e49d3d85f294",
+  "c/drivers/audio/ac97/pci.c": "29590bf14201305543a83f9d9aad8beff2868c85d9c0f5b83d5cce9be7551851",
+  "c/drivers/audio/ac97/ports.c": "e148673cc0ecf111d0bf76dbbe0ea1e163a30807d11fca49b5b7ef938a40a53a",
+  "c/drivers/audio/ac97/streams.c": "cee1b9a1424c5c4d23f40db413c459086f4a69db67b628456e7e6d8b6e1bae33"
+}

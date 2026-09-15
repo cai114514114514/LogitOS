@@ -1,0 +1,14 @@
+{
+  "firmware": "bios",
+  "evidence": "qemu-ati-vga-1002:5046",
+  "bar": 0,
+  "width": 1024,
+  "height": 768,
+  "sample_colours": 221,
+  "lit_samples": 12288,
+  "samples": 12288,
+  "image": "/Users/wangzhe/system/LogitOS/build-gpu-coverage-final/logit.iso",
+  "image_sha256": "adbced2ffcb09dbfb1618fd9945d1c89241d5d912507de60ff51704f4ee3870c",
+  "physical_amd_gpu_verified": false,
+  "native_gpu_acceleration_verified": false
+}

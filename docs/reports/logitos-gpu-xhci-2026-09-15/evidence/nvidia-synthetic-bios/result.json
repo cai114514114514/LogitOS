@@ -1,0 +1,11 @@
+{
+  "firmware": "bios",
+  "evidence": "synthetic-qemu-stdvga",
+  "bar": 0,
+  "width": 1024,
+  "height": 768,
+  "sample_colours": 221,
+  "lit_samples": 12288,
+  "samples": 12288,
+  "physical_gtx1050_verified": false
+}

@@ -1,0 +1,5 @@
+INTEL_BOOTFB_NEGCTL: foreign display was claimed (exactly one failure)
+INTEL_BOOTFB_NEGCTL: D3 display was accepted (exactly one failure)
+INTEL_BOOTFB_NEGCTL: all-ones PCI command was accepted (exactly one failure)
+INTEL_BOOTFB_NEGCTL: unowned LFB produced the three expected failures
+INTEL_BOOTFB: 31 checks, 0 failures

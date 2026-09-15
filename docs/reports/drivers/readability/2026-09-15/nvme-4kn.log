@@ -1,0 +1,2 @@
+PASS nvme-4kn boot 1: writes/flush/byte checks
+PASS nvme-4kn boot 2: persistent bytes after cold boot

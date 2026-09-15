@@ -1,0 +1,14 @@
+[
+  {
+    "file": "build-rx580-firmware-input/polaris10_sdma.bin",
+    "url": "https://gitlab.com/kernel-firmware/linux-firmware/-/raw/1522c78ab870b3c051d8a3a1d24ecbbc12b23be5/amdgpu/polaris10_sdma.bin",
+    "bytes": 12692,
+    "sha256": "e27b3ec976f87e32883b9190e653b20d27f9e77da8dd2d77eeb10c35ee9f1e61"
+  },
+  {
+    "file": "build-rx580-firmware-input/polaris10_sdma1.bin",
+    "url": "https://gitlab.com/kernel-firmware/linux-firmware/-/raw/1522c78ab870b3c051d8a3a1d24ecbbc12b23be5/amdgpu/polaris10_sdma1.bin",
+    "bytes": 12692,
+    "sha256": "23dd73eb1316d40a681841b4d3d116c5cae6d8317cebe8f5e1f9e5dec6de5c87"
+  }
+]

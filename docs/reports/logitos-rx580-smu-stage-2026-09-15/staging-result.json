@@ -1,0 +1,20 @@
+{
+  "passed": true,
+  "validation": "host-ram-only",
+  "firmware_sha256": [
+    "e27b3ec976f87e32883b9190e653b20d27f9e77da8dd2d77eeb10c35ee9f1e61",
+    "23dd73eb1316d40a681841b4d3d116c5cae6d8317cebe8f5e1f9e5dec6de5c87"
+  ],
+  "stage_sha256": "28184c890e407f42e98afeab42ba992cec89ace42793cbf65e5e64787a569468",
+  "stage_bytes": 36864,
+  "present_mask": "0x6",
+  "missing_mask": "0x478",
+  "proposed_gpu_base": "0x120000000",
+  "negative_control": "payload-mismatch",
+  "truncated_file_preserves_output": true,
+  "rebasing_changes_only_toc": true,
+  "gpu_mapped": false,
+  "uploaded": false,
+  "firmware_loaded": false,
+  "physical_rx580_verified": false
+}

@@ -1,0 +1,17 @@
+[
+  {
+    "path": "build/drivers/expansion/kernel/logit.iso",
+    "bytes": 9232384,
+    "sha256": "b9d910240ce4db8d4d14360cf8341fc5e3d411da82b5e2bd7716a0025de9ec0c"
+  },
+  {
+    "path": "build/drivers/expansion/kernel/kernel.elf",
+    "bytes": 8776256,
+    "sha256": "22198b71ed37cca56ecb87c3b3162bb35227f4b0d282df0908f20f96c9d67916"
+  },
+  {
+    "path": "build/disk.img",
+    "bytes": 536870912,
+    "sha256": "112db0a4b69c2586542da084700959e53066ad61735a530ab2721bebebbc8cf5"
+  }
+]

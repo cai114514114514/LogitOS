@@ -1,0 +1,27 @@
+[
+  {
+    "fixture": "hda-ac97",
+    "path": "build/drivers/audio/expand-before/hda-ac97",
+    "passed": false,
+    "errors": [
+      "rec reported failure"
+    ],
+    "iso_sha256": "481fb9f016e6aea28bcdae5f6e1d2cdb1332ec1cd87406f4cfdf7313957ef271",
+    "clean_boot": true,
+    "hda_output_only": true,
+    "interpretation": "AC97 input was refused after HDA selected playback"
+  },
+  {
+    "fixture": "hda-es1370",
+    "path": "build/drivers/audio/expand-before/hda-es1370",
+    "passed": false,
+    "errors": [
+      "duplex playback did not retain its three-second length",
+      "playback frequency/phase continuity changed during capture"
+    ],
+    "iso_sha256": "481fb9f016e6aea28bcdae5f6e1d2cdb1332ec1cd87406f4cfdf7313957ef271",
+    "clean_boot": true,
+    "hda_output_only": true,
+    "interpretation": "capture matched; playback trajectory incomplete in this run; no causal claim from one baseline observation"
+  }
+]

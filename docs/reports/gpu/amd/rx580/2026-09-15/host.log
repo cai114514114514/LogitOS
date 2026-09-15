@@ -1,0 +1,68 @@
+AMD_BOOTFB_NEGCTL: start-only ownership accepted partial overlap (exactly one failure)
+AMD_BOOTFB_NEGCTL: memory-decode-off device bound (exactly one failure)
+AMD_BOOTFB_NEGCTL: mixed memory/I-O BAR was accepted (exactly one failure)
+AMD_BOOTFB_NEGCTL: malformed PM capability was dereferenced (exactly one failure)
+AMD_BOOTFB: 59 checks, 0 failures
+AMD_RV100_NEGCTL: modern GPU reached legacy BARs (exactly one failure)
+AMD_RV100_NEGCTL: out-of-scanout fill submitted (exactly one failure)
+AMD_RV100_NEGCTL: corrupted runtime upload rejected by pixel oracle (exactly one failure)
+AMD_RV100: 604 checks, 0 failures
+POLARIS_PROBE_NEGCTL: 32-bit VRAM truncation and false MC coverage caught (three failures)
+POLARIS_PROBE: 89 checks, 0 failures
+POLARIS_INTEGRATION_NEGCTL: read-only probe cannot register an acceleration presenter
+POLARIS_INTEGRATION: 259 checks, 0 failures
+POLARIS_FIRMWARE_NEGCTL: v2 accepted as v1 (exactly one failure)
+POLARIS_FIRMWARE_NEGCTL: v1.1 missing header extension accepted (exactly one failure)
+POLARIS_FIRMWARE: 132 checks, 0 failures
+POLARIS_SDMA_NEGCTL: SDMA v4 count-minus-one rejected by literal v3 oracle
+POLARIS_SDMA: 208 checks, 0 failures
+POLARIS_SMU_TOC_NEGCTL: swapped high/low GPU address words rejected by literal wire oracle
+POLARIS_SMU_TOC: 186 checks, 0 failures
+POLARIS_SMU_MAILBOX_NEGCTL: unsupported response accepted (exactly one failure)
+POLARIS_SMU_MAILBOX: 141 checks, 0 failures
+POLARIS_SMU_STAGE_NEGCTL: corrupted second-engine payload rejected by independent copy oracle
+POLARIS_SMU_STAGE: 105 checks, 0 failures
+POLARIS_MEMORY_NEGCTL: scanout overwrite and incorrect SYSTEM PTE bit detected
+POLARIS_MEMORY_LAYOUT: 76 checks, 0 failures
+POLARIS_GART: 177 checks, 0 failures
+BUNDLE_NEGCTL: independent copy oracle rejects corrupted JT2
+BUNDLE: 8378 checks, 0 failures
+POLARIS_SMU_LOADER_NEGCTL: ACK without full SRAM firmware completion rejected
+POLARIS_SMU_LOADER: 94 checks, 0 failures
+POLARIS_SDMA_QUEUE_NEGCTL: late fence accepted after timeout (exactly one failure)
+POLARIS_SDMA_QUEUE: 275 checks, 0 failures
+POLARIS_SDMA_ENGINE_NEGCTL: cached loader status accepted (exactly one failure)
+POLARIS_SDMA_ENGINE: 177 checks, 0 failures
+NATIVE_NEGCTL: missing HDP invalidate rejected
+NATIVE: 72 checks, 0 failures
+POLARIS_PRESENT_NEGCTL: missing GPU copy canary caught
+POLARIS_PRESENT: 20630 checks, 0 failures
+POLARIS_RUNTIME_NEGCTL: corrupted staged MEC JT2 prevents composed driver activation
+POLARIS_RUNTIME: 92 checks, 0 failures (host protocol model; no physical GPU proof)
+DESKTOP_NEGCTL: pixel/byte stride regression rejected
+DESKTOP success: 45 checks, 0 failures (wiring stubs; no protocol or hardware proof)
+DESKTOP no-boot: 5 checks, 0 failures (wiring stubs; no protocol or hardware proof)
+DESKTOP geometry: 5 checks, 0 failures (wiring stubs; no protocol or hardware proof)
+DESKTOP lease: 5 checks, 0 failures (wiring stubs; no protocol or hardware proof)
+DESKTOP bind: 6 checks, 0 failures (wiring stubs; no protocol or hardware proof)
+DESKTOP address: 7 checks, 0 failures (wiring stubs; no protocol or hardware proof)
+DESKTOP translation: 7 checks, 0 failures (wiring stubs; no protocol or hardware proof)
+DESKTOP runtime: 13 checks, 0 failures (wiring stubs; no protocol or hardware proof)
+FAIL GPU success preserves callback pixels without CPU overwrite
+FB_NATIVE_PRESENT_NEGCTL: CPU overwrite detected (exactly one failure)
+FB_NATIVE_PRESENT: 21 checks, 0 failures
+test_ci_and_control_inventories (__main__.NestedMakeTests.test_ci_and_control_inventories) ... ok
+test_comment_recipe_and_partial_filename_are_not_edges (__main__.NestedMakeTests.test_comment_recipe_and_partial_filename_are_not_edges) ... ok
+test_continuations_multiple_paths_comments_and_cycle (__main__.NestedMakeTests.test_continuations_multiple_paths_comments_and_cycle) ... ok
+test_declared_exception_is_path_specific (__main__.NestedMakeTests.test_declared_exception_is_path_specific) ... ok
+test_missing_then_restored_edge (__main__.NestedMakeTests.test_missing_then_restored_edge) ... ok
+test_nested_link_prerequisites_are_checked (__main__.NestedMakeTests.test_nested_link_prerequisites_are_checked) ... ok
+test_same_leaf_is_not_same_fragment (__main__.NestedMakeTests.test_same_leaf_is_not_same_fragment) ... ok
+
+----------------------------------------------------------------------
+Ran 7 tests in 0.051s
+
+OK
+negative control: nested fragment without include is UNREACHABLE
+mk-wired: ok (362 fragments, 361 reachable from the Makefile, 1 declared)
+  declared: tests/schedneg.mk -- a `make -f` wrapper that includes the Makefile itself; including it back would recurse (see its own header)

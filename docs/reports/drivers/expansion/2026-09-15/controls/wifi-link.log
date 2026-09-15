@@ -1,0 +1,6 @@
+[net] no supported NIC found; networking disabled
+[net] if 1 lo flags up running loopback  127.0.0.1/8
+WIFI_FAIL 116: !(netif_by_index(index)->flags & NETIF_F_RUNNING)
+WIFI_FAIL 160: wifi_adapter_poll() == -1 && !(netif_by_index(index)->flags & NETIF_F_RUNNING)
+WIFI_FAIL 116: !(netif_by_index(index)->flags & NETIF_F_RUNNING)
+WIFI_ADAPTER: 53 checks, 3 failures

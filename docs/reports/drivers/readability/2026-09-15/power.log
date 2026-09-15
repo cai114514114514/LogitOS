@@ -1,0 +1,9 @@
+PASS: qemu exited on its own after poweroff
+PASS: [power] syncing then [power] going down, in order
+PASS: /pwprobe.txt survived the poweroff, byte-for-byte
+PASS: no journal replay after a clean poweroff (contrast run-fscrash-test.sh, which counts this string's PRESENCE after a SIGKILL)
+PASS: boot banner appeared 2 times in one serial log -- reboot really reset the guest
+
+PASS: make test-power -- poweroff syncs, goes down, and QEMU exits by itself;
+      the write survives and the journal has nothing to replay; reboot
+      round-trips through a real guest reset

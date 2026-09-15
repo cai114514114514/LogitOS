@@ -1,0 +1,2 @@
+mk-wired: ok (333 fragments, 332 reachable from the Makefile, 1 declared)
+  declared: tests/schedneg.mk -- a `make -f` wrapper that includes the Makefile itself; including it back would recurse (see its own header)

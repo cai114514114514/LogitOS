@@ -1,0 +1,13 @@
+POLARIS_FIRMWARE_NEGCTL: v2 accepted as v1 (exactly one failure)
+POLARIS_FIRMWARE: 120 checks, 0 failures
+POLARIS_SDMA_NEGCTL: SDMA v4 count-minus-one rejected by literal v3 oracle
+POLARIS_SDMA: 208 checks, 0 failures
+AMD_BOOTFB_NEGCTL: start-only ownership accepted partial overlap (exactly one failure)
+AMD_BOOTFB_NEGCTL: memory-decode-off device bound (exactly one failure)
+AMD_BOOTFB_NEGCTL: mixed memory/I-O BAR was accepted (exactly one failure)
+AMD_BOOTFB_NEGCTL: malformed PM capability was dereferenced (exactly one failure)
+AMD_BOOTFB: 59 checks, 0 failures
+AMD_RV100_NEGCTL: modern GPU reached legacy BARs (exactly one failure)
+AMD_RV100_NEGCTL: out-of-scanout fill submitted (exactly one failure)
+AMD_RV100_NEGCTL: corrupted runtime upload rejected by pixel oracle (exactly one failure)
+AMD_RV100: 604 checks, 0 failures

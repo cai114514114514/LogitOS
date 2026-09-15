@@ -1,0 +1,275 @@
+{
+  "passed": true,
+  "mode": "gpu-present",
+  "iso": "/Users/wangzhe/system/LogitOS/build-rx580-bringup/logit.iso",
+  "iso_sha256": "bb99ebfe56aacf32c47568e58a9936a6fa4ad63e4f5eea6bef8cbc612aa5f32d",
+  "qemu_version": "QEMU emulator version 11.0.0",
+  "qemu_device": "ati-vga,model=rv100,vgamem_mb=16,xres=1280,yres=800",
+  "pci_identity": {
+    "device": 20825,
+    "subsystem-vendor": 6900,
+    "vendor": 4098,
+    "subsystem": 4352
+  },
+  "startup_canary": {
+    "family": "RV100",
+    "pci": "5159",
+    "stage": "active",
+    "engine": "rv100-2d-canary-passed",
+    "desktop": "cpu",
+    "commands": "2",
+    "vram": "16777216",
+    "scanout": "0",
+    "canary": "3145728",
+    "reads": "672",
+    "writes": "448",
+    "fill": "ok",
+    "copy": "ok",
+    "restore": "ok"
+  },
+  "startup_trace": {
+    "cnfg_memsize_reads": 1,
+    "engine_status_reads": 559,
+    "canary_trigger_value": "0x7000d",
+    "canary_trigger_writes": 2,
+    "fill_master_writes": 1,
+    "copy_master_writes": 111,
+    "cache_flush_writes": 223,
+    "dst_height_width_tail": [
+      "ati_mm_write 4 0x143c  <- 0x7000d",
+      "ati_mm_write 4 0x143c  <- 0x7000d"
+    ]
+  },
+  "runtime_markers": [
+    {
+      "completed": "1",
+      "pixels": "786432",
+      "commands": "3",
+      "upload_bytes": "3145728",
+      "scanout": "0",
+      "scratch": "3147776",
+      "pitch": "4096",
+      "rects": "1",
+      "verified": "1"
+    },
+    {
+      "completed": "2",
+      "pixels": "811008",
+      "commands": "4",
+      "upload_bytes": "3244032",
+      "scanout": "0",
+      "scratch": "3147776",
+      "pitch": "4096",
+      "rects": "2",
+      "verified": "1"
+    },
+    {
+      "completed": "4",
+      "pixels": "835782",
+      "commands": "6",
+      "upload_bytes": "3343128",
+      "scanout": "0",
+      "scratch": "3147776",
+      "pitch": "4096",
+      "rects": "4",
+      "verified": "1"
+    },
+    {
+      "completed": "8",
+      "pixels": "836592",
+      "commands": "10",
+      "upload_bytes": "3346368",
+      "scanout": "0",
+      "scratch": "3147776",
+      "pitch": "4096",
+      "rects": "8",
+      "verified": "1"
+    },
+    {
+      "completed": "16",
+      "pixels": "838176",
+      "commands": "18",
+      "upload_bytes": "3352704",
+      "scanout": "0",
+      "scratch": "3147776",
+      "pitch": "4096",
+      "rects": "16",
+      "verified": "1"
+    },
+    {
+      "completed": "32",
+      "pixels": "890100",
+      "commands": "34",
+      "upload_bytes": "3560400",
+      "scanout": "0",
+      "scratch": "3147776",
+      "pitch": "4096",
+      "rects": "32",
+      "verified": "1"
+    },
+    {
+      "completed": "64",
+      "pixels": "945192",
+      "commands": "66",
+      "upload_bytes": "3780768",
+      "scanout": "0",
+      "scratch": "3147776",
+      "pitch": "4096",
+      "rects": "64",
+      "verified": "1"
+    }
+  ],
+  "completed_before_input": 2,
+  "input_moves": [
+    [
+      256,
+      256
+    ],
+    [
+      768,
+      384
+    ],
+    [
+      256,
+      384
+    ],
+    [
+      768,
+      256
+    ],
+    [
+      256,
+      384
+    ],
+    [
+      768,
+      384
+    ],
+    [
+      256,
+      256
+    ],
+    [
+      768,
+      384
+    ],
+    [
+      256,
+      384
+    ],
+    [
+      768,
+      256
+    ],
+    [
+      256,
+      384
+    ],
+    [
+      768,
+      384
+    ]
+  ],
+  "pointer_before": [
+    512,
+    384
+  ],
+  "pointer_after": [
+    512,
+    384
+  ],
+  "scanout": {
+    "width": 1024,
+    "height": 768,
+    "sample_colours": 221,
+    "lit_samples": 12288,
+    "samples": 12288
+  },
+  "physical_amd_gpu_verified": false,
+  "modern_amd_gpu_acceleration_verified": false,
+  "gpu_shader_compositing_verified": false,
+  "performance_speedup_measured": false,
+  "runtime_trace": {
+    "visible_copy_commands": 110,
+    "visible_fill_commands": 0,
+    "cache_flush_writes": 223,
+    "copy_samples": [
+      {
+        "x": 0,
+        "y": 0,
+        "width": 1024,
+        "height": 768,
+        "trigger": "0x3000400",
+        "dst_pitch_offset": "0x10000000",
+        "src_pitch_offset": "0x10000c02"
+      },
+      {
+        "x": 0,
+        "y": 0,
+        "width": 1024,
+        "height": 24,
+        "trigger": "0x180400",
+        "dst_pitch_offset": "0x10000000",
+        "src_pitch_offset": "0x10000c02"
+      },
+      {
+        "x": 0,
+        "y": 0,
+        "width": 1024,
+        "height": 24,
+        "trigger": "0x180400",
+        "dst_pitch_offset": "0x10000000",
+        "src_pitch_offset": "0x10000c02"
+      },
+      {
+        "x": 512,
+        "y": 384,
+        "width": 11,
+        "height": 18,
+        "trigger": "0x12000b",
+        "dst_pitch_offset": "0x10000000",
+        "src_pitch_offset": "0x10000c02"
+      },
+      {
+        "x": 384,
+        "y": 256,
+        "width": 11,
+        "height": 18,
+        "trigger": "0x12000b",
+        "dst_pitch_offset": "0x10000000",
+        "src_pitch_offset": "0x10000c02"
+      },
+      {
+        "x": 384,
+        "y": 256,
+        "width": 11,
+        "height": 18,
+        "trigger": "0x12000b",
+        "dst_pitch_offset": "0x10000000",
+        "src_pitch_offset": "0x10000c02"
+      },
+      {
+        "x": 0,
+        "y": 0,
+        "width": 1024,
+        "height": 24,
+        "trigger": "0x180400",
+        "dst_pitch_offset": "0x10000000",
+        "src_pitch_offset": "0x10000c02"
+      },
+      {
+        "x": 0,
+        "y": 0,
+        "width": 1024,
+        "height": 24,
+        "trigger": "0x180400",
+        "dst_pitch_offset": "0x10000000",
+        "src_pitch_offset": "0x10000c02"
+      }
+    ],
+    "source_scratch": 3147776,
+    "destination_scanout": 0,
+    "pitch": 4096
+  },
+  "rv100_visible_gpu_presentation_verified": true
+}

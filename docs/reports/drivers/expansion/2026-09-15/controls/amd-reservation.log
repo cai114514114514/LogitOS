@@ -1,0 +1,5 @@
+FAIL line 219: result.firmware.base == UINT64_C(0x1200400000)
+FAIL line 220: result.firmware.bytes == 65536
+FAIL line 346: report.reservations.firmware.base == UINT64_C(0x1200400000)
+FAIL line 347: report.reservations.firmware.bytes == 65536
+POLARIS_RESOURCES: 4370 checks, 4 failures

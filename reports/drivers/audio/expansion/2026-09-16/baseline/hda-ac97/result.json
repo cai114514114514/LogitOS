@@ -1,0 +1,36 @@
+{
+  "passed": false,
+  "device": "AC97",
+  "output_device": "intel-hda",
+  "errors": [
+    "rec reported failure"
+  ],
+  "native_rates": {
+    "capture": 48000,
+    "playback": 48000
+  },
+  "inputs": {
+    "iso_sha256": "481fb9f016e6aea28bcdae5f6e1d2cdb1332ec1cd87406f4cfdf7313957ef271",
+    "disk_sha256": "782ee74dc6e67c399de03ef90752ef451360fb51c8e9f0448df1df817d493798",
+    "backend_sha256": "e94f1d58d6222e8665336fdeadf448f478a216ede945077fb0898da776489878",
+    "original_disk_sha256": "782ee74dc6e67c399de03ef90752ef451360fb51c8e9f0448df1df817d493798"
+  },
+  "source_sha256": "cd53f2c8c48f5554dae9110a6d20b3db3c6d07a0f05cde4b968f5c6eff9350fe",
+  "qemu_version": "QEMU emulator version 11.0.0",
+  "artifacts": {
+    "source.pcm": "cd53f2c8c48f5554dae9110a6d20b3db3c6d07a0f05cde4b968f5c6eff9350fe",
+    "injected.pcm": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "playback.pcm": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "backend.log": "1a1f0551b9bba179c88fef93898a8797050c02f888ba5d0633b50fb180cb1527",
+    "backend.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "serial.log": "9aa733b6433f58f8e0bf8cca1c1df9d1e597fa564e19cab9b0b3f62b89b3c9ca",
+    "qemu.stderr": "eb453b9b2bb701b9f6a9b97ab4ffdd51e6c7925a18406bf06cee34cfef03b2c1"
+  },
+  "harness": {
+    "/Users/wangzhe/system/LogitOS/tests/drivers/audio/capture/guest.py": "6beee43f515d1e2068f8a9796a1073ef808b8f0991dba7e7cb1407e4636a699f",
+    "/Users/wangzhe/system/LogitOS/tests/drivers/audio/capture/oracle.py": "c8a9100dbd415a39f59dbe58ca20c41fbcfb1839f7c52b919bf5d90bd888ce55",
+    "/Users/wangzhe/system/LogitOS/tests/drivers/audio/capture/backend.c": "fa760173b5de9310ddb0f67e174248079d8535d0f19cdc9732be8572505b8cca",
+    "/Users/wangzhe/system/LogitOS/tests/drivers/audio/capture/profiles.py": "ebcfc6d85530ae218c38e730eb19a4d25643ab2afb4cb744bd1ec626d27430df"
+  },
+  "original_disk_after_sha256": "782ee74dc6e67c399de03ef90752ef451360fb51c8e9f0448df1df817d493798"
+}

@@ -1,0 +1,498 @@
+{
+  "passed": true,
+  "cases": [
+    {
+      "case": "48000-positive",
+      "expected_pass": true,
+      "control_ok": true,
+      "observation": {
+        "passed": true,
+        "errors": [],
+        "metrics": {
+          "header_finalized": true,
+          "captured_frames": 48000,
+          "signal_frames": 48000,
+          "rate": 48000,
+          "minimum": -30720,
+          "maximum": 30464,
+          "zero_crossings": 200,
+          "bad_slopes": 0,
+          "frequency_hz": 200.0,
+          "direct_checker": "ok  captured 48000 frames of signal (1000 ms)\nok  all 47984 frames advance by exactly one index (no drop, repeat, tear or rate error)\nok  amplitude spans -30720..30464 as designed\nok  right channel is the negation of left (channel map correct)\n"
+        }
+      }
+    },
+    {
+      "case": "48000-silence",
+      "expected_pass": false,
+      "control_ok": true,
+      "observation": {
+        "passed": false,
+        "errors": [
+          "one-second signal length differs by more than 64 frames",
+          "silent or too short"
+        ],
+        "metrics": {
+          "header_finalized": true,
+          "captured_frames": 48000,
+          "signal_frames": 0,
+          "rate": 48000
+        }
+      }
+    },
+    {
+      "case": "48000-wrong-speed",
+      "expected_pass": false,
+      "control_ok": true,
+      "observation": {
+        "passed": false,
+        "errors": [
+          "ramp slope/order disagrees with the source clock",
+          "200 Hz cycle spacing is discontinuous or has wrong speed",
+          "original exact frame-index checker rejected capture"
+        ],
+        "metrics": {
+          "header_finalized": true,
+          "captured_frames": 48000,
+          "signal_frames": 48000,
+          "rate": 48000,
+          "minimum": -30720,
+          "maximum": 30413,
+          "zero_crossings": 180,
+          "bad_slopes": 40440,
+          "frequency_hz": 180.00000000000003,
+          "direct_checker": "ok  captured 48000 frames of signal (1000 ms)\nFAIL: 5156/47984 frames break the index sequence (0 out of range, 5156 wrong step); first at (16, -27034, 'index 14 after 14, wanted 15')\nok  amplitude spans -30720..30413 as designed\nok  right channel is the negation of left (channel map correct)\n"
+        }
+      }
+    },
+    {
+      "case": "48000-swapped",
+      "expected_pass": false,
+      "control_ok": true,
+      "observation": {
+        "passed": false,
+        "errors": [
+          "ramp slope/order disagrees with the source clock",
+          "original exact frame-index checker rejected capture"
+        ],
+        "metrics": {
+          "header_finalized": true,
+          "captured_frames": 48000,
+          "signal_frames": 48000,
+          "rate": 48000,
+          "minimum": -30464,
+          "maximum": 30720,
+          "zero_crossings": 199,
+          "bad_slopes": 40400,
+          "frequency_hz": 200.0,
+          "direct_checker": "ok  captured 48000 frames of signal (1000 ms)\nFAIL: 47983/47984 frames break the index sequence (199 out of range, 47784 wrong step); first at (9, 28416, 'index 231 after 232, wanted 233')\nok  amplitude spans -30464..30720 as designed\nok  right channel is the negation of left (channel map correct)\n"
+        }
+      }
+    },
+    {
+      "case": "48000-short",
+      "expected_pass": false,
+      "control_ok": true,
+      "observation": {
+        "passed": false,
+        "errors": [
+          "one-second signal length differs by more than 64 frames"
+        ],
+        "metrics": {
+          "header_finalized": true,
+          "captured_frames": 24000,
+          "signal_frames": 24000,
+          "rate": 48000,
+          "minimum": -30720,
+          "maximum": 30464,
+          "zero_crossings": 100,
+          "bad_slopes": 0,
+          "frequency_hz": 200.0,
+          "direct_checker": "ok  captured 24000 frames of signal (500 ms)\nok  all 23984 frames advance by exactly one index (no drop, repeat, tear or rate error)\nok  amplitude spans -30720..30464 as designed\nok  right channel is the negation of left (channel map correct)\n"
+        }
+      }
+    },
+    {
+      "case": "48000-repeated-period",
+      "expected_pass": false,
+      "control_ok": true,
+      "observation": {
+        "passed": false,
+        "errors": [
+          "ramp slope/order disagrees with the source clock",
+          "200 Hz cycle spacing is discontinuous or has wrong speed",
+          "original exact frame-index checker rejected capture"
+        ],
+        "metrics": {
+          "header_finalized": true,
+          "captured_frames": 48000,
+          "signal_frames": 48000,
+          "rate": 48000,
+          "minimum": -30720,
+          "maximum": 30464,
+          "zero_crossings": 201,
+          "bad_slopes": 2,
+          "frequency_hz": 201.00502512562812,
+          "direct_checker": "ok  captured 48000 frames of signal (1000 ms)\nFAIL: 2/47984 frames break the index sequence (0 out of range, 2 wrong step); first at (2048, -14336, 'index 64 after 127, wanted 128')\nok  amplitude spans -30720..30464 as designed\nok  right channel is the negation of left (channel map correct)\n"
+        }
+      }
+    },
+    {
+      "case": "48000-damaged",
+      "expected_pass": false,
+      "control_ok": true,
+      "observation": {
+        "passed": false,
+        "errors": [
+          "RIFF length is not finalized"
+        ]
+      }
+    },
+    {
+      "case": "48000-wrong-rate",
+      "expected_pass": false,
+      "control_ok": true,
+      "observation": {
+        "passed": false,
+        "errors": [
+          "expected complete stereo s16 PCM at native rate"
+        ],
+        "format": [
+          1,
+          2,
+          48000,
+          192000,
+          4,
+          16
+        ]
+      }
+    },
+    {
+      "case": "48000-streaming-positive",
+      "expected_pass": true,
+      "control_ok": true,
+      "observation": {
+        "passed": true,
+        "errors": [],
+        "metrics": {
+          "header_finalized": false,
+          "captured_frames": 48000,
+          "signal_frames": 48000,
+          "rate": 48000,
+          "minimum": -30720,
+          "maximum": 30464,
+          "zero_crossings": 200,
+          "bad_slopes": 0,
+          "frequency_hz": 200.0,
+          "direct_checker": "ok  captured 48000 frames of signal (1000 ms)\nok  all 47984 frames advance by exactly one index (no drop, repeat, tear or rate error)\nok  amplitude spans -30720..30464 as designed\nok  right channel is the negation of left (channel map correct)\n"
+        }
+      }
+    },
+    {
+      "case": "48000-streaming-damaged",
+      "expected_pass": false,
+      "control_ok": true,
+      "observation": {
+        "passed": false,
+        "errors": [
+          "expected complete stereo s16 PCM at native rate"
+        ],
+        "format": [
+          1,
+          2,
+          48000,
+          192000,
+          4,
+          16
+        ]
+      }
+    },
+    {
+      "case": "48000-streaming-short",
+      "expected_pass": false,
+      "control_ok": true,
+      "observation": {
+        "passed": false,
+        "errors": [
+          "one-second signal length differs by more than 64 frames"
+        ],
+        "metrics": {
+          "header_finalized": false,
+          "captured_frames": 24000,
+          "signal_frames": 24000,
+          "rate": 48000,
+          "minimum": -30720,
+          "maximum": 30464,
+          "zero_crossings": 100,
+          "bad_slopes": 0,
+          "frequency_hz": 200.0,
+          "direct_checker": "ok  captured 24000 frames of signal (500 ms)\nok  all 23984 frames advance by exactly one index (no drop, repeat, tear or rate error)\nok  amplitude spans -30720..30464 as designed\nok  right channel is the negation of left (channel map correct)\n"
+        }
+      }
+    },
+    {
+      "case": "48000-only-riff-zero",
+      "expected_pass": false,
+      "control_ok": true,
+      "observation": {
+        "passed": false,
+        "errors": [
+          "RIFF length is not finalized"
+        ]
+      }
+    },
+    {
+      "case": "48000-only-data-zero",
+      "expected_pass": false,
+      "control_ok": true,
+      "observation": {
+        "passed": false,
+        "errors": [
+          "truncated WAV chunk"
+        ]
+      }
+    },
+    {
+      "case": "48662-positive",
+      "expected_pass": true,
+      "control_ok": true,
+      "observation": {
+        "passed": true,
+        "errors": [],
+        "metrics": {
+          "header_finalized": true,
+          "captured_frames": 48662,
+          "signal_frames": 48662,
+          "rate": 48662,
+          "minimum": -30720,
+          "maximum": 30462,
+          "zero_crossings": 200,
+          "bad_slopes": 0,
+          "frequency_hz": 199.99999803303035
+        }
+      }
+    },
+    {
+      "case": "48662-silence",
+      "expected_pass": false,
+      "control_ok": true,
+      "observation": {
+        "passed": false,
+        "errors": [
+          "one-second signal length differs by more than 64 frames",
+          "silent or too short"
+        ],
+        "metrics": {
+          "header_finalized": true,
+          "captured_frames": 48662,
+          "signal_frames": 0,
+          "rate": 48662
+        }
+      }
+    },
+    {
+      "case": "48662-wrong-speed",
+      "expected_pass": false,
+      "control_ok": true,
+      "observation": {
+        "passed": false,
+        "errors": [
+          "ramp slope/order disagrees with the source clock",
+          "200 Hz cycle spacing is discontinuous or has wrong speed"
+        ],
+        "metrics": {
+          "header_finalized": true,
+          "captured_frames": 48662,
+          "signal_frames": 48662,
+          "rate": 48662,
+          "minimum": -30720,
+          "maximum": 30462,
+          "zero_crossings": 180,
+          "bad_slopes": 41004,
+          "frequency_hz": 179.9999969048438
+        }
+      }
+    },
+    {
+      "case": "48662-swapped",
+      "expected_pass": false,
+      "control_ok": true,
+      "observation": {
+        "passed": false,
+        "errors": [
+          "ramp slope/order disagrees with the source clock",
+          "200 Hz cycle spacing is discontinuous or has wrong speed"
+        ],
+        "metrics": {
+          "header_finalized": true,
+          "captured_frames": 48662,
+          "signal_frames": 48662,
+          "rate": 48662,
+          "minimum": -30462,
+          "maximum": 30720,
+          "zero_crossings": 199,
+          "bad_slopes": 40984,
+          "frequency_hz": 199.99931055678297
+        }
+      }
+    },
+    {
+      "case": "48662-short",
+      "expected_pass": false,
+      "control_ok": true,
+      "observation": {
+        "passed": false,
+        "errors": [
+          "one-second signal length differs by more than 64 frames"
+        ],
+        "metrics": {
+          "header_finalized": true,
+          "captured_frames": 24331,
+          "signal_frames": 24331,
+          "rate": 48662,
+          "minimum": -30720,
+          "maximum": 30462,
+          "zero_crossings": 100,
+          "bad_slopes": 0,
+          "frequency_hz": 199.99999604619236
+        }
+      }
+    },
+    {
+      "case": "48662-repeated-period",
+      "expected_pass": false,
+      "control_ok": true,
+      "observation": {
+        "passed": false,
+        "errors": [
+          "ramp slope/order disagrees with the source clock",
+          "200 Hz cycle spacing is discontinuous or has wrong speed"
+        ],
+        "metrics": {
+          "header_finalized": true,
+          "captured_frames": 48662,
+          "signal_frames": 48662,
+          "rate": 48662,
+          "minimum": -30720,
+          "maximum": 30462,
+          "zero_crossings": 200,
+          "bad_slopes": 2,
+          "frequency_hz": 199.99999803303035
+        }
+      }
+    },
+    {
+      "case": "48662-damaged",
+      "expected_pass": false,
+      "control_ok": true,
+      "observation": {
+        "passed": false,
+        "errors": [
+          "RIFF length is not finalized"
+        ]
+      }
+    },
+    {
+      "case": "48662-wrong-rate",
+      "expected_pass": false,
+      "control_ok": true,
+      "observation": {
+        "passed": false,
+        "errors": [
+          "expected complete stereo s16 PCM at native rate"
+        ],
+        "format": [
+          1,
+          2,
+          48662,
+          194648,
+          4,
+          16
+        ]
+      }
+    },
+    {
+      "case": "48662-streaming-positive",
+      "expected_pass": true,
+      "control_ok": true,
+      "observation": {
+        "passed": true,
+        "errors": [],
+        "metrics": {
+          "header_finalized": false,
+          "captured_frames": 48662,
+          "signal_frames": 48662,
+          "rate": 48662,
+          "minimum": -30720,
+          "maximum": 30462,
+          "zero_crossings": 200,
+          "bad_slopes": 0,
+          "frequency_hz": 199.99999803303035
+        }
+      }
+    },
+    {
+      "case": "48662-streaming-damaged",
+      "expected_pass": false,
+      "control_ok": true,
+      "observation": {
+        "passed": false,
+        "errors": [
+          "expected complete stereo s16 PCM at native rate"
+        ],
+        "format": [
+          1,
+          2,
+          48662,
+          194648,
+          4,
+          16
+        ]
+      }
+    },
+    {
+      "case": "48662-streaming-short",
+      "expected_pass": false,
+      "control_ok": true,
+      "observation": {
+        "passed": false,
+        "errors": [
+          "one-second signal length differs by more than 64 frames"
+        ],
+        "metrics": {
+          "header_finalized": false,
+          "captured_frames": 24331,
+          "signal_frames": 24331,
+          "rate": 48662,
+          "minimum": -30720,
+          "maximum": 30462,
+          "zero_crossings": 100,
+          "bad_slopes": 0,
+          "frequency_hz": 199.99999604619236
+        }
+      }
+    },
+    {
+      "case": "48662-only-riff-zero",
+      "expected_pass": false,
+      "control_ok": true,
+      "observation": {
+        "passed": false,
+        "errors": [
+          "RIFF length is not finalized"
+        ]
+      }
+    },
+    {
+      "case": "48662-only-data-zero",
+      "expected_pass": false,
+      "control_ok": true,
+      "observation": {
+        "passed": false,
+        "errors": [
+          "truncated WAV chunk"
+        ]
+      }
+    }
+  ]
+}

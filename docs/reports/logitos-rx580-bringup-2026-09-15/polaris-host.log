@@ -1,0 +1,13 @@
+POLARIS_FIRMWARE_NEGCTL: v2 accepted as v1 (exactly one failure)
+POLARIS_FIRMWARE_NEGCTL: v1.1 missing header extension accepted (exactly one failure)
+POLARIS_FIRMWARE: 132 checks, 0 failures
+POLARIS_FW_FILE structure=valid file=build-rx580-firmware-input/polaris10_sdma.bin header=1.1 ip=3.1 ucode_version=58 feature=31 words=3109 jump=3072/32 digest_raw=5 integrity=unchecked loaded=0
+POLARIS_FW_FILE structure=valid file=build-rx580-firmware-input/polaris10_sdma1.bin header=1.1 ip=3.1 ucode_version=58 feature=0 words=3109 jump=3072/32 digest_raw=0 integrity=unchecked loaded=0
+POLARIS_SDMA_NEGCTL: SDMA v4 count-minus-one rejected by literal v3 oracle
+POLARIS_SDMA: 208 checks, 0 failures
+POLARIS_PROBE_NEGCTL: 32-bit VRAM truncation and false MC coverage caught (three failures)
+POLARIS_PROBE: 89 checks, 0 failures
+POLARIS_INTEGRATION_NEGCTL: read-only probe cannot register an acceleration presenter
+POLARIS_INTEGRATION: 259 checks, 0 failures
+mk-wired: ok (344 fragments, 343 reachable from the Makefile, 1 declared)
+  declared: tests/schedneg.mk -- a `make -f` wrapper that includes the Makefile itself; including it back would recurse (see its own header)

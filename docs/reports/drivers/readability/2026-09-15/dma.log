@@ -1,0 +1,6 @@
+PASS: nvme_old_pointer fails the explicit driver assertion
+PASS: nvme_old_stop fails the explicit driver assertion
+PASS: nvme_zero_neighbours fails the explicit driver assertion
+PASS: ahci_old_pointer fails the explicit driver assertion
+NVMe DMA: 44 checks, 0 failures
+AHCI DMA: 13 checks, 0 failures

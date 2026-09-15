@@ -1,0 +1,4 @@
+FAIL 531: init_calls == previous_init
+FAIL 542: init_calls == previous_init && allocations == frees
+FAIL 549: init_calls == previous_init && allocations == frees
+AC97_HOST: 125540 checks, 3 failures

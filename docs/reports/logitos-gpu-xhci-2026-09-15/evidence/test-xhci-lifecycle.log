@@ -1,0 +1,10 @@
+xHCI lifecycle: 18 checks, 0 failures
+EXPECTED-FAIL xHCI IGNORE_BIOS: BIOS ownership timeout refuses without SMI clear or re-probe
+EXPECTED-FAIL xHCI EARLY_BME: BME starts only after handoff reset and base ring programming
+EXPECTED-FAIL xHCI LATE_BME: event table is latched only while bus mastering is enabled
+EXPECTED-FAIL xHCI ERDP_FIRST: ERSTBA is latched before ERDP is published
+EXPECTED-FAIL xHCI EVENT_RING_READBACK: posted-write flush observes event-ring HCE before Run and isolates DMA
+EXPECTED-FAIL xHCI RUN_HCE: Run-time HCE refuses start and isolates DMA
+EXPECTED-FAIL xHCI COMMAND_READBACK: dropped MEM-only Command write refuses before BAR access
+EXPECTED-FAIL xHCI RESTORE_FAILURE: failed Command isolation retains unknown DMA and blocks re-probe
+EXPECTED-FAIL xHCI REGISTER_FAILURE: USB registration failure stops and isolates initialized xHCI

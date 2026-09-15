@@ -1,0 +1,5 @@
+{
+  "build/drivers/audio/expand-kernel/logit.iso": "9fac6a13724be0b3c4f6205c63ef157cd83937d8a6e0c03b0d79094bd62c03bb",
+  "build/drivers/audio/expand-verify/audio-capture/backend": "e94f1d58d6222e8665336fdeadf448f478a216ede945077fb0898da776489878",
+  "build/drivers/audio/capture-template/disk.img": "782ee74dc6e67c399de03ef90752ef451360fb51c8e9f0448df1df817d493798"
+}

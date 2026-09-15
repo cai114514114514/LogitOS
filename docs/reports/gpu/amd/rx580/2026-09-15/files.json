@@ -1,0 +1,502 @@
+{
+  "scope": "AMD source, directly affected audit/test files and final kernel artifacts; unrelated concurrent changes are not claimed",
+  "sources": [
+    {
+      "path": "c/drivers/gpu/amd/README.md",
+      "sha256": "16ec178d7f9f2b2517db7ec1e9773bb9d707dae1d02f3e8fff8a5820483b35b1",
+      "bytes": 5346
+    },
+    {
+      "path": "c/drivers/gpu/amd/accel.c",
+      "sha256": "effde8b7a36b5243924a956d8a4b8ea51f218ceb52aa8a6a5df461282193f2e2",
+      "bytes": 16556
+    },
+    {
+      "path": "c/drivers/gpu/amd/accel.h",
+      "sha256": "be0aaf1c2b1207dea0431a36c26300fbc42cc38dbf35ea4a572ac099d347fa8d",
+      "bytes": 3088
+    },
+    {
+      "path": "c/drivers/gpu/amd/bootfb.c",
+      "sha256": "881ca6da41e47319d2a5b75e10f07ab12ef9c7e13288f6a8ded14e0607ecd91d",
+      "bytes": 6350
+    },
+    {
+      "path": "c/drivers/gpu/amd/bootfb.h",
+      "sha256": "fde4cd4511164df51dba71aafacdd11b9c36ce78dfd7a2e0aafd3fa10c70792b",
+      "bytes": 513
+    },
+    {
+      "path": "c/drivers/gpu/amd/polaris/desktop.c",
+      "sha256": "3bcd19b43bd44006ffe13d7154a512ada0bf41d269c6d045315e00e2612153bf",
+      "bytes": 4071
+    },
+    {
+      "path": "c/drivers/gpu/amd/polaris/desktop.h",
+      "sha256": "8674219f0e2fb8e5c16ef4fac8345ee1447655b20f33ac01f7a58d246ecca9f3",
+      "bytes": 1136
+    },
+    {
+      "path": "c/drivers/gpu/amd/polaris/device.c",
+      "sha256": "0d25309a20d1d871acfcf15fb59a0c69dafbd113fe7192e7d08425818ff856f2",
+      "bytes": 5619
+    },
+    {
+      "path": "c/drivers/gpu/amd/polaris/device.h",
+      "sha256": "f4a553a1659cbe9e388e66b86c0c794423bde5d7d19aa8d92bf89d794532818b",
+      "bytes": 1534
+    },
+    {
+      "path": "c/drivers/gpu/amd/polaris/firmware/bundle.c",
+      "sha256": "dac3ebe7441d912ceb5975442cbcbd41d887290a6fa89f58d3564ceec647769b",
+      "bytes": 7913
+    },
+    {
+      "path": "c/drivers/gpu/amd/polaris/firmware/bundle.h",
+      "sha256": "ba9d6408025592fd3a74af6f1f416710ab56f535e90d8628bafd62fd75a192fd",
+      "bytes": 2447
+    },
+    {
+      "path": "c/drivers/gpu/amd/polaris/firmware.c",
+      "sha256": "ccc373ed9cf92b4afc6694fee9bfffacb78bf15f8e99e88b6a9e7baa8f6e883b",
+      "bytes": 4824
+    },
+    {
+      "path": "c/drivers/gpu/amd/polaris/firmware.h",
+      "sha256": "8eb45a9c8ec38890f138fc1594826b2f5ee19069aab065697bed39849cc42cc9",
+      "bytes": 1995
+    },
+    {
+      "path": "c/drivers/gpu/amd/polaris/memory/gart.c",
+      "sha256": "2524e827a2d9ad1c5d79c3ca1584a497c143448d1372c0410760a229098fe3ef",
+      "bytes": 2643
+    },
+    {
+      "path": "c/drivers/gpu/amd/polaris/memory/gart.h",
+      "sha256": "c1f4c521714419e17fd1c67c772251e9aaa464943b6e7dbd235deb74207747bd",
+      "bytes": 1880
+    },
+    {
+      "path": "c/drivers/gpu/amd/polaris/memory/layout.c",
+      "sha256": "ef6fd411d670fd86d7e187af07a29f1f4caf1e5df04dee85ed96a740fb98eb57",
+      "bytes": 2797
+    },
+    {
+      "path": "c/drivers/gpu/amd/polaris/memory/layout.h",
+      "sha256": "3e1a71a7ed377aa76d2acdc3d1ed9a52351e0856132b48f86300359da861c144",
+      "bytes": 1774
+    },
+    {
+      "path": "c/drivers/gpu/amd/polaris/native.c",
+      "sha256": "88517cc2dea91d38d8c1afa95f6b92f0623ce71285efac73cb0f4bae65f61df1",
+      "bytes": 10093
+    },
+    {
+      "path": "c/drivers/gpu/amd/polaris/native.h",
+      "sha256": "cc3b616f9e0a703ac1095af7ca81aca12ce0a08839812561aef81e874eaced97",
+      "bytes": 1942
+    },
+    {
+      "path": "c/drivers/gpu/amd/polaris/platform.h",
+      "sha256": "6dbca38bf7e8d07c24f659ec7d9774069d07366a0600d51b61c1027dedffca98",
+      "bytes": 911
+    },
+    {
+      "path": "c/drivers/gpu/amd/polaris/present.c",
+      "sha256": "8a9001ce189ccb0a9b2ca38409b423d329759641b8b9cb9a36d15ef9e5062033",
+      "bytes": 6005
+    },
+    {
+      "path": "c/drivers/gpu/amd/polaris/present.h",
+      "sha256": "7cb4947f64fb4c114a7874d8c9bcacf54e4b64d5b8de546581d8d535d76e88f6",
+      "bytes": 1542
+    },
+    {
+      "path": "c/drivers/gpu/amd/polaris/runtime.c",
+      "sha256": "f41dafa321a76032bc026703d7c9f1ab2566989ab0b351da3cd2c6cb6cd606c3",
+      "bytes": 9417
+    },
+    {
+      "path": "c/drivers/gpu/amd/polaris/runtime.h",
+      "sha256": "dc06ee6f2017da4227ca603c94cca88a19d380de7aef1030b94466158e12dd83",
+      "bytes": 2544
+    },
+    {
+      "path": "c/drivers/gpu/amd/polaris/sdma/engine.c",
+      "sha256": "e4d216af6e276d79ea57a096559edb89d045e0caf08a5e44c8d74cf6433a6ded",
+      "bytes": 9448
+    },
+    {
+      "path": "c/drivers/gpu/amd/polaris/sdma/engine.h",
+      "sha256": "7581c461197d064f7b7f7f700628639dddc098128589b58637fc2fbf389bfea1",
+      "bytes": 2484
+    },
+    {
+      "path": "c/drivers/gpu/amd/polaris/sdma/packet.c",
+      "sha256": "ef6e002d0bcca75c1af56c6a13225412843d91584742c2a09a3dc1a08eac9e4c",
+      "bytes": 4518
+    },
+    {
+      "path": "c/drivers/gpu/amd/polaris/sdma/packet.h",
+      "sha256": "704761ac748db0b195e593d8e1cae2ebce54dbc87bddb8b3d0ef6880ec3cb470",
+      "bytes": 2674
+    },
+    {
+      "path": "c/drivers/gpu/amd/polaris/sdma/queue.c",
+      "sha256": "4640b463646c3bd567c4752e576c23e5900e9460acc1180515fe910e2dc31202",
+      "bytes": 11867
+    },
+    {
+      "path": "c/drivers/gpu/amd/polaris/sdma/queue.h",
+      "sha256": "3819292149f23a8278df2e57edd442e792e833d59f33ef6a170ea1013f1d39f9",
+      "bytes": 4320
+    },
+    {
+      "path": "c/drivers/gpu/amd/polaris/smu/loader.c",
+      "sha256": "3d0fee67767a72b1a0e090edb739fb6c5b51defab1491c5bed55c2cc0da8fc27",
+      "bytes": 11595
+    },
+    {
+      "path": "c/drivers/gpu/amd/polaris/smu/loader.h",
+      "sha256": "7e6eed841d44defb25d99ad681076c4c590e1a42976be754b84bbd018486b269",
+      "bytes": 2665
+    },
+    {
+      "path": "c/drivers/gpu/amd/polaris/smu/mailbox.c",
+      "sha256": "2909cdae75007c10dcb41e0c61687f68d94451b5f8b9639968983926dc37f6e7",
+      "bytes": 5122
+    },
+    {
+      "path": "c/drivers/gpu/amd/polaris/smu/mailbox.h",
+      "sha256": "1c97cdde516dc3edd3a217224c24bbf656ed541d684068afcd47d20d4ef1c32c",
+      "bytes": 2803
+    },
+    {
+      "path": "c/drivers/gpu/amd/polaris/smu/stage.c",
+      "sha256": "3087c1b1c5770fabfad486de5722e32b60bcc8684d54ed3bcf4097be080ecac9",
+      "bytes": 3484
+    },
+    {
+      "path": "c/drivers/gpu/amd/polaris/smu/stage.h",
+      "sha256": "2583c614abe0b24ec2a44f2ee809f7231d34d3361832fe28fe206ad8f9a4fa85",
+      "bytes": 1254
+    },
+    {
+      "path": "c/drivers/gpu/amd/polaris/smu/toc.c",
+      "sha256": "c906ca90d3ff18786ccb3ff85e73dc5850bcd8a740adcad6f2edf13f4f234380",
+      "bytes": 4294
+    },
+    {
+      "path": "c/drivers/gpu/amd/polaris/smu/toc.h",
+      "sha256": "f6df03c772ab4f479bc418ffcd3c2280016e42b10df8c88020f25411b01929e6",
+      "bytes": 2729
+    },
+    {
+      "path": "c/drivers/gpu/amd/rv100/engine.c",
+      "sha256": "866d46529968768d76db88ff69fd19ce5c6b77f07d00ade097dce3635c8e8f27",
+      "bytes": 29526
+    },
+    {
+      "path": "c/drivers/gpu/amd/rv100/engine.h",
+      "sha256": "6a501bd3251030743609013edee84518e75dd7cf3e2d886105943503402c148b",
+      "bytes": 3881
+    },
+    {
+      "path": "tests/boot/run-amd-bootfb.py",
+      "sha256": "55647e13ef4090709119d81099a7c1a2ae1897412e01615fbc73315e8bcf129f",
+      "bytes": 8611
+    },
+    {
+      "path": "tests/boot/run-amd-rv100-accel.py",
+      "sha256": "33278cb697b34319a680aaa676c66d82e9d85f3095e6eb6de387cd3479d54a58",
+      "bytes": 12769
+    },
+    {
+      "path": "tests/boot/run-amd-rv100-present.py",
+      "sha256": "cb28f294e1faeb512523a91acfd48055b3cf43d996305d6cc7770f2bd4f7eeb6",
+      "bytes": 16110
+    },
+    {
+      "path": "tests/driver_expansion.mk",
+      "sha256": "d9ee6178d185c8437fdd924be67db9c64cf07482792f78c770975539aad046fd",
+      "bytes": 2700
+    },
+    {
+      "path": "tests/gpu/amd/bootfb.mk",
+      "sha256": "66d9ef383ed4fe5ef9c265d23fcb2f096d66bce4f60f88d7890687c6bfd6168b",
+      "bytes": 5169
+    },
+    {
+      "path": "tests/gpu/amd/bootfb_test.c",
+      "sha256": "e56854c9ae3c88a5d3ee06c8c00193f7a02565ab416a833a64819dda1c07c6e3",
+      "bytes": 10115
+    },
+    {
+      "path": "tests/gpu/amd/polaris/desktop/test.c",
+      "sha256": "84df208017091e3dd4f44b95a78a56a66a56378bde93760b24777a8d3ba7b43f",
+      "bytes": 6213
+    },
+    {
+      "path": "tests/gpu/amd/polaris/desktop/test.mk",
+      "sha256": "425241278b595bc54b9379211ac40db704f4c640c74ae4008caabbd584193c32",
+      "bytes": 1506
+    },
+    {
+      "path": "tests/gpu/amd/polaris/device.mk",
+      "sha256": "03e3f2dbc0aa8d768d5d4917666c8ed4afb58896bf7e7985f900ce4fcb50b1ea",
+      "bytes": 1213
+    },
+    {
+      "path": "tests/gpu/amd/polaris/device_test.c",
+      "sha256": "77341ebb15efa9a76c5f9773925d3cac92a078e381536d093eac498ab3f76236",
+      "bytes": 10068
+    },
+    {
+      "path": "tests/gpu/amd/polaris/firmware/bundle.mk",
+      "sha256": "5f19c4d95373a68df3d86c290a6712cc7b83c132bafdf00aec8ef539a2ec0125",
+      "bytes": 2204
+    },
+    {
+      "path": "tests/gpu/amd/polaris/firmware/bundle_test.c",
+      "sha256": "9b7259363e9563456d1a8fdaaa4ecf6186538b7b216e0452d222105091b3fe2e",
+      "bytes": 5822
+    },
+    {
+      "path": "tests/gpu/amd/polaris/firmware/files.py",
+      "sha256": "8c76961193dc07aa49595bcd5a0f287ae0ab1f01e4653b2d679458dea29f122c",
+      "bytes": 4135
+    },
+    {
+      "path": "tests/gpu/amd/polaris/firmware.mk",
+      "sha256": "a59b3dc9c8e519272184489394a6b43247cf3067e16de5258ace5427a4a27de0",
+      "bytes": 2551
+    },
+    {
+      "path": "tests/gpu/amd/polaris/firmware_test.c",
+      "sha256": "8784fe2333e89698bfb67e6bdbcf33b99a4d6c9cf2a79c6d1dfeacd278ab1fdb",
+      "bytes": 7508
+    },
+    {
+      "path": "tests/gpu/amd/polaris/integration.mk",
+      "sha256": "8848621641d5537a2bd461199093bf4d4362c04f3e0615aec4bf20ed5e99eed2",
+      "bytes": 1554
+    },
+    {
+      "path": "tests/gpu/amd/polaris/integration_test.c",
+      "sha256": "53267c24eb0ccb73f91bf1e2fcba988f1fd5ced9e7f2488038fe47d719163b61",
+      "bytes": 9093
+    },
+    {
+      "path": "tests/gpu/amd/polaris/memory/gart_test.c",
+      "sha256": "cf4a0595a3b33d801ae7f66ee37676ccd0a61612f79263dd34006142a8299550",
+      "bytes": 3141
+    },
+    {
+      "path": "tests/gpu/amd/polaris/memory/layout_test.c",
+      "sha256": "eafb40d04e511b288cacfaa01197c63fc5e7893159e699cc7aeac89b77b3e3c4",
+      "bytes": 3711
+    },
+    {
+      "path": "tests/gpu/amd/polaris/memory/tests.mk",
+      "sha256": "61ddd1446c210b37f7723197d7544054e31577912f78f92a8351afaba17d9a83",
+      "bytes": 1901
+    },
+    {
+      "path": "tests/gpu/amd/polaris/native/test.c",
+      "sha256": "43e49d853b9443bea86f2e60e547e0691b1a01401031bb8751f18d540b298edb",
+      "bytes": 7726
+    },
+    {
+      "path": "tests/gpu/amd/polaris/native/test.mk",
+      "sha256": "d1c08e027d24ed384a135718ea3958f007f419595364e48152df29055d1efbf4",
+      "bytes": 1060
+    },
+    {
+      "path": "tests/gpu/amd/polaris/present.mk",
+      "sha256": "9e3d59cabd4dc5f7493fa1b087fd81d2dee080acc1736ae6edc0e53c94507c1f",
+      "bytes": 1185
+    },
+    {
+      "path": "tests/gpu/amd/polaris/present_test.c",
+      "sha256": "2d111e1e41fb729576f706f7930e341b1e544f3557d917e0e70756161efb450f",
+      "bytes": 3142
+    },
+    {
+      "path": "tests/gpu/amd/polaris/runtime.mk",
+      "sha256": "a56116ffbb0ec305f55dcf3810e7df99b8e9af7908acb257aee91c71153479b8",
+      "bytes": 1798
+    },
+    {
+      "path": "tests/gpu/amd/polaris/runtime_test.c",
+      "sha256": "5182aeaa982f8d6dc25dc100b20ff1e00b8556fe5a47be5736e9fcf6a04e9355",
+      "bytes": 14570
+    },
+    {
+      "path": "tests/gpu/amd/polaris/sdma/engine.mk",
+      "sha256": "80d9a3ecaf3f9ae434c0e6f4efebe4fd628d04be6658d45daa40fb9f53cce99f",
+      "bytes": 1255
+    },
+    {
+      "path": "tests/gpu/amd/polaris/sdma/engine_test.c",
+      "sha256": "ebc3a53a8deb38a2f07b9927df568e007f23b7f03310442ef506eeb8b847ddd9",
+      "bytes": 7134
+    },
+    {
+      "path": "tests/gpu/amd/polaris/sdma/model.h",
+      "sha256": "8eb68d7888e263789de420c3491db4face9459e2f2ac48878893ddaafc5b63a1",
+      "bytes": 5939
+    },
+    {
+      "path": "tests/gpu/amd/polaris/sdma/packet.mk",
+      "sha256": "7445807a1ebdb10da3775deeef42fa62884e960b3eb8dff4609e156d95208e76",
+      "bytes": 1189
+    },
+    {
+      "path": "tests/gpu/amd/polaris/sdma/packet_test.c",
+      "sha256": "621388d4baaff9ee354e1e1fa0ebdbf9e153d3fac7bc123640259c61c9a537ad",
+      "bytes": 8072
+    },
+    {
+      "path": "tests/gpu/amd/polaris/sdma/queue.mk",
+      "sha256": "0014ee809d5164d322196e0864c48c754e1813bf593358659113f92889ed0606",
+      "bytes": 1208
+    },
+    {
+      "path": "tests/gpu/amd/polaris/sdma/queue_test.c",
+      "sha256": "a1a1ed9c436ef93a124161098aebfadb13d2a8d571468ae44403d1a57abd221b",
+      "bytes": 5530
+    },
+    {
+      "path": "tests/gpu/amd/polaris/smu/files.py",
+      "sha256": "0bdcee64935e4ba09c7acc87c14064f1432bcf4aedad27862fa82705766f5aaf",
+      "bytes": 4143
+    },
+    {
+      "path": "tests/gpu/amd/polaris/smu/loader.mk",
+      "sha256": "269bf36df25d34bcc45703ef2d9ed6dfa12f8cf3893f25e05d5880dc9c7b1b12",
+      "bytes": 1276
+    },
+    {
+      "path": "tests/gpu/amd/polaris/smu/loader_test.c",
+      "sha256": "2529d6a22a871272df198a054829de1fb6c772ddf8845ed6207998a9081a9dbe",
+      "bytes": 11883
+    },
+    {
+      "path": "tests/gpu/amd/polaris/smu/mailbox.mk",
+      "sha256": "3c64fa6a7768dedf15f3da76f295e600730005af7778c96d2ddd11eb72ca0fea",
+      "bytes": 1275
+    },
+    {
+      "path": "tests/gpu/amd/polaris/smu/mailbox_test.c",
+      "sha256": "242cc43506e4ce1013ca0557070794d69b8d9f7696ac981ffd7b318ff9866db4",
+      "bytes": 10018
+    },
+    {
+      "path": "tests/gpu/amd/polaris/smu/stage.mk",
+      "sha256": "18ab5c5bb304b35b35537b3e50de1547e19eddc76df1e4e6b59da6f7cf73f0d9",
+      "bytes": 2747
+    },
+    {
+      "path": "tests/gpu/amd/polaris/smu/stage_test.c",
+      "sha256": "b61fc450cac30c60551b492a154f59eee682fb77b033e9a1d72062c5d76a1378",
+      "bytes": 7133
+    },
+    {
+      "path": "tests/gpu/amd/polaris/smu/toc.mk",
+      "sha256": "273c3403ab88eb3c0637a3032047eed309e216907509a0a977dfdd9d738299af",
+      "bytes": 1248
+    },
+    {
+      "path": "tests/gpu/amd/polaris/smu/toc_test.c",
+      "sha256": "b3bcae8c36ff61578e0731f0e2482ccdc54427bdf0547c7fda02ce087f77101c",
+      "bytes": 5965
+    },
+    {
+      "path": "tests/gpu/amd/rv100/engine.mk",
+      "sha256": "df286a5bc233ff70e0308a184e4545ff90ab2befd99203507c25af830bd07565",
+      "bytes": 2361
+    },
+    {
+      "path": "tests/gpu/amd/rv100/engine_test.c",
+      "sha256": "7bc63837370d0a05983d5cc5602c515042102968956532d22235b112cd358cd5",
+      "bytes": 21080
+    },
+    {
+      "path": "tests/gpu/amd/rv100/present.mk",
+      "sha256": "a59fbca16656634b1a721e2c6b02aa79235db55a90beb46f38746337400f34f1",
+      "bytes": 808
+    },
+    {
+      "path": "tests/gpu/amd/tests.mk",
+      "sha256": "31163a8479fe62944e005dc3c46329f4677e2931bcd89c669084b9a6bd735786",
+      "bytes": 1442
+    },
+    {
+      "path": "tests/tools/make/wired.mk",
+      "sha256": "6180354cd01b40f41ed20db6a3f8010a4d152776b0500c5e36dd902c5cfeba68",
+      "bytes": 293
+    },
+    {
+      "path": "tests/tools/make/wired.py",
+      "sha256": "c618371e9562ee36b0736f957b4daebcf53f7d07a49689390b7f7c12d669cf07",
+      "bytes": 4744
+    },
+    {
+      "path": "tools/audit_tests.py",
+      "sha256": "62779ecee1711e8e8c30d7157f4dc4d11368ab4e81963dd89de3ebc3444568c7",
+      "bytes": 29492
+    },
+    {
+      "path": "tools/gpu/amd/bundle.c",
+      "sha256": "a356fb6c2f3706505a417947f306d8ae6afa77227a0b7e9303e705a54c88f7f7",
+      "bytes": 3444
+    },
+    {
+      "path": "tools/gpu/amd/firmware.c",
+      "sha256": "caea07c1e4c9de7de58a53f57195348975bcea0f623f26115156d685a14710ce",
+      "bytes": 1958
+    },
+    {
+      "path": "tools/gpu/amd/stage.c",
+      "sha256": "779b559e711251c254f5b3118a441d9260b74f84661d05a56bbdc37cbb1ce815",
+      "bytes": 2578
+    },
+    {
+      "path": "tools/mk_prereq.py",
+      "sha256": "f55bb189afd86641ee62bf23a56e0f3507cc866d26f49ac7c09c94ad0aad99bd",
+      "bytes": 6526
+    },
+    {
+      "path": "tools/mk_wired.py",
+      "sha256": "c4cf4b0c739fa5eb668df1c6a7afbf89d4b4a390486a8fd7d3c7475dd57dc1f3",
+      "bytes": 4605
+    },
+    {
+      "path": "tools/negctl_drift.py",
+      "sha256": "757e3f24f75f3932d389840bedb95b5ad8502a168cab4d0bf10a108dc0e26984",
+      "bytes": 13475
+    }
+  ],
+  "artifacts": [
+    {
+      "path": "/Users/wangzhe/system/LogitOS/build/gpu/amd/rx580-kernel/kernel.elf",
+      "sha256": "c45d0910a1100bdc9e863409d508235d8928a8faea17f16dedeb530e5199b447",
+      "bytes": 7723912
+    },
+    {
+      "path": "/Users/wangzhe/system/LogitOS/build/gpu/amd/rx580-kernel/logit.iso",
+      "sha256": "4bcdf373900f6727ff64e68951137b363936fbc0ccefd7d95057cec530466409",
+      "bytes": 8179712
+    },
+    {
+      "path": "/Users/wangzhe/system/LogitOS/build/gpu/amd/rx580-control/kernel.elf",
+      "sha256": "c3d23297cbd6206707ad4bbf27a6b5086b8904d261574b9183ebfa8786682cd5",
+      "bytes": 7723096
+    },
+    {
+      "path": "/Users/wangzhe/system/LogitOS/build/gpu/amd/rx580-control/logit.iso",
+      "sha256": "7f21d87b8960fd13cfd29350f4275c061a1d17cd7f6c40ce471664b1dedeabac",
+      "bytes": 8179712
+    }
+  ]
+}

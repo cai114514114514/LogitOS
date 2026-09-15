@@ -1,0 +1,109 @@
+{
+  "negative": {
+    "expected_failure": "payload mismatch for image 8"
+  },
+  "positive": {
+    "bytes": 385024,
+    "sha256": "a2e734cd37263f1ab1d8d406f2a649f326e0f7b536329f10503672daa7088c4d",
+    "entries": [
+      {
+        "id": 10,
+        "offset": 4096,
+        "toc_bytes": 16404,
+        "allocation_bytes": 20480
+      },
+      {
+        "id": 3,
+        "offset": 24576,
+        "toc_bytes": 8596,
+        "allocation_bytes": 12288
+      },
+      {
+        "id": 4,
+        "offset": 36864,
+        "toc_bytes": 16788,
+        "allocation_bytes": 20480
+      },
+      {
+        "id": 5,
+        "offset": 57344,
+        "toc_bytes": 16788,
+        "allocation_bytes": 20480
+      },
+      {
+        "id": 6,
+        "offset": 77824,
+        "toc_bytes": 262164,
+        "allocation_bytes": 266240
+      },
+      {
+        "id": 7,
+        "offset": 344064,
+        "toc_bytes": 404,
+        "allocation_bytes": 4096
+      },
+      {
+        "id": 8,
+        "offset": 348160,
+        "toc_bytes": 404,
+        "allocation_bytes": 4096
+      },
+      {
+        "id": 1,
+        "offset": 352256,
+        "toc_bytes": 12436,
+        "allocation_bytes": 16384
+      },
+      {
+        "id": 2,
+        "offset": 368640,
+        "toc_bytes": 12436,
+        "allocation_bytes": 16384
+      }
+    ]
+  },
+  "required_mask": "0x47e",
+  "present_mask": "0x5fe",
+  "missing_mask": "0",
+  "mapped": false,
+  "loaded": false,
+  "physical_hardware_tested": false,
+  "inputs": {
+    "polaris10_ce.bin": {
+      "bytes": 8852,
+      "sha256": "d1664bd98b69bf21c2fb4e6654860e6648d2a202eeb2175e718982ffb7be1dc5"
+    },
+    "polaris10_me.bin": {
+      "bytes": 17044,
+      "sha256": "db550bf611ed416a93057b207014ee78b0abe90e5474995b56e915133ff4d1b0"
+    },
+    "polaris10_mec.bin": {
+      "bytes": 262824,
+      "sha256": "c19c1e2e36b47c4a8c25d601f5ae04a26458d98c3000f851d1be5c3a0a424b07"
+    },
+    "polaris10_mec2.bin": {
+      "bytes": 262824,
+      "sha256": "c19c1e2e36b47c4a8c25d601f5ae04a26458d98c3000f851d1be5c3a0a424b07"
+    },
+    "polaris10_pfp.bin": {
+      "bytes": 17044,
+      "sha256": "066cf60af4cf266eb302c8d327513159d964e1bef9dacbb65a6b07483bbd440a"
+    },
+    "polaris10_rlc.bin": {
+      "bytes": 23488,
+      "sha256": "a5d4c2d3acc5c3c4988b95855fe21a5f682552b2b065f76439370835178ccbaf"
+    },
+    "polaris10_sdma.bin": {
+      "bytes": 12692,
+      "sha256": "e27b3ec976f87e32883b9190e653b20d27f9e77da8dd2d77eeb10c35ee9f1e61"
+    },
+    "polaris10_sdma1.bin": {
+      "bytes": 12692,
+      "sha256": "23dd73eb1316d40a681841b4d3d116c5cae6d8317cebe8f5e1f9e5dec6de5c87"
+    },
+    "polaris10_smc.bin": {
+      "bytes": 130216,
+      "sha256": "f7ac568d6e2098a26fc61fc321df1330f9d8952e9b0b47e0309f1d8e6b6727fb"
+    }
+  }
+}

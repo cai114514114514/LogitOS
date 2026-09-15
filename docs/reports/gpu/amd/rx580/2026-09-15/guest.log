@@ -1,0 +1,1 @@
+AMD_RV100_PRESENT_GUEST: PASS visible GPU copies + completed desktop presents + scanout readback; CPU control and desktop parity passed

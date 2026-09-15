@@ -1,0 +1,481 @@
+FAIL: Command write preserves W1C Status
+FAIL: halfword uses one native write without neighbour read
+FAIL: byte write preserves W1C Status
+FAIL: explicit Status byte clear touches selected lane only
+PCI hardware ports: 7 checks, 4 failed
+negative control OK: wide-write
+FAIL: MCFG base remains relative to bus zero
+FAIL: maps actual bus-two physical window
+FAIL: extended halfword targets actual selected function
+FAIL: extended byte targets actual selected lane
+PCI hardware ecam: 7 checks, 4 failed
+negative control OK: bus-relative
+FAIL: physical PCI stays level-triggered
+PCI hardware intx: 3 checks, 1 failed
+negative control OK: all-edge
+PCI hardware ports: 7 checks, 0 failed
+PCI hardware ecam: 7 checks, 0 failed
+PCI hardware intx: 3 checks, 0 failed
+[pci] 00:01.0 BAR0 probe refused: decode stayed enabled
+[pci] 00:01.0 BAR0 probe refused: decode stayed enabled
+[pci] 00:01.0 BAR0 restore failed; decode left off
+[pci] 00:01.0 BAR0 high restore failed; decode left off
+[pci] 00:01.0 BAR0 Command restore failed; decode=off
+
+PCI tests: 58 checks, 0 failed
+[device] PCI 02:03.1 Command enable rejected (want=407 got=403 restore=400)
+[device] PCI 02:03.1 Command unavailable
+[device] PCI 02:03.1 Command disable rejected (want=400 got=404)
+[dev] 0000:00:00.0 8086:2922 class=01.06.01 test         driver=quirk
+[dev] 0000:00:01.0 1b36:0010 class=01.06.01 test         driver=generic
+[dev] 0000:00:02.0 10ec:8139 class=02.00.00 test         driver=net
+[dev] 0000:00:03.0 dead:beef class=0d.00.00 test         driver=-
+[dev] 4 device(s), 3 bound, 1 unclaimed
+
+Device-model tests: 44 checks, 0 failed
+[irq] 0000:00:01.0: msi-x vector 96 (t)
+[irq] 0000:00:03.0: msi vector 98 (t)
+[irq] 0000:00:04.0: msi vector 99 (t)
+[irq] 0000:00:05.0: intx vector 100 (t)
+[irq] 0000:00:07.0: intx vector 101 (t)
+[irq] 0000:00:07.0: msi vector 102 (t)
+[irq] 0000:00:08.0: intx vector 103 (t)
+[irq] 0000:00:09.0: INTx source disable readback failed
+[irq] 0000:00:0c.0: msi vector 107 (fault-msi-release)
+[irq] 0000:00:0d.0: msi-x vector 108 (fault-msix-release)
+[irq] 0000:00:13.0: MSI source could not be quiesced; stopping
+[irq] 0000:00:14.0: MSI-X source could not be quiesced; stopping
+[irq] 0000:00:0e.0: msi-x vector 111 (fault-alt-msi)
+[irq] 0000:00:0f.0: msi vector 112 (fault-alt-msix)
+[irq] 0000:00:10.0: intx vector 113 (fault-no-lapic)
+[irq] 0000:00:11.0: intx vector 114 (fault-forced-intx)
+[irq] refusing MSI 8-bit destination apic_id=256
+
+MSI/MSI-X/INTx tests: 49 checks, 0 failed
+PCI_INTX_NEGCTL_FIRST_ONLY: PCI INTx: 43 checks, 3 failures
+PCI_INTX_NEGCTL_SKIP_MASK: PCI INTx: 43 checks, 5 failures
+PCI_INTX_NEGCTL_NO_MEMBER_DRAIN: PCI INTx: 43 checks, 1 failures
+LOGIT_X2APIC_NEGCTL_SKIP_ROUTE_READBACK: PCI INTx: 1 checks, 1 failures
+LOGIT_X2APIC_NEGCTL_SKIP_LEGACY_ROLLBACK: PCI INTx: 1 checks, 1 failures
+LOGIT_X2APIC_NEGCTL_ALLOW_DUPLICATE_GSI: PCI INTx: 1 checks, 1 failures
+LOGIT_X2APIC_NEGCTL_FREE_UNSAFE_INTX: PCI INTx: 1 checks, 1 failures
+LOGIT_X2APIC_NEGCTL_SKIP_INTX_SOURCE_READBACK: PCI INTx: 1 checks, 1 failures
+IRQ_NEGCTL_EARLY_EOI: PCI INTx: 43 checks, 2 failures
+positive: PCI INTx: 43 checks, 0 failures
+negative control ok: exactly 6 of 55 checks fail with one-NIC binding
+negative control ok: primary-only IRQ registration fails the real multi-NIC route check
+[net] virtio-net: found 1af4:1000 at 0000:00:04.0
+[net] NIC bound: eth0 = virtio-net  MAC 52:54:0:0:0:71  irq=10
+[net] e1000: found 8086:100e at 0000:00:03.0
+[net] NIC bound: eth1 = e1000  MAC 52:54:0:0:0:e1  irq=11
+[net] rtl8139: found 10ec:8139 at 0000:00:05.0
+[net] NIC bound: eth2 = rtl8139  MAC 52:54:0:0:0:39  irq=9
+[net] rtl8169: 10ec:8168 found but the interface table is full (NETIF_MAX=4); left unclaimed
+[net] if 1 lo flags up running loopback  127.0.0.1/8
+[net] if 2 eth0 flags up running broadcast  mac 52:54:0:0:0:71 drv virtio-net irq=10  [primary]
+[net] if 3 eth1 flags up running broadcast  mac 52:54:0:0:0:e1 drv e1000 irq=11
+[net] if 4 eth2 flags up running broadcast  mac 52:54:0:0:0:39 drv rtl8139 irq=9
+ok   netdev_init bound a NIC
+ok   late init cannot repeat the raw boot probe or duplicate interfaces
+ok   index RT_OIF_LO exists
+ok   index 1 is 'lo' -- registered before any card
+ok   lo carries NETIF_F_LOOPBACK
+ok   lo has no device: an interface is not a card
+ok   lo holds 127.0.0.1/8 -- the whole block, not a /32
+ok   netdev_loopback_ifindex agrees with route.h's constant
+ok   the table is full: lo plus three of the four cards
+ok   eth0 is the virtio NIC -- NIC-line priority, not enumeration order
+ok   eth1 is the e1000, which enumerated FIRST and is second in priority
+ok   eth2 is the rtl8139
+ok   the fourth card is refused: the table is full and says so
+ok   and the refused card is left UNCLAIMED for dev_probe_all to report
+ok   the primary NIC's index is route.h's RT_OIF_NIC0
+ok   netdev_primary_ifindex agrees
+ok   the interface copied the card's MAC
+ok   netdev_mac() is the PRIMARY's MAC, unchanged in meaning
+ok   netdev_name() is the primary's
+ok   netdev_present() still means 'a NIC is bound'
+ok   netdev_tx still goes to the primary card
+ok   netdev_tx_if(eth1) reaches the SECOND card -- unreachable before
+ok   netdev_tx_if refuses loopback: it has no card to hand bytes to
+ok   netdev_tx_if refuses an index that is not an interface
+ok   netdev_tx_if refuses index 0, which is never valid
+ok   netdev_rx_poll drains all three cards (1+2+4; no other subset sums to 7)
+ok   and does not touch the card that never bound
+ok   netdev_irq acks every card -- PCI INTx lines are shared
+ok   early callback installation keeps all NIC interrupt sources masked
+ok   legacy netdev_irq_line still reports the primary's firmware line
+[net] IRQ route: eth0 = virtio-net vector 97 via device model
+[net] IRQ route: eth1 = e1000 unavailable; polling
+[net] IRQ route: eth2 = rtl8139 vector 98 via device model
+ok   failed IRQ registration leaves that NIC polled and routes the others
+ok   every bound interrupt NIC uses device-model registration
+ok   NIC registration uses supported INTx and restores the global preference
+ok   a rejected IRQ request does not publish a callback or mode
+ok   unbound PCI cards and loopback do not acquire NIC interrupt handlers
+ok   only successfully routed NICs unmask their interrupt sources
+[net] IRQ route: eth1 = e1000 vector 96 via device model
+ok   retry wires only the failed NIC and reuses existing registrations
+ok   repeated NIC IRQ routing does not allocate duplicate handlers
+ok   retry arms the failed NIC once and repeat routing does not rearm others
+ok   registered callback dispatches only its own PCI NIC
+ok   detached or retiring PCI bindings do not enter stale NIC callbacks
+ok   an address can be given to an interface
+ok   and a SECOND one, which net_cfg.ip cannot represent at all
+ok   the interface holds both
+ok   re-adding an address updates its mask instead of consuming a slot
+ok   netif_src_for picks the address whose own prefix contains the dst
+ok   and the other one for the other subnet
+ok   a destination in neither prefix falls back to the first address
+ok   loopback sources from 127.0.0.1
+ok   an unknown interface has no source address, and says 0 rather than guessing
+ok   127.0.0.1 is ours
+ok   so is the SECOND address of the primary card
+ok   8.8.8.8 is not
+ok   a full address list refuses rather than overwriting an address
+ok   an address cannot be given to an interface that does not exist
+
+netif_test: 55 checks, 0 failed
+netif_test: ALL PASS
+82540 ID negctl OK: dropping the four rows reddens exactly 4 checks
+net_drv_test: 136 checks passed
+PCNET_NEGCTL: rejected delivery of an errored RX descriptor (exactly one failure)
+NIC_RESULT: 2 valid records accepted; 7 corrupt/split/ambiguous records rejected
+PCNET_RING: 16 checks, 0 failures
+E1000E_NEGCTL: rejected MDIC READY+ERROR (exactly one failure)
+NIC_RESULT: 2 valid records accepted; 7 corrupt/split/ambiguous records rejected
+E1000E_RING: 13 checks, 0 failures
+EXPECTED-FAIL old_nvme_queue_grant: NVMe honors controller SQ queue grant; NVMe honors controller CQ queue grant
+EXPECTED-FAIL old_nvme_scan: NVMe finds bridge-bus multifunction endpoint
+EXPECTED-FAIL old_ahci_mem_command_readback: AHCI refuses MEM-decode drop before BAR mapping
+EXPECTED-FAIL old_ahci_master_command_readback: AHCI refuses bus-master drop after quiescing firmware ports
+EXPECTED-FAIL old_ahci_restore_failure_continue: AHCI fail-stops when partial Command enable cannot be restored
+EXPECTED-FAIL old_ahci_early_bme: AHCI enables BME only after BOHC and firmware-port stop
+EXPECTED-FAIL old_ahci_skip_firmware_stop: AHCI enables BME only after BOHC and firmware-port stop
+EXPECTED-FAIL old_ahci_bme_isolation_continue: AHCI fail-stops if failed BME enable cannot be isolated
+EXPECTED-FAIL old_ahci_firmware_bme_disable_continue: AHCI fail-stops if firmware BME cannot be disabled after handoff
+EXPECTED-FAIL old_ahci_sectors: AHCI rejects 4Kn before registering a disk; AHCI rejects invalid zero logical-sector size
+EXPECTED-FAIL old_ahci_handoff: AHCI enables BME only after BOHC and firmware-port stop; AHCI refuses controller while firmware retains ownership
+storage hardware: 37 checks, 0 failed
+PASS control: first-interface-only binding failed the two-interface assertion
+PASS control: treating absolute coordinates as deltas failed tablet normalization
+usb_hid_test: ok (QEMU usb-kbd and usb-mouse descriptors parse and decode; report-ID multiplexing; 12-bit cross-byte axes; Logical Maximum 0xFF; sign extension by Logical Minimum; truncated/Push-Pop/oversized/inverted descriptors rejected; full US keymap)
+usb_input_extensions: PASS composite interfaces, multiplexed roles, modifier snapshots, absolute tablet, NKRO, protocol refusal
+usb_hid_test: ok (QEMU usb-kbd and usb-mouse descriptors parse and decode; report-ID multiplexing; 12-bit cross-byte axes; Logical Maximum 0xFF; sign extension by Logical Minimum; truncated/Push-Pop/oversized/inverted descriptors rejected; full US keymap)
+python3 tests/unit/dma_virtio_run.py --negative pci-command-ignore
+FAIL: PCI Command failure blocks BAR mapping (173)
+dma-virtio: 139 checks, 1 failed
+negative control OK: pci-command-ignore
+python3 tests/unit/dma_virtio_run.py --negative wrong-pci-function
+FAIL: explicit transport retains selected PCI function (187)
+FAIL: same-ID devices have separate MMIO domains (188)
+FAIL: second probe does not reset first input device (189)
+dma-virtio: 139 checks, 3 failed
+negative control OK: wrong-pci-function
+python3 tests/unit/dma_virtio_run.py --negative queue-cpu-address
+FAIL: queue register uses physical, not CPU alias (198)
+dma-virtio: 139 checks, 1 failed
+negative control OK: queue-cpu-address
+python3 tests/unit/dma_virtio_run.py --negative false-quiescence
+FAIL: failed reset quarantines submitted payload (205)
+FAIL: cannot free quarantined payload (207)
+FAIL: failed reset retains rings (213)
+FAIL: unacknowledged GPU backing retained on init unwind (234)
+FAIL: normal GPU remove retains backing until reset ACK (252)
+FAIL: failed device reset still revokes CPU framebuffer borrowing (254)
+FAIL: unacknowledged donations remain allocated (268)
+FAIL: balloon PFN stage quarantined too (269)
+FAIL: unsafe direct DMA must not return caller ownership (289)
+dma-virtio: 139 checks, 9 failed
+negative control OK: false-quiescence
+python3 tests/unit/dma_virtio_run.py --negative balloon-cpu-pfn
+FAIL: balloon payload equals held guest physical PFN (148)
+FAIL: balloon payload equals held guest physical PFN (148)
+FAIL: balloon payload equals held guest physical PFN (148)
+FAIL: balloon payload equals held guest physical PFN (148)
+FAIL: balloon payload equals held guest physical PFN (148)
+FAIL: balloon payload equals held guest physical PFN (148)
+FAIL: balloon payload equals held guest physical PFN (148)
+FAIL: balloon payload equals held guest physical PFN (148)
+FAIL: balloon payload equals held guest physical PFN (148)
+FAIL: balloon payload equals held guest physical PFN (148)
+FAIL: balloon payload equals held guest physical PFN (148)
+dma-virtio: 139 checks, 11 failed
+negative control OK: balloon-cpu-pfn
+python3 tests/unit/dma_virtio_run.py --negative gpu-cpu-backing
+FAIL: GPU nested backing is high guest physical (127)
+FAIL: GPU backing DMA range resolves (128)
+FAIL: GPU nested backing is high guest physical (127)
+FAIL: GPU backing DMA range resolves (128)
+FAIL: GPU nested backing is high guest physical (127)
+FAIL: GPU backing DMA range resolves (128)
+FAIL: all device addresses resolve independently of CPU aliases (317)
+dma-virtio: 139 checks, 7 failed
+negative control OK: gpu-cpu-backing
+python3 tests/unit/dma_virtio_run.py --negative fb-skip-drain
+FAIL: stalled CPU writer prevents normal free (241)
+FAIL: CPU drain timeout quarantines GPU backing (242)
+FAIL: revoked pointer prevents new CPU writes and cursor commands (244)
+dma-virtio: 139 checks, 3 failed
+negative control OK: fb-skip-drain
+python3 tests/unit/dma_virtio_run.py --positive
+dma-virtio: 139 checks, 0 failed
+In file included from /Users/wangzhe/system/LogitOS/tests/unit/dma_driver_test.c:24:
+/Users/wangzhe/system/LogitOS/build-driver-full-host/dma-drivers-negctl/3-capability/dma_driver.inc:225:17: warning: unused function 'rtl_dma_mask' [-Wunused-function]
+  225 | static uint64_t rtl_dma_mask(const struct device *dev, uint32_t txconfig)
+      |                 ^~~~~~~~~~~~
+1 warning generated.
+net/e1000: address, 1 cases PASS
+net/e1000: lifetime, 1 cases PASS
+net/e1000: pci-command, 1 cases PASS
+net/rtl8139: address, 1 cases PASS
+net/rtl8139: lifetime, 1 cases PASS
+net/rtl8139: pci-command, 1 cases PASS
+net/rtl8139: rx-overflow, 1 cases PASS
+net/rtl8169: address, 1 cases PASS
+net/rtl8169: lifetime, 1 cases PASS
+net/rtl8169: pci-command, 1 cases PASS
+net/rtl8169: capability, 1 cases PASS
+usb/xhci: address, 1 cases PASS
+usb/xhci: lifetime, 1 cases PASS
+audio/hda: address, 1 cases PASS
+audio/hda: lifetime, 1 cases PASS
+EXPECTED-FAIL nvme-early-bme: MEM-only guard is mandatory
+EXPECTED-FAIL e1000-ignore-error: checked result must gate BAR access
+EXPECTED-FAIL e1000e-d0-before-bme-off: BME isolation precedes PMCSR D0
+EXPECTED-FAIL ignore-readback: 2 exact Command assertions
+PCI caller ordering: 9 production paths PASS
+PCI Command positive: 44 checks PASS
+net/e1000: positive, 76 cases PASS
+net/rtl8139: positive, 7 cases PASS
+net/rtl8169: positive, 56 cases PASS
+usb/xhci: positive, 6 cases PASS
+audio/hda: positive, 5 cases PASS
+BLK_LATE_NEGCTL: duplicate late partition publication rejected
+negative control OK -- with the interlock removed, these fail:
+FAIL: no second command was issued on top of the first -- got 1, want 0
+FAIL: the async request was completed by the other thread -- got 0, want 1
+FAIL: its data is correct
+BLK-ASYNC FAILED: 88 checks, 3 failures
+BLK-ASYNC FAILED: 88 checks, 3 failures
+BLK-ASYNC OK: 88 checks, 0 failures
+EXPECTED-FAIL EHCI NO_TT: FS split records actual TT hub and port
+EXPECTED-FAIL EHCI FULL_SHORT: short packet reports exact actual bytes
+EXPECTED-FAIL EHCI IGNORE_BIOS: firmware ownership timeout refuses controller
+EXPECTED-FAIL EHCI NO_HALT: unacknowledged hardware halt is reported before DMA classification
+EXPECTED-FAIL EHCI PRE_HANDOFF_BME: pre-ownership PCI gate clears bus master and confirms MEM/INTx state
+EXPECTED-FAIL EHCI COMMAND_NO_READBACK: PCI quiet gate refuses a dropped MEM-decode readback
+EXPECTED-FAIL EHCI MASTER_BEFORE_HALT: bus master cannot start before an acknowledged controller halt
+EXPECTED-FAIL EHCI RESTORE_NO_READBACK: unconfirmed PCI Command restore is retained as an unsafe state
+EXPECTED-FAIL EHCI CLEAR_MASTER_NO_READBACK: teardown retains DMA when bus-master clear is not confirmed
+EXPECTED-FAIL EHCI POST_HANDOFF_RESTORE_BME: post-semaphore handoff failure retains quiet ownership and blocks reprobe (exactly one)
+EXPECTED-FAIL EHCI SKIP_ISOLATE_ON_HALT_FAIL: halt-timeout shutdown still isolates BME and retains submitted DMA (exactly one)
+EHCI production: 56 checks, 0 failures
+USB_HUB_NEGCTL_NO_CHILDREN: USB hub/core: 20 checks, 5 failures
+USB_HUB_NEGCTL_NO_TT: USB hub/core: 32 checks, 5 failures
+USB_HUB_NEGCTL_CONTROL_ONE_DIRECTION: USB hub/core: 32 checks, 1 failures
+positive: USB hub/core: 32 checks, 0 failures
+residual: xHCI transfers: 21 checks, 2 failures
+accounting: xHCI transfers: 21 checks, 3 failures
+dequeue: xHCI transfers: 21 checks, 1 failures
+toggle: xHCI transfers: 21 checks, 1 failures
+positive: xHCI transfers: 21 checks, 0 failures
+NEGATIVE CONTROL tag: real guard removed; "FAIL reject stale CSW tag" observed
+NEGATIVE CONTROL signature: real guard removed; "FAIL reject wrong CSW signature" observed
+NEGATIVE CONTROL residue: real guard removed; "FAIL reject residue greater than requested data" observed
+NEGATIVE CONTROL csw-length: real guard removed; "FAIL reject truncated CSW" observed
+NEGATIVE CONTROL short-data: real guard removed; "FAIL reject fabricated full success after short data" observed
+NEGATIVE CONTROL phase: real guard removed; "FAIL phase error requires reset" observed
+NEGATIVE CONTROL block-residue: real guard removed; "FAIL block API rejects command-passed CSW with incomplete residue" observed
+NEGATIVE CONTROL flush: real guard removed; "FAIL block flush issues SYNCHRONIZE CACHE rather than success stub" observed
+usb-bot: 117 checks, 0 failures
+usb-storage: 124 checks, 0 failures
+EXPECTED-FAIL usb-hotplug ignore-csc: change interrupt without CSC leaves existing device untouched
+EXPECTED-FAIL usb-hotplug unlocked-detach: disconnect waits for in-flight class callback before remove
+usb-hotplug: 12 checks, 0 failures
+[smbus] 0000:00:1f.3 Intel C600/X79 io=0x500 SPD read-only 0x50-0x57
+[spd] addr=0x50 ddr3 module_mib=16384 ranks=2 device_width=8 bus_width=64 ecc_bits=8 crc=ok mfg_raw=2c80 serial=12345678 part=READONLY
+[spd] modules=1 module_capacity_mib=16384 rejected=0 read_errors=0 source=SPD-not-firmware-map
+FAIL: SPD transactions remain read-only
+X79 chipset readonly: 1 checks, 1 failed
+negative control OK: neg-write-direction
+FAIL: byte0 bit7 selects 117-byte CRC coverage
+X79 chipset crc: 1 checks, 1 failed
+negative control OK: neg-crc-coverage
+[smbus] 0000:00:1f.3 Intel C600/X79 io=0x500 SPD read-only 0x50-0x57
+[spd] addr=0x50 read-error=-3 scan-aborted
+[spd] modules=0 module_capacity_mib=0 rejected=0 read_errors=1 source=SPD-not-firmware-map
+FAIL: owned timeout is killed, cleared and bounded
+X79 chipset kill: 1 checks, 1 failed
+negative control OK: neg-timeout-recovery
+[smbus] 0000:00:1f.3 Intel C600/X79 io=0x500 SPD read-only 0x50-0x57
+[spd] addr=0x50 ddr3 module_mib=16384 ranks=2 device_width=8 bus_width=64 ecc_bits=8 crc=ok mfg_raw=2c80 serial=12345678 part=CMD-LOCKED
+[spd] modules=1 module_capacity_mib=16384 rejected=0 read_errors=0 source=SPD-not-firmware-map
+FAIL: ignored I/O-decode write is refused before BAR access
+X79 chipset command: 1 checks, 1 failed
+negative control OK: neg-command-readback
+[smbus] 0000:00:1f.3 Intel C600/X79 io=0x500 SPD read-only 0x50-0x57
+[spd] addr=0x50 read-error=-3 scan-aborted
+[spd] modules=0 module_capacity_mib=0 rejected=0 read_errors=1 source=SPD-not-firmware-map
+[smbus] 0000:00:1f.3 Intel C600/X79 io=0x500 SPD read-only 0x50-0x57
+[spd] addr=0x50 read-error=-4 scan-aborted
+[spd] modules=0 module_capacity_mib=0 rejected=0 read_errors=1 source=SPD-not-firmware-map
+FAIL: ignored KILL permanently quarantines without clearing or releasing ownership
+X79 chipset kill-ignored: 1 checks, 1 failed
+negative control OK: neg-kill-readback
+[smbus] 0000:00:1f.3 C600/X79 host enable refused
+[smbus] 0000:00:1f.3 Intel C600/X79 io=0x500 SPD read-only 0x50-0x57
+[spd] modules=0 module_capacity_mib=0 rejected=0 read_errors=0 source=SPD-not-firmware-map
+FAIL: unconfirmed PCI Command restore quarantines before all BAR I/O
+X79 chipset command-restore: 1 checks, 1 failed
+negative control OK: neg-command-restore-readback
+[smbus] 0000:00:1f.3 Intel C600/X79 io=0x500 SPD read-only 0x50-0x57
+[spd] addr=0x50 ddr3 module_mib=16384 ranks=2 device_width=8 bus_width=64 ecc_bits=8 crc=ok mfg_raw=2c80 serial=12345678 part=X79-16G-RDIMM
+[spd] addr=0x51 ddr3 module_mib=8192 ranks=2 device_width=8 bus_width=64 ecc_bits=8 crc=ok mfg_raw=2c80 serial=12345678 part=X79-8G-UDIMM
+[spd] addr=0x52 rejected=crc
+[spd] addr=0x53 rejected=not-ddr3
+[spd] modules=2 module_capacity_mib=24576 rejected=2 read_errors=0 source=SPD-not-firmware-map
+[smbus] 0000:00:1f.3 C600/X79 unusable I/O BAR
+[smbus] 0000:00:1f.3 C600/X79 I2C mode refused
+[smbus] 0000:00:1f.3 C600/X79 host enable refused
+[smbus] 0000:00:1f.3 C600/X79 I/O decode enable refused
+[smbus] 0000:00:1f.3 Intel C600/X79 io=0x500 SPD read-only 0x50-0x57
+[spd] addr=0x50 read-error=-3 scan-aborted
+[spd] modules=0 module_capacity_mib=0 rejected=0 read_errors=1 source=SPD-not-firmware-map
+[smbus] 0000:00:1f.3 Intel C600/X79 io=0x500 SPD read-only 0x50-0x57
+[spd] addr=0x50 read-error=-4 scan-aborted
+[spd] modules=0 module_capacity_mib=0 rejected=0 read_errors=1 source=SPD-not-firmware-map
+[smbus] 0000:00:1f.3 Intel C600/X79 io=0x500 SPD read-only 0x50-0x57
+[spd] addr=0x50 read-error=-4 scan-aborted
+[spd] modules=0 module_capacity_mib=0 rejected=0 read_errors=1 source=SPD-not-firmware-map
+X79 chipset full: 31 checks, 0 failed
+[smbus] 0000:00:1f.3 Intel C600/X79 io=0x500 SPD read-only 0x50-0x57
+[smbus] io=0x500 KILL left BUSY set; controller quarantined, semaphore retained
+[spd] addr=0x50 read-error=-5 scan-aborted
+[spd] modules=0 module_capacity_mib=0 rejected=0 read_errors=1 source=SPD-not-firmware-map
+[smbus] 0000:00:1f.3 controller quarantined; reprobe refused
+X79 chipset kill-ignored: 1 checks, 0 failed
+[smbus] 0000:00:1f.3 PCI Command restore refused old=0x6 got=0x7; controller quarantined
+[smbus] 0000:00:1f.3 C600/X79 host enable refused
+[smbus] 0000:00:1f.3 controller quarantined; reprobe refused
+X79 chipset command-restore: 1 checks, 0 failed
+X79 inventory: 6 checks, 0 failed
+NV_BOOTFB_NEGCTL: broad Pascal ID rule misidentified MX150 (exactly one failure)
+NV_BOOTFB_NEGCTL: accepting D3 violated passive-probe contract (exactly one failure)
+NV_BOOTFB: 56 checks, 0 failures
+[pci] 00:01.0 BAR0 probe refused: decode stayed enabled
+[pci] 00:01.0 BAR0 probe refused: decode stayed enabled
+[pci] 00:01.0 BAR0 restore failed; decode left off
+[pci] 00:01.0 BAR0 high restore failed; decode left off
+[pci] 00:01.0 BAR0 Command restore failed; decode=off
+
+PCI BAR safety: 5 checks, 0 failed
+FAIL: ignored decode-disable write is refused before BAR sizing
+
+PCI BAR safety: 1 checks, 1 failed
+negative control OK: neg-decode-readback
+[pci] 00:01.0 BAR0 probe refused: decode stayed enabled
+FAIL: partial decode-disable refusal restores complete PCI Command
+
+PCI BAR safety: 1 checks, 1 failed
+negative control OK: neg-partial-decode-recovery
+FAIL: failed BAR restore leaves decode off and publishes no resource
+
+PCI BAR safety: 1 checks, 1 failed
+negative control OK: neg-bar-restore-readback
+FAIL: failed 64-bit BAR high restore leaves decode off and publishes no resource
+
+PCI BAR safety: 1 checks, 1 failed
+negative control OK: neg-bar-high-restore-readback
+FAIL: failed Command restore leaves valid BAR decoded off and unpublished
+
+PCI BAR safety: 1 checks, 1 failed
+negative control OK: neg-command-restore-readback
+PCI BAR safety: positive plus 5 observed negative controls PASS
+wrote CPUID.0B negative-control source
+xeon e5 policy: PASS
+NEGCTL RED: ignoring CPUID.0B topology was rejected
+clang -std=c11 -O2 -Wall -Wextra -Werror -Ic/kernel/cpu tests/unit/xeon_e5_platform_test.c c/kernel/cpu/cpu_platform.c -o build-driver-full-host/xeon-e5-platform-test
+clang -std=c11 -O2 -Wall -Wextra -Werror -DLOGIT_LOCK_HOST -Ic/kernel/cpu tests/unit/xeon_e5_lock_diag_test.c c/kernel/cpu/spinlock.c -o build-driver-full-host/xeon-e5-lock-diag-test
+build-driver-full-host/xeon-e5-platform-test
+xeon_e5_platform: 45 checks, 0 failed
+build-driver-full-host/xeon-e5-lock-diag-test
+xeon_e5_lock_diag: CPU 30/31 preserved
+python3 tests/unit/xeon_e5_policy.py --negative-osxsave --negative-cpucount --negative-lockdiag
+NEGCTL RED: inherited-loader fixture: CR4.OSXSAVE is not explicitly cleared
+NEGCTL RED: CPU-index sysconf regression rejected
+NEGCTL RED: spinlock.c: releasing CPU index is not printed in full
+xeon e5 policy: PASS
+wrote uniform-smt negative-control source
+NEGCTL RED: uniform SMT inference rejected
+wrote leaf-b-first negative-control source
+NEGCTL RED: CPUID.0B preference rejected
+wrote model-range negative-control source
+NEGCTL RED: undocumented model stepping rejected
+wrote malformed-topology negative-control source
+NEGCTL RED: permissive malformed topology rejected
+NEGCTL RED: fabricated hybrid legacy topology rejected
+NEGCTL RED: HFI geometry without capability rejected
+clang -std=c11 -O2 -Wall -Wextra -Werror -Ic/kernel/cpu \
+	    tests/unit/raptor_lake_platform_test.c c/kernel/cpu/cpu_platform.c -o build-driver-full-host/raptor-lake-platform-test
+python3 tests/unit/raptor_lake_policy.py --check-report
+raptor_lake_report: 3 checks, 0 failed
+build-driver-full-host/raptor-lake-platform-test
+raptor_lake_platform: 106 checks, 0 failed
+LOGIT_RAPTOR_SMP_NEGCTL_APIC8: RED (wide MADT x2APIC IDs remain distinct in SMP slots)
+LOGIT_RAPTOR_SMP_NEGCTL_ASSUME_SMT2: RED (8 SMT P-cores plus 12 single-thread E-cores report 20 physical cores)
+LOGIT_RAPTOR_SMP_NEGCTL_ALL_P: RED (CPUID.1A core classes survive per-CPU recording and aggregation)
+LOGIT_RAPTOR_SMP_NEGCTL_COMMIT_PUBLISHING: RED (PUBLISHING timeout cannot enter the dense online set)
+RAPTOR_SMP_HOST: 15 checks, 0 failures
+LOGIT_X2APIC_NEGCTL_IGNORE_TYPE9: RED (MADT type9 preserves its full APIC ID and ACPI UID)
+LOGIT_X2APIC_NEGCTL_DUPLICATE_CPU: RED (matching type0/type9 records do not start a CPU twice)
+LOGIT_X2APIC_NEGCTL_MMIO_WHEN_EXTD: RED (firmware-active x2APIC selects the MSR backend)
+LOGIT_X2APIC_NEGCTL_TRUNCATE_ICR: RED (x2APIC ICR keeps all 32 destination bits)
+LOGIT_X2APIC_NEGCTL_TRUNCATE_EXTERNAL: RED (legacy external routing rejects an unrepresentable APIC ID)
+LOGIT_X2APIC_NEGCTL_SHORT_DELAY: RED (AP startup obeys the Intel INIT/SIPI wall-time minima)
+LOGIT_X2APIC_NEGCTL_IGNORE_BUSY: RED (stuck xAPIC delivery status aborts the IPI)
+LOGIT_X2APIC_NEGCTL_COMMIT_PUBLISHING: RED (PUBLISHING AP is excluded from the dense online set)
+LOGIT_X2APIC_NEGCTL_FREE_TIMEOUT: RED (a timed-out AP stack is quarantined after startup was sent)
+LOGIT_X2APIC_NEGCTL_AP_TIMER_PIC_EOI: RED (wide-BSP PIC fallback still EOIs an AP LAPIC timer locally)
+LOGIT_X2APIC_NEGCTL_SKIP_ROUTE_READBACK: PCI INTx: 1 checks, 1 failures
+LOGIT_X2APIC_NEGCTL_SKIP_LEGACY_ROLLBACK: PCI INTx: 1 checks, 1 failures
+LOGIT_X2APIC_NEGCTL_ALLOW_DUPLICATE_GSI: PCI INTx: 1 checks, 1 failures
+LOGIT_X2APIC_NEGCTL_FREE_UNSAFE_INTX: PCI INTx: 1 checks, 1 failures
+LOGIT_X2APIC_NEGCTL_SKIP_INTX_SOURCE_READBACK: PCI INTx: 1 checks, 1 failures
+initmask-positive: BKL PCI mode 5: PASS
+badver-positive: BKL PCI mode 6: PASS
+initmask: BKL PCI mode 5: FAIL
+badver: BKL PCI mode 6: FAIL
+LOGIT_X2APIC_NEGCTL_UNBIND_AFTER_IRQ_RELEASE_FAIL: Device-model tests: 44 checks, 1 failed
+LOGIT_X2APIC_NEGCTL_SKIP_INTX_SOURCE_READBACK: MSI/MSI-X/INTx tests: 1 checks, 1 failed
+LOGIT_X2APIC_NEGCTL_SKIP_MSI_SETUP_READBACK: MSI/MSI-X/INTx tests: 1 checks, 1 failed
+LOGIT_X2APIC_NEGCTL_SKIP_MSIX_SETUP_READBACK: MSI/MSI-X/INTx tests: 1 checks, 1 failed
+LOGIT_X2APIC_NEGCTL_SKIP_MSI_TEARDOWN_READBACK: MSI/MSI-X/INTx tests: 1 checks, 1 failed
+LOGIT_X2APIC_NEGCTL_SKIP_MSIX_TEARDOWN_READBACK: MSI/MSI-X/INTx tests: 1 checks, 1 failed
+LOGIT_X2APIC_NEGCTL_TRUST_STALE_SETUP_STATE: MSI/MSI-X/INTx tests: 1 checks, 1 failed
+LOGIT_X2APIC_NEGCTL_SKIP_ALTERNATE_MESSAGE_QUIESCE: MSI/MSI-X/INTx tests: 1 checks, 1 failed
+X2APIC_HOST: 39 checks, 0 failures
+positive: PCI INTx: 43 checks, 0 failures
+positive: Device-model tests: 44 checks, 0 failed
+positive: MSI/MSI-X/INTx tests: 49 checks, 0 failed
+HDA_X79_NEGCTL master-before-firmware-quiesce: exactly one observed failure: firmware DMA is stopped and read back before CRST and BME
+HDA_X79_NEGCTL ignore-stuck-firmware-run: exactly one observed failure: stuck firmware RUN state blocks CRST and BME
+HDA_X79_NEGCTL force-256-rings: exactly one observed failure: 16-entry-only command ring is negotiated and read back
+HDA_X79_NEGCTL accept-gpu-audio: exactly one observed failure: GTX 1050 display-function HDA is declined before X79 onboard audio
+HDA_X79_NEGCTL poison-singleton: exactly one observed failure: failed HDA probe clears the active instance for a later controller
+HDA_X79_NEGCTL free-unacked-dma: exactly one observed failure: unacknowledged controller reset retains hardware-owned DMA
+HDA_X79_NEGCTL remove-after-irq-failure: exactly one observed failure: failed IRQ teardown retains HDA callbacks and DMA
+HDA_X79_NEGCTL isr-early-return-on-remove: exactly one observed failure: removing ISR acknowledges both stream sources on every failed-release re-entry
+HDA_X79: 36 checks, 0 failures
+EXPECTED-FAIL PCH2 IGNORE_FW: managed firmware is explicitly refused without PHY reset
+EXPECTED-FAIL PCH2 STEAL_SWFLAG: busy SWFLAG is neither stolen nor cleared
+EXPECTED-FAIL PCH2 WRONG_PHY_ADDR: complete non-managed 82579 probe succeeds
+EXPECTED-FAIL PCH2 NO_MASTER_DRAIN: unacknowledged master drain retains every DMA buffer
+EXPECTED-FAIL PCH2 ACCEPT_RX_ERROR: RX hardware errors are never delivered
+EXPECTED-FAIL PCH2 OFFLINE_NO_ACK: offline retained IRQ acknowledges pending without scheduling
+E1000_PCH2: 154 checks, 0 failures
+ACPI_INTEGRITY_NEGCTL: pre-fix parser accepted corrupt SDT and ACPI 2.0 RSDP (2 failures)
+ACPI-SIGNATURE-NEGCTL: accepting the wrong root kind reddened exactly one check
+ACPI_INTEGRITY: 15 checks, 0 failures
+HPET-NEGCTL-OK: unsafe GAS, block-ID, and revision acceptance each reddened the host gate
+hpet_test: 18 checks, 0 failed

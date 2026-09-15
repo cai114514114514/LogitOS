@@ -1,0 +1,26 @@
+PASS: qemu exited on its own after poweroff
+PASS: [power] syncing then [power] going down, in order
+PASS: /pwprobe.txt survived the poweroff, byte-for-byte
+PASS: AML and EC discovery completed at boot without a power request
+PASS: no journal replay after a clean poweroff (contrast run-fFAIL: boot 3: boot banner appeared 0 time(s), expected >= 2 -- reboot did not actually reset the guest
+----- b1.log -----
+[fs] log: replayed 6 block(s) from an interrupted transaction
+[fsck] mount check: clean
+[fs] mounted
+[fs] /proc mounted
+LOGIT_BOOT_OK
+[power] AML ready=1 batteries=0 thermal_zones=0 AC=-1 error=0
+[power] EC bound=0 error=0
+[power] syncing...
+[power] going down
+[power] entering firmware-evaluated S5
+----- b2.log -----
+[fsck] mount check: clean
+[fs] mounted
+[fs] /proc mounted
+LOGIT_BOOT_OK
+[power] AML ready=1 batteries=0 thermal_zones=0 AC=-1 error=0
+[power] EC bound=0 error=0
+/ $ echo PWTEST-BOOT2-DONE
+PWTEST-BOOT2-DONE
+----- b3.log -----

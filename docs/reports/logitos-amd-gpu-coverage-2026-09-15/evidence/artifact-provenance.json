@@ -1,0 +1,21 @@
+{
+  "scope": "GPU driver composition isolated from concurrent BIOS loader work",
+  "current_loader_source_compiled": false,
+  "reason": "The shared-tree BIOS loader changed during the final GPU rebuild and NASM rejected that independent work; the last QEMU-validated loader and matching bootinfo object from build-audit-rv100 were reused.",
+  "loader": {
+    "source": "build-audit-rv100/bios-product/loader.bin",
+    "sha256": "3dc030b5949cc10c9e26b03b720f7b68651f45f4d9c48d25bef57a5687ea5ef4"
+  },
+  "bootinfo_object": {
+    "source": "build-audit-rv100/c/kernel/core/bootinfo.o",
+    "sha256": "8c2c635319199f82e8b6633304198070461e0f1183a25b980013345c46ad38e2"
+  },
+  "gpu_objects": {
+    "amd_accel.o": "a42b5151fea643f28eefd63aa541255f9e9febcd1d4cebf352e95b036fcf176c",
+    "amd_bootfb.o": "e432133ecc8518a7179a19278d7b56ffce7c162b48420b51422378e4f2014301",
+    "intel_bootfb.o": "667308cfdec0a5dbf7c7982bf341e093814856e6a4fb09320ce2e4e2bfd097d3",
+    "rv100_accel.o": "861d1dc7aa0800d3cd5c1bc439216b413f8b45bb039cdda021ad317b78e9cc93"
+  },
+  "kernel_elf_sha256": "676dd7e805ccba32638b5c6a5b46bc91dc2c2ffbd96a53ca90e936603ce0448b",
+  "iso_sha256": "adbced2ffcb09dbfb1618fd9945d1c89241d5d912507de60ff51704f4ee3870c"
+}

@@ -1,0 +1,4 @@
+PASS[e1000e]: transfer=0 bytes=131072 fnv1a=1767153093
+PASS[e1000e]: transfer=1 bytes=131072 fnv1a=1041145285
+PASS[e1000e]: dynamic vector=96 NIC IRQ schedules=5
+PASS[e1000e]: DHCP 10.0.2.15; two exact 128 KiB transfers; log=build/drivers/expansion/kernel/e1000e-guest/serial.log

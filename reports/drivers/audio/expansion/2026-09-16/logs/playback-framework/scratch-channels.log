@@ -1,0 +1,51 @@
+=================================================================
+==53968==ERROR: AddressSanitizer: heap-buffer-overflow on address 0x62d00003a420 at pc 0x000102f9487c bp 0x00016ce7a1b0 sp 0x00016ce7a1a8
+WRITE of size 1 at 0x62d00003a420 thread T0
+    #0 0x000102f94878 in pcm_ring_peek pcm.c:232
+    #1 0x000102f8fc60 in kaudio_thread scratch-channels.c:383
+    #2 0x000102f90b90 in pump scratch-channels-test.c:101
+    #3 0x000102f8f3c4 in eight_channel_float_input scratch-channels-test.c:276
+    #4 0x000102f8e658 in main scratch-channels-test.c:340
+    #5 0x00018f117e7c in start+0x1a1c (dyld:arm64e+0x31e7c)
+
+0x62d00003a420 is located 0 bytes after 32800-byte region [0x62d000032400,0x62d00003a420)
+allocated by thread T0 here:
+    #0 0x000103829164 in malloc+0x78 (libclang_rt.asan_osx_dynamic.dylib:arm64e+0x41164)
+    #1 0x000102f84f84 in snd_register_device scratch-channels.c:199
+    #2 0x000102f8f174 in eight_channel_float_input scratch-channels-test.c:262
+    #3 0x000102f8e658 in main scratch-channels-test.c:340
+    #4 0x00018f117e7c in start+0x1a1c (dyld:arm64e+0x31e7c)
+
+SUMMARY: AddressSanitizer: heap-buffer-overflow pcm.c:232 in pcm_ring_peek
+Shadow bytes around the buggy address:
+  0x62d00003a180: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+  0x62d00003a200: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+  0x62d00003a280: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+  0x62d00003a300: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+  0x62d00003a380: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+=>0x62d00003a400: 00 00 00 00[fa]fa fa fa fa fa fa fa fa fa fa fa
+  0x62d00003a480: fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa
+  0x62d00003a500: fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa
+  0x62d00003a580: fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa
+  0x62d00003a600: fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa
+  0x62d00003a680: fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa
+Shadow byte legend (one shadow byte represents 8 application bytes):
+  Addressable:           00
+  Partially addressable: 01 02 03 04 05 06 07 
+  Heap left redzone:       fa
+  Freed heap region:       fd
+  Stack left redzone:      f1
+  Stack mid redzone:       f2
+  Stack right redzone:     f3
+  Stack after return:      f5
+  Stack use after scope:   f8
+  Global redzone:          f9
+  Global init order:       f6
+  Poisoned by user:        f7
+  Container overflow:      fc
+  Array cookie:            ac
+  Intra object redzone:    bb
+  ASan internal:           fe
+  Left alloca redzone:     ca
+  Right alloca redzone:    cb
+==53968==ABORTING

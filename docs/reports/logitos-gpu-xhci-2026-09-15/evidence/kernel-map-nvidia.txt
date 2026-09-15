@@ -1,0 +1,17 @@
+         2071060          2071060      78b    16         build-gpu-xhci-final/c/drivers/gpu/nvidia_pascal_accel.o:(.text)
+         2071540          2071540       ab     1                 nvidia_pascal_accel_prepare
+         2071720          2071720       1a     1                 nvidia_pascal_accel_blocker_name
+         2071740          2071740       3e     1                 nvidia_pascal_accel_query
+         2071780          2071780       41     1                 nvidia_pascal_accel_reset
+         20717d0          20717d0        b     1                 nvidia_pascal_accel_fill
+         20717e0          20717e0        b     1                 nvidia_pascal_accel_copy
+         21b8ed0          21b8ed0      290    16         build-gpu-xhci-final/c/drivers/gpu/nvidia_pascal_accel.o:(.rodata)
+         2200418          2200418       24     8         build-gpu-xhci-final/c/drivers/gpu/nvidia_pascal_accel.o:(.data)
+           48efe            48efe      acc     1         build-gpu-xhci-final/c/drivers/gpu/nvidia_pascal_accel.o:(.debug_loclists)
+            f1e5             f1e5      360     1         build-gpu-xhci-final/c/drivers/gpu/nvidia_pascal_accel.o:(.debug_abbrev)
+           6a3bc            6a3bc      de7     1         build-gpu-xhci-final/c/drivers/gpu/nvidia_pascal_accel.o:(.debug_info)
+            645b             645b       38     1         build-gpu-xhci-final/c/drivers/gpu/nvidia_pascal_accel.o:(.debug_rnglists)
+            d654             d654      29c     1         build-gpu-xhci-final/c/drivers/gpu/nvidia_pascal_accel.o:(.debug_str_offsets)
+           19a38            19a38      330     1         build-gpu-xhci-final/c/drivers/gpu/nvidia_pascal_accel.o:(.debug_addr)
+            e6d0             e6d0      218     8         build-gpu-xhci-final/c/drivers/gpu/nvidia_pascal_accel.o:(.debug_frame)
+           43c29            43c29      516     1         build-gpu-xhci-final/c/drivers/gpu/nvidia_pascal_accel.o:(.debug_line)

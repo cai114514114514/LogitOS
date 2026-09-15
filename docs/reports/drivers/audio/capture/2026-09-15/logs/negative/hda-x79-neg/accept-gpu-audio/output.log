@@ -1,0 +1,2 @@
+FAIL: GTX 1050 display-function HDA is declined before X79 onboard audio
+HDA_X79: 1 checks, 1 failures

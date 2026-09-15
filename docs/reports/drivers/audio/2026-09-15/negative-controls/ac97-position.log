@@ -1,0 +1,3 @@
+FAIL 352: sound->position(sound) == 32768
+FAIL 354: sound->position(sound) == 32768
+AC97_HOST: 10667 checks, 2 failures

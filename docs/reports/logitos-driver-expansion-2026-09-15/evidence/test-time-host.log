@@ -1,0 +1,3 @@
+TIME-SWITCH-NEGCTL-OK: publishing source before seqlock reddened exactly one check
+time_test: timer heap, ns arithmetic, wrap, clamp, cross-check
+time_test: 208 checks, 0 failures

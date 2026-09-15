@@ -1,0 +1,50 @@
+[
+  {
+    "QMP": {
+      "version": {
+        "qemu": {
+          "micro": 0,
+          "minor": 0,
+          "major": 11
+        },
+        "package": ""
+      },
+      "capabilities": [
+        "oob"
+      ]
+    }
+  },
+  {
+    "return": {}
+  },
+  {
+    "return": {}
+  },
+  {
+    "return": {}
+  },
+  {
+    "timestamp": {
+      "seconds": 1789487527,
+      "microseconds": 424263
+    },
+    "event": "RESUME"
+  },
+  {
+    "return": {}
+  },
+  {
+    "timestamp": {
+      "seconds": 1789487534,
+      "microseconds": 675721
+    },
+    "event": "SHUTDOWN",
+    "data": {
+      "guest": false,
+      "reason": "host-qmp-quit"
+    }
+  },
+  {
+    "return": {}
+  }
+]

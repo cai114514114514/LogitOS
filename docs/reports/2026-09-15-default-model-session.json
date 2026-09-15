@@ -1,0 +1,86 @@
+{
+  "status": "passed",
+  "provider": "DeepSeek",
+  "model": "deepseek-flash",
+  "simulated_model": false,
+  "default_make_run": true,
+  "mode": "bios",
+  "checks": [
+    "normal launcher starts task service",
+    "arbitrary existing document survives session setup",
+    "native Finder input submits a task through make run",
+    "real report contains source facts and citations",
+    "real report is saved byte for byte",
+    "source material remains unchanged",
+    "native TextEdit input produces a reviewable revision",
+    "TextEdit candidate preserves source facts and citations",
+    "native TextEdit Apply saves the exact proposal",
+    "one gateway belongs to this session",
+    "all domain requests reached real DeepSeek"
+  ],
+  "task": [
+    "1",
+    "done",
+    "3",
+    "4",
+    "/docs/report-1.md.r3.md"
+  ],
+  "metrics": {
+    "provider": "DeepSeek",
+    "model": "deepseek-flash",
+    "calls": 4,
+    "results": [
+      {
+        "call": 1,
+        "http": 200,
+        "seconds": 2.117
+      },
+      {
+        "call": 2,
+        "http": 200,
+        "seconds": 1.832
+      },
+      {
+        "call": 3,
+        "http": 200,
+        "seconds": 2.011
+      },
+      {
+        "call": 4,
+        "http": 200,
+        "seconds": 2.442
+      }
+    ]
+  },
+  "date": "2026-09-15",
+  "problem": "make run bypassed the .env-backed model gateway",
+  "fix": "ordinary run uses agent_session; optional missing env boots offline; invalid present env fails visibly",
+  "evidence_root": "/tmp/logitos-make-run-20260915",
+  "source_commit_base": "aa64eee93",
+  "host_controls": [
+    "old QEMU-only make recipe rejected",
+    "missing env preserves disk and child exit status",
+    "present invalid env refuses online startup",
+    "installer negative controls and preservation checks",
+    "test-mk-wired: 328 fragments, 327 reachable, 1 declared"
+  ],
+  "artifacts": {
+    "logit.iso": "461b9d270272dafbd35edca6e787b9af45847bfb4fc3993a9858ac02a98d03f5",
+    "agentd.aex": "60acac7f3e9da3d08a9c07d568a6ffc2952870a10bce748d9321c4a788717326",
+    "agentctl.aex": "ed2429568bff272a2b797c74a6b27cba1b89fb545a54534368e365e1e49845fd",
+    "files.aex": "6aece9644d007711af2144b8d8f075b6f71a8d41f0e2eb33a1b6b3bd88352dd6",
+    "textedit.aex": "c8c1252a32ca0055d7f2e8a47574e415f6203647cd7b1950ba6e529e7516b0b7",
+    "assistant.aex": "b626f3592a72df65065074cfa71aabbb2ac5a0ee4ffd408e989f22ce2ab3a77e"
+  },
+  "scope": "BIOS 512 MiB, actual make run recipe with private QMP/serial and fixture disk; native Finder/TextEdit task entry",
+  "limits": [
+    "No browser or third-party source changes",
+    "No control of the user live VM or writes to the user disk in this acceptance run",
+    "Full-system repack was bypassed with make -o for the prepared fixture disk; this test covers session setup and native task flow",
+    "No full filesystem, wide-memory, driver or UEFI matrix rerun"
+  ],
+  "preliminary_probe": {
+    "path": "/tmp/logitos-make-run-20260915/guest-native",
+    "result": "Finder send passed; an extra Assistant-window probe did not observe a second task; final gate follows the user clarified Finder/TextEdit scope"
+  }
+}

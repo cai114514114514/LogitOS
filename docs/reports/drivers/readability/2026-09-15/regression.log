@@ -1,0 +1,34 @@
+EXPECTED-FAIL old_nvme_queue_grant: NVMe honors controller SQ queue grant; NVMe honors controller CQ queue grant
+EXPECTED-FAIL old_nvme_scan: NVMe finds bridge-bus multifunction endpoint
+EXPECTED-FAIL old_ahci_mem_command_readback: AHCI refuses MEM-decode drop before BAR mapping
+EXPECTED-FAIL old_ahci_master_command_readback: AHCI refuses bus-master drop after quiescing firmware ports
+EXPECTED-FAIL old_ahci_restore_failure_continue: AHCI fail-stops when partial Command enable cannot be restored
+EXPECTED-FAIL old_ahci_early_bme: AHCI enables BME only after BOHC and firmware-port stop
+EXPECTED-FAIL old_ahci_skip_firmware_stop: AHCI enables BME only after BOHC and firmware-port stop
+EXPECTED-FAIL old_ahci_bme_isolation_continue: AHCI fail-stops if failed BME enable cannot be isolated
+EXPECTED-FAIL old_ahci_firmware_bme_disable_continue: AHCI fail-stops if firmware BME cannot be disabled after handoff
+EXPECTED-FAIL old_ahci_sectors: AHCI rejects 4Kn before registering a disk; AHCI rejects invalid zero logical-sector size
+EXPECTED-FAIL old_ahci_handoff: AHCI enables BME only after BOHC and firmware-port stop; AHCI refuses controller while firmware retains ownership
+storage hardware: 37 checks, 0 failed
+PASS control: inherited stale touch anchor fails actual WM position assertion
+usb_hid_test: ok (QEMU usb-kbd and usb-mouse descriptors parse and decode; report-ID multiplexing; 12-bit cross-byte axes; Logical Maximum 0xFF; sign extension by Logical Minimum; truncated/Push-Pop/oversized/inverted descriptors rejected; full US keymap)
+usb-hid-generic: 67 checks, 0 failed; parser + real class bind/poll/remove + input consumers
+PASS control: first-interface-only binding failed the two-interface assertion
+PASS control: treating absolute coordinates as deltas failed tablet normalization
+usb_hid_test: ok (QEMU usb-kbd and usb-mouse descriptors parse and decode; report-ID multiplexing; 12-bit cross-byte axes; Logical Maximum 0xFF; sign extension by Logical Minimum; truncated/Push-Pop/oversized/inverted descriptors rejected; full US keymap)
+usb_input_extensions: PASS composite interfaces, multiplexed roles, modifier snapshots, absolute tablet, NKRO, protocol refusal
+test_ci_and_control_inventories (__main__.NestedMakeTests.test_ci_and_control_inventories) ... ok
+test_comment_recipe_and_partial_filename_are_not_edges (__main__.NestedMakeTests.test_comment_recipe_and_partial_filename_are_not_edges) ... ok
+test_continuations_multiple_paths_comments_and_cycle (__main__.NestedMakeTests.test_continuations_multiple_paths_comments_and_cycle) ... ok
+test_declared_exception_is_path_specific (__main__.NestedMakeTests.test_declared_exception_is_path_specific) ... ok
+test_missing_then_restored_edge (__main__.NestedMakeTests.test_missing_then_restored_edge) ... ok
+test_nested_link_prerequisites_are_checked (__main__.NestedMakeTests.test_nested_link_prerequisites_are_checked) ... ok
+test_same_leaf_is_not_same_fragment (__main__.NestedMakeTests.test_same_leaf_is_not_same_fragment) ... ok
+
+----------------------------------------------------------------------
+Ran 7 tests in 0.051s
+
+OK
+negative control: nested fragment without include is UNREACHABLE
+mk-wired: ok (365 fragments, 364 reachable from the Makefile, 1 declared)
+  declared: tests/schedneg.mk -- a `make -f` wrapper that includes the Makefile itself; including it back would recurse (see its own header)

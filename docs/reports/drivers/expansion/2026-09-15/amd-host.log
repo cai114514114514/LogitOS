@@ -1,0 +1,7 @@
+POLARIS_RESOURCES_NEGCTL: omitted firmware reservation caught by literal parser and production discovery oracles
+POLARIS_RESOURCES: 4370 checks, 0 failures
+AMD_BOOTFB_NEGCTL: start-only ownership accepted partial overlap (exactly one failure)
+AMD_BOOTFB_NEGCTL: memory-decode-off device bound (exactly one failure)
+AMD_BOOTFB_NEGCTL: mixed memory/I-O BAR was accepted (exactly one failure)
+AMD_BOOTFB_NEGCTL: malformed PM capability was dereferenced (exactly one failure)
+AMD_BOOTFB: 62 checks, 0 failures

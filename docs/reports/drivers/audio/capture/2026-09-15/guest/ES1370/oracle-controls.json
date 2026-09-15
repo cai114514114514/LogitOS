@@ -1,0 +1,915 @@
+{
+  "passed": true,
+  "cases": [
+    {
+      "case": "48000-positive",
+      "control_ok": true,
+      "expected_pass": true,
+      "observation": {
+        "passed": true,
+        "errors": [],
+        "rounds": [
+          {
+            "round": 1,
+            "frames": 48000,
+            "match_byte_offset": 0,
+            "input_interval": [
+              0,
+              192000
+            ],
+            "sha256": "6429d6720c62e553b3190977620a5c055822ebc537d76b5b5bc2ac495cb103a9"
+          },
+          {
+            "round": 2,
+            "frames": 48000,
+            "match_byte_offset": 192000,
+            "input_interval": [
+              192000,
+              384000
+            ],
+            "sha256": "4cd0c382cc70d76769bf9567d735fe1a1ffa1d891a20ad1495f3083be4e0cdb6"
+          }
+        ],
+        "playback": {
+          "passed": true,
+          "errors": [],
+          "signal_frames": 144000,
+          "zero_crossings": 600,
+          "bad_steps": 0
+        }
+      }
+    },
+    {
+      "case": "48000-silence",
+      "control_ok": true,
+      "expected_pass": false,
+      "observation": {
+        "passed": false,
+        "errors": [
+          "round 2: capture is silent",
+          "round 2: complete stereo sample trajectory does not match its injection interval"
+        ],
+        "rounds": [
+          {
+            "round": 1,
+            "frames": 48000,
+            "match_byte_offset": 0,
+            "input_interval": [
+              0,
+              192000
+            ],
+            "sha256": "6429d6720c62e553b3190977620a5c055822ebc537d76b5b5bc2ac495cb103a9"
+          },
+          {
+            "round": 2,
+            "frames": 48000,
+            "match_byte_offset": -1,
+            "input_interval": [
+              192000,
+              384000
+            ],
+            "sha256": "ea0787f65f73b0013d03b359490e3125211b28ad5c1502ffb1544c0ded4192f5"
+          }
+        ],
+        "playback": {
+          "passed": true,
+          "errors": [],
+          "signal_frames": 144000,
+          "zero_crossings": 600,
+          "bad_steps": 0
+        }
+      }
+    },
+    {
+      "case": "48000-swapped",
+      "control_ok": true,
+      "expected_pass": false,
+      "observation": {
+        "passed": false,
+        "errors": [
+          "round 2: complete stereo sample trajectory does not match its injection interval"
+        ],
+        "rounds": [
+          {
+            "round": 1,
+            "frames": 48000,
+            "match_byte_offset": 0,
+            "input_interval": [
+              0,
+              192000
+            ],
+            "sha256": "6429d6720c62e553b3190977620a5c055822ebc537d76b5b5bc2ac495cb103a9"
+          },
+          {
+            "round": 2,
+            "frames": 48000,
+            "match_byte_offset": -1,
+            "input_interval": [
+              192000,
+              384000
+            ],
+            "sha256": "91785643ff3227a4c435fe87889a40978c8d6ad2c547ba0ed0e90250f8983252"
+          }
+        ],
+        "playback": {
+          "passed": true,
+          "errors": [],
+          "signal_frames": 144000,
+          "zero_crossings": 600,
+          "bad_steps": 0
+        }
+      }
+    },
+    {
+      "case": "48000-reordered",
+      "control_ok": true,
+      "expected_pass": false,
+      "observation": {
+        "passed": false,
+        "errors": [
+          "round 2: complete stereo sample trajectory does not match its injection interval"
+        ],
+        "rounds": [
+          {
+            "round": 1,
+            "frames": 48000,
+            "match_byte_offset": 0,
+            "input_interval": [
+              0,
+              192000
+            ],
+            "sha256": "6429d6720c62e553b3190977620a5c055822ebc537d76b5b5bc2ac495cb103a9"
+          },
+          {
+            "round": 2,
+            "frames": 48000,
+            "match_byte_offset": -1,
+            "input_interval": [
+              192000,
+              384000
+            ],
+            "sha256": "98d626e89e304c0e0555f493f759658492376932e18b53238e485d3f17855fe8"
+          }
+        ],
+        "playback": {
+          "passed": true,
+          "errors": [],
+          "signal_frames": 144000,
+          "zero_crossings": 600,
+          "bad_steps": 0
+        }
+      }
+    },
+    {
+      "case": "48000-repeated",
+      "control_ok": true,
+      "expected_pass": false,
+      "observation": {
+        "passed": false,
+        "errors": [
+          "round 2: complete stereo sample trajectory does not match its injection interval"
+        ],
+        "rounds": [
+          {
+            "round": 1,
+            "frames": 48000,
+            "match_byte_offset": 0,
+            "input_interval": [
+              0,
+              192000
+            ],
+            "sha256": "6429d6720c62e553b3190977620a5c055822ebc537d76b5b5bc2ac495cb103a9"
+          },
+          {
+            "round": 2,
+            "frames": 48000,
+            "match_byte_offset": -1,
+            "input_interval": [
+              192000,
+              384000
+            ],
+            "sha256": "b3799c63d3f2dcfed0be02e3fa6a11af9ed7e16329edd590e4df69ea60f6b5e0"
+          }
+        ],
+        "playback": {
+          "passed": true,
+          "errors": [],
+          "signal_frames": 144000,
+          "zero_crossings": 600,
+          "bad_steps": 0
+        }
+      }
+    },
+    {
+      "case": "48000-short",
+      "control_ok": true,
+      "expected_pass": false,
+      "observation": {
+        "passed": false,
+        "errors": [
+          "round 2: expected exactly one native-rate second"
+        ],
+        "rounds": [
+          {
+            "round": 1,
+            "frames": 48000,
+            "match_byte_offset": 0,
+            "input_interval": [
+              0,
+              192000
+            ],
+            "sha256": "6429d6720c62e553b3190977620a5c055822ebc537d76b5b5bc2ac495cb103a9"
+          },
+          {
+            "round": 2,
+            "frames": 46976,
+            "match_byte_offset": 192000,
+            "input_interval": [
+              192000,
+              384000
+            ],
+            "sha256": "5d540f23c8776a290acb5b10fa79ee0bd910cbee06535673ee6c1b2704671104"
+          }
+        ],
+        "playback": {
+          "passed": true,
+          "errors": [],
+          "signal_frames": 144000,
+          "zero_crossings": 600,
+          "bad_steps": 0
+        }
+      }
+    },
+    {
+      "case": "48000-wrong-rate",
+      "control_ok": true,
+      "expected_pass": false,
+      "observation": {
+        "passed": false,
+        "errors": [
+          "round 2: expected exactly one native-rate second"
+        ],
+        "rounds": [
+          {
+            "round": 1,
+            "frames": 48000,
+            "match_byte_offset": 0,
+            "input_interval": [
+              0,
+              192000
+            ],
+            "sha256": "6429d6720c62e553b3190977620a5c055822ebc537d76b5b5bc2ac495cb103a9"
+          },
+          {
+            "round": 2,
+            "frames": 48000,
+            "match_byte_offset": 192000,
+            "input_interval": [
+              192000,
+              384000
+            ],
+            "sha256": "4cd0c382cc70d76769bf9567d735fe1a1ffa1d891a20ad1495f3083be4e0cdb6"
+          }
+        ],
+        "playback": {
+          "passed": true,
+          "errors": [],
+          "signal_frames": 144000,
+          "zero_crossings": 600,
+          "bad_steps": 0
+        }
+      }
+    },
+    {
+      "case": "48000-stale-reopen",
+      "control_ok": true,
+      "expected_pass": false,
+      "observation": {
+        "passed": false,
+        "errors": [
+          "round 2: complete stereo sample trajectory does not match its injection interval"
+        ],
+        "rounds": [
+          {
+            "round": 1,
+            "frames": 48000,
+            "match_byte_offset": 0,
+            "input_interval": [
+              0,
+              192000
+            ],
+            "sha256": "6429d6720c62e553b3190977620a5c055822ebc537d76b5b5bc2ac495cb103a9"
+          },
+          {
+            "round": 2,
+            "frames": 48000,
+            "match_byte_offset": -1,
+            "input_interval": [
+              192000,
+              384000
+            ],
+            "sha256": "6429d6720c62e553b3190977620a5c055822ebc537d76b5b5bc2ac495cb103a9"
+          }
+        ],
+        "playback": {
+          "passed": true,
+          "errors": [],
+          "signal_frames": 144000,
+          "zero_crossings": 600,
+          "bad_steps": 0
+        }
+      }
+    },
+    {
+      "case": "48000-no-stop",
+      "control_ok": true,
+      "expected_pass": false,
+      "observation": {
+        "passed": false,
+        "errors": [
+          "input/output has no confirmed stop"
+        ],
+        "rounds": [],
+        "playback": null
+      }
+    },
+    {
+      "case": "48000-not-duplex",
+      "control_ok": true,
+      "expected_pass": false,
+      "observation": {
+        "passed": false,
+        "errors": [
+          "second ADC open/close did not occur wholly inside active playback"
+        ],
+        "rounds": [
+          {
+            "round": 1,
+            "frames": 48000,
+            "match_byte_offset": 0,
+            "input_interval": [
+              0,
+              192000
+            ],
+            "sha256": "6429d6720c62e553b3190977620a5c055822ebc537d76b5b5bc2ac495cb103a9"
+          },
+          {
+            "round": 2,
+            "frames": 48000,
+            "match_byte_offset": 192000,
+            "input_interval": [
+              192000,
+              384000
+            ],
+            "sha256": "4cd0c382cc70d76769bf9567d735fe1a1ffa1d891a20ad1495f3083be4e0cdb6"
+          }
+        ],
+        "playback": {
+          "passed": true,
+          "errors": [],
+          "signal_frames": 144000,
+          "zero_crossings": 600,
+          "bad_steps": 0
+        }
+      }
+    },
+    {
+      "case": "48000-playback-corrupt",
+      "control_ok": true,
+      "expected_pass": false,
+      "observation": {
+        "passed": false,
+        "errors": [
+          "duplex playback did not retain its three-second length",
+          "playback is silent or too short"
+        ],
+        "rounds": [
+          {
+            "round": 1,
+            "frames": 48000,
+            "match_byte_offset": 0,
+            "input_interval": [
+              0,
+              192000
+            ],
+            "sha256": "6429d6720c62e553b3190977620a5c055822ebc537d76b5b5bc2ac495cb103a9"
+          },
+          {
+            "round": 2,
+            "frames": 48000,
+            "match_byte_offset": 192000,
+            "input_interval": [
+              192000,
+              384000
+            ],
+            "sha256": "4cd0c382cc70d76769bf9567d735fe1a1ffa1d891a20ad1495f3083be4e0cdb6"
+          }
+        ],
+        "playback": {
+          "passed": false,
+          "errors": [
+            "duplex playback did not retain its three-second length",
+            "playback is silent or too short"
+          ]
+        }
+      }
+    },
+    {
+      "case": "48000-injected-corrupt",
+      "control_ok": true,
+      "expected_pass": false,
+      "observation": {
+        "passed": false,
+        "errors": [
+          "injected samples differ from the source and declared gain",
+          "round 1: complete stereo sample trajectory does not match its injection interval",
+          "round 2: complete stereo sample trajectory does not match its injection interval"
+        ],
+        "rounds": [
+          {
+            "round": 1,
+            "frames": 48000,
+            "match_byte_offset": -1,
+            "input_interval": [
+              0,
+              192000
+            ],
+            "sha256": "6429d6720c62e553b3190977620a5c055822ebc537d76b5b5bc2ac495cb103a9"
+          },
+          {
+            "round": 2,
+            "frames": 48000,
+            "match_byte_offset": -1,
+            "input_interval": [
+              192000,
+              384000
+            ],
+            "sha256": "4cd0c382cc70d76769bf9567d735fe1a1ffa1d891a20ad1495f3083be4e0cdb6"
+          }
+        ],
+        "playback": {
+          "passed": true,
+          "errors": [],
+          "signal_frames": 144000,
+          "zero_crossings": 600,
+          "bad_steps": 0
+        }
+      }
+    },
+    {
+      "case": "48662-positive",
+      "control_ok": true,
+      "expected_pass": true,
+      "observation": {
+        "passed": true,
+        "errors": [],
+        "rounds": [
+          {
+            "round": 1,
+            "frames": 48662,
+            "match_byte_offset": 0,
+            "input_interval": [
+              0,
+              194648
+            ],
+            "sha256": "ecc102056815beff45a269836ebf18f03c96ac7fe193c859cfa13c1df3295efc"
+          },
+          {
+            "round": 2,
+            "frames": 48662,
+            "match_byte_offset": 194648,
+            "input_interval": [
+              194648,
+              389296
+            ],
+            "sha256": "1f0e920990a7c8e4de053536ac6444cae159729c08c258a147e6519367565f39"
+          }
+        ],
+        "playback": {
+          "passed": true,
+          "errors": [],
+          "signal_frames": 145986,
+          "zero_crossings": 600,
+          "bad_steps": 0
+        }
+      }
+    },
+    {
+      "case": "48662-silence",
+      "control_ok": true,
+      "expected_pass": false,
+      "observation": {
+        "passed": false,
+        "errors": [
+          "round 2: capture is silent",
+          "round 2: complete stereo sample trajectory does not match its injection interval"
+        ],
+        "rounds": [
+          {
+            "round": 1,
+            "frames": 48662,
+            "match_byte_offset": 0,
+            "input_interval": [
+              0,
+              194648
+            ],
+            "sha256": "ecc102056815beff45a269836ebf18f03c96ac7fe193c859cfa13c1df3295efc"
+          },
+          {
+            "round": 2,
+            "frames": 48662,
+            "match_byte_offset": -1,
+            "input_interval": [
+              194648,
+              389296
+            ],
+            "sha256": "09b054acefbc8615d7d8698ba19b0a2b1788db4391413c6b721d2b57daf6292b"
+          }
+        ],
+        "playback": {
+          "passed": true,
+          "errors": [],
+          "signal_frames": 145986,
+          "zero_crossings": 600,
+          "bad_steps": 0
+        }
+      }
+    },
+    {
+      "case": "48662-swapped",
+      "control_ok": true,
+      "expected_pass": false,
+      "observation": {
+        "passed": false,
+        "errors": [
+          "round 2: complete stereo sample trajectory does not match its injection interval"
+        ],
+        "rounds": [
+          {
+            "round": 1,
+            "frames": 48662,
+            "match_byte_offset": 0,
+            "input_interval": [
+              0,
+              194648
+            ],
+            "sha256": "ecc102056815beff45a269836ebf18f03c96ac7fe193c859cfa13c1df3295efc"
+          },
+          {
+            "round": 2,
+            "frames": 48662,
+            "match_byte_offset": -1,
+            "input_interval": [
+              194648,
+              389296
+            ],
+            "sha256": "11ec0419674c90d9012d1802327ec2004b4458ae07c2d749fc8168b2038acf6b"
+          }
+        ],
+        "playback": {
+          "passed": true,
+          "errors": [],
+          "signal_frames": 145986,
+          "zero_crossings": 600,
+          "bad_steps": 0
+        }
+      }
+    },
+    {
+      "case": "48662-reordered",
+      "control_ok": true,
+      "expected_pass": false,
+      "observation": {
+        "passed": false,
+        "errors": [
+          "round 2: complete stereo sample trajectory does not match its injection interval"
+        ],
+        "rounds": [
+          {
+            "round": 1,
+            "frames": 48662,
+            "match_byte_offset": 0,
+            "input_interval": [
+              0,
+              194648
+            ],
+            "sha256": "ecc102056815beff45a269836ebf18f03c96ac7fe193c859cfa13c1df3295efc"
+          },
+          {
+            "round": 2,
+            "frames": 48662,
+            "match_byte_offset": -1,
+            "input_interval": [
+              194648,
+              389296
+            ],
+            "sha256": "09c8fbcc3659a517129e90ed87e0646cad5e8eafef0485a664537d809728fc4f"
+          }
+        ],
+        "playback": {
+          "passed": true,
+          "errors": [],
+          "signal_frames": 145986,
+          "zero_crossings": 600,
+          "bad_steps": 0
+        }
+      }
+    },
+    {
+      "case": "48662-repeated",
+      "control_ok": true,
+      "expected_pass": false,
+      "observation": {
+        "passed": false,
+        "errors": [
+          "round 2: complete stereo sample trajectory does not match its injection interval"
+        ],
+        "rounds": [
+          {
+            "round": 1,
+            "frames": 48662,
+            "match_byte_offset": 0,
+            "input_interval": [
+              0,
+              194648
+            ],
+            "sha256": "ecc102056815beff45a269836ebf18f03c96ac7fe193c859cfa13c1df3295efc"
+          },
+          {
+            "round": 2,
+            "frames": 48662,
+            "match_byte_offset": -1,
+            "input_interval": [
+              194648,
+              389296
+            ],
+            "sha256": "836821758d10a099a9b1a0922a4a500aadf1c011903c2e1cf6e3700c6fc0b14f"
+          }
+        ],
+        "playback": {
+          "passed": true,
+          "errors": [],
+          "signal_frames": 145986,
+          "zero_crossings": 600,
+          "bad_steps": 0
+        }
+      }
+    },
+    {
+      "case": "48662-short",
+      "control_ok": true,
+      "expected_pass": false,
+      "observation": {
+        "passed": false,
+        "errors": [
+          "round 2: expected exactly one native-rate second"
+        ],
+        "rounds": [
+          {
+            "round": 1,
+            "frames": 48662,
+            "match_byte_offset": 0,
+            "input_interval": [
+              0,
+              194648
+            ],
+            "sha256": "ecc102056815beff45a269836ebf18f03c96ac7fe193c859cfa13c1df3295efc"
+          },
+          {
+            "round": 2,
+            "frames": 47638,
+            "match_byte_offset": 194648,
+            "input_interval": [
+              194648,
+              389296
+            ],
+            "sha256": "efc6ff610c225f6b7900345ac1639928ae9a9d4fd6ba42237f9fce92f68b3f41"
+          }
+        ],
+        "playback": {
+          "passed": true,
+          "errors": [],
+          "signal_frames": 145986,
+          "zero_crossings": 600,
+          "bad_steps": 0
+        }
+      }
+    },
+    {
+      "case": "48662-wrong-rate",
+      "control_ok": true,
+      "expected_pass": false,
+      "observation": {
+        "passed": false,
+        "errors": [
+          "round 2: expected exactly one native-rate second"
+        ],
+        "rounds": [
+          {
+            "round": 1,
+            "frames": 48662,
+            "match_byte_offset": 0,
+            "input_interval": [
+              0,
+              194648
+            ],
+            "sha256": "ecc102056815beff45a269836ebf18f03c96ac7fe193c859cfa13c1df3295efc"
+          },
+          {
+            "round": 2,
+            "frames": 48662,
+            "match_byte_offset": 194648,
+            "input_interval": [
+              194648,
+              389296
+            ],
+            "sha256": "1f0e920990a7c8e4de053536ac6444cae159729c08c258a147e6519367565f39"
+          }
+        ],
+        "playback": {
+          "passed": true,
+          "errors": [],
+          "signal_frames": 145986,
+          "zero_crossings": 600,
+          "bad_steps": 0
+        }
+      }
+    },
+    {
+      "case": "48662-stale-reopen",
+      "control_ok": true,
+      "expected_pass": false,
+      "observation": {
+        "passed": false,
+        "errors": [
+          "round 2: complete stereo sample trajectory does not match its injection interval"
+        ],
+        "rounds": [
+          {
+            "round": 1,
+            "frames": 48662,
+            "match_byte_offset": 0,
+            "input_interval": [
+              0,
+              194648
+            ],
+            "sha256": "ecc102056815beff45a269836ebf18f03c96ac7fe193c859cfa13c1df3295efc"
+          },
+          {
+            "round": 2,
+            "frames": 48662,
+            "match_byte_offset": -1,
+            "input_interval": [
+              194648,
+              389296
+            ],
+            "sha256": "ecc102056815beff45a269836ebf18f03c96ac7fe193c859cfa13c1df3295efc"
+          }
+        ],
+        "playback": {
+          "passed": true,
+          "errors": [],
+          "signal_frames": 145986,
+          "zero_crossings": 600,
+          "bad_steps": 0
+        }
+      }
+    },
+    {
+      "case": "48662-no-stop",
+      "control_ok": true,
+      "expected_pass": false,
+      "observation": {
+        "passed": false,
+        "errors": [
+          "input/output has no confirmed stop"
+        ],
+        "rounds": [],
+        "playback": null
+      }
+    },
+    {
+      "case": "48662-not-duplex",
+      "control_ok": true,
+      "expected_pass": false,
+      "observation": {
+        "passed": false,
+        "errors": [
+          "second ADC open/close did not occur wholly inside active playback"
+        ],
+        "rounds": [
+          {
+            "round": 1,
+            "frames": 48662,
+            "match_byte_offset": 0,
+            "input_interval": [
+              0,
+              194648
+            ],
+            "sha256": "ecc102056815beff45a269836ebf18f03c96ac7fe193c859cfa13c1df3295efc"
+          },
+          {
+            "round": 2,
+            "frames": 48662,
+            "match_byte_offset": 194648,
+            "input_interval": [
+              194648,
+              389296
+            ],
+            "sha256": "1f0e920990a7c8e4de053536ac6444cae159729c08c258a147e6519367565f39"
+          }
+        ],
+        "playback": {
+          "passed": true,
+          "errors": [],
+          "signal_frames": 145986,
+          "zero_crossings": 600,
+          "bad_steps": 0
+        }
+      }
+    },
+    {
+      "case": "48662-playback-corrupt",
+      "control_ok": true,
+      "expected_pass": false,
+      "observation": {
+        "passed": false,
+        "errors": [
+          "duplex playback did not retain its three-second length",
+          "playback is silent or too short"
+        ],
+        "rounds": [
+          {
+            "round": 1,
+            "frames": 48662,
+            "match_byte_offset": 0,
+            "input_interval": [
+              0,
+              194648
+            ],
+            "sha256": "ecc102056815beff45a269836ebf18f03c96ac7fe193c859cfa13c1df3295efc"
+          },
+          {
+            "round": 2,
+            "frames": 48662,
+            "match_byte_offset": 194648,
+            "input_interval": [
+              194648,
+              389296
+            ],
+            "sha256": "1f0e920990a7c8e4de053536ac6444cae159729c08c258a147e6519367565f39"
+          }
+        ],
+        "playback": {
+          "passed": false,
+          "errors": [
+            "duplex playback did not retain its three-second length",
+            "playback is silent or too short"
+          ]
+        }
+      }
+    },
+    {
+      "case": "48662-injected-corrupt",
+      "control_ok": true,
+      "expected_pass": false,
+      "observation": {
+        "passed": false,
+        "errors": [
+          "injected samples differ from the source and declared gain",
+          "round 1: complete stereo sample trajectory does not match its injection interval",
+          "round 2: complete stereo sample trajectory does not match its injection interval"
+        ],
+        "rounds": [
+          {
+            "round": 1,
+            "frames": 48662,
+            "match_byte_offset": -1,
+            "input_interval": [
+              0,
+              194648
+            ],
+            "sha256": "ecc102056815beff45a269836ebf18f03c96ac7fe193c859cfa13c1df3295efc"
+          },
+          {
+            "round": 2,
+            "frames": 48662,
+            "match_byte_offset": -1,
+            "input_interval": [
+              194648,
+              389296
+            ],
+            "sha256": "1f0e920990a7c8e4de053536ac6444cae159729c08c258a147e6519367565f39"
+          }
+        ],
+        "playback": {
+          "passed": true,
+          "errors": [],
+          "signal_frames": 145986,
+          "zero_crossings": 600,
+          "bad_steps": 0
+        }
+      }
+    }
+  ]
+}

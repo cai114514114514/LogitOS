@@ -1,0 +1,202 @@
+[
+  {
+    "topology": "single",
+    "device": "AC97",
+    "output_device": "AC97",
+    "rates": {
+      "capture": 48000,
+      "playback": 48000
+    },
+    "rounds": [
+      {
+        "round": 1,
+        "frames": 48000,
+        "match_byte_offset": 0,
+        "input_interval": [
+          0,
+          193920
+        ],
+        "sha256": "221dec4db7c35a5175c9fb194cf325ed922ecb9f55f0ff0461c698bd85b8dab9"
+      },
+      {
+        "round": 2,
+        "frames": 48000,
+        "match_byte_offset": 193920,
+        "input_interval": [
+          193920,
+          387840
+        ],
+        "sha256": "1fab6fe8f06ab6f37d89e1b64e8714c9eccc74e438d0e4bdb9939c164bd38495"
+      }
+    ],
+    "playback": {
+      "passed": true,
+      "errors": [],
+      "signal_frames": 144000,
+      "zero_crossings": 600,
+      "bad_steps": 0
+    },
+    "result": "guest/single/AC97/result.json",
+    "original_run": "build/drivers/audio/expand-verify/audio-capture/guest.l5bJn0/AC97"
+  },
+  {
+    "topology": "single",
+    "device": "ES1370",
+    "output_device": "ES1370",
+    "rates": {
+      "capture": 48662,
+      "playback": 48662
+    },
+    "rounds": [
+      {
+        "round": 1,
+        "frames": 48662,
+        "match_byte_offset": 0,
+        "input_interval": [
+          0,
+          198272
+        ],
+        "sha256": "ed521457a8e87589d1a0cbc3747b6d6623eba014b60cf0024521968468e0d324"
+      },
+      {
+        "round": 2,
+        "frames": 48662,
+        "match_byte_offset": 198272,
+        "input_interval": [
+          198272,
+          396544
+        ],
+        "sha256": "c61a72a1684b24a8eedafcfdc530655f4cbe7b98afb2ab732bc8178b5aede77f"
+      }
+    ],
+    "playback": {
+      "passed": true,
+      "errors": [],
+      "signal_frames": 145987,
+      "zero_crossings": 600,
+      "bad_steps": 0
+    },
+    "result": "guest/single/ES1370/result.json",
+    "original_run": "build/drivers/audio/expand-verify/audio-capture/guest.l5bJn0/ES1370"
+  },
+  {
+    "topology": "single",
+    "device": "intel-hda",
+    "output_device": "intel-hda",
+    "rates": {
+      "capture": 48000,
+      "playback": 48000
+    },
+    "rounds": [
+      {
+        "round": 1,
+        "frames": 48000,
+        "match_byte_offset": 0,
+        "input_interval": [
+          0,
+          195840
+        ],
+        "sha256": "4a49049d94461a7f948c058a8f019383d523b8e1eea586404506e0661577fdcc"
+      },
+      {
+        "round": 2,
+        "frames": 48000,
+        "match_byte_offset": 195840,
+        "input_interval": [
+          195840,
+          391680
+        ],
+        "sha256": "b1e1bbb6d189e9cf34259cd7886e3519c63695b09ffe087d2c466c0ce8d2ffe8"
+      }
+    ],
+    "playback": {
+      "passed": true,
+      "errors": [],
+      "signal_frames": 144000,
+      "zero_crossings": 600,
+      "bad_steps": 0
+    },
+    "result": "guest/single/intel-hda/result.json",
+    "original_run": "build/drivers/audio/expand-verify/audio-capture/guest.l5bJn0/intel-hda"
+  },
+  {
+    "topology": "multicard",
+    "device": "AC97",
+    "output_device": "intel-hda",
+    "rates": {
+      "capture": 48000,
+      "playback": 48000
+    },
+    "rounds": [
+      {
+        "round": 1,
+        "frames": 48000,
+        "match_byte_offset": 0,
+        "input_interval": [
+          0,
+          193920
+        ],
+        "sha256": "221dec4db7c35a5175c9fb194cf325ed922ecb9f55f0ff0461c698bd85b8dab9"
+      },
+      {
+        "round": 2,
+        "frames": 48000,
+        "match_byte_offset": 193920,
+        "input_interval": [
+          193920,
+          387840
+        ],
+        "sha256": "1fab6fe8f06ab6f37d89e1b64e8714c9eccc74e438d0e4bdb9939c164bd38495"
+      }
+    ],
+    "playback": {
+      "passed": true,
+      "errors": [],
+      "signal_frames": 144000,
+      "zero_crossings": 600,
+      "bad_steps": 0
+    },
+    "result": "guest/multicard/AC97/result.json",
+    "original_run": "build/drivers/audio/expand-verify/audio-capture/multicard.HzqjrI/AC97"
+  },
+  {
+    "topology": "multicard",
+    "device": "ES1370",
+    "output_device": "intel-hda",
+    "rates": {
+      "capture": 48662,
+      "playback": 48000
+    },
+    "rounds": [
+      {
+        "round": 1,
+        "frames": 48662,
+        "match_byte_offset": 0,
+        "input_interval": [
+          0,
+          198272
+        ],
+        "sha256": "ed521457a8e87589d1a0cbc3747b6d6623eba014b60cf0024521968468e0d324"
+      },
+      {
+        "round": 2,
+        "frames": 48662,
+        "match_byte_offset": 198272,
+        "input_interval": [
+          198272,
+          396544
+        ],
+        "sha256": "c61a72a1684b24a8eedafcfdc530655f4cbe7b98afb2ab732bc8178b5aede77f"
+      }
+    ],
+    "playback": {
+      "passed": true,
+      "errors": [],
+      "signal_frames": 144000,
+      "zero_crossings": 600,
+      "bad_steps": 0
+    },
+    "result": "guest/multicard/ES1370/result.json",
+    "original_run": "build/drivers/audio/expand-verify/audio-capture/multicard.HzqjrI/ES1370"
+  }
+]

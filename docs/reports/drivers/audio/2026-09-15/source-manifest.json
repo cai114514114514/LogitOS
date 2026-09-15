@@ -1,0 +1,43 @@
+{
+  "recorded_at": "2026-09-15T15:20:28.421921+00:00",
+  "repository": "/Users/wangzhe/system/LogitOS",
+  "head": "f21b7df1f1d7e6b278b55122423bc055a822fb91",
+  "shared_worktree": true,
+  "files": {
+    "Makefile": "8a490773086d94392b2934aa9b64dca931218bfbbb92f1b30dcd6f32fac2ba92",
+    "c/drivers/audio/ac97/ac97.h": "254ff05e3e1cf5e92ed362ae13b87cef98180bd4c8cfed79fe08a5aabd295d2a",
+    "c/drivers/audio/ac97/ac97_regs.h": "aa8ab6630221af0e56ca15fe2c41c1309acca3dec08271331d5e6bec180023b3",
+    "c/drivers/audio/ac97/controller.c": "6889837c5d3c2be59d6f70abbb071e5daedc3d3d2390f161a13e0c6058aabbd3",
+    "c/drivers/audio/ac97/pci.c": "802d6d37187e841d79d489bddf0ae711b3587e62a6ab5fc4b5ef61db08c7c611",
+    "c/drivers/audio/ac97/ports.c": "e148673cc0ecf111d0bf76dbbe0ea1e163a30807d11fca49b5b7ef938a40a53a",
+    "c/drivers/audio/es1370/driver.c": "f97f393ed2385717b34baf7c03b810ccbf114821bbfa2d9de35572a8e31a3c17",
+    "c/drivers/audio/es1370/es1370.h": "4715024a8e7a17ea4b11ee5bfd0f57cb4a78e223a514fd1525a5a71362d53c10",
+    "c/drivers/audio/es1370/registers.h": "eedec7d4102e407e14ff1888bbd45df9c35c396f97ef00e283703e58b7ab7ca5",
+    "c/drivers/audio/hda.c": "a34e9c6cf7f548dd0486b790380fc62bcfceac1a3f50f969fdb1da0c2e1719c3",
+    "c/kernel/audio/capture.c": "7be964795c3bf0f4524f15d557415e555458800686ea0e41d17a67862e85b8e0",
+    "c/kernel/audio/mixer.c": "e83d8f2e6382a75a4aee41b2c672c2a9d4d35ad76709b4b6d4689a8cc1d18382",
+    "c/kernel/audio/pcm.c": "bf037c0765c02a59cc8307de500cb987d41a6ac34e3dd32d5adce2c9296d3c10",
+    "c/kernel/audio/snd.c": "f4224ec56f5498298d17616a7bdaa77ae0e4241e74dae0a596ea800bc452dc7a",
+    "c/kernel/audio/snd.h": "9eb249a0c39b95639e6041342bb72ea5a1654511f78f22c699eca5e054ddfa12",
+    "tests/audio.mk": "a4a544d7325846dcd33a661895c210667c8daf3e26a71766adefdf3ff26786d9",
+    "tests/boot/audio_check.py": "7cb0454213f7ff307185ee0db72794eb55245c0d783187c4933aca4302aed423",
+    "tests/boot/run-audio-none-test.sh": "15e532b9b0969928626d275c6c82f3fd863c7a1df5c7535d80550343dc663351",
+    "tests/drivers/audio/ac97/host_test.c": "7448544b9f65e828eee875c57ce48c885fd33dcb414d7da55bd73bb77dd160e4",
+    "tests/drivers/audio/ac97/negative.py": "866c91159613b73fcace77105abc0617bb0a88970fabec51cbf13b22c83963d8",
+    "tests/drivers/audio/ac97/test.mk": "9bc51275095fb21384613de2171276922c943f381b32f77910c5ae2f2a486d17",
+    "tests/drivers/audio/es1370/stubs/io.h": "8b32941c9c32be561a2a04040987a2f466cace033d450beb230b863c939b1d48",
+    "tests/drivers/audio/es1370/test.c": "205760b0ba726116f4b11c34d96b5df0fa71eb25b0ce41b3e7a4cfe92d1e2700",
+    "tests/drivers/audio/es1370/test.mk": "8573cd9037100856989b97e5e42f1d523c67ddbf3c0f39c492839453dfa935e1",
+    "tests/drivers/audio/guest/oracle.py": "b164e9c1599b6dbc595fdf1d4788d698249bd016ccad9ecb5daea19ebe677f56",
+    "tests/drivers/audio/guest.py": "8b5e6bcf7d283f7c01630a9ed13d65397c3470bc02a595b52f9583c21a8171e1",
+    "tests/drivers/audio/tests.mk": "c72875f235f52584d25fe911c8ce539e43b14a2a53266e6d76beb6c5031bc2ce"
+  },
+  "iso": {
+    "path": "build/drivers/audio/kernel/logit.iso",
+    "sha256": "f61ccff42352e9f7cb3060fa774c58a3f82c1eda498ba66a8d8a5e3167a58c5f"
+  },
+  "disk": {
+    "path": "build/disk.img",
+    "sha256": "112db0a4b69c2586542da084700959e53066ad61735a530ab2721bebebbc8cf5"
+  }
+}

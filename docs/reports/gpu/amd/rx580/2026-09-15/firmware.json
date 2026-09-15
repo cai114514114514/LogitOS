@@ -1,0 +1,164 @@
+[
+  {
+    "file": "polaris10_sdma.bin",
+    "url": "https://gitlab.com/kernel-firmware/linux-firmware/-/raw/1522c78ab870b3c051d8a3a1d24ecbbc12b23be5/amdgpu/polaris10_sdma.bin",
+    "bytes": 12692,
+    "sha256": "e27b3ec976f87e32883b9190e653b20d27f9e77da8dd2d77eeb10c35ee9f1e61",
+    "header": [
+      12692,
+      52,
+      1,
+      1,
+      3,
+      1,
+      58,
+      12436,
+      256,
+      1732609330
+    ]
+  },
+  {
+    "file": "polaris10_sdma1.bin",
+    "url": "https://gitlab.com/kernel-firmware/linux-firmware/-/raw/1522c78ab870b3c051d8a3a1d24ecbbc12b23be5/amdgpu/polaris10_sdma1.bin",
+    "bytes": 12692,
+    "sha256": "23dd73eb1316d40a681841b4d3d116c5cae6d8317cebe8f5e1f9e5dec6de5c87",
+    "header": [
+      12692,
+      52,
+      1,
+      1,
+      3,
+      1,
+      58,
+      12436,
+      256,
+      2878175991
+    ]
+  },
+  {
+    "file": "polaris10_ce.bin",
+    "url": "https://gitlab.com/kernel-firmware/linux-firmware/-/raw/1522c78ab870b3c051d8a3a1d24ecbbc12b23be5/amdgpu/polaris10_ce.bin",
+    "bytes": 8852,
+    "sha256": "d1664bd98b69bf21c2fb4e6654860e6648d2a202eeb2175e718982ffb7be1dc5",
+    "header": [
+      8852,
+      44,
+      1,
+      0,
+      8,
+      0,
+      134,
+      8596,
+      256,
+      1798206360
+    ]
+  },
+  {
+    "file": "polaris10_pfp.bin",
+    "url": "https://gitlab.com/kernel-firmware/linux-firmware/-/raw/1522c78ab870b3c051d8a3a1d24ecbbc12b23be5/amdgpu/polaris10_pfp.bin",
+    "bytes": 17044,
+    "sha256": "066cf60af4cf266eb302c8d327513159d964e1bef9dacbb65a6b07483bbd440a",
+    "header": [
+      17044,
+      44,
+      1,
+      0,
+      8,
+      0,
+      235,
+      16788,
+      256,
+      791245729
+    ]
+  },
+  {
+    "file": "polaris10_me.bin",
+    "url": "https://gitlab.com/kernel-firmware/linux-firmware/-/raw/1522c78ab870b3c051d8a3a1d24ecbbc12b23be5/amdgpu/polaris10_me.bin",
+    "bytes": 17044,
+    "sha256": "db550bf611ed416a93057b207014ee78b0abe90e5474995b56e915133ff4d1b0",
+    "header": [
+      17044,
+      44,
+      1,
+      0,
+      8,
+      0,
+      161,
+      16788,
+      256,
+      2053786433
+    ]
+  },
+  {
+    "file": "polaris10_mec.bin",
+    "url": "https://gitlab.com/kernel-firmware/linux-firmware/-/raw/1522c78ab870b3c051d8a3a1d24ecbbc12b23be5/amdgpu/polaris10_mec.bin",
+    "bytes": 262824,
+    "sha256": "c19c1e2e36b47c4a8c25d601f5ae04a26458d98c3000f851d1be5c3a0a424b07",
+    "header": [
+      262824,
+      44,
+      1,
+      0,
+      8,
+      0,
+      705,
+      262568,
+      256,
+      2337686448
+    ]
+  },
+  {
+    "file": "polaris10_mec2.bin",
+    "url": "https://gitlab.com/kernel-firmware/linux-firmware/-/raw/1522c78ab870b3c051d8a3a1d24ecbbc12b23be5/amdgpu/polaris10_mec2.bin",
+    "bytes": 262824,
+    "sha256": "c19c1e2e36b47c4a8c25d601f5ae04a26458d98c3000f851d1be5c3a0a424b07",
+    "header": [
+      262824,
+      44,
+      1,
+      0,
+      8,
+      0,
+      705,
+      262568,
+      256,
+      2337686448
+    ]
+  },
+  {
+    "file": "polaris10_rlc.bin",
+    "url": "https://gitlab.com/kernel-firmware/linux-firmware/-/raw/1522c78ab870b3c051d8a3a1d24ecbbc12b23be5/amdgpu/polaris10_rlc.bin",
+    "bytes": 23488,
+    "sha256": "a5d4c2d3acc5c3c4988b95855fe21a5f682552b2b065f76439370835178ccbaf",
+    "header": [
+      23488,
+      104,
+      2,
+      0,
+      8,
+      0,
+      286,
+      16404,
+      256,
+      1515823353
+    ]
+  },
+  {
+    "file": "polaris10_smc.bin",
+    "url": "https://gitlab.com/kernel-firmware/linux-firmware/-/raw/1522c78ab870b3c051d8a3a1d24ecbbc12b23be5/amdgpu/polaris10_smc.bin",
+    "bytes": 130216,
+    "sha256": "f7ac568d6e2098a26fc61fc321df1330f9d8952e9b0b47e0309f1d8e6b6727fb",
+    "header": [
+      130216,
+      36,
+      1,
+      0,
+      7,
+      2,
+      1513984,
+      129960,
+      256,
+      393982136
+    ]
+  }
+]

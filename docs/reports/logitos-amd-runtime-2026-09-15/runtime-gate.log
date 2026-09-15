@@ -1,0 +1,10 @@
+AMD_RV100_NEGCTL: modern GPU reached legacy BARs (exactly one failure)
+AMD_RV100_NEGCTL: out-of-scanout fill submitted (exactly one failure)
+AMD_RV100_NEGCTL: corrupted runtime upload rejected by pixel oracle (exactly one failure)
+AMD_RV100: 604 checks, 0 failures
+FAIL GPU success preserves callback pixels without CPU overwrite
+FB_NATIVE_PRESENT_NEGCTL: CPU overwrite detected (exactly one failure)
+FB_NATIVE_PRESENT: 21 checks, 0 failures
+test -n "build-amd-present-cpu/logit.iso"
+python3 tests/boot/run-amd-rv100-present.py --iso build-amd-present-live/logit.iso --cpu-iso build-amd-present-cpu/logit.iso --out build-amd-present-live/amd-present-control
+AMD_RV100_PRESENT_GUEST: PASS visible GPU copies + completed desktop presents + scanout readback; CPU control and desktop parity passed

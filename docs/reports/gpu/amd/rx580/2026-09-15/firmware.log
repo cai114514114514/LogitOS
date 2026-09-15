@@ -1,0 +1,4 @@
+BUNDLE_NEGCTL: independent copy oracle rejects corrupted JT2
+BUNDLE: 8378 checks, 0 failures
+BUNDLE_FILES_NEGCTL: corrupted JT2 rejected
+BUNDLE_FILES: all 9 TOC entries, all payloads and padding match; mapped=0 loaded=0

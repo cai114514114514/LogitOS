@@ -1,0 +1,48 @@
+FAIL 458: capture_notifications == period + 1
+FAIL 458: capture_notifications == period + 1
+FAIL 458: capture_notifications == period + 1
+FAIL 458: capture_notifications == period + 1
+FAIL 458: capture_notifications == period + 1
+FAIL 458: capture_notifications == period + 1
+FAIL 458: capture_notifications == period + 1
+FAIL 458: capture_notifications == period + 1
+FAIL 458: capture_notifications == period + 1
+FAIL 458: capture_notifications == period + 1
+FAIL 458: capture_notifications == period + 1
+FAIL 458: capture_notifications == period + 1
+FAIL 458: capture_notifications == period + 1
+FAIL 458: capture_notifications == period + 1
+FAIL 458: capture_notifications == period + 1
+FAIL 458: capture_notifications == period + 1
+FAIL 458: capture_notifications == period + 1
+FAIL 458: capture_notifications == period + 1
+FAIL 458: capture_notifications == period + 1
+FAIL 458: capture_notifications == period + 1
+FAIL 458: capture_notifications == period + 1
+FAIL 458: capture_notifications == period + 1
+FAIL 458: capture_notifications == period + 1
+FAIL 458: capture_notifications == period + 1
+FAIL 458: capture_notifications == period + 1
+FAIL 458: capture_notifications == period + 1
+FAIL 458: capture_notifications == period + 1
+FAIL 458: capture_notifications == period + 1
+FAIL 458: capture_notifications == period + 1
+FAIL 458: capture_notifications == period + 1
+FAIL 458: capture_notifications == period + 1
+FAIL 458: capture_notifications == period + 1
+FAIL 458: capture_notifications == period + 1
+FAIL 458: capture_notifications == period + 1
+FAIL 458: capture_notifications == period + 1
+FAIL 458: capture_notifications == period + 1
+FAIL 458: capture_notifications == period + 1
+FAIL 458: capture_notifications == period + 1
+FAIL 458: capture_notifications == period + 1
+FAIL 458: capture_notifications == period + 1
+FAIL 467: notifications == 41 && capture_notifications == 40
+FAIL 474: capture_notifications == 3 && notifications == 41
+FAIL 499: capture_notifications == 2 && notifications == 2
+FAIL 499: capture_notifications == 2 && notifications == 2
+FAIL 499: capture_notifications == 2 && notifications == 2
+FAIL 499: capture_notifications == 2 && notifications == 2
+FAIL 537: capture_notifications == 2 && notifications == 0
+AC97_HOST: 16890 checks, 47 failures

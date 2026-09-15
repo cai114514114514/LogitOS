@@ -1,0 +1,9 @@
+0000000002070c10 T amd_accel_prepare
+0000000002071420 t polaris_map
+0000000002070670 T polaris_probe_readonly
+0000000002070af0 T polaris_probe_result_name
+0000000002071760 T polaris_sdma_emit_copy
+0000000002071a60 T polaris_sdma_emit_fence
+0000000002071930 T polaris_sdma_emit_fill
+00000000020722e0 T polaris_sdma_firmware_parse
+0000000002072480 T polaris_sdma_firmware_word

@@ -1,0 +1,2 @@
+FAIL: firmware DMA is stopped and read back before CRST and BME
+HDA_X79: 1 checks, 1 failures

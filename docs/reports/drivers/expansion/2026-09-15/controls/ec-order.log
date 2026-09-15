@@ -1,0 +1,13 @@
+starting uACPI, version 6.1.0
+RSDP 0x0000000000000100 00000014 v00 (LOGIT )
+RSDT 0x0000000000000200 00000028 v06 (LOGIT  POWERAML)
+DSDT 0x0000000000000800 000001B0 v06 (LOGIT  POWERAML)
+FACP 0x0000000000000400 00000114 v06 (LOGIT  POWERAML)
+FACS 0x0000000000000F00 00000040
+successfully loaded 1 AML blob, 41 ops in 0ms (avg 41000000000/s)
+unable to attach (EmbeddedControl) operation region \_SB_.EC00.ECG0: no handler found
+aborting method invocation due to previous error: no handler found
+    #0 in \_SB_.EC00._INI()+9/9 at StoreOp
+namespace initialization done in 0ms: 2 devices, 1 thermal zones
+FAIL: power_ec_model.memory[0x11] == 1
+EC_AML success: 32 checks, 1 failures

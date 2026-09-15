@@ -1,0 +1,2 @@
+POLARIS_STAGE bytes=36864 proposed_gpu_base=0x120000000 offsets=4096/20480 payloads=12436/12436 present=0x6 missing=0x478 gpu_mapped=0 uploaded=0 loaded=0
+POLARIS_STAGE rejected inputs

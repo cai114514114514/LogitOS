@@ -1,0 +1,5 @@
+POLARIS_SMU_STAGE_NEGCTL: corrupted second-engine payload rejected by independent copy oracle
+POLARIS_SMU_STAGE: 105 checks, 0 failures
+POLARIS_SMU_STAGE_FILES: PASS exact payloads/TOC/padding, corruption rejected; GPU not accessed
+mk-wired: ok (349 fragments, 348 reachable from the Makefile, 1 declared)
+  declared: tests/schedneg.mk -- a `make -f` wrapper that includes the Makefile itself; including it back would recurse (see its own header)

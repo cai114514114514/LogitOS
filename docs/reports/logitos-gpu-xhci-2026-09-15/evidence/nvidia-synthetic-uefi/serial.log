@@ -1,0 +1,214 @@
+[2J[01;01H[=3h[2J[01;01H[2J[01;01H[=3h[2J[01;01H[2J[01;01H[=3h[2J[01;01HBdsDxe: loading Boot0001 "UEFI QEMU HARDDISK QM00013 " from PciRoot(0x0)/Pci(0x2,0x0)/Sata(0x0,0xFFFF,0x0)
+BdsDxe: starting Boot0001 "UEFI QEMU HARDDISK QM00013 " from PciRoot(0x0)/Pci(0x2,0x0)/Sata(0x0,0xFFFF,0x0)
+
+
+[efi] LogitOS UEFI loader -- multiboot2 handoff, no GRUB
+[efi] LogitOS UEFI loader -- multiboot2 handoff, no GRUB
+[efi] firmware revision 0x20046
+[efi] firmware revision 0x20046
+[efi] image 0x10000000..0x10009000
+[efi] image 0x10000000..0x10009000
+[efi] kernel logit.elf 7481648 bytes
+[efi] kernel logit.elf 7481648 bytes
+[efi] load reserved 0x2000000..0x2ec9000
+[efi] load reserved 0x2000000..0x2ec9000
+[efi] entry 0x215f940
+[efi] entry 0x215f940
+[efi] gop 1280x800 bgr pitch 5120 fb 0x80000000
+[efi] gop 1280x800 bgr pitch 5120 fb 0x80000000
+[efi] rsdp acpi2 0x1fb7e014 len 36 -> mb2 tag 15
+[efi] rsdp acpi2 0x1fb7e014 len 36 -> mb2 tag 15
+[efi] kernel map LoaderData confirmed
+[efi] mmap 107 entries, 505 MiB available
+[efi] info 0x1e9b0000 size 2712
+[efi] ebs ok
+[efi] jump entry 0x215f940 info 0x1e9b0000
+[efi] descent ICPLJ
+[cpu] GenuineIntel -- Intel Xeon E312xx (Sandy Bridge)
+[cpu] 28/60 known features present: fpu tsc msr mce apic mca cmov clflush mmx fxsr sse sse2 htt sse3 pclmulqdq ssse3 cx16 sse4.1 sse4.2 x2apic popcnt aes xsave avx hypervisor nx rdtscp lm
+[cpu-platform] family=6 model=0x2a stepping=1 generation=other
+[cpu] topology: source=cpuid.0xb x2apic_id=0 package=0 core=0 thread=0 cpuid-addressable/package=2 cores/package=2 threads/core=1
+[cpu] hfi: hw=0 performance=0 efficiency=0 table-pages=0 current-lp-row=0 thread-director-hw=0 classes=0 (inventory only; no config MSR write)
+[cpu] apic: x2apic_hw=1 mode=xapic base=0xfee00000
+[cpu] cache: L1 type=1 size=32768 line=64 ways=8 shared=1
+[cpu] cache: L1 type=2 size=32768 line=64 ways=8 shared=1
+[cpu] cache: L2 type=3 size=4194304 line=64 ways=16 shared=1
+[cpu] cache: L3 type=3 size=16777216 line=64 ways=16 shared=2
+[cpu] mca: banks=10 ctl=1 cmci=0 tes=0 ser=1 (enumerated, not enabled)
+[cpu] tsc: invariant_hw=0
+[cpu] xsave: 832 B holds every supported state, xcr0 mask 0x7, osxsave=0
+[cpu] xstate: avx_hw=1 avx_os=0 osxsave=0 xcr0=0x0 abi=fxsave
+[cpu] aes-gcm backend: aesni (constant-time); rdrand=0 rdseed=0
+[cpu] aes-gcm 16 KiB: aesni=841000 cycles, c=7119000 cycles, speedup x8.46
+
+[logitos] long mode, C kernel running
+[rust] inflate selftest OK
+[prot] bsp: nx sup/ON  wxsplit ON  smep -/off  smap -/off
+[time] source=tsc 1000.005 MHz res=1ns  (invariant-tsc=no hypervisor=yes calib=pit-ch2)
+[time] fallback=pit 100 Hz res=10000000ns  timers=heap/128  mono=64-bit ns (wraps in 584 years)
+[time] calib samples(Hz) 1000405563 1000005007 999968593 -> median chosen
+[cpu] simd selftest: backend=aesni xmm_corrupt=0 (20 ticks) crypto_mismatch=0 kat=0 (764 rounds, 6 ticks)
+CPU_SIMD_SELFTEST_OK
+[physmap] metadata base=0x2ec9000 bytes=441448 kernel_end=0x2ec9000
+[mm] low: 117724 frames free (459 MiB), 13072 used, 0 shared, 0 bugs
+[physmap] ready: base=0xffff800000000000 high_pages=0 table_pages=16 low_free=117709 NX=1
+[mm] boot: 130796 frames total (510 MiB), 117709 free, 13087 used, 0 shared, 13087 refs (+0 saved = 0 KiB), 0 pinned, 0 bugs
+[physmap] boot: high_allocs=0 high_live=0 high_max=0x0 high_free=0 low_free=117709
+[mm] boot: metadata 431 KiB (bitmap + poison map + 2-byte refcounts + pins), poison level 1
+[mm] boot: 0 frames pinned against reclaim, 128 reserve frames (0 dips), 0 allocations refused
+[mm] low: 117468 frames free (458 MiB), 13328 used, 0 shared, 0 bugs
+[mm] low: 117212 frames free (457 MiB), 13584 used, 0 shared, 0 bugs
+[mm] low: 116956 frames free (456 MiB), 13840 used, 0 shared, 0 bugs
+[rmap] 130796 frames, 196194 nodes (3592 KiB total: 510 KiB heads + 3065 KiB nodes)
+[acpi] RSDP from the bootloader's multiboot2 tag
+[hpet] ready: base=0xfed00000 period=10000000fs counter=64-bit timers=3
+[time] HPET standby: invariant TSC remains active
+[logitos] interrupts + memory + gdt/tss online
+[mm] low: 116700 frames free (455 MiB), 14096 used, 0 shared, 0 bugs
+[mm] low: 116444 frames free (454 MiB), 14352 used, 0 shared, 0 bugs
+[pcache] up: 65398 page slots (261592 KiB ceiling), 32 file slots, 16384 buckets; tables 2108 KiB from the PMM (16 B/frame of RAM)
+[klog] ring 512 lines x 112 bytes; `cat /dev/kmsg`, `cat /dev/kstat`
+[pci] ECAM seg 0 bus 0-255 @ 0xe0000000 (MCFG)
+[pci] 6 function(s) enumerated across all buses
+[mm] low: 116188 frames free (453 MiB), 14608 used, 0 shared, 0 bugs
+[mm] low: 115932 frames free (452 MiB), 14864 used, 0 shared, 0 bugs
+[mm] low: 115676 frames free (451 MiB), 15120 used, 0 shared, 0 bugs
+[mm] low: 115420 frames free (450 MiB), 15376 used, 0 shared, 0 bugs
+[kheap] arena domain=physmap cpu=0xffff8000034dd000 phys=0x34dd000 bytes=4194304
+[kheap] grow #1: +4096 KiB -> arena 4096 KiB, live 0 KiB, free 4095 KiB, over-allocated 0 KiB
+[rust] png selftest OK
+[ahci] 8086:2922 at 00:02.0 abar=81011000 ver=1.0 ports=6 impl=3f slots=32 addr64=yes ncq=yes(32 deep, unused -- see the NCQ note in ahci.c)
+[dma] alloc ahci cpu=0xffff8000038e1000 dma=0x38e1000 bytes=4096 mask=0xffffffffffffffff
+[dma] map ahci cpu=0x25b4500 dma=0x25b4500 bytes=512 sg=1 bounce=0
+[ahci] port 0: SATA disk 'QEMU HARDDISK' 32768 sectors (16 MiB) lba48=yes
+[ahci] 8086:2922 at 00:1f.2 abar=81010000 ver=1.0 ports=6 impl=3f slots=32 addr64=yes ncq=yes(32 deep, unused -- see the NCQ note in ahci.c)
+[ahci] controller up, no SATA disks attached
+[blk] ahci0: AHCI SATA disk, 32768 sectors (16.0 MiB)
+[part] ahci0: MBR -- 0 partitions, 1 rejected
+[blk] 1 disk, 0 partitions; root = ahci0 (NO FILESYSTEM FOUND)
+[fs] mount FAILED
+[pcache] backend installed over c/fs/vfs.h (statx + vfs_pread, VFS-identity gated)
+[tls] trust store: 130 roots, 0 skipped
+[tls]   isrg_x1 isrg_x2 digicert_global_ca digicert_global_g2 digicert_global_g3
+[tls]   globalsign_r1 globalsign_r3 gts_r1 gts_r4 usertrust_rsa usertrust_ecc
+[tls]   amazon_root_1 amazon_root_3 dtrust_root3_2009 sslcom_ecc_2022
+[tls]   aaa_certificate_services accvraiz1 actalis_authentication_root_ca
+[tls]   affirmtrust_commercial affirmtrust_networking affirmtrust_premium
+[tls]   affirmtrust_premium_ecc amazon_root_ca_2 amazon_root_ca_4
+[tls]   atos_trustedroot_2011 autoridad_de_certificacion_firmaprofesional_cif_
+[tls]   baltimore_cybertrust_root buypass_class_2_root_ca buypass_class_3_root_ca
+[tls]   ca_disig_root_r2 certigna certigna_root_ca certsign certsign_sa
+[tls]   certum_trusted_network_ca cfca_ev_root chambers_of_commerce_root_2008
+[tls]   chunghwa_telecom_co comodo_certification_authority
+[tls]   comodo_ecc_certification_authority comodo_rsa_certification_authority
+[tls]   cybertrust_global_root d_trust_root_class_3_ca_2_ev_2009
+[tls]   digicert_assured_id_root_ca digicert_assured_id_root_g2
+[tls]   digicert_assured_id_root_g3 digicert_high_assurance_ev_root_ca
+[tls]   digicert_trusted_root_g4 e_szigno_root_ca_2017 e_tugra_certification_authority
+[tls]   ec_acc emsign_ecc_root_ca_c3 emsign_ecc_root_ca_g3 emsign_root_ca_c1
+[tls]   emsign_root_ca_g1 entrust_net_certification_authority_2048
+[tls]   entrust_root_certification_authority entrust_root_certification_authority_ec1
+[tls]   entrust_root_certification_authority_g2
+[tls]   entrust_root_certification_authority_g4 fnmt_rcm gdca_trustauth_r5_root
+[tls]   geotrust_global_ca geotrust_primary_certification_authority_g2
+[tls]   global_chambersign_root_2008 globalsign globalsign_1 globalsign_2 globalsign_3
+[tls]   go_daddy_root_certificate_authority_g2 gts_root_r2 gts_root_r3
+[tls]   hellenic_academic_and_research_institutions_ecc_
+[tls]   hellenic_academic_and_research_institutions_root
+[tls]   hellenic_academic_and_research_institutions_root_1 hongkong_post_root_ca_1
+[tls]   hongkong_post_root_ca_3 identrust_commercial_root_ca_1
+[tls]   identrust_public_sector_root_ca_1 izenpe_com microsec_e_szigno_root_ca_2009
+[tls]   microsoft_ecc_root_certificate_authority_2017
+[tls]   microsoft_rsa_root_certificate_authority_2017
+[tls]   naver_global_root_certification_authority
+[tls]   netlock_arany_class_gold_f_c5_91tan_c3_bas_c3_ad
+[tls]   network_solutions_certificate_authority oiste_wisekey_global_root_gb_ca
+[tls]   oiste_wisekey_global_root_gc_ca quovadis_root_ca_1_g3 quovadis_root_ca_2
+[tls]   quovadis_root_ca_2_g3 quovadis_root_ca_3 quovadis_root_ca_3_g3
+[tls]   quovadis_root_certification_authority secom_trust_net secom_trust_systems_co
+[tls]   secure_global_ca securesign_rootca11 securetrust_ca sonera_class2_ca
+[tls]   ssl_com_ev_root_certification_authority_ecc
+[tls]   ssl_com_ev_root_certification_authority_rsa_r2
+[tls]   ssl_com_root_certification_authority_ecc
+[tls]   ssl_com_root_certification_authority_rsa staat_der_nederlanden_ev_root_ca
+[tls]   staat_der_nederlanden_root_ca_g3 starfield_root_certificate_authority_g2
+[tls]   starfield_services_root_certificate_authority_g2 starfield_technologies
+[tls]   swisssign_gold_ca_g2 swisssign_silver_ca_g2 szafir_root_ca2
+[tls]   t_telesec_globalroot_class_2 t_telesec_globalroot_class_3
+[tls]   teliasonera_root_ca_v1 the_go_daddy_group trustcor_eca_1
+[tls]   trustcor_rootcert_ca_1 trustcor_rootcert_ca_2 trustis_limited
+[tls]   trustwave_global_certification_authority
+[tls]   trustwave_global_ecc_p256_certification_authorit
+[tls]   trustwave_global_ecc_p384_certification_authorit
+[tls]   tubitak_kamu_sm_ssl_kok_sertifikasi_surum_1 twca_global_root_ca
+[tls]   twca_root_certification_authority uca_extended_validation_root
+[tls]   uca_global_g2_root verisign_universal_root_certification_authority
+[tls]   xramp_global_certification_authority
+[net] no supported NIC found; networking disabled
+[net] if 1 lo flags up running loopback  127.0.0.1/8
+[text] /fonts/ui.ttf: not found
+[text] /fonts/mono.ttf: not found
+[text] /fonts/text.ttf: not found
+[text] /fonts/ui-bold.ttf: not found
+[text] /fonts/mono-bold.ttf: not found
+[mm] low: 115164 frames free (449 MiB), 15632 used, 0 shared, 0 bugs
+[mm] low: 114908 frames free (448 MiB), 15888 used, 0 shared, 0 bugs
+[mm] low: 114652 frames free (447 MiB), 16144 used, 0 shared, 0 bugs
+[mm] low: 114396 frames free (446 MiB), 16400 used, 0 shared, 0 bugs
+[mm] low: 114140 frames free (445 MiB), 16656 used, 0 shared, 0 bugs
+[mm] low: 113884 frames free (444 MiB), 16912 used, 0 shared, 0 bugs
+[mm] low: 113628 frames free (443 MiB), 17168 used, 0 shared, 0 bugs
+[mm] low: 113372 frames free (442 MiB), 17424 used, 0 shared, 0 bugs
+[wm] display 1280x800 px, scale 100%, desktop 1280x800 pt
+[ime] /ime/pinyin.dat: not found -- the input method is UNAVAILABLE;
+[ime] Shift+Space will pass through and ASCII input is unchanged
+[wm] pointer: composited into the frame (no cursor plane)
+[wm] dock 0 apps:
+[wm] menu title 0 LogitOS x0 8 y0 0 x1 46 y1 24
+[wm] menu title 1 File x0 62 y0 0 x1 90 y1 24
+[wm] menu title 2 View x0 106 y0 0 x1 134 y1 24
+[logitos] desktop up; mouse + keyboard armed
+[acpi] MADT CPUs type0=2 type9=0 duplicate=0 rejected=0
+[lapic] mode=xapic id=0 source=IA32_APIC_BASE
+[smp] CPU 0 apic_id=0 topology=cpuid.0b pkg=0 core=0 thread=0 type=unknown native-valid=0 native=0 hybrid=0
+[smp] 2 CPU(s) detected, BSP apic_id=0
+[ioapic] device IRQs routed via I/O APIC
+[smp] CPU 1 apic_id=1 topology=cpuid.0b pkg=0 core=1 thread=0 type=unknown native-valid=0 native=0 hybrid=0
+[prot] ap: nx sup/ON  wxsplit ON  smep -/off  smap -/off
+[smp] CPU 1 apic_id=1 online
+[smp] 2/2 CPUs online
+[smp] topology logical=2 cores=2 p=0/0 e=0/0 unknown=2/2 mismatch=0 conflict=0
+[smp] scheduler topology policy=uniform-online-cpus
+[smp] parallel present on 2 cores (IPI 241)
+[nv-bootfb] 0000:00:01.0 1234:1111 QEMU stdvga (synthetic test alias) TEST-ONLY mode=passive bootfb=1280x800 source=multiboot-lfb bar=0 lfb=0x80000000/0x3e8000 cmd=0007 pm=none bar0=0x80000000/0x1000000/pref bar2=0x81012000/0x1000
+[nv-bootfb] framebuffer retained; no GPU command, modeset, clocks, DMA, IRQ or 3D
+[nv-accel] stage=5 blocker=wrong-device firmware=0/22 chipset=0 boot0=0 reads=0 writes=0 fallback=cpu
+[dev] 0000:00:00.0 8086:29c0 class=06.00.00 host-bridge  driver=-
+[dev] 0000:00:01.0 1234:1111 class=03.00.00 vga          driver=nv-bootfb bar0=0x80000000/0x1000000 bar2=0x81012000/0x1000
+[dev] 0000:00:02.0 8086:2922 class=01.06.01 sata/ahci    driver=ahci caps=msi, bar4=io:0x6060/0x20 bar5=0x81011000/0x1000
+[dev] 0000:00:1f.0 8086:2918 class=06.01.00 isa-bridge   driver=-
+[dev] 0000:00:1f.2 8086:2922 class=01.06.01 sata/ahci    driver=- caps=msi, bar4=io:0x6040/0x20 bar5=0x81010000/0x1000
+[dev] 0000:00:1f.3 8086:2930 class=0c.05.00 smbus        driver=- bar4=io:0x6000/0x40
+[dev] 6 device(s), 2 bound, 4 unclaimed
+[dma] boot coherent=1 bytes=4096 mappings=0 pins=0 direct=0 bounce=0 quarantine=0/0/0 high=0 max=0x38e1fff stale=0 completed_direct=3584 completed_high=0
+
+[wm] desktop live; launching apps as ring-3 processes
+[wm] no accounts on this machine: the desktop starts unauthenticated
+[wm] launch: not found
+[wm] ptr 640 400
+[wm] win 0 gone
+[wm] win 1 gone
+[wm] win 2 gone
+[wm] win 3 gone
+[wm] win 4 gone
+[wm] win 5 gone
+[wm] win 6 gone
+[wm] win 7 gone
+[wm] win 8 gone
+[wm] win 9 gone
+[wm] win 10 gone
+[wm] win 11 gone
+[wm] win 12 gone
+[wm] win 13 gone
+[wm] win 14 gone
+[wm] win 15 gone

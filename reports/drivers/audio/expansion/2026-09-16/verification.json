@@ -1,0 +1,11 @@
+{
+  "verified_at": "2026-09-15T16:22:33.263109+00:00",
+  "production_sources_match": true,
+  "all_55_audio_sources_match": true,
+  "frozen_inputs_match": true,
+  "guest_configurations_passed": 5,
+  "recordings_byte_exact": 10,
+  "aggregate_make_exit": 0,
+  "no_audio_gate_exit": 0,
+  "physical_hardware_verified": false
+}

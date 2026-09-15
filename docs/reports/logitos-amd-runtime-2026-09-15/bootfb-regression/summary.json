@@ -1,0 +1,19 @@
+{
+  "scope": "QEMU ati-vga boot framebuffer integration; not physical AMD hardware",
+  "runs": [
+    {
+      "firmware": "bios",
+      "evidence": "qemu-ati-vga-1002:5046",
+      "bar": 0,
+      "width": 1024,
+      "height": 768,
+      "sample_colours": 221,
+      "lit_samples": 12288,
+      "samples": 12288,
+      "image": "/Users/wangzhe/system/LogitOS/build-amd-present-live/logit.iso",
+      "image_sha256": "0f80979f37e8a17e590b45e7579f26231ae137607f99047c2f9926784190ec73",
+      "physical_amd_gpu_verified": false,
+      "native_gpu_acceleration_verified": false
+    }
+  ]
+}
