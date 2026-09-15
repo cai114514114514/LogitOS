@@ -16,6 +16,19 @@
 
 在仓库根目录执行，使用独立构建目录：
 
+**2026-09-15 默认入口修正：** 原先仅 `run-agent` / `run-project` 配置宿主模型
+网关，普通 `make run` 直接启动 QEMU，导致 Finder / TextEdit 虽有任务输入框却
+没有可用的模型连接。现在 `make run` 在 `.env` 存在时使用同一会话启动器，
+安装配套应用和本次会话的模型配置；真实服务密钥仍只由宿主进程读取。
+未提供 `.env` 时继续启动桌面并明确提示模型离线；已有配置无效则在启动时报告错误。
+改动需要退出当前 QEMU 后重新执行 `make run`，不会自动修改正在运行的虚拟机。
+默认入口仍使用原磁盘格式；下方 `run-project` 是具有 v5 持久身份的独立副本入口。
+
+默认入口已在私有磁盘上通过原生 Finder 提交、TextEdit 继续修改、审阅和保存；
+四次真实 DeepSeek 请求均 HTTP 200。复跑命令为
+`make BUILD=build-default-session test-default-session-real`，证据摘要见
+`reports/2026-09-15-default-model-session.json`。
+
 ```sh
 make BUILD=build-project run-project
 ```

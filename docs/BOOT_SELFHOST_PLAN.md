@@ -350,21 +350,17 @@ lives in the component that knows what its own firmware did.*
 
 ## 12. The dependency surface, counted
 
-Small, and that is why this is worth attempting at all. Six files, ~45
-references:
+HISTORY (retired 2026-09-15): this section originally counted six production
+files and about 45 Multiboot2 references. The scanned header, 32-bit entry and
+UEFI descent are now absent from production. Their only surviving executable
+copies live under `tests/fixtures/bootoracle/`, linked into a separately named
+GRUB kernel for the fixed-QEMU differential and one-release escape hatch.
 
-| file | refs | what |
-|---|---|---|
-| `c/kernel/mm/pmm.c` | 28 | the mmap tag walk and its structs — the real work |
-| `c/kernel/cpu/acpi.c` + `.h` | 8 | `rsdp_from_mb2()` |
-| `c/kernel/gui/fb.c` | 5 | framebuffer tag |
-| `c/boot/boot.asm` | 3 | the magic check and the 32-bit entry |
-| `c/boot/multiboot2.asm` | 2 | the header itself |
-| `c/kernel/core/kmain.c` | 1 | hands the block to acpi.c |
-
-`c/drivers/gpu/nvidia_pascal.c` also matches, and is **not** a dependency: the
-hit is the log string `source=multiboot-lfb`. Rename it with the rest or leave
-it; do not let a grep count it as work.
+The three mature consumers still receive an internal legacy-shaped view from
+`bootinfo.c`. That was chosen over three simultaneous parser conversions because
+`acpi.c` was owned by another active task and the unchanged payload layouts let
+one validated entry adapter preserve one reader per fact. This is not a second
+wire protocol: both shipping loaders emit native tag numbers exclusively.
 
 ## 13. The shape of the native protocol
 
@@ -399,16 +395,16 @@ the design starts from them instead of rediscovering them.
 
 ## 14. The ordering constraint, which is the reason this is Phase 2
 
-**Multiboot2 cannot go while GRUB is still the BIOS loader**, because GRUB
-speaks nothing else. So: §8 (GRUB removed) strictly precedes any of §11–13. A
-tree that starts replacing the protocol before the loader that requires it is
-gone is a tree with no bootable BIOS path and no way back.
+HISTORY (completed 2026-09-15): GRUB first left the product path, both in-tree
+loaders then gained native v1 behind test flags, and the differential showed the
+same consumed machine facts. Production now has only the native long-mode entry.
 
-And within Phase 2, the same discipline as §7: **the kernel accepts both
-protocols for exactly one milestone**, with the native path behind a build flag,
-and the differential is the gate — same machine, same kernel, both protocols,
-the three consumers reaching the same conclusions. Then Multiboot2 comes out in
-one commit that touches six files, and `test-sweep` is the acceptance.
+GRUB remains deliberately test-only for one release. Its separately linked
+kernel retains the retired entry so the oracle is still an independent loader,
+not our loader compared with itself. The boundary is narrower than the old live
+differential: the fixed SeaBIOS invocation can catch changes in the facts our
+BIOS loader reports, but cannot catch QEMU/SeaBIOS drift or behavior on other
+firmware and real machines.
 
 ## 15. What Phase 2 is still not
 
