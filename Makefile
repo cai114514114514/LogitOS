@@ -447,10 +447,34 @@ $(BUILD)/%.o: %.asm
 $(KERNEL): $(OBJ) $(RUST_LIB) linker.ld
 	$(LD) $(LDFLAGS) -Map=$(BUILD)/kernel.map -o $@ --start-group $(OBJ) $(RUST_LIB) --end-group
 
-$(ISO): $(KERNEL) grub.cfg
+# These are product artifacts, not aliases of test-bios-boot outputs. Keeping
+# them under the caller's BUILD makes a clean or isolated build reconstruct the
+# exact preload/loader bytes that mkiso.py puts on the product ISO.
+PRODUCT_BIOS_DIR := $(BUILD)/bios-product
+PRODUCT_BIOS_PRELOAD := $(PRODUCT_BIOS_DIR)/preload.bin
+PRODUCT_BIOS_LOADER := $(PRODUCT_BIOS_DIR)/loader.bin
+GRUB_ISO := $(BUILD)/logit-grub.iso
+
+$(PRODUCT_BIOS_PRELOAD): c/boot/bios/preload.asm
+	@mkdir -p $(PRODUCT_BIOS_DIR)
+	$(ASM) -f bin -o $@ $<
+
+$(PRODUCT_BIOS_LOADER): c/boot/bios/loader.asm
+	@mkdir -p $(PRODUCT_BIOS_DIR)
+	$(ASM) -f bin -o $@ $<
+
+$(ISO): $(KERNEL) tools/mkiso.py $(PRODUCT_BIOS_PRELOAD) $(PRODUCT_BIOS_LOADER)
+	python3 tools/mkiso.py $@ --boot-image $(PRODUCT_BIOS_PRELOAD) \
+	    --loader $(PRODUCT_BIOS_LOADER) --kernel $(KERNEL)
+
+.PHONY: iso-grub
+iso-grub: $(GRUB_ISO)
+
+$(GRUB_ISO): $(KERNEL) grub.cfg
 	@mkdir -p $(ISO_DIR)/boot/grub
 	cp $(KERNEL) $(ISO_DIR)/boot/kernel.elf
 	cp grub.cfg $(ISO_DIR)/boot/grub/grub.cfg
+	# DUE 2026-10-15: remove this one-release bisection escape hatch after the self-hosted ISO has baked for 30 days.
 	$(GRUB_RESCUE) -o $@ $(ISO_DIR)
 
 # --- userland applications (.aex), each a ring-3 process ---
@@ -549,15 +573,23 @@ $(BUILD)/gallery_hidden.aex: $(BUILD)/gallery.elf tools/mkaex.py
 $(eval $(call APP_RULE,settings,0x4B000000,Settings,-,S,140,150,165))
 # Preview is NOT built by APP_RULE -- it links the H.264 decoder and mini-libc,
 # so its rule lives with the VID_OBJ definitions further down.
-# Code Studio links the AetherScript completion engine (complete.o) for IntelliSense.
+# Code Studio owns a separately compiled application engine. The GUI links
+# that archive and never includes its implementation or owns compiler state.
+STUDIO_SRC := $(wildcard c/apps/studio/*.c)
+STUDIO_OBJ := $(patsubst c/apps/studio/%.c,$(BUILD)/apps/studio/%.o,$(STUDIO_SRC))
+$(BUILD)/apps/studio/%.o: c/apps/studio/%.c $(wildcard c/apps/studio/*.h) c/apps/as/complete.h
+	@mkdir -p $(dir $@)
+	$(CC) $(UCFLAGS) -c $< -o $@
+$(BUILD)/apps/studio-engine.a: $(STUDIO_OBJ)
+	$(AGENT_AR) rcs $@ $(STUDIO_OBJ)
 $(BUILD)/apps/complete.o: c/apps/as/complete.c c/apps/as/complete.h
 	@mkdir -p $(BUILD)/apps
 	$(CC) $(UCFLAGS) -c c/apps/as/complete.c -o $@
-$(BUILD)/studio.elf: $(GUIDIR)/studio.c $(APPDIR)/crt0.asm $(APPDIR)/logit.h $(GUIDIR)/aui.h $(BUILD)/apps/aui.o $(GFX_OBJ) $(BUILD)/apps/complete.o c/apps/as/complete.h
+$(BUILD)/studio.elf: $(GUIDIR)/studio.c $(APPDIR)/crt0.asm $(APPDIR)/logit.h $(GUIDIR)/aui.h $(BUILD)/apps/aui.o $(GFX_OBJ) $(BUILD)/apps/studio-engine.a $(BUILD)/apps/complete.o c/apps/studio/engine.h $(wildcard c/apps/studio/studio_*.inc)
 	@mkdir -p $(BUILD)/apps
 	$(ASM) -f elf64 $(APPDIR)/crt0.asm -o $(BUILD)/apps/studio.crt0.o
 	$(CC) $(UCFLAGS) -c $(GUIDIR)/studio.c -o $(BUILD)/apps/studio.o -Ic/apps/as
-	$(LD) -nostdlib -e _start -Ttext=0x49000000 -o $@ $(BUILD)/apps/studio.crt0.o $(BUILD)/apps/studio.o $(BUILD)/apps/aui.o $(GFX_OBJ) $(BUILD)/apps/complete.o
+	$(LD) -nostdlib -e _start -Ttext=0x49000000 -o $@ $(BUILD)/apps/studio.crt0.o $(BUILD)/apps/studio.o $(BUILD)/apps/aui.o $(GFX_OBJ) $(BUILD)/apps/studio-engine.a $(BUILD)/apps/complete.o
 $(BUILD)/studio.aex: $(BUILD)/studio.elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/studio.elf $@ 'Code Studio' as '{' 200 160 250
 
@@ -1193,7 +1225,7 @@ AS_OBJ  := $(patsubst %.c,$(BUILD)/asobj/%.o,$(AS_C)) \
 # as.h carries AS_BC_VERSION + the opcode enum; depend on it so a version bump
 # rebuilds EVERY asobj (esp. as_bc.o, whose .c rarely changes) -- otherwise a
 # stale as_bc.o in /bin/as rejects the freshly-bumped .la files on Logit.
-AS_HDRS := $(wildcard c/apps/as/*.h)
+AS_HDRS := $(wildcard c/apps/as/*.h c/apps/as/runtime/*.h)
 
 $(BUILD)/asobj/%.o: %.c $(AS_HDRS)
 	@mkdir -p $(dir $@)
@@ -1209,7 +1241,10 @@ $(BUILD)/asobj/%.o: %.asm
 # bootstrap that precompiles every .la and is the oracle half of the crosscheck
 # -- still links all of them; as.c is the only file that differs between the
 # two, which is why  on this binary is a gate (test-as-shipped).
-AS_OBJ_SHIPPED := $(filter-out $(BUILD)/asobj/c/apps/as/compiler.o                                $(BUILD)/asobj/c/apps/as/lexer.o,$(AS_OBJ))
+# Correction (2026-09-15): the shared lexer and the version-3 typed frontend
+# now ship for local checks. Legacy source -> bytecode still uses asc.la;
+# compiler.c remains excluded and the old self-hosting gate checks that path.
+AS_OBJ_SHIPPED := $(filter-out $(BUILD)/asobj/c/apps/as/compiler.o,$(AS_OBJ))
 
 $(BUILD)/as.elf: $(AS_OBJ_SHIPPED) $(APPDIR)/crt0_cli.asm
 	@mkdir -p $(BUILD)/apps
@@ -1566,8 +1601,12 @@ MODEL_LM_ON_DISK := $(if $(MODEL_LM),$(MODEL_LM):/model.lm,)
 # Repacking after an app edit used to erase the browser profile even when its
 # Cookie/localStorage writes had succeeded. Keep the existing disk path and
 # preserve the WHOLE /browser subtree, including future state files. New user
-# state outside it needs an explicit --preserve root here. The packer validates
-# and recovers a private copy, then replaces atomically; disk_guard rejects an
+# state outside it needs an explicit --preserve root here.
+# Correction (2026-09-15): /docs was missing, so rebuilding removed Studio
+# projects while /etc still remembered their tabs. Merge the WHOLE document
+# tree: user edits (including packaged readme.txt) win, new shipped files are
+# added, and nested .studio recovery slots/empty folders retain their metadata.
+# The packer validates and recovers a private copy, then replaces atomically; disk_guard rejects an
 # image held by QEMU. A same-image reboot test alone cannot catch this failure.
 $(DISK): $(FS_FILES) $(AS_EXAMPLES) $(AS_LA) $(FONTS) $(FONT_TEXT) $(RELEASE_NOTICES) $(AEX) $(BUILD)/libctest.aex $(BUILD)/closefull.aex $(BUILD)/vidcheck.aex $(BUILD)/audiocheck.aex $(BUILD)/h2check.aex $(BUILD)/dot.png tools/mkfs.py $(BUILD)/imgcheck.aex $(IMG_FIXTURES) $(BUILD)/asnative.aex $(LPK_FIXTURES) $(GREETER_AEX) $(CH_AEX) $(BUILD)/lm.aex $(MODEL_LM) $(BUILD)/tcc/tcc.aex
 	@mkdir -p $(BUILD)
@@ -1577,7 +1616,7 @@ $(DISK): $(FS_FILES) $(AS_EXAMPLES) $(AS_LA) $(FONTS) $(FONT_TEXT) $(RELEASE_NOT
 	else \
 	    echo "disk: build/model.lm not present -- packing without /model.lm (run build/lmtrain to add it, see tools/lmtrain.md)"; \
 	fi
-	python3 tools/mkfs.py --preserve /browser --preserve /state --preserve-merge /etc --preserve /home --preserve /download --snapshot-helper $(BUILD)/lfs_snapshot $(DISK) $(FS_FILES) fsroot/readme.txt:/docs/readme.txt \
+	python3 tools/mkfs.py --preserve /browser --preserve /state --preserve-merge /docs --preserve-merge /etc --preserve /home --preserve /download --snapshot-helper $(BUILD)/lfs_snapshot $(DISK) $(FS_FILES) fsroot/readme.txt:/docs/readme.txt \
 	    $(BUILD)/hello.lpk:/pkg/hello.lpk $(BUILD)/tampered.lpk:/pkg/tampered.lpk \
 	    $(BUILD)/foreign.lpk:/pkg/foreign.lpk \
 	    $(BUILD)/pkgverify.aex:/bin/pkgverify \
@@ -1775,8 +1814,12 @@ QEMU_SND ?= -audiodev coreaudio,id=snd0 -device intel-hda -device hda-output,aud
 DISP ?=
 QEMU_DISP := $(if $(DISP),-display $(DISP),)
 
+# The ordinary desktop must start the same model session as run-agent. Keep
+# its QEMU device arguments intact; acceptance overrides only this argument
+# list to attach private serial/QMP sockets to the real `make run` recipe.
+QEMU_RUN_ARGS = -cdrom $(ISO) $(QEMU_DISK) $(QEMU_RAM) $(QEMU_SMP) $(QEMU_CPU) $(QEMU_RTC) $(QEMU_GPU) $(QEMU_NET) $(QEMU_DISP) $(QEMU_SND) -serial stdio -no-reboot -qmp unix:/tmp/logit-qmp.sock,server,nowait
 run: $(ISO) $(DISK)
-	python3 tools/disk_guard.py $(DISK) -- $(QEMU) -cdrom $(ISO) $(QEMU_DISK) $(QEMU_RAM) $(QEMU_SMP) $(QEMU_CPU) $(QEMU_RTC) $(QEMU_GPU) $(QEMU_NET) $(QEMU_DISP) $(QEMU_SND) -serial stdio -no-reboot -qmp unix:/tmp/logit-qmp.sock,server,nowait
+	$(AGENT_SESSION_LAUNCH) --optional-env --disk $(DISK) -- $(QEMU) $(QEMU_RUN_ARGS)
 
 # What is the guest ACTUALLY drawing? Boots headless, screendumps over QMP and
 # writes a PNG. This is the check that separates "the OS is broken" from "the
@@ -5461,3 +5504,6 @@ include tests/physical_spacing_boundary.mk
 include tests/crc32_perf.mk
 
 include tests/svg_stylesheet.mk
+
+-include tests/astyped.mk
+-include tests/asmigration.mk

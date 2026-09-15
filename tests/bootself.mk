@@ -276,11 +276,13 @@ $(BIOS_MB2_BAD_RSDP_IMAGE): tools/mkiso.py $(BIOS_MB2_PRELOAD) $(BIOS_MB2_BAD_RS
 
 # Build the ordinary kernel objects in the caller's isolated BUILD tree,
 # recompile only the two diagnostic translation units with BOOT_MB2_DUMP, then
-# link a separately named kernel and ask the ordinary GRUB recipe for a
+# link a separately named kernel and ask the retained GRUB escape hatch for a
 # separately named ISO.  Naming both outputs is important: merely recompiling
 # two objects inside one filesystem timestamp tick once left the old kernel
-# linked and the apparent "differential" ran no dumper at all.  The product ISO
-# recipe, product ISO pathname, and grub.cfg remain exactly as shipped.
+# linked and the apparent "differential" ran no dumper at all.
+# Correction (2026-09-15): the product ISO now uses mkiso.py; this differential
+# deliberately keeps its oracle on iso-grub for one release so a loader defect
+# cannot make both sides of the comparison agree on the same wrong behavior.
 $(BIOS_MB2_GRUB_IMAGE): c/kernel/core/mb2dump.c c/kernel/core/kmain.c tests/bootself.mk
 	@mkdir -p $(BIOS_MB2_DIR)
 	$(MAKE) BUILD=$(BUILD) $(KERNEL)
@@ -288,7 +290,7 @@ $(BIOS_MB2_GRUB_IMAGE): c/kernel/core/mb2dump.c c/kernel/core/kmain.c tests/boot
 	$(CC) $(CFLAGS) -DBOOT_MB2_DUMP -c c/kernel/core/kmain.c -o $(BUILD)/c/kernel/core/kmain.o
 	$(MAKE) BUILD=$(BUILD) KERNEL=$(BIOS_MB2_GRUB_KERNEL) $(BIOS_MB2_GRUB_KERNEL)
 	$(MAKE) BUILD=$(BUILD) KERNEL=$(BIOS_MB2_GRUB_KERNEL) \
-	    ISO=$(BIOS_MB2_GRUB_WORK_IMAGE) $(BIOS_MB2_GRUB_WORK_IMAGE)
+	    GRUB_ISO=$(BIOS_MB2_GRUB_WORK_IMAGE) iso-grub
 	cp $(BIOS_MB2_GRUB_WORK_IMAGE) $@
 
 # SeaBIOS on the measured host enters with A20 enabled.  The control therefore
@@ -321,10 +323,11 @@ test-bios-mb2-differential: test-bios-mb2-differential-negctl \
 	@python3 $(BIOS_MB2_TEST) --qemu $(BIOS_MB2_QEMU) compare \
 	    $(BIOS_MB2_IMAGE) $(BIOS_MB2_GRUB_IMAGE)
 
-# Stage 3 keeps the product ISO and grub.cfg untouched: this sibling image
-# contains preload, loader, and the diagnostic kernel ELF as consecutive native
-# CD extents.  The GRUB image above is still built because its BOOT_MB2_DUMP is
-# the oracle for consumed tags, not because GRUB participates in our boot.
+# Stage 3 kept the product ISO and grub.cfg untouched. Correction (2026-09-15):
+# the product now uses this preload/loader/kernel layout; the sibling image here
+# remains separately named. The GRUB image above is still built because its
+# BOOT_MB2_DUMP is the oracle for consumed tags, not because GRUB participates
+# in our product boot.
 BIOS_BOOT_DIR := $(BUILD)/bios-boot
 BIOS_BOOT_PRELOAD := $(BIOS_BOOT_DIR)/preload.bin
 BIOS_BOOT_LOADER := $(BIOS_BOOT_DIR)/loader.bin
