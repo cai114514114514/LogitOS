@@ -12,7 +12,12 @@
  * A program that checks the return value before relying on raw mode --
  * which a correct one must, since tcgetattr can fail on any real system too
  * (redirected stdin, for one) -- behaves correctly here: it sees the failure
- * and falls back to whatever it does for "not a controllable terminal." */
+ * and falls back to whatever it does for "not a controllable terminal."
+ *
+ * Correction (2026-09-15): that remains true for the legacy serial console.
+ * Native PTY descriptors now have real attributes, window size, and a
+ * controlling-session foreground pgid. Unsupported flags and every console
+ * request still fail; nothing is promoted from ENOTTY to plausible success. */
 
 typedef unsigned char cc_t;
 typedef unsigned int  speed_t;
@@ -25,8 +30,9 @@ struct termios {
     speed_t  c_ispeed, c_ospeed;
 };
 
-/* Just enough symbolic constants that code referencing them compiles; none
- * of them can actually be set (see above). */
+/* The PTY accepts the flags below except IXON. IXON remains defined because
+ * cfmakeraw() must clear it in caller-owned structs, but tcsetattr refuses it:
+ * the line discipline has no software flow-control state to apply. */
 #define ICANON 0x0002
 #define ECHO   0x0008
 #define ECHOE  0x0010

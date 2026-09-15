@@ -1,9 +1,8 @@
-/* <termios.h>. See the header: there is no termios driver on this kernel, so
- * every call that would change or report real terminal state fails with
- * ENOTTY -- honestly, not with a fabricated struct. The few calls that need
- * no kernel state (cfmakeraw, the speed accessors) work on the caller's own
- * struct, exactly as they do on any system, because they are pure struct
- * manipulation the standard defines that way. */
+/* <termios.h>. Historically there was no termios driver on this kernel, so
+ * every stateful call failed with ENOTTY rather than fabricating success.
+ * Correction (2026-09-15): native PTYs have the operations routed below; the
+ * serial console and unsupported operations retain that honest failure. The
+ * pure struct helpers (cfmakeraw and the speed accessors) need no driver. */
 #include <termios.h>
 #include <unistd.h>
 #include <errno.h>
@@ -33,9 +32,28 @@ int tcsetattr(int fd, int actions, const struct termios *t)
 }
 int tcflush(int fd, int queue) { return pty_result(libc_pty_ctl(fd,LPTY_FLUSH,(void *)(long)queue)); }
 int tcdrain(int fd) { return pty_result(libc_pty_ctl(fd,LPTY_DRAIN,0)); }
-int tcflow(int fd, int action) { (void)action; return not_a_pty(fd) ? -1 : 0; }
-pid_t tcgetpgrp(int fd) { not_a_pty(fd); return -1; }
-int tcsetpgrp(int fd, pid_t pgrp) { (void)pgrp; return not_a_pty(fd) ? -1 : 0; }
+int tcflow(int fd, int action)
+{
+    /* IXON/IXOFF and transmitter suspension are not in the PTY discipline.
+     * Before PTYs were reachable not_a_pty() happened to reject every fd; now
+     * an isatty-success path must not turn this into a no-op success. */
+    (void)action;
+    (void)not_a_pty(fd);
+    return -1;
+}
+pid_t tcgetpgrp(int fd)
+{
+    long r=libc_pty_ctl(fd,LPTY_GETPGRP,0);
+    if(r<0){errno=ENOTTY;return -1;}
+    return (pid_t)r;
+}
+int tcsetpgrp(int fd, pid_t pgrp)
+{
+    if(pgrp<=0){errno=EINVAL;return -1;}
+    if(!isatty(fd)){errno=ENOTTY;return -1;}
+    if(libc_pty_ctl(fd,LPTY_SETPGRP,(void *)(long)pgrp)<0){errno=EPERM;return -1;}
+    return 0;
+}
 
 speed_t cfgetispeed(const struct termios *t) { return t ? t->c_ispeed : 0; }
 speed_t cfgetospeed(const struct termios *t) { return t ? t->c_ospeed : 0; }

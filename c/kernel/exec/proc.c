@@ -226,6 +226,11 @@ static struct proc *alloc_proc(void)
             p->fd_lock = (spinlock_t)SPINLOCK_INIT; p->teardown = 0; p->execing = 0; p->system_service = 0;
             p->state = PROC_BUILDING; /* reserved, not externally visible until proc_publish */
             p->pid = next_pid++;
+            /* A kernel-created process begins as its own session/group leader;
+             * fork overwrites these with the parent's identities below. The
+             * alternative zero/default would make tcsetpgrp accept a group no
+             * live process actually owns. */
+            p->sid = p->pgid = p->pid; p->ctty_id = 0;
             p->ppid = 0; p->exit_code = 0; p->tid = -1; p->cr3 = 0; p->gui = NULL;
             p->cwd[0] = '/'; p->cwd[1] = 0; p->name[0] = 0;
             /* M28: a recycled slot must not inherit the previous tenant's
@@ -508,6 +513,11 @@ long proc_fork(struct registers *r, const void *user_fxarea)
     child->cr3  = space;
     child->ppid = parent->pid;
     child->gui  = NULL;                      /* a forked child has no window */
+    uint64_t parent_proc_flags = spin_lock_irqsave(&g_proc_lock);
+    child->sid = parent->sid;
+    child->pgid = parent->pgid;
+    child->ctty_id = parent->ctty_id;
+    spin_unlock_irqrestore(&g_proc_lock, parent_proc_flags);
     uint64_t parent_fd_flags = spin_lock_irqsave(&parent->fd_lock);
     scopy(child->name, parent->name, sizeof child->name);
     scopy(child->cwd, parent->cwd, sizeof child->cwd);
@@ -554,6 +564,122 @@ long proc_fork(struct registers *r, const void *user_fxarea)
         return -1;
     }
     return child_pid;                        /* parent sees the child's pid */
+}
+
+/* --------------------------------------------------------------------------
+ * Minimal POSIX session/process-group contract for a controlling PTY.
+ *
+ * Deliberately not implemented here: saved terminal state per login, orphaned
+ * group SIGHUP/SIGCONT, the post-exec parent-side setpgid exclusion, and
+ * background TOSTOP/SIGTTIN/SIGTTOU enforcement. A shell plus one foreground
+ * job needs stable sid/pgid membership and an atomic group change; pretending
+ * at the rest would make ordinary I/O fail for policy this kernel cannot yet
+ * complete. g_proc_lock makes membership queries and changes one snapshot, so
+ * a terminal never validates a pgid against a recycled half-built process. */
+long proc_setsid(void)
+{
+    struct proc *self = proc_current();
+    if (!self) return -1;
+    uint64_t fl = spin_lock_irqsave(&g_proc_lock);
+    long r = -1;
+    if (self->state == PROC_RUNNING && self->pgid != self->pid) {
+        self->sid = self->pgid = self->pid;
+        self->ctty_id = 0; /* leaving the old session detaches its terminal */
+        r = self->sid;
+    }
+    spin_unlock_irqrestore(&g_proc_lock, fl);
+    return r;
+}
+
+long proc_getpgid(int pid)
+{
+    struct proc *self = proc_current();
+    if (!self || pid < 0) return -1;
+    if (pid == 0) pid = self->pid;
+    uint64_t fl = spin_lock_irqsave(&g_proc_lock);
+    long r = -1;
+    for (int i = 0; i < NPROC; i++)
+        if ((procs[i].state == PROC_RUNNING || procs[i].state == PROC_ZOMBIE) &&
+            procs[i].pid == pid) { r = procs[i].pgid; break; }
+    spin_unlock_irqrestore(&g_proc_lock, fl);
+    return r;
+}
+
+int proc_terminal_ids(int *sid, int *pgid, uint64_t *ctty_id)
+{
+    struct proc *self = proc_current();
+    if (!self) return 0;
+    uint64_t fl = spin_lock_irqsave(&g_proc_lock);
+    int ok = self->state == PROC_RUNNING;
+    if (ok) {
+        if (sid) *sid = self->sid;
+        if (pgid) *pgid = self->pgid;
+        if (ctty_id) *ctty_id = self->ctty_id;
+    }
+    spin_unlock_irqrestore(&g_proc_lock, fl);
+    return ok;
+}
+
+int proc_group_in_session(int pgid, int sid)
+{
+    if (pgid <= 0 || sid <= 0) return 0;
+    uint64_t fl = spin_lock_irqsave(&g_proc_lock);
+    int found = 0;
+    for (int i = 0; i < NPROC; i++)
+        if ((procs[i].state == PROC_RUNNING || procs[i].state == PROC_ZOMBIE) &&
+            procs[i].sid == sid && procs[i].pgid == pgid) { found = 1; break; }
+    spin_unlock_irqrestore(&g_proc_lock, fl);
+    return found;
+}
+
+int proc_attach_ctty(uint64_t ctty_id)
+{
+    struct proc *self = proc_current();
+    if (!self || !ctty_id) return -1;
+    uint64_t fl = spin_lock_irqsave(&g_proc_lock);
+    int ok = self->state == PROC_RUNNING && self->sid == self->pid;
+    if (ok) for (int i = 0; i < NPROC; i++)
+        if ((procs[i].state == PROC_RUNNING || procs[i].state == PROC_ZOMBIE) &&
+            procs[i].sid == self->sid && procs[i].ctty_id &&
+            procs[i].ctty_id != ctty_id) { ok = 0; break; }
+    if (ok) for (int i = 0; i < NPROC; i++)
+        if ((procs[i].state == PROC_RUNNING || procs[i].state == PROC_ZOMBIE) &&
+            procs[i].sid == self->sid) procs[i].ctty_id = ctty_id;
+    spin_unlock_irqrestore(&g_proc_lock, fl);
+    return ok ? 0 : -1;
+}
+
+void proc_clear_ctty(uint64_t ctty_id)
+{
+    if (!ctty_id) return;
+    uint64_t fl = spin_lock_irqsave(&g_proc_lock);
+    for (int i = 0; i < NPROC; i++)
+        if (procs[i].state != PROC_FREE && procs[i].ctty_id == ctty_id)
+            procs[i].ctty_id = 0;
+    spin_unlock_irqrestore(&g_proc_lock, fl);
+}
+
+long proc_setpgid(int pid, int pgid)
+{
+    struct proc *self = proc_current();
+    if (!self || pid < 0 || pgid < 0) return -1;
+    if (pid == 0) pid = self->pid;
+    if (pgid == 0) pgid = pid;
+    uint64_t fl = spin_lock_irqsave(&g_proc_lock);
+    struct proc *target = NULL;
+    for (int i = 0; i < NPROC; i++)
+        if (procs[i].state == PROC_RUNNING && procs[i].pid == pid) { target = &procs[i]; break; }
+    int allowed = target && (target == self || target->ppid == self->pid) &&
+                  target->sid == self->sid && target->pid != target->sid;
+    if (allowed && pgid != target->pid) {
+        allowed = 0;
+        for (int i = 0; i < NPROC; i++)
+            if (procs[i].state == PROC_RUNNING && procs[i].sid == self->sid &&
+                procs[i].pgid == pgid) { allowed = 1; break; }
+    }
+    if (allowed) target->pgid = pgid;
+    spin_unlock_irqrestore(&g_proc_lock, fl);
+    return allowed ? 0 : -1;
 }
 
 void proc_exit(int code)

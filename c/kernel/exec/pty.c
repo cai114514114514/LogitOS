@@ -19,11 +19,14 @@ struct pty {
     struct pq in, out;
     unsigned char edit[EDIT]; unsigned editing;
     int master, slave, eof;
+    uint64_t id;
+    int session, fg_pgid;
     unsigned signals;
     struct logit_termios attr;
     struct logit_winsize win;
 };
 static spinlock_t life = SPINLOCK_INIT;
+static uint64_t next_pty_id = 1;
 static void push(struct pq *q,unsigned char c) { q->b[q->head]=c;q->head=(q->head+1)%PQ;q->n++; }
 static int pop(struct pq *q) { int c=q->b[q->tail];q->tail=(q->tail+1)%PQ;q->n--;return c; }
 static void nap(struct pty *p,uint64_t *flags)
@@ -35,6 +38,14 @@ static void nap(struct pty *p,uint64_t *flags)
 int pty_open(struct file **master,struct file **slave)
 {
     struct pty *p=kmalloc(sizeof *p);if(!p)return -1;memset(p,0,sizeof *p);waitq_init(&p->wq);
+    /* Do not key a controlling terminal by pid or pointer: both are reused.
+     * IDs are monotonic for this boot; after uint64_t exhaustion allocation
+     * refuses instead of wrapping onto a live or historical identity. */
+    uint64_t life_flags=spin_lock_irqsave(&life);
+    p->id=next_pty_id;
+    if(next_pty_id)next_pty_id++;
+    spin_unlock_irqrestore(&life,life_flags);
+    if(!p->id){kfree(p);return -1;}
     struct file *m=file_alloc(),*s=file_alloc();
     if(!m||!s){if(m)file_close(m);if(s)file_close(s);kfree(p);return -1;}
     p->master=p->slave=1;p->win.rows=24;p->win.cols=80;
@@ -42,7 +53,11 @@ int pty_open(struct file **master,struct file **slave)
     p->attr.lflag=LPTY_ISIG|LPTY_ICANON|LPTY_ECHO|LPTY_ECHOE;
     p->attr.cc[LPTY_VINTR]=3;p->attr.cc[LPTY_VQUIT]=28;p->attr.cc[LPTY_VERASE]=127;
     p->attr.cc[LPTY_VKILL]=21;p->attr.cc[LPTY_VEOF]=4;p->attr.cc[LPTY_VMIN]=1;
-    m->type=s->type=F_PTY;m->backing=s->backing=p;m->is_write=1;s->is_write=0;
+    /* Both endpoints are the existing terminal fd kind. A NULL F_TTY backing
+     * is the serial console; this non-NULL backing selects the PTY discipline
+     * inside file.c. A sixth kind made fstat/isatty grow a parallel path for
+     * bytes that are still, semantically, a terminal. */
+    m->type=s->type=F_TTY;m->backing=s->backing=p;m->is_write=1;s->is_write=0;
     m->amode=s->amode=O_RDWR;*master=m;*slave=s;return 0;
 }
 long pty_read(struct file *f,void *data,long len)
@@ -120,7 +135,8 @@ void pty_release(void *backing,int master)
     uint64_t life_flags=spin_lock_irqsave(&life),fl=spin_lock_irqsave(&p->wq.lock);
     if(master)p->master=0;else p->slave=0;int dead=!p->master&&!p->slave;
     spin_unlock_irqrestore(&p->wq.lock,fl);if(!dead)waitq_wake_all(&p->wq);
-    spin_unlock_irqrestore(&life,life_flags);if(dead)kfree(p);
+    spin_unlock_irqrestore(&life,life_flags);
+    if(dead){proc_clear_ctty(p->id);kfree(p);}
 }
 long pty_syscall(long num,long a,long b,long c)
 {
@@ -133,8 +149,13 @@ long pty_syscall(long num,long a,long b,long c)
         if(user_copy_to((void *)a,fds,sizeof fds)<0){proc_fd_close_if(owner,fds[0],hold_m);proc_fd_close_if(owner,fds[1],hold_s);return -1;}
         return 0;
     }
-    struct file *f FILE_REF=proc_fd_acquire(owner,a);if(!f||f->type!=F_PTY)return -1;
+    struct file *f FILE_REF=proc_fd_acquire(owner,a);
+    if(!f||f->type!=F_TTY||!f->backing)return -1;
     struct pty *p=f->backing;struct logit_termios attr;struct logit_winsize win;
+    int caller_sid=0,caller_pgid=0;uint64_t caller_ctty=0;
+    if((b==LPTY_SETCTTY||b==LPTY_GETPGRP||b==LPTY_SETPGRP) &&
+       !proc_terminal_ids(&caller_sid,&caller_pgid,&caller_ctty))return -1;
+    if(b==LPTY_SETPGRP && !proc_group_in_session((int)c,caller_sid))return -1;
     if(b==LPTY_DRAIN){
         uint64_t fl=spin_lock_irqsave(&p->wq.lock);
         while(p->out.n&&p->master&&!ksig_interrupted())nap(p,&fl);
@@ -156,7 +177,14 @@ long pty_syscall(long num,long a,long b,long c)
     case LPTY_SETATTR:
         if((p->attr.lflag&LPTY_ICANON)&&!(attr.lflag&LPTY_ICANON)){
             if(PQ-p->in.n<p->editing){r=-1;break;}for(unsigned i=0;i<p->editing;i++)push(&p->in,p->edit[i]);p->editing=0;
-        }p->attr=attr;break;
+        }
+#ifdef PTY_NEGCTL_ECHO_STUCK
+        /* test-pty's real-kernel control removes the ECHO transition only.
+         * The syscall still returns success, so the observed master byte --
+         * not a return code -- is what makes the control go red. */
+        attr.lflag=(attr.lflag&~LPTY_ECHO)|(p->attr.lflag&LPTY_ECHO);
+#endif
+        p->attr=attr;break;
     case LPTY_GETWIN:win=p->win;break;
     case LPTY_SETWIN:p->win=win;p->signals|=1u<<LOGIT_SIGWINCH;break;
     case LPTY_SIGNAL:
@@ -166,6 +194,21 @@ long pty_syscall(long num,long a,long b,long c)
         if(c<0||c>2){r=-1;break;}
         if(c!=1){p->in.n=p->in.head=p->in.tail=p->editing=p->eof=0;}
         if(c!=0)p->out.n=p->out.head=p->out.tail=0;break;
+    case LPTY_SETCTTY:
+        /* TIOCSCTTY is slave-only and session-leader-only. proc_attach_ctty
+         * also refuses a second terminal for this session; the PTY side
+         * refuses a second live session for this terminal. Force-stealing a
+         * terminal is deliberately absent because there is no privilege model
+         * for that Linux extension to consult. */
+        if(f->is_write||(p->session&&p->session!=caller_sid)||
+           proc_attach_ctty(p->id)<0){r=-1;break;}
+        p->session=caller_sid;p->fg_pgid=caller_pgid;break;
+    case LPTY_GETPGRP:
+        if(p->session!=caller_sid||caller_ctty!=p->id||p->fg_pgid<=0){r=-1;break;}
+        r=p->fg_pgid;break;
+    case LPTY_SETPGRP:
+        if(p->session!=caller_sid||caller_ctty!=p->id){r=-1;break;}
+        p->fg_pgid=(int)c;break;
     default:r=-1;break;
     }
     spin_unlock_irqrestore(&p->wq.lock,fl);waitq_wake_all(&p->wq);

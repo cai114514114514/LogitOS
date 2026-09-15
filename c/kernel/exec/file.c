@@ -110,9 +110,12 @@ static long tty_read(struct file *f, void *vbuf, long len)
      * interrupt (timer 100Hz / serial), exactly like the WM idle loop, so the
      * other cores keep running while we wait. */
     /* THE FOREGROUND PID. Whoever is blocking on the console IS the foreground
-     * process, as far as this machine can tell -- there are no sessions and no
-     * process groups here (no SYS_SETSID, no SYS_GETPGID), and half a job
-     * control layer would be worse than none. So the tty holds one pid and the
+     * process, as far as the legacy serial console can tell. The historical
+     * reason was that there were no sessions and no process groups here (no
+     * SYS_SETSID, no SYS_GETPGID), and half a job-control layer would be worse
+     * than none. Correction (2026-09-15): PTYs now have sessions/groups, while
+     * the serial console deliberately keeps its old claim-on-read rule rather
+     * than pretending it is a controlling PTY. So the console holds one pid and the
      * timer's ^C goes to it. It gets the shell right, which is the case that
      * matters; it does not reach the shell's child, so `sleep 100` is not
      * interruptible until /bin/sh forwards the signal. Said out loud in
@@ -503,7 +506,8 @@ int file_timerfd_arm(struct file *f, long value_ms, long interval_ms)
 short file_poll(struct file *f, struct poll_table *pt)
 {
     if (!f) return LPOLLNVAL;
-    if (f->type == F_PTY) return LOGIT_HAVE(pty_poll) ? pty_poll(f,pt) : LPOLLNVAL;
+    if (f->type == F_TTY && f->backing)
+        return LOGIT_HAVE(pty_poll) ? pty_poll(f,pt) : LPOLLNVAL;
     switch (f->type) {
     case F_VFS:
         /* Always ready, and it is not an approximation. For a WRITABLE
@@ -982,7 +986,8 @@ struct file *file_open_vfs(const char *path, int flags)
 
 long file_read(struct file *f, void *buf, long len)
 {
-    if (f && f->type == F_PTY) return LOGIT_HAVE(pty_read) ? pty_read(f,buf,len) : -1;
+    if (f && f->type == F_TTY && f->backing)
+        return LOGIT_HAVE(pty_read) ? pty_read(f,buf,len) : -1;
     if (!f || len < 0) return -1;
     if (f->type == F_VFS) {
         FILE_IO_GUARD(f);
@@ -1027,7 +1032,8 @@ long file_read(struct file *f, void *buf, long len)
 
 long file_write(struct file *f, const void *buf, long len)
 {
-    if (f && f->type == F_PTY) return LOGIT_HAVE(pty_write) ? pty_write(f,buf,len) : -1;
+    if (f && f->type == F_TTY && f->backing)
+        return LOGIT_HAVE(pty_write) ? pty_write(f,buf,len) : -1;
     if (!f || len < 0) return -1;
     if (f->type == F_VFS) {
         FILE_IO_GUARD(f);
@@ -1276,7 +1282,7 @@ int file_close(struct file *f)
             waitq_wake_all(&e->wq);
             kfree(e);
         }
-    } else if (type == F_PTY) {
+    } else if (type == F_TTY && backing) {
         if (LOGIT_HAVE(pty_release)) pty_release(backing,is_write);
     } else if (type == F_PIPE) {
         struct pipe *p = (struct pipe *)backing;
