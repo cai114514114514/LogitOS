@@ -574,6 +574,15 @@ static js_force_inline JSValue JS_NewFloat64(JSContext *ctx, double d)
         uint64_t u;
     } u, t;
     u.d = d;
+#ifndef JS_FLOAT64_UNCHECKED_NARROW
+    /* The forms fixture reached 4294967295 here under UBSan: converting an
+     * out-of-range double to int32_t is undefined, even when the following
+     * bit comparison would choose the float representation. Reject NaN and
+     * infinities with the same ordered bounds, BEFORE narrowing. The bit
+     * comparison below still keeps -0 and nonintegral finite numbers boxed. */
+    if (!(d >= INT32_MIN && d <= INT32_MAX))
+        return __JS_NewFloat64(ctx, d);
+#endif
     val = (int32_t)d;
     t.d = val;
     /* -0 cannot be represented as integer, so we compare the bit
@@ -957,6 +966,11 @@ JSAtom JS_GetModuleName(JSContext *ctx, JSModuleDef *m);
    atom is a new reference (JS_DupAtom); the caller must JS_FreeAtom it. */
 int JS_GetModuleReqEntriesCount(JSModuleDef *m);
 JSAtom JS_GetModuleReqEntryName(JSContext *ctx, JSModuleDef *m, int idx);
+/* LOGIT: query the same context-owned map used by import resolution. `name`
+   is already normalized; compiled-but-unresolved and failed modules count too.
+   This is for avoiding redundant speculative IO, not an evaluation-success
+   predicate. Returns -1 on allocation failure (exception pending). */
+int JS_HasModule(JSContext *ctx, const char *name);
 
 /* JS Job support */
 

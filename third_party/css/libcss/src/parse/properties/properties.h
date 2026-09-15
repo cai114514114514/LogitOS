@@ -480,6 +480,10 @@ css_error css__parse_border_bottom_left_radius(css_language *c,
 		const parserutils_vector *vector, int32_t *ctx,
 		css_style *result);
 
+css_error css__parse_pointer_events(css_language *c,
+		const parserutils_vector *vector, int32_t *ctx, css_style *result);
+#define UNIT_MASK_POINTER_EVENTS (0)
+
 /** Mapping from property bytecode index to bytecode unit class mask. */
 extern const uint32_t property_unit_mask[CSS_N_PROPERTIES];
 

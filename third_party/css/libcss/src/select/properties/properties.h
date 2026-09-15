@@ -140,6 +140,7 @@ PROPERTY_FUNCS(top);
 PROPERTY_FUNCS(unicode_bidi);
 PROPERTY_FUNCS(vertical_align);
 PROPERTY_FUNCS(visibility);
+PROPERTY_FUNCS(pointer_events);
 PROPERTY_FUNCS(voice_family);
 PROPERTY_FUNCS(volume);
 PROPERTY_FUNCS(white_space);

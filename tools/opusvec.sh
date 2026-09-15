@@ -138,7 +138,10 @@ else
     # is the one whose .dec output the shipped vectors were produced with; do
     # not "improve" this to FIXED_POINT, because then opus_compare would be
     # scoring our decoder against a reference that disagrees with the corpus.
-    ( cd "$REF" && make -s CFLAGS="-O2 -w" >/dev/null )
+    # Pass CFLAGS through the environment, not make's command line: a command-
+    # line CFLAGS overrides the RFC Makefile's later += include paths and makes
+    # the pristine reference fail at its first #include "opus_types.h".
+    ( cd "$REF" && CFLAGS="-O2 -w" make -s >/dev/null )
     [ -x "$REF/opus_compare" ] || { echo "[opusvec] opus_compare did not build" >&2; exit 1; }
 fi
 

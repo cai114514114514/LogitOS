@@ -153,6 +153,16 @@ long wav_read_s16(const wavinfo *w, long at, long n, int16_t *out)
     if (n > w->frames - at) n = w->frames - at;
 
     int nch = w->channels, bps = w->bits / 8;
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+    /* PCM16 WAV samples already have exactly the representation promised by
+     * this API on LogitOS and its supported little-endian build hosts. Avoid
+     * converting them through double and re-clamping every sample. */
+    if (!w->is_float && w->bits == 16) {
+        memcpy(out, w->data + at * w->frame_bytes,
+               (size_t)n * (size_t)nch * sizeof(*out));
+        return n;
+    }
+#endif
     for (long i = 0; i < n; i++) {
         const uint8_t *p = w->data + (at + i) * w->frame_bytes;
         for (int c = 0; c < nch; c++, p += bps) {
@@ -182,6 +192,14 @@ long wav_read_s32(const wavinfo *w, long at, long n, int32_t *out)
     if (n > w->frames - at) n = w->frames - at;
 
     int nch = w->channels, bps = w->bits / 8;
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+    /* Same identity fast path for native-depth PCM32. */
+    if (!w->is_float && w->bits == 32) {
+        memcpy(out, w->data + at * w->frame_bytes,
+               (size_t)n * (size_t)nch * sizeof(*out));
+        return n;
+    }
+#endif
     double scale = 1.0;
     if (w->is_float) {
         scale = 32768.0;   /* float WAV is nominally [-1,1); report at 16-bit scale */

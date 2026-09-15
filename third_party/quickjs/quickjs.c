@@ -839,6 +839,13 @@ struct JSModuleDef {
     BOOL eval_has_exception : 8; 
     JSValue eval_exception;
     JSValue meta_obj; /* for import.meta */
+    /* LOGIT: resolved is also the cycle-breaking visited bit; it is set
+       BEFORE loading dependencies and therefore does not imply success.
+       Keep failures separately rather than clearing that bit: nested
+       JS_ResolveModule cleanup could otherwise free an ancestor still on
+       the loader's C stack. See js_module_resolution_failed below. */
+    BOOL resolve_failed;
+    JSValue resolve_exception;
 };
 
 typedef struct JSJobEntry {
@@ -8404,7 +8411,7 @@ static int delete_property(JSContext *ctx, JSObject *p, JSAtom atom)
 }
 
 static int call_setter(JSContext *ctx, JSObject *setter,
-                       JSValueConst this_obj, JSValue val, int flags)
+                       JSValueConst this_obj, JSValue val, int flags, JSAtom prop)
 {
     JSValue ret, func;
     if (likely(setter)) {
@@ -8421,7 +8428,11 @@ static int call_setter(JSContext *ctx, JSObject *setter,
         JS_FreeValue(ctx, val);
         if ((flags & JS_PROP_THROW) ||
             ((flags & JS_PROP_THROW_STRICT) && is_strict_mode(ctx))) {
-            JS_ThrowTypeError(ctx, "no setter for property");
+            /* The old message was just "no setter for property". A minified
+             * SPA stack named its render helper, not which DOM contract it
+             * tried to write. Preserve refusal semantics and name the atom,
+             * using the same formatter as ordinary read-only properties. */
+            JS_ThrowTypeErrorAtom(ctx, "no setter for property '%s'", prop);
             return -1;
         }
         return FALSE;
@@ -8661,7 +8672,7 @@ int JS_SetPropertyInternal(JSContext *ctx, JSValueConst obj,
             assert(prop == JS_ATOM_length);
             return set_array_length(ctx, p, val, flags);
         } else if ((prs->flags & JS_PROP_TMASK) == JS_PROP_GETSET) {
-            return call_setter(ctx, pr->u.getset.setter, this_obj, val, flags);
+            return call_setter(ctx, pr->u.getset.setter, this_obj, val, flags, prop);
         } else if ((prs->flags & JS_PROP_TMASK) == JS_PROP_VARREF) {
             /* JS_PROP_WRITABLE is always true for variable
                references, but they are write protected in module name
@@ -8750,7 +8761,7 @@ int JS_SetPropertyInternal(JSContext *ctx, JSValueConst obj,
                                     setter = NULL;
                                 else
                                     setter = JS_VALUE_GET_OBJ(desc.setter);
-                                ret = call_setter(ctx, setter, this_obj, val, flags);
+                                ret = call_setter(ctx, setter, this_obj, val, flags, prop);
                                 JS_FreeValue(ctx, desc.getter);
                                 JS_FreeValue(ctx, desc.setter);
                                 return ret;
@@ -8782,7 +8793,7 @@ int JS_SetPropertyInternal(JSContext *ctx, JSValueConst obj,
         prs = find_own_property(&pr, p1, prop);
         if (prs) {
             if ((prs->flags & JS_PROP_TMASK) == JS_PROP_GETSET) {
-                return call_setter(ctx, pr->u.getset.setter, this_obj, val, flags);
+                return call_setter(ctx, pr->u.getset.setter, this_obj, val, flags, prop);
             } else if ((prs->flags & JS_PROP_TMASK) == JS_PROP_AUTOINIT) {
                 /* Instantiate property and retry (potentially useless) */
                 if (JS_AutoInitProperty(ctx, p1, prop, pr, prs))
@@ -28215,6 +28226,7 @@ static JSModuleDef *js_new_module_def(JSContext *ctx, JSAtom name)
     m->module_ns = JS_UNDEFINED;
     m->func_obj = JS_UNDEFINED;
     m->eval_exception = JS_UNDEFINED;
+    m->resolve_exception = JS_UNDEFINED;
     m->meta_obj = JS_UNDEFINED;
     m->promise = JS_UNDEFINED;
     m->resolving_funcs[0] = JS_UNDEFINED;
@@ -28239,6 +28251,7 @@ static void js_mark_module_def(JSRuntime *rt, JSModuleDef *m,
     JS_MarkValue(rt, m->module_ns, mark_func);
     JS_MarkValue(rt, m->func_obj, mark_func);
     JS_MarkValue(rt, m->eval_exception, mark_func);
+    JS_MarkValue(rt, m->resolve_exception, mark_func);
     JS_MarkValue(rt, m->meta_obj, mark_func);
     JS_MarkValue(rt, m->promise, mark_func);
     JS_MarkValue(rt, m->resolving_funcs[0], mark_func);
@@ -28278,6 +28291,7 @@ static void js_free_module_def(JSContext *ctx, JSModuleDef *m)
     JS_FreeValue(ctx, m->module_ns);
     JS_FreeValue(ctx, m->func_obj);
     JS_FreeValue(ctx, m->eval_exception);
+    JS_FreeValue(ctx, m->resolve_exception);
     JS_FreeValue(ctx, m->meta_obj);
     JS_FreeValue(ctx, m->promise);
     JS_FreeValue(ctx, m->resolving_funcs[0]);
@@ -28994,12 +29008,40 @@ static JSValue js_get_module_ns(JSContext *ctx, JSModuleDef *m)
     return JS_DupValue(ctx, m->module_ns);
 }
 
+/* LOGIT, 2026-09-09: "resolved" previously meant success at the early return
+   below, but actually meant visited. A failed transitive fetch left a cached
+   module with a NULL req_module entry. A second entry importing it reached
+   js_create_module_function(NULL): the user's Apple core has RSI=0, CR2=0x82
+   at that function's first load. module_retry_test reproduces this with three
+   tiny modules and no site logic. Preserve/rethrow the original failure,
+   including undefined, and own it through the normal mark/free paths.
+
+   Creation needs the same check: a cycle member can finish resolving before
+   its ancestor encounters a missing sibling. Re-entering that member must
+   propagate the ancestor's failure, never skip it because func_created was
+   already set during an earlier unsuccessful walk. No retry is fabricated;
+   a new page context gets a new module map. */
+static int js_module_resolution_failed(JSContext *ctx, JSModuleDef *m)
+{
+#ifndef JS_MODULE_FORGET_RESOLUTION_ERROR
+    m->resolve_failed = TRUE;
+    JS_FreeValue(ctx, m->resolve_exception);
+    m->resolve_exception = JS_GetException(ctx);
+    JS_Throw(ctx, JS_DupValue(ctx, m->resolve_exception));
+#endif
+    return -1;
+}
+
 /* Load all the required modules for module 'm' */
 static int js_resolve_module(JSContext *ctx, JSModuleDef *m)
 {
     int i;
     JSModuleDef *m1;
 
+    if (m->resolve_failed) {
+        JS_Throw(ctx, JS_DupValue(ctx, m->resolve_exception));
+        return -1;
+    }
     if (m->resolved)
         return 0;
 #ifdef DUMP_MODULE_RESOLVE
@@ -29015,12 +29057,12 @@ static int js_resolve_module(JSContext *ctx, JSModuleDef *m)
         m1 = js_host_resolve_imported_module_atom(ctx, m->module_name,
                                                   rme->module_name);
         if (!m1)
-            return -1;
+            return js_module_resolution_failed(ctx, m);
         rme->module = m1;
         /* already done in js_host_resolve_imported_module() except if
            the module was loaded with JS_EvalBinary() */
         if (js_resolve_module(ctx, m1) < 0)
-            return -1;
+            return js_module_resolution_failed(ctx, m);
     }
     return 0;
 }
@@ -29101,6 +29143,10 @@ static int js_create_module_function(JSContext *ctx, JSModuleDef *m)
     int i;
     JSVarRef *var_ref;
     
+    if (m->resolve_failed) {
+        JS_Throw(ctx, JS_DupValue(ctx, m->resolve_exception));
+        return -1;
+    }
     if (m->func_created)
         return 0;
 
@@ -29128,7 +29174,7 @@ static int js_create_module_function(JSContext *ctx, JSModuleDef *m)
     for(i = 0; i < m->req_module_entries_count; i++) {
         JSReqModuleEntry *rme = &m->req_module_entries[i];
         if (js_create_module_function(ctx, rme->module) < 0)
-            return -1;
+            return js_module_resolution_failed(ctx, m);
     }
 
     return 0;
@@ -29424,6 +29470,16 @@ JSAtom JS_GetModuleReqEntryName(JSContext *ctx, JSModuleDef *m, int idx)
     if (idx < 0 || idx >= m->req_module_entries_count)
         return JS_ATOM_NULL;
     return JS_DupAtom(ctx, m->req_module_entries[idx].module_name);
+}
+
+int JS_HasModule(JSContext *ctx, const char *name)
+{
+    JSAtom atom = JS_NewAtom(ctx, name);
+    if (atom == JS_ATOM_NULL)
+        return -1;
+    int found = js_find_loaded_module(ctx, atom) != NULL;
+    JS_FreeAtom(ctx, atom);
+    return found;
 }
 
 JSValue JS_GetImportMeta(JSContext *ctx, JSModuleDef *m)
@@ -32145,7 +32201,15 @@ typedef struct CodeContext {
 
 #define M2(op1, op2)            ((op1) | ((op2) << 8))
 #define M3(op1, op2, op3)       ((op1) | ((op2) << 8) | ((op3) << 16))
+#ifdef JS_OPCODE_SIGNED_SHIFT
 #define M4(op1, op2, op3, op4)  ((op1) | ((op2) << 8) | ((op3) << 16) | ((op4) << 24))
+#else
+/* The old signed op4<<24 overflowed for opcode 171 during a typeof comparison
+ * (2026-09-10 fetch regression, UBSan at the M4 call). Pack bits unsigned,
+ * then keep the final argument int: code_match consumes it with va_arg(int),
+ * so returning uint32_t here would silently change the varargs contract. */
+#define M4(op1, op2, op3, op4)  ((int)((uint32_t)(op1) | ((uint32_t)(op2) << 8) | ((uint32_t)(op3) << 16) | ((uint32_t)(op4) << 24)))
+#endif
 
 static BOOL code_match(CodeContext *s, int pos, ...)
 {
@@ -35462,7 +35526,18 @@ static JSValue __JS_EvalInternal(JSContext *ctx, JSValueConst this_obj,
     return ret_val;
  fail1:
     /* XXX: should free all the unresolved dependencies */
+    /* LOGIT: eager compilation resolves while still inside this parser.
+       A completed cycle member may already point back to m when a later
+       dependency fails. Freeing that failed m here leaves the cached member
+       dangling. Keep the same failed-module record as COMPILE_NO_RESOLVE;
+       only parse/compile failures without a published graph are freed. The
+       eager ASan variant of module_retry_test caught this second lifetime
+       door after the no-resolve path's null dereference was fixed. */
+#ifdef JS_MODULE_FREE_FAILED_PARSE
     if (m)
+#else
+    if (m && !m->resolve_failed)
+#endif
         js_free_module_def(ctx, m);
     return JS_EXCEPTION;
 }
@@ -44902,6 +44977,14 @@ BOOL lre_check_stack_overflow(void *opaque, size_t alloca_size)
     return js_check_stack_overflow(ctx->rt, alloca_size);
 }
 
+BOOL lre_check_timeout(void *opaque)
+{
+    /* libregexp already batches 16,384 VM operations. Poll directly here,
+     * without applying the JS bytecode's second 10,000-operation divider. */
+    JSContext *ctx = opaque;
+    return __js_poll_interrupts(ctx) < 0;
+}
+
 void *lre_realloc(void *opaque, void *ptr, size_t size)
 {
     JSContext *ctx = opaque;
@@ -44969,7 +45052,15 @@ static JSValue js_regexp_exec(JSContext *ctx, JSValueConst this_val,
                     goto fail;
             }
         } else {
-            JS_ThrowInternalError(ctx, "out of memory in regexp execution");
+            if (rc != LRE_RET_INTERRUPTED)
+                JS_ThrowInternalError(ctx, "out of memory in regexp execution");
+#ifdef LOGIT_OS
+            else {
+                const char *pattern = JS_ToCString(ctx, JS_MKPTR(JS_TAG_STRING, re->pattern));
+                printf("[regexp] interrupted input_len=%d pattern=%.200s\n", str->len, pattern ? pattern : "?");
+                if (pattern) JS_FreeCString(ctx, pattern);
+            }
+#endif
             goto fail;
         }
     } else {
@@ -45165,7 +45256,8 @@ static JSValue JS_RegExpDelete(JSContext *ctx, JSValueConst this_val, JSValueCon
                         goto fail;
                 }
             } else {
-                JS_ThrowInternalError(ctx, "out of memory in regexp execution");
+                if (ret != LRE_RET_INTERRUPTED)
+                    JS_ThrowInternalError(ctx, "out of memory in regexp execution");
                 goto fail;
             }
             break;
@@ -48271,7 +48363,25 @@ static uint32_t map_hash_key(JSContext *ctx, JSValueConst key)
  * (plain refcount-zero key churn; self-cyclic keys forcing JS_RunGC) did NOT
  * reproduce it, so the exact write site is NOT identified -- left OFF
  * (#undef) so nothing here silently changes shipped behaviour; flip to
- * `#define LOGIT_MAP_UAF_DIAG 1` and see the report for how to reproduce. */
+ * `#define LOGIT_MAP_UAF_DIAG 1` and see the report for how to reproduce.
+ *
+ * CORRECTION (2026-09-09, kept beside the paragraph above because somebody
+ * will arrive holding it): strengthened variants of this diagnostic ran
+ * against the live site six times. Every capture showed the SAME shape, and
+ * the shape is NOT a stale write: at the moment of the fire the bucket ring
+ * AND .records walked in full were CONSISTENT, and the NULL was visible to
+ * exactly one load of a link whose address read a valid pointer on the
+ * loads immediately before (4 adjacent volatile reads) and after (the
+ * callee's own re-reads) -- a one-load transient, deterministic at the same
+ * JS point in every run, identical at -O2/-O1 and -smp 4/1. A temporary
+ * kernel-side trace (fault/drop/swap paths, since reverted) proved the
+ * kernel never touched the page after first touch. The one engine defect
+ * this investigation DID convict by ASan stack is a different one --
+ * js_finreg_unregister's reentrant free -- fixed the same day with its own
+ * patch; for the transient load itself the mitigation is the re-read in
+ * map_find_record, whose comment carries the whole evidence chain. This
+ * diagnostic block remains as originally written: #undef'd, flip-on for the
+ * next capture. */
 #undef LOGIT_MAP_UAF_DIAG
 #ifdef LOGIT_MAP_UAF_DIAG
 static void map_uaf_diag_dump(JSContext *ctx, const char *why)
@@ -48360,10 +48470,16 @@ static BOOL map_uaf_diag_check_bucket(JSContext *ctx, JSMapState *s,
 }
 #endif
 
+/* Counts the times map_find_record() below re-read a chain link and got a
+ * different answer than the first load (see the long comment inside). A
+ * read-only hook for the 2026-09-09 crash investigation; not on any hot
+ * path. */
+uint64_t js_map_link_rereads;
+
 static JSMapRecord *map_find_record(JSContext *ctx, JSMapState *s,
                                     JSValueConst key)
 {
-    struct list_head *el;
+    struct list_head *head, *prev, *el;
     JSMapRecord *mr;
     uint32_t h;
 #ifdef LOGIT_MAP_UAF_DIAG
@@ -48375,7 +48491,71 @@ static JSMapRecord *map_find_record(JSContext *ctx, JSMapState *s,
     if (map_uaf_diag_check_bucket(ctx, s, h, s->hash_table[h].next))
         return NULL;
 #endif
-    list_for_each(el, &s->hash_table[h]) {
+    /* LOGITOS PATCH (chat.deepseek.com sig-11 in js_map_get, fixed
+     * 2026-09-09): upstream walks `for (el = head->next; el != head;
+     * el = el->next)` and the body dereferences el unconditionally. On
+     * this machine that increment was observed -- deterministically, twice
+     * per load of the real site, identically at -O2 and at -O1, at -smp 4
+     * and at -smp 1 -- returning NULL for exactly one load of a link whose
+     * bytes read a valid pointer on the loads immediately before and after
+     * (four adjacent volatile loads of the same address agreed on a valid
+     * pointer; the load carrying the same value onward read NULL; the
+     * callee's re-reads were valid again), while the bucket ring and the
+     * .records list walked in full were consistent at every observation.
+     * A kernel-side trace over the whole run (temporary prints in
+     * do_anon/try_drop/try_swap/reclaim_swapin, since reverted) showed the
+     * page was never dropped, swapped or re-faulted after first touch, so
+     * no kernel actor changed those bytes. In the shipped build the
+     * transient NULL reached the body's mr->key read as a dereference of
+     * ~0x10 and took the whole browser down (sig 11, rip=js_map_get+0x90,
+     * cr2=0x10); js_map_set/has/delete all funnel through this walk too,
+     * so it is the entire exposed surface.
+     *
+     * The response is deliberately a RE-READ, not a blind NULL bailout: if
+     * re-reading the same link returns a non-NULL pointer, memory really
+     * holds that value (every other load of the address returns it) and
+     * the walk proceeds on exactly those bytes -- upstream semantics, with
+     * the anomalous load skipped and counted in js_map_link_rereads. Only
+     * if the re-read ALSO returns NULL is the break treated as genuine,
+     * named once on the serial line and the walk ends as not-found: a
+     * loud, bounded degradation instead of a process death.
+     *
+     * MEASURED, 2026-09-09, the fixed build on the real site: the break is
+     * REAL at re-read time (both occurrences re-read NULL nanoseconds
+     * later), so the not-found path is the one taken -- and it is enough:
+     * the browser survived the whole run (previously: sig 11 within
+     * minutes of this exact point), the page kept painting, and the map
+     * was consistent again on every later access, i.e. something relinked
+     * the bucket within the milliseconds between this walk and the next.
+     * Whoever that writer is, it does not exist in this process's own
+     * thread model (no pthread_create anywhere under c/apps/browser;
+     * bfetch is pumped from the main loop), which is why the anomalous
+     * load itself remains UNIDENTIFIED below. What was deliberately NOT
+     * done: chasing that writer past the instruments already built. If
+     * the root cause is ever found and fixed, the re-read branch is dead
+     * code and this paragraph should go with it. */
+    head = &s->hash_table[h];
+    prev = head;
+    el = prev->next;
+    while (el != head) {
+        if (unlikely(el == NULL)) {
+            el = *(struct list_head *volatile *)&prev->next;
+            js_map_link_rereads++;
+            if (el == NULL) {
+                /* two loads of the same link agree on NULL: genuine */
+                static uint32_t named;
+                if (!named) {
+                    named = 1;
+                    fprintf(stderr,
+                            "[js] map chain broke at bucket %u (map=%p "
+                            "weak=%d); treated as not-found, link rereads "
+                            "so far: %llu\n",
+                            h, (void *)s, (int)s->is_weak,
+                            (unsigned long long)js_map_link_rereads);
+                }
+                return NULL;
+            }
+        }
 #ifdef LOGIT_MAP_UAF_DIAG
         if (map_uaf_diag_check_bucket(ctx, s, h, el))
             return NULL;
@@ -48383,6 +48563,8 @@ static JSMapRecord *map_find_record(JSContext *ctx, JSMapState *s,
         mr = list_entry(el, JSMapRecord, hash_link);
         if (js_same_value_zero(ctx, mr->key, key))
             return mr;
+        prev = el;
+        el = el->next;
     }
     return NULL;
 }
@@ -48580,6 +48762,19 @@ static void reset_weak_ref(JSRuntime *rt, JSObject *p)
             assert(!mr->empty); /* no iterator on WeakMap/WeakSet */
             list_del(&mr->hash_link);
             list_del(&mr->link);
+            /* LOGITOS PATCH (2026-09-09): map_delete_record() decrements
+             * s->record_count on the delete() path, but this path -- the
+             * KEY dying, by far the common one on a real page, where
+             * zone.js-style bookkeeping keys short-lived objects into
+             * WeakMaps thousands of times -- never did. record_count only
+             * ratcheted UP, so a long-lived WeakMap crossed
+             * record_count_threshold on every set() and map_hash_resize()
+             * doubled a table whose real occupancy was shrinking: unbounded
+             * table growth for the exact lifecycle the crashing page uses
+             * (the repro map sat at record_count=4 with three records for
+             * this reason). Not the sig-11 -- that is map_find_record's
+             * own patch -- but the same investigation found it. */
+            s->record_count--;
         }
     }
 
@@ -49395,6 +49590,29 @@ static JSValue js_finreg_register(JSContext *ctx, JSValueConst this_val,
     return JS_UNDEFINED;
 }
 
+/* LOGITOS PATCH (chat.deepseek.com browser crash, fixed 2026-09-09): this
+ * used to free each token-matching cell's held_value INSIDE the
+ * list_for_each_safe walk. At gc_phase NONE (unregister is a live-JS call)
+ * an object held_value whose refcount reaches zero is freed IMMEDIATELY --
+ * free_object runs synchronously, reset_weak_ref(target) walks the dying
+ * object's first_weak_ref list, and any OTHER cell registered on that same
+ * object is list_del'd from frs->cells AND js_free_rt'd under the loop's
+ * feet. The saved el1 then points into freed memory and the next iteration
+ * reads fre->token through it (heap-use-after-free, ASan-confirmed at this
+ * exact function against the repro in tests/unit/weakmap_fin_test.c:
+ * register(T, H, tk); register(H, 1); H = null; unregister(tk) -- H's only
+ * strong ref is the first cell's held value, so freeing it mid-loop kills
+ * H and reclaims the SECOND cell mid-walk; the unfixed engine segfaulted
+ * at plain -O1 and ASan named this function).
+ *
+ * The fix is the same two-pass shape js_map_finalizer and reset_weak_ref
+ * already argue for: pass 1 severs every matching cell from frs->cells and
+ * from its target's weak-ref list WITHOUT freeing anything (both are pure
+ * list splices; nothing can cascade), re-chaining the removed cells on a
+ * stack-local list so pass 2 needs no allocation. Pass 2 then frees; any
+ * cascade it triggers reaches cells only through frs->cells and the
+ * targets' weak-ref lists, and every cell worth freeing is already off
+ * both, so no reentrant path can touch what this loop is walking. */
 static JSValue js_finreg_unregister(JSContext *ctx, JSValueConst this_val,
                                     int argc, JSValueConst *argv)
 {
@@ -49402,6 +49620,7 @@ static JSValue js_finreg_unregister(JSContext *ctx, JSValueConst this_val,
     JSValueConst token = argv[0];
     JSObject *tok_p;
     struct list_head *el, *el1;
+    struct list_head to_free;
     BOOL removed = FALSE;
 
     if (!frs)
@@ -49409,16 +49628,22 @@ static JSValue js_finreg_unregister(JSContext *ctx, JSValueConst this_val,
     if (!JS_IsObject(token))
         return JS_ThrowTypeErrorNotAnObject(ctx);
     tok_p = JS_VALUE_GET_OBJ(token);
+    init_list_head(&to_free);
     list_for_each_safe(el, el1, &frs->cells) {
         JSFinRecEntry *fre = list_entry(el, JSFinRecEntry, reg_link);
         if (fre->token == tok_p) {
             list_del(&fre->reg_link);
             if (fre->target)
                 weak_ref_unlink(fre->target, &fre->hdr);
-            JS_FreeValue(ctx, fre->held_value);
-            js_free(ctx, fre);
+            list_add_tail(&fre->reg_link, &to_free);
             removed = TRUE;
         }
+    }
+    list_for_each_safe(el, el1, &to_free) {
+        JSFinRecEntry *fre = list_entry(el, JSFinRecEntry, reg_link);
+        list_del(&fre->reg_link);
+        JS_FreeValue(ctx, fre->held_value);
+        js_free(ctx, fre);
     }
     return JS_NewBool(ctx, removed);
 }

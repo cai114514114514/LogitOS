@@ -208,6 +208,9 @@ typedef struct css_media {
 	/* Viewport / page media features */
 	css_fixed             width;  /* In css pixels */
 	css_fixed             height; /* In css pixels */
+	/* Output device dimensions are independent of the resizable viewport. */
+	css_fixed             device_width;
+	css_fixed             device_height;
 	css_fixed             aspect_ratio;
 	css_media_orientation orientation;
 
@@ -226,6 +229,7 @@ typedef struct css_media {
 	css_fixed inverted_colors; /** boolean: {0|1} */
 
 	lwc_string *prefers_color_scheme; /* "light", "dark" */
+	bool prefers_reduced_motion; /* embedder accessibility preference */
 
 	/* Interaction media features */
 	css_media_pointer pointer;

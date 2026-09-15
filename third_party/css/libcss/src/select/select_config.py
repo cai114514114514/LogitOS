@@ -60,6 +60,7 @@ style = {
     ('text_transform', 3),
     ('unicode_bidi', 2),
     ('visibility', 2),
+    ('pointer_events', 2),
     ('white_space', 3),
     # Style group, with additional value
     ('background_color', 2, 'color'),

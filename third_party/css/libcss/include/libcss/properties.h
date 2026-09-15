@@ -153,6 +153,8 @@ enum css_properties_e {
 	CSS_PROP_BORDER_BOTTOM_RIGHT_RADIUS	= 0x080,
 	CSS_PROP_BORDER_BOTTOM_LEFT_RADIUS	= 0x081,
 
+	/* Inherited HTML hit-test policy; append to preserve existing opcodes. */
+	CSS_PROP_POINTER_EVENTS = 0x082,
 	CSS_N_PROPERTIES
 };
 
@@ -463,7 +465,8 @@ enum css_display_e {
 	CSS_DISPLAY_FLEX			= 0x11,
 	CSS_DISPLAY_INLINE_FLEX			= 0x12,
 	CSS_DISPLAY_GRID			= 0x13,
-	CSS_DISPLAY_INLINE_GRID			= 0x14
+	CSS_DISPLAY_INLINE_GRID			= 0x14,
+	CSS_DISPLAY_CONTENTS			= 0x15
 };
 
 enum css_empty_cells_e {
@@ -876,6 +879,13 @@ enum css_vertical_align_e {
 	CSS_VERTICAL_ALIGN_BOTTOM		= 0x7,
 	CSS_VERTICAL_ALIGN_TEXT_BOTTOM		= 0x8,
 	CSS_VERTICAL_ALIGN_SET			= 0x9
+};
+
+enum css_pointer_events_e {
+	CSS_POINTER_EVENTS_INHERIT = 0,
+	CSS_POINTER_EVENTS_AUTO = 1,
+	CSS_POINTER_EVENTS_NONE = 2,
+	CSS_POINTER_EVENTS_ALL = 3
 };
 
 enum css_visibility_e {

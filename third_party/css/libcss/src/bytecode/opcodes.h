@@ -348,7 +348,8 @@ enum op_display {
 	DISPLAY_FLEX			= 0x0010,
 	DISPLAY_INLINE_FLEX		= 0x0011,
 	DISPLAY_GRID			= 0x0012,
-	DISPLAY_INLINE_GRID		= 0x0013
+	DISPLAY_INLINE_GRID		= 0x0013,
+	DISPLAY_CONTENTS		= 0x0014
 };
 
 enum op_elevation {
@@ -827,6 +828,12 @@ enum op_vertical_align {
 	VERTICAL_ALIGN_MIDDLE		= 0x0005,
 	VERTICAL_ALIGN_BOTTOM		= 0x0006,
 	VERTICAL_ALIGN_TEXT_BOTTOM	= 0x0007
+};
+
+enum op_pointer_events {
+	POINTER_EVENTS_AUTO = 0x0000,
+	POINTER_EVENTS_NONE = 0x0001,
+	POINTER_EVENTS_ALL = 0x0002
 };
 
 enum op_visibility {

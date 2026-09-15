@@ -259,6 +259,7 @@ const stringmap_entry stringmap[LAST_KNOWN] = {
 	SMAP("border-top-right-radius"),
 	SMAP("border-bottom-right-radius"),
 	SMAP("border-bottom-left-radius"),
+	SMAP("pointer-events"),
 
 	SMAP("inherit"),
 	SMAP("unset"),
@@ -519,6 +520,7 @@ const stringmap_entry stringmap[LAST_KNOWN] = {
 	SMAP("inline-grid"),
 	SMAP("sticky"),
 	SMAP("calc"),
+	SMAP("contents"),
 
 	/* Named colours */
 	SMAP("aliceblue"),
