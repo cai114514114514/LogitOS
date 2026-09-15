@@ -372,6 +372,9 @@ void JS_FreeContext(JSContext *s);
 JSContext *JS_DupContext(JSContext *ctx);
 void *JS_GetContextOpaque(JSContext *ctx);
 void JS_SetContextOpaque(JSContext *ctx, void *opaque);
+/* Embedder policy for JavaScript-originated eval and Function constructors.
+   Does not disable trusted host JS_Eval calls. Default: allowed. */
+void JS_SetStringCodeGenerationAllowed(JSContext *ctx, JS_BOOL allowed);
 JSRuntime *JS_GetRuntime(JSContext *ctx);
 void JS_SetClassProto(JSContext *ctx, JSClassID class_id, JSValue obj);
 JSValue JS_GetClassProto(JSContext *ctx, JSClassID class_id);

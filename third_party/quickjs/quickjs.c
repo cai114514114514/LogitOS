@@ -432,6 +432,7 @@ struct JSContext {
 
     uint16_t binary_object_count;
     int binary_object_size;
+    BOOL string_code_gen_disabled;
 
     JSShape *array_shape;   /* initial shape for Array objects */
 
@@ -1069,6 +1070,13 @@ static JSValue JS_InvokeFree(JSContext *ctx, JSValue this_val, JSAtom atom,
                              int argc, JSValueConst *argv);
 static __exception int JS_ToArrayLengthFree(JSContext *ctx, uint32_t *plen,
                                             JSValue val, BOOL is_array_ctor);
+void JS_SetStringCodeGenerationAllowed(JSContext *ctx, JS_BOOL allowed)
+{
+    ctx->string_code_gen_disabled = !allowed;
+}
+
+static JSValue js_throw_eval_policy(JSContext *ctx, const char *fmt, ...);
+
 static JSValue JS_EvalObject(JSContext *ctx, JSValueConst this_obj,
                              JSValueConst val, int flags, int scope_idx);
 JSValue __attribute__((format(printf, 2, 3))) JS_ThrowInternalError(JSContext *ctx, const char *fmt, ...);
@@ -35554,6 +35562,15 @@ static JSValue JS_EvalInternal(JSContext *ctx, JSValueConst this_obj,
                               flags, scope_idx);
 }
 
+static JSValue js_throw_eval_policy(JSContext *ctx, const char *fmt, ...)
+{
+    va_list ap;
+    va_start(ap, fmt);
+    JSValue ret = JS_ThrowError(ctx, JS_EVAL_ERROR, fmt, ap);
+    va_end(ap);
+    return ret;
+}
+
 static JSValue JS_EvalObject(JSContext *ctx, JSValueConst this_obj,
                              JSValueConst val, int flags, int scope_idx)
 {
@@ -35563,6 +35580,8 @@ static JSValue JS_EvalObject(JSContext *ctx, JSValueConst this_obj,
 
     if (!JS_IsString(val))
         return JS_DupValue(ctx, val);
+    if (ctx->string_code_gen_disabled)
+        return js_throw_eval_policy(ctx, "String code generation blocked by document policy");
     str = JS_ToCStringLen(ctx, &len, val);
     if (!str)
         return JS_EXCEPTION;
