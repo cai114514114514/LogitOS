@@ -27,6 +27,7 @@
 #include <stdint.h>
 #include "cpu_report.h"
 #include "cpufeat.h"
+#include "cpu_platform.h"
 #include "crypto.h"
 #include "kprintf.h"
 #include "serial.h"
@@ -55,6 +56,88 @@ static void put_hex(uint64_t v)
     if (!v) { put("0"); return; }
     while (v) { b[i++] = d[v & 0xf]; v >>= 4; }
     while (i--) { char c[2] = { b[i], 0 }; put(c); }
+}
+
+static void platform_report(void)
+{
+    const struct cpu_platform_info *p = cpu_platform_info();
+    if (!p->valid) {
+        put("[cpu] platform: CPUID leaf 1 unavailable\n");
+        return;
+    }
+
+    put("[cpu-platform] family="); put_u(p->family);
+    put(" model=0x"); put_hex(p->model);
+    put(" stepping="); put_u(p->stepping);
+    put(" generation="); put(cpu_platform_generation_name(p->generation));
+    put("\n");
+
+    if (!p->topology.valid) {
+        put("[cpu] topology: unavailable; physical-core identity unknown\n");
+    } else {
+        put("[cpu] topology: source=");
+        if (p->topology.leaf_1f) put("cpuid.0x1f");
+        else if (p->topology.leaf_b) put("cpuid.0xb");
+        else put("legacy");
+        put(" x2apic_id="); put_u(p->topology.x2apic_id);
+        put(" package="); put_u(p->topology.package_id);
+        put(" core="); put_u(p->topology.core_id);
+        put(" thread="); put_u(p->topology.thread_id);
+        put(" cpuid-addressable/package=");
+        put_u(p->topology.logical_per_package);
+        put(" cores/package=");
+        if (p->topology.core_count_exact) put_u(p->topology.cores_per_package);
+        else put("unknown");
+        put(" threads/core="); put_u(p->topology.threads_per_core);
+        put("\n");
+    }
+
+    const struct cpu_platform_hfi *h = &p->current_core.hfi;
+    put("[cpu] hfi: hw="); put_u((uint64_t)h->hfi_capable);
+    put(" performance="); put_u((uint64_t)h->performance_capable);
+    put(" efficiency="); put_u((uint64_t)h->energy_efficiency_capable);
+    put(" table-pages="); put_u(h->table_pages);
+    put(" current-lp-row="); put_u(h->table_index);
+    put(" thread-director-hw=");
+    put_u((uint64_t)h->thread_director_capable);
+    put(" classes="); put_u(h->thread_director_classes);
+    put(" (inventory only; no config MSR write)\n");
+
+    put("[cpu] apic: x2apic_hw="); put_u((uint64_t)p->x2apic_capable);
+    put(" mode=");
+    if (!p->apic_base_valid) put("unknown");
+    else if (!p->apic_enabled) put("disabled");
+    else if (p->x2apic_active) put("x2apic");
+    else put("xapic");
+    put(" base=0x"); put_hex(p->apic_base_phys);
+    put("\n");
+
+    for (uint32_t i = 0; i < p->cache_count; i++) {
+        const struct cpu_platform_cache *c = &p->cache[i];
+        put("[cpu] cache: L"); put_u(c->level);
+        put(" type="); put_u(c->type);
+        put(" size="); put_u(c->size_bytes);
+        put(" line="); put_u(c->line_size);
+        put(" ways="); put_u(c->ways);
+        put(" shared="); put_u(c->shared_logical);
+        put("\n");
+    }
+
+    if (p->mca.cap_valid) {
+        put("[cpu] mca: banks="); put_u(p->mca.banks);
+        put(" ctl="); put_u((uint64_t)p->mca.ctl_present);
+        put(" cmci="); put_u((uint64_t)p->mca.cmci_present);
+        put(" tes="); put_u((uint64_t)p->mca.tes_present);
+        put(" ser="); put_u((uint64_t)p->mca.ser_present);
+        put(" (enumerated, not enabled)\n");
+    } else {
+        put("[cpu] mca: ");
+        put(p->mca.mca ? "capability present, MCG_CAP unavailable"
+                       : "not supported");
+        put("\n");
+    }
+    put("[cpu] tsc: invariant_hw="); put_u((uint64_t)p->invariant_tsc);
+    put("\n");
 }
 
 /* ---- the AES-NI-versus-C question, answered on the machine ---------------
@@ -137,6 +220,7 @@ void cpu_early_init(void)
     crypto_simd_init();
 
     serial_init();                       /* idempotent; kernel_main repeats it */
+    cpu_platform_runtime_init();
 
     const struct cpu_features *c = cpu_features();
     static char list[640];
@@ -146,6 +230,7 @@ void cpu_early_init(void)
     if (c->brand[0]) { put(" -- "); put(c->brand); }
     put("\n[cpu] "); put_u((uint64_t)n); put("/"); put_u((uint64_t)CPU_FEAT_COUNT);
     put(" known features present: "); put(list); put("\n");
+    platform_report();
 
     /* Print the XSAVE geometry even though we do not use it: it is exactly the
      * number a future AVX migration needs (how big the XSAVE area must be),
@@ -155,10 +240,15 @@ void cpu_early_init(void)
         put(" B holds every supported state, xcr0 mask 0x");
         put_hex(c->xcr0_supported);
         put(", osxsave="); put_u((uint64_t)cpu_has(CPU_OSXSAVE));
-        put(" (AVX deliberately off -- see boot/long.asm)\n");
+        put("\n");
     } else {
         put("[cpu] xsave: not supported\n");
     }
+    put("[cpu] xstate: avx_hw="); put_u((uint64_t)cpu_has(CPU_AVX));
+    put(" avx_os="); put_u((uint64_t)cpu_avx_usable());
+    put(" osxsave="); put_u((uint64_t)cpu_has(CPU_OSXSAVE));
+    put(" xcr0=0x"); put_hex(c->xcr0_enabled);
+    put(" abi=fxsave\n");
 
     put("[cpu] aes-gcm backend: "); put(crypto_simd_backend_name());
     put(crypto_simd_constant_time() ? " (constant-time)"

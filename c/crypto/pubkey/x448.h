@@ -7,9 +7,9 @@
  * c/crypto/pubkey/x25519.c. See x448.c's header for the field it runs over
  * and the two clamp/constant traps this file exists to have gotten right.
  *
- * NOT WIRED INTO ANYTHING. This is a primitive with its known-answer test
- * (tests/unit/x448_test.c) and nothing else; no consumer, no trust path. See
- * CLAUDE.md's rule for this whole workstream before adding one.
+ * Originally only a primitive with a known-answer test. Since 2026-09-10,
+ * net/tls uses it for TLS 1.2/1.3 client and TLS 1.3 server key agreement;
+ * that protocol layer validates the 56-byte width and rejects zero secrets.
  *
  * out[56] = X448(scalar[56], point[56]). scalar is clamped internally per
  * RFC 7748 section 5 -- callers pass raw random bytes, not a pre-clamped
@@ -25,7 +25,7 @@
  * zero-output check either), kept for the same "one jar, two doors" reason:
  * two sibling primitives disagreeing on this would be the kind of thing
  * CLAUDE.md's rule 4 is about. A caller building a protocol on top of this
- * (there is none yet) owns the all-zero check if it wants one. */
+ * owns the all-zero check required by its protocol (TLS requires it). */
 void x448(uint8_t out[56], const uint8_t scalar[56], const uint8_t point[56]);
 
 /* X448(scalar, 5) -- the base point is u=5 (one byte 0x05 then 55 zero

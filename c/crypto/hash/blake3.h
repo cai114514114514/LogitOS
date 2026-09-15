@@ -6,12 +6,12 @@
 
 /* BLAKE3 (the team's own spec, v1.0: https://github.com/BLAKE3-team/BLAKE3-specs).
  *
- * This has NO caller in this tree today -- see CLAUDE.md's category (b) and
+ * Historical boundary: this had NO caller in the tree -- see CLAUDE.md's category (b) and
  * the rule this file was built under: a primitive with a real known-answer
  * gate claims nothing to anybody, and breadth is the point of a crypto
- * library. THIS FILE MUST NOT BE REACHED FROM c/crypto/trust, TLS, aex.c's
- * package check, or the login path. Wiring is a separate decision with its
- * own argument; this is not that decision.
+ * library. Since 2026-09-10, /bin/net consumes unkeyed 256-bit output for
+ * file checksums and expected-digest download verification. It does not
+ * authenticate a signer or replace TLS, package trust or password handling.
  *
  * Three modes share one tree structure, distinguished only by which flags and
  * initial chaining value the top-level hasher starts with:

@@ -1,14 +1,20 @@
 /* Logit OS kernel linker script.
  *
- * The kernel is loaded at the conventional 1 MiB mark. The Multiboot2 header
- * is forced to the very front so GRUB finds it within the first 32 KiB.
+ * The kernel is loaded at 32 MiB.  The old conventional 1 MiB address crosses
+ * firmware-owned low-memory ranges on real UEFI machines (and OVMF puts ACPI
+ * NVS in the old image span). 32 MiB remains inside boot.asm's first-1-GiB
+ * identity map while leaving that firmware workspace alone. Both GRUB and the
+ * self-built UEFI loader consume this same ELF physical address. The
+ * Multiboot2 header is forced to the very front so GRUB still finds it within
+ * the first 32 KiB of the file.
  */
 
 ENTRY(start)
 
 SECTIONS
 {
-    . = 1M;
+    . = 32M;
+    _kernel_start = .;      /* first physical byte occupied by the kernel */
 
     .boot ALIGN(8) :
     {

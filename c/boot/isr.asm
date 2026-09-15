@@ -82,9 +82,11 @@ ISR_NOERR 47
 ISR_NOERR 128
 ; e1000 NIC (I/O APIC routed)
 ISR_NOERR 65
-; SMP IPIs: 240 = TLB shootdown, 241 = parallel-present band
+; SMP IPIs: 240 = TLB shootdown, 241 = parallel-present band,
+; 242 = test-only all-CPU delivery probe (gate installed only in probe builds)
 ISR_NOERR 240
 ISR_NOERR 241
+ISR_NOERR 242
 ; LAPIC spurious vector
 ISR_NOERR 255
 

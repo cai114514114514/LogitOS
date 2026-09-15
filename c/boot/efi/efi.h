@@ -309,9 +309,9 @@ struct EFI_SIMPLE_FILE_SYSTEM_PROTOCOL {
 };
 _Static_assert(OFF(EFI_SIMPLE_FILE_SYSTEM_PROTOCOL, OpenVolume) == 8, "sec 13.4");
 
-/* EFI_FILE_INFO (sec 13.5.16). Only FileSize is read -- the kernel image size
- * decides how many pages to demand at 1 MiB, and demanding them in one call is
- * what makes a refusal a refusal instead of a half-loaded kernel. */
+/* EFI_FILE_INFO (sec 13.5.16). Only FileSize is read -- the ELF PT_LOAD span
+ * decides how many pages to demand at its fixed physical address, and demanding
+ * them in one call makes a refusal final instead of producing half a kernel. */
 #define EFI_FILE_INFO_ID \
     { 0x09576e92, 0x6d3f, 0x11d2, { 0x8e, 0x39, 0x00, 0xa0, 0xc9, 0x69, 0x72, 0x3b } }
 typedef struct {

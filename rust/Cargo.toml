@@ -56,7 +56,7 @@ pngenc-always-final = []
 
 [profile.release]
 panic = "abort"
-opt-level = 2
+opt-level = 3
 
 [profile.dev]
 panic = "abort"

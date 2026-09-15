@@ -107,6 +107,7 @@ enable_paging:
     mov cr3, eax                ; load top-level table
 
     mov eax, cr4
+    and eax, ~(1 << 12)          ; CR4.LA57=0: pml4_table is four-level
     or eax, 1 << 5              ; CR4.PAE
     mov cr4, eax
 

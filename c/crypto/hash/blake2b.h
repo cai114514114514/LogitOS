@@ -12,11 +12,11 @@
  * aes_backend.h / keccak.h / mlkem.h already use. A consumer that wants
  * BLAKE2b includes THIS file.
  *
- * NO CONSUMER TODAY. This is a primitive, not a trust decision -- it is not
- * reachable from c/crypto/trust, TLS, aex's package check or the login path,
- * and it must stay that way; wiring it anywhere that could make a page, a
- * package or a peer look verified is a separate, unmade decision. See
- * CLAUDE.md's category-(b) discussion of exactly this kind of file.
+ * Historical boundary: NO CONSUMER. This is a primitive, not a trust decision -- it is not
+ * reachable from c/crypto/trust, TLS, aex's package check or the login path.
+ * Since 2026-09-10, /bin/net uses the unkeyed 64-byte digest for file
+ * checksums and comparison with a user-supplied download digest. That is
+ * content integrity, not authentication of a package signer or network peer.
  *
  * WHY BLAKE2b AND NOT ONLY BLAKE2s: BLAKE2s (32-bit words) already exists as
  * a sibling contribution; BLAKE2b is the 64-bit member and the one actually

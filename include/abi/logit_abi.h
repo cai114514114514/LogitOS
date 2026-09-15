@@ -6,6 +6,7 @@
 
 #define SYS_WRITE       1   /* (fd, buf, len) -> len  (fd 1 = serial log) */
 #define SYS_EXIT        2   /* (code) -> terminate the process */
+#include "aex_agent.h"
 #define SYS_GUI_CREATE  3   /* (title, (w<<16)|h) -> 0  create the app window */
 #define SYS_GUI_CLEAR   4   /* (color) */
 #define SYS_GUI_RECT    5   /* ((x<<16)|y, (w<<16)|h, color) */
@@ -82,6 +83,7 @@
 #define SYS_OPEN_PATH   66 /* (path) -> 0; open file with its associated app (GUI only) */
 #define SYS_IMG_DECODE  67 /* (struct logit_imgreq*) decode an image file -> RGBA in app buffer */
 #define SYS_CPU_INDEX   68 /* () -> the index (0..N-1) of the core running the caller (SMP proof) */
+#define SYS_CPU_COUNT  196 /* () -> current online logical CPU count; never a build-time topology constant */
 #define SYS_KHEAP_STRESS 69 /* (iters, size, seed) -> corruption count; BKL-FREE concurrent kmalloc/kfree stress (M25 P1 gate) */
 #define SYS_UI_DARK     70 /* (set) set<0 query, else set system dark mode (0/1); -> current value */
 #define SYS_GUI_ICON    71 /* ((x<<16)|y, (id<<16)|px, color) draw a vector icon into the window */
@@ -295,6 +297,12 @@
  * done the reallocations anyway and then thrown the events away. */
 #define EV_RESIZE     9
 
+/* a = 1 when this window receives keyboard input, 0 when it loses it; b = 0.
+ * Sent once after create and on changes, including switching windows or opening
+ * system menus. Enqueuing wakes SYS_WAIT_EVENT, so an idle app need not poll.
+ * WINS_FOCUSED queries the same state before the first event is consumed. */
+#define EV_WINDOW_FOCUS 10
+
 /* Modifier keys held when the event was generated (struct logit_event.mods).
  * Sampled in the IRQ that produced the event, not when the app polls it -- a
  * shift released while the app was repainting must not un-shift the click that
@@ -396,6 +404,29 @@ struct logit_netinfo {
 #define LOGIT_FACE_MONO 0x1   /* fixed-pitch face rather than the proportional UI face */
 #define LOGIT_FACE_BOLD 0x2   /* the bold instance of whichever face bit 0 chose */
 struct logit_run  { int x, y, px, mono; unsigned color; const char *s; int len; int bold; };
+/* Optional versioned query through SYS_TEXT_MEASURE(a=&query,b=-1,c=0).
+ * A kernel without this branch rejects negative len before reading a, returns
+ * zero, and never draws. Existing nonnegative-len width calls are unchanged.
+ * Return 1 on success, 0 if unsupported, -1 if unavailable; only success writes
+ * out. All result coordinates are DEVICE pixels relative to the draw-run top
+ * origin (S(x),S(y)), at the exact scaled font size S(px). The ink rectangle is
+ * half open and excludes zero-coverage pixels. Empty runs retain font metrics.
+ * ascent/descent/line_gap retain the selected font's signed metric convention.
+ * scale_percent lets callers convert bounds outward instead of applying the
+ * pointer-hit cell inverse used by fb_dev2pt. */
+#define LOGIT_TEXT_METRICS_QUERY (-1)
+#define LOGIT_TEXT_METRICS_VERSION 1
+#define LOGIT_TEXT_METRICS_MAX_BYTES 1023
+struct logit_text_metrics {
+    int scale_percent, advance, baseline, ascent, descent, line_gap;
+    int has_ink, ink_left, ink_top, ink_right, ink_bottom;
+};
+struct logit_text_metrics_query {
+    unsigned size, version;
+    const char *s;
+    int len, px, face, flags;
+    unsigned char *out; /* sizeof(struct logit_text_metrics) writable bytes */
+};
 struct logit_blit { int x, y, w, h; const unsigned char *rgba; int sw, sh; };
 
 /* SYS_IMG_DECODE: the app provides `path` + an `rgba` buffer of `max` bytes; the
@@ -752,6 +783,8 @@ struct logit_mmap_file_req {
 #define WINS_MINIMIZED 3   /* -> 1 if hidden to the dock, else 0 */
 #define WINS_SET_ZOOM  4   /* arg: 0 restore, 1 maximize, -1 toggle -> new state */
 #define WINS_SET_MIN   5   /* arg: 1 minimise, 0 restore -> new state */
+#define WINS_FOCUSED   6   /* -> 1 if this window receives keyboard input, else 0 */
+#define WINS_KEY_HELD  7   /* arg: unshifted ASCII / KEY_*; 0 unless focused. */
 
 /* logit_procinfo.state -- mirrors enum proc_state in c/kernel/exec/proc.h. */
 #define LOGIT_PROC_RUNNING   1
@@ -1407,7 +1440,11 @@ struct logit_stat {
                                   * a caller must not read as 1970. */
     long long          mtime;
     long long          ctime;
+    /* Additive tail: old callers get their original length. New callers must
+     * check len and LSTA_ID before using it on an older kernel/volume. */
+    unsigned long long volume[2], object_id, revision;
 };
+#define LSTA_ID 0x0020
 #define LOGIT_STAT_VERSION 1
 
 /* SYS_GETDENTS: the directory read that SYS_DIR_NAME is not.
@@ -1983,6 +2020,7 @@ struct logit_dgram {
                              * Same value SYS_READ uses on a non-blocking pipe. */
 #define LSK_E_INUSE  (-3)   /* that port is already bound */
 #define LSK_E_FULL   (-4)   /* no listener slot, no fd, or no connection slot */
+#define LSK_E_INTR   (-9)   /* interrupted socket control wait; distinct from FULL */
 #define LSK_E_STATE  (-5)   /* listen on a connected socket, accept on an
                              * unbound one, sendto on a stream -- the call is
                              * fine, the socket is in the wrong state for it */
@@ -2875,3 +2913,6 @@ struct logit_itimer {
 #define RUCTL_GET_NS      0
 #define RUCTL_SET_LIMIT_S 1
 #define RUCTL_GET_LIMIT_S 2
+/* Own resident user frames, counted through rmap; shared frames count once
+ * for this address space. This is an O(RAM frames) diagnostic, not a hot call. */
+#define RUCTL_GET_RSS_FRAMES 3

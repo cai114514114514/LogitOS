@@ -37,7 +37,9 @@ LINK="${LINK:-lld-link}"
 # or fail depending on build order -- the worst kind of flake.
 EFI_OUT="${EFI_OUT:-$OUT/BOOTX64.EFI}"
 EFI_CPPFLAGS="${EFI_CPPFLAGS:-}"
-OBJ="$OUT/efi/$(basename "$EFI_OUT" .EFI)"
+# Keep objects beside the selected image too: EFI_OUT must isolate all
+# build artifacts, not just the final PE file.
+OBJ="$(dirname "$EFI_OUT")/obj-$(basename "$EFI_OUT" .EFI)"
 
 mkdir -p "$OBJ" "$(dirname "$EFI_OUT")"
 

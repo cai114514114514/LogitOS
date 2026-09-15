@@ -34,6 +34,15 @@ long_mode_start:
     mov cr0, rax
 
     mov rax, cr4
+%ifdef LOGIT_OSXSAVE_NEGCTL
+    ; Test-only inherited-loader state: the acceptance gate must reject this
+    ; while interrupt entry still preserves only the 512-byte FXSAVE image.
+    or  rax, (1 << 18)
+%else
+    ; A BIOS/UEFI loader may leave OSXSAVE enabled. Clear it explicitly: our
+    ; interrupt ABI saves XMM state with FXSAVE, not upper YMM state with XSAVE.
+    and rax, ~(1 << 18)         ; CR4.OSXSAVE = 0
+%endif
     or  rax, (1 << 9)          ; CR4.OSFXSR
     or  rax, (1 << 10)         ; CR4.OSXMMEXCPT
     mov cr4, rax

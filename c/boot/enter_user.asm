@@ -42,12 +42,14 @@ ring3_bootstrap:
 ; the subsequent `pop r15` is still correct; the child's IF comes from cr->rflags
 ; via iretq. sched_unlock_new_thread clobbers no callee-saved regs the frame needs.
 fork_ret:
+    ; The BKL references above are historical: only g_sched_lock is handed
+    ; through context_switch now. The stack also owns a separate FXSAVE copy.
     call sched_unlock_new_thread
-    fninit
-    sub rsp, 8
-    mov dword [rsp], 0x1F80  ; default MXCSR
-    ldmxcsr [rsp]
-    add rsp, 8
+    ; Correction to the caller-saved claim above: inline int 0x80 preserves
+    ; user XMM registers. thread_fork now passes the original entry snapshot
+    ; in r13 and the GPR frame in r12, both callee-saved across the call.
+    fxrstor [r13]
+    mov rsp, r12
     pop r15
     pop r14
     pop r13
@@ -67,11 +69,25 @@ fork_ret:
     iretq
 
 enter_user:
+    ; The scheduler has already installed the incoming thread's IA32_FS_BASE.
+    ; Loading the user FS selector below resets that hidden base to zero, so
+    ; preserve it across the selector reload. r8/rax/rcx/rdx are caller-saved;
+    ; rdi/rsi still carry the entry and stack and must remain untouched.
+    mov ecx, 0xC0000100
+    rdmsr
+    mov r8d, eax
+    shl rdx, 32
+    or r8, rdx
     mov ax, 0x23        ; user data selector (RPL 3)
     mov ds, ax
     mov es, ax
     mov fs, ax
     mov gs, ax
+    mov eax, r8d
+    shr r8, 32
+    mov edx, r8d
+    mov ecx, 0xC0000100
+    wrmsr
 
     ; Clean default FP/SSE state for the fresh process: without this the new
     ; ring-3 thread starts with whatever XMM0-15/MXCSR the previous process or

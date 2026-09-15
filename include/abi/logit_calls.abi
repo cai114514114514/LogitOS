@@ -128,6 +128,8 @@ call sock_close     SYS_SOCK_CLOSE     int(fd)
 call http_body      SYS_HTTP_BODY      buf(b) int(max)
 call res_fetch      SYS_RES_FETCH      str(src) buf(b) int(max)
 call text_measure   SYS_TEXT_MEASURE   str(s) int(len) pack(px:1:31, mono:0:1)
+# SYS_TEXT_MEASURE also accepts the optional C TextMetrics query described in
+# logit_abi.h: (query pointer, -1, 0); size/version are fields of the query.
 call gui_text_run   SYS_GUI_TEXT_RUN   buf(run)
 call gui_blit       SYS_GUI_BLIT       buf(blit)
 call img_decode     SYS_IMG_DECODE     buf(req)

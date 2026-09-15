@@ -139,10 +139,25 @@ fn block_body(b: &mut BitR, lit: &Huff, dist: &Huff, out: &mut [u8], op: &mut us
         let de = b.getbits(DIST_EXTRA[ds as usize]); if de < 0 { return -1; }
         let distance = (DIST_BASE[ds as usize] + de) as usize;
         if distance == 0 || distance > *op || *op + length > outcap { return -1; }
-        for _ in 0..length {
-            out[*op] = out[*op - distance];                 // both indices bounds-guarded above
-            *op += 1;
+        // Seed one non-overlapping period from history, then double the bytes
+        // already produced. This preserves DEFLATE's overlapping recurrence
+        // (distance=1 still expands a run) while turning long matches into a
+        // logarithmic number of wide copies instead of one branch per byte.
+        let dst = *op;
+        let seed = distance.min(length);
+        {
+            let (history, tail) = out.split_at_mut(*op);
+            let start = history.len() - distance;
+            tail[..seed].copy_from_slice(&history[start..start + seed]);
         }
+        let mut produced = seed;
+        while produced < length {
+            let count = produced.min(length - produced);
+            let (history, tail) = out.split_at_mut(dst + produced);
+            tail[..count].copy_from_slice(&history[dst..dst + count]);
+            produced += count;
+        }
+        *op += length;
     }
 }
 
@@ -164,7 +179,9 @@ fn inflate_core(b: &mut BitR, out: &mut [u8], op: &mut usize) -> i32 {
             if nlen != !len & 0xffff { return -1; }          // NLEN must be ~LEN
             b.pos += 4;                                      // skip LEN + NLEN
             if b.pos + len > b.p.len() || *op + len > outcap { return -1; }
-            for _ in 0..len { out[*op] = b.p[b.pos]; *op += 1; b.pos += 1; }
+            out[*op..*op + len].copy_from_slice(&b.p[b.pos..b.pos + len]);
+            *op += len;
+            b.pos += len;
         } else if btype == 1 || btype == 2 {
             let lit;
             let dist;
@@ -224,11 +241,20 @@ fn inflate_core(b: &mut BitR, out: &mut [u8], op: &mut usize) -> i32 {
 
 /// RFC 1950 Adler-32 checksum.
 fn adler32(data: &[u8]) -> u32 {
+    const MOD_ADLER: u32 = 65521;
+    // RFC 1950 arithmetic is unchanged, but reducing once per byte is very
+    // expensive. 5552 is the largest conventional chunk whose unreduced
+    // accumulators are guaranteed to fit in u32.
+    const NMAX: usize = 5552;
     let mut a: u32 = 1;
     let mut b: u32 = 0;
-    for &x in data {
-        a = (a + x as u32) % 65521;
-        b = (b + a) % 65521;
+    for chunk in data.chunks(NMAX) {
+        for &x in chunk {
+            a += x as u32;
+            b += a;
+        }
+        a %= MOD_ADLER;
+        b %= MOD_ADLER;
     }
     (b << 16) | a
 }

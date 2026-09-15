@@ -37,6 +37,7 @@ pm32:
     mov es, ax
     mov ss, ax
     mov eax, cr4
+    and eax, ~(1 << 12)                    ; kernel CR3 names a PML4, not PML5
     or  eax, 1 << 5                        ; CR4.PAE
     mov cr4, eax
     mov eax, [ARGS]                        ; kernel CR3 (PML4 phys, < 4 GiB)
@@ -95,6 +96,13 @@ lm64:
     or  rax, (1 << 5)
     mov cr0, rax
     mov rax, cr4
+%ifdef LOGIT_OSXSAVE_NEGCTL
+    or  rax, (1 << 18)                     ; test inherited-loader regression
+%else
+    ; CR4 is per-CPU. Enforce the same FXSAVE-only contract as the BSP even
+    ; if firmware or a virtual platform supplied a non-reset AP state.
+    and rax, ~(1 << 18)                    ; CR4.OSXSAVE = 0
+%endif
     or  rax, (1 << 9)
     or  rax, (1 << 10)
     mov cr4, rax

@@ -22,31 +22,19 @@
  *   EFI config-table RSDP   -> mb2 ACPI tag        (15)  -> nobody yet
  *
  * ================= THE ONE THING GRUB NEVER HAS TO DO =================
- * GRUB on BIOS loads this kernel straight to its link address, because BIOS
- * hands over a machine where 1 MiB upwards is simply free. UEFI does not: the
- * firmware owns the machine until ExitBootServices and has its own data in low
- * memory. On the firmware this gate runs on, the kernel's 11.5 MiB image does
- * not fit in the 7 MiB that is free down there.
+ * GRUB loads PT_LOAD segments at the ELF physical addresses after consulting
+ * the BIOS memory map. UEFI still owns the machine while this loader runs, so
+ * this path must claim the whole kernel span itself. The old 1 MiB link address
+ * crossed OVMF's ACPI NVS and BootServicesData ranges; copying there after
+ * ExitBootServices destroyed firmware state and made a QEMU convenience into a
+ * real-machine hazard.
  *
- * So placement has two paths, and the audit above destination_is_takeable()
- * carries the full argument for both:
- *
- *   DIRECT  AllocatePages(AllocateAddress) succeeds -> the image goes straight
- *           to 1 MiB and nothing happens after ExitBootServices but the jump.
- *           This is what the milestone was planned around and what real
- *           firmware, which keeps its reservations high, generally allows.
- *
- *   STAGED  it fails -> ask the question that actually matters, which is not
- *           "may I have this now" but "is this MINE ONCE BOOT SERVICES ARE
- *           GONE". Most of what blocks the address is BootServicesData, which
- *           by definition stops existing at EBS. If every byte qualifies, the
- *           finished image is built in a staging buffer and installed by
- *           trampoline.S after EBS -- in assembly, with no stack, because the
- *           destination overlaps the UEFI stack itself.
- *
- * A refusal remains a refusal: memory that never becomes the OS's (runtime
- * services, the ACPI tables, MMIO) is not taken, and this kernel is not
- * relocatable, so there is nowhere else to put it.
+ * The shared ELF now links at 32 MiB, still inside boot.asm's first-1-GiB
+ * identity map. The loader accepts exactly one placement path: AllocatePages at
+ * the ELF address must succeed, and both an immediate memory-map readback and
+ * the final map used for ExitBootServices must describe every byte as
+ * EfiLoaderData. Any refusal, hole, type mismatch, or descriptor overflow stops
+ * before ExitBootServices. No code writes the kernel image after firmware exit.
  *
  * ======================= THE KNOWN GAP, ON PURPOSE ====================
  * c/kernel/cpu/acpi.c finds the RSDP by scanning the BIOS EBDA/ROM area, which
@@ -71,6 +59,7 @@
  */
 
 #include "efi.h"
+#include "load_policy.h"
 #include "mb2.h"
 
 /* L"..." must be UCS-2 for every string handed to a firmware protocol. It is,
@@ -208,14 +197,13 @@ static EFI_BOOT_SERVICES *BS;
  * ExitBootServices invalidates the key. One flag closes both windows. */
 static int serial_only;
 
-/* Where the kernel image must end up, and (if the firmware would not let us
- * write there before ExitBootServices) where its finished copy is waiting.
- * install_len == 0 means the image is already in place and the trampoline has
- * nothing to install. Everything allocated after the kernel is loaded is
- * checked against [kernel_lo, kernel_hi) before it is used, because the install
- * overwrites that span without looking. */
+/* The allocated PT_LOAD span. It is checked once immediately after
+ * AllocatePages and again against each final map offered to ExitBootServices. */
 static UINT64 kernel_lo, kernel_hi;
-static UINT64 install_dst, install_src, install_len;
+
+/* boot.asm installs one PD with 512 2-MiB leaves before entering C. Every
+ * kernel byte and the Multiboot information block must remain in that map. */
+#define BOOT_IDENTITY_LIMIT 0x40000000ULL
 
 /* ConOut wants UCS-2 and every string in this file is ASCII, so widen on the
  * way out rather than carrying two copies of every message. 256 CHAR16 is
@@ -284,8 +272,8 @@ static void halt(void)
 /* A refusal.
  *
  * STALLING IS THE POINT. Every caller has discovered that an assumption the
- * jump depends on is false -- the kernel is missing, the firmware would not
- * give us 1 MiB, ExitBootServices failed. Continuing from any of those means
+ * jump depends on is false -- the kernel is missing, the firmware refused its
+ * fixed address, ExitBootServices failed. Continuing from any of those means
  * jumping into memory whose contents nobody knows, which produces a triple
  * fault or, worse, a silently wrong machine with no evidence of the cause. A
  * stalled machine with a printed reason is a solved bug. */
@@ -416,80 +404,38 @@ static const char *efi_type_name(UINT32 t)
 
 /* ================= AUDITING THE DESTINATION, AND WHY ==================
  *
- * The plan of record for this milestone was: AllocatePages(AllocateAddress) at
- * the kernel's link address, and refuse if the firmware says no. That is the
- * right FIRST move and it is still the first move below -- but on the machine
- * this gate runs on it cannot succeed, and the firmware's own memory map says
- * why. The kernel's image spans 0x100000..0xC05000 (11.5 MiB, nearly all of it
- * .bss) and OVMF leaves only 0x109000..0x800000 free down there:
- *
- *     0x100000..0x800000   Conventional        free
- *     0x800000..0x900000   ACPI NVS            firmware
- *     0x900000..0x1780000  BootServicesData    firmware, until EBS
- *
- * Those addresses are FIXED -- measured identical at -m 512M and -m 2048M, so
- * they are not a function of how much RAM the machine has and no amount of it
- * moves them.
- *
- * So there is a second question after "will the firmware give me this address",
- * and it is the one that actually matters: WILL THIS MEMORY BE MINE AFTER
- * ExitBootServices? For most of that span the answer is yes and the firmware
- * simply cannot say so in advance, because AllocateAddress is a question about
- * NOW and BootServicesData stops existing at EBS. That is what this audit
- * answers, per descriptor, with three outcomes:
- *
- *   MINE AFTER EBS -- Conventional, BootServicesCode/Data, LoaderCode/Data.
- *     Exactly the set mb2_type_of() forwards to the kernel as available, which
- *     is not a coincidence: it is the same claim, made to the same authority.
- *
- *   ACPI NVS -- TAKEN, AND SAID OUT LOUD. This is the one judgement call in
- *     the file, so here is the whole argument. EfiACPIMemoryNVS is memory the
- *     firmware asks the OS to preserve across the S1-S3 sleep states. LogitOS
- *     implements no sleep state and cannot resume from one, so the capability
- *     being destroyed is a capability that does not exist. It is NOT the ACPI
- *     tables: on this machine those live at 0x1fb6d000 in EfiACPIReclaimMemory,
- *     near the top of RAM and nowhere near the kernel, and ACPIReclaim is
- *     REFUSED below precisely so the forwarded RSDP keeps pointing at something
- *     real for the deferred acpi.c patch. Independent confirmation that the low
- *     block is only the S3 reservation: booting the same firmware with
- *     `-global ICH9-LPC.disable_s3=1` turns exactly those descriptors into
- *     BootServicesData and nothing else changes.
- *
- *   ANYTHING ELSE -- REFUSED. RuntimeServicesCode/Data are live firmware we
- *     never called SetVirtualAddressMap on; ACPIReclaim holds the tables;
- *     Reserved/MMIO/Unusable/Persistent are not ours to take at all. A hole in
- *     the map is refused too: memory the firmware does not describe is not
- *     memory we may assume is RAM.
- *
- * On firmware that puts its reservations high -- which is most real firmware --
- * none of this fires and the direct path is taken. */
-static UINT32 mb2_type_of(UINT32 efi_type);      /* defined with the mmap tag */
+ * AllocateAddress is an ownership request, not just a convenient allocator.
+ * Success must turn the whole target into EfiLoaderData in the firmware map.
+ * We read that map back immediately, then repeat the same validation on the
+ * exact map/key passed to ExitBootServices. The latter closes the window where
+ * a later firmware allocation or a broken implementation changes ownership.
+ * The pure policy is in load_policy.h so a host mutation can prove that
+ * accepting ACPI NVS or any other reserved overlap makes the gate red. */
 
-static void map_walk_begin(EFI_MEMORY_DESCRIPTOR **m, UINTN *count, UINTN *dsz)
+static void map_walk_begin(EFI_MEMORY_DESCRIPTOR **m, UINTN *map_size, UINTN *dsz)
 {
     UINTN size = 0, key = 0;
     UINT32 ver = 0;
-    *m = 0; *count = 0; *dsz = 0;
+    *m = 0; *map_size = 0; *dsz = 0;
     if (BS->GetMemoryMap(&size, 0, &key, dsz, &ver) != EFI_BUFFER_TOO_SMALL) return;
     size += 8192;
     if (BS->AllocatePool(EfiLoaderData, size, (void **)m) != EFI_SUCCESS) return;
     if (BS->GetMemoryMap(&size, *m, &key, dsz, &ver) != EFI_SUCCESS || *dsz == 0) {
         BS->FreePool(*m); *m = 0; return;
     }
-    *count = size / *dsz;
+    *map_size = size;
 }
 
-/* Print every descriptor overlapping [lo,hi). Used by both the audit and the
- * refusal path: "the firmware said no" is a refusal, "the firmware said no
- * because 0x800000..0x900000 is ACPI NVS" is a diagnosis. */
+/* Print every descriptor overlapping [lo,hi). "The firmware said no" is a
+ * refusal; naming the exact reserved owner is a diagnosis. */
 static void report_who_owns(UINT64 lo, UINT64 hi)
 {
-    EFI_MEMORY_DESCRIPTOR *m; UINTN n, dsz;
-    map_walk_begin(&m, &n, &dsz);
+    EFI_MEMORY_DESCRIPTOR *m; UINTN map_size, dsz;
+    map_walk_begin(&m, &map_size, &dsz);
     if (!m) return;
     say("[efi] who owns that range, per the firmware's own map:\n");
-    for (UINTN i = 0; i < n; i++) {
-        EFI_MEMORY_DESCRIPTOR *d = (EFI_MEMORY_DESCRIPTOR *)((UINT8 *)m + i * dsz);
+    for (UINTN off = 0; off + dsz <= map_size; off += dsz) {
+        EFI_MEMORY_DESCRIPTOR *d = (EFI_MEMORY_DESCRIPTOR *)((UINT8 *)m + off);
         UINT64 a = d->PhysicalStart, b = a + d->NumberOfPages * 4096;
         if (b <= lo || a >= hi) continue;
         say("[efi]   "); sayx(a); say(".."); sayx(b);
@@ -499,55 +445,22 @@ static void report_who_owns(UINT64 lo, UINT64 hi)
     BS->FreePool(m);
 }
 
-/* Nonzero if every byte of [lo,hi) is ours once boot services are gone. */
-static int destination_is_takeable(UINT64 lo, UINT64 hi)
+/* Immediate readback after AllocatePages. The final EBS map is checked again
+ * separately; neither observation substitutes for the other. */
+static int allocated_range_is_loader_data(UINT64 lo, UINT64 hi)
 {
-    EFI_MEMORY_DESCRIPTOR *m; UINTN n, dsz;
-    UINT64 covered = 0, nvs = 0;
-    int ok = 1;
-
-    map_walk_begin(&m, &n, &dsz);
-    if (!m) { say("[efi] cannot read the memory map to audit the load address\n"); return 0; }
-
-    for (UINTN i = 0; i < n; i++) {
-        EFI_MEMORY_DESCRIPTOR *d = (EFI_MEMORY_DESCRIPTOR *)((UINT8 *)m + i * dsz);
-        UINT64 a = d->PhysicalStart, b = a + d->NumberOfPages * 4096;
-        if (b <= lo || a >= hi) continue;
-        if (a < lo) a = lo;
-        if (b > hi) b = hi;
-        covered += b - a;
-
-        if (mb2_type_of(d->Type) == MB2_MEM_AVAILABLE) continue;   /* ours at EBS */
-        if (d->Type == EfiACPIMemoryNVS) { nvs += b - a; continue; }
-
-        say("[efi] the kernel's load address overlaps "); say(efi_type_name(d->Type));
-        say(" at "); sayx(a); say(".."); sayx(b);
-        say(" -- that memory never becomes the OS's\n");
-        ok = 0;
+    EFI_MEMORY_DESCRIPTOR *m; UINTN map_size, dsz;
+    map_walk_begin(&m, &map_size, &dsz);
+    if (!m) {
+        say("[efi] cannot read the memory map to verify the allocation\n");
+        return 0;
     }
+    int ok = efi_load_range_is_loader_data(m, map_size, dsz, lo, hi);
     BS->FreePool(m);
-
-    if (covered != hi - lo) {
-        say("[efi] the firmware's map does not describe all of ");
-        sayx(lo); say(".."); sayx(hi);
-        say(" -- undescribed memory is not assumed to be RAM\n");
-        ok = 0;
-    }
-    if (ok && nvs) {
-        /* Said every boot, not hidden in a comment: this is a real casualty. */
-        say("[efi] NOTE: taking "); sayd(nvs >> 10);
-        say(" KiB of ACPI NVS inside the kernel image. LogitOS implements no\n"
-            "[efi]       sleep state, so the S3 resume data being destroyed is\n"
-            "[efi]       for a capability that does not exist. The ACPI TABLES\n"
-            "[efi]       are in ACPIReclaim elsewhere and are refused, not taken.\n");
-    }
     return ok;
 }
 
-/* [a,b) and [c,d) intersect. Used for every "is this buffer in the way" check
- * below -- and all of them exist because the post-ExitBootServices install
- * overwrites the destination unconditionally, so anything still live that
- * happens to sit there is destroyed WHILE IT IS BEING USED. */
+/* [a,b) and [c,d) intersect. */
 static int overlaps(UINT64 a, UINT64 b, UINT64 c, UINT64 d)
 {
     return a < d && c < b;
@@ -652,7 +565,7 @@ static UINT64 load_kernel(EFI_HANDLE image)
                "short read of the program headers");
 
     /* Span of the image in PHYSICAL memory. p_paddr, not p_vaddr: the kernel is
-     * linked to run identity-mapped at 1 MiB so the two are equal today, but
+     * linked to run identity-mapped at 32 MiB so the two are equal today, but
      * the physical address is the field that answers "where does this go", and
      * reading the other one would be right only by luck. */
     UINT64 lo = ~(UINT64)0, hi = 0;
@@ -666,7 +579,8 @@ static UINT64 load_kernel(EFI_HANDLE image)
         if (b > hi) hi = b;
     }
     if (lo == ~(UINT64)0) die("logit.elf has no PT_LOAD segments");
-    if (hi > 0xFFFFFFFFULL) die("the kernel image does not fit below 4 GiB");
+    if (hi > BOOT_IDENTITY_LIMIT)
+        die("the kernel image does not fit in boot.asm's first-1-GiB identity map");
 
     UINT64 page_lo = lo & ~(UINT64)0xFFF;
     UINT64 page_hi = (hi + 0xFFF) & ~(UINT64)0xFFF;
@@ -674,101 +588,49 @@ static UINT64 load_kernel(EFI_HANDLE image)
     kernel_lo = page_lo;
     kernel_hi = page_hi;
 
-    /* ==================== THE TRAP THIS STEP EXISTS FOR ====================
-     * The kernel links at 1 MiB and UEFI may own that memory -- it is the
-     * firmware's machine until ExitBootServices, and nothing entitles us to
-     * any particular address. So claim the WHOLE span first, in one call, with
-     * AllocateAddress (UEFI 2.10 sec 7.2, "allocates pages at a specified
-     * address"), and treat a refusal as final.
-     *
-     * WHY REFUSING IS RIGHT and not "load it somewhere else": a kernel written
-     * over the firmware's own data structures does not fail here, it fails
-     * later and elsewhere -- inside a firmware callback, or after the jump,
-     * with nothing pointing back at this line. OVMF leaves low RAM free so this
-     * succeeds on the machine the gate runs on; real firmware may not, and the
-     * honest behaviour until the kernel can be relocated is to say so.
-     *
-     * KNOWN FUTURE WORK, named rather than hidden: the fix is a relocatable
-     * kernel (a Multiboot2 relocatable header tag, sec 3.1.10, plus
-     * position-independent early boot code), at which point this becomes
-     * AllocateAnyPages. That is a kernel change, and this milestone changes no
-     * kernel. */
-    /* The loader must not be standing on the kernel. Nothing later checks this
-     * for us: in the staged path below, the install overwrites the destination
-     * unconditionally, so a loader image inside the span would be erased while
-     * executing. (This is not hypothetical -- the first build of this file used
-     * /base:0x100000 and OVMF honoured it exactly.) */
+    /* The loader must not be standing on the kernel. A preferred PE base is a
+     * request, so check the actual LoadedImage placement before asking for the
+     * fixed ELF destination. */
     if (overlaps((UINT64)(UINTN)li->ImageBase, img_end, page_lo, page_hi))
         die("this loader is loaded on top of the kernel's link address "
             "(change /base in c/boot/efi/build.sh)");
 
+    /* AllocateAddress is the only safe placement path. The former fallback
+     * staged the image and copied it over ACPI NVS/BootServices memory after
+     * ExitBootServices. That made a firmware reservation disappear by writing
+     * through it, which is precisely what a loader must never do. A fixed
+     * non-relocatable kernel either owns its complete address range now or the
+     * boot is refused with the conflicting map entries printed. */
     EFI_PHYSICAL_ADDRESS at = page_lo;
-    UINT64 dest = page_lo;      /* where the segments get written RIGHT NOW */
-
     st = BS->AllocatePages(AllocateAddress, EfiLoaderData, pages, &at);
-    if (st == EFI_SUCCESS) {
-        /* PATH 1, the simple one and the one real firmware usually allows: the
-         * kernel goes straight to its link address and nothing happens after
-         * ExitBootServices except the jump.
-         *
-         * NOT EXERCISED BY THE GATE, and worth knowing: this OVMF build's low
-         * reservations are at fixed physical addresses (measured identical at
-         * -m 512M and -m 2048M, and on both -machine q35 and -machine pc), so
-         * the 11.5 MiB image can never fit the 7 MiB hole and this branch is
-         * structurally unreachable here. It is the strictly SIMPLER path --
-         * install_len stays 0 and trampoline.S skips the copy on a single
-         * testq/jz -- so what goes untested is a subset of what is tested, not
-         * a parallel implementation. */
-        say("[efi] load direct "); sayx(page_lo); say(".."); sayx(page_hi); say("\n");
-    } else {
-        /* PATH 2. The firmware owns part of the span NOW. That is not the same
-         * as owning it after ExitBootServices -- see the audit's header comment
-         * -- so ask the real question before giving up. */
-        say("[efi] link address unavailable now ("); sayd(pages);
-        say(" pages at "); sayx(page_lo); say("): asking whether it becomes ours\n");
+    if (st != EFI_SUCCESS || at != page_lo) {
+        say("[efi] fixed kernel address unavailable ("); sayd(pages);
+        say(" pages at "); sayx(page_lo); say(")\n");
         report_who_owns(page_lo, page_hi);
-
-        if (!destination_is_takeable(page_lo, page_hi))
-            die_st("the kernel's link address holds memory that never becomes "
-                   "the OS's -- this kernel is not relocatable, so there is "
-                   "nowhere else to put it", st);
-
-        /* Build the finished image in a staging buffer and install it after
-         * ExitBootServices, when the firmware's claim on the destination has
-         * lapsed. Staged as ONE flat span rather than a list of segments so the
-         * post-EBS work is a single copy with no structure to walk -- see
-         * mb2_handoff, which does it with no stack and no memory reference
-         * outside the two buffers. */
-        EFI_PHYSICAL_ADDRESS stage = 0xFFFFFFFFULL;    /* keep it below 4 GiB */
-        st = BS->AllocatePages(AllocateMaxAddress, EfiLoaderData, pages, &stage);
-        if (st) die_st("no staging buffer for the kernel image", st);
-        if (overlaps(stage, stage + (page_hi - page_lo), page_lo, page_hi))
-            die("the staging buffer landed inside the kernel's own destination");
-
-        dest        = stage;
-        install_dst = page_lo;
-        install_src = stage;
-        install_len = page_hi - page_lo;
-
-        say("[efi] load staged "); sayx(stage);
-        say(" -> ");               sayx(page_lo);
-        say(" ("); sayd(install_len >> 20); say(" MiB, installed after EBS)\n");
+        if (st != EFI_SUCCESS)
+            die_st("firmware refused the fixed kernel address; no safe "
+                   "post-ExitBootServices fallback exists", st);
+        die("AllocateAddress returned a different physical address");
     }
+    if (!allocated_range_is_loader_data(page_lo, page_hi)) {
+        report_who_owns(page_lo, page_hi);
+        die("firmware did not mark the complete kernel allocation LoaderData");
+    }
+    say("[efi] load reserved "); sayx(page_lo); say(".."); sayx(page_hi); say("\n");
 
     /* Zero the ENTIRE span before loading, rather than each segment's
      * (memsz - filesz) tail. Two things fall out of one clear: .bss is zero as
      * the kernel's C requires, and so is every alignment gap BETWEEN segments
      * -- which no per-segment loop covers, and which AllocatePages does not
-     * promise to hand over clean. In the staged path this also means the buffer
-     * copied later IS the finished image, byte for byte. */
-    mzero((void *)(UINTN)dest, page_hi - page_lo);
+     * promise to hand over clean. */
+    mzero((void *)(UINTN)page_lo, page_hi - page_lo);
 
     for (UINT16 i = 0; i < eh.e_phnum; i++) {
         if (phdrs[i].p_type != PT_LOAD || phdrs[i].p_memsz == 0) continue;
         if (phdrs[i].p_filesz) {
             seek(file, phdrs[i].p_offset);
             read_exact(file,
-                       (void *)(UINTN)(dest + (phdrs[i].p_paddr - page_lo)),
+                       (void *)(UINTN)phdrs[i].p_paddr,
                        phdrs[i].p_filesz, "short read of a PT_LOAD segment");
         }
     }
@@ -981,14 +843,11 @@ static UINT32 mb2_type_of(UINT32 efi_type)
 
 /* c/boot/efi/trampoline.S. Not returning is part of its contract.
  *
- * It takes the install as parameters rather than doing it here because the
- * copy can destroy this C environment: the UEFI stack lives in
- * BootServicesData, which on this firmware is exactly the memory the kernel's
- * .bss lands on. mb2_handoff reads all five arguments into registers first and
- * then touches no stack at all, so a stack that ceases to exist half way
- * through the copy costs nothing -- there is nothing left to return to. */
-extern void mb2_handoff(UINT64 dst, UINT64 src, UINT64 len,
-                        UINT64 entry, UINT64 info);
+ * It receives only values already safe below 1 GiB. The old install arguments
+ * represented a post-ExitBootServices overwrite path; removing them from the
+ * ABI makes reintroducing that unsafe operation require an explicit interface
+ * change rather than a stray nonzero length. */
+extern void mb2_handoff(UINT64 entry, UINT64 info);
 
 /* THE 1 GiB CEILING ON THE INFORMATION BLOCK, and it is 1 GiB, not 4.
  *
@@ -999,7 +858,7 @@ extern void mb2_handoff(UINT64 dst, UINT64 src, UINT64 len,
  * mm_p2v(), which on the target is the identity (c/kernel/mm/mmhost.h:43). A
  * block at 2 GiB would satisfy Multiboot2 perfectly and page-fault the kernel
  * on its first read of total_size -- before there is an IDT to report it. */
-#define INFO_MAX_ADDR 0x3FFFFFFFULL     /* uppermost byte, i.e. below 1 GiB */
+#define INFO_MAX_ADDR (BOOT_IDENTITY_LIMIT - 1) /* uppermost byte below 1 GiB */
 
 /* Slack on the map buffer. GetMemoryMap's own documentation (UEFI 2.10 sec 7.2)
  * warns that the map can GROW between the sizing call and the real one --
@@ -1075,12 +934,8 @@ void efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *systab)
                            info_bytes >> 12, &info_at);
     if (st) die_st("no free pages below 1 GiB for the multiboot2 info block", st);
 
-    /* The staged install overwrites [kernel_lo, kernel_hi) wholesale and runs
-     * AFTER this block is finished, so an info block inside that span would be
-     * erased between being built and being read. AllocateMaxAddress hands back
-     * the highest free run under the limit, which is nowhere near the kernel --
-     * but "is nowhere near" is an observation about one firmware, and this is a
-     * check. */
+    /* AllocateMaxAddress should place this far above the already-reserved
+     * kernel, but firmware allocations are verified rather than inferred. */
     if (overlaps(info_at, info_at + info_bytes, kernel_lo, kernel_hi))
         die("the multiboot2 info block landed inside the kernel image");
 
@@ -1124,8 +979,8 @@ void efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *systab)
      * below writes into a buffer that already exists, which is pure computation
      * and changes nothing. The spec's own remedy for a stale key is to take the
      * map again and retry, which is this loop; two attempts is enough, because
-     * the second runs with literally nothing between GetMemoryMap and
-     * ExitBootServices. */
+     * the second runs with no operation that can change the map between
+     * GetMemoryMap and ExitBootServices. */
     serial_only = 1;
 
     for (int attempt = 0; ; attempt++) {
@@ -1134,6 +989,19 @@ void efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *systab)
         map_size = map_cap;
         st = BS->GetMemoryMap(&map_size, map, &map_key, &desc_size, &desc_ver);
         if (st) die_st("GetMemoryMap failed with a sized buffer", st);
+
+        /* This is the last ownership decision before the point of no return.
+         * It runs on every EBS attempt and on the exact bytes associated with
+         * map_key. Serial diagnostics below use raw port I/O and cannot mutate
+         * the firmware map. */
+        if (!efi_load_range_is_loader_data(map, map_size, desc_size,
+                                           kernel_lo, kernel_hi)) {
+            sputs("\n[efi] REFUSING TO BOOT: final memory map no longer owns "
+                  "the complete kernel span as LoaderData\n[efi] halted.\n");
+            halt();
+        }
+        if (attempt == 0)
+            sputs("[efi] kernel map LoaderData confirmed\n");
 
         UINTN n_desc = map_size / desc_size;
         struct mb2_tag_mmap *mm = ib_take(&ib, 16 + n_desc * 24);
@@ -1221,18 +1089,9 @@ void efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *systab)
      * after "[efi] descent CP" says the machine died between clearing CR0.PG
      * and clearing EFER.LME, which is a located bug; a log that stops after
      * "[efi] jump" says only that something went wrong somewhere. */
-    if (install_len) {
-        sputs("[efi] install ");
-        sputx(install_src);
-        sputs(" -> ");
-        sputx(install_dst);
-        sputs("\n");
-    }
-
     sputs("[efi] descent ");
 
-    mb2_handoff(install_dst, install_src, install_len,
-                entry, (UINT64)(UINTN)ib.base);
+    mb2_handoff(entry, (UINT64)(UINTN)ib.base);
 
     halt();   /* mb2_handoff does not return; this is so the compiler knows */
 }
