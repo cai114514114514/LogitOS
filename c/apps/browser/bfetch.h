@@ -31,10 +31,28 @@
 
 enum { BF_PENDING = 0, BF_DONE = 1, BF_FAILED = -1 };
 
+/* Browser policy, shared by resource GET and fetch(): the generic HTTP parser
+ * keeps its 8 MiB default for other clients. A real gzip script was 2,724,940
+ * wire bytes but 10,589,862 decoded bytes (2026-09-10; matching Content-Length,
+ * host gzip -t and -l); 8 MiB rejected intact data as an encoding error.
+ * 16 MiB admits it with bounded headroom, NOT unlimited decompression. This is
+ * a per-buffer ceiling; it is not an aggregate browser-memory guarantee. */
+#ifndef BROWSER_BUFFERED_BODY_MAX
+#define BROWSER_BUFFERED_BODY_MAX (16 * 1024 * 1024)
+#endif
+
 void bfetch_init(void);
 
 /* The document URL every relative reference resolves against. */
 void bfetch_set_base(const char *page_url);
+/* Committed document identity, independent of stylesheet/import resolution.
+ * Set before its subresources are queued; queued requests retain a snapshot. */
+void bfetch_set_document(const char *page_url);
+/* Security context is the COMMITTED document, not the URL-resolution base:
+ * <base href>, stylesheet URLs and a pending address-bar edit cannot change
+ * which site initiated a resource. Each request copies this at construction.
+ * NULL means no document; a non-HTTP(S) URL is an opaque document. */
+void bfetch_set_document(const char *document_url);
 
 /* Resolve `ref` against `base` (or the document base when `base` is NULL) into
  * an absolute URL, with RFC 3986 dot-segment removal applied -- url.c's
@@ -53,6 +71,19 @@ int  bfetch_start_from(const char *base, const char *ref);
  * the whole of what Lax means and what keeps a link from another site from
  * arriving logged out. Strict is still withheld. */
 int  bfetch_start_nav(const char *ref);
+/* Explicit navigation initiator, captured before retiring its JS realm.
+ * NULL is reserved for browser-chrome navigation (address bar/bookmark), not
+ * page links or script navigation. Redirects retain this same initiator. */
+int  bfetch_start_nav_from(const char *ref, const char *initiator_url);
+
+/* Passive child transport: owner and ancestor are copied into the request's
+ * non-top-level Cookie context. Cross-site ancestors make site-for-cookies
+ * opaque. No parent fetch/CORS result or mutable URL base supplies authority.
+ * Its cache bypass is required until cached responses retain CSP/XFO. */
+typedef int (*bfetch_embedded_redirect)(void *owner,const char *base,const char *ref,char *out,int cap);
+int bfetch_start_embedded(const char *ref,const char *owner_url,const char *ancestor_url,
+                          bfetch_embedded_redirect redirect,void *owner);
+int bfetch_response_policy_known(int id);
 
 /* ===================== byte ranges: Range / 206 ==========================
  *
@@ -125,6 +156,7 @@ int  bfetch_sync_range(const char *ref, long long first, long long last,
                        unsigned char **out, int *outlen, long long *total);
 
 int  bfetch_state(int id);                  /* BF_PENDING / BF_DONE / BF_FAILED */
+const char *bfetch_response_header(int id, const char *name); /* Content-Type/Disposition; valid until release */
 int  bfetch_status(int id);                 /* HTTP status code, or 0 */
 /* The body. Owned by bfetch until bfetch_release(); NUL-terminated at [len]. */
 const unsigned char *bfetch_body(int id, int *len);
@@ -270,6 +302,10 @@ void bfetch_close_all(void);
 struct h1_conn;
 struct h1_transport;
 
+/* A replacement handshake is pending. No request bytes were accepted, and
+ * the caller still owns req. Poll the updated fd, then call start again. */
+enum { BXFER_START_WAIT = 1 };
+
 #ifdef WEBAPI_HOST
 
 /* No HTTP/2, and no dependency on browser_rt.c. `host`/`port`/`tls` and the
@@ -286,15 +322,34 @@ struct h1_transport;
 /* Dial, or join an existing HTTP/2 connection to the same origin. Returns a
  * socket handle the caller polls exactly as before, or < 0. */
 int  bxfer_open(const char *host, int port, int tls);
-/* Give a handle back. The socket is closed once the last user has let go. */
+/* Give a request handle back. A healthy HTTP/2 origin session remains in the
+ * pool after the last handle and is closed by idle expiry, eviction, or
+ * bxfer_close_all; HTTP/1.1 and unusable sessions retain last-owner close. */
 void bxfer_close(int fd);
 
-/* Begin one exchange. `req` is a serialized HTTP/1.1 request and ownership
- * passes here either way -- on the h2 path it is re-encoded as HPACK, and the
+/* Hand a FINISHED HTTP/1.1 session to the caller's keep-alive pool: the
+ * session entry dissolves (no refcount close, socket stays open) and fd +
+ * hpool slot become the caller's, exactly as if the caller had dialled the
+ * connection itself. Returns the fd (>= 0) and stores its pool slot, or -1
+ * if the handle was not a session / was speaking h2 -- an h2 connection is
+ * not one exchange's to give away. Exists because bfetch's dial path went
+ * through bxfer_open (2026-09-09): an HTTP/1.1 server must not lose the
+ * idle keep-alive reuse bfetch always had just because the dial moved. */
+int bxfer_h1_yield(int fd, int *out_pslot);
+
+/* bxfer_open, telling the caller whether it DIALLED (fresh) or JOINED an
+ * existing/in-flight session. See bxfer_h1_yield's comment for who needs
+ * the distinction; bxfer_open() itself is the no-out-param spelling. */
+int bxfer_open_ex(const char *host, int port, int tls, int *fresh);
+
+/* Begin one exchange. `req` is a serialized HTTP/1.1 request. The old comment
+ * said ownership "passes here either way"; correction: ONLY H1_OK transfers
+ * it, as both callers have always required. On h2 it is re-encoded as HPACK, and the
  * request body is used in place out of that same buffer, so it is held until
  * the stream completes. `*fd` is the handle from bxfer_open and MAY BE
  * REPLACED (see the speculative case above); the caller must keep polling the
- * value it finds there afterwards. H1_OK, or a negative H1_E_*. */
+ * value it finds there afterwards. H1_OK, BXFER_START_WAIT (not yet accepted),
+ * or a negative H1_E_*. WAIT never replays an allocated HTTP/2 stream. */
 int  bxfer_start(struct h1_conn *c, const struct h1_transport *t,
                  char *req, int reqlen, int *fd,
                  const char *host, int port, int tls);
