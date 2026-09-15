@@ -30,4 +30,12 @@ int kernel_poweroff(void);
 /* Correction: preparation failure returns after restoring admission. */
 int kernel_reboot(void);
 
+/* Initialize/query real AML power devices after scheduler and ACPI setup.
+ * Queries are serialized, may sleep, and return explicit unavailable state. */
+struct power_acpi_status;
+int kernel_power_init(void);
+int kernel_power_status(struct power_acpi_status *snapshot);
+/* Boot-only: queue discovery after the scheduler and shared worker exist. */
+void kernel_power_start(void);
+
 #endif /* LOGIT_POWER_H */

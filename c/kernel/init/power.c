@@ -72,6 +72,9 @@
 #include "logitfs.h"
 #include "vfs.h"
 #include "wait.h"
+#include "sched.h"
+#include "../../drivers/power/acpi/devices.h"
+#include "../../drivers/power/acpi/native.h"
 
 /* Only power requests serialize here. Drain is a reversible token: already
  * admitted filesystem work finishes with its CPUs running; every failure
@@ -81,7 +84,10 @@ static int power_prepare(struct vfs_drain *token)
 {
     mutex_lock(&power_lock);
     int rc = vfs_drain_begin(token);
-    if (rc) { mutex_unlock(&power_lock); return rc; }
+    if (rc) {
+        mutex_unlock(&power_lock);
+        return rc;
+    }
     kprintf("[power] syncing...\n");
     if (logitfs_sync()) {
         vfs_drain_end(token);
@@ -110,66 +116,120 @@ static void spin_ms(unsigned ms)
         __asm__ volatile ("pause");
 }
 
-/* Write RESET_VALUE to RESET_REG. acpi_reset_reg() has already refused any
- * space_id other than 0 (system memory) or 1 (system I/O), so those are the
- * only two cases here -- there is no third branch to silently fall through. */
-static void write_reset_reg(const struct acpi_gas *reg, uint8_t value)
+/* Correction to the original guessed _S5/physical RESET_REG description:
+ * uACPI now evaluates the platform's namespace and drives its Generic Address
+ * registers. A missing interpreter/platform service is an error, never a
+ * reason to try arbitrary sleep types or dereference a physical address. */
+static struct mutex aml_lock = MUTEX_INIT;
+static int aml_initialization_attempted;
+static int aml_initialization_error;
+
+static int initialize_aml_locked(void)
 {
-    if (reg->space_id == 1)
-        outb((uint16_t)reg->address, value);
-    else
-        *(volatile uint8_t *)(uintptr_t)reg->address = value;
+    if (aml_initialization_attempted)
+        return aml_initialization_error;
+    aml_initialization_attempted = 1;
+    aml_initialization_error = power_acpi_native_start();
+    if (!aml_initialization_error)
+        aml_initialization_error = power_acpi_start();
+    if (aml_initialization_error)
+        kprintf("[power] ACPI interpreter unavailable: status=%d\n",
+                aml_initialization_error);
+    return aml_initialization_error;
+}
+
+int kernel_power_status(struct power_acpi_status *snapshot)
+{
+    if (!snapshot)
+        return -22;
+    mutex_lock(&aml_lock);
+    int status = initialize_aml_locked();
+    /* Even initialization failure produces an explicit unavailable snapshot. */
+    int query_status = power_acpi_query(snapshot);
+    if (status)
+        snapshot->error = status;
+    mutex_unlock(&aml_lock);
+    return status || query_status ? -5 : 0;
+}
+
+int kernel_power_init(void)
+{
+    struct power_acpi_status snapshot;
+    int status = kernel_power_status(&snapshot);
+    kprintf("[power] AML ready=%d batteries=%d thermal_zones=%d AC=%d error=%d\n",
+            snapshot.ready, snapshot.battery_count, snapshot.thermal_count,
+            snapshot.ac_online, snapshot.error);
+    kprintf("[power] EC bound=%u error=%d\n", snapshot.ec_count, snapshot.ec_error);
+    for (int index = 0; index < snapshot.battery_count; index++) {
+        const struct power_battery *battery = &snapshot.batteries[index];
+        kprintf("[power] battery %s present=%d state=%u remaining=%u unit=%u error=%d\n",
+                battery->path, battery->present, battery->state, battery->remaining,
+                battery->unit, battery->status_error);
+    }
+    for (int index = 0; index < snapshot.thermal_count; index++) {
+        const struct power_thermal *thermal = &snapshot.thermals[index];
+        kprintf("[power] thermal %s millicelsius=%d error=%d\n",
+                thermal->path, thermal->temperature_millic, thermal->status_error);
+    }
+    return status;
+}
+
+static void power_boot_worker(void)
+{
+    (void)kernel_power_init();
+}
+
+void kernel_power_start(void)
+{
+    /* AML initialization can sleep and dispatch GPE work. Use a separate
+     * thread after scheduler startup: running on kworker would wait for that
+     * same worker's startup probe, and running under wm_lock stalls input. */
+    thread_create(power_boot_worker, "acpi-init");
 }
 
 int kernel_poweroff(void)
 {
     struct vfs_drain token = {0};
     int rc = power_prepare(&token);
-    if (rc) return rc;
+    if (rc)
+        return rc;
 
     kprintf("[power] going down\n");
 
-    uint32_t pm1a = 0, pm1b = 0;
-    if (acpi_pm1_cnt(&pm1a, &pm1b) != 0) {
-        return power_cancel(&token, "no usable FADT PM1_CNT block");
+    mutex_lock(&aml_lock);
+    int status = initialize_aml_locked();
+    if (!status)
+        status = power_acpi_prepare_off();
+    if (status) {
+        mutex_unlock(&aml_lock);
+        return power_cancel(&token, "ACPI S5 preparation failed");
     }
 
-    /* PM1 Control Register: bits 10-12 are SLP_TYP, bit 13 is SLP_EN
-     * (write-only, self-clearing on the transition -- there is nothing to
-     * read back to confirm it "took" except the machine going away). */
-    static const unsigned slp_typ_guess[2] = { 0, 5 };
-    for (unsigned i = 0; i < 2; i++) {
-        uint16_t val = (uint16_t)((slp_typ_guess[i] << 10) | (1u << 13));
-        kprintf("[power] S5 attempt: SLP_TYP=%u on PM1a port 0x%x%s\n",
-                slp_typ_guess[i], (unsigned)pm1a, pm1b ? " (+PM1b)" : "");
-        outw((uint16_t)pm1a, val);
-        if (pm1b) outw((uint16_t)pm1b, val);
-        spin_ms(10);
-        /* Reaching this line means the machine is still here. */
-    }
-
-    return power_cancel(&token, "S5 write did not take");
+    kprintf("[power] entering firmware-evaluated S5\n");
+    status = power_acpi_enter_off();
+    /* A normal return means the machine is still executing. Restore ACPI's
+     * working-state event setup before reopening filesystem admission. */
+    int restore_status = power_acpi_restore_working();
+    kprintf("[power] S5 returned status=%d restore=%d\n", status, restore_status);
+    mutex_unlock(&aml_lock);
+    return power_cancel(&token, "S5 did not power off the machine");
 }
 
 int kernel_reboot(void)
 {
     struct vfs_drain token = {0};
     int rc = power_prepare(&token);
-    if (rc) return rc;
+    if (rc)
+        return rc;
     kprintf("[power] rebooting\n");
 
-    struct acpi_gas reg;
-    uint8_t value;
-    if (acpi_reset_reg(&reg, &value) == 0) {
-        kprintf("[power] reboot: FADT RESET_REG (space %u addr 0x%llx val 0x%x)\n",
-                (unsigned)reg.space_id, (unsigned long long)reg.address,
-                (unsigned)value);
-        write_reset_reg(&reg, value);
-        spin_ms(50);
-        kprintf("[power] reboot: RESET_REG did not take\n");
-    } else {
-        kprintf("[power] reboot: no usable FADT RESET_REG\n");
-    }
+    mutex_lock(&aml_lock);
+    int reset_status = initialize_aml_locked();
+    if (!reset_status)
+        reset_status = power_acpi_reset();
+    mutex_unlock(&aml_lock);
+    kprintf("[power] ACPI reset returned status=%d; trying legacy reset\n",
+            reset_status);
 
     /* Tier 2: the legacy 8042 keyboard-controller pulse -- write the
      * "pulse output port, drive reset low" command byte. Every PC-compatible
