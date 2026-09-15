@@ -25,7 +25,7 @@ static void net_cfg_fallback(void)
     kprintf("[net] dhcp failed; static ip 10.0.2.15/24 gw 10.0.2.2 dns 10.0.2.3\n");
 }
 
-static int up;
+static _Atomic int up;
 
 int net_up(void) { return up; }
 
@@ -110,9 +110,9 @@ LOGIT_WEAK_STUB(eth_dump);
  * run, and this one drains inline instead of queueing a second promise behind
  * the first.
  * ------------------------------------------------------------------------- */
-static volatile uint32_t rx_owed;      /* a raise is outstanding */
-static uint32_t rx_n_softirq, rx_n_inline, rx_n_poll, rx_n_irq, rx_frames;
-static uint32_t idle_halts, idle_skips;   /* net_idle: how often it slept vs looked again */
+static _Atomic uint32_t rx_owed;      /* a raise is outstanding */
+static _Atomic uint32_t rx_n_softirq, rx_n_inline, rx_n_poll, rx_n_irq, rx_frames;
+static _Atomic uint32_t idle_halts, idle_skips;   /* net_idle: how often it slept vs looked again */
 /* 64, not 512: a fetch has to be reported while it is still small enough to
  * have IDLE GAPS in it, because "did an interrupt wake us" is only a question
  * when the machine ever got to sleep. A boot with no traffic receives well
@@ -120,11 +120,36 @@ static uint32_t idle_halts, idle_skips;   /* net_idle: how often it slept vs loo
  * every other line's serial expectations. */
 static uint32_t rx_next_report = 64;
 
+/* Defer local frames until the sender has published its sequence/state.
+ * Recursive delivery could ACK data before tcp_output updated snd_nxt, and
+ * the old depth limit discarded the third leg of a local TCP handshake. */
+static struct { uint16_t len; uint8_t frame[1518]; } local_frames[32];
+static unsigned local_head,local_count;
+int net_loopback_enqueue(const uint8_t *frame,uint16_t len)
+{
+    NET_GUARD;
+    if(len>sizeof local_frames[0].frame || local_count==32)return -1;
+    unsigned tail=(local_head+local_count)%32;
+    memcpy(local_frames[tail].frame,frame,len);local_frames[tail].len=len;local_count++;
+    softirq_raise(SOFTIRQ_NET);return 0;
+}
+static void net_loopback_drain(void)
+{
+    NET_GUARD;
+    for(int budget=0;local_count&&budget<128;budget++){
+        uint8_t frame[1518];uint16_t n=local_frames[local_head].len;
+        memcpy(frame,local_frames[local_head].frame,n);local_head=(local_head+1)%32;local_count--;
+        eth_loopback_input(frame,n);
+    }
+    if(local_count)softirq_raise(SOFTIRQ_NET);
+}
+
 /* Counts drains that actually DELIVERED something. net_poll runs ~100x/s and
  * mostly finds an empty ring; counting those would drown the comparison this
  * exists to make ("which context is the receive path?") in idle polls. */
-static void net_rx_drain(uint32_t *counter)
+static void net_rx_drain(_Atomic uint32_t *counter)
 {
+    net_loopback_drain();
     rx_owed = 0;                       /* whoever drains discharges the debt */
     int n = netdev_rx_poll(eth_input);
     if (n > 0) { (*counter)++; rx_frames += (uint32_t)n; }
@@ -169,6 +194,7 @@ void net_rx_schedule(void)
  * still being the thing tests/boot/run-net-rx-test.sh reads. */
 static void rx_report(void)
 {
+    NET_GUARD;
     if (rx_frames < rx_next_report) return;
     /* Re-report every 512 frames, so a long fetch ends with a line that
      * describes the WHOLE transfer rather than only its first moments -- the
@@ -225,6 +251,7 @@ static unsigned long nl_next_report = 1;
 
 static void netlock_report(void)
 {
+    NET_GUARD;
     unsigned long acq = 0, rec = 0, depth = 0, viol = 0;
     net_lock_stats(&acq, &rec, &depth, &viol);
     if (acq < nl_next_report) return;
@@ -333,9 +360,9 @@ LOGIT_WEAK_STUB(tcp_poll);
 
 static struct ktimer   tcp_tick_timer;
 static volatile uint32_t tcp_tick_owed;     /* a pass is due and has not run */
-static uint32_t tcp_tick_fires;             /* ktimer callbacks */
-static uint32_t tcp_tick_softirq;           /* passes run on SOFTIRQ_NET */
-static uint32_t tcp_tick_inline;            /* passes discharged by net_poll */
+static _Atomic uint32_t tcp_tick_fires;             /* ktimer callbacks */
+static _Atomic uint32_t tcp_tick_softirq;           /* passes run on SOFTIRQ_NET */
+static _Atomic uint32_t tcp_tick_inline;            /* passes discharged by net_poll */
 
 /* THE OLD WIRING, on a switch, because "the timers are off the WM loop" is a
  * claim that has to be watched failing. Set it and net_poll() drives tcp_poll()
@@ -344,14 +371,14 @@ static uint32_t tcp_tick_inline;            /* passes discharged by net_poll */
  * negative control the design was written against); the runtime setter below is
  * how a device harness reaches it without a second kernel. */
 #ifdef TCP_TIMERS_ON_WM
-static int tcp_on_wm = 1;
+static _Atomic int tcp_on_wm = 1;
 #else
-static int tcp_on_wm = 0;
+static _Atomic int tcp_on_wm = 0;
 #endif
 
 /* Run an owed pass, if one is owed. Callable from the softirq tail or from
  * net_poll(); both hold the BKL, and tcp_poll() takes net_lock() itself. */
-static void tcp_tick_run(uint32_t *counter)
+static void tcp_tick_run(_Atomic uint32_t *counter)
 {
     /* An EXCHANGE, not a test-then-clear, and for the same reason
      * softirq_run_pending() uses one on g_pending: there are two discharging
@@ -501,6 +528,7 @@ static void park_report(const char *how)
 
 void net_debug_park(long ms)
 {
+    NET_GUARD;
     if (ms <= 0) {
         if (park_until_ms) { park_until_ms = 0; park_report("released by hand"); }
         else kprintf("[net] park: not parked\n");
@@ -541,6 +569,7 @@ void net_debug_tcp_on_wm(int on)
 /* 1 while parked. */
 static int net_parked(void)
 {
+    NET_GUARD;
     if (!park_until_ms) return 0;
     if (time_mono_ms() < park_until_ms) { park_calls++; return 1; }
     park_until_ms = 0;
@@ -616,7 +645,7 @@ void net_poll(void)
  */
 void net_idle(void)
 {
-    static uint32_t seen;
+    static _Atomic uint32_t seen;
     if (rx_frames != seen) {        /* the network answered; go look at it */
         seen = rx_frames;
         __asm__ volatile ("sti");

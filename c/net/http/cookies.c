@@ -7,47 +7,11 @@
  * is covered by its near-miss in tests/unit/cookie_test.c, because the easy
  * cases (exact match, obvious mismatch) pass under almost any implementation.
  *
- * THE MISSING PUBLIC SUFFIX LIST.
- * RFC 6265 5.3 step 5 says: reject a Domain= attribute that names a public
- * suffix.  Without that check, evil.co.uk can set `Domain=co.uk` and its
- * cookie is then domain-matched by bbc.co.uk, gov.uk's neighbours, everyone --
- * the supercookie.  Deciding "is this a public suffix" genuinely requires
- * Mozilla's PSL: it is a ~10k-entry data file with no algorithmic shortcut
- * (com.au is a suffix, com.de is not).  We do not ship it.
- *
- * So the conservative rule, chosen because over-rejecting costs a session
- * cookie while over-accepting costs the session itself:
- *
- *   1. A Domain= attribute with no dot at all is rejected.  That alone kills
- *      `Domain=com`, `Domain=uk`, `Domain=localhost`, and every single-label
- *      TLD supercookie.
- *   2. A Domain= attribute naming an entry of a small built-in table of common
- *      two-label public suffixes (co.uk, com.au, ...) is rejected.
- *   3. A two-label Domain= whose TLD is a two-letter ccTLD and whose left
- *      label is a known registry label (com, net, org, co, ac, gov, ...) is
- *      rejected, whether or not the pair is in the table.  This is what closes
- *      `Domain=com.xx` for the ccTLDs nobody listed.
- *   4. Everything else with >= 2 labels is accepted if it domain-matches the
- *      request host, as the RFC requires.
- *
- * Rule 3 knowingly OVER-rejects: `com.de` and `co.com` style names really are
- * registrable in a few registries, and a site there loses cross-subdomain
- * cookies (its host-only cookies still work).  That is the intended direction
- * of the error -- over-rejecting costs a session cookie, over-accepting costs
- * the session.
- *
- * The residual risk is now a public suffix with THREE or more labels, or a
- * two-label one under a long TLD, that nothing above catches.  Closing that
- * means shipping the PSL, which is a data-vendoring decision (a ~10k-entry
- * file in a 2.8 MB .aex), not a code one, and it is stated here rather than
- * hidden.  Note the common case is unaffected: a cookie with NO Domain
- * attribute is host-only and never widens, and that is the majority of real
- * cookies.
- *
- * SameSite is enforced on the way OUT, in cookie_header_ex: a request whose
- * site differs from the document's sends only SameSite=None cookies.  That is
- * the rule that stops a cross-site fetch from riding the user's session, and
- * it is why js_webapi.c must pass CK_REQ_CROSS_SITE and not the default.
+ * Correction (2026-09-10): the old "conservative" mini-PSL could both
+ * over-reject real domains and under-reject unlisted suffixes. A pinned full
+ * ICANN + PRIVATE list now supplies both Domain and site classification.
+ * SameSite is enforced on creation as well as retrieval, using explicit
+ * request context; Secure integrity is checked before replacement/deletion.
  */
 
 #include <stdint.h>
@@ -57,13 +21,12 @@
 
 #include "cookies.h"
 
-#define CK_NAME_MAX    256
-#define CK_VALUE_MAX  4096
-#define CK_DOMAIN_MAX  256
-#define CK_PATH_MAX   1024
-/* An expiry far enough out that it is unambiguously "never", used when
- * Max-Age is huge.  2^31 seconds past 2038 is fine on int64. */
-#define CK_FAR_FUTURE  ((int64_t)253402300799LL)     /* 9999-12-31T23:59:59Z */
+/* Saturating arithmetic also matters for a corrupted persisted timestamp;
+ * no expiry path may wrap from the future into a deletion. */
+static int64_t expiry_limit(int64_t now)
+{
+    return now > INT64_MAX - CK_MAX_AGE_SECONDS ? INT64_MAX : now + CK_MAX_AGE_SECONDS;
+}
 
 static int lc(int c) { return (c >= 'A' && c <= 'Z') ? c + 32 : c; }
 static int is_digit(int c) { return c >= '0' && c <= '9'; }
@@ -105,7 +68,21 @@ int cookie_canon_host(const char *host, char *out, int outmax)
     int n = (int)strlen(host);
     if (n && host[n - 1] == '.') n--;             /* one trailing root dot */
     if (n <= 0 || n >= outmax) return -1;
-    for (int i = 0; i < n; i++) out[i] = (char)lc((unsigned char)host[i]);
+    /* URL canonicalization owns IDNA. Refusing raw Unicode here avoids
+     * comparing U-label input against the A-label PSL as if it were unknown. */
+    int ip = strchr(host, ':') != NULL;
+    for (int i = 0; i < n; i++) {
+        int c = lc((unsigned char)host[i]);
+        if (ip) {
+            if (!is_digit(c) && !(c >= 'a' && c <= 'f') &&
+                c != ':' && c != '.' && c != '[' && c != ']') return -1;
+        } else {
+            if (!is_digit(c) && !(c >= 'a' && c <= 'z') &&
+                c != '-' && c != '_' && c != '.') return -1;
+            if (c == '.' && (!i || i == n - 1 || host[i - 1] == '.')) return -1;
+        }
+        out[i] = (char)c;
+    }
     out[n] = 0;
     return 0;
 }
@@ -147,17 +124,20 @@ int cookie_domain_match(const char *host, const char *domain)
     return 1;
 }
 
-int cookie_path_match(const char *request_path, const char *cookie_path)
+static int path_match_n(const char *request_path, size_t rl, const char *cookie_path)
 {
     if (!request_path || !cookie_path || !*cookie_path) return 0;
     if (*request_path != '/') return 0;
-    int rl = (int)strlen(request_path), cl = (int)strlen(cookie_path);
+    size_t cl = strlen(cookie_path);
     if (cl > rl) return 0;
     if (memcmp(request_path, cookie_path, (size_t)cl) != 0) return 0;
     if (cl == rl) return 1;
     if (cookie_path[cl - 1] == '/') return 1;      /* "/a/" prefixes "/a/b" */
     return request_path[cl] == '/';                /* "/a" prefixes "/a/b", not "/ab" */
 }
+
+int cookie_path_match(const char *request_path, const char *cookie_path)
+{ return path_match_n(request_path, request_path ? strlen(request_path) : 0, cookie_path); }
 
 int cookie_default_path(const char *request_path, char *out, int outmax)
 {
@@ -174,101 +154,70 @@ int cookie_default_path(const char *request_path, char *out, int outmax)
     return 0;
 }
 
-/* ---- the mini public-suffix table ------------------------------------- */
+/* ---- one PSL authority for Domain and site-for-cookies ----------------- */
+#include "cookie_psl.inc"
 
-/* Deliberately small and boring: the two-label suffixes a real user is most
- * likely to browse.  See the file header for why this is not a PSL and what
- * that costs. */
-static const char *const public_suffix2[] = {
-    "co.uk", "org.uk", "ac.uk", "gov.uk", "me.uk", "net.uk", "sch.uk",
-    "com.au", "net.au", "org.au", "edu.au", "gov.au", "id.au",
-    "com.cn", "net.cn", "org.cn", "gov.cn", "edu.cn", "ac.cn",
-    "com.br", "com.mx", "com.ar", "com.co", "com.pe",
-    "co.jp", "or.jp", "ne.jp", "ac.jp", "go.jp",
-    "co.kr", "or.kr", "co.in", "net.in", "org.in", "gov.in", "ac.in",
-    "co.za", "org.za", "com.tr", "com.tw", "com.hk", "org.hk",
-    "co.nz", "org.nz", "net.nz", "com.sg", "com.my", "com.ph",
-    "com.vn", "com.ua", "com.pl", "com.ru", "co.il", "com.eg",
-    "com.sa", "com.ng", "com.pk", "com.bd", "co.th", "or.th",
-    NULL
-};
-
-/* Rule 3: the generic ccTLD rule, which closes the gap the header names.
- *
- * The residual hole in rules 1-2 was `Domain=com.xx` for a ccTLD not in the
- * table -- a supercookie for every registrant under it.  There is no way to
- * enumerate those without the PSL, but there IS a pattern: a two-label domain
- * whose TLD is a two-letter ccTLD and whose left label is one of the registry
- * labels below is, in almost every ccTLD that uses them, a public suffix.
- *
- * This deliberately OVER-rejects.  `com.de` is a real registrable domain (the
- * PSL says so) and this rule refuses to let it be a Domain= value; a site
- * there loses a cross-subdomain cookie and keeps its host-only ones.  That is
- * the trade this file already chose in its header: over-rejecting costs a
- * session cookie, over-accepting costs the session. */
-static const char *const registry_labels[] = {
-    "com", "net", "org", "edu", "gov", "mil", "int", "co", "ac", "or", "ne",
-    "go", "gr", "id", "in", "info", "biz", "name", "sch", "nom", "gob", "gouv",
-    "asso", "web", "pp", "priv", "plc", "ltd", "firm", "store", "art", "res",
-    "lg", "police", "nhs", "mod", "gen", "tm", "per", "k12", "abo", "adm",
-    NULL
-};
-
-static int is_cctld_registry_pair(const char *domain)
+/* Offset table avoids one relocation/pointer per rule in both kernel and
+ * browser images. Binary search includes the rule kind; wildcard and exception
+ * rules are independent entries, not suffix guesses based on label spelling. */
+static int psl_has(char kind, const char *domain)
 {
-    const char *dot = strchr(domain, '.');
-    if (!dot || strchr(dot + 1, '.')) return 0;          /* not exactly 2 labels */
-    const char *tld = dot + 1;
-    int tl = (int)strlen(tld);
-    if (tl != 2) return 0;                               /* only two-letter ccTLDs */
-    for (int i = 0; i < 2; i++) {
-        int c = lc((unsigned char)tld[i]);
-        if (c < 'a' || c > 'z') return 0;
-    }
-    int ll = (int)(dot - domain);
-    for (int i = 0; registry_labels[i]; i++) {
-        int n = (int)strlen(registry_labels[i]);
-        if (n == ll && strncmp_ci(domain, registry_labels[i], n) == 0) return 1;
+    int lo = 0, hi = COOKIE_PSL_COUNT;
+    while (lo < hi) {
+        int mid = lo + (hi - lo) / 2;
+        const char *rule = cookie_psl_data + cookie_psl_offsets[mid];
+        int cmp = (unsigned char)kind - (unsigned char)rule[0];
+        if (!cmp) cmp = strcmp(domain, rule + 1);
+        if (!cmp) return 1;
+        if (cmp < 0) hi = mid; else lo = mid + 1;
     }
     return 0;
 }
 
-int cookie_domain_is_public_suffix(const char *domain)
+/* The default '*' rule covers unknown TLDs too. An exception removes its
+ * leftmost label from the prevailing suffix, even when a wildcard matched. */
+static const char *public_suffix(const char *host)
 {
-    if (!domain || !*domain) return 1;
-    /* Rule 1: no dot -> a bare TLD (or "localhost"). Never a valid Domain=. */
-    if (!strchr(domain, '.')) return 1;
-    /* Rule 2: the built-in two-label table. */
-    for (int i = 0; public_suffix2[i]; i++)
-        if (ci_eq(domain, public_suffix2[i])) return 1;
-    /* Rule 3: com.<cc> and friends, for any ccTLD. */
-    return is_cctld_registry_pair(domain);
+    const char *label[128];
+    int count = 0;
+    const char *p = host;
+    do {
+        if (count == (int)(sizeof label / sizeof label[0])) return host;
+        label[count++] = p;
+        p = strchr(p, '.');
+        if (p) p++;
+    } while (p && *p);
+    int best = count - 1;
+    for (int i = 0; i < count; i++) {
+        if (psl_has('!', label[i])) return i + 1 < count ? label[i + 1] : label[i];
+        if (psl_has('=', label[i]) && i < best) best = i;
+#ifndef COOKIE_PSL_NO_WILDCARD
+        if (i > 0 && psl_has('*', label[i]) && i - 1 < best) best = i - 1;
+#endif
+    }
+    return label[best];
 }
 
-/* The registrable domain: the shortest suffix of `host` that is NOT a public
- * suffix by the rules above.  Used only to answer "same site?", so an IP
- * literal is its own site and a name we cannot reduce is returned whole. */
+int cookie_domain_is_public_suffix(const char *domain)
+{
+    char host[CK_DOMAIN_MAX];
+    if (cookie_canon_host(domain, host, sizeof host) != 0) return 1;
+    if (is_ip_literal(host)) return 0;
+    return public_suffix(host) == host;
+}
+
 static int registrable_domain(const char *host, char *out, int outmax)
 {
     char h[CK_DOMAIN_MAX];
-    if (cookie_canon_host(host, h, (int)sizeof h) != 0) return -1;
-    if (is_ip_literal(h)) {
-        if ((int)strlen(h) >= outmax) return -1;
-        memcpy(out, h, strlen(h) + 1);
-        return 0;
+    if (cookie_canon_host(host, h, sizeof h) != 0) return -1;
+    const char *best = h;
+    if (!is_ip_literal(h)) {
+        const char *suffix = public_suffix(h);
+        if (suffix > h) {
+            best = suffix - 1;
+            while (best > h && best[-1] != '.') best--;
+        }
     }
-    /* Walk the suffixes longest-first: s0 = host, s1 = host past its first
-     * dot, ...  The registrable domain is the suffix immediately BEFORE the
-     * first one that is a public suffix ("a.example.co.uk" -> s2 = "co.uk" is
-     * public, so s1 = "example.co.uk" is registrable). */
-    const char *prev = h, *cur = h;
-    while (cur && *cur) {
-        if (cookie_domain_is_public_suffix(cur)) break;
-        prev = cur;
-        const char *dot = strchr(cur, '.');
-        cur = dot ? dot + 1 : NULL;
-    }
-    const char *best = (cur == h) ? h : prev;    /* the host itself is a suffix */
     if ((int)strlen(best) >= outmax) return -1;
     memcpy(out, best, strlen(best) + 1);
     return 0;
@@ -281,6 +230,27 @@ int cookie_same_site(const char *host_a, const char *host_b)
     if (registrable_domain(host_a, a, (int)sizeof a) != 0) return 0;
     if (registrable_domain(host_b, b, (int)sizeof b) != 0) return 0;
     return ci_eq(a, b);
+}
+
+/* Missing context is opaque, not equivalent to opening a URL from browser UI.
+ * Unsafe top-level requests differ on retrieval but retain the top-level
+ * creation exception. That fourth state prevents POST from inheriting Lax. */
+int cookie_request_kind(const struct cookie_ctx *ctx,
+                        const struct cookie_request *request)
+{
+    if (!ctx || !ctx->host || !request) return CK_REQ_CROSS_SITE;
+    if (request->top_level_navigation && request->browser_initiated &&
+        !request->site_host) return CK_REQ_SAME_SITE;
+#ifndef COOKIE_SCHEMELESS_CONTEXT
+    int same_scheme = !!ctx->secure == !!request->site_secure;
+#else
+    int same_scheme = 1;
+#endif
+    if (same_scheme && cookie_same_site(ctx->host, request->site_host))
+        return CK_REQ_SAME_SITE;
+    if (request->top_level_navigation)
+        return request->safe_method ? CK_REQ_CROSS_SITE_NAV : CK_REQ_CROSS_SITE_NAV_UNSAFE;
+    return CK_REQ_CROSS_SITE;
 }
 
 /* ---- RFC 6265 5.1.1 cookie-date --------------------------------------- */
@@ -384,7 +354,7 @@ void cookie_jar_init(struct cookie_jar *j)
 {
     if (!j) return;
     j->v = NULL; j->n = 0; j->cap = 0;
-    j->max_total = 300; j->max_per_domain = 50;
+    j->max_total = CK_JAR_MAX_TOTAL; j->max_per_domain = CK_JAR_MAX_PER_DOMAIN;
 }
 
 static void cookie_wipe(struct cookie *c)
@@ -451,22 +421,27 @@ int cookie_jar_gc(struct cookie_jar *j, int64_t now)
  * first. max_per_domain is 50, which real sites reach on their own, so this
  * was also reachable without an attacker.
  *
- * Two passes rather than a sort key, because "prefer" must not become
- * "never": a domain holding nothing but HttpOnly cookies still has to be able
- * to accept a new one, and the second pass is what keeps the cap honest.
- * RFC 6265bis 5.6 leaves eviction order to the implementation. */
+ * The former two-pass comment claimed 6265bis leaves all eviction order to
+ * the implementation. Correction (2026-09-10): secure-only protection is an
+ * outer priority; HttpOnly remains our tie-breaking preference within each
+ * security class. All four passes permit progress when only protected cookies
+ * remain. Admission inserts the new cookie before enforcing limits, so a new
+ * ordinary cookie can evict itself instead of displacing a protected one. */
 static int evict_lru(struct cookie_jar *j, const char *domain)
 {
 #ifdef COOKIE_NO_EVICT_PREFERENCE             /* negctl: pure LRU, the old rule */
     const int npass = 1;
 #else
-    const int npass = 2;
+    const int npass = 4;
 #endif
     for (int pass = 0; pass < npass; pass++) {
         int best = -1;
         for (int i = 0; i < j->n; i++) {
             if (domain && !ci_eq(j->v[i].domain, domain)) continue;
-            if (npass == 2 && pass == 0 && j->v[i].http_only) continue;
+            if (npass == 4) {
+                if (pass < 2 && j->v[i].secure) continue;
+                if ((pass == 0 || pass == 2) && j->v[i].http_only) continue;
+            }
             if (best < 0 || j->v[i].accessed < j->v[best].accessed) best = i;
         }
         if (best >= 0) { jar_erase(j, best); return 1; }
@@ -475,11 +450,11 @@ static int evict_lru(struct cookie_jar *j, const char *domain)
 }
 
 static int jar_find(const struct cookie_jar *j, const char *name,
-                    const char *domain, const char *path)
+                    const char *domain, const char *path, int host_only)
 {
     for (int i = 0; i < j->n; i++)
         if (!strcmp(j->v[i].name, name) && ci_eq(j->v[i].domain, domain) &&
-            !strcmp(j->v[i].path, path)) return i;
+            !strcmp(j->v[i].path, path) && j->v[i].host_only == host_only) return i;
     return -1;
 }
 
@@ -515,7 +490,7 @@ struct attrs {
     int have_maxage;  int64_t maxage;
     const char *domain; int domain_len;
     const char *path;   int path_len;
-    int secure, http_only, samesite;
+    int secure, http_only, samesite, have_path, have_domain;
 };
 
 static void parse_attributes(const char *s, int len, struct attrs *a)
@@ -537,13 +512,16 @@ static void parse_attributes(const char *s, int len, struct attrs *a)
         int vb = (eq < e) ? eq + 1 : e, ve = e;
         while (vb < ve && is_ws((unsigned char)s[vb])) vb++;
 
+        /* 6265bis ignores oversized attribute values instead of parsing a
+         * truncated prefix. The last usable Path/SameSite still wins. */
+        if (ve - vb > 1024) continue;
         int nl = ne - nb;
         const char *nm = s + nb;
         #define ATTR_IS(lit) (nl == (int)sizeof(lit) - 1 && \
                               !strncmp_ci(nm, lit, nl))
         if (ATTR_IS("expires")) {
-            char buf[128];
-            int cl = ve - vb; if (cl > (int)sizeof buf - 1) cl = (int)sizeof buf - 1;
+            char buf[1025];
+            int cl = ve - vb; if (cl >= (int)sizeof buf) continue;
             memcpy(buf, s + vb, (size_t)cl); buf[cl] = 0;
             int64_t t = cookie_parse_date(buf);
             if (t) { a->have_expires = 1; a->expires = t; }
@@ -551,27 +529,32 @@ static void parse_attributes(const char *s, int len, struct attrs *a)
             /* RFC 6265 5.2.2: leading '-' allowed, then DIGIT only; anything
              * else means ignore the attribute entirely (do NOT clamp). */
             int p = vb, neg = 0;
-            if (p < ve && (s[p] == '-' || s[p] == '+')) { neg = (s[p] == '-'); p++; }
+            if (p < ve && s[p] == '-') { neg = 1; p++; }
             if (p < ve) {
                 int64_t v = 0, ok = 1;
                 for (int k = p; k < ve; k++) {
                     if (!is_digit((unsigned char)s[k])) { ok = 0; break; }
-                    if (v > (int64_t)200000000000LL) { v = 200000000000LL; continue; }
-                    v = v * 10 + (s[k] - '0');
+                    if (v < CK_MAX_AGE_SECONDS) {
+                        v = v * 10 + (s[k] - '0');
+                        if (v > CK_MAX_AGE_SECONDS) v = CK_MAX_AGE_SECONDS;
+                    }
                 }
                 if (ok) { a->have_maxage = 1; a->maxage = neg ? -v : v; }
             }
         } else if (ATTR_IS("domain")) {
+            a->have_domain = 1;
             int p = vb;
             if (p < ve && s[p] == '.') p++;         /* 5.2.3: strip one leading dot */
             if (p < ve) { a->domain = s + p; a->domain_len = ve - p; }
         } else if (ATTR_IS("path")) {
+            a->have_path = 1; a->path = NULL; a->path_len = 0;
             if (ve > vb && s[vb] == '/') { a->path = s + vb; a->path_len = ve - vb; }
         } else if (ATTR_IS("secure")) {
             a->secure = 1;
         } else if (ATTR_IS("httponly")) {
             a->http_only = 1;
         } else if (ATTR_IS("samesite")) {
+            a->samesite = CK_SS_UNSET;
             int vl = ve - vb;
             if (vl == 6 && !strncmp_ci(s + vb, "strict", 6)) a->samesite = CK_SS_STRICT;
             else if (vl == 3 && !strncmp_ci(s + vb, "lax", 3)) a->samesite = CK_SS_LAX;
@@ -583,6 +566,10 @@ static void parse_attributes(const char *s, int len, struct attrs *a)
 
 int cookie_set(struct cookie_jar *j, const struct cookie_ctx *ctx,
                const char *set_cookie_value, int64_t now)
+{ return cookie_set_ex(j, ctx, CK_REQ_SAME_SITE, set_cookie_value, now); }
+
+int cookie_set_ex(struct cookie_jar *j, const struct cookie_ctx *ctx,
+                  int request_kind, const char *set_cookie_value, int64_t now)
 {
     if (!j || !ctx || !ctx->host || !ctx->path || !set_cookie_value) return -1;
 
@@ -591,7 +578,11 @@ int cookie_set(struct cookie_jar *j, const struct cookie_ctx *ctx,
 
     const char *s = set_cookie_value;
     int len = (int)strlen(s);
-    if (len > CK_VALUE_MAX + CK_NAME_MAX + 2048) return -1;   /* absurd header */
+    if (len > CK_PAIR_MAX + 8192) return -1; /* bounded metadata work */
+    for (int i = 0; i < len; i++) {
+        unsigned char c = (unsigned char)s[i];
+        if ((c < 0x20 && c != '\t') || c == 0x7f) return -1;
+    }
 
     /* 5.2.1: split off the name/value pair at the first ';'. */
     int semi = 0;
@@ -609,7 +600,7 @@ int cookie_set(struct cookie_jar *j, const struct cookie_ctx *ctx,
 
     int nlen = ne - nb, vlen = ve - vb;
     if (nlen <= 0 || nlen > CK_NAME_MAX) return -1;
-    if (vlen < 0 || vlen > CK_VALUE_MAX) return -1;
+    if (vlen < 0 || vlen > CK_VALUE_MAX || nlen + vlen > CK_PAIR_MAX) return -1;
     for (int i = 0; i < nlen; i++) if (!nv_char_ok((unsigned char)s[nb + i], 1)) return -1;
     for (int i = 0; i < vlen; i++) if (!nv_char_ok((unsigned char)s[vb + i], 0)) return -1;
 
@@ -623,11 +614,11 @@ int cookie_set(struct cookie_jar *j, const struct cookie_ctx *ctx,
     int64_t expires = 0;
     if (a.have_maxage) {
         persistent = 1;
-        expires = a.maxage <= 0 ? (now - 1)
-                : (a.maxage > CK_FAR_FUTURE - now ? CK_FAR_FUTURE : now + a.maxage);
+        expires = a.maxage <= 0 ? now
+                : (now > INT64_MAX - a.maxage ? INT64_MAX : now + a.maxage);
     } else if (a.have_expires) {
         persistent = 1;
-        expires = a.expires;
+        expires = a.expires > expiry_limit(now) ? expiry_limit(now) : a.expires;
     }
 
     /* 5.3 steps 5-6: the Domain attribute. */
@@ -637,9 +628,11 @@ int cookie_set(struct cookie_jar *j, const struct cookie_ctx *ctx,
         if (a.domain_len >= (int)sizeof domain) return -1;
         for (int i = 0; i < a.domain_len; i++) domain[i] = (char)lc((unsigned char)a.domain[i]);
         domain[a.domain_len] = 0;
-        int dl = a.domain_len;
-        while (dl > 1 && domain[dl - 1] == '.') domain[--dl] = 0;
-        if (!dl) return -1;
+        /* A trailing dot in Domain is not the URL root-dot normalization:
+         * accepting it silently widens a malformed attribute to a real host. */
+        if (domain[a.domain_len - 1] == '.') return -1;
+        char canonical[CK_DOMAIN_MAX];
+        if (cookie_canon_host(domain, canonical, sizeof canonical) != 0) return -1;
         if (cookie_domain_is_public_suffix(domain)) {
             /* The RFC allows one exception: domain == host exactly, which is
              * how a site literally at a public suffix (rare) keeps working.
@@ -666,7 +659,9 @@ int cookie_set(struct cookie_jar *j, const struct cookie_ctx *ctx,
         return -1;
     }
 
-    /* --- 6265bis security rules, all of them "reject" rather than "adjust" --- */
+    /* The old "all security rules" claim only checked the incoming flag.
+     * Secure integrity also protects an EXISTING cookie when the new one has
+     * no Secure flag, including expired writes that would otherwise delete it. */
 
     /* A Secure cookie may only be SET over a secure channel; otherwise an
      * active network attacker on the http origin can overwrite the https
@@ -677,21 +672,41 @@ int cookie_set(struct cookie_jar *j, const struct cookie_ctx *ctx,
     /* Script may neither set nor overwrite an HttpOnly cookie. */
     if (a.http_only && !ctx->http_api) return -1;
 
+#ifndef COOKIE_NO_CREATION_CONTEXT
+    if (a.samesite != CK_SS_NONE && request_kind != CK_REQ_SAME_SITE &&
+        !(ctx->http_api && (request_kind == CK_REQ_CROSS_SITE_NAV ||
+                           request_kind == CK_REQ_CROSS_SITE_NAV_UNSAFE))) return -1;
+#endif
+
     /* Cookie name prefixes -- cheap, and the only integrity guarantee a
      * cookie name can carry. */
-    if (nlen > 9 && !strncmp_ci(s + nb, "__Secure-", 9)) {
+    if (nlen >= 9 && !strncmp_ci(s + nb, "__Secure-", 9)) {
         if (!a.secure || !ctx->secure) return -1;
     }
-    if (nlen > 7 && !strncmp_ci(s + nb, "__Host-", 7)) {
-        if (!a.secure || !ctx->secure || !host_only) return -1;
-        if (strcmp(path, "/") != 0) return -1;
+    if (nlen >= 7 && !strncmp_ci(s + nb, "__Host-", 7)) {
+        if (!a.secure || !ctx->secure || !host_only || a.have_domain) return -1;
+        if (!a.have_path || !a.path || a.path_len != 1 || strcmp(path, "/") != 0) return -1;
     }
+
+    cookie_jar_gc(j, now);
+#ifndef COOKIE_NO_SECURE_OVERLAY
+    if (!ctx->secure && !a.secure) {
+        for (int i = 0; i < j->n; i++) {
+            const struct cookie *old = &j->v[i];
+            if (!old->secure || (int)strlen(old->name) != nlen ||
+                memcmp(old->name, s + nb, (size_t)nlen)) continue;
+            if ((cookie_domain_match(domain, old->domain) ||
+                 cookie_domain_match(old->domain, domain)) &&
+                cookie_path_match(path, old->path)) return -1;
+        }
+    }
+#endif
 
     char *cname = dupn(s + nb, nlen);
     char *cvalue = dupn(s + vb, vlen);
     if (!cname || !cvalue) { free(cname); free(cvalue); return -1; }
 
-    int idx = jar_find(j, cname, domain, path);
+    int idx = jar_find(j, cname, domain, path, host_only);
     if (idx >= 0 && j->v[idx].http_only && !ctx->http_api) {
         free(cname); free(cvalue);
         return -1;                                /* script cannot clobber HttpOnly */
@@ -720,12 +735,6 @@ int cookie_set(struct cookie_jar *j, const struct cookie_ctx *ctx,
     }
 
     cookie_jar_gc(j, now);
-    int per = 0;
-    for (int i = 0; i < j->n; i++) if (ci_eq(j->v[i].domain, domain)) per++;
-    while (per >= j->max_per_domain && evict_lru(j, domain)) per--;
-    while (j->n >= j->max_total && evict_lru(j, NULL)) { }
-    if (j->n >= j->max_total) { free(cname); free(cvalue); return -1; }
-
     struct cookie c;
     memset(&c, 0, sizeof c);
     c.name = cname; c.value = cvalue;
@@ -737,13 +746,71 @@ int cookie_set(struct cookie_jar *j, const struct cookie_ctx *ctx,
     c.host_only = host_only; c.secure = a.secure;
     c.http_only = a.http_only; c.samesite = a.samesite;
     if (jar_push(j, &c) != 0) { cookie_wipe(&c); return -1; }
+    int per = 0;
+    for (int i = 0; i < j->n; i++) if (ci_eq(j->v[i].domain, domain)) per++;
+    while (per > j->max_per_domain && evict_lru(j, domain)) per--;
+    while (j->n > j->max_total && evict_lru(j, NULL)) { }
+    return 0;
+}
+
+/* Local durable data remains untrusted input. In particular, loading a jar
+ * written before a PSL update may not restore a now-public Domain cookie.
+ * Do not route this through Set-Cookie: that loses original creation ordering
+ * and turns serialization details into an accidental network trust context. */
+int cookie_restore_entry(struct cookie_jar *j, const struct cookie *entry,
+                          int64_t now)
+{
+    if (!j || !entry || !entry->name || !entry->value || !entry->domain ||
+        !entry->path || entry->persistent != 1 || entry->expires <= now ||
+        entry->expires > expiry_limit(now) || entry->created < 0 ||
+        entry->accessed < entry->created || entry->created > now ||
+        entry->accessed > now ||
+        (entry->host_only != 0 && entry->host_only != 1) ||
+        (entry->secure != 0 && entry->secure != 1) ||
+        (entry->http_only != 0 && entry->http_only != 1) ||
+        entry->samesite < CK_SS_UNSET || entry->samesite > CK_SS_STRICT)
+        return -1;
+    size_t nl = strlen(entry->name), vl = strlen(entry->value);
+    size_t pl = strlen(entry->path);
+    if (!nl || nl > CK_NAME_MAX || vl > CK_VALUE_MAX || nl + vl > CK_PAIR_MAX ||
+        !pl || pl >= CK_PATH_MAX || entry->path[0] != '/') return -1;
+    for (size_t i = 0; i < nl; i++)
+        if (!nv_char_ok((unsigned char)entry->name[i], 1)) return -1;
+    for (size_t i = 0; i < vl; i++)
+        if (!nv_char_ok((unsigned char)entry->value[i], 0)) return -1;
+    for (size_t i = 0; i < pl; i++) {
+        unsigned char c = (unsigned char)entry->path[i];
+        if (c < 0x20 || c == 0x7f || c == ';') return -1;
+    }
+    char host[CK_DOMAIN_MAX];
+    if (cookie_canon_host(entry->domain, host, sizeof host) != 0 ||
+        strcmp(host, entry->domain)) return -1;
+    if (!entry->host_only && cookie_domain_is_public_suffix(host)) return -1;
+    if (entry->samesite == CK_SS_NONE && !entry->secure) return -1;
+    if (nl >= 9 && !strncmp_ci(entry->name, "__Secure-", 9) && !entry->secure) return -1;
+    if (nl >= 7 && !strncmp_ci(entry->name, "__Host-", 7) &&
+        (!entry->secure || !entry->host_only || strcmp(entry->path, "/"))) return -1;
+    if (j->n >= j->max_total || jar_find(j, entry->name, host, entry->path,
+                                      entry->host_only) >= 0) return -1;
+    int per = 0;
+    for (int i = 0; i < j->n; i++) if (!strcmp(j->v[i].domain, host)) per++;
+    if (per >= j->max_per_domain) return -1;
+    struct cookie copy = *entry;
+    copy.name = dupn(entry->name, (int)nl);
+    copy.value = dupn(entry->value, (int)vl);
+    copy.domain = dupn(host, (int)strlen(host));
+    copy.path = dupn(entry->path, (int)pl);
+    if (!copy.name || !copy.value || !copy.domain || !copy.path || jar_push(j, &copy)) {
+        cookie_wipe(&copy);
+        return -1;
+    }
     return 0;
 }
 
 /* ---- Cookie: header ---------------------------------------------------- */
 
 static int cookie_applies(const struct cookie *c, const char *host,
-                          const char *path, const struct cookie_ctx *ctx,
+                          const char *path, size_t path_len, const struct cookie_ctx *ctx,
                           int cross_site, int64_t now)
 {
     if (cookie_expired(c, now)) return 0;
@@ -766,8 +833,9 @@ static int cookie_applies(const struct cookie *c, const char *host,
     }
 #endif
     if (c->host_only) { if (!ci_eq(c->domain, host)) return 0; }
-    else if (!cookie_domain_match(host, c->domain)) return 0;
-    if (!cookie_path_match(path, c->path)) return 0;
+    else if (cookie_domain_is_public_suffix(c->domain) ||
+             !cookie_domain_match(host, c->domain)) return 0;
+    if (!path_match_n(path, path_len, c->path)) return 0;
     /* A Secure cookie over plaintext is exactly the leak the flag exists to
      * prevent, so this is unconditional and not a preference. */
     if (c->secure && !ctx->secure) return 0;
@@ -781,21 +849,24 @@ int cookie_header(struct cookie_jar *j, const struct cookie_ctx *ctx,
 
 int cookie_header_ex(struct cookie_jar *j, const struct cookie_ctx *ctx,
                      int cross_site, int64_t now, char *out, int outmax)
+{ return cookie_header_with_diagnostics(j, ctx, cross_site, now, out, outmax, NULL); }
+
+int cookie_header_with_diagnostics(struct cookie_jar *j, const struct cookie_ctx *ctx,
+                     int cross_site, int64_t now, char *out, int outmax,
+                     struct cookie_header_diagnostics *diagnostics)
 {
+    if (out && outmax > 0) out[0] = 0;
+    if (diagnostics) memset(diagnostics, 0, sizeof *diagnostics);
     if (!j || !ctx || !ctx->host || !ctx->path || !out || outmax <= 0) return -1;
     char host[CK_DOMAIN_MAX];
     if (cookie_canon_host(ctx->host, host, (int)sizeof host) != 0) return -1;
 
-    char path[CK_PATH_MAX];
-    {
-        int n = 0;
-        const char *p = ctx->path;
-        if (!p || p[0] != '/') { path[0] = '/'; path[1] = 0; }
-        else {
-            while (p[n] && p[n] != '?' && p[n] != '#' && n < (int)sizeof path - 1) n++;
-            memcpy(path, p, (size_t)n); path[n] = 0;
-        }
-    }
+    /* Do not truncate a long request path at the cookie-attribute cap: a
+     * request and a Path attribute are distinct bounded inputs, and slicing
+     * the former can manufacture an exact match at byte 1024. */
+    const char *path = ctx->path[0] == '/' ? ctx->path : "/";
+    size_t path_len = 0;
+    while (path[path_len] && path[path_len] != '?' && path[path_len] != '#') path_len++;
 
     /* Gather indices, then order per RFC 6265 5.4: longer paths first, and
      * among equal path lengths the earlier-created cookie first.  Servers do
@@ -805,7 +876,29 @@ int cookie_header_ex(struct cookie_jar *j, const struct cookie_ctx *ctx,
     if (!idx) return -1;
     int m = 0;
     for (int i = 0; i < j->n; i++)
-        if (cookie_applies(&j->v[i], host, path, ctx, cross_site, now)) idx[m++] = i;
+        if (cookie_applies(&j->v[i], host, path, path_len, ctx, cross_site, now)) idx[m++] = i;
+
+    size_t required = 1;
+    for (int i = 0; i < m; i++) {
+        const struct cookie *c = &j->v[idx[i]];
+        size_t need = strlen(c->name) + strlen(c->value) + 1 + (i ? 2 : 0);
+        if (need > SIZE_MAX - required) { free(idx); return CK_E_ARG; }
+        required += need;
+    }
+    if (diagnostics) {
+        diagnostics->required_bytes = required;
+        diagnostics->eligible_count = m;
+    }
+#ifndef COOKIE_PARTIAL_HEADER
+    if (required > (size_t)outmax) {
+        free(idx);
+#ifdef COOKIE_NOFIT_IS_EMPTY
+        return 0;
+#else
+        return CK_E_NOFIT;
+#endif
+    }
+#endif
 
     for (int i = 1; i < m; i++) {                 /* insertion sort: m is tiny */
         int k = idx[i], p = i - 1;

@@ -214,7 +214,26 @@ static int      huff_ready;
 
 static void huff_init(void)
 {
-    if (huff_ready) return;
+    /* The first concurrent-init fix used IO_GUARD here. Correction: this
+     * translation unit also links into ring-3 browser. Both builds are
+     * freestanding, so __STDC_HOSTED__ cannot identify privilege: the disk
+     * build failed at tlb_service, and merely supplying that symbol would
+     * leave user-mode CLI/STI faults. Use a privilege-neutral once state.
+     * Initialization is bounded (two 257-symbol passes plus 31 lengths),
+     * makes no callbacks/allocations, and HPACK is not called from IRQs.
+     * 0 = unclaimed, 1 = being built, 2 = published. Acquire/release is
+     * required: a plain ready flag can publish half-built decoder tables. */
+    if (__atomic_load_n(&huff_ready, __ATOMIC_ACQUIRE) == 2) return;
+    int expected = 0;
+    if (!__atomic_compare_exchange_n(&huff_ready, &expected, 1, 0,
+                                     __ATOMIC_ACQUIRE, __ATOMIC_ACQUIRE)) {
+        while (__atomic_load_n(&huff_ready, __ATOMIC_ACQUIRE) != 2) {
+#if defined(__i386__) || defined(__x86_64__)
+            __asm__ volatile("pause");
+#endif
+        }
+        return;
+    }
     for (int l = 0; l <= HUFF_MAXBITS; l++) { huff_cnt[l] = 0; huff_first_code[l] = 0; huff_first_idx[l] = 0; }
     for (int i = 0; i < 257; i++) huff_cnt[g_huff[i].bits]++;
     /* Canonical: the first code of length l is (first(l-1) + cnt(l-1)) << 1. */
@@ -234,7 +253,7 @@ static void huff_init(void)
         uint32_t off = g_huff[i].code - huff_first_code[l];
         huff_order[huff_first_idx[l] + off] = (uint16_t)i;
     }
-    huff_ready = 1;
+    __atomic_store_n(&huff_ready, 2, __ATOMIC_RELEASE);
 }
 
 int hpack_huff_len(const char *s, int n)

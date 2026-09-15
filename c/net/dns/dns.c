@@ -1,3 +1,9 @@
+#include "../../drivers/core/io_domain.h"
+/* DNS query/cache ownership includes poll_buf and TCP fallback descriptors.
+ * Only these nonblocking operations take the owner. dns_resolve remains
+ * outside it because net_poll enters the socket broker, whose queries enter
+ * DNS in the other direction; holding this over net_poll would be AB-BA. */
+static struct io_domain dns_owner = IO_DOMAIN_INIT;
 #include <stdint.h>
 #include <stddef.h>
 #include <string.h>
@@ -9,11 +15,12 @@
 #include "pit.h"
 #include "rng.h"
 #include "ip6.h"
+#include "kprintf.h"   /* the [dns] finalize diagnostic in dq_advance() */
 
 /* A DNS client for LogitOS.
  *
  * WHAT THIS IS, PLAINLY: A STUB RESOLVER. It asks exactly ONE upstream server
- * (net_cfg.dns -- DHCP option 6, or the static SLIRP fallback 10.0.2.3) and
+ * (net_config_snapshot().dns -- DHCP option 6, or the static SLIRP fallback 10.0.2.3) and
  * trusts whatever it says. There is no local root-hints walk, no iterative
  * referral-following, no DNSSEC validation -- all of "how do I turn a name
  * into an address" past the first hop is outsourced to that one configured
@@ -521,11 +528,11 @@ static void dq_send(struct dns_query *q)
     int o = build_query_type(buf, q->name, DNS_T_A, &q->txid);
     if (o < 0) { q->done = 1; q->failed = 1; return; }
     q->last = timer_ticks();
-    udp_send_to(q->sock, net_cfg.dns, DNS_PORT, buf, (uint16_t)o);
+    udp_send_to(q->sock, net_config_snapshot().dns, DNS_PORT, buf, (uint16_t)o);
     if (!q->want6) return;
     o = build_query_type(buf, q->name, DNS_T_AAAA, &q->txid6);
     if (o > 0)
-        udp_send_to(q->sock, net_cfg.dns, DNS_PORT, buf, (uint16_t)o);
+        udp_send_to(q->sock, net_config_snapshot().dns, DNS_PORT, buf, (uint16_t)o);
 }
 
 /* Parse `msg` as the answer to `q`'s A transaction (for6=0) or AAAA
@@ -630,7 +637,7 @@ static void dns_tcp_start(struct dns_query *q, int for6)
     f->qbuf[1] = (uint8_t)o;
     f->qlen = o + 2;
 
-    f->id = tcp_connect_start(net_cfg.dns, DNS_PORT);
+    f->id = tcp_connect_start(net_config_snapshot().dns, DNS_PORT);
     if (f->id < 0) return;                             /* f->used stays 0 */
     f->stage = 0;
     f->used = 1;
@@ -723,7 +730,7 @@ static void dq_advance(struct dns_query *q)
             died = 1;
             break;
         }
-        if (src != net_cfg.dns || sport != DNS_PORT)
+        if (src != net_config_snapshot().dns || sport != DNS_PORT)
             continue;                       /* someone else's datagram */
         if (rlen < 12) continue;            /* not even a header */
 
@@ -748,6 +755,33 @@ static void dq_advance(struct dns_query *q)
     if (both || (q->t_first && graced)) {
         q->done = 1;
         q->failed = (q->naddr == 0);
+        /* LOGIT DIAG (2026-09-09, youtube-only outage): the anomaly-only
+         * line below is what made DNS forgery visible on the serial -- the
+         * youtube lookup ended with a destination list holding only a
+         * forged 2001::1 while example.com got real answers. */
+        {
+            /* The A side is the forgery shape: an A answer ARRIVED (got4)
+             * yet not one record survived collection (owner/shape filters)
+             * -- the poisoned-youtube run where only a forged 2001::1 was
+             * left. The v6 side is deliberately NOT symmetric: got6 with
+             * zero collected is ordinary NODATA ("this name has no IPv6"),
+             * and half the web answers that way -- printing it would make
+             * the line noise on every lookup and undo its whole point. */
+            int a4 = 0, a6 = 0;
+            for (int i = 0; i < q->naddr; i++)
+                ip6_is_v4mapped(&q->addrs[i]) ? a4++ : a6++;
+            int odd = q->failed || (q->got4 && a4 == 0);
+            if (odd) {
+                char first[2][48];
+                for (int i = 0; i < 2 && i < q->naddr; i++)
+                    ip6_format(&q->addrs[i], first[i], sizeof first[i]);
+                kprintf("[dns] %s: got4=%d got6=%d -> %d addr (%d v4, %d v6)"
+                        " [%s %s]%s\n",
+                        q->name, q->got4, q->got6, q->naddr, a4, a6,
+                        first[0], q->naddr > 1 ? first[1] : "-",
+                        q->failed ? " FAILED" : "");
+            }
+        }
         if (q->naddr) dns_cache_put_set(q->name, q->addrs, q->naddr, q->ttl ? q->ttl : DNS_TTL_FLOOR);
         return;
     }
@@ -774,6 +808,7 @@ static void dq_advance(struct dns_query *q)
  * an already-complete slot, so the caller's state machine has one shape. */
 int dns_query_start(const char *name)
 {
+    IO_DOMAIN_GUARD(&dns_owner);
     if (!name || !*name) return -1;
     int n = 0; while (name[n]) n++;
     if (n >= DNS_NAME_MAX) return -1;
@@ -836,7 +871,7 @@ int dns_query_start(const char *name)
     if (q->sock < 0) { q->used = 0; return -1; }
     /* Kick the resolver's ARP without waiting for it: arp_warm() blocks, and
      * nothing on this path may. A cold cache costs one DNS retransmit. */
-    { uint8_t mac[ETH_ALEN]; arp_resolve(net_cfg.dns, mac); }
+    { uint8_t mac[ETH_ALEN]; arp_resolve(net_config_snapshot().dns, mac); }
     q->t0 = timer_ticks();
     dq_send(q);
     return id;
@@ -850,6 +885,7 @@ int dns_query_start(const char *name)
  * that can speak both families use dns_query_addrs() instead. */
 uint32_t dns_query_result(int id)
 {
+    IO_DOMAIN_GUARD(&dns_owner);
     if (id < 0 || id >= DNS_NQ || !dq[id].used) return 0xFFFFFFFFu;
     struct dns_query *q = &dq[id];
     if (!q->done) return 0;
@@ -866,6 +902,7 @@ uint32_t dns_query_result(int id)
  * changes the answer without the DNS records changing at all. */
 int dns_query_addrs(int id, ip6_addr *out, int max)
 {
+    IO_DOMAIN_GUARD(&dns_owner);
     if (id < 0 || id >= DNS_NQ || !dq[id].used || max <= 0) return -1;
     struct dns_query *q = &dq[id];
     if (!q->done) return 0;
@@ -883,6 +920,7 @@ int dns_query_addrs(int id, ip6_addr *out, int max)
 
 void dns_query_free(int id)
 {
+    IO_DOMAIN_GUARD(&dns_owner);
     if (id < 0 || id >= DNS_NQ || !dq[id].used) return;
     dns_tcp_abandon_owner(&dq[id]);
     if (dq[id].sock >= 0) udp_close(dq[id].sock);
@@ -895,6 +933,7 @@ void dns_query_free(int id)
  * call, which is what makes the pool lookups concurrent. */
 void dns_poll(void)
 {
+    IO_DOMAIN_GUARD(&dns_owner);
     for (int i = 0; i < DNS_NQ; i++) dq_advance(&dq[i]);
     dq_advance(&legacy_dq);
     dns_tcp_pump();
@@ -923,6 +962,7 @@ static void legacy_release(void)
 /* Non-blocking: send the query, arm the receive socket, record the start time. */
 void dns_start(const char *name)
 {
+    IO_DOMAIN_GUARD(&dns_owner);
     if (legacy_dq.used) legacy_release();       /* a lookup was already in flight: abandon it */
     for (unsigned i = 0; i < sizeof legacy_dq; i++) ((uint8_t *)&legacy_dq)[i] = 0;
     legacy_dq.used = 1;
@@ -948,7 +988,7 @@ void dns_start(const char *name)
     for (int tries = 0; tries < 16 && legacy_dq.sock < 0; tries++)
         legacy_dq.sock = udp_bind(pick_lport());
     if (legacy_dq.sock < 0) { legacy_dq.used = 0; return; }   /* no free socket: dns_result fails */
-    { uint8_t mac[ETH_ALEN]; arp_resolve(net_cfg.dns, mac); }
+    { uint8_t mac[ETH_ALEN]; arp_resolve(net_config_snapshot().dns, mac); }
     legacy_dq.t0 = timer_ticks();
     dq_send(&legacy_dq);
 }
@@ -967,6 +1007,7 @@ void dns_start(const char *name)
  * tick (retransmit is time-gated, receive just drains whatever is queued). */
 uint32_t dns_result(void)
 {
+    IO_DOMAIN_GUARD(&dns_owner);
     dns_poll();
     if (!legacy_dq.used) return 0xFFFFFFFFu;
     if (!legacy_dq.done) return 0;
@@ -979,23 +1020,19 @@ uint32_t dns_resolve(const char *name)
 {
     uint32_t lit = parse_ip_literal(name);
     if (lit) return lit;
-    arp_warm(net_cfg.dns, 30);                /* resolve the resolver's MAC first, so the */
-    dns_start(name);                          /* query isn't dropped on a cold ARP cache */
+    /* Blocking callers each own a query slot. Sharing legacy_dq allowed a
+     * concurrent HTTP or SSH request to replace the name beneath this loop. */
+    int id = dns_query_start(name);
+    if (id < 0) return 0;
     uint64_t start = timer_ticks();
-    /* dq_advance()'s own DNS_GIVEUP is the real deadline (retransmission
-     * included -- dns_result() pumps dns_poll() every call, which retransmits
-     * every DNS_RETX ticks on its own now). This loop only needs to run long
-     * enough to observe that deadline fire, plus a little slack for
-     * scheduling jitter -- not a SECOND independent timeout to keep in sync
-     * with the first, which is what the old code had (two 300-tick constants
-     * that happened to agree because nothing had yet made them disagree). */
+    uint32_t result = 0;
     while (timer_ticks() - start < DNS_GIVEUP + TIMER_HZ) {
         net_poll();
-        uint32_t r = dns_result();
-        if (r == 0xFFFFFFFFu) return 0;
-        if (r) return r;                      /* dq_advance already cached it; dns_result already freed the slot */
-        net_idle();                                  /* sleep to the next tick; don't peg the host CPU */
+        uint32_t r = dns_query_result(id);
+        if (r == 0xFFFFFFFFu) break;
+        if (r) { result = r; break; }
+        net_idle();
     }
-    legacy_release();                          /* outer bound reached first: don't leak the socket */
-    return 0;
+    dns_query_free(id);
+    return result;
 }

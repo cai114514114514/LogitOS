@@ -52,10 +52,11 @@ static uint32_t ping_dst;
 static uint64_t ping_sent_tick;
 static int last_rtt = -1;
 
-int icmp_last_rtt(void) { return last_rtt; }
+int icmp_last_rtt(void) { NET_GUARD; return last_rtt; }
 
 int icmp_ping(uint32_t dst)
 {
+    NET_GUARD;
     struct { struct icmp_hdr h; uint8_t data[32]; } msg;
     msg.h.type = ICMP_ECHO_REQUEST;
     msg.h.code = 0;
@@ -123,6 +124,7 @@ static void icmp_error(const uint8_t *data, uint16_t len)
 
 void icmp_input(uint32_t src, const uint8_t *data, uint16_t len)
 {
+    NET_GUARD;
     if (len < sizeof(struct icmp_hdr))
         return;
     if (ip_checksum(data, len) != 0)

@@ -38,4 +38,7 @@ const char *http_body(int *len);
  * refused"; they send a reader to different places. */
 int  res_fetch(const char *src, uint8_t **buf, int *len);
 
+/* Hold across http_body/page_url pointer use; fetch uses the same owner. */
+void http_lock(void);
+void http_unlock(void);
 #endif /* LOGIT_HTTP_H */

@@ -68,6 +68,7 @@ struct hp_conn {
     int64_t idle_since;            /* ms timestamp, valid when !in_use */
     int     used;                  /* slot occupied */
     int     proto;                 /* HP_PROTO_* */
+    int     draining;              /* h2: existing streams only; permit replacement */
     int     streams;               /* h2: requests in flight right now */
     int     peak_streams;          /* h2: the most ever concurrent here */
 };
@@ -113,6 +114,11 @@ int  hpool_acquire_mux(struct hpool *p, const char *host, int port, int tls, int
 void hpool_set_proto(struct hpool *p, int slot, int proto);
 int  hpool_proto(const struct hpool *p, int slot);
 int  hpool_streams(const struct hpool *p, int slot);
+/* Retire an h2 session without invalidating its active stream reservations.
+ * GOAWAY can preserve long responses while a new connection serves new work.
+ * It still counts against physical socket caps, but no longer blocks the
+ * origin's replacement or accepts mux acquisitions. */
+void hpool_retire(struct hpool *p, int slot);
 /* How many connections this origin has that are h2 or not yet decided. */
 int  hpool_count_mux(const struct hpool *p, const char *host, int port, int tls);
 

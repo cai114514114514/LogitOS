@@ -1,6 +1,8 @@
 #include <stdint.h>
 #include <stddef.h>
 #include "lsock.h"
+#include "../../drivers/core/io_domain.h"
+#include "../../drivers/core/io_lock.h"
 #include "file.h"
 #include "tcp.h"
 #include "udp.h"
@@ -11,6 +13,7 @@
 #include "vfs.h"             /* vfs_may_create -- see lsock_bind_unix */
 #include "vfs_cred.h"            /* the privilege check SOCK_RAW needs -- see lsock_create() */
 #include "kernel/core/wait.h"   /* sched_sleep_ms -- the one wait here that is a sleep */
+#include "kernel/exec/ksignal.h"
 
 void *memset(void *, int, size_t);
 
@@ -41,19 +44,31 @@ enum {
 };
 
 struct lsock {
-    int  kind;
-    int  id;            /* S_LISTEN: listener id. S_CONN: conn id. S_DGRAM: udp
+    _Atomic int kind;
+    _Atomic int id;            /* S_LISTEN: listener id. S_CONN: conn id. S_DGRAM: udp
                          * sock. S_RAW: raw.c id. */
     int  type;          /* LOGIT_SOCK_STREAM / LOGIT_SOCK_DGRAM */
     int  pid;
     uint16_t lport;     /* what bind() asked for (0 = any) */
-    unsigned rcvtimeo;  /* SO_RCVTIMEO, ms; 0 = wait indefinitely */
-    int  reuse;         /* SO_REUSEADDR was set */
-    int  rd_shut;       /* SHUT_RD: reads report EOF regardless of the wire */
+    uint32_t laddr;     /* explicit IPv4 listen address, 0 = wildcard */
+    _Atomic unsigned rcvtimeo;  /* SO_RCVTIMEO, ms; 0 = wait indefinitely */
+    _Atomic int reuse;         /* SO_REUSEADDR was set */
+    _Atomic int rd_shut;       /* SHUT_RD: reads report EOF regardless of the wire */
     struct usock *un;   /* S_UNIX only: the state, which lives in unix.c */
 };
 
 static struct lsock socks[NLSOCK];
+static io_lock_t lsock_slots = IO_LOCK_INIT;
+static struct io_domain lsock_control[NLSOCK];
+static unsigned char lsock_control_ready[NLSOCK];
+/* Slot claims are short; bind/listen/options are per-socket transactions. Read
+ * and write use transport locks and can park independently in full duplex.
+ * File references keep backing slots alive; owner cleanup must not recycle a
+ * slot while a syscall still holds a reference to its file description. */
+#define LSOCK_CONTROL(s) IO_DOMAIN_GUARD(&lsock_control[(s) - socks])
+static void sk_free(struct lsock *s)
+{ IO_GUARD(&lsock_slots); s->kind = S_FREE; }
+
 static uint32_t st_reuse_set;      /* SO_REUSEADDR requests, so it is not silent */
 
 /* How long one park lasts before the caller re-tests. NOT a poll interval in
@@ -66,8 +81,13 @@ static uint32_t st_reuse_set;      /* SO_REUSEADDR requests, so it is not silent
 
 static struct lsock *sk_alloc(void)
 {
+    IO_GUARD(&lsock_slots);
     for (int i = 0; i < NLSOCK; i++)
         if (socks[i].kind == S_FREE) {
+            if (!lsock_control_ready[i]) {
+                lsock_control[i] = (struct io_domain)IO_DOMAIN_INIT;
+                lsock_control_ready[i] = 1;
+            }
             memset(&socks[i], 0, sizeof socks[i]);
             socks[i].kind = S_UNBOUND;
             return &socks[i];
@@ -82,6 +102,32 @@ static struct lsock *sk_of(struct file *f)
 }
 
 /* ------------------------------------------------------------- the fd face */
+
+short lsock_file_poll(struct file *f, struct poll_table *pt)
+{
+    struct lsock *s = sk_of(f);
+    if (!s) return LPOLLNVAL;
+    /* file.c formerly had only a weak declaration: every valid AF_UNIX fd
+     * reported NVAL, so an event loop returned immediately instead of sleeping.
+     * Keep that old result available as a measured negative control. */
+#ifdef UNIX_POLL_NEGCTL_NVAL
+    (void)pt;
+    return LPOLLNVAL;
+#else
+    if (s->kind == S_UNIX) return unix_poll(s->un, pt);
+    /* INET is still unsupported here. TCP's listener/rx queues and send-space
+     * state are private to its transport lock; UDP/raw expose no readiness
+     * wait queue. A guessed OUT bit or an unregistered zero mask would turn
+     * this explicit limitation into a spin or an indefinite lost wakeup. */
+    /* 2026-09-11: TCP now registers its actual listener/transport wait queue.
+     * The old NVAL above caused an SSH idle loop to enter a blocking read,
+     * preventing time-based rekey and independent remote accepts. Datagram
+     * and raw readiness remain absent until their queues expose this hook. */
+    if(s->kind==S_LISTEN)return tcp_file_poll(s->id,1,pt);
+    if(s->kind==S_CONN){short mask=tcp_file_poll(s->id,0,pt);return s->rd_shut?(short)(mask|LPOLLIN):mask;}
+    return LPOLLNVAL;
+#endif
+}
 
 long lsock_file_read(struct file *f, void *buf, long len)
 {
@@ -101,10 +147,14 @@ long lsock_file_read(struct file *f, void *buf, long len)
 
     int cap = len > 0x7fffffff ? 0x7fffffff : (int)len;
     for (;;) {
+        /* A sibling can SHUT_RD while this read parks. Checking only before
+         * the loop made a daemon's local shutdown invisible to that read. */
+        if (s->rd_shut) return 0;
         int n = tcp_recv(s->id, buf, cap);
         if (n > 0) return n;
         if (n < 0) return 0;               /* peer FIN drained, or gone: EOF */
         if (f->flags & O_NONBLOCK) return EAGAIN_RC;
+        if(ksig_interrupted())return SIG_E_INTR;
         /* Park. The thread is unlinked from the run ring while it waits; what
          * wakes it is the segment carrying the bytes, delivered by the NIC
          * interrupt's softirq -- so this does not depend on the window manager
@@ -133,6 +183,7 @@ long lsock_file_write(struct file *f, const void *buf, long len)
         if (n < 0) return sent > 0 ? sent : -1;      /* connection gone */
         if (n == 0) {
             if (f->flags & O_NONBLOCK) return sent > 0 ? sent : EAGAIN_RC;
+            if(ksig_interrupted())return sent>0?sent:SIG_E_INTR;
             /* The send ring is full: what empties it is the peer's ACK. */
             if (tcp_wait_writable(s->id, PARK_MS) < 0)
                 return sent > 0 ? sent : -1;
@@ -147,6 +198,8 @@ void lsock_file_release_backing(void *backing)
 {
     struct lsock *s = (struct lsock *)backing;
     if (!s || s->kind == S_FREE) return;
+    {
+    LSOCK_CONTROL(s);
     switch (s->kind) {
     case S_LISTEN: tcp_listen_close(s->id); break;
     case S_CONN:   tcp_close(s->id);        break;
@@ -155,7 +208,8 @@ void lsock_file_release_backing(void *backing)
     case S_RAW:    raw_icmp_close(s->id);   break;
     default: break;
     }
-    s->kind = S_FREE;
+    } /* the last operation owner drops before the slot can be claimed again */
+    sk_free(s);
 }
 
 /* ---------------------------------------------------------- the call face */
@@ -169,7 +223,7 @@ static struct file *unix_file(struct usock *u, int pid, int *err)
     struct lsock *s = sk_alloc();
     if (!s) { unix_release(u); if (err) *err = LSK_E_FULL; return NULL; }
     struct file *f = file_alloc();
-    if (!f) { s->kind = S_FREE; unix_release(u); if (err) *err = LSK_E_FULL; return NULL; }
+    if (!f) { sk_free(s); unix_release(u); if (err) *err = LSK_E_FULL; return NULL; }
     s->kind = S_UNIX;
     s->un = u;
     s->pid = pid;
@@ -262,9 +316,29 @@ fail:
  * The DIRECTORY's permissions are the VFS's question, so vfs_may_create()
  * answers it; the NAME's own owner and mode are recorded from this process's
  * credential and umask, and are what connect() is checked against later. */
+int lsock_peer_pid(struct file *f)
+{
+    struct lsock *s = sk_of(f);
+    if (!s) return -1;
+    LSOCK_CONTROL(s);
+    return s->kind == S_UNIX ? unix_peer_pid(s->un) : -1;
+}
+
+int lsock_agent_peer(struct file *f, struct aex_agent_identity *id)
+{
+    struct lsock *s=sk_of(f); if (!s) return -1;
+    LSOCK_CONTROL(s); return s->kind==S_UNIX ? unix_agent_peer(s->un,id) : -1;
+}
+int lsock_agent_transfer(struct file *f, int parent, const struct aex_agent_identity *id)
+{
+    struct lsock *s=sk_of(f); if (!s) return -1;
+    LSOCK_CONTROL(s); return s->kind==S_UNIX ? unix_agent_transfer(s->un,parent,id) : -1;
+}
 int lsock_bind_unix(struct file *f, const char *canon)
 {
     struct lsock *s = sk_of(f);
+    if (!s) return LSK_E_ARG;
+    LSOCK_CONTROL(s);
     if (!s || !canon) return LSK_E_ARG;
     if (s->kind != S_UNIX) return LSK_E_ARG;
     if (canon[0] && vfs_may_create(canon) < 0) return LSK_E_PERM;
@@ -277,6 +351,8 @@ int lsock_bind_unix(struct file *f, const char *canon)
 int lsock_connect_unix(struct file *f, const char *canon)
 {
     struct lsock *s = sk_of(f);
+    if (!s) return LSK_E_ARG;
+    LSOCK_CONTROL(s);
     if (!s || !canon) return LSK_E_ARG;
     if (s->kind != S_UNIX) return LSK_E_ARG;
     struct vcred cr;
@@ -284,10 +360,31 @@ int lsock_connect_unix(struct file *f, const char *canon)
     return unix_connect(s->un, canon, &cr);
 }
 
+/* The ordinary descriptor API can now originate IPv4 streams as well as
+ * accepting them. This blocking connect is bounded; nonblocking connect and
+ * explicit source binding are refused until their completion ABI exists. */
+int lsock_connect_inet(struct file *f, const struct logit_sockaddr *a)
+{
+    struct lsock *s=sk_of(f);if(!s||!a)return LSK_E_ARG;LSOCK_CONTROL(s);
+    if(s->kind!=S_UNBOUND||s->type!=LOGIT_SOCK_STREAM||a->family!=LOGIT_AF_INET||!a->port||!a->addr||
+       (f->flags&O_NONBLOCK))return LSK_E_STATE;
+    int id=tcp_connect_owned(a->addr,a->port);if(id<0)return LSK_E_NET;
+    for(int i=0;i<1000;i++){
+        if(ksig_interrupted()){tcp_close(id);return LSK_E_INTR;}
+        int r=tcp_connect_status(id);
+        if(r>0){s->id=id;s->kind=S_CONN;return 0;}
+        if(r<0)break;
+        sched_sleep_ms(10);
+    }
+    tcp_close(id);return LSK_E_CONNREFUSED;
+}
+
 /* AF_UNIX getsockname: a PATH, so it cannot go through the sockaddr form. */
 int lsock_getsockname_unix(struct file *f, char *out, int max)
 {
     struct lsock *s = sk_of(f);
+    if (!s) return LSK_E_ARG;
+    LSOCK_CONTROL(s);
     if (!s || s->kind != S_UNIX) return LSK_E_ARG;
     return unix_getsockname(s->un, out, max);
 }
@@ -314,6 +411,8 @@ int lsock_socketpair(int domain, int type, int protocol, int pid,
 int lsock_bind(struct file *f, const struct logit_sockaddr *a)
 {
     struct lsock *s = sk_of(f);
+    if (!s) return LSK_E_ARG;
+    LSOCK_CONTROL(s);
     if (!s || !a) return LSK_E_ARG;
     /* An AF_INET address on an AF_UNIX socket. Refused here BY NAME rather
      * than falling through to the state check below, which would have said
@@ -326,7 +425,8 @@ int lsock_bind(struct file *f, const struct logit_sockaddr *a)
      * (net_cfg.ip), so INADDR_ANY and its own address are the same set, and a
      * bind to some third address should fail rather than silently listen
      * everywhere. */
-    if (a->addr != 0 && a->addr != net_cfg.ip) return LSK_E_ARG;
+    if (a->addr != 0 && a->addr != net_config_snapshot().ip &&
+        !((a->addr>>24)==127&&s->type==LOGIT_SOCK_STREAM)) return LSK_E_ARG;
 
     if (s->type == LOGIT_SOCK_DGRAM) {
         int id = udp_bind(a->port);
@@ -334,12 +434,14 @@ int lsock_bind(struct file *f, const struct logit_sockaddr *a)
         s->id = id;
         s->kind = S_DGRAM;
         s->lport = a->port;
+        s->laddr = a->addr;
         return 0;
     }
     /* A stream socket's port is claimed at listen(): tcp.c's listener table is
      * where a TCP port is owned, and taking it here would mean a bind()-only
      * socket held a listening port it never listened on. */
     s->lport = a->port;
+    s->laddr = a->addr;
     s->kind = S_BOUND;
     return 0;
 }
@@ -348,11 +450,13 @@ int lsock_listen(struct file *f, int backlog)
 {
     struct lsock *s = sk_of(f);
     if (!s) return LSK_E_ARG;
+    LSOCK_CONTROL(s);
+    if (!s) return LSK_E_ARG;
     if (s->kind == S_UNIX) return unix_listen(s->un, backlog);
     if (s->type != LOGIT_SOCK_STREAM) return LSK_E_STATE;
     if (s->kind == S_LISTEN) return 0;             /* idempotent, as POSIX is */
     if (s->kind != S_BOUND) return LSK_E_STATE;    /* listen() before bind() */
-    int id = tcp_listen(s->lport, backlog, s->pid);
+    int id = tcp_listen_addr(s->lport, backlog, s->pid,s->laddr);
     if (id == TCP_L_E_INUSE) return LSK_E_INUSE;
     if (id == TCP_L_E_FULL)  return LSK_E_FULL;
     if (id < 0)              return LSK_E_ARG;
@@ -392,6 +496,9 @@ struct file *lsock_accept(struct file *f, struct logit_sockaddr *peer,
          * thread is off the run ring -- and the loop exists so that a listener
          * closed under us (tcp_accept returning LSK_E_ARG) still gets out. */
         for (;;) {
+            /* Return to ring 3 to deliver a pending signal. Re-entering the
+             * accept wait forever made even a terminated server unreapable. */
+            if(ksig_interrupted()){if(err)*err=LSK_E_INTR;return NULL;}
             cid = tcp_accept_wait(s->id, PARK_MS);
             if (cid != TCP_L_E_AGAIN) break;
         }
@@ -402,7 +509,7 @@ struct file *lsock_accept(struct file *f, struct logit_sockaddr *peer,
     struct lsock *cs = sk_alloc();
     if (!cs) { tcp_close(cid); if (err) *err = LSK_E_FULL; return NULL; }
     struct file *cf = file_alloc();
-    if (!cf) { cs->kind = S_FREE; tcp_close(cid); if (err) *err = LSK_E_FULL; return NULL; }
+    if (!cf) { sk_free(cs); tcp_close(cid); if (err) *err = LSK_E_FULL; return NULL; }
     cs->kind = S_CONN;
     cs->id = cid;
     cs->type = LOGIT_SOCK_STREAM;
@@ -428,6 +535,8 @@ struct file *lsock_accept(struct file *f, struct logit_sockaddr *peer,
 int lsock_getsockname(struct file *f, struct logit_sockaddr *out)
 {
     struct lsock *s = sk_of(f);
+    if (!s) return LSK_E_ARG;
+    LSOCK_CONTROL(s);
     if (!s || !out) return LSK_E_ARG;
     /* An AF_UNIX socket has a path, not an address+port, and there is no honest
      * way to render one as the other. SYS_GETSOCKNAME on one is refused so the
@@ -435,10 +544,12 @@ int lsock_getsockname(struct file *f, struct logit_sockaddr *out)
      * back 0.0.0.0:0 and believing it. */
     if (s->kind == S_UNIX) return LSK_E_ARG;
     out->family = LOGIT_AF_INET;
-    out->addr = net_cfg.ip;
+    out->addr = s->laddr;
     if (s->kind == S_LISTEN) {
         int p = tcp_listen_port(s->id);
         out->port = (unsigned short)(p < 0 ? 0 : p);
+    } else if(s->kind==S_CONN) {
+        return tcp_local(s->id,&out->addr,&out->port);
     } else {
         out->port = s->lport;
     }
@@ -448,6 +559,8 @@ int lsock_getsockname(struct file *f, struct logit_sockaddr *out)
 int lsock_getpeername(struct file *f, struct logit_sockaddr *out)
 {
     struct lsock *s = sk_of(f);
+    if (!s) return LSK_E_ARG;
+    LSOCK_CONTROL(s);
     if (!s || !out) return LSK_E_ARG;
     if (s->kind != S_CONN) return LSK_E_STATE;
     uint32_t ip = 0; uint16_t pt = 0;
@@ -461,6 +574,8 @@ int lsock_getpeername(struct file *f, struct logit_sockaddr *out)
 int lsock_setsockopt(struct file *f, int level, int optname, long value)
 {
     struct lsock *s = sk_of(f);
+    if (!s) return LSK_E_ARG;
+    LSOCK_CONTROL(s);
     if (!s) return LSK_E_ARG;
     /* NOT A FALL-THROUGH. Every option below is an AF_INET one: SO_RCVTIMEO
      * would set a field the AF_UNIX path never reads (a value silently
@@ -497,9 +612,15 @@ int lsock_shutdown(struct file *f, int how)
 {
     struct lsock *s = sk_of(f);
     if (!s) return LSK_E_ARG;
+    LSOCK_CONTROL(s);
+    if (!s) return LSK_E_ARG;
     if (s->kind == S_UNIX) return unix_shutdown(s->un, how);
     if (s->kind != S_CONN) return LSK_E_STATE;
-    if (how == LOGIT_SHUT_RD || how == LOGIT_SHUT_RDWR) s->rd_shut = 1;
+    if (how == LOGIT_SHUT_RD || how == LOGIT_SHUT_RDWR) {
+        s->rd_shut = 1;
+        /* Local EOF changes readiness without an incoming TCP segment. */
+        tcp_poll_wake();
+    }
     if (how == LOGIT_SHUT_WR || how == LOGIT_SHUT_RDWR) tcp_shutdown_write(s->id);
     if (how != LOGIT_SHUT_RD && how != LOGIT_SHUT_WR && how != LOGIT_SHUT_RDWR)
         return LSK_E_ARG;
@@ -591,13 +712,10 @@ long lsock_stat(int what)
 
 void lsock_close_owner(int pid)
 {
-    /* Listeners only. Connections are held by file descriptors, and process
-     * teardown closes those already -- reaching in here would double-free
-     * them. A listener is different: the port it owns lives in tcp.c and would
-     * otherwise stay claimed for the rest of the boot if the fd table teardown
-     * ever missed it. */
-    tcp_listen_close_owner(pid);
-    for (int i = 0; i < NLSOCK; i++)
-        if (socks[i].kind == S_LISTEN && socks[i].pid == pid)
-            socks[i].kind = S_FREE;
+    (void)pid;
+    /* proc_fd_close_all revokes the descriptors. The final file reference owns
+     * transport close and sk_free; a sweep here used to mark a backing FREE
+     * while proc_fd_acquire users still accessed it, allowing a new connection
+     * to be closed by an old syscall's cleanup. Module-style raw ownership is
+     * not a second lifetime mechanism for descriptor-backed sockets. */
 }

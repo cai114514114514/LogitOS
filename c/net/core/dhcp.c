@@ -1,6 +1,11 @@
 #include <stdint.h>
 #include <stddef.h>
 #include "dhcp.h"
+#include "../../drivers/core/io_domain.h"
+static struct io_domain dhcp_owner = IO_DOMAIN_INIT;
+static unsigned dhcp_runner;
+static void dhcp_runner_drop(unsigned *claim)
+{ if (*claim) __atomic_store_n(&dhcp_runner, 0, __ATOMIC_RELEASE); }
 #include "udp.h"
 #include "net.h"
 #include "pit.h"
@@ -135,6 +140,7 @@ static void kprint_ip(const char *tag, uint32_t ip)
 static void apply_lease(const struct bootp_hdr *h,
                         const uint8_t *opts, int olen)
 {
+    NET_GUARD; /* Lease publication is coherent with packet routing. */
     const uint8_t *v;
     net_cfg.ip = ntohl(h->yiaddr);
     if ((v = opt_find(opts, olen, 1, 4))) net_cfg.mask = get32n(v);
@@ -197,6 +203,7 @@ static void dhcp_handle(const uint8_t *pkt, int len)
  * BOUND -> RENEWING at T1. */
 static void dhcp_step(void)
 {
+    IO_DOMAIN_GUARD(&dhcp_owner);
     if (st == ST_IDLE || sock < 0)
         return;
     uint8_t pkt[1500];
@@ -232,6 +239,11 @@ static void dhcp_step(void)
 
 int dhcp_run(int timeout_ticks)
 {
+    unsigned zero = 0;
+    if (!__atomic_compare_exchange_n(&dhcp_runner, &zero, 1, 0, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) return -1;
+    unsigned claim __attribute__((cleanup(dhcp_runner_drop))) = 1;
+    {
+    IO_DOMAIN_GUARD(&dhcp_owner);
     if (sock < 0) {
         sock = udp_bind(DHCP_SPORT);
         if (sock < 0)
@@ -242,16 +254,17 @@ int dhcp_run(int timeout_ticks)
     initial = 1;
     send_discover();
     enter(ST_SELECTING);
+    }
 
     uint64_t start = timer_ticks();
     while (timer_ticks() - start < (uint64_t)timeout_ticks) {
         net_poll();
         dhcp_step();
-        if (st == ST_BOUND) { initial = 0; return 0; }
+        { IO_DOMAIN_GUARD(&dhcp_owner);
+          if (st == ST_BOUND) { initial = 0; return 0; } }
         net_idle();
     }
-    initial = 0;
-    st = ST_IDLE;
+    { IO_DOMAIN_GUARD(&dhcp_owner); initial = 0; st = ST_IDLE; }
     return -1;
 }
 

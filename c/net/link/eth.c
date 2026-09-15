@@ -95,6 +95,13 @@ static int mac_eq(const uint8_t *a, const uint8_t *b)
  * is dropped and counted rather than followed. */
 #define LOOPBACK_MAX_DEPTH 2
 static int loopback_depth;
+int net_loopback_enqueue(const uint8_t *,uint16_t) LOGIT_WEAK;
+LOGIT_WEAK_STUB(net_loopback_enqueue);
+/* Only the internal delivery entry sets this provenance; a NIC cannot mark
+ * an incoming frame local by choosing its source IP or MAC. net_lock held. */
+int eth_in_loopback(void) { return loopback_depth>0; }
+void eth_loopback_input(const uint8_t *frame,uint16_t n)
+{ loopback_depth++;eth_input(frame,n);loopback_depth--; }
 
 /* THE TRANSMIT FUNNEL, AND WHY IT NOW TAKES net_lock() ITSELF.
  *
@@ -191,6 +198,11 @@ static int eth_send_locked(const uint8_t dst[ETH_ALEN], uint16_t ethertype,
      * machine's own address usable from the machine -- see arp_resolve's self
      * case, which is what causes such a frame to be built in the first place. */
     if (mac_eq(dst, net_cfg.mac) && !mac_eq(dst, eth_broadcast)) {
+        if(LOGIT_HAVE(net_loopback_enqueue)){
+            int r=net_loopback_enqueue(frame,n);
+            if(r<0)stats.lo_dropped++;else stats.lo_tx++;
+            return r;
+        }
         if (loopback_depth >= LOOPBACK_MAX_DEPTH) {
             stats.lo_dropped++;
             return -1;

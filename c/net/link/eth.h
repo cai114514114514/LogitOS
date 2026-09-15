@@ -67,6 +67,8 @@ int eth_send(const uint8_t dst[ETH_ALEN], uint16_t ethertype,
  * CONTRACT: callers hold net_lock() for the duration, which all four NIC
  * drivers do. eth_input keeps a de-tagging buffer that relies on it. */
 void eth_input(const uint8_t *frame, uint16_t len);
+void eth_loopback_input(const uint8_t *frame, uint16_t len);
+int eth_in_loopback(void);
 
 /* Stats (for the Network app / debugging). */
 const struct eth_stats *eth_get_stats(void);

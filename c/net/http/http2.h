@@ -317,6 +317,9 @@ void h2_conn_goaway(struct h2_conn *c, uint32_t code);
 int  h2_conn_state(const struct h2_conn *c);
 /* 1 while the connection can still carry a new request. */
 int  h2_conn_usable(const struct h2_conn *c);
+/* 1 only while h2_request can allocate another stream NOW.  Usable is a
+ * lifetime answer; this is the peer/local concurrency answer. */
+int  h2_conn_stream_available(const struct h2_conn *c);
 int  h2_conn_active_streams(const struct h2_conn *c);
 
 /* ---- streams --------------------------------------------------------- */

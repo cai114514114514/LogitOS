@@ -1,3 +1,10 @@
+#include "../../drivers/core/io_domain.h"
+/* The legacy fetch API owns ONE response object (raw/body_off/cur). This
+ * object mutex extends through body copying; net_poll never calls HTTP, so
+ * the network may make progress while this owner waits for a response. */
+static struct io_domain http_owner = IO_DOMAIN_INIT;
+void http_lock(void) { io_domain_enter(&http_owner); }
+void http_unlock(void) { io_domain_leave(&http_owner); }
 #include <stdint.h>
 #include <stddef.h>
 #include "http.h"
@@ -184,7 +191,8 @@ static int fetch_once(const struct url *u)
     if (!ip) return HTTP_ERR_DNS;
     /* Warm the next-hop's ARP (gateway for off-subnet, else the host itself) so
      * the SYN isn't dropped on a cold cache -> no 0.5 s retransmit stall. */
-    uint32_t nexthop = ((ip & net_cfg.mask) == (net_cfg.ip & net_cfg.mask)) ? ip : net_cfg.gw;
+    struct net_config cfg = net_config_snapshot();
+    uint32_t nexthop = ((ip & cfg.mask) == (cfg.ip & cfg.mask)) ? ip : cfg.gw;
     arp_warm(nexthop, 30);
     int tcp = tcp_connect(ip, u->port);
     if (tcp < 0) return HTTP_ERR_CONN;
@@ -243,6 +251,7 @@ static int fetch_once(const struct url *u)
 
 int http_get(const char *url)
 {
+    IO_DOMAIN_GUARD(&http_owner);
     if (http_busy) return HTTP_ERR_CONN;
     http_busy = 1;
     status = HTTP_BUSY;
@@ -341,6 +350,7 @@ static int decode_data_uri(const char *u, uint8_t **buf, int *len)
  * built from the page body, which copied its strings). */
 int res_fetch(const char *src, uint8_t **buf, int *len)
 {
+    IO_DOMAIN_GUARD(&http_owner);
     if (!src || !*src) return -1;
     if (src[0]=='d'&&src[1]=='a'&&src[2]=='t'&&src[3]=='a'&&src[4]==':')
         return decode_data_uri(src, buf, len);

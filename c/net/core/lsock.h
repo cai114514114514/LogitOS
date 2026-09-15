@@ -32,6 +32,8 @@ struct file;
 /* --- the F_SOCK backend, called from c/kernel/exec/file.c --------------- */
 long lsock_file_read(struct file *f, void *buf, long len);
 long lsock_file_write(struct file *f, const void *buf, long len);
+struct poll_table;
+short lsock_file_poll(struct file *f, struct poll_table *pt);
 /* Last close of an F_SOCK description. Takes the raw `backing` pointer rather
  * than the file, because file_close() detaches the slot (and clears
  * f->backing) under its lock BEFORE running any teardown -- a teardown that
@@ -58,6 +60,7 @@ struct file *lsock_create(int domain, int type, int protocol, int pid, int *err)
 
 int lsock_bind(struct file *f, const struct logit_sockaddr *a);
 int lsock_listen(struct file *f, int backlog);
+int lsock_connect_inet(struct file *f, const struct logit_sockaddr *a);
 
 /* --- AF_UNIX (c/net/core/unix.c) ----------------------------------------- *
  *
@@ -72,6 +75,7 @@ int lsock_listen(struct file *f, int backlog);
  * process's cwd, so c/kernel/exec/syscall.c does it, once, the same way it does
  * for every other path-taking syscall. */
 int lsock_bind_unix(struct file *f, const char *canon);
+int lsock_peer_pid(struct file *f);
 int lsock_connect_unix(struct file *f, const char *canon);
 int lsock_getsockname_unix(struct file *f, char *out, int max);
 
@@ -104,4 +108,7 @@ long lsock_stat(int what);
  * port bound for the rest of the boot. */
 void lsock_close_owner(int pid);
 
+struct aex_agent_identity;
+int lsock_agent_peer(struct file *, struct aex_agent_identity *);
+int lsock_agent_transfer(struct file *, int parent, const struct aex_agent_identity *);
 #endif /* LOGIT_LSOCK_H */

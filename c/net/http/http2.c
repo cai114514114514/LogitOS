@@ -382,6 +382,19 @@ int h2_conn_active_streams(const struct h2_conn *c)
     return n;
 }
 
+int h2_conn_stream_available(const struct h2_conn *c)
+{
+    if (!h2_conn_usable(c)) return 0;
+    if ((uint32_t)h2_conn_active_streams(c) >= c->peer_max_conc) return 0;
+    /* SETTINGS_MAX_CONCURRENT_STREAMS is not the only cap.  A peer may allow
+     * more streams than this build can represent, and h2_request then returns
+     * H2_E_NOSLOT when its fixed table is full.  Report the exact admission
+     * answer here so a scheduler can wait instead of reserving a pool stream
+     * and turning that ordinary back-pressure into a transport failure. */
+    for (int i = 0; i < H2_MAX_STREAMS; i++) if (!c->st[i].used) return 1;
+    return 0;
+}
+
 void h2_conn_goaway(struct h2_conn *c, uint32_t code)
 {
     if (!c || c->state == H2_C_ERROR || c->state == H2_C_CLOSED) return;

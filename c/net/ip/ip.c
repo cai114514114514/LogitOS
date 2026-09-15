@@ -92,8 +92,11 @@ static void route_sync(void)
      * that the routing decision is a table and not a ternary, and it is also
      * route_at()/route_count()'s consumer in the kernel. */
     for (int i = 0; i < RT_NROUTE; i++) {
-        const struct route_entry *e = route_at(i);
-        if (!e) continue;
+        /* Receive IRQs may send replies here while a syscall owns its name
+         * scratch. Keep this log's row on the IRQ stack instead. */
+        struct route_entry row;
+        if (!route_at_copy(i, &row)) continue;
+        const struct route_entry *e = &row;
         kprintf("[route] %u.%u.%u.%u/%u ", (e->dst >> 24) & 255,
                 (e->dst >> 16) & 255, (e->dst >> 8) & 255, e->dst & 255, e->plen);
         if (e->nexthop)
@@ -135,9 +138,20 @@ void icmp_input(uint32_t, const uint8_t *, uint16_t) LOGIT_WEAK;
 void udp_input(uint32_t, const uint8_t *, uint16_t,
                const uint8_t *) LOGIT_WEAK;
 void tcp_input(uint32_t, const uint8_t *, uint16_t) LOGIT_WEAK;
+void tcp_input_v4(uint32_t,uint32_t,const uint8_t *,uint16_t) LOGIT_WEAK;
+int eth_in_loopback(void) LOGIT_WEAK;
 LOGIT_WEAK_STUB(icmp_input);
 LOGIT_WEAK_STUB(udp_input);
 LOGIT_WEAK_STUB(tcp_input);
+LOGIT_WEAK_STUB(tcp_input_v4);
+LOGIT_WEAK_STUB(eth_in_loopback);
+
+int ip_source_addr(uint32_t dst,uint32_t *src)
+{
+    route_sync();struct route_res rr;
+    if(route_lookup(dst,&rr)!=RT_OK)return -1;
+    *src=rr.src?rr.src:net_cfg.ip;return 0;
+}
 
 uint16_t ip_checksum(const void *data, int len)
 {
@@ -301,12 +315,13 @@ void ip_input(const uint8_t *frame, uint16_t len)
      * (keeps off-subnet noise out of the one-shot UDP/DNS receive slot).
      * Broadcasts (limited or subnet-directed) are let through for UDP only --
      * they are how DHCP-class services reach us; TCP/ICMP stay unicast-only. */
-    if (dst != net_cfg.ip && (!ip_is_broadcast(dst) || h->proto != IP_PROTO_UDP))
+    int local=LOGIT_HAVE(eth_in_loopback)&&eth_in_loopback();
+    if (dst != net_cfg.ip && !(local&&(dst>>24)==127) && (!ip_is_broadcast(dst) || h->proto != IP_PROTO_UDP))
         return;
     /* This stack has no DHCP/bootstrap receive path, multicast membership, or
      * loopback-on-wire use. Reject source forms that cannot identify a remote
      * unicast peer in the supported configuration. */
-    if (src == 0 || src == 0xFFFFFFFFu || (src >> 24) == 127 ||
+    if (src == 0 || src == 0xFFFFFFFFu || ((src >> 24) == 127 && !local) ||
         (src >> 28) >= 0xEu)
         return;
 
@@ -330,8 +345,10 @@ void ip_input(const uint8_t *frame, uint16_t len)
         icmp_input(src, l4, l4len);
     else if (h->proto == IP_PROTO_UDP && LOGIT_HAVE(udp_input))
         udp_input(src, l4, l4len, iph);
-    else if (h->proto == IP_PROTO_TCP && LOGIT_HAVE(tcp_input))
-        tcp_input(src, l4, l4len);
+    else if (h->proto == IP_PROTO_TCP) {
+        if(LOGIT_HAVE(tcp_input_v4))tcp_input_v4(src,dst,l4,l4len);
+        else if(LOGIT_HAVE(tcp_input))tcp_input(src,l4,l4len);
+    }
 
     if (frag & 0x3FFFu)
         reasm_release(&g);

@@ -1,3 +1,4 @@
+/* 2026-09-10 concurrency correction: DNS, DHCP, socket, HTTP and TLS state now have distinct task owners; ICMP uses net_lock and route.c a short table gate. Their old BKL inventory below is historical. No service owner spans the global network polling loop. */
 #ifndef LOGIT_NET_H
 #define LOGIT_NET_H
 
@@ -162,4 +163,13 @@ void     net_lock_stats(unsigned long *acq, unsigned long *recur,
                         unsigned long *maxdepth, unsigned long *viol);
 #endif
 
+/* Scope the existing recursive protocol lock through every early return. */
+struct net_guard { uint64_t flags; };
+static inline void net_guard_drop(struct net_guard *g) { net_unlock(g->flags); }
+#define NET_GUARD struct net_guard net_guard_ \
+    __attribute__((cleanup(net_guard_drop))) = { net_lock() }
+/* Service owners are not the packet lock. Take a small snapshot before
+ * waiting or entering DNS/TLS; no network spinlock spans those operations. */
+static inline struct net_config net_config_snapshot(void)
+{ NET_GUARD; return net_cfg; }
 #endif /* LOGIT_NET_H */

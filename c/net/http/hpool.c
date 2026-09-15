@@ -146,7 +146,7 @@ int hpool_acquire_mux(struct hpool *p, const char *host, int port, int tls, int6
     hpool_expire(p, now);
     for (int i = 0; i < HP_MAX_CONNS; i++) {
         if (!same_origin(&p->v[i], host, port, tls)) continue;
-        if (p->v[i].proto != HP_PROTO_H2) continue;
+        if (p->v[i].proto != HP_PROTO_H2 || p->v[i].draining) continue;
         if (p->max_streams > 0 && p->v[i].streams >= p->max_streams) continue;
         p->v[i].streams++;
         if (p->v[i].streams > p->v[i].peak_streams) p->v[i].peak_streams = p->v[i].streams;
@@ -186,12 +186,18 @@ int hpool_streams(const struct hpool *p, int slot)
     return p->v[slot].streams;
 }
 
+void hpool_retire(struct hpool *p, int slot)
+{
+    if (!p || slot < 0 || slot >= HP_MAX_CONNS || !p->v[slot].used) return;
+    if (p->v[slot].proto == HP_PROTO_H2) p->v[slot].draining = 1;
+}
+
 int hpool_count_mux(const struct hpool *p, const char *host, int port, int tls)
 {
     int n = 0;
     if (!p || !host) return 0;
     for (int i = 0; i < HP_MAX_CONNS; i++)
-        if (same_origin(&p->v[i], host, port, tls) &&
+        if (same_origin(&p->v[i], host, port, tls) && !p->v[i].draining &&
             (p->v[i].proto == HP_PROTO_H2 || p->v[i].proto == HP_PROTO_PENDING)) n++;
     return n;
 }
