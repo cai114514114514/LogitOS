@@ -30,7 +30,7 @@ struct blkdev;
  * ASYNCHRONY: a request that outlives the call that made it
  *
  * Until 2026-08-20 `struct blk_ops` was read/write/flush, all three
- * synchronous, and c/kernel/mm/reclaim/reclaim/swap.c named the consequence as an open work
+ * synchronous, and c/kernel/mm/reclaim/swap.c named the consequence as an open work
  * order in its own words: a page fault that needs the disk holds the big
  * kernel lock for the whole length of a device transfer, because there is no
  * way to give the CPU back in the middle of one. swap.c even wrote the
@@ -75,7 +75,7 @@ struct blkdev;
 /* blk_submit() refusals. Distinct values because a caller that gets -1 for
  * everything cannot tell "your arguments are wrong" (nothing to do about it)
  * from "this buffer cannot be DMA'd from an ASYNCHRONOUS request" (there is a
- * correct fallback, and c/kernel/mm/reclaim/reclaim/swap.c takes it and counts it). */
+ * correct fallback, and c/kernel/mm/reclaim/swap.c takes it and counts it). */
 #define BLK_E_ARG    (-1)   /* no device, no ops, zero count, out of bounds */
 #define BLK_E_NODMA  (-2)   /* async + a buffer the device cannot reach -- see blk_submit */
 

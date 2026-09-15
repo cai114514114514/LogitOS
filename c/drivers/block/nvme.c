@@ -47,6 +47,29 @@ static inline void barrier(void) { __asm__ volatile ("mfence" ::: "memory"); }
 #define AQ_DEPTH  64
 #define IO_DEPTH  64
 
+/* The block API counts 512-byte sectors even on a native 4 KiB namespace. */
+#define NVME_BLOCK_SECTOR_BYTES 512u
+#define NVME_NATIVE_4K_BYTES    4096u
+#define NVME_SECTORS_PER_4K    (NVME_NATIVE_4K_BYTES / NVME_BLOCK_SECTOR_BYTES)
+#define NVME_PRP_MAX_SECTORS   2048u
+#define NVME_COMMAND_TIMEOUT_MS 10000u
+
+#define NVME_NVM_FLUSH 0x00u
+#define NVME_NVM_WRITE 0x01u
+#define NVME_NVM_READ  0x02u
+
+enum nvme_partial_state {
+    NVME_PARTIAL_IDLE,
+    NVME_PARTIAL_READING,
+    NVME_PARTIAL_WRITING,
+};
+
+enum nvme_partial_result {
+    NVME_PARTIAL_ERROR = -1,
+    NVME_PARTIAL_PENDING,
+    NVME_PARTIAL_COMPLETE,
+};
+
 /* ONE SUBMISSION/COMPLETION PAIR PER CORE.
  *
  * NVMe is designed for this -- the doorbell for queue n is at a distinct
@@ -89,6 +112,13 @@ struct nvme_q {
     struct dma_buffer *sq_mem, *cq_mem;
     struct dma_mapping *mapping;
     uint64_t map_token, prp_token;
+    /* A native 4Kn partial write needs read/merge/write under the block
+     * layer's per-medium request lease. This buffer stays DMA-owned across
+     * polls; completing the read must not complete the caller's write. */
+    struct dma_buffer *sector_mem;
+    uint64_t sector_token;
+    enum nvme_partial_state partial_state;
+    unsigned partial_sector_offset;
 
     struct nvme_sqe *sq;          /* page-aligned DMA */
     struct nvme_cqe *cq;
@@ -104,7 +134,7 @@ static volatile uint8_t *g_regs;
 static struct nvme_q g_admin, g_io[NVME_IOQ_MAX];
 static int      g_nioq = 1;            /* I/O queue pairs actually created */
 static uint32_t g_nsid = 1, g_lba = 512;
-static uint64_t g_cap;                 /* capacity in LBAs */
+static uint64_t g_cap;                 /* capacity in 512-byte block API sectors */
 static uint64_t *g_prp_list[NVME_IOQ_MAX];  /* one PRP-list page PER QUEUE: two queues in
                                              * flight at once would otherwise overwrite
                                              * each other's page list mid-DMA */
@@ -175,13 +205,25 @@ static unsigned nvme_granted_ioqs(uint32_t result, unsigned requested)
 static int nvme_namespace_format(const uint8_t *id, uint64_t *sectors, uint32_t *lba)
 {
     unsigned format = (id[26] & 15u) | ((id[26] & 0x60u) >> 1);
-    if ((id[26] & 0x80u) || format > id[25] || format >= 64) return -1;
+    if ((id[26] & 0x80u) || format > id[25] || format >= 64)
+        return -1;
     const uint8_t *entry = id + 128 + format * 4;
-    if (entry[0] || entry[1] || entry[2] != 9 || (id[29] & 7)) return -1;
+    unsigned sector_exponent = entry[2];
+    int has_metadata = entry[0] || entry[1];
+    int has_protection = id[29] & 7;
+    if (has_metadata || has_protection || (sector_exponent != 9 && sector_exponent != 12))
+        return -1;
+
     uint64_t capacity = 0;
-    for (unsigned i = 0; i < 8; ++i) capacity |= (uint64_t)id[i] << (8 * i);
-    if (!capacity) return -1;
-    *sectors = capacity; *lba = 512;
+    for (unsigned i = 0; i < 8; ++i)
+        capacity |= (uint64_t)id[i] << (8 * i);
+    unsigned sectors_per_block = sector_exponent == 12 ? NVME_SECTORS_PER_4K : 1;
+    if (!capacity || capacity > UINT64_MAX / sectors_per_block)
+        return -1;
+    /* blkdev and its partition/filesystem callers count 512-byte sectors.
+     * Advertise converted capacity; only the NVMe command uses native LBAs. */
+    *sectors = capacity * sectors_per_block;
+    *lba = 1u << sector_exponent;
     return 0;
 }
 
@@ -190,7 +232,7 @@ static int nvme_namespace_format(const uint8_t *id, uint64_t *sectors, uint32_t 
  *
  * This used to be one function that wrote the SQE, rang the doorbell and then
  * spun on the CQ until the phase bit flipped -- and that spin is precisely the
- * BKL-held time c/kernel/mm/reclaim/reclaim/swap.c measures and blkdev.h now exists to give
+ * BKL-held time c/kernel/mm/reclaim/swap.c measures and blkdev.h now exists to give
  * back. The two halves are separate calls; nvme_run() below re-composes them
  * for the callers that genuinely have nowhere to go (controller bring-up, with
  * IF=0 and no scheduler yet).
@@ -289,6 +331,7 @@ static void nvme_free_all(void)
         if (g_io[i].sq_mem) dma_free_coherent(g_io[i].sq_mem);
         if (g_io[i].cq_mem) dma_free_coherent(g_io[i].cq_mem);
         if (g_prp_mem[i]) dma_free_coherent(g_prp_mem[i]);
+        if (g_io[i].sector_mem) dma_free_coherent(g_io[i].sector_mem);
         memset(&g_io[i], 0, sizeof g_io[i]);
         g_prp_mem[i] = NULL; g_prp_list[i] = NULL;
     }
@@ -440,7 +483,7 @@ int nvme_init(void)
     int format_ok = nvme_namespace_format(idbuf, &g_cap, &g_lba);
     dma_free_coherent(idmem);
     if (format_ok) {
-        kprintf("[nvme] unsupported namespace: need nonempty 512-byte LBAs without metadata/protection\n");
+        kprintf("[nvme] unsupported namespace: need nonempty 512/4096-byte LBAs without metadata/protection\n");
         return nvme_init_release(dev);
     }
 
@@ -469,6 +512,10 @@ int nvme_init(void)
         g_prp_mem[i] = dma_alloc_coherent(&g_dma, 4096, 4096, 0);
         if (!g_prp_mem[i]) return nvme_init_release(dev);
         g_prp_list[i] = g_prp_mem[i]->cpu;
+        if (g_lba == 4096) {
+            q->sector_mem = dma_alloc_coherent(&g_dma, 4096, 4096, 0);
+            if (!q->sector_mem) return nvme_init_release(dev);
+        }
         memset(&cmd, 0, sizeof cmd);
         cmd.cdw0 = 0x05; cmd.prp1 = dma_addr_value(q->cq_mem->dma);
         cmd.cdw10 = ((IO_DEPTH - 1) << 16) | qid;
@@ -480,6 +527,7 @@ int nvme_init(void)
             dma_buffer_complete(q->cq_mem, cqtoken); /* rejected: controller never adopted it */
             dma_free_coherent(q->cq_mem); dma_free_coherent(q->sq_mem);
             dma_free_coherent(g_prp_mem[i]); g_prp_mem[i] = NULL; g_prp_list[i] = NULL;
+            if (q->sector_mem) dma_free_coherent(q->sector_mem);
             memset(q, 0, sizeof *q); break;
         }
         memset(&cmd, 0, sizeof cmd);
@@ -542,141 +590,308 @@ static int nvme_qidx(void)
     return i;
 }
 
-/* Build and issue the command for the chunk at r->done. `tag` carries the queue
- * index AND the command id, because the poll that reports this chunk complete
- * may run on a different core from the submit -- so "which queue" cannot be
- * re-derived from the caller, it has to be remembered. */
-static int nvme_issue(struct blk_req *r)
+/* Encode the hardware LBA once, keeping native blocks distinct from the
+ * 512-byte sectors used by blk_req. NLB is zero-based in the NVM command. */
+static void nvme_set_transfer(struct nvme_sqe *command, uint32_t opcode,
+                              uint64_t native_lba, uint32_t native_blocks)
 {
-    int qi = (int)(r->tag >> 16);
-    struct nvme_q *q = &g_io[qi];
-    struct nvme_sqe cmd;
-    memset(&cmd, 0, sizeof cmd);
+    command->cdw0 = opcode;
+    command->nsid = g_nsid;
+    command->cdw10 = (uint32_t)native_lba;
+    command->cdw11 = (uint32_t)(native_lba >> 32);
+    command->cdw12 = native_blocks - 1;
+}
 
-    if (r->op == BLK_OP_FLUSH) {
-        /* NVM opcode 0x00: Flush. Completing it means the namespace's volatile
-         * write cache is on non-volatile media. Without it a controller with a
-         * write cache is free to have the journal's commit record on media
-         * while the blocks it vouches for are not -- the one state the journal
-         * exists to make impossible. */
-        cmd.cdw0 = 0x00;
-        cmd.nsid = g_nsid;
-        r->chunk = 0;
-    } else {
-        uint32_t n = r->count - r->done;
-        if (n > g_max_sectors) n = g_max_sectors;
-        if (n > 2048) n = 2048;                         /* keep the PRP list in one page */
+/* The poll may run on a different core: retain both the queue and command ID.
+ * Use elapsed time because the caller may leave many scheduler ticks between
+ * polls; a count of polls cannot bound a stalled hardware command. */
+static void nvme_publish(struct blk_req *request, struct nvme_sqe *command)
+{
+    unsigned queue_index = request->tag >> 16;
+    uint16_t command_id = nvme_begin(&g_io[queue_index], command);
 
-        void *cpu = (uint8_t *)r->buf + (uint64_t)r->done * 512;
-        size_t bytes = (size_t)n * 512;
-        q->mapping = dma_map_kernel(&g_dma, cpu, bytes,
-            r->op == BLK_OP_WRITE ? DMA_TO_DEVICE : DMA_FROM_DEVICE, 0);
-        if (!q->mapping) return -1;
-        uint64_t addr = dma_addr_value(dma_mapping_addr(q->mapping, 0));
-        size_t offset = 4096 - (addr & 4095);
-        cmd.cdw0 = r->op == BLK_OP_WRITE ? 0x01 : 0x02;
-        cmd.nsid = g_nsid; cmd.prp1 = addr;
-        if (bytes > offset) {
-            if (bytes - offset <= 4096)
-                cmd.prp2 = dma_addr_value(dma_mapping_addr(q->mapping, offset));
-            else {
-                unsigned ent = 0;
-                for (; offset < bytes; offset += 4096)
-                    g_prp_list[qi][ent++] = dma_addr_value(dma_mapping_addr(q->mapping, offset));
-                cmd.prp2 = dma_addr_value(g_prp_mem[qi]->dma);
-                q->prp_token = dma_buffer_submit(g_prp_mem[qi]);
-                if (!q->prp_token) { dma_unmap(q->mapping); q->mapping = NULL; return -1; }
-            }
-        }
-        q->map_token = dma_mapping_submit(q->mapping);
-        if (!q->map_token) {
-            if (q->prp_token) dma_buffer_complete(g_prp_mem[qi], q->prp_token);
-            q->prp_token = 0; dma_unmap(q->mapping); q->mapping = NULL; return -1;
-        }
-        cmd.cdw10 = (uint32_t)((r->dev_lba + r->done) & 0xFFFFFFFFu);
-        cmd.cdw11 = (uint32_t)((r->dev_lba + r->done) >> 32);
-        cmd.cdw12 = n - 1;                                  /* NLB, 0-based */
-        r->chunk = n;
-    }
+    request->tag = (queue_index << 16) | command_id;
+    request->deadline = timer_ms() + NVME_COMMAND_TIMEOUT_MS;
+}
 
-    uint16_t cid = nvme_begin(q, &cmd);
-    r->tag = ((uint32_t)qi << 16) | cid;
-    /* A millisecond deadline, not a spin count: this poll may be called once
-     * every scheduler tick by an async waiter, so "how many times have I
-     * looked" says nothing about how long the controller has had. 10 s is the
-     * NVMe default command timeout and far outside anything QEMU does. */
-    r->deadline = timer_ms() + 10000;
+static int nvme_prepare_partial_read(struct nvme_q *queue,
+                                      struct blk_req *request,
+                                      struct nvme_sqe *command,
+                                      uint32_t sectors)
+{
+    uint64_t sector = request->dev_lba + request->done;
+    unsigned offset = sector % NVME_SECTORS_PER_4K;
+    unsigned available = NVME_SECTORS_PER_4K - offset;
+
+    if (sectors > available)
+        sectors = available;
+
+    /* A partial write must first preserve the rest of its native block. The
+     * block layer holds its per-medium request lease across both commands,
+     * including accesses through partitions; competing merges cannot race. */
+    nvme_set_transfer(command, NVME_NVM_READ, sector / NVME_SECTORS_PER_4K, 1);
+    command->prp1 = dma_addr_value(queue->sector_mem->dma);
+    queue->sector_token = dma_buffer_submit(queue->sector_mem);
+    if (!queue->sector_token)
+        return -1;
+
+    queue->partial_state = NVME_PARTIAL_READING;
+    queue->partial_sector_offset = offset;
+    request->chunk = sectors;
     return 0;
 }
 
-int nvme_blk_submit(struct blk_req *r)
+/* Aligned native blocks use the existing streaming mapping. PRPs describe
+ * bus pages, which need not be contiguous or equal to their CPU aliases. */
+static int nvme_prepare_mapped_transfer(struct nvme_q *queue,
+                                        struct blk_req *request,
+                                        struct nvme_sqe *command,
+                                        uint32_t sectors)
 {
-    if (!g_ready) return -1;
-    if (r->op != BLK_OP_FLUSH && r->count == 0) return -1;
-    r->tag = (uint32_t)nvme_qidx() << 16;
-    return nvme_issue(r);
+    unsigned queue_index = request->tag >> 16;
+    unsigned sectors_per_block = g_lba / NVME_BLOCK_SECTOR_BYTES;
+    uint64_t sector = request->dev_lba + request->done;
+    void *cpu = (uint8_t *)request->buf +
+                (uint64_t)request->done * NVME_BLOCK_SECTOR_BYTES;
+    size_t bytes = (size_t)sectors * NVME_BLOCK_SECTOR_BYTES;
+    enum dma_direction direction = request->op == BLK_OP_WRITE ?
+                                   DMA_TO_DEVICE : DMA_FROM_DEVICE;
+    uint32_t opcode = request->op == BLK_OP_WRITE ? NVME_NVM_WRITE : NVME_NVM_READ;
+
+    queue->mapping = dma_map_kernel(&g_dma, cpu, bytes, direction, 0);
+    if (!queue->mapping)
+        return -1;
+
+    uint64_t addr = dma_addr_value(dma_mapping_addr(queue->mapping, 0));
+    size_t offset = NVME_NATIVE_4K_BYTES - (addr & (NVME_NATIVE_4K_BYTES - 1));
+    nvme_set_transfer(command, opcode, sector / sectors_per_block,
+                      sectors / sectors_per_block);
+    command->prp1 = addr;
+
+    if (bytes > offset) {
+        if (bytes - offset <= NVME_NATIVE_4K_BYTES) {
+            command->prp2 = dma_addr_value(dma_mapping_addr(queue->mapping, offset));
+        } else {
+            unsigned entry = 0;
+            for (; offset < bytes; offset += NVME_NATIVE_4K_BYTES) {
+                g_prp_list[queue_index][entry++] =
+                    dma_addr_value(dma_mapping_addr(queue->mapping, offset));
+            }
+            command->prp2 = dma_addr_value(g_prp_mem[queue_index]->dma);
+            queue->prp_token = dma_buffer_submit(g_prp_mem[queue_index]);
+            if (!queue->prp_token)
+                goto release_mapping;
+        }
+    }
+
+    queue->map_token = dma_mapping_submit(queue->mapping);
+    if (!queue->map_token) {
+        if (queue->prp_token)
+            dma_buffer_complete(g_prp_mem[queue_index], queue->prp_token);
+        queue->prp_token = 0;
+        goto release_mapping;
+    }
+
+    request->chunk = sectors;
+    return 0;
+
+release_mapping:
+    dma_unmap(queue->mapping);
+    queue->mapping = NULL;
+    return -1;
 }
 
-int nvme_blk_poll(struct blk_req *r)
+/* Select one chunk. Partial native blocks take read/merge/write; complete
+ * blocks use direct DMA. Every branch publishes through the same deadline and
+ * command-ID path, including the second half of a partial write. */
+static int nvme_issue(struct blk_req *request)
 {
-    struct nvme_q *q = &g_io[r->tag >> 16];
+    struct nvme_q *queue = &g_io[request->tag >> 16];
+    struct nvme_sqe command;
+    memset(&command, 0, sizeof command);
+
+    if (request->op == BLK_OP_FLUSH) {
+        /* Completing Flush makes the namespace's volatile writes durable;
+         * the filesystem journal relies on this ordering boundary. */
+        command.cdw0 = NVME_NVM_FLUSH;
+        command.nsid = g_nsid;
+        request->chunk = 0;
+    } else {
+        uint32_t sectors = request->count - request->done;
+        uint64_t sector = request->dev_lba + request->done;
+        unsigned sectors_per_block = g_lba / NVME_BLOCK_SECTOR_BYTES;
+        int prepare_status;
+
+        if (sectors > g_max_sectors)
+            sectors = g_max_sectors;
+        if (sectors > NVME_PRP_MAX_SECTORS)
+            sectors = NVME_PRP_MAX_SECTORS;
+
+        queue->partial_state = NVME_PARTIAL_IDLE;
+        if (sectors_per_block == NVME_SECTORS_PER_4K &&
+            (sector % sectors_per_block || sectors < sectors_per_block)) {
+            prepare_status = nvme_prepare_partial_read(queue, request, &command, sectors);
+        } else {
+            sectors -= sectors % sectors_per_block;
+            prepare_status = nvme_prepare_mapped_transfer(queue, request, &command, sectors);
+        }
+        if (prepare_status != 0)
+            return -1;
+    }
+
+    nvme_publish(request, &command);
+    return 0;
+}
+
+int nvme_blk_submit(struct blk_req *request)
+{
+    if (!g_ready)
+        return -1;
+    if (request->op != BLK_OP_READ && request->op != BLK_OP_WRITE &&
+        request->op != BLK_OP_FLUSH)
+        return -1;
+    if (request->op != BLK_OP_FLUSH &&
+        (!request->count || !request->buf || request->dev_lba >= g_cap ||
+         request->count > g_cap - request->dev_lba))
+        return -1;
+
+    request->tag = (uint32_t)nvme_qidx() << 16;
+    return nvme_issue(request);
+}
+
+/* Call only after nvme_quiesce observed CSTS.RDY clear. Submitted tokens are
+ * invalid after that stop, even if a stale CQ entry still looks successful. */
+static void nvme_release_stopped_request(struct nvme_q *queue)
+{
+    if (queue->mapping) {
+        if (dma_unmap(queue->mapping))
+            panic("nvme: stopped DMA still owned");
+        queue->mapping = NULL;
+    }
+    queue->map_token = 0;
+    queue->prp_token = 0;
+    queue->sector_token = 0;
+    queue->partial_state = NVME_PARTIAL_IDLE;
+}
+
+static void nvme_complete_mapped_transfer(struct nvme_q *queue,
+                                          const struct blk_req *request,
+                                          int status)
+{
+    if (queue->mapping) {
+        size_t valid_bytes = status == 0 ?
+                             (size_t)request->chunk * NVME_BLOCK_SECTOR_BYTES : 0;
+        int completion_status = dma_mapping_complete(queue->mapping,
+                                                     queue->map_token, valid_bytes);
+        if (completion_status || dma_unmap(queue->mapping))
+            panic("nvme: invalid DMA completion ownership");
+        queue->mapping = NULL;
+        queue->map_token = 0;
+    }
+    if (queue->prp_token) {
+        if (dma_buffer_complete(g_prp_mem[request->tag >> 16], queue->prp_token))
+            panic("nvme: invalid PRP completion ownership");
+        queue->prp_token = 0;
+    }
+}
+
+/* Reading the native block completes a partial READ, but only prepares a
+ * partial WRITE. Report PENDING until the merged write itself completes. */
+static enum nvme_partial_result nvme_complete_partial_transfer(
+    struct nvme_q *queue, struct blk_req *request, int status)
+{
+    if (dma_buffer_complete(queue->sector_mem, queue->sector_token))
+        panic("nvme: invalid native-sector DMA completion");
+    queue->sector_token = 0;
+
+    if (status != 0) {
+        queue->partial_state = NVME_PARTIAL_IDLE;
+        return NVME_PARTIAL_ERROR;
+    }
+
+    uint8_t *partial = (uint8_t *)queue->sector_mem->cpu +
+                       queue->partial_sector_offset * NVME_BLOCK_SECTOR_BYTES;
+    uint8_t *caller = (uint8_t *)request->buf +
+                      (uint64_t)request->done * NVME_BLOCK_SECTOR_BYTES;
+    size_t bytes = (size_t)request->chunk * NVME_BLOCK_SECTOR_BYTES;
+
+    if (queue->partial_state == NVME_PARTIAL_READING && request->op == BLK_OP_WRITE) {
+#ifdef NVME_4KN_NEGCTL_ZERO_NEIGHBOURS
+        memset(queue->sector_mem->cpu, 0, NVME_NATIVE_4K_BYTES);
+#endif
+        memcpy(partial, caller, bytes);
+
+        struct nvme_sqe command;
+        uint64_t native_lba = (request->dev_lba + request->done) / NVME_SECTORS_PER_4K;
+        memset(&command, 0, sizeof command);
+        nvme_set_transfer(&command, NVME_NVM_WRITE, native_lba, 1);
+        command.prp1 = dma_addr_value(queue->sector_mem->dma);
+
+        queue->sector_token = dma_buffer_submit(queue->sector_mem);
+        if (!queue->sector_token) {
+            queue->partial_state = NVME_PARTIAL_IDLE;
+            return NVME_PARTIAL_ERROR;
+        }
+        queue->partial_state = NVME_PARTIAL_WRITING;
+        nvme_publish(request, &command);
+        return NVME_PARTIAL_PENDING;
+    }
+
+    if (queue->partial_state == NVME_PARTIAL_READING)
+        memcpy(caller, partial, bytes);
+    queue->partial_state = NVME_PARTIAL_IDLE;
+    return NVME_PARTIAL_COMPLETE;
+}
+
+int nvme_blk_poll(struct blk_req *request)
+{
+    struct nvme_q *queue = &g_io[request->tag >> 16];
     int status = 0;
 
-    /* An admin timeout stops the entire controller, including a block request
-     * parked between polls. Its old CQ entry and tokens are no longer valid.
-     * nvme_quiesce only returns after RDY cleared, so release this request's
-     * mapping without interpreting or acknowledging a pre-reset completion. */
     if (!g_ready) {
-        if (q->mapping) {
-            if (dma_unmap(q->mapping)) panic("nvme: stopped DMA still owned");
-            q->mapping = NULL;
-        }
-        q->map_token = q->prp_token = 0;
-        r->status = -1;
+        nvme_release_stopped_request(queue);
+        request->status = -1;
         return 1;
     }
 
-    if (!nvme_step(q, (uint16_t)(r->tag & 0xFFFF), &status)) {
-        if (timer_ms() > r->deadline) {
-            /* NO RETRY, deliberately, and unlike AHCI. An AHCI timeout is a
-             * port that latched an error and can be recovered; an NVMe command
-             * that has not completed in ten seconds is still OWNED BY THE
-             * CONTROLLER -- its PRPs point at this buffer and it may write them
-             * at any moment. Re-issuing would put two commands on one buffer.
-             * Abort/reset is the only correct recovery and this driver has
-             * neither, so fail out loud rather than invent one. */
-            /* DMA migration: the historical no-reset limitation above is
-             * superseded by acknowledged CC.EN/CSTS.RDY stop below. */
-            kprintf("[nvme] command timeout (q%d cid %d, lba %u)\n",
-                    (int)(r->tag >> 16), (int)(r->tag & 0xFFFF),
-                    (unsigned)(r->dev_lba + r->done));
-            nvme_quiesce();
-            if (q->mapping) { dma_unmap(q->mapping); q->mapping = NULL; }
-            q->map_token = q->prp_token = 0;
-            r->status = -1;
+    if (!nvme_step(queue, (uint16_t)request->tag, &status)) {
+        if (timer_ms() <= request->deadline)
+            return 0;
+
+        /* Do not retry a timed-out command: the controller may still DMA into
+         * its buffer. Stop acknowledgement must precede all memory release. */
+        kprintf("[nvme] command timeout (q%d cid %d, lba %u)\n",
+                (int)(request->tag >> 16), (int)(request->tag & 0xFFFF),
+                (unsigned)(request->dev_lba + request->done));
+        nvme_quiesce();
+        nvme_release_stopped_request(queue);
+        request->status = -1;
+        return 1;
+    }
+
+    nvme_complete_mapped_transfer(queue, request, status);
+    if (queue->partial_state != NVME_PARTIAL_IDLE) {
+        enum nvme_partial_result result =
+            nvme_complete_partial_transfer(queue, request, status);
+        if (result == NVME_PARTIAL_PENDING)
+            return 0;
+        if (result == NVME_PARTIAL_ERROR)
+            status = -1;
+    }
+    if (status != 0) {
+        request->status = -1;
+        return 1;
+    }
+
+    request->done += request->chunk;
+    if (request->op != BLK_OP_FLUSH && request->done < request->count) {
+        if (nvme_issue(request) != 0) {
+            request->status = -1;
             return 1;
         }
         return 0;
     }
-    if (q->mapping) {
-        int dc = dma_mapping_complete(q->mapping, q->map_token,
-                                      status == 0 ? (size_t)r->chunk * 512 : 0);
-        if (dc || dma_unmap(q->mapping)) panic("nvme: invalid DMA completion ownership");
-        q->mapping = NULL; q->map_token = 0;
-    }
-    if (q->prp_token) {
-        if (dma_buffer_complete(g_prp_mem[r->tag >> 16], q->prp_token))
-            panic("nvme: invalid PRP completion ownership");
-        q->prp_token = 0;
-    }
-    if (status != 0) { r->status = -1; return 1; }
-
-    r->done += r->chunk;
-    if (r->op != BLK_OP_FLUSH && r->done < r->count) {
-        if (nvme_issue(r) != 0) { r->status = -1; return 1; }
-        return 0;                                       /* the next chunk is in flight */
-    }
-    r->status = 0;
+    request->status = 0;
     return 1;
 }
 

@@ -1,10 +1,12 @@
 # DMA controls are prerequisites of positive acceptance, not optional siblings.
-.PHONY: test-dma test-dma-negctl test-dma-block test-dma-os
+.PHONY: test-dma test-dma-negctl test-dma-block test-dma-block-negctl test-dma-os
 test-dma: test-dma-negctl test-dma-block test-blk-async
 test-dma-negctl:
 	python3 tests/unit/dma_test.py --build $(BUILD)/dma-core
-test-dma-block:
-	python3 tests/unit/block_dma_test.py --root . --build $(BUILD)/dma-block
+test-dma-block: test-dma-block-negctl
+	python3 tests/unit/block_dma_test.py --root . --build $(BUILD)/dma-block --positive-only
+test-dma-block-negctl:
+	python3 tests/unit/block_dma_test.py --root . --build $(BUILD)/dma-block --controls-only
 # Run with WIDEVERIFY=1 and an independent BUILD. The memory/PIE matrix uses
 # the ordinary DMA implementation and real virtio-blk + NVMe on both firmware.
 test-dma-os: test-dma test-wide-memory-os

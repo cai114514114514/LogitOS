@@ -11,7 +11,7 @@
  * reader of facts, and a number computed here would be a number only /proc
  * knows, which is how two subsystems come to disagree about the same machine.
  *
- * NOT INCLUDED, on purpose: c/kernel/mm/reclaim/reclaim/swap.h and reclaim.h. /proc/meminfo
+ * NOT INCLUDED, on purpose: c/kernel/mm/reclaim/swap.h and reclaim.h. /proc/meminfo
  * would be a natural place for the eviction counters, and reclaim.h is the
  * door to them -- but the block line has an in-flight edit in swap.c/swap.h
  * that does not compile under -Werror right now, and reclaim.h reaches it.
