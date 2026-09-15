@@ -114,6 +114,10 @@ char *url_host_parse(const char *s, int len, int opaque);
  * built on c/net/http/url.c; this replaces it outright, and replacing it means
  * running after it. */
 URL_FN void js_url_install(JSContext *ctx);
+/* Pure realm installer: no document bindings or page state. Class IDs remain
+ * process-wide, registrations runtime-local, and prototypes context-local so
+ * creating a worker cannot invalidate already-live URLs in its parent. */
+URL_FN int js_url_install_core(JSContext *ctx);
 
 /* The Mach-O half of the weak declarations above (include/weaksym.h): an
  * undefined weak reference is an ELF property, so each optional entry point
@@ -121,6 +125,7 @@ URL_FN void js_url_install(JSContext *ctx);
  * only under JS_URL_OPTIONAL, i.e. only in that TU. */
 #ifdef JS_URL_OPTIONAL
 LOGIT_WEAK_STUB(js_url_install);
+LOGIT_WEAK_STUB(js_url_install_core);
 #endif
 #endif
 

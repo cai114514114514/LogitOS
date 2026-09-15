@@ -879,7 +879,24 @@ static const char *IDB_JS =
 "  var ai = !!(options && options.autoIncrement);\n"
 "  if (ai && Array.isArray(kp)) throw derr('autoIncrement is not allowed with an array key path', 'InvalidAccessError');\n"
 "  rec.stores.set(name, { name: name, keyPath: kp, autoIncrement: ai, nextKey: 1, records: [], indexes: new Map() });\n"
+#ifdef JS_IDB_STATIC_UPGRADE_SCOPE
 "  return makeStoreHandle(txn, name);\n"
+#else
+/* beginUpgrade used to leave its initial store-name snapshot untouched.
+ * createObjectStore returned a usable handle, but the ordinary next call
+ * transaction.objectStore(theSameName) threw NotFoundError. The local upgrade
+ * gate exercises both a new database and an existing one: updating only the
+ * database's Map cannot update a transaction's scope. Keep the existing list
+ * current and register creation in the transaction's handle cache, so both
+ * API doors return the same handle. Do not call its public objectStore method:
+ * a page's wrapper of that method must not become a new internal callback.
+ * Normal transactions keep their fixed scope
+ * and objectStore's NotFoundError check remains authoritative. */
+"  txn.objectStoreNames.push(name); txn.objectStoreNames.sort();\n"
+"  var os = makeStoreHandle(txn, name);\n"
+"  txn._stores.set(name, os);\n"
+"  return os;\n"
+#endif
 "}, 'createObjectStore', 1);\n"
 "DBProto.deleteObjectStore = named(function (name) {\n"
 "  var conn = this, txn = currentVersionChangeTxn(conn);\n"
@@ -888,6 +905,14 @@ static const char *IDB_JS =
 "  if (!conn._dbRecord.stores.has(name)) throw derr('no object store of that name', 'NotFoundError');\n"
 "  conn._dbRecord.stores.delete(name);\n"
 "  txn._stores.delete(name);\n"
+#ifndef JS_IDB_STATIC_UPGRADE_SCOPE
+/* A stale name after deletion did more than report an old list: objectStore
+ * passed its scope check and makeStoreHandle read a missing record. Removing
+ * it here restores the proper NotFoundError and permits a new handle when the
+ * same name is recreated later in this upgrade. */
+"  var at = txn.objectStoreNames.indexOf(name);\n"
+"  if (at >= 0) txn.objectStoreNames.splice(at, 1);\n"
+#endif
 "}, 'deleteObjectStore', 1);\n"
 "DBProto.transaction = named(function (storeNames, mode) {\n"
 "  var conn = this;\n"

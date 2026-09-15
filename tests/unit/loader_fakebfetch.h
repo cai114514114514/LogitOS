@@ -17,4 +17,7 @@ void  fake_site_clear_log(void);
  * and therefore the right one for an assertion that says "none". */
 int   fake_site_dials(void);
 
+/* Read-only observations at the real browser.c -> bfetch request seam. */
+const char *fake_site_nav_initiator(void);
+int fake_site_nav_first_browser(void);
 #endif /* LOADER_FAKEBFETCH_H */

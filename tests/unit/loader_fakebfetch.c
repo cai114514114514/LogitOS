@@ -66,11 +66,16 @@ static struct req g_req[NREQ];
 static char g_base[512];
 static int  g_dials, g_reuses, g_requests;
 static void (*g_tick)(void);
+static char g_nav_initiator[600];
+static int g_nav_calls, g_nav_first_browser;
+const char *fake_site_nav_initiator(void) { return g_nav_initiator; }
+int fake_site_nav_first_browser(void) { return g_nav_first_browser; }
 
 /* ---- the fixture site ---- */
 void fake_site_reset(void)
 {
     g_nroutes = 0; g_nlog = 0;
+    g_nav_calls=0;g_nav_first_browser=0;g_nav_initiator[0]=0;
     for (int i = 0; i < NREQ; i++) { free(g_req[i].body); }
     memset(g_req, 0, sizeof g_req);
     g_dials = g_reuses = g_requests = 0;
@@ -95,24 +100,10 @@ int fake_site_fetched(const char *frag)
     return n;
 }
 
-/* ---- URL resolution: enough of RFC 3986 for the fixtures ---- */
+/* Use the production URL algorithm; only transport is simulated here. */
+#include "bfetch_url.inc"
 static void resolve(const char *base, const char *ref, char *out, int max)
-{
-    if (strstr(ref, "://") ) { snprintf(out, max, "%s", ref); return; }
-    if (ref[0] == '/') {
-        /* scheme://host + ref */
-        const char *p = strstr(base, "://");
-        const char *slash = p ? strchr(p + 3, '/') : 0;
-        int hostlen = slash ? (int)(slash - base) : (int)strlen(base);
-        snprintf(out, max, "%.*s%s", hostlen, base, ref);
-        return;
-    }
-    /* relative: strip the last path segment of base */
-    const char *p = strstr(base, "://");
-    const char *last = strrchr(p ? p + 3 : base, '/');
-    int keep = last ? (int)(last - base) + 1 : (int)strlen(base);
-    snprintf(out, max, "%.*s%s", keep, base, ref);
-}
+{ if (browser_url_resolve(base, ref, out, max) != 0) out[0] = 0; }
 
 /* ---- bfetch.h ---- */
 void bfetch_init(void) { }
@@ -120,7 +111,7 @@ void bfetch_set_base(const char *page_url)
 { snprintf(g_base, sizeof g_base, "%s", page_url ? page_url : ""); }
 
 int bfetch_resolve(const char *base, const char *ref, char *out, int max)
-{ resolve(base && base[0] ? base : g_base, ref, out, max); return 0; }
+{ return browser_url_resolve(base && base[0] ? base : g_base, ref, out, max); }
 
 int bfetch_start_from(const char *base, const char *ref)
 {
@@ -155,6 +146,13 @@ int bfetch_start(const char *ref) { return bfetch_start_from(0, ref); }
  * how this arrived: a source grew a dependency and a link line did not follow,
  * which this tree has now recorded seven times. */
 int bfetch_start_nav(const char *ref) { return bfetch_start_from(0, ref); }
+int bfetch_start_nav_from(const char *ref, const char *initiator)
+{
+    if(!g_nav_calls++)g_nav_first_browser=!initiator;
+    snprintf(g_nav_initiator,sizeof g_nav_initiator,"%s",initiator?initiator:"");
+    return bfetch_start_nav(ref);
+}
+void bfetch_set_document(const char *url) { (void)url; }
 
 int bfetch_state(int id)  { return (id >= 0 && g_req[id].used) ? g_req[id].state : BF_FAILED; }
 int bfetch_status(int id) { return (id >= 0 && g_req[id].used) ? g_req[id].status : 0; }

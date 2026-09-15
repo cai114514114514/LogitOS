@@ -45,6 +45,16 @@ int js_module_eval(const char *src, int len, const char *url);
 /* True if `type` (the raw value of a <script type=...> attribute, possibly
  * NULL) selects the module goal. */
 int js_module_is_module_type(const char *type);
+int js_module_is_importmap_type(const char *type);
+/* Prepare the loader even for a classic script's import(). Import maps are
+ * JSON data, registered in script order, never evaluated as JavaScript.
+ * Currently bounded to HTTP(S) addresses by the shared bfetch URL resolver;
+ * integrity metadata is refused until the module fetch enforces it. */
+void js_module_prepare(void);
+int js_module_importmap(const char *json, int len, const char *base_url);
+/* An inline script's unique compiler/cache name is not its base URL. Register
+ * the pair explicitly; never recover it by guessing a '#inline-' suffix. */
+int js_module_inline_referrer(const char *internal_name, const char *base_url);
 /* True if `type` names a classic script (NULL, empty, or a JavaScript MIME
  * type). Anything else -- importmap, application/json, text/template -- is a
  * data block the spec says must NOT be executed. */
@@ -54,5 +64,17 @@ int js_module_is_classic_type(const char *type);
  * many of those failed. Reset per navigation by js_module_reset(). */
 void js_module_stats(int *loaded, int *failed);
 void js_module_reset(void);
+
+/* Guest elapsed time, not host timing or interpreter-only CPU time. Nested
+ * module loads partition one interval: child IO/compilation cannot also be
+ * charged to the parent's linking/evaluation. Initial load dumps exclude any
+ * later dynamic import, timer or unresolved top-level await continuation. */
+struct js_module_profile {
+    unsigned long long compile_ms, prefetch_ms, fetch_ms, link_ms, eval_jobs_ms;
+    unsigned long long compile_bytes;
+    unsigned int compiles, fetches, prefetch_batches;
+};
+void js_module_profile_get(struct js_module_profile *out);
+void js_module_profile_dump(void);
 
 #endif /* LOGIT_JS_MODULE_H */

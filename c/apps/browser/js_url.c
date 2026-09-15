@@ -2531,20 +2531,29 @@ static void carry_statics(JSContext *ctx, JSValueConst from, JSValueConst to)
     js_free(ctx, tab);
 }
 
-void js_url_install(JSContext *ctx)
+int js_url_install_core(JSContext *ctx)
 {
     JSRuntime *rt = JS_GetRuntime(ctx);
+    /* Class IDs identify objects across all live runtimes; registrations are
+     * runtime-local and prototypes below are context-local. QuickJS's
+     * JS_NewClassID is itself idempotent for nonzero IDs, so the previous
+     * unconditional calls did NOT invalidate existing parent objects. The
+     * explicit registration guard also permits another context in one runtime
+     * to install its own constructors without duplicate class registration. */
+    if (!g_url_class) JS_NewClassID(&g_url_class);
+    if (!g_usp_class) JS_NewClassID(&g_usp_class);
+    if (!g_uspit_class) JS_NewClassID(&g_uspit_class);
+    if ((!JS_IsRegisteredClass(rt, g_url_class) && JS_NewClass(rt, g_url_class, &url_class_def) < 0) ||
+        (!JS_IsRegisteredClass(rt, g_usp_class) && JS_NewClass(rt, g_usp_class, &usp_class_def) < 0) ||
+        (!JS_IsRegisteredClass(rt, g_uspit_class) && JS_NewClass(rt, g_uspit_class, &uspit_class_def) < 0)) {
+        JS_ThrowOutOfMemory(ctx);
+        return -1;
+    }
     JSValue g = JS_GetGlobalObject(ctx);
     /* Whatever is being replaced, held until the new pair exists. */
     JSValue old_url = JS_GetPropertyStr(ctx, g, "URL");
     JSValue old_usp = JS_GetPropertyStr(ctx, g, "URLSearchParams");
 
-    JS_NewClassID(&g_url_class);
-    JS_NewClass(rt, g_url_class, &url_class_def);
-    JS_NewClassID(&g_usp_class);
-    JS_NewClass(rt, g_usp_class, &usp_class_def);
-    JS_NewClassID(&g_uspit_class);
-    JS_NewClass(rt, g_uspit_class, &uspit_class_def);
     {
         JSValue ip = JS_NewObject(ctx);
         JS_SetPropertyStr(ctx, ip, "next", JS_NewCFunction(ctx, uspit_next, "next", 0));
@@ -2589,7 +2598,12 @@ void js_url_install(JSContext *ctx)
     JS_FreeValue(ctx, old_url);
     JS_SetPropertyStr(ctx, g, "URL", ctor);
     JS_FreeValue(ctx, g);
+    return 0;
+}
 
+void js_url_install(JSContext *ctx)
+{
+    if (js_url_install_core(ctx) < 0) return;
     /* LAST of the last: everything js_urlbind.c installs is built on the two
      * globals above, and its JS half calls `new URL(...)` directly. */
     if (LOGIT_HAVE(js_urlbind_install)) js_urlbind_install(ctx);
