@@ -616,8 +616,9 @@ static void test_paused_canplay(void)
     CHECK(mel_ready_state(el) >= 3,
           "buffered future samples advance readyState while paused (%d)",
           mel_ready_state(el));
-    CHECK((ev & MEV_LOADEDMETADATA) && (ev & MEV_CANPLAY),
-          "loadedmetadata and canplay are both observable before play()");
+    CHECK((ev & MEV_LOADEDMETADATA) && (ev & MEV_LOADEDDATA) &&
+          (ev & MEV_CANPLAY),
+          "loadedmetadata, loadeddata and canplay are observable before play()");
     mse_free(ms);
 out:
     free(vi); free(vs); free(ai); free(as);

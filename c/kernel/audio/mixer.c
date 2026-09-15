@@ -46,9 +46,16 @@ static struct io_domain snd_lifecycle = IO_DOMAIN_INIT;
 #include "sched.h"
 #include "spinlock.h"
 
+#ifndef memset
 void *memset(void *, int, size_t);
+#endif
 
 #define SND_MAX_STREAMS 8
+#define SND_MAX_APP_CHANNELS 8u
+#define SND_MAX_SAMPLE_BYTES 4u
+#define SND_MAX_PERIOD_BYTES (256u * 1024u)
+#define SND_MAX_RING_BYTES (16u * 1024u * 1024u)
+#define SND_MAX_PERIODS 256u
 
 /* Enough input for one period even when resampling 4:1 down from 192 kHz. */
 #define SND_MAX_RATIO   4
@@ -108,12 +115,21 @@ static int               g_next_handle = 1;
 
 static struct snd_device * _Atomic g_dev;
 static struct semaphore   g_period;
-static unsigned           g_fill;        /* period index kaudio fills next */
+static uint64_t           g_fill;        /* period index kaudio fills next */
 static unsigned           g_dev_underruns;
 static _Atomic uint64_t   g_periods_done;
 static _Atomic int        g_running;
 
-/* Scratch, allocated once from the device's real geometry. Not on the stack:
+/* Separate from the mixer lock: driver start holds the mixer lock and then
+ * the card gate; the card ISR already owns that gate. Taking the mixer lock
+ * from the ISR would invert that order. Event state uses only this short lock,
+ * and no code holding it enters a driver or acquires the mixer lock. */
+static spinlock_t g_event_lock = SPINLOCK_INIT;
+static int g_initialized;
+static int g_worker_created;
+static int g_start_failed;
+
+/* Scratch, allocated for each registered device's validated geometry. Not on the stack:
  * the deep path here is 32 KiB at 192 kHz, and this kernel has already
  * overflowed a thread stack into its own page tables once (see the M11 note). */
 static uint8_t  *g_in_raw;      /* app-format input */
@@ -123,43 +139,101 @@ static unsigned  g_period_frames;
 
 /* ------------------------------------------------------------- registry -- */
 
-int snd_register_device(struct snd_device *d)
+/* Lifecycle domain held by the caller; wait queues must outlive any stream
+ * generation. Reinitializing them on each probe used to orphan sleeping
+ * writers and reset the live semaphore, while leaking the previous scratch. */
+static void initialize_service(void)
 {
+    if (g_initialized) {
+        return;
+    }
+    semaphore_init(&g_period, 0);
+    for (unsigned index = 0; index < SND_MAX_STREAMS; ++index) {
+        waitq_init(&g_str[index].wq);
+    }
+    g_initialized = 1;
+}
+
+static int valid_device_geometry(const struct snd_device *device)
+{
+    if (!device || !device->name || !device->ring || !device->start || !device->stop ||
+        device->format != SND_FMT_S16 || device->channels < 1 || device->channels > 2 ||
+        !snd_fmt_ok(device->rate, device->channels, device->format)) {
+        return 0;
+    }
+    unsigned frame_bytes = device->channels * sizeof(int16_t);
+    if (!device->period_bytes || device->period_bytes % frame_bytes ||
+        device->period_bytes > SND_MAX_PERIOD_BYTES || device->periods < 2 ||
+        device->periods > SND_MAX_PERIODS ||
+        device->periods > SND_MAX_RING_BYTES / device->period_bytes ||
+        (uintptr_t)device->ring % _Alignof(int16_t)) {
+        return 0;
+    }
+    size_t ring_bytes = (size_t)device->period_bytes * device->periods;
+    /* pcm_resample carries its phase in Q16.16. Even at the allowed 4:1
+     * input ratio, one call must stay below its 16-bit integer frame range. */
+    unsigned period_frames = device->period_bytes / frame_bytes;
+    if (period_frames * SND_MAX_RATIO + 4u > UINT16_MAX) {
+        return 0;
+    }
+    return (uintptr_t)device->ring <= UINTPTR_MAX - (ring_bytes - 1u);
+}
+
+int snd_register_device(struct snd_device *device)
+{
+    IO_DOMAIN_GUARD(&snd_lifecycle);
+    if (!valid_device_geometry(device)) {
+        return -1;
+    }
     if (g_dev) {
-        /* Two cards and no notion of a default sink to choose between them.
-         * Saying so is better than silently picking one: on a machine with an
-         * HDMI audio function as well as an analogue codec, "silently picked
-         * one" is how sound comes out of a monitor nobody is looking at. */
         kprintf("[snd] %s ignored: %s is already the output device\n",
-                d->name, g_dev->name);
+                device->name, g_dev->name);
         return -1;
     }
-    /* The mixer builds periods in s16 because every card we drive consumes s16.
-     * Rejecting anything else keeps the conversion in one place instead of
-     * scattering a second format path through the mix loop for a case that has
-     * no hardware behind it. */
-    if (d->format != SND_FMT_S16) {
-        kprintf("[snd] %s rejected: format %d, only s16 is wired\n", d->name, d->format);
+    initialize_service();
+    unsigned period_frames = device->period_bytes / (device->channels * sizeof(int16_t));
+    unsigned input_frames = period_frames * SND_MAX_RATIO + 4u;
+    /* snd_fmt_ok accepts eight app channels. The old two-channel raw allocation
+     * overflowed when an eight-channel F32 stream filled one period. Conversion
+     * scratch and resampler history still follow the one/two-channel device. */
+    uint8_t *input_raw = kmalloc((size_t)input_frames * SND_MAX_APP_CHANNELS *
+                                SND_MAX_SAMPLE_BYTES);
+    int16_t *input_s16 = kmalloc((size_t)input_frames * device->channels * sizeof(int16_t));
+    int16_t *output = kmalloc(device->period_bytes);
+    if (!input_raw || !input_s16 || !output) {
+        kfree(input_raw);
+        kfree(input_s16);
+        kfree(output);
         return -1;
     }
-    if (!d->ring || !d->period_bytes || d->periods < 2) {
-        kprintf("[snd] %s rejected: needs a ring of >= 2 periods\n", d->name);
-        return -1;
-    }
-    g_dev = d;
+    snd_GUARD;
+    g_in_raw = input_raw;
+    g_in_s16 = input_s16;
+    g_out = output;
+    g_period_frames = period_frames;
+    g_fill = 1;
+    g_dev_underruns = 0;
+    g_start_failed = 0;
+    uint64_t event_flags = spin_lock_irqsave(&g_event_lock);
+    g_periods_done = 0;
+    g_running = 0;
+    g_dev = device;
+    spin_unlock_irqrestore(&g_event_lock, event_flags);
     return 0;
 }
 
 int snd_present(void) { return g_dev != 0; }
 
-/* Called FROM THE CARD'S INTERRUPT HANDLER. Everything it does must be legal
- * with the BKL held, in interrupt context, without blocking: a counter and a
- * post, both of which wait.h documents as interrupt-safe. */
-void snd_period_elapsed(struct snd_device *d)
+/* The card ISR may hold its own gate. Only event_lock is taken here: its
+ * identity/running test and counter update cannot straddle detach/rebind. */
+void snd_period_elapsed(struct snd_device *device)
 {
-    if (d != g_dev || !g_running) return;
-    g_periods_done++;
-    sem_post(&g_period);
+    uint64_t flags = spin_lock_irqsave(&g_event_lock);
+    if (device == g_dev && g_running) {
+        ++g_periods_done;
+        sem_post(&g_period);
+    }
+    spin_unlock_irqrestore(&g_event_lock, flags);
 }
 
 /* --------------------------------------------------------------- mixing -- */
@@ -281,7 +355,7 @@ static void kaudio_thread(void)
              * captured WAV: not a decoder fault, not a lost interrupt, an
              * off-by-one in the lead. */
             uint64_t done = g_periods_done;
-            unsigned earliest = (unsigned)done + 1;
+            uint64_t earliest = done + 1;
 
             /* Fell behind (a late wake under TCG, or several IOCs coalesced).
              * The periods between g_fill and `earliest` are already history --
@@ -299,8 +373,8 @@ static void kaudio_thread(void)
              * first interrupt or after a stall. Bounded by the ring: never
              * write past g_periods_done + periods, which would clobber a
              * period the engine has not played yet. */
-            unsigned limit = (unsigned)done + SND_FILL_LEAD;
-            unsigned cap   = (unsigned)done + g_dev->periods - 1;
+            uint64_t limit = done + SND_FILL_LEAD;
+            uint64_t cap = done + g_dev->periods - 1;
             if (limit > cap) limit = cap;
 
             while (g_fill <= limit) {
@@ -317,8 +391,13 @@ static void kaudio_thread(void)
              * like a stutter, is not silence, and passes any "is it still
              * playing" check. The engine is g_fill - done >= SND_FILL_LEAD
              * periods away from this slot, so zeroing it races nothing. */
-            memset(g_dev->ring + (g_fill % g_dev->periods) * g_dev->period_bytes,
-                   0, g_dev->period_bytes);
+            /* Correction: the old unconditional zero wraps onto the active
+             * DMA slot with a two/three/four-period ring. There is no spare
+             * silence slot when the lead already fills every future period. */
+            if (g_fill - done < g_dev->periods) {
+                memset(g_dev->ring + (g_fill % g_dev->periods) * g_dev->period_bytes,
+                       0, g_dev->period_bytes);
+            }
         }
         spin_unlock_irqrestore(&g_snd_lock, fl);
 
@@ -355,51 +434,54 @@ static void kaudio_thread(void)
  * Idempotent, and called with g_snd_lock NOT held (thread_create takes
  * g_sched_lock, and the ordering the rest of the kernel uses is
  * g_sched_lock inside nothing). */
-static int g_engine_up;
-
 static int snd_engine_start(int quiet)
 {
     IO_DOMAIN_GUARD(&snd_lifecycle);
-    if (g_engine_up) return 1;
-    if (!g_dev) return 0;
-
-    /* The guard that makes this safe wherever it is called from. Before
-     * sched_init() there is no current thread on any CPU, and creating one is
-     * the thing that faults. At probe time this is the expected path and says
-     * so; anywhere else it is a diagnosis rather than a silent no-sound. */
+    if (!g_dev || g_start_failed) {
+        return 0;
+    }
+    if (g_running) {
+        return 1;
+    }
     if (!sched_current_thread()) {
-        if (!quiet)
+        if (!quiet) {
             kprintf("[snd] engine start refused: the scheduler is not up yet\n");
+        }
         return 0;
     }
-
-    struct snd_guard start_guard __attribute__((cleanup(snd_guard_drop))) = snd_guard_take();
-    /* Fill the WHOLE ring with silence before the engine is allowed to run, so
-     * a card that starts playing the instant it is told to plays silence rather
-     * than whatever was in that RAM. */
+    /* One worker survives device detach. The old g_engine_up conflated this
+     * lifetime with DMA: a second card was reported started without start()
+     * ever being called. Scheduler publication must occur outside snd_lock.
+     * thread_create currently returns void; its allocation failure cannot be
+     * detected through this interface, so no reliable OOM retry is claimed. */
+    if (!g_worker_created) {
+        thread_create(kaudio_thread, "kaudio");
+        g_worker_created = 1;
+    }
+    snd_GUARD;
     memset(g_dev->ring, 0, (size_t)g_dev->periods * g_dev->period_bytes);
-
-    if (g_dev->start && g_dev->start(g_dev) != 0) {
-        kprintf("[snd] %s: DMA engine would not start -- audio disabled\n", g_dev->name);
-        g_dev = 0;
+    g_fill = 1;
+    uint64_t event_flags = spin_lock_irqsave(&g_event_lock);
+    g_periods_done = 0;
+    g_running = 1;
+    spin_unlock_irqrestore(&g_event_lock, event_flags);
+    /* Holding snd_lock keeps the worker off the ring until start returns.
+     * IRQs use event_lock and may arrive synchronously from a driver callback. */
+    if (g_dev->start(g_dev) != 0) {
+        event_flags = spin_lock_irqsave(&g_event_lock);
+        g_running = 0;
+        spin_unlock_irqrestore(&g_event_lock, event_flags);
+        g_start_failed = 1;
+        kprintf("[snd] %s: DMA start failed; binding disabled until removal\n", g_dev->name);
+        /* Do not retry or zero the DMA ring again: the void stop contract
+         * cannot prove that failed hardware stopped. Driver removal owns the
+         * final hardware quiescence and DMA allocation lifetime. */
         return 0;
     }
-    /* The engine is about to start at period 0 and the whole ring is silent.
-     * kaudio's first wake resyncs this to the real playback position anyway
-     * (g_periods_done + 1), so the only thing that matters here is that it is
-     * not AHEAD of the engine -- 1 is the earliest safe value at start. */
-    g_fill = 1;
-    g_running = 1;
-    g_engine_up = 1;
-
-    snd_guard_drop(&start_guard);
-    thread_create(kaudio_thread, "kaudio");
-    kprintf("[snd] engine running: kaudio started, DMA at %u Hz\n", g_dev->rate);
+    kprintf("[snd] engine running: kaudio ready, DMA at %u Hz\n", g_dev->rate);
     return 1;
 }
 
-/* Called from the first operation that actually needs sound to be coming out.
- * Declared in snd.h so snd.c's syscall entry can use it too. */
 int snd_engine_ensure(void)
 {
     return snd_engine_start(0);
@@ -407,45 +489,13 @@ int snd_engine_ensure(void)
 
 void snd_init(void)
 {
-    unsigned dev_ch, in_frames;
-
-    semaphore_init(&g_period, 0);
-    for (int i = 0; i < SND_MAX_STREAMS; i++) waitq_init(&g_str[i].wq);
-
-    /* _once, not snd_report(): this call is what marks the report as done, so
-     * the first audio syscall's snd_report_once() stays quiet. Calling the bare
-     * form here printed the whole boot line twice on every machine that had a
-     * card -- once at probe, once at the first SYS_SND_*. */
+    IO_DOMAIN_GUARD(&snd_lifecycle);
+    initialize_service();
     snd_report_once();
-    if (!g_dev) return;      /* no card: nothing allocated, no thread, no cost */
-
-    dev_ch = g_dev->channels;
-    g_period_frames = g_dev->period_bytes / (dev_ch * (unsigned)snd_fmt_bytes(g_dev->format));
-    in_frames = g_period_frames * SND_MAX_RATIO + 4;
-
-    g_in_raw = (uint8_t *)kmalloc(in_frames * 2 * 4);          /* worst case: 2ch f32 */
-    g_in_s16 = (int16_t *)kmalloc(in_frames * dev_ch * 2);
-    g_out    = (int16_t *)kmalloc(g_period_frames * dev_ch * 2);
-    if (!g_in_raw || !g_in_s16 || !g_out) {
-        kprintf("[snd] no memory for mix buffers -- audio disabled\n");
-        g_dev = 0;
-        return;
-    }
-
-    /* Everything above is allocation and is safe at probe time. The engine and
-     * its thread are not; they start on first use. If some future boot order
-     * probes after sched_init(), this call succeeds here and the deferral never
-     * happens -- so the behaviour is "as early as is safe", not "always late". */
-    snd_engine_start(1);   /* quiet: at probe time deferral is the design */
-
-    /* Capture's own init (capture.c), called from here rather than from
-     * hda.c a second time: "adding a driver requires editing no other file"
-     * (see the comment at hda_probe's snd_init() call) applies just as much
-     * to capture as to playback, and snd_init() is already the ONE place
-     * every card driver calls unconditionally. Safe when no capture device
-     * registered -- snd_cap_init() only sets up a waitq and a semaphore, no
-     * g_capdev check needed because it does not touch g_capdev at all. */
     snd_cap_init();
+    /* io_domain recursion is task-owned, so open/ensure/init can all share
+     * this domain. None of these calls holds snd_lock while entering it. */
+    (void)snd_engine_start(1);
 }
 
 void snd_report(void)
@@ -659,20 +709,41 @@ void snd_info_fill(struct logit_sndinfo *si)
     si->streams_open = (unsigned)open;
 }
 
-void snd_unregister_device(struct snd_device *d)
+void snd_unregister_device(struct snd_device *device)
 {
     IO_DOMAIN_GUARD(&snd_lifecycle);
-    uint64_t fl = spin_lock_irqsave(&g_snd_lock);
-    if (g_dev != d) { spin_unlock_irqrestore(&g_snd_lock, fl); return; }
+    uint64_t flags = spin_lock_irqsave(&g_snd_lock);
+    if (!device || g_dev != device) {
+        spin_unlock_irqrestore(&g_snd_lock, flags);
+        return;
+    }
+    uint64_t event_flags = spin_lock_irqsave(&g_event_lock);
     g_running = 0;
     g_dev = NULL;
-    for (int i = 0; i < SND_MAX_STREAMS; i++) {
-        if (!g_str[i].used) continue;
-        g_str[i].closing = 1;
-        g_str[i].state = SND_S_DRAINING;
-        waitq_wake_all(&g_str[i].wq);
+    g_periods_done = 0;
+    spin_unlock_irqrestore(&g_event_lock, event_flags);
+    for (unsigned index = 0; index < SND_MAX_STREAMS; ++index) {
+        if (g_str[index].used) {
+            g_str[index].closing = 1;
+            g_str[index].state = SND_S_DRAINING;
+        }
     }
-    spin_unlock_irqrestore(&g_snd_lock, fl);
-    /* kaudio can reap app rings, but its device/ring branch is now unreachable. */
-    if (g_engine_up) sem_post(&g_period);
+    /* We own the same lock as kaudio, so no reader can still use these rings.
+     * Reap before another device registers: old samples/resampler state must
+     * never enter the new sink, even if no worker wake occurs in between. */
+    reap_closed();
+    uint8_t *input_raw = g_in_raw;
+    int16_t *input_s16 = g_in_s16;
+    int16_t *output = g_out;
+    g_in_raw = NULL;
+    g_in_s16 = NULL;
+    g_out = NULL;
+    g_period_frames = 0;
+    g_start_failed = 0;
+    spin_unlock_irqrestore(&g_snd_lock, flags);
+    kfree(input_raw);
+    kfree(input_s16);
+    kfree(output);
+    /* Queued old semaphore tokens are harmless: kaudio reads current device
+     * state under snd_lock. Never reset a semaphore containing live waiters. */
 }

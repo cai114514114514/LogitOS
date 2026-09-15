@@ -195,6 +195,23 @@ int main(void)
     result rn = simulate(&novid);  report(&novid, &rn);
     result ru = simulate(&unb);    report(&unb, &ru);
 
+    /* LIVE MSE STARVATION REGRESSION.  A sound-card play cursor is allowed to
+     * stop between two appended audio ranges.  The next decoded picture can
+     * then remain a few milliseconds ahead of that frozen master.  Repeated
+     * AV_WAIT calls must consume one shared budget and eventually rebase;
+     * capping each individual sleep merely turns the wait into an infinite
+     * polling loop. */
+    avclock stalled;
+    avclock_init(&stalled, 1);
+    avclock_audio(&stalled, 0);
+    long long sleep = 0;
+    int first = avclock_frame(&stalled, 0, 0, &sleep);
+    int wait1 = avclock_frame(&stalled, F, 10 * NS_PER_MS, &sleep);
+    long long first_sleep = sleep;
+    int wait2 = avclock_frame(&stalled, F, 249 * NS_PER_MS, &sleep);
+    long long last_sleep = sleep;
+    int released = avclock_frame(&stalled, F, 260 * NS_PER_MS, &sleep);
+
     /* --- the gates ------------------------------------------------------ */
     /* When the machine is fast enough, nothing is dropped and the drift is a
      * rounding error. This is the case that must be exactly right. */
@@ -207,6 +224,14 @@ int main(void)
     GATE((double)rf.wall_ns / rf.media_ns < 1.02 && (double)rf.wall_ns / rf.media_ns > 0.98,
          "a fast machine did not play in real time (%.3fx)",
          (double)rf.wall_ns / rf.media_ns);
+    GATE(first == AV_SHOW && wait1 == AV_WAIT && wait2 == AV_WAIT,
+         "frozen-audio setup did not hold exactly one early picture");
+    GATE(first_sleep == F && last_sleep == 11 * NS_PER_MS,
+         "held-picture wait budget was reset (%lld ms then %lld ms)",
+         first_sleep / NS_PER_MS, last_sleep / NS_PER_MS);
+    GATE(released == AV_SHOW && stalled.resyncs == 1 && stalled.frames_shown == 2,
+         "frozen audio kept a picture parked past 250 ms (what=%d resyncs=%lld shown=%lld)",
+         released, stalled.resyncs, stalled.frames_shown);
 
     /* AUDIO AND VIDEO MUST STAY TOGETHER, in every configuration. This is the
      * claim the whole policy exists to make and the one a viewer perceives.

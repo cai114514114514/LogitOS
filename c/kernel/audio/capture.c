@@ -44,6 +44,10 @@ static struct io_domain cap_lifecycle = IO_DOMAIN_INIT;
  * what every real capture API does (ALSA calls it -EPIPE and expects the
  * reader to catch up from "now"), and it is the only choice that keeps
  * kcapture non-blocking.
+ * Correction: that paragraph conflated two rings. Overwritten DMA periods
+ * are skipped; the stream's pcm_ring_write actually keeps queued bytes and
+ * drops new bytes when full. This implementation counts either loss as an
+ * overrun. It does not implement an ALSA error or a newest-audio policy.
  */
 #include "snd.h"
 #include "kheap.h"
@@ -97,26 +101,28 @@ static unsigned          g_cap_drain;          /* next period index to copy out 
 static unsigned          g_cap_dev_overruns;    /* periods dropped with NO stream open */
 static _Atomic int       g_cap_running;
 static int               g_cap_engine_up;
+static int               g_cap_initialized;
 
 /* ------------------------------------------------------------- registry -- */
 
 int snd_register_capture_device(struct snd_capdevice *d)
 {
+    IO_DOMAIN_GUARD(&cap_lifecycle);
+    /* WAV consumers use s16 frames. Validate the complete geometry before
+     * publishing it: reporting and buffering both divide by frame size. */
+    if (!d || !snd_fmt_ok(d->rate, d->channels, d->format) ||
+        d->format != SND_FMT_S16 || !d->ring || d->periods < 2 ||
+        !d->period_bytes || d->period_bytes % (d->channels * 2u) ||
+        d->period_bytes > SIZE_MAX / d->periods) {
+        return -1;
+    }
+    /* Capture may be the only usable direction on a card. Initialize before
+     * publishing it instead of depending on successful playback probe/init. */
+    snd_cap_init();
+    cap_GUARD;
     if (g_capdev) {
         kprintf("[snd] %s (capture) ignored: %s is already the input device\n",
                 d->name, g_capdev->name);
-        return -1;
-    }
-    /* Same reasoning as snd_register_device(): one hardware format wired,
-     * because s16 is the only one anything downstream (WAV writers, the s16
-     * ring type itself) has been asked to consume. */
-    if (d->format != SND_FMT_S16) {
-        kprintf("[snd] %s (capture) rejected: format %d, only s16 is wired\n",
-                d->name, d->format);
-        return -1;
-    }
-    if (!d->ring || !d->period_bytes || d->periods < 2) {
-        kprintf("[snd] %s (capture) rejected: needs a ring of >= 2 periods\n", d->name);
         return -1;
     }
     g_capdev = d;
@@ -129,8 +135,9 @@ int snd_capture_present(void) { return g_capdev != 0; }
  * snd_period_elapsed() in snd.h. A counter bump and a post, nothing else. */
 void snd_capture_period_elapsed(struct snd_capdevice *d)
 {
-    (void)d;
-    if (!g_cap_running) return;
+    /* Another controller, or a retained callback after its detach, must not
+     * advance the selected input's consumer index. Keep this IRQ path short. */
+    if (d != g_capdev || !g_cap_running) return;
     g_cap_periods_done++;
     sem_post(&g_cap_period);
 }
@@ -166,15 +173,18 @@ static void kcapture_thread(void)
         if (g_capdev && g_cap_running) {
             uint64_t done = g_cap_periods_done;
 
-            /* Fell behind by more than the ring holds: the periods between
+            /* Fell behind by at least the ring's capacity: periods between
              * g_cap_drain and (done - periods + 1) have already been
              * overwritten by the DMA engine -- there is nothing left to copy
              * out of them. Same recovery shape as mixer.c's g_fill clamp,
              * mirrored: there it protects against writing into what the
              * engine is currently playing, here it protects against reading
              * what the engine has already overwritten. */
-            uint64_t oldest_live = (done > g_capdev->periods)
-                                  ? done - g_capdev->periods : 0;
+            /* After N completions the device is already writing period N.
+             * The old >= one-ring case included that in-progress slot and
+             * could copy a mixture of its old tail and new head into a WAV. */
+            uint64_t oldest_live = (done >= g_capdev->periods)
+                                  ? done - g_capdev->periods + 1 : 0;
             if (g_cap_drain < oldest_live) {
                 unsigned skipped = (unsigned)(oldest_live - g_cap_drain);
                 g_cap_dev_overruns += skipped;
@@ -254,8 +264,13 @@ static int snd_cap_engine_start(void)
 
 void snd_cap_init(void)
 {
+    cap_GUARD;
+    /* Drivers may initialize playback after registering capture. Resetting
+     * an existing semaphore/waitq would discard pending audio or waiters. */
+    if (g_cap_initialized) return;
     waitq_init(&g_cs.wq);
     semaphore_init(&g_cap_period, 0);
+    g_cap_initialized = 1;
     /* Nothing else to allocate: unlike the mixer's scratch buffers (one
      * resampler needs several), a capture period is copied byte-for-byte with
      * no conversion, so there is no per-format scratch sized here. */

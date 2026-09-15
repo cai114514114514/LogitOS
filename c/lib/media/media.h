@@ -249,6 +249,8 @@ typedef struct {
     long long audio_pts_ns;    /* -1 until the audio path reports; the master */
     long long offset_ns;       /* correction a re-base applied to the master */
     long long max_sleep_ns;
+    long long wait_started_ns; /* wall time at first AV_WAIT for wait_pts_ns */
+    long long wait_pts_ns;     /* identifies retries of the same held frame */
     long long resync_ns;
     long long drop_ns;         /* lateness beyond which the frame is not shown */
     int       max_drop_run;    /* never skip more than this many in a row */
@@ -259,6 +261,7 @@ typedef struct {
     long long last_drift_ns;
     int       started;
     int       have_audio;
+    int       waiting_pts;
 } avclock;
 
 /* have_audio selects the master. Defaults: 50 ms drop threshold, 1 s resync,

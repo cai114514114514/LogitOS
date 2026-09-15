@@ -71,6 +71,8 @@ void avclock_init(avclock *c, int have_audio)
     c->audio_pts_ns = -1;
     c->offset_ns = 0;
     c->max_sleep_ns = 250000000LL;   /* never park on one absurd timestamp */
+    c->wait_started_ns = 0;
+    c->wait_pts_ns = 0;
     c->resync_ns = 1000000000LL;     /* a second behind: stop chasing */
     c->drop_ns = 50000000LL;         /* two frames at 25 fps, and about the
                                       * threshold at which lip-sync error
@@ -93,6 +95,7 @@ void avclock_init(avclock *c, int have_audio)
     c->last_drift_ns = 0;
     c->started = 0;
     c->have_audio = have_audio ? 1 : 0;
+    c->waiting_pts = 0;
 }
 
 void avclock_audio(avclock *c, long long played_pts_ns)
@@ -142,13 +145,46 @@ int avclock_frame(avclock *c, long long pts_ns, long long now_ns, long long *sle
     long long drift = pts_ns - m;          /* + = video ahead, - = video behind */
 
     if (drift > 0) {
-        /* Early. Wait -- but bounded, so one wild timestamp in a corrupt file
-         * cannot park the player for an hour. */
+        /* Early.  The bound is on the TOTAL wait for this picture, not on one
+         * answer from this function.  A polling caller otherwise receives the
+         * same capped AV_WAIT forever when an audio ring temporarily drains:
+         * the card's cursor parks just before the picture and no future call
+         * can make the remaining positive drift disappear.
+         *
+         * A new pts starts a new budget.  When the budget is exhausted, rebase
+         * the master to the held picture and show it.  For an audio master the
+         * correction remains an offset, so later card progress is still the
+         * clock; a transient MSE starvation does not permanently demote audio
+         * to wall time. */
+        if (!c->waiting_pts || c->wait_pts_ns != pts_ns) {
+            c->waiting_pts = 1;
+            c->wait_pts_ns = pts_ns;
+            c->wait_started_ns = now_ns;
+        }
+        long long waited = now_ns - c->wait_started_ns;
+        if (waited < 0) waited = 0;
+        if (waited >= c->max_sleep_ns) {
+            c->waiting_pts = 0;
+            c->resyncs++;
+            if (c->have_audio && c->audio_pts_ns >= 0)
+                c->offset_ns = pts_ns - c->audio_pts_ns;
+            else {
+                c->start_ns = now_ns;
+                c->anchor_pts_ns = pts_ns;
+            }
+            record(c, drift);
+            c->drop_run = 0;
+            c->frames_shown++;
+            return AV_SHOW;
+        }
         long long s = drift;
-        if (s > c->max_sleep_ns) s = c->max_sleep_ns;
+        long long remaining = c->max_sleep_ns - waited;
+        if (s > remaining) s = remaining;
         if (sleep_ns) *sleep_ns = s;
         return AV_WAIT;
     }
+
+    c->waiting_pts = 0;
 
     if (-drift > c->resync_ns) {
         /* Permanently behind. Re-anchor instead of dropping for ever. */

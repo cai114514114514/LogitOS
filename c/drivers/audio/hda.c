@@ -7,9 +7,9 @@ static io_lock_t hda_gate = IO_LOCK_INIT;
  * HDA is the right target because it is what real machines have: every PC
  * built since about 2004 has an HDA controller, the register map is a published
  * spec rather than a per-vendor secret, and QEMU emulates it faithfully enough
- * that the same code drives both. AC'97 would have been a third of the work and
- * is a dead end -- see ac97.c, which exists as the fallback for machines that
- * really only have that.
+ * that the same code drives both. Earlier notes dismissed AC'97 as a dead end
+ * and claimed an ac97.c fallback already existed. That file never existed.
+ * The separate audio/ac97/ driver now provides the older-controller path.
  *
  * WHAT AN HDA CONTROLLER ACTUALLY IS. Two completely separate things share one
  * PCI function, and conflating them is the usual way this driver goes wrong:

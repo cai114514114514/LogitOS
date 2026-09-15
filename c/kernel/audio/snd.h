@@ -99,21 +99,26 @@ struct snd_device {
 
 /* Called by a card driver from its probe(). The first device registered wins;
  * a second one is logged and ignored (we have no notion of a default sink to
- * choose between them yet, and silently picking one would be worse). */
+ * choose between them yet, and silently picking one would be worse). Geometry
+ * must describe an aligned s16 mono/stereo DMA ring. Registration allocates
+ * that device's mixing scratch and can fail; unregister releases the scratch
+ * after excluding the worker. Hardware stop/free remains the driver's job. */
 int  snd_register_device(struct snd_device *d);
 
 /* Called by the card driver FROM ITS INTERRUPT HANDLER when the engine has
  * finished playing a period. Interrupt-safe and non-blocking by construction:
- * it does a counter bump and a sem_post, nothing else. */
+ * a short event lock validates the current running device before the counter
+ * bump and sem_post. It never takes the mixer lock or calls a driver. */
 void snd_period_elapsed(struct snd_device *d);
 
 /* Is there a card? Everything else degrades to SND_E_NODEV when this is 0. */
 int  snd_present(void);
 
 /* ------------------------------------------------------------- the mixer -- */
-/* Start the kaudio thread. Called once from kmain after dev_probe_all(); a
- * no-op when no card registered, so a machine with no sound hardware spends
- * nothing on it. */
+/* Initialize service queues once, even across multiple driver probes. The old
+ * comment said kmain starts the worker here; drivers actually call this during
+ * probe, before the scheduler exists. DMA/worker start is deferred until safe,
+ * and the one worker is reused when another device later registers. */
 void snd_init(void);
 
 /* Start the DMA engine and the kaudio thread if they are not already running.
@@ -184,9 +189,10 @@ void snd_capture_period_elapsed(struct snd_capdevice *d);
 int  snd_capture_present(void);
 
 /* Idempotent; safe to call whether or not a capture device is registered.
- * Called once from snd_init() (mixer.c) so a machine with no capture path
- * pays nothing extra beyond the check. Allocates the single stream's waitq;
- * does NOT start the DMA engine or spawn kcapture -- see snd_cap_engine_ensure,
+ * Previously relied on snd_init() alone. Capture registration now calls it
+ * before publishing the input, so capture need not depend on playback probe.
+ * Initializes the single stream's waitq once, preserving existing waiters;
+ * does NOT start the DMA engine or spawn kcapture -- see snd_cap_engine_start,
  * same boot-order landmine snd_engine_ensure documents for playback
  * (thread_create() before sched_init() faults). */
 void snd_cap_init(void);
