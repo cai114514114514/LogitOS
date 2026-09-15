@@ -41,6 +41,7 @@ Exit code 0 only if the gate's assertions hold (see GATE at the bottom);
 --json-only skips the assertion (for baseline runs that must NOT gate).
 """
 import argparse
+import hashlib
 import http.server
 import json
 import os
@@ -295,6 +296,23 @@ def main():
                          "hits==reqs, dials=0)")
     args = ap.parse_args()
 
+    def artifact_ids():
+        result = {}
+        for name in (args.iso, args.disk):
+            path = os.path.realpath(name)
+            before = os.stat(path)
+            digest = hashlib.sha256()
+            with open(path, "rb") as fh:
+                for block in iter(lambda: fh.read(1024 * 1024), b""):
+                    digest.update(block)
+            after = os.stat(path)
+            if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
+                raise RuntimeError("artifact changed while hashing: " + path)
+            result[path] = {"sha256": digest.hexdigest(),
+                            "size": after.st_size,
+                            "mtime_ns": after.st_mtime_ns}
+        return result
+
     for p, what in ((args.iso, "iso"), (args.disk, "disk")):
         if not os.path.exists(p) or os.path.getsize(p) == 0:
             print("HARNESS FAIL: the %s (%s) is missing or empty" % (what, p))
@@ -309,7 +327,10 @@ def main():
     serial_path = os.path.join(tmp, "serial.log")
 
     rec = {"page": args.page, "visits": [], "control": None,
-           "serial_log": os.path.join(tmp, "serial.log"),
+           "serial_log": None,
+           "runtime_serial_log": os.path.join(tmp, "serial.log"),
+           "artifacts": {"before": artifact_ids()},
+           "qemu_accel": "tcg,thread=multi",
            "gate": None, "started": time.strftime("%Y-%m-%dT%H:%M:%S")}
 
     cmd = [QEMU, "-cpu", os.environ.get("QEMU_CPU", "max"), "-cdrom", args.iso,
@@ -357,12 +378,35 @@ def main():
     def finish(code, why):
         rec["why"] = why
         rec["finished"] = time.strftime("%Y-%m-%dT%H:%M:%S")
-        rec["serial_tail"] = serial()[-4000:]
+        serial_body = serial()
+        rec["serial_tail"] = serial_body[-4000:]
         try:
             proc.kill()
+            proc.wait(timeout=10)
         except OSError:
             pass
+        except subprocess.TimeoutExpired:
+            proc.terminate()
+            proc.wait(timeout=10)
         srv.shutdown()
+        try:
+            rec["artifacts"]["after"] = artifact_ids()
+            rec["artifacts"]["unchanged"] = (rec["artifacts"]["before"] ==
+                                                    rec["artifacts"]["after"])
+        except (OSError, RuntimeError) as exc:
+            rec["artifacts"]["error"] = str(exc)
+            rec["artifacts"]["unchanged"] = False
+        if not rec["artifacts"]["unchanged"]:
+            code = 2
+            why = "artifact identity changed during run"
+            rec["why"] = why
+        evidence_dir = os.path.splitext(os.path.abspath(args.out))[0]
+        os.makedirs(evidence_dir, exist_ok=True)
+        serial_copy = os.path.join(evidence_dir, "serial.txt")
+        with open(serial_copy, "w", encoding="utf-8") as fh:
+            fh.write(serial_body)
+        rec["serial_log"] = os.path.relpath(serial_copy,
+                                             os.path.dirname(os.path.abspath(args.out)))
         with open(args.out, "w") as fh:
             json.dump(rec, fh, indent=1)
         print(json.dumps({"gate": rec.get("gate"), "why": why}, indent=1))
@@ -403,7 +447,11 @@ def main():
         time.sleep(3)
         ui = Session(qmp_path, serial=serial_path)
         try:
-            ui.launch_app("browser")
+            # A long unverified pointer jump can lose PS/2 bytes under a busy
+            # TCG host and leave the click in the gap beside Browser.  Confirm
+            # the guest cursor at the published Dock coordinate before the
+            # launch, so host contention cannot masquerade as launch latency.
+            ui.launch_app("browser", probe=os.path.join(tmp, "browser-launch-pointer.ppm"))
         except AssertionError as e:
             finish(2, str(e))
         time.sleep(7)

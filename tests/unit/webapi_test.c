@@ -18,6 +18,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "quickjs.h"
 #include "js_webapi.h"
@@ -174,6 +175,15 @@ static void fs_answer(struct fakesock *s)
 
     if (!strcmp(target, "/hello")) {
         rsp_body(s, 200, "OK", "text/plain", "hello world");
+    } else if (!strcmp(target, "/multi-headers")) {
+        /* Deliberately unsorted and mixed case. Cookies exercise the real
+         * response visibility filter, not a fabricated exposed header. Their
+         * path prevents this fixture changing unrelated subsequent requests. */
+        rsp_add(s,"HTTP/1.1 200 OK\r\nX-Z: end\r\nX-Multi: alpha\r\n"
+                  "x-multi: beta\r\nX-MULTI: gamma\r\nX-A: start\r\n"
+                  "Set-Cookie: header-a=one; Path=/headers-only\r\n"
+                  "set-cookie: header-b=two; Path=/headers-only\r\n"
+                  "Content-Length: 0\r\n\r\n");
     } else if (!strcmp(target, "/json")) {
         rsp_body(s, 200, "OK", "application/json", "{\"a\":1,\"b\":[2,3]}");
     } else if (!strcmp(target, "/notfound")) {
@@ -592,10 +602,39 @@ static void test_fetch(void)
     ckjs("AB && AB.length === 11 && AB[0] === 104", "arrayBuffer() gives the raw bytes");
 
     run("var MH = null; fetch('/hello').then(function (r) { var o = []; r.headers.forEach(function (v, k) "
-        "{ if (k === 'x-trace') o.push(v); }); MH = { j: r.headers.get('x-trace'), n: o.length }; });");
+        "{ if (k === 'x-trace') o.push(v); }); MH = { j: r.headers.get('x-trace'), n: o.length, v: o[0] }; });");
     settle(40);
-    ckjs("MH && MH.j === 'one, two' && MH.n === 2",
-         "repeated headers are kept apart and joined by get()");
+    /* The old assertion was MH.n === 2: 'repeated headers are kept apart and
+     * joined by get()'. Correction: keeping both wire values does NOT mean
+     * iterating both fields. Fetch's Headers iterable uses sort-and-combine,
+     * yielding one entry for ordinary names and separate entries only for
+     * Set-Cookie. The actual transport returned {j:'one, two',n:1}; changing
+     * production to satisfy n=2 would undo already-correct standard behavior.
+     * https://fetch.spec.whatwg.org/#concept-header-list-sort-and-combine */
+    ckjs("MH && MH.j === 'one, two' && MH.n === 1 && MH.v === 'one, two'",
+         "repeated response headers iterate once with both wire values");
+
+    run("var HM=null;fetch('/multi-headers').then(function(r){var each=[];"
+        "r.headers.forEach(function(v,k){each.push([k,v])});"
+        "HM={get:r.headers.get('X-MULTI'),each:each,entries:Array.from(r.headers.entries()),"
+        "keys:Array.from(r.headers.keys()),values:Array.from(r.headers.values()),"
+        "cookie:r.headers.get('set-cookie'),cookies:r.headers.getSetCookie()};});");
+    settle(40);
+    ckjs("HM&&HM.get==='alpha, beta, gamma'", "all mixed-case repeated wire values survive get");
+    ckjs("HM&&JSON.stringify(HM.each)===JSON.stringify([['content-length','0'],['x-a','start'],['x-multi','alpha, beta, gamma'],['x-z','end']])",
+         "response forEach sorts names and combines repeated values in wire order");
+    ckjs("HM&&JSON.stringify(HM.entries)===JSON.stringify(HM.each)&&HM.keys.join('|')==='content-length|x-a|x-multi|x-z'&&HM.values.join('|')==='0|start|alpha, beta, gamma|end'",
+         "response entries keys and values share the combined iteration view");
+    ckjs("HM&&HM.cookie===null&&HM.cookies.length===0&&!HM.keys.includes('set-cookie')",
+         "network Set-Cookie remains hidden from every Headers read surface");
+
+    /* Script-created unguarded Headers can carry Set-Cookie. This tests its
+     * separate-entry rule without weakening fetch's forbidden-header filter. */
+    run("var HS=new Headers([['Set-Cookie','a=1'],['SET-cookie','b=2'],['X-Multi','one'],['x-multi','two']]);"
+        "var HSentries=Array.from(HS.entries()),HSeach=[];HS.forEach(function(v,k){HSeach.push([k,v])});");
+    ckjs("HS.getSetCookie().join('|')==='a=1|b=2'", "unguarded Headers preserves separate Set-Cookie values");
+    ckjs("JSON.stringify(HSentries)===JSON.stringify([['set-cookie','a=1'],['set-cookie','b=2'],['x-multi','one, two']])&&JSON.stringify(HSeach)===JSON.stringify(HSentries)",
+         "Set-Cookie alone retains repeated iteration entries");
 
     /* Redirects. */
     run("var RD = null; fetch('/redirect').then(function (r) { return r.text().then(function (t) "
@@ -625,7 +664,7 @@ static void test_fetch(void)
     ckjs("F === 'TypeError'", "an unopenable connection rejects with a TypeError");
 
     run("var BAD = 'pending'; fetch('::::not a url').catch(function (e) { BAD = e.name; });");
-    settle(10);
+    settle(2);
     ckjs("BAD === 'TypeError'", "an unparseable URL rejects rather than throwing");
 }
 
@@ -643,11 +682,12 @@ static void test_fetch_request(void)
     ckjs("P && /Content-Length: 10/.test(P)", "Content-Length is computed from the body");
     ckjs("P && /\\r\\n\\r\\nname=value$/.test(P)", "the body follows the headers");
     ckjs("P && /Host: page\\.example/.test(P)", "Host comes from the URL, not the caller");
-
     run("var H = null; fetch('http://a.example:8080/host').then(function (r) { return r.text(); })"
         ".then(function (t) { H = t; });");
     settle(60);
     ckjs("H === 'a.example:8080'", "a non-default port is included in Host");
+    ck(strstr(last_req, "Referer: http://page.example/\r\n") != 0,
+       "cross-origin fetch trims Referer to the document origin");
 
     /* Header injection: the value carries CRLF and must not become two headers. */
     run("var I = null; fetch('/echo', { headers: { 'X-A': 'good\\r\\nX-Evil: yes' } })"
@@ -704,6 +744,29 @@ static void test_xhr(void)
         "z.onload = function () { XJ = z.response; }; z.open('GET', '/json'); z.send();");
     settle(60);
     ckjs("XJ && XJ.a === 1", "responseType='json' parses the body");
+
+    /* Bilibili's MP4 range loader uses this exact surface: it requests an
+     * ArrayBuffer and hands xhr.response straight to its ISO-BMFF parser.
+     * NUL, invalid UTF-8 and split reads make a text round-trip incapable of
+     * passing accidentally. */
+    fs_reset();
+    run("var XA = { progress: 0, loads: 0, states: [] };"
+        "var a = new XMLHttpRequest(); a.responseType = 'arraybuffer';"
+        "a.onreadystatechange = function () { XA.states.push(a.readyState); };"
+        "a.onprogress = function () { XA.progress++; };"
+        "a.onload = function () { XA.loads++; XA.tag = Object.prototype.toString.call(a.response);"
+        " XA.bytes = Array.from(new Uint8Array(a.response)).join(',');"
+        " XA.text = a.responseText; };"
+        "a.open('POST', '/binecho');"
+        "a.send(new Uint8Array([0,255,128,65,195,0,244,144,128,128]));");
+    settle(80);
+    ckjs("XA.tag === '[object ArrayBuffer]'", "responseType='arraybuffer' returns an ArrayBuffer");
+    ckjs("XA.bytes === '0,255,128,65,195,0,244,144,128,128'",
+         "XHR arraybuffer preserves split binary bytes exactly");
+    ckjs("XA.text === '' && XA.loads === 1 && XA.progress >= 1",
+         "binary XHR completes once without text-decoding its body");
+    ckjs("XA.states[0] === 1 && XA.states.includes(2) && XA.states.includes(3) && XA.states[XA.states.length-1] === 4",
+         "binary XHR retains the readyState lifecycle");
 }
 
 /* ---- 6. location + history ------------------------------------------- */
@@ -899,6 +962,35 @@ static void test_data_urls(void)
         "  .then(function (b) { var u = new Uint8Array(b); d4 = Array.from(u).join(','); });");
     settle(2);
     ckjs("d4 === '0,1,2,3,255'", "binary payloads survive as bytes");
+
+    /* Bilibili's player bootstrap constructs a data:application/wasm;base64
+     * URL hundreds of KiB long. The former JS path expanded every input byte
+     * into a growable number Array, then concatenated it back into a string;
+     * in the guest that spent 126.9 seconds in percentDecodeBytes and tripped
+     * the page watchdog before video.js could load. Keep a same-shape payload
+     * here: size + boundary bytes prove it was decoded, while wall time makes
+     * the regression observable instead of merely producing the right answer
+     * eventually. Five seconds is deliberately loose for a host unit test. */
+    struct timespec dl0, dl1;
+    clock_gettime(CLOCK_MONOTONIC, &dl0);
+    run("var dlres={};var dlb64='QUJD'.repeat(131072);"
+        "fetch('data:application/wasm;base64,'+dlb64).then(function(r){return r.arrayBuffer()})"
+        ".then(function(b){var u=new Uint8Array(b);dlres.n=u.length;dlres.a=u[0];"
+        "dlres.z=u[u.length-1]},function(e){dlres.error=e.name+': '+e.message});");
+    settle(10);
+    clock_gettime(CLOCK_MONOTONIC, &dl1);
+    double dlms = (dl1.tv_sec - dl0.tv_sec) * 1000.0 +
+                  (dl1.tv_nsec - dl0.tv_nsec) / 1000000.0;
+    JSValue dlv = eval("JSON.stringify(dlres)");
+    const char *dls = JS_ToCString(ctx, dlv);
+    printf("      large base64 data URL: %.2f ms, result %s\n",
+           dlms, dls ? dls : "<exception>");
+    if (dls) JS_FreeCString(ctx, dls);
+    JS_FreeValue(ctx, dlv);
+    ckjs("dlres.n===393216&&dlres.a===65&&dlres.z===67",
+         "a 512 KiB player-shaped base64 URL decodes byte-exactly");
+    ck(dlms < 5000.0,
+       "the large data URL finishes inside the player watchdog budget");
 
     run("var d5 = 'unset'; fetch('data:this-has-no-comma').then(function () { d5 = 'resolved'; },"
         "  function (e) { d5 = e.name; });");

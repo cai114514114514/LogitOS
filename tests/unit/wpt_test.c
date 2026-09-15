@@ -269,6 +269,13 @@ static char *resolve_url(const char *url, const char *testdir, char *out, size_t
  * exactly as a relative URL would be, and a "/..." one against the root. */
 static const char *g_testdir = "";
 
+/* This harness reads modules synchronously from the local WPT checkout.
+ * Prefetch is a transport optimization, so it has no work queue here; the
+ * subsequent bfetch_sync still performs (and can fail) the actual file read.
+ * The production module loader now calls these seams even in a fresh link. */
+void bfetch_prefetch(const char *ref) { (void)ref; }
+void bfetch_prefetch_wait(void) {}
+
 int bfetch_resolve(const char *base, const char *ref, char *out, int max)
 {
     /* Strip the synthetic http://web-platform.test:8000 origin off `base` so
