@@ -2,6 +2,9 @@
 #define LOGIT_TCP_H
 
 #include <stdint.h>
+struct poll_table;
+short tcp_file_poll(int id,int listener,struct poll_table *pt);
+void tcp_poll_wake(void);
 
 /* A compact active-open (client) TCP. No listen/accept.
  *
@@ -75,6 +78,8 @@ int  tcp_connect(uint32_t dst, uint16_t port);
  * of these progress concurrently under tcp_poll(); tcp_connect() is just the
  * two of them with a wait loop between. */
 int  tcp_connect_start(uint32_t dst, uint16_t port);
+/* Descriptor-owned active open; retained until tcp_close even after failure. */
+int  tcp_connect_owned(uint32_t dst, uint16_t port);
 int  tcp_connect_start_addr(const struct tcp_addr *dst, uint16_t port);
 int  tcp_connect_status(int id);
 
@@ -146,6 +151,7 @@ int  tcp_get_info(int id, struct tcp_info *out);
 #define TCP_L_E_AGAIN (-4)   /* nothing to accept yet -- NOT an error */
 
 int  tcp_listen(uint16_t port, int backlog, int pid);
+int  tcp_listen_addr(uint16_t port, int backlog, int pid,uint32_t addr);
 int  tcp_accept(int lid);                       /* never waits */
 int  tcp_accept_wait(int lid, unsigned ms);     /* parks; same returns */
 int  tcp_listen_port(int lid);
@@ -154,6 +160,7 @@ void tcp_listen_close_owner(int pid);
 
 /* Peer address/port of an accepted connection (getpeername). 0 on success. */
 int  tcp_peer(int id, uint32_t *ip, uint16_t *port);
+int  tcp_local(int id, uint32_t *ip, uint16_t *port);
 
 /* Park the calling thread until the connection is readable/writable, or `ms`
  * elapses. tcp_wait_readable returns what tcp_available() would; the write side

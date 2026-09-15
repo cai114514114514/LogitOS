@@ -158,6 +158,8 @@ int  tlss_step(int id);
  * bytes read, 0 if nothing is available yet, or -1 on close/failure. */
 int  tlss_send(int id, const void *buf, int len);
 int  tlss_recv(int id, void *buf, int max);
+/* Drain queued ciphertext: 1 complete, 0 would block, -1 failed. */
+int  tlss_flush(int id);
 
 /* The ALPN protocol selected ("" if none), its length, or -1 for a bad id. */
 int  tlss_alpn(int id, char *out, int max);

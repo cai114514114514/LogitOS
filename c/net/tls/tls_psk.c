@@ -1,3 +1,7 @@
+#include "../../drivers/core/io_domain.h"
+/* One owner for this session/ticket pool. Only nonblocking steps hold it;
+ * the caller pumps TCP after the step returns. It may never span net_poll. */
+static struct io_domain tls_ticket_owner = IO_DOMAIN_INIT;
 /* TLS 1.3 session resumption (RFC 8446 §2.2, §4.2.11, §4.6.1): the ticket
  * cache, the PSK binder, and the pre_shared_key / psk_key_exchange_modes
  * extensions.
@@ -145,6 +149,7 @@ int tls_psk_store(const char *host, int suite, const uint8_t *res_master,
                   const uint8_t *blob, int bloblen,
                   uint32_t lifetime, uint32_t age_add, int64_t now)
 {
+    IO_DOMAIN_GUARD(&tls_ticket_owner);
     if (!host || !host[0] || bloblen <= 0 || bloblen > TICKET_BLOB_MAX) return -1;
     /* hkdf_expand_label bounds its context at 64 bytes. A ticket_nonce is
      * 0..255 by the grammar but every implementation in the wild uses 8; a
@@ -221,6 +226,7 @@ static struct tls_ticket *ticket_find(const char *host, int64_t now)
  * tickets every time one got double-offered. */
 void tls_psk_forget(const char *host)
 {
+    IO_DOMAIN_GUARD(&tls_ticket_owner);
     for (int i = 0; i < TICKET_MAX; i++)
         if (tickets[i].used && streq(tickets[i].host, host)) ticket_clear(&tickets[i]);
 }
@@ -228,6 +234,7 @@ void tls_psk_forget(const char *host)
 /* Test/diagnostic: how many live tickets are cached. */
 int tls_psk_count(void)
 {
+    IO_DOMAIN_GUARD(&tls_ticket_owner);
     int n = 0;
     for (int i = 0; i < TICKET_MAX; i++) if (tickets[i].used) n++;
     return n;
@@ -235,6 +242,7 @@ int tls_psk_count(void)
 
 void tls_psk_clear_all(void)
 {
+    IO_DOMAIN_GUARD(&tls_ticket_owner);
     for (int i = 0; i < TICKET_MAX; i++) ticket_clear(&tickets[i]);
 }
 
@@ -259,6 +267,7 @@ static int put_u16(uint8_t *p, int v) { p[0]=(uint8_t)(v>>8); p[1]=(uint8_t)v; r
  * guaranteed rejected binder. */
 int tls_psk_arm(struct tls_sess *s)
 {
+    IO_DOMAIN_GUARD(&tls_ticket_owner);
     struct tls_ticket *t = ticket_find(s->host, s->now);
     if (!t) { s->psk_offered = 0; return 0; }
     memcpy(s->psk, t->psk, HLEN);

@@ -70,6 +70,7 @@ static inline int tls13_suite_hash(int suite)
 #define GRP_P256    0x0017
 #define GRP_P384    0x0018
 #define GRP_X25519  0x001d
+#define GRP_X448    0x001e
 
 /* X25519MLKEM768 (draft-ietf-tls-ecdhe-mlkem), the post-quantum hybrid Chrome
  * and Firefox negotiate by default in 2026. TLS 1.3 ONLY -- it is a KEM, not a
@@ -361,7 +362,7 @@ int  tls_aead_decrypt(const struct aead *a, const uint8_t nonce[12],
                       const uint8_t *aad, int aadlen,
                       const uint8_t *ct, int len, const uint8_t *tag, uint8_t *pt);
 
-/* Ephemeral key handling for s->group (x25519 / P-256 / P-384). */
+/* Ephemeral key handling for s->group (X25519 / X448 / P-256 / P-384). */
 int  tls_gen_share(struct tls_sess *s);
 int  tls_compute_shared(struct tls_sess *s, const uint8_t *spub, int splen,
                         uint8_t *out, int *outlen);

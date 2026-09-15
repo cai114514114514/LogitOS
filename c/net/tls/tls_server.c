@@ -1,3 +1,7 @@
+#include "tls_domain.h"
+/* One owner for this session/ticket pool. Only nonblocking steps hold it;
+ * the caller pumps TCP after the step returns. It may never span net_poll. */
+static struct io_domain tls_server_owner = IO_DOMAIN_INIT;
 /* TLS 1.3 server (RFC 8446). See tls_server.h for what it does and does not do.
  *
  * ===========================================================================
@@ -572,7 +576,10 @@ static const uint16_t srv_groups[] = {
      * pinned count. */
     GRP_X25519MLKEM768,
 #endif
-    GRP_X25519, GRP_P256, GRP_P384
+    GRP_X25519, GRP_P256, GRP_P384,
+#ifndef LOGIT_TLS_NO_X448
+    GRP_X448,
+#endif
 };
 #define N_SRV_GROUPS ((int)(sizeof srv_groups / sizeof srv_groups[0]))
 
@@ -1286,6 +1293,7 @@ static int step_recv_fin(struct srv_sess *v)
 
 int tlss_start(int tcp_id, const struct tls_ident *ident, const char *alpn, int64_t now)
 {
+    IO_DOMAIN_GUARD(&tls_server_owner);
     if (!ident || ident->nchain < 1 || ident->nchain > TLSS_CHAIN_MAX) return TLS_E_PROTO;
     if (ident->key_curve != 256 && ident->key_curve != 384 && ident->key_curve != 521)
         return TLS_E_PROTO;
@@ -1334,6 +1342,7 @@ int tlss_start(int tcp_id, const struct tls_ident *ident, const char *alpn, int6
 
 int tlss_step(int id)
 {
+    IO_DOMAIN_GUARD(&tls_server_owner);
     struct srv_sess *v = sess_of(id);
     if (!v) return TLS_E_PROTO;
     struct tls_sess *s = &v->s;
@@ -1353,6 +1362,7 @@ int tlss_step(int id)
 
 int tlss_send(int id, const void *buf, int len)
 {
+    IO_DOMAIN_GUARD(&tls_server_owner);
     struct srv_sess *v = sess_of(id);
     if (!v || v->sub != SS_ESTABLISHED) return -1;
     struct tls_sess *s = &v->s;
@@ -1369,6 +1379,7 @@ int tlss_send(int id, const void *buf, int len)
 
 int tlss_recv(int id, void *buf, int max)
 {
+    IO_DOMAIN_GUARD(&tls_server_owner);
     struct srv_sess *v = sess_of(id);
     if (!v || v->sub != SS_ESTABLISHED) return -1;
     struct tls_sess *s = &v->s;
@@ -1423,8 +1434,19 @@ int tlss_recv(int id, void *buf, int max)
     }
 }
 
+/* A successful send may only have queued bytes. Consumers closing after a
+ * fixed Content-Length must drain them before sending close_notify. */
+int tlss_flush(int id)
+{
+    IO_DOMAIN_GUARD(&tls_server_owner);
+    struct srv_sess *v = sess_of(id);
+    if (!v || v->sub != SS_ESTABLISHED) return -1;
+    return tls_tx_flush(&v->s);
+}
+
 int tlss_alpn(int id, char *out, int max)
 {
+    IO_DOMAIN_GUARD(&tls_server_owner);
     struct srv_sess *v = sess_of(id);
     if (!v || max < 1) return -1;
     int n = 0; while (v->s.alpn_sel[n] && n < max - 1) { out[n] = v->s.alpn_sel[n]; n++; }
@@ -1434,6 +1456,7 @@ int tlss_alpn(int id, char *out, int max)
 
 int tlss_sni(int id, char *out, int max)
 {
+    IO_DOMAIN_GUARD(&tls_server_owner);
     struct srv_sess *v = sess_of(id);
     if (!v || max < 1) return -1;
     int n = 0; while (v->sni[n] && n < max - 1) { out[n] = v->sni[n]; n++; }
@@ -1443,12 +1466,14 @@ int tlss_sni(int id, char *out, int max)
 
 int tlss_version(int id)
 {
+    IO_DOMAIN_GUARD(&tls_server_owner);
     struct srv_sess *v = sess_of(id);
     return v ? v->s.version : 0;
 }
 
 int tlss_pending(int id)
 {
+    IO_DOMAIN_GUARD(&tls_server_owner);
     struct srv_sess *v = sess_of(id);
     if (!v || v->sub != SS_ESTABLISHED) return 0;
     return v->s.applen - v->s.appoff;
@@ -1456,6 +1481,7 @@ int tlss_pending(int id)
 
 void tlss_close(int id)
 {
+    IO_DOMAIN_GUARD(&tls_server_owner);
     struct srv_sess *v = sess_of(id);
     if (!v) return;
     if (v->sub == SS_ESTABLISHED) srv_alert_lv(v, 1 /* warning */, AL_CLOSE_NOTIFY);

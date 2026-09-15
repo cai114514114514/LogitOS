@@ -1,3 +1,18 @@
+#include "../../drivers/core/io_domain.h"
+/* The local socket namespace and its queues are one in-memory service.
+ * A blocking read/write drops this task owner before parking, so its peer
+ * can change the queue. A wake sequence is inspected under waitq.lock; reading
+ * freed datagram inbox pointers from that predicate would be unsafe. */
+static struct io_domain unix_owner = IO_DOMAIN_INIT;
+static unsigned long unix_change;
+#define unix_signal(q) do { __atomic_fetch_add(&unix_change, 1, __ATOMIC_RELEASE); waitq_wake_all(q); waitq_wake_all(&unix_dgram_pollq); } while (0)
+#define UNIX_WAIT(q) do { \
+    unsigned long seen = __atomic_load_n(&unix_change, __ATOMIC_ACQUIRE); \
+    io_domain_drop(&domain_guard_); \
+    wait_event(q, __atomic_load_n(&unix_change, __ATOMIC_ACQUIRE) != seen || sig_interrupted()); \
+    domain_guard_ = io_domain_take(&unix_owner); \
+} while (0)
+
 #include <stdint.h>
 #include <stddef.h>
 #include "unix.h"
@@ -20,6 +35,23 @@ int  ksig_post_current(int signo) LOGIT_WEAK;
 int  ksig_interrupted(void)       LOGIT_WEAK;
 LOGIT_WEAK_STUB(ksig_post_current);
 LOGIT_WEAK_STUB(ksig_interrupted);
+int proc_agent_identity(int pid, struct aex_agent_identity *) LOGIT_WEAK;
+int proc_agent_channel_valid(int pid, uint64_t generation) LOGIT_WEAK;
+LOGIT_WEAK_STUB(proc_agent_identity);
+LOGIT_WEAK_STUB(proc_agent_channel_valid);
+/* Legacy Unix host gates omit the poll core. Keep those builds linkable, but
+ * refuse a requested registration if it is absent rather than silently sleep
+ * without a wake source. The ordinary kernel supplies the strong definition. */
+void poll_wait(struct poll_table *, struct waitq *) LOGIT_WEAK;
+LOGIT_WEAK_STUB(poll_wait);
+/* Named datagrams have independent local RX and peer capacity queues. The
+ * poll table permits one queue per fd, and a peer table slot may be reused.
+ * This permanent aggregate queue covers both without retaining a peer pointer;
+ * unrelated Unix activity may cause a harmless readiness recheck. */
+static struct waitq unix_dgram_pollq = WAITQ_INIT;
+static void capture_identity(int pid, struct aex_agent_identity *id)
+{ if (LOGIT_HAVE(proc_agent_identity)) (void)proc_agent_identity(pid,id); }
+
 static int sig_interrupted(void) { return LOGIT_HAVE(ksig_interrupted) ? ksig_interrupted() : 0; }
 
 /* ===========================================================================
@@ -112,6 +144,9 @@ struct uchan {
 struct uend { int gone, wr_shut, rd_shut; };
 
 struct uconn {
+    struct aex_agent_identity identity[2];
+    int transferable;
+    int pid[2]; /* captured at connection creation, never taken from a message */
     int          refs;          /* 2 while both ends live; the accept queue
                                  * holds the server side's reference until
                                  * accept() takes it */
@@ -330,7 +365,7 @@ static struct uconn *conn_new(int records)
 #ifdef UNIX_NEGCTL_NOWAKE
 #define unix_wake(q) ((void)(q))
 #else
-#define unix_wake(q) waitq_wake_all(q)
+#define unix_wake(q) unix_signal(q)
 #endif
 
 static void conn_put(struct uconn *c)
@@ -344,6 +379,7 @@ static void conn_put(struct uconn *c)
 
 struct usock *unix_create(int type, int pid, int *err)
 {
+    IO_DOMAIN_GUARD(&unix_owner);
     if (type != LOGIT_SOCK_STREAM && type != LOGIT_SOCK_DGRAM &&
         type != LOGIT_SOCK_SEQPACKET) { if (err) *err = LSK_E_ARG; return NULL; }
     struct usock *s = sk_alloc(type, pid);
@@ -355,6 +391,7 @@ struct usock *unix_create(int type, int pid, int *err)
 int unix_bind(struct usock *s, const char *canon, const struct vcred *cr,
               unsigned umask)
 {
+    IO_DOMAIN_GUARD(&unix_owner);
     if (!s || !s->used || !canon) return LSK_E_ARG;
     /* An empty path is Linux's ABSTRACT NAMESPACE marker (a sun_path whose
      * first byte is NUL names a socket with no filesystem entry at all). It is
@@ -385,6 +422,7 @@ int unix_bind(struct usock *s, const char *canon, const struct vcred *cr,
 
 int unix_listen(struct usock *s, int backlog)
 {
+    IO_DOMAIN_GUARD(&unix_owner);
     if (!s || !s->used) return LSK_E_ARG;
     if (s->type == LOGIT_SOCK_DGRAM) return LSK_E_STATE;   /* nothing to accept */
     if (s->state == U_LISTEN) return 0;                    /* idempotent, as POSIX */
@@ -398,12 +436,13 @@ int unix_listen(struct usock *s, int backlog)
 
 struct usock *unix_accept(struct usock *s, int nonblock, int *err)
 {
+    IO_DOMAIN_GUARD(&unix_owner);
     if (!s || !s->used) { if (err) *err = LSK_E_ARG; return NULL; }
     if (s->state != U_LISTEN) { if (err) *err = LSK_E_STATE; return NULL; }
 
     while (s->qn == 0) {
         if (nonblock) { if (err) *err = LSK_E_AGAIN; return NULL; }
-        wait_event(&s->wq, s->qn > 0 || s->state != U_LISTEN || sig_interrupted());
+        UNIX_WAIT(&s->wq);
         if (s->state != U_LISTEN) { if (err) *err = LSK_E_STATE; return NULL; }
         if (s->qn == 0 && sig_interrupted()) { if (err) *err = LSK_E_AGAIN; return NULL; }
     }
@@ -425,13 +464,14 @@ struct usock *unix_accept(struct usock *s, int nonblock, int *err)
     /* Wake the connection's queue: a client parked in write() on a full buffer
      * has something to re-test now, because the accepted end is what will
      * drain it. */
-    waitq_wake_all(&c->wq);
+    unix_signal(&c->wq);
     if (err) *err = 0;
     return cs;
 }
 
 int unix_connect(struct usock *s, const char *canon, const struct vcred *cr)
 {
+    IO_DOMAIN_GUARD(&unix_owner);
     if (!s || !s->used || !canon || !canon[0] || !pfits(canon)) return LSK_E_ARG;
     if (s->state == U_CONN || s->state == U_LISTEN) return LSK_E_STATE;
 
@@ -459,16 +499,19 @@ int unix_connect(struct usock *s, const char *canon, const struct vcred *cr)
 
     struct uconn *c = conn_new(s->type == LOGIT_SOCK_SEQPACKET);
     if (!c) return LSK_E_FULL;
+    c->pid[0] = s->pid; c->pid[1] = t->pid;
+    capture_identity(s->pid,&c->identity[0]); capture_identity(t->pid,&c->identity[1]);
     s->conn = c;
     s->side = 0;
     s->state = U_CONN;
     t->q[t->qn++] = c;
-    waitq_wake_all(&t->wq);
+    unix_signal(&t->wq);
     return 0;
 }
 
 int unix_pair(int type, int pid, struct usock **pa, struct usock **pb, int *err)
 {
+    IO_DOMAIN_GUARD(&unix_owner);
     if (type != LOGIT_SOCK_STREAM && type != LOGIT_SOCK_DGRAM &&
         type != LOGIT_SOCK_SEQPACKET) { if (err) *err = LSK_E_ARG; return LSK_E_ARG; }
     struct usock *a = sk_alloc(type, pid);
@@ -481,16 +524,68 @@ int unix_pair(int type, int pid, struct usock **pa, struct usock **pb, int *err)
     struct uconn *c = conn_new(type != LOGIT_SOCK_STREAM);
     if (!c) { a->used = 0; b->used = 0; if (err) *err = LSK_E_FULL; return LSK_E_FULL; }
     a->conn = c; a->side = 0; a->state = U_CONN;
+    c->pid[0] = c->pid[1] = pid; c->transferable=1;
+    capture_identity(pid,&c->identity[0]); c->identity[1]=c->identity[0];
     b->conn = c; b->side = 1; b->state = U_CONN;
     *pa = a; *pb = b;
     if (err) *err = 0;
     return 0;
 }
 
+/* Authenticated channels cannot survive a writer's fork/exec as the old
+ * application. Ordinary unregistered Unix sockets retain POSIX inheritance. */
+static int owner_valid(struct usock *s)
+{
+    if (!s || !s->conn || !s->conn->identity[s->side].abi) return 1;
+    const struct aex_agent_identity *id=&s->conn->identity[s->side];
+    struct aex_agent_identity live={0};capture_identity(id->pid,&live);
+    return live.uid==id->uid && live.gid==id->gid && LOGIT_HAVE(proc_agent_channel_valid) && proc_agent_channel_valid(id->pid,id->generation);
+}
+
+short unix_poll(struct usock *s, struct poll_table *pt)
+{
+    IO_DOMAIN_GUARD(&unix_owner);
+    if (!s || !s->used) return LPOLLNVAL;
+    if (pt && !LOGIT_HAVE(poll_wait)) return LPOLLNVAL;
+    struct waitq *q = s->conn ? &s->conn->wq :
+        s->type == LOGIT_SOCK_DGRAM ? &unix_dgram_pollq : &s->wq;
+    /* Register while the same owner excludes every state-changing operation.
+     * No queue lock remains held while reading namespace/channel state. */
+    if (LOGIT_HAVE(poll_wait)) poll_wait(pt, q);
+    if (!owner_valid(s)) return LPOLLERR;
+    if (s->state == U_LISTEN) return s->qn ? LPOLLIN : 0;
+    if (s->conn) {
+        struct uconn *c = s->conn;
+        struct uend *local = &c->e[s->side], *peer = &c->e[1-s->side];
+        struct uchan *in = &c->ch[1-s->side], *out = &c->ch[s->side];
+        short mask = 0;
+        if (local->rd_shut || peer->gone || peer->wr_shut || chan_readable(in)) mask |= LPOLLIN;
+        /* Writable means a one-byte operation will not block, including an
+         * immediate EPIPE. Local SHUT_WR alone must not return a global ERR or
+         * HUP: a caller may still legitimately wait for the peer's response. */
+        if (local->wr_shut || peer->gone || peer->rd_shut ||
+            (out->count < UNIX_BUF && (!c->records || out->rcount < UNIX_RECS))) mask |= LPOLLOUT;
+        /* Complete peer shutdown also ends an events=0 HUP-only wait even
+         * while that peer retains its descriptor; SHUT_WR alone is still EOF. */
+        if (peer->gone || (peer->rd_shut && peer->wr_shut) || (local->rd_shut && local->wr_shut)) mask |= LPOLLHUP;
+        return mask;
+    }
+    if (s->type == LOGIT_SOCK_DGRAM) {
+        short mask = s->rx && chan_readable(s->rx) ? LPOLLIN : 0;
+        if (!s->has_peer) return mask | LPOLLOUT; /* sendto chooses its destination later */
+        struct usock *peer = by_name(s->peer);
+        if (!peer || !peer->rx) return mask | LPOLLOUT | LPOLLERR;
+        if (peer->rx->count < UNIX_BUF && peer->rx->rcount < UNIX_RECS) mask |= LPOLLOUT;
+        return mask;
+    }
+    return LPOLLHUP; /* unconnected stream: no read can wait for incoming data */
+}
 /* ------------------------------------------------------------------- I/O */
 
 long unix_read(struct usock *s, void *buf, long len, int nonblock)
 {
+    IO_DOMAIN_GUARD(&unix_owner);
+    if (!owner_valid(s)) return LSK_E_PERM;
     if (!s || !s->used || len < 0) return -1;
     if (len == 0) return 0;
 
@@ -521,7 +616,7 @@ long unix_read(struct usock *s, void *buf, long len, int nonblock)
         for (;;) {
             if (chan_readable(in)) {
                 long n = chan_read(in, buf, len, c->records);
-                waitq_wake_all(&c->wq);                  /* there is room now */
+                unix_signal(&c->wq);                  /* there is room now */
                 return n;
             }
             /* EOF is tested AFTER the data, so bytes a peer wrote before it
@@ -529,8 +624,11 @@ long unix_read(struct usock *s, void *buf, long len, int nonblock)
              * every request/response protocol depends on. */
             if (c->e[1 - s->side].gone || c->e[1 - s->side].wr_shut) return 0;
             if (nonblock) return EAGAIN_RC;
-            wait_event(&c->wq, chan_readable(in) || c->e[1 - s->side].gone ||
-                               c->e[1 - s->side].wr_shut || sig_interrupted());
+            UNIX_WAIT(&c->wq);
+            /* Entry-time authentication is insufficient across a wait: the
+             * Unix owner was dropped, and credentials can change while this
+             * operation sleeps. Do not consume bytes under the old identity. */
+            if (!owner_valid(s)) return LSK_E_PERM;
             if (!chan_readable(in) && !c->e[1 - s->side].gone &&
                 !c->e[1 - s->side].wr_shut && sig_interrupted())
                 return SIG_E_INTR;
@@ -541,7 +639,7 @@ long unix_read(struct usock *s, void *buf, long len, int nonblock)
         for (;;) {
             if (chan_readable(s->rx)) {
                 long n = chan_read(s->rx, buf, len, 1);
-                waitq_wake_all(&s->wq);                   /* there is room now */
+                unix_signal(&s->wq);                   /* there is room now */
                 return n;
             }
             if (nonblock) return EAGAIN_RC;
@@ -550,7 +648,7 @@ long unix_read(struct usock *s, void *buf, long len, int nonblock)
              * stream: senders come and go and the inbox stays open, exactly as
              * on Linux. A daemon reading this loop blocks until a message
              * arrives or it is signalled. */
-            wait_event(&s->wq, chan_readable(s->rx) || sig_interrupted());
+            UNIX_WAIT(&s->wq);
             if (!chan_readable(s->rx) && sig_interrupted()) return SIG_E_INTR;
         }
     }
@@ -559,6 +657,8 @@ long unix_read(struct usock *s, void *buf, long len, int nonblock)
 
 long unix_write(struct usock *s, const void *buf, long len, int nonblock)
 {
+    IO_DOMAIN_GUARD(&unix_owner);
+    if (!owner_valid(s)) return LSK_E_PERM;
     if (!s || !s->used || len < 0) return -1;
     /* A zero-length write sends NOTHING and reports 0, on a record socket as
      * well as a stream. That is deliberate and it is the one place this layer
@@ -592,14 +692,15 @@ long unix_write(struct usock *s, const void *buf, long len, int nonblock)
             if (n > 0) {
                 sent += n;
                 if (c->records) st_dgrams++;
-                waitq_wake_all(&c->wq);
+                unix_signal(&c->wq);
                 if (c->records || sent >= len) return sent;
                 continue;
             }
             if (nonblock) return sent > 0 ? sent : EAGAIN_RC;
-            wait_event(&c->wq, c->ch[s->side].count < UNIX_BUF ||
-                               c->e[1 - s->side].gone || c->e[1 - s->side].rd_shut ||
-                               sig_interrupted());
+            UNIX_WAIT(&c->wq);
+            /* Preserve a truthful short-write result for bytes committed
+             * before the identity changed; no further bytes may be queued. */
+            if (!owner_valid(s)) return sent > 0 ? sent : LSK_E_PERM;
             if (sig_interrupted() && c->ch[s->side].count >= UNIX_BUF)
                 return sent > 0 ? sent : SIG_E_INTR;
         }
@@ -615,10 +716,10 @@ long unix_write(struct usock *s, const void *buf, long len, int nonblock)
             struct usock *t = by_name(s->peer);
             if (!t || !t->rx) { st_refused_name++; return LSK_E_CONNREFUSED; }
             long n = chan_write(t->rx, buf, len, 1);
-            if (n > 0) { st_dgrams++; waitq_wake_all(&t->wq); return n; }
+            if (n > 0) { st_dgrams++; unix_signal(&t->wq); return n; }
             if (nonblock) return EAGAIN_RC;
-            wait_event(&t->wq, t->rx->rcount < UNIX_RECS || sig_interrupted());
-            if (sig_interrupted() && t->rx->rcount >= UNIX_RECS) return SIG_E_INTR;
+            UNIX_WAIT(&t->wq);
+            if (sig_interrupted()) return SIG_E_INTR; /* destination is re-resolved on the next iteration */
         }
     }
     return LSK_E_STATE;
@@ -626,6 +727,7 @@ long unix_write(struct usock *s, const void *buf, long len, int nonblock)
 
 int unix_shutdown(struct usock *s, int how)
 {
+    IO_DOMAIN_GUARD(&unix_owner);
     if (!s || !s->used) return LSK_E_ARG;
     if (how != LOGIT_SHUT_RD && how != LOGIT_SHUT_WR && how != LOGIT_SHUT_RDWR)
         return LSK_E_ARG;
@@ -641,8 +743,38 @@ int unix_shutdown(struct usock *s, int how)
     return 0;
 }
 
+int unix_peer_pid(struct usock *s)
+{
+    IO_DOMAIN_GUARD(&unix_owner);
+    return s && s->used && s->state == U_CONN && s->conn ?
+           s->conn->pid[1 - s->side] : -1;
+}
+
+int unix_agent_peer(struct usock *s, struct aex_agent_identity *id)
+{
+    IO_DOMAIN_GUARD(&unix_owner);
+    if (!s || !s->used || !s->conn || !owner_valid(s)) return -1;
+    *id=s->conn->identity[1-s->side];
+    struct aex_agent_identity live={0};
+    capture_identity(id->pid,&live);
+    /* An exec generation alone does not cover a credential change. Returning
+     * the captured uid/gid after either changes would authenticate stale
+     * authority even though the endpoint's next I/O would be refused. */
+    return id->abi && live.abi && live.generation==id->generation &&
+           live.uid==id->uid && live.gid==id->gid ? 0 : -1;
+}
+int unix_agent_transfer(struct usock *s, int parent, const struct aex_agent_identity *id)
+{
+    IO_DOMAIN_GUARD(&unix_owner);
+    if (!s || !s->used || !s->conn || !s->conn->transferable ||
+        s->conn->pid[0]!=parent || s->conn->pid[1]!=parent ||
+        s->conn->ch[0].count || s->conn->ch[1].count || !owner_valid(s)) return -1;
+    s->conn->transferable=0; s->conn->pid[s->side]=id->pid;
+    s->conn->identity[s->side]=*id; s->pid=id->pid; return 0;
+}
 int unix_getsockname(struct usock *s, char *out, int max)
 {
+    IO_DOMAIN_GUARD(&unix_owner);
     if (!s || !s->used || !out || max <= 0) return LSK_E_ARG;
     pstrcpy(out, s->name, max);
     return 0;
@@ -650,6 +782,7 @@ int unix_getsockname(struct usock *s, char *out, int max)
 
 void unix_release(struct usock *s)
 {
+    IO_DOMAIN_GUARD(&unix_owner);
     if (!s || !s->used) return;
 
     if (s->conn) {
@@ -684,6 +817,7 @@ void unix_release(struct usock *s)
 
 long unix_stat(int what)
 {
+    IO_DOMAIN_GUARD(&unix_owner);
     int nsock = 0, nname = 0, nconn = 0;
     for (int i = 0; i < NUSOCK; i++) {
         if (!socks[i].used) continue;

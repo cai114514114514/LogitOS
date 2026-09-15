@@ -15,6 +15,11 @@
 void *memcpy(void *, const void *, size_t);
 void *memset(void *, int, size_t);
 #include "../../../include/weaksym.h"   /* the weak declarations below are an ELF idiom */
+#include "../../../include/abi/logit_abi.h"
+void poll_wait(struct poll_table *,struct waitq *) LOGIT_WEAK;
+LOGIT_WEAK_STUB(poll_wait);
+int ip_source_addr(uint32_t,uint32_t *) LOGIT_WEAK;
+LOGIT_WEAK_STUB(ip_source_addr);
 
 /* IPv6 output, provided by the IPv6 line. Weak: until that lands the symbol is
  * NULL and an AF_INET6 connection simply cannot be opened. Nothing else in this
@@ -167,6 +172,7 @@ struct tcp_conn {
      *             been handed to the application yet. THE SLOT IS NOT FREE
      *             WHILE THIS IS SET: see conn_closed. */
     uint8_t  passive, ws_ok, in_backlog;
+    uint8_t  app_owned; /* accepted descriptor pins the slot until tcp_close */
     int      lst;
 
     int      used;
@@ -218,6 +224,7 @@ static uint32_t iss_counter = 1;
 struct tcp_listener {
     int      used;
     uint16_t lport;
+    uint32_t laddr;             /* 0 wildcard; otherwise a specific IPv4 local address */
     int      pid;               /* owning process, for teardown on exit */
     int      backlog;           /* min(requested, TCP_BACKLOG) */
     int      reuse;             /* SO_REUSEADDR: rebind over a lingering port */
@@ -249,6 +256,30 @@ static uint32_t st_syn_recv, st_accepted, st_refused_backlog,
  * because the herd it can wake is bounded by the thread ceiling this ABI
  * documents (about thirteen per process), not by NCONN. */
 static struct waitq rx_wq = WAITQ_INIT;
+void tcp_poll_wake(void){waitq_wake_all(&rx_wq);}
+
+short tcp_file_poll(int id,int listener,struct poll_table *pt)
+{
+    if(pt&&!LOGIT_HAVE(poll_wait))return LPOLLNVAL;
+    uint64_t flags=net_lock();short mask=0;
+    if(listener){
+        if(id<0||id>=NLISTEN){net_unlock(flags);return LPOLLNVAL;}
+        struct tcp_listener *l=&listeners[id];
+        if(LOGIT_HAVE(poll_wait))poll_wait(pt,&l->wq);
+        mask=!l->used?LPOLLHUP:l->qn?LPOLLIN:0;
+    }else{
+        if(id<0||id>=NCONN){net_unlock(flags);return LPOLLNVAL;}
+        /* Register before inspecting readiness, under the same transport
+         * lock that publishes data/ACK/close. A packet crossing this check
+         * either changes this snapshot or wakes the registered poll table. */
+        if(LOGIT_HAVE(poll_wait))poll_wait(pt,&rx_wq);
+        struct tcp_conn *c=&conns[id];
+        if(!c->used||c->state==CLOSED||c->state==TIME_WAIT)mask|=LPOLLHUP;
+        if(c->rx_len||c->peer_fin||(mask&LPOLLHUP))mask|=LPOLLIN;
+        if(c->used&&(c->state==ESTABLISHED||c->state==CLOSE_WAIT)&&!c->fin_queued&&c->snd_end-c->snd_una<SNDBUF)mask|=LPOLLOUT;
+    }
+    net_unlock(flags);return mask;
+}
 
 struct tcp_hdr {
     uint16_t sport, dport;
@@ -339,7 +370,11 @@ static int af_send(const struct tcp_addr *dst, const void *seg, uint16_t len)
 /* The local address to use towards `dst`. */
 static int af_local(const struct tcp_addr *dst, struct tcp_addr *out)
 {
-    if (dst->af == TCP_AF_INET) { addr_v4(out, net_cfg.ip); return 0; }
+    if (dst->af == TCP_AF_INET) {
+        uint32_t src=net_cfg.ip;
+        if(LOGIT_HAVE(ip_source_addr)&&ip_source_addr(dst->a.v4,&src)<0)return -1;
+        addr_v4(out,src);return 0;
+    }
     if (!LOGIT_HAVE(ip6_local_addr)) return -1;
     out->af = TCP_AF_INET6;
     return ip6_local_addr(dst->a.v6, out->a.v6);
@@ -1079,7 +1114,12 @@ static void conn_closed(struct tcp_conn *c)
      * sees a dead connection on its first read, which is honest and is what a
      * peer that RSTs during the backlog wait actually did) or when the listener
      * is closed. */
-    if (!c->in_backlog)
+    /* 2026-09-10: backlog ownership ends at accept, descriptor ownership
+     * starts there. Keep a closed accepted connection addressable until its
+     * application's final tcp_close, even while a child process is reaping.
+     * Ordinary SSH cancellation exposed this: a following connection could
+     * start before the previous session had finished releasing its socket. */
+    if (!c->in_backlog && !c->app_owned)
         c->used = 0;
     /* A connection dying is exactly as much an event to a blocked reader as a
      * byte arriving: without this it would sit out its whole deadline before
@@ -1104,6 +1144,46 @@ static int free_slots(void)
     int n = 0;
     for (int i = 0; i < NCONN; i++) if (!conns[i].used) n++;
     return n;
+}
+
+/* A one-line census of the connection table, for sock.c's connect-refused
+ * diagnostic. Written by hand rather than with a printf-family helper
+ * because this file is freestanding and pulls no formatting code today;
+ * the shapes that matter are four (established / the FIN handshakes /
+ * TIME_WAIT / everything transient), and naming them costs 30 bytes.
+ * NCONN is small enough that the walk is negligible even at refusal time. */
+void tcp_conn_census(char *buf, int cap)
+{
+    int est = 0, fin = 0, tw = 0, other = 0;
+    for (int i = 0; i < NCONN; i++) {
+        if (!conns[i].used) continue;
+        switch (conns[i].state) {
+        case ESTABLISHED: est++; break;
+        case FIN_WAIT: case CLOSE_WAIT: case LAST_ACK: case CLOSING: fin++; break;
+        case TIME_WAIT:  tw++; break;
+        default:         other++; break;     /* SYN_SENT / SYN_RCVD / CLOSED */
+        }
+    }
+    int w = 0;
+    const char *p;
+    /* no snprintf here: fixed pieces, hand-rolled integers */
+    #define PUT(str) do { \
+        for (p = (str); *p && w < cap - 1; ) buf[w++] = *p++; \
+    } while (0)
+    #define NUM(v) do { \
+        char tb[12]; int n = 0; \
+        if ((v) == 0) tb[n++] = '0'; \
+        for (int x = (v); x > 0; x /= 10) tb[n++] = '0' + x % 10; \
+        while (n > 0 && w < cap - 1) buf[w++] = tb[--n]; \
+    } while (0)
+    PUT("est=");   NUM(est);
+    PUT(" fin=");  NUM(fin);
+    PUT(" tw=");   NUM(tw);
+    PUT(" syn/other="); NUM(other);
+    PUT("/");      NUM(NCONN);
+    buf[w] = 0;
+    #undef PUT
+    #undef NUM
 }
 
 /* A SYN arrived for a port somebody is listening on. Build the half-open
@@ -1236,6 +1316,7 @@ void tcp_input_af(const struct tcp_addr *src, const struct tcp_addr *dst,
          * unmatched-segment path is unchanged. */
         if ((h->flags & (SYN | ACK)) == SYN) {
             struct tcp_listener *l = find_listener(lport);
+            if(l&&l->laddr&&(dst->af!=TCP_AF_INET||dst->a.v4!=l->laddr))l=0;
             if (l) {
                 struct tcp_opts sopt;
                 if (parse_options(data + sizeof *h, hlen0 - (int)sizeof *h, &sopt) == 0 &&
@@ -1548,13 +1629,15 @@ void tcp_input_af(const struct tcp_addr *src, const struct tcp_addr *dst,
     waitq_wake_all(&rx_wq);
 }
 
-void tcp_input(uint32_t src, const uint8_t *data, uint16_t len)
+void tcp_input_v4(uint32_t src,uint32_t dst,const uint8_t *data,uint16_t len)
 {
     struct tcp_addr s, d;
     addr_v4(&s, src);
-    addr_v4(&d, net_cfg.ip);
+    addr_v4(&d, dst);
     tcp_input_af(&s, &d, data, len);
 }
+void tcp_input(uint32_t src,const uint8_t *data,uint16_t len)
+{ tcp_input_v4(src,net_cfg.ip,data,len); }
 
 /* ------------------------------------------------------------------ timers */
 
@@ -1698,13 +1781,19 @@ void tcp_poll(void)
 
 /* ------------------------------------------------------------------- API */
 
-int tcp_connect_start_addr(const struct tcp_addr *dst, uint16_t port)
+static int connect_start_addr(const struct tcp_addr *dst, uint16_t port, int owned)
 {
     int id = -1;
     uint64_t f = net_lock();                    /* build the conn atomically vs the RX IRQ */
     /* Slot search inside the lock: with a pool, two starts can race the same
      * free slot between the scan and the memset, and the loser would then
      * scribble over a connection that had already sent its SYN. */
+    /* Distinct failure codes for sock.c's refusal line: -1 the table really
+     * is full, -2 no source address for this destination family/route,
+     * -3 the ephemeral port range is exhausted. A refusal that cannot say
+     * which of the three it was sends every diagnosis down the wrong path
+     * (the 2026-09-09 youtube "table is full" was neither table nor port:
+     * the census showed 31 free slots at the moment of refusal). */
     for (int i = 0; i < NCONN; i++) if (!conns[i].used) { id = i; break; }
     if (id < 0) { net_unlock(f); return -1; }
     struct tcp_conn *c = &conns[id];
@@ -1712,11 +1801,12 @@ int tcp_connect_start_addr(const struct tcp_addr *dst, uint16_t port)
     c->lst = -1;                    /* an active open belongs to no listener --
                                      * 0 from the memset is a VALID index */
     c->raddr = *dst;
-    if (af_local(dst, &c->laddr) != 0) { net_unlock(f); return -1; }
+    if (af_local(dst, &c->laddr) != 0) { net_unlock(f); return -2; }
     c->used = 1;
+    c->app_owned = owned; /* fd connect has the same lifetime pin as accept */
     c->state = SYN_SENT;
     c->lport = alloc_lport();
-    if (c->lport == 0) { c->used = 0; net_unlock(f); return -1; }
+    if (c->lport == 0) { c->used = 0; net_unlock(f); return -3; }
     c->rport = port;
     uint32_t iss;
     kernel_random_bytes((uint8_t *)&iss, sizeof iss);
@@ -1746,6 +1836,14 @@ int tcp_connect_start_addr(const struct tcp_addr *dst, uint16_t port)
     net_unlock(f);
     return id;
 }
+
+int tcp_connect_start_addr(const struct tcp_addr *dst, uint16_t port)
+{ return connect_start_addr(dst,port,0); }
+
+/* Claim ownership before the SYN leaves, under the allocation lock. Setting
+ * it after returning would race a fast reset and another caller's slot reuse. */
+int tcp_connect_owned(uint32_t dst, uint16_t port)
+{ struct tcp_addr a;addr_v4(&a,dst);return connect_start_addr(&a,port,1); }
 
 int tcp_connect_start(uint32_t dst, uint16_t port)
 {
@@ -1875,7 +1973,10 @@ int tcp_recv(int id, void *buf, int max)
     } else {
         int avail = c->rx_len;
         if (avail <= 0) {
-            if (c->state == CLOSED) c->used = 0;
+            /* EOF does not release a descriptor's ownership. A concurrent
+             * accept must not recycle this slot before the final close of
+             * its duplicated descriptors, which still calls tcp_close(id). */
+            if (c->state == CLOSED && !c->app_owned) c->used = 0;
             rc = (c->peer_fin || c->state == CLOSED) ? -1 : 0;
         } else {
             int n = avail > max ? max : avail;
@@ -1894,7 +1995,12 @@ int tcp_recv(int id, void *buf, int max)
             /* Window update: the sender learns our window only from ACKs (sent on
              * inbound data). After draining a burst, proactively ACK so it doesn't
              * stall on a stale small window. */
-            if (c->state == ESTABLISHED &&
+            /* 2026-09-11: the old ESTABLISHED-only condition above worked
+             * until request EOF put a forwarding socket in FIN_WAIT. A slow
+             * reader then emptied a zero window without telling the sender,
+             * truncating the response at the close timeout. Our FIN ends
+             * writes only; reads must keep advertising room until peer FIN. */
+            if ((c->state == ESTABLISHED || c->state == FIN_WAIT) &&
                 (int)recv_window(c) - c->adv_wnd >= RXBUF / 4)
                 send_ack(c);
             rc = n;
@@ -1909,6 +2015,7 @@ void tcp_close(int id)
     if (id < 0 || id >= NCONN) return;
     struct tcp_conn *c = &conns[id];
     uint64_t f = net_lock();
+    c->app_owned = 0;
     if (!c->used) {
         /* nothing to do */
     } else if (c->state == ESTABLISHED || c->state == CLOSE_WAIT) {
@@ -1987,7 +2094,7 @@ int tcp_get_info(int id, struct tcp_info *out)
  *   interrupted, and so that a bug in the wake path costs latency rather than a
  *   hung machine. A caller that wants to block forever loops on it. */
 
-int tcp_listen(uint16_t port, int backlog, int pid)
+int tcp_listen_addr(uint16_t port, int backlog, int pid,uint32_t addr)
 {
     if (port == 0) return TCP_L_E_ARG;
     uint64_t f = net_lock();
@@ -2008,11 +2115,14 @@ int tcp_listen(uint16_t port, int backlog, int pid)
     waitq_init(&l->wq);
     l->used = 1;
     l->lport = port;
+    l->laddr = addr;
     l->pid = pid;
     l->backlog = backlog <= 0 ? 1 : (backlog > TCP_BACKLOG ? TCP_BACKLOG : backlog);
     net_unlock(f);
     return id;
 }
+int tcp_listen(uint16_t port,int backlog,int pid)
+{ return tcp_listen_addr(port,backlog,pid,0); }
 
 /* Pop the oldest completed handshake. >= 0 is a connection id, TCP_L_E_AGAIN
  * means the queue is empty (not an error), anything else is a dead listener. */
@@ -2051,6 +2161,7 @@ int tcp_accept(int lid)
     int id = l->q[0];
     for (int i = 1; i < l->qn; i++) l->q[i - 1] = l->q[i];
     l->qn--;
+    conns[id].app_owned = 1;
     conns[id].in_backlog = 0;
     conns[id].lst = -1;
     spin_unlock_irqrestore(&l->wq.lock, f);
@@ -2158,6 +2269,14 @@ int tcp_peer(int id, uint32_t *ip, uint16_t *port)
     }
     net_unlock(f);
     return rc;
+}
+
+int tcp_local(int id,uint32_t *ip,uint16_t *port)
+{
+    if(id<0||id>=NCONN)return -1;
+    uint64_t f=net_lock();struct tcp_conn *c=&conns[id];int rc=-1;
+    if(c->used){if(ip)*ip=c->laddr.af==TCP_AF_INET?c->laddr.a.v4:0;if(port)*port=c->lport;rc=0;}
+    net_unlock(f);return rc;
 }
 
 /* Half-close: stop sending, keep receiving. This is `shutdown(fd, SHUT_WR)`,

@@ -525,7 +525,9 @@ static int process_flight(struct tls_sess *s)
     crypto_wipe(s->priv, sizeof s->priv);
     if (tls_gen_share(s) != 0) return TLS_E_CRYPTO;
 
-    uint8_t pm[48]; int pmlen = 0;
+    /* P-384 used to be the widest classical secret (48). X448 needs 56;
+     * use the shared bound so adding a group cannot outgrow this consumer. */
+    uint8_t pm[TLS_KX_SS_MAX]; int pmlen = 0;
     if (tls_compute_shared(s, s->speer, s->speerlen, pm, &pmlen) != 0) {
         crypto_wipe(pm, sizeof pm);
         return TLS_E_CRYPTO;

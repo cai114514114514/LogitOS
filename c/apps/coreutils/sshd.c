@@ -57,10 +57,29 @@
  * needed -- it is a second pipe pair and a second output thread, not a
  * redesign.
  */
+/* 2026-09-10: the historical v1 notes above describe the old relay. Pipes
+ * now poll stdout and stderr separately; unsupported PTY/subsystem requests
+ * fail explicitly. Workers are joined before their caller-owned stack/slot
+ * is reused. The default disk includes sshd; starting it remains explicit. */
+/* 2026-09-11: PTY now uses the real kernel terminal/termios device; SFTP is
+ * an account-scoped child process. recv_msg handles client-initiated rekey,
+ * and opt-in direct-tcpip uses owned IPv4 descriptors. The guest gate runs
+ * stock OpenSSH (including Ctrl+C, live resize and overlapping channel
+ * close) plus SFTP transfers beyond 2 MiB. Full POSIX job control, concurrent
+ * channels, remote forwarding and server-initiated rekey remain absent. */
+/* 2026-09-11, second pass: the latter three gaps are implemented in
+ * sshd_channels.h. Four independently buffered channels share each transport;
+ * an opted-in loopback remote listener creates forwarded-tcpip channels.
+ * Default rekey triggers are 1 GiB of conservatively counted transport bytes
+ * or 1 hour; `sshd [port] [rekey_bytes] [rekey_seconds]` overrides them, with
+ * 0 disabling that trigger. Normal OpenSSH guest checks cover paused stdin,
+ * concurrent forwarding, cancellation/rebind and both peers initiating KEX.
+ * Full POSIX process groups and job control are still absent. */
 #include "logit.h"
 #include "clib.h"
 #include "logit_stat.h"
 #include "accounts.h"
+#include "../../../include/abi/pty.h"
 
 #include "ssh.h"
 #include "ssh_wire.h"
@@ -68,16 +87,21 @@
 #include "ssh_kex.h"
 #include "ssh_hostkey.h"
 #include "ssh_auth.h"
+#include "ssh_pubkey.h"
 #include "ssh_conn.h"
 #include "crypto.h"
 
 /* The coreutils link no libc (see pkgverify.c's identical note) but every
  * crypto TU here is ordinary C: clang emits memcpy/memset for struct
  * assignment and array init regardless of -ffreestanding. */
-void *memcpy(void *d, const void *s, unsigned long n)
+/* Also linked with the optional agent libc; these standalone fallbacks yield
+ * to that runtime's strong string implementations when present. */
+__attribute__((weak)) void *memcpy(void *d, const void *s, unsigned long n)
 { unsigned char *a = (unsigned char *)d; const unsigned char *b = (const unsigned char *)s; for (unsigned long i = 0; i < n; i++) a[i] = b[i]; return d; }
-void *memset(void *d, int c, unsigned long n)
+__attribute__((weak)) void *memset(void *d, int c, unsigned long n)
 { unsigned char *a = (unsigned char *)d; for (unsigned long i = 0; i < n; i++) a[i] = (unsigned char)c; return d; }
+__attribute__((weak)) int memcmp(const void *a,const void *b,unsigned long n)
+{ const unsigned char *x=a,*y=b;for(unsigned long i=0;i<n;i++)if(x[i]!=y[i])return (int)x[i]-y[i];return 0; }
 
 /* c/crypto/kdf/pbkdf2.c -- declared rather than pulled in via crypto.h's
  * whole surface, same reasoning login.c gives. */
@@ -143,48 +167,67 @@ const struct aes_backend *aes_backend_ni(void) { return 0; }
  * ==================================================================== */
 #define HOSTKEY_PATH "/etc/ssh_host_ed25519_key"
 
+/* Descriptor I/O works in a CLI process and distinguishes truncation from a
+ * complete record. Account buffers are per call: simultaneous authentications
+ * must never parse another connection's static scratch storage. */
+static int read_record(const char *path, void *buf, int cap)
+{
+    int fd = sys_open(path, O_RDONLY);
+    if (fd < 0) return -1;
+    int used = 0, n;
+    while (used < cap && (n = sys_read(fd, (char *)buf + used, cap - used)) > 0)
+        used += n;
+    char extra;
+    int tail = used == cap ? sys_read(fd, &extra, 1) : n;
+    sys_close(fd);
+    return tail != 0 ? -1 : used;
+}
+
 static int load_or_create_hostkey(uint8_t pub[32], uint8_t seed[32])
 {
+    /* Required even with an existing identity: every new X25519 exchange
+     * consumes entropy. Loading yesterday's key cannot waive today's check. */
+    if (!getrandom_strong()) {
+        errs("sshd: refusing to start without strong session entropy\n");
+        return -1;
+    }
     uint8_t rec[SSH_HOSTKEY_RECORD_LEN];
-    int n = read_file(HOSTKEY_PATH, rec, sizeof rec);
-    if (n == (int)sizeof rec && ssh_hostkey_decode(rec, n, seed, pub) == 0) {
+    struct logit_stat st;
+    if (st_lstat(HOSTKEY_PATH, &st) == 0) {
+        if ((st.mode & LST_IFMT) != LST_IFREG || st.uid != 0 || (st.mode & 077) ||
+            read_record(HOSTKEY_PATH, rec, sizeof rec) != (int)sizeof rec ||
+            ssh_hostkey_decode(rec, sizeof rec, seed, pub) != 0) {
+            errs("sshd: existing host key must be a valid root-owned private record (0600)\n");
+            return -1;
+        }
         uint8_t derived[32];
         ed25519_pubkey(derived, seed);
-        int ok = 1;
-        for (int i = 0; i < 32; i++) if (derived[i] != pub[i]) ok = 0;
-        if (ok) return 0;
-        errs("sshd: " HOSTKEY_PATH " is present but internally inconsistent "
-             "(seed does not derive the stored public key) -- refusing to trust it\n");
-        return -1;
+        for (int i = 0; i < 32; i++) if (derived[i] != pub[i]) {
+            errs("sshd: inconsistent host key; restore it explicitly\n");
+            return -1;
+        }
+        return 0;
     }
-
-    /* A HOST KEY FROM A WEAK RNG IS A KEY THE WHOLE WORLD SHARES -- refuse
-     * to manufacture one rather than silently sign with rdtsc-derived
-     * material. This also covers every EPHEMERAL per-connection X25519 key
-     * this process will ever generate (rnd() above is the same call), which
-     * the task's "refuse to start" language names only for the host key but
-     * whose forward secrecy depends on exactly the same entropy source. */
-    if (!getrandom_strong()) {
-        errs("sshd: refusing to start -- entropy source is a timer, not RDSEED/RDRAND "
-             "(see rng_strong() in CLAUDE.md's M9 note); a host key or session key from "
-             "it is not one\n");
-        return -1;
-    }
-
-    if (ed25519_keypair(pub, seed, rnd) != 0) {
-        errs("sshd: ed25519_keypair failed (dead entropy source)\n");
-        return -1;
-    }
+    if (ed25519_keypair(pub, seed, rnd) != 0) return -1;
     ssh_hostkey_encode(seed, pub, rec);
     make_dir("/etc");
-    if (write_file(HOSTKEY_PATH, rec, sizeof rec) < 0) {
-        errs("sshd: could not write " HOSTKEY_PATH "\n");
+    /* Set before creation, not after writing a temporarily public key. */
+    int oldmask = st_umask(0077);
+    int fd = sys_open(HOSTKEY_PATH, O_WRONLY | O_CREAT | O_TRUNC);
+    st_umask(oldmask);
+    if (fd < 0) return -1;
+    int used = 0;
+    while (used < (int)sizeof rec) {
+        int n = sys_write(fd, rec + used, sizeof rec - used);
+        if (n <= 0) break;
+        used += n;
+    }
+    int closed = sys_close(fd);
+    if (closed < 0 || used != (int)sizeof rec || st_chown(HOSTKEY_PATH, 0, 0) < 0 ||
+        st_chmod(HOSTKEY_PATH, 0600) < 0) {
+        errs("sshd: cannot persist a private host key\n");
         return -1;
     }
-    /* Same argument as accounts.h's /etc/passwd: a key file whose mode does
-     * not survive a reboot is not protected by that mode at all. */
-    if (st_chown(HOSTKEY_PATH, 0, 0) < 0 || st_chmod(HOSTKEY_PATH, 0600) < 0)
-        errs("sshd: WARNING " HOSTKEY_PATH " is not root:root 0600 -- it is readable\n");
     outs("sshd: generated a new host key at " HOSTKEY_PATH "\n");
     return 0;
 }
@@ -193,12 +236,12 @@ static int load_or_create_hostkey(uint8_t pub[32], uint8_t seed[32])
  * account store + authorized_keys (no I/O in c/net/ssh -- see ssh_auth.h)
  * ==================================================================== */
 #define STORE_MAX 4096
-#define AUTHKEYS_MAX 4096
+#define AUTHKEYS_MAX 16384 /* multiple RSA-4096 and NIST keys in one account */
 
 static int find_account(const char *user, struct account *out)
 {
-    static char store[STORE_MAX + 1];
-    int n = read_file("/etc/passwd", store, STORE_MAX);
+    char store[STORE_MAX + 1];
+    int n = read_record("/etc/passwd", store, STORE_MAX);
     if (n < 0) return 0;
     return acct_find(store, n, user, out);
 }
@@ -206,8 +249,8 @@ static int find_account(const char *user, struct account *out)
 /* 1/0. On success fills uid/gid/home/shell via `acct`. */
 static int check_password(const char *user, const char *pw, struct account *acct)
 {
-    static char store[STORE_MAX + 1];
-    int n = read_file("/etc/passwd", store, STORE_MAX);
+    char store[STORE_MAX + 1];
+    int n = read_record("/etc/passwd", store, STORE_MAX);
     if (n < 0) return 0;
     int found = acct_find(store, n, user, acct);
     if (found) return acct_check_password(acct, pw);
@@ -223,14 +266,20 @@ static int check_password(const char *user, const char *pw, struct account *acct
  * (the caller looked the user up to get `home`). */
 static int check_authorized_key(const struct account *acct, const uint8_t *blob, int bloblen)
 {
-    static char keys[AUTHKEYS_MAX + 1];
+    char keys[AUTHKEYS_MAX + 1];
     char path[ACCT_PATH + 32];
     path_join(path, acct->home, ".ssh/authorized_keys", (int)sizeof path);
-    int n = read_file(path, keys, AUTHKEYS_MAX);
+    struct logit_stat st;
+    if (st_lstat(path, &st) < 0 || (st.mode & LST_IFMT) != LST_IFREG ||
+        (st.uid != 0 && st.uid != acct->uid) || (st.mode & 022)) return 0;
+    int n = read_record(path, keys, AUTHKEYS_MAX);
     if (n < 0) return 0;
     return ssh_authkeys_match(keys, n, blob, bloblen);
 }
 
+/* SIGCHLD can interrupt ANY thread in this server, including accept or
+ * another session's KEX read. Retry every blocking adapter without losing
+ * the partial-byte offset; a signal is not a broken transport. */
 /* ========================================================================
  * socket I/O adapters -- the ssh_io_fn shape c/net/ssh calls through
  * ==================================================================== */
@@ -242,6 +291,7 @@ static int sock_read_exact(void *ctx, uint8_t *buf, int len)
     int off = 0;
     while (off < len) {
         int n = sys_read(fd, buf + off, len - off);
+        if (n == SIG_E_INTR) continue;
         if (n <= 0) return -1; /* blocking socket: <=0 is EOF/reset, not "try again" */
         off += n;
     }
@@ -254,6 +304,7 @@ static int sock_write_all(void *ctx, uint8_t *buf, int len)
     int off = 0;
     while (off < len) {
         int n = sys_write(fd, buf + off, len - off);
+        if (n == SIG_E_INTR) continue;
         if (n <= 0) return -1;
         off += n;
     }
@@ -263,13 +314,18 @@ static int sock_write_all(void *ctx, uint8_t *buf, int len)
 /* ========================================================================
  * per-connection state
  * ==================================================================== */
-#define SSHD_MAX_CONN   8
+#define SSHD_MAX_CONN   4 /* 32 process fds, four per session + transient fork pipes */
 #define CONN_STACK_SIZE (256 * 1024)
 #define PUMP_STACK_SIZE (192 * 1024)
 #define WATCHDOG_STACK_SIZE (32 * 1024)
 #define MAX_AUTH_TRIES  6        /* OpenSSH's own MaxAuthTries default */
-#define OUR_INIT_WINDOW (2u * 1024 * 1024)
-#define OUR_MAX_PACKET  32768u
+#include "sshd_channel_state.h"
+#define OUR_INIT_WINDOW SSHD_INPUT_CAP
+/* Channel maxpacket is a DATA length to OpenSSH, while the transport bound
+ * includes channel/type/string headers. Advertising 32768 made ordinary
+ * full-sized upload packets exceed our 32768-byte parser buffer. */
+#define OUR_MAX_PACKET  (SSH_MAX_PAYLOAD - 13u)
+_Static_assert(OUR_MAX_PACKET + 13u <= SSH_MAX_PAYLOAD,"channel header fits transport");
 
 /* Pre-auth deadline. A connection that has not AUTHENTICATED within this is
  * reaped by the watchdog below: without it, eight sockets that connect and
@@ -289,6 +345,7 @@ static uint8_t g_conn_stack[SSHD_MAX_CONN][CONN_STACK_SIZE] __attribute__((align
 static uint8_t g_pump_stack[SSHD_MAX_CONN][PUMP_STACK_SIZE] __attribute__((aligned(16)));
 static uint8_t g_watchdog_stack[WATCHDOG_STACK_SIZE] __attribute__((aligned(16)));
 static volatile int g_slot_busy[SSHD_MAX_CONN];
+static int g_conn_tid[SSHD_MAX_CONN];
 
 struct conn_ctx {
     int slot;
@@ -305,25 +362,22 @@ struct conn_ctx {
                    * comment: the client's FIRST SSH_MSG_KEXINIT is required
                    * and must be let through; only a SECOND one (a rekey
                    * ask, arriving after this flips to 1) gets refused. */
+    /* 2026-09-10 correction: rekey is now performed. Application packets
+     * pause between our KEXINIT and completion; transport packets continue. */
+    volatile int kex_busy;
+    struct channel_ctx channels[SSHD_CHANNELS];
+    struct remote_listener remote[SSHD_REMOTE_LISTENERS];
+    uint32_t next_channel;
+    unsigned long long key_bytes,key_since_ns;
+    int nreplies;
+    struct { int len; uint8_t data[512]; } replies[64];
 
     char user[64];
     struct account acct;
     int authenticated;
     int auth_tries;
 
-    uint32_t peer_chan;
-    volatile uint32_t peer_window;
-    uint32_t peer_maxpkt;
     volatile int lock;
-
-    /* Receive-window accounting: CHANNEL_DATA the client sends, charged
-     * against OUR_INIT_WINDOW (the window WE advertised). RFC 4254 5.2 says
-     * a client MUST NOT send past the window; a server that relays it anyway
-     * has no receive-side flow control at all -- which was the state here
-     * until the attack battery's flood probe: the input thread just wrote
-     * everything to the child, and OUR_INIT_WINDOW governed only the
-     * sending direction. */
-    uint32_t recv_used;
 
     /* Pre-auth reap state, for the watchdog thread (see
      * SSHD_PREAUTH_TIMEOUT_MS above). `gen` is bumped by the accept loop at
@@ -334,15 +388,15 @@ struct conn_ctx {
     volatile unsigned gen;
     volatile int preauth_reaped;
 
-    int child_pid;
-    int child_in_w;
-    int child_out_r;
+    volatile int stopping;
 
     struct sshd_thread_arg main_targ, pump_targ;
 };
 
 static struct conn_ctx g_conn[SSHD_MAX_CONN];
 static uint8_t g_hostpub[32], g_hostseed[32];
+static unsigned long long g_rekey_bytes=1024ull*1024*1024;
+static unsigned long long g_rekey_ns=3600ull*1000000000;
 static volatile int g_active_conns; /* diagnostics only */
 static struct sshd_thread_arg g_watchdog_targ;
 
@@ -396,8 +450,15 @@ static void preauth_watchdog(void *arg)
 static int send_msg(struct conn_ctx *cc, const uint8_t *payload, int len)
 {
     struct sock_io_ctx c = { cc->sockfd };
-    spin_lock(&cc->lock);
+    for (;;) {
+        spin_lock(&cc->lock);
+        if (!cc->kex_busy || (len > 0 && payload[0] < 50)) break;
+        spin_unlock(&cc->lock);
+        if (cc->stopping) return -1;
+        sys_sleep_ms(1);
+    }
     int rc = ssh_pkt_send(&cc->s2c, sock_write_all, &c, payload, len, rnd);
+    if(rc==0)__sync_fetch_and_add(&cc->key_bytes,(unsigned long long)len+64);
     spin_unlock(&cc->lock);
     return rc;
 }
@@ -429,18 +490,36 @@ static void disconnect(struct conn_ctx *cc, uint32_t reason, const char *msg);
  * while the server's loop just kept waiting for a CHANNEL_OPEN that was
  * never coming either. Centralising the check here closes every call site
  * that reads a packet in one place instead of three. */
-static int recv_msg(struct conn_ctx *cc, uint8_t *buf, int max)
+static int do_kex(struct conn_ctx *cc, const uint8_t *incoming, int incoming_len);
+static int channel_dispatch(struct conn_ctx *cc,const uint8_t *buf,int n);
+static int recv_transport(struct conn_ctx *cc, uint8_t *buf, int max)
 {
     struct sock_io_ctx c = { cc->sockfd };
     for (;;) {
         int n = ssh_pkt_recv(&cc->c2s, sock_read_exact, &c, buf, max);
-        if (n < 0) return n;
+        if(n>0)__sync_fetch_and_add(&cc->key_bytes,(unsigned long long)n+64);
+        if (n < 0) { errs("sshd: receive error "); outn_fd(2, n); errs("\n"); return n; }
         if (n >= 1 && (buf[0] == SSH_MSG_IGNORE || buf[0] == SSH_MSG_DEBUG ||
                        buf[0] == SSH_MSG_UNIMPLEMENTED)) continue;
-        if (n >= 1 && buf[0] == SSH_MSG_KEXINIT && cc->kex_done) {
-            disconnect(cc, SSH_DISCONNECT_KEY_EXCHANGE_FAILED, "rekey not supported");
-            return -1;
+        return n;
+    }
+}
+
+/* 2026-09-10: supersedes the refusal described above. Read a full transport
+ * packet before inspecting its type: a rekey proposal can arrive even while
+ * a caller is waiting for a tiny service/channel reply. */
+static int recv_msg(struct conn_ctx *cc, uint8_t *buf, int max)
+{
+    uint8_t packet[SSH_MAX_PAYLOAD];
+    for (;;) {
+        int n = recv_transport(cc, packet, sizeof packet);
+        if (n > 0 && packet[0] == SSH_MSG_KEXINIT && cc->kex_done) {
+            if (do_kex(cc, packet, n) < 0) return -1;
+            if(cc->authenticated)return 0;
+            continue;
         }
+        if (n > max) return -1;
+        if (n > 0) memcpy(buf, packet, n);
         return n;
     }
 }
@@ -470,7 +549,9 @@ static int do_version_exchange(struct conn_ctx *cc)
     int n = 0;
     for (;;) {
         char ch;
-        if (sys_read(cc->sockfd, &ch, 1) != 1) return -1;
+        int got = sys_read(cc->sockfd, &ch, 1);
+        if (got == SIG_E_INTR) continue;
+        if (got != 1) return -1;
         if (n < (int)sizeof line - 1) line[n++] = ch;
         if (ch == '\n') break;
         if (n >= SSH_MAX_IDENT) return -1; /* RFC 4253 4.2 line-length bound */
@@ -485,14 +566,32 @@ static int do_version_exchange(struct conn_ctx *cc)
 /* ========================================================================
  * KEX
  * ==================================================================== */
-static int do_kex(struct conn_ctx *cc)
+static int do_kex(struct conn_ctx *cc, const uint8_t *incoming, int incoming_len)
 {
     uint8_t buf[512];
+    spin_lock(&cc->lock); cc->kex_busy = 1; spin_unlock(&cc->lock);
     cc->islen = ssh_kexinit_build(cc->I_S, (int)sizeof cc->I_S, rnd);
     if (cc->islen < 0) return -1;
     if (send_msg(cc, cc->I_S, cc->islen) < 0) return -1;
 
-    cc->iclen = recv_msg(cc, cc->I_C, (int)sizeof cc->I_C);
+    if (incoming) {
+        if (incoming_len > (int)sizeof cc->I_C) return -1;
+        memcpy(cc->I_C, incoming, incoming_len); cc->iclen = incoming_len;
+    } else {
+        uint8_t pending[SSH_MAX_PAYLOAD];
+        for(;;){
+            int n=recv_transport(cc,pending,sizeof pending);
+            if(n<1)return -1;
+            if(pending[0]==SSH_MSG_KEXINIT){
+                if(n>(int)sizeof cc->I_C)return -1;
+                memcpy(cc->I_C,pending,n);cc->iclen=n;break;
+            }
+            /* A server-initiated proposal crosses packets already in flight.
+             * Dispatch them into per-channel queues; postpone their replies
+             * until NEWKEYS. Dropping them corrupts an otherwise valid upload. */
+            if(!cc->authenticated||pending[0]<50||channel_dispatch(cc,pending,n)<0)return -1;
+        }
+    }
     if (cc->iclen < 1 || cc->I_C[0] != SSH_MSG_KEXINIT) return -1;
 
     struct ssh_negotiated neg;
@@ -502,7 +601,7 @@ static int do_kex(struct conn_ctx *cc)
         return -1;
     }
 
-    int n = recv_msg(cc, buf, (int)sizeof buf);
+    int n = recv_transport(cc, buf, (int)sizeof buf);
     if (n < 1 || buf[0] != SSH_MSG_KEX_ECDH_INIT) return -1;
     const uint8_t *qc; int qclen;
     if (ssh_r_string(buf, 1, n, &qc, &qclen) < 0 || qclen != 32) return -1;
@@ -518,7 +617,9 @@ static int do_kex(struct conn_ctx *cc)
         return -1;
     }
     if (send_msg(cc, reply, replylen) < 0) return -1;
-    for (int i = 0; i < 32; i++) cc->session_id[i] = h[i];
+    /* The session identifier is the FIRST exchange hash for every later
+     * KDF and userauth signature. Replacing it rekeys to different keys. */
+    if (!cc->kex_done) for (int i = 0; i < 32; i++) cc->session_id[i] = h[i];
 
     uint8_t nk[1] = { SSH_MSG_NEWKEYS };
     if (send_msg(cc, nk, 1) < 0) return -1;
@@ -530,15 +631,32 @@ static int do_kex(struct conn_ctx *cc)
     /* Our OWN NEWKEYS was just sent -- our outgoing side switches now. */
     ssh_dir_activate(&cc->s2c, enc_s2c, iv_s2c, mac_s2c);
 
-    n = recv_msg(cc, buf, (int)sizeof buf);
+    n = recv_transport(cc, buf, (int)sizeof buf);
     if (n < 1 || buf[0] != SSH_MSG_NEWKEYS) return -1;
     /* The client's NEWKEYS was just RECEIVED -- our incoming side switches now. */
     ssh_dir_activate(&cc->c2s, enc_c2s, iv_c2s, mac_c2s);
 
     crypto_wipe(enc_c2s, 16); crypto_wipe(enc_s2c, 16);
     crypto_wipe(mac_c2s, 32); crypto_wipe(mac_s2c, 32);
+    /* RFC 8308: the CLIENT's ext-info-c permits our initial EXT_INFO.
+     * RSA SHA-2 support must be announced here so OpenSSH can select a
+     * signature algorithm for the ssh-rsa public-key encoding. Never emit
+     * this initial-only extension on a later rekey. */
+    const uint8_t *kexnames; int kexlen;
+    if (!cc->kex_done && ssh_r_string(cc->I_C,17,cc->iclen,&kexnames,&kexlen)>=0 &&
+        ssh_namelist_has(kexnames,kexlen,"ext-info-c")) {
+        uint8_t ext[256]; int elen=ssh_pubkey_ext_info(ext,sizeof ext);
+        if(elen<0 || send_msg(cc,ext,elen)<0)return -1;
+    }
     cc->kex_done = 1; /* from here on, a THIRD-party SSH_MSG_KEXINIT means
                        * rekey, and recv_msg() refuses it -- see its comment */
+    spin_lock(&cc->lock);
+    struct sock_io_ctx io={cc->sockfd};
+    for(int i=0;i<cc->nreplies;i++){
+        if(ssh_pkt_send(&cc->s2c,sock_write_all,&io,cc->replies[i].data,cc->replies[i].len,rnd)<0){spin_unlock(&cc->lock);return -1;}
+    }
+    cc->nreplies=0;cc->key_bytes=0;cc->key_since_ns=monotonic_ns();
+    cc->kex_busy = 0; spin_unlock(&cc->lock);
     return 0;
 }
 
@@ -549,10 +667,10 @@ static int do_service_request(struct conn_ctx *cc)
 {
     uint8_t buf[128];
     int n = recv_msg(cc, buf, (int)sizeof buf);
-    if (n < 1 || buf[0] != SSH_MSG_SERVICE_REQUEST) return -1;
+    if (n < 1 || buf[0] != SSH_MSG_SERVICE_REQUEST) { errs("sshd: service packet n/type "); outn_fd(2,n); errs("/"); outn_fd(2,n>0?buf[0]:-1); errs("\n"); return -1; }
     const uint8_t *svc; int svclen;
-    if (ssh_r_string(buf, 1, n, &svc, &svclen) < 0) return -1;
-    if (svclen != 12 || c_strncmp((const char *)svc, "ssh-userauth", 12) != 0) return -1;
+    if (ssh_r_string(buf, 1, n, &svc, &svclen) < 0) { errs("sshd: service string parse failed\n"); return -1; }
+    if (svclen != 12 || c_strncmp((const char *)svc, "ssh-userauth", 12) != 0) { errs("sshd: unsupported service\n"); return -1; }
     uint8_t rep[64];
     int rl = ssh_build_service_accept("ssh-userauth", rep, (int)sizeof rep);
     return send_msg(cc, rep, rl) < 0 ? -1 : 0;
@@ -633,31 +751,18 @@ static int do_userauth(struct conn_ctx *cc)
             if (ssh_auth_parse_publickey(req.rest, req.restlen, &has_sig, alg, (int)sizeof alg,
                                          &blob, &bloblen, &sig, &siglen) < 0) return -1;
 
-            int algok = c_streq(alg, "ssh-ed25519");
+            int algok = ssh_pubkey_supported(alg, blob, bloblen);
             int userok = algok && find_account(req.user, &cc->acct);
             int keyok = userok && check_authorized_key(&cc->acct, blob, bloblen);
 
             if (!keyok) { fail_or_disconnect(cc, "publickey", &give_up); if (give_up) return -1; continue; }
 
             if (!has_sig) {
-                uint8_t rep[128];
+                uint8_t rep[SSH_AUTH_KEY_MAX + 64];
                 int rl = ssh_build_userauth_pk_ok(alg, blob, bloblen, rep, (int)sizeof rep);
                 if (send_msg(cc, rep, rl) < 0) return -1;
                 continue;
             }
-
-            /* signature blob (RFC 4253 6.6): string alg2 + string raw-sig */
-            const uint8_t *alg2; int alg2len;
-            const uint8_t *rawsig; int rawsiglen;
-            int so = ssh_r_string(sig, 0, siglen, &alg2, &alg2len);
-            so = ssh_r_string(sig, so, siglen, &rawsig, &rawsiglen);
-            if (so < 0 || rawsiglen != 64) { fail_or_disconnect(cc, "publickey", &give_up); if (give_up) return -1; continue; }
-
-            /* the raw 32-byte key out of blob = string alg + string pub */
-            const uint8_t *a3; int a3len; const uint8_t *pubk; int pubklen;
-            int bo = ssh_r_string(blob, 0, bloblen, &a3, &a3len);
-            bo = ssh_r_string(blob, bo, bloblen, &pubk, &pubklen);
-            if (bo < 0 || pubklen != 32) return -1;
 
             uint8_t signdata[SSH_AUTH_SIGDATA_MAX];
             int sdlen = ssh_auth_pubkey_signdata(cc->session_id, req.user, req.service,
@@ -665,7 +770,7 @@ static int do_userauth(struct conn_ctx *cc)
             if (sdlen < 0) return -1;
 
 
-            if (ed25519_verify(rawsig, signdata, (unsigned long)sdlen, pubk)) {
+            if (ssh_pubkey_verify(alg,blob,bloblen,sig,siglen,signdata,sdlen)) {
                 uint8_t rep[16];
                 int rl = ssh_build_userauth_success(rep, (int)sizeof rep);
                 if (send_msg(cc, rep, rl) < 0) return -1;
@@ -684,370 +789,18 @@ static int do_userauth(struct conn_ctx *cc)
     }
 }
 
-/* ========================================================================
- * connection protocol: channel open + requests up to shell/exec
- * ==================================================================== */
-static int spawn_child(struct conn_ctx *cc, const char *cmd /* NULL = shell */)
-{
-    int ip[2], op[2]; /* ip: server->child stdin; op: child stdout+stderr->server */
-    if (sys_pipe(ip) < 0) return -1;
-    if (sys_pipe(op) < 0) { sys_close(ip[0]); sys_close(ip[1]); return -1; }
+#include "sshd_channels.h"
 
-    int pid = sys_fork();
-    if (pid < 0) {
-        sys_close(ip[0]); sys_close(ip[1]); sys_close(op[0]); sys_close(op[1]);
-        return -1;
-    }
-    if (pid == 0) {
-        sys_dup2(ip[0], 0);
-        sys_dup2(op[1], 1);
-        sys_dup2(op[1], 2); /* stderr merged into the same stream -- see file header */
-        sys_close(ip[0]); sys_close(ip[1]); sys_close(op[0]); sys_close(op[1]);
-
-        if (sys_setgid(cc->acct.gid) < 0 || sys_setuid(cc->acct.uid) < 0) {
-            errs("sshd: could not drop privileges to the authenticated user\n");
-            app_exit(126);
-        }
-        sys_chdir(cc->acct.home);
-
-        static char envh[ACCT_PATH + 8], envu[ACCT_NAME + 8];
-        char *e = envh; const char *pre = "HOME="; int k = 0;
-        for (int i = 0; pre[i]; i++) e[k++] = pre[i];
-        for (int i = 0; cc->acct.home[i] && k < (int)sizeof envh - 1; i++) e[k++] = cc->acct.home[i];
-        e[k] = 0;
-        char *e2 = envu; const char *pre2 = "USER="; k = 0;
-        for (int i = 0; pre2[i]; i++) e2[k++] = pre2[i];
-        for (int i = 0; cc->acct.name[i] && k < (int)sizeof envu - 1; i++) e2[k++] = cc->acct.name[i];
-        e2[k] = 0;
-        char *envp[] = { envh, envu, 0 };
-
-        if (cmd) {
-            char *argv[] = { (char *)"sh", (char *)"-c", (char *)cmd, 0 };
-            sys_execve(cc->acct.shell[0] ? cc->acct.shell : "/bin/sh", argv, envp);
-        } else {
-            char *argv[] = { (char *)"sh", 0 };
-            sys_execve(cc->acct.shell[0] ? cc->acct.shell : "/bin/sh", argv, envp);
-        }
-        errs("sshd: exec failed\n");
-        app_exit(127);
-    }
-
-    sys_close(ip[0]);
-    sys_close(op[1]);
-    cc->child_pid = pid;
-    cc->child_in_w = ip[1];
-    cc->child_out_r = op[0];
-    return 0;
-}
-
-/* --- the output pump: child's merged stdout+stderr -> CHANNEL_DATA,
- * honouring the CLIENT's advertised window (peer_window/peer_maxpkt). --- */
-static void output_pump(void *arg)
-{
-    struct conn_ctx *cc = (struct conn_ctx *)arg;
-    uint8_t chunk[4096];
-    for (;;) {
-        int n = sys_read(cc->child_out_r, chunk, (int)sizeof chunk);
-        if (n <= 0) break; /* child closed its output (exited) */
-
-        int off = 0;
-        while (off < n) {
-            /* Wait for window room. A client that never sends WINDOW_ADJUST
-             * (or one that has genuinely stopped reading) stalls the
-             * connection here rather than the server writing past what it
-             * was granted -- see the file header for why that is the
-             * correctness bar, not merely a nicety. */
-            uint32_t room;
-            for (;;) {
-                spin_lock(&cc->lock);
-                room = cc->peer_window;
-                spin_unlock(&cc->lock);
-                if (room > 0) break;
-                sys_sleep_ms(10);
-            }
-            uint32_t want = (uint32_t)(n - off);
-            if (want > room) want = room;
-            if (want > cc->peer_maxpkt) want = cc->peer_maxpkt;
-            if (want > sizeof chunk) want = sizeof chunk;
-
-            uint8_t pkt[9 + 4096];
-            int pl = ssh_build_channel_data(cc->peer_chan, chunk + off, (int)want, pkt, (int)sizeof pkt);
-            if (pl < 0) { off = n; break; }
-            if (send_msg(cc, pkt, pl) < 0) { off = n; break; }
-            spin_lock(&cc->lock);
-            cc->peer_window -= want;
-            spin_unlock(&cc->lock);
-            off += (int)want;
-        }
-    }
-
-    int status = 0;
-    sys_waitpid(cc->child_pid, &status);
-    uint8_t pkt[64];
-    int pl = ssh_build_exit_status(cc->peer_chan, (uint32_t)status, pkt, (int)sizeof pkt);
-    if (pl > 0) send_msg(cc, pkt, pl);
-    pl = ssh_build_eof(cc->peer_chan, pkt, (int)sizeof pkt);
-    if (pl > 0) send_msg(cc, pkt, pl);
-    pl = ssh_build_close(cc->peer_chan, pkt, (int)sizeof pkt);
-    if (pl > 0) send_msg(cc, pkt, pl);
-
-    sys_close(cc->child_out_r);
-    /* Unblock the input thread's pending blocking read so it can notice the
-     * session is over and clean up -- see the file header's thread-shape note. */
-    sys_shutdown(cc->sockfd, LOGIT_SHUT_RD);
-}
-
-/* Reads channel requests until "shell" or "exec" spawns a child, or the
- * client gives up. Returns 0 once a child is running, -1 on any protocol
- * failure or an explicit close. */
-static int run_channel_setup(struct conn_ctx *cc)
-{
-    uint8_t buf[SSH_MAX_PAYLOAD];
-    for (int tries = 0; tries < 8; tries++) {
-        int n = recv_msg(cc, buf, (int)sizeof buf);
-        if (n < 1) return -1;
-        if (buf[0] != SSH_MSG_CHANNEL_OPEN) continue;
-
-        char type[32];
-        uint32_t peer_chan, peer_win, peer_maxpkt;
-        if (ssh_parse_channel_open(buf, n, type, (int)sizeof type, &peer_chan, &peer_win, &peer_maxpkt) < 0)
-            return -1;
-        if (!c_streq(type, "session")) {
-            uint8_t rep[64];
-            int rl = ssh_build_channel_open_failure(peer_chan, SSH_OPEN_UNKNOWN_CHANNEL_TYPE, rep, (int)sizeof rep);
-            send_msg(cc, rep, rl);
-            continue;
-        }
-        cc->peer_chan = peer_chan;
-        cc->peer_window = peer_win;
-        cc->peer_maxpkt = peer_maxpkt < OUR_MAX_PACKET ? peer_maxpkt : OUR_MAX_PACKET;
-        if (cc->peer_maxpkt == 0) cc->peer_maxpkt = 32768;
-
-        uint8_t rep[32];
-        int rl = ssh_build_channel_open_confirmation(peer_chan, 0, OUR_INIT_WINDOW, OUR_MAX_PACKET, rep, (int)sizeof rep);
-        if (send_msg(cc, rep, rl) < 0) return -1;
-        break;
-    }
-    if (cc->peer_maxpkt == 0) return -1; /* never got a session channel */
-
-    for (;;) {
-        int n = recv_msg(cc, buf, (int)sizeof buf);
-        if (n < 1) return -1;
-
-        if (buf[0] == SSH_MSG_CHANNEL_CLOSE) return -1;
-
-        /* A second CHANNEL_OPEN after ours was confirmed: ssh_conn.h's
-         * one-session-channel-per-connection policy, ENFORCED rather than
-         * assumed. The first version of this loop fell into the
-         * not-a-CHANNEL_REQUEST continue below, i.e. silence -- and RFC
-         * 4254 5.1 says a client MUST wait for OPEN_CONFIRMATION or
-         * OPEN_FAILURE before proceeding, so a conforming client (OpenSSH
-         * included) hangs forever on our policy. Found by the attack
-         * battery: its second-open probe timed out waiting for any reply.
-         * Refused by name, not by silence -- the same honesty rule as the
-         * rekey refusal in recv_msg(). */
-        if (buf[0] == SSH_MSG_CHANNEL_OPEN) {
-            uint32_t refused_chan;
-            if (ssh_r_u32(buf, 1, n, &refused_chan) < 0) return -1;
-            uint8_t rep[64];
-            int rl = ssh_build_channel_open_failure(refused_chan,
-                                                    SSH_OPEN_ADMINISTRATIVELY_PROHIBITED,
-                                                    rep, (int)sizeof rep);
-            if (rl > 0) send_msg(cc, rep, rl);
-            continue;
-        }
-
-        if (buf[0] != SSH_MSG_CHANNEL_REQUEST) continue;
-
-        uint32_t chan; char type[32]; int want_reply;
-        const uint8_t *data; int datalen;
-        if (ssh_parse_channel_request(buf, n, &chan, type, (int)sizeof type, &want_reply, &data, &datalen) < 0)
-            return -1;
-
-        if (c_streq(type, "shell") || c_streq(type, "exec")) {
-            char cmd[512];
-            const char *cmdp = 0;
-            if (c_streq(type, "exec")) {
-                if (ssh_parse_exec_command(data, datalen, cmd, (int)sizeof cmd) < 0) return -1;
-                cmdp = cmd;
-                /* Diagnostic, not decoration: /bin/sh (c/apps/coreutils/sh.c,
-                 * out of this line's ownership) has no `-c` argument handling
-                 * at all, so spawn_child's `sh -c cmdp` silently becomes a
-                 * plain interactive sh that ignores cmdp and reads its stdin
-                 * -- discovered by testing exec against a real OpenSSH
-                 * client, not assumed. Printing what the server RECEIVED is
-                 * what let that be told apart from a parse bug here. */
-                outs("sshd: EXEC user="); outs(cc->user); outs(" cmd="); outs(cmdp); outc('\n');
-            }
-            if (spawn_child(cc, cmdp) < 0) {
-                if (want_reply) {
-                    uint8_t rep[16]; int rl = ssh_build_channel_failure(chan, rep, (int)sizeof rep);
-                    send_msg(cc, rep, rl);
-                }
-                return -1;
-            }
-            if (want_reply) {
-                uint8_t rep[16]; int rl = ssh_build_channel_success(chan, rep, (int)sizeof rep);
-                send_msg(cc, rep, rl);
-            }
-            return 0;
-        }
-
-        /* pty-req / env / window-change / anything else: acknowledged (if a
-         * reply was requested) and otherwise ignored -- see the file header
-         * for exactly what "no real pty" means here. */
-        if (want_reply) {
-            uint8_t rep[16]; int rl = ssh_build_channel_success(chan, rep, (int)sizeof rep);
-            send_msg(cc, rep, rl);
-        }
-    }
-}
-
-/* --- the input thread's steady-state relay, once a child is running --- */
-static void input_relay(struct conn_ctx *cc)
-{
-    uint8_t buf[SSH_MAX_PAYLOAD];
-    for (;;) {
-        int n = recv_msg(cc, buf, (int)sizeof buf);
-        if (n < 0) break;
-        if (n < 1) continue;
-
-        switch (buf[0]) {
-        case SSH_MSG_CHANNEL_DATA: {
-            uint32_t chan; const uint8_t *data; int datalen;
-            if (ssh_parse_channel_data(buf, n, &chan, &data, &datalen) < 0) { n = -1; break; }
-            /* Recipient-channel check: our sender channel is 0 (the open
-             * confirmation says so), and data addressed anywhere else is for
-             * a channel this connection never opened. Until the attack
-             * battery's wrong-recipient probe, the recipient number was
-             * parsed and then IGNORED -- data for channel 0xDEAD reached the
-             * shell's stdin exactly like data for channel 0. RFC 4254 5.3:
-             * data on a channel that is not open is silently ignored (the
-             * alternative, an error, would let a hostile client kill the
-             * session with one mistyped u32). */
-            if (chan != 0) break;
-            /* Receive-window enforcement: the client is allowed exactly
-             * OUR_INIT_WINDOW bytes of CHANNEL_DATA past our open
-             * confirmation before it must hear from us again. A client that
-             * overruns it is violating flow control on purpose; the honest
-             * answer is a DISCONNECT, because "ignore the excess" would
-             * train a hostile sender that the window is decorative. */
-            spin_lock(&cc->lock);
-            cc->recv_used += (uint32_t)datalen;
-            uint32_t used = cc->recv_used;
-            spin_unlock(&cc->lock);
-            if (used > OUR_INIT_WINDOW) {
-                disconnect(cc, SSH_DISCONNECT_PROTOCOL_ERROR, "flow-control window exceeded");
-                n = -1;
-                break;
-            }
-            int off = 0;
-            while (off < datalen) {
-                int w = sys_write(cc->child_in_w, data + off, datalen - off);
-                if (w <= 0) { off = datalen; n = -1; break; }
-                off += w;
-            }
-            break;
-        }
-        case SSH_MSG_CHANNEL_WINDOW_ADJUST: {
-            uint32_t chan, bytes;
-            if (ssh_parse_window_adjust(buf, n, &chan, &bytes) == 0) {
-                spin_lock(&cc->lock);
-                cc->peer_window += bytes;
-                spin_unlock(&cc->lock);
-            }
-            break;
-        }
-        case SSH_MSG_CHANNEL_EOF:
-            /* Guarded: a client MAY send EOF twice, and the second close
-             * used to run sys_close(-1). The kernel happens to refuse
-             * fd<0 cleanly (c/kernel/exec/syscall.c's SYS_CLOSE guard:
-             * fd<0 || fd>=NFD -> -1), so this was never memory-unsafe --
-             * but an unguarded close of a not-open descriptor is a bug
-             * wearing a lucky kernel, and the guard costs one line. */
-            if (cc->child_in_w >= 0) {
-                sys_close(cc->child_in_w);
-                cc->child_in_w = -1;
-            }
-            break;
-        case SSH_MSG_CHANNEL_OPEN: {
-            /* The SECOND half of the one-channel policy: run_channel_setup
-             * refuses extra opens while the session is being set up (see
-             * its own comment); THIS loop is where an open arrives after a
-             * shell is already running, and it used to fall through to the
-             * default case -- silently ignored, client hung. Same refusal,
-             * same reason, second location, because recv_msg() cannot own
-             * it: pre-auth an unsolicited CHANNEL_OPEN must simply be
-             * dropped, and only the loops that have a session to protect
-             * know which is which. */
-            uint32_t refused_chan;
-            /* `>= 0`, not `== 0`: ssh_r_u32 returns the NEXT OFFSET (5
-             * here), never 0 -- an `== 0` guard made this reply unreachable
-             * and the second-open attack timed out on the FIXED server,
-             * which is how the wrong comparison was found. */
-            if (ssh_r_u32(buf, 1, n, &refused_chan) >= 0) {
-                uint8_t rep[64];
-                int rl = ssh_build_channel_open_failure(refused_chan,
-                                                        SSH_OPEN_ADMINISTRATIVELY_PROHIBITED,
-                                                        rep, (int)sizeof rep);
-                if (rl > 0) send_msg(cc, rep, rl);
-            }
-            break;
-        }
-        case SSH_MSG_CHANNEL_CLOSE:
-            n = -1;
-            break;
-        case SSH_MSG_CHANNEL_REQUEST:
-        default:
-            break; /* window-change and anything post-shell: ignored --
-                     * SSH_MSG_KEXINIT (a rekey request) never reaches here:
-                     * recv_msg() refuses it centrally, see that function's
-                     * own comment for why it has to live there and not in
-                     * this switch. */
-        }
-        if (n < 0) break;
-    }
-    if (cc->child_in_w >= 0) sys_close(cc->child_in_w);
-}
-
-/* ========================================================================
- * per-connection entry point
- * ==================================================================== */
 static void handle_connection(void *arg)
 {
-    struct conn_ctx *cc = (struct conn_ctx *)arg;
-
-    if (do_version_exchange(cc) == 0 &&
-        do_kex(cc) == 0 &&
-        do_service_request(cc) == 0 &&
-        do_userauth(cc) == 0 &&
-        run_channel_setup(cc) == 0) {
-
-        cc->pump_targ.fn = output_pump;
-        cc->pump_targ.ctx = cc;
-        struct logit_thread_spec spec;
-        spec.entry = (unsigned long)(long)&sshd_thread_entry;
-        spec.stack_top = (unsigned long)(long)(g_pump_stack[cc->slot] + PUMP_STACK_SIZE);
-        spec.stack_base = 0;
-        spec.stack_len = 0;
-        spec.tls = 0;
-        spec.arg = (unsigned long)(long)&cc->pump_targ;
-        int tid = sys_thread_create(&spec);
-        if (tid > 0) {
-            input_relay(cc);
-        } else {
-            errs("sshd: could not start the output pump thread\n");
-        }
-    }
-
-    if (cc->child_in_w >= 0) sys_close(cc->child_in_w);
-    /* gen BEFORE the close: the pre-auth watchdog re-verifies `gen` around
-     * its shutdown() precisely so a torn-down-and-reused fd cannot be shut
-     * down by a stale decision -- see that function's race note. */
-    cc->gen++;
-    sys_close(cc->sockfd);
-    g_active_conns--;
-    g_slot_busy[cc->slot] = 0;
+    struct conn_ctx *cc=arg;
+    int stage=0,rc=do_version_exchange(cc);
+    if(rc==0){stage=1;rc=do_kex(cc,0,0);}
+    if(rc==0){stage=2;rc=do_service_request(cc);}
+    if(rc==0){stage=3;rc=do_userauth(cc);}
+    if(rc==0){stage=4;rc=run_channels(cc);}
+    if(rc<0){errs("sshd: connection ended at stage ");outn_fd(2,stage);errs("\n");}
+    cc->gen++;sys_close(cc->sockfd);g_active_conns--;g_slot_busy[cc->slot]=0;
 }
 
 /* ========================================================================
@@ -1057,8 +810,16 @@ int main(int argc, char **argv)
 {
     int port = argc > 1 ? c_atoi(argv[1]) : 22;
     if (port <= 0 || port > 65535) port = 22;
+    if(argc>2){int b=c_atoi(argv[2]);if(b<0)return 1;g_rekey_bytes=(unsigned)b;}
+    if(argc>3){int secs=c_atoi(argv[3]);if(secs<0)return 1;g_rekey_ns=(unsigned long long)secs*1000000000;}
+    struct logit_sigaction ignore={0};ignore.handler=1;
+    if(_sys(SYS_SIGACTION,LOGIT_SIGPIPE,(long)&ignore,0)<0)return 1;
 
+    if (sys_setgid(0) < 0 || sys_setuid(0) < 0) {
+        errs("sshd: start as root; commands run as the authenticated account\n"); return 1;
+    }
     if (load_or_create_hostkey(g_hostpub, g_hostseed) != 0) return 1;
+    ssh_pubkey_init();
     char fp[64];
     ssh_hostkey_fingerprint(g_hostpub, fp, (int)sizeof fp);
     outs("sshd: host key fingerprint (ssh-ed25519) "); outs(fp); outc('\n');
@@ -1073,9 +834,9 @@ int main(int argc, char **argv)
     if (sys_listen(lfd, 8) < 0) { errs("SSHD_FAIL listen\n"); return 1; }
     sys_getsockname(lfd, &me);
 
-    for (int i = 0; i < SSHD_MAX_CONN; i++) g_conn[i].child_in_w = -1;
 
-    outs("SSHD_READY port="); outn(me.port); outc('\n');
+
+
 
     /* The pre-auth reaper -- started once, before the first accept, so no
      * connection can slip in under a watchdog that does not exist yet (the
@@ -1093,15 +854,25 @@ int main(int argc, char **argv)
         spec.stack_len = 0;
         spec.tls = 0;
         spec.arg = (unsigned long)(long)&g_watchdog_targ;
-        if (sys_thread_create(&spec) <= 0)
-            errs("sshd: could not start the pre-auth watchdog (no deadlines will fire)\n");
+        if (sys_thread_create(&spec) <= 0) {
+            errs("SSHD_FAIL watchdog\n"); sys_close(lfd); return 1;
+        }
     }
+
+    outs("SSHD_READY port="); outn(me.port); outs(" pid=");outn(sys_getpid());outc('\n');
+    _sys(SYS_FSYNC, 1, 0, 0); /* daemon logs use buffered file descriptors */
 
     for (;;) {
         struct logit_sockaddr peer;
         peer.family = 0; peer.port = 0; peer.addr = 0;
         int cfd = sys_accept(lfd, &peer, 0);
-        if (cfd < 0) { if (cfd == LSK_E_AGAIN) continue; break; }
+        if (cfd < 0) {
+            if(cfd==LSK_E_AGAIN||cfd==LSK_E_INTR)continue;
+            /* FULL is -4, distinct from socket-control EINTR (-9). A busy
+             * process must leave the listener alive while channels drain. */
+            if(cfd==LSK_E_FULL){sys_sleep_ms(10);continue;}
+            errs("SSHD_FAIL accept ");outn_fd(2,cfd);errs("\n");break;
+        }
 
         int slot = -1;
         for (int i = 0; i < SSHD_MAX_CONN; i++) if (!g_slot_busy[i]) { slot = i; break; }
@@ -1116,6 +887,8 @@ int main(int argc, char **argv)
             continue;
         }
 
+        if (g_conn_tid[slot] > 0)
+            _sys(SYS_THREAD_JOIN, g_conn_tid[slot], 0, 0);
         struct conn_ctx *cc = &g_conn[slot];
         /* Zero everything but the .bss-resident large buffers, which do not
          * need zeroing between connections (every field that matters is set
@@ -1124,19 +897,17 @@ int main(int argc, char **argv)
         cc->sockfd = cfd;
         cc->authenticated = 0;
         cc->auth_tries = 0;
-        cc->child_pid = 0;
-        cc->child_in_w = -1;
-        cc->child_out_r = -1;
-        cc->peer_chan = 0;
-        cc->peer_window = 0;
-        cc->peer_maxpkt = 0;
+        cc->stopping = 0;
         cc->lock = 0;
         cc->c2s.cipher_on = 0; cc->c2s.mac_on = 0; cc->c2s.seq = 0;
         cc->s2c.cipher_on = 0; cc->s2c.mac_on = 0; cc->s2c.seq = 0;
         cc->kex_done = 0; /* a REUSED slot's prior connection may have left
                            * this 1 -- a fresh connection's first KEXINIT
                            * must not be mistaken for a rekey ask */
-        cc->recv_used = 0;
+        cc->kex_busy = 0;cc->nreplies=0;cc->key_bytes=0;cc->key_since_ns=0;
+        cc->next_channel=0;
+        for(int j=0;j<SSHD_CHANNELS;j++)cc->channels[j].used=0;
+        for(int j=0;j<SSHD_REMOTE_LISTENERS;j++)cc->remote[j].fd=-1;
         cc->preauth_reaped = 0;
         cc->gen++;                 /* also bumped at cleanup: see the watchdog */
         cc->connected_ns = monotonic_ns();
@@ -1153,7 +924,8 @@ int main(int argc, char **argv)
         spec.stack_len = 0;
         spec.tls = 0;
         spec.arg = (unsigned long)(long)&cc->main_targ;
-        if (sys_thread_create(&spec) <= 0) {
+        g_conn_tid[slot] = sys_thread_create(&spec);
+        if (g_conn_tid[slot] <= 0) {
             errs("sshd: could not start a connection thread\n");
             sys_close(cfd);
             g_slot_busy[slot] = 0;

@@ -1,3 +1,4 @@
+/* 2026-09-10 concurrency correction: The concurrency paragraph below describes the removed BKL. unix_owner now serializes the local namespace and queues, and every blocking operation releases that task owner before parking. */
 #ifndef LOGIT_UNIX_H
 #define LOGIT_UNIX_H
 
@@ -31,6 +32,7 @@
  * anything today and one would have to be removed again when the BKL goes. */
 
 struct usock;      /* opaque: the state behind an AF_UNIX struct file */
+struct poll_table;
 struct vcred;      /* c/fs/vfs_meta.h -- uid/gid, passed IN rather than fetched
                     * here, so the host gate can drive two different callers
                     * without a process table. */
@@ -38,6 +40,7 @@ struct vcred;      /* c/fs/vfs_meta.h -- uid/gid, passed IN rather than fetched
 /* Create an unbound, unconnected socket. `type` is LOGIT_SOCK_STREAM,
  * LOGIT_SOCK_DGRAM or LOGIT_SOCK_SEQPACKET. NULL + *err on failure. */
 struct usock *unix_create(int type, int pid, int *err);
+int unix_peer_pid(struct usock *s);
 
 /* Claim `canon` (an ALREADY-RESOLVED absolute path -- see the namespace
  * argument at the top of unix.c for why this layer never sees a relative one).
@@ -62,6 +65,10 @@ int  unix_connect(struct usock *s, const char *canon, const struct vcred *cr);
 long unix_read(struct usock *s, void *buf, long len, int nonblock);
 long unix_write(struct usock *s, const void *buf, long len, int nonblock);
 
+/* Register one wait queue before inspecting readiness under unix_owner.
+ * The file reference held by poll keeps a connection and its queue alive. */
+short unix_poll(struct usock *s, struct poll_table *pt);
+
 int  unix_shutdown(struct usock *s, int how);
 
 /* The bound path, or "" -- getsockname() for AF_UNIX. */
@@ -78,4 +85,7 @@ void unix_release(struct usock *s);
 /* UNIXSTAT_* (include/abi/logit_abi.h), or -1 for an unknown selector. */
 long unix_stat(int what);
 
+struct aex_agent_identity;
+int unix_agent_peer(struct usock *, struct aex_agent_identity *);
+int unix_agent_transfer(struct usock *, int parent, const struct aex_agent_identity *);
 #endif /* LOGIT_UNIX_H */

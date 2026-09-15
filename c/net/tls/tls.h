@@ -12,7 +12,8 @@
  * www.mas.gov.sg, www.cbuae.gov.ae at the time of writing), and to those hosts
  * "we only speak 1.3" meant unreachable, not slow.
  *
- * Key exchange (both versions): x25519 (preferred) plus secp256r1 / secp384r1.
+ * Key exchange (both versions): X25519, secp256r1 / secp384r1, and X448.
+ * TLS 1.3 also offers X25519MLKEM768 plus a bare X25519 share initially.
  * In 1.3 a group we did not lead with is reached through HelloRetryRequest; in
  * 1.2 the server simply names the curve in its ServerKeyExchange.
  *
@@ -28,9 +29,10 @@
  * signature is verified against the leaf -- it is the only thing that
  * authenticates the ephemeral key.
  *
- * Not implemented: TLS 1.1 and below, session resumption / PSK / tickets,
- * 0-RTT, client certificates (a CertificateRequest is declined politely),
- * renegotiation, KeyUpdate, post-quantum groups.
+ * Correction to the former "no PSK/tickets or post-quantum groups" claim:
+ * resumption and X25519MLKEM768 are implemented. X448 joined in 2026-09-10.
+ * Still absent: TLS 1.1 and below, 0-RTT, client certificates (a
+ * CertificateRequest is declined politely), and renegotiation.
  *
  * --- Two ways to drive it ---
  *

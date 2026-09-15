@@ -1,3 +1,7 @@
+#include "tls_domain.h"
+/* One owner for this session/ticket pool. Only nonblocking steps hold it;
+ * the caller pumps TCP after the step returns. It may never span net_poll. */
+static struct io_domain tls_owner = IO_DOMAIN_INIT;
 #include <stdint.h>
 #include <stddef.h>
 #include "tls.h"
@@ -12,6 +16,7 @@
 #include "kprintf.h"
 #include "rng.h"
 #include "mlkem.h"
+#include "../../crypto/pubkey/x448.h"
 
 void *memcpy(void *, const void *, size_t);
 void *memset(void *, int, size_t);
@@ -61,7 +66,9 @@ int tls_fail(struct tls_sess *s, int rc)
 int tls_tx_flush(struct tls_sess *s)
 {
     while (s->txoff < s->txlen) {
-        int n = tcp_send(s->tcp, s->tx + s->txoff, s->txlen - s->txoff);
+        /* tcp_send can pump sock->TLS while the TLS owner is held.
+         * This record step must return WANT_WRITE and let its caller pump. */
+        int n = tcp_send_nb(s->tcp, s->tx + s->txoff, s->txlen - s->txoff);
         if (n < 0) return -1;
         if (n == 0) return 0;
         s->txoff += n;
@@ -273,6 +280,7 @@ static int group_curve(int grp) { return grp == GRP_P256 ? 256 : grp == GRP_P384
 const char *tls_group_name(int grp)
 {
     return grp == GRP_X25519 ? "x25519" : grp == GRP_P256 ? "secp256r1"
+         : grp == GRP_X448 ? "x448"
          : grp == GRP_P384 ? "secp384r1"
          : grp == GRP_X25519MLKEM768 ? "X25519MLKEM768" : "?";
 }
@@ -286,7 +294,12 @@ const char *tls_group_name(int grp)
  * to the 1.2 reader, which is a check somebody can later delete without seeing
  * why it was there. */
 int tls_group_supported(int grp)
-{ return grp == GRP_X25519 || grp == GRP_P256 || grp == GRP_P384; }
+{
+#ifndef LOGIT_TLS_NO_X448
+    if (grp == GRP_X448) return 1;
+#endif
+    return grp == GRP_X25519 || grp == GRP_P256 || grp == GRP_P384;
+}
 
 /* The TLS 1.3 key_share list, which is the above PLUS the hybrid. Used for the
  * HelloRetryRequest retry group, where a server may legitimately ask us to
@@ -321,6 +334,14 @@ int tls_gen_share(struct tls_sess *s)
         rand_bytes(s->priv, 32);
         x25519_base(s->pub, s->priv);
         s->publen = 32;
+        rc = 0;
+    } else if (s->group == GRP_X448) {
+        /* RFC 8422/8446 carry all 56 RFC 7748 bytes, with no SEC1 prefix or
+         * byte reversal. Generate only when selected: advertising a fallback
+         * must not charge the common hybrid/X25519 handshake another ladder. */
+        rand_bytes(s->priv, 56);
+        x448_base(s->pub, s->priv);
+        s->publen = 56;
         rc = 0;
     } else {
         int curve = group_curve(s->group);
@@ -409,6 +430,17 @@ int tls_compute_shared(struct tls_sess *s, const uint8_t *spub, int splen,
              * chose. */
             uint8_t z = 0; for (int i = 0; i < 32; i++) z |= out[i];
             if (z) { *outlen = 32; rc = 0; }
+        }
+    } else if (s->group == GRP_X448) {
+        if (splen == 56) {
+            uint8_t shared[56], nz = 0;
+            x448(shared, s->priv, spub);
+            /* The primitive intentionally accepts every u-coordinate. TLS
+             * owns RFC 8446 7.4.2's mandatory all-zero refusal; never publish
+             * that known value as a successfully derived session secret. */
+            for (int i = 0; i < 56; i++) nz |= shared[i];
+            if (nz) { memcpy(out, shared, 56); *outlen = 56; rc = 0; }
+            crypto_wipe(shared, sizeof shared);
         }
     } else {
         int curve = group_curve(s->group);
@@ -573,12 +605,19 @@ static int build_ch(struct tls_sess *s, uint8_t *ch, int max,
      * server that refuses x25519 gets a HelloRetryRequest it can act on
      * instead of a handshake_failure. In TLS 1.2 this same list is what the
      * server picks its ServerKeyExchange curve from. */
-    n += put_u16(ch + n, EXT_SUPPORTED_GRPS); n += put_u16(ch + n, 10);
-    n += put_u16(ch + n, 8);
-    n += put_u16(ch + n, GRP_X25519MLKEM768);
-    n += put_u16(ch + n, GRP_X25519);
-    n += put_u16(ch + n, GRP_P256);
-    n += put_u16(ch + n, GRP_P384);
+    static const uint16_t groups[] = {
+        GRP_X25519MLKEM768, GRP_X25519, GRP_P256, GRP_P384,
+#ifndef LOGIT_TLS_NO_X448
+        GRP_X448,
+#endif
+    };
+    /* Derive both wire lengths from the actual offers. The negative build
+     * removes X448 from negotiation and must lose only the X448 interop rows. */
+    n += put_u16(ch + n, EXT_SUPPORTED_GRPS);
+    n += put_u16(ch + n, 2 + sizeof groups);
+    n += put_u16(ch + n, sizeof groups);
+    for (unsigned i = 0; i < sizeof groups / sizeof groups[0]; i++)
+        n += put_u16(ch + n, groups[i]);
 
     /* ec_point_formats = uncompressed. Meaningless in 1.3 (points have one
      * encoding) but RFC 4492 4 requires an ECC-capable 1.2 client to send it,
@@ -1696,6 +1735,7 @@ void trust_banner(void)
 
 int tls_start(int tcp_id, const char *host, const char *alpn, int64_t now)
 {
+    IO_DOMAIN_GUARD(&tls_owner);
     trust_banner();
     /* refuse to key a handshake from the weak rdtsc-only RNG fallback */
     if (!rng_strong()) {
@@ -1743,6 +1783,7 @@ int tls_start(int tcp_id, const char *host, const char *alpn, int64_t now)
 
 int tls_step(int id)
 {
+    IO_DOMAIN_GUARD(&tls_owner);
     struct tls_sess *s = sess_of(id);
     if (!s) return TLS_E_PROTO;
     if (s->state == TS_ESTABLISHED) return TLS_DONE;
@@ -1795,6 +1836,7 @@ int tls_connect(int tcp_id, const char *host, int64_t now)
 
 int tls_send(int id, const void *buf, int len)
 {
+    IO_DOMAIN_GUARD(&tls_owner);
     struct tls_sess *s = sess_of(id);
     if (!s || s->state != TS_ESTABLISHED || len < 0) return -1;
     int fl = tx_flush(s);
@@ -1868,6 +1910,7 @@ static void take_tickets(struct tls_sess *s, const uint8_t *p, int len)
 
 int tls_recv(int id, void *buf, int max)
 {
+    IO_DOMAIN_GUARD(&tls_owner);
     struct tls_sess *s = sess_of(id);
     if (!s || max <= 0) return -1;
     if (s->state == TS_FAILED) return -1;
@@ -1951,12 +1994,14 @@ int tls_recv(int id, void *buf, int max)
 
 int tls_version(int id)
 {
+    IO_DOMAIN_GUARD(&tls_owner);
     struct tls_sess *s = sess_of(id);
     return s ? s->version : 0;
 }
 
 int tls_resumed(int id)
 {
+    IO_DOMAIN_GUARD(&tls_owner);
     struct tls_sess *s = sess_of(id);
     return s ? s->psk_accepted : -1;
 }
@@ -1966,6 +2011,7 @@ int  tls_tickets_count(void) { return tls_psk_count(); }
 
 int tls_pending(int id)
 {
+    IO_DOMAIN_GUARD(&tls_owner);
     struct tls_sess *s = sess_of(id);
     if (!s || s->state != TS_ESTABLISHED) return 0;
     return s->applen - s->appoff;
@@ -1973,6 +2019,7 @@ int tls_pending(int id)
 
 int tls_alpn(int id, char *out, int max)
 {
+    IO_DOMAIN_GUARD(&tls_owner);
     struct tls_sess *s = sess_of(id);
     if (!s || max <= 0) return -1;
     int i = 0;
@@ -1983,6 +2030,7 @@ int tls_alpn(int id, char *out, int max)
 
 void tls_close(int id)
 {
+    IO_DOMAIN_GUARD(&tls_owner);
     if (id < 0 || id >= TLS_MAX_SESSIONS || !sessions[id].used) return;
     /* A session abandoned mid-handshake (the caller gave up, not tls_fail) still
      * spent the time; close the span rather than dropping the sample. */

@@ -428,11 +428,24 @@ probe-tls13-certverify-bypass: $(BUILD)
 # Measured on first run: 39 claimed cells pass, 0 fail, 7 correctly reported
 # not-claimed (TLS 1.2 x hybrid, which has no KEM message, and the hybrid
 # against our own server, whose srv_groups[] does not offer it).
+# Correction (2026-09-10): the server now offers the hybrid, and both sides
+# consume X448. The full matrix measures 52 passing cells, with only the six
+# TLS 1.2 hybrid cells unclaimed. Direction B checks the server's exit status
+# AND the exact echoed application bytes; its previous 64-byte expectation
+# for a 19-byte input could hide a server timeout behind s_client's success.
 test-tls-matrix:
 	@bash tests/unit/run-tls-matrix.sh
 
 .PHONY: test-tls-matrix
 ci-host: test-tls-matrix
+
+.PHONY: test-tls-x448 test-tls-x448-negctl
+# Break the actual TLS group offer, not the primitive's unit-test vectors:
+# exactly 12 X448 consumers disappear while all 12 X25519 controls survive.
+test-tls-x448: test-tls-x448-negctl
+test-tls-x448-negctl:
+	BUILD=$(BUILD) python3 tests/unit/tls_x448_run.py --build $(BUILD)/tls-x448
+ci-host: test-tls-x448
 
 # =============================================================================
 # COORDINATION NOTE, for whoever next writes to this file: three concurrent

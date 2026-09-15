@@ -96,6 +96,8 @@ int tcp_send(int id, const void *buf, int len)
     if (errno == EAGAIN || errno == EWOULDBLOCK) return 0;
     return -1;
 }
+/* The production TLS step uses the nonblocking transport entry. */
+int tcp_send_nb(int id, const void *buf, int len) { return tcp_send(id, buf, len); }
 int tcp_recv(int id, void *buf, int max)
 {
     (void)id;
