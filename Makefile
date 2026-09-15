@@ -93,10 +93,7 @@ QEMU        := qemu-system-x86_64
 #     `#include "sched.h"` can ever see. Put any FUTURE userland-only header
 #     whose basename collides with a kernel header here, not at the top level
 #     of c/apps/libc/include -- see UCFLAGS below for the matching -I.
-# AS compiler internals use paths relative to c/apps/as, not a public flat
-# include namespace. Its runtime/file.h otherwise shadows the kernel's file.h
-# in kmain and every other out-of-directory file consumer after a clean build.
-INCDIRS := $(addprefix -I,$(filter-out %/include/sys %/include/uonly c/apps/as/%,$(sort $(shell find c include -type d))))
+INCDIRS := $(addprefix -I,$(filter-out %/include/sys %/include/uonly,$(sort $(shell find c include -type d))))
 # Host-built unit tests compile kernel sources against the host libc: the
 # mini-libc headers (c/apps/libc/include) would shadow glibc's <features.h>
 # and break <stdint.h>, so host tests use INCDIRS without that dir.
@@ -656,22 +653,19 @@ $(eval $(call APP_RULE,settings,0x4B000000,Settings,-,S,140,150,165))
 # that archive and never includes its implementation or owns compiler state.
 STUDIO_SRC := $(wildcard c/apps/studio/*.c)
 STUDIO_OBJ := $(patsubst c/apps/studio/%.c,$(BUILD)/apps/studio/%.o,$(STUDIO_SRC))
-$(BUILD)/apps/studio/%.o: c/apps/studio/%.c $(wildcard c/apps/studio/*.h) c/apps/as/editor/completion.h
+$(BUILD)/apps/studio/%.o: c/apps/studio/%.c $(wildcard c/apps/studio/*.h) c/apps/as/complete.h
 	@mkdir -p $(dir $@)
 	$(CC) $(UCFLAGS) -c $< -o $@
 $(BUILD)/apps/studio-engine.a: $(STUDIO_OBJ)
 	$(AGENT_AR) rcs $@ $(STUDIO_OBJ)
-# Keep the object path aligned with the moved source. Reusing apps/complete.o
-# also imports its old .d prerequisite, c/apps/as/complete.c; -MP only protects
-# removed headers, so existing build trees would fail before recompilation.
-$(BUILD)/apps/as/editor/completion.o: c/apps/as/editor/completion.c c/apps/as/editor/completion.h
-	@mkdir -p $(dir $@)
-	$(CC) $(UCFLAGS) -c c/apps/as/editor/completion.c -o $@
-$(BUILD)/studio.elf: $(GUIDIR)/studio/studio.c $(APPDIR)/crt0.asm $(APPDIR)/logit.h $(GUIDIR)/aui.h $(BUILD)/apps/aui.o $(GFX_OBJ) $(BUILD)/apps/studio-engine.a $(BUILD)/apps/as/editor/completion.o c/apps/studio/engine.h $(wildcard c/apps/studio/studio_*.inc)
+$(BUILD)/apps/complete.o: c/apps/as/complete.c c/apps/as/complete.h
+	@mkdir -p $(BUILD)/apps
+	$(CC) $(UCFLAGS) -c c/apps/as/complete.c -o $@
+$(BUILD)/studio.elf: $(GUIDIR)/studio.c $(APPDIR)/crt0.asm $(APPDIR)/logit.h $(GUIDIR)/aui.h $(BUILD)/apps/aui.o $(GFX_OBJ) $(BUILD)/apps/studio-engine.a $(BUILD)/apps/complete.o c/apps/studio/engine.h $(wildcard c/apps/studio/studio_*.inc)
 	@mkdir -p $(BUILD)/apps
 	$(ASM) -f elf64 $(APPDIR)/crt0.asm -o $(BUILD)/apps/studio.crt0.o
-	$(CC) $(UCFLAGS) -c $(GUIDIR)/studio/studio.c -o $(BUILD)/apps/studio.o -Ic/apps/as
-	$(LD) -nostdlib -e _start -Ttext=0x49000000 -o $@ $(BUILD)/apps/studio.crt0.o $(BUILD)/apps/studio.o $(BUILD)/apps/aui.o $(GFX_OBJ) $(BUILD)/apps/studio-engine.a $(BUILD)/apps/as/editor/completion.o
+	$(CC) $(UCFLAGS) -c $(GUIDIR)/studio.c -o $(BUILD)/apps/studio.o -Ic/apps/as
+	$(LD) -nostdlib -e _start -Ttext=0x49000000 -o $@ $(BUILD)/apps/studio.crt0.o $(BUILD)/apps/studio.o $(BUILD)/apps/aui.o $(GFX_OBJ) $(BUILD)/apps/studio-engine.a $(BUILD)/apps/complete.o
 $(BUILD)/studio.aex: $(BUILD)/studio.elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/studio.elf $@ 'Code Studio' as '{' 200 160 250
 
@@ -1303,7 +1297,7 @@ $(BUILD)/browser.aex: $(BUILD)/browser.elf tools/mkaex.py
 # --- AetherScript: /bin/as -- a ring-3 CLI program. Links the as core + mini-libc
 # (fopen/malloc/snprintf/strtod) at the common CLI base via crt0_cli. (CLI_RULE
 # can't be reused: those programs use logit.h inline syscalls, not mini-libc.) ---
-include c/apps/as/sources.mk
+AS_C    := $(wildcard c/apps/as/*.c)
 AS_LIBC := $(wildcard c/apps/libc/src/*.c)
 AS_LASM := $(wildcard c/apps/libc/src/*.asm)
 AS_OBJ  := $(patsubst %.c,$(BUILD)/asobj/%.o,$(AS_C)) \
@@ -1312,8 +1306,7 @@ AS_OBJ  := $(patsubst %.c,$(BUILD)/asobj/%.o,$(AS_C)) \
 # as.h carries AS_BC_VERSION + the opcode enum; depend on it so a version bump
 # rebuilds EVERY asobj (esp. as_bc.o, whose .c rarely changes) -- otherwise a
 # stale as_bc.o in /bin/as rejects the freshly-bumped .la files on Logit.
-# Header and source groups now come from sources.mk. In particular, runtime/
-# belongs to generated native programs and is not part of AS_C.
+AS_HDRS := $(wildcard c/apps/as/*.h c/apps/as/runtime/*.h)
 
 $(BUILD)/asobj/%.o: %.c $(AS_HDRS)
 	@mkdir -p $(dir $@)
@@ -1332,7 +1325,7 @@ $(BUILD)/asobj/%.o: %.asm
 # Correction (2026-09-15): the shared lexer and the version-3 typed frontend
 # now ship for local checks. Legacy source -> bytecode still uses asc.la;
 # compiler.c remains excluded and the old self-hosting gate checks that path.
-AS_OBJ_SHIPPED := $(filter-out $(BUILD)/asobj/c/apps/as/legacy/compiler.o,$(AS_OBJ))
+AS_OBJ_SHIPPED := $(filter-out $(BUILD)/asobj/c/apps/as/compiler.o,$(AS_OBJ))
 
 $(BUILD)/as.elf: $(AS_OBJ_SHIPPED) $(APPDIR)/crt0_cli.asm
 	@mkdir -p $(BUILD)/apps
@@ -3305,15 +3298,7 @@ test-smp: $(ISO) $(DISK)
 # completion engine (own -DAS_COMPLETE_TEST target, doesn't include as.h). This
 # used to be a hand-written list, so a new core .c built into /bin/as fine and
 # then failed to link every host test until someone remembered to add it here.
-# AS_CORE is derived in c/apps/as/sources.mk. Mutation tests query this same
-# inventory so a directory move cannot silently remove their compiler units.
-.PHONY: as-host-sources as-shipped-sources
-as-host-sources:
-	@printf '%s\n' $(AS_HOST_SOURCES)
-
-as-shipped-sources:
-	@printf '%s\n' $(filter-out c/apps/as/legacy/compiler.c,$(AS_C)) $(AS_LIBC)
-
+AS_CORE := $(filter-out c/apps/as/as.c c/apps/as/complete.c,$(AS_C))
 test-as: check-asops check-abi
 	@mkdir -p $(BUILD)
 	@$(CC) -O2 -Wall -Wextra -o $(BUILD)/as_test tests/unit/as_test.c $(AS_CORE) -Ic/apps/as -Iinclude/abi
@@ -3343,14 +3328,14 @@ check-abi:
 # as_native.c #includes the generated asserts; rebuild it when they change, or a
 # stale object would keep vouching for the old layout (cf. the roots_bundle.inc
 # gotcha, where a missing dep silently kept the old CA roots in the kernel).
-$(BUILD)/asobj/c/apps/as/legacy/builtins.o: c/apps/as/legacy/abi_layout.inc
-$(BUILD)/c/apps/as/legacy/builtins.o: c/apps/as/legacy/abi_layout.inc
+$(BUILD)/asobj/c/apps/as/as_native.o: c/apps/as/abi_layout.inc
+$(BUILD)/c/apps/as/as_native.o: c/apps/as/abi_layout.inc
 
 # libcomplete host unit tests: the completion engine is self-contained C, so it
 # builds and runs natively -- no QEMU.
 test-complete:
 	@mkdir -p $(BUILD)
-	@$(CC) -O2 -Wall -Wextra -DAS_COMPLETE_TEST -o $(BUILD)/complete_test tests/unit/complete_test.c c/apps/as/editor/completion.c -Ic/apps/as
+	@$(CC) -O2 -Wall -Wextra -DAS_COMPLETE_TEST -o $(BUILD)/complete_test tests/unit/complete_test.c c/apps/as/complete.c -Ic/apps/as
 	@$(BUILD)/complete_test
 
 # Framebuffer clip is per-target (struct surface), not global: this builds the
@@ -3389,9 +3374,9 @@ ASC := $(BUILD)/asc
 # opcode change forces asc (and therefore every .la) to rebuild. Without this
 # dep a bumped AS_BC_VERSION silently keeps stale .la files that the kernel's
 # as_load then rejects (cf. the roots_bundle.inc dep gotcha).
-$(ASC): $(AS_CORE) c/apps/as/cli/main.c c/apps/as/legacy/vm.h
+$(ASC): $(AS_CORE) c/apps/as/as.c c/apps/as/as.h
 	@mkdir -p $(BUILD)
-	$(CC) -O2 -o $@ c/apps/as/cli/main.c $(AS_CORE) -Ic/apps/as -Iinclude/abi
+	$(CC) -O2 -o $@ c/apps/as/as.c $(AS_CORE) -Ic/apps/as -Iinclude/abi
 
 # Precompile the LibLogit library modules (fsroot/as/lib/*.as) to .la (compiled
 # bytecode). -c is compile-only (no run), so even a lib with module-mate calls
