@@ -22,13 +22,13 @@ include tests/openlogit.mk
 .PHONY: test-gfx test-gfx-clip test-gfx-clip-negctl test-gfx-raster test-gfx-paint test-gfx-stroke test-gfx-negctl \
         test-gfx-stroke-negctl bench-gfx bench-gfx-stroke bench-gfx-frame
 
-GFX_TEST_CF := -O1 -g -Wall -Wextra -Ic/lib/gfx
+GFX_TEST_CF := -O1 -g -Wall -Wextra $(GFX_INC)
 
-$(BUILD)/gfx_raster_test: tests/unit/gfx_raster_test.c $(GFX_SRC) c/lib/gfx/gfx.h
+$(BUILD)/gfx_raster_test: tests/unit/gfx_raster_test.c $(GFX_SRC) c/lib/gfx/include/gfx.h
 	@mkdir -p $(BUILD)
 	$(CC) $(GFX_TEST_CF) -o $@ tests/unit/gfx_raster_test.c $(GFX_SRC) -lm
 
-$(BUILD)/gfx_paint_test: tests/unit/gfx_paint_test.c $(GFX_SRC) c/lib/gfx/gfx.h
+$(BUILD)/gfx_paint_test: tests/unit/gfx_paint_test.c $(GFX_SRC) c/lib/gfx/include/gfx.h
 	@mkdir -p $(BUILD)
 	$(CC) $(GFX_TEST_CF) -o $@ tests/unit/gfx_paint_test.c $(GFX_SRC) -lm
 
@@ -52,7 +52,7 @@ test-gfx-paint: $(BUILD)/gfx_paint_test
 # tests/unit/gfx_stroke_test.c for why the distance is to the polyline and
 # never to the ideal curve (measuring against the curve charges the path's
 # flattening error to the stroker and fails a correct one).
-$(BUILD)/gfx_stroke_test: tests/unit/gfx_stroke_test.c $(GFX_SRC) c/lib/gfx/gfx.h
+$(BUILD)/gfx_stroke_test: tests/unit/gfx_stroke_test.c $(GFX_SRC) c/lib/gfx/include/gfx.h
 	@mkdir -p $(BUILD)
 	$(CC) $(GFX_TEST_CF) -o $@ tests/unit/gfx_stroke_test.c $(GFX_SRC) -lm
 
@@ -73,7 +73,7 @@ test-gfx-stroke: test-gfx-stroke-negctl $(BUILD)/gfx_stroke_test
 # deliberately ASYMMETRIC clip extents and origins, because a centred clip
 # hides a transposed-axis or sign error and an off-by-one in either axis is
 # the single most likely defect in this feature.
-$(BUILD)/gfx_clip_test: tests/unit/gfx_clip_test.c $(GFX_SRC) c/lib/gfx/gfx.h
+$(BUILD)/gfx_clip_test: tests/unit/gfx_clip_test.c $(GFX_SRC) c/lib/gfx/include/gfx.h
 	@mkdir -p $(BUILD)
 	$(CC) $(GFX_TEST_CF) -o $@ tests/unit/gfx_clip_test.c $(GFX_SRC) -lm
 
@@ -166,13 +166,13 @@ bench-gfx: $(BUILD)/gfx_bench
 # geometry the accuracy assertions are written against.
 bench-gfx-stroke:
 	@mkdir -p $(BUILD)
-	$(CC) -O2 -g -Wall -Wextra -Ic/lib/gfx -DGFX_STROKE_BENCH \
+	$(CC) -O2 -g -Wall -Wextra $(GFX_INC) -DGFX_STROKE_BENCH \
 	    -o $(BUILD)/gfx_stroke_bench tests/unit/gfx_stroke_test.c $(GFX_SRC) -lm
 	@$(BUILD)/gfx_stroke_bench | sed -n '/what a stroke costs/,$$p'
 
-$(BUILD)/gfx_bench: tests/unit/gfx_bench.c $(GFX_SRC) c/lib/gfx/gfx.h
+$(BUILD)/gfx_bench: tests/unit/gfx_bench.c $(GFX_SRC) c/lib/gfx/include/gfx.h
 	@mkdir -p $(BUILD)
-	$(CC) -O2 -g -Wall -Wextra -Ic/lib/gfx -o $@ tests/unit/gfx_bench.c $(GFX_SRC) -lm
+	$(CC) -O2 -g -Wall -Wextra $(GFX_INC) -o $@ tests/unit/gfx_bench.c $(GFX_SRC) -lm
 
 # What ONE FRAME costs on the machine, at 1280x800, 1920x1200 and 2560x1600,
 # with the components separated -- because the toolkit line already measured
@@ -191,15 +191,15 @@ bench-gfx-frame: $(ISO) $(BUILD)/gallery_cost.aex
 	    $(BUILD)/disk_gfxcost.img
 	bash tests/boot/run-gfx-bench.sh $(ISO) $(BUILD)/disk_gfxcost.img
 
-$(BUILD)/apps/aui_cost.o: $(GUIDIR)/aui.c $(GUIDIR)/aui.h $(APPDIR)/logit.h c/lib/gfx/gfx.h
+$(BUILD)/apps/aui_cost.o: $(GUIDIR)/aui.c $(GUIDIR)/aui.h $(APPDIR)/logit.h c/lib/gfx/include/gfx.h
 	@mkdir -p $(BUILD)/apps
 	$(CC) $(UCFLAGS) -DAUI_COST -c $(GUIDIR)/aui.c -o $@
 
-$(BUILD)/gallery_cost.elf: $(GUIDIR)/gallery.c $(APPDIR)/crt0.asm $(APPDIR)/logit.h \
+$(BUILD)/gallery_cost.elf: $(GUIDIR)/gallery/gallery.c $(APPDIR)/crt0.asm $(APPDIR)/logit.h \
                            $(GUIDIR)/aui.h $(BUILD)/apps/aui_cost.o $(GFX_OBJ)
 	@mkdir -p $(BUILD)/apps
 	$(ASM) -f elf64 $(APPDIR)/crt0.asm -o $(BUILD)/apps/gallery_cost.crt0.o
-	$(CC) $(UCFLAGS) -c $(GUIDIR)/gallery.c -o $(BUILD)/apps/gallery_cost.o
+	$(CC) $(UCFLAGS) -c $(GUIDIR)/gallery/gallery.c -o $(BUILD)/apps/gallery_cost.o
 	$(LD) -nostdlib -e _start -Ttext=0x4A000000 -o $@ $(BUILD)/apps/gallery_cost.crt0.o \
 	    $(BUILD)/apps/gallery_cost.o $(BUILD)/apps/aui_cost.o $(GFX_OBJ)
 $(BUILD)/gallery_cost.aex: $(BUILD)/gallery_cost.elf tools/mkaex.py

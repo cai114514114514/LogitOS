@@ -2,7 +2,7 @@
 # The registry shim substitutes allocation/registration only: geometry and
 # rasterization are the same SVG and GFX sources the guest browser links.
 SVG_SCENE_SRC := tests/unit/svg_scene_test.c c/lib/image/svg.c $(GFX_SRC)
-SVG_SCENE_DEP := $(SVG_SCENE_SRC) c/lib/image/svg_scene.inc c/lib/image/img.h c/lib/gfx/gfx.h tests/svg_scene.mk
+SVG_SCENE_DEP := $(SVG_SCENE_SRC) c/lib/image/svg_scene.inc c/lib/image/img.h c/lib/gfx/include/gfx.h tests/svg_scene.mk
 SVG_SCENE_DIR := $(BUILD)/svg-scene
 $(SVG_SCENE_DIR)/current: $(SVG_SCENE_DEP)
 	@mkdir -p $(SVG_SCENE_DIR)

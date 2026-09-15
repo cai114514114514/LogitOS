@@ -3,7 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <pthread.h>
-#include "../../c/apps/gui/clock_geometry.h"
+#include "../../c/apps/gui/clock/geometry.h"
 
 static int checks, failures;
 #define CHECK(ok, label)                                                                           \

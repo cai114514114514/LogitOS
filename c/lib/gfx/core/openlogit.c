@@ -1,4 +1,5 @@
 #include "openlogit.h"
+#include "openlogit_canvas.h"
 #include "openlogit_sw.h"
 
 /* Software device runtime. The existing scan converter remains the only
@@ -41,7 +42,8 @@ struct ol_list {
     struct ol_device *device;
     unsigned long capacity, used;
 };
-enum { CMD_CLEAR = 1, CMD_FILL, CMD_IMAGE, CMD_RESOURCE, CMD_GLYPH, CMD_LAYER, CMD_BACKDROP };
+enum { CMD_CLEAR = 1, CMD_FILL, CMD_IMAGE, CMD_RESOURCE, CMD_GLYPH, CMD_LAYER, CMD_BACKDROP,
+       CMD_CLEAR_RECT };
 struct command {
     unsigned op, bytes;
     int alpha, rule, samples, has_clip;
@@ -79,10 +81,21 @@ static int list_ok(const struct ol_list *l)
 }
 static void copy(void *dst, const void *src, unsigned long n)
 {
+    /* Volatile stores keep freestanding builds independent of libc memcpy.
+     * Pixel rows are usually word aligned; retain a byte path for arbitrary
+     * image strides and descriptor tails. may_alias permits object-byte copies. */
+    typedef unsigned int alias_word __attribute__((__may_alias__));
     volatile unsigned char *d = dst;
     const unsigned char *s = src;
-    for (unsigned long i = 0; i < n; i++)
-        d[i] = s[i];
+    if (!(((unsigned long)d | (unsigned long)s) & 3)) {
+        while (n >= 4) {
+            *(volatile alias_word *)d = *(const alias_word *)s;
+            d += 4;
+            s += 4;
+            n -= 4;
+        }
+    }
+    while (n--) *d++ = *s++;
 }
 static int overlap(const void *a, unsigned long an, const void *b, unsigned long bn)
 {
@@ -284,6 +297,12 @@ static int fail(struct ol_list *l, int error)
         l->error = error;
     return error;
 }
+int ol_list_invalidate(struct ol_list *list, int error)
+{
+    if (error >= OL_OK || error < OL_BACKEND_FAILED)
+        error = OL_ARGUMENT;
+    return fail(list, error);
+}
 static struct command *record(struct ol_list *l, unsigned op, unsigned long extra)
 {
     if (!list_ok(l))
@@ -325,6 +344,18 @@ static int rect_ok(struct gfx_rect r)
 {
     return r.w >= 0 && r.h >= 0 && r.x >= -32768 && r.y >= -32768 && r.w <= 32768 && r.h <= 32768 &&
            r.x <= 32768 - r.w && r.y <= 32768 - r.h;
+}
+int ol_cmd_clear_rect(struct ol_list *list, struct gfx_rect rect, unsigned rgb, int alpha)
+{
+    if (!rect_ok(rect) || alpha < 0 || alpha > 255)
+        return fail(list, OL_ARGUMENT);
+    struct command *command = record(list, CMD_CLEAR_RECT, 0);
+    if (!command)
+        return record_error(list);
+    command->rect = rect;
+    command->rgb = rgb;
+    command->alpha = alpha;
+    return OL_OK;
 }
 static int path_ok(const struct gfx_path *p)
 {
@@ -368,7 +399,11 @@ int ol_cmd_fill(struct ol_list *l, const struct gfx_path *p, int rule,
     if (!c)
         return record_error(l);
     c->path = *p;
-    c->paint = *paint;
+    /* Clang lowers this large struct assignment to memcpy even in a
+     * freestanding build. The core also serves GUI clients without libc;
+     * use its bounded copy primitive so that link never acquires a libc
+     * dependency merely because a paint descriptor grew. */
+    copy(&c->paint, paint, sizeof c->paint);
     c->rule = rule;
     c->samples = samples;
     c->has_clip = clip != 0;
@@ -428,10 +463,13 @@ static int execute(struct ol_device *d, const struct command *c, struct gfx_surf
     if(c->op==CMD_BACKDROP) {
         ol_sw_backdrop(target,c->rect,c->layer.blur_radius,c->rgb,c->alpha,scratch);return 1;
     }
-    if (c->op == CMD_CLEAR) {
-        for (int y = 0; y < target->h; y++) {
+    if (c->op == CMD_CLEAR || c->op == CMD_CLEAR_RECT) {
+        struct gfx_rect rect = {0, 0, target->w, target->h};
+        if (c->op == CMD_CLEAR_RECT)
+            rect = ol_damage_move(c->rect, (struct gfx_rect){0,0,0,0}, 0, target->w, target->h);
+        for (int y = rect.y; y < rect.y + rect.h; y++) {
             unsigned char *row = target->px + (unsigned long)y * target->stride;
-            for (int x = 0; x < target->w; x++) {
+            for (int x = rect.x; x < rect.x + rect.w; x++) {
                 row[4 * x] = GFX_R(c->rgb);
                 row[4 * x + 1] = GFX_G(c->rgb);
                 row[4 * x + 2] = GFX_B(c->rgb);
@@ -585,6 +623,13 @@ static int submit(struct ol_device *d, const struct ol_list *l, struct ol_surfac
      * halo from front too; uninitialized work pixels otherwise leak into blur
      * at the edge, even though the committed rectangle itself is correct. */
     struct gfx_rect initial=ol_damage_move(damage,reads,0,target.w,target.h);
+    /* A leading full clear defines every work pixel, including backdrop read
+     * halos. Commit still happens only after the entire list succeeds. */
+    if (count) {
+        const struct command *first = (const void *)((const unsigned char *)l + align8(sizeof *l));
+        if (first->op == CMD_CLEAR)
+            initial = (struct gfx_rect){0, 0, 0, 0};
+    }
     for(int y=initial.y;y<initial.y+initial.h;y++)
         copy(target.px+(unsigned long)y*target.stride+initial.x*4,
              s->desc.front+(unsigned long)y*s->desc.stride+initial.x*4,initial.w*4);
@@ -743,6 +788,72 @@ int ol_cmd_glyph_mask(struct ol_list *l,struct ol_image *im,int x,int y,unsigned
     struct command *c=record(l,CMD_GLYPH,0);if(!c)return record_error(l);
     c->resource=im;c->resource_generation=im->generation;c->rect=r;c->alpha=alpha;c->rgb=rgb;
     im->refs++;return OL_OK;
+}
+
+int ol_cmd_sprite(struct ol_list *list, struct ol_image *image, struct gfx_rect source,
+                  const struct gfx_matrix *transform, const struct gfx_rect *clip,
+                  int opacity, int bilinear)
+{
+    if (!list_ok(list) || !image_ok(image) || image->device != list->device ||
+        image->desc.format != OL_FORMAT_RGBA8_STRAIGHT || !transform ||
+        !rect_ok(source) || source.x < 0 || source.y < 0 || source.w <= 0 || source.h <= 0 ||
+        (unsigned)(source.x + source.w) > image->desc.width ||
+        (unsigned)(source.y + source.h) > image->desc.height ||
+        opacity < 0 || opacity > 255 || (bilinear != 0 && bilinear != 1))
+        return fail(list, OL_ARGUMENT);
+    const unsigned char *pixels = image->desc.pixels +
+        (unsigned long)source.y * image->desc.stride + source.x * 4;
+    struct gfx_paint image_paint, solid;
+    if (!gfx_paint_image(&image_paint, pixels, source.w, source.h, image->desc.stride,
+                         transform, bilinear))
+        return fail(list, OL_ARGUMENT);
+    int points[16], contours[2];
+    struct gfx_path path;
+    gfx_path_init(&path, points, 8, contours, 2);
+    gfx_path_rect(&path, 0, 0, GFX_PX(source.w), GFX_PX(source.h));
+    gfx_paint_solid(&solid, 0, 255);
+    struct ol_fill_options options = {
+        .size = sizeof options, .transform = transform, .clip = clip,
+        .opacity = opacity, .samples = 4
+    };
+    unsigned long start = list->used;
+    int status = ol_cmd_fill_ex(list, &path, GFX_NONZERO, &solid, &options);
+    if (status != OL_OK)
+        return status;
+    /* Borrowed image paints are deliberately refused by ol_cmd_fill. Attach
+     * this one only after validating and retaining its versioned resource. */
+    struct command *command = (void *)((unsigned char *)list + start);
+    copy(&command->paint, &image_paint, sizeof image_paint);
+    command->paint.bilinear = bilinear ? GFX_FILTER_LINEAR_CLAMP : GFX_FILTER_NEAREST;
+    command->paint.global_alpha = opacity;
+    command->resource = image;
+    command->resource_generation = image->generation;
+    image->refs++;
+    return OL_OK;
+}
+
+int ol_cmd_image_region(struct ol_list *list, struct ol_image *image, struct gfx_rect source,
+                        struct gfx_rect destination, const struct gfx_rect *clip,
+                        int opacity, int bilinear)
+{
+    if (!list_ok(list) || !rect_ok(destination) || destination.w <= 0 || destination.h <= 0 ||
+        source.w < 1 || source.h < 1)
+        return fail(list, OL_ARGUMENT);
+    long long scale_x = (long long)destination.w*GFX_MONE/source.w;
+    long long scale_y = (long long)destination.h*GFX_MONE/source.h;
+    if (scale_x > 0x7fffffff || scale_y > 0x7fffffff)
+        return fail(list, OL_LIMIT);
+    struct gfx_matrix matrix = {scale_x,0,0,scale_y,GFX_PX(destination.x),GFX_PX(destination.y)};
+    unsigned long start = list->used;
+    int status = ol_cmd_sprite(list,image,source,&matrix,clip,opacity,bilinear);
+    if (status != OL_OK) return status;
+    struct command *command = (void *)((unsigned char *)list+start);
+    /* The inverse texture matrix is quantized to 16.16. Coverage must still
+     * end at the exact destination edge, especially between nine-slice tiles. */
+    gfx_path_reset(&command->path);
+    gfx_path_rect(&command->path,GFX_PX(destination.x),GFX_PX(destination.y),
+                   GFX_PX(destination.w),GFX_PX(destination.h));
+    return OL_OK;
 }
 struct gfx_rect ol_damage_move(struct gfx_rect a,struct gfx_rect b,int extent,int w,int h)
 {

@@ -281,6 +281,7 @@ void gfx_surface_clear(struct gfx_surface *s);
 
 /* ----------------------------------------------------------------- paint -- */
 enum { GFX_SOLID = 0, GFX_LINEAR, GFX_RADIAL, GFX_IMAGE };
+enum { GFX_FILTER_NEAREST = 0, GFX_FILTER_LINEAR = 1, GFX_FILTER_LINEAR_CLAMP = 2 };
 
 struct gfx_stop { int t; unsigned color; int alpha; };   /* t: 0..65536 */
 

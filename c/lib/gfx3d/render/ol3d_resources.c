@@ -1,4 +1,4 @@
-#include "openlogit_3d.h"
+#include "ols_internal.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -39,26 +39,10 @@ int ol3d_pipeline_validate(const struct ol3d_pipeline *p,const struct ol3d_bindi
             const struct ols_instruction *c=&program->code[i];
             if(stage&&c->op==OLS_INPUT&&(c->a>=p->varying_count||!(written&(1u<<c->a))))
                 return diagnostic(e,i+1,"pixel input has no linked vertex varying");
-            if(!bindings)continue; /* Creation validates the stage interface; draw supplies bindings. */
-            if((c->op==OLS_UNIFORM&&(!bindings->uniforms||c->a>=bindings->uniform_count))||
-               (c->op==OLS_MAT4&&(!bindings->uniforms||c->b+4>bindings->uniform_count)))
-                return diagnostic(e,i+1,"missing uniform binding");
-            if(c->op==OLS_TEX2D&&(!bindings->textures||c->b>=bindings->texture_count))
-                return diagnostic(e,i+1,"missing texture binding");
         }
-    }
-    if(bindings) {
-        if(bindings->uniform_count>OL3D_MAX_UNIFORMS||bindings->texture_count>OL3D_MAX_TEXTURES||
-           (bindings->uniform_count&&!bindings->uniforms)||(bindings->texture_count&&!bindings->textures))
-            return diagnostic(e,0,"invalid binding table");
-        for(unsigned i=0;i<bindings->uniform_count;i++)for(int k=0;k<4;k++)
-            if(!isfinite(bindings->uniforms[i][k]))return diagnostic(e,0,"nonfinite uniform");
-        for(unsigned i=0;i<bindings->texture_count;i++) {
-            const struct ol3d_texture *t=&bindings->textures[i];
-            if(!t->pixels||!t->width||!t->height||t->width>4096||t->height>4096||t->stride<t->width*4||
-               t->bytes<(size_t)(t->height-1)*t->stride+t->width*4)
-                return diagnostic(e,0,"invalid texture storage");
-        }
+        /* Creation checks stage linkage; a draw additionally checks the same
+         * uniform/sampler contract used by screen-space materials. */
+        if(bindings && ols_bindings_validate(program,bindings,e))return OL_ARGUMENT;
     }
     if(e)*e=(struct ol_shader_error){0};return OL_OK;
 }

@@ -1,7 +1,7 @@
 # Finite ordinary images only; no budget/fault/stress fixture prerequisites.
 SVG_STYLESHEET_DIR = $(BUILD)/svg-stylesheet
 SVG_STYLESHEET_SRC = $(filter-out tests/unit/svg_scene_test.c,$(SVG_SCENE_SRC)) tests/unit/svg_stylesheet_test.c
-SVG_STYLESHEET_DEP = $(SVG_STYLESHEET_SRC) $(wildcard c/lib/image/svg*.inc c/lib/gfx/*.h) c/lib/image/img.h tests/svg_stylesheet.mk
+SVG_STYLESHEET_DEP = $(SVG_STYLESHEET_SRC) $(wildcard c/lib/image/svg*.inc c/lib/gfx/include/*.h) c/lib/image/img.h tests/svg_stylesheet.mk
 $(SVG_STYLESHEET_DIR)/current: $(SVG_STYLESHEET_DEP)
 	@mkdir -p $(SVG_STYLESHEET_DIR)
 	$(CC) -O1 -g -Wall -Wextra $(IMG_HOST_INC) $(SVG_STYLESHEET_SRC) -o $@ -lm

@@ -162,6 +162,39 @@ static void sample_image(const struct gfx_paint *p, int x, int y,
     int u, v;
     gfx_m_apply(&p->inv, x, y, &u, &v);
     *r = *g = *b = *a = 0;
+    if (p->bilinear == GFX_FILTER_LINEAR_CLAMP) {
+        /* Atlas quads provide their own coverage. Clamp texel centers to the
+         * crop and interpolate premultiplied color: transparent RGB must not
+         * produce a colored fringe, and border samples must not fade to zero.
+         * Legacy transparent-border sampling below keeps its existing result. */
+        if (u < 128) u = 128;
+        if (v < 128) v = 128;
+        if (u > p->iw*256-128) u = p->iw*256-128;
+        if (v > p->ih*256-128) v = p->ih*256-128;
+        int ix = (u-128)>>8, iy = (v-128)>>8;
+        int tx = (u-128)&255, ty = (v-128)&255;
+        unsigned long long colors[3] = {0,0,0};
+        unsigned alpha = 0;
+        for (int j=0; j<2; j++) {
+            int sy = iy+j < p->ih ? iy+j : p->ih-1;
+            for (int i=0; i<2; i++) {
+                int sx = ix+i < p->iw ? ix+i : p->iw-1;
+                unsigned weight = (i?tx:256-tx)*(j?ty:256-ty);
+                const unsigned char *pixel = p->img+(long)sy*p->istride+sx*4;
+                unsigned weighted_alpha = pixel[3]*weight;
+                alpha += weighted_alpha;
+                for (unsigned channel=0; channel<3; channel++)
+                    colors[channel] += (unsigned long long)pixel[channel]*weighted_alpha;
+            }
+        }
+        if (alpha) {
+            *r = (int)((colors[0]+alpha/2)/alpha);
+            *g = (int)((colors[1]+alpha/2)/alpha);
+            *b = (int)((colors[2]+alpha/2)/alpha);
+            *a = (alpha+32768)/65536;
+        }
+        return;
+    }
     if (!p->bilinear) {
         int ix = u >> 8, iy = v >> 8;
         if (u < 0 || v < 0 || ix >= p->iw || iy >= p->ih) return;

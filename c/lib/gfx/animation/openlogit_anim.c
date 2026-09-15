@@ -329,4 +329,3 @@ int ol_spring_retarget(struct ol_spring *s, uint64_t now, float target)
     s->start_ns = now;
     return OL_OK;
 }
-

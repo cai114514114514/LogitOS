@@ -3,7 +3,7 @@
  * Run /tmp/island. No private rasterizer, timer thread or shader shortcut.
  * The simulation uses fixed steps; all visual curves sample one shared time.
  * Frame timings below are guest render/submit time, NOT displayed frame rate. */
-#include "openlogit_3d.h"
+#include "openlogit_lsl.h"
 #include "openlogit_window.h"
 #include "island_game.h"
 #include "island_shaders.h"
@@ -17,7 +17,6 @@ static struct ol_device *device;
 static struct ol_surface *scene;
 static void *device_mem,*surface_mem;
 static unsigned char *front,*work;
-static struct ol_shader_program vertex_program,pixel_program;
 static struct ol3d_vertex cube[24];
 static uint32_t indices[36];
 static struct ol3d_pipeline_object *pipeline;
@@ -57,16 +56,40 @@ static int target(int low)
     renderer=next;scene=s;front=f;work=b;surface_mem=sm;width=w;height=h;
     return 1;
 }
+static int create_game_pipeline(void)
+{
+    struct ol_lsl_shader *vertex = NULL;
+    struct ol_lsl_shader *fragment = NULL;
+    struct ol_shader_error error = {0};
+    struct ol_lsl_raster_state state = {
+        .cull_back = 1,
+        .depth_test = 1,
+        .depth_write = 1
+    };
+    int status = ol_lsl_compile(island_vertex_shader, strlen(island_vertex_shader),
+                                &vertex, &error);
+    if (status == OL_OK)
+        status = ol_lsl_compile(island_fragment_shader, strlen(island_fragment_shader),
+                                &fragment, &error);
+    if (status == OL_OK)
+        status = ol_lsl_pipeline_create(vertex, fragment, &state, &pipeline, &error);
+
+    /* The pipeline copies immutable native code; compiler objects are no longer
+     * needed by rendering and must also be released on a partial compile failure. */
+    ol_lsl_destroy(vertex);
+    ol_lsl_destroy(fragment);
+    if (status != OL_OK)
+        example_log("LSL shader:%u: %s\n", error.line, error.message);
+    return status == OL_OK;
+}
+
 static int init(void)
 {
     device_mem=malloc(ol_device_size());
     if(!device_mem||ol_device_create(device_mem,ol_device_size(),OL_API_VERSION,OL_CAP_IMAGE,&device))return 0;
     if(!target(0))return 0;
-    struct ol_shader_error error;
-    if(ol_shader_compile(island_vertex_shader,strlen(island_vertex_shader),&vertex_program,&error)||
-       ol_shader_compile(island_pixel_shader,strlen(island_pixel_shader),&pixel_program,&error)) {
-        fprintf(stderr,"shader:%u: %s\n",error.line,error.message);return 0;
-    }
+    if (!create_game_pipeline())
+        return 0;
     /* Each face has its own vertices for discontinuous flat normals and UVs.
      * Winding is CCW from outside; the SDK performs clipping/culling/depth. */
     static const float corners[8][3]={{-.5f,-.5f,-.5f},{.5f,-.5f,-.5f},{.5f,.5f,-.5f},{-.5f,.5f,-.5f},
@@ -84,9 +107,7 @@ static int init(void)
         unsigned local[6]={0,1,2,0,2,3};for(int j=0;j<6;j++)indices[f*6+j]=f*4+local[j];
     }
     checker=(struct ol3d_texture){texels,2,2,8,sizeof texels,0,1};
-    struct ol3d_pipeline state={&vertex_program,&pixel_program,2,1,1,1,0};
-    if(ol3d_pipeline_create(&state,&pipeline,&error)||
-       ol3d_buffer_create(OL3D_VERTEX_BUFFER,cube,24,&vertices_buffer)||
+    if(ol3d_buffer_create(OL3D_VERTEX_BUFFER,cube,24,&vertices_buffer)||
        ol3d_buffer_create(OL3D_INDEX_BUFFER,indices,36,&index_buffer))return 0;
     bindings=(struct ol3d_bindings){uniforms,11,&checker,1};
     ol_spring_init(&jump_pose,0,0,0,5,1,0,300000000);
@@ -207,7 +228,7 @@ int main(int argc,char **argv)
     struct island_game game;island_reset(&game);
     uint64_t previous=monotonic_ns(),simulation=0;double accumulator=0;int last_score=0,last_deaths=0;uint64_t trace_at=0;
     int dirty=1,jump_request=0,low=width==320,reduced=setting_int("ui.reduce_motion",0)!=0;
-    example_log("ISLAND READY api=1.1 backend=software shaders=custom source=SDK\n");
+    example_log("ISLAND READY api=1.1 backend=software shaders=LSL source=SDK\n");
     for(;;) {
         struct logit_event event;
         while(poll_event(&event)) {

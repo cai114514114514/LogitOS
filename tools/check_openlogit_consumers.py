@@ -9,7 +9,7 @@ work. Guest tests supply evidence for the real paths that they exercise.
 import argparse,json,re
 from pathlib import Path
 ROOT=Path(__file__).resolve().parents[1]
-p=argparse.ArgumentParser();p.add_argument('--output',type=Path);p.add_argument('--inject-legacy',action='store_true');a=p.parse_args()
+p=argparse.ArgumentParser();p.add_argument('--output',type=Path);p.add_argument('--inject-legacy',action='store_true');p.add_argument('--inject-missing-motion',action='store_true');a=p.parse_args()
 def code(s):
     # Preserve newlines for diagnostic locations while removing comments/strings.
     return re.sub(r'/\*.*?\*/|//[^\n]*|"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'',
@@ -23,6 +23,16 @@ for path in sorted(list((ROOT/'c').rglob('*'))+list((ROOT/'examples/openlogit').
     if path.suffix not in ('.c','.h','.inc'):continue
     rel=str(path.relative_to(ROOT));src=code(path.read_text(errors='replace'))
     if a.inject_legacy and rel=='c/kernel/gui/wm.c':src+='\nvoid forbidden_draw(void){gfx_fill(0,0,0,0,0);}'
+    if a.inject_missing_motion and rel=='c/apps/gui/ch/ch.c':
+        src=re.sub(r'\baui_anim_due\s*\(\s*\)', '0', src)
+    # A smoothed scroller's first frame retains its old offset. Without an
+    # animation deadline in the application loop it parks there until another
+    # input or unrelated refresh. This happened in Chat and Monitor: routing
+    # only their drawing calls through the SDK was insufficient.
+    if rel.startswith('c/apps/') and path.suffix=='.c' and rel!='c/apps/gui/aui.c' and \
+       re.search(r'\baui_(?:scroll_begin|list|table)\s*\(',src):
+        if not all(re.search(r'\b'+name+r'\s*\(',src) for name in ('aui_anim_due','aui_anim_wait')):
+            violations.append(f'{rel}: scroll consumer missing animation wake integration')
     sdk=rel.startswith(('c/lib/gfx/','c/lib/gfx3d/'))
     if not sdk:
         for m in legacy.finditer(src):violations.append(f'{rel}:{src[:m.start()].count(chr(10))+1}: legacy raster bypass {m[0]}')
@@ -30,12 +40,12 @@ for path in sorted(list((ROOT/'c').rglob('*'))+list((ROOT/'examples/openlogit').
     calls=sorted(set(entries.findall(src)))
     if calls:
         route='sdk-backend' if sdk else 'normal-consumer'
-        if rel in ('c/kernel/gui/fb/fb/fb.c','c/apps/logit.h','c/kernel/gui/fb/fb/glass.h'):route='compatibility-or-driver'
+        if rel in ('c/kernel/gui/fb/fb.c','c/apps/logit.h','c/kernel/gui/fb/glass.h'):route='compatibility-or-driver'
         inventory.append({'path':rel,'role':route,'entry_points':calls})
 # A framebuffer adapter can transfer final display pixels but its normal draw
 # entries must remain loop-free one-way calls. Braces parse enough of C here;
 # there are no strings/comments left to confuse nesting.
-fb=code((ROOT/'c/kernel/gui/fb/fb/fb.c').read_text())
+fb=code((ROOT/'c/kernel/gui/fb/fb.c').read_text())
 for name in ('put','clear','fill_rect','fill_circle','round_rect','blit_glyph','blit_rgba',
              'blit_surface','blit_surface_scaled','blit_surface_scaled_bl','shadow','blur_rect',
              'blend_rect','blend_round_rect','fill_vgrad','round_rect_vgrad','liquid_glass','liquid_glass_cut'):

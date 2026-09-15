@@ -81,7 +81,11 @@ static void filtered(struct gfx_surface *t,const struct gfx_surface *s,struct gf
             for(int y=out.y;y<out.y+out.h;y++)for(int x=out.x;x<out.x+out.w;x++) {
                 const unsigned char *p=s->px+(unsigned long)(y-dst.y)*s->stride+(x-dst.x)*4;
                 unsigned char *q=t->px+(unsigned long)y*t->stride+x*4;
-                if(replace){for(int k=0;k<4;k++)q[k]=p[k];}
+                /* Opaque cached layers need no source-over arithmetic or
+                 * per-pixel function call. Partial alpha keeps the exact oracle. */
+                if(replace || (!shadow && opacity == 255 && p[3] == 255)) {
+                    for(int k=0;k<4;k++)q[k]=p[k];
+                }
                 else gfx_over(q,shadow?GFX_R(rgb):p[0],shadow?GFX_G(rgb):p[1],shadow?GFX_B(rgb):p[2],
                               (p[3]*opacity+127)/255,255);
             }

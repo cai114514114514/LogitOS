@@ -50,7 +50,8 @@ enum {
     OL_CAP_BLUR = 1u << 11,
     OL_CAP_BACKDROP = 1u << 12,
     OL_CAP_GPU = 1u << 16,
-    OL_CAP_3D = 1u << 17
+    OL_CAP_3D = 1u << 17,
+    OL_CAP_PIXEL_MATERIAL = 1u << 18 /* user-space extension query only */
 };
 
 struct ol_caps {

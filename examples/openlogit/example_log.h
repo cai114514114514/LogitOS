@@ -1,5 +1,6 @@
 #ifndef OPENLOGIT_EXAMPLE_LOG_H
 #define OPENLOGIT_EXAMPLE_LOG_H
+#include "logit.h"
 #include <stdarg.h>
 #include <stdio.h>
 /* A guest serial line must be one write. printf can emit each format fragment
