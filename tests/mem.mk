@@ -91,7 +91,7 @@ bench-arena-js: $(BUILD)/arena_js_mem
 # here instead because adding a fragment costs one `-include` line in the
 # Makefile and the Makefile is contended by several live lines. They sit beside
 # the memory gates rather than anywhere else for a reason that is not only
-# convenience: c/kernel/mm/reclaim/reclaim/swap.c is the CONSUMER this interface was built for,
+# convenience: c/kernel/mm/reclaim/swap.c is the CONSUMER this interface was built for,
 # and `make test-swap` is the gate that measures whether it did anything.
 #
 # What it covers and why nothing else does: `make test-fs-host` compiles
@@ -167,7 +167,7 @@ ci-host: test-blk-async
 # c/kernel/mm/virt/fault.c used to return 0 when memory was gone even after a forced
 # reclaim, so the process that DIED was whoever touched memory next -- which on
 # a machine one program has emptied is essentially never that program. The
-# killer chooses instead. See c/kernel/mm/reclaim/reclaim/oom.h for the policy and why "kill the
+# killer chooses instead. See c/kernel/mm/reclaim/oom.h for the policy and why "kill the
 # biggest" is wrong on this machine specifically.
 #
 #   test-oom        HOST, seconds, ASan+UBSan. The real oom.c over the real

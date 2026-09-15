@@ -661,10 +661,10 @@ $(BUILD)/apps/studio-engine.a: $(STUDIO_OBJ)
 $(BUILD)/apps/complete.o: c/apps/as/complete.c c/apps/as/complete.h
 	@mkdir -p $(BUILD)/apps
 	$(CC) $(UCFLAGS) -c c/apps/as/complete.c -o $@
-$(BUILD)/studio.elf: $(GUIDIR)/studio.c $(APPDIR)/crt0.asm $(APPDIR)/logit.h $(GUIDIR)/aui.h $(BUILD)/apps/aui.o $(GFX_OBJ) $(BUILD)/apps/studio-engine.a $(BUILD)/apps/complete.o c/apps/studio/engine.h $(wildcard c/apps/studio/studio_*.inc)
+$(BUILD)/studio.elf: $(GUIDIR)/studio/studio.c $(APPDIR)/crt0.asm $(APPDIR)/logit.h $(GUIDIR)/aui.h $(BUILD)/apps/aui.o $(GFX_OBJ) $(BUILD)/apps/studio-engine.a $(BUILD)/apps/complete.o c/apps/studio/engine.h $(wildcard c/apps/studio/studio_*.inc)
 	@mkdir -p $(BUILD)/apps
 	$(ASM) -f elf64 $(APPDIR)/crt0.asm -o $(BUILD)/apps/studio.crt0.o
-	$(CC) $(UCFLAGS) -c $(GUIDIR)/studio.c -o $(BUILD)/apps/studio.o -Ic/apps/as
+	$(CC) $(UCFLAGS) -c $(GUIDIR)/studio/studio.c -o $(BUILD)/apps/studio.o -Ic/apps/as
 	$(LD) -nostdlib -e _start -Ttext=0x49000000 -o $@ $(BUILD)/apps/studio.crt0.o $(BUILD)/apps/studio.o $(BUILD)/apps/aui.o $(GFX_OBJ) $(BUILD)/apps/studio-engine.a $(BUILD)/apps/complete.o
 $(BUILD)/studio.aex: $(BUILD)/studio.elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/studio.elf $@ 'Code Studio' as '{' 200 160 250
@@ -4934,7 +4934,7 @@ clean-scratch:
 # Own fragment for the same reason as every other one above.
 -include tests/mem.mk
 
-# How far is c/kernel/mm/reclaim/reclaim/reclaim.c's clock from the offline optimum? An exact
+# How far is c/kernel/mm/reclaim/reclaim.c's clock from the offline optimum? An exact
 # answer, from a recorded reference string and Belady MIN. The tracer is a QEMU
 # plugin, so the kernel and this ISO are untouched by it.
 -include tests/mmtrace.mk
