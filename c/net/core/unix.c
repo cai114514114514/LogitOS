@@ -606,7 +606,7 @@ long unix_read(struct usock *s, void *buf, long len, int nonblock)
          * stdout before writing it. That flush is not cosmetic -- without it
          * this count alternated between 17 and 18 run to run, the abort having
          * been spliced into the middle of a buffered check line; see
-         * tests/unit/unixstub/kernel/core/wait.h. Verified stable at 18 over 8
+         * tests/unit/unixstub/kernel/sync/wait.h. Verified stable at 18 over 8
          * consecutive runs. */
         struct uchan *in = &c->ch[s->side];
 #else

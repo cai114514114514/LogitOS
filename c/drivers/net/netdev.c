@@ -153,6 +153,58 @@ int netif_register(const char *name, struct netdev *dev, uint32_t flags)
     return n->index;
 }
 
+/* Registered transports retain their netdev object for the interface table's
+ * lifetime. Detach disables callbacks behind that stable object; no route or
+ * reader can retain a pointer to reclaimed transport storage. */
+int netdev_attach_transport(const char *name, struct netdev *dev)
+{
+    NET_GUARD;
+    if (__atomic_load_n(&init_state, __ATOMIC_ACQUIRE) != 2 || !name || !name[0] ||
+        !dev || !dev->tx || !dev->rx_poll) {
+        return -1;
+    }
+    unsigned name_bytes = 0;
+    while (name_bytes < NETIF_NAMELEN && name[name_bytes]) {
+        ++name_bytes;
+    }
+    if (name_bytes >= NETIF_NAMELEN || netif_by_name(name)) {
+        return -1;
+    }
+    for (int index = 0; index < netif_count(); ++index) {
+        if (ifs[index].dev == dev) {
+            return -1;
+        }
+    }
+    int index = netif_register(name, dev, NETIF_F_UP | NETIF_F_BROADCAST);
+    if (index < 0) {
+        return -1;
+    }
+    if (!primary_if) {
+        primary_if = index;
+        g_nic = dev;
+        /* A first runtime NIC permits a later explicit net_init(). It does
+         * not itself run DHCP or block inside a transport poll callback. */
+        __atomic_store_n(&init_result, 0, __ATOMIC_RELEASE);
+    }
+    return index;
+}
+
+int netdev_set_link(struct netdev *dev, int link_up)
+{
+    NET_GUARD;
+    for (int index = 0; index < netif_count(); ++index) {
+        if (ifs[index].dev == dev && dev) {
+            if (link_up) {
+                ifs[index].flags |= NETIF_F_RUNNING;
+            } else {
+                ifs[index].flags &= ~NETIF_F_RUNNING;
+            }
+            return 0;
+        }
+    }
+    return -1;
+}
+
 int netif_addr_add(int idx, uint32_t addr, uint32_t mask)
 {
     NET_GUARD;
@@ -191,7 +243,11 @@ int netif_is_local(uint32_t a)
     return 0;
 }
 
-int netdev_primary_ifindex(void)  { return primary_if; }
+int netdev_primary_ifindex(void)
+{
+    NET_GUARD;
+    return primary_if;
+}
 int netdev_loopback_ifindex(void) { return lo_if; }
 
 static void ip4_print(const char *tag, uint32_t a)
@@ -333,28 +389,48 @@ int netdev_init(void)
 {
     unsigned idle = 0;
     if (!__atomic_compare_exchange_n(&init_state, &idle, 1, 0,
-                                     __ATOMIC_ACQUIRE, __ATOMIC_RELAXED))
-        return __atomic_load_n(&init_state, __ATOMIC_ACQUIRE) == 2 ? init_result : -1;
+                                     __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) {
+        if (__atomic_load_n(&init_state, __ATOMIC_ACQUIRE) != 2) {
+            return -1;
+        }
+        return __atomic_load_n(&init_result, __ATOMIC_ACQUIRE);
+    }
     int rc = netdev_init_boot();
-    init_result = rc;
+    __atomic_store_n(&init_result, rc, __ATOMIC_RELEASE);
     __atomic_store_n(&init_state, 2, __ATOMIC_RELEASE);
     return rc;
 }
 
-int netdev_present(void) { return g_nic != NULL; }
-const char *netdev_name(void) { return g_nic ? g_nic->name : "none"; }
-const uint8_t *netdev_mac(void) { return g_nic ? g_nic->mac : zero_mac; }
+int netdev_present(void)
+{
+    NET_GUARD;
+    return g_nic != NULL;
+}
+const char *netdev_name(void)
+{
+    NET_GUARD;
+    return g_nic ? g_nic->name : "none";
+}
+const uint8_t *netdev_mac(void)
+{
+    NET_GUARD;
+    return g_nic ? g_nic->mac : zero_mac;
+}
 
 int netdev_tx(const void *frame, uint16_t len)
 {
-    if (!g_nic || !g_nic->tx) return -1;
-    return g_nic->tx(frame, len);
+    NET_GUARD;
+    return netdev_tx_if(primary_if, frame, len);
 }
 
 int netdev_tx_if(int oif, const void *frame, uint16_t len)
 {
+    NET_GUARD;
     struct netif *n = netif_by_index(oif);
-    if (!n || !n->dev || !n->dev->tx) return -1;
+    if (!n || !n->dev || !n->dev->tx ||
+        (n->flags & (NETIF_F_UP | NETIF_F_RUNNING)) != (NETIF_F_UP | NETIF_F_RUNNING)) {
+        return -1;
+    }
     return n->dev->tx(frame, len);
 }
 
@@ -441,6 +517,7 @@ int netdev_irq_route(void)
 
 int netdev_irq_line(void)
 {
+    NET_GUARD;
     /* Legacy query only. Previously smp.c used this one line to program vector
      * 65, leaving secondary NICs polled and overwriting other PCI devices on
      * the GSI. netdev_irq_route now registers every NIC with the device model. */
@@ -461,7 +538,7 @@ void netdev_irq(void)
  * Legacy facade.
  *
  * `c/net/link/eth.c`, `c/net/core/net.c`, `c/kernel/cpu/irq/interrupts.c` and
- * `c/kernel/cpu/smp/smp/smp.c` all called the NIC by the name `e1000_*` -- that is the
+ * `c/kernel/cpu/smp/smp.c` all called the NIC by the name `e1000_*` -- that is the
  * seam this whole file exists to generalise. So the e1000_* symbols stay, and
  * now mean "the bound NIC, whatever it is". They are pure forwarding; nothing
  * below knows about Intel.

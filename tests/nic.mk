@@ -11,7 +11,7 @@
 # netdev.c / rtl8139.c / rtl8169.c / virtio_net.c link with no Makefile change
 # (verified: build/c/drivers/net/*.o).
 
-.PHONY: test-nic test-nic-drv test-nic-e1000 test-nic-virtio test-nic-rtl8139 test-nic-none
+.PHONY: test-nic test-nic-drv test-nic-82540-ids-negctl test-nic-e1000 test-nic-virtio test-nic-rtl8139 test-nic-none
 .PHONY: test-e1000-stats test-e1000-stats-negctl test-e1000-link
 .PHONY: test-e1000-linkmask-negctl
 
@@ -64,7 +64,27 @@ endif
 # and PCI match-table resolution -- read from the REAL tables (net_ids.inc), not
 # a copy. See the header comment in tests/unit/net_drv_test.c for why the
 # register programming is deliberately not mocked.
-test-nic-drv:
+# Mutation control for the widened 82540 table.  It compiles the production
+# table with precisely the four new same-MAC rows removed; the four positive
+# resolution checks must be the only failures.  This catches an include-path
+# accident where the test silently reads a copied table as well as a lost ID.
+test-nic-82540-ids-negctl:
+	@mkdir -p $(BUILD)
+	@$(CC) -O1 -g -Wall -Wextra -DLOGIT_HOST_TEST -DNET_IDS_NEGCTL_DROP_82540_VARIANTS \
+		-o $(BUILD)/net_drv_82540_negctl tests/unit/net_drv_test.c c/drivers/core/device.c \
+		-Ic/drivers/net -Ic/drivers/core -Ic/kernel/pci -Itests/unit/pcistub
+	@out=$$(./$(BUILD)/net_drv_82540_negctl 2>&1); rc=$$?; \
+	 n=$$(printf '%s\n' "$$out" | grep -c '^FAIL '); \
+	 if [ $$rc -eq 0 ]; then \
+	   echo "NEGCTL FAIL: dropping four 82540 IDs still passes"; exit 1; \
+	 elif [ "$$n" != "4" ]; then \
+	   echo "NEGCTL FAIL: expected exactly 4 lost-ID failures, got $$n"; \
+	   printf '%s\n' "$$out"; exit 1; \
+	 else \
+	   echo "82540 ID negctl OK: dropping the four rows reddens exactly $$n checks"; \
+	 fi
+
+test-nic-drv: test-nic-82540-ids-negctl
 	@mkdir -p $(BUILD)
 	@$(CC) -O1 -g -fsanitize=address,undefined -Wall -Wextra -DLOGIT_HOST_TEST \
 		-o $(BUILD)/net_drv_test tests/unit/net_drv_test.c c/drivers/core/device.c \

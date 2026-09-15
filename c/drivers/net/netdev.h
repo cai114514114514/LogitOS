@@ -117,7 +117,7 @@ void netdev_irq(void);
 #define NETIF_NAMELEN 8
 
 #define NETIF_F_UP        0x1u   /* administratively up */
-#define NETIF_F_RUNNING   0x2u   /* the driver bound and the card answered */
+#define NETIF_F_RUNNING   0x2u   /* usable link; Wi-Fi requires authenticated keys */
 #define NETIF_F_LOOPBACK  0x4u   /* delivers to this machine, has no wire */
 #define NETIF_F_BROADCAST 0x8u   /* the link can carry a broadcast frame */
 
@@ -140,6 +140,14 @@ struct netif {
  * or -1 when the table is full. netdev_init() calls this; nothing else needs
  * to, and a driver must not -- a driver's job ends at dev_set_drvdata(). */
 int netif_register(const char *name, struct netdev *dev, uint32_t flags);
+
+/* Runtime transport adapters publish a permanent netdev object after boot
+ * enumeration. No slot reuse: NETIF_MAX includes these interfaces and lo.
+ * The adapter must retain its vtable even after transport detach. Names and
+ * device pointers are unique; registration never replaces an existing primary.
+ * Link changes preserve administrative UP and never configure IP or DHCP. */
+int netdev_attach_transport(const char *name, struct netdev *dev);
+int netdev_set_link(struct netdev *dev, int link_up);
 
 int netif_count(void);                        /* registered interfaces */
 struct netif *netif_by_index(int idx);        /* NULL if absent */

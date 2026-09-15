@@ -7,7 +7,7 @@
 /* COMPATIBILITY FACADE -- these are no longer the Intel driver.
  *
  * The e1000_* names below are what `c/net/link/eth.c`, `c/net/core/net.c`,
- * `c/kernel/cpu/irq/interrupts.c` and `c/kernel/cpu/smp/smp/smp.c` call, from when the OS
+ * `c/kernel/cpu/irq/interrupts.c` and `c/kernel/cpu/smp/smp.c` call, from when the OS
  * had exactly one NIC driver. They are now thin forwards (defined in netdev.c)
  * to whichever card the registry bound -- virtio-net, e1000, rtl8139, rtl8169.
  * Calling e1000_tx() on a machine with a Realtek card transmits on the Realtek
