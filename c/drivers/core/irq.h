@@ -10,7 +10,9 @@
  * c/drivers/core has to change to add a device interrupt.
  *
  * Handlers run in interrupt context on whichever CPU the interrupt was routed
- * to (the BSP, in practice), with the BKL held, and EOI is sent for them. */
+ * to (the BSP, in practice), with device-local locks, and EOI is sent for them.
+ * irq_free_vector drains old callbacks and their EOI; never call it from that
+ * vector itself. The caller must disable/mask the hardware source first. */
 
 #include <stdint.h>
 #include "driver.h"     /* irq_handler_t */

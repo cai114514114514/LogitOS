@@ -50,10 +50,26 @@ static void put(int bus, int slot, int func, int off, uint32_t v) { *cfg(bus, sl
 struct bar_model { int idx; uint32_t mask_lo, mask_hi; int wide; };
 static struct bar_model g_bars[8];
 static int g_nbar, g_hook_bars;
+static int g_ignore_command_disable, g_partial_command_disable;
+static int g_ignore_command_restore;
+static int g_ignore_bar_restore, g_ignore_bar_restore_off, g_live_sizing_writes;
 static void install_bar_hook(int on) { g_hook_bars = on; }
 
 static void cfg_store(int bus, int slot, int func, int off, uint32_t v)
 {
+    if (g_hook_bars && off >= PCI_CFG_BAR0 &&
+        off <= PCI_CFG_BAR0 + 5 * 4) {
+        if (v == 0xFFFFFFFFu) {
+            uint16_t command =
+                (uint16_t)*cfg(bus, slot, func, PCI_CFG_COMMAND);
+            if (command & (PCI_CMD_IO | PCI_CMD_MEM))
+                g_live_sizing_writes++;
+        } else if (g_ignore_bar_restore &&
+                   (g_ignore_bar_restore_off < 0 ||
+                    off == g_ignore_bar_restore_off)) {
+            return;
+        }
+    }
     if (g_hook_bars && v == 0xFFFFFFFFu) {
         for (int i = 0; i < g_nbar; i++) {
             int b = 0x10 + g_bars[i].idx * 4;
@@ -83,10 +99,29 @@ uint32_t inl(uint16_t port)
     if (bus >= FBUS) return 0xFFFFFFFFu;
     return *cfg(bus, slot, func, off);
 }
-void outb(uint16_t p, uint8_t v)  { (void)p; (void)v; }
-uint8_t inb(uint16_t p)           { (void)p; return 0xFF; }
-void outw(uint16_t p, uint16_t v) { (void)p; (void)v; }
-uint16_t inw(uint16_t p)          { (void)p; return 0xFFFF; }
+static void port_narrow(uint16_t p, uint32_t v, unsigned width)
+{
+    if (p < 0xCFC || p + width > 0xD00 || !(g_cf8 >> 31)) return;
+    unsigned bus=(g_cf8 >> 16)&255, slot=(g_cf8 >> 11)&31, func=(g_cf8 >> 8)&7;
+    if (bus >= FBUS) return;
+    uint8_t *dst=(uint8_t *)cfg(bus,slot,func,g_cf8 & 0xFC)+(p-0xCFC);
+    if (width == 2 && (g_cf8 & 0xFC) == PCI_CFG_COMMAND && p == 0xCFC) {
+        uint16_t old = (uint16_t)(dst[0] | ((uint16_t)dst[1] << 8));
+        uint16_t next = (uint16_t)v;
+        uint16_t decode = PCI_CMD_IO | PCI_CMD_MEM;
+        if (g_ignore_command_disable && (old & decode) && !(next & decode))
+            return;
+        if (g_partial_command_disable && (old & decode) && !(next & decode))
+            v = (uint16_t)(next | (old & PCI_CMD_IO));
+        if (g_ignore_command_restore && !(old & decode) && (next & decode))
+            return;
+    }
+    for (unsigned i=0;i<width;i++) dst[i]=(uint8_t)(v>>(8*i));
+}
+void outb(uint16_t p, uint8_t v) { port_narrow(p,v,1); }
+uint8_t inb(uint16_t p) { (void)p; return 0xFF; }
+void outw(uint16_t p, uint16_t v) { port_narrow(p,v,2); }
+uint16_t inw(uint16_t p) { (void)p; return 0xFFFF; }
 
 /* ------------------------------------------------------------- fixtures -- */
 static void space_reset(void)
@@ -94,6 +129,10 @@ static void space_reset(void)
     memset(g_space, 0xFF, (size_t)FBUS << 20);      /* absent everywhere */
     g_nbar = 0;
     install_bar_hook(0);
+    g_ignore_command_disable = g_partial_command_disable = 0;
+    g_ignore_command_restore = 0;
+    g_ignore_bar_restore = g_live_sizing_writes = 0;
+    g_ignore_bar_restore_off = -1;
 }
 
 static void mkdev(int bus, int slot, int func, uint16_t ven, uint16_t dev,
@@ -113,6 +152,8 @@ static void test_bar_sizing(void)
     space_reset();
     mkdev(0, 1, 0, 0x8086, 0x1234, 0x02, 0x00, 0x00, 0x00);
     install_bar_hook(1);
+    put(0, 1, 0, PCI_CFG_COMMAND,
+        PCI_CMD_IO | PCI_CMD_MEM | PCI_CMD_MASTER);
 
     /* BAR0: 32-bit non-prefetchable memory, 128 KiB at 0xFEB80000 */
     put(0, 1, 0, 0x10, 0xFEB80000u);
@@ -163,8 +204,99 @@ static void test_bar_sizing(void)
     CHECK(r.flags == DEV_RES_MEM && r.size == 0x1000ull && r.start == 0,
           "unassigned-but-implemented BAR: flags=%x size=%llx", r.flags,
           (unsigned long long)r.size);
+    CHECK(g_live_sizing_writes == 0,
+          "BAR sizing must never run while IO/MEM decode is live");
+    CHECK(pci_cfg_read16(0, 1, 0, PCI_CFG_COMMAND) ==
+          (PCI_CMD_IO | PCI_CMD_MEM | PCI_CMD_MASTER),
+          "original PCI Command must be restored after every successful probe");
 
     install_bar_hook(0);
+}
+
+static void setup_bar_safety_fixture(void)
+{
+    space_reset();
+    mkdev(0, 1, 0, 0x10de, 0x1c81, 0x03, 0x00, 0x00, 0x00);
+    put(0, 1, 0, PCI_CFG_COMMAND,
+        PCI_CMD_IO | PCI_CMD_MEM | PCI_CMD_MASTER);
+    put(0, 1, 0, PCI_CFG_BAR0, 0xE0000000u);
+    g_bars[g_nbar++] = (struct bar_model){
+        .idx = 0, .mask_lo = 0xF0000000u
+    };
+    install_bar_hook(1);
+}
+
+static void test_bar_decode_refusal(void)
+{
+    setup_bar_safety_fixture();
+    g_ignore_command_disable = 1;
+    struct dev_resource r;
+    int n = pci_bar_probe(0, 1, 0, 0, &r);
+    CHECK(n == 1 && r.flags == 0 && g_live_sizing_writes == 0 &&
+          pci_cfg_read16(0, 1, 0, PCI_CFG_COMMAND) ==
+              (PCI_CMD_IO | PCI_CMD_MEM | PCI_CMD_MASTER),
+          "ignored decode-disable write is refused before BAR sizing");
+}
+
+static void test_bar_partial_decode_recovery(void)
+{
+    setup_bar_safety_fixture();
+    g_partial_command_disable = 1;
+    struct dev_resource r;
+    int n = pci_bar_probe(0, 1, 0, 0, &r);
+    CHECK(n == 1 && r.flags == 0 && g_live_sizing_writes == 0 &&
+          pci_cfg_read16(0, 1, 0, PCI_CFG_COMMAND) ==
+              (PCI_CMD_IO | PCI_CMD_MEM | PCI_CMD_MASTER),
+          "partial decode-disable refusal restores complete PCI Command");
+}
+
+static void test_bar_restore_refusal(void)
+{
+    setup_bar_safety_fixture();
+    g_ignore_bar_restore = 1;
+    struct dev_resource r;
+    int n = pci_bar_probe(0, 1, 0, 0, &r);
+    CHECK(n == 1 && r.flags == 0 &&
+          !(pci_cfg_read16(0, 1, 0, PCI_CFG_COMMAND) &
+            (PCI_CMD_IO | PCI_CMD_MEM)),
+          "failed BAR restore leaves decode off and publishes no resource");
+}
+
+static void test_bar_high_restore_refusal(void)
+{
+    space_reset();
+    mkdev(0, 1, 0, 0x10de, 0x1c81, 0x03, 0x00, 0x00, 0x00);
+    put(0, 1, 0, PCI_CFG_COMMAND,
+        PCI_CMD_IO | PCI_CMD_MEM | PCI_CMD_MASTER);
+    put(0, 1, 0, PCI_CFG_BAR0, 0xE000000Cu);
+    put(0, 1, 0, PCI_CFG_BAR0 + 4, 0x00000001u);
+    g_bars[g_nbar++] = (struct bar_model){
+        .idx = 0, .wide = 1, .mask_lo = 0xF0000000u,
+        .mask_hi = 0xFFFFFFFFu
+    };
+    install_bar_hook(1);
+    g_ignore_bar_restore = 1;
+    g_ignore_bar_restore_off = PCI_CFG_BAR0 + 4;
+    struct dev_resource r;
+    int n = pci_bar_probe(0, 1, 0, 0, &r);
+    CHECK(n == 2 && r.flags == 0 &&
+          !(pci_cfg_read16(0, 1, 0, PCI_CFG_COMMAND) &
+            (PCI_CMD_IO | PCI_CMD_MEM)) &&
+          *cfg(0, 1, 0, PCI_CFG_BAR0) == 0xE000000Cu,
+          "failed 64-bit BAR high restore leaves decode off and publishes no resource");
+}
+
+static void test_command_restore_refusal(void)
+{
+    setup_bar_safety_fixture();
+    g_ignore_command_restore = 1;
+    struct dev_resource r;
+    int n = pci_bar_probe(0, 1, 0, 0, &r);
+    CHECK(n == 1 && r.flags == 0 &&
+          !(pci_cfg_read16(0, 1, 0, PCI_CFG_COMMAND) &
+            (PCI_CMD_IO | PCI_CMD_MEM)) &&
+          *cfg(0, 1, 0, PCI_CFG_BAR0) == 0xE0000000u,
+          "failed Command restore leaves valid BAR decoded off and unpublished");
 }
 
 static void test_cap_walk(void)
@@ -330,14 +462,41 @@ static void test_multifunction(void)
 
 /* device.c's dev_unbind releases the device's interrupt; the MSI code lives in
  * pci_msi.c, which needs a LAPIC. Not linked here. */
-void dev_irq_release(struct device *d) { (void)d; }
+int dev_irq_release(struct device *d) { (void)d; return 0; }
 
-int main(void)
+int main(int argc, char **argv)
 {
     g_space = malloc((size_t)FBUS << 20);
     if (!g_space) { printf("out of memory\n"); return 1; }
 
+    if (argc == 2) {
+        if (!strcmp(argv[1], "decode")) test_bar_decode_refusal();
+        else if (!strcmp(argv[1], "partial-decode")) test_bar_partial_decode_recovery();
+        else if (!strcmp(argv[1], "bar-restore")) test_bar_restore_refusal();
+        else if (!strcmp(argv[1], "bar-high-restore")) test_bar_high_restore_refusal();
+        else if (!strcmp(argv[1], "command-restore")) test_command_restore_refusal();
+        else if (!strcmp(argv[1], "safety")) {
+            test_bar_decode_refusal();
+            test_bar_partial_decode_recovery();
+            test_bar_restore_refusal();
+            test_bar_high_restore_refusal();
+            test_command_restore_refusal();
+        } else {
+            free(g_space);
+            return 2;
+        }
+        printf("\nPCI BAR safety: %d checks, %d failed\n", checks, failures);
+        free(g_space);
+        return failures ? 1 : 0;
+    }
+    if (argc != 1) { free(g_space); return 2; }
+
     test_bar_sizing();
+    test_bar_decode_refusal();
+    test_bar_partial_decode_recovery();
+    test_bar_restore_refusal();
+    test_bar_high_restore_refusal();
+    test_command_restore_refusal();
     test_cap_walk();
     test_ecam();
     test_mcfg_layout();

@@ -1,10 +1,12 @@
 #include <stdint.h>
 #include <stddef.h>
 #include "netdev.h"
+#include "e1000_pch2.h"
 #include "driver.h"
 #include "pci.h"
 #include "kprintf.h"
 #include "route.h"
+#include "net.h"
 
 /* The NIC line: which drivers exist, in what order they get a look at a card,
  * and where the link layer's calls go once one is bound.
@@ -17,23 +19,51 @@
 
 #include "net_ids.inc"
 
+/* Driver teardown confirms hardware reset before reclaiming DMA pages. */
+void virtio_net_remove(struct device *dev);
+void e1000_remove(struct device *dev);
+void rtl8139_remove(struct device *dev);
+void rtl8169_remove(struct device *dev);
+void pcnet_remove(struct device *dev);
+void e1000e_remove(struct device *dev);
+
+
 static struct driver virtio_net_driver = {
     .name = "virtio-net", .bus_type = DEV_BUS_PCI,
-    .match = virtio_net_ids, .probe = virtio_net_probe,
+    .match = virtio_net_ids, .probe = virtio_net_probe, .remove = virtio_net_remove,
 };
 static struct driver e1000_driver = {
     .name = "e1000", .bus_type = DEV_BUS_PCI,
-    .match = e1000_ids, .probe = e1000_probe,
+    .match = e1000_ids, .probe = e1000_probe, .remove = e1000_remove,
 };
 static struct driver rtl8139_driver = {
     .name = "rtl8139", .bus_type = DEV_BUS_PCI,
-    .match = rtl8139_ids, .probe = rtl8139_probe,
+    .match = rtl8139_ids, .probe = rtl8139_probe, .remove = rtl8139_remove,
 };
 static struct driver rtl8169_driver = {
     .name = "rtl8169", .bus_type = DEV_BUS_PCI,
-    .match = rtl8169_ids, .probe = rtl8169_probe,
+    .match = rtl8169_ids, .probe = rtl8169_probe, .remove = rtl8169_remove,
 };
 
+static struct driver pcnet_driver = {
+    .name = "pcnet", .bus_type = DEV_BUS_PCI,
+    .match = pcnet_ids, .probe = pcnet_probe, .remove = pcnet_remove,
+};
+
+static struct driver e1000e_driver = {
+    .name = "e1000e", .bus_type = DEV_BUS_PCI,
+    .match = e1000e_ids, .probe = e1000e_probe, .remove = e1000e_remove,
+};
+
+/* 82579 uses the PCH2 ownership/PHY path, never the discrete 82574 probe. */
+static struct driver e1000_pch2_driver = {
+    .name = "e1000-pch2", .bus_type = DEV_BUS_PCI,
+    .match = e1000_pch2_ids, .probe = e1000_pch2_probe, .remove = e1000_pch2_remove,
+};
+DRIVER_DECLARE(e1000_pch2_driver);
+
+DRIVER_DECLARE(e1000e_driver);
+DRIVER_DECLARE(pcnet_driver);
 DRIVER_DECLARE(virtio_net_driver);
 DRIVER_DECLARE(e1000_driver);
 DRIVER_DECLARE(rtl8139_driver);
@@ -45,7 +75,8 @@ DRIVER_DECLARE(rtl8169_driver);
  * uses registration order instead, which is not under our control -- so the
  * early pass keeps its own list. */
 static struct driver *const nic_order[] = {
-    &virtio_net_driver, &e1000_driver, &rtl8139_driver, &rtl8169_driver,
+    &virtio_net_driver, &e1000_driver, &e1000e_driver, &rtl8139_driver, &pcnet_driver, &rtl8169_driver,
+    &e1000_pch2_driver,
 };
 #define NDRV ((int)(sizeof nic_order / sizeof nic_order[0]))
 
@@ -61,10 +92,15 @@ static struct driver *const nic_order[] = {
  * ------------------------------------------------------------------------ */
 
 static struct netif ifs[NETIF_MAX];
-static int nif;                 /* registered interfaces; indices are 1..nif */
+static int nif;                 /* release-published, permanent interface slots */
+static unsigned init_state;
+static int init_result;
 static int lo_if, primary_if;   /* 0 = not registered */
 static struct netdev *g_nic;    /* the primary interface's device */
 static const uint8_t zero_mac[6];
+static struct device *irq_owners[NETIF_MAX];
+static net_rx_cb irq_rx_cb;
+static int irq_enable_requested;
 
 /* route.c memoises a configuration per interface index and refuses an index it
  * cannot store, so an interface table larger than its array would silently
@@ -76,18 +112,19 @@ _Static_assert(NETIF_MAX <= RT_NIF, "NETIF_MAX outgrew RT_NIF (route.h)");
  * first, which this asserts is still what index 1 means. */
 _Static_assert(RT_OIF_LO == 1 && RT_OIF_NIC0 == 2, "route.h index constants moved");
 
-int netif_count(void) { return nif; }
+int netif_count(void) { return __atomic_load_n(&nif, __ATOMIC_ACQUIRE); }
 
 struct netif *netif_by_index(int idx)
 {
-    if (idx < 1 || idx > nif) return NULL;
+    if (idx < 1 || idx > netif_count()) return NULL;
     return &ifs[idx - 1];
 }
 
 struct netif *netif_by_name(const char *name)
 {
+    NET_GUARD;
     if (!name) return NULL;
-    for (int i = 0; i < nif; i++) {
+    for (int i = 0; i < netif_count(); i++) {
         const char *a = ifs[i].name, *b = name;
         while (*a && *a == *b) { a++; b++; }
         if (!*a && !*b) return &ifs[i];
@@ -97,6 +134,7 @@ struct netif *netif_by_name(const char *name)
 
 int netif_register(const char *name, struct netdev *dev, uint32_t flags)
 {
+    NET_GUARD;
     if (nif >= NETIF_MAX) return -1;
     struct netif *n = &ifs[nif];
     int i = 0;
@@ -111,12 +149,13 @@ int netif_register(const char *name, struct netdev *dev, uint32_t flags)
      * caller holding a struct netif should not have to know which interfaces
      * have a card behind them to read six bytes. */
     for (int k = 0; k < 6; k++) n->mac[k] = dev ? dev->mac[k] : 0;
-    nif++;
+    __atomic_store_n(&nif, nif + 1, __ATOMIC_RELEASE);
     return n->index;
 }
 
 int netif_addr_add(int idx, uint32_t addr, uint32_t mask)
 {
+    NET_GUARD;
     struct netif *n = netif_by_index(idx);
     if (!n) return -1;
     for (int i = 0; i < n->naddr; i++)
@@ -130,6 +169,7 @@ int netif_addr_add(int idx, uint32_t addr, uint32_t mask)
 
 uint32_t netif_src_for(int oif, uint32_t dst)
 {
+    NET_GUARD;
     struct netif *n = netif_by_index(oif);
     if (!n || n->naddr <= 0) return 0;
     int best = -1, bestlen = -1;
@@ -144,7 +184,8 @@ uint32_t netif_src_for(int oif, uint32_t dst)
 
 int netif_is_local(uint32_t a)
 {
-    for (int i = 0; i < nif; i++)
+    NET_GUARD;
+    for (int i = 0; i < netif_count(); i++)
         for (int k = 0; k < ifs[i].naddr; k++)
             if (ifs[i].addr[k].addr == a) return 1;
     return 0;
@@ -161,7 +202,8 @@ static void ip4_print(const char *tag, uint32_t a)
 
 void netif_dump(void)
 {
-    for (int i = 0; i < nif; i++) {
+    NET_GUARD;
+    for (int i = 0; i < netif_count(); i++) {
         struct netif *n = &ifs[i];
         kprintf("[net] if %d %s flags%s%s%s%s",
                 n->index, n->name,
@@ -181,7 +223,7 @@ void netif_dump(void)
     }
 }
 
-int netdev_init(void)
+static int netdev_init_boot(void)
 {
     /* LOOPBACK FIRST, and it is not decoration. It fixes a real leak: before
      * the table existed, 127.0.0.1 failed ip.c's on-subnet test, so an ICMP
@@ -283,6 +325,22 @@ int netdev_init(void)
     return 0;
 }
 
+/* The priority pass is boot-only: kmain calls net_init before wm_run creates
+ * runnable processes. Later dev_probe_all owns runtime device binding. The
+ * legacy e1000_init entry may be called again, but cannot re-run this raw
+ * early binding pass or duplicate the interface table after publication. */
+int netdev_init(void)
+{
+    unsigned idle = 0;
+    if (!__atomic_compare_exchange_n(&init_state, &idle, 1, 0,
+                                     __ATOMIC_ACQUIRE, __ATOMIC_RELAXED))
+        return __atomic_load_n(&init_state, __ATOMIC_ACQUIRE) == 2 ? init_result : -1;
+    int rc = netdev_init_boot();
+    init_result = rc;
+    __atomic_store_n(&init_state, 2, __ATOMIC_RELEASE);
+    return rc;
+}
+
 int netdev_present(void) { return g_nic != NULL; }
 const char *netdev_name(void) { return g_nic ? g_nic->name : "none"; }
 const uint8_t *netdev_mac(void) { return g_nic ? g_nic->mac : zero_mac; }
@@ -306,42 +364,96 @@ int netdev_rx_poll(net_rx_cb cb)
      * drained fills up and then drops everything, silently, which is a worse
      * failure than not having bound it at all. */
     int n = 0;
-    for (int i = 0; i < nif; i++)
+    for (int i = 0; i < netif_count(); i++)
         if (ifs[i].dev && ifs[i].dev->rx_poll) n += ifs[i].dev->rx_poll(cb);
     return n;
 }
 
 void netdev_irq_enable(net_rx_cb cb)
 {
-    /* A driver with no interrupt path is polled-only; net_poll() from the WM
-     * loop already covers it, so this is a no-op rather than a failure. */
-    for (int i = 0; i < nif; i++)
-        if (ifs[i].dev && ifs[i].dev->irq_enable) ifs[i].dev->irq_enable(cb);
+    /* net_init supplies the callback before the APIC route exists. Keep NIC
+     * interrupt sources masked until the handler and route are installed;
+     * otherwise an early DHCP reply can assert INTx before it has an owner. */
+    irq_rx_cb = cb;
+    irq_enable_requested = 1;
+    for (int i = 0; i < netif_count(); i++) {
+        struct device *owner = irq_owners[i];
+        struct netdev *nd = ifs[i].dev;
+        if (owner && owner->irq_mode != DEV_IRQ_NONE && owner->drv &&
+            !__atomic_load_n(&owner->unbinding, __ATOMIC_ACQUIRE) &&
+            dev_get_drvdata(owner) == nd && nd && nd->irq_enable)
+            nd->irq_enable(cb);
+    }
+}
+
+static void netdev_device_irq(void *arg)
+{
+    struct device *dev = arg;
+    /* The device IRQ layer pins this argument while a callback runs and drains
+     * callbacks before remove. Look up drvdata at delivery time: retaining a
+     * raw netdev pointer would outlive the binding on a later device removal. */
+    if (!dev || __atomic_load_n(&dev->unbinding, __ATOMIC_ACQUIRE) || !dev->drv) return;
+    struct netdev *nd = dev_get_drvdata(dev);
+    if (nd && nd->irq) nd->irq();
+}
+
+int netdev_irq_route(void)
+{
+    if (__atomic_load_n(&init_state, __ATOMIC_ACQUIRE) != 2) return 0;
+    int routed = 0;
+    /* This pass runs on the sole BSP before AP startup; no other probe can
+     * observe the temporary preference. Future runtime NIC binding needs a
+     * per-request mode API rather than changing this global policy there. */
+    int previous = dev_irq_prefer(DEV_IRQ_INTX);
+    for (int i = 0; i < netif_count(); i++) {
+        struct netdev *nd = ifs[i].dev;
+        if (!nd || !nd->irq) continue;
+        struct device *owner = NULL;
+        for (int j = 0; j < dev_count(); j++) {
+            struct device *d = dev_at(j);
+            if (d && d->bus_type == DEV_BUS_PCI && d->drv &&
+                !__atomic_load_n(&d->unbinding, __ATOMIC_ACQUIRE) &&
+                dev_get_drvdata(d) == nd) { owner = d; break; }
+        }
+        if (!owner) continue;
+        if (owner->irq_mode != DEV_IRQ_NONE) { routed++; continue; }
+        int vec = dev_irq_request(owner, netdev_device_irq, owner, nd->name);
+        if (vec >= 0) {
+            routed++;
+            irq_owners[i] = owner;
+            kprintf("[net] IRQ route: %s = %s vector %d via device model\n",
+                    ifs[i].name, nd->name, vec);
+            if (irq_enable_requested && nd->irq_enable)
+                nd->irq_enable(irq_rx_cb);
+        } else {
+            kprintf("[net] IRQ route: %s = %s unavailable; polling\n",
+                    ifs[i].name, nd->name);
+        }
+#ifdef NETIF_NEGCTL_PRIMARY_IRQ
+        /* Recreate the removed smp.c shortcut: route one NIC and stop. A
+         * one-card boot passes; the multi-device fixture must catch it. */
+        break;
+#endif
+    }
+    dev_irq_prefer(previous);
+    return routed;
 }
 
 int netdev_irq_line(void)
 {
-    /* -1 when there is no NIC or the driver is polled-only: smp.c only routes
-     * the I/O APIC entry for a line in (0, 24), so this disables the routing
-     * without smp.c needing to know anything about NICs.
-     *
-     * STILL THE PRIMARY'S LINE ONLY. smp.c asks for one line and wires one
-     * I/O APIC entry; a second card on a different GSI is therefore polled,
-     * not interrupt-driven -- it works (net_poll from the WM loop is every
-     * card's backstop) but its latency is the frame rate. Fixing it is a
-     * change to c/kernel/cpu/smp.c, which this file does not own. */
+    /* Legacy query only. Previously smp.c used this one line to program vector
+     * 65, leaving secondary NICs polled and overwriting other PCI devices on
+     * the GSI. netdev_irq_route now registers every NIC with the device model. */
     if (!g_nic || !g_nic->irq) return -1;
     return g_nic->irq_line;
 }
 
 void netdev_irq(void)
 {
-    /* Every card that can take one. PCI interrupt lines are shared, so a
-     * vector-65 interrupt may belong to any of them and each driver's irq()
-     * begins by reading its own device's cause register: the ones with nothing
-     * pending cost a read and return. Calling only the primary would leave a
-     * sharing card's interrupt unacked and the line asserted forever. */
-    for (int i = 0; i < nif; i++)
+    /* Compatibility dispatch for the old fixed-vector entry and host callers.
+     * No PCI route now targets vector 65. Normal delivery goes through the
+     * device-model callback above; the shared-GSI layer owns its fanout. */
+    for (int i = 0; i < netif_count(); i++)
         if (ifs[i].dev && ifs[i].dev->irq) ifs[i].dev->irq();
 }
 
@@ -354,15 +466,9 @@ void netdev_irq(void)
  * now mean "the bound NIC, whatever it is". They are pure forwarding; nothing
  * below knows about Intel.
  *
- * The two NET files have since been converted (eth.c -> netdev_tx, net.c ->
- * netdev_init/netdev_mac/netdev_irq_enable/netdev_rx_poll). What is left is
- * `c/kernel/cpu/interrupts.c` (vector 65 -> e1000_irq) and `c/kernel/cpu/smp.c`
- * (e1000_irq_line for the I/O APIC entry), which belong to the kernel lines.
- * When someone owns those two files:
- *     e1000_irq_line()    -> netdev_irq_line()
- *     e1000_irq()         -> netdev_irq()
- * plus `#include "e1000.h"` -> `#include "netdev.h"`. Two lines each; this
- * block can then be deleted.
+ * eth/net and now smp.c use the common interface. The old static vector-65
+ * entry remains an ABI-compatible caller in interrupts.c, but no NIC GSI is
+ * routed to it: normal delivery is registered by netdev_irq_route().
  * ------------------------------------------------------------------------ */
 
 int  e1000_init(void)                 { return netdev_init(); }

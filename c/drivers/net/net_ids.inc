@@ -62,3 +62,26 @@ static const struct dev_match rtl8169_ids[] = {
     DEV_MATCH_VD(0x1186, 0x4300),   /* D-Link DGE-528T (8169 inside) */
     DEV_MATCH_END
 };
+
+/* AMD PCnet PCI ID family; probe verifies Am79C970A chip version.
+ * Style-2 32-bit DMA descriptors. This is a separate controller
+ * protocol, not an e1000 alias. QEMU exposes this ID with -device pcnet. */
+static const struct dev_match pcnet_ids[] = {
+    DEV_MATCH_VD(0x1022, 0x2000),
+    DEV_MATCH_END
+};
+
+/* The 82574 family has its own PCIe/NVM/PHY initialization in e1000e.c.
+ * These IDs do not imply support for ICH/PCH integrated LAN or igb/igc. */
+static const struct dev_match e1000e_ids[] = {
+    DEV_MATCH_VD(0x8086, 0x10D3), /* 82574L/IT: QEMU e1000e also models this */
+    DEV_MATCH_VD(0x8086, 0x10F6), /* 82574LA: physical-hardware validation pending */
+    DEV_MATCH_END
+};
+/* PCH2 + 82579 only. A match is eligibility for the guarded probe, not proof
+ * of ME coexistence or a physical link. Later I217/I219 have other contracts. */
+static const struct dev_match e1000_pch2_ids[] = {
+    DEV_MATCH_VD(0x8086, 0x1502), /* 82579LM */
+    DEV_MATCH_VD(0x8086, 0x1503), /* 82579V */
+    DEV_MATCH_END,
+};

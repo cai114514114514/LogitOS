@@ -39,7 +39,8 @@ struct netdev {
     int  (*rx_poll)(net_rx_cb cb);                 /* drain RX; returns frames delivered */
 
     /* Optional. irq_enable() unmasks the device's RX interrupt and remembers cb;
-     * irq() is called from the vector-65 ISR to ack the device and drain. A
+     * irq() is called by the device model's per-device callback to acknowledge
+     * the device and schedule receive work. A
      * driver that leaves both NULL is polled-only and still works -- net_poll()
      * from the WM loop is the backstop for every card. */
     void (*irq_enable)(net_rx_cb cb);
@@ -62,11 +63,21 @@ struct netdev {
  */
 int netdev_init(void);
 
+/* BSP bootstrap only, after LAPIC/I/O APIC init and before AP startup. Route
+ * every registered PCI NIC through dev_irq_request, so NICs share the same
+ * INTx fanout/release mechanism as USB and storage. Returns routed card count;
+ * missing routes remain polled. Repeated calls reuse successful registrations.
+ * Current NICs are explicitly INTx-only here: enabling PCI MSI-X alone does
+ * not program virtio queue vectors or 82574 IVAR, so it would lose interrupts.
+ */
+int netdev_irq_route(void);
+
 const char    *netdev_name(void);     /* "none" when nothing bound */
 const uint8_t *netdev_mac(void);      /* always a valid 6-byte pointer */
 int  netdev_present(void);
 int  netdev_tx(const void *frame, uint16_t len);
 int  netdev_rx_poll(net_rx_cb cb);
+/* Save the RX callback now; unmask each NIC only after IRQ routing succeeds. */
 void netdev_irq_enable(net_rx_cb cb);
 int  netdev_irq_line(void);
 void netdev_irq(void);
@@ -179,5 +190,7 @@ int e1000_probe(struct device *dev);
 int rtl8139_probe(struct device *dev);
 int rtl8169_probe(struct device *dev);
 int virtio_net_probe(struct device *dev);
+int pcnet_probe(struct device *dev);
+int e1000e_probe(struct device *dev);
 
 #endif /* LOGIT_NETDEV_H */

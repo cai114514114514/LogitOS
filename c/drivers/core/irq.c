@@ -1,3 +1,4 @@
+/* 2026-09-10 concurrency correction: IRQ entry tracks CPU-local nesting only. A short registry lock pins active callbacks, and free drains those pins before caller-owned arguments can be released. */
 /* Dynamic interrupt vectors (0x60..0x7F) for the device model.
  *
  * Two things here are worth explaining, because both look like they should have
@@ -17,15 +18,16 @@
  *    CPU has already loaded (there is one shared IDT), so writing a gate here
  *    is immediately live on every core with no cross-module plumbing.
  *
- * The stubs land in interrupt context, take the BKL the same way
- * interrupts.c does (including the nested-entry check that keeps a `sti` window
- * inside an in-progress kernel operation from self-deadlocking the ticket
- * lock), run the handler, and EOI to the LAPIC. */
+ * The stubs preserve CPU-local nesting depth. A short registry lock pins the
+ * callback and its argument; device handlers run outside that lock. The pin
+ * remains through EOI so another CPU cannot recycle a retiring vector while
+ * this CPU is still completing its previous interrupt. */
 #include <stdint.h>
 #include <stddef.h>
 #include "irq.h"
 #include "interrupts.h"
 #include "spinlock.h"
+#include "io_lock.h"
 #include "percpu.h"
 #include "lapic.h"
 #include "smp.h"
@@ -116,6 +118,8 @@ struct irq_slot {
     void         *arg;
     const char   *name;
     volatile uint64_t count;
+    unsigned active;
+    int retiring;
 };
 
 static struct irq_slot g_slot[IRQ_NVEC];
@@ -124,9 +128,12 @@ static int             g_stubs_ok = -1;    /* -1 = not checked yet */
 
 static int stubs_ready(void)
 {
-    if (g_stubs_ok < 0)
-        g_stubs_ok = ((irq_stub_end - irq_stub_base) == IRQ_NVEC * IRQ_STUB_STRIDE);
-    return g_stubs_ok;
+    int ready = __atomic_load_n(&g_stubs_ok, __ATOMIC_ACQUIRE);
+    if (ready < 0) {
+        ready = ((irq_stub_end - irq_stub_base) == IRQ_NVEC * IRQ_STUB_STRIDE);
+        __atomic_store_n(&g_stubs_ok, ready, __ATOMIC_RELEASE);
+    }
+    return ready;
 }
 
 int irq_alloc_vector(irq_handler_t fn, void *arg, const char *name)
@@ -140,10 +147,10 @@ int irq_alloc_vector(irq_handler_t fn, void *arg, const char *name)
     uint64_t fl = spin_lock_irqsave(&g_irq_lock);
     int got = -1;
     for (int i = 0; i < IRQ_NVEC; i++) {
-        if (g_slot[i].fn) continue;
+        if (g_slot[i].fn || g_slot[i].retiring) continue;
         g_slot[i].fn = fn; g_slot[i].arg = arg;
         g_slot[i].name = name ? name : "?";
-        g_slot[i].count = 0;
+        __atomic_store_n(&g_slot[i].count, 0, __ATOMIC_RELAXED);
         got = i;
         break;
     }
@@ -159,37 +166,60 @@ void irq_free_vector(int vec)
     int i = vec - IRQ_VEC_BASE;
     if (i < 0 || i >= IRQ_NVEC) return;
     uint64_t fl = spin_lock_irqsave(&g_irq_lock);
-    g_slot[i].fn = NULL; g_slot[i].arg = NULL; g_slot[i].name = NULL;
+    /* Retiring slots cannot be reused until the last old callback returns.
+     * Clearing the function alone would leave a dispatcher using freed arg. */
+    if (g_slot[i].retiring) {
+        spin_unlock_irqrestore(&g_irq_lock, fl);
+        while (__atomic_load_n(&g_slot[i].active, __ATOMIC_ACQUIRE)) io_relax();
+        return; /* Only the first retirement may clear/publish this slot. */
+    }
+    g_slot[i].retiring = 1;
+    g_slot[i].fn = NULL;
+    spin_unlock_irqrestore(&g_irq_lock, fl);
+    while (__atomic_load_n(&g_slot[i].active, __ATOMIC_ACQUIRE)) io_relax();
+    fl = spin_lock_irqsave(&g_irq_lock);
+    g_slot[i].arg = NULL; g_slot[i].name = NULL; g_slot[i].retiring = 0;
     spin_unlock_irqrestore(&g_irq_lock, fl);
 }
 
 uint64_t irq_vector_count(int vec)
 {
     int i = vec - IRQ_VEC_BASE;
-    return (i >= 0 && i < IRQ_NVEC) ? g_slot[i].count : 0;
+    return (i >= 0 && i < IRQ_NVEC) ? __atomic_load_n(&g_slot[i].count, __ATOMIC_RELAXED) : 0;
 }
 
 const char *irq_vector_name(int vec)
 {
+    uint64_t fl = spin_lock_irqsave(&g_irq_lock);
     int i = vec - IRQ_VEC_BASE;
-    return (i >= 0 && i < IRQ_NVEC && g_slot[i].name) ? g_slot[i].name : "-";
+    const char *name = (i >= 0 && i < IRQ_NVEC && g_slot[i].name) ? g_slot[i].name : "-";
+    spin_unlock_irqrestore(&g_irq_lock, fl);
+    return name;
 }
 
 /* ------------------------------------------------------------- dispatch -- */
 void irq_isr_entry(struct registers *r)
 {
     struct cpu *me = this_cpu();
-    /* Same nested-entry rule as interrupts.c: key off the BKL's true owner, not
-     * a separate flag, or a nested IRQ re-acquires a lock this core holds. */
-    int nested = (g_bkl_owner == me->index);
-    uint64_t bf = 0;
-    if (!nested) { bf = spin_lock_irqsave(&g_bkl); me->in_kernel = 1; }
+    /* Entry depth is CPU-local context tracking, never mutual exclusion. */
+    int depth = me->in_kernel;
+    me->in_kernel = depth + 1;
 
     int i = (int)r->vector - IRQ_VEC_BASE;
+    int borrowed = 0;
     if (i >= 0 && i < IRQ_NVEC) {
-        g_slot[i].count++;
+        uint64_t f = spin_lock_irqsave(&g_irq_lock);
         irq_handler_t fn = g_slot[i].fn;
-        if (fn) fn(g_slot[i].arg);
+        void *arg = g_slot[i].arg;
+        if (fn) {
+            __atomic_fetch_add(&g_slot[i].active, 1, __ATOMIC_RELAXED);
+            borrowed = 1;
+        }
+        __atomic_fetch_add(&g_slot[i].count, 1, __ATOMIC_RELAXED);
+        spin_unlock_irqrestore(&g_irq_lock, f);
+        /* A callback may acquire device locks or wake tasks. Keep the registry
+         * lock out of that graph; the active reference pins its argument. */
+        if (fn) fn(arg);
     }
 
     /* EOI to the LAPIC whenever there is one. Keying off smp_irq_via_apic()
@@ -199,5 +229,8 @@ void irq_isr_entry(struct registers *r)
     else               pic_eoi((int)r->vector - 32);
 
     __asm__ volatile ("cli");
-    if (!nested) { this_cpu()->in_kernel = 0; spin_unlock_irqrestore(&g_bkl, bf); }
+    this_cpu()->in_kernel = depth;
+    /* Keep the vector pinned through EOI: a level INTx owner's final removal
+     * must not recycle it while this CPU still completes the old interrupt. */
+    if (borrowed) __atomic_fetch_sub(&g_slot[i].active, 1, __ATOMIC_RELEASE);
 }
