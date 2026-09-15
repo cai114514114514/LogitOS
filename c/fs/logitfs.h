@@ -58,4 +58,8 @@ void logitfs_set_clock(int64_t (*now_unix)(void));
 void     logitfs_set_read_run(uint32_t n);
 uint32_t logitfs_read_run(void);
 
+struct bcache_stats;
+/* Diagnostic cache operations serialized with the real journal transaction. */
+int logitfs_cache_cold(void);
+void logitfs_cache_stats(struct bcache_stats *out);
 #endif /* LOGIT_LOGITFS_H */

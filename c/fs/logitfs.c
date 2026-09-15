@@ -39,6 +39,11 @@ void *memset(void *, int, size_t);
 #define dirent lfs_dirent
 
 static struct lfs_super sb;
+static struct lfs_identity_super identity_super;
+static unsigned identity_epoch;
+struct id_parent { uint32_t parent; char name[LFS_NAME_MAX]; };
+static struct id_parent *id_parents;
+static unsigned id_parents_epoch;
 
 static uint8_t      *bitmap;            /* bitmap_blocks * BS, in RAM */
 static struct dinode *inodes;           /* inode_blocks  * BS, in RAM */
@@ -620,10 +625,19 @@ static struct dinode *iget(uint32_t ino)
 
 static int ialloc(uint16_t type)
 {
+    if (sb.version == LFS_ID_VERSION &&
+        inodes[sb.root_ino].next_id == UINT64_MAX) return -1;
     for (uint32_t i = 0; i < sb.inode_count; i++)
         if (inodes[i].type == T_FREE) {
             memset(&inodes[i], 0, sizeof(struct dinode));
             inodes[i].type = type;
+            if (sb.version == LFS_ID_VERSION) {
+                inodes[i].object_id = ++inodes[sb.root_ino].next_id;
+#ifdef LOGITFS_ID_REUSE_NEGCTL
+                inodes[i].object_id = i+1;
+#endif
+                inodes[i].revision = 1;
+            }
             itouch(&inodes[i], TS_A | TS_M | TS_C);
             return (int)i;
         }
@@ -703,6 +717,13 @@ static uint32_t imap_fill(struct dinode *in, uint32_t i0, uint32_t want, uint32_
 
 static int flush_bitmap(void)           /* stage the free-block bitmap */
 {
+    /* The root counter and new object commit together. An aborted allocation
+     * may leave a gap, but a published identity must never be reused. */
+    if (sb.version == LFS_ID_VERSION) {
+        uint32_t b = sb.root_ino / LFS_IPB;
+        if (log_add(sb.inode_start+b,(uint8_t *)inodes+b*BS)) return -1;
+        identity_epoch++;
+    }
     /* Every operation calls this immediately before it commits, which makes it
      * the one place where "this transaction is going through" is known -- so it
      * is where the deferred frees become real. */
@@ -878,6 +899,7 @@ static void inode_trunc_now(struct dinode *in) { inode_trunc_ex(in, bfree_now); 
  * Pointer blocks (single/double indirect) are metadata and ALWAYS logged. */
 static int inode_write(struct dinode *in, const void *buf, int size, int logged)
 {
+    if (sb.version == LFS_ID_VERSION && in->revision == UINT64_MAX) return -1;
     if (size < 0) return -1;
     uint32_t nblk = ((uint32_t)size + BS - 1) / BS;
     if ((uint64_t)nblk > (uint64_t)NDIRECT + PPB + (uint64_t)PPB * PPB) return -1;
@@ -951,6 +973,7 @@ static int inode_write(struct dinode *in, const void *buf, int size, int logged)
      * logitfs_write, directories via dir_add/dir_remove -- so a directory's
      * mtime moves when an entry is created or removed, as it should. */
     itouch(in, TS_M | TS_C);
+    if (sb.version == LFS_ID_VERSION) in->revision++;
     kfree(allocated);
     return size;
 fail:
@@ -1232,6 +1255,14 @@ static int logitfs_mount_locked(void)
     uint8_t b0[SECTOR];
     if (blk_read(0, 1, b0)) return -1;
     memcpy(&sb, b0, sizeof sb);
+    memset(&identity_super,0,sizeof identity_super);
+    if (sb.version == LFS_ID_VERSION) {
+        memcpy(&identity_super,b0+sizeof sb,sizeof identity_super);
+        if (identity_super.magic!=LFS_ID_MAGIC ||
+            !(identity_super.volume[0]|identity_super.volume[1]) ||
+            crc32(&identity_super,20)!=identity_super.checksum) return -1;
+    }
+    identity_epoch++;
     /* Geometry validation lives in fsck.c, shared with the offline checker: the
      * mounted and the checked notion of "usable image" must not drift apart,
      * and every one of those bounds exists because the value it bounds comes
@@ -1264,6 +1295,7 @@ static int logitfs_mount_locked(void)
     for (uint32_t i = 0; i < sb.inode_blocks; i++)
         if (bread(sb.inode_start + i, (uint8_t *)inodes + i * BS)) goto oom;
     alloc_hint_reset();                    /* a freshly read bitmap vouches for nothing */
+    if(fsck_identity_valid(&sb,&identity_super,inodes)<0)goto oom;
 
     /* A READ-ONLY consistency check on every mount.
      *
@@ -1325,6 +1357,7 @@ oom:
  * in one process, and by any future eject/shutdown path. */
 static void logitfs_unmount_locked(void)
 {
+    kfree(id_parents); id_parents=0;
     if (!bitmap && !inodes) return;
     bcache_shutdown();
     kfree(bitmap); kfree(inodes); kfree(tx_bufs); kfree(freed);
@@ -1520,9 +1553,14 @@ static int logitfs_getattr_locked(const char *path, struct vattr *a)
     a->type  = isdir ? VT_DIR : VT_REG;
     a->nlink = 1;
     a->ino   = ino;
+    if (sb.version == LFS_ID_VERSION) {
+        a->flags |= VA_ID;
+        a->volume[0]=identity_super.volume[0]; a->volume[1]=identity_super.volume[1];
+        a->object_id=in->object_id; a->revision=in->revision;
+    }
     a->dev   = 0;                       /* the VFS supplies the mount index */
     a->blksize = BS;
-    a->flags = VA_INO;
+    a->flags |= VA_INO;
 
     if (in->xmode & LFS_MODE_SET) {
         a->mode = in->xmode & LFS_MODE_BITS & 0777;
@@ -1537,10 +1575,20 @@ static int logitfs_getattr_locked(const char *path, struct vattr *a)
 
     if (!isdir) {
         a->size = in->size;
-        /* Blocks actually allocated, from the inode's own pointers rather than
-         * from the size: a file with a hole occupies fewer. Counting them is a
-         * walk, so it is bounded by what imap can address and stops at the
-         * first missing pointer exactly as inode_read does. */
+        /* LogitFS has no sparse-file operation: inode_write() allocates every
+         * data block from byte zero through EOF before it publishes the new
+         * inode, and inode_pread() treats a missing pointer inside that range
+         * as corruption rather than a hole.  The allocated DATA-block count is
+         * therefore a function of size, not something stat has to rediscover
+         * by walking the block tree.
+         *
+         * This is on read(2)'s hot path. vfs_pread() rechecks permission through
+         * getattr, so the old loop copied the same 4 KiB indirect block once
+         * per FILE block for every small read. A 512-byte sequential reader of
+         * ui.ttf consequently did an O(file-size) metadata scan thousands of
+         * times. Keep the prior algorithm as the measured negative control;
+         * tests/unit/fs_getattr_cost_test.c makes its 889 cache lookups visible. */
+#ifdef LOGITFS_GETATTR_LINEAR_NEGCTL
         uint32_t need = (in->size + BS - 1) / BS;
         uint64_t got = 0;
         for (uint32_t i = 0; i < need; i++) {
@@ -1548,6 +1596,10 @@ static int logitfs_getattr_locked(const char *path, struct vattr *a)
             got++;
         }
         a->blocks = got * (BS / 512);
+#else
+        uint64_t data_blocks = ((uint64_t)in->size + BS - 1) / BS;
+        a->blocks = data_blocks * (BS / 512);
+#endif
     } else {
         a->size = 0;                     /* the VFS fills the entry count */
     }
@@ -1774,7 +1826,10 @@ void logitfs_set_read_run(uint32_t n)
     spin_unlock_irqrestore(&lfs_lock, fl);
 }
 
+#include "logitfs_identity.inc"
+
 struct filesystem logitfs = {
+    .refpath = logitfs_refpath,
     .name     = "logitfs",
     .mount    = logitfs_mount,
     .list     = logitfs_list,
@@ -1801,3 +1856,20 @@ struct filesystem logitfs = {
     .setattr  = logitfs_setattr,
 #endif
 };
+
+/* Cache measurements must share the filesystem transaction lock. In
+ * particular, sync+drop cannot straddle a writer that dirties another block. */
+int logitfs_cache_cold(void)
+{
+    uint64_t fl = spin_lock_irqsave(&lfs_lock);
+    int rc = bcache_sync();
+    if (!rc) bcache_drop();
+    spin_unlock_irqrestore(&lfs_lock, fl);
+    return rc;
+}
+void logitfs_cache_stats(struct bcache_stats *out)
+{
+    uint64_t fl = spin_lock_irqsave(&lfs_lock);
+    bcache_getstats(out);
+    spin_unlock_irqrestore(&lfs_lock, fl);
+}

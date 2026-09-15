@@ -31,6 +31,10 @@
 #define LFS_SPB         (LFS_BS / LFS_SECTOR) /* 512B sectors per block (8) */
 #define LFS_MAGIC       0x4C4F4749u           /* "LOGI" */
 #define LFS_VERSION     4
+/* v4 stays the legacy writer format. v5 adds identities whose allocation
+ * counter MUST be understood by every writer; an old kernel rejects v5. */
+#define LFS_ID_VERSION  5
+#define LFS_ID_MAGIC    0x31444946u
 #define LFS_INODE_SIZE  128
 #define LFS_NDIRECT     12
 #define LFS_PPB         (LFS_BS / 4)          /* u32 pointers per indirect block */
@@ -156,7 +160,10 @@ struct lfs_dinode {                           /* 128 bytes on disk */
     uint32_t xmode;                           /* 0 = never set; else LFS_MODE_SET | 07777 */
     uint32_t uid;
     uint32_t gid;
-    uint8_t  reserved[LFS_INODE_SIZE - 8 - LFS_NDIRECT * 4 - 8 - 24 - 12];
+    uint64_t object_id;                       /* v5: never reused within a volume */
+    uint64_t revision;                        /* v5: content/children generation */
+    uint64_t next_id;                         /* v5: root inode only */
+    uint8_t  reserved[4];
 } __attribute__((packed));
 
 #define LFS_MODE_SET   0x8000u                /* xmode presence bit */
@@ -174,5 +181,15 @@ struct lfs_super {
     uint32_t data_start, root_ino;
     uint32_t log_start, log_blocks;
 };
+
+/* Extension at byte sizeof(lfs_super); the v4 prefix remains exactly 52 B.
+ * The immutable volume identity and extension are checked independently of
+ * the existing geometry. The allocation counter lives in the journaled root
+ * inode, so block zero never needs a runtime write. */
+struct lfs_identity_super {
+    uint32_t magic;
+    uint64_t volume[2];
+    uint32_t checksum;                         /* CRC32 of first 20 bytes */
+} __attribute__((packed));
 
 #endif /* LOGIT_LOGITFS_FMT_H */

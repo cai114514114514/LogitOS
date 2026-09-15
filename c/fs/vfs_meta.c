@@ -3,6 +3,10 @@
  * tests alongside vfs.c. */
 
 #include "vfs_meta.h"
+#include "../drivers/core/io_domain.h"
+/* Only the in-memory metadata object is held. No filesystem callback or disk
+ * wait runs under this owner. VFS mount transaction -> metadata is the order. */
+static struct io_domain meta_owner = IO_DOMAIN_INIT;
 #include "vfs_path.h"
 #include "../../include/weaksym.h"  /* the weak vfs_cred_ingroup below */
 
@@ -29,6 +33,7 @@ static struct uent { int pid; uint32_t mask; } umasks[32];
 
 void vmeta_reset(void)
 {
+    IO_DOMAIN_GUARD(&meta_owner);
     for (int i = 0; i < VMETA_N; i++) recs[i].path[0] = 0;
     for (int i = 0; i < 32; i++) umasks[i].pid = 0;
     next_group = 1;
@@ -70,10 +75,12 @@ void vattr_clear(struct vattr *a)
     a->mode = 0; a->uid = 0; a->gid = 0; a->type = VT_REG; a->nlink = 1;
     a->flags = 0; a->size = 0; a->blocks = 0; a->ino = 0; a->dev = 0;
     a->blksize = 0; a->atime = 0; a->mtime = 0; a->ctime = 0;
+    a->volume[0]=a->volume[1]=a->object_id=a->revision=0;
 }
 
 int vmeta_lookup(const char *path, struct vattr *a)
 {
+    IO_DOMAIN_GUARD(&meta_owner);
     struct vrec *r = find(path);
     if (!r) return 0;
     if (a) {
@@ -90,6 +97,7 @@ int vmeta_lookup(const char *path, struct vattr *a)
 
 void vmeta_attr(const char *path, int is_dir, struct vattr *a)
 {
+    IO_DOMAIN_GUARD(&meta_owner);
     if (!a) return;
     if (vmeta_lookup(path, a)) return;
     vattr_clear(a);
@@ -110,6 +118,7 @@ void vmeta_attr(const char *path, int is_dir, struct vattr *a)
 
 uint32_t vmeta_umask(int pid, int set)
 {
+    IO_DOMAIN_GUARD(&meta_owner);
     uint32_t prev = 022;
     struct uent *free_slot = 0, *e = 0;
     for (int i = 0; i < VUMASK_N; i++) {
@@ -125,11 +134,13 @@ uint32_t vmeta_umask(int pid, int set)
 
 void vmeta_umask_forget(int pid)
 {
+    IO_DOMAIN_GUARD(&meta_owner);
     for (int i = 0; i < VUMASK_N; i++) if (umasks[i].pid == pid) umasks[i].pid = 0;
 }
 
 int vmeta_chmod(const char *path, int is_dir, uint32_t mode)
 {
+    IO_DOMAIN_GUARD(&meta_owner);
     struct vrec *r = intern(path, is_dir);
     if (!r) return VFS_ENOSPC;
     r->mode = mode & 0777;
@@ -144,6 +155,7 @@ int vmeta_chmod(const char *path, int is_dir, uint32_t mode)
 
 int vmeta_chown(const char *path, int is_dir, uint32_t uid, uint32_t gid)
 {
+    IO_DOMAIN_GUARD(&meta_owner);
     struct vrec *r = intern(path, is_dir);
     if (!r) return VFS_ENOSPC;
     r->uid = uid; r->gid = gid;
@@ -157,6 +169,7 @@ int vmeta_chown(const char *path, int is_dir, uint32_t uid, uint32_t gid)
 
 int vmeta_symlink(const char *target, const char *path, const struct vcred *c)
 {
+    IO_DOMAIN_GUARD(&meta_owner);
     if (!target || !target[0] || !path || !path[0]) return VFS_EINVAL;
     if (m_len(target) + 1 > VMETA_TARGET) return VFS_ENAMETOOLONG;
     if (find(path)) return VFS_EEXIST;
@@ -171,6 +184,7 @@ int vmeta_symlink(const char *target, const char *path, const struct vcred *c)
 
 int vmeta_readlink(const char *path, char *out, int max)
 {
+    IO_DOMAIN_GUARD(&meta_owner);
     struct vrec *r = find(path);
     if (!r || r->type != VT_LNK) return 0;
     int n = m_len(r->target);
@@ -183,6 +197,7 @@ int vmeta_readlink(const char *path, char *out, int max)
 
 const char *vmeta_canon(const char *path)
 {
+    IO_DOMAIN_GUARD(&meta_owner);
     struct vrec *r = find(path);
     if (!r || !r->group || r->canon) return path;
     for (int i = 0; i < VMETA_N; i++)
@@ -193,6 +208,7 @@ const char *vmeta_canon(const char *path)
 
 int vmeta_nlink(const char *path)
 {
+    IO_DOMAIN_GUARD(&meta_owner);
     struct vrec *r = find(path);
     if (!r || !r->group) return 1;
     int n = 0;
@@ -203,6 +219,7 @@ int vmeta_nlink(const char *path)
 
 int vmeta_link(const char *oldpath, const char *newpath, int is_dir)
 {
+    IO_DOMAIN_GUARD(&meta_owner);
     if (is_dir) return VFS_EPERM;                /* no hard links to directories */
     if (find(newpath)) return VFS_EEXIST;
     struct vrec *o = intern(oldpath, 0);
@@ -221,6 +238,7 @@ int vmeta_link(const char *oldpath, const char *newpath, int is_dir)
 
 int vmeta_unlink(const char *path, char *promote, int max)
 {
+    IO_DOMAIN_GUARD(&meta_owner);
     struct vrec *r = find(path);
     if (promote && max > 0) promote[0] = 0;
     if (!r) return 0;
@@ -245,6 +263,7 @@ int vmeta_unlink(const char *path, char *promote, int max)
 
 void vmeta_renamed(const char *from, const char *to)
 {
+    IO_DOMAIN_GUARD(&meta_owner);
     struct vrec *r = find(from);
     if (!r) return;
     if (m_len(to) + 1 > VMETA_PATH) { r->path[0] = 0; return; }
@@ -253,6 +272,7 @@ void vmeta_renamed(const char *from, const char *to)
 
 void vmeta_forget_subtree(const char *prefix)
 {
+    IO_DOMAIN_GUARD(&meta_owner);
     for (int i = 0; i < VMETA_N; i++)
         if (recs[i].path[0] && vfs_path_is_prefix(prefix, recs[i].path))
             recs[i].path[0] = 0;
@@ -280,6 +300,7 @@ static int in_supp_group(uint32_t gid)
 
 int vmeta_permission(const struct vattr *a, const struct vcred *c, int want)
 {
+    IO_DOMAIN_GUARD(&meta_owner);
     if (!a || !c) return VFS_EACCES;
 
 #ifdef VFS_NEGCTL_STORE_ONLY
@@ -333,6 +354,7 @@ static int putn(char *b, int max, int n, unsigned long v, int oct)
 
 int vmeta_render(char *buf, int max)
 {
+    IO_DOMAIN_GUARD(&meta_owner);
     int n = 0;
     n = put(buf, max, n, "# path mode uid gid type nlink target\n");
     for (int i = 0; i < VMETA_N; i++) {
@@ -352,4 +374,10 @@ int vmeta_render(char *buf, int max)
     }
     if (n < max) buf[n] = 0;
     return n;
+}
+
+void vmeta_canon_copy(const char *path, char *out, int cap)
+{
+    IO_DOMAIN_GUARD(&meta_owner);
+    if (out && cap > 0) m_cpy(out, vmeta_canon(path), cap);
 }

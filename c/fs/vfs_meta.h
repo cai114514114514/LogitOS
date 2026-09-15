@@ -70,6 +70,7 @@
 #define VA_DURABLE  0x0002   /* ...and it is on the medium, so it survives a boot */
 #define VA_TIMES    0x0004   /* atime/mtime/ctime came off the medium */
 #define VA_INO      0x0008   /* `ino` is a real inode number */
+#define VA_ID       0x0020   /* persistent v5 identity and revision */
 
 struct vattr {
     uint32_t mode;      /* permission bits only, 0..0777 */
@@ -86,6 +87,7 @@ struct vattr {
     uint64_t dev;       /* mount index; (dev,ino) identifies a file */
     uint32_t blksize;
     int64_t  atime, mtime, ctime;   /* whole seconds, Unix epoch. 0 = unknown. */
+    uint64_t volume[2], object_id, revision;
 };
 
 /* Zero everything the permission path does not set, so that a caller reading
@@ -139,6 +141,7 @@ int  vmeta_readlink(const char *path, char *out, int max);
  *               names in the group survive; 0 when the data may simply go. */
 int  vmeta_link(const char *oldpath, const char *newpath, int is_dir);
 const char *vmeta_canon(const char *path);
+void vmeta_canon_copy(const char *path, char *out, int cap);
 int  vmeta_nlink(const char *path);
 int  vmeta_unlink(const char *path, char *promote, int max);
 

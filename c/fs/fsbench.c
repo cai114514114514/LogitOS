@@ -104,8 +104,7 @@ static long num(const char *s)
  * which is not a trade this tree makes for a number. */
 static void go_cold(void)
 {
-    (void)bcache_sync();
-    bcache_drop();
+    (void)logitfs_cache_cold();
 }
 
 /* --- blk: what one device round trip costs, as a function of its size -------
@@ -198,7 +197,7 @@ static void bench_launch(const char *path, int reps)
     int got = 0;
     for (int r = 0; r < reps; r++) {
         go_cold();
-        bcache_getstats(&c0);                 /* the LAST rep's device traffic is
+        logitfs_cache_stats(&c0);                 /* the LAST rep's device traffic is
                                                * what gets reported: one cold read
                                                * of this file, nothing else */
         uint64_t t0 = time_mono_ns();
@@ -208,7 +207,7 @@ static void bench_launch(const char *path, int reps)
         uint64_t t2 = time_mono_ns();
         int n2 = img ? vfs_read(path, img, bytes) : -1;
         uint64_t t3 = time_mono_ns();
-        bcache_getstats(&c1);
+        logitfs_cache_stats(&c1);
         kfree(img);
         if (n1 > 0 && n2 > 0) {
             vz[got] = t1 - t0; va[got] = t2 - t1; vr[got] = t3 - t2; vt[got] = t3 - t0;
@@ -239,7 +238,7 @@ static void bench_launch(const char *path, int reps)
 static void bench_cache(void)
 {
     struct bcache_stats c;
-    bcache_getstats(&c);
+    logitfs_cache_stats(&c);
     char b[192];
     ksnprintf(b, (int)sizeof b,
               "cache hits=%u misses=%u evict=%u dirty-evict=%u wb=%u syncs=%u resident=%u dirty=%u",
@@ -363,9 +362,9 @@ static void bench_openfd(const char *path)
         void *img = kmalloc((size_t)sz);
         if (!img) { emit("openfd: the REFERENCE read could not be allocated -- no comparison possible"); emit("OPENFD-DONE"); return; }
         go_cold();
-        bcache_getstats(&r0);
+        logitfs_cache_stats(&r0);
         int n = vfs_read(path, img, sz);
-        bcache_getstats(&r1);
+        logitfs_cache_stats(&r1);
         if (n != sz) { kfree(img); ksnprintf(b, (int)sizeof b, "openfd %s: vfs_read gave %d of %d", path, n, sz); emit(b); emit("OPENFD-DONE"); return; }
         want = fnv1a(img, n, want);
         kfree(img);
@@ -379,16 +378,16 @@ static void bench_openfd(const char *path)
     struct kheap_stats k0, k1, k2;
     struct bcache_stats c0, c1, c2;
     kheap_get_stats(&k0);
-    bcache_getstats(&c0);
+    logitfs_cache_stats(&c0);
     struct file *f = file_open_vfs(path, O_RDONLY);
-    bcache_getstats(&c1);
+    logitfs_cache_stats(&c1);
     kheap_get_stats(&k1);
     if (!f) { ksnprintf(b, (int)sizeof b, "openfd %s: open REFUSED", path); emit(b); emit("OPENFD-DONE"); return; }
 
     uint32_t got = 2166136261u;
     long total = 0, n;
     while ((n = file_read(f, openfd_buf, OPENFD_CHUNK)) > 0) { got = fnv1a(openfd_buf, n, got); total += n; }
-    bcache_getstats(&c2);
+    logitfs_cache_stats(&c2);
     kheap_get_stats(&k2);
     file_close(f);
 

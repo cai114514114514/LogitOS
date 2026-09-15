@@ -28,6 +28,7 @@ struct centry {
 };
 
 static struct centry creds[NCRED];
+static struct centry system_root;
 static spinlock_t g_cred_lock = SPINLOCK_INIT;
 
 /* THE SESSION. See the block comment above SYS_SETSESSION in
@@ -57,7 +58,7 @@ static volatile int g_any_groups;
 static void sweep_locked(void)
 {
     for (int i = 0; i < NCRED; i++)
-        if (creds[i].pid && !proc_by_pid(creds[i].pid)) creds[i].pid = 0;
+        if (creds[i].pid && !proc_exists(creds[i].pid)) creds[i].pid = 0;
 }
 
 static struct centry *find_locked(int pid)
@@ -70,7 +71,7 @@ static struct centry *find_locked(int pid)
  * found walking up the ppid chain, otherwise NULL (meaning: the session).
  *
  * Caller holds the lock and passes its saved flags, because this drops and
- * retakes the lock around proc_by_pid(), which takes its own. Bounded by NPROC
+ * retakes the lock around proc_snapshot(), which takes its own. Bounded by NPROC
  * so a corrupted ppid cycle cannot spin here. */
 static struct centry *govern_locked(int pid, uint64_t *fl)
 {
@@ -79,10 +80,15 @@ static struct centry *govern_locked(int pid, uint64_t *fl)
         struct centry *e = find_locked(cur);
         if (e) return e;
         spin_unlock_irqrestore(&g_cred_lock, *fl);
-        struct proc *p = proc_by_pid(cur);           /* takes its own lock */
+        struct proc snapshot;
+        int exists = proc_snapshot(cur, &snapshot); /* copy while process slot is pinned */
         *fl = spin_lock_irqsave(&g_cred_lock);
-        if (!p) break;
-        cur = p->ppid;
+        if (!exists) break;
+        /* Kernel services stay rooted across session changes and restarts.
+         * An explicit per-process entry above still permits a one-way drop;
+         * a user process cannot set the PCB's pre-publication marker. */
+        if (snapshot.system_service) return &system_root;
+        cur = snapshot.ppid;
     }
     return NULL;
 }
@@ -122,7 +128,7 @@ void vfs_cred_current(struct vcred *c)
 int vfs_cred_set(int pid, uint32_t uid, uint32_t gid)
 {
     if (pid <= 0) return VFS_EINVAL;
-    if (!proc_by_pid(pid)) return VFS_ENOENT;
+    if (!proc_exists(pid)) return VFS_ENOENT;
 
     struct vcred me;
     vfs_cred_current(&me);
@@ -198,7 +204,7 @@ int vfs_cred_groups_get(int pid, uint32_t *out, int max)
 int vfs_cred_groups_set(int pid, const uint32_t *list, int n)
 {
     if (pid <= 0 || n < 0 || n > ID_NGROUPS_MAX) return VFS_EINVAL;
-    if (!proc_by_pid(pid)) return VFS_ENOENT;
+    if (!proc_exists(pid)) return VFS_ENOENT;
 
     struct vcred me;
     vfs_cred_current(&me);

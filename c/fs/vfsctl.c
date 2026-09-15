@@ -4,6 +4,15 @@
 #include <stddef.h>
 #include <stdint.h>
 #include "vfsctl.h"
+#include "../drivers/core/io_domain.h"
+#include "vfs.h"
+static struct io_domain control_owner = IO_DOMAIN_INIT;
+int vfsctl_drain_lock(void)
+{
+    if (__atomic_load_n(&control_owner.owner, __ATOMIC_ACQUIRE) == io_domain_identity()) return VFS_EBUSY;
+    io_domain_enter(&control_owner); return 0;
+}
+void vfsctl_drain_unlock(void) { io_domain_leave(&control_owner); }
 #include "fsbench.h"
 #include "vfs.h"
 #include "vfs_meta.h"
@@ -203,19 +212,20 @@ static int cmd_fdtest(const char *path)
     file_dup(f);                                     /* dup(2): +1 descriptor, same description */
     int fdb = proc_fd_alloc(p, f);
     if (fdb < 0) {                       /* two references are live: the open and the dup */
-        p->fd[fda] = 0; file_close(f); file_close(f);
+        proc_fd_close_if(p, fda, f); file_close(f);
         return fail("fdtable", VFS_EMFILE);
     }
 
     char a[4] = { 0 }, b[4] = { 0 };
-    file_read(proc_fd_get(p, fda), a, 3);
-    file_read(proc_fd_get(p, fdb), b, 3);
+    { struct file *fa FILE_REF = proc_fd_acquire(p, fda); file_read(fa, a, 3); }
+    { struct file *fb FILE_REF = proc_fd_acquire(p, fdb); file_read(fb, b, 3); }
 
     /* Close one descriptor; the description must survive for the other. */
-    file_close(p->fd[fda]); p->fd[fda] = 0;
+    proc_fd_close_if(p, fda, f);
     char c[4] = { 0 };
-    long after = file_read(proc_fd_get(p, fdb), c, 1);
-    file_close(p->fd[fdb]); p->fd[fdb] = 0;
+    long after;
+    { struct file *fb FILE_REF = proc_fd_acquire(p, fdb); after = file_read(fb, c, 1); }
+    proc_fd_close_if(p, fdb, f);
 
     int shared   = (a[0] == 'A' && a[1] == 'B' && a[2] == 'C' &&
                     b[0] == 'D' && b[1] == 'E' && b[2] == 'F');
@@ -335,6 +345,7 @@ int vfsctl_size(const char *path)
 {
     int w = which_node(path);
     if (w < 0) return KDIAG_NOT_MINE;
+    IO_DOMAIN_GUARD(&control_owner);
     if (w == 0) return g_result_len;
     if (w == NODE_FSBENCH) return fsbench_len();
     char tmp[4096];
@@ -346,6 +357,7 @@ int vfsctl_read(const char *path, void *buf, int max)
 {
     int w = which_node(path);
     if (w < 0) return KDIAG_NOT_MINE;
+    IO_DOMAIN_GUARD(&control_owner);
     char *out = (char *)buf;
     if (w == 0) {
         int n = g_result_len < max ? g_result_len : max;
@@ -363,6 +375,7 @@ int vfsctl_write(const char *path, const void *buf, int len)
 {
     int w = which_node(path);
     if (w < 0) return KDIAG_NOT_MINE;
+    IO_DOMAIN_GUARD(&control_owner);
     if (w == NODE_FSBENCH) { if (len > 0) fsbench_command((const char *)buf, len); return len; }
     if (w != 0) return -1;                    /* the rendered views are read-only */
     if (len <= 0) return 0;

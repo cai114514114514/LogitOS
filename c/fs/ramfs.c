@@ -1,3 +1,6 @@
+#include "../drivers/core/io_lock.h"
+/* Only instance claims use this gate; file operations use their mount owner. */
+static io_lock_t ramfs_pool_gate = IO_LOCK_INIT;
 /* An in-memory filesystem. See ramfs.h for why it exists.
  *
  * Deliberately allocation-free: instances and file bytes come out of a static
@@ -247,6 +250,7 @@ static const struct fs_iops ramfs_iops = {
 
 struct filesystem *ramfs_create(const char *label)
 {
+    IO_GUARD(&ramfs_pool_gate);
     for (int i = 0; i < RAMFS_MAXFS; i++) {
         if (pool[i].used) continue;
         struct rinst *R = &pool[i];
@@ -274,6 +278,7 @@ struct filesystem *ramfs_create(const char *label)
 
 void ramfs_destroy(struct filesystem *fs)
 {
+    IO_GUARD(&ramfs_pool_gate);
     if (!fs || !fs->priv) return;
     struct rinst *R = (struct rinst *)fs->priv;
     R->used = 0;

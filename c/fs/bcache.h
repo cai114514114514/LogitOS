@@ -1,3 +1,4 @@
+/* 2026-09-10 concurrency correction: LogitFS now calls this cache under its own filesystem lock and per-mount owner. The historical BKL note below is superseded. */
 #ifndef LOGIT_BCACHE_H
 #define LOGIT_BCACHE_H
 

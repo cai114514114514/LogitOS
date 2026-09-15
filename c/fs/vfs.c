@@ -7,6 +7,8 @@
 
 #include <stddef.h>
 #include "vfs.h"
+#include "../drivers/core/io_domain.h"
+#include "../drivers/core/io_lock.h"
 #include "vfs_path.h"
 #include "vfs_meta.h"
 #include "vfsctl.h"     /* the VFS's own control + introspection nodes under /dev */
@@ -69,9 +71,15 @@ static int k_dir_size(const char *d, int i)
 struct vmountent {
     char  at[VFS_MPOINT_MAX];      /* canonical mount point, "" = free */
     struct filesystem *fs;
+    unsigned refs;
+    int state; /* 0 free, 1 mounting, 2 published, 3 draining */
+    int op_init;
+    struct io_domain op; /* one transaction owner PER MOUNT */
 };
 
 static struct vmountent mounts[VFS_NMOUNT];
+static io_lock_t mount_table_lock = IO_LOCK_INIT;
+static int mounts_paused;
 static struct filesystem *pending_root;    /* what vfs_register() was handed */
 
 /* --- one dispatch point per operation -------------------------------------
@@ -147,13 +155,56 @@ static struct vmountent *mount_for(const char *abs)
     struct vmountent *best = NULL;
     int bestlen = -1;
     for (int i = 0; i < VFS_NMOUNT; i++) {
-        if (!mounts[i].at[0] || !mounts[i].fs) continue;
+        if (!mounts[i].fs || (mounts[i].state != 2 && !(mounts[i].state == 3 && __atomic_load_n(&mounts[i].op.owner, __ATOMIC_ACQUIRE) == io_domain_identity()))) continue;
         if (!vfs_path_is_prefix(mounts[i].at, abs)) continue;
         int l = s_len(mounts[i].at);
         if (l > bestlen) { bestlen = l; best = &mounts[i]; }
     }
     return best;
 }
+
+/* A lookup pins the immutable mount entry before dropping the short registry
+ * lock. Waiting for the per-mount owner happens AFTER that drop, so a slow disk
+ * does not serialize other mounts. Unmount first removes admission, then waits
+ * for these references before destroying the backend. Recursive backend/stat
+ * paths retain task ownership; unrelated filesystems remain concurrent. */
+struct mount_ref { struct vmountent *m; int owned; };
+static struct mount_ref mount_pin(const char *abs, int owned)
+{
+    struct mount_ref ref = { 0, 0 };
+    uint64_t f = io_lock_enter(&mount_table_lock);
+    ref.m = mount_for(abs);
+    if (ref.m && mounts_paused &&
+        __atomic_load_n(&ref.m->op.owner, __ATOMIC_ACQUIRE) != io_domain_identity()) ref.m = 0;
+    if (ref.m) __atomic_fetch_add(&ref.m->refs, 1, __ATOMIC_RELAXED);
+    io_lock_leave(&mount_table_lock, f);
+    if (ref.m && owned) { io_domain_enter(&ref.m->op); ref.owned = 1; }
+    return ref;
+}
+static struct mount_ref mount_pin_index(int i)
+{
+    struct mount_ref ref = { 0, 0 };
+    uint64_t f = io_lock_enter(&mount_table_lock);
+    if (i >= 0 && i < VFS_NMOUNT && !mounts_paused && mounts[i].state == 2) {
+        ref.m = &mounts[i];
+        __atomic_fetch_add(&ref.m->refs, 1, __ATOMIC_RELAXED);
+    }
+    io_lock_leave(&mount_table_lock, f);
+    if (ref.m) { io_domain_enter(&ref.m->op); ref.owned = 1; }
+    return ref;
+}
+static void mount_put(struct mount_ref *ref)
+{
+    if (!ref->m) return;
+    if (ref->owned) io_domain_leave(&ref->m->op);
+    __atomic_fetch_sub(&ref->m->refs, 1, __ATOMIC_RELEASE);
+    ref->m = 0;
+}
+#define MOUNT_REF_KIND(name, path, owned) \
+    struct mount_ref name##_ref __attribute__((cleanup(mount_put))) = mount_pin(path, owned); \
+    struct vmountent *name = name##_ref.m
+#define MOUNT_REF(name, path) MOUNT_REF_KIND(name, path, 1)
+#define MOUNT_LOOKUP(name, path) MOUNT_REF_KIND(name, path, 0)
 
 /* The path AS THE BACKEND SEES IT: global path minus the mount point, so a
  * filesystem mounted at /mnt is asked for "/hello.txt", not "/mnt/hello.txt".
@@ -173,18 +224,20 @@ static const char *sub_path(const struct vmountent *m, const char *abs, char *bu
  * that would corrupt the table (unlinking a mount point, renaming across it). */
 static int is_mount_point(const char *abs)
 {
+    IO_GUARD(&mount_table_lock);
     for (int i = 0; i < VFS_NMOUNT; i++)
         if (mounts[i].at[0] && mounts[i].fs && s_eq(mounts[i].at, abs) && !s_eq(abs, "/"))
             return 1;
     return 0;
 }
 
-void vfs_register(struct filesystem *fs) { pending_root = fs; }
+void vfs_register(struct filesystem *fs) { __atomic_store_n(&pending_root, fs, __ATOMIC_RELEASE); }
 
 int vfs_mount(void)
 {
-    if (!pending_root) return -1;
-    return vfs_mount_at("/", pending_root);
+    struct filesystem *fs = __atomic_load_n(&pending_root, __ATOMIC_ACQUIRE);
+    if (!fs) return -1;
+    return vfs_mount_at("/", fs);
 }
 
 int vfs_mount_at(const char *dir, struct filesystem *fs)
@@ -193,14 +246,15 @@ int vfs_mount_at(const char *dir, struct filesystem *fs)
     char at[VFS_MPOINT_MAX];
     if (vfs_path_norm("/", dir, at, (int)sizeof at) < 0) return VFS_ENAMETOOLONG;
 
-    for (int i = 0; i < VFS_NMOUNT; i++)
-        if (mounts[i].at[0] && s_eq(mounts[i].at, at)) return VFS_EBUSY;
+
 
     /* Everything except "/" must be mounted ON something, and that something
      * has to already be a directory: a mount point that does not exist is a
      * filesystem you can only reach by knowing it is there. */
+    struct mount_ref parent_ref __attribute__((cleanup(mount_put))) = {0, 0};
     if (!s_eq(at, "/")) {
-        struct vmountent *par = mount_for(at);
+        parent_ref = mount_pin(at, 1);
+        struct vmountent *par = parent_ref.m;
         if (!par) return VFS_ENOENT;
         char sub[VFS_PATH_MAX];
         const char *sp = sub_path(par, at, sub, (int)sizeof sub);
@@ -213,43 +267,76 @@ int vfs_mount_at(const char *dir, struct filesystem *fs)
     }
 
     int slot = -1;
-    for (int i = 0; i < VFS_NMOUNT; i++) if (!mounts[i].at[0]) { slot = i; break; }
-    if (slot < 0) return VFS_ENOSPC;
-
-    if (fs_mount(fs) != 0) return VFS_EIO;   /* a backend that cannot
-                                                          * mount is not installed */
-    s_cpy(mounts[slot].at, at, VFS_MPOINT_MAX);
-    mounts[slot].fs = fs;
-    return 0;
+    {
+        IO_GUARD(&mount_table_lock);
+        if (mounts_paused) return VFS_EBUSY;
+        if (parent_ref.m && parent_ref.m->state != 2) return VFS_EBUSY;
+        for (int i = 0; i < VFS_NMOUNT; i++) {
+            if (mounts[i].state && (s_eq(mounts[i].at, at) || mounts[i].fs == fs)) return VFS_EBUSY;
+            if (!mounts[i].state && slot < 0) slot = i;
+        }
+        if (slot < 0) return VFS_ENOSPC;
+        struct vmountent *m = &mounts[slot];
+#if __STDC_HOSTED__
+        if (m->op_init) pthread_mutex_destroy(&m->op.lock);
+#endif
+        m->op = (struct io_domain)IO_DOMAIN_INIT;
+        m->op_init = 1;
+        m->state = 1;
+        m->refs = 0;
+        m->fs = fs;
+        s_cpy(m->at, at, VFS_MPOINT_MAX);
+    }
+    int mounted = fs_mount(fs) == 0;
+    {
+        IO_GUARD(&mount_table_lock);
+        mounts[slot].state = mounted ? 2 : 0;
+        if (!mounted) { mounts[slot].at[0] = 0; mounts[slot].fs = 0; }
+    }
+    return mounted ? 0 : VFS_EIO;
 }
 
 int vfs_umount(const char *dir)
 {
     char at[VFS_MPOINT_MAX];
     if (!dir || vfs_path_norm("/", dir, at, (int)sizeof at) < 0) return VFS_EINVAL;
-    for (int i = 0; i < VFS_NMOUNT; i++) {
-        if (!mounts[i].at[0] || !s_eq(mounts[i].at, at)) continue;
-        /* Refuse while something is mounted underneath: unmounting the middle
-         * of the table would leave the deeper filesystem reachable through a
-         * path that no longer resolves to it. */
-        for (int j = 0; j < VFS_NMOUNT; j++)
-            if (j != i && mounts[j].at[0] && vfs_path_is_prefix(at, mounts[j].at))
-                return VFS_EBUSY;
-        fs_umount(mounts[i].fs);
-        /* Metadata records below the mount point describe files that are about
-         * to become unreachable; keeping them would apply one filesystem's
-         * modes to whatever is mounted there next. */
-        vmeta_forget_subtree(at);
-        mounts[i].at[0] = 0; mounts[i].fs = NULL;
-        return 0;
+    struct vmountent *m = 0;
+    {
+        IO_GUARD(&mount_table_lock);
+        if (mounts_paused) return VFS_EBUSY;
+        for (int i = 0; i < VFS_NMOUNT; i++) {
+            if (mounts[i].state != 2 || !s_eq(mounts[i].at, at)) continue;
+            for (int j = 0; j < VFS_NMOUNT; j++)
+                if (j != i && mounts[j].state && vfs_path_is_prefix(at, mounts[j].at)) return VFS_EBUSY;
+            m = &mounts[i];
+            m->state = 3;
+            break;
+        }
     }
-    return VFS_EINVAL;
+    if (!m) return VFS_EINVAL;
+    /* No registry or mount operation lock is held while an old borrower runs.
+     * On UP it may need to be scheduled; a spin here would strand that task. */
+    while (__atomic_load_n(&m->refs, __ATOMIC_ACQUIRE)) {
+#if __STDC_HOSTED__
+        sched_yield();
+#else
+        sched_poll_wait();
+#endif
+    }
+    fs_umount(m->fs);
+    vmeta_forget_subtree(at);
+    {
+        IO_GUARD(&mount_table_lock);
+        m->at[0] = 0; m->fs = 0; m->state = 0;
+    }
+    return 0;
 }
 
 int vfs_mount_count(void)
 {
+    IO_GUARD(&mount_table_lock);
     int n = 0;
-    for (int i = 0; i < VFS_NMOUNT; i++) if (mounts[i].at[0]) n++;
+    for (int i = 0; i < VFS_NMOUNT; i++) if (mounts[i].state == 2) n++;
     return n;
 }
 
@@ -261,9 +348,10 @@ static int put(char *b, int max, int n, const char *s)
 
 int vfs_mounts_render(char *buf, int max)
 {
+    IO_GUARD(&mount_table_lock);
     int n = 0;
     for (int i = 0; i < VFS_NMOUNT; i++) {
-        if (!mounts[i].at[0]) continue;
+        if (mounts[i].state != 2) continue;
         n = put(buf, max, n, mounts[i].fs->name ? mounts[i].fs->name : "?");
         n = put(buf, max, n, " ");
         n = put(buf, max, n, mounts[i].at);
@@ -275,8 +363,37 @@ int vfs_mounts_render(char *buf, int max)
 
 void vfs_list(void)
 {
-    for (int i = 0; i < VFS_NMOUNT; i++)
-        if (mounts[i].at[0]) fs_list(mounts[i].fs);
+    for (int i = 0; i < VFS_NMOUNT; i++) {
+        struct mount_ref ref __attribute__((cleanup(mount_put))) = mount_pin_index(i);
+        if (ref.m) fs_list(ref.m->fs);
+    }
+}
+
+int vfs_refpath(const struct logit_file_id *id,char *out,int cap)
+{
+    if(!id||!id->object||cap<2)return VFS_EINVAL;
+    char found[VFS_PATH_MAX];int matches=0;
+    for(int i=0;i<VFS_NMOUNT;i++) {
+        struct mount_ref ref __attribute__((cleanup(mount_put))) = mount_pin_index(i);
+        if(!ref.m||!ref.m->fs->refpath)continue;
+        char sub[VFS_PATH_MAX],full[VFS_PATH_MAX];
+        int r=ref.m->fs->refpath(id,sub,sizeof sub);if(r<0)continue;
+        int a=0,b=0;while(ref.m->at[a])a++;while(sub[b])b++;
+        if(a==1)a=0;if(a+b+1>(int)sizeof full)return VFS_ENAMETOOLONG;
+        for(int j=0;j<a;j++)full[j]=ref.m->at[j];
+        for(int j=0;j<=b;j++)full[a+j]=sub[j];
+        /* Check the resolved path through the ordinary path walker before
+         * disclosing it. Duplicate volume identities are deliberately refused. */
+        struct vattr attr;
+        if(vfs_statx(full,&attr,0)<0||vfs_access(full,MAY_READ)<0)return VFS_EACCES;
+        if(!(attr.flags&VA_ID)||attr.object_id!=id->object||
+           attr.volume[0]!=id->volume[0]||attr.volume[1]!=id->volume[1])return VFS_EBUSY;
+        if(++matches>1)return VFS_EBUSY;
+        for(int j=0;j<=a+b;j++)found[j]=full[j];
+    }
+    if(!matches)return VFS_ENOENT;
+    int n=0;while(found[n])n++;if(n+1>cap)return VFS_ENAMETOOLONG;
+    for(int j=0;j<=n;j++)out[j]=found[j];return 0;
 }
 
 /* --------------------------------------------------------------------------
@@ -353,7 +470,7 @@ static int syn_size(const char *p);          /* the synthetic providers, below *
 
 static void attrs_of(const char *abs, struct vattr *a)
 {
-    struct vmountent *m = mount_for(abs);
+    MOUNT_REF(m, abs);
     char sub[VFS_PATH_MAX];
     int isdir = s_eq(abs, "/") || (m && is_dir_on(m, sub_path(m, abs, sub, (int)sizeof sub)));
 
@@ -427,7 +544,9 @@ int vfs_stat(const char *path, struct vattr *a)
     int rc = resolve(path, abs, (int)sizeof abs, 1);
     if (rc < 0) return rc;
     if (vfs_size(abs) < 0 && vfs_count(abs) < 0) return VFS_ENOENT;
-    attrs_of(vmeta_canon(abs), a);
+    char canon[VFS_PATH_MAX];
+    vmeta_canon_copy(abs, canon, sizeof canon);
+    attrs_of(canon, a);
     a->nlink = vmeta_nlink(abs);
     return 0;
 }
@@ -479,20 +598,23 @@ int vfs_statx(const char *path, struct vattr *a, int follow)
             *a = la;
             a->size = (vmeta_readlink(abs, tgt, (int)sizeof tgt) == 1)
                           ? (uint64_t)s_len(tgt) : 0;
-            a->dev = mount_dev(mount_for(abs));
+            MOUNT_REF(link_mount, abs);
+            a->dev = mount_dev(link_mount);
             return 0;
         }
     }
 
-    const char *real = vmeta_canon(abs);
-    struct vmountent *m = mount_for(real);
+    char real_buf[VFS_PATH_MAX];
+    vmeta_canon_copy(abs, real_buf, sizeof real_buf);
+    const char *real = real_buf;
+    int syn = syn_size(abs);
+    MOUNT_REF(m, real);
 
     /* Existence, and the type, from the cheapest question that distinguishes
      * them. A synthetic node (/dev/kmsg, /dev/vfsctl) is a file with a size and
      * no backend, so it is asked first exactly as every other operation does. */
     int is_dir = s_eq(abs, "/");
     long fsz = -1;
-    int syn = syn_size(abs);
     if (syn != SYN_NOT_MINE) {
         fsz = syn;
     } else if (!is_dir) {
@@ -568,7 +690,7 @@ int vfs_getdents(const char *dir, int *cursor, struct vdirent *out, int max)
         s_cpy(child + cl, nm, (int)sizeof child - cl);
 
         struct vattr ca;
-        struct vmountent *cm = mount_for(child);
+        MOUNT_REF(cm, child);
         vattr_clear(&ca);
         if (cm && cm->fs->getattr && cm->fs->setattr) {
             char sub[VFS_PATH_MAX];
@@ -643,7 +765,7 @@ static void stamp_create(const char *abs, int is_dir, const struct vcred *c)
     int owner_is_default = (c->uid == 0 && c->gid == 0);
     if (mode_is_default && owner_is_default) return;
 
-    struct vmountent *m = mount_for(abs);
+    MOUNT_REF(m, abs);
     if (m && m->fs->getattr && m->fs->setattr) {
         struct vattr a; attrs_of(abs, &a);
         a.mode = want; a.uid = c->uid; a.gid = c->gid;
@@ -686,8 +808,10 @@ int vfs_size(const char *path)
     int n = syn_size(abs);
     if (n != SYN_NOT_MINE) return n;
 
-    const char *real = vmeta_canon(abs);
-    struct vmountent *m = mount_for(real);
+    char real_buf[VFS_PATH_MAX];
+    vmeta_canon_copy(abs, real_buf, sizeof real_buf);
+    const char *real = real_buf;
+    MOUNT_REF(m, real);
     if (!m) return -1;
     char sub[VFS_PATH_MAX];
     return fs_size(m->fs, sub_path(m, real, sub, (int)sizeof sub));
@@ -713,8 +837,10 @@ int vfs_read(const char *path, void *buf, int max)
 
     if ((rc = check_file(abs, &c, MAY_READ)) < 0) return rc;
 
-    const char *real = vmeta_canon(abs);
-    struct vmountent *m = mount_for(real);
+    char real_buf[VFS_PATH_MAX];
+    vmeta_canon_copy(abs, real_buf, sizeof real_buf);
+    const char *real = real_buf;
+    MOUNT_REF(m, real);
     if (!m) return -1;
     char sub[VFS_PATH_MAX];
     return fs_read(m->fs, sub_path(m, real, sub, (int)sizeof sub), buf, max);
@@ -757,11 +883,36 @@ int vfs_pread(const char *path, void *buf, int max, long long off)
 
     if ((rc = check_file(abs, &c, MAY_READ)) < 0) return rc;
 
-    const char *real = vmeta_canon(abs);
-    struct vmountent *m = mount_for(real);
+    char real_buf[VFS_PATH_MAX];
+    vmeta_canon_copy(abs, real_buf, sizeof real_buf);
+    const char *real = real_buf;
+    MOUNT_REF(m, real);
     if (!m) return -1;
     char sub[VFS_PATH_MAX];
     return fs_pread(m->fs, sub_path(m, real, sub, (int)sizeof sub), buf, max, off);
+}
+
+/* Publication needs one atomic absent-name check and write. open(O_EXCL)
+ * currently cannot promise that; holding the existing mount transaction owner
+ * makes this operation contend with rename/delete/write on the same mount. */
+int vfs_create_file(const char *path, const void *buf, int size)
+{
+    if(size<0)return VFS_EINVAL;
+    char abs[VFS_PATH_MAX],again[VFS_PATH_MAX];
+    int rc=resolve(path,abs,sizeof abs,0);if(rc<0)return rc;
+    MOUNT_REF(m,abs);if(!m)return VFS_ENOENT;
+    rc=resolve(path,again,sizeof again,0);if(rc<0)return rc;
+    if(!s_eq(abs,again))return VFS_EBUSY;
+    struct vattr attr;
+    rc=vfs_lstat(abs,&attr);
+    if(rc>=0)return VFS_EEXIST;
+    if(rc!=VFS_ENOENT)return rc;
+    struct vcred c;cred_now(&c);
+    if((rc=check_parent_write(abs,&c))<0)return rc;
+    char sub[VFS_PATH_MAX];
+    int n=fs_write(m->fs,sub_path(m,abs,sub,sizeof sub),buf,size);
+    if(n>=0){stamp_create(abs,0,&c);pc_invalidate(abs);}
+    return n;
 }
 
 int vfs_write(const char *path, const void *buf, int size)
@@ -784,8 +935,10 @@ int vfs_write(const char *path, const void *buf, int size)
         return vfsctl_write(abs, buf, size);
     }
 
-    const char *real = vmeta_canon(abs);
-    struct vmountent *m = mount_for(real);
+    char real_buf[VFS_PATH_MAX];
+    vmeta_canon_copy(abs, real_buf, sizeof real_buf);
+    const char *real = real_buf;
+    MOUNT_REF(m, real);
     if (!m) return -1;
     char sub[VFS_PATH_MAX];
     const char *sp = sub_path(m, real, sub, (int)sizeof sub);
@@ -834,6 +987,8 @@ int vfs_delete(const char *path)
     char abs[VFS_PATH_MAX];
     int rc = resolve(path, abs, (int)sizeof abs, 0);   /* unlink acts on the link */
     if (rc < 0) return rc;
+    MOUNT_REF(m, abs);
+    if (!m) return -1;
     if (is_mount_point(abs)) return VFS_EBUSY;
 
     struct vcred c; cred_now(&c);
@@ -867,13 +1022,13 @@ int vfs_delete(const char *path)
         return 0;
     }
 
-    const char *canon = vmeta_canon(abs);
+    char canon_buf[VFS_PATH_MAX];
+    vmeta_canon_copy(abs, canon_buf, sizeof canon_buf);
+    const char *canon = canon_buf;
     int this_is_canon = s_eq(canon, abs);
     char promote[VFS_PATH_MAX];
     int must_move = vmeta_unlink(abs, promote, (int)sizeof promote);
 
-    struct vmountent *m = mount_for(abs);
-    if (!m) return -1;
     char sub[VFS_PATH_MAX], sub2[VFS_PATH_MAX];
 
     if (must_move) {
@@ -881,7 +1036,7 @@ int vfs_delete(const char *path)
          * A real filesystem would just decrement the inode's link count; with
          * a path-addressed backend the bytes have to move to a surviving name,
          * which is observably the same thing. */
-        struct vmountent *m2 = mount_for(promote);
+        MOUNT_LOOKUP(m2, promote);
         if (m2 != m) return VFS_EXDEV;
         int rn = fs_rename(m->fs, sub_path(m, abs, sub, (int)sizeof sub),
                             sub_path(m2, promote, sub2, (int)sizeof sub2));
@@ -919,7 +1074,7 @@ int vfs_mkdir(const char *path)
     struct vcred c; cred_now(&c);
     if ((rc = check_parent_write(abs, &c)) < 0) return rc;
 
-    struct vmountent *m = mount_for(abs);
+    MOUNT_REF(m, abs);
     if (!m) return -1;
     char sub[VFS_PATH_MAX];
     rc = fs_mkdir(m->fs, sub_path(m, abs, sub, (int)sizeof sub));
@@ -944,7 +1099,8 @@ int vfs_rename(const char *old_path, const char *new_path)
     if ((rc = check_parent_write(ao, &c)) < 0) return rc;
     if ((rc = check_parent_write(an, &c)) < 0) return rc;
 
-    struct vmountent *mo = mount_for(ao), *mn = mount_for(an);
+    MOUNT_REF(mo, ao);
+    MOUNT_LOOKUP(mn, an);
     if (!mo || !mn) return VFS_ENOENT;
     /* Rename is a directory-entry operation. Across a mount boundary there is
      * no single directory to operate in, so it is EXDEV -- the same answer
@@ -1017,7 +1173,7 @@ int vfs_count(const char *dir)
     struct vcred c; cred_now(&c);
     int syn = syn_count(abs);
 
-    struct vmountent *m = mount_for(abs);
+    MOUNT_REF(m, abs);
     char sub[VFS_PATH_MAX];
     int back = m ? fs_count(m->fs, sub_path(m, abs, sub, (int)sizeof sub)) : -1;
 
@@ -1040,17 +1196,35 @@ static int syn_split(const char *abs, int i, int *which)
     return i;
 }
 
+int vfs_ent_name_copy(const char *dir, int i, char *out, int cap)
+{
+    if (!out || cap <= 0) return VFS_EINVAL;
+    out[0] = 0;
+    char abs[VFS_PATH_MAX];
+    if (resolve(dir, abs, sizeof abs, 1) < 0) return 0;
+    int which, li = syn_split(abs, i, &which);
+    const char *name;
+    if (which == 0) { name = k_dir_name(abs, li); s_cpy(out, name, cap); return s_len(out); }
+    if (which == 1) { name = vfsctl_dir_name(abs, li); s_cpy(out, name, cap); return s_len(out); }
+    MOUNT_REF(m, abs);
+    if (!m) return 0;
+    char sub[VFS_PATH_MAX];
+    name = fs_ent_name(m->fs, sub_path(m, abs, sub, sizeof sub), li);
+    /* ent_name returns backend scratch. Copy BEFORE releasing mount ownership. */
+    s_cpy(out, name, cap);
+    return s_len(out);
+}
 const char *vfs_ent_name(const char *dir, int i)
 {
-    char abs[VFS_PATH_MAX];
-    if (resolve(dir, abs, (int)sizeof abs, 1) < 0) return "";
-    int which, li = syn_split(abs, i, &which);
-    if (which == 0) { const char *s = k_dir_name(abs, li); return s ? s : ""; }
-    if (which == 1) { const char *s = vfsctl_dir_name(abs, li); return s ? s : ""; }
-    struct vmountent *m = mount_for(abs);
-    if (!m) return "";
-    char sub[VFS_PATH_MAX];
-    return fs_ent_name(m->fs, sub_path(m, abs, sub, (int)sizeof sub), li);
+#if __STDC_HOSTED__
+    static _Thread_local char name[256];
+    char *out = name;
+#else
+    extern char *sched_name_scratch(void);
+    char *out = sched_name_scratch();
+#endif
+    vfs_ent_name_copy(dir, i, out, 256);
+    return out;
 }
 
 int vfs_ent_size(const char *dir, int i)
@@ -1060,7 +1234,7 @@ int vfs_ent_size(const char *dir, int i)
     int which, li = syn_split(abs, i, &which);
     if (which == 0) { int n = k_dir_size(abs, li); return n == SYN_NOT_MINE ? 0 : n; }
     if (which == 1) { int n = vfsctl_dir_size(abs, li); return n == SYN_NOT_MINE ? 0 : n; }
-    struct vmountent *m = mount_for(abs);
+    MOUNT_REF(m, abs);
     if (!m) return 0;
     char sub[VFS_PATH_MAX];
     return fs_ent_size(m->fs, sub_path(m, abs, sub, (int)sizeof sub), li);
@@ -1072,7 +1246,7 @@ int vfs_ent_is_dir(const char *dir, int i)
     if (resolve(dir, abs, (int)sizeof abs, 1) < 0) return 0;
     int which, li = syn_split(abs, i, &which);
     if (which != 2) return 0;                    /* synthetic nodes are files */
-    struct vmountent *m = mount_for(abs);
+    MOUNT_REF(m, abs);
     if (!m) return 0;
     char sub[VFS_PATH_MAX];
     return fs_ent_is_dir(m->fs, sub_path(m, abs, sub, (int)sizeof sub), li);
@@ -1094,7 +1268,7 @@ static int owner_ok(const char *abs, const struct vcred *c)
 static int is_dir_path(const char *abs)
 {
     if (s_eq(abs, "/")) return 1;
-    struct vmountent *m = mount_for(abs);
+    MOUNT_REF(m, abs);
     char sub[VFS_PATH_MAX];
     return m && is_dir_on(m, sub_path(m, abs, sub, (int)sizeof sub));
 }
@@ -1107,7 +1281,8 @@ int vfs_chmod(const char *path, unsigned mode)
     struct vcred c; cred_now(&c);
     if ((rc = owner_ok(abs, &c)) < 0) return rc;
 
-    struct vmountent *m = mount_for(abs);
+    MOUNT_REF(m, abs);
+    if (!m) return VFS_EBUSY;
     if (m && m->fs->getattr && m->fs->setattr) {
         struct vattr a; attrs_of(abs, &a); a.mode = mode & 0777;
         char sub[VFS_PATH_MAX];
@@ -1126,7 +1301,8 @@ int vfs_chown(const char *path, unsigned uid, unsigned gid)
      * otherwise a user can plant a setuid-shaped file on somebody else. */
     if (c.uid != 0) return VFS_EPERM;
 
-    struct vmountent *m = mount_for(abs);
+    MOUNT_REF(m, abs);
+    if (!m) return VFS_EBUSY;
     if (m && m->fs->getattr && m->fs->setattr) {
         struct vattr a; attrs_of(abs, &a); a.uid = uid; a.gid = gid;
         char sub[VFS_PATH_MAX];
@@ -1140,6 +1316,8 @@ int vfs_symlink(const char *target, const char *linkpath)
     char abs[VFS_PATH_MAX];
     int rc = resolve(linkpath, abs, (int)sizeof abs, 0);
     if (rc < 0) return rc;
+    MOUNT_REF(link_mount, abs);
+    if (!link_mount) return VFS_EBUSY;
     struct vcred c; cred_now(&c);
     if ((rc = check_parent_write(abs, &c)) < 0) return rc;
     if (vfs_size(abs) >= 0 || vfs_count(abs) >= 0) return VFS_EEXIST;
@@ -1168,7 +1346,10 @@ int vfs_link(const char *oldpath, const char *newpath)
     /* A hard link is a second directory entry for one inode. Across a mount
      * boundary there is no one inode, so it is EXDEV -- not a silent copy,
      * which is what a caller would get if this were allowed to succeed. */
-    if (mount_for(ao) != mount_for(an)) return VFS_EXDEV;
+    MOUNT_REF(old_mount, ao);
+    MOUNT_LOOKUP(new_mount, an);
+    if (!old_mount || !new_mount) return VFS_EBUSY;
+    if (old_mount != new_mount) return VFS_EXDEV;
     /* Directories first: a directory has no size, so an "does it exist" test
      * by size would report EPERM's case as ENOENT and say the wrong thing. */
     if (is_dir_path(ao)) return VFS_EPERM;
@@ -1188,4 +1369,63 @@ int vfs_nlink(const char *path)
     int rc = resolve(path, abs, (int)sizeof abs, 0);
     if (rc < 0) return rc;
     return vmeta_nlink(abs);
+}
+
+int vfsctl_drain_lock(void) LOGIT_WEAK;
+void vfsctl_drain_unlock(void) LOGIT_WEAK;
+LOGIT_WEAK_STUB(vfsctl_drain_lock);
+LOGIT_WEAK_STUB(vfsctl_drain_unlock);
+/* Reversible shutdown preparation. The caller holds no VFS operation lease.
+ * Backend transactions already admitted can finish; new ones return an error.
+ * Synthetic fsbench/control commands are drained first because they can issue
+ * raw storage operations. A failed power action MUST call vfs_drain_end. */
+int vfs_drain_begin(struct vfs_drain *token)
+{
+    if (!token) return VFS_EINVAL;
+    token->active = token->control = 0;
+    token->owner = io_domain_identity();
+    {
+        IO_GUARD(&mount_table_lock);
+        if (mounts_paused) return VFS_EBUSY;
+        for (int i = 0; i < VFS_NMOUNT; i++)
+            if (__atomic_load_n(&mounts[i].op.owner, __ATOMIC_ACQUIRE) == token->owner)
+                return VFS_EBUSY;
+    }
+    if (LOGIT_HAVE(vfsctl_drain_lock)) {
+        if (vfsctl_drain_lock() != 0) return VFS_EBUSY;
+        token->control = 1;
+    }
+    int blocked;
+    {
+        IO_GUARD(&mount_table_lock);
+        blocked = mounts_paused;
+        if (!blocked) { mounts_paused = 1; token->active = 1; }
+    }
+    if (blocked) {
+        if (token->control && LOGIT_HAVE(vfsctl_drain_unlock)) vfsctl_drain_unlock();
+        token->control = 0;
+        return VFS_EBUSY;
+    }
+    for (;;) {
+        unsigned busy = 0;
+        {
+            IO_GUARD(&mount_table_lock);
+            for (int i = 0; i < VFS_NMOUNT; i++)
+                busy |= mounts[i].state == 1 || mounts[i].state == 3 ||
+                        __atomic_load_n(&mounts[i].refs, __ATOMIC_ACQUIRE) != 0;
+        }
+        if (!busy) return 0;
+#if __STDC_HOSTED__
+        sched_yield();
+#else
+        sched_poll_wait();
+#endif
+    }
+}
+void vfs_drain_end(struct vfs_drain *token)
+{
+    if (!token || !token->active || token->owner != io_domain_identity()) return;
+    { IO_GUARD(&mount_table_lock); mounts_paused = 0; token->active = 0; }
+    if (token->control && LOGIT_HAVE(vfsctl_drain_unlock)) vfsctl_drain_unlock();
+    token->control = 0;
 }

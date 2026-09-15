@@ -43,6 +43,7 @@ struct fsck_dev {
  * (always 0 when repair == 0). */
 struct fsck_report {
     int fatal;                 /* image not usable: superblock/geometry/root */
+    int bad_identity;          /* ambiguous v5 identity/counter: never repaired */
     int problems;              /* total problems found */
     int fixed;                 /* total problems repaired */
 
@@ -60,6 +61,9 @@ struct fsck_report {
     int multi_linked;          /* inode named by more than one dirent */
     int orphan_inode;          /* allocated inode no dirent names */
 };
+
+int fsck_identity_valid(const struct lfs_super *,const struct lfs_identity_super *,
+                        const struct lfs_dinode *);
 
 /* Report progress/problems; called once per finding. May be NULL.
  *

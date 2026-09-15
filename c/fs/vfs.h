@@ -3,6 +3,7 @@
 
 #include "vfs_path.h"    /* VFS_E* and the path walker */
 #include "vfs_meta.h"    /* struct vattr / struct vcred / MAY_* */
+#include "../../include/abi/fs_ref.h"
 
 /* ---------------------------------------------------------------------------
  * The virtual filesystem layer.
@@ -116,7 +117,9 @@ struct filesystem {
      * every op above except getattr/setattr. */
     const struct fs_iops *iops;
     void *priv;                                     /* backend instance cookie */
+    int (*refpath)(const struct logit_file_id *, char *, int);
 };
+int vfs_refpath(const struct logit_file_id *, char *, int);
 
 /* --- mounting ----------------------------------------------------------- */
 
@@ -130,6 +133,9 @@ int  vfs_mount(void);
  * mount is not installed. */
 int  vfs_mount_at(const char *dir, struct filesystem *fs);
 int  vfs_umount(const char *dir);
+struct vfs_drain { void *owner; int active, control; };
+int vfs_drain_begin(struct vfs_drain *token);
+void vfs_drain_end(struct vfs_drain *token);
 int  vfs_mount_count(void);
 /* Render the mount table, /proc/mounts style. Returns bytes written. */
 int  vfs_mounts_render(char *buf, int max);
@@ -147,8 +153,10 @@ int  vfs_read(const char *path, void *buf, int max);
 int  vfs_pread(const char *path, void *buf, int max, long long off);
 int  vfs_count(const char *dir);
 const char *vfs_ent_name(const char *dir, int i);
+int vfs_ent_name_copy(const char *dir, int i, char *out, int cap);
 int  vfs_ent_size(const char *dir, int i);
 int  vfs_ent_is_dir(const char *dir, int i);
+int vfs_create_file(const char *path, const void *buf, int size);
 int  vfs_write(const char *path, const void *buf, int size);
 int  vfs_delete(const char *path);
 int  vfs_mkdir(const char *path);

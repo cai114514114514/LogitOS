@@ -11,6 +11,27 @@ void *memset(void *, int, size_t);
 /* geometry                                                                   */
 /* ------------------------------------------------------------------------- */
 
+int fsck_identity_valid(const struct lfs_super *sb,const struct lfs_identity_super *e,
+                        const struct lfs_dinode *inodes)
+{
+    if(!sb||!e||!inodes||fsck_super_valid(sb)<0)return -1;
+    if(sb->version!=LFS_ID_VERSION)return 0;
+    if(e->magic!=LFS_ID_MAGIC||!(e->volume[0]|e->volume[1])||
+       crc32(e,20)!=e->checksum)return -1;
+    uint32_t cap=1;while(cap<sb->inode_count*2u)cap<<=1;
+    uint64_t *seen=kmalloc((size_t)cap*sizeof *seen);if(!seen)return -1;
+    memset(seen,0,(size_t)cap*sizeof *seen);int rc=0;
+    uint64_t next=inodes[sb->root_ino].next_id;
+    for(uint32_t i=0;i<sb->inode_count;i++)if(inodes[i].type) {
+        uint64_t id=inodes[i].object_id;
+        if(!id||id>next||!inodes[i].revision){rc=-1;break;}
+        uint32_t p=(uint32_t)(id^(id>>32))&(cap-1);
+        while(seen[p]&&seen[p]!=id)p=(p+1)&(cap-1);
+        if(seen[p]){rc=-1;break;}seen[p]=id;
+    }
+    kfree(seen);return rc;
+}
+
 /* The bounds every consumer of an untrusted superblock needs. These were
  * originally inline in logitfs_mount; they live here so the mounted and the
  * offline view of "usable image" are literally the same code. Each check exists
@@ -19,7 +40,8 @@ void *memset(void *, int, size_t);
 int fsck_super_valid(const struct lfs_super *sb)
 {
     if (!sb) return -1;
-    if (sb->magic != LFS_MAGIC || sb->version != LFS_VERSION) return -1;
+    if (sb->magic != LFS_MAGIC ||
+        (sb->version != LFS_VERSION && sb->version != LFS_ID_VERSION)) return -1;
     if (sb->block_size != LFS_BS) return -1;
     /* bitmap_blocks * BS sizes an allocation: a crafted value wraps it small
      * and the read loop then writes BS bytes per block past the end. */
@@ -478,6 +500,12 @@ int fsck_run(struct fsck_dev *dev, int repair, struct fsck_report *rep,
         if (say) say(saycx, "root inode %u is not a directory (type %u) -- refusing",
                      c.sb.root_ino, c.inodes[c.sb.root_ino].type);
         goto out;
+    }
+
+    struct lfs_identity_super identity;
+    memcpy(&identity,sblk+sizeof c.sb,sizeof identity);
+    if(fsck_identity_valid(&c.sb,&identity,c.inodes)<0) {
+        rep->fatal=1;rep->bad_identity++;rep->problems++;goto out;
     }
 
     /* --- 4. inodes: types, sizes, block chains ---------------------------- */
