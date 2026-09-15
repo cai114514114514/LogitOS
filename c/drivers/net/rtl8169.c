@@ -3,7 +3,7 @@
 #include "netdev.h"
 #include "netring.h"
 #include "pci.h"
-#include "pmm.h"
+#include "dma.h"
 #include "vmm.h"
 #include "net.h"
 #include "kprintf.h"
@@ -87,6 +87,24 @@ struct rtl_desc {
     uint64_t addr;       /* buffer physical address */
 } __attribute__((packed));
 
+/* Coherent memory is CPU-mapped independently of the device address. All
+ * buffers are prepared before DMA is enabled; failed preparation can therefore
+ * release them without assuming a controller has stopped. Successful rings
+ * remain device-owned for the driver's lifetime. */
+static struct dma_device nic_dma;
+static void dma_discard_unpublished(void)
+{
+    while (nic_dma.buffers) {
+        if (dma_free_coherent(nic_dma.buffers) != 0) break;
+    }
+}
+static void dma_publish_buffers(void)
+{
+    for (struct dma_buffer *b = nic_dma.buffers; b; b = b->next)
+        dma_buffer_submit(b);
+    dma_wmb();
+}
+static struct dma_buffer *rx_dma, *tx_dma, *tx_payload[TX_DESC];
 static volatile uint8_t  *mmio;
 static volatile struct rtl_desc *rxd, *txd;
 static uint8_t *rxbuf[RX_DESC];
@@ -99,12 +117,14 @@ static inline uint8_t  m8 (uint32_t o)             { return *(volatile uint8_t  
 static inline void     w8 (uint32_t o, uint8_t v)  { *(volatile uint8_t  *)(mmio + o) = v; }
 static inline void     w16(uint32_t o, uint16_t v) { *(volatile uint16_t *)(mmio + o) = v; }
 static inline uint16_t r16(uint32_t o)             { return *(volatile uint16_t *)(mmio + o); }
+static inline uint32_t r32(uint32_t o)             { return *(volatile uint32_t *)(mmio + o); }
 static inline void     w32(uint32_t o, uint32_t v) { *(volatile uint32_t *)(mmio + o) = v; }
 static inline void     w64(uint32_t o, uint64_t v) { w32(o, (uint32_t)v); w32(o + 4, (uint32_t)(v >> 32)); }
 static inline void barrier(void) { __asm__ volatile ("mfence" ::: "memory"); }
 
 static int rtl_rx_poll(net_rx_cb cb)
 {
+    NET_GUARD;
     if (!ready) return 0;
     uint64_t f = net_lock();
     /* No ack-in-the-drain here either, and deliberately. e1000 and virtio-net
@@ -145,7 +165,7 @@ static int rtl_tx(const void *frame, uint16_t len)
     uint16_t n = len;
     if (n < ETH_MIN) { memset(txbuf[i], 0, ETH_MIN); n = ETH_MIN; }
     memcpy(txbuf[i], frame, len);
-    txd[i].addr  = (uint64_t)(uintptr_t)txbuf[i];
+    txd[i].addr  = dma_addr_value(tx_payload[i]->dma);
     txd[i].opts2 = 0;
     barrier();                                    /* buffer + address visible before OWN */
     txd[i].opts1 = rtl8169_tx_opts1(n, i == TX_DESC - 1);
@@ -165,8 +185,10 @@ static void rtl_irq_on(net_rx_cb cb)
 
 static void rtl_isr(void)
 {
+    NET_GUARD;
     if (!ready) return;
     uint16_t isr = r16(R_ISR);
+    if (!isr || isr == UINT16_MAX) return;       /* another device owns the shared IRQ */
     w16(R_ISR, isr);                              /* ack before draining */
     /* Ack here, drain on SOFTIRQ_NET -- see c/net/core/net.c. */
     if (g_rxcb) net_rx_schedule();
@@ -192,47 +214,79 @@ static uint64_t map_mmio_bar(struct device *dev)
     return 0;
 }
 
+/* The old unconditional 64-bit mask also covered conventional PCI 8169 and
+ * unknown revisions. PCIe 8168C and later known MACs support 64-bit descriptors
+ * without CPlusCmd.PCIDAC; that bit is for older PCI DAC, which we do not enable.
+ * Hardware XID facts and the MAC >= 18 boundary are checked against Linux's
+ * rtl_chip_infos / rtl_init_one in drivers/net/ethernet/realtek/r8169_main.c:
+ * https://github.com/torvalds/linux/blob/master/drivers/net/ethernet/realtek/r8169_main.c
+ * This is capability selection, not a claim of device validation or complete
+ * variant-specific PHY setup. New/unknown IDs deliberately stay below 4 GiB. */
+static uint64_t rtl_dma_mask(const struct device *dev, uint32_t txconfig)
+{
+    if (dev->vendor != 0x10ec || !dev->cap_pcie ||
+        (dev->device != 0x8168 && dev->device != 0x8161)) return DMA_MASK_32;
+    uint32_t xid = (txconfig >> 20) & 0xfcf;
+    /* C/CP, D/DP, E/EVL and F/8411 families. */
+    switch (xid & 0x7c8) {
+    case 0x3c0: case 0x3c8: case 0x280: case 0x2c0: case 0x2c8:
+    case 0x488: return DMA_MASK_64;
+    }
+    /* Later families have sparse, individually identified revisions. */
+    switch (xid & 0x7cf) {
+    case 0x28a: case 0x28b: case 0x480: case 0x481: case 0x4c0:
+    case 0x509: case 0x5c8: case 0x541: case 0x6c0: case 0x502:
+    case 0x54a: case 0x54b: return DMA_MASK_64;
+    }
+    return DMA_MASK_32;
+}
+
 int rtl8169_probe(struct device *dev)
 {
-    if (ready) return -1;                          /* one NIC bound at a time */
-    dev_enable(dev, 1);                            /* memory decode + bus master (DMA) */
+    if (ready || nic_dma.blocked) return -1;                          /* one NIC bound at a time */
+    if (dev_enable_checked(dev, 0) != 0) {
+        kprintf("[rtl8169] PCI Command decode rejected\n"); return -1;
+    }
     uint64_t base = map_mmio_bar(dev);
     if (!base) { kprintf("[rtl8169] no memory BAR\n"); return -1; }
     mmio = (volatile uint8_t *)(uintptr_t)base;
 
-    uint64_t rr = pmm_alloc(), tr = pmm_alloc();
-    if (!rr || !tr) { kprintf("[rtl8169] descriptor ring alloc failed\n"); return -1; }
-    /* The descriptor rings must be 256-byte aligned; a 4 KiB frame is. */
-    rxd = (volatile struct rtl_desc *)(uintptr_t)rr;
-    txd = (volatile struct rtl_desc *)(uintptr_t)tr;
-    memset((void *)rxd, 0, RX_DESC * sizeof(struct rtl_desc));
-    memset((void *)txd, 0, TX_DESC * sizeof(struct rtl_desc));
-
+    dma_device_init(&nic_dma, "rtl8169", rtl_dma_mask(dev, r32(R_TCR)));
+    rx_dma = dma_alloc_coherent(&nic_dma, 4096, 4096, 0);
+    tx_dma = dma_alloc_coherent(&nic_dma, 4096, 4096, 0);
+    if (!rx_dma || !tx_dma) goto alloc_fail;
+    uint64_t rr = dma_addr_value(rx_dma->dma), tr = dma_addr_value(tx_dma->dma);
+    rxd = rx_dma->cpu;
+    txd = tx_dma->cpu;
     for (int i = 0; i < RX_DESC; i++) {
-        uint64_t b = pmm_alloc();
-        if (!b) { kprintf("[rtl8169] rx buffer alloc failed\n"); return -1; }
-        rxbuf[i] = (uint8_t *)(uintptr_t)b;
-        rxd[i].addr  = b;                          /* identity-mapped: phys == virt */
-        rxd[i].opts2 = 0;
+        struct dma_buffer *b = dma_alloc_coherent(&nic_dma, 4096, 4096, 0);
+        if (!b) goto alloc_fail;
+        rxbuf[i] = b->cpu;
+        rxd[i].addr = dma_addr_value(b->dma);
         rxd[i].opts1 = rtl8169_rx_opts1(BUF_SIZE, i == RX_DESC - 1);
     }
     for (int i = 0; i < TX_DESC; i++) {
-        uint64_t b = pmm_alloc();
-        if (!b) { kprintf("[rtl8169] tx buffer alloc failed\n"); return -1; }
-        txbuf[i] = (uint8_t *)(uintptr_t)b;
-        txd[i].addr  = b;
-        txd[i].opts1 = (i == TX_DESC - 1) ? RTL8169_EOR : 0;   /* OWN clear = ours */
+        struct dma_buffer *b = dma_alloc_coherent(&nic_dma, 4096, 4096, 0);
+        if (!b) goto alloc_fail;
+        tx_payload[i] = b;
+        txbuf[i] = b->cpu;
+        txd[i].addr = dma_addr_value(b->dma);
+        txd[i].opts1 = (i == TX_DESC - 1) ? RTL8169_EOR : 0;
     }
 
     w8(R_CR, CR_RST);
     int spins = 0;
     while (m8(R_CR) & CR_RST) {
-        if (++spins > 1000000) { kprintf("[rtl8169] reset timeout\n"); return -1; }
+        if (++spins > 1000000) { kprintf("[rtl8169] reset timeout\n"); goto alloc_fail; }
     }
 
     for (int i = 0; i < 6; i++) rtl_dev.mac[i] = m8(R_IDR0 + (uint32_t)i);
     rtl_dev.irq_line = dev->irq_line;
 
+    if (dev_enable_checked(dev, 1) != 0) {
+        kprintf("[rtl8169] PCI bus-master enable rejected\n"); goto alloc_fail;
+    }
+    dma_publish_buffers();
     w8(R_CFG9346, CFG9346_UNLOCK);
     w16(R_CPCMD, 0);                               /* no VLAN / checksum offload */
     w8(R_MTPS, 0x3B);                              /* 59 * 128 B max transmit */
@@ -266,4 +320,32 @@ int rtl8169_probe(struct device *dev)
     }
     dev_set_drvdata(dev, &rtl_dev);
     return 0;
+alloc_fail:
+    dma_discard_unpublished();
+    rxd = txd = NULL;
+    mmio = NULL;
+    return -1;
+}
+
+/* The existing device-model removal hook stops DMA before releasing backing
+ * pages. A controller that cannot acknowledge reset keeps every allocation. */
+void rtl8169_remove(struct device *dev)
+{
+    NET_GUARD;
+    (void)dev;
+    if (!mmio) return;
+    ready = 0;
+    w16(R_IMR, 0);
+    w8(R_CR, CR_RST);
+    for (unsigned i = 0; i < 1000000; i++) {
+        if (!(m8(R_CR) & CR_RST)) goto stopped;
+    }
+    dma_device_quarantine(&nic_dma);
+    kprintf("[rtl8169] reset unconfirmed: DMA quarantined\n");
+    return;
+stopped:
+    dma_device_quiesced(&nic_dma);
+    dma_discard_unpublished(); /* now quiesced, including previously owned pages */
+    mmio = NULL;
+    rxd = txd = NULL;
 }

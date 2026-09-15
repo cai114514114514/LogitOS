@@ -3,7 +3,7 @@
 #include "netdev.h"
 #include "netring.h"
 #include "pci.h"
-#include "pmm.h"
+#include "dma.h"
 #include "net.h"
 #include "io.h"
 #include "pit.h"
@@ -74,6 +74,24 @@ void *memcpy(void *, const void *, size_t);
 #define ETH_MIN    60           /* the 8139 does not pad; a runt is dropped on the wire */
 #define FRAME_MAX  1518
 
+/* Coherent memory is CPU-mapped independently of the device address. All
+ * buffers are prepared before DMA is enabled; failed preparation can therefore
+ * release them without assuming a controller has stopped. Successful rings
+ * remain device-owned for the driver's lifetime. */
+static struct dma_device nic_dma;
+static void dma_discard_unpublished(void)
+{
+    while (nic_dma.buffers) {
+        if (dma_free_coherent(nic_dma.buffers) != 0) break;
+    }
+}
+static void dma_publish_buffers(void)
+{
+    for (struct dma_buffer *b = nic_dma.buffers; b; b = b->next)
+        dma_buffer_submit(b);
+    dma_wmb();
+}
+static struct dma_buffer *rx_dma, *tx_dma[TX_SLOTS];
 static uint16_t io;             /* I/O port base */
 static uint8_t *rxbuf;          /* RTL8139_RXBUF_PAD bytes, contiguous, < 4 GiB */
 static uint8_t *txbuf[TX_SLOTS];
@@ -141,7 +159,7 @@ static void link_check(void)
 static void stats_report(void)
 {
     kprintf("[rtl8139] stats: rx %u ok / %u bad, tx %u ok / %u fail, "
-            "%u overflow reset(s)\n",
+            "%u overflow/recovery event(s)\n",
             g_rx_ok, g_rx_bad, g_tx_ok, g_tx_fail, g_rx_overflow);
 }
 
@@ -187,6 +205,7 @@ static void rx_reset(void)
 
 static int rtl_rx_poll(net_rx_cb cb)
 {
+    NET_GUARD;
     if (!ready) return 0;
     uint64_t f = net_lock();
     /* THIS CARD DOES NOT GET THE ACK-IN-THE-DRAIN THAT e1000 AND virtio-net DO,
@@ -266,7 +285,7 @@ static int rtl_tx(const void *frame, uint16_t len)
         n = ETH_MIN;
     }
     memcpy(txbuf[i], frame, len);
-    outl(io + R_TSAD0 + 4 * i, (uint32_t)(uintptr_t)txbuf[i]);
+    outl(io + R_TSAD0 + 4 * i, (uint32_t)dma_addr_value(tx_dma[i]->dma));
     /* Writing TSD with a length clears OWN and starts the transmit. */
     outl(port, TSD_ERTXTH | n);
     tx_cur = ring_next(i, TX_SLOTS);
@@ -291,12 +310,18 @@ static void rtl_irq_on(net_rx_cb cb)
 
 static void rtl_isr(void)
 {
+    NET_GUARD;
     if (!ready) return;
     uint16_t isr = inw(io + R_ISR);
+    if (!isr || isr == UINT16_MAX) return;       /* another device owns the shared IRQ */
     outw(io + R_ISR, isr);                        /* ack before draining, so a frame
                                                    * arriving mid-drain still raises
                                                    * a fresh edge */
-    if (isr & (ISR_RXOVW | ISR_FOVW)) rx_reset();
+    /* Overflow drops an incoming frame; the queued ring entries remain valid.
+     * Drain those entries normally. Rewinding CAPR alone here loses agreement
+     * with CBR and replays old headers indefinitely (also seen in QEMU).
+     * Linux 8139too likewise counts/acknowledges overflow without RX reset. */
+    if (isr & (ISR_RXOVW | ISR_FOVW)) g_rx_overflow++;
     /* Ack here, drain on SOFTIRQ_NET -- see c/net/core/net.c. */
     if (g_rxcb) net_rx_schedule();
 }
@@ -321,29 +346,27 @@ static uint16_t find_io_bar(const struct device *dev)
 
 int rtl8139_probe(struct device *dev)
 {
-    if (ready) return -1;                         /* one NIC bound at a time */
-    dev_enable(dev, 1);                           /* I/O decode + bus master (DMA) */
+    if (ready || nic_dma.blocked) return -1;                         /* one NIC bound at a time */
     io = find_io_bar(dev);
     if (!io) { kprintf("[rtl8139] no I/O BAR\n"); return -1; }
+    if (dev_enable_checked(dev, 0) != 0) {
+        kprintf("[rtl8139] PCI Command decode rejected\n"); return -1;
+    }
 
     /* The receive ring must be physically contiguous, and RBSTART is a 32-BIT
      * register: this chip cannot DMA above 4 GiB at all. Refusing here is the
      * difference between "no network" and "the chip DMAs into the truncated
      * low-32-bit alias of our buffer", which is memory corruption elsewhere in
      * the kernel with no hint that the NIC caused it. */
-    uint64_t phys = pmm_alloc_contig((RTL8139_RXBUF_PAD + 4095) / 4096);
-    if (!phys) { kprintf("[rtl8139] rx ring alloc failed\n"); return -1; }
-    if (phys + RTL8139_RXBUF_PAD > 0x100000000ull) {
-        kprintf("[rtl8139] rx ring above 4 GiB (%p): chip cannot address it\n", (void *)phys);
-        return -1;
-    }
-    rxbuf = (uint8_t *)(uintptr_t)phys;
-    memset(rxbuf, 0, RTL8139_RXBUF_PAD);
-
+    dma_device_init(&nic_dma, "rtl8139", DMA_MASK_32);
+    rx_dma = dma_alloc_coherent(&nic_dma, RTL8139_RXBUF_PAD, 4096, 0);
+    if (!rx_dma) goto alloc_fail;
+    uint64_t phys = dma_addr_value(rx_dma->dma);
+    rxbuf = rx_dma->cpu;
     for (int i = 0; i < TX_SLOTS; i++) {
-        uint64_t t = pmm_alloc();
-        if (!t || t + 4096 > 0x100000000ull) { kprintf("[rtl8139] tx buffer alloc failed\n"); return -1; }
-        txbuf[i] = (uint8_t *)(uintptr_t)t;
+        tx_dma[i] = dma_alloc_coherent(&nic_dma, 4096, 4096, 0);
+        if (!tx_dma[i]) goto alloc_fail;
+        txbuf[i] = tx_dma[i]->cpu;
     }
 
     /* Power on, then soft reset and wait for the chip to clear RST itself. */
@@ -353,12 +376,16 @@ int rtl8139_probe(struct device *dev)
     outb(io + R_CR, CR_RST);
     int spins = 0;
     while (inb(io + R_CR) & CR_RST) {
-        if (++spins > 1000000) { kprintf("[rtl8139] reset timeout\n"); return -1; }
+        if (++spins > 1000000) { kprintf("[rtl8139] reset timeout\n"); goto alloc_fail; }
     }
 
     for (int i = 0; i < 6; i++) rtl_dev.mac[i] = inb((uint16_t)(io + R_IDR0 + i));
     rtl_dev.irq_line = dev->irq_line;
 
+    if (dev_enable_checked(dev, 1) != 0) {
+        kprintf("[rtl8139] PCI bus-master enable rejected\n"); goto alloc_fail;
+    }
+    dma_publish_buffers();
     outb(io + R_CFG9346, CFG9346_UNLOCK);
     outb(io + R_CR, CR_TE | CR_RE);               /* enable BEFORE writing RCR/TCR */
     /* RCR: accept physical-match + multicast + broadcast (not promiscuous, not
@@ -383,4 +410,32 @@ int rtl8139_probe(struct device *dev)
     kprintf("[rtl8139] up: io=%x rxring=%p (%d B)\n", io, (void *)phys, RTL8139_RXBUF_PAD);
     dev_set_drvdata(dev, &rtl_dev);
     return 0;
+alloc_fail:
+    dma_discard_unpublished();
+    rxbuf = NULL;
+    memset(txbuf, 0, sizeof txbuf);
+    return -1;
+}
+
+/* The existing device-model removal hook stops DMA before releasing backing
+ * pages. A controller that cannot acknowledge reset keeps every allocation. */
+void rtl8139_remove(struct device *dev)
+{
+    NET_GUARD;
+    (void)dev;
+    if (!io) return;
+    ready = 0;
+    outw(io + R_IMR, 0);
+    outb(io + R_CR, CR_RST);
+    for (unsigned i = 0; i < 1000000; i++) {
+        if (!(inb(io + R_CR) & CR_RST)) goto stopped;
+    }
+    dma_device_quarantine(&nic_dma);
+    kprintf("[rtl8139] reset unconfirmed: DMA quarantined\n");
+    return;
+stopped:
+    dma_device_quiesced(&nic_dma);
+    dma_discard_unpublished(); /* now quiesced, including previously owned pages */
+    io = 0;
+    rxbuf = NULL;
 }

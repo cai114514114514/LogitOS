@@ -105,7 +105,10 @@ static void edu_selftest(struct device *dev, struct edu *e, const char *label)
 
 static int edu_probe(struct device *dev)
 {
-    dev_enable(dev, 1);
+    if (dev_enable_checked(dev, 0) != 0) {
+        kprintf("[edu] %s: PCI Command decode rejected\n", dev->name);
+        return -1;
+    }
     uint64_t bar = dev_bar_map(dev, 0);
     if (!bar) { kprintf("[edu] %s: no BAR0\n", dev->name); return -1; }
 
@@ -126,6 +129,12 @@ static int edu_probe(struct device *dev)
             dev->cap_msi ? "yes" : "no", dev->cap_msix ? "yes" : "no",
             (int)dev->irq_pin);
 
+    /* The DMA example is quiescent until a self-test command is written. */
+    if (dev_enable_checked(dev, 1) != 0) {
+        kprintf("[edu] %s: PCI bus-master enable rejected\n", dev->name);
+        return -1;
+    }
+
     dev_set_drvdata(dev, e);
 
     /* Path 1: whatever the model prefers (MSI-X, else MSI). */
@@ -135,7 +144,10 @@ static int edu_probe(struct device *dev)
         kprintf("LOGIT_IRQ_FAIL msi no-vector\n");
 
     /* Path 2: the same device, forced down to the legacy INTx line. */
-    dev_irq_release(dev);
+    if (dev_irq_release(dev) != 0) {
+        kprintf("LOGIT_IRQ_FAIL release-unconfirmed\n");
+        return 0;
+    }
     int prev = dev_irq_prefer(DEV_IRQ_INTX);
     if (dev_irq_request(dev, edu_isr, e, "edu-intx") >= 0)
         edu_selftest(dev, e, "legacy");
