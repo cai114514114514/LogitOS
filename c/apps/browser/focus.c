@@ -18,6 +18,7 @@
 #include "focus.h"
 #include "dom.h"
 #include "css.h"
+#include "top_layer.h"
 
 /* ------------------------------------------------------------ dispatch -- */
 
@@ -115,14 +116,16 @@ static int is_disabled(const struct node *n)
  * skipping. Noted rather than hidden: it is a fidelity gap, not a bug. */
 static int is_rendered(const struct node *n)
 {
-    for (const struct node *p = n; p && p->type == N_ELEM; p = p->parent) {
+    const struct node *modal=top_layer_owner(n);
+    for (const struct node *p = n; p && p->type == N_ELEM; p = p==modal?0:p->parent) {
+        if (top_layer_is_hidden_popover(p)) return 0;
         const struct cstyle *st = (const struct cstyle *)p->style;
         if (st && st->display == DISP_NONE) return 0;
         if (st && st->vis_hid) return 0;
     }
     /* `hidden` content attribute; the UA sheet already maps it to display:none,
      * but a document that was never styled has no cstyle at all. */
-    for (const struct node *p = n; p && p->type == N_ELEM; p = p->parent)
+    for (const struct node *p = n; p && p->type == N_ELEM; p = p==modal?0:p->parent)
         if (dom_attr(p, "hidden")) return 0;
     return 1;
 }
@@ -169,9 +172,32 @@ int focus_tab_index(struct node *n, int *explicit_out)
     return natively_focusable(n) ? 0 : -1;
 }
 
+/* Attribute presence, not its string value, is authoritative. Checking this
+ * at use time makes inserting/moving a node or toggling an ancestor's inert
+ * flag effective before the next layout. Requiring a fresh style here left
+ * a window in which script focus and quiet restoration entered blocked UI. */
+int focus_is_inert(struct node *n)
+{
+#ifndef FOCUS_NO_INERT
+    if (!n) return 0;
+    if (!top_layer_allows_input(n)) return 1;
+    struct node *modal = top_layer_current();
+    for (; n; n = n->parent) {
+        if (n->type == N_ELEM && dom_attr(n, "inert")) return 1;
+        /* A modal escapes inherited inertness, but its own inert attribute
+         * still applies. This is why modal blocking is not an inert write on
+         * body: that would disable the dialog with everything beneath it. */
+        if (n == modal) break;
+    }
+#else
+    (void)n;
+#endif
+    return 0;
+}
+
 int focus_is_focusable(struct node *n)
 {
-    if (!is_elem(n)) return 0;
+    if (!is_elem(n) || focus_is_inert(n)) return 0;
     if (is_disabled(n)) return 0;
     if (!is_rendered(n)) return 0;
     int present = 0;
@@ -179,6 +205,7 @@ int focus_is_focusable(struct node *n)
     /* tabindex="-1" IS focusable, just not tabbable. That distinction is the
      * whole reason focus_tab_index and focus_is_focusable are two functions. */
     if (present) return 1;
+    if (top_layer_is_modal(n)) return 1; /* empty dialog focusing fallback */
     return natively_focusable(n);
 }
 
@@ -194,6 +221,7 @@ struct node *focus_current(void)
     if (!g_focus) return 0;
     /* The slot was recycled: the element we focused no longer exists. */
     if (g_focus->serial != g_serial) { g_focus = 0; g_serial = 0; return 0; }
+    if (focus_is_inert(g_focus)) { focus_reset(); return 0; }
     /* Detached from the document by a script. The DOM says focus goes back to
      * the body in that case; reporting NULL is how this file says that, and
      * the embedder resolves NULL to <body> for activeElement. */
@@ -205,6 +233,7 @@ struct node *focus_current(void)
 
 void focus_set_quiet(struct node *n)
 {
+    if (focus_is_inert(n)) return;
     if (n && n->type != N_ELEM) n = 0;
     g_focus = n;
     g_serial = n ? n->serial : 0;
@@ -212,6 +241,7 @@ void focus_set_quiet(struct node *n)
 
 int focus_set(struct node *n)
 {
+    if (focus_is_inert(n)) return 0;
     struct node *old = focus_current();
     if (n && n->type != N_ELEM) n = 0;
     if (n && !focus_is_focusable(n)) n = 0;
@@ -336,7 +366,12 @@ struct node *focus_next(struct node *root, struct node *from, int back)
 
 int focus_advance(struct node *root, int back)
 {
+    struct node *modal = top_layer_current();
+    if (modal) root = modal;
     struct node *n = focus_next(root, focus_current(), back);
+    if (!n) n = modal;
     if (!n) return 0;
     return focus_set(n);
 }
+
+#include "top_layer.inc"

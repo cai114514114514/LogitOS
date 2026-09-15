@@ -153,8 +153,9 @@ static uint16_t tag_id_of(lwc_string *name)
     return TAG_UNKNOWN;
 }
 
-/* `s` is already lowercased and `len` its length: find the matching attribute
- * atom, screening on length then first byte before the full compare. */
+/* The original caller guarantee was "s is already lowercased". Foreign
+ * attributes also reach this helper verbatim now; it only performs exact
+ * matching. Screen length then first byte before the full compare. */
 static lwc_string *attr_atom(const char *s, size_t len)
 {
     for (int i = 0; i < NATTR_ATOM; i++) {
@@ -195,9 +196,15 @@ struct dom_doc {
     struct node **idb;              /* id index buckets (id_next chains) */
     uint32_t idcap, idcount;
 
+    struct dom_subscription *subscriptions;
     int quirks;
     int oom;                        /* an allocation failed; tree is truncated */
 };
+
+/* Included here so every production/probe DOM source list automatically
+ * carries the notification and live boundary implementation. A separate TU
+ * would silently disappear from the many historical handwritten probe lists. */
+#include "dom_mutation.inc"
 
 static struct node *nc_nodes(struct node_chunk *c) { return (struct node *)(void *)(c + 1); }
 
@@ -376,6 +383,8 @@ static struct node *node_alloc(struct dom_doc *d)
 
 static void node_recycle(struct dom_doc *d, struct node *n)
 {
+    struct dom_mutation dying = { .kind = DOM_MUT_DESTROY, .node = n };
+    dom_emit(d, &dying);
     id_unindex(d, n);
     if (n->style) { kfree(n->style); n->style = 0; }
     if (n->computed && g_computed_free) { g_computed_free(n->computed); n->computed = 0; }
@@ -449,6 +458,9 @@ int  dom_script_is_done(const struct node *n) { return n && (n->flags & NF_SCRIP
 
 static void doc_destroy(struct dom_doc *d)
 {
+    struct dom_mutation closing = { .kind = DOM_MUT_CLOSE };
+    dom_emit(d, &closing);
+    while (d->subscriptions) dom_unsubscribe(d->subscriptions);
     /* Walk every slot ever handed out rather than the tree: styles and computed
      * styles live outside the arena, and a node detached by a script (or left
      * on the free list) would otherwise leak them. Dense chunk arrays make this
@@ -511,6 +523,7 @@ static void unlink_from_parent(struct node *c)
 {
     struct node *p = c->parent;
     if (!p) { c->prev = c->next = 0; return; }
+    dom_emit_child(DOM_MUT_REMOVE, p, c);
     if (c->prev) c->prev->next = c->next; else p->first_child = c->next;
     if (c->next) c->next->prev = c->prev; else p->last_child  = c->prev;
     c->parent = 0; c->prev = 0; c->next = 0;
@@ -529,14 +542,12 @@ void dom_destroy_children(struct node *n)
 {
     DST(DOM_ST_DESTROY);
     if (!n || !n->doc) return;
-    struct node *c = n->first_child;
-    n->first_child = n->last_child = 0;
-    n->child_gen++;   /* whole child list dropped at once -- see dom.h */
-    while (c) {
-        struct node *nx = c->next;
-        c->parent = 0; c->prev = 0; c->next = 0;
+    /* Unlink one child at a time while ancestry still exists. Clearing the
+     * head first loses the index and descendant path live ranges need. */
+    while (n->first_child) {
+        struct node *c = n->first_child;
+        unlink_from_parent(c);
         recycle_tree(n->doc, c);
-        c = nx;
     }
 }
 
@@ -560,6 +571,7 @@ void dom_append_child(struct node *p, struct node *c)
     c->next = 0;
     if (p->last_child) p->last_child->next = c; else p->first_child = c;
     p->last_child = c;
+    dom_emit_child(DOM_MUT_INSERT, p, c);
     p->child_gen++;   /* p's child LIST changed -- see dom.h's child_gen */
 }
 
@@ -582,6 +594,7 @@ void dom_insert_before(struct node *p, struct node *c, struct node *ref)
     c->prev = ref->prev;
     if (ref->prev) ref->prev->next = c; else p->first_child = c;
     ref->prev = c;
+    dom_emit_child(DOM_MUT_INSERT, p, c);
     p->child_gen++;   /* p's child LIST changed -- see dom.h's child_gen */
 }
 
@@ -800,6 +813,8 @@ int dom_text_append(struct node *n, const char *s, int len)
     DST(DOM_ST_MUTATE);
     if (!n || !n->doc || !s || len <= 0) return 0;
     if (n->type != N_TEXT && n->type != N_COMMENT) return 0;
+    if (n->doc->subscriptions)
+        return dom_text_replace(n, dom_text_length(n), 0, s, len);
     struct dom_doc *d = n->doc;
     size_t need = (size_t)n->textlen + (size_t)len + 1;
     if ((size_t)n->textcap < need) {
@@ -819,6 +834,8 @@ int dom_text_append(struct node *n, const char *s, int len)
     n->text[n->textlen] = 0;
     return 1;
 }
+
+#include "dom_text_mutation.inc"
 
 struct node *dom_create_comment(struct dom_doc *d, const char *data, int len)
 {
@@ -933,7 +950,51 @@ static void set_id(struct dom_doc *d, struct node *n, const char *v, size_t vlen
     id_index(d, n);
 }
 
-/* Append (or overwrite) one attribute. `lname` must already be lowercase. */
+/* HTML name lookup folds ASCII in the REQUEST, not in stored raw names.
+ * Foreign content is case-sensitive: html_tree already adjusts viewBox and
+ * clipPathUnits, but folding again here made those parsed attrs unreadable
+ * and setAttribute appended a second lowercase spelling. Keep this decision
+ * shared by native, JS length-carrying, interned and removal paths. The raw
+ * parser/NS door remains verbatim; this DOM has no XML document-type flag. */
+static int attr_fold_name(const struct node *n)
+{
+#ifdef DOM_FOREIGN_ATTR_LEGACY
+    (void)n; return 1;
+#else
+    return n->ns == NS_HTML;
+#endif
+}
+static const struct dom_attr *attr_find_name(const struct node *n,
+                                            const char *name, size_t len, int fold)
+{
+    if (!n || n->type != N_ELEM || !name || !len || !n->nattr) return 0;
+    char sb[64];
+    if (len < sizeof sb) {
+        const char *query = name;
+        if (fold) {
+            for (size_t i=0;i<len;i++) sb[i]=(char)lc((unsigned char)name[i]);
+            sb[len]=0; query=sb;
+        }
+        lwc_string *at=attr_atom(query,len);
+        if (at) {
+            for (int i=0;i<n->nattr;i++) if(n->attrs[i].name==at)return &n->attrs[i];
+            return 0;
+        }
+    }
+    /* Unknown and long names need no transient process-global intern entry. */
+    for (int i=0;i<n->nattr;i++) {
+        lwc_string *at=n->attrs[i].name;
+        if (lwc_string_length(at)!=len)continue;
+        const char *stored=lwc_string_data(at);
+        size_t k=0;
+        while(k<len && stored[k]==(fold?(char)lc((unsigned char)name[k]):name[k]))k++;
+        if(k==len)return &n->attrs[i];
+    }
+    return 0;
+}
+
+/* Append (or overwrite) one attribute. `lname` is already normalized for its
+ * caller: lowercased HTML, case-preserved foreign content, or verbatim raw. */
 static int attr_set(struct dom_doc *d, struct node *n,
                     const char *lname, size_t nlen,
                     const char *val, size_t vlen)
@@ -948,6 +1009,8 @@ static int attr_set(struct dom_doc *d, struct node *n,
 
     int slot = -1;
     for (int i = 0; i < n->nattr; i++) if (n->attrs[i].name == an) { slot = i; break; }
+    const char *old_value = slot < 0 ? 0 : n->attrs[slot].value;
+    unsigned old_len = slot < 0 ? 0 : n->attrs[slot].vlen;
     if (slot < 0) {
         if (n->nattr >= n->attrcap) {
             int ncap = n->attrcap ? n->attrcap * 2 : 4;
@@ -964,20 +1027,64 @@ static int attr_set(struct dom_doc *d, struct node *n,
 
     if (an == dom_atoms.a_id)    set_id(d, n, v, vlen);
     else if (an == dom_atoms.a_class) set_classes(d, n, v, vlen);
+    dom_notify_attribute(n, lwc_string_data(an), old_value, old_len, v, (unsigned)vlen);
     return 1;
+}
+
+/* Erasure is one mutation. The old binding first wrote an empty attribute
+ * to refresh id/class indexes, then erased the slot; a native observer would
+ * see two writes and the wrong oldValue if that shortcut survived here. */
+static int attr_remove_entry(struct node *n, const struct dom_attr *found)
+{
+    if(!found)return 0;
+    for (int i = 0; i < n->nattr; i++) {
+        if (&n->attrs[i]!=found)continue;
+        lwc_string *atom = n->attrs[i].name;
+        const char *an = lwc_string_data(atom);
+        const char *old = n->attrs[i].value;
+        unsigned old_len = n->attrs[i].vlen;
+        if (atom == dom_atoms.a_id) { id_unindex(n->doc, n); n->id = 0; }
+        if (atom == dom_atoms.a_class) { n->nclass = 0; n->classes = 0; n->clscap = 0; }
+        for (int k = i + 1; k < n->nattr; k++) n->attrs[k-1] = n->attrs[k];
+        n->nattr--;
+        dom_notify_attribute(n, an, old, old_len, 0, 0);
+        return 1;
+    }
+    return 0;
+}
+
+int dom_remove_attr(struct node *n, const char *name)
+{
+    if (!n || !name || n->type != N_ELEM) return 0;
+    return attr_remove_entry(n,attr_find_name(n,name,zlen(name),attr_fold_name(n)));
+}
+
+/* The NS binding already resolved an exact stored qualified name. Folding it
+ * again on an HTML element would fail to remove a mixed-case raw/NS attr. */
+int dom_remove_attr_raw(struct node *n, const char *name)
+{
+    if (!n || !name || n->type != N_ELEM) return 0;
+    return attr_remove_entry(n,attr_find_name(n,name,zlen(name),0));
 }
 
 int dom_set_attr(struct node *n, const char *name, const char *val)
 {
+    return dom_set_attr_len(n,name,val,val?(int)zlen(val):0);
+}
+
+int dom_set_attr_len(struct node *n, const char *name, const char *val, int vlen)
+{
     DST(DOM_ST_ATTR_SET);
-    if (!n || !name || n->type != N_ELEM) return 0;
+    if (!n || !name || n->type != N_ELEM || vlen<0) return 0;
     struct dom_doc *d = n->doc;
     size_t nl = zlen(name);
     if (!nl) return 0;
+    if (!attr_fold_name(n))
+        return attr_set(d,n,name,nl,val?val:"",val?(size_t)vlen:0);
     char sb[64];
     char *low = lower_tmp(d, name, nl, sb, sizeof sb);
     if (!low) return 0;
-    return attr_set(d, n, low, nl, val ? val : "", val ? zlen(val) : 0);
+    return attr_set(d, n, low, nl, val ? val : "", val ? (size_t)vlen : 0);
 }
 
 int dom_set_attr_raw(struct node *n, const char *name, int nlen,
@@ -993,6 +1100,13 @@ const char *dom_attr_lw(const struct node *n, lwc_string *name)
 {
     DST(DOM_ST_ATTR_GET);
     if (!n || n->type != N_ELEM || !name) return 0;
+    if (attr_fold_name(n)) {
+        const char *s=lwc_string_data(name);size_t len=lwc_string_length(name);
+        for(size_t i=0;i<len;i++)if(s[i]>='A'&&s[i]<='Z') {
+            const struct dom_attr *a=attr_find_name(n,s,len,1);
+            return a?a->value:0;
+        }
+    }
     for (int i = 0; i < n->nattr; i++)
         if (n->attrs[i].name == name) return n->attrs[i].value;
     return 0;
@@ -1015,35 +1129,18 @@ const char *dom_attr_value_at(const struct node *n, int i)
     return n->attrs[i].value;
 }
 
-const char *dom_attr(const struct node *n, const char *name)
+const struct dom_attr *dom_find_attr(const struct node *n, const char *name)
 {
     if (!n || n->type != N_ELEM || !n->nattr || !name) return 0;
-    dom_atoms_init();
-    size_t len = zlen(name);
-    if (!len) return 0;
-
-    char sb[64];
-    if (len < sizeof sb) {
-        for (size_t i = 0; i < len; i++) sb[i] = (char)lc((unsigned char)name[i]);
-        sb[len] = 0;
-        lwc_string *at = attr_atom(sb, len);
-        if (at) return dom_attr_lw(n, at);      /* the hot path: pointer compares */
-    }
-    /* Cold path: an attribute name nobody asks for often. Compare bytes rather
-     * than interning a transient string into the process-global table.
-     * Counted HERE and not at the top of the function, because the hot path
-     * above returns through dom_attr_lw() which counts itself -- a bump at the
-     * top would double-count exactly the crossings that matter most. */
     DST(DOM_ST_ATTR_GET);
-    for (int i = 0; i < n->nattr; i++) {
-        lwc_string *an = n->attrs[i].name;
-        if (lwc_string_length(an) != len) continue;
-        const char *ad = lwc_string_data(an);
-        size_t k = 0;
-        while (k < len && ad[k] == (char)lc((unsigned char)name[k])) k++;
-        if (k == len) return n->attrs[i].value;
-    }
-    return 0;
+    dom_atoms_init();
+    return attr_find_name(n,name,zlen(name),attr_fold_name(n));
+}
+
+const char *dom_attr(const struct node *n, const char *name)
+{
+    const struct dom_attr *a=dom_find_attr(n,name);
+    return a?a->value:0;
 }
 
 /* ------------------------------------------------------------------ */
@@ -1084,11 +1181,14 @@ struct node *dom_attach_shadow(struct node *host, int mode, unsigned flags)
      * ->last_child -- that single decision is what keeps every existing
      * first_child walk (layout.c, css_engine.c, dom_serialize.c's default
      * path, forms.c, ...) blind to the shadow tree rather than half-rendering
-     * it. It also means ordinary connectivity checks that climb ->parent
-     * (dom_get_element_by_id, dom_import_node's ancestor test) correctly see
+     * it. It also means connectivity checks that climb ->parent
+     * (dom_import_node's ancestor test, Node.isConnected) correctly see
      * shadow content as "connected" exactly when its host is -- climbing from
      * inside the shadow tree reaches root, then host, then the document, the
-     * same as the spec's shadow-including tree order. */
+     * same as the spec's shadow-including tree order. The old comment also
+     * named dom_get_element_by_id here: that was wrong. Being connected does
+     * not make shadow content a document descendant for ID queries. Keep this
+     * parent link for connectivity; the ID query stops at shadow boundaries. */
     root->parent = host;
     host->shadow = root;
     return root;
@@ -1108,9 +1208,10 @@ struct node *dom_flat_next_sibling(const struct node *n)
 /* ------------------------------------------------------------------ */
 /* id lookup + JS wrapper slots                                        */
 /* ------------------------------------------------------------------ */
-struct node *dom_get_element_by_id(struct dom_doc *d, const char *id)
+struct node *dom_get_element_by_id_in(struct node *root, const char *id)
 {
     DST(DOM_ST_BYID);
+    struct dom_doc *d = root ? root->doc : 0;
     if (!d || !d->idb || !id || !*id) return 0;
     /* getElementById is case-SENSITIVE per the DOM spec, so this is an exact
      * interned-pointer match; a value nothing in the document uses will not be
@@ -1118,16 +1219,50 @@ struct node *dom_get_element_by_id(struct dom_doc *d, const char *id)
     lwc_string *k = 0;
     if (lwc_intern_string(id, zlen(id), &k) != lwc_error_ok || !k) return 0;
     struct node *hit = 0;
+    int duplicate = 0;
     for (struct node *e = d->idb[ptr_hash(k) & (d->idcap - 1)]; e; e = e->id_next) {
         if (e->id != k) continue;
-        /* Only nodes connected to the document are visible, matching the tree
-         * walk this replaced (a script may hold a detached element with an id). */
+        if (e == root) continue;     /* descendants, not the query root itself */
         struct node *p = e;
-        while (p->parent) p = p->parent;
-        if (p == d->root) { hit = e; break; }
+        while (p && p != root) {
+#ifndef DOM_ID_LEGACY_LOOKUP
+            if (dom_is_shadow_root(p)) break;
+#endif
+            p = p->parent;
+        }
+        if (p != root) continue;
+#ifdef DOM_ID_LEGACY_LOOKUP
+        /* Negative control: the former bucket-first, shadow-including lookup. */
+        hit = e; break;
+#else
+        if (hit) { duplicate = 1; break; }
+        hit = e;
+#endif
+    }
+    /* The old lookup returned the first connected hash-bucket entry and was
+     * described as O(1). Bucket insertion order is not tree order: appending
+     * A then B with the same ID returned B, even after moving A back in front.
+     * Retain indexed lookup for the usual unique ID. Only ambiguous IDs need
+     * a preorder walk, bounded by this root and following ordinary child links
+     * (never host->shadow). This also avoids caches that every reorder and ID
+     * mutation would have to invalidate. Walk iteratively so deep DOMs do not
+     * spend the C stack just to resolve a duplicate ID. */
+    if (duplicate) {
+        for (struct node *n = root->first_child; n;) {
+            if (n->type == N_ELEM && n->id == k) { hit = n; break; }
+            if (n->first_child) { n = n->first_child; continue; }
+            while (n != root && !n->next) n = n->parent;
+            if (n == root) break;
+            n = n->next;
+        }
     }
     lwc_string_unref(k);
     return hit;
+}
+
+struct node *dom_get_element_by_id(struct dom_doc *d, const char *id)
+{
+    return dom_get_element_by_id_in(d ? d->root : 0, id);
 }
 
 void dom_set_wrapper(struct node *n, void *jsobj)

@@ -1,0 +1,69 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>DOMMatrix computed transform guest check</title>
+<style>
+body { margin: 24px; font: 16px sans-serif; background: #fff; color: #18202a }
+button { width: 280px; height: 44px; margin: 8px 0; font-size: 16px }
+#status { padding: 12px; background: #edf3f8 }
+#two { width: 120px; height: 20px; transform: matrix(2, 3, 4, 5, 40, 50) }
+#three { width: 120px; height: 20px; transform: perspective(100px) translateZ(20px) }
+#percent { width: 200px; height: 80px; transform: translate(25%, 50%) scale(2, 3); background: #bfdcff }
+#specimens { margin-top: 80px }
+</style>
+<h1>DOMMatrix guest check</h1>
+<div id="status">DOM-MATRIX PENDING</div>
+<button id="resize">Resize reference box and verify</button>
+<div id="details"></div>
+<div id="specimens">
+  <div id="two"></div><div id="three"></div>
+  <div id="percent">Actual percentage reference box</div>
+</div>
+<script>
+(function () {
+  var status = document.getElementById('status');
+  var details = document.getElementById('details');
+  var count = 0;
+  function assert(ok, message) { if (!ok) throw new Error(message); count++; }
+  function close(a, b) { return Math.abs(a - b) < 0.000001; }
+  function matrix(id) {
+    return new DOMMatrix(getComputedStyle(document.getElementById(id)).getPropertyValue('transform'));
+  }
+  // This is the gallery's production consumer shape: read sixteen column-major
+  // fields from a matrix constructed from actual computed style, not test data.
+  function fields(m) {
+    var out = [];
+    for (var c = 1; c <= 4; c++) for (var r = 1; r <= 4; r++) out.push(m['m' + c + r]);
+    return out;
+  }
+  function finish(stage, error) {
+    var marker = 'DOM-MATRIX ' + (error ? 'FAIL' : 'PASS') + ' ' + stage;
+    status.textContent = marker + (error ? ': ' + error.message : ' (' + count + ' checks)');
+    status.style.color = error ? '#b00020' : '#08662a';
+    console.log(marker + (error ? ': ' + error.message : ''));
+  }
+  try {
+    assert(typeof DOMMatrix === 'function', 'DOMMatrix absent');
+    var a = matrix('two'), values = fields(a);
+    var expected = [2, 3, 0, 0, 4, 5, 0, 0, 0, 0, 1, 0, 40, 50, 0, 1];
+    assert(values.every(function (v, i) { return close(v, expected[i]); }), '2D sixteen coefficients');
+    assert(a.a === 2 && a.b === 3 && a.c === 4 && a.d === 5 && a.e === 40 && a.f === 50, 'six aliases');
+    var b = matrix('three');
+    assert(!b.is2D && close(b.m34, -0.01) && close(b.m43, 20) && close(b.m44, 0.8), '3D perspective lost');
+    var p = matrix('percent');
+    assert(p.m11 === 2 && p.m22 === 3 && p.m41 === 50 && p.m42 === 40, 'initial actual percentage box');
+    assert(new DOMMatrix(getComputedStyle(document.body).transform).isIdentity, 'untransformed identity');
+    assert(typeof navigator.javaEnabled === 'function' && navigator.javaEnabled() === false, 'actual Java capability');
+    details.textContent = '2D values: ' + values.join(', ') + ' | 3D values: ' + fields(b).join(', ') + ' | initial translation: ' + p.m41 + ', ' + p.m42;
+    finish('initial');
+  } catch (e) { finish('initial', e); }
+  document.getElementById('resize').addEventListener('click', function () {
+    try {
+      document.getElementById('percent').style.width = '320px';
+      var p = matrix('percent');
+      assert(p.m41 === 80 && p.m42 === 40, 'resize must update translation to 80,40');
+      details.textContent = 'Native button resize: width 320px; translation ' + p.m41 + ', ' + p.m42;
+      finish('resize');
+    } catch (e) { finish('resize', e); }
+  });
+})();
+</script>

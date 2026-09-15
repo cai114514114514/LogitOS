@@ -111,6 +111,8 @@ void focus_set_quiet(struct node *n);
 /* Is `n` able to hold focus at all? Disabled controls, hidden subtrees and
  * elements with no focusable behaviour answer 0. */
 int  focus_is_focusable(struct node *n);
+/* HTML inert is inherited through ancestors, including shadow hosts. */
+int  focus_is_inert(struct node *n);
 
 /* The element's tabindex as the spec's THREE-way answer, because two of the
  * three are the interesting ones:

@@ -1,0 +1,27 @@
+<!doctype html><meta charset=utf-8><title>Detached image loading regression</title>
+<style>body{font:20px sans-serif;margin:40px}img{width:96px;height:64px;margin:12px}</style>
+<h1>Detached image loading regression</h1><p id=result>Waiting for preloads</p><div id=pictures></div>
+<script>
+var checks=0,failures=0,events=[],sync=true,eventAsync=false,eventTarget=false;
+function check(ok,name){checks++;if(!ok)failures++;console.log((ok?'PASS ':'FAIL ')+name)}
+var image=new Image(),freshComplete=image.complete===true,freshZero=image.naturalWidth===0;
+image.onload=function(e){events.push('good');eventAsync=!sync;eventTarget=e.target===image&&!e.bubbles;
+var shown=document.createElement('img');shown.src='/image.svg';shown.onload=function(){events.push('cached')};document.getElementById('pictures').appendChild(shown)};
+image.src='/image.svg';var loadingIncomplete=image.complete===false;
+var bad=new Image();bad.onerror=function(){events.push('bad')};bad.src='/corrupt.svg';
+var replaced=new Image();replaced.onload=function(){events.push('replaced')};replaced.onerror=function(){events.push('stale')};replaced.src='/missing.svg';replaced.src='/image.svg';
+var attributed=document.createElement('img');attributed.onload=function(){events.push('attribute')};attributed.setAttribute('src','/image.svg');
+sync=false;
+setTimeout(function(){
+check(freshComplete,'fresh image is complete');check(freshZero,'fresh natural dimensions are zero');
+check(loadingIncomplete,'assigned source waits for real bytes');
+check(events.filter(function(x){return x==='good'}).length===1,'detached source fires one load');
+check(eventAsync,'image event is asynchronous');check(eventTarget,'image event target and propagation');
+check(events.indexOf('bad')>=0,'corrupt image fires error');check(bad.complete&&bad.naturalWidth===0,'broken image completes without invented dimensions');
+check(events.indexOf('replaced')>=0&&events.indexOf('stale')<0,'superseded source cannot publish stale event');
+check(events.indexOf('attribute')>=0,'detached setAttribute source loads');
+check(image.complete&&image.naturalWidth===24&&image.naturalHeight===16&&image.width===24,'decoded dimensions are real');
+check(events.filter(function(x){return x==='cached'}).length===1,'attached image reuses preload and signals completion');
+var result='DETACHED-IMAGES checks='+checks+' failures='+failures;document.getElementById('result').textContent=result;console.log(result);
+},3000);
+</script>

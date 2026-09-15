@@ -123,8 +123,10 @@ struct node {
     void *style;                    /* struct cstyle*, kmalloc'd by css_engine */
     char *raw; int rawlen;          /* <svg>: verbatim source span (start '<' to
                                      * the matching "</svg>"), an arena copy; the
-                                     * DOM attrs lowercase viewBox, so layout
-                                     * decodes SVG from this instead. */
+                                     * DOM attrs formerly lowercased viewBox,
+                                     * so layout decoded this instead.
+                                     * Correction: foreign attrs now preserve
+                                     * case; raw is only a source snapshot. */
 
     /* ---------------- the new model ---------------- */
     struct node *prev;              /* previous sibling -> O(1) unlink, and the
@@ -212,6 +214,60 @@ struct node {
                                      * shadow_mode. */
 };
 
+/* Native mutation records are synchronous internal notifications, never JS
+ * callbacks. REMOVE is before unlink, DESTROY before recycling, CLOSE before
+ * the arena is freed; INSERT/TEXT/ATTRIBUTE describe committed writes. The
+ * distinction matters: detached wrappers remain usable, recycled ones do not.
+ * Sinks may not mutate the DOM or subscription list while being called. */
+enum dom_mutation_kind { DOM_MUT_INSERT, DOM_MUT_REMOVE, DOM_MUT_TEXT,
+    DOM_MUT_ATTRIBUTE, DOM_MUT_DESTROY, DOM_MUT_CLOSE, DOM_MUT_SPLIT };
+struct dom_mutation {
+    enum dom_mutation_kind kind;
+    struct node *node, *parent, *related;
+    unsigned offset, removed, added;
+    const char *name, *old_value, *new_value;
+    unsigned old_len, new_len;
+};
+struct dom_subscription {
+    struct dom_subscription *next;
+    struct dom_doc *doc;
+    void (*notify)(void *, const struct dom_mutation *);
+    void *opaque;
+};
+void dom_subscribe(struct dom_doc *, struct dom_subscription *,
+                   void (*)(void *, const struct dom_mutation *), void *);
+void dom_unsubscribe(struct dom_subscription *);
+int dom_remove_attr(struct node *, const char *name);
+/* Exact stored-name removal for the parser/NS door; no HTML name folding. */
+int dom_remove_attr_raw(struct node *, const char *name);
+void dom_notify_attribute(struct node *, const char *name, const char *old_value,
+                           unsigned old_len, const char *new_value, unsigned new_len);
+unsigned dom_text_length(const struct node *);
+unsigned dom_utf16_length(const char *utf8, unsigned byte_len);
+/* Count clamps to the available UTF-16 units. Failure changes nothing. A split
+ * through a surrogate pair preserves each lone surrogate, like a JS string. */
+int dom_text_replace(struct node *, unsigned offset, unsigned count,
+                     const char *utf8, int byte_len);
+/* Native editor byte splice preserves even incomplete input bytes; callers
+ * normally pass character boundaries. Range notifications still use UTF-16. */
+int dom_text_splice_bytes(struct node *, unsigned start_byte, unsigned end_byte,
+                          const char *utf8, int byte_len);
+struct node *dom_text_split(struct node *, unsigned offset);
+
+/* No JS references in this state: a finalizer can unsubscribe it after doc
+ * teardown because CLOSE has already cleared its subscription and boundaries. */
+struct dom_live_range {
+    struct dom_subscription sub;
+    struct node *start, *end;
+    unsigned start_offset, end_offset;
+};
+void dom_range_init(struct dom_live_range *, struct dom_doc *);
+void dom_range_dispose(struct dom_live_range *);
+/* 1 success, 0 offset/type invalid, -1 different document/tree scope. */
+int dom_range_set(struct dom_live_range *, int end, struct node *, unsigned);
+/* -1/0/+1 document order; 2 denotes distinct trees (including shadow roots). */
+int dom_point_compare(struct node *, unsigned, struct node *, unsigned);
+
 /* A <script> node's run-once flag (NF_SCRIPT_DONE). dom.c owns the field;
  * these two are the only writers/readers, so browser.c (parser-run scripts)
  * and js_dom.c (inserted scripts) agree without either reaching into
@@ -261,16 +317,21 @@ void   dom_doc_set_quirks(struct dom_doc *d, int mode);
 
 /* ---------------- attributes ---------------- */
 
-/* Attribute value by (case-insensitive) name, or NULL. Valueless attributes
- * read as "". */
+/* Normal attribute lookup: ASCII-fold names on HTML elements, preserve case
+ * on SVG/MathML. Valueless attributes read as ""; NULL means absent. */
 const char *dom_attr(const struct node *n, const char *name);
-/* Same, but the caller already holds the interned (lowercase) name: a pointer
- * compare per attribute. */
+/* Same lookup plus its stored name and byte length. Borrowed entry is invalid
+ * after an attribute mutation; callers must not retain its array address. */
+const struct dom_attr *dom_find_attr(const struct node *n, const char *name);
+/* Same, but the caller already holds an interned name. Canonical names keep
+ * the pointer-compare path; uppercase HTML queries are normalized too. */
 const char *dom_attr_lw(const struct node *n, lwc_string *name);
 int         dom_has_attr_lw(const struct node *n, lwc_string *name);
-/* Set (or add) an attribute; the name is lowercased, the value copied into the
- * arena. Keeps node->id and node->classes in sync. 1 on success. */
+/* Set (or add) an attribute with the same namespace-sensitive normalization;
+ * value is copied into the arena. Keeps id/classes in sync. 1 on success. */
 int         dom_set_attr(struct node *n, const char *name, const char *val);
+/* Normal setAttribute semantics, with a byte length so JS values retain NUL. */
+int         dom_set_attr_len(struct node *n, const char *name, const char *val, int vlen);
 /* Same, but the name is used VERBATIM (already lowercase, or deliberately not:
  * "viewBox" on an SVG element) and both strings carry explicit lengths so an
  * attribute value may contain NUL. The namespaced foreign attributes are stored
@@ -348,9 +409,12 @@ void dom_destroy_children(struct node *n);
 
 /* ---------------- indexes / wrappers ---------------- */
 
-/* Exact-match (DOM-spec, case-sensitive) id lookup over the document's id
- * index; only nodes connected to the document root are returned. */
+/* Exact-match, case-sensitive ID lookup, first match in current ordinary tree
+ * order. Document lookup excludes shadow trees, even when they are connected.
+ * The scoped form searches descendants of root (excluding root itself) and
+ * also works on a detached ShadowRoot without escaping into its host. */
 struct node *dom_get_element_by_id(struct dom_doc *d, const char *id);
+struct node *dom_get_element_by_id_in(struct node *root, const char *id);
 
 /* Record (or clear) the WEAK JS wrapper for a node: `jsobj` is the wrapper's
  * JSObject*, stored without taking a reference. The first non-NULL store links
