@@ -33,20 +33,26 @@
  * switch on these values and `make test-cssom-abi` pins sizeof(struct item)
  * across two flag sets; inserting in the middle would renumber IT_CONTROL
  * under one build and not the other. */
-enum { IT_RECT, IT_TEXT, IT_IMAGE, IT_VIDEO, IT_CONTROL, IT_CANVAS };
+/* IT_HIT is an actual inline whitespace advance, without ink. A node-box
+ * union would cover unused ends of wrapped lines and steal clicks there.
+ * Display-list order retains overlay/clip rules and the whitespace source. */
+enum { IT_RECT, IT_TEXT, IT_IMAGE, IT_VIDEO, IT_CONTROL, IT_CANVAS, IT_HIT };
+struct cstyle;
 struct item {
+    /* node remains the real event target. This borrowed style selects pseudo
+     * background/border/text ink; it lives until the next style/layout pass. */
+    const struct cstyle *generated_style;
+    unsigned char pseudo;             /* 0 real DOM, 1 before, 2 after */
     int type, x, y, w, h;
     struct node *node;                /* DOM node this box came from (NULL only
                                        * if layout ran out of context). Lets a
                                        * hit test / inspector / future event
                                        * dispatch go from a painted box back to
                                        * the element without a second search. */
-    int z;                            /* stacking level: the z-index of the
-                                       * nearest positioned ancestor that set
-                                       * one, 0 otherwise. layout_page stable-
-                                       * sorts the list by it, so both the
-                                       * forward paint and the backward hit test
-                                       * see the right box on top. */
+    int z;                            /* legacy scalar diagnostic; ordering is
+                                       * now the flattened stacking-context tree
+                                       * in layout_stacking.inc. This field is
+                                       * retained for probes/old negative control. */
     /* RECT */ uint32_t bg; int has_bg;
     int bg_alpha;                     /* background-color's own alpha, 0..255.
                                        * Multiplied by `opacity` at paint time,
@@ -99,14 +105,37 @@ struct item {
 /* Lay out `root` (a parsed+styled DOM) into a display list at the given canvas
  * width; fetches/decodes <img>. */
 void  layout_page(struct node *root, int canvas_w);
+/* Passive documents own their display list, box table, text/image/SVG storage
+ * and CSS state. NULL selects the existing top-level document. Activate only
+ * between completed layout/style calls; a painter may switch between finished
+ * lists. The returned previous handle must be restored on every exit path.
+ * No script realm, focus registry or animation clock is created by this API.
+ * Destroy releases layout before its CSS backing; it does not free the DOM.
+ * The embedder must stop using borrowed item/box/style pointers first and free
+ * its DOM before or immediately after destroy. New contexts retain at most
+ * 8 MiB of decoded images/SVG; decoder temporary allocations are separate. */
+struct layout_context;
+struct layout_context *layout_context_create(void);
+struct layout_context *layout_context_activate(struct layout_context *context);
+void layout_context_destroy(struct layout_context *context);
 /* Fetch+decode up to `max` of the page's <img> resources (bounded, blocking);
  * call after layout_page. Returns the number of images successfully loaded. */
 int   layout_load_images(int max);
+/* fetch: 0 transfers malloc-owned bytes, 1 means pending, -1 failed.
+ * Pending requests must never become permanent negative image cache entries. */
+int layout_load_images_fetch(int max, int (*fetch)(const char *, unsigned char **, int *));
+/* O(1): new decoded dimensions since layout_page, not a DOM mutation or IO
+ * request. The embedder flushes layout before image-dependent CSSOM reads and
+ * after a completed resource batch; layout_page consumes the generation. */
+int layout_image_geometry_pending(void);
 int   layout_height(void);
 /* Page (canvas) background propagated from <html>/<body>; 1 if set, fills *out. */
 int   layout_page_bg(uint32_t *out);
 int   layout_count(void);
 const struct item *layout_items(void);
+/* Animation-only paint snapshots; does not change boxes, text or image ownership. */
+int layout_refresh_opacity(struct node *root);
+unsigned long long layout_build_count(void);
 void  layout_free(void);
 
 /* ---- per-element geometry, for the CSSOM ----
@@ -143,4 +172,15 @@ int   layout_node_box(const struct node *n, int *x, int *y, int *w, int *h);
  * counted, which is the spec's rule and not a shortcut. */
 int   layout_node_scroll(const struct node *n, int *w, int *h);
 
-#endif /* LOGIT_LAYOUT_H */
+/* Optional guest clock; null leaves codec/trial counters silent on host gates. */
+void layout_set_profile_clock(unsigned long long (*clock)(void));
+/* Explicit about:images snapshot only; never called from layout/frame hot paths.
+ * Browser owns request-slot/state diagnostics and prints them after this. */
+void layout_dump_images(struct node *root); /* LOGIT_LAYOUT_H */
+
+/* Shared decoded pixels for detached HTMLImageElement preloads: dimensions
+ * returns 0 pending/unseen, 1 decoded, -1 broken; store succeeds only on decode. */
+int layout_img_dimensions(const char *src, int *w, int *h);
+int layout_img_store(const char *src, const unsigned char *data, int len);
+
+#endif
