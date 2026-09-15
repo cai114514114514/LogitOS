@@ -1,3 +1,8 @@
+/* 2026-09-10 correction to the historical scope below: operations now use
+ * real crypto; generateKey, EC/OKP DER import/export, Ed25519/ECDSA sign and
+ * verify, ECDH/X25519 deriveBits/deriveKey are implemented. AES-GCM, HMAC,
+ * HKDF and PBKDF2 remain the symmetric consumers. RSA private operations,
+ * wrap/unwrap and other AES modes still reject unsupported operations. */
 /* crypto.subtle -- WebCryptoAPI, the validation half.
  *
  * TRIAGE, NOT A GUESS: WebCryptoAPI/'s WPT failure corpus is overwhelmingly
@@ -18,7 +23,7 @@
  *     key instead of an error. importKey with either format validates
  *     usages (so "Bad usages"/"Empty usages" still fire correctly) and then
  *     refuses with NotSupportedError rather than pretending to parse.
- *   - No actual digest/encrypt/decrypt/sign/verify/deriveBits/wrapKey
+ *   - Historical claim (corrected below): No actual digest/encrypt/decrypt/sign/verify/deriveBits/wrapKey
  *     result. c/crypto has real SHA-2/AES/ECDSA/Ed25519/X25519 primitives,
  *     but this browser's link line does not pull CRYPTO_SRC into
  *     browser.elf or wpt_test (Makefile:896, tests/wpt.mk:227) and this
@@ -58,14 +63,22 @@
  * including U+212A, untouched -- so the Kelvin string canonicalizes to
  * itself and correctly fails to match "HKDF".
  */
+/* Correction (2026-09-09): SHA-1/256/384/512 digest now returns real bytes
+ * through js_digest.inc. A second correction in this batch adds HMAC-SHA-2,
+ * HKDF/PBKDF2 and AES-GCM operations through js_crypto_ops.inc. The historical
+ * refusal above remains beside this correction; RSA/EC operations, SHA-1 HMAC,
+ * truncated GCM tags and random key generation still explicitly refuse. */
 #include "quickjs.h"
 #include "js_platform.h"
 #include <string.h>
 
 int printf(const char *, ...);
+#include "js_digest.inc"
+#include "js_crypto_ops.inc"
+#include "js_crypto_keys.inc"
 
 static const char *SUBTLE_PRELUDE =
-"(function () {\n"
+"(function (nativeDigest, nativeHmac, nativeKdf, nativeGcm, nativeRandom, nativeKeyOp) {\n"
 "'use strict';\n"
 "var G = globalThis;\n"
 "var c = G.crypto;\n"
@@ -171,10 +184,15 @@ static const char *SUBTLE_PRELUDE =
  * crypto_key_cached_slots.https.any.js (2 subtests) requires that repeated
  * `key.algorithm`/`key.usages` gets return the SAME object identity -- so
  * the slot's stored object is returned as-is, never rebuilt per get. */
+"var arrayIndexOf = Function.prototype.call.bind(Array.prototype.indexOf);\n"
+"var arraySlice = Function.prototype.call.bind(Array.prototype.slice);\n"
 "var KeySlots = new WeakMap();\n"
+
+"var getSlot = KeySlots.get.bind(KeySlots), setSlot = KeySlots.set.bind(KeySlots);\n"
+
 "function CryptoKey() { throw new TypeError('Illegal constructor'); }\n"
 "function slotOf(k) {\n"
-"  var s = KeySlots.get(k);\n"
+"  var s = getSlot(k);\n"
 "  if (!s) throw new TypeError('not a CryptoKey');\n"
 "  return s;\n"
 "}\n"
@@ -195,8 +213,10 @@ static const char *SUBTLE_PRELUDE =
  * cosmetic mismatch. */
 "  var seenUsage = {}, dedupedUsages = [];\n"
 "  usages.forEach(function (u) { if (!seenUsage[u]) { seenUsage[u] = true; dedupedUsages.push(u); } });\n"
-"  KeySlots.set(k, { type: type, extractable: !!extractable, algorithm: algorithm,\n"
-"                     usages: dedupedUsages, material: material });\n"
+"  setSlot(k, { type: type, extractable: !!extractable, algorithm: algorithm,\n"
+"                     usages: arraySlice(dedupedUsages), allowedUsages: dedupedUsages,\n"
+"                     authAlgorithm: {name:algorithm.name, hash:algorithm.hash ? {name:algorithm.hash.name} : undefined, length:algorithm.length, namedCurve:algorithm.namedCurve}, material: material });\n"
+
 "  return k;\n"
 "}\n"
 "G.CryptoKey = CryptoKey;\n"
@@ -229,7 +249,11 @@ static const char *SUBTLE_PRELUDE =
 "}\n"
 "function toBytes(keyData) {\n"
 "  if (keyData instanceof ArrayBuffer) return new Uint8Array(keyData);\n"
-"  if (ArrayBuffer.isView(keyData)) return new Uint8Array(keyData.buffer, keyData.byteOffset, keyData.byteLength);\n"
+"  if (ArrayBuffer.isView(keyData)) {\n"
+"    if (!(keyData.buffer instanceof ArrayBuffer)) throw new TypeError('shared buffers are not accepted');\n"
+"    return new Uint8Array(keyData.buffer, keyData.byteOffset, keyData.byteLength);\n"
+"  }\n"
+
 "  throw new TypeError('keyData must be a BufferSource');\n"
 "}\n"
 
@@ -240,7 +264,7 @@ static const char *SUBTLE_PRELUDE =
  * 'spki'/'pkcs8', which this file never parses at all. */
 "function usagesOk(requested, allowed) {\n"
 "  for (var i = 0; i < requested.length; i++)\n"
-"    if (allowed.indexOf(requested[i]) === -1) return false;\n"
+"    if (arrayIndexOf(allowed,requested[i]) === -1) return false;\n"
 "  return true;\n"
 "}\n"
 "function reqField(jwk, name) {\n"
@@ -296,7 +320,7 @@ static const char *SUBTLE_PRELUDE =
  * ONLY for Ed25519 in this corpus (Ed448 is unregistered here and X25519/
  * ECDH have no 'alg' semantics), and it is an EXACT string compare --
  * 'ed25519'/'ED25519' must both be rejected, so no case-folding here. */
-"    if (algName === 'Ed25519' && jwk.alg !== undefined && jwk.alg !== 'EdDSA')\n"
+"    if (algName === 'Ed25519' && jwk.alg !== undefined && jwk.alg !== 'EdDSA' && jwk.alg !== 'Ed25519')\n"
 "      throw new G.DOMException(\"Invalid 'alg' field '\" + jwk.alg + \"'\", 'DataError');\n"
 "  } else {\n" /* rsa: presence-only, no modulus/exponent validation (no RSA math here) */
 "    out.n = b64urlDecode(reqField(jwk, 'n'));\n"
@@ -342,10 +366,10 @@ static const char *SUBTLE_PRELUDE =
 "  return new Promise(function (resolve, reject) {\n"
 "    try {\n"
 "      format = String(format);\n"
-"      usages = usages ? Array.prototype.slice.call(usages) : [];\n"
+"      usages = usages ? arraySlice(usages) : [];\n"
 "      var norm = normalizeAlg(algorithm);\n"
 "      var entry = norm.entry;\n"
-"      if (entry.formats.indexOf(format) === -1)\n"
+"      if (arrayIndexOf(entry.formats,format) === -1)\n"
 "        throw new G.DOMException(norm.name + \" does not support the '\" + format + \"' import format\", 'NotSupportedError');\n"
 "      var jwk = null, keyType;\n"
 "      if (format === 'jwk') {\n"
@@ -373,6 +397,27 @@ static const char *SUBTLE_PRELUDE =
 "      if (format === 'jwk') material = parseJwk(entry, norm.name, jwk, keyType, algorithm, extractable);\n"
 "      else if (format === 'raw') material = parseRaw(entry, norm.name, keyData, algorithm);\n"
 "      else throw new G.DOMException(format + ' import is not supported in this build (no DER reader -- see js_subtle.c)', 'NotSupportedError');\n"
+"      if (entry.cls === 'kdf' && extractable)\n"
+"        throw new G.DOMException('KDF base keys must be non-extractable', 'SyntaxError');\n"
+"      if (norm.name === 'HMAC') {\n"
+"        var bits = material.k.length * 8;\n"
+"        if (!bits) throw new G.DOMException('HMAC key is empty', 'DataError');\n"
+"        if (norm.raw.length !== undefined) {\n"
+"          var wanted = uint32(norm.raw.length, 'length');\n"
+"          if (wanted > bits || wanted <= bits - 8) throw new G.DOMException('invalid HMAC length', 'DataError');\n"
+"          if (wanted % 8) throw new G.DOMException('bit-granular HMAC keys are not supported', 'NotSupportedError');\n"
+"        }\n"
+"      }\n"
+"      validateAsymmetric(norm,keyType,material);\n"
+"      if (jwk) {\n"
+"        if (jwk.key_ops !== undefined && (!Array.isArray(jwk.key_ops) || new Set(jwk.key_ops).size !== jwk.key_ops.length || !usagesOk(usages,jwk.key_ops)))\n"
+"          throw new G.DOMException('JWK key_ops does not permit requested usages', 'DataError');\n"
+"        var wantUse = norm.name==='HMAC'||norm.name==='ECDSA'||norm.name==='Ed25519' ? 'sig' : 'enc';\n"
+"        if (usages.length && jwk.use !== undefined && jwk.use !== wantUse)\n"
+"          throw new G.DOMException('JWK use does not match algorithm', 'DataError');\n"
+"        if (entry.cls==='sym' && jwk.alg !== undefined && jwk.alg !== jwaAlg(norm.name,norm.hash,material.k))\n"
+"          throw new G.DOMException('JWK alg does not match algorithm', 'DataError');\n"
+"      }\n"
 "      var algOut = buildAlgorithmObject(entry, norm, algorithm, material);\n"
 "      resolve(makeCryptoKey(keyType, extractable, algOut, usages, material));\n"
 "    } catch (e) { reject(e); }\n"
@@ -400,33 +445,33 @@ static const char *SUBTLE_PRELUDE =
 "  if (entry.cls === 'sym' || entry.cls === 'kdf') {\n"
 "    out.kty = 'oct'; out.k = b64urlEncode(m.k);\n"
 "  } else if (entry.cls === 'ec') {\n"
-"    out.kty = 'EC'; out.crv = slot.algorithm.namedCurve;\n"
+"    out.kty = 'EC'; out.crv = slot.authAlgorithm.namedCurve;\n"
 "    out.x = b64urlEncode(m.x); out.y = b64urlEncode(m.y);\n"
 "    if (slot.type === 'private') out.d = b64urlEncode(m.d);\n"
 "  } else if (entry.cls === 'okp') {\n"
-"    out.kty = 'OKP'; out.crv = slot.algorithm.name;\n"
+"    out.kty = 'OKP'; out.crv = slot.authAlgorithm.name;\n"
 "    out.x = b64urlEncode(m.x);\n"
 "    if (slot.type === 'private') out.d = b64urlEncode(m.d);\n"
 "  } else {\n"
 "    out.kty = 'RSA'; out.n = b64urlEncode(m.n); out.e = b64urlEncode(m.e);\n"
 "    if (slot.type === 'private' && m.d) out.d = b64urlEncode(m.d);\n"
 "  }\n"
-"  var alg = jwaAlg(slot.algorithm.name, slot.algorithm.hash && slot.algorithm.hash.name, m.k);\n"
+"  var alg = jwaAlg(slot.authAlgorithm.name, slot.authAlgorithm.hash && slot.authAlgorithm.hash.name, m.k);\n"
 "  if (alg !== undefined) out.alg = alg;\n"
 "  out.ext = slot.extractable;\n"
-"  out.key_ops = slot.usages.slice();\n"
+"  out.key_ops = arraySlice(slot.allowedUsages);\n"
 "  return out;\n"
 "}\n"
 "SubtleCrypto.prototype.exportKey = function (format, key) {\n"
 "  return new Promise(function (resolve, reject) {\n"
 "    try {\n"
-"      if (!(key instanceof CryptoKey)) throw new TypeError('key must be a CryptoKey');\n"
-"      var slot = KeySlots.get(key);\n"
+"      var slot = slotOf(key);\n"
+
 "      if (!slot.extractable)\n"
 "        throw new G.DOMException('key is not extractable', 'InvalidAccessError');\n"
 "      if (!slot.material)\n"
 "        throw new G.DOMException('export of this key is not supported in this build', 'NotSupportedError');\n"
-"      var entry = ALG[slot.algorithm.name];\n"
+"      var entry = ALG[slot.authAlgorithm.name];\n"
 "      if (format === 'jwk') { resolve(materialToJwk(entry, slot)); return; }\n"
 "      if (format === 'raw') {\n"
 "        var bytes = slot.material.k || (slot.type === 'public' ? slot.material.x : undefined);\n"
@@ -454,15 +499,13 @@ static const char *SUBTLE_PRELUDE =
 "  });\n"
 "};\n"
 
-/* ==== digest: normalization only -- see the file header for why the real
- * hash is not wired in. Still resolves the normalize-only subtests
- * (unknown name, empty algorithm object) for free. */
+/* ==== digest: SHA bytes from the production hash translation units. */
 "SubtleCrypto.prototype.digest = function (algorithm, data) {\n"
 "  return new Promise(function (resolve, reject) {\n"
 "    try {\n"
+"      var bytes = new Uint8Array(toBytes(data));\n"
 "      var name = normalizeDigest(algorithm);\n"
-"      toBytes(data);\n"
-"      reject(new G.DOMException(name + ' digest is not supported in this build (CRYPTO_SRC is not linked -- see js_subtle.c)', 'NotSupportedError'));\n"
+"      resolve(nativeDigest(name, bytes.buffer));\n"
 "    } catch (e) { reject(e); }\n"
 "  });\n"
 "};\n"
@@ -474,40 +517,115 @@ static const char *SUBTLE_PRELUDE =
  * itself throws first (Kelvin-mangled name), and a caller that passes a
  * key which doesn't support the operation at all should learn THAT, not a
  * generic 'not supported'. */
+/* The old check read key.algorithm/key.usages directly. Those are mutable JS
+ * objects, so a verify-only key could be changed into a signing key. Keep the
+ * required cached public objects, but use separate unexposed metadata and a
+ * captured WeakMap getter for all key authorization and export decisions. */
 "function checkKeyFor(key, algName, usage) {\n"
-"  if (!(key instanceof CryptoKey)) throw new TypeError('argument is not a CryptoKey');\n"
-"  if (key.algorithm.name !== algName)\n"
+"  var slot = slotOf(key);\n"
+"  if (slot.authAlgorithm.name !== algName)\n"
 "    throw new G.DOMException('key algorithm does not match', 'InvalidAccessError');\n"
-"  if (key.usages.indexOf(usage) === -1)\n"
+"  if (arrayIndexOf(slot.allowedUsages,usage) === -1)\n"
 "    throw new G.DOMException('key usages do not include ' + usage, 'InvalidAccessError');\n"
+"  return slot;\n"
+"}\n"
+"function operationAlg(input) {\n"
+"  var dict = algDictFrom(input), name = ALG_BY_UPPER[asciiUpper(String(dict.name))];\n"
+"  if (name === undefined) throw new G.DOMException('unsupported algorithm', 'NotSupportedError');\n"
+"  return {name:name, raw:dict};\n"
+"}\n"
+"function hashSize(name) {\n"
+"  var n = {'SHA-256':32,'SHA-384':48,'SHA-512':64}[name];\n"
+"  if (!n) throw new G.DOMException('HMAC/KDF SHA-1 backend is not available', 'NotSupportedError');\n"
+"  return n;\n"
+"}\n"
+"function uint32(value, label) {\n"
+"  var n = Number(value);\n"
+"  if (!Number.isFinite(n)) throw new TypeError(label + ' must be finite');\n"
+"  n = Math.trunc(n);\n"
+"  if (n < 0 || n > 4294967295) throw new TypeError(label + ' is out of range');\n"
+"  return n;\n"
+"}\n"
+"function bufferCopy(value) { return new Uint8Array(toBytes(value)).buffer; }\n"
+"function operationFailure(fn) {\n"
+"  try { return fn(); } catch(e) { throw new G.DOMException(String(e), 'OperationError'); }\n"
 "}\n"
 "function opStub(label, usage, keyArgIndex) {\n"
 "  return function () {\n"
 "    var args = arguments, algorithm = args[0], key = args[keyArgIndex];\n"
 "    return new Promise(function (resolve, reject) {\n"
 "      try {\n"
-"        var norm = normalizeAlg(algorithm);\n"
+"        var norm = operationAlg(algorithm);\n"
 "        checkKeyFor(key, norm.name, usage);\n"
 "        reject(new G.DOMException(norm.name + ' ' + label + ' is not supported in this build', 'NotSupportedError'));\n"
 "      } catch (e) { reject(e); }\n"
 "    });\n"
 "  };\n"
 "}\n"
-"SubtleCrypto.prototype.encrypt = opStub('encrypt', 'encrypt', 1);\n"
-"SubtleCrypto.prototype.decrypt = opStub('decrypt', 'decrypt', 1);\n"
-"SubtleCrypto.prototype.sign = opStub('sign', 'sign', 1);\n"
-"SubtleCrypto.prototype.verify = opStub('verify', 'verify', 1);\n"
-"SubtleCrypto.prototype.deriveBits = opStub('deriveBits', 'deriveBits', 1);\n"
-"SubtleCrypto.prototype.deriveKey = function (algorithm, baseKey, derivedKeyAlgorithm) {\n"
-"  return new Promise(function (resolve, reject) {\n"
-"    try {\n"
-"      var norm = normalizeAlg(algorithm);\n"
-"      checkKeyFor(baseKey, norm.name, 'deriveKey');\n"
-"      normalizeAlg(derivedKeyAlgorithm);\n" /* the derived key's algorithm must ALSO be a real one */
-"      reject(new G.DOMException(norm.name + ' deriveKey is not supported in this build', 'NotSupportedError'));\n"
-"    } catch (e) { reject(e); }\n"
-"  });\n"
+/* HMAC sign normalizes only the algorithm NAME. The previous generic
+ * normalizeAlg incorrectly demanded a hash for sign('HMAC',...), although the
+ * hash belongs to the imported key. KDF hash/salt/info are operation params. */
+"SubtleCrypto.prototype.sign = function(algorithm,key,data) {\n"
+"  return new Promise(function(resolve,reject){ try {\n"
+"    var norm=operationAlg(algorithm), slot=checkKeyFor(key,norm.name,'sign');\n"
+"    if(norm.name !== 'HMAC') throw new G.DOMException('sign algorithm is not implemented','NotSupportedError');\n"
+"    var hlen=hashSize(slot.authAlgorithm.hash.name), bytes=bufferCopy(data);\n"
+"    resolve(operationFailure(function(){return nativeHmac(hlen,slot.material.k.buffer,bytes)}));\n"
+"  } catch(e){reject(e)} });\n"
 "};\n"
+"SubtleCrypto.prototype.verify = function(algorithm,key,signature,data) {\n"
+"  return new Promise(function(resolve,reject){ try {\n"
+"    var norm=operationAlg(algorithm), slot=checkKeyFor(key,norm.name,'verify');\n"
+"    if(norm.name !== 'HMAC') throw new G.DOMException('verify algorithm is not implemented','NotSupportedError');\n"
+"    var hlen=hashSize(slot.authAlgorithm.hash.name), bytes=bufferCopy(data), sig=bufferCopy(signature);\n"
+"    resolve(operationFailure(function(){return nativeHmac(hlen,slot.material.k.buffer,bytes,sig)}));\n"
+"  } catch(e){reject(e)} });\n"
+"};\n"
+"function derive(algorithm,key,length,usage) {\n"
+"  var norm=operationAlg(algorithm), dict=norm.raw;\n"
+"  if(norm.name !== 'HKDF' && norm.name !== 'PBKDF2') throw new G.DOMException('derivation is not implemented','NotSupportedError');\n"
+"  if(dict.hash===undefined || dict.salt===undefined || (norm.name==='HKDF' ? dict.info===undefined : dict.iterations===undefined))\n"
+"    throw new TypeError('derivation dictionary is missing a required member');\n"
+"  var hlen=hashSize(normalizeDigest(dict.hash)), salt=bufferCopy(dict.salt);\n"
+"  var info=norm.name==='HKDF'?bufferCopy(dict.info):new ArrayBuffer(0);\n"
+"  var iterations=norm.name==='PBKDF2'?uint32(dict.iterations,'iterations'):0;\n"
+"  var slot=checkKeyFor(key,norm.name,usage);\n"
+"  if(length===null || length===undefined) throw new G.DOMException('length must be specified','OperationError');\n"
+"  var bits=uint32(length,'length');\n"
+"  if(bits%8 || (norm.name==='PBKDF2' && iterations===0)) throw new G.DOMException('invalid derivation length or iterations','OperationError');\n"
+"  return operationFailure(function(){return nativeKdf(norm.name==='HKDF'?1:0,hlen,slot.material.k.buffer,salt,info,iterations,bits/8)});\n"
+"}\n"
+"SubtleCrypto.prototype.deriveBits = function(algorithm,key,length) {\n"
+"  return new Promise(function(resolve,reject){try{resolve(derive(algorithm,key,length,'deriveBits'))}catch(e){reject(e)}});\n"
+"};\n"
+"SubtleCrypto.prototype.deriveKey = function(algorithm,key,derivedAlgorithm,extractable,usages) {\n"
+"  return new Promise(function(resolve,reject){try{\n"
+"    var norm=normalizeAlg(derivedAlgorithm), bits;\n"
+"    if(norm.name==='HMAC') bits=norm.raw.length===undefined?(norm.hash==='SHA-1'||norm.hash==='SHA-256'?512:1024):uint32(norm.raw.length,'length');\n"
+"    else if(/^AES-/.test(norm.name)) {\n"
+"      if(norm.raw.length===undefined)throw new TypeError('derived AES key length is required');\n"
+"      bits=uint32(norm.raw.length,'length');\n"
+"      if([128,192,256].indexOf(bits)<0)throw new G.DOMException('invalid AES key length','OperationError');\n"
+"    } else throw new G.DOMException('derived key algorithm is not implemented','NotSupportedError');\n"
+"    if(!bits || bits%8)throw new G.DOMException('derived key requires a nonzero byte length','OperationError');\n"
+"    var raw=derive(algorithm,key,bits,'deriveKey');\n"
+"    resolve(SubtleCrypto.prototype.importKey.call(this,'raw',raw,derivedAlgorithm,extractable,usages));\n"
+"  }catch(e){reject(e)}});\n"
+"};\n"
+"function crypt(decrypt,algorithm,key,data) {\n"
+"  return new Promise(function(resolve,reject){try{\n"
+"    var norm=operationAlg(algorithm), slot=checkKeyFor(key,norm.name,decrypt?'decrypt':'encrypt'), dict=norm.raw;\n"
+"    if(norm.name!=='AES-GCM')throw new G.DOMException('cipher is not implemented','NotSupportedError');\n"
+"    if(dict.iv===undefined)throw new TypeError('AES-GCM iv is required');\n"
+"    var iv=bufferCopy(dict.iv), aad=dict.additionalData===undefined?new ArrayBuffer(0):bufferCopy(dict.additionalData), bytes=bufferCopy(data);\n"
+"    var tag=dict.tagLength===undefined?128:uint32(dict.tagLength,'tagLength');\n"
+"    if([32,64,96,104,112,120,128].indexOf(tag)<0)throw new G.DOMException('invalid GCM tag length','OperationError');\n"
+"    if(tag!==128)throw new G.DOMException('truncated GCM tags are not implemented','NotSupportedError');\n"
+"    resolve(operationFailure(function(){return nativeGcm(decrypt?1:0,slot.material.k.buffer,iv,aad,bytes)}));\n"
+"  }catch(e){reject(e)}});\n"
+"}\n"
+"SubtleCrypto.prototype.encrypt = function(algorithm,key,data){return crypt(false,algorithm,key,data)};\n"
+"SubtleCrypto.prototype.decrypt = function(algorithm,key,data){return crypt(true,algorithm,key,data)};\n"
 "SubtleCrypto.prototype.wrapKey = function (format, key, wrappingKey, wrapAlgorithm) {\n"
 "  return new Promise(function (resolve, reject) {\n"
 "    try {\n"
@@ -527,6 +645,7 @@ static const char *SUBTLE_PRELUDE =
 "  });\n"
 "};\n"
 
+#include "js_crypto_keys_script.inc"
 "c.subtle = Object.create(SubtleCrypto.prototype);\n"
 "})\n";
 
@@ -543,7 +662,17 @@ void js_subtle_install(JSContext *ctx)
         JS_FreeValue(ctx, fn);
         return;
     }
-    JSValue r = JS_Call(ctx, fn, JS_UNDEFINED, 0, 0);
+    JSValue native[] = {
+        JS_NewCFunction(ctx, subtle_digest_native, "digest", 2),
+        JS_NewCFunction(ctx, subtle_hmac_native, "hmac", 3),
+        JS_NewCFunction(ctx, subtle_kdf_native, "kdf", 7),
+        JS_NewCFunction(ctx, subtle_gcm_native, "gcm", 5),
+        JS_NewCFunction(ctx, subtle_random_native, "random", 1),
+        JS_NewCFunction(ctx, subtle_keyop_native, "keyop", 5)
+    };
+    const int native_count=(int)(sizeof native/sizeof native[0]);
+    JSValue r = JS_Call(ctx, fn, JS_UNDEFINED, native_count, (JSValueConst *)native);
+    for (int i=0;i<native_count;i++) JS_FreeValue(ctx, native[i]);
     if (JS_IsException(r)) {
         JSValue e = JS_GetException(ctx);
         const char *m = JS_ToCString(ctx, e);

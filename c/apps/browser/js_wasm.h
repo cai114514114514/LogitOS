@@ -29,13 +29,33 @@
 
 WASMJS_FN void js_wasm_install(JSContext *ctx);
 
-/* Drop every module, instance, memory and table this context built.  Call it
+/* Drop every module, instance, memory and table this context built. Other
+ * contexts remain live, including other contexts in the same runtime. Each
+ * install captures an independent owner in private native function data;
+ * reset retires that owner and its old methods cannot address a replacement.
+ * The binding bounds each owner to 128 slots per resource kind and all live
+ * or retained retired owners to 64. Call reset once evaluation has unwound,
+ * at page teardown BEFORE JS_FreeContext, not after: it releases malloc'd
+ * arenas AND held JSValues using their originating runtime, and detaches
+ * cached memory buffers before freeing their backing arenas.
+ *
+ * The former comment promised this scope but the four tables were global:
+ * resetting one context also freed unrelated contexts' resources. That
+ * assumption is now replaced by explicit ownership; ClassID registration
+ * alone was already runtime-aware and did not solve resource isolation.
+ *
+ * Call it
  * at page teardown BEFORE JS_FreeContext, not after: it releases malloc'd
  * arenas the JS heap cannot see AND the JSValues it is holding (each memory's
  * cached ArrayBuffer, each imported function).  Called after the context is
  * gone there is no way to release the second kind, and QuickJS asserts on the
  * leak at JS_FreeRuntime. */
 WASMJS_FN void js_wasm_reset(JSContext *ctx);
+
+#ifdef WASM_REALM_TEST_COUNTS
+/* Native lifetime accounting only; no JavaScript surface or production hook. */
+unsigned js_wasm_test_owner_count(void);
+#endif
 
 #ifdef JS_WASM_OPTIONAL
 LOGIT_WEAK_STUB(js_wasm_install);
