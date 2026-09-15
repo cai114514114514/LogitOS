@@ -43,7 +43,7 @@ void  kfree(void *p) { free(p); }
 void js_domparser_install(JSContext *ctx);
 
 static int fails, checks;
-#define CK(c, m) do { checks++; if (!(c)) { printf("FAIL %s\n", m); fails = 1; } \
+#define CK(c, m) do { checks++; if (!(c)) { printf("FAIL %s\n", m); fails++; } \
                       else printf("ok: %s\n", m); } while (0)
 
 static JSRuntime *rt;
@@ -145,6 +145,31 @@ static void part_a(void)
     CK(run("if (doc.getElementById('a').hasAttribute('nope')) throw 'hasAttribute false positive';"),
        "hasAttribute (absent)");
 
+    /* Search-result summaries parse an independent document and strip markup
+     * with querySelectorAll(...).forEach(el => el.remove()). Exercising normal
+     * page Element.prototype alone misses this separate wrapper completely. */
+    CK(run("var cleaned=p.parseFromString('<!doctype html><body><p id=kept>Useful<a class=headerlink>Anchor</a></p><script>ignored()</script><style>p{color:red}</style></body>','text/html');"
+           "['.headerlink','script','style'].forEach(function(q){cleaned.querySelectorAll(q).forEach(function(e){e.remove();});});"
+           "if(cleaned.body.textContent!=='Useful') throw 'summary not cleaned';"),
+       "DOMParser remove cleans queried elements");
+    CK(run("var kept=cleaned.getElementById('kept');kept.remove();"
+           "if(kept.parentNode!==null || kept.textContent!=='Useful' || cleaned.getElementById('kept')!==null) throw 'remove destroyed or still linked';"
+           "kept.remove();cleaned.body.appendChild(kept);"
+           "if(cleaned.getElementById('kept')!==kept) throw 'cannot reinsert';"),
+       "DOMParser remove detaches idempotently and preserves wrapper identity");
+    CK(run("var tx=cleaned.createTextNode('tail'),co=cleaned.createComment('note');"
+           "kept.appendChild(tx);kept.appendChild(co);tx.remove();co.remove();"
+           "if(tx.parentNode!==null || co.parentNode!==null || tx.textContent!=='tail' || co.textContent!=='note') throw 'character data removed incorrectly';"),
+       "DOMParser remove handles Text and Comment");
+    CK(run("var dt=cleaned.firstChild;if(dt.nodeType!==10) throw 'missing doctype';dt.remove();"
+           "if(dt.parentNode!==null || cleaned.firstChild===dt) throw 'doctype remains';"
+           "if(typeof cleaned.remove!=='undefined') throw 'Document gained ChildNode method';"),
+       "DOMParser remove handles DocumentType but excludes Document");
+    CK(run("kept.remove();cleaned=null;"), "DOMParser removed node retained after document wrapper dropped");
+    JS_RunGC(rt);
+    CK(streq_eval("kept.textContent", "Useful"),
+       "DOMParser removed wrapper keeps its independent arena alive across GC");
+
     /* textContent WRITE, and its return trip. */
     CK(run("doc.getElementById('b').textContent = 'bye';"), "textContent write");
     CK(streq_eval("doc.getElementById('b').textContent", "bye"), "textContent write readback");
@@ -240,5 +265,5 @@ int main(void)
     part_a();
     part_b();
     printf("%d/%d checks passed\n", checks - fails, checks);
-    return fails;
+    return fails ? 1 : 0;
 }

@@ -1,0 +1,24 @@
+<!doctype html><meta charset="utf-8"><title>Download and key consumers</title>
+<style>body{font:20px sans-serif;margin:28px;color:#123}a,button{display:block;margin:18px 0;padding:10px}pre{white-space:pre-wrap}</style>
+<h1>Downloads and operational keys</h1>
+<a id="attachment" href="/attachment">Download server attachment</a>
+<button id="export">Generate a signed report and download it</button>
+<pre id="key-results">Checking independent crypto vectors...</pre>
+<script src="/key-vectors.js"></script><script src="/key-checks.js"></script>
+<script>
+function save(bytes,name){var a=document.createElement('a');a.href=URL.createObjectURL(new Blob([bytes]));a.download=name;a.click();URL.revokeObjectURL(a.href)}
+var originalHistory=history.length;var ticks=0;setInterval(function(){ticks++},100);
+setTimeout(function(){['attachment','export'].forEach(function(id){var r=document.getElementById(id).getBoundingClientRect();console.log('DOWNLOAD-RECT '+id+' '+JSON.stringify({x:r.x+r.width/2,y:r.y+r.height/2}))})},2500);
+document.getElementById('export').addEventListener('click',async function(){try{
+ var key=await crypto.subtle.generateKey('Ed25519',false,['sign','verify']);
+ var message='A useful signed report from LogitOS';
+ var bytes=new TextEncoder().encode(message),signature=await crypto.subtle.sign('Ed25519',key.privateKey,bytes);
+ if(!await crypto.subtle.verify('Ed25519',key.publicKey,signature,bytes))throw Error('Signature did not verify');
+ var report={message:message,publicKey:await crypto.subtle.exportKey('jwk',key.publicKey),signature:Array.from(new Uint8Array(signature))};
+ save(JSON.stringify(report),'signed-report.json');
+ save(new Uint8Array([0,1,2,127,128,255]),'blob.bin');
+ setTimeout(function(){save('','empty.txt')},300);
+ setTimeout(function(){var a=document.createElement('a');a.href='/plain';a.download='suggested.txt';a.click()},600);
+ setTimeout(function(){console.log('DOWNLOAD-PAGE-ALIVE ticks='+ticks+' keys='+cryptoKeyResults.length+' failed='+cryptoKeyResults.filter(x=>!x[1]).length+' historyStable='+(history.length===originalHistory))},1800);
+}catch(e){console.log('DOWNLOAD-PAGE-ERROR '+e)}});
+</script>

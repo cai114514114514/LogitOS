@@ -216,6 +216,8 @@ static int last_tconn(void)
 }
 
 #include "ip6_addr.c"
+/* Diagnostics are not a DNS transport dependency in the host fixture. */
+void kprintf(const char *fmt, ...) { (void)fmt; }
 #include "dns.c"
 
 static int passed, failed;

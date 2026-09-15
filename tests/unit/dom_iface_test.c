@@ -277,8 +277,12 @@ int main(void)
     /* NULL, not a throw, when there is no parent to insert beside. The spec
      * separates this from a bad position string, and a page inserting before a
      * detached element is asking a question with a legitimate answer. */
-    ckjs("var d = document.createElement('div');"
-         "d.insertAdjacentElement('beforebegin', document.createElement('b')) === null",
+    /* This used `var d`, overwriting the fixture's window-named id=d before
+     * the named-property assertion below. Both current and old attribute
+     * folding builds then failed that unrelated assertion (57/58). Keep this
+     * scratch name distinct so the oracle still tests an unshadowed id. */
+    ckjs("var detachedForBefore = document.createElement('div');"
+         "detachedForBefore.insertAdjacentElement('beforebegin', document.createElement('b')) === null",
          "beforebegin on a parentless element is null, not an exception");
 
     /* A mistyped position is a SyntaxError BY NAME. Silently doing nothing

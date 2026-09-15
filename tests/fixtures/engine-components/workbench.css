@@ -1,0 +1,20 @@
+@import url("theme.css");
+body { max-width: 960px; margin: 0 auto; padding: 24px; color: #172b3a; background: #f5f7f8; font: 16px sans-serif; line-height: 1.5; }
+header,section,footer { margin: 0 0 22px; }
+header { border-bottom: 3px solid #146a72; padding-bottom: 20px; }
+h1 { font-size: 32px; margin: 6px 0; } h2 { font-size: 22px; } h3 { font-size: 18px; }
+.eyebrow { color: #146a72; font-size: 12px; letter-spacing: 2px; }
+section { background: white; border: 1px solid #d4dfe4; border-radius: 8px; padding: 18px; }
+.cards { display: flex; gap: 12px; flex-wrap: wrap; }
+article { flex: 1; min-width: 200px; padding: 12px; border: 1px solid #b9ccd5; }
+.flex { display: flex; gap: 8px; } .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.flex > *, .grid > * { padding: 4px 8px; background: #e3eff0; }
+.atomic { padding: 6px; border: 1px solid #146a72; margin: 4px; }
+.atomic.block { display: inline-block; } .atomic.flex { display: inline-flex; } .atomic.grid { display: inline-grid; }
+table { border-collapse: collapse; width: 100%; margin: 16px 0; } th,td { border: 1px solid #bacbd3; padding: 8px; text-align: left; }
+button,input,select,textarea { font: inherit; } button { margin: 4px 4px 4px 0; padding: 6px 10px; }
+label { margin-right: 12px; } pre { padding: 12px; background: #edf2f4; white-space: pre-wrap; overflow-wrap: break-word; }
+.editor { min-height: 70px; border: 1px solid #7c9ca8; padding: 12px; }
+.overflow { overflow: auto; border: 1px solid #bacbd3; padding: 8px; } .wide { width: 1300px; }
+.swatch { width: 280px; padding: 18px; border-radius: 12px; box-shadow: 3px 4px 8px #aabbcc; background: linear-gradient(90deg, #caebe6, #ceddf5); }
+dialog { padding: 24px; border: 2px solid #146a72; } footer { color: #59717d; }

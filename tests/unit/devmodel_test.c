@@ -14,6 +14,9 @@
 #include "pci.h"
 
 static int checks, failures;
+static uint16_t pci_command, pci_write_mask = UINT16_MAX;
+static unsigned pci_command_writes;
+static int pci_command_missing;
 #define CHECK(cond, msg, ...) do {                                            \
     checks++;                                                                 \
     if (!(cond)) { failures++; printf("FAIL: " msg "\n", ##__VA_ARGS__); }    \
@@ -81,10 +84,12 @@ static void test_match(void)
 
 /* -------------------------------------------------------- probe and bind -- */
 static int probe_calls_generic, probe_calls_quirk, probe_calls_decline;
+static int remove_calls_quirk, irq_release_fail;
 
 static int generic_probe(struct device *d) { (void)d; probe_calls_generic++; return 0; }
 static int quirk_probe(struct device *d)   { (void)d; probe_calls_quirk++;   return 0; }
 static int decline_probe(struct device *d) { (void)d; probe_calls_decline++; return -1; }
+static void quirk_remove(struct device *d) { (void)d; remove_calls_quirk++; }
 
 static const struct dev_match generic_ids[] = { DEV_MATCH_CLASS(0x01, 0x06), DEV_MATCH_END };
 static const struct dev_match quirk_ids[]   = { DEV_MATCH_VD(0x8086, 0x2922), DEV_MATCH_END };
@@ -93,7 +98,8 @@ static const struct dev_match net_ids[]     = { DEV_MATCH_CLASS(0x02, 0x00), DEV
 static struct driver drv_decline = { .name = "decline", .bus_type = DEV_BUS_PCI,
                                      .match = quirk_ids,   .probe = decline_probe };
 static struct driver drv_quirk   = { .name = "quirk",   .bus_type = DEV_BUS_PCI,
-                                     .match = quirk_ids,   .probe = quirk_probe };
+                                     .match = quirk_ids,   .probe = quirk_probe,
+                                     .remove = quirk_remove };
 static struct driver drv_generic = { .name = "generic", .bus_type = DEV_BUS_PCI,
                                      .match = generic_ids, .probe = generic_probe };
 static struct driver drv_net     = { .name = "net",     .bus_type = DEV_BUS_PCI,
@@ -138,9 +144,22 @@ static void test_probe(void)
     CHECK(again == 0, "second probe pass bound %d devices (want 0)", again);
     CHECK(probe_calls_quirk == 1, "quirk probe ran %d times across two passes", probe_calls_quirk);
 
-    /* Unbind frees the device for a later pass. */
+    /* An IRQ source that did not stop may still call through drvdata.  Unbind
+     * must preserve the complete owner and allow a later retry. */
+    void *owned = (void *)(uintptr_t)0x1234;
+    ahci->drvdata = owned;
+    irq_release_fail = 1;
+    int removes_before = remove_calls_quirk;
     dev_unbind(ahci);
-    CHECK(ahci->drv == NULL, "dev_unbind must clear ->drv");
+    CHECK(ahci->drv == &drv_quirk && ahci->drvdata == owned &&
+          remove_calls_quirk == removes_before && !ahci->unbinding,
+          "failed IRQ release must keep drvdata and skip remove");
+    irq_release_fail = 0;
+
+    /* A confirmed retry frees the device for a later pass. */
+    dev_unbind(ahci);
+    CHECK(ahci->drv == NULL && remove_calls_quirk == removes_before + 1,
+          "dev_unbind must clear ->drv after confirmed IRQ release");
     again = dev_probe_all();
     CHECK(again == 1 && ahci->drv == &drv_quirk, "unbound device should rebind (again=%d)", again);
 }
@@ -162,11 +181,81 @@ static void test_lookup(void)
     CHECK(dev_at(0) != NULL && dev_at(4) == NULL && dev_at(-1) == NULL, "dev_at bounds");
 }
 
+/* ------------------------------------------------ PCI Command readback -- */
+static void command_model(uint16_t initial, uint16_t write_mask, int missing)
+{
+    pci_command = initial;
+    pci_write_mask = write_mask;
+    pci_command_writes = 0;
+    pci_command_missing = missing;
+}
+
+static void test_pci_command(void)
+{
+    struct device d;
+    memset(&d, 0, sizeof d);
+    d.bus_type = DEV_BUS_PCI;
+    d.bus = 2; d.slot = 3; d.func = 1;
+    d.res[0] = (struct dev_resource){ .start = 0x1000, .size = 0x100,
+                                      .flags = DEV_RES_MEM };
+    d.res[1] = (struct dev_resource){ .start = 0x2000, .size = 0x20,
+                                      .flags = DEV_RES_IO };
+
+    command_model(PCI_CMD_MASTER | PCI_CMD_INTX_DIS, UINT16_MAX, 0);
+    CHECK(dev_enable_checked(&d, 0) == 0 &&
+          pci_command == (PCI_CMD_IO | PCI_CMD_MEM | PCI_CMD_INTX_DIS),
+          "MEM-only gate must clear stale bus mastering");
+
+    d.res[1] = (struct dev_resource){0};
+    command_model(PCI_CMD_MASTER | PCI_CMD_INTX_DIS,
+                  (uint16_t)(UINT16_MAX & ~PCI_CMD_IO), 0);
+    CHECK(dev_enable_checked(&d, 0) == 0 &&
+          pci_command == (PCI_CMD_MEM | PCI_CMD_INTX_DIS),
+          "pure-MMIO device must not be forced to accept I/O decode");
+    d.res[1] = (struct dev_resource){ .start = 0x2000, .size = 0x20,
+                                      .flags = DEV_RES_IO };
+
+    command_model(PCI_CMD_INTX_DIS, UINT16_MAX, 0);
+    CHECK(dev_enable_checked(&d, 1) == 0 &&
+          pci_command == (PCI_CMD_IO | PCI_CMD_MEM | PCI_CMD_MASTER | PCI_CMD_INTX_DIS) &&
+          pci_command_writes == 1,
+          "enable must be confirmed by exact Command readback");
+
+    command_model(PCI_CMD_INTX_DIS,
+                  (uint16_t)(UINT16_MAX & ~PCI_CMD_MASTER), 0);
+    CHECK(dev_enable_checked(&d, 1) < 0 && pci_command == PCI_CMD_INTX_DIS &&
+          pci_command_writes == 2,
+          "enable must reject dropped Command bits and restore the old value");
+
+    command_model(0, UINT16_MAX, 1);
+    CHECK(dev_enable_checked(&d, 1) < 0 && pci_command_writes == 0,
+          "all-ones Command read must be refused without a write");
+
+    command_model(PCI_CMD_IO | PCI_CMD_MEM | PCI_CMD_MASTER | PCI_CMD_INTX_DIS,
+                  UINT16_MAX, 0);
+    CHECK(dev_disable_checked(&d) == 0 && pci_command == PCI_CMD_INTX_DIS,
+          "disable must clear decode and bus mastering with readback");
+
+    command_model(PCI_CMD_IO | PCI_CMD_MEM | PCI_CMD_MASTER | PCI_CMD_INTX_DIS,
+                  (uint16_t)(UINT16_MAX & ~PCI_CMD_MASTER), 0);
+    CHECK(dev_disable_checked(&d) < 0 &&
+          pci_command == (PCI_CMD_MASTER | PCI_CMD_INTX_DIS) &&
+          pci_command_writes == 1,
+          "disable must reject uncleared Command bits without restoring enables");
+
+    d.bus_type = DEV_BUS_PLATFORM;
+    command_model(0, UINT16_MAX, 0);
+    CHECK(dev_enable_checked(&d, 1) < 0 && dev_disable_checked(&d) < 0 &&
+          pci_command_writes == 0,
+          "non-PCI devices must never reach PCI config space");
+}
+
 int main(void)
 {
     test_match();
     test_probe();
     test_lookup();
+    test_pci_command();
     dev_dump();
     printf("\nDevice-model tests: %d checks, %d failed\n", checks, failures);
     return failures ? 1 : 0;
@@ -180,8 +269,18 @@ uint32_t pci_cfg_read(uint8_t b, uint8_t s, uint8_t f, uint16_t o)
 void pci_cfg_write(uint8_t b, uint8_t s, uint8_t f, uint16_t o, uint32_t v)
 { (void)b; (void)s; (void)f; (void)o; (void)v; }
 uint16_t pci_cfg_read16(uint8_t b, uint8_t s, uint8_t f, uint16_t o)
-{ (void)b; (void)s; (void)f; (void)o; return 0; }
+{
+    (void)b; (void)s; (void)f;
+    if (o == PCI_CFG_COMMAND) return pci_command_missing ? UINT16_MAX : pci_command;
+    return 0;
+}
 void pci_cfg_write16(uint8_t b, uint8_t s, uint8_t f, uint16_t o, uint16_t v)
-{ (void)b; (void)s; (void)f; (void)o; (void)v; }
+{
+    (void)b; (void)s; (void)f;
+    if (o != PCI_CFG_COMMAND || pci_command_missing) return;
+    pci_command_writes++;
+    pci_command = (uint16_t)((pci_command & (uint16_t)~pci_write_mask) |
+                             (v & pci_write_mask));
+}
 const char *pci_class_name(uint8_t c, uint8_t s) { (void)c; (void)s; return "test"; }
-void dev_irq_release(struct device *d) { (void)d; }
+int dev_irq_release(struct device *d) { (void)d; return irq_release_fail ? -1 : 0; }

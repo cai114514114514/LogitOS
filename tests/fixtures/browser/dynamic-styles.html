@@ -1,0 +1,30 @@
+<!doctype html><meta charset=utf-8><title>Dynamic stylesheet regression</title>
+<style>body{font:20px sans-serif;margin:40px}#target{width:31px}</style>
+<h1>Dynamic stylesheet regression</h1><p id=result>Waiting for stylesheets</p><div id=target>Styled content</div>
+<script>
+var events=[],checks=0,failures=0,sync=true;
+function check(ok,name){checks++;if(!ok)failures++;console.log((ok?'PASS ':'FAIL ')+name)}
+function sheet(id,href){var s=document.createElement('link');s.id=id;s.rel='stylesheet';s.href=href;s.onload=function(e){events.push(id+':load');check(!sync,'stylesheet load is asynchronous');check(e.target===s&&!e.bubbles,'stylesheet event target and propagation')};s.onerror=function(){events.push(id+':error')};document.head.appendChild(s);return s;}
+var first=sheet('first','/first.css');sheet('empty','/empty.css');sheet('missing','/missing.css');
+var late=document.createElement('style');late.textContent='#target{width:73px}';document.head.appendChild(late);
+sync=false;
+setTimeout(function(){
+check(events.indexOf('first:load')>=0,'dynamic stylesheet delivers load');
+check(events.indexOf('empty:load')>=0,'empty stylesheet delivers load');
+check(events.indexOf('missing:error')>=0,'missing stylesheet delivers error');
+check(parseInt(getComputedStyle(document.getElementById('target')).width)===73,'later inline style wins in document order');
+late.remove();
+setTimeout(function(){
+check(parseInt(getComputedStyle(document.getElementById('target')).width)===52,'loaded external style survives inline removal');
+first.href='/second.css';
+setTimeout(function(){
+check(parseInt(getComputedStyle(document.getElementById('target')).width)===94,'href change replaces applied stylesheet');
+first.remove();
+setTimeout(function(){
+check(parseInt(getComputedStyle(document.getElementById('target')).width)===31,'removal withdraws external stylesheet');
+var result='DYNAMIC-STYLES checks='+checks+' failures='+failures;document.getElementById('result').textContent=result;console.log(result);
+},500);
+},1000);
+},500);
+},3000);
+</script>
