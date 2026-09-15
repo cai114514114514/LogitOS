@@ -34,4 +34,14 @@ static inline int tolower(int c) { return isupper(c)?c+32:c; }
 static inline int _toupper(int c) { return c-32; }
 static inline int _tolower(int c) { return c+32; }
 
+#include <locale.h>
+int isalnum_l(int, locale_t); int isalpha_l(int, locale_t);
+int isblank_l(int, locale_t); int iscntrl_l(int, locale_t);
+int isdigit_l(int, locale_t); int isgraph_l(int, locale_t);
+int islower_l(int, locale_t); int isprint_l(int, locale_t);
+int ispunct_l(int, locale_t); int isspace_l(int, locale_t);
+int isupper_l(int, locale_t); int isxdigit_l(int, locale_t);
+int isascii_l(int, locale_t);
+int tolower_l(int, locale_t); int toupper_l(int, locale_t);
+
 #endif /* _CTYPE_H */

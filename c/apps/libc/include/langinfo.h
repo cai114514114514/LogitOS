@@ -53,5 +53,7 @@ enum {
 };
 
 char *nl_langinfo(nl_item item);
+#include <locale.h>
+char *nl_langinfo_l(nl_item item, locale_t locale);
 
 #endif /* _LANGINFO_H */

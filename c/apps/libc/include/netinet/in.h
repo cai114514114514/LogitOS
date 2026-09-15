@@ -13,6 +13,8 @@
  * report for the precise gap. */
 
 typedef uint16_t in_port_t;
+/* 2026-09-11: the client-only note above is historical. IPv4 stream sockets
+ * now consume these network-order addresses through libc/socket.c. */
 typedef uint32_t in_addr_t;
 
 struct in_addr { in_addr_t s_addr; };

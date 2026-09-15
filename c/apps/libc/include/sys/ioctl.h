@@ -39,6 +39,7 @@ struct winsize {
 };
 
 #define TIOCGWINSZ 0x5413
+#define TIOCSWINSZ 0x5414
 #define TIOCGPGRP  0x540F
 #define FIONREAD   0x541B
 

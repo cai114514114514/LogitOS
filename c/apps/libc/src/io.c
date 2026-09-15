@@ -104,9 +104,12 @@ int rmdir(const char *p)
  * which is exactly what the shell arranges. */
 int isatty(int fd)
 {
-    if (fd < 0) { errno = EBADF; return 0; }
-    if (sys(SYS_LSEEK, fd, 0, SEEK_CUR) >= 0) { errno = ENOTTY; return 0; }
-    if (fd <= 2) return 1;
+    /* 2026-09-11: descriptor numbers never identify a terminal. Both a pipe
+     * and the old heuristic's tty were unseekable fd 0; metadata now exposes
+     * the real device type, including PTY slaves duplicated above fd 2. */
+    struct stat s;
+    if (fstat(fd,&s)<0) return 0;
+    if (S_ISCHR(s.st_mode)) return 1;
     errno = ENOTTY;
     return 0;
 }
@@ -129,21 +132,28 @@ int access(const char *path, int mode)
 
 int ftruncate(int fd, off_t len)
 {
-    /* There is no truncate syscall. Growing works (seek past the end and write
-     * a zero byte); shrinking does not, and says so rather than reporting a
-     * success that leaves the old bytes in place. */
-    long cur = sys(SYS_LSEEK, fd, 0, SEEK_CUR);
-    long end = sys(SYS_LSEEK, fd, 0, SEEK_END);
-    if (cur < 0 || end < 0) { errno = EBADF; return -1; }
-    if (len < end) { sys(SYS_LSEEK, fd, cur, SEEK_SET); errno = ENOSYS; return -1; }
-    if (len > end) {
-        char z = 0;
-        sys(SYS_LSEEK, fd, len - 1, SEEK_SET);
-        if (sys(SYS_WRITE, fd, (long)&z, 1) != 1) { errno = EIO; return -1; }
+    /* ftruncate now has a real fd-level primitive (SYS_FTRUNCATE, storage wave,
+     * 2026-08-30). The kernel only returns 0/-1 for this call, so errno is a
+     * best-effort shape. Use EBADF when the descriptor is invalid; use EINVAL
+     * for the other shapes (read-only/wrong kind / bad len / alloc failure)
+     * rather than inventing a positive success signal.
+     *
+     * Why this is not a no-op: before this change shrinking was ENOSYS, and
+     * growing was simulated through lseek+write, which could leak stale uninit
+     * bytes on grown holes. The fd primitive keeps shrink correctness and a
+     * defined whole-file result.
+     *
+     * Deliberate gap: errno is not exact for every -1 shape because the ABI itself
+     * reports only one-bit failure; returning EBADF or EINVAL is the house rule.
+     */
+    long r = sys(SYS_FTRUNCATE, fd, len, 0);
+    if (r < 0) {
+        errno = (sys(SYS_LSEEK, fd, 0, SEEK_CUR) < 0) ? EBADF : EINVAL;
+        return -1;
     }
-    sys(SYS_LSEEK, fd, cur, SEEK_SET);
     return 0;
 }
+
 int truncate(const char *path, off_t len)
 {
     int fd = open(path, O_RDWR);
@@ -255,7 +265,11 @@ long sysconf(int name)
     case _SC_OPEN_MAX:  return OPEN_MAX;
     case _SC_CLK_TCK:   return 100;          /* the kernel's PIT rate */
     case _SC_ARG_MAX:   return ARG_MAX;
-    case _SC_NPROCESSORS_ONLN: return sys(SYS_CPU_INDEX, 0, 0, 0) >= 0 ? 4 : 1;
+    case _SC_NPROCESSORS_ONLN: {
+        long n = sys(SYS_CPU_COUNT, 0, 0, 0);
+        if (n < 1) { errno = ENOSYS; return -1; }
+        return n;
+    }
     default: errno = EINVAL; return -1;
     }
 }
