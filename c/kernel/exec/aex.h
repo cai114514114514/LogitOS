@@ -2,6 +2,7 @@
 #define LOGIT_AEX_H
 
 #include <stdint.h>
+#include "../../../include/abi/aex_agent.h"
 
 /* AEX -- the Logit native executable.
  *
@@ -106,7 +107,7 @@ struct aex_header {
 #define AEX_MAGIC        "AEX1"
 #define AEX_VERSION      2      /* what mkaex.py writes today            */
 #define AEX_VERSION_MIN  1      /* the oldest this loader will accept    */
-#define AEX_VERSION_MAX  2      /* anything above is refused, by number  */
+#define AEX_VERSION_MAX  3      /* v3 adds an explicit agent contract */
 #define AEX_VERSION_BARE 0      /* reported in aex_info.version for a bare
                                  * ELF: there is no container, so there is
                                  * no container version. 0 is the value an
@@ -186,6 +187,11 @@ struct elf_image;
 
 /* Everything the container says, read once, bounded. */
 struct aex_info {
+    /* v3 consumers need owned metadata on the streaming path too. Keep the
+     * historical pointer fields below for existing memory-backed callers. */
+    struct aex_agent_manifest agent;
+    char agent_id[AEX_AGENT_ID_MAX];
+    uint8_t image_hash[32];
     uint16_t version, flags, hdr_size, stack_pages;
     uint8_t  arch, abi, category, sort;
     uint32_t elf_size, crc32;

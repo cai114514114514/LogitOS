@@ -2,6 +2,8 @@
 #define LOGIT_ELF_H
 
 #include <stdint.h>
+#include "../../../include/abi/aex_agent.h"
+#include "../mm/mm.h" /* one authoritative pair of user windows */
 
 /* The ELF64 loader.
  *
@@ -26,7 +28,7 @@
 #define ELF_E_CLASS       -3   /* not ELFCLASS64                                 */
 #define ELF_E_DATA        -4   /* not ELFDATA2LSB                                */
 #define ELF_E_IDENT       -5   /* EI_VERSION / EI_OSABI / EI_ABIVERSION          */
-#define ELF_E_TYPE        -6   /* not ET_EXEC (ET_DYN needs relocation)          */
+#define ELF_E_TYPE        -6   /* not ET_EXEC or supported static ET_DYN          */
 #define ELF_E_MACHINE     -7   /* not EM_X86_64                                  */
 #define ELF_E_VERSION     -8   /* e_version != EV_CURRENT                        */
 #define ELF_E_EHSIZE      -9   /* e_ehsize / e_phentsize / e_shentsize wrong     */
@@ -38,14 +40,15 @@
 #define ELF_E_SEGALIGN   -15   /* p_align not a power of two / bad congruence    */
 #define ELF_E_SEGORDER   -16   /* PT_LOADs not ascending, or they overlap        */
 #define ELF_E_WX         -17   /* a PT_LOAD asks for write AND execute           */
-#define ELF_E_INTERP     -18   /* PT_INTERP: no dynamic loader on this system    */
-#define ELF_E_DYNAMIC    -19   /* PT_DYNAMIC: no relocation on this system       */
+#define ELF_E_INTERP     -18   /* malformed/unavailable/unsupported interpreter */
+#define ELF_E_DYNAMIC    -19   /* unsupported dynamic-linker requirements       */
 #define ELF_E_STACKX     -20   /* PT_GNU_STACK asks for an executable stack      */
 #define ELF_E_TLS        -21   /* PT_TLS malformed                               */
 #define ELF_E_TOOBIG     -22   /* the image asks for more memory than the cap    */
 #define ELF_E_NOLOAD     -23   /* no PT_LOAD lands in the user region            */
 #define ELF_E_OOM        -24   /* out of physical frames part-way through        */
 #define ELF_E_PHNUM      -25   /* e_phnum 0, or past the cap                     */
+#define ELF_E_RELOC      -27   /* unsupported/malformed static PIE relocation */
 #define ELF_E_FLAGS      -26   /* e_flags nonzero: no x86-64 flags are defined    */
 
 /* Which program headers the image actually carried. Diagnostics, and the thing
@@ -166,6 +169,9 @@ int elf_file_runs(const struct elf64_phdr *ph, int phnum, uint64_t hdr_off,
  *                              on the stack, which means the program can
  *                              rewrite the seed of its own canary.
  *   AT_BASE                    0: there is no interpreter to have a base.
+ *                              Correction: zero for static images; otherwise
+ *                              the loaded interpreter's bias. AT_ENTRY always
+ *                              names the main image, even before it executes.
  *   AT_UID/EUID/GID/AT_SECURE  0. One user, never setuid -- but emitted rather
  *                              than omitted, because a libc that cannot find
  *                              AT_SECURE assumes it IS running privileged.
@@ -200,9 +206,16 @@ int elf_file_runs(const struct elf64_phdr *ph, int phnum, uint64_t hdr_off,
 /* Everything the loader learned about the image, for the caller that has to
  * build the process around it. Zero-initialise before the call. */
 struct elf_image {
+    struct aex_agent_identity agent; /* populated by AEX from the loaded bytes */
     uint64_t entry;         /* e_entry                                        */
+    /* entry remains the MAIN program's AT_ENTRY. start_entry is the first
+     * instruction to execute, which belongs to PT_INTERP when present. */
+    uint64_t start_entry, interp_base;
+    char interp_path[128];  /* absolute, terminated path; empty for static */
     uint64_t top;           /* page-aligned top of EVERYTHING mapped, so a
                              * caller can place a stack above the image       */
+    uint64_t load_bias;     /* ET_DYN address bias; zero for fixed ET_EXEC */
+    uint64_t relocations;   /* applied R_X86_64_RELATIVE entries */
     uint64_t load_base;     /* lowest mapped page                             */
 
     /* The program's own view of itself, for auxv. AT_PHDR is always a mapped,
@@ -302,6 +315,13 @@ int elf_read_sha256(const struct elf_reader *rd, uint64_t off, uint64_t n, uint8
 int elf_load_reader(const struct elf_reader *rd, struct elf_image *out,
                     const struct elf_src *src);
 
+/* Filesystem seam for PT_INTERP. The kernel provider checks execution/read
+ * permissions and holds a transient cache handle; the loader always closes
+ * it, while successful file VMAs retain their own references. Host tests may
+ * replace this seam with fixture files, never the mapping/validation logic. */
+int elf_interpreter_open(const char *path, struct elf_reader *rd, struct elf_src *src);
+void elf_interpreter_close(const struct elf_src *src);
+
 /* Load a static ELF64 executable image (already in memory, `image_size` bytes)
  * into the CURRENTLY ACTIVE address space as user pages. The image is untrusted
  * on-disk data and every field read from it is bounded against image_size.
@@ -328,13 +348,14 @@ uint64_t elf_load(void *image, uint64_t image_size, uint64_t *out_top);
  * browser test variant at ~108 MiB. */
 #define ELF_MAX_IMAGE_BYTES (256ull * 1024 * 1024)
 
-/* The private user region (PML4[0]/PDPT[1]). Anything outside it would be
- * mapped into the SHARED kernel page tables. */
-#define USER_VA_BASE 0x40000000ull
-#define USER_VA_END  0x80000000ull
+/* Historical programs use the legacy PDPT[1] window. Static PIE uses the
+ * separately private wide window in mm.h; the gap between them stays denied.
+ * Keep these legacy aliases for old linkers and tests, not as a wide limit. */
+#define USER_VA_BASE MM_USER_BASE
+#define USER_VA_END  MM_USER_END
 
 /* THE ONE PREDICATE for "an entry point this machine can jump to": inside the
- * private user region, with 64 MiB of headroom above it, because
+ * either private user window, with 64 MiB of headroom above it, because
  * setup_cli_stack() maps the CLI stack at (entry & ~0xFFFFF) + 0x4000000.
  * Subtraction form, so a huge e_entry cannot wrap the comparison.
  *
@@ -344,7 +365,7 @@ uint64_t elf_load(void *image, uint64_t image_size, uint64_t *out_top);
  * space. A second copy of the constant in aex.c is the thing that drifts. */
 static inline int elf_entry_in_user_region(uint64_t e)
 {
-    return e >= USER_VA_BASE && e <= USER_VA_END - 0x4000000;
+    return mm_user_range(e, 0x4000000);
 }
 
 /* The identification half of the loader's header matrix -- magic, class,

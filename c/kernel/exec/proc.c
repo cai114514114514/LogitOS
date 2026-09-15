@@ -1,3 +1,4 @@
+#include "vfs_cred.h"
 #include <stdint.h>
 #include <stddef.h>
 #include "proc.h"
@@ -5,6 +6,7 @@
 #include "sched.h"
 #include "vmm.h"
 #include "mm.h"
+#include "mmguard.h"
 #include "pmm.h"
 #include "pit.h"
 #include "kprintf.h"
@@ -32,7 +34,9 @@ LOGIT_WEAK_STUB(sock_close_owner);
  * OUTSIDE it (lock order BKL -> g_proc_lock -> g_file_lock -> g_sched_lock ->
  * g_kheap_lock -> g_pmm_lock; nothing under g_proc_lock calls vmm/kheap, so the
  * order never reverses). irqsave: reachable from fault-context proc_exit and held
- * with the timer live on a BKL-free path. */
+ * with the timer live on a BKL-free path.
+ * Correction: there is no outer BKL now. Table/FD reference locks cover only
+ * publication and snapshots; no MM, I/O or scheduling runs under g_proc_lock. */
 static spinlock_t g_proc_lock = SPINLOCK_INIT;
 
 static struct proc procs[NPROC];
@@ -115,10 +119,10 @@ void proc_fork_stats(uint64_t *forks, uint64_t *cycles, uint64_t *shared, uint64
 
 void proc_fork_stats(uint64_t *forks, uint64_t *cycles, uint64_t *shared, uint64_t *copied)
 {
-    if (forks)  *forks  = g_forks;
-    if (cycles) *cycles = g_fork_cycles;
-    if (shared) *shared = g_fork_shared;
-    if (copied) *copied = g_fork_copied;
+    if (forks)  *forks  = __atomic_load_n(&g_forks, __ATOMIC_RELAXED);
+    if (cycles) *cycles = __atomic_load_n(&g_fork_cycles, __ATOMIC_RELAXED);
+    if (shared) *shared = __atomic_load_n(&g_fork_shared, __ATOMIC_RELAXED);
+    if (copied) *copied = __atomic_load_n(&g_fork_copied, __ATOMIC_RELAXED);
 }
 
 /* An idle desktop stays silent; a shell running commands leaves a continuous
@@ -140,10 +144,10 @@ void proc_fork_stats(uint64_t *forks, uint64_t *cycles, uint64_t *shared, uint64
 static void fork_report_tick(void)
 {
     uint64_t now = timer_ms();
-    if (g_forks == g_rep_forks) return;
-    if (g_forks - g_rep_forks < FORK_REPORT_EVERY && g_rep_ms && now - g_rep_ms < 5000) return;
+    if (__atomic_load_n(&g_forks, __ATOMIC_RELAXED) == g_rep_forks) return;
+    if (__atomic_load_n(&g_forks, __ATOMIC_RELAXED) - g_rep_forks < FORK_REPORT_EVERY && g_rep_ms && now - g_rep_ms < 5000) return;
     g_rep_ms = now ? now : 1;
-    g_rep_forks = g_forks;
+    g_rep_forks = __atomic_load_n(&g_forks, __ATOMIC_RELAXED);
     /* `live` is what makes two samples comparable. The free-frame count on its
      * own is not: taken while one more process exists it is short by that
      * process's pages (~256 for a shell), which is far bigger than the leak
@@ -151,13 +155,15 @@ static void fork_report_tick(void)
      * test -- compare only samples taken with the same set of processes
      * alive. */
     int live = 0;
+    uint64_t report_flags = spin_lock_irqsave(&g_proc_lock);
     for (int i = 0; i < NPROC; i++) if (procs[i].state != PROC_FREE) live++;
+    spin_unlock_irqrestore(&g_proc_lock, report_flags);
 
     kprintf("[mm] fork: cow=%s, %d forks, %d pages shared, %d copied, %d kcycles/fork; "
             "%d frames free, %d shared, %d bugs, %d live\n",
             mm_cow_enabled() ? "on" : "off",
-            (int)g_forks, (int)g_fork_shared, (int)g_fork_copied,
-            (int)(g_forks ? g_fork_cycles / g_forks / 1000 : 0),
+            (int)__atomic_load_n(&g_forks, __ATOMIC_RELAXED), (int)__atomic_load_n(&g_fork_shared, __ATOMIC_RELAXED), (int)__atomic_load_n(&g_fork_copied, __ATOMIC_RELAXED),
+            (int)(__atomic_load_n(&g_forks, __ATOMIC_RELAXED) ? __atomic_load_n(&g_fork_cycles, __ATOMIC_RELAXED) / __atomic_load_n(&g_forks, __ATOMIC_RELAXED) / 1000 : 0),
             (int)pmm_free_frames(), (int)pmm_shared_frames(), (int)pmm_bugs(), live);
 }
 
@@ -168,15 +174,44 @@ void proc_init(void)
 
 struct proc *proc_current(void) { return (struct proc *)sched_current_data(); }
 
-struct proc *proc_by_pid(int pid)
+/* A copied record cannot silently change to a new pid after reaping.
+ * The copied fd pointers are diagnostics only, never references. */
+int proc_snapshot(int pid, struct proc *out)
 {
     uint64_t fl = spin_lock_irqsave(&g_proc_lock);
-    struct proc *ret = NULL;
-    for (int i = 0; i < NPROC; i++)
-        if (procs[i].state != PROC_FREE && procs[i].pid == pid) { ret = &procs[i]; break; }
+    int found = 0;
+    for (int i = 0; i < NPROC; i++) if ((procs[i].state == PROC_RUNNING || procs[i].state == PROC_ZOMBIE) && procs[i].pid == pid) {
+        if (out) {
+            uint64_t ff = spin_lock_irqsave(&procs[i].fd_lock);
+            *out = procs[i];
+            spin_unlock_irqrestore(&procs[i].fd_lock, ff);
+        }
+        found = 1; break;
+    }
     spin_unlock_irqrestore(&g_proc_lock, fl);
-    return ret;
+    return found;
 }
+int proc_agent_identity(int pid, struct aex_agent_identity *id)
+{
+    uint64_t fl=spin_lock_irqsave(&g_proc_lock); int found=0;
+    for (int i=0;i<NPROC;i++) if (procs[i].state==PROC_RUNNING && procs[i].pid==pid) {
+        uint64_t ff=spin_lock_irqsave(&procs[i].fd_lock);
+        *id=procs[i].agent; found=id->abi!=0;
+        spin_unlock_irqrestore(&procs[i].fd_lock,ff); break;
+    }
+    spin_unlock_irqrestore(&g_proc_lock,fl);
+    if (found) { struct vcred c; vfs_cred_get(pid,&c); id->uid=c.uid; id->gid=c.gid; }
+    return found;
+}
+int proc_agent_channel_valid(int pid, uint64_t generation)
+{
+    struct proc *p=proc_current();
+    if (!p || p->pid!=pid) return 0;
+    uint64_t fl=spin_lock_irqsave(&p->fd_lock);
+    int ok=p->agent.abi && p->agent.generation==generation;
+    spin_unlock_irqrestore(&p->fd_lock,fl); return ok;
+}
+int proc_exists(int pid) { return proc_snapshot(pid, NULL); }
 
 static struct proc *alloc_proc(void)
 {
@@ -186,8 +221,10 @@ static struct proc *alloc_proc(void)
         if (procs[i].state == PROC_FREE) {
             struct proc *p = &procs[i];
             for (int f = 0; f < NFD; f++) p->fd[f] = NULL;
+            for (unsigned a = 0; a < sizeof p->agent; a++) ((uint8_t *)&p->agent)[a] = 0;
             g_killmark[i] = 0;                 /* a recycled slot never inherits a kill mark */
-            p->state = PROC_RUNNING;           /* claim the slot atomically under the lock */
+            p->fd_lock = (spinlock_t)SPINLOCK_INIT; p->teardown = 0; p->execing = 0; p->system_service = 0;
+            p->state = PROC_BUILDING; /* reserved, not externally visible until proc_publish */
             p->pid = next_pid++;
             p->ppid = 0; p->exit_code = 0; p->tid = -1; p->cr3 = 0; p->gui = NULL;
             p->cwd[0] = '/'; p->cwd[1] = 0; p->name[0] = 0;
@@ -216,6 +253,33 @@ static struct proc *alloc_proc(void)
     return ret;
 }
 
+/* Reservation and publication are separate. Previously alloc_proc made the
+ * slot RUNNING before its CR3/credentials/FDs existed; another core could kill
+ * or inspect that half-built process. Scheduler publication is infallible and
+ * precedes enqueue, with neither proc nor scheduler lock nested in the other. */
+void proc_publish(struct proc *p, int tid)
+{
+    if (!p) return;
+    uint64_t fl = spin_lock_irqsave(&g_proc_lock);
+    if (p->state == PROC_BUILDING) {
+        p->tid = tid;
+        __atomic_store_n(&p->state, PROC_RUNNING, __ATOMIC_RELEASE);
+    }
+    spin_unlock_irqrestore(&g_proc_lock, fl);
+}
+
+void proc_abort_build(struct proc *p)
+{
+    if (!p) return;
+    /* Caller retains the sole BUILDING reservation through cleanup. Publishing
+     * FREE first lets a new allocation inherit this cleanup and lose its FDs. */
+    proc_fd_close_all(p);
+    ksig_proc_free(p->pid);
+    uint64_t fl = spin_lock_irqsave(&g_proc_lock);
+    p->pid = 0; p->cr3 = 0; p->state = PROC_FREE;
+    spin_unlock_irqrestore(&g_proc_lock, fl);
+}
+
 static void scopy(char *d, const char *s, int max)
 { int i = 0; for (; s && i < max - 1 && s[i]; i++) d[i] = s[i]; d[i] = 0; }
 
@@ -228,27 +292,120 @@ struct proc *proc_create(uint64_t cr3, void *gui, const char *name, int ppid)
     return p;
 }
 
+int proc_exec_space(struct proc *p, uint64_t old, uint64_t next)
+{
+    /* uthread_exec_begin excludes sibling creation for the whole load. Publish
+     * under the same lock as procfs/OOM snapshots, but leave scheduler changes
+     * and old-space reclamation outside it: both can acquire sleeping locks. */
+    uint64_t f = spin_lock_irqsave(&g_proc_lock);
+    int ok = p && p->cr3 == old && !p->teardown;
+    if (ok) p->cr3 = next;
+    spin_unlock_irqrestore(&g_proc_lock, f);
+    return ok;
+}
+
+/* The old BKL made fd lookup look like ownership. A close on another core
+ * can now recycle both the descriptor and files[] slot: acquire the file
+ * reference while the table lock still protects the pointer. Backend cleanup
+ * stays outside the table lock because it may sleep for I/O. */
 int proc_fd_alloc(struct proc *p, struct file *f)
 {
     if (!p || !f) return -1;
-    for (int i = 0; i < NFD; i++)
-        if (!p->fd[i]) { p->fd[i] = f; return i; }
-    return -1;
+    uint64_t fl = spin_lock_irqsave(&p->fd_lock);
+    int fd = -1;
+    if (!__atomic_load_n(&p->teardown, __ATOMIC_ACQUIRE)) for (int i = 0; i < NFD; i++)
+        if (!p->fd[i]) { p->fd[i] = f; fd = i; break; }
+    spin_unlock_irqrestore(&p->fd_lock, fl);
+    return fd;
 }
-
-struct file *proc_fd_get(struct proc *p, int fd)
+struct file *proc_fd_acquire(struct proc *p, int fd)
 {
     if (!p || fd < 0 || fd >= NFD) return NULL;
-    return p->fd[fd];
+    uint64_t fl = spin_lock_irqsave(&p->fd_lock);
+    struct file *f = p->fd[fd];
+#ifndef BKL_NEGCTL_FD_BORROW
+    if (f) file_dup(f);
+#endif
+    spin_unlock_irqrestore(&p->fd_lock, fl);
+    return f;
 }
+int proc_fd_close(struct proc *p, int fd)
+{
+    if (!p || fd < 0 || fd >= NFD) return -1;
+    uint64_t fl = spin_lock_irqsave(&p->fd_lock);
+    struct file *f = p->fd[fd]; p->fd[fd] = NULL;
+    spin_unlock_irqrestore(&p->fd_lock, fl);
+    if (!f) return -1;
+    return file_close(f) < 0 ? -2 : 0;
+}
+/* Rollback owns an extra reference to expected. Pointer equality is therefore
+ * generation-safe: close/reopen on a sibling cannot recycle this file slot. */
+int proc_fd_close_if(struct proc *p, int fd, struct file *expected)
+{
+    if (!p || fd < 0 || fd >= NFD) return -1;
+    uint64_t fl = spin_lock_irqsave(&p->fd_lock);
+    struct file *f = p->fd[fd] == expected ? p->fd[fd] : NULL;
+    if (f) p->fd[fd] = NULL;
+    spin_unlock_irqrestore(&p->fd_lock, fl);
+    return f ? file_close(f) : 0;
+}
+int proc_fd_take_exclusive(struct proc *p, int fd, struct file *f)
+{
+    if (!p || fd<0 || fd>=NFD || !f) return 0;
+    uint64_t fl=spin_lock_irqsave(&p->fd_lock);
+    int ok=p->fd[fd]==f && file_refs_equal(f,2);
+    if (ok) p->fd[fd]=NULL;
+    spin_unlock_irqrestore(&p->fd_lock,fl);
+    if (ok) file_close(f); /* caller's acquired reference becomes child's fd */
+    return ok;
+}
+int proc_fd_dup2(struct proc *p, int old, int replacement)
+{
+    if (!p || old < 0 || old >= NFD || replacement < 0 || replacement >= NFD) return -1;
+    uint64_t fl = spin_lock_irqsave(&p->fd_lock);
+    struct file *f = p->fd[old], *drop = NULL;
+    if (f && old != replacement) {
+        file_dup(f); drop = p->fd[replacement]; p->fd[replacement] = f;
+    }
+    spin_unlock_irqrestore(&p->fd_lock, fl);
+    if (drop) file_close(drop);
+    return f ? replacement : -1;
+}
+int proc_fd_pair(struct proc *p, struct file *a, struct file *b, int out[2])
+{
+    if (!p || !a || !b) return -1;
+    uint64_t fl = spin_lock_irqsave(&p->fd_lock);
+    int x = -1, y = -1;
+    if (!__atomic_load_n(&p->teardown, __ATOMIC_ACQUIRE)) for (int i = 0; i < NFD; i++) if (!p->fd[i]) {
+        if (x < 0) x = i; else { y = i; break; }
+    }
+    if (y >= 0) { p->fd[x] = a; p->fd[y] = b; out[0] = x; out[1] = y; }
+    spin_unlock_irqrestore(&p->fd_lock, fl);
+    return y >= 0 ? 0 : -1;
+}
+void proc_fd_clone(struct proc *dst, struct proc *src)
+{
+    /* dst is private and has not been scheduled or returned to userland. */
+    uint64_t fl = spin_lock_irqsave(&src->fd_lock);
+    for (int i = 0; i < NFD; i++) {
+        dst->fd[i] = src->fd[i]; if (dst->fd[i]) file_dup(dst->fd[i]);
+    }
+    spin_unlock_irqrestore(&src->fd_lock, fl);
+}
+void proc_fd_close_all(struct proc *p)
+{ for (int i = 0; i < NFD; i++) (void)proc_fd_close(p, i); }
 
 /* Resolve `in` to an absolute canonical path against p->cwd, collapsing "."/"..".
  * Output is "/a/b/c" (root is "/"). Bounded by `max`. */
 void proc_resolve(struct proc *p, const char *in, char *out, int max)
 {
+    char cwd[sizeof p->cwd];
+    uint64_t cf = spin_lock_irqsave(&p->fd_lock);
+    scopy(cwd, p->cwd, sizeof cwd);
+    spin_unlock_irqrestore(&p->fd_lock, cf);
     char src[256]; int n = 0;
     if (in[0] != '/') {
-        for (const char *d = p->cwd; *d && n < 255; d++) src[n++] = *d;
+        for (const char *d = cwd; *d && n < 255; d++) src[n++] = *d;
         if (n == 0 || src[n - 1] != '/') { if (n < 255) src[n++] = '/'; }
     }
     for (const char *s = in; *s && n < 255; s++) src[n++] = *s;
@@ -322,7 +479,7 @@ int proc_cap_subset(unsigned long req_caps, const char *req_prefix,
     return req_prefix[i] == 0 || req_prefix[i] == '/';  /* component boundary, not a byte match */
 }
 
-long proc_fork(struct registers *r)
+long proc_fork(struct registers *r, const void *user_fxarea)
 {
     struct proc *parent = proc_current();
     if (!parent) return -1;
@@ -330,7 +487,8 @@ long proc_fork(struct registers *r)
     uint64_t t0 = rdtsc();
     uint64_t space = vmm_new_space();
     if (!space) { kprintf("[fork] vmm_new_space failed\n"); return -1; }
-    if (vmm_clone_user(space, parent->cr3) < 0) {   /* OOM mid-clone: don't run a partial child */
+    uint64_t shared = 0, copied = 0;
+    if (vmm_clone_user_counted(space, parent->cr3, &shared, &copied) < 0) {   /* OOM mid-clone: don't run a partial child */
         kprintf("[fork] clone_user failed\n");
         vmm_free_space(space);
         return -1;
@@ -338,12 +496,11 @@ long proc_fork(struct registers *r)
     {   /* Charge the address-space clone only: the fd table and the child
          * thread cost the same before and after, and mixing them in would
          * hide the thing being measured. */
-        uint64_t shared = 0, copied = 0;
-        vmm_clone_stats(&shared, &copied);
-        g_forks++;
-        g_fork_cycles += rdtsc() - t0;
-        g_fork_shared += shared;
-        g_fork_copied += copied;
+        /* Counters belong to this clone invocation, not another CPU's last fork. */
+        __atomic_fetch_add(&g_forks, 1, __ATOMIC_RELAXED);
+        __atomic_fetch_add(&g_fork_cycles, rdtsc() - t0, __ATOMIC_RELAXED);
+        __atomic_fetch_add(&g_fork_shared, shared, __ATOMIC_RELAXED);
+        __atomic_fetch_add(&g_fork_copied, copied, __ATOMIC_RELAXED);
     }
 
     struct proc *child = alloc_proc();
@@ -351,8 +508,10 @@ long proc_fork(struct registers *r)
     child->cr3  = space;
     child->ppid = parent->pid;
     child->gui  = NULL;                      /* a forked child has no window */
+    uint64_t parent_fd_flags = spin_lock_irqsave(&parent->fd_lock);
     scopy(child->name, parent->name, sizeof child->name);
     scopy(child->cwd, parent->cwd, sizeof child->cwd);
+    spin_unlock_irqrestore(&parent->fd_lock, parent_fd_flags);
     /* M28 D1 item 2: fork inherits the parent's capability set UNCHANGED --
      * not attenuated, not widened. Plain SYS_FORK is not a narrowing event,
      * the same way plain SYS_EXECVE is not (see proc_execve() in exec.c): a
@@ -367,10 +526,7 @@ long proc_fork(struct registers *r)
      * the parent, and duplicating it would mean a Ctrl+C during a fork killing
      * two processes. */
     ksig_proc_fork(child->pid, parent->pid);
-    for (int i = 0; i < NFD; i++) {
-        child->fd[i] = parent->fd[i];
-        if (child->fd[i]) file_dup(child->fd[i]);
-    }
+    proc_fd_clone(child, parent);
 
     /* M30, and this is POSIX's rule rather than a shortcut: ONLY THE CALLING
      * THREAD EXISTS IN THE CHILD. thread_fork() builds exactly one thread, and
@@ -387,18 +543,17 @@ long proc_fork(struct registers *r)
      * about it is refuse execve from a multi-threaded process outright (see the
      * SYS_EXECVE case in syscall.c), so the surviving path is fork-then-exec
      * from a single-threaded process, which is what /bin/sh does. */
-    child->tid = thread_fork(child->name, r, child, space);
-    if (child->tid < 0) {                    /* OOM building the child kstack/thread */
+    int child_pid = child->pid;
+    int child_tid = thread_fork(child->name, r, user_fxarea, child, space);
+    if (child_tid < 0) {                    /* OOM building the child kstack/thread */
         kprintf("[fork] thread_fork failed\n");
         /* Undo the fork instead of leaking the PCB slot + dup'd fds + address space
          * (and falsely returning a pid for a child that will never run). */
-        for (int i = 0; i < NFD; i++)
-            if (child->fd[i]) { file_close(child->fd[i]); child->fd[i] = NULL; }
         vmm_free_space(space);
-        child->state = PROC_FREE; child->pid = 0; child->cr3 = 0;
+        proc_abort_build(child);
         return -1;
     }
-    return child->pid;                       /* parent sees the child's pid */
+    return child_pid;                        /* parent sees the child's pid */
 }
 
 void proc_exit(int code)
@@ -436,17 +591,18 @@ void proc_exit(int code)
          * which is another line's file -- exactly the gap proc_kill() already
          * documents for a killed process, now reachable one more way.
          * =================================================================== */
+        if (!__atomic_load_n(&p->teardown, __ATOMIC_ACQUIRE)) (void)uthread_self();
         code = uthread_proc_kill(p->pid, code);
-        uthread_release_self(0);
-        if (uthread_proc_live(p->pid) > 0)
-            thread_exit();               /* a sibling lives on; never returns */
+        /* The descriptor transition and last-thread election are one operation
+         * under g_ut_lock; a second departing sibling never touches this PCB
+         * after the winner makes it reapable. */
+        if (!uthread_release_self(0)) thread_exit();
         uthread_proc_reap(p->pid);       /* free this process's descriptors + its mark */
 
         /* Close fds BEFORE marking zombie (file_close takes g_file_lock/kheap, which
          * must not nest under g_proc_lock). While still RUNNING with no fds, a waiter
          * sees RUNNING and keeps waiting -- no premature reap. */
-        for (int i = 0; i < NFD; i++)
-            if (p->fd[i]) { file_close(p->fd[i]); p->fd[i] = NULL; }
+        proc_fd_close_all(p);
         /* Sockets are a separate table from the fds, so they need their own
          * sweep. Without it a tab that dies mid-load (window closed, page
          * faulted) strands its connections until something else needs the slot
@@ -472,10 +628,18 @@ void proc_exit(int code)
          * kernel's raw code into the POSIX status word for ITS callers only.
          * That file is outside this change's ownership; this comment is the
          * record for whoever picks it up. */
+        int dead_pid = p->pid, ppid = p->ppid;
+        wm_app_exit();
+        ksig_proc_free(dead_pid);
+        ptrace_proc_free(dead_pid);
+        /* A parent may reap immediately after ZOMBIE becomes visible. Detach
+         * the outgoing scheduler thread and switch off this CR3 first; no PCB
+         * consumer runs after publication, even though its kernel stack lives
+         * until the deferred scheduler reap. */
+        sched_detach_current_proc(p);
         uint64_t fl = spin_lock_irqsave(&g_proc_lock);
         p->exit_code = code;
         p->state = PROC_ZOMBIE;
-        int ppid = p->ppid;
         spin_unlock_irqrestore(&g_proc_lock, fl);
 
         /* M31: SIGCHLD. AFTER the zombie is visible, so a parent whose handler
@@ -496,13 +660,13 @@ void proc_exit(int code)
         /* This process will never run again, so its signal state is dead with
          * it -- released here rather than at reap, so that a pid recycled
          * before the zombie is collected cannot find the old handlers. */
-        ksig_proc_free(p->pid);
+        /* Freed before publishing PROC_ZOMBIE (BKL-free reap can run now). */
         /* And any ptrace link at EITHER end, for the same reason and released
          * at the same point: a recycled pid must not inherit the right to read
          * somebody's memory, and a tracee whose tracer has just died must not
          * be left parked in the stop loop with nobody to continue it.
          * c/kernel/exec/ptrace.c handles both cases. */
-        ptrace_proc_free(p->pid);
+        /* Trace link was retired before publishing the zombie. */
         /* AFTER the unlock, and before thread_exit() (which never returns).
          * Outside the lock because the waiter holds g_child_wq.lock while it
          * takes g_proc_lock, so a waker holding g_proc_lock here would close an
@@ -512,7 +676,7 @@ void proc_exit(int code)
          * lost. */
         waitq_wake_all(&g_child_wq);
     }
-    wm_app_exit();        /* if this proc owns a window, mark it dead (no-op otherwise) */
+    /* All PCB consumers finish before the zombie becomes visible. */
     thread_exit();        /* leaves the ring; never returns. Address space freed by
                            * proc_waitpid (parent) or proc_reap (orphan/GUI). */
 }
@@ -581,7 +745,7 @@ long proc_waitpid(int pid, int *status, int options)
          * spurious as far as this predicate goes, so the loop would re-park and
          * the check would never be reached if it were on the other side. */
         if (ksig_interrupted()) return SIG_E_INTR;
-        /* PARK, do not poll. bkl_hlt_wait() re-dispatched this thread on every
+        /* PARK, do not poll. sched_poll_wait() re-dispatched this thread on every
          * interrupt -- ~100 times a second for the whole life of every command
          * /bin/sh runs -- and each pass re-acquired the global kernel lock (which
          * on four cores means spinning with interrupts off if somebody else has
@@ -593,7 +757,7 @@ long proc_waitpid(int pid, int *status, int options)
          * what a normal one does. A wait that can only be ended by a wake is one
          * bug away from a hung shell, and this shell is the machine's console. */
 #ifdef KBENCH_NEGCTL
-        bkl_hlt_wait();      /* the old poll; tests/boot/run-kbench.sh must FAIL */
+        sched_poll_wait();      /* the old poll; tests/boot/run-kbench.sh must FAIL */
 #else
         int woke = 0;
         wait_event_timeout(&g_child_wq, have_zombie(self->pid, pid), 200, woke);
@@ -678,7 +842,7 @@ static int proc_list(struct logit_procinfo *out, int max)
          * and why the table is re-read each refresh rather than cached. */
         uint64_t fl = spin_lock_irqsave(&g_proc_lock);
         struct proc *p = &procs[i];
-        if (p->state != PROC_FREE) {
+        if (p->state == PROC_RUNNING || p->state == PROC_ZOMBIE) {
             e.pid   = p->pid;
             e.ppid  = p->ppid;
             e.state = (p->state == PROC_ZOMBIE) ? LOGIT_PROC_ZOMBIE : LOGIT_PROC_RUNNING;
@@ -690,10 +854,12 @@ static int proc_list(struct logit_procinfo *out, int max)
             /* The SAME predicate proc_kill() refuses on, evaluated here so a UI
              * never has to guess it. See the comment above proc_kill(). */
             if (!p->gui && p->ppid == 0) e.flags |= LOGIT_PROC_PROTECTED;
+            uint64_t ff = spin_lock_irqsave(&p->fd_lock);
             e.nfds = 0;
             for (int f = 0; f < NFD; f++) if (p->fd[f]) e.nfds++;
             scopy(e.name, p->name, (int)sizeof e.name);
             scopy(e.cwd,  p->cwd,  (int)sizeof e.cwd);
+            spin_unlock_irqrestore(&p->fd_lock, ff);
             have = 1;
         }
         spin_unlock_irqrestore(&g_proc_lock, fl);
@@ -739,6 +905,9 @@ static int proc_list(struct logit_procinfo *out, int max)
  * Both files belong to other lines. The mark is durable, so in both cases the
  * kill still happens -- later, not never -- and the table shows the process as
  * DYING in the meantime rather than pretending it is gone.
+ * Correction: there is no global entry lock. Teardown requests wake every
+ * live process thread, and syscall/timer return paths check the durable mark;
+ * only the final detached thread publishes a reapable zombie.
  *
  * REFUSALS, and how the protected process is IDENTIFIED. The one process that
  * must survive is the shell wm_run() spawns on the serial console -- init here,
@@ -764,10 +933,10 @@ static long proc_kill(int pid)
     uint64_t fl = spin_lock_irqsave(&g_proc_lock);
     for (int i = 0; i < NPROC; i++) {
         struct proc *p = &procs[i];
-        if (p->state == PROC_FREE || p->pid != pid) continue;
+        if ((p->state != PROC_RUNNING && p->state != PROC_ZOMBIE) || p->pid != pid) continue;
         if (!p->gui && p->ppid == 0) { rc = LOGIT_KILL_PROTECTED; break; }
         if (p->state == PROC_ZOMBIE) { rc = LOGIT_KILL_ZOMBIE; break; }
-        if (!g_killmark[i]) { g_killmark[i] = 1; g_kill_pending++; }
+        if (!g_killmark[i]) { g_killmark[i] = 1; __atomic_fetch_add(&g_kill_pending, 1, __ATOMIC_RELAXED); }
         rc = LOGIT_KILL_OK;
         break;
     }
@@ -795,7 +964,7 @@ void proc_kill_check(void)
     for (int i = 0; i < NPROC; i++)
         if (&procs[i] == self && g_killmark[i]) {
             g_killmark[i] = 0;                  /* claim it: exactly one exit per mark */
-            if (g_kill_pending) g_kill_pending--;
+            if (g_kill_pending) __atomic_fetch_sub(&g_kill_pending, 1, __ATOMIC_RELAXED);
             doomed = 1;
             break;
         }
@@ -808,7 +977,7 @@ void proc_kill_check(void)
 }
 
 /* The gate itself, inlined by syscall.c's caller into one load + one branch. */
-int proc_kill_armed(void) { return g_kill_pending != 0; }
+int proc_kill_armed(void) { return __atomic_load_n(&g_kill_pending, __ATOMIC_RELAXED) != 0; }
 
 long proc_syscall(long num, long a, long b, long c)
 {
@@ -903,7 +1072,7 @@ int procfs_src_pids(int *out, int max)
     int n = 0;
     uint64_t fl = spin_lock_irqsave(&g_proc_lock);
     for (int i = 0; i < NPROC && n < max; i++)
-        if (procs[i].state != PROC_FREE) out[n++] = procs[i].pid;
+        if (procs[i].state == PROC_RUNNING || procs[i].state == PROC_ZOMBIE) out[n++] = procs[i].pid;
     spin_unlock_irqrestore(&g_proc_lock, fl);
     return n;
 }
@@ -915,7 +1084,7 @@ int procfs_src_task(int pid, struct procfs_task *out)
     uint64_t fl = spin_lock_irqsave(&g_proc_lock);
     for (int i = 0; i < NPROC; i++) {
         struct proc *p = &procs[i];
-        if (p->state == PROC_FREE || p->pid != pid) continue;
+        if ((p->state != PROC_RUNNING && p->state != PROC_ZOMBIE) || p->pid != pid) continue;
         out->pid   = p->pid;
         out->ppid  = p->ppid;
         out->tid   = p->tid;
@@ -925,11 +1094,13 @@ int procfs_src_task(int pid, struct procfs_task *out)
         out->caps  = p->caps;
         out->cr3   = p->cr3;
         out->nfd_max = NFD;
+        uint64_t ff = spin_lock_irqsave(&p->fd_lock);
         out->nfds  = 0;
         for (int f = 0; f < NFD; f++) if (p->fd[f]) out->nfds++;
         scopy(out->name, p->name, (int)sizeof out->name);
         scopy(out->cwd,  p->cwd,  (int)sizeof out->cwd);
         scopy(out->fs_prefix, p->fs_prefix, (int)sizeof out->fs_prefix);
+        spin_unlock_irqrestore(&p->fd_lock, ff);
         found = 1;
         break;
     }
@@ -1044,21 +1215,37 @@ int oom_task_self(void)
  * subtree). The pre-existing proc_waitpid() path frees the PML4 FRAME ITSELF in
  * the same window, which is strictly the larger exposure; this is not the place
  * to close either. */
+/* Correction to the historical single-core/idempotence argument above:
+ * emptying the same space twice is safe; dereferencing a recycled CR3 is not.
+ * ZOMBIE is now published only after the final thread detaches its CR3, but a
+ * normal reaper can still claim that PCB between our snapshot and AS lock.
+ * Hold the AS operation guard, then revalidate PID + slot + CR3 before touching
+ * tables. The normal reaper may claim afterwards, but cannot free/reuse its
+ * CR3 until this guard drops. TRY is essential: OOM may already own the
+ * faulting caller's AS, so waiting on another AS would create a lock cycle. */
 int oom_task_reap_dead(void)
 {
     int n = 0;
     for (int i = 0; i < NPROC; i++) {
         uint64_t cr3 = 0;
+        int pid = 0;
         uint64_t fl = spin_lock_irqsave(&g_proc_lock);
         struct proc *p = &procs[i];
-        if (p->state == PROC_ZOMBIE && p->cr3) cr3 = p->cr3;
+        if (p->state == PROC_ZOMBIE && p->cr3) {
+            cr3 = p->cr3;
+            pid = p->pid;
+        }
         spin_unlock_irqrestore(&g_proc_lock, fl);
-        /* Outside the lock: vmm_free_user() calls into the PMM and the VMA
-         * table, and this file's lock order is g_proc_lock -> ... -> g_pmm_lock
-         * with "nothing under g_proc_lock calls vmm/kheap" (top of file). The
-         * pid stays in the table with its cr3, so the reaper's later
-         * vmm_free_space() still runs -- this only empties the space. */
-        if (cr3) { vmm_free_user(cr3); n++; }
+        if (!cr3) continue;
+        struct mm_guard guard __attribute__((cleanup(mm_guard_end))) = mm_guard_try(cr3);
+        if (!guard.held) continue;
+        fl = spin_lock_irqsave(&g_proc_lock);
+        int still_dead = p->state == PROC_ZOMBIE && p->pid == pid && p->cr3 == cr3;
+        spin_unlock_irqrestore(&g_proc_lock, fl);
+#ifdef BKL_NEGCTL_OOM_REAP
+        still_dead = 1; /* host control: preserve the old borrowed-CR3 decision */
+#endif
+        if (still_dead && mm_space_live(cr3)) { vmm_free_user(cr3); n++; }
     }
     return n;
 }

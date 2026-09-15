@@ -77,6 +77,11 @@ static void pack(const struct vattr *a, struct logit_stat *st)
     st->atime   = a->atime;
     st->mtime   = a->mtime;
     st->ctime   = a->ctime;
+    if (a->flags & VA_ID) {
+        st->attr |= LSTA_ID;
+        st->volume[0]=a->volume[0]; st->volume[1]=a->volume[1];
+        st->object_id=a->object_id; st->revision=a->revision;
+    }
 }
 
 /* Copy out at most `len` bytes and stamp `len` with what was actually written.
@@ -93,8 +98,7 @@ static long emit(const struct logit_stat *st, void *ubuf, long len)
     if (!user_range_ok(ubuf, (uint64_t)n, 1)) return -1;
     struct logit_stat tmp = *st;
     tmp.len = (unsigned int)n;
-    memcpy(ubuf, &tmp, (size_t)n);
-    return 0;
+    return user_copy_to(ubuf, &tmp, (uint64_t)n);
 }
 
 /* A failed stat writes NOTHING. POSIX calls the buffer unspecified after a
@@ -128,8 +132,9 @@ static long stat_path(const char *upath, void *ubuf, long len, int follow)
 static long stat_fd(int fd, void *ubuf, long len)
 {
     struct proc *p = proc_current();
-    struct file *f = p ? proc_fd_get(p, fd) : NULL;
+    struct file *f FILE_REF = p ? proc_fd_acquire(p, fd) : NULL;
     if (!f) return -1;
+    FILE_IO_GUARD(f);
 
     if (f->type == F_VFS && f->path[0]) {
         struct vattr a;
@@ -154,6 +159,7 @@ static long stat_fd(int fd, void *ubuf, long len)
     st.attr    = 0;                       /* nothing here is stored anywhere */
     switch (f->type) {
     case F_PIPE: st.mode = LST_IFIFO | 0600; break;
+    case F_PTY:
     case F_TTY:  st.mode = LST_IFCHR | 0620; break;
     default:     st.mode = LST_IFREG | 0644;
                  st.size = (unsigned long long)(f->size > 0 ? f->size : 0);
@@ -170,6 +176,8 @@ static long stat_fd(int fd, void *ubuf, long len)
  * rather than in a batch. A batch would need a kmalloc proportional to the
  * caller's request in a path that runs under the BKL, and the copy is not what
  * this costs -- the directory lookups are.
+ * Correction: no BKL remains; the bounded private entry and owned FD reference
+ * survive concurrent close, and usercopy completes outside backend locks.
  * ------------------------------------------------------------------------ */
 static long getdents(void *ureq)
 {
@@ -177,7 +185,7 @@ static long getdents(void *ureq)
     if (!p || !user_range_ok(ureq, sizeof(struct logit_dirreq), 1)) return -1;
 
     struct logit_dirreq req;
-    memcpy(&req, ureq, sizeof req);
+    if (user_copy_from(&req, ureq, sizeof req) < 0) return -1;
     if (req.max < (int)sizeof(struct logit_dirent) || req.cursor < 0) return -1;
 
     char path[128], abs[128];
@@ -203,13 +211,13 @@ static long getdents(void *ureq)
         int i = 0;
         for (; i < (int)sizeof e.name - 1 && v.name[i]; i++) e.name[i] = v.name[i];
         e.name[i] = 0;
-        memcpy((unsigned char *)req.buf + (size_t)written * sizeof e, &e, sizeof e);
+        if (user_copy_to((unsigned char *)req.buf + (size_t)written * sizeof e, &e, sizeof e) < 0) return -1;
         written++;
     }
 
     req.cursor = cursor;
     req.count  = written;
-    memcpy(ureq, &req, sizeof req);
+    if (user_copy_to(ureq, &req, sizeof req) < 0) return -1;
     return written;
 }
 
@@ -249,13 +257,19 @@ static long readlink_op(const char *upath, char *ubuf, long max)
     int n = vfs_readlink(abs, tgt, (int)sizeof tgt);
     if (n < 0) return n;
     if (n > max) n = (int)max;      /* POSIX truncates; it does not NUL-terminate */
-    memcpy(ubuf, tgt, (size_t)n);
-    return n;
+    return user_copy_to(ubuf, tgt, (uint64_t)n) < 0 ? -1 : n;
 }
 
 long meta_syscall(long num, long a, long b, long c)
 {
     switch (num) {
+    case SYS_FSREF: {
+        struct logit_fsref q;
+        if (b != sizeof q || user_copy_from(&q,(void *)a,sizeof q)<0 ||
+            q.version!=LOGIT_FSREF_VERSION || q.reserved) return VFS_EINVAL;
+        int rc=vfs_refpath(&q.id,q.path,sizeof q.path);
+        return rc<0 ? rc : user_copy_to((void *)a,&q,sizeof q);
+    }
     case SYS_STAT:     return stat_path((const char *)a, (void *)b, c, 1);
     case SYS_LSTAT:    return stat_path((const char *)a, (void *)b, c, 0);
     case SYS_FSTAT:    return stat_fd((int)a, (void *)b, c);

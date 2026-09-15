@@ -12,6 +12,7 @@
 #include "ksig_int.h"
 #include "proc.h"
 #include "sched.h"
+#include "uthread.h"
 #include "serial.h"
 #include "pit.h"
 #include "kprintf.h"
@@ -86,7 +87,7 @@ void ksig_recalc_ignored(struct sigst *s)
 void ksig_set_pending(struct sigst *s, uint64_t bits)
 {
     if (!bits) return;
-    if (!s->pending) g_sig_armed++;
+    if (!s->pending) __atomic_fetch_add(&g_sig_armed, 1, __ATOMIC_RELAXED);
     s->pending |= bits;
 }
 
@@ -94,10 +95,10 @@ void ksig_clear_pending(struct sigst *s, uint64_t bits)
 {
     if (!s->pending) return;
     s->pending &= ~bits;
-    if (!s->pending && g_sig_armed) g_sig_armed--;
+    if (!s->pending && g_sig_armed) __atomic_fetch_sub(&g_sig_armed, 1, __ATOMIC_RELAXED);
 }
 
-int ksig_armed(void) { return g_sig_armed != 0; }
+int ksig_armed(void) { return __atomic_load_n(&g_sig_armed, __ATOMIC_RELAXED) != 0; }
 
 struct sigst *ksig_find_locked(int pid)
 {
@@ -105,6 +106,35 @@ struct sigst *ksig_find_locked(int pid)
     for (int i = 0; i < NPROC; i++)
         if (g_sig[i].pid == pid) return &g_sig[i];
     return NULL;
+}
+
+/* At most the adopted thread table plus one lazy main thread per PCB can
+ * fault. Keep the budget derived from their owning tables, not an unrelated
+ * CPU count: a fault can remain pending across a context switch. */
+static struct ksig_fault_record g_faults[UTHREAD_TABLE_MAX + NPROC];
+static void fault_clear_locked(int pid)
+{
+    for (unsigned i = 0; i < sizeof g_faults / sizeof g_faults[0]; i++)
+        if (g_faults[i].signo && g_faults[i].pid == pid) {
+            g_faults[i].signo = 0;
+            __atomic_fetch_sub(&g_sig_armed, 1, __ATOMIC_RELAXED);
+        }
+}
+int ksig_take_fault_locked(struct ksig_fault_record *out)
+{
+    int tid = sched_current_tid();
+    for (unsigned i = 0; i < sizeof g_faults / sizeof g_faults[0]; i++)
+        if (g_faults[i].signo
+#ifndef BKL_NEGCTL_SIGNAL_OWNER
+            && g_faults[i].tid == tid
+#endif
+        ) {
+            *out = g_faults[i];
+            g_faults[i].signo = 0;
+            __atomic_fetch_sub(&g_sig_armed, 1, __ATOMIC_RELAXED);
+            return out->signo;
+        }
+    return 0;
 }
 
 /* --------------------------------------------------------------------------
@@ -118,10 +148,10 @@ static void reset_locked(struct sigst *s, int pid)
     for (int n = 0; n < KSIG_NSIG; n++) {
         s->handler[n] = 0; s->hmask[n] = 0; s->restorer[n] = 0; s->hflags[n] = 0;
     }
-    if (s->pending) { s->pending = 0; if (g_sig_armed) g_sig_armed--; }
+    if (s->pending) { s->pending = 0; if (g_sig_armed) __atomic_fetch_sub(&g_sig_armed, 1, __ATOMIC_RELAXED); }
     s->blocked = 0;
     s->stopped = 0;
-    if (s->alarm_at && g_alarm_armed) g_alarm_armed--;
+    if (s->alarm_at && g_alarm_armed) __atomic_fetch_sub(&g_alarm_armed, 1, __ATOMIC_RELAXED);
     s->alarm_at = 0;
     s->suspend_mask = 0; s->in_suspend = 0;
     s->fault_cr2 = 0; s->fault_err = 0; s->fault_trapno = 0;
@@ -178,6 +208,7 @@ void ksig_proc_free(int pid)
 {
     uint64_t f = spin_lock_irqsave(&g_sig_lock);
     struct sigst *s = ksig_find_locked(pid);
+    fault_clear_locked(pid);
     if (s) { reset_locked(s, 0); }
     spin_unlock_irqrestore(&g_sig_lock, f);
 }
@@ -209,7 +240,7 @@ int ksig_post(int pid, int signo)
     }
 
     ksig_set_pending(s, SIGBIT(signo));
-    g_sig_posted++;
+    __atomic_fetch_add(&g_sig_posted, 1, __ATOMIC_RELAXED);
     spin_unlock_irqrestore(&g_sig_lock, f);
 
     /* Wake the target so a PARKED thread returns from its wait and reaches a
@@ -223,12 +254,15 @@ int ksig_post(int pid, int signo)
      * exposes no enumerator, and a process-directed signal is allowed to go to
      * one thread. A signal aimed at a process whose main thread is parked and
      * whose worker is spinning in ring 3 is still delivered -- the worker's next
-     * timer interrupt is a return-to-ring-3 boundary too. */
+     * timer interrupt is a return-to-ring-3 boundary too.
+     * Correction: all adopted live threads are also woken now, so an exited
+     * main thread cannot strand a signal behind sleeping workers. */
     {
-        struct proc *p = proc_by_pid(pid);
-        if (p) wake_tid = p->tid;
+        struct proc snap;
+        if (proc_snapshot(pid, &snap)) wake_tid = snap.tid;
     }
     if (wake_tid >= 0) sched_wake_id(wake_tid);
+    uthread_wake_process(pid);
     return 0;
 }
 
@@ -238,20 +272,21 @@ int ksig_post_current(int signo)
     return p ? ksig_post(p->pid, signo) : SIG_E_SRCH;
 }
 
-/* THE EINTR PREDICATE, and it is unlocked on purpose -- see ksig_int.h. */
+/* Historically this was an unlocked volatile hint. Once syscalls run in
+ * parallel the predicate must sample one consistent disposition/mask/pending
+ * state. Signal publication never wakes while holding g_sig_lock, so a wait
+ * queue may take this short lock without reversing the wake order. */
 int ksig_interrupted(void)
 {
-    if (!g_sig_armed) return 0;
+    if (uthread_exit_pending()) return 1;
+    if (!__atomic_load_n(&g_sig_armed, __ATOMIC_RELAXED)) return 0;
     struct proc *p = proc_current();
     if (!p) return 0;
-    for (int i = 0; i < NPROC; i++) {
-        if (g_sig[i].pid != p->pid) continue;
-        uint64_t pend = g_sig[i].pending;
-        if (!pend) return 0;
-        uint64_t deliverable = pend & (~g_sig[i].blocked | SIG_UNMASKABLE);
-        return (deliverable & ~g_sig[i].ignored) != 0;
-    }
-    return 0;
+    uint64_t f = spin_lock_irqsave(&g_sig_lock);
+    struct sigst *s = ksig_find_locked(p->pid);
+    int yes = s && ((s->pending & (~s->blocked | SIG_UNMASKABLE) & ~s->ignored) != 0);
+    spin_unlock_irqrestore(&g_sig_lock, f);
+    return yes;
 }
 
 /* --------------------------------------------------------------------------
@@ -283,13 +318,24 @@ int ksig_fault(int signo, uint64_t cr2, uint64_t err, uint64_t vector)
          * Getting this wrong in the permissive direction would not look like a
          * bug, it would look like the machine hanging. */
         if (s->handler[signo] > 1 && !(s->blocked & bit)) {
-            s->fault_cr2 = cr2; s->fault_err = err; s->fault_trapno = vector;
-            ksig_set_pending(s, bit);
-            take = 1;
+            /* Previously these three words and the pending bit belonged to
+             * s: another CPU could consume both and build its own stack frame
+             * with this thread's fault address. Bind the record to the tid. */
+            int tid = sched_current_tid();
+            struct ksig_fault_record *dst = NULL;
+            for (unsigned i = 0; i < sizeof g_faults / sizeof g_faults[0]; i++)
+                if (g_faults[i].signo && g_faults[i].tid == tid) { dst = &g_faults[i]; break; }
+            if (!dst) for (unsigned i = 0; i < sizeof g_faults / sizeof g_faults[0]; i++)
+                if (!g_faults[i].signo) { dst = &g_faults[i]; break; }
+            if (dst) {
+                if (!dst->signo) __atomic_fetch_add(&g_sig_armed, 1, __ATOMIC_RELAXED);
+                *dst = (struct ksig_fault_record){tid, p->pid, signo, cr2, err, vector};
+                take = 1;
+            }
         }
     }
     spin_unlock_irqrestore(&g_sig_lock, f);
-    if (take) g_sig_posted++;
+    if (take) __atomic_fetch_add(&g_sig_posted, 1, __ATOMIC_RELAXED);
     return take;
 }
 
@@ -306,7 +352,7 @@ int ksig_fault(int signo, uint64_t cr2, uint64_t err, uint64_t vector)
  * So the 100 Hz timer drains the UART instead. A ^C becomes a SIGINT to the
  * foreground pid; every other byte goes into this ring, and tty_read() takes it
  * from here rather than from the port. Two consumers of one register is a race
- * (both run under the BKL, but tty_read drops it to halt), and one consumer
+ * (historically both under the BKL; now serialized by g_tty_lock), and one consumer
  * with a queue is not -- so this is also the simpler arrangement, not only the
  * one that works.
  *
@@ -324,22 +370,26 @@ int ksig_fault(int signo, uint64_t cr2, uint64_t err, uint64_t vector)
 static char          g_ttyq[TTYQ_SZ];
 static volatile int  g_ttyq_head, g_ttyq_tail;
 static volatile int  g_tty_fg;
-/* Nobody sleeps on this today -- tty_read() above still drops the BKL and
+/* Nobody sleeps on this today -- tty_read() uses sched_poll_wait and
  * halts, which is a different mechanism and is left alone deliberately: it also
  * has to cover the between-ticks UART fallback, and rewriting it is not what
  * poll() needed. This queue exists for poll() registrations, and it is woken by
  * the ONE producer of bytes into the ring below. */
 static struct waitq  g_tty_wq = WAITQ_INIT;
+/* IRQ producer and concurrent console readers share both the ring and UART.
+ * Post signals only after dropping this lock: signal wakeups may take other
+ * wait queues, and no device lock is held across that chain. */
+static spinlock_t g_tty_lock = SPINLOCK_INIT;
 
 struct waitq *ksig_tty_waitq(void) { return &g_tty_wq; }
 int           ksig_tty_avail(void) { return g_ttyq_tail != g_ttyq_head; }
 
-void ksig_tty_set_fg(int pid) { g_tty_fg = pid; }
+void ksig_tty_set_fg(int pid) { __atomic_store_n(&g_tty_fg, pid, __ATOMIC_RELAXED); }
 
 void ksig_tty_claim_fg(void)
 {
     struct proc *p = proc_current();
-    if (p) g_tty_fg = p->pid;
+    if (p) ksig_tty_set_fg(p->pid);
 }
 
 static int ttyq_full(void)
@@ -356,16 +406,15 @@ static void ttyq_push(char c)
 
 int ksig_tty_getc(void)
 {
+    uint64_t fl = spin_lock_irqsave(&g_tty_lock);
+    int c;
     if (g_ttyq_tail != g_ttyq_head) {
-        char c = g_ttyq[g_ttyq_tail];
+        c = (unsigned char)g_ttyq[g_ttyq_tail];
         g_ttyq_tail = (g_ttyq_tail + 1) % TTYQ_SZ;
-        return (unsigned char)c;
-    }
-    /* Fall back to the port itself. The timer normally gets there first, but a
-     * read issued between two ticks should not wait 10 ms for a key that is
-     * already sitting in the register. */
-    int c = serial_getc();
-    if (c == 3) { if (g_tty_fg > 0) ksig_post(g_tty_fg, LOGIT_SIGINT); return -1; }
+    } else c = serial_getc();
+    int fg = g_tty_fg;
+    spin_unlock_irqrestore(&g_tty_lock, fl);
+    if (c == 3) { if (fg > 0) ksig_post(fg, LOGIT_SIGINT); return -1; }
     return c;
 }
 
@@ -386,13 +435,14 @@ void ksig_tick(void)
      * test harness typing a command that never arrives. Leaving the byte in the
      * device is the flow control; the queue is only ever a place to put what
      * has already been taken out. */
-    int pushed = 0;
+    int pushed = 0, interrupt_fg = 0;
+    uint64_t tf = spin_lock_irqsave(&g_tty_lock);
     for (int i = 0; i < 16 && !ttyq_full(); i++) {   /* bounded: never spin in an IRQ */
         int c = serial_getc();
         if (c < 0) break;
         if (c == 3) {
             int fg = g_tty_fg;
-            if (fg > 0) ksig_post(fg, LOGIT_SIGINT);
+            if (fg > 0) interrupt_fg = fg;
             continue;                            /* ^C is consumed, not echoed */
         }
         ttyq_push((char)c);
@@ -403,6 +453,8 @@ void ksig_tick(void)
      * find one byte, and be told nothing more had arrived -- correct but
      * needlessly chatty. waitq_wake_all is interrupt-safe by design
      * (c/kernel/core/wait.h rule 3), which is what makes this legal here. */
+    spin_unlock_irqrestore(&g_tty_lock, tf);
+    if (interrupt_fg) ksig_post(interrupt_fg, LOGIT_SIGINT);
     if (pushed) waitq_wake_all(&g_tty_wq);
 
     /* timerfd. Same argument for putting it here as for the console drain: this
@@ -423,7 +475,7 @@ void ksig_tick(void)
         if (!g_sig[i].pid || !g_sig[i].alarm_at) continue;
         if (now < g_sig[i].alarm_at) continue;
         g_sig[i].alarm_at = 0;
-        if (g_alarm_armed) g_alarm_armed--;
+        if (g_alarm_armed) __atomic_fetch_sub(&g_alarm_armed, 1, __ATOMIC_RELAXED);
         if (nf < NPROC) fire[nf++] = g_sig[i].pid;
     }
     spin_unlock_irqrestore(&g_sig_lock, f);
@@ -456,8 +508,8 @@ int ksig_kill(int pid, int signo)
      * asked for it and gets it; SIGINT with a handler is precisely the case
      * that must work. */
     if (signo > 0 && ksig_default_action(signo) == DFL_TERM) {
-        struct proc *p = proc_by_pid(pid);
-        if (p && !p->gui && p->ppid == 0) {
+        struct proc snap;
+        if (proc_snapshot(pid, &snap) && !snap.gui && snap.ppid == 0) {
             int caught = 0;
             uint64_t f = spin_lock_irqsave(&g_sig_lock);
             struct sigst *s = ksig_find_locked(pid);
@@ -578,13 +630,13 @@ static long sys_alarm(long seconds)
     long remain = 0;
     if (s->alarm_at) {
         remain = (long)((s->alarm_at > now ? s->alarm_at - now : 0) + 999) / 1000;
-        if (g_alarm_armed) g_alarm_armed--;
+        if (g_alarm_armed) __atomic_fetch_sub(&g_alarm_armed, 1, __ATOMIC_RELAXED);
         s->alarm_at = 0;
     }
     if (seconds > 0) {
         s->alarm_at = now + (uint64_t)seconds * 1000ull;
         if (!s->alarm_at) s->alarm_at = 1;      /* 0 means "no alarm"; never store it */
-        g_alarm_armed++;
+        __atomic_fetch_add(&g_alarm_armed, 1, __ATOMIC_RELAXED);
     }
     spin_unlock_irqrestore(&g_sig_lock, f);
     return remain;
@@ -594,7 +646,7 @@ static long sys_alarm(long seconds)
  * delivered, restore. The only successful outcome is SIG_E_INTR, which is what
  * POSIX specifies.
  *
- * The wait is bkl_hlt_wait() -- drop the big lock, halt, re-acquire -- and not a
+ * The wait is sched_poll_wait() -- drop the big lock, halt, re-acquire -- and not a
  * waitqueue, because the event being waited for is "a signal became
  * deliverable" and that is exactly what ksig_interrupted() answers. A queue
  * would need every raiser to know about it; the halt wakes on any interrupt,
@@ -625,7 +677,7 @@ static long sys_sigsuspend(uint64_t umask)
     spin_unlock_irqrestore(&g_sig_lock, f);
 
     while (!ksig_interrupted())
-        bkl_hlt_wait();
+        sched_poll_wait();
 
     /* The frame ksig_deliver() is about to push will carry suspend_mask as the
      * mask to restore -- see the in_suspend branch there -- so a handler that
@@ -643,12 +695,12 @@ static long sys_sigquery(long what)
 {
     struct proc *p;
     switch (what) {
-    case SIGQ_DELIVERED: return (long)g_sig_delivered;
-    case SIGQ_RETURNED:  return (long)g_sig_returned;
-    case SIGQ_POSTED:    return (long)g_sig_posted;
-    case SIGQ_DEFAULTED: return (long)g_sig_defaulted;
-    case SIGQ_DROPPED:   return (long)g_sig_dropped;
-    case SIGQ_FPUSAVED:  return (long)g_sig_fpusaved;
+    case SIGQ_DELIVERED: return (long)__atomic_load_n(&g_sig_delivered, __ATOMIC_RELAXED);
+    case SIGQ_RETURNED:  return (long)__atomic_load_n(&g_sig_returned, __ATOMIC_RELAXED);
+    case SIGQ_POSTED:    return (long)__atomic_load_n(&g_sig_posted, __ATOMIC_RELAXED);
+    case SIGQ_DEFAULTED: return (long)__atomic_load_n(&g_sig_defaulted, __ATOMIC_RELAXED);
+    case SIGQ_DROPPED:   return (long)__atomic_load_n(&g_sig_dropped, __ATOMIC_RELAXED);
+    case SIGQ_FPUSAVED:  return (long)__atomic_load_n(&g_sig_fpusaved, __ATOMIC_RELAXED);
     case SIGQ_PENDING:
     case SIGQ_BLOCKED: {
         p = proc_current();

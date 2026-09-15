@@ -37,7 +37,7 @@
  * ------------------------------------------------------------ HOW IT STOPS
  * IT DOES NOT INVENT A STOP. c/kernel/exec/ksigframe.c's ksig_deliver()
  * already has one: SIGSTOP sets `stopped` and the thread sits in a
- * bkl_hlt_wait() loop at the return-to-ring-3 boundary, which is the ONE place
+ * sched_poll_wait() loop at the return-to-ring-3 boundary, which is the ONE place
  * a complete user register frame exists. ATTACH posts SIGSTOP through the
  * ordinary path and the tracee stops there like any other stopped process;
  * this file only adds two calls inside that loop -- one to save the frame on
@@ -48,7 +48,7 @@
  * The consequence to know: ATTACH is not instantaneous. The tracee stops at
  * its next kernel exit, which the 100 Hz timer guarantees within one tick even
  * for a ring-3 loop that makes no syscall. ptrace_attach() therefore waits for
- * it, bounded, with the same bkl_hlt_wait() that does not hold the machine.
+ * it, bounded, with the same sched_poll_wait() that does not hold the machine.
  *
  * ------------------------------------------------------------- WHO MAY
  * Two rules, both enforced in ptrace.c and neither of them decoration:

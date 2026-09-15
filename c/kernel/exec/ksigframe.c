@@ -48,6 +48,7 @@
 #include "interrupts.h"
 #include "proc.h"
 #include "sched.h"
+#include "uthread.h"
 #include "kprintf.h"
 #include "usercopy.h"
 #include "logit_abi.h"
@@ -174,7 +175,7 @@ static int push_frame(struct registers *r, void *fxarea, int signo,
      * passes. See tests/unit/signal_test.c. */
     if (user_copy_to((void *)fp.fp, fxarea, FXAREA_BYTES) < 0) return 0;
     fpaddr = fp.fp;
-    g_sig_fpusaved++;
+    __atomic_fetch_add(&g_sig_fpusaved, 1, __ATOMIC_RELAXED);
 #else
     (void)fxarea;
 #endif
@@ -240,7 +241,9 @@ void ksig_deliver(struct registers *r, void *fxarea, uint64_t sysnr)
              * blocked" means, and it is enforced here as well as at
              * sigprocmask because a mask can also be set by sa_mask. */
             uint64_t deliverable = s->pending & (~s->blocked | SIG_UNMASKABLE);
-            signo = lowest_bit(deliverable);
+            struct ksig_fault_record fault;
+            int synchronous = ksig_take_fault_locked(&fault);
+            signo = synchronous ? synchronous : lowest_bit(deliverable);
             if (signo) {
                 d.handler  = s->handler[signo];
                 d.mask     = s->hmask[signo];
@@ -251,11 +254,13 @@ void ksig_deliver(struct registers *r, void *fxarea, uint64_t sysnr)
                  * so that the handler runs under the suspend mask (POSIX) and
                  * returning from it lands back on the original. */
                 d.oldmask  = s->in_suspend ? s->suspend_mask : s->blocked;
-                d.cr2 = s->fault_cr2; d.err = s->fault_err; d.trapno = s->fault_trapno;
+                d.cr2 = synchronous ? fault.cr2 : 0;
+                d.err = synchronous ? fault.err : 0;
+                d.trapno = synchronous ? fault.trapno : 0;
                 if (SIGBIT(signo) & SIG_UNMASKABLE) d.handler = 0;   /* uncatchable */
                 action = (d.handler > 1) ? -1 : (d.handler == 1 ? DFL_IGN
                                                                 : ksig_default_action(signo));
-                ksig_clear_pending(s, SIGBIT(signo));
+                if (!synchronous) ksig_clear_pending(s, SIGBIT(signo));
                 if (action == -1) {
                     /* Commit the handler's mask NOW, under the same lock that
                      * chose it: a second signal arriving between here and the
@@ -288,11 +293,13 @@ void ksig_deliver(struct registers *r, void *fxarea, uint64_t sysnr)
              * interrupt -- of which there are a hundred a second. Same idiom
              * tty_read() uses at the console prompt, and for the same reason.
              *
-             * bkl_hlt_wait() DROPS the big kernel lock, so a stopped process
+             * sched_poll_wait() DROPS the big kernel lock, so a stopped process
              * does not stop the machine. What it does cost, said plainly: this
              * thread is still on the run ring and is dispatched once per tick
              * to test one flag. A stopped process is rare and this is ten
-             * instructions of it. */
+             * instructions of it.
+             * Correction: sched_poll_wait now manages entry depth only; there
+             * is no BKL. Pending teardown is checked on every stopped pass. */
 
             /* THE ONE PLACE A COMPLETE USER REGISTER FRAME EXISTS FOR A
              * PROCESS THAT IS NOT RUNNING. ptrace (c/kernel/exec/ptrace.h)
@@ -312,7 +319,9 @@ void ksig_deliver(struct registers *r, void *fxarea, uint64_t sysnr)
                 if (s2 && (s2->pending & SIG_UNMASKABLE)) still = 0;
                 spin_unlock_irqrestore(&g_sig_lock, f2);
                 if (!still) break;
-                bkl_hlt_wait();
+                uthread_exit_check();
+                proc_kill_check();
+                sched_poll_wait();
             }
             /* Applies a SETREGS the tracer made while this thread was parked,
              * and drops the saved frame -- leaving it would let a GETREGS
@@ -326,19 +335,19 @@ void ksig_deliver(struct registers *r, void *fxarea, uint64_t sysnr)
 
         if (action == -1) {
             if (push_frame(r, fxarea, signo, &d, sysnr)) {
-                g_sig_delivered++;
+                __atomic_fetch_add(&g_sig_delivered, 1, __ATOMIC_RELAXED);
                 return;                       /* iretq goes to the handler */
             }
             /* No usable user stack. There is nowhere to report this to and no
              * state to return to, so it is fatal -- which is also what Linux
              * does (a SIGSEGV that cannot be delivered kills). */
-            g_sig_dropped++;
+            __atomic_fetch_add(&g_sig_dropped, 1, __ATOMIC_RELAXED);
             kprintf("[signal] pid %d: no room for a sig %d frame at rsp=%p -- terminating\n",
                     p->pid, signo, (void *)r->rsp);
             proc_exit(128 + signo);           /* never returns */
         }
 
-        g_sig_defaulted++;
+        __atomic_fetch_add(&g_sig_defaulted, 1, __ATOMIC_RELAXED);
         if (action == DFL_IGN || action == DFL_CONT) continue;   /* look for another */
 
         /* DFL_TERM. The historical exit code for a signalled process, and the
@@ -366,7 +375,7 @@ void ksig_sigreturn(struct registers *r, void *fxarea)
     if (!p || !(r->cs & 3)) { r->rax = (uint64_t)(long)SIG_E_ARG; return; }
     if (!user_range_ok((const void *)r->rsp, sizeof c, 0) ||
         user_copy_from(&c, (const void *)r->rsp, sizeof c) < 0) {
-        g_sig_dropped++;
+        __atomic_fetch_add(&g_sig_dropped, 1, __ATOMIC_RELAXED);
         kprintf("[signal] pid %d: bad sigreturn frame at %p -- terminating\n",
                 p->pid, (void *)r->rsp);
         proc_exit(128 + LOGIT_SIGSEGV);       /* never returns */
@@ -412,5 +421,5 @@ void ksig_sigreturn(struct registers *r, void *fxarea)
     }
     spin_unlock_irqrestore(&g_sig_lock, f);
 
-    g_sig_returned++;
+    __atomic_fetch_add(&g_sig_returned, 1, __ATOMIC_RELAXED);
 }

@@ -1,6 +1,7 @@
 #include <stdint.h>
 #include "aex.h"
 #include "elf.h"
+#include "kheap.h"
 #include "crc32.h"      /* c/drivers/block: the one CRC-32 in the tree */
 #include "aexsig.h"     /* c/crypto/trust: the OPTIONAL Ed25519 signature --
                          * see the comment above the AEX_T_SIG case below and
@@ -302,6 +303,7 @@ static int aex_parse_src(const struct elf_reader *rd, struct aex_info *out)
      * allowed to grow without breaking an old loader, which is the half of the
      * compatibility story `flags` deliberately does not get. */
     int have_crc = 0;
+    int have_agent = 0, have_id = 0;
     uint32_t want_crc = 0;
     int have_sig = 0;
     uint8_t sigrec[AEX_SIG_LEN];
@@ -328,6 +330,17 @@ static int aex_parse_src(const struct elf_reader *rd, struct aex_info *out)
             break;
         }
         case AEX_T_APPID: {
+            if (h->version == 3) {
+                if (have_id++ || len < 2 || len > sizeof out->agent_id ||
+                    elf_read(rd, voff, out->agent_id, len) < 0)
+                    return reject(AEX_E_TLV, "invalid v3 application identity", off, len);
+                for (uint32_t j = 0; j < len - 1; j++) {
+                    char c = out->agent_id[j];
+                    if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ||
+                          c == '.' || c == '_' || c == '-'))
+                        return reject(AEX_E_TLV, "invalid v3 identity character", j, c);
+                }
+            }
             /* The NUL is CHECKED on both paths and the string is only REPORTED
              * on one. The check is what stops a malformed record reaching a
              * caller as an unterminated string, and skipping it on the
@@ -350,6 +363,16 @@ static int aex_parse_src(const struct elf_reader *rd, struct aex_info *out)
             if (val) out->app_id = (const char *)val;
             break;
         }
+        case AEX_T_AGENT:
+            if (h->version != 3) break; /* v2's unknown-metadata rule survives */
+            if (have_agent++ || len != sizeof out->agent ||
+                elf_read(rd, voff, &out->agent, len) < 0 ||
+                out->agent.abi != AEX_AGENT_ABI || !out->agent.capability_version ||
+                !out->agent.state_version || (out->agent.objects & ~7u) ||
+                (out->agent.actions & ~15u) || (out->agent.contexts & ~7u) ||
+                out->agent.document_max > AEX_AGENT_DOCUMENT_MAX || out->agent.reserved)
+                return reject(AEX_E_TLV, "unsupported v3 agent contract", off, len);
+            break;
         case AEX_T_TYPES:
             if (len & 1) return reject(AEX_E_TLV, "the type list is not a u16 array", off, len);
             if (val) {
@@ -442,6 +465,9 @@ static int aex_parse_src(const struct elf_reader *rd, struct aex_info *out)
      * is c/drivers/block/crc32.c's 16-entry nibble table, chosen when the only
      * caller was GPT reading a few kilobytes per boot. A 256-entry table halves
      * this, and that file belongs to the block line. */
+    if (h->version == 3 && (!have_agent || !have_id ||
+        elf_read_sha256(rd, 0, file_size, out->image_hash) < 0))
+        return reject(AEX_E_TLV, "v3 requires identity, agent contract and image hash", 0, 0);
     if (!have_crc)
         return reject(AEX_E_NOCRC, "a v2 image with no integrity record", h->version, 0);
     /* Through the reader, so the streaming path folds the image 16 KiB at a
@@ -623,12 +649,21 @@ int aex_load_image_ex(const void *file, uint64_t file_size, char *out_name, char
 
     uint64_t bytes = (uint64_t)in.hdr_size + in.elf_size;
     struct elf_src src = {
-        .fh = fh,
+        .fh = in.version == 3 ? -1 : fh,
         .base_off = in.hdr_size,
         .file_pages = (bytes + 0xFFF) >> 12,
     };
-    return elf_load_image_ex((void *)in.elf, in.elf_size, out, &src) == ELF_OK
-               ? 0 : AEX_E_ELF;
+    int rc = elf_load_image_ex((void *)in.elf, in.elf_size, out, &src) == ELF_OK ? 0 : AEX_E_ELF;
+    if (!rc && out && in.version == 3 && out->interp_path[0])
+        return reject(AEX_E_ELF,"v3 interpreter identity not registered",0,0);
+    if (!rc && out && in.version == 3) {
+        out->agent.abi = AEX_AGENT_ABI;
+        out->agent.state_version = in.agent.state_version;
+        out->agent.capability_version = in.agent.capability_version;
+        for (unsigned i=0;i<sizeof out->agent.app_id;i++) out->agent.app_id[i]=in.agent_id[i];
+        for (unsigned i=0;i<32;i++) out->agent.image_hash[i]=in.image_hash[i];
+    }
+    return rc;
 }
 
 /* THE STREAMING LOAD -- the same function with no buffer behind it.
@@ -686,6 +721,19 @@ static inline uint64_t aex_rdtsc(void)
 int aex_load_path(const char *path, uint64_t file_size, char *out_name, char *out_ext,
                   struct elf_image *out, int fh)
 {
+    /* v3 identity must describe the bytes actually mapped. A second hash of
+     * a path, or lazy executable pages backed by that path, could describe a
+     * different installation. Legacy large executables retain streaming. */
+    struct aex_header header;
+    if (!LOGIT_HAVE(vfs_pread) || vfs_pread(path,&header,sizeof header,0)!=sizeof header) return -1;
+    if (header.version == 3 && header.magic[0]=='A' && header.magic[1]=='E' && header.magic[2]=='X' && header.magic[3]=='1') {
+        if (file_size > 16u*1024u*1024u) return AEX_E_ELFSIZE;
+        void *snapshot=kmalloc(file_size);
+        if (!snapshot) return -1;
+        int rc=vfs_pread(path,snapshot,(int)file_size,0)==(int)file_size ?
+            aex_load_image_ex(snapshot,file_size,out_name,out_ext,out,-1) : -1;
+        kfree(snapshot); return rc;
+    }
     uint64_t t0 = aex_rdtsc();
     struct aex_info in;
     if (aex_parse_path(path, file_size, &in) != AEX_OK)
@@ -737,6 +785,9 @@ uint64_t aex_load_ex(const void *file, uint64_t file_size, char *out_name, char 
     if (out_top) *out_top = 0;
     if (aex_load_image_ex(file, file_size, out_name, out_ext, &img, fh) != 0)
         return 0;
+    /* PT_INTERP requires the descriptor's auxv; a bare entry/top pair cannot
+     * launch it correctly. All process launchers use the descriptor API. */
+    if (img.interp_base) return 0;
     if (out_top) *out_top = img.top;
     return img.entry;
 }

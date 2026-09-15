@@ -1,3 +1,7 @@
+#include "mmguard.h"
+#include "mmhost.h"
+#include "mm.h"
+#include "pmm.h"
 #include <stdint.h>
 #include <stddef.h>
 #include "usercopy.h"
@@ -70,52 +74,60 @@ void *memcpy(void *, const void *, size_t);
  * in this file needs to change for that; the seam is deliberately here.
  * ------------------------------------------------------------------------ */
 
+/* Correction (2026-09-10), beside the single-thread claim above: processes
+ * now have siblings. A successful user_range_ok is ONLY a momentary check;
+ * it does not authorize a later raw dereference. Copy under the AS guard,
+ * through a referenced and pinned physical page, so munmap cannot recycle
+ * memory and fork cannot make a kernel write land in its child's COW page. */
 int user_range_ok(const void *ptr, uint64_t len, int write)
 {
-    /* Not a pure check any more: it makes the range usable, or fails. A
-     * copy-on-write page is unshared and an untouched anonymous page is filled
-     * BEFORE this returns 1, so every existing caller's plain memcpy (or its
-     * direct write through the user pointer) is safe exactly as written.
-     * Ranges that are not legitimately the process's still return 0, having
-     * changed nothing -- vmm_user_range_fault_in only acts on the two cases
-     * mm_fault_classify() is willing to name. */
     return vmm_user_range_fault_in(sched_current_cr3(), ptr, len, write);
 }
-
 int user_range_mapped(const void *ptr, uint64_t len, int write)
 {
-    /* The old pure-check semantics, for anyone who wants to ask a question
-     * about the current mapping WITHOUT changing it (diagnostics, assertions).
-     * Not what a syscall entry point wants. */
     return vmm_user_range_ok(sched_current_cr3(), ptr, len, write);
 }
-
-int user_copy_from(void *dst, const void *src, uint64_t len)
+static int copy_current(void *kernel, uint64_t va, uint64_t len, int write)
 {
-    if (!dst) return -1;
-    if (len == 0) return 0;
-    if (!user_range_ok(src, len, 0)) return -1;
-    memcpy(dst, src, (size_t)len);
-    return 0;
-}
-
-int user_copy_to(void *dst, const void *src, uint64_t len)
-{
-    if (!src) return -1;
-    if (len == 0) return 0;
-    if (!user_range_ok(dst, len, 1)) return -1;    /* resolves copy-on-write first */
-    memcpy(dst, src, (size_t)len);
-    return 0;
-}
-
-int user_copy_string(char *dst, int max, const char *src)
-{
-    if (!dst || max <= 0) return -1;
-    for (int i = 0; i < max; i++) {
-        if (!user_range_ok(src + i, 1, 0)) return -1;
-        dst[i] = src[i];
-        if (dst[i] == 0) return i;
+    if (!len) return 0;
+    if (!kernel || !mm_user_range(va,len)) return -1;
+    uint64_t cr3=sched_current_cr3();
+    uint8_t *k=kernel;
+    while (len) {
+        uint64_t n=4096-(va&4095); if (n>len) n=len;
+        MM_GUARD(cr3);
+        uint64_t phys;
+        if (vmm_pin_user_page(cr3,va,write,&phys)) return -1;
+        void *alias=(uint8_t *)mm_p2v(phys)+(va&4095);
+        if (write) memcpy(alias,k,(size_t)n); else memcpy(k,alias,(size_t)n);
+        pmm_unpin(phys); pmm_free(phys);
+        va+=n; k+=n; len-=n;
     }
-    dst[max - 1] = 0;
-    return -1;
+    return 0;
 }
+int user_copy_from(void *dst,const void *src,uint64_t len)
+{ return copy_current(dst,(uint64_t)(uintptr_t)src,len,0); }
+int user_copy_to(void *dst,const void *src,uint64_t len)
+{ return copy_current((void *)src,(uint64_t)(uintptr_t)dst,len,1); }
+int user_copy_string(char *dst,int max,const char *src)
+{
+    if (!dst || max<=0) return -1;
+    int done=0;
+    while (done<max) {
+        uint64_t va=(uint64_t)(uintptr_t)src+(unsigned)done;
+        int n=4096-(int)(va&4095); if (n>max-done) n=max-done;
+        if (user_copy_from(dst+done,(const void *)(uintptr_t)va,(uint64_t)n)) return -1;
+        for (int i=0;i<n;i++) if (!dst[done+i]) return done+i;
+        done+=n;
+    }
+    dst[max-1]=0; return -1;
+}
+int user_pin_word(const void *ptr,uint64_t *phys,const void **cpu)
+{
+    uint64_t va=(uint64_t)(uintptr_t)ptr;
+    if (!phys || !cpu || (va&3) || !mm_user_range(va,4)) return -1;
+    if (vmm_pin_user_page(sched_current_cr3(),va,0,phys)) return -1;
+    *cpu=(const uint8_t *)mm_p2v(*phys)+(va&4095);
+    return 0;
+}
+void user_unpin_word(uint64_t phys) { pmm_unpin(phys); pmm_free(phys); }

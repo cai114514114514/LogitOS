@@ -40,7 +40,10 @@ static short src_file_ready(void *obj, struct poll_table *pt)
  * close() from another thread of the same process during the wait therefore
  * leaves this call holding a pointer whose refcount it did not take.
  *
- * That is safe here and would not be in general, so it is written down: every
+ * Correction (BKL removal): the snapshot now takes a reference for every
+ * entry and releases them only after poll_core unregisters all waiters. The
+ * old claim below missed that a recycled file slot could free its wait queue.
+ * That was considered safe here and would not be in general, so it is written down: every
  * caller of poll() holds the descriptors it is polling, a close of an fd this
  * process is currently polling is a program bug in any POSIX system (Linux's
  * behaviour is famously unspecified), and the only alternative -- file_dup()
@@ -82,7 +85,7 @@ static long sys_poll(long ufds, long nfds, long timeout_ms)
          * is left NULL AND `events` is cleared, so it cannot even match an
          * unconditional LPOLLERR/LPOLLHUP. */
         if (kfds[i].fd < 0) { src[i].events = 0; continue; }
-        struct file *f = proc_fd_get(p, kfds[i].fd);
+        struct file *f = proc_fd_acquire(p, kfds[i].fd);
         if (!f) continue;              /* ready == NULL -> poll_core says LPOLLNVAL */
         src[i].obj   = f;
         src[i].ready = src_file_ready;
@@ -92,6 +95,7 @@ static long sys_poll(long ufds, long nfds, long timeout_ms)
      * to be distinguishable from a bad fd. Both have ready == NULL, so mark the
      * skipped ones after poll_core has written its answers, not before. */
     int rc = poll_core(src, (int)nfds, (int)timeout_ms);
+    for (long i = 0; i < nfds; i++) if (src[i].obj) file_close(src[i].obj);
     if (rc < 0) return rc;
 
     int n = 0;
@@ -152,22 +156,13 @@ long poll_syscall(long nr, long a, long b, long c)
          * round. */
         if (a < 0) {
             struct file *f = file_timerfd((int)c);
-            long fd = install_fd(p, f);
-            if (fd < 0) return fd;
-            if (uit && it.value_ms &&
-                file_timerfd_arm(f, it.value_ms, it.interval_ms) < 0) {
-                /* Arming failed after the fd was installed. Undo it whole
-                 * rather than hand back a descriptor that will never fire: a
-                 * timer that is silently never armed is indistinguishable from
-                 * a poll() bug, which is the confusion this whole file is
-                 * trying to avoid creating. */
-                p->fd[fd] = 0;
-                file_close(f);
-                return POLL_E_ARG;
+            if (!f) return POLL_E_NOMEM;
+            if (uit && it.value_ms && file_timerfd_arm(f, it.value_ms, it.interval_ms) < 0) {
+                file_close(f); return POLL_E_ARG;
             }
-            return fd;
+            return install_fd(p, f);
         }
-        struct file *f = proc_fd_get(p, (int)a);
+        struct file *f FILE_REF = proc_fd_acquire(p, (int)a);
         if (!f) return POLL_E_ARG;
         if (!uit) return POLL_E_ARG;      /* re-arm with nothing to arm from */
         return file_timerfd_arm(f, it.value_ms, it.interval_ms) < 0

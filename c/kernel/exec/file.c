@@ -3,11 +3,11 @@
 #include "file.h"
 #include "kheap.h"
 #include "vfs.h"
-#include "sched.h"      /* bkl_hlt_wait() -- block without hogging the BKL */
+#include "sched.h"      /* sched_poll_wait: migration-safe wait without a global lock */
 #include "serial.h"     /* F_TTY console */
 #include "logit_abi.h"   /* O_*, SEEK_* */
-#include "percpu.h"     /* this_cpu (SMP: drop BKL while blocked on input) */
-#include "spinlock.h"   /* g_bkl */
+#include "percpu.h"     /* architecture helpers */
+#include "spinlock.h"   /* per-object and allocation locks */
 #include "kbench.h"     /* kb_rdtsc: what the console wait actually costs */
 #include "kprintf.h"    /* the exhaustion census -- see file_alloc */
 /* Path-qualified: mini-libc ships c/apps/libc/include/sys/wait.h and that
@@ -42,6 +42,14 @@ LOGIT_WEAK_STUB(lsock_file_release_backing);
  * c/kernel/exec/kpoll.h, written for whoever picks it up. */
 short lsock_file_poll(struct file *f, struct poll_table *pt) LOGIT_WEAK;
 LOGIT_WEAK_STUB(lsock_file_poll);
+long pty_read(struct file *, void *, long) LOGIT_WEAK;
+long pty_write(struct file *, const void *, long) LOGIT_WEAK;
+short pty_poll(struct file *, struct poll_table *) LOGIT_WEAK;
+void pty_release(void *, int) LOGIT_WEAK;
+LOGIT_WEAK_STUB(pty_read);
+LOGIT_WEAK_STUB(pty_write);
+LOGIT_WEAK_STUB(pty_poll);
+LOGIT_WEAK_STUB(pty_release);
 
 /* --------------------------------------------------------------------------
  * WHAT THE CONSOLE WAIT COSTS.
@@ -124,21 +132,17 @@ static long tty_read(struct file *f, void *vbuf, long len)
         /* Charge the previous wake with everything from `hlt` returning to here:
          * the BKL re-acquire (which may spin) and the UART poll. Nothing else in
          * this loop executes while the core is not halted. */
-        if (woke_at) g_tty_awake_cyc += kb_rdtsc() - woke_at;
+        if (woke_at) __atomic_fetch_add(&g_tty_awake_cyc, kb_rdtsc() - woke_at, __ATOMIC_RELAXED);
         /* BOTH the release window (in_kernel=0 .. spin_unlock) and the re-acquire
          * window (spin_lock .. in_kernel=1) must run with IF=0: a nested IRQ in
          * either gap reads nested=0 and re-acquires the BKL this core holds ->
          * self-deadlock. `hlt` returns via iretq with IF=1, so cli AFTER hlt too. */
-        TTY_IRQ_OFF();
-        this_cpu()->in_kernel = 0;
-        spin_unlock(&g_bkl);
-        TTY_IDLE_IRQ_OFF();
+        /* BKL removal: scheduler owns entry nesting across migration. */
+        sched_poll_wait();
         woke_at = kb_rdtsc();
-        spin_lock(&g_bkl);
-        this_cpu()->in_kernel = 1;
-        g_tty_wakes++;
+        __atomic_fetch_add(&g_tty_wakes, 1, __ATOMIC_RELAXED);
     }
-    if (woke_at) g_tty_awake_cyc += kb_rdtsc() - woke_at;
+    if (woke_at) __atomic_fetch_add(&g_tty_awake_cyc, kb_rdtsc() - woke_at, __ATOMIC_RELAXED);
     if (c == '\r') c = '\n';
     if (c == '\n')      { serial_putc('\r'); serial_putc('\n'); out[0] = '\n'; }
     else if (c == 127 || c == 8) { serial_putc(8); serial_putc(' '); serial_putc(8); out[0] = 8; }
@@ -193,69 +197,68 @@ struct pipe {
     struct waitq wq;
 };
 
+/* The BKL formerly covered count/head/tail, even though the queue already
+ * had a lock. Use that same lock for the condition and bytes: a wake cannot
+ * overtake a park, and two readers cannot both consume the last byte. These
+ * routines receive kernel staging buffers; no user fault is allowed here. */
 static long pipe_read(struct file *f, void *vbuf, long len)
 {
-    struct pipe *p = (struct pipe *)f->backing;
-    char *out = (char *)vbuf;
-    if (!(f->flags & O_NONBLOCK)) {
-        /* ksig_interrupted() is in the PREDICATE, not tested after the wait,
-         * and that is the only place it works: a signal's wake is spurious as
-         * far as "there is data" goes, so a wait_event() that did not know
-         * about it would simply re-park and the check after the loop would
-         * never be reached. It is deliberately lock-free for this -- it is
-         * evaluated under the waitqueue's own lock, and taking g_sig_lock there
-         * would invert the lock order this kernel is built on. */
-        wait_event(&p->wq, p->count > 0 || p->writers == 0 || ksig_interrupted());
-        if (p->count == 0 && p->writers != 0 && ksig_interrupted())
-            return SIG_E_INTR;
+    if (!len) return 0;
+    struct pipe *p = f->backing;
+    uint64_t fl = spin_lock_irqsave(&p->wq.lock);
+    while (p->count == 0 && p->writers && !ksig_interrupted()) {
+        if (__atomic_load_n(&f->flags, __ATOMIC_RELAXED) & O_NONBLOCK) break;
+        struct waiter w;
+        waitq_enqueue(&p->wq, &w);
+        sched_block_self_unlock(&p->wq.lock, fl);
+        fl = spin_lock_irqsave(&p->wq.lock);
+        waitq_dequeue(&p->wq, &w);
     }
-    if (p->count == 0)
-        return p->writers == 0 ? 0 : EAGAIN_RC;   /* EOF, or "would block" */
     long n = 0;
-    while (n < len && p->count > 0) {
-        out[n++] = p->buf[p->tail];
-        p->tail = (p->tail + 1) % PIPE_SZ;
-        p->count--;
+    if (!p->count) n = !p->writers ? 0 : ksig_interrupted() ? SIG_E_INTR : EAGAIN_RC;
+    else {
+        char *out = vbuf;
+        while (n < len && p->count) {
+            out[n++] = p->buf[p->tail]; p->tail = (p->tail + 1) % PIPE_SZ; p->count--;
+        }
     }
-    waitq_wake_all(&p->wq);                       /* there is room now */
+    spin_unlock_irqrestore(&p->wq.lock, fl);
+    if (n > 0) waitq_wake_all(&p->wq);
     return n;
 }
-
 static long pipe_write(struct file *f, const void *vbuf, long len)
 {
-    struct pipe *p = (struct pipe *)f->backing;
-    const char *in = (const char *)vbuf;
+    struct pipe *p = f->backing;
+    const char *in = vbuf;
     long n = 0;
     while (n < len) {
-        if (p->readers == 0) {
-            /* SIGPIPE. The condition was already detected here -- the pipe has
-             * refcounted its readers since M18 -- and all that could be done
-             * with it was to return an error the caller was free to ignore.
-             * That is why a shell pipeline whose head keeps writing after the
-             * tail exits never died: `yes | head -1` ran forever.
-             *
-             * Its default action is terminate, so posting it is what makes the
-             * writer stop; a program that has asked to handle it (or ignored
-             * it, as every server does) still gets its -1/EPIPE here. Posted
-             * before the return so that delivery happens at this syscall's own
-             * exit to ring 3, not at some later one. */
+        uint64_t fl = spin_lock_irqsave(&p->wq.lock);
+        /* <= PIPE_SZ writes are indivisible, including after a full-ring wait.
+         * This matters for multiple shell producers, not just benchmark totals. */
+        long need = len <= PIPE_SZ ? len : 1;
+        while (p->readers && PIPE_SZ - p->count < need && !ksig_interrupted()) {
+            if (__atomic_load_n(&f->flags, __ATOMIC_RELAXED) & O_NONBLOCK) break;
+            struct waiter w;
+            waitq_enqueue(&p->wq, &w);
+            sched_block_self_unlock(&p->wq.lock, fl);
+            fl = spin_lock_irqsave(&p->wq.lock);
+            waitq_dequeue(&p->wq, &w);
+        }
+        if (!p->readers) {
+            spin_unlock_irqrestore(&p->wq.lock, fl);
             ksig_post_current(LOGIT_SIGPIPE);
-            return n > 0 ? n : -1;                           /* broken pipe */
+            return n ? n : -1;
         }
-        if (p->count == PIPE_SZ) {
-            if (f->flags & O_NONBLOCK) return n > 0 ? n : EAGAIN_RC;
-            wait_event(&p->wq, p->count < PIPE_SZ || p->readers == 0 || ksig_interrupted());
-            if (p->count == PIPE_SZ && p->readers != 0 && ksig_interrupted())
-                return n > 0 ? n : SIG_E_INTR;
-            continue;
+        if (PIPE_SZ - p->count < need) {
+            int err = ksig_interrupted() ? SIG_E_INTR : EAGAIN_RC;
+            spin_unlock_irqrestore(&p->wq.lock, fl);
+            return n ? n : err;
         }
-        long before = n;
         while (n < len && p->count < PIPE_SZ) {
-            p->buf[p->head] = in[n++];
-            p->head = (p->head + 1) % PIPE_SZ;
-            p->count++;
+            p->buf[p->head] = in[n++]; p->head = (p->head + 1) % PIPE_SZ; p->count++;
         }
-        if (n > before) waitq_wake_all(&p->wq);              /* there is data now */
+        spin_unlock_irqrestore(&p->wq.lock, fl);
+        waitq_wake_all(&p->wq);
     }
     return n;
 }
@@ -344,14 +347,14 @@ void file_timerfd_tick(void)
 {
     if (!g_ntimers) return;                     /* the common case: no timerfds */
     uint64_t now = timer_ticks();
-    struct eventobj *fire[TIMERFD_MAX];
-    int nf = 0;
+
 
     uint64_t f = spin_lock_irqsave(&g_timer_lock);
     for (int i = 0; i < TIMERFD_MAX; i++) {
         struct eventobj *e = g_timers[i];
         if (!e || !e->deadline) continue;
         if ((int64_t)(now - e->deadline) < 0) continue;
+        uint64_t ef = spin_lock_irqsave(&e->wq.lock);
         if (e->interval) {
             uint64_t n = 1 + (now - e->deadline) / e->interval;
             e->val     += n;
@@ -360,7 +363,10 @@ void file_timerfd_tick(void)
             e->val++;
             e->deadline = 0;                    /* one-shot: disarmed by firing */
         }
-        if (nf < TIMERFD_MAX) fire[nf++] = e;
+        spin_unlock_irqrestore(&e->wq.lock, ef);
+        /* Hold registry lifetime through the wake: last close cannot free e.
+         * Order registry -> event queue -> scheduler, with no reverse edge. */
+        waitq_wake_all(&e->wq);
     }
     spin_unlock_irqrestore(&g_timer_lock, f);
 
@@ -368,63 +374,52 @@ void file_timerfd_tick(void)
      * own lock and, for a poll registration, the poller's lock inside it -- so
      * doing it under g_timer_lock would add a third lock to that chain from
      * interrupt context for no reason. Lock order stays q->lock -> xlock. */
-    for (int i = 0; i < nf; i++) waitq_wake_all(&fire[i]->wq);
+    /* Correction: wakes are now inside registry ownership, above. */
 }
 
 static long evt_read(struct file *f, void *vbuf, long len)
 {
-    struct eventobj *e = (struct eventobj *)f->backing;
-    /* EXACTLY 8 BYTES, refused rather than truncated. Linux's contract, and
-     * every ported program assumes it; a short read that "worked" would hand
-     * back half a counter and leave the rest to be misread as the next one. */
+    struct eventobj *e = f->backing;
     if (len < 8) return -1;
-    if (!(f->flags & O_NONBLOCK)) {
-        /* ksig_interrupted() in the PREDICATE for the reason pipe_read gives
-         * above: a signal's wake says nothing about the counter, so a
-         * wait_event that did not know about it would simply re-park. */
-        wait_event(&e->wq, e->val > 0 || ksig_interrupted());
-        if (e->val == 0 && ksig_interrupted()) return SIG_E_INTR;
+    uint64_t fl = spin_lock_irqsave(&e->wq.lock);
+    while (!e->val && !ksig_interrupted()) {
+        if (__atomic_load_n(&f->flags, __ATOMIC_RELAXED) & O_NONBLOCK) break;
+        struct waiter w; waitq_enqueue(&e->wq, &w);
+        sched_block_self_unlock(&e->wq.lock, fl);
+        fl = spin_lock_irqsave(&e->wq.lock); waitq_dequeue(&e->wq, &w);
     }
-    if (e->val == 0) return EAGAIN_RC;
+    if (!e->val) {
+        int err = ksig_interrupted() ? SIG_E_INTR : EAGAIN_RC;
+        spin_unlock_irqrestore(&e->wq.lock, fl); return err;
+    }
     uint64_t out;
     if (e->semflag && !e->is_timer) { out = 1; e->val--; }
-    else                            { out = e->val; e->val = 0; }
+    else { out = e->val; e->val = 0; }
+    int remains = e->val != 0;
+    spin_unlock_irqrestore(&e->wq.lock, fl);
     memcpy(vbuf, &out, sizeof out);
-    /* Wake the queue: with EFD_SEMAPHORE several readers share one counter, and
-     * a reader that took one of five has left four for somebody else. */
-    if (e->val) waitq_wake_all(&e->wq);
+    if (remains) waitq_wake_all(&e->wq);
     return 8;
 }
-
 static long evt_write(struct file *f, const void *vbuf, long len)
 {
-    struct eventobj *e = (struct eventobj *)f->backing;
-    /* A timerfd is written by the clock and by nothing else. Refused rather
-     * than accepted-and-ignored: a program that thinks it armed a timer by
-     * writing to it would wait forever with no error to look at. */
-    if (e->is_timer) return -1;
-    if (len < 8) return -1;
-    uint64_t add;
-    memcpy(&add, vbuf, sizeof add);
-    /* A write of 0 wakes nobody, deliberately -- see the ABI note. It is not an
-     * error, so a caller looping over a buffer of counts does not have to
-     * special-case it. */
-    if (add == 0) return 8;
-    if (e->val > 0xfffffffffffffffeULL - add) e->val = 0xfffffffffffffffeULL;
-    else                                      e->val += add;
-    waitq_wake_all(&e->wq);
-    return 8;
+    struct eventobj *e = f->backing;
+    if (e->is_timer || len < 8) return -1;
+    uint64_t add; memcpy(&add, vbuf, sizeof add);
+    if (!add) return 8;
+    uint64_t fl = spin_lock_irqsave(&e->wq.lock);
+    if (add > UINT64_MAX - 1 - e->val) e->val = UINT64_MAX - 1;
+    else e->val += add;
+    spin_unlock_irqrestore(&e->wq.lock, fl);
+    waitq_wake_all(&e->wq); return 8;
 }
-
 static short evt_poll(struct file *f, struct poll_table *pt)
 {
-    struct eventobj *e = (struct eventobj *)f->backing;
-    poll_wait(pt, &e->wq);                      /* FIRST -- see kpoll.h */
-    short m = 0;
-    if (e->val > 0) m |= LPOLLIN;
-    /* A timerfd is never writable: evt_write refuses it, so claiming LPOLLOUT
-     * would be promising that a call which always fails will not block. */
-    if (!e->is_timer) m |= LPOLLOUT;
+    struct eventobj *e = f->backing;
+    poll_wait(pt, &e->wq);
+    uint64_t fl = spin_lock_irqsave(&e->wq.lock);
+    short m = (e->val ? LPOLLIN : 0) | (!e->is_timer ? LPOLLOUT : 0);
+    spin_unlock_irqrestore(&e->wq.lock, fl);
     return m;
 }
 
@@ -468,6 +463,7 @@ int file_timerfd_arm(struct file *f, long value_ms, long interval_ms)
     if (value_ms < 0 || interval_ms < 0) return -1;
 
     uint64_t fl = spin_lock_irqsave(&g_timer_lock);
+    uint64_t ef = spin_lock_irqsave(&e->wq.lock);
     if (value_ms == 0) {
         e->deadline = 0;
         e->interval = 0;
@@ -480,6 +476,7 @@ int file_timerfd_arm(struct file *f, long value_ms, long interval_ms)
         e->interval = it;
         e->val      = 0;
     }
+    spin_unlock_irqrestore(&e->wq.lock, ef);
     spin_unlock_irqrestore(&g_timer_lock, fl);
     return 0;
 }
@@ -500,10 +497,13 @@ int file_timerfd_arm(struct file *f, long value_ms, long interval_ms)
  * would introduce a lock this file takes INSIDE a poll table's registration
  * window -- a new edge in the lock graph to serve a read that the BKL already
  * serialises. When the BKL goes, all four sites move together.
+ * Correction (BKL removal): read, write, poll and endpoint close now all take
+ * the pipe wait-queue lock; eventfd uses its own wait-queue lock too.
  * ======================================================================== */
 short file_poll(struct file *f, struct poll_table *pt)
 {
     if (!f) return LPOLLNVAL;
+    if (f->type == F_PTY) return LOGIT_HAVE(pty_poll) ? pty_poll(f,pt) : LPOLLNVAL;
     switch (f->type) {
     case F_VFS:
         /* Always ready, and it is not an approximation. For a WRITABLE
@@ -523,6 +523,7 @@ short file_poll(struct file *f, struct poll_table *pt)
         struct pipe *p = (struct pipe *)f->backing;
         if (!p) return LPOLLNVAL;
         poll_wait(pt, &p->wq);                  /* FIRST -- see kpoll.h */
+        uint64_t fl = spin_lock_irqsave(&p->wq.lock);
         short m = 0;
         if (f->is_write) {
             /* No readers left: a write() would post SIGPIPE and fail. That is
@@ -539,6 +540,7 @@ short file_poll(struct file *f, struct poll_table *pt)
              * otherwise spin on a dead pipe forever. */
             if (p->writers == 0) m |= LPOLLHUP;
         }
+        spin_unlock_irqrestore(&p->wq.lock, fl);
         return m;
     }
 
@@ -618,6 +620,7 @@ struct file *file_alloc(void)
         if (files[i].refcount == 0) {
             if (!f) {
                 f = &files[i];
+                mutex_init(&f->io_lock);
                 f->type = F_NONE; f->refcount = 1; f->flags = 0; f->is_write = 0;  /* claim under lock */
                 f->amode = 0;
                 f->off = 0; f->size = 0; f->cap = 0; f->dirty = 0;
@@ -683,6 +686,19 @@ void file_dup(struct file *f)
     uint64_t fl = spin_lock_irqsave(&g_file_lock);
     f->refcount++;
     spin_unlock_irqrestore(&g_file_lock, fl);
+}
+
+int file_refs_equal(struct file *f, int expected)
+{
+    if (!f || expected <= 0) return 0;
+    /* Refcounts are ordinary integers protected by g_file_lock. An atomic
+     * read alone would not synchronize with dup/close's locked plain writes.
+     * The caller keeps f alive and, for exclusive handoff, holds fd_lock;
+     * that is the existing fd_lock -> g_file_lock order used by acquire. */
+    uint64_t fl = spin_lock_irqsave(&g_file_lock);
+    int equal = f->refcount == expected;
+    spin_unlock_irqrestore(&g_file_lock, fl);
+    return equal;
 }
 
 static void scopy(char *d, const char *s, int max)
@@ -953,7 +969,7 @@ struct file *file_open_vfs(const char *path, int flags)
          * to fake. */
         long cap = sz > 0 ? sz : 1;
         f->backing = kmalloc((size_t)cap);
-        if (!f->backing) { f->refcount = 0; f->type = F_NONE; return 0; }
+        if (!f->backing) { file_close(f); return 0; }
         f->cap = cap;
         int n = sz > 0 ? vfs_read(path, f->backing, sz) : 0;
         f->size = n > 0 ? n : 0;
@@ -966,8 +982,10 @@ struct file *file_open_vfs(const char *path, int flags)
 
 long file_read(struct file *f, void *buf, long len)
 {
+    if (f && f->type == F_PTY) return LOGIT_HAVE(pty_read) ? pty_read(f,buf,len) : -1;
     if (!f || len < 0) return -1;
     if (f->type == F_VFS) {
+        FILE_IO_GUARD(f);
         /* The access mode is a property of the open file DESCRIPTION, so it is
          * checked here rather than at the descriptor: a dup of a write-only fd
          * is still write-only, and a fork inherits the same answer. */
@@ -1009,8 +1027,10 @@ long file_read(struct file *f, void *buf, long len)
 
 long file_write(struct file *f, const void *buf, long len)
 {
+    if (f && f->type == F_PTY) return LOGIT_HAVE(pty_write) ? pty_write(f,buf,len) : -1;
     if (!f || len < 0) return -1;
     if (f->type == F_VFS) {
+        FILE_IO_GUARD(f);
         if (f->amode == O_RDONLY) return -1;
         /* No buffer to write into. Unreachable through an ordinary open -- the
          * amode check one line above already refuses a read-only description,
@@ -1021,7 +1041,7 @@ long file_write(struct file *f, const void *buf, long len)
          * merits, since there is no backend write op to flush to; refused HERE
          * rather than at close, where the failure would be reported to nobody. */
         if (f->stream) return -1;
-        if (f->flags & O_APPEND) f->off = f->size;
+        if (__atomic_load_n(&f->flags, __ATOMIC_RELAXED) & O_APPEND) f->off = f->size;
         if (f->off > (long)0x7fffffffffffffffL - len) return -1;   /* off+len would wrap negative */
         if (vfs_ensure_cap(f, f->off + len) < 0) return -1;
         /* THE HOLE IS ZERO-FILLED, and this line is a measured bug fix, not a
@@ -1061,6 +1081,7 @@ long file_write(struct file *f, const void *buf, long len)
 long file_lseek(struct file *f, long off, int whence)
 {
     if (!f || f->type != F_VFS) return -1;
+    FILE_IO_GUARD(f);
     /* SEEK_END on a generated file asks the length NOW, because `f->size` is
      * 0 for one and always will be. It is still a length that was true at some
      * instant and may not be at the next read -- which is a property of the
@@ -1108,6 +1129,7 @@ long file_lseek(struct file *f, long off, int whence)
 long file_truncate(struct file *f, long len)
 {
     if (!f || f->type != F_VFS || len < 0) return -1;
+    FILE_IO_GUARD(f);
     if (f->amode == O_RDONLY) return -1;          /* the description may not write */
     if (f->stream || f->live) return -1;          /* nothing buffered: no length to set */
 #ifdef STORAGE_NEGCTL
@@ -1145,6 +1167,7 @@ long file_truncate(struct file *f, long len)
 int file_fsync(struct file *f)
 {
     if (!f) return -1;
+    FILE_IO_GUARD(f);
     if (f->type != F_VFS) return 0;            /* pipes/tty: nothing to persist */
     if (!f->dirty) return 0;
     if (!f->path[0]) return -1;
@@ -1165,8 +1188,8 @@ int file_pipe(struct file **rd, struct file **wr)
     struct file *r = file_alloc();
     struct file *w = file_alloc();
     if (!r || !w) {
-        if (r) { r->refcount = 0; r->type = F_NONE; }
-        if (w) { w->refcount = 0; w->type = F_NONE; }
+        if (r) file_close(r);
+        if (w) file_close(w);
         kfree(p);
         return -1;
     }
@@ -1253,22 +1276,23 @@ int file_close(struct file *f)
             waitq_wake_all(&e->wq);
             kfree(e);
         }
+    } else if (type == F_PTY) {
+        if (LOGIT_HAVE(pty_release)) pty_release(backing,is_write);
     } else if (type == F_PIPE) {
         struct pipe *p = (struct pipe *)backing;
         if (p) {
             /* readers/writers are shared with the other pipe end -> decrement under
              * the lock; the side that drops the last count frees the pipe (outside). */
             uint64_t fl2 = spin_lock_irqsave(&g_file_lock);
+            uint64_t pf = spin_lock_irqsave(&p->wq.lock);
             if (is_write) p->writers--; else p->readers--;
             int free_pipe = (p->readers == 0 && p->writers == 0);
+            spin_unlock_irqrestore(&p->wq.lock, pf);
+            /* Two final-close callers can race. Keep their cleanup serialized
+             * until the non-final caller has finished touching the wait queue. */
+            if (!free_pipe) waitq_wake_all(&p->wq);
             spin_unlock_irqrestore(&g_file_lock, fl2);
-            /* THE WAKE THAT MAKES CLOSING AN END VISIBLE. The old poll re-tested
-             * `writers` every 10 ms, so it noticed EOF whether or not anyone
-             * announced it; a parked reader is woken by events or not at all,
-             * and "the last writer went away" is the event that turns its wait
-             * into a 0-byte return. Omitting this is a hang, not a slowdown. */
             if (free_pipe) kfree(p);
-            else           waitq_wake_all(&p->wq);
         }
     }
     return rc;

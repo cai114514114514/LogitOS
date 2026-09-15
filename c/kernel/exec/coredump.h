@@ -51,6 +51,9 @@
  * process that died BECAUSE memory ran out is the one whose dump would then
  * fail to allocate. The buffer is serialised by the BKL, which the ring-3
  * fault path holds at the one call site (c/kernel/cpu/interrupts.c).
+ * Correction: each concurrent crash reserves one of CORE_SLOTS static buffers
+ * atomically and owns it through build/write/readback. Exhaustion is reported
+ * without allocating or reusing another crash's buffer.
  *
  * WHAT A CALLER SEES WHEN IT DOES NOT FIT -- never silence, in three places:
  *   1. every PT_LOAD carries p_memsz = the region's real size and p_filesz =

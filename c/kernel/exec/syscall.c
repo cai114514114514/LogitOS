@@ -2,12 +2,15 @@
 #include <stddef.h>
 #include "syscall.h"
 #include "logit_abi.h"
+#include "../../../include/abi/agent_policy.h"
 #include "serial.h"
 #include "wm.h"
+#include "fb.h"
 #include "sched.h"
 #include "usercopy.h"
 #include "proc.h"
 #include "file.h"
+#include "pty.h"
 #include "vfs.h"
 #include "rtc.h"
 #include "net.h"
@@ -19,6 +22,7 @@
 #include "img.h"
 #include "kheap.h"
 #include "percpu.h"
+#include "smp.h"
 #include "kprintf.h"
 #include "pit.h"
 #include "ktime.h"
@@ -40,9 +44,12 @@
                           * and the wait.h note twenty lines up for the same
                           * INCDIRS trap in its earlier form. */
 #include "uthread.h"     /* M30: SYS_THREAD_* / SYS_SET_TLS / SYS_FUTEX */
+#include "oom.h"
+#include "mmguard.h"
 #include "ksignal.h"     /* signals: SYS_SIGACTION..SYS_SIGQUERY, execve reset */
 #include "ptrace.h"      /* SYS_PTRACE: attach, registers, peek/poke */
 #include "meta.h"        /* meta_syscall: SYS_STAT / SYS_GETDENTS / SYS_CHMOD ... */
+#include "../../../include/abi/fs_ref.h"
 #include "vfs_cred.h"    /* id_syscall:   SYS_GETUID .. SYS_GETSESSION (150-159) */
 #include "power.h"       /* kernel_poweroff / kernel_reboot: SYS_POWEROFF / SYS_REBOOT */
 /* mod_syscall: SYS_MODULE_LOAD/_UNLOAD/_LIST/_SYM (182-185). Bare include is
@@ -54,7 +61,7 @@
 /* M25 P1: which syscalls run WITHOUT the Big Kernel Lock (interrupt_handler skips
  * the BKL for these; they self-lock via fine-grained locks). Only the kheap stress
  * for now -- the proof that concurrent, BKL-free kmalloc works. */
-int syscall_is_bkl_free(int n) { return n == SYS_KHEAP_STRESS; }
+/* BKL removal: every syscall uses object-specific synchronization. */
 
 /* BKL-FREE concurrent kmalloc/kfree stress (the P1 gate). Runs on N cores at once,
  * hammering g_kheap_lock under real contention. Each call stamps a per-call tag
@@ -83,7 +90,7 @@ static long kheap_stress(long iters, int size, unsigned long seed)
     return bad;
 }
 
-static void syscall_do(struct registers *r);
+static void syscall_do(struct registers *r, const void *user_fxarea);
 
 /* ONE COPY-IN AND ONE RESOLUTION for the two AF_UNIX calls that take a path
  * (SYS_BIND with an AF_UNIX address, and SYS_CONNECT).
@@ -104,12 +111,32 @@ static void syscall_do(struct registers *r);
  *
  * `connecting` picks which of the two calls to make: the difference between
  * bind and connect here is genuinely that one line. */
+/* Keep user addresses out of wait queues and devices: a sibling can unmap
+ * them while the operation sleeps. Reads use a bounded private buffer and
+ * copy out after completion; short reads/writes keep their usual ABI meaning. */
+#define SYSCALL_IO_MAX (64 * 1024)
+static void syscall_buf_free(unsigned char **p) { if (*p) kfree(*p); }
+#define SYSCALL_BUF(name, n) unsigned char *name \
+    __attribute__((cleanup(syscall_buf_free))) = kmalloc((size_t)((n) ? (n) : 1))
+
+int kernel_img_decode(const uint8_t *data, int len, struct image *out)
+{
+    /* JPEG uses shared scratch. Only decoders serialize here; unrelated
+     * syscalls, the compositor, and I/O continue on other cores. */
+    static struct mutex decode_lock = MUTEX_INIT;
+    mutex_lock(&decode_lock);
+    fb_graphics_lock(); /* SVG shares gfx_raster scratch with the compositor. */
+    int rc = img_decode(data, len, out);
+    fb_graphics_unlock();
+    mutex_unlock(&decode_lock);
+    return rc;
+}
+
 static long unix_addr_call(struct proc *p, struct file *f, const void *uaddr,
                            int connecting)
 {
-    if (!user_range_ok(uaddr, sizeof(struct logit_sockaddr_un), 0))
-        return LSK_E_ARG;
-    struct logit_sockaddr_un ua = *(const struct logit_sockaddr_un *)uaddr;
+    struct logit_sockaddr_un ua;
+    if (user_copy_from(&ua, uaddr, sizeof ua) < 0) return LSK_E_ARG;
     ua.path[sizeof ua.path - 1] = 0;                       /* (1) */
     /* An empty path is Linux's abstract namespace, which this kernel does not
      * implement. Passed through UNRESOLVED so that unix.c refuses it by name:
@@ -173,12 +200,12 @@ static int syscall_cap_class(int num)
     /* ---- CAP_FS: creates, destroys, renames, links, or reveals something
      * BY PATH. See the classification rule above for what is deliberately
      * NOT here (fd-only operations). */
-    case SYS_READ_FILE: case SYS_WRITE_FILE: case SYS_DELETE_FILE:
+    case SYS_CREATE_FILE: case SYS_READ_FILE: case SYS_WRITE_FILE: case SYS_DELETE_FILE:
     case SYS_MKDIR: case SYS_DIR_COUNT: case SYS_DIR_NAME:
     case SYS_FILE_COUNT: case SYS_FILE_NAME:
     case SYS_OPEN: case SYS_CHDIR: case SYS_RENAME: case SYS_OPEN_PATH:
     case SYS_IMG_DECODE:
-    case SYS_STAT: case SYS_LSTAT: case SYS_GETDENTS: case SYS_CHMOD:
+    case SYS_FSREF: case SYS_STAT: case SYS_LSTAT: case SYS_GETDENTS: case SYS_CHMOD:
     case SYS_SYMLINK: case SYS_READLINK: case SYS_LINK: case SYS_CHOWN:
         return CAP_FS;
 
@@ -253,7 +280,7 @@ static int syscall_cap_class(int num)
 /* The dispatcher proper is wrapped so the per-number accounting has exactly one
  * place to live, instead of being repeated at the ~60 `return`s below. When the
  * counters are disarmed this is a load of a global, a branch, and a tail call. */
-void syscall_dispatch(struct registers *r)
+void syscall_entry_checks(void)
 {
     /* A process marked by SYS_KILL dies here, on its own stack, before it gets
      * to make the call. This is the ONLY point at which a killed process is
@@ -265,8 +292,10 @@ void syscall_dispatch(struct registers *r)
      * other exit path in the tree does. Dying here would be the one place that
      * ran the teardown without it. The mark is durable, so the victim simply
      * dies at its next ordinary syscall instead; nothing is lost but a few
-     * microseconds, and only for a process calling the BKL-free stress call. */
-    if (__builtin_expect(proc_kill_armed(), 0) && !syscall_is_bkl_free((int)r->rax))
+     * microseconds, and only for a process calling the BKL-free stress call.
+     * Correction (BKL removal): every syscall now checks the mark; teardown
+     * uses object lifetime rules and needs no global kernel lock. */
+    if (__builtin_expect(proc_kill_armed(), 0))
         proc_kill_check();
 
     /* M30: and a thread whose PROCESS is exiting dies here too, for exactly the
@@ -275,7 +304,7 @@ void syscall_dispatch(struct registers *r)
      * stack, rather than being torn down from the exiting thread's context.
      * Same gate discipline: one load of a global and a never-taken branch on a
      * machine where nothing is exiting. */
-    if (__builtin_expect(uthread_exit_armed(), 0) && !syscall_is_bkl_free((int)r->rax))
+    if (__builtin_expect(uthread_exit_armed(), 0))
         uthread_exit_check();
 
     /* M30: make this core's TLB current before the call runs.
@@ -293,6 +322,11 @@ void syscall_dispatch(struct registers *r)
      * right place, it is the right place. Costs one relaxed load and a
      * not-taken branch on a machine where nothing is being unmapped. */
     sched_tlb_gen_check();
+}
+
+void syscall_dispatch(struct registers *r, const void *user_fxarea)
+{
+    syscall_entry_checks();
 
     /* M28: the capability category gate -- see syscall_cap_class() above for
      * the table and the reasoning. One field read on the current process plus
@@ -315,6 +349,7 @@ void syscall_dispatch(struct registers *r)
      * removes a fail-OPEN path that a future classified syscall could
      * otherwise inherit by accident).
      *
+     * Historical gate rationale (the kill gates are now unconditional):
      * DELIBERATELY NOT GUARDED BY `!syscall_is_bkl_free((int)r->rax)`, unlike
      * the two kill-check gates just above. That guard exists there so a KILL
      * MARK does not tear down a process while it is mid-flight through the
@@ -344,42 +379,80 @@ void syscall_dispatch(struct registers *r)
         }
     }
 
-    if (__builtin_expect(!g_kb_stat, 1)) { syscall_do(r); return; }
+    if (__builtin_expect(!kb_stat_enabled(), 1)) { syscall_do(r, user_fxarea); return; }
     uint64_t n = r->rax, t0 = kb_rdtsc();
-    syscall_do(r);
+    syscall_do(r, user_fxarea);
     /* r->rax is the RESULT by now, so the number has to be the one saved above.
      * execve rewrites the whole frame; it is still the right number to charge. */
-    if (n < KB_NSYS) { g_kb_sys_n[n]++; g_kb_sys_cyc[n] += kb_rdtsc() - t0; }
+    if (n < KB_NSYS) {
+        /* A blocking syscall can migrate. Freeze only this final four-scalar
+         * update, then choose the CPU we actually exit on; no shared LOCK RMW. */
+        uint64_t flags;
+        __asm__ volatile ("pushfq; pop %0; cli" : "=r"(flags) :: "memory");
+        kb_sys_record((unsigned)this_cpu()->index, n, kb_rdtsc() - t0);
+        if (flags & 0x200) __asm__ volatile ("sti" ::: "memory");
+    }
 }
 
-static void syscall_do(struct registers *r)
+static void syscall_do(struct registers *r, const void *user_fxarea)
 {
+    struct proc *agent_p = proc_current();
+    if (agent_p && agent_p->agent.mode == AEX_ACT_WORKER &&
+        !aex_agent_syscall_allowed(r->rax, r->rdi)) { r->rax = (uint64_t)-1; return; }
     switch (r->rax) {
-    case SYS_WRITE: {
-        const char *buf = (const char *)r->rsi;     /* user pointer, mapped */
-        long len = (long)r->rdx;
-        int  fd  = (int)r->rdi;
-        if (len < 0 || !user_range_ok(buf, (uint64_t)len, 0)) { r->rax = (uint64_t)-1; return; }
-        struct proc *p = proc_current();
-        struct file *f = p ? proc_fd_get(p, fd) : NULL;
-        if (f) { r->rax = (uint64_t)file_write(f, buf, len); return; }
-        if (fd == 1 || fd == 2) {                    /* default console: serial (GUI apps, init) */
-            for (long i = 0; i < len; i++) serial_putc(buf[i]);
-            r->rax = (uint64_t)len;
-            return;
-        }
-        r->rax = (uint64_t)-1;
+    case SYS_PTY_OPEN: case SYS_PTY_CTL:
+        r->rax = (uint64_t)pty_syscall(r->rax,r->rdi,r->rsi,r->rdx);return;
+    case SYS_AGENT_SPAWN:
+        r->rax = (uint64_t)proc_agent_spawn(r); return;
+    case SYS_AGENT_SELF: {
+        struct aex_agent_identity id;
+        r->rax=agent_p && r->rsi==sizeof id && proc_agent_identity(agent_p->pid,&id) &&
+            user_copy_to((void *)r->rdi,&id,sizeof id)==0 ? 0 : (uint64_t)-1;
         return;
     }
-    case SYS_READ: {
-        char *buf = (char *)r->rsi;
-        long len = (long)r->rdx;
-        if (len < 0 || !user_range_ok(buf, (uint64_t)len, 1)) { r->rax = (uint64_t)-1; return; }
-        struct proc *p = proc_current();
-        struct file *f = p ? proc_fd_get(p, (int)r->rdi) : NULL;
-        if (!f) { r->rax = (uint64_t)-1; return; }
-        r->rax = (uint64_t)file_read(f, buf, len);
+    case SYS_AGENT_PEER: {
+        struct file *f=proc_fd_acquire(agent_p,(int)r->rdi);
+        struct aex_agent_identity id;
+        int ok=f && r->rdx==sizeof id && lsock_agent_peer(f,&id)==0;
+        if (f) file_close(f);
+        r->rax=ok && user_copy_to((void *)r->rsi,&id,sizeof id)==0 ? 0 : (uint64_t)-1;
         return;
+    }
+    case SYS_WRITE: {
+        const unsigned char *buf = (const void *)r->rsi;
+        long len = (long)r->rdx, done = 0;
+        int fd = (int)r->rdi;
+        if (len < 0 || !user_range_ok(buf, (uint64_t)len, 0)) { r->rax = (uint64_t)-1; return; }
+        struct proc *p = proc_current();
+        struct file *f FILE_REF = p ? proc_fd_acquire(p, fd) : NULL;
+        if (!f && fd != 1 && fd != 2) { r->rax = (uint64_t)-1; return; }
+        long cap = len < SYSCALL_IO_MAX ? len : SYSCALL_IO_MAX;
+        SYSCALL_BUF(tmp, cap);
+        if (!tmp) { r->rax = (uint64_t)-1; return; }
+        while (done < len) {
+            long n = len - done < cap ? len - done : cap;
+            if (user_copy_from(tmp, buf + done, (uint64_t)n) < 0) { if (!done) done = -1; break; }
+            long got = n;
+            if (f) got = file_write(f, tmp, n);
+            else for (long i = 0; i < n; i++) serial_putc(tmp[i]);
+            if (got <= 0) { if (!done) done = got; break; }
+            done += got; if (got < n) break;
+        }
+        r->rax = (uint64_t)done; return;
+    }
+    case SYS_READ: {
+        long len = (long)r->rdx;
+        if (len < 0) { r->rax = (uint64_t)-1; return; }
+        struct proc *p = proc_current();
+        struct file *f FILE_REF = p ? proc_fd_acquire(p, (int)r->rdi) : NULL;
+        if (!f) { r->rax = (uint64_t)-1; return; }
+        if (len > SYSCALL_IO_MAX) len = SYSCALL_IO_MAX;
+        if (!user_range_ok((void *)r->rsi, (uint64_t)len, 1)) { r->rax = (uint64_t)-1; return; }
+        SYSCALL_BUF(tmp, len);
+        if (!tmp) { r->rax = (uint64_t)-1; return; }
+        long got = file_read(f, tmp, len);
+        if (got > 0 && user_copy_to((void *)r->rsi, tmp, (uint64_t)got) < 0) got = -1;
+        r->rax = (uint64_t)got; return;
     }
     case SYS_OPEN: {
         char path[128];
@@ -394,34 +467,12 @@ static void syscall_do(struct registers *r)
         r->rax = (uint64_t)fd;
         return;
     }
-    case SYS_CLOSE: {
-        struct proc *p = proc_current(); int fd = (int)r->rdi;
-        if (!p || fd < 0 || fd >= NFD || !p->fd[fd]) { r->rax = (uint64_t)-1; return; }
-        /* file_close() now returns 0/-1 (see file.c): -1 means THIS was the
-         * last reference to a dirty F_VFS file and its whole-file write-back
-         * to the backend failed -- e.g. the disk is full. The ABI already
-         * documented SYS_CLOSE as "(fd) -> 0, or <0" before this change; what
-         * changes is that <0 was previously unreachable -- SYS_CLOSE used to
-         * return 0 unconditionally, so the only symptom of a failed write was
-         * that the file quietly was not there. */
-        /* -1 and -2 are DIFFERENT failures and ring 3 needs to tell them
-         * apart. -1 keeps its historic and only meaning, "fd was not open",
-         * which is the guard three lines above; the write-back failure gets
-         * -2 of its own. Collapsing both into -1 costs a real distinction:
-         * mini-libc's close() would have to pick one errno for both, and it
-         * picked EIO -- so close(999) on a descriptor that was never open
-         * started reporting "Input/output error". That is a worse answer than
-         * the one this whole change exists to make reachable. file_close()
-         * keeps its own 0/-1 convention (it argues for matching
-         * file_fsync()); the translation belongs here, at the ABI edge, which
-         * is the only place that knows both spellings. */
-        int rc = file_close(p->fd[fd]); p->fd[fd] = NULL;
-        r->rax = (uint64_t)(long)(rc < 0 ? -2 : 0);
+    case SYS_CLOSE:
+        r->rax = (uint64_t)(long)proc_fd_close(proc_current(), (int)r->rdi);
         return;
-    }
     case SYS_LSEEK: {
         struct proc *p = proc_current();
-        struct file *f = p ? proc_fd_get(p, (int)r->rdi) : NULL;
+        struct file *f FILE_REF = p ? proc_fd_acquire(p, (int)r->rdi) : NULL;
         if (!f) { r->rax = (uint64_t)-1; return; }
         r->rax = (uint64_t)file_lseek(f, (long)r->rsi, (int)r->rdx);
         return;
@@ -434,14 +485,14 @@ static void syscall_do(struct registers *r)
      * file_truncate() in file.c. */
     case SYS_FTRUNCATE: {
         struct proc *p = proc_current();
-        struct file *f = p ? proc_fd_get(p, (int)r->rdi) : NULL;
+        struct file *f FILE_REF = p ? proc_fd_acquire(p, (int)r->rdi) : NULL;
         if (!f) { r->rax = (uint64_t)-1; return; }
         r->rax = (uint64_t)file_truncate(f, (long)r->rsi);
         return;
     }
     case SYS_DUP: {
         struct proc *p = proc_current();
-        struct file *f = p ? proc_fd_get(p, (int)r->rdi) : NULL;
+        struct file *f FILE_REF = p ? proc_fd_acquire(p, (int)r->rdi) : NULL;
         if (!f) { r->rax = (uint64_t)-1; return; }
         file_dup(f);
         int fd = proc_fd_alloc(p, f);
@@ -451,35 +502,30 @@ static void syscall_do(struct registers *r)
     }
     case SYS_SETNB: {
         struct proc *p = proc_current();
-        struct file *f = p ? proc_fd_get(p, (int)r->rdi) : NULL;
+        struct file *f FILE_REF = p ? proc_fd_acquire(p, (int)r->rdi) : NULL;
         if (!f) { r->rax = (uint64_t)-1; return; }
-        f->flags |= O_NONBLOCK;
+        __atomic_fetch_or(&f->flags, O_NONBLOCK, __ATOMIC_RELAXED);
         r->rax = 0;
         return;
     }
     case SYS_FSYNC: {
         struct proc *p = proc_current();
-        struct file *f = p ? proc_fd_get(p, (int)r->rdi) : NULL;
+        struct file *f FILE_REF = p ? proc_fd_acquire(p, (int)r->rdi) : NULL;
         if (!f) { r->rax = (uint64_t)-1; return; }
         r->rax = (uint64_t)file_fsync(f);
         return;
     }
-    case SYS_DUP2: {
-        struct proc *p = proc_current(); int old = (int)r->rdi, nw = (int)r->rsi;
-        struct file *f = p ? proc_fd_get(p, old) : NULL;
-        if (!f || nw < 0 || nw >= NFD) { r->rax = (uint64_t)-1; return; }
-        if (old != nw) {
-            if (p->fd[nw]) file_close(p->fd[nw]);
-            file_dup(f); p->fd[nw] = f;
-        }
-        r->rax = (uint64_t)nw;
+    case SYS_DUP2:
+        r->rax = (uint64_t)(long)proc_fd_dup2(proc_current(), (int)r->rdi, (int)r->rsi);
         return;
-    }
     case SYS_GETCWD: {
         struct proc *p = proc_current(); char *buf = (char *)r->rdi; int max = (int)r->rsi;
         if (!p || max <= 0 || !user_range_ok(buf, (uint64_t)max, 1)) { r->rax = (uint64_t)-1; return; }
-        int i = 0; for (; i < max - 1 && p->cwd[i]; i++) buf[i] = p->cwd[i]; buf[i] = 0;
-        r->rax = (uint64_t)i;
+        char cwd[sizeof p->cwd];
+        uint64_t cf = spin_lock_irqsave(&p->fd_lock);
+        int i = 0; for (; i < max - 1 && i < (int)sizeof cwd - 1 && p->cwd[i]; i++) cwd[i] = p->cwd[i]; cwd[i] = 0;
+        spin_unlock_irqrestore(&p->fd_lock, cf);
+        r->rax = user_copy_to(buf, cwd, (uint64_t)i + 1) < 0 ? (uint64_t)-1 : (uint64_t)i;
         return;
     }
     case SYS_CHDIR: {
@@ -488,7 +534,9 @@ static void syscall_do(struct registers *r)
         struct proc *p = proc_current(); if (!p) { r->rax = (uint64_t)-1; return; }
         char abs[128]; proc_resolve(p, path, abs, sizeof abs);
         if (vfs_count(abs) < 0) { r->rax = (uint64_t)-1; return; }   /* not a directory */
+        uint64_t cf = spin_lock_irqsave(&p->fd_lock);
         int i = 0; for (; i < (int)sizeof(p->cwd) - 1 && abs[i]; i++) p->cwd[i] = abs[i]; p->cwd[i] = 0;
+        spin_unlock_irqrestore(&p->fd_lock, cf);
         r->rax = 0;
         return;
     }
@@ -500,16 +548,25 @@ static void syscall_do(struct registers *r)
         if (!p || max < 0 || user_copy_string(name, sizeof name, (const char *)r->rdi) < 0) { r->rax = (uint64_t)-1; return; }
         if (max > 0 && !user_range_ok((void *)r->rsi, (uint64_t)max, 1)) { r->rax = (uint64_t)-1; return; }
         proc_resolve(p, name, abs, sizeof abs);
-        r->rax = (uint64_t)vfs_read(abs, (void *)r->rsi, max);
+        SYSCALL_BUF(tmp, max);
+        if (!tmp) { r->rax = (uint64_t)-1; return; }
+        long got = vfs_read(abs, tmp, max);
+        if (got > 0 && user_copy_to((void *)r->rsi, tmp, (uint64_t)got) < 0) got = -1;
+        r->rax = (uint64_t)got;
         return;
     }
+    case SYS_CREATE_FILE:
     case SYS_WRITE_FILE: {
+        int exclusive=r->rax==SYS_CREATE_FILE;
+        if(exclusive&&r->rdx>AEX_AGENT_DOCUMENT_MAX){r->rax=(uint64_t)-1;return;}
         char path[128], abs[128]; int size = (int)r->rdx;
         struct proc *p = proc_current();
         if (!p || size < 0 || user_copy_string(path, sizeof path, (const char *)r->rdi) < 0) { r->rax = (uint64_t)-1; return; }
         if (size > 0 && !user_range_ok((const void *)r->rsi, (uint64_t)size, 0)) { r->rax = (uint64_t)-1; return; }
         proc_resolve(p, path, abs, sizeof abs);
-        r->rax = (uint64_t)vfs_write(abs, (const void *)r->rsi, size);
+        SYSCALL_BUF(tmp, size);
+        if (!tmp || user_copy_from(tmp, (const void *)r->rsi, (uint64_t)size) < 0) { r->rax = (uint64_t)-1; return; }
+        r->rax = (uint64_t)(exclusive ? vfs_create_file(abs,tmp,size) : vfs_write(abs, tmp, size));
         return;
     }
     case SYS_DELETE_FILE: {
@@ -539,8 +596,9 @@ static void syscall_do(struct registers *r)
         if (!user_range_ok((void *)r->rdx, 64, 1)) { r->rax = (uint64_t)-1; return; }
         proc_resolve(p, dir, abs, sizeof abs);
         if (i < 0 || i >= vfs_count(abs)) { r->rax = (uint64_t)-1; return; }
-        { const char *nm = vfs_ent_name(abs, i); char *out = (char *)r->rdx;
-          int j = 0; for (; j < 63 && nm && nm[j]; j++) out[j] = nm[j]; out[j] = 0; }
+        { const char *nm = vfs_ent_name(abs, i); char out[64];
+          int j = 0; for (; j < 63 && nm && nm[j]; j++) out[j] = nm[j]; out[j] = 0;
+          if (user_copy_to((void *)r->rdx, out, (uint64_t)j + 1) < 0) { r->rax = (uint64_t)-1; return; } }
         r->rax = (uint64_t)(vfs_ent_is_dir(abs, i) ? -2 : vfs_ent_size(abs, i));
         return;
     }
@@ -550,8 +608,9 @@ static void syscall_do(struct registers *r)
     case SYS_FILE_NAME: {
         int i = (int)r->rdi; int max = (int)r->rdx;
         if (i < 0 || i >= vfs_count("/") || max <= 0 || !user_range_ok((void *)r->rsi, (uint64_t)max, 1)) { r->rax = (uint64_t)-1; return; }
-        { const char *nm = vfs_ent_name("/", i); char *out = (char *)r->rsi;
-          int j = 0; for (; j < max - 1 && nm && nm[j]; j++) out[j] = nm[j]; out[j] = 0; }
+        { const char *nm = vfs_ent_name("/", i); char out[256];
+          int j = 0; for (; j < max - 1 && j < 255 && nm && nm[j]; j++) out[j] = nm[j]; out[j] = 0;
+          if (user_copy_to((void *)r->rsi, out, (uint64_t)j + 1) < 0) { r->rax = (uint64_t)-1; return; } }
         r->rax = (uint64_t)vfs_ent_size("/", i);
         return;
     }
@@ -573,10 +632,13 @@ static void syscall_do(struct registers *r)
          * has no use for nanoseconds. Ten ticks = 100 ms.
          *
          * Statics, not per-process: this is one hardware clock and every reader
-         * wants the same answer. Reached only with the BKL held (int 0x80 is
-         * not in syscall_is_bkl_free), so no lock of its own. */
+         * wants the same answer. Historical assumption: BKL held (int 0x80 is
+         * not in syscall_is_bkl_free), so no lock of its own.
+         * Correction: cache_lock now protects the RTC snapshot and timestamp. */
         if (!user_range_ok((void *)r->rdi, sizeof(struct rtc_time), 1)) { r->rax = (uint64_t)-1; return; }
         static struct rtc_time cached;
+        static spinlock_t cache_lock = SPINLOCK_INIT;
+        uint64_t cf = spin_lock_irqsave(&cache_lock);
 #ifdef KBENCH_NEGCTL
         rtc_now(&cached);                          /* the old behaviour: the CMOS, every time */
 #else
@@ -587,7 +649,9 @@ static void syscall_do(struct registers *r)
             cached_at = now ? now : 1;             /* 0 means "never", so never store 0 */
         }
 #endif
-        user_copy_to((void *)r->rdi, &cached, sizeof cached);
+        struct rtc_time result = cached;
+        spin_unlock_irqrestore(&cache_lock, cf);
+        if (user_copy_to((void *)r->rdi, &result, sizeof result) < 0) { r->rax = (uint64_t)-1; return; }
         r->rax = 0;
         return;
     }
@@ -611,14 +675,14 @@ static void syscall_do(struct registers *r)
         if (!user_range_ok((void *)r->rsi, sizeof ts, 1)) { r->rax = (uint64_t)-1; return; }
         if (time_clock_gettime((int)r->rdi, &s, &ns) < 0) { r->rax = (uint64_t)-1; return; }
         ts.tv_sec = (long)s; ts.tv_nsec = (long)ns;
-        user_copy_to((void *)r->rsi, &ts, sizeof ts);
+        if (user_copy_to((void *)r->rsi, &ts, sizeof ts) < 0) { r->rax = (uint64_t)-1; return; }
         r->rax = 0;
         return;
     }
     case SYS_NANOSLEEP: {
         struct logit_timespec req;
         if (!user_range_ok((const void *)r->rdi, sizeof req, 0)) { r->rax = (uint64_t)-1; return; }
-        user_copy_from(&req, (const void *)r->rdi, sizeof req);
+        if (user_copy_from(&req, (const void *)r->rdi, sizeof req) < 0) { r->rax = (uint64_t)-1; return; }
         if (req.tv_sec < 0 || req.tv_nsec < 0 || req.tv_nsec >= 1000000000L) {
             r->rax = (uint64_t)-1; return;
         }
@@ -650,7 +714,7 @@ static void syscall_do(struct registers *r)
             if (now >= deadline) break;
             uint64_t rem = deadline - now;
             if (rem > 2 * tick_ns) sched_sleep_ms((unsigned)((rem - tick_ns) / NS_PER_MS));
-            /* bkl_hlt_wait(), NOT schedule(), and this one hung the machine.
+            /* sched_poll_wait(), NOT schedule(), and this one hung the machine.
              *
              * schedule() does not touch the BKL unless it actually switches,
              * and with every other thread blocked it finds nothing to switch
@@ -673,7 +737,7 @@ static void syscall_do(struct registers *r)
              * bkl_hlt_wait drops the BKL, halts until the next interrupt, and
              * retakes it -- the primitive that already exists for exactly this
              * (see its comment in sched.c). Reproducer: make test-smp-fork-storm. */
-            else                   bkl_hlt_wait();
+            else                   sched_poll_wait();
         }
         if (r->rsi && user_range_ok((void *)r->rsi, sizeof req, 1)) {
             struct logit_timespec rem = { 0, 0 };
@@ -703,7 +767,7 @@ static void syscall_do(struct registers *r)
         { const char *n = time_source_name(src); int i = 0;
           for (; i < (int)sizeof ci.name - 1 && n[i]; i++) ci.name[i] = n[i];
           for (; i < (int)sizeof ci.name; i++) ci.name[i] = 0; }
-        user_copy_to((void *)r->rdi, &ci, sizeof ci);
+        if (user_copy_to((void *)r->rdi, &ci, sizeof ci) < 0) { r->rax = (uint64_t)-1; return; }
         r->rax = 0;
         return;
     }
@@ -718,7 +782,7 @@ static void syscall_do(struct registers *r)
         r->rax = 0;
         return;
     case SYS_FORK:
-        r->rax = (uint64_t)proc_fork(r);
+        r->rax = (uint64_t)proc_fork(r, user_fxarea);
         return;
     case SYS_EXECVE: {
         /* M30: REFUSED from a multi-threaded process, rather than done wrong.
@@ -735,20 +799,23 @@ static void syscall_do(struct registers *r)
          * So it is a refusal, and it is a loud one. Nothing in the tree does
          * this today: /bin/sh forks single-threaded and execs in the child. */
         struct proc *ep = proc_current();
-        if (ep && uthread_proc_live(ep->pid) > 1) {
+        if (!uthread_exec_begin()) {
             kprintf("[execve] pid %d: refused, %d threads live\n",
-                    ep->pid, uthread_proc_live(ep->pid));
+                    ep ? ep->pid : -1, ep ? uthread_proc_live(ep->pid) : 0);
             r->rax = (uint64_t)(long)THR_E_INVAL;
             return;
         }
         long rc = proc_execve(r);
+        uthread_exec_end();
         /* On success the user image is gone and with it whatever the TLS
          * pointer used to name. Leaving IA32_FS_BASE loaded would hand the new
          * program a %fs pointing into memory that is no longer its own -- and
          * because the descriptor would still agree with the hardware, no later
          * context switch would ever correct it. */
+        /* Correction: proc_execve installs ei.tls_tp (zero for an image with
+         * no TLS). Clearing it again here erased the newly relocated PIE TLS,
+         * making its first %fs:0 load fault at address zero. */
         if (rc == 0) {
-            sched_set_fsbase(0);
             /* Signals across exec, and the distinction is POSIX's rather than a
              * shortcut: a CAUGHT signal goes back to SIG_DFL, because the
              * handler's address is in an image that no longer exists and
@@ -764,25 +831,19 @@ static void syscall_do(struct registers *r)
     }
     case SYS_PIPE: {
         struct proc *p = proc_current();
-        int *ufds = (int *)r->rdi;
-        if (!p || !user_range_ok(ufds, sizeof(int) * 2, 1)) { r->rax = (uint64_t)-1; return; }
-        struct file *rf = 0, *wf = 0;
-        if (file_pipe(&rf, &wf) < 0) { kprintf("[pipe] file_pipe failed (file table/kheap)\n"); r->rax = (uint64_t)-1; return; }
-        int rfd = proc_fd_alloc(p, rf);
-        int wfd = proc_fd_alloc(p, wf);
-        if (rfd < 0 || wfd < 0) {
-            /* Unhook any installed fd BEFORE closing: file_close drops the last
-             * ref, the slot becomes reusable, and a dangling p->fd[] entry would
-             * later close the slot's NEW owner (proc_exit/SYS_CLOSE). */
-            kprintf("[pipe] fd table full (pid %d)\n", p->pid);
-            if (rfd >= 0) p->fd[rfd] = NULL;
-            if (wfd >= 0) p->fd[wfd] = NULL;
+        int *ufds = (int *)r->rdi, fds[2];
+        if (!p || !user_range_ok(ufds, sizeof fds, 1)) { r->rax = (uint64_t)-1; return; }
+        struct file *rf = NULL, *wf = NULL;
+        if (file_pipe(&rf, &wf) < 0) { r->rax = (uint64_t)-1; return; }
+        struct file *hold_a FILE_REF = rf, *hold_b FILE_REF = wf;
+        file_dup(rf); file_dup(wf); /* retain identity through copyout rollback */
+        if (proc_fd_pair(p, rf, wf, fds) < 0) {
             file_close(rf); file_close(wf); r->rax = (uint64_t)-1; return;
         }
-        int fds[2] = { rfd, wfd };
-        user_copy_to(ufds, fds, sizeof fds);
-        r->rax = 0;
-        return;
+        if (user_copy_to(ufds, fds, sizeof fds) < 0) {
+            proc_fd_close_if(p, fds[0], hold_a); proc_fd_close_if(p, fds[1], hold_b); r->rax = (uint64_t)-1; return;
+        }
+        r->rax = 0; return;
     }
     case SYS_GETPID: {
         struct proc *p = proc_current();
@@ -790,11 +851,17 @@ static void syscall_do(struct registers *r)
         return;
     }
     case SYS_CPU_INDEX:
-        /* index of the core running this syscall (under the BKL). SMP proof: a
+        /* index of the core running this syscall (kernel entry depth only). SMP proof: a
          * child that observes a different index than another ran on another core. */
         r->rax = (uint64_t)(long)this_cpu()->index;
         return;
-    case SYS_KHEAP_STRESS: {   /* BKL-FREE (see syscall_is_bkl_free): concurrent kmalloc stress */
+    case SYS_CPU_COUNT:
+        /* Runtime state, after AP bring-up. Keeping this separate from CPU_INDEX
+         * preserves that call's zero-argument ABI and prevents libc from
+         * pretending every machine has four CPUs. */
+        r->rax = (uint64_t)(unsigned)smp_cpu_count();
+        return;
+    case SYS_KHEAP_STRESS: {   /* concurrent kmalloc stress; all syscalls are BKL-free */
         long iters = (long)r->rdi; int size = (int)r->rsi; unsigned long seed = (unsigned long)r->rdx;
         if (size < 8 || size > 1024 || iters < 0) { r->rax = (uint64_t)-1; return; }
         r->rax = (uint64_t)kheap_stress(iters, size, seed);
@@ -809,7 +876,7 @@ static void syscall_do(struct registers *r)
          * (SIG_E_NOSYS) any bit it does not implement instead of ignoring it. */
         int status = 0;
         long rc = proc_waitpid((int)r->rdi, &status, (int)r->rdx);
-        if (rc >= 0 && r->rsi) user_copy_to((void *)r->rsi, &status, sizeof(int));
+        if (rc >= 0 && r->rsi && user_copy_to((void *)r->rsi, &status, sizeof(int)) < 0) rc = -1;
         r->rax = (uint64_t)rc;
         return;
     }
@@ -821,8 +888,11 @@ static void syscall_do(struct registers *r)
         if (!net_up()) { r->rax = 0; return; }
         struct logit_netinfo *ni = (struct logit_netinfo *)r->rdi;
         if (!user_range_ok(ni, sizeof *ni, 1)) { r->rax = (uint64_t)-1; return; }
-        ni->ip = net_cfg.ip; ni->mask = net_cfg.mask; ni->gw = net_cfg.gw;
-        for (int i = 0; i < 6; i++) ni->mac[i] = net_cfg.mac[i];
+        struct logit_netinfo info = {0};
+        struct net_config cfg = net_config_snapshot();
+        info.ip = cfg.ip; info.mask = cfg.mask; info.gw = cfg.gw;
+        for (int i = 0; i < 6; i++) info.mac[i] = cfg.mac[i];
+        if (user_copy_to(ni, &info, sizeof info) < 0) { r->rax = (uint64_t)-1; return; }
         r->rax = 1; return;
     }
     case SYS_NET_PING:
@@ -850,7 +920,9 @@ static void syscall_do(struct registers *r)
      * window. Every one of these returns without waiting -- which is the whole
      * change. The blocking SYS_HTTP_GET runs with the BKL held for the length of
      * a fetch, which is exactly why the desktop froze; these hold it for a memcpy
-     * and the real work happens in net_poll() on the WM thread. */
+     * and the real work happens in net_poll() on the WM thread.
+     * Correction: the BKL is gone. Socket calls pass private kernel buffers
+     * to the socket owner; HTTP uses its own sleeping session lock. */
     case SYS_SOCK_OPEN: {
         char host[SOCK_HOST_MAX];
         struct proc *p = proc_current();
@@ -873,7 +945,10 @@ static void syscall_do(struct registers *r)
         int len = (int)r->rdx;
         if (!p || len < 0 || (len > 0 && !user_range_ok((const void *)r->rsi, (uint64_t)len, 0)))
             { r->rax = (uint64_t)(long)SOCK_E_ARG; return; }
-        r->rax = (uint64_t)(long)sock_send((int)r->rdi, (const void *)r->rsi, len, p->pid);
+        if (len > SYSCALL_IO_MAX) len = SYSCALL_IO_MAX;
+        SYSCALL_BUF(tmp, len);
+        if (!tmp || user_copy_from(tmp, (const void *)r->rsi, (uint64_t)len) < 0) { r->rax = (uint64_t)-1; return; }
+        r->rax = (uint64_t)(long)sock_send((int)r->rdi, tmp, len, p->pid);
         return;
     }
     case SYS_SOCK_RECV: {
@@ -881,7 +956,12 @@ static void syscall_do(struct registers *r)
         int max = (int)r->rdx;
         if (!p || max <= 0 || !user_range_ok((void *)r->rsi, (uint64_t)max, 1))
             { r->rax = (uint64_t)(long)SOCK_E_ARG; return; }
-        r->rax = (uint64_t)(long)sock_recv((int)r->rdi, (void *)r->rsi, max, p->pid);
+        if (max > SYSCALL_IO_MAX) max = SYSCALL_IO_MAX;
+        SYSCALL_BUF(tmp, max);
+        if (!tmp) { r->rax = (uint64_t)-1; return; }
+        long got = sock_recv((int)r->rdi, (void *)tmp, max, p->pid);
+        if (got > 0 && user_copy_to((void *)r->rsi, tmp, (uint64_t)got) < 0) got = -1;
+        r->rax = (uint64_t)got;
         return;
     }
     case SYS_SOCK_ALPN: {
@@ -889,7 +969,12 @@ static void syscall_do(struct registers *r)
         int max = (int)r->rdx;
         if (!p || max <= 0 || !user_range_ok((void *)r->rsi, (uint64_t)max, 1))
             { r->rax = (uint64_t)(long)SOCK_E_ARG; return; }
-        r->rax = (uint64_t)(long)sock_alpn((int)r->rdi, (char *)r->rsi, max, p->pid);
+        if (max > SYSCALL_IO_MAX) max = SYSCALL_IO_MAX;
+        SYSCALL_BUF(tmp, max);
+        if (!tmp) { r->rax = (uint64_t)-1; return; }
+        long got = sock_alpn((int)r->rdi, (void *)tmp, max, p->pid);
+        if (got >= 0 && user_copy_to((void *)r->rsi, tmp, (uint64_t)got + 1) < 0) got = -1;
+        r->rax = (uint64_t)got;
         return;
     }
     case SYS_SOCK_CLOSE: {
@@ -935,11 +1020,11 @@ static void syscall_do(struct registers *r)
      * 8-byte struct at the end of a page. */
     case SYS_BIND: {
         struct proc *p = proc_current();
-        struct file *f = p ? proc_fd_get(p, (int)r->rdi) : NULL;
+        struct file *f FILE_REF = p ? proc_fd_acquire(p, (int)r->rdi) : NULL;
         unsigned short fam;
         if (!f || !user_range_ok((const void *)r->rsi, sizeof fam, 0))
             { r->rax = (uint64_t)(long)LSK_E_ARG; return; }
-        fam = *(const unsigned short *)r->rsi;
+        if (user_copy_from(&fam, (const void *)r->rsi, sizeof fam) < 0) { r->rax = (uint64_t)(long)LSK_E_ARG; return; }
         if (fam == LOGIT_AF_UNIX) {
             r->rax = (uint64_t)(long)unix_addr_call(p, f, (const void *)r->rsi, 0);
             return;
@@ -947,7 +1032,7 @@ static void syscall_do(struct registers *r)
         struct logit_sockaddr a;
         if (!user_range_ok((const void *)r->rsi, sizeof a, 0))
             { r->rax = (uint64_t)(long)LSK_E_ARG; return; }
-        a = *(const struct logit_sockaddr *)r->rsi;   /* struct assignment: no
+        if (user_copy_from(&a, (const void *)r->rsi, sizeof a) < 0) { r->rax = (uint64_t)(long)LSK_E_ARG; return; }   /* struct assignment: no
                                      * libc memcpy is declared in this TU */
         r->rax = (uint64_t)(long)lsock_bind(f, &a);
         return;
@@ -957,11 +1042,17 @@ static void syscall_do(struct registers *r)
      * lsock_connect() that does not exist. */
     case SYS_CONNECT: {
         struct proc *p = proc_current();
-        struct file *f = p ? proc_fd_get(p, (int)r->rdi) : NULL;
+        struct file *f FILE_REF = p ? proc_fd_acquire(p, (int)r->rdi) : NULL;
         unsigned short fam;
         if (!f || !user_range_ok((const void *)r->rsi, sizeof fam, 0))
             { r->rax = (uint64_t)(long)LSK_E_ARG; return; }
-        fam = *(const unsigned short *)r->rsi;
+        if (user_copy_from(&fam, (const void *)r->rsi, sizeof fam) < 0) { r->rax = (uint64_t)(long)LSK_E_ARG; return; }
+        /* 2026-09-11 correction to the historical comment above: IPv4
+         * blocking connect now uses an owned ordinary socket descriptor. */
+        if(fam==LOGIT_AF_INET){struct logit_sockaddr a;
+            if(r->rdx<sizeof a){r->rax=(uint64_t)(long)LSK_E_ARG;return;}
+            if(user_copy_from(&a,(void *)r->rsi,sizeof a)<0){r->rax=(uint64_t)(long)LSK_E_ARG;return;}
+            r->rax=(uint64_t)(long)lsock_connect_inet(f,&a);return;}
         if (fam != LOGIT_AF_UNIX) { r->rax = (uint64_t)(long)LSK_E_ARG; return; }
         r->rax = (uint64_t)(long)unix_addr_call(p, f, (const void *)r->rsi, 1);
         return;
@@ -979,27 +1070,30 @@ static void syscall_do(struct registers *r)
          * second slot cannot be had the first is given back -- a caller whose
          * sv[] holds one live descriptor and one -1 has leaked a socket it was
          * never told about. */
-        int a = proc_fd_alloc(p, fa);
-        if (a < 0) { file_close(fa); file_close(fb); r->rax = (uint64_t)(long)LSK_E_FULL; return; }
-        int b = proc_fd_alloc(p, fb);
-        if (b < 0) { file_close(p->fd[a]); p->fd[a] = NULL; file_close(fb);
-                      r->rax = (uint64_t)(long)LSK_E_FULL; return; }
-        sv[0] = a; sv[1] = b;
-        r->rax = 0;
-        return;
+        int fds[2];
+        struct file *hold_a FILE_REF = fa, *hold_b FILE_REF = fb;
+        file_dup(fa); file_dup(fb); /* retain identity through copyout rollback */
+        if (proc_fd_pair(p, fa, fb, fds) < 0) {
+            file_close(fa); file_close(fb); r->rax = (uint64_t)(long)LSK_E_FULL; return;
+        }
+        if (user_copy_to(sv, fds, sizeof fds) < 0) {
+            proc_fd_close_if(p, fds[0], hold_a); proc_fd_close_if(p, fds[1], hold_b); r->rax = (uint64_t)(long)LSK_E_ARG; return;
+        }
+        r->rax = 0; return;
     }
+
     case SYS_LISTEN: {
         struct proc *p = proc_current();
-        struct file *f = p ? proc_fd_get(p, (int)r->rdi) : NULL;
+        struct file *f FILE_REF = p ? proc_fd_acquire(p, (int)r->rdi) : NULL;
         if (!f) { r->rax = (uint64_t)(long)LSK_E_ARG; return; }
         r->rax = (uint64_t)(long)lsock_listen(f, (int)r->rsi);
         return;
     }
     case SYS_ACCEPT: {
         struct proc *p = proc_current();
-        struct file *f = p ? proc_fd_get(p, (int)r->rdi) : NULL;
+        struct file *f FILE_REF = p ? proc_fd_acquire(p, (int)r->rdi) : NULL;
         if (!f) { r->rax = (uint64_t)(long)LSK_E_ARG; return; }
-        struct logit_sockaddr peer;
+        struct logit_sockaddr peer = {0}; /* unnamed AF_UNIX peer has no address */
         int want_peer = r->rsi != 0;
         if (want_peer && !user_range_ok((void *)r->rsi, sizeof peer, 1))
             { r->rax = (uint64_t)(long)LSK_E_ARG; return; }
@@ -1010,15 +1104,17 @@ static void syscall_do(struct registers *r)
         /* Install the fd BEFORE copying out: a failed copy-out with the fd
          * already allocated is a leaked connection, and the fd table is the
          * thing the caller cannot clean up itself. */
+        struct file *hold_cf FILE_REF = cf;
+        file_dup(cf);
         int fd = proc_fd_alloc(p, cf);
         if (fd < 0) { file_close(cf); r->rax = (uint64_t)(long)LSK_E_FULL; return; }
-        if (want_peer) *(struct logit_sockaddr *)r->rsi = peer;
+        if (want_peer && user_copy_to((void *)r->rsi, &peer, sizeof peer) < 0) { proc_fd_close_if(p, fd, hold_cf); r->rax = (uint64_t)(long)LSK_E_ARG; return; }
         r->rax = (uint64_t)(long)fd;
         return;
     }
     case SYS_GETSOCKNAME: {
         struct proc *p = proc_current();
-        struct file *f = p ? proc_fd_get(p, (int)r->rdi) : NULL;
+        struct file *f FILE_REF = p ? proc_fd_acquire(p, (int)r->rdi) : NULL;
         if (!f) { r->rax = (uint64_t)(long)LSK_E_ARG; return; }
         /* Dispatched on the SOCKET, not on the buffer, because the buffer is
          * write-only here and has nothing in it to read a family out of. An
@@ -1029,7 +1125,7 @@ static void syscall_do(struct registers *r)
             if (!user_range_ok((void *)r->rsi, sizeof un, 1))
                 { r->rax = (uint64_t)(long)LSK_E_ARG; return; }
             un.family = LOGIT_AF_UNIX;
-            *(struct logit_sockaddr_un *)r->rsi = un;
+            if (user_copy_to((void *)r->rsi, &un, sizeof un) < 0) { r->rax = (uint64_t)(long)LSK_E_ARG; return; }
             r->rax = 0;
             return;
         }
@@ -1037,13 +1133,13 @@ static void syscall_do(struct registers *r)
         if (!user_range_ok((void *)r->rsi, sizeof a, 1))
             { r->rax = (uint64_t)(long)LSK_E_ARG; return; }
         int rc = lsock_getsockname(f, &a);
-        if (rc == 0) *(struct logit_sockaddr *)r->rsi = a;
+        if (rc == 0 && user_copy_to((void *)r->rsi, &a, sizeof a) < 0) rc = LSK_E_ARG;
         r->rax = (uint64_t)(long)rc;
         return;
     }
     case SYS_SETSOCKOPT: {
         struct proc *p = proc_current();
-        struct file *f = p ? proc_fd_get(p, (int)r->rdi) : NULL;
+        struct file *f FILE_REF = p ? proc_fd_acquire(p, (int)r->rdi) : NULL;
         if (!f) { r->rax = (uint64_t)(long)LSK_E_ARG; return; }
         int level = (int)((r->rsi >> 16) & 0xFFFF);
         int opt   = (int)(r->rsi & 0xFFFF);
@@ -1052,7 +1148,7 @@ static void syscall_do(struct registers *r)
     }
     case SYS_SHUTDOWN: {
         struct proc *p = proc_current();
-        struct file *f = p ? proc_fd_get(p, (int)r->rdi) : NULL;
+        struct file *f FILE_REF = p ? proc_fd_acquire(p, (int)r->rdi) : NULL;
         if (!f) { r->rax = (uint64_t)(long)LSK_E_ARG; return; }
         r->rax = (uint64_t)(long)lsock_shutdown(f, (int)r->rsi);
         return;
@@ -1060,15 +1156,15 @@ static void syscall_do(struct registers *r)
     case SYS_RECVFROM:
     case SYS_SENDTO: {
         struct proc *p = proc_current();
-        struct file *f = p ? proc_fd_get(p, (int)r->rdi) : NULL;
+        struct file *f FILE_REF = p ? proc_fd_acquire(p, (int)r->rdi) : NULL;
         struct logit_dgram d;
         /* recvfrom writes the sender back into the caller's struct; sendto only
          * reads it. Checking for write access on both would refuse a sendto
          * from a read-only mapping, which is legal. */
         if (!f || !user_range_ok((void *)r->rsi, sizeof d, r->rax == SYS_RECVFROM))
             { r->rax = (uint64_t)(long)LSK_E_ARG; return; }
-        d = *(const struct logit_dgram *)r->rsi;
-        if (d.len < 0 || d.flags != 0)
+        if (user_copy_from(&d, (const void *)r->rsi, sizeof d) < 0) { r->rax = (uint64_t)(long)LSK_E_ARG; return; }
+        if (d.len < 0 || d.len > SYSCALL_IO_MAX || d.flags != 0)
             { r->rax = (uint64_t)(long)LSK_E_ARG; return; }
         int writing = (r->rax == SYS_RECVFROM);
         if (d.len > 0 && !user_range_ok(d.buf, (uint64_t)d.len, writing))
@@ -1078,15 +1174,19 @@ static void syscall_do(struct registers *r)
          * fields, converted here so exactly one of the two shapes is public. */
         struct logit_sockaddr sa;
         sa.family = d.family; sa.port = d.port; sa.addr = d.addr;
+        SYSCALL_BUF(tmp, d.len);
+        if (!tmp) { r->rax = (uint64_t)(long)LSK_E_ARG; return; }
         long rc;
         if (r->rax == SYS_RECVFROM) {
-            rc = lsock_recvfrom(f, d.buf, d.len, &sa);
+            rc = lsock_recvfrom(f, tmp, d.len, &sa);
+            if (rc > 0 && user_copy_to(d.buf, tmp, (uint64_t)rc) < 0) rc = LSK_E_ARG;
             if (rc > 0) {                                       /* the sender */
                 d.family = sa.family; d.port = sa.port; d.addr = sa.addr;
-                *(struct logit_dgram *)r->rsi = d;
+                if (user_copy_to((void *)r->rsi, &d, sizeof d) < 0) rc = LSK_E_ARG;
             }
         } else {
-            rc = lsock_sendto(f, d.buf, d.len, &sa);
+            if (user_copy_from(tmp, d.buf, (uint64_t)d.len) < 0) rc = LSK_E_ARG;
+            else rc = lsock_sendto(f, tmp, d.len, &sa);
         }
         r->rax = (uint64_t)rc;
         return;
@@ -1111,13 +1211,14 @@ static void syscall_do(struct registers *r)
         if (!file) { r->rax = (uint64_t)-1; return; }
         int n = vfs_read(abs, file, sz);
         struct image im;
-        if (n <= 0 || img_decode(file, n, &im) != 0) { kfree(file); r->rax = (uint64_t)-1; return; }
+        if (n <= 0 || kernel_img_decode(file, n, &im) != 0) { kfree(file); r->rax = (uint64_t)-1; return; }
         kfree(file);
         long need = (long)im.w * im.h * 4;
         if (need <= 0 || need > req.max) { img_free(&im); r->rax = (uint64_t)-1; return; }
-        user_copy_to(req.rgba, im.rgba, (uint64_t)need);
+        int copy_rc = user_copy_to(req.rgba, im.rgba, (uint64_t)need);
         req.w = im.w; req.h = im.h;
-        user_copy_to((void *)r->rdi, &req, sizeof req);     /* return dimensions */
+        if (copy_rc == 0) copy_rc = user_copy_to((void *)r->rdi, &req, sizeof req);
+        if (copy_rc < 0) { img_free(&im); r->rax = (uint64_t)-1; return; }
         img_free(&im);
         r->rax = 0;
         return;
@@ -1206,6 +1307,13 @@ static void syscall_do(struct registers *r)
      * SYS_THREAD_* is -- a CLI process with no window still has a CPU-time
      * budget. Recovered from stash@{0}; see branch rescue-1845. */
     case SYS_RUSAGE:
+        if(r->rdi==RUCTL_GET_RSS_FRAMES){
+            struct proc *p=proc_current();if(!p){r->rax=(uint64_t)-1;return;}
+            /* Measure the caller's live address space under its existing
+             * owner. Never inspect another process by a recyclable PID. */
+            uint64_t space=p->cr3;MM_GUARD(space);
+            r->rax=oom_rss_frames(space);return;
+        }
         r->rax = (uint64_t)sched_rusage_syscall((long)r->rdi, (long)r->rsi,
                                                 (long)r->rdx);
         return;
@@ -1311,6 +1419,7 @@ static void syscall_do(struct registers *r)
      * the reason mm_syscall() gives: which argument is a user pointer and what
      * it means are facts about this subsystem. Proc-level, not GUI: a CLI
      * program is the main caller and has no window. */
+    case SYS_FSREF:
     case SYS_STAT:
     case SYS_LSTAT:
     case SYS_FSTAT:
@@ -1372,11 +1481,13 @@ static void syscall_do(struct registers *r)
      * unreadable store, means the user gets the system settings read-only:
      * a worse desktop, not a refused one. */
     case SYS_SETSESSION: {
+        settings_session_lock();
         int prepared = (settings_prepare_user((unsigned)r->rdi) == 0);
         long rc = id_syscall((long)r->rax, (long)r->rdi,
                              (long)r->rsi, (long)r->rdx);
         if (rc == 0 && prepared) settings_adopt_user();
         else                     settings_discard_user();
+        settings_session_unlock();
         r->rax = (uint64_t)rc;
         return;
     }
@@ -1454,18 +1565,23 @@ static void syscall_do(struct registers *r)
      * works, so there is no rax to set there -- reaching a `return` after
      * either call is dead code the compiler already knows is dead (both are
      * declared noreturn in power.h), not a case this dispatcher forgot to
-     * finish. */
+     * finish.
+     * Correction: successful hardware shutdown/reset still cannot return, but
+     * drain/sync/hardware refusal now restores service and returns an error.
+     * Preserve that result instead of falling through to another syscall. */
     case SYS_POWEROFF: {
         struct vcred me;
         vfs_cred_current(&me);
         if (me.uid != 0) { r->rax = (uint64_t)ID_E_PERM; return; }
-        kernel_poweroff();
+        r->rax = (uint64_t)kernel_poweroff();
+        return;
     }
     case SYS_REBOOT: {
         struct vcred me;
         vfs_cred_current(&me);
         if (me.uid != 0) { r->rax = (uint64_t)ID_E_PERM; return; }
-        kernel_reboot();
+        r->rax = (uint64_t)kernel_reboot();
+        return;
     }
 
     /* Loadable kernel modules (c/kernel/module/). The uid check is NOT here

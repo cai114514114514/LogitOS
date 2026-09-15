@@ -16,6 +16,7 @@
 #include "../../../include/weaksym.h"
 #ifndef LOGIT_HOSTTEST
 #include "vma.h"       /* VMA_READ/VMA_EXEC + the file-mapping entry point */
+#include "mmguard.h"
 #else
 /* tests/unit/exechost has no c/kernel/mm on its include path, and no VMAs to
  * reserve -- the weak vma_reserve_file_fixed below is absent there and the
@@ -24,6 +25,7 @@
  * which is why the kernel build includes the real header instead of copying
  * the values. */
 #define VMA_READ 0x1
+#define VMA_WRITE 0x2
 #define VMA_EXEC 0x4
 #endif
 
@@ -37,6 +39,13 @@ void *memset(void *, int, size_t);
  * would make them a link error instead. */
 int vfs_pread(const char *path, void *buf, int max, long long off) LOGIT_WEAK;
 LOGIT_WEAK_STUB(vfs_pread);
+
+#ifdef LOGIT_HOSTTEST
+int elf_interpreter_open(const char *, struct elf_reader *, struct elf_src *) LOGIT_WEAK;
+void elf_interpreter_close(const struct elf_src *) LOGIT_WEAK;
+LOGIT_WEAK_STUB(elf_interpreter_open);
+LOGIT_WEAK_STUB(elf_interpreter_close);
+#endif
 
 /* THE BOUNCE, AND WHY THE FILE BYTES DO NOT GO STRAIGHT TO THEIR DESTINATION.
  *
@@ -99,11 +108,28 @@ LOGIT_WEAK_STUB(vfs_pread);
 #ifndef ELF_BOUNCE
 #define ELF_BOUNCE (128 * 4096)          /* = READ_RUN * BS, see above */
 #endif
-static uint8_t g_bounce[ELF_BOUNCE];
+/* Correction to the static-buffer argument above: every read/hash invocation
+ * owns its scratch through I/O completion. CPU-local scratch would race after
+ * a sleeping loader migrates. Allocation stays bounded at the measured 512 KiB. */
+#ifdef LOGIT_HOSTTEST
+#include <stdlib.h>
+#define ELF_ALLOC malloc
+#define ELF_FREE free
+#else
+#include "kheap.h"
+#define ELF_ALLOC kmalloc
+#define ELF_FREE kfree
+#endif
+static void elf_scratch_free(uint8_t **p) { if (*p) ELF_FREE(*p); }
 
 int elf_read(const struct elf_reader *rd, uint64_t off, void *dst, uint64_t n)
 {
     if (!rd || !dst) return -1;
+    uint8_t *g_bounce __attribute__((cleanup(elf_scratch_free))) = NULL;
+    if (!rd->mem && n) {
+        g_bounce = ELF_ALLOC((size_t)(n < ELF_BOUNCE ? n : ELF_BOUNCE));
+        if (!g_bounce) return -1;
+    }
     if (off > rd->size || n > rd->size - off) return -1;   /* subtraction form: no wrap */
     if (!n) return 0;
 
@@ -145,6 +171,11 @@ int elf_read(const struct elf_reader *rd, uint64_t off, void *dst, uint64_t n)
 int elf_read_crc32(const struct elf_reader *rd, uint64_t off, uint64_t n, uint32_t *crc)
 {
     if (!rd || !crc) return -1;
+    uint8_t *g_bounce __attribute__((cleanup(elf_scratch_free))) = NULL;
+    if (!rd->mem && n) {
+        g_bounce = ELF_ALLOC((size_t)(n < ELF_BOUNCE ? n : ELF_BOUNCE));
+        if (!g_bounce) return -1;
+    }
     if (off > rd->size || n > rd->size - off) return -1;
     uint32_t c = CRC32_INIT;
     if (rd->mem) {
@@ -176,6 +207,11 @@ int elf_read_crc32(const struct elf_reader *rd, uint64_t off, uint64_t n, uint32
 int elf_read_sha256(const struct elf_reader *rd, uint64_t off, uint64_t n, uint8_t out[32])
 {
     if (!rd || !out) return -1;
+    uint8_t *g_bounce __attribute__((cleanup(elf_scratch_free))) = NULL;
+    if (!rd->mem && n) {
+        g_bounce = ELF_ALLOC((size_t)(n < ELF_BOUNCE ? n : ELF_BOUNCE));
+        if (!g_bounce) return -1;
+    }
     if (off > rd->size || n > rd->size - off) return -1;
     struct sha256 c;
     sha256_init(&c);
@@ -440,7 +476,7 @@ int elf_file_runs(const struct elf64_phdr *ph, int phnum, uint64_t hdr_off,
          * anyway. Returning it would be a run that is always dropped, which
          * costs a "could not be reserved" line on every load of every binary
          * that has one -- a warning that means nothing, printed forever. */
-        if (lo < USER_VA_BASE || hi > USER_VA_END) continue;
+        if (!mm_user_range(lo, hi - lo)) continue;
 
         /* (d) in full. Redundant with the hdr_off test above for any image
          * PASS 0 accepted (p_offset == p_vaddr mod 4096) and kept because the
@@ -488,6 +524,8 @@ static int in_runs(const struct elf_run *runs, int nrun, uint64_t va)
 int vma_reserve_file_fixed(uint64_t cr3, uint64_t start, uint64_t len,
                            uint32_t prot, int fh, uint64_t foff) LOGIT_WEAK;
 LOGIT_WEAK_STUB(vma_reserve_file_fixed);
+int vma_reserve_fixed(uint64_t cr3, uint64_t start, uint64_t len, uint32_t prot) LOGIT_WEAK;
+LOGIT_WEAK_STUB(vma_reserve_fixed);
 
 /* Allocate + map one zeroed user page at `va`. Returns 0 on OOM, 1 if a page
  * was already there, 2 if this call allocated one. Skips the allocation if
@@ -503,10 +541,12 @@ static int place_page(uint64_t cr3, uint64_t va, uint64_t flags)
 {
     uint64_t *e = vmm_pte(cr3, va);
     if (e && (*e & 1)) return 1;                  /* PRESENT: already ours */
-    uint64_t frame = pmm_alloc();
+    uint64_t frame = pmm_alloc_any();
     if (!frame) return 0;
-    memset((void *)frame, 0, 0x1000);
     vmm_map_page(va, frame, flags);
+    /* Physical payload frames may be above the identity map. The active user
+     * VA is our mapping of this frame, so clear through it, never (void*)phys. */
+    memset((void *)va, 0, 0x1000);
     return 2;
 }
 
@@ -517,6 +557,10 @@ static int place_page(uint64_t cr3, uint64_t va, uint64_t flags)
  * REFUSE, which is a different and more useful state than not knowing about it.
  * Written down here so the next person does not have to re-derive whether the
  * absence is a decision:
+ * Correction (PT_INTERP delivery): the INTERP/DYNAMIC refusals below describe
+ * the original loader. A named bare ET_DYN interpreter now receives startup;
+ * it owns both objects' relocations, TLS and RELRO. Without PT_INTERP, the
+ * restricted static PIE relocation path remains in force.
  *
  *   PT_INTERP   -- refused. It names a dynamic loader (/lib/ld-linux...). There
  *                  is none on this machine and no plan for one; mapping the
@@ -526,7 +570,9 @@ static int place_page(uint64_t cr3, uint64_t va, uint64_t flags)
  *   PT_DYNAMIC  -- refused. It is the relocation/symbol table, and this loader
  *                  applies no relocations. A static ET_EXEC never has one; a
  *                  binary that does has expectations we would silently break.
- *   ET_DYN      -- refused, same reason, at the file level: a PIE is *defined*
+ *   ET_DYN      -- originally refused; correction: static PIE is now handled
+ *                  by pie_dynamic/pie_relocate below. Historical rationale:
+ *                  a PIE is *defined*
  *                  by needing R_X86_64_RELATIVE applied at its load base.
  *                  Refusing is what makes the fixed link bases honest rather
  *                  than accidental.
@@ -565,6 +611,138 @@ int elf_load_image_ex(void *image, uint64_t image_size, struct elf_image *out,
     return elf_load_reader(&rd, out, src);
 }
 
+/* Static PIE deliberately stops before a dynamic linker: every relocation is
+ * self-relative, and every destination belongs to private writable image data.
+ * Tables are translated through PT_LOAD file ranges, never dereferenced as
+ * untrusted user pointers. A validation pass precedes all page allocations;
+ * the application pass repeats the same checks before protections/RELRO. */
+struct pie_rela { uint64_t offset, info; int64_t addend; };
+struct pie_plan { uint64_t file_off, count; };
+
+static int pie_file_range(const struct elf64_phdr *ph, int n, uint64_t va,
+                          uint64_t len, uint64_t *off)
+{
+    for (int i = 0; i < n; i++) {
+        if (ph[i].p_type != PT_LOAD || va < ph[i].p_vaddr) continue;
+        uint64_t delta = va - ph[i].p_vaddr;
+        if (delta <= ph[i].p_filesz && len <= ph[i].p_filesz - delta) {
+            *off = ph[i].p_offset + delta;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int pie_target(const struct elf64_phdr *ph, int n, uint64_t va)
+{
+    for (int i = 0; i < n; i++) {
+        if (ph[i].p_type != PT_LOAD || !(ph[i].p_flags & PF_W) ||
+            (ph[i].p_flags & PF_X) || va < ph[i].p_vaddr) continue;
+        uint64_t d = va - ph[i].p_vaddr;
+        if (d <= ph[i].p_memsz && 8 <= ph[i].p_memsz - d) return 1;
+    }
+    return 0;
+}
+
+static int pie_dynamic(const struct elf_reader *rd, const struct elf64_phdr *ph,
+                       int n, const struct elf64_phdr *dyn, uint64_t bias,
+                       struct pie_plan *plan)
+{
+    memset(plan, 0, sizeof *plan);
+    if (!dyn) return ELF_OK;       /* a fully RIP-relative program needs none */
+    uint64_t off;
+    if (!dyn->p_filesz || dyn->p_filesz > 8192 || dyn->p_filesz % 16 ||
+        !pie_file_range(ph, n, dyn->p_vaddr, dyn->p_filesz, &off) || off != dyn->p_offset)
+        return reject(ELF_E_DYNAMIC, "PIE dynamic table outside file-backed LOAD", dyn->p_vaddr, dyn->p_filesz);
+    uint64_t rela = 0, bytes = 0, ent = 0, relcount = 0;
+    unsigned seen = 0;
+    int ended = 0;
+    for (uint64_t at = 0; at < dyn->p_filesz; at += 16) {
+        uint64_t d[2];
+        if (elf_read(rd, off + at, d, sizeof d) < 0)
+            return reject(ELF_E_DYNAMIC, "cannot read PIE dynamic table", off + at, 0);
+        if (d[0] == 0) { ended = 1; break; }
+        unsigned bit = 0;
+        switch (d[0]) {
+        case 7: bit = 1; rela = d[1]; break;           /* DT_RELA */
+        case 8: bit = 2; bytes = d[1]; break;          /* DT_RELASZ */
+        case 9: bit = 4; ent = d[1]; break;            /* DT_RELAENT */
+        case 0x6ffffff9: bit = 8; relcount = d[1]; break;
+        /* Inert symbol/hash metadata is emitted even with NO imported symbols.
+         * Accepting these is not symbol resolution: any symbolic relocation
+         * below is still refused. Constructors/DT_NEEDED/REL/RELR/PLT are not
+         * inert and hit the default refusal. */
+        case 4: case 5: case 6: case 10: case 11: case 0x6ffffef5: break;
+        case 21: if (d[1]) return reject(ELF_E_DYNAMIC, "nonzero DT_DEBUG", d[1], 0); break;
+        case 30:
+            if (d[1] & ~8ull) return reject(ELF_E_DYNAMIC, "unsupported DT_FLAGS (including TEXTREL)", d[1], 0);
+            break;
+        case 0x6ffffffb:
+            if (d[1] & ~(0x08000000ull | 1ull))
+                return reject(ELF_E_DYNAMIC, "unsupported DT_FLAGS_1", d[1], 0);
+            break;
+        default: return reject(ELF_E_DYNAMIC, "static PIE refuses dynamic tag", d[0], d[1]);
+        }
+        if (bit && (seen & bit)) return reject(ELF_E_DYNAMIC, "duplicate PIE relocation tag", d[0], 0);
+        seen |= bit;
+    }
+    if (!ended) return reject(ELF_E_DYNAMIC, "PIE dynamic table lacks DT_NULL", off, 0);
+    if (!(seen & 7)) {
+        if (relcount) return reject(ELF_E_RELOC, "RELACOUNT without RELA", relcount, 0);
+        return ELF_OK;
+    }
+    if ((seen & 7) != 7 || ent != sizeof(struct pie_rela) || bytes % ent ||
+        bytes / ent > 262144 || relcount > bytes / ent || rela > UINT64_MAX - bias)
+        return reject(ELF_E_RELOC, "malformed PIE RELA description", bytes, ent);
+    if (!pie_file_range(ph, n, rela + bias, bytes, &plan->file_off))
+        return reject(ELF_E_RELOC, "PIE RELA table outside file-backed LOAD", rela, bytes);
+    plan->count = bytes / ent;
+    return ELF_OK;
+}
+
+static int pie_relocate(const struct elf_reader *rd, const struct elf64_phdr *ph,
+                        int n, uint64_t bias, const struct pie_plan *plan,
+                        int apply, uint64_t *applied)
+{
+    struct pie_rela batch[32]; /* 768 bytes; stream large tables, no heap copy */
+    for (uint64_t first = 0; first < plan->count;) {
+        uint64_t count = plan->count - first;
+        if (count > 32) count = 32;
+        if (elf_read(rd, plan->file_off + first * sizeof batch[0], batch,
+                     count * sizeof batch[0]) < 0)
+            return reject(ELF_E_RELOC, "cannot read PIE RELA table", first, count);
+        for (uint64_t i = 0; i < count; i++) {
+            const struct pie_rela *r = &batch[i];
+            if (r->info == 0) continue;                /* R_X86_64_NONE */
+            if (r->info != 8 || r->offset > UINT64_MAX - bias)
+                return reject(ELF_E_RELOC, "only symbol-free R_X86_64_RELATIVE is supported", r->info, r->offset);
+            uint64_t target = bias + r->offset, value;
+            if (!pie_target(ph, n, target))
+                return reject(ELF_E_RELOC, "PIE relocation target is not private writable LOAD data", target, 0);
+            if (r->addend >= 0) {
+                if ((uint64_t)r->addend > UINT64_MAX - bias)
+                    return reject(ELF_E_RELOC, "PIE relocation value overflows", bias, r->addend);
+                value = bias + (uint64_t)r->addend;
+            } else {
+                uint64_t magnitude = 0 - (uint64_t)r->addend;
+                if (magnitude > bias)
+                    return reject(ELF_E_RELOC, "PIE relocation value underflows", bias, magnitude);
+                value = bias - magnitude;
+            }
+            if (!mm_user_range(value, 1))
+                return reject(ELF_E_RELOC, "PIE relative pointer leaves user windows", value, 0);
+            if (apply) {
+#ifndef ELF_PIE_NEGCTL_NORELOC
+                memcpy((void *)target, &value, sizeof value);
+#endif
+                (*applied)++;
+            }
+        }
+        first += count;
+    }
+    return ELF_OK;
+}
+
 int elf_check_header64(const void *hdr64)
 {
     const struct elf64_ehdr *eh = hdr64;
@@ -587,11 +765,11 @@ int elf_check_header64(const void *hdr64)
     if (eh->e_ident[EI_ABIVERSION] != 0)
         return reject(ELF_E_IDENT, "EI_ABIVERSION != 0", eh->e_ident[EI_ABIVERSION], 0);
 
-    if (eh->e_type == ET_DYN)
-        return reject(ELF_E_TYPE, "ET_DYN: a PIE needs relocation, and this "
-                                  "loader applies none", eh->e_type, 0);
-    if (eh->e_type != ET_EXEC)
-        return reject(ELF_E_TYPE, "not ET_EXEC", eh->e_type, 0);
+    /* Previously ET_DYN was refused because no relocations existed. Static
+     * PIE now passes the header check; full validation still precedes mapping.
+     * An ELF container is NOT a promise of Linux syscall ABI compatibility. */
+    if (eh->e_type != ET_EXEC && eh->e_type != ET_DYN)
+        return reject(ELF_E_TYPE, "not ET_EXEC or static ET_DYN", eh->e_type, 0);
     if (eh->e_machine != EM_X86_64)
         return reject(ELF_E_MACHINE, "not EM_X86_64", eh->e_machine, 0);
 
@@ -599,15 +777,16 @@ int elf_check_header64(const void *hdr64)
      * above it -- elf.h's predicate says why. This is the check that names
      * the most common wrong binary on this machine: one linked at a stock
      * toolchain's 0x400000, which is shared kernel low memory. */
-    if (!elf_entry_in_user_region(eh->e_entry))
+    if (eh->e_type == ET_EXEC && !elf_entry_in_user_region(eh->e_entry))
         return reject(ELF_E_ENTRY, "entry point outside the user region "
                                    "(a LogitOS program links at 0x50000000)",
                       eh->e_entry, USER_VA_BASE);
     return ELF_OK;
 }
 
-int elf_load_reader(const struct elf_reader *rd, struct elf_image *out,
-                    const struct elf_src *src)
+static int elf_load_object(const struct elf_reader *rd, struct elf_image *out,
+                          const struct elf_src *src, int interpreter,
+                          uint64_t avoid_start, uint64_t avoid_end)
 {
     struct elf_image blank;
     if (!out) out = &blank;
@@ -637,6 +816,8 @@ int elf_load_reader(const struct elf_reader *rd, struct elf_image *out,
      * TWO defects gets and nothing else. */
     int hrc = elf_check_header64(eh);
     if (hrc != ELF_OK) return hrc;
+    if (interpreter && eh->e_type != ET_DYN)
+        return reject(ELF_E_INTERP, "interpreter must be a bare ET_DYN ELF", eh->e_type, 0);
     if (eh->e_version != EV_CURRENT)
         return reject(ELF_E_VERSION, "e_version != EV_CURRENT", eh->e_version, 0);
     if (eh->e_ehsize != sizeof *eh)
@@ -689,12 +870,70 @@ int elf_load_reader(const struct elf_reader *rd, struct elf_image *out,
                       eh->e_phoff, eh->e_phnum);
     struct elf64_phdr *ph = phbuf;
     int phnum = eh->e_phnum;
+    /* Discover PT_INTERP before PT_DYNAMIC: table order must not decide who
+     * owns relocations. The bounded pathname is file data, not a user pointer.
+     * Recursive interpreters are refused before allocating a single page. */
+    for (int i = 0; i < phnum; i++) {
+        if (ph[i].p_type != PT_INTERP) continue;
+        uint64_t len = ph[i].p_filesz;
+        if (interpreter || out->interp_path[0] || len < 2 || len > sizeof out->interp_path ||
+            elf_read(rd, ph[i].p_offset, out->interp_path, len) < 0)
+            return reject(ELF_E_INTERP, "invalid, duplicate or nested PT_INTERP", i, len);
+        if (out->interp_path[0] != '/' || out->interp_path[len - 1] != 0)
+            return reject(ELF_E_INTERP, "interpreter path must be absolute and terminated", i, len);
+        for (uint64_t j = 0; j + 1 < len; j++)
+            if (!out->interp_path[j])
+                return reject(ELF_E_INTERP, "interpreter path contains embedded NUL", i, j);
+    }
+    int deferred = interpreter || out->interp_path[0];
+    /* Deterministic placement, NOT ASLR. Different loads exercise relocation
+     * without claiming entropy. The BKL serialises calls, as for g_bounce.
+     * Correction: placement uses an atomic serial and each reader owns bounce
+     * storage; the mapping transaction owns only its target AS guard. */
+#ifndef ELF_PIE_BASE
+#define ELF_PIE_BASE MM_USER_WIDE_BASE
+#endif
+    static uint64_t pie_serial;
+    if (eh->e_type == ET_DYN) {
+        uint64_t align = 4096;
+        for (int i = 0; i < phnum; i++) {
+            if (ph[i].p_type != PT_LOAD) continue;
+            if (ph[i].p_align > 1 && !is_pow2(ph[i].p_align))
+                return reject(ELF_E_SEGALIGN, "PIE load alignment is not power-of-two", i, ph[i].p_align);
+            if (ph[i].p_align > align) align = ph[i].p_align;
+        }
+        /* Separate deterministic windows, not ASLR. Alignment can otherwise
+         * round consecutive 256 MiB slots onto the SAME 1 GiB base. The span
+         * check below still rejects a main image reaching into this window. */
+        uint64_t base = ELF_PIE_BASE + (interpreter ? (1ull << 39) : 0) +
+                        ((__atomic_fetch_add(&pie_serial, 1, __ATOMIC_RELAXED) & 15) << 28);
+        if (align > (1ull << 30) || base > UINT64_MAX - align)
+            return reject(ELF_E_SEGALIGN, "PIE load alignment exceeds 1 GiB", align, base);
+        out->load_bias = (base + align - 1) & ~(align - 1);
+        if (eh->e_entry > UINT64_MAX - out->load_bias)
+            return reject(ELF_E_ENTRY, "PIE entry plus bias overflows", eh->e_entry, out->load_bias);
+        eh->e_entry += out->load_bias;
+        if (!elf_entry_in_user_region(eh->e_entry))
+            return reject(ELF_E_ENTRY, "PIE entry outside user windows", eh->e_entry, 0);
+        for (int i = 0; i < phnum; i++) {
+            switch (ph[i].p_type) {
+            case PT_LOAD: case PT_TLS: case PT_PHDR: case PT_DYNAMIC:
+            case PT_GNU_RELRO: case PT_GNU_EH_FRAME:
+                if (ph[i].p_vaddr > UINT64_MAX - out->load_bias)
+                    return reject(ELF_E_SEGVA, "PIE segment plus bias overflows", i, ph[i].p_vaddr);
+                ph[i].p_vaddr += out->load_bias;
+                break;
+            default: break;
+            }
+        }
+    }
+
 
     /* ================= PASS 0: validate every program header ==============
      * Nothing is mapped until this pass has passed, so a refusal leaves no
      * half-built address space behind -- the property the W^X check already
      * had, extended to everything else. */
-    const struct elf64_phdr *tls = 0, *relro = 0, *phdrseg = 0;
+    const struct elf64_phdr *tls = 0, *relro = 0, *phdrseg = 0, *dynamic = 0;
     uint64_t prev_end = 0;
     int seen_load = 0;
     uint64_t total_bytes = 0;
@@ -782,7 +1021,7 @@ int elf_load_reader(const struct elf_reader *rd, struct elf_image *out,
              * kernel memory -- skip it instead of mapping. Anything straddling
              * or above the user region boundary is still rejected outright. */
             if (end <= USER_VA_BASE) break;
-            if (start < USER_VA_BASE || end > USER_VA_END)
+            if (!mm_user_range(start, end - start))
                 return reject(ELF_E_SEGVA, "segment outside the user region", start, end);
 
 #ifndef ELF_NEGCTL_NOWX
@@ -813,13 +1052,17 @@ int elf_load_reader(const struct elf_reader *rd, struct elf_image *out,
 
         case PT_INTERP:
             out->seen |= ELF_SEEN_INTERP;
-            return reject(ELF_E_INTERP, "PT_INTERP: this system has no dynamic loader",
-                          ph[i].p_offset, ph[i].p_filesz);
+            /* Historical refusal: "this system has no dynamic loader".
+             * Correction: load the named interpreter, which owns dynamic
+             * linking. This kernel still does not resolve shared symbols. */
+            break;
 
         case PT_DYNAMIC:
             out->seen |= ELF_SEEN_DYNAMIC;
-            return reject(ELF_E_DYNAMIC, "PT_DYNAMIC: this loader applies no relocations",
-                          ph[i].p_vaddr, ph[i].p_memsz);
+            if ((!deferred && eh->e_type != ET_DYN) || dynamic)
+                return reject(ELF_E_DYNAMIC, "PT_DYNAMIC requires one static PIE dynamic table", i, 0);
+            dynamic = &ph[i];
+            break;
 
         case PT_SHLIB:
             return reject(ELF_E_DYNAMIC, "PT_SHLIB: reserved by the ELF spec, "
@@ -904,12 +1147,41 @@ int elf_load_reader(const struct elf_reader *rd, struct elf_image *out,
     }
     /* Room above the image for the loader's own two mappings (the info page and
      * any TLS block), which the caller then places its stack above. */
-    if (out->top > USER_VA_END - 0x200000)
+    if (!mm_user_range(out->top, 0x200000))
         return reject(ELF_E_SEGVA, "no room above the image for the info page",
                       out->top, USER_VA_END);
 
+    if (interpreter && out->load_base < avoid_end && avoid_start < out->top + 0x200000)
+        return reject(ELF_E_INTERP, "interpreter overlaps main image or metadata", out->load_base, out->top);
+
+    struct pie_plan plan = {0};
+    int pie_rc = ELF_OK;
+    if (deferred && dynamic) {
+        uint64_t off;
+        if (!dynamic->p_filesz || dynamic->p_filesz % 16 ||
+            !pie_file_range(ph, phnum, dynamic->p_vaddr, dynamic->p_filesz, &off) ||
+            off != dynamic->p_offset)
+            return reject(ELF_E_DYNAMIC, "interpreter dynamic table outside file-backed LOAD", dynamic->p_vaddr, dynamic->p_filesz);
+    }
+    if (!deferred) pie_rc = pie_dynamic(rd, ph, phnum, dynamic, out->load_bias, &plan);
+    if (pie_rc != ELF_OK) return pie_rc;
+    pie_rc = pie_relocate(rd, ph, phnum, out->load_bias, &plan, 0, &out->relocations);
+    if (pie_rc != ELF_OK) return pie_rc;
+    if ((out->load_bias || deferred) && tls && tls->p_filesz) {
+        uint64_t tls_off;
+        if (!pie_file_range(ph, phnum, tls->p_vaddr, tls->p_filesz, &tls_off) || tls_off != tls->p_offset)
+            return reject(ELF_E_TLS, "PIE TLS initialiser outside file-backed LOAD", tls->p_vaddr, tls->p_filesz);
+    }
+
     int nx_on = cpu_prot_nx_usable();
     uint64_t cr3 = read_cr3();
+#ifndef LOGIT_HOSTTEST
+    /* Mapping and filling are one AS operation. Keeping only each map call
+     * locked leaves reclaim able to remove a page before the loader's raw VA
+     * copy or relocation store. The lock may sleep; scheduler tracks the
+     * temporary active space through any such sleep. */
+    MM_GUARD(cr3);
+#endif
 
     /* ================= PASS 0.5: the file-backed runs =====================
      * Before a single frame is allocated, because the whole point is not to
@@ -942,6 +1214,32 @@ int elf_load_reader(const struct elf_reader *rd, struct elf_image *out,
         if (kept < want)
             kprintf("[elf] %d of %d file-backed runs could not be reserved; "
                     "those pages are being copied\n", want - kept, want);
+    }
+
+    /* Static eager LOADs historically had PTEs only. An interpreter must be
+     * able to mprotect its RELRO and manage mappings through the normal VMA
+     * API. Register private eager runs, with the same per-page permission
+     * union as PASS 2; preserve separately owned file-cache VMAs. Measured by
+     * the PT_INTERP guest: without these areas the first RELRO mprotect returns
+     * ENOMEM despite the corresponding writable PTE being present. */
+    if (deferred && LOGIT_HAVE(vma_reserve_fixed)) {
+        uint64_t done = 0;
+        for (int i = 0; i < phnum; i++) {
+            if (ph[i].p_type != PT_LOAD || !ph[i].p_memsz) continue;
+            uint64_t a = ph[i].p_vaddr & ~0xFFFull;
+            uint64_t end = (ph[i].p_vaddr + ph[i].p_memsz + 4095) & ~0xFFFull;
+            if (end <= USER_VA_BASE) continue;
+            if (a < done) a = done; /* two LOADs may share a boundary page */
+            while (a < end) {
+                if (in_runs(runs, nrun, a)) { a += 4096; continue; }
+                uint64_t start = a;uint32_t prot = page_prot(ph, phnum, a);
+                do { a += 4096; } while (a < end && !in_runs(runs, nrun, a) && page_prot(ph, phnum, a) == prot);
+                uint32_t vp = ((prot & PF_R) ? VMA_READ : 0) | ((prot & PF_W) ? VMA_WRITE : 0) | ((prot & PF_X) ? VMA_EXEC : 0);
+                if (vma_reserve_fixed(cr3, start, a - start, vp) < 0)
+                    return reject(ELF_E_OOM, "cannot reserve interpreted LOAD area", start, a - start);
+            }
+            done = end;
+        }
     }
 
     /* ================= PASS 1: map + copy ================================ */
@@ -992,6 +1290,10 @@ int elf_load_reader(const struct elf_reader *rd, struct elf_image *out,
         }
     }
 
+    /* Relocate private writable pages before segment protections and RELRO. */
+    pie_rc = pie_relocate(rd, ph, phnum, out->load_bias, &plan, 1, &out->relocations);
+    if (pie_rc != ELF_OK) return pie_rc;
+
     /* ================= PASS 2: the real protections ======================
      * Now that every byte is in place. Re-mapping the same frame through
      * vmm_map_page() rather than editing the PTE by hand keeps this on the
@@ -1018,9 +1320,9 @@ int elf_load_reader(const struct elf_reader *rd, struct elf_image *out,
     /* ================= PASS 3: PT_GNU_RELRO ==============================
      * The segment names the part of the writable image that is only written
      * while the program is being STARTED -- .data.rel.ro, .init_array, the GOT.
-     * With relocation there would be a relocate-then-protect ordering to get
-     * right; with none, everything in it was written by the memcpy above and is
-     * finished, so this is simply "take write away again".
+     * Originally no relocations existed, so memcpy completed this region.
+     * Static PIE now relocates in PASS 1.5 above; only afterwards may this
+     * pass remove write permission, including from TLS pointer initialisers.
      *
      * Rounding: the region's start is not page-aligned (lld emits
      * 0x4529c4f8/0x2b08 for the browser), and a page is either writable or not.
@@ -1028,7 +1330,9 @@ int elf_load_reader(const struct elf_reader *rd, struct elf_image *out,
      * here too -- but only after checking that the page it swallows holds no
      * byte of some OTHER writable segment. Round up instead of taking write
      * away from real .data. */
-    if (relro) {
+    /* With PT_INTERP, even the interpreter relocates itself in userspace.
+     * Sealing either object's RELRO here would fault its first GOT store. */
+    if (relro && !deferred) {
         uint64_t rs = relro->p_vaddr, re = relro->p_vaddr + relro->p_memsz;
         uint64_t first = rs & ~(uint64_t)0xFFF, last = re & ~(uint64_t)0xFFF;
         for (uint64_t a = first; a < last; a += 0x1000) {
@@ -1068,13 +1372,22 @@ int elf_load_reader(const struct elf_reader *rd, struct elf_image *out,
      * canary, and a canary seed the program can rewrite is not one. */
     {
         uint64_t page = out->top;
+        /* mmap's placement uses VMAs, not present PTEs. Reserve metadata too,
+         * or an explicit mmap hint could hand AT_RANDOM/PHDR bytes back as an
+         * apparently fresh anonymous page. Static layout stays unchanged. */
+        if (deferred && LOGIT_HAVE(vma_reserve_fixed) &&
+            vma_reserve_fixed(cr3, page, 4096, VMA_READ) < 0)
+            return reject(ELF_E_OOM, "cannot reserve interpreted metadata", page, 0);
         if (!place_page(cr3, page, VMM_WRITABLE | VMM_USER))
             return reject(ELF_E_OOM, "out of physical frames for the info page", page, 0);
         uint8_t *p = (uint8_t *)page;
         memset(p, 0, 0x1000);
         uint64_t phbytes = (uint64_t)phnum * sizeof(struct elf64_phdr);
-        memcpy(p, eh, sizeof *eh);
-        memcpy(p + sizeof *eh, ph, phbytes);
+        /* Expose original ELF headers, not bias-adjusted working headers:
+         * runtimes derive bias via PT_PHDR and must add it exactly once. */
+        if (elf_read(rd, 0, p, sizeof *eh) < 0 ||
+            elf_read(rd, eh->e_phoff, p + sizeof *eh, phbytes) < 0)
+            return reject(ELF_E_PHTAB, "cannot copy original headers", 0, phbytes);
         uint64_t roff = (sizeof *eh + phbytes + 15) & ~(uint64_t)15;
         kernel_random_bytes(p + roff, 16);
 
@@ -1083,12 +1396,29 @@ int elf_load_reader(const struct elf_reader *rd, struct elf_image *out,
         out->phnum     = eh->e_phnum;
         out->random_va = page + roff;
         out->info_page = page;
+        /* PT_PHDR is optional. A table contained in a LOAD still has a real
+         * address; preferring the metadata copy would hide its load bias from
+         * an interpreter whose linker omitted just the PT_PHDR descriptor. */
+        for (int i = 0; i < phnum; i++) {
+            if (ph[i].p_type != PT_LOAD || eh->e_phoff < ph[i].p_offset) continue;
+            uint64_t delta = eh->e_phoff - ph[i].p_offset;
+            if (delta <= ph[i].p_filesz && phbytes <= ph[i].p_filesz - delta &&
+                mm_user_range(ph[i].p_vaddr + delta, phbytes)) {
+                out->phdr_va = ph[i].p_vaddr + delta;
+                break;
+            }
+        }
         /* If the link DID map its own phdrs (a normal Linux-shaped layout),
          * prefer the real address: dl_iterate_phdr's callers compare it against
          * segment addresses, and the copy is not one of the program's segments. */
-        if (phdrseg && phdrseg->p_vaddr >= USER_VA_BASE) {
-            uint64_t *e = vmm_pte(cr3, phdrseg->p_vaddr & ~(uint64_t)0xFFF);
-            if (e && (*e & 1)) out->phdr_va = phdrseg->p_vaddr;
+        if (phdrseg && mm_user_range(phdrseg->p_vaddr, phbytes)) {
+            uint64_t off;
+            /* A reserved page-cache run can be absent right now and is still
+             * the program's real header mapping. Using the copy merely because
+             * a PTE is lazy would make AT_PHDR - PT_PHDR invent a wrong bias. */
+            if (pie_file_range(ph, phnum, phdrseg->p_vaddr, phbytes, &off) &&
+                off == eh->e_phoff)
+                out->phdr_va = phdrseg->p_vaddr;
         }
         vmm_map_page(page, *vmm_pte(cr3, page) & PTE_ADDR_MASK,
                      map_flags(PF_R, nx_on));
@@ -1139,21 +1469,28 @@ int elf_load_reader(const struct elf_reader *rd, struct elf_image *out,
      * points at 0x200000, outside the mapped region. AT_PHDR is real now, and
      * the block below is already laid out and initialised, so that linker
      * script is a route that can be retired rather than a requirement. */
-    if (tls) {
+    /* A dynamic runtime owns the complete TLS layout (main + future DSOs).
+     * Leave FS=0 and expose PT_TLS through the original main PHDRs instead
+     * of publishing a kernel-built TCB which its runtime would misinterpret. */
+    if (tls && !deferred) {
         uint64_t align = tls->p_align < 8 ? 8 : tls->p_align;
         uint64_t tlsoff = (tls->p_memsz + align - 1) & ~(align - 1);
         uint64_t tcb    = 0x100;                 /* room for a real TCB, zeroed */
         uint64_t base   = out->top;              /* just above the info page    */
         uint64_t tp     = (base + tlsoff + align - 1) & ~(align - 1);
         uint64_t end    = (tp + tcb + 0xFFF) & ~(uint64_t)0xFFF;
-        if (end > USER_VA_END - 0x100000)
+        if (!mm_user_range(base, end - base + 0x100000))
             return reject(ELF_E_TLS, "no room above the image for the TLS block", end, 0);
         for (uint64_t a = base; a < end; a += 0x1000)
             if (!place_page(cr3, a, VMM_WRITABLE | VMM_USER |
                                     (nx_on ? PTE_NX : 0)))
                 return reject(ELF_E_OOM, "out of physical frames for the TLS block", a, 0);
         memset((void *)(tp - tlsoff), 0, tlsoff + tcb);
-        if (elf_read(rd, tls->p_offset, (void *)(tp - tlsoff), tls->p_filesz) < 0)
+        if (out->load_bias) {
+            /* The initialiser may contain a relocated pointer: re-reading
+             * file bytes here would silently undo that relocation. */
+            memcpy((void *)(tp - tlsoff), (const void *)tls->p_vaddr, tls->p_filesz);
+        } else if (elf_read(rd, tls->p_offset, (void *)(tp - tlsoff), tls->p_filesz) < 0)
             return reject(ELF_E_TLS, "could not read the PT_TLS initialisation image",
                           tls->p_offset, tls->p_filesz);
         *(uint64_t *)tp       = tp;              /* %fs:0  = self-pointer */
@@ -1168,7 +1505,40 @@ int elf_load_reader(const struct elf_reader *rd, struct elf_image *out,
     }
 
     out->entry = eh->e_entry;
+    out->start_entry = out->entry;
     out->bytes_mapped = total_bytes;
+    return ELF_OK;
+}
+
+int elf_load_reader(const struct elf_reader *rd, struct elf_image *out,
+                    const struct elf_src *src)
+{
+    struct elf_image local;
+    if (!out) out = &local;
+    int rc = elf_load_object(rd, out, src, 0, 0, 0);
+    if (rc || !out->interp_path[0]) return rc;
+#ifdef LOGIT_HOSTTEST
+    if (!LOGIT_HAVE(elf_interpreter_open) || !LOGIT_HAVE(elf_interpreter_close))
+        return reject(ELF_E_INTERP, "interpreter filesystem unavailable", 0, 0);
+#endif
+    struct elf_reader ir;
+    struct elf_src is;
+    rc = elf_interpreter_open(out->interp_path, &ir, &is);
+    if (rc) return reject(ELF_E_INTERP, "cannot open executable interpreter", 0, 0);
+    struct elf_image interp;
+    rc = elf_load_object(&ir, &interp, &is, 1, out->load_base, out->top);
+    elf_interpreter_close(&is);
+    if (rc) return rc;
+    out->start_entry = interp.entry;
+    out->interp_base = interp.load_bias;
+    if (interp.top > out->top) out->top = interp.top;
+    out->bytes_mapped += interp.bytes_mapped;
+    out->copied_pages += interp.copied_pages;
+    out->file_pages += interp.file_pages;
+    out->file_runs += interp.file_runs;
+    kprintf("[elf] interpreter %s: base=%p start=%p main=%p\n",
+            out->interp_path, (void *)out->interp_base,
+            (void *)out->start_entry, (void *)out->entry);
     return ELF_OK;
 }
 
@@ -1178,6 +1548,9 @@ uint64_t elf_load(void *image, uint64_t image_size, uint64_t *out_top)
     if (out_top) *out_top = 0;
     if (elf_load_image(image, image_size, &img) != ELF_OK)
         return 0;
+    /* This legacy interface cannot return auxv information. Only descriptor
+     * callers can start an interpreter with its required startup contract. */
+    if (img.interp_base) return 0;
     if (out_top) *out_top = img.top;
     return img.entry;
 }

@@ -28,7 +28,8 @@ struct sigst {
     uint64_t restorer[KSIG_NSIG];        /* required; see logit_abi.h */
     uint32_t hflags[KSIG_NSIG];          /* LOGIT_SA_* */
 
-    /* The three words ksig_interrupted() reads WITHOUT the lock. Volatile
+    /* Historical layout: the three words ksig_interrupted() read WITHOUT the lock.
+     * Correction: the BKL-free predicate now samples them under g_sig_lock. Volatile
      * because that read is deliberately unlocked (see the header): it is a
      * hint, and the cost of a stale one is one more pass round a wait loop.
      * `ignored` is a CACHE of "this signal's disposition does nothing", kept in
@@ -54,6 +55,15 @@ struct sigst {
 
 extern spinlock_t g_sig_lock;
 extern struct sigst g_sig[NPROC];
+
+/* A synchronous fault belongs to the faulting scheduler thread, never to a
+ * process-wide pending bit that a sibling can consume. Records are fixed
+ * storage and copied under g_sig_lock before any user stack copy can sleep. */
+struct ksig_fault_record {
+    int tid, pid, signo;
+    uint64_t cr2, err, trapno;
+};
+int ksig_take_fault_locked(struct ksig_fault_record *out);
 
 /* Both TUs need these. */
 struct sigst *ksig_find_locked(int pid);

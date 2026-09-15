@@ -2,6 +2,7 @@
 #define LOGIT_FILE_H
 
 #include <stdint.h>
+#include "kernel/core/wait.h"
 
 /* An open file description (the thing a file descriptor points at). Shared by
  * dup/dup2/fork via refcount. Three backends:
@@ -30,8 +31,12 @@
 #define F_TTY   3
 #define F_SOCK  4
 #define F_EVENT 5
+#define F_PTY   6
 
 struct file {
+    /* BKL removal: only VFS operations take this sleeping, per-description
+     * lock. Pipes/events need independent producer and consumer progress. */
+    struct mutex io_lock;
     int   type;
     int   refcount;
     int   flags;        /* O_* (O_NONBLOCK / O_APPEND / ...) */
@@ -92,6 +97,10 @@ struct file {
 void          file_init(void);
 struct file  *file_alloc(void);     /* a fresh F_NONE file, refcount = 1 */
 void          file_dup(struct file *f);    /* refcount++ */
+/* Caller owns a reference. A uniqueness decision additionally needs the
+ * descriptor-table lock so another descriptor cannot acquire a new reference
+ * after this snapshot. Uses the same file lock as dup/close. */
+int           file_refs_equal(struct file *f, int expected);
 int           file_close(struct file *f);  /* refcount--; release backend at 0.
                                              * Returns 0 on success, -1 if the
                                              * last close's flush to the
@@ -102,6 +111,15 @@ int           file_close(struct file *f);  /* refcount--; release backend at 0.
                                              * file_fsync(). 0 while refcount
                                              * stays above 0: there was
                                              * nothing to flush yet. */
+
+/* proc_fd_acquire transfers a transient reference to the caller. Cleanup is
+ * lexical, including every early error return; never annotate a transferred
+ * table reference unless it is set to NULL after installation. */
+static inline void file_ref_cleanup(struct file **p) { if (*p) file_close(*p); }
+#define FILE_REF __attribute__((cleanup(file_ref_cleanup)))
+static inline void file_io_unlock(struct mutex **m) { if (*m) mutex_unlock(*m); }
+#define FILE_IO_GUARD(f) struct mutex *__file_io \
+    __attribute__((cleanup(file_io_unlock))) = &(f)->io_lock; mutex_lock(__file_io)
 
 /* Backends (P2/P3/P5). */
 struct file  *file_open_vfs(const char *path, int flags);   /* P2 */

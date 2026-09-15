@@ -534,6 +534,7 @@ int coredump_read_gregs(const void *bufv, int n, uint64_t *greg27)
 #include "vfs.h"
 #include "kprintf.h"
 #include "usercopy.h"
+#include "spinlock.h"
 
 /* THE BUFFER. .bss, not kmalloc -- see coredump.h. Serialised by the BKL: the
  * one caller is the ring-3 fault path in c/kernel/cpu/interrupts.c, which runs
@@ -541,10 +542,15 @@ int coredump_read_gregs(const void *bufv, int n, uint64_t *greg27)
  * syscall_is_bkl_free()'s allow-list, and a trap is not a syscall). If a second
  * caller is ever added that does not hold it, this needs a lock of its own and
  * this comment is the thing that says so. */
-static unsigned char g_corebuf[CORE_BUF_MAX];
+/* Correction: each crash owns one bounded slot through build/write/readback.
+ * No heap allocation in the fatal/OOM path, and no giant lock around VFS I/O. */
+static unsigned char g_corepool[CORE_SLOTS][CORE_BUF_MAX];
+static unsigned char g_corebusy[CORE_SLOTS];
+static unsigned g_reserved;
+static void core_slot_end(int *slot) { if (*slot >= 0) __atomic_store_n(&g_corebusy[*slot], 0, __ATOMIC_RELEASE); }
 static char g_lastpath[24];
 static int  g_count;
-static int  g_slot;
+static unsigned g_slot;
 static int  g_budget_said;
 
 struct ksrc {
@@ -578,18 +584,13 @@ static int k_regions(void *ctx, struct core_region *out, int max)
 static int k_mapped(void *ctx, uint64_t va)
 {
     struct ksrc *k = (struct ksrc *)ctx;
-    uint64_t *pte = vmm_pte(k->cr3, va);
-    if (!pte) return 0;
-    uint64_t e = *pte;
-    if (!(e & 1)) return 0;               /* not present (or a swap entry)   */
-    if (!(e & 4)) return 0;               /* not user-accessible             */
-    return 1;
+    return vmm_user_range_ok(k->cr3, (const void *)(uintptr_t)va, PAGE, 0);
 }
 
 static void k_read_page(void *ctx, uint64_t va, void *dst)
 {
     (void)ctx;
-    cp(dst, (const void *)(uintptr_t)va, PAGE);
+    if (user_copy_from(dst, (const void *)(uintptr_t)va, PAGE) < 0) zero(dst, PAGE);
 }
 
 const char *coredump_last_path(void) { return g_lastpath; }
@@ -601,20 +602,28 @@ void coredump_take(const struct registers *r, const void *fx,
     struct proc *p = proc_current();
     if (!p) return;                       /* no process: nothing to dump      */
 
-    if (g_count >= CORE_MAX_PER_BOOT) {
-        /* Said ONCE. A crash loop printing this every iteration would bury the
-         * [fault] lines that say what is actually crashing. */
-        if (!g_budget_said) {
-            g_budget_said = 1;
-            kprintf("[core] budget spent (%d dumps this boot) -- not writing more\n",
-                    CORE_MAX_PER_BOOT);
-        }
+    unsigned count = __atomic_fetch_add(&g_reserved, 1, __ATOMIC_RELAXED);
+    if (count >= CORE_MAX_PER_BOOT) {
+        if (!__atomic_exchange_n(&g_budget_said, 1, __ATOMIC_RELAXED))
+            kprintf("[core] budget spent (%d dumps this boot) -- not writing more\n", CORE_MAX_PER_BOOT);
         return;
     }
+    int slot __attribute__((cleanup(core_slot_end))) = -1;
+    unsigned first = __atomic_fetch_add(&g_slot, 1, __ATOMIC_RELAXED);
+    for (unsigned i = 0; i < CORE_SLOTS; i++) {
+        unsigned k = (first + i) % CORE_SLOTS;
+        unsigned char free = 0;
+        if (__atomic_compare_exchange_n(&g_corebusy[k], &free, 1, 0, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) { slot = (int)k; break; }
+    }
+    if (slot < 0) { kprintf("[core] concurrent dump slots busy -- skipped\n"); return; }
+    unsigned char *g_corebuf = g_corepool[slot];
+    char path[24];
 
-    static struct ksrc k;                 /* 32 x 40 B; same BKL argument as
+    struct ksrc k;                 /* 32 x 40 B; same BKL argument as
                                            * the buffer, and off the 32 KiB
                                            * kernel stack this path is on */
+    /* Correction: this region snapshot is per-call stack storage (~1.3 KiB);
+     * only the much larger dump buffer comes from the owned static pool. */
     k.cr3 = p->cr3;
     k.n = vma_snapshot(p->cr3, k.v, CORE_RGN_MAX);
     if (k.n < 0) k.n = 0;
@@ -637,14 +646,9 @@ void coredump_take(const struct registers *r, const void *fx,
         return;
     }
 
-    /* /core.1 .. /core.4, round robin. The name is built by hand rather than
-     * with a formatter because CORE_SLOTS is 4 and this runs in a fault. */
-    g_slot = (g_slot % CORE_SLOTS) + 1;
-    g_lastpath[0] = '/'; g_lastpath[1] = 'c'; g_lastpath[2] = 'o';
-    g_lastpath[3] = 'r'; g_lastpath[4] = 'e'; g_lastpath[5] = '.';
-    g_lastpath[6] = (char)('0' + g_slot); g_lastpath[7] = 0;
-
-    int w = vfs_write(g_lastpath, g_corebuf, n);
+    path[0] = '/'; path[1] = 'c'; path[2] = 'o'; path[3] = 'r'; path[4] = 'e'; path[5] = '.';
+    path[6] = (char)('1' + slot); path[7] = 0;
+    int w = vfs_write(path, g_corebuf, n);
     if (w < 0) {
         /* OUT LOUD, and the app still dies normally. A dump that could not be
          * written must never turn a dead app into a dead kernel -- and "the
@@ -652,11 +656,15 @@ void coredump_take(const struct registers *r, const void *fx,
          * would be reached in, so a silent return here would remove the one
          * message that explains the missing file. */
         kprintf("[core] pid %d (%s): %s write failed (%d) -- no dump\n",
-                p->pid, p->name, g_lastpath, w);
-        g_lastpath[0] = 0;
+                p->pid, p->name, path, w);
+        path[0] = 0;
         return;
     }
-    g_count++;
+    __atomic_fetch_add(&g_count, 1, __ATOMIC_RELAXED);
+    static spinlock_t path_lock = SPINLOCK_INIT;
+    uint64_t pf = spin_lock_irqsave(&path_lock);
+    cp(g_lastpath, path, 8);
+    spin_unlock_irqrestore(&path_lock, pf);
 
     /* ONE line, and every register on it is READ BACK OUT OF THE FILE rather
      * than reprinted from `r`. The [fault] line one line below prints `r`;
@@ -668,12 +676,12 @@ void coredump_take(const struct registers *r, const void *fx,
     uint64_t g[27];
     if (coredump_read_gregs(g_corebuf, n, g) != 0) {
         kprintf("[core] pid %d: WROTE %s (%d bytes) BUT CANNOT READ ITS OWN"
-                " REGISTER NOTE BACK\n", p->pid, g_lastpath, n);
+                " REGISTER NOTE BACK\n", p->pid, path, n);
         return;
     }
     kprintf("[core] pid %d (%s) sig %d -> %s %d bytes: regions %u/%u bytes %u/%u"
             " rip=%p rsp=%p cr2=%p err=%x%s\n",
-            p->pid, p->name, signo, g_lastpath, n,
+            p->pid, p->name, signo, path, n,
             ln.got_regions, ln.want_regions,
             (unsigned)ln.got_bytes, (unsigned)ln.want_bytes,
             (void *)g[CORE_RIP], (void *)g[CORE_RSP],

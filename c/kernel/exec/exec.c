@@ -4,13 +4,16 @@
 #include "proc.h"
 #include "sched.h"
 #include "file.h"
+#include "lsock.h"
 #include "vmm.h"
+#include "mmguard.h"
 #include "pmm.h"
 #include "vma.h"         /* the CLI stack is a RESERVATION, faulted in on touch */
 #include "pcache.h"      /* the file handle a program's text is mapped from */
 #include "aex.h"
 #include "elf.h"      /* struct elf_image + the AT_* auxv tags */
 #include "vfs.h"
+#include "vfs_cred.h"
 #include "kheap.h"
 #include "usercopy.h"
 #include "logit_abi.h"
@@ -20,6 +23,23 @@
 
 void *memcpy(void *, const void *, size_t);
 
+/* fd_lock is also used by proc_snapshot: publish one complete image identity.
+ * Generation invalidates authenticated channels on exec, including same-image exec. */
+static uint64_t agent_generation;
+void proc_agent_bind_image(struct proc *p, const struct elf_image *image, unsigned mode)
+{
+    struct aex_agent_identity id = image ? image->agent : (struct aex_agent_identity){0};
+    struct vcred cred; vfs_cred_get(p->ppid ? p->ppid : p->pid, &cred);
+    id.uid=cred.uid; id.gid=cred.gid;
+    id.generation=__atomic_add_fetch(&agent_generation,1,__ATOMIC_RELAXED);
+    if (id.abi) {
+        id.size=sizeof id; id.mode=mode; id.pid=p->pid; id.parent_pid=p->ppid;
+        id.channel_fd=mode==AEX_ACT_WORKER ? AEX_AGENT_FD : -1;
+    }
+    uint64_t fl=spin_lock_irqsave(&p->fd_lock); p->agent=id;
+    spin_unlock_irqrestore(&p->fd_lock,fl);
+}
+
 /* Both from include/abi/logit_exec.h and not from a number typed here, because
  * a number typed here was 48 while /bin/sh's was 32, and a 49-argument execve
  * returned success with arguments 49..n gone (copy_uvec stopped at MAXARG and
@@ -28,6 +48,12 @@ void *memcpy(void *, const void *, size_t);
 #define MAXARG          LOGIT_ARG_MAX
 #define ARGBUFSZ        LOGIT_ARG_BYTES /* total bytes for all argv + envp strings */
 #define CLI_STACK_PAGES 256           /* 1 MiB user stack for a CLI program */
+/* Per-invocation ownership replaces the BKL-protected argv scratch. A loader
+ * may sleep for disk I/O and resume on another core, so per-CPU storage is not
+ * sufficient either. Cleanup covers all ordinary error returns. */
+struct exec_args { char store[ARGBUFSZ]; char *argv[MAXARG], *envp[MAXARG]; };
+static void exec_args_free(struct exec_args **a) { if (*a) kfree(*a); }
+
 
 /* WHAT AN EXEC COSTS, split so the answer is actionable.
  *
@@ -62,12 +88,12 @@ static uint64_t g_ld_loads, g_ld_filepg, g_ld_copypg, g_ld_runs, g_ld_eager;
 void exec_note_load(const char *what, const struct elf_image *ei)
 {
     if (!ei) return;
-    g_ld_loads++;
-    g_ld_filepg += ei->file_pages;
-    g_ld_copypg += ei->copied_pages;
-    g_ld_runs   += ei->file_runs;
-    if (!ei->file_runs) g_ld_eager++;
-    if (g_ld_loads <= LOAD_REPORT_MAX)
+    __atomic_fetch_add(&g_ld_loads, 1, __ATOMIC_RELAXED);
+    __atomic_fetch_add(&g_ld_filepg, ei->file_pages, __ATOMIC_RELAXED);
+    __atomic_fetch_add(&g_ld_copypg, ei->copied_pages, __ATOMIC_RELAXED);
+    __atomic_fetch_add(&g_ld_runs, ei->file_runs, __ATOMIC_RELAXED);
+    if (!ei->file_runs) __atomic_fetch_add(&g_ld_eager, 1, __ATOMIC_RELAXED);
+    if (__atomic_load_n(&g_ld_loads, __ATOMIC_RELAXED) <= LOAD_REPORT_MAX)
         kprintf("[exec] load %s: %d pages file-backed in %d areas, %d copied\n",
                 what ? what : "?", (int)ei->file_pages, (int)ei->file_runs,
                 (int)ei->copied_pages);
@@ -84,20 +110,20 @@ static inline uint64_t exec_rdtsc(void)
 
 static void exec_report(void)
 {
-    if (!g_execs || (g_execs % EXEC_REPORT_EVERY)) return;
+    if (!__atomic_load_n(&g_execs, __ATOMIC_RELAXED) || (__atomic_load_n(&g_execs, __ATOMIC_RELAXED) % EXEC_REPORT_EVERY)) return;
     kprintf("[exec] %d execs, %d kcycles each: %d in aex_load, %d in the "
             "%d-page user stack\n",
-            (int)g_execs, (int)(g_exec_cyc / g_execs / 1000),
-            (int)(g_exec_load_cyc / g_execs / 1000),
-            (int)(g_exec_stack_cyc / g_execs / 1000), CLI_STACK_PAGES);
+            (int)__atomic_load_n(&g_execs, __ATOMIC_RELAXED), (int)(__atomic_load_n(&g_exec_cyc, __ATOMIC_RELAXED) / __atomic_load_n(&g_execs, __ATOMIC_RELAXED) / 1000),
+            (int)(__atomic_load_n(&g_exec_load_cyc, __ATOMIC_RELAXED) / __atomic_load_n(&g_execs, __ATOMIC_RELAXED) / 1000),
+            (int)(__atomic_load_n(&g_exec_stack_cyc, __ATOMIC_RELAXED) / __atomic_load_n(&g_execs, __ATOMIC_RELAXED) / 1000), CLI_STACK_PAGES);
     /* Beside it, because the two answer one question together: the cycles say
      * what a load cost and this says why. A gate reads `file` going up and
      * `copied` coming down; `eager` going up instead is the whole feature
      * being declined, quietly, which is the failure mode worth naming. */
     kprintf("[exec] loader: %d loads (%d eager), %d pages from the page cache "
             "in %d areas, %d pages copied\n",
-            (int)g_ld_loads, (int)g_ld_eager, (int)g_ld_filepg,
-            (int)g_ld_runs, (int)g_ld_copypg);
+            (int)__atomic_load_n(&g_ld_loads, __ATOMIC_RELAXED), (int)__atomic_load_n(&g_ld_eager, __ATOMIC_RELAXED), (int)__atomic_load_n(&g_ld_filepg, __ATOMIC_RELAXED),
+            (int)__atomic_load_n(&g_ld_runs, __ATOMIC_RELAXED), (int)__atomic_load_n(&g_ld_copypg, __ATOMIC_RELAXED));
 }
 
 static int kstrlen(const char *s) { int n = 0; while (s[n]) n++; return n; }
@@ -112,9 +138,23 @@ static void scopy(char *d, const char *s, int max)
  * line sends the reader to the wrong place. */
 static int user_strnlen(const char *src, int max)
 {
-    for (int i = 0; i < max; i++) {
-        if (!user_range_ok(src + i, 1, 0)) return -1;
-        if (src[i] == 0) return i;
+    int done = 0;
+    while (done < max) {
+        char chunk[256];
+        uint64_t va = (uint64_t)(uintptr_t)src + (unsigned)done;
+        int n = 4096 - (int)(va & 4095);
+        if (n > (int)sizeof chunk) n = sizeof chunk;
+        if (n > max - done) n = max - done;
+#ifdef BKL_NEGCTL_ARGV_BYTEWISE
+        n = 1;
+#endif
+        /* Same validating usercopy, fewer AS-lock/pin round trips. Chunks never
+         * cross a page: a NUL at the end of a mapped page must succeed even
+         * when the following page is unmapped. The host gate measures 16 copy
+         * calls for a 4096-byte page instead of 4096, preserving EFAULT/E2BIG. */
+        if (user_copy_from(chunk, (const void *)(uintptr_t)va, (uint64_t)n) < 0) return -1;
+        for (int i = 0; i < n; i++) if (!chunk[i]) return done + i;
+        done += n;
     }
     return -2;
 }
@@ -137,8 +177,8 @@ static int copy_uvec(char **uvec, char *vec[MAXARG], char *store, int *used, int
     if (!uvec) return 0;                          /* NULL vector -> empty */
     int n = 0;
     for (; n < MAXARG; n++) {
-        if (!user_range_ok(&uvec[n], sizeof(char *), 0)) return -1;
-        char *uptr = uvec[n];
+        char *uptr;
+        if (user_copy_from(&uptr, &uvec[n], sizeof uptr) < 0) return -1;
         if (!uptr) break;                         /* NULL terminator */
         char *dst = store + *used;
         int room = storemax - *used;
@@ -151,8 +191,9 @@ static int copy_uvec(char **uvec, char *vec[MAXARG], char *store, int *used, int
         *used += wrote + 1;
     }
     if (n == MAXARG) {
-        if (!user_range_ok(&uvec[n], sizeof(char *), 0)) return -1;
-        if (uvec[n]) return LOGIT_EXEC_E2BIG;     /* entry MAXARG+1 exists: too many */
+        char *extra;
+        if (user_copy_from(&extra, &uvec[n], sizeof extra) < 0) return -1;
+        if (extra) return LOGIT_EXEC_E2BIG;     /* entry MAXARG+1 exists: too many */
     }
     return n;
 }
@@ -185,7 +226,7 @@ static void uvec_refused(const char *who, const char *abs, const char *which, in
  * continuously instead of being trusted. */
 /* The auxiliary vector costs 2 words a pair, and the executable's own path is
  * pushed as a string for AT_EXECFN. */
-#define AUXV_PAIRS      14
+#define AUXV_PAIRS      15
 #define CLI_STACK_HEAD_MAX (ARGBUFSZ + 160 + (2 * MAXARG + 3 + 2 * AUXV_PAIRS) * 8 + 48)
 #define CLI_STACK_EAGER_MIN 2
 #define CLI_STACK_EAGER_MAX ((CLI_STACK_HEAD_MAX + 4095) / 4096)
@@ -242,16 +283,24 @@ static uint64_t cli_stack_head(const char *execfn, char **argv, int argc, char *
  * address no VMA covers, returns MM_FAULT_NONE, and the process dies on its
  * first deep call -- so a failed reservation falls back to mapping eagerly
  * rather than handing out a stack that faults. */
-static uint64_t setup_cli_stack(uint64_t cr3, const struct elf_image *img,
+static uint64_t setup_user_stack(uint64_t cr3, const struct elf_image *img,
                                 const char *execfn, char **argv, int argc,
-                                char **envp, int envc)
+                                char **envp, int envc, int stack_pages)
 {
+    MM_GUARD(cr3); /* all eager mappings and user-VA stack stores are one operation */
     uint64_t entry = img->entry;
     uint64_t base = entry & ~(uint64_t)0xFFFFF;
     uint64_t top = base + 0x4000000;                 /* 64 MiB above base */
-    uint64_t bottom = top - (uint64_t)CLI_STACK_PAGES * 0x1000;
+    /* Retain legacy stack placement; a large PIE BSS needs its stack above
+     * the entire image, rather than blindly 64 MiB above the entry. */
+    if ((img->load_bias || img->interp_base) && top < img->top + (uint64_t)stack_pages * 0x1000)
+        top = (img->top + (uint64_t)stack_pages * 0x1000 + 0xFFF) & ~0xFFFull;
+    uint64_t bottom = top - (uint64_t)stack_pages * 0x1000;
+    if (!mm_user_range(bottom, top - bottom)) return 0;
     int need = (int)((cli_stack_head(execfn, argv, argc, envp, envc) + 4095) / 4096);
+    if (stack_pages < 1 || need > stack_pages) return 0;
     if (need < CLI_STACK_EAGER_MIN) need = CLI_STACK_EAGER_MIN;
+    if (need > stack_pages) need = stack_pages;
 
 #ifdef KBENCH_NEGCTL
     /* The negative control (tests/kbench.mk): map the whole megabyte up front,
@@ -259,13 +308,13 @@ static uint64_t setup_cli_stack(uint64_t cr3, const struct elf_image *img,
      * on the cost of exec, on the pages a fork then has to share, and on the
      * anonymous-fault count, which goes to zero because nothing is ever
      * missing. */
-    int eager = CLI_STACK_PAGES;
+    int eager = stack_pages;
     (void)bottom; (void)need; (void)cr3;   /* cr3 is the reservation's, and the
                                             * negctl maps instead of reserving */
 #else
-    int reserved = (vma_reserve_fixed(cr3, bottom, (uint64_t)CLI_STACK_PAGES * 0x1000,
+    int reserved = (vma_reserve_fixed(cr3, bottom, (uint64_t)stack_pages * 0x1000,
                                       VMA_READ | VMA_WRITE) == 0);
-    int eager = reserved ? need : CLI_STACK_PAGES;
+    int eager = reserved ? need : stack_pages;
 #endif
 
     /* NX on the stack: it is data, and without it the classic shape -- overflow
@@ -295,7 +344,7 @@ static uint64_t setup_cli_stack(uint64_t cr3, const struct elf_image *img,
     int want_nx = !(img->stack_flags & PF_X) && cpu_prot_nx_usable();
     uint64_t stack_flags = VMM_WRITABLE | VMM_USER | (want_nx ? PTE_NX : 0);
     for (int i = 1; i <= eager; i++) {
-        uint64_t frame = pmm_alloc();
+        uint64_t frame = pmm_alloc_any();
         if (!frame) return 0;
         vmm_map_page(top - (uint64_t)i * 0x1000, frame, stack_flags);
     }
@@ -304,7 +353,8 @@ static uint64_t setup_cli_stack(uint64_t cr3, const struct elf_image *img,
      * function that is never re-entered -- every caller (proc_execve,
      * proc_spawn, proc_cap_spawn) runs with IF=0 under the BKL, which is the
      * same argument proc_execve's argstore already rests on. */
-    static uint64_t uargv[MAXARG], uenvp[MAXARG];
+    /* Correction: these bounded 4 KiB vectors are private stack data now. */
+    uint64_t uargv[MAXARG], uenvp[MAXARG];
     uint64_t sp = top, uexecfn = 0;
     for (int i = 0; i < argc; i++) { int l = kstrlen(argv[i]); sp -= l + 1; memcpy((void *)sp, argv[i], l + 1); uargv[i] = sp; }
     for (int i = 0; i < envc; i++) { int l = kstrlen(envp[i]); sp -= l + 1; memcpy((void *)sp, envp[i], l + 1); uenvp[i] = sp; }
@@ -325,7 +375,9 @@ static uint64_t setup_cli_stack(uint64_t cr3, const struct elf_image *img,
      *
      * AT_PHDR and AT_RANDOM are addresses in the read-only page the loader
      * places above the image (elf.c), so nothing here has to allocate for them.
-     * AT_SECURE is 0 and AT_UID/GID are 0 because this system has one user;
+     * AT_SECURE remains 0 (no setuid executable transition). Historically
+     * AT_UID/GID were 0 because this system had one user; correction: all
+     * four identity entries below now report the caller's real credentials.
      * they are emitted rather than omitted because a libc that does not find
      * AT_SECURE assumes the worst. */
     int nslots = 1 + (argc + 1) + (envc + 1) + 2 * AUXV_PAIRS;
@@ -341,12 +393,15 @@ static uint64_t setup_cli_stack(uint64_t cr3, const struct elf_image *img,
     st[k++] = AT_PHENT;    st[k++] = img->phentsize;
     st[k++] = AT_PHNUM;    st[k++] = img->phnum;
     st[k++] = AT_PAGESZ;   st[k++] = 0x1000;
-    st[k++] = AT_BASE;     st[k++] = 0;              /* no interpreter */
+    st[k++] = AT_BASE;     st[k++] = img->interp_base;
     st[k++] = AT_FLAGS;    st[k++] = 0;
     st[k++] = AT_ENTRY;    st[k++] = img->entry;
-    st[k++] = AT_UID;      st[k++] = 0;
-    st[k++] = AT_EUID;     st[k++] = 0;
-    st[k++] = AT_GID;      st[k++] = 0;
+    struct vcred cred;
+    vfs_cred_current(&cred);
+    st[k++] = AT_UID;      st[k++] = cred.uid;
+    st[k++] = AT_EUID;     st[k++] = cred.uid;
+    st[k++] = AT_GID;      st[k++] = cred.gid;
+    st[k++] = AT_EGID;     st[k++] = cred.gid;
     st[k++] = AT_SECURE;   st[k++] = 0;
     st[k++] = AT_RANDOM;   st[k++] = img->random_va;
     st[k++] = AT_EXECFN;   st[k++] = uexecfn;
@@ -358,6 +413,22 @@ static uint64_t setup_cli_stack(uint64_t cr3, const struct elf_image *img,
     if (k != nslots)
         kprintf("[exec] auxv miscount: wrote %d slots, reserved %d\n", k, nslots);
     return sp;
+}
+
+static uint64_t setup_cli_stack(uint64_t cr3, const struct elf_image *img,
+                                const char *path, char **argv, int argc,
+                                char **envp, int envc)
+{
+    return setup_user_stack(cr3, img, path, argv, argc, envp, envc, CLI_STACK_PAGES);
+}
+
+uint64_t exec_interpreter_stack(uint64_t cr3, const struct elf_image *img,
+                                const char *path, const char *arg, int pages)
+{
+    /* The legacy GUI entry ABI has an empty stack. Only PT_INTERP needs the
+     * SysV head; retain AEX's stack hint and the existing SYS_GET_ARGS path. */
+    char *argv[3] = {(char *)path, (char *)arg, 0};
+    return setup_user_stack(cr3, img, path, argv, arg && *arg ? 2 : 1, 0, 0, pages);
 }
 
 /* execve(path, argv, envp): replace the current process's user address space with
@@ -377,8 +448,9 @@ long proc_execve(struct registers *r)
     char abs[128];
     proc_resolve(p, path, abs, sizeof abs);
 
-    static char argstore[ARGBUFSZ];
-    static char *argv[MAXARG], *envp[MAXARG];
+    struct exec_args *args __attribute__((cleanup(exec_args_free))) = kmalloc(sizeof *args);
+    if (!args) return -1;
+    char *argstore = args->store, **argv = args->argv, **envp = args->envp;
     int used = 0;
     int argc = copy_uvec((char **)r->rsi, argv, argstore, &used, ARGBUFSZ);
     if (argc < 0) { uvec_refused("execve", abs, "argv", argc); return argc; }
@@ -417,7 +489,9 @@ long proc_execve(struct registers *r)
      * version agrees on. That placement is the whole point of splitting it out:
      * everything after the vmm_free_user() below is fatal to the caller, so the
      * cheap "is this a program at all" answer has to come before it, exactly as
-     * the old aex_info(img, ...) did. */
+     * the old aex_info(img, ...) did.
+     * Correction: the replacement space is now built transactionally below;
+     * even a later segment/interpreter/stack failure keeps the old image. */
     int sz = vfs_size(abs);
     if (sz < AEX_HDR_SIZE) { kprintf("[execve] %s: missing/too small (%d)\n", abs, sz); return -1; }
     char nm[32], ext[8];
@@ -440,18 +514,27 @@ long proc_execve(struct registers *r)
      * left alone by this function too. If a future change ever makes execve
      * touch `caps`, that change re-opens the exact hole D1 exists to close. */
 
-    /* 3. Point of no return: swap the user address space. */
+    /* Historical point of no return: vmm_free_user preceded all segment I/O.
+     * Correction: interpreter lookup, two images and the stack must succeed
+     * before replacing anything. Keep the old process/TLS/FD/signal state on
+     * every failure. The cost is retaining the old resident image while loading
+     * the new one; dropping it early cannot provide exec's failure contract. */
     kprintf("[execve] pid %d: %s loading\n", p->pid, abs);   /* DIAG: reached = child alive */
     uint64_t t_exec = exec_rdtsc();
-    uint64_t cr3 = p->cr3;
-    vmm_free_user(cr3);
+    uint64_t old_cr3 = p->cr3;
+    uint64_t cr3 = vmm_new_space();
+    if (!cr3) return -1;
+    struct mm_guard loading = mm_guard_start(cr3);
+    uint64_t prev = sched_use_address_space(cr3);
     struct elf_image ei;
     /* AFTER vmm_free_user, which drops the OLD image's areas and with them
      * their references to whatever this process was running a moment ago --
      * so re-exec'ing the same binary puts the old handle before taking the new
      * one, and the entry never briefly counts twice. A -1 (no slot, an
      * unstattable path, a backend with no real inode numbers) is not an error
-     * here: the loader copies, exactly as it always did. */
+     * here: the loader copies, exactly as it always did.
+     * Correction: the old and replacement VMAs now coexist until commit;
+     * each owns a separate reference, including when re-execing one file. */
     int fh = pcache_file_open(abs);
 #ifdef EXEC_NEGCTL_SLURP
     /* THE NEGATIVE CONTROL (tests/exec.mk's test-bigexec-negctl): this function
@@ -480,12 +563,23 @@ long proc_execve(struct registers *r)
         }
     }
 #else
-    int lrc = aex_load_path(abs, (uint64_t)sz, nm, ext, &ei, fh);  /* maps into the active (p->cr3) space */
+    int lrc = aex_load_path(abs, (uint64_t)sz, nm, ext, &ei, fh);  /* active replacement space; p still owns old_cr3 */
 #endif
     if (fh >= 0) pcache_file_put(fh);          /* the VMAs hold their own */
     uint64_t t_load = exec_rdtsc();
-    if (lrc != 0) { kprintf("[execve] %s: aex_load failed\n", abs); proc_exit(127); }
-    uint64_t entry = ei.entry;
+    uint64_t sp = lrc == 0 ? setup_cli_stack(cr3, &ei, abs, argv, argc, envp, envc) : 0;
+    sched_use_address_space(prev);
+    mm_guard_end(&loading);
+    if (!sp || !proc_exec_space(p, old_cr3, cr3)) {
+        kprintf("[execve] %s: load/stack failed; old image retained\n", abs);
+        vmm_free_space(cr3);
+        return -1;
+    }
+    sched_use_address_space(cr3);
+    /* No new-space guard held here: freeing the old AS must not reverse the
+     * MM guard order. No other thread can still execute this old user image. */
+    vmm_free_space(old_cr3);
+    uint64_t entry = ei.start_entry;
 
     /* PT_TLS: install the thread pointer the loader laid out. Through
      * sched_set_fsbase() and never with a bare WRMSR -- the scheduler keeps
@@ -498,14 +592,13 @@ long proc_execve(struct registers *r)
     sched_set_fsbase(ei.tls_tp);
 
     /* 4+5. Fresh user stack with the SysV argc/argv/envp/auxv layout. */
-    uint64_t sp = setup_cli_stack(cr3, &ei, abs, argv, argc, envp, envc);
-    if (!sp) { kprintf("[execve] %s: stack setup failed\n", abs); proc_exit(127); }
+    /* The new SysV stack was built before publishing the replacement CR3. */
     {
         uint64_t t_end = exec_rdtsc();
-        g_execs++;
-        g_exec_cyc       += t_end  - t_exec;
-        g_exec_load_cyc  += t_load - t_exec;
-        g_exec_stack_cyc += t_end  - t_load;
+        __atomic_fetch_add(&g_execs, 1, __ATOMIC_RELAXED);
+        __atomic_fetch_add(&g_exec_cyc, t_end  - t_exec, __ATOMIC_RELAXED);
+        __atomic_fetch_add(&g_exec_load_cyc, t_load - t_exec, __ATOMIC_RELAXED);
+        __atomic_fetch_add(&g_exec_stack_cyc, t_end  - t_load, __ATOMIC_RELAXED);
         exec_report();
     }
     /* AFTER the stopwatch, not between its two readings. It sat between them,
@@ -519,8 +612,12 @@ long proc_execve(struct registers *r)
      * program. */
     exec_note_load(abs, &ei);
 
+    proc_agent_bind_image(p, &ei, AEX_ACT_UI);
+
     /* 6. Rewrite the syscall-return frame to land in the new program. */
+    uint64_t name_flags = spin_lock_irqsave(&p->fd_lock);
     scopy(p->name, nm, sizeof p->name);
+    spin_unlock_irqrestore(&p->fd_lock, name_flags);
     r->rip = entry; r->rsp = sp; r->rflags = 0x202; r->cs = 0x1B; r->ss = 0x23;
     r->rax = r->rbx = r->rcx = r->rdx = r->rsi = r->rdi = r->rbp = 0;
     r->r8 = r->r9 = r->r10 = r->r11 = r->r12 = r->r13 = r->r14 = r->r15 = 0;
@@ -529,7 +626,7 @@ long proc_execve(struct registers *r)
 
 /* init: spawn `path` as a fresh CLI process with fd 0/1/2 bound to the serial
  * console. Used by the kernel to launch /bin/sh after boot. Returns the pid. */
-int proc_spawn(const char *path, char **argv)
+static int spawn_initial(const char *path, char **argv, int service)
 {
     int sz = vfs_size(path);
     if (sz < AEX_HDR_SIZE) return -1;        /* aex_info reads the 64-byte header */
@@ -573,15 +670,16 @@ int proc_spawn(const char *path, char **argv)
      * So the requirement is precise and it is one function's: if blk_wait ever
      * stops holding the no-preemption flag across a transfer, this call site
      * breaks. Nothing about which driver is underneath matters. */
-    uint64_t prev;
-    __asm__ volatile ("cli");
-    __asm__ volatile ("mov %%cr3, %0" : "=r"(prev));
-    vmm_switch(space);
+    /* Correction to the historical no-preemption assumption above: VFS and
+     * AS locks may now sleep. Save the temporary space in scheduler state too,
+     * so a resumed/migrated loader always writes into its own target CR3. */
+    struct mm_guard loading = mm_guard_start(space);
+    uint64_t prev = sched_use_address_space(space);
     struct elf_image ei;
-    uint64_t entry = aex_load_path(path, (uint64_t)sz, nm, ext, &ei, fh) == 0 ? ei.entry : 0;
+    uint64_t entry = aex_load_path(path, (uint64_t)sz, nm, ext, &ei, fh) == 0 ? ei.start_entry : 0;
     uint64_t sp = entry ? setup_cli_stack(space, &ei, path, argv, argc, 0, 0) : 0;
-    vmm_switch(prev);
-    __asm__ volatile ("sti");
+    sched_use_address_space(prev);
+    mm_guard_end(&loading);
     if (fh >= 0) pcache_file_put(fh);
     if (entry) exec_note_load(path, &ei);
     if (!entry || !sp) { vmm_free_space(space); return -1; }
@@ -600,21 +698,31 @@ int proc_spawn(const char *path, char **argv)
      * grant through SYS_FORK (unchanged) and SYS_CAP_SPAWN (ceiling-checked)
      * -- never invented anywhere else. */
     p->caps = CAP_ALL; p->fs_prefix[0] = 0;
+    p->system_service = service;
+    proc_agent_bind_image(p, &ei, AEX_ACT_UI);
 
     struct file *tty = file_open_tty();              /* fd 0/1/2 -> serial console */
     if (tty) { p->fd[0] = tty; file_dup(tty); p->fd[1] = tty; file_dup(tty); p->fd[2] = tty; }
 
-    p->tid = thread_create_user(nm, entry, sp, p, space);
-    if (p->tid < 0) {                    /* OOM: undo the spawn (same shape as proc_fork's
+    int child_pid = p->pid;
+    int child_tid = thread_create_user_tls(nm, entry, sp, p, space, ei.tls_tp);
+    if (child_tid < 0) {                    /* OOM: undo the spawn (same shape as proc_fork's
                                           * failure path) instead of leaking the PCB slot
                                           * + the whole address space under a live pid. */
-        for (int i = 0; i < NFD; i++)
-            if (p->fd[i]) { file_close(p->fd[i]); p->fd[i] = NULL; }
         vmm_free_space(space);
-        p->state = PROC_FREE; p->pid = 0; p->cr3 = 0;
+        proc_abort_build(p);
         return -1;
     }
-    return p->pid;
+    return child_pid;
+}
+
+int proc_spawn(const char *path, char **argv) { return spawn_initial(path,argv,0); }
+int proc_spawn_service(const char *path, char **argv)
+{
+    /* A restarted system daemon must retain its credential root after login.
+     * This entry has no syscall and refuses a process caller; an AppID or a
+     * pathname supplied by an application never creates that authority. */
+    return proc_current() ? -1 : spawn_initial(path,argv,1);
 }
 
 /* SYS_CAP_SPAWN: fork()+load+execve(path) in ONE kernel call, except the
@@ -663,8 +771,9 @@ long proc_cap_spawn(struct registers *r)
     char abs[128];
     proc_resolve(p, path, abs, sizeof abs);
 
-    static char cs_argstore[ARGBUFSZ];
-    static char *cs_argv[MAXARG];
+    struct exec_args *args __attribute__((cleanup(exec_args_free))) = kmalloc(sizeof *args);
+    if (!args) return LOGIT_CAP_E_NOMEM;
+    char *cs_argstore = args->store, **cs_argv = args->argv;
     int used = 0;
     int argc = copy_uvec((char **)r->rsi, cs_argv, cs_argstore, &used, ARGBUFSZ);
     /* An over-long argv is reported on the log by its real cause, but it
@@ -713,39 +822,99 @@ long proc_cap_spawn(struct registers *r)
      * kernel's own writes into it -- argv/envp/auxv -- must happen with it
      * switched in, and switched back out before anything else can run). */
     int fh = pcache_file_open(abs);           /* outside the cli: see proc_spawn */
-    uint64_t prev;
-    __asm__ volatile ("cli");
-    __asm__ volatile ("mov %%cr3, %0" : "=r"(prev));
-    vmm_switch(space);
+    /* Correction to the historical no-preemption assumption above: VFS and
+     * AS locks may now sleep. Save the temporary space in scheduler state too,
+     * so a resumed/migrated loader always writes into its own target CR3. */
+    struct mm_guard loading = mm_guard_start(space);
+    uint64_t prev = sched_use_address_space(space);
     struct elf_image ei;
-    uint64_t entry = aex_load_path(abs, (uint64_t)sz, nm, ext, &ei, fh) == 0 ? ei.entry : 0;
+    uint64_t entry = aex_load_path(abs, (uint64_t)sz, nm, ext, &ei, fh) == 0 ? ei.start_entry : 0;
     uint64_t sp = entry ? setup_cli_stack(space, &ei, abs, cs_argv, argc, 0, 0) : 0;
-    vmm_switch(prev);
-    __asm__ volatile ("sti");
+    sched_use_address_space(prev);
+    mm_guard_end(&loading);
     if (fh >= 0) pcache_file_put(fh);
     if (entry) exec_note_load(abs, &ei);
     if (!entry || !sp) { vmm_free_space(space); return LOGIT_CAP_E_NOENT; }
 
     struct proc *child = proc_create(space, NULL, nm, p->pid);
     if (!child) { vmm_free_space(space); return LOGIT_CAP_E_NOMEM; }
+    uint64_t cwd_flags = spin_lock_irqsave(&p->fd_lock);
     scopy(child->cwd, p->cwd, sizeof child->cwd);
+    spin_unlock_irqrestore(&p->fd_lock, cwd_flags);
     /* The grant: exactly `req`, never a copy of the caller's own set -- the
      * whole point proven above is that `req` is already <= that set. */
     child->caps = req.caps;
     scopy(child->fs_prefix, req.prefix, sizeof child->fs_prefix);
 
-    for (int i = 0; i < NFD; i++) {           /* inherit the caller's fds, like SYS_FORK */
-        child->fd[i] = p->fd[i];
-        if (child->fd[i]) file_dup(child->fd[i]);
-    }
+    proc_agent_bind_image(child, &ei, AEX_ACT_UI);
+    proc_fd_clone(child, p);
 
-    child->tid = thread_create_user(nm, entry, sp, child, space);
-    if (child->tid < 0) {                     /* OOM: same undo shape as proc_fork()/proc_spawn() */
-        for (int i = 0; i < NFD; i++)
-            if (child->fd[i]) { file_close(child->fd[i]); child->fd[i] = NULL; }
+    int child_pid = child->pid;
+    int child_tid = thread_create_user_tls(nm, entry, sp, child, space, ei.tls_tp);
+    if (child_tid < 0) {                     /* OOM: same undo shape as proc_fork()/proc_spawn() */
         vmm_free_space(space);
-        child->state = PROC_FREE; child->pid = 0; child->cr3 = 0;
+        proc_abort_build(child);
         return LOGIT_CAP_E_NOMEM;
     }
-    return child->pid;
+    return child_pid;
+}
+
+/* A worker is loaded from an immutable snapshot. Hashing the path and then
+ * paging the executable from that mutable path would authenticate different
+ * bytes if an installation changes during launch. No page-cache backing is
+ * retained for this deliberately bounded (16 MiB) worker image. */
+long proc_agent_spawn(struct registers *r)
+{
+    struct proc *parent = proc_current();
+    struct aex_agent_spawn req;
+    char path[128], abs[128], name[32], ext[8];
+    if (!parent || parent->agent.mode == AEX_ACT_WORKER ||
+        !(parent->caps & CAP_PROC) || !(parent->caps & CAP_FS) ||
+        user_copy_string(path, sizeof path, (const char *)r->rdi) < 0 ||
+        user_copy_from(&req, (const void *)r->rsi, sizeof req) < 0 ||
+        req.size != sizeof req || req.abi != AEX_AGENT_ABI || req.reserved ||
+        req.app_id[sizeof req.app_id - 1]) return -1;
+    proc_resolve(parent, path, abs, sizeof abs);
+    if (vfs_access(abs, MAY_EXEC) < 0) return -1;
+    struct file *channel = proc_fd_acquire(parent, req.channel_fd);
+    if (!channel) return -1;
+    if (lsock_peer_pid(channel) != parent->pid) { file_close(channel); return -1; }
+    int size = vfs_size(abs);
+    void *image = size >= AEX_HDR_SIZE && size <= 16 * 1024 * 1024 ? kmalloc(size) : 0;
+    struct aex_info info;
+    int valid = image && vfs_pread(abs, image, size, 0) == size &&
+                aex_parse(image, size, &info) == 0 && info.version == 3;
+    if (valid) for (unsigned i = 0; i < sizeof req.app_id; i++)
+        if (req.app_id[i] != info.agent_id[i]) valid = 0;
+    if (valid) for (unsigned i = 0; i < sizeof req.image_hash; i++)
+        if (req.image_hash[i] != info.image_hash[i]) valid = 0;
+    if (!valid) { kfree(image); file_close(channel); return -1; }
+    uint64_t space = vmm_new_space();
+    if (!space) { kfree(image); file_close(channel); return -1; }
+    struct elf_image ei;
+    struct mm_guard loading = mm_guard_start(space);
+    uint64_t prev = sched_use_address_space(space);
+    uint64_t entry = aex_load_image_ex(image, size, name, ext, &ei, -1) == 0 ? ei.start_entry : 0;
+    char *argv[] = {abs, "--agent", 0};
+    uint64_t sp = entry ? setup_cli_stack(space, &ei, abs, argv, 2, 0, 0) : 0;
+    sched_use_address_space(prev); mm_guard_end(&loading); kfree(image);
+    if (!entry || !sp) { vmm_free_space(space); file_close(channel); return -1; }
+    struct proc *child = proc_create(space, 0, name, parent->pid);
+    if (!child) { vmm_free_space(space); file_close(channel); return -1; }
+    child->caps = 0; child->fs_prefix[0] = 0;
+    child->fd[AEX_AGENT_FD] = channel; /* transfer our one acquired reference */
+    proc_agent_bind_image(child, &ei, AEX_ACT_WORKER);
+    /* Taking the only descriptor reference prevents parent dup/fork aliases
+     * from retaining the endpoint whose peer identity is about to change. */
+    if (!proc_fd_take_exclusive(parent, req.channel_fd, channel)) {
+        vmm_free_space(space); proc_abort_build(child); return -1;
+    }
+    if (lsock_agent_transfer(channel, parent->pid, &child->agent) < 0) {
+        vmm_free_space(space); proc_abort_build(child); return AEX_SPAWN_CHANNEL_CONSUMED;
+    }
+    int pid = child->pid;
+    if (thread_create_user_tls(name, entry, sp, child, space, ei.tls_tp) < 0) {
+        vmm_free_space(space); proc_abort_build(child); return AEX_SPAWN_CHANNEL_CONSUMED;
+    }
+    return pid;
 }

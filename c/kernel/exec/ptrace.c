@@ -14,7 +14,10 @@
 #include "sched.h"
 #include "ksignal.h"
 #include "usercopy.h"
+#include "kernel/core/wait.h"
+#include "mmguard.h"
 #include "vmm.h"
+#include "mmhost.h"     /* translate a tracee physical frame into a CPU RAM alias */
 #include "spinlock.h"
 #include "kprintf.h"
 #include "vfs_cred.h"
@@ -37,8 +40,9 @@ struct link {
 static struct link g_link[NPROC];
 /* LOCK ORDER: g_pt_lock -> g_sig_lock, one direction only, and it is checked
  * rather than intended:
- *   - ptrace_proc_free() holds this and calls ksig_post(), which takes
- *     ksignal.c's g_sig_lock. That is the ONLY nesting in this file.
+ *   - historically ptrace_proc_free() held this across ksig_post(), which takes
+ *     ksignal.c's g_sig_lock. Correction: wake targets are now copied, then
+ *     posted after unlocking; the table lock has no signal-lock nesting.
  *   - the reverse cannot happen. Both hooks are called from ksig_deliver()'s
  *     stop, which RELEASES g_sig_lock before it reaches them (ksigframe.c
  *     unlocks, then tests `stopped`), so a thread taking g_pt_lock there holds
@@ -48,6 +52,12 @@ static struct link g_link[NPROC];
  * irqsave, because ptrace_note_stop() runs on the return-to-ring-3 path with
  * the timer live. */
 static spinlock_t  g_pt_lock = SPINLOCK_INIT;
+/* Memory inspection can wait for an address-space operation. This separate
+ * sleeping lifetime lock prevents tracee teardown/resume during inspection;
+ * the table spinlock never spans a usercopy or an MM fault. */
+static struct mutex g_pt_access = MUTEX_INIT;
+static void pt_access_end(struct mutex **m) { mutex_unlock(*m); }
+#define PT_ACCESS struct mutex *access __attribute__((cleanup(pt_access_end))) = &g_pt_access; mutex_lock(access)
 /* The gate. Zero on a machine where nothing is traced, which is every machine
  * almost all of the time, so the two hooks in the stop path cost one relaxed
  * load and a not-taken branch -- the discipline ksig_armed() and
@@ -64,7 +74,7 @@ static struct link *find_locked(int tracee)
 /* --------------------------------------------------------------- the hooks */
 void ptrace_note_stop(int pid, const struct registers *r)
 {
-    if (!g_links_live) return;
+    if (!__atomic_load_n(&g_links_live, __ATOMIC_RELAXED)) return;
     uint64_t f = spin_lock_irqsave(&g_pt_lock);
     struct link *l = find_locked(pid);
     if (l) { l->regs = *r; l->stopped = 1; l->setregs = 0; }
@@ -73,7 +83,8 @@ void ptrace_note_stop(int pid, const struct registers *r)
 
 void ptrace_note_resume(int pid, struct registers *r)
 {
-    if (!g_links_live) return;
+    if (!__atomic_load_n(&g_links_live, __ATOMIC_RELAXED)) return;
+    PT_ACCESS;
     uint64_t f = spin_lock_irqsave(&g_pt_lock);
     struct link *l = find_locked(pid);
     if (l) {
@@ -108,7 +119,9 @@ void ptrace_note_resume(int pid, struct registers *r)
 
 void ptrace_proc_free(int pid)
 {
-    if (!g_links_live) return;
+    if (!__atomic_load_n(&g_links_live, __ATOMIC_RELAXED)) return;
+    PT_ACCESS;
+    int resume[NPROC], nr = 0;
     uint64_t f = spin_lock_irqsave(&g_pt_lock);
     for (int i = 0; i < NPROC; i++) {
         if (!g_link[i].used) continue;
@@ -118,14 +131,15 @@ void ptrace_proc_free(int pid)
         if (g_link[i].tracee == pid || g_link[i].tracer == pid) {
             int tracee = g_link[i].tracee;
             g_link[i].used = 0;
-            if (g_links_live) g_links_live--;
+            if (g_links_live) __atomic_fetch_sub(&g_links_live, 1, __ATOMIC_RELAXED);
             /* If the TRACER died while the tracee was stopped, the tracee
              * would sit in the stop loop forever with nobody to continue it.
              * Post SIGCONT on the way out. */
-            if (tracee != pid) ksig_post(tracee, LOGIT_SIGCONT);
+            if (tracee != pid) resume[nr++] = tracee;
         }
     }
     spin_unlock_irqrestore(&g_pt_lock, f);
+    for (int i = 0; i < nr; i++) ksig_post(resume[i], LOGIT_SIGCONT);
 }
 
 /* ------------------------------------------------------- address translation
@@ -137,31 +151,16 @@ void ptrace_proc_free(int pid)
  * boots with the first 1 GiB identity-mapped (c/boot/boot.asm) and has 512 MiB
  * of RAM, so every frame is addressable. If either ever stops being true this
  * function is the thing that breaks, which is why it says so.
+ * Correction (2026-09-09): MM payload pages may now be above 1 GiB. The PTE
+ * still names a physical frame, but xlate returns mm_p2v(phys), retaining the
+ * low alias and selecting the supervisor physmap for high pages. The tracee
+ * need not be current, and no user mapping is created or faulted in here.
  *
  * PRESENT ONLY, never faulted in. A tracer asking about an address the tracee
  * has not touched gets PT_E_FAULT rather than causing the page to be
  * materialised -- reading a program must not change it, and demand-faulting on
  * behalf of a stopped process from a third process's syscall would do exactly
  * that. */
-static int xlate(uint64_t cr3, uint64_t va, int write, volatile uint64_t **out)
-{
-    if (va & 7) return PT_E_ALIGN;
-    uint64_t *pte = vmm_pte(cr3, va & ~0xfffull);
-    if (!pte) return PT_E_FAULT;
-    uint64_t e = *pte;
-    if (!(e & 1)) return PT_E_FAULT;             /* absent, or a swap entry    */
-    if (!(e & 4)) return PT_E_FAULT;             /* not the process's own page */
-    /* A copy-on-write page is mapped READ-ONLY and is shared with somebody
-     * else, so this test refuses it without needing to know about COW at all:
-     * writing through it would silently change a page another process owns.
-     * The tracer is told PT_E_FAULT rather than having the copy forced,
-     * because forcing it is a decision about the tracee's memory that belongs
-     * to the tracee's own fault path. */
-    if (write && !(e & 2)) return PT_E_FAULT;
-    uint64_t phys = (e & 0x000ffffffffff000ull) | (va & 0xfff);
-    *out = (volatile uint64_t *)(uintptr_t)phys;
-    return PT_OK;
-}
 
 /* ------------------------------------------------------------ permission */
 /* May `me` become the tracer of `target`? Root, or the same uid. See the
@@ -187,6 +186,19 @@ static int may_attach(int me, int target)
 
 /* Is the caller the tracer of `pid`, and is it stopped? Returns the link, or
  * fills *err. */
+/* Unlike the old xlate pointer borrower, this helper completes the copy while
+ * the address-space operation lock is held. The caller additionally holds
+ * g_pt_access so proc_exit cannot recycle the snapshot CR3 between lookup and
+ * this guard. Preserve ptrace's resident-only and no-COW-write contract. */
+static int xlate(uint64_t cr3, uint64_t va, int writing, uint64_t *word)
+{
+    if (va & 7) return PT_E_ALIGN;
+    MM_GUARD(cr3);
+    if (!vmm_user_range_ok(cr3, (const void *)(uintptr_t)va, sizeof *word, writing))
+        return PT_E_FAULT;
+    return vmm_copy_in_space(cr3, word, va, sizeof *word, writing) < 0 ? PT_E_FAULT : PT_OK;
+}
+
 static struct link *claim(int pid, int need_stopped, int *err)
 {
     struct proc *me = proc_current();
@@ -247,7 +259,7 @@ static long do_attach(int pid)
     if (!me) return PT_E_PERM;
     if (pid == me->pid) return PT_E_PERM;        /* no self-tracing            */
     if (pid <= 1) return PT_E_PERM;              /* not init                   */
-    if (!proc_by_pid(pid)) return PT_E_SRCH;
+    if (!proc_exists(pid)) return PT_E_SRCH;
     if (!may_attach(me->pid, pid)) return PT_E_PERM;
 
     uint64_t f = spin_lock_irqsave(&g_pt_lock);
@@ -257,7 +269,7 @@ static long do_attach(int pid)
     if (!l) { spin_unlock_irqrestore(&g_pt_lock, f); return PT_E_NOSPACE; }
     l->used = 1; l->tracee = pid; l->tracer = me->pid;
     l->stopped = 0; l->setregs = 0;
-    g_links_live++;
+    __atomic_fetch_add(&g_links_live, 1, __ATOMIC_RELAXED);
     spin_unlock_irqrestore(&g_pt_lock, f);
 
     /* Through the ordinary path. SIGSTOP is unmaskable (ksignal.c's
@@ -274,10 +286,10 @@ static long do_attach(int pid)
         spin_unlock_irqrestore(&g_pt_lock, f2);
         if (gone) return PT_E_SRCH;              /* it exited while we waited  */
         if (done) return PT_OK;
-        if (!proc_by_pid(pid)) { ptrace_proc_free(pid); return PT_E_SRCH; }
-        /* Drops the BKL, so waiting here does not stop the machine -- the same
+        if (!proc_exists(pid)) { ptrace_proc_free(pid); return PT_E_SRCH; }
+        /* Schedules without a global kernel lock -- the same
          * idiom the stop loop itself and tty_read() use. */
-        bkl_hlt_wait();
+        sched_poll_wait();
     }
     /* Did not stop. The link is torn down rather than left half-made, and the
      * tracee is continued -- leaving it SIGSTOPped with no tracer would be a
@@ -304,7 +316,7 @@ long ptrace_syscall(long req, long pidl, long arg)
         uint64_t f = spin_lock_irqsave(&g_pt_lock);
         struct link *l = claim(pid, 0, &err);
         int was = l ? 1 : 0;
-        if (l) { l->used = 0; if (g_links_live) g_links_live--; }
+        if (l) { l->used = 0; if (g_links_live) __atomic_fetch_sub(&g_links_live, 1, __ATOMIC_RELAXED); }
         spin_unlock_irqrestore(&g_pt_lock, f);
         if (!was) return err;
         ksig_post(pid, LOGIT_SIGCONT);           /* never leave it frozen */
@@ -349,26 +361,27 @@ long ptrace_syscall(long req, long pidl, long arg)
         struct logit_ptrace_word w;
         if (user_copy_from(&w, (const void *)(uintptr_t)arg, sizeof w) != 0)
             return PT_E_ARG;
-        int err = PT_OK;
-        uint64_t f = spin_lock_irqsave(&g_pt_lock);
-        struct link *l = claim(pid, 1, &err);
-        spin_unlock_irqrestore(&g_pt_lock, f);
-        if (!l) return err;
-        /* The tracee is STOPPED, so its address space cannot be torn down
-         * under this call: proc_exit() is reached from ring 3 and it is not in
-         * ring 3. proc_by_pid() is still re-read, because "stopped" is our
-         * bookkeeping and the PCB is the authority. */
-        struct proc *t = proc_by_pid(pid);
-        if (!t) return PT_E_SRCH;
-        volatile uint64_t *p = 0;
-        int rc = xlate(t->cr3, w.addr, req == PTRACE_POKEDATA, &p);
-        if (rc != PT_OK) return rc;
-        if (req == PTRACE_PEEKDATA) {
-            w.data = *p;
-            if (user_copy_to((void *)(uintptr_t)arg, &w, sizeof w) != 0) return PT_E_ARG;
-        } else {
-            *p = w.data;
+        if (w.addr & 7) return PT_E_ALIGN;
+        int rc;
+        {
+            PT_ACCESS;
+            int err = PT_OK;
+            uint64_t f = spin_lock_irqsave(&g_pt_lock);
+            struct link *l = claim(pid, 1, &err);
+            int valid = l != NULL;
+            spin_unlock_irqrestore(&g_pt_lock, f);
+            if (!valid) return err;
+            struct proc t;
+            if (!proc_snapshot(pid, &t) || t.state != PROC_RUNNING) return PT_E_SRCH;
+            /* proc_exit takes g_pt_access before publishing a zombie. Thus
+             * this CR3 cannot be destroyed and recycled before copy finishes. */
+            uint64_t value = w.data;
+            rc = xlate(t.cr3, w.addr, req == PTRACE_POKEDATA, &value);
+            w.data = value;
         }
+        if (rc < 0) return PT_E_FAULT;
+        if (req == PTRACE_PEEKDATA &&
+            user_copy_to((void *)(uintptr_t)arg, &w, sizeof w) < 0) return PT_E_ARG;
         return PT_OK;
     }
 

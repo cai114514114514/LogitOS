@@ -20,4 +20,8 @@ int user_copy_from(void *dst, const void *src, uint64_t len);
 int user_copy_to(void *dst, const void *src, uint64_t len);
 int user_copy_string(char *dst, int max, const char *src);
 
+/* Pin a naturally aligned 32-bit futex word before taking its bucket lock.
+ * The CPU alias survives unmap; release after enqueue, before sleeping. */
+int user_pin_word(const void *ptr, uint64_t *phys, const void **cpu);
+void user_unpin_word(uint64_t phys);
 #endif /* LOGIT_USERCOPY_H */
