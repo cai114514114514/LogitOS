@@ -49,6 +49,11 @@ int  js_page_eval(const char *src, int len, const char *filename, struct node *n
 /* Drain the microtask queue; returns the number of jobs run. */
 int  js_page_pump(void);
 
+/* Shared timer/rAF queue ceiling. Exhaustion returns handle 0, as allocation
+ * failure did before the queue was bounded; it never silently drops an older
+ * callback. This is an implementation limit, not a web-platform guarantee. */
+#define JS_PAGE_TASK_CAPACITY 4096
+
 /* ---- timers ----
  * setTimeout / setInterval / requestAnimationFrame all land in one queue keyed
  * by a monotonic deadline. The main loop asks js_page_pending() (a pointer
@@ -58,9 +63,10 @@ int  js_page_pump(void);
 int  js_page_pending(void);
 /* Deadline of the earliest scheduled callback in monotonic ms, or -1. */
 long long js_page_next_due(void);
-/* Run every callback whose deadline has passed, in deadline order. Returns how
- * many ran. Callbacks scheduled BY a callback wait for the next call, so a
- * setTimeout(f, 0) loop cannot starve the main loop. */
+/* Run due callbacks in deadline order within a shared turn budget. Returns
+ * how many ran; unfinished phases/tasks stay visible in pending/next_due.
+ * Callbacks scheduled BY a callback wait for the next timer snapshot. One
+ * synchronous callback is not preemptible by this boundary budget. */
 int  js_page_run_due(void);
 
 /* The monotonic clock, injected by the embedder: the browser passes
@@ -105,6 +111,21 @@ void js_page_set_slice_ms(int ms);
  * branches-or-calls -- NOT per 10,000 bytecodes; see js_page.c). What host
  * harnesses use, and the backstop everywhere else. */
 void js_page_set_slice_fuel(long long calls);
+/* The embedder may have a harder reason to unwind than the CPU budget (the
+ * Browser uses this for a window-close request while a page script is running).
+ * The probe runs from QuickJS's existing 10,000-branch interrupt point and must
+ * only observe/record state: it must not free the runtime whose stack it is on.
+ * Returning nonzero interrupts the current entry; the embedder performs its
+ * teardown after js_page_eval/js_dom_dispatch has unwound. NULL disables it. */
+typedef int (*js_page_interrupt_probe_fn)(void *opaque);
+void js_page_set_interrupt_probe(js_page_interrupt_probe_fn fn, void *opaque);
+/* A probe may also observe close from a native I/O callback, before QuickJS's
+ * next interrupt poll. Latch it here so listener/job drains stop while the
+ * stack unwinds. entry_active stays true until every slice bracket returns;
+ * embedders must defer JS_FreeRuntime while it is true. */
+void js_page_request_cancel(void);
+int  js_page_cancel_requested(void);
+int  js_page_entry_active(void);
 int  js_page_slice_hits(void);
 /* The watchdog's OWN fuel count for the current/last slice. Counted whether or
  * not js_prof is enabled, which is what makes it the one honest input to an
@@ -112,6 +133,11 @@ int  js_page_slice_hits(void);
  * changes the work. */
 long long js_page_slice_fuel_used(void);
 void js_page_slice_begin(void);
+/* Lexical scopes around blocking native resource I/O that cannot dispatch JS.
+ * Return token is an epoch, not a new budget. Always end it, including errors;
+ * nested waits count once and completions from an old slice are ignored. */
+unsigned long long js_page_slice_io_begin(void);
+void js_page_slice_io_end(unsigned long long epoch);
 /* The other end of one synchronous JS entry. Call it when the entry returns
  * (js_page_eval and js_page_run_due do). It arms nothing and disarms nothing:
  * its only job is to tell js_prof that the wall clock from here to the next
@@ -119,6 +145,9 @@ void js_page_slice_begin(void);
  * calls it loses only the js_ms/out_ms split, and gains a `resumed` count that
  * says so. */
 void js_page_slice_end(void);
+/* Correction (2026-09-09) to "arms nothing and disarms nothing" above:
+ * slice_end now disarms the completed entry's deadline as well as recording
+ * profiler time. Keeping it armed charged idle time to the next page's setup. */
 
 /* ---- js_prof: where a slice's time goes ----
  *

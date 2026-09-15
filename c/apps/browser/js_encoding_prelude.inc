@@ -349,7 +349,10 @@
 
 /* The stream pair. Unchanged in shape from what was here, but the decoder now
  * carries a label and its options, which is what made TextDecoderStream over a
- * non-UTF-8 response body meaningless before. */
+ * non-UTF-8 response body meaningless before. A pure worker realm can install
+ * byte codecs without TransformStream; leave dependent stream constructors
+ * absent there, rather than advertising constructors that immediately fail. */
+"if (typeof G.TransformStream === 'function') {\n"
 "G.TextDecoderStream = function TextDecoderStream(label, options) {\n"
 "  var dec = new G.TextDecoder(label, options);\n"
 "  var t = new G.TransformStream({\n"
@@ -384,6 +387,7 @@
 
 /* toU8/u8ab/joinParts stay: Response.arrayBuffer, Blob and the fetch body sink
  * all use them, and they predate this file. */
+"}\n"
 "function toU8(x) { return encToBytes(x); }\n"
 "function u8ab(u) { return u.buffer.slice(u.byteOffset, u.byteOffset + u.byteLength); }\n"
 "function joinParts(parts) {\n"

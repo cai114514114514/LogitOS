@@ -64,7 +64,7 @@ void js_platform_set_viewport(int w, int h) { if (w > 0) g_vw = w; if (h > 0) g_
  * the syscall "fails" and the code below takes the xorshift fallback it
  * already owns, reported honestly as __randomStrong()=0. */
 static int getrandom_bytes(void *buf, unsigned long n) { (void)buf; (void)n; return -1; }
-static int getrandom_strong(void) { return 0; }   /* unreachable: bytes always fails */
+static int getrandom_strong(void) { return 1; } /* host OS entropy, below */
 /* No kernel clipboard on the host either -- every host clipboard gate builds
  * its OWN clip_set/clip_get stub already (see webapi_probe.c); this one only
  * has to exist so js_platform.c links, and it always refuses so no host test
@@ -112,6 +112,7 @@ static unsigned long long rng_next(void)
 /* __random(n, clockHint) -> ArrayBuffer of n random bytes. Bounded at the
  * spec's own 65536-byte limit for getRandomValues, so a page cannot ask for a
  * gigabyte. */
+#include "web_entropy.h"
 static JSValue js_random(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
 {
     (void)t;
@@ -119,21 +120,16 @@ static JSValue js_random(JSContext *ctx, JSValueConst t, int argc, JSValueConst 
     double hint = 0;
     if (argc > 0) JS_ToInt32(ctx, &n, argv[0]);
     if (argc > 1) JS_ToFloat64(ctx, &hint, argv[1]);
-    if (n < 0) n = 0;
-    if (n > 65536) n = 65536;
+    if (n < 0 || n > 65536) return JS_ThrowRangeError(ctx,"random request exceeds quota");
     unsigned char *buf = malloc((size_t)n + 1);
     if (!buf) return JS_ThrowOutOfMemory(ctx);
-    /* The kernel DRBG first; the old xorshift only if the syscall refuses. */
-    if (n == 0 || getrandom_bytes(buf, n) != 0) {
-        g_rng_kernel = 0;
-        if (!g_seeded) rng_seed((unsigned long long)hint);
-        for (int i = 0; i < n; ) {
-            unsigned long long r = rng_next();
-            for (int k = 0; k < 8 && i < n; k++, i++) buf[i] = (unsigned char)(r >> (k * 8));
-        }
-    } else {
-        g_rng_kernel = 1;
+    /* Correction (2026-09-10): the historical fallback above is retired.
+     * Clock-seeded output must not become a key or nonce on an error path. */
+    if (web_entropy(buf,n) != 0) {
+        g_rng_kernel=0; memset(buf,0,(size_t)n);free(buf);
+        return JS_ThrowTypeError(ctx,"strong entropy unavailable");
     }
+    g_rng_kernel=1;
     JSValue ab = JS_NewArrayBufferCopy(ctx, buf, (size_t)n);
     free(buf);
     return ab;
@@ -216,24 +212,16 @@ static JSValue js_clip_write_text(JSContext *ctx, JSValueConst t, int argc, JSVa
 static JSValue g_reject_hook = JS_UNDEFINED;
 static JSContext *g_ctx;
 
-static void rejection_tracker(JSContext *ctx, JSValueConst promise, JSValueConst reason,
-                              int is_handled, void *opaque)
-{
-    (void)opaque;
-    if (is_handled || !JS_IsFunction(ctx, g_reject_hook)) return;
-    JSValue a[2];
-    a[0] = JS_DupValue(ctx, promise);
-    a[1] = JS_DupValue(ctx, reason);
-    JSValue r = JS_Call(ctx, g_reject_hook, JS_UNDEFINED, 2, (JSValueConst *)a);
-    if (JS_IsException(r)) JS_FreeValue(ctx, JS_GetException(ctx));
-    JS_FreeValue(ctx, r);
-    JS_FreeValue(ctx, a[0]);
-    JS_FreeValue(ctx, a[1]);
-}
+#include "js_rejections.inc"
+#include "js_native_mo.inc"
 
 /* ---- the prelude -------------------------------------------------------- */
+#include "js_bootstrap_scan.inc"
+
+extern int passive_frames_enabled(void) LOGIT_WEAK;
+LOGIT_WEAK_STUB(passive_frames_enabled);
 static const char *PLATFORM_PRELUDE =
-"(function (__random, __vw, __vh, __randomStrong, __clipWriteText) {\n"
+"(function (__random, __vw, __vh, __randomStrong, __clipWriteText, __nativeMOFlush, __initialIframes, __passiveFrames) {\n"
 "'use strict';\n"
 "var G = globalThis;\n"
 /* The house rule for this whole file. Three lines are adding to this runtime
@@ -589,50 +577,7 @@ static const char *PLATFORM_PRELUDE =
 "    this.bubbles = !!init.bubbles; this.cancelable = !!init.cancelable;\n"
 "  };\n"
 "}\n"
-"if (!G.MessageChannel) {\n"
-"  var Port = function MessagePort() {\n"
-"    this._peer = null; this._l = []; this.onmessage = null; this._started = false;\n"
-"    this._q = [];\n"
-"  };\n"
-"  Port.prototype = {\n"
-"    constructor: Port,\n"
-"    addEventListener: function (t, f) { if (t === 'message' && typeof f === 'function') this._l.push(f); },\n"
-"    removeEventListener: function (t, f) {\n"
-"      if (t !== 'message') return;\n"
-"      var i = this._l.indexOf(f); if (i >= 0) this._l.splice(i, 1);\n"
-"    },\n"
-       /* start() is not decoration: a port with onmessage assigned is implicitly
-          started, but one that only used addEventListener stays SILENT until
-          start() is called, and code that forgets it is code we must not
-          accidentally rescue -- it would behave differently here than in a
-          browser. */
-"    start: function () {\n"
-"      if (this._started) return;\n"
-"      this._started = true;\n"
-"      var self = this, q = this._q; this._q = [];\n"
-"      q.forEach(function (d) { self._deliver(d); });\n"
-"    },\n"
-"    close: function () { this._peer = null; this._l = []; this.onmessage = null; },\n"
-"    _deliver: function (data) {\n"
-"      var ev = new G.MessageEvent('message', { data: data, source: null });\n"
-"      if (typeof this.onmessage === 'function') { try { this.onmessage(ev); } catch (e) { G.reportError(e); } }\n"
-"      this._l.slice().forEach(function (f) { try { f(ev); } catch (e) { G.reportError(e); } });\n"
-"    },\n"
-"    postMessage: function (data) {\n"
-"      var peer = this._peer;\n"
-"      if (!peer) return;\n"
-"      setTimeout(function () {\n"
-"        if (peer._started || typeof peer.onmessage === 'function') peer._deliver(data);\n"
-"        else peer._q.push(data);\n"
-"      }, 0);\n"
-"    }\n"
-"  };\n"
-"  G.MessagePort = Port;\n"
-"  G.MessageChannel = function MessageChannel() {\n"
-"    this.port1 = new Port(); this.port2 = new Port();\n"
-"    this.port1._peer = this.port2; this.port2._peer = this.port1;\n"
-"  };\n"
-"}\n"
+#include "js_message_port.inc"
 /* ==== BroadcastChannel ==================================================
  * MEASURED, 2026-08-30, in the guest, on the z.ai specimen (the zaiblank
  * package): the page's 3.2 MB entry module rejects at evaluation with
@@ -913,11 +858,13 @@ static const char *PLATFORM_PRELUDE =
 "if (!G.PromiseRejectionEvent) {\n"
 "  G.PromiseRejectionEvent = function PromiseRejectionEvent(type, init) {\n"
 "    init = init || {};\n"
-"    this.type = String(type); this.promise = init.promise; this.reason = init.reason;\n"
-"    this.bubbles = !!init.bubbles; this.cancelable = init.cancelable !== false;\n"
-"    this._prevented = false;\n"
-"    this.preventDefault = function () { this._prevented = true; };\n"
+"    var ev = new G.Event(type, {bubbles:!!init.bubbles,cancelable:!!init.cancelable});\n"
+"    Object.setPrototypeOf(ev, G.PromiseRejectionEvent.prototype);\n"
+"    Object.defineProperties(ev, {promise:{value:init.promise,enumerable:true},reason:{value:init.reason,enumerable:true}});\n"
+"    return ev;\n"
 "  };\n"
+"  G.PromiseRejectionEvent.prototype = Object.create(G.Event.prototype);\n"
+"  G.PromiseRejectionEvent.prototype.constructor = G.PromiseRejectionEvent;\n"
 "}\n"
 
 /* ==== Storage named properties ==========================================
@@ -982,6 +929,9 @@ static const char *PLATFORM_PRELUDE =
 "  def(nav, 'webdriver', false);\n"
 "  def(nav, 'sendBeacon', function () { return false; });\n"   /* honest: we send nothing */
 "  def(nav, 'vendor', '');\n"
+   /* There is no Java runtime or Java plug-in in this browser. This query is
+    * an actual capability answer, like the empty installed-plugin list. */
+"  def(nav, 'javaEnabled', function () { return false; });\n"
 "  def(nav, 'product', 'Gecko');\n"
    /* navigator.mimeTypes / navigator.plugins.
     *
@@ -1102,7 +1052,8 @@ static const char *PLATFORM_PRELUDE =
 "      throw new TypeError('getRandomValues requires an integer TypedArray');\n"
 "    if (view instanceof Float32Array || view instanceof Float64Array)\n"
 "      throw new TypeError('getRandomValues does not accept a float array');\n"
-"    var bytes = new Uint8Array(__random(view.byteLength, Date.now()));\n"
+"    if(view.byteLength>65536) throw new G.DOMException('random request exceeds quota','QuotaExceededError');\n"
+"    var bytes;try{bytes=new Uint8Array(__random(view.byteLength,0))}catch(e){throw new G.DOMException('strong entropy unavailable','OperationError')}\n"
 "    var dst = new Uint8Array(view.buffer, view.byteOffset, view.byteLength);\n"
 "    dst.set(bytes);\n"
 "    return view;\n"
@@ -1187,6 +1138,13 @@ static const char *PLATFORM_PRELUDE =
 "      return x;\n"
 "    }\n"
 "    if (seen.has(x)) return seen.get(x);\n"
+"    if ((portIs && portIs(x)) || (G.Node && x instanceof G.Node) ||\n"
+"        (typeof Promise!=='undefined' && x instanceof Promise) ||\n"
+"        (typeof WeakMap!=='undefined' && x instanceof WeakMap) ||\n"
+"        (typeof WeakSet!=='undefined' && x instanceof WeakSet) ||\n"
+"        (typeof WeakRef!=='undefined' && x instanceof WeakRef) ||\n"
+"        (typeof SharedArrayBuffer!=='undefined' && x instanceof SharedArrayBuffer))\n"
+"      throw new G.DOMException('could not be cloned','DataCloneError');\n"
 "    var out;\n"
 "    if (x instanceof Date) { out = new Date(x.getTime()); seen.set(x, out); return out; }\n"
 "    if (x instanceof RegExp) { out = new RegExp(x.source, x.flags); seen.set(x, out); return out; }\n"
@@ -1205,11 +1163,12 @@ static const char *PLATFORM_PRELUDE =
 "      out.name = x.name; return out; }\n"
 "    out = {}; seen.set(x, out);\n"
 "    var ks = Object.keys(x);\n"
-"    for (var j = 0; j < ks.length; j++) out[ks[j]] = cl(x[ks[j]]);\n"
+"    for (var j = 0; j < ks.length; j++) Object.defineProperty(out,ks[j],{value:cl(x[ks[j]]),writable:true,enumerable:true,configurable:true});\n"
 "    return out;\n"
 "  }\n"
 "  return cl(v);\n"
 "});\n"
+"portClone=G.structuredClone;\n"
 
 /* ==== Blob / File / FormData ============================================
  * REQUESTED, NOT MEASURED. Blob stores its parts as bytes rather than as the
@@ -1638,6 +1597,10 @@ static const char *PLATFORM_PRELUDE =
       but a page that does `new MutationObserver(cb)` where cb is undefined
       because of a typo got a working-looking observer object instead of the
       construction-time error every other observer constructor gives it. */
+"  var refreshNativeWatches=function(){\n"
+"    var list=[];mos.forEach(function(m){m._t.forEach(function(t){list.push([t.node,!!t.opts.childList,!!t.opts.characterData,!!t.opts.subtree]);});});\n"
+"    __nativeMOFlush(mos.length,false,list);\n"
+"  };\n"
 "  var MO = function MutationObserver(cb) {\n"
 "    if (typeof cb !== 'function')\n"
 "      throw new TypeError('MutationObserver: callback is not a function');\n"
@@ -1646,58 +1609,70 @@ static const char *PLATFORM_PRELUDE =
 "  MO.prototype = {\n"
 "    constructor: MO,\n"
 "    observe: function (el, opts) {\n"
-"      if (!el) return;\n"
-"      this._t.push({ node: el, opts: opts || { childList: true } });\n"
+"      __nativeMOFlush();\n"
+"      if (!el || typeof el.nodeType !== 'number') throw new TypeError('observe needs a Node');\n"
+"      opts = Object.assign({}, opts || {});\n"
+"      if (opts.characterData === undefined && opts.characterDataOldValue) opts.characterData=true;\n"
+"      if (opts.attributes === undefined && (opts.attributeOldValue || opts.attributeFilter)) opts.attributes=true;\n"
+"      if ((!opts.childList && !opts.attributes && !opts.characterData) || (!opts.characterData && opts.characterDataOldValue) || (!opts.attributes && (opts.attributeOldValue || opts.attributeFilter))) throw new TypeError('invalid MutationObserver options');\n"
+"      var prior=this._t.find(function(t){return t.node===el});if(prior)prior.opts=opts;else this._t.push({node:el,opts:opts});\n"
 "      if (mos.indexOf(this) < 0) mos.push(this);\n"
+"      refreshNativeWatches();\n"
 "    },\n"
-"    disconnect: function () { var i = mos.indexOf(this); if (i >= 0) mos.splice(i, 1); this._t = []; },\n"
-"    takeRecords: function () { var r = this._recs; this._recs = []; return r; }\n"
+"    disconnect: function () { __nativeMOFlush(); var i = mos.indexOf(this); if (i >= 0) mos.splice(i, 1); this._t = []; this._recs = []; refreshNativeWatches(); },\n"
+"    takeRecords: function () { __nativeMOFlush(); var r = this._recs; this._recs = []; return r; }\n"
 "  };\n"
 "  G.MutationObserver = MO;\n"
 "  G.MutationRecord = function MutationRecord() {};\n"
    /* Does `node` lie inside anything this observer watches? `subtree` is the
       difference between an observer on document.body seeing every change on the
       page and seeing none of them, so it is walked, not assumed. */
-"  var watches = function (mo, node) {\n"
-"    for (var i = 0; i < mo._t.length; i++) {\n"
-"      var e = mo._t[i];\n"
-"      if (e.node === node) return e.opts;\n"
-"      if (e.opts.subtree) {\n"
-"        var p = node;\n"
-"        while (p) { if (p === e.node) return e.opts; p = p.parentNode; }\n"
+/* A single observer can register both a parent and its child with different
+ * types. Returning the first ancestral match discarded a later eligible text
+ * registration; filter each registration first, then union oldValue requests. */
+"  var watches = function (mo, node, rec, chain) {\n"
+"    var result=null;\n"
+"    for (var i=0;i<mo._t.length;i++) {\n"
+"      var e=mo._t[i],o=e.opts,match=e.node===node;\n"
+"      if(!match&&o.subtree){\n"
+"        if(chain)match=chain.indexOf(e.node)>=0;\n"
+"        else for(var p=node;p;p=p.parentNode){if(p===e.node){match=true;break;}}\n"
 "      }\n"
+"      if(!match || !o[rec.type])continue;\n"
+"      if(rec.type==='attributes'&&o.attributeFilter&&o.attributeFilter.indexOf(rec.attributeName)<0)continue;\n"
+"      if(!result)result={};\n"
+"      result[rec.type]=true;\n"
+"      if(o.characterDataOldValue)result.characterDataOldValue=true;\n"
+"      if(o.attributeOldValue)result.attributeOldValue=true;\n"
 "    }\n"
-"    return null;\n"
+"    return result;\n"
 "  };\n"
-"  var queued = false;\n"
-"  var emit = function (target, rec) {\n"
+"  var emit = function (target, rec, chain) {\n"
    /* __domQuiet: a tree move that is an IMPLEMENTATION DETAIL rather than
       something the page did. installCloneNode moves a node into a scratch
       container to read its markup and puts it straight back; a page must not
       see that as a removal and an insertion, because a virtual-DOM diff
       watching the subtree would act on it. */
 "    if (G.__domQuiet) return;\n"
+"    if (!chain) __nativeMOFlush();\n"
+"    var notified=false;\n"
 "    for (var i = 0; i < mos.length; i++) {\n"
-"      var o = watches(mos[i], target);\n"
+"      var o = watches(mos[i], target, rec, chain);\n"
 "      if (!o) continue;\n"
 "      if (rec.type === 'childList' && !o.childList) continue;\n"
 "      if (rec.type === 'attributes' && !o.attributes) continue;\n"
 "      if (rec.type === 'characterData' && !o.characterData) continue;\n"
-"      rec.target = target;\n"
-"      mos[i]._recs.push(rec);\n"
+"      var copy=Object.assign(Object.create(G.MutationRecord.prototype),rec);copy.target=target;\n"
+"      if((rec.type==='characterData'&&!o.characterDataOldValue)||(rec.type==='attributes'&&!o.attributeOldValue))copy.oldValue=null;\n"
+"      mos[i]._recs.push(copy);notified=true;\n"
 "    }\n"
-"    if (queued) return;\n"
-"    queued = true;\n"
-       /* Records are delivered on a microtask, as the spec says: a page that
-          mutates ten nodes in a loop must get ONE callback with ten records,
-          not ten callbacks, or every virtual-DOM diff runs ten times. */
-"    Promise.resolve().then(function () {\n"
-"      queued = false;\n"
-"      mos.slice().forEach(function (m) {\n"
-"        if (!m._recs.length) return;\n"
-"        var r = m._recs; m._recs = [];\n"
-"        try { m._cb(r, m); } catch (e) { G.reportError(e); }\n"
-"      });\n"
+"    if(notified)__nativeMOFlush(undefined, true);\n"
+"  };\n"
+"  var deliverMutations = function () {\n"
+"    mos.slice().forEach(function (m) {\n"
+"      if (!m._recs.length) return;\n"
+"      var r = m._recs; m._recs = [];\n"
+"      try { m._cb(r, m); } catch (e) { G.reportError(e); }\n"
 "    });\n"
 "  };\n"
    /* Each method is wrapped on the prototype that OWNS it -- see wrapMethod at
@@ -1755,58 +1730,10 @@ static const char *PLATFORM_PRELUDE =
 "      };\n"
 "    });\n"
 "  });\n"
-   /* characterData -- the branch js_characterdata.c's own header named as
-      missing ("MutationObserver's characterData branch lands in chardata_set
-      later"). `data`/`nodeValue` are ACCESSOR properties (JS_CGETSET_DEF), not
-      plain functions, so wrapMethod (which overwrites `P[name]` with a
-      function) cannot touch them -- overwriting an accessor with a function
-      would replace the getter too and break every read of `.data`. This wraps
-      the DESCRIPTOR instead: read it, keep its getter, replace only the
-      setter, put the whole descriptor back with defineProperty.
-      insertData/deleteData/replaceData/splitText/appendData/substringData all
-      end at this same setter (js_characterdata.c's header: "whatever
-      invalidation and observation el_set_nodeValue's chardata_set does for a
-      plain node.data = x assignment, insertData/deleteData/replaceData/
-      splitText get for free") -- so wrapping the one setter covers the whole
-      CharacterData method family with no separate wrapper for each.
-      `data` and `nodeValue` are TWO DIFFERENT own properties (CharacterData.
-      prototype and Node.prototype respectively) backed by the same native
-      function, exactly the setAttribute/className/classList shape above --
-      wrapping one does not wrap the other, so both are done here. A `<div>`
-      has neither in its chain (data is CharacterData-only), so the probe
-      element is a text node, not wrapMethod's `document.createElement('div')`. */
-"  (function () {\n"
-"    var sample = null;\n"
-"    try { sample = G.document.createTextNode('x'); } catch (e) {}\n"
-"    if (!sample) return;\n"
-"    ['data', 'nodeValue'].forEach(function (name) {\n"
-"      var p = Object.getPrototypeOf(sample), owner = null, desc = null;\n"
-"      while (p) {\n"
-"        var d = Object.getOwnPropertyDescriptor(p, name);\n"
-"        if (d && typeof d.set === 'function') { owner = p; desc = d; break; }\n"
-"        p = Object.getPrototypeOf(p);\n"
-"      }\n"
-"      if (!owner) return;\n"
-"      var key = '__w_mo_' + name;\n"
-"      if (owner[key]) return;\n"
-"      try {\n"
-"        Object.defineProperty(owner, key, { value: true, enumerable: false, configurable: true });\n"
-"        Object.defineProperty(owner, name, {\n"
-"          configurable: true, enumerable: desc.enumerable, get: desc.get,\n"
-"          set: function (v) {\n"
-"            var old = null;\n"
-"            if (mos.length) { try { old = desc.get.call(this); } catch (e) {} }\n"
-"            desc.set.call(this, v);\n"
-"            if (mos.length) emit(this, { type: 'characterData', attributeName: null,\n"
-"                                         attributeNamespace: null, oldValue: old,\n"
-"                                         addedNodes: [], removedNodes: [],\n"
-"                                         previousSibling: null, nextSibling: null });\n"
-"          }\n"
-"        });\n"
-"      } catch (e) {}\n"
-"    });\n"
-"  })();\n"
+/* CharacterData now arrives through native dom subscriptions, including
+ * keyboard edits and native replaceData. Do not also wrap the setters. */
 "}\n"
+
 
 /* ==== HTMLElement.dataset ================================================
  * THE TOP OF THE CHROME DIFFERENTIAL, and the only entry on it that two
@@ -2183,6 +2110,21 @@ static const char *PLATFORM_PRELUDE =
 "function installCustomElements() {\n"
 "  if (G.customElements) return;\n"
 "  var defs = {}, waiting = {};\n"
+#ifndef CE_LEGACY_CREATION_LIFECYCLE
+"  var hasDefs = false, rawCreate = G.document.createElement;\n"
+"  var connectOne = function(el) {\n"
+"    if (el.__ceState !== 'upgraded' || el.__ceConnected || !inDocument(el)) return;\n"
+"    el.__ceConnected = true;\n"
+"    if (typeof el.connectedCallback === 'function')\n"
+"      try { el.connectedCallback(); } catch(e) { G.reportError(e); }\n"
+"  };\n"
+"  var disconnectOne = function(el) {\n"
+"    if (el.__ceState !== 'upgraded' || !el.__ceConnected) return;\n"
+"    el.__ceConnected = false;\n"
+"    if (typeof el.disconnectedCallback === 'function')\n"
+"      try { el.disconnectedCallback(); } catch(e) { G.reportError(e); }\n"
+"  };\n"
+#endif
 "  var validName = function (n) {\n"
 "    return typeof n === 'string' && /^[a-z][a-z0-9._]*-[a-z0-9._-]*$/.test(n);\n"
 "  };\n"
@@ -2208,8 +2150,12 @@ static const char *PLATFORM_PRELUDE =
 "        if (v !== null) { try { el.attributeChangedCallback(obs[i], null, v); } catch (e) { G.reportError(e); } }\n"
 "      }\n"
 "    }\n"
+#ifdef CE_LEGACY_CREATION_LIFECYCLE
 "    if (typeof el.connectedCallback === 'function' && inDocument(el))\n"
 "      { try { el.connectedCallback(); } catch (e) { G.reportError(e); } }\n"
+#else
+"    connectOne(el);\n"
+#endif
 "  };\n"
 "  var inDocument = function (n) {\n"
 "    for (var p = n; p; p = p.parentNode) if (p === G.document || p === G.document.documentElement) return true;\n"
@@ -2222,9 +2168,17 @@ static const char *PLATFORM_PRELUDE =
 "    while (c) { walk(c, fn); c = c.nextSibling; }\n"
 "  };\n"
 "  var upgradeTree = function (root) {\n"
+#ifndef CE_LEGACY_CREATION_LIFECYCLE
+       /* An empty registry has no possible candidate: do not enumerate every
+          descendant on ordinary appendChild (framework detached-tree builds). */
+"    if (!hasDefs) return;\n"
+#endif
 "    walk(root, function (el) {\n"
 "      var d = defs[String(el.tagName || '').toLowerCase()];\n"
 "      if (d) upgradeOne(el, d);\n"
+#ifndef CE_LEGACY_CREATION_LIFECYCLE
+"      connectOne(el);\n"
+#endif
 "    });\n"
 "  };\n"
 "  var CE = {\n"
@@ -2241,6 +2195,9 @@ static const char *PLATFORM_PRELUDE =
 "        throw new G.DOMException('customised built-in elements are not supported',\n"
 "                                 'NotSupportedError');\n"
 "      defs[name] = { ctor: ctor, name: name };\n"
+#ifndef CE_LEGACY_CREATION_LIFECYCLE
+"      hasDefs = true;\n"
+#endif
 "      try { upgradeTree(G.document.documentElement || G.document); } catch (e) {}\n"
 "      var w = waiting[name];\n"
 "      if (w) { delete waiting[name]; w.forEach(function (r) { try { r(ctor); } catch (e) {} }); }\n"
@@ -2317,7 +2274,14 @@ static const char *PLATFORM_PRELUDE =
 "        if (tag === null) return Reflect.construct(target, args, newTarget);\n"
 "        if (!G.document || typeof G.document.createElement !== 'function')\n"
 "          throw new TypeError('HTMLElement: no document to construct into');\n"
+#ifdef CE_LEGACY_CREATION_LIFECYCLE
 "        var el = G.document.createElement(tag);\n"
+#else
+       /* The original document method is essential: calling the newly wrapped
+          createElement below from HTMLElement's super() constructs the same
+          class recursively, rather than supplying its one native node. */
+"        var el = rawCreate.call(G.document, tag);\n"
+#endif
           /* Same swap upgradeOne does for the parser-upgrade case: the
              prototype makes the node instanceof the leaf class and reaches
              its methods; __ceState makes it a no-op for a LATER upgrade pass
@@ -2335,6 +2299,64 @@ static const char *PLATFORM_PRELUDE =
 "    try { Object.defineProperty(G, 'HTMLElement', { value: P, writable: true, configurable: true }); }\n"
 "    catch (e) { G.HTMLElement = P; }\n"
 "  })();\n"
+   /* Correction 2026-09-09, kept beside the earlier claim above: insertion
+    * wrappers did NOT connect already-upgraded elements; upgradeOne returned
+    * early. And createElement did not upgrade at all until append. The real
+    * GitHub behaviors module read getPrototypeOf(createElement('turbo-frame')
+    * .delegate) before append and rejected with TypeError: not an object.
+    * tests/unit/custom_elements_test.c consumes a detached controller through
+    * that operation and also exercises new, reconnect, fragment and replace.
+    *
+    * Native creation is captured once, so the public creation door and direct
+    * construction share one registry without recursively invoking each other.
+    * Snapshot insertion candidates BEFORE native insertion: fragments are empty
+    * afterwards, and a moved node's old connection is otherwise irrecoverable.
+    * Call reactions only after the native mutation succeeds, so a failed
+    * insertBefore does not manufacture a disconnect. The native bindings still
+    * return null for some refusals rather than throw; check the returned node
+    * as well as exceptions before issuing any reaction. This remains a synchronous
+    * subset: parser/innerHTML removal reactions and shadow-including traversal
+    * are deliberately not claimed here (their native mutation doors need work).
+    */
+#ifndef CE_LEGACY_CREATION_LIFECYCLE
+"  ['createElement', 'createElementNS'].forEach(function(m) {\n"
+"    var owner = G.document;\n"
+"    while (owner && !Object.prototype.hasOwnProperty.call(owner,m)) owner=Object.getPrototypeOf(owner);\n"
+"    if (!owner || typeof owner[m] !== 'function') return;\n"
+"    var orig=owner[m];\n"
+"    owner[m]=function() {\n"
+"      var el=orig.apply(this,arguments);\n"
+"      if (this===G.document && !G.__domQuiet && (m==='createElement' || arguments[0]==='http://www.w3.org/1999/xhtml')) {\n"
+"        var d=defs[String(el.tagName||'').toLowerCase()];\n"
+"        if(d) upgradeOne(el,d);\n"
+"      }\n"
+"      return el;\n"
+"    };\n"
+"  });\n"
+"  var snapshot = function(root) {\n"
+"    var a=[]; walk(root,function(el){a.push({el:el,connected:inDocument(el)});}); return a;\n"
+"  };\n"
+"  ['appendChild','insertBefore','replaceChild'].forEach(function(m) {\n"
+"    wrapMethod('ce',m,function(orig) { return function() {\n"
+"      if (G.__domQuiet || !hasDefs) return orig.apply(this,arguments);\n"
+"      var incoming=snapshot(arguments[0]);\n"
+"      var outgoing=m==='replaceChild' ? snapshot(arguments[1]) : [];\n"
+"      var r=orig.apply(this,arguments);\n"
+"      if (r !== arguments[m==='replaceChild' ? 1 : 0]) return r;\n"
+"      outgoing.forEach(function(x){if(x.connected) disconnectOne(x.el);});\n"
+"      incoming.forEach(function(x){if(x.connected) disconnectOne(x.el);});\n"
+"      incoming.forEach(function(x){var d=defs[String(x.el.tagName||'').toLowerCase()];if(d) upgradeOne(x.el,d);connectOne(x.el);});\n"
+"      return r;\n"
+"    }; });\n"
+"  });\n"
+"  wrapMethod('ce','removeChild',function(orig) { return function(n) {\n"
+"    if (G.__domQuiet || !hasDefs) return orig.apply(this,arguments);\n"
+"    var outgoing=snapshot(n), r=orig.apply(this,arguments);\n"
+"    if (r !== n) return r;\n"
+"    outgoing.forEach(function(x){if(x.connected) disconnectOne(x.el);});\n"
+"    return r;\n"
+"  }; });\n"
+#else
    /* Insertion upgrades. The same three methods the MutationObserver support
       wraps, wrapped once more here -- order does not matter because each
       wrapper calls through, and doing it here rather than there keeps the two
@@ -2366,6 +2388,7 @@ static const char *PLATFORM_PRELUDE =
 "      return r;\n"
 "    };\n"
 "  });\n"
+#endif
 "}\n"
 /* ==== Node.cloneNode =====================================================
  * THE SINGLE FAILURE THAT TAKES BAIDU DOWN, and it is one call.
@@ -2591,24 +2614,16 @@ static const char *PLATFORM_PRELUDE =
  * el_removeChild's comment in js_dom.c) for adoptNode's "take it out of
  * wherever it was" step.
  *
- * WHAT THIS REFUSES, BY NAME, RATHER THAN GETTING SILENTLY WRONG: importing
- * or adopting a node that belongs to a DIFFERENT document -- one produced by
- * `new DOMParser().parseFromString()`, the one case in this engine where a
- * node is genuinely NOT part of the live document's own tree (see the note
- * below on why document.implementation.createHTMLDocument does NOT need this
- * refusal). Those nodes are a SEPARATE wrapper class (js_domparser.c's
- * dp_cid, not this file's/js_dom.c's elem_cid) with no attribute-enumeration
- * primitive exposed to JS at all, so
- * there is no way to serialize one faithfully from here the way cloneNode's
- * markup round trip does for a same-document node -- attempting it would mean
- * dropping every attribute silently, which is exactly the "the page looks
- * alive and is lying" failure this whole tier exists to close. Per rule 3
- * (never stub to success): every cross-document call throws a real, named
- * DOMException instead, so a page relying on it gets a diagnosable failure
- * -- caught by its own try/catch or reported to console -- rather than a
- * blank subtree with no error anywhere. Closing this for real needs an
- * outerHTML/attribute-list primitive on js_domparser.c's node wrapper; that
- * file's line to change, not this one's.
+ * CROSS-DOCUMENT NODES ARE NATIVE, NOT SERIALIZED. DOMParser nodes use a
+ * separate wrapper class and arena, but js_domparser.c exposes one hidden
+ * native transfer that calls dom_import_node into the live document. That
+ * copies attributes, namespaces, text and the requested descendants without
+ * a lossy JavaScript reconstruction. adoptNode uses the same copy and detaches
+ * the old parsed node. It cannot preserve JS object identity across QuickJS
+ * native classes; the returned live wrapper is authoritative. This bounded
+ * deviation replaced a measured Bilibili player stop: the public page loaded
+ * and negotiated H.264/AAC, then rejected its DOMParser-built template before
+ * it could create MediaSource.
  *
  * ONE JAR, NOT TWO: `document.implementation` (createHTMLDocument,
  * createDocumentType, createDocument, hasFeature) is NOT built here. It is
@@ -2624,36 +2639,42 @@ static const char *PLATFORM_PRELUDE =
  * DOMParser-backed and duplicated it in JS on that wrong assumption; caught
  * by testing against the real thing (its ownerDocument came back === document,
  * not a foreign object) before it shipped. The genuinely foreign case this
- * file DOES still have to refuse is `new DOMParser().parseFromString()` --
- * js_domparser.c's dp_cid nodes are a real separate `struct dom_doc`, and
- * THAT is what CROSS_DOC below is for. */
+ * genuinely foreign case is `new DOMParser().parseFromString()`; that case is
+ * routed through the native transfer below. */
 "function installImportAdopt() {\n"
 "  var D = G.document;\n"
 "  if (!D || typeof D.importNode === 'function') return;\n"
-"  var CROSS_DOC = 'importing or adopting a node from a document created by ' +\n"
-"                  'new DOMParser().parseFromString() is not supported in this build';\n"
 "  var checkNode = function (node, verb) {\n"
 "    if (!node || typeof node.nodeType !== 'number')\n"
 "      throw new TypeError(\"Failed to execute '\" + verb + \"Node' on 'Document': \" +\n"
 "                          'parameter 1 is not of type \\'Node\\'.');\n"
 "    if (node.nodeType === 9)\n"
 "      throw new G.DOMException('A Document node may not be ' + verb + 'ed', 'NotSupportedError');\n"
-"    if (node.ownerDocument !== undefined && node.ownerDocument !== null && node.ownerDocument !== D)\n"
-"      throw new G.DOMException(CROSS_DOC, 'NotSupportedError');\n"
+"    return node.ownerDocument !== undefined && node.ownerDocument !== null &&\n"
+"           node.ownerDocument !== D;\n"
 "  };\n"
 "  def(D, 'importNode', function (node, deep) {\n"
-"    checkNode(node, 'import');\n"
+"    var foreign = checkNode(node, 'import');\n"
+"    if (foreign) {\n"
+"      if (typeof G.__domParserTransfer !== 'function')\n"
+"        throw new G.DOMException('foreign document transfer is unavailable', 'NotSupportedError');\n"
+"      return G.__domParserTransfer(node, deep === true, false);\n"
+"    }\n"
    /* Same-document nodes always have cloneNode by this point (EP/FP both got
       it above, in installCloneNode -- called before this function, see the
-      install sequence at the bottom of this file). A missing cloneNode here
-      only happens for a foreign wrapper checkNode's ownerDocument test failed
-      to catch; refuse the same way rather than let it read as `undefined`. */
+      install sequence at the bottom of this file). Refuse an unknown wrapper
+      rather than let a missing method read as a successful import. */
 "    if (typeof node.cloneNode !== 'function')\n"
-"      throw new G.DOMException(CROSS_DOC, 'NotSupportedError');\n"
+"      throw new G.DOMException('node cannot be cloned', 'NotSupportedError');\n"
 "    return node.cloneNode(deep === true);\n"
 "  });\n"
 "  def(D, 'adoptNode', function (node) {\n"
-"    checkNode(node, 'adopt');\n"
+"    var foreign = checkNode(node, 'adopt');\n"
+"    if (foreign) {\n"
+"      if (typeof G.__domParserTransfer !== 'function')\n"
+"        throw new G.DOMException('foreign document transfer is unavailable', 'NotSupportedError');\n"
+"      return G.__domParserTransfer(node, true, true);\n"
+"    }\n"
 "    if (node.parentNode) { try { node.parentNode.removeChild(node); } catch (e) {} }\n"
 "    return node;\n"
 "  });\n"
@@ -3239,6 +3260,7 @@ static const char *PLATFORM_PRELUDE =
       allowances and a silent same-origin-shaped blank would be the exact
       hang shape the whole feature is measured against. */
 "  var blockedErr = function (r) {\n"
+"    if (r.blocked === 'passive') return new G.DOMException('Passive embedded documents have no script-visible browsing context.', 'NotSupportedError');\n"
 "    if (r.blocked === 'sandbox')\n"
 "      return new G.DOMException('Blocked access to a sandboxed frame: this engine does not honour the sandbox attribute, so access is refused rather than silently granted.', 'SecurityError');\n"
 "    return new G.DOMException('Blocked a frame from accessing a cross-origin frame.', 'SecurityError');\n"
@@ -3303,6 +3325,16 @@ static const char *PLATFORM_PRELUDE =
           reads .contentWindow on exactly as cheap as before. */
 "      if (doc) {\n"
 "        try {\n"
+       /* This wrapper is live only while the current connected frame owns it.
+        * The parent's hasFocus includes the WM/chrome state; activeElement
+        * adds the descendant condition. A sibling frame must stay false.
+        * Nested frame navigation/input remains outside this frame backend. */
+"          Object.defineProperty(doc, 'hasFocus', { configurable: true, writable: true,\n"
+"            value: function () {\n"
+"              if (this !== doc) throw new TypeError('Document.hasFocus requires its Document');\n"
+"              return !!(!r.blocked && r.doc === doc && el.isConnected &&\n"
+"                typeof D.hasFocus === 'function' && D.hasFocus() && D.activeElement === el);\n"
+"            } });\n"
 "          Object.defineProperty(doc, 'defaultView', { configurable: true, enumerable: true,\n"
 "            get: function () {\n"
 "              if (r.blocked) return null;\n"
@@ -3341,16 +3373,31 @@ static const char *PLATFORM_PRELUDE =
 "    var r = rec(el);\n"
 "    if (!r) return;\n"
 "    var gen = ++r.gen;\n"
+#ifdef FRAME_SANDBOX_URL_BYPASS
+/* Negative control: restore the old malformed-URL return before refusal. */
+"    try { new G.URL(String(url), D.baseURI || (G.location && G.location.href) || ''); }\n"
+"    catch (badURL) { settle(el, r, gen, parseDoc(''), null); return; }\n"
+#endif
+/* Attribute setters enter startLoad directly. Refuse before invalid-URL
+ * fallback too, otherwise a sandboxed frame can acquire an unrestricted blank
+ * document by assigning malformed src after insertion. */
+"    if (el.hasAttribute && el.hasAttribute('sandbox')) {\n"
+"      console.log('[iframe] refused: sandbox attribute is not honoured by this engine, src=' + String(url));\n"
+"      settle(el, r, gen, null, 'sandbox');\n"
+"      return;\n"
+"    }\n"
 "    var base = D.baseURI || (G.location && G.location.href) || '';\n"
 "    var u = null;\n"
 "    try { u = new G.URL(String(url), base); } catch (e) {}\n"
        /* An unparseable src is not a navigation at all in real browsers --
           treated here the same as no src: about:blank. */
 "    if (!u) { settle(el, r, gen, parseDoc(''), null); return; }\n"
-"    if (el.hasAttribute && el.hasAttribute('sandbox')) {\n"
-"      console.log('[iframe] refused: sandbox attribute is not honoured by this engine, src=' + u.href);\n"
-"      settle(el, r, gen, null, 'sandbox');\n"
-"      return;\n"
+/* Network frames now have a separate native document owner. Do not ALSO fetch
+ * their bytes through parent fetch/CORS, expose a DOMParser copy, execute child
+ * scripts in the compatibility realm, or fabricate a load event before pixels
+ * exist. The boolean is a native prelude argument captured before author JS. */
+"    if (__passiveFrames && (u.protocol === 'http:' || u.protocol === 'https:')) {\n"
+"      if (r.doc) releaseDoc(r); r.doc = null; r.blocked = 'passive'; return;\n"
 "    }\n"
 "    var top = (G.location && G.location.origin) || '';\n"
 "    if (u.origin !== top) {\n"
@@ -3391,6 +3438,17 @@ static const char *PLATFORM_PRELUDE =
       first; the current content attributes are the source of truth each
       time, exactly as they are the first time. */
 "  var navigate = function (el) {\n"
+#ifndef FRAME_SANDBOX_BLANK_BYPASS
+/* An empty/missing src never reached startLoad/loadSrcdoc's sandbox guards.
+ * That granted a readable document and ran injected child scripts while the
+ * element advertised sandbox. Refuse before choosing ANY source, including
+ * about:blank; this does not claim to implement sandbox token permissions. */
+"    if (el.hasAttribute && el.hasAttribute('sandbox')) {\n"
+"      var blockedRec = rec(el);\n"
+"      if (blockedRec) settle(el, blockedRec, ++blockedRec.gen, null, 'sandbox');\n"
+"      return;\n"
+"    }\n"
+#endif
 "    var sd = el.getAttribute ? el.getAttribute('srcdoc') : null;\n"
 "    var sr = el.getAttribute ? el.getAttribute('src') : null;\n"
 "    if (sd !== null && sd !== '') { loadSrcdoc(el, sd); return; }\n"
@@ -3738,7 +3796,7 @@ static const char *PLATFORM_PRELUDE =
       never calls appendChild at all (every <iframe src=...> in the source
       HTML) still gets its load fired without the mutation wraps' help. */
 "  try {\n"
-"    var existing = D.querySelectorAll('iframe');\n"
+"    var existing = __initialIframes === undefined ? D.querySelectorAll('iframe') : __initialIframes;\n"
 "    for (var i = 0; i < existing.length; i++) initFrame(existing[i]);\n"
 "  } catch (e) {}\n"
 "}\n"
@@ -3927,14 +3985,17 @@ static const char *PLATFORM_PRELUDE =
 /* The hook the C rejection tracker calls. It is returned rather than published
  * as a global, so a page cannot fake an unhandled rejection. */
 "return {\n"
-"  onReject: function (promise, reason) {\n"
-"    var ev = new G.PromiseRejectionEvent('unhandledrejection',\n"
-"                                         { promise: promise, reason: reason });\n"
-"    if (typeof G.onunhandledrejection === 'function') {\n"
-"      try { G.onunhandledrejection(ev); } catch (e) {}\n"
+"  onNativeDelivery: function(){ if(typeof deliverMutations==='function')deliverMutations(); },\n"
+"  onNativeText: function(target,oldValue,chain,added,previous,following,split){if(typeof emit==='function')emit(target,{type:split?'childList':'characterData',attributeName:null,attributeNamespace:null,oldValue:split?null:oldValue,addedNodes:split?[added]:[],removedNodes:[],previousSibling:split?previous:null,nextSibling:split?following:null},chain)},\n"
+"  onReject: function (promise, reason, handled) {\n"
+"    var type = handled ? 'rejectionhandled' : 'unhandledrejection';\n"
+"    var ev = new G.PromiseRejectionEvent(type,\n"
+"                                         { promise: promise, reason: reason, cancelable: !handled });\n"
+"    if (typeof G['on'+type] === 'function') {\n"
+"      try { G['on'+type](ev); } catch (e) {}\n"
 "    }\n"
 "    try { if (G.dispatchEvent) G.dispatchEvent(ev); } catch (e) {}\n"
-"    if (!ev._prevented) {\n"
+"    if (!handled && !ev.defaultPrevented && !ev._prevented) {\n"
        /* String(reason) FIRST, then the stack.
         *
         * This used to print `reason.stack` alone, which is right in V8 --
@@ -3962,6 +4023,16 @@ void js_platform_install(JSContext *ctx)
 {
     if (!ctx) return;
     g_ctx = ctx;
+#ifndef FRAME_BOOTSTRAP_LATE_INSTALL
+    /* installIframes does MORE than define getters: its initial native
+     * snapshot synchronously navigates parser-built srcdoc/about:blank frames.
+     * Their settle() must already see __frameAdopt. The old AFTER-prelude
+     * ordering below ran only the dynamic half of the identical-srcdoc guest
+     * fixture (1 child console side effect instead of 2). DOMParser has been
+     * installed by js_page_open before this entry; frame_install itself only
+     * registers C sinks/functions and has no platform-prelude dependency. */
+    if (LOGIT_HAVE(js_frame_install)) js_frame_install(ctx);
+#endif
     JSValue fn = JS_Eval(ctx, PLATFORM_PRELUDE, strlen(PLATFORM_PRELUDE), "<platform>",
                          JS_EVAL_TYPE_GLOBAL);
     if (JS_IsException(fn)) {
@@ -3973,14 +4044,21 @@ void js_platform_install(JSContext *ctx)
         JS_FreeValue(ctx, fn);
         return;
     }
-    JSValue args[5];
+    JSValue args[8];
     args[0] = JS_NewCFunction(ctx, js_random, "__random", 2);
     args[1] = JS_NewInt32(ctx, g_vw);
     args[2] = JS_NewInt32(ctx, g_vh);
     args[3] = JS_NewCFunction(ctx, js_random_strong, "__randomStrong", 0);
     args[4] = JS_NewCFunction(ctx, js_clip_write_text, "__clipWriteText", 1);
-    JSValue hooks = JS_Call(ctx, fn, JS_UNDEFINED, 5, (JSValueConst *)args);
-    for (int i = 0; i < 5; i++) JS_FreeValue(ctx, args[i]);
+    args[5] = JS_NewCFunction(ctx, native_mo_drain, "drainMutations", 0);
+    args[6] = js_bootstrap_snapshot(ctx,"iframe",0);
+    args[7] = JS_NewBool(ctx,LOGIT_HAVE(passive_frames_enabled)&&passive_frames_enabled());
+    if(JS_IsException(args[6])) {
+        for(int i=0;i<8;i++)JS_FreeValue(ctx,args[i]);
+        JS_FreeValue(ctx,fn);return;
+    }
+    JSValue hooks = JS_Call(ctx, fn, JS_UNDEFINED, 8, (JSValueConst *)args);
+    for (int i = 0; i < 8; i++) JS_FreeValue(ctx, args[i]);
     JS_FreeValue(ctx, fn);
     if (JS_IsException(hooks)) {
         JSValue e = JS_GetException(ctx);
@@ -3993,9 +4071,14 @@ void js_platform_install(JSContext *ctx)
     }
     JS_FreeValue(ctx, g_reject_hook);
     g_reject_hook = JS_GetPropertyStr(ctx, hooks, "onReject");
+    g_native_mo_hook = JS_GetPropertyStr(ctx, hooks, "onNativeText");
+    g_native_mo_delivery = JS_GetPropertyStr(ctx, hooks, "onNativeDelivery");
+    struct node *mo_root = js_dom_root();
+    if (mo_root) dom_subscribe(mo_root->doc, &mo_subscription, native_mo_notify, NULL);
     JS_FreeValue(ctx, hooks);
     JS_SetHostPromiseRejectionTracker(JS_GetRuntime(ctx), rejection_tracker, 0);
-    /* AFTER the prelude, not before: js_frame_install defines __frameAdopt on
+    /* OLD CLAIM, corrected by the entry-time registration above:
+     * AFTER the prelude, not before: js_frame_install defines __frameAdopt on
      * globalThis and the prelude's settle() reads it by `typeof` at call time,
      * so ordering only has to put it before the first navigation -- which is
      * any time after installIframes() merely DEFINED the getters. Installed
@@ -4003,7 +4086,9 @@ void js_platform_install(JSContext *ctx)
      * calls js_platform_close() at exactly the point js_frame_close_all needs
      * (before JS_FreeContext/JS_FreeRuntime), so this needs no new hook cut
      * into a file another line of work is actively editing. */
+#ifdef FRAME_BOOTSTRAP_LATE_INSTALL
     if (LOGIT_HAVE(js_frame_install)) js_frame_install(ctx);
+#endif
 }
 
 void js_platform_close(JSContext *ctx)
@@ -4017,6 +4102,8 @@ void js_platform_close(JSContext *ctx)
     if (LOGIT_HAVE(js_frame_close_all)) js_frame_close_all();
     if (ctx) {
         JS_SetHostPromiseRejectionTracker(JS_GetRuntime(ctx), 0, 0);
+        rejections_close(ctx);
+        native_mo_close(ctx);
         JS_FreeValue(ctx, g_reject_hook);
     }
     g_reject_hook = JS_UNDEFINED;

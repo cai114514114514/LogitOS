@@ -5,8 +5,8 @@
  *
  * WHY THIS EXISTS, measured rather than assumed. Driving a headless Chrome at a
  * real bilibili video page: the DASH manifest offers avc1.640033 (H.264 High,
- * level 5.1), hvc1.1.6.L120.90 (HEVC Main), av01.0.08M.08 (AV1) and mp4a.40.2
- * (AAC-LC); the container is SEPARATE video/mp4 and audio/mp4 fragmented
+ * level 5.1), hvc1.1.6.L120.90 (HEVC Main), av01.0.08M.08 (AV1), mp4a.40.2
+ * (AAC-LC) and mp4a.40.5 (HE-AAC v1); the container is SEPARATE video/mp4 and audio/mp4 fragmented
  * streams, and the player fetches 84 .m4s segments and feeds them to one
  * <video> element. Feeding separate audio and video fMP4 segments into one
  * <video> is MSE and nothing else does it -- so every byte-exact decoder in
@@ -57,6 +57,7 @@
  * `type` is a full MIME with parameters, e.g.
  *     video/mp4; codecs="avc1.640033"
  *     audio/mp4; codecs="mp4a.40.2"
+ *     audio/mp4; codecs="mp4a.40.5"
  * Returns 1 only when every codec named is one the linked decoders accept.
  * An empty or absent codecs= parameter is answered 0, exactly as the spec
  * requires: "video/mp4" alone does not say what is inside it. */

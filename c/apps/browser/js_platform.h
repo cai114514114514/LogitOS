@@ -155,6 +155,9 @@ PLATFORM_FN void js_platform_install(JSContext *ctx);
 /* Release everything held here before JS_FreeContext: the promise-rejection
  * tracker's context pointer and the observer registry. */
 PLATFORM_FN void js_platform_close(JSContext *ctx);
+PLATFORM_FN int js_platform_rejections_pending(void);
+PLATFORM_FN int js_platform_rejections_flush(JSContext *ctx);
+PLATFORM_FN int js_platform_mutations_flush(JSContext *ctx);
 
 /* The viewport an IntersectionObserver measures against. Same values the
  * embedder gives js_webapi_set_viewport. */
@@ -188,6 +191,9 @@ PLATFORM_FN void js_subtle_install(JSContext *ctx);
 #ifdef JS_PLATFORM_OPTIONAL
 LOGIT_WEAK_STUB(js_platform_install);
 LOGIT_WEAK_STUB(js_platform_close);
+LOGIT_WEAK_STUB(js_platform_rejections_pending);
+LOGIT_WEAK_STUB(js_platform_rejections_flush);
+LOGIT_WEAK_STUB(js_platform_mutations_flush);
 LOGIT_WEAK_STUB(js_platform_set_viewport);
 LOGIT_WEAK_STUB(js_select_install);
 LOGIT_WEAK_STUB(js_intl_install);

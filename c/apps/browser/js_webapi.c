@@ -26,6 +26,8 @@
 #include "js_webapi.h"
 #include "http1.h"
 #include "cookies.h"
+/* One persistence implementation, like storage_backend.c below. */
+#include "cookie_persistence.c"
 #include "url.h"
 /* bxfer_*: the transport beneath this file, which chooses HTTP/1.1 or HTTP/2
  * from what ALPN returned. Drop-in for h1_conn_start/pump/free plus the socket
@@ -297,16 +299,63 @@ static void wurl_target(const struct wurl *u, char *out, int max)
 /* ---- the document's location ------------------------------------------ */
 
 static struct wurl g_loc;                    /* the current document's URL */
+/* This service still has one live top-level realm (tabs dehydrate). Do not
+ * silently overwrite it when a future frame caller tries to install another:
+ * DOM, history and JS hooks are not yet per-realm. Refusal preserves the real
+ * boundary; it is not a substitute for implementing multi-realm ownership. */
+static JSContext *g_webapi_ctx;
 static int  g_loc_valid;
 static char g_loc_raw[WURL_MAX] = "about:blank";   /* what we were handed, parseable or not */
 static char g_pending_nav[WURL_MAX];
 static int  g_have_pending_nav;
+
+#define WT_MAX 8
+struct wtimer { int used; unsigned long long due; JSValue fn; };
+/* One native policy engine, many owning realms. The page's location is not a
+ * worker's base or authority: Blob has an opaque base but a creator origin.
+ * No JSValue in this record is borrowed from a different runtime. */
+struct fetch_realm {
+    struct fetch_realm *next;
+    JSContext *ctx;
+    struct wurl base, origin, site;
+    int base_valid, origin_valid, site_valid, stopped;
+    unsigned identity;
+    JSValue mk_response, mk_error;
+    struct wtimer timers[WT_MAX];
+};
+static struct fetch_realm *g_fetch_realms, *g_page_fetch;
+static unsigned g_fetch_realm_serial;
+static struct fetch_realm *fetch_realm_for(JSContext *ctx)
+{
+    for(struct fetch_realm *r=g_fetch_realms;r;r=r->next)
+        if(r->ctx==ctx)return r;
+    return NULL;
+}
+static struct fetch_realm *fetch_realm_new(JSContext *ctx, const char *base,
+                                         const char *origin, const char *site)
+{
+    if(!ctx||fetch_realm_for(ctx))return NULL;
+    if(g_fetch_realm_serial==~0u){JS_ThrowRangeError(ctx,"fetch realm identity exhausted");return NULL;}
+    struct fetch_realm *r=calloc(1,sizeof *r);
+    if(!r){JS_ThrowOutOfMemory(ctx);return NULL;}
+    r->ctx=ctx;r->mk_response=r->mk_error=JS_UNDEFINED;
+    r->identity=++g_fetch_realm_serial;
+    r->base_valid=base&&wurl_parse(base,NULL,&r->base)==0;
+    r->origin_valid=origin&&wurl_parse(origin,NULL,&r->origin)==0;
+    r->site_valid=site&&wurl_parse(site,NULL,&r->site)==0;
+    r->next=g_fetch_realms;g_fetch_realms=r;
+    return r;
+}
 
 static void set_location(const char *url)
 {
     scopy(g_loc_raw, url && *url ? url : "about:blank", WURL_MAX);
     g_loc_valid = (wurl_parse(g_loc_raw, 0, &g_loc) == 0);
     if (!g_loc_valid) memset(&g_loc, 0, sizeof g_loc);
+    if(g_page_fetch){
+        g_page_fetch->base=g_page_fetch->origin=g_page_fetch->site=g_loc;
+        g_page_fetch->base_valid=g_page_fetch->origin_valid=g_page_fetch->site_valid=g_loc_valid;
+    }
 }
 
 int js_webapi_take_navigation(char *out, int max)
@@ -317,81 +366,44 @@ int js_webapi_take_navigation(char *out, int max)
     return 1;
 }
 
+static void queue_navigation(const char *absolute_url)
+{
+    scopy(g_pending_nav, absolute_url, WURL_MAX);
+    g_have_pending_nav = 1;
+}
+
+int js_webapi_request_navigation(const char *absolute_url)
+{
+    struct wurl parsed;
+    if (!absolute_url || wurl_parse(absolute_url, 0, &parsed) != 0) return 0;
+    char want[WURL_MAX];wurl_href(&parsed,want,sizeof want);
+    /* Form submission must reload even an unchanged URL. Going through the
+     * location.href setter would silently take its same-document fast path.
+     * Use the SAME pending record, so callback form and location requests do
+     * not race two independently drained navigation queues. */
+    queue_navigation(want);
+    return 1;
+}
+
 /* ---- Storage ----------------------------------------------------------
- * Real Storage semantics, in memory, keyed by origin. It lives in C rather
- * than JS for exactly one reason: it must survive js_page_close(), so a page
- * that navigates and comes back finds what it wrote.
+ * The old g_stores implementation lived here and keyed both localStorage and
+ * sessionStorage by origin alone: "sessionStorage is identical today, and
+ * differs only in that it is documented to be per-tab." Correction: the
+ * shared backend now keys session areas by the embedder's stable tab id.
+ * A navigation changes the JSContext, not the tab; no teardown here clears
+ * its store. Explicit tab destruction drops only that tab's session areas.
  *
- * NOT PERSISTED TO DISK. LogitFS has a known cross-boot write-durability bug
- * (see CLAUDE.md), and every test harness boots with -snapshot, so a disk
- * backing would be both unreliable and unverifiable. localStorage therefore
- * lives as long as the browser process does; sessionStorage is identical
- * today, and differs only in that it is documented to be per-tab. */
-
-#define ST_ORIGINS   8
-#define ST_ITEMS   256
-#define ST_BYTES (256*1024)      /* per store, keys + values */
-
-struct st_item { char *k, *v; };
-struct store {
-    char  origin[URL_HOST_MAX + 16];
-    int   session;                       /* 0 = localStorage, 1 = sessionStorage */
-    int   used;
-    int   n;
-    long  bytes;
-    struct st_item v[ST_ITEMS];
-};
-static struct store g_stores[ST_ORIGINS * 2];
-
-static struct store *store_for(const char *origin, int session)
-{
-    for (int i = 0; i < ST_ORIGINS * 2; i++)
-        if (g_stores[i].used && g_stores[i].session == session &&
-            strcmp(g_stores[i].origin, origin) == 0) return &g_stores[i];
-    for (int i = 0; i < ST_ORIGINS * 2; i++)
-        if (!g_stores[i].used) {
-            g_stores[i].used = 1; g_stores[i].session = session;
-            g_stores[i].n = 0; g_stores[i].bytes = 0;
-            scopy(g_stores[i].origin, origin, (int)sizeof g_stores[i].origin);
-            return &g_stores[i];
-        }
-    return 0;                            /* 9th origin in one session: no store */
-}
-
-static int store_find(struct store *s, const char *k)
-{ for (int i = 0; i < s->n; i++) if (strcmp(s->v[i].k, k) == 0) return i; return -1; }
-
-static void store_erase(struct store *s, int i)
-{
-    s->bytes -= (long)strlen(s->v[i].k) + (long)strlen(s->v[i].v);
-    free(s->v[i].k); free(s->v[i].v);
-    for (int j = i; j + 1 < s->n; j++) s->v[j] = s->v[j + 1];
-    s->n--;
-}
-
-static char *dupstr(const char *s)
-{ size_t n = strlen(s) + 1; char *p = (char *)malloc(n); if (p) memcpy(p, s, n); return p; }
-
-/* 0 ok, -1 out of memory, -2 quota. */
-static int store_set(struct store *s, const char *k, const char *v)
-{
-    int i = store_find(s, k);
-    long delta = (long)strlen(v) - (i >= 0 ? (long)strlen(s->v[i].v) : -(long)strlen(k));
-    if (s->bytes + delta > ST_BYTES) return -2;
-    if (i < 0 && s->n >= ST_ITEMS) return -2;
-    char *nv = dupstr(v);
-    if (!nv) return -1;
-    if (i >= 0) {
-        s->bytes += (long)strlen(v) - (long)strlen(s->v[i].v);
-        free(s->v[i].v); s->v[i].v = nv;
-        return 0;
-    }
-    char *nk = dupstr(k);
-    if (!nk) { free(nv); return -1; }
-    s->v[s->n].k = nk; s->v[s->n].v = nv; s->n++;
-    s->bytes += (long)strlen(k) + (long)strlen(v);
-    return 0;
-}
+ * Still IN MEMORY ONLY. The old comment attributed the absence of disk
+ * backing to a filesystem durability bug; that is not a current storage
+ * capability check. This service simply has no disk commit/recovery backend,
+ * and must not claim persistence until that backend is actually implemented.
+ * Textual ownership keeps the existing partial host links on the same
+ * implementation (see storage_backend.c); do not link a second copy. */
+#include "storage_backend.c"
+int js_webapi_set_storage_store(const struct bstore_ops *ops) { return storage_backend_set_store(ops); }
+static unsigned long long g_storage_session;
+void js_webapi_set_storage_session(unsigned long long id) { g_storage_session = id; }
+void js_webapi_drop_storage_session(unsigned long long id) { storage_backend_drop_session(id); }
 
 /* ---- history ----------------------------------------------------------
  * The SAME-DOCUMENT history: pushState/replaceState and the back/forward that
@@ -494,6 +506,9 @@ static int same_origin(const struct wurl *a, const struct wurl *b)
  * request is same-site (SameSite) and whether it is allowed to carry
  * credentials at all (CORS). */
 
+/* Correction 2026-09-10: the historical non-durable rationale above is retired.
+ * Cookie persistence now commits each accepted mutation through a private
+ * two-slot bstore; session cookies intentionally stay process-local. */
 static struct cookie_jar g_jar;
 static int g_jar_ready;
 
@@ -503,12 +518,56 @@ static struct cookie_jar *jar(void)
     return &g_jar;
 }
 
+static struct cookie_persistence g_cookie_store;
+int js_webapi_set_cookie_store(const struct bstore_ops *ops)
+{ return cookie_persistence_open(&g_cookie_store, jar(), ops, now_unix()); }
+int js_webapi_cookie_persistence_status(void)
+{ return g_cookie_store.status; }
+static void cookie_commit(int rc)
+{
+    if (rc == 0 && cookie_persistence_flush(&g_cookie_store, jar(), now_unix()) < 0)
+        printf("[webapi] cookie persistence failed status=%d\n", g_cookie_store.status);
+}
+
 static void ck_ctx(struct cookie_ctx *c, const struct wurl *u, int http_api)
 {
     c->host = u->host;
     c->path = u->pathname[0] ? u->pathname : "/";
     c->secure = u->https;
     c->http_api = http_api;
+}
+
+static struct cookie_request cookie_request_for(const struct wurl *site, int valid,
+                                                int nav, int safe)
+{
+    struct cookie_request r = { valid ? site->host : 0,
+                                valid ? site->https : 0,
+                                nav, safe, 0 };
+    return r;
+}
+
+int webapi_cookie_line_request(const char *host, const char *path, int secure,
+                               const struct cookie_request *request, char *out, int cap)
+{
+    struct cookie_ctx c = { host, (path && path[0]) ? path : "/", secure, 1 };
+#ifdef WEBAPI_COOKIE_ALWAYS_SAME_SITE
+    (void)request;
+    return cookie_header(jar(), &c, now_unix(), out, cap);
+#else
+    struct cookie_header_diagnostics diag;
+    int n = cookie_header_with_diagnostics(jar(), &c, cookie_request_kind(&c, request),
+                                          now_unix(), out, cap, &diag);
+    if (n < 0) printf("[webapi] cookie-header error=%d required=%llu cap=%d count=%d\n",
+                      n, (unsigned long long)diag.required_bytes, cap, diag.eligible_count);
+    return n;
+#endif
+}
+
+void webapi_cookie_store_request(const char *host, const char *path, int secure,
+                                 const struct cookie_request *request, const char *value)
+{
+    struct cookie_ctx c = { host, (path && path[0]) ? path : "/", secure, 1 };
+    cookie_commit(cookie_set_ex(jar(), &c, cookie_request_kind(&c, request), value, now_unix()));
 }
 
 /* ---- the jar's two exports to the TRANSPORT (browser_rt.c) --------------
@@ -562,10 +621,13 @@ int webapi_cookie_line(const char *host, const char *path, int secure,
     (void)nav;
     return cookie_header(jar(), &c, now_unix(), out, cap);
 #else
-    int kind = CK_REQ_SAME_SITE;
-    if (g_loc_valid && !cookie_same_site(g_loc.host, host))
-        kind = nav ? CK_REQ_CROSS_SITE_NAV : CK_REQ_CROSS_SITE;
-    return cookie_header_ex(jar(), &c, kind, now_unix(), out, cap);
+    /* Compatibility door for existing direct embedders/tests. Product bfetch
+     * now calls the explicit request door above; this global lookup MUST NOT
+     * return to a queued/redirected resource path. The historical comment above
+     * describes the retired product wiring, not a current context guarantee. */
+    struct cookie_request request = cookie_request_for(&g_loc, g_loc_valid, nav, 1);
+    if (!g_webapi_ctx && !g_loc_valid) request.browser_initiated = 1;
+    return webapi_cookie_line_request(host, path, secure, &request, out, cap);
 #endif
 }
 
@@ -573,7 +635,7 @@ void webapi_cookie_store_line(const char *host, const char *path, int secure,
                               const char *setcookie)
 {
     struct cookie_ctx c = { host, (path && path[0]) ? path : "/", secure, 1 };
-    cookie_set(jar(), &c, setcookie, now_unix());
+    cookie_commit(cookie_set(jar(), &c, setcookie, now_unix()));
 }
 
 /* ---- CORS -------------------------------------------------------------
@@ -667,22 +729,26 @@ static int cors_safe_resp_header(const char *n)
 #define PFC_MAX 16
 struct pfcache {
     int  used, creds;
-    char origin[URL_HOST_MAX + 16];
+    char origin[WURL_MAX];             /* exact target URL, fragment excluded */
+    char initiator[URL_HOST_MAX + 16];
     char method[H1_METHOD_MAX];
     char headers[256];                  /* lowercase comma list the server allowed */
     unsigned long long expires_ms;
 };
 static struct pfcache g_pfc[PFC_MAX];
 
-static void pfc_store(const char *origin, const char *method, int creds,
+static void pfc_store(const char *initiator, const char *origin, const char *method, int creds,
                       const char *allow_hdrs, int max_age_s)
 {
-    if (max_age_s <= 0) return;
+    /* Opaque origins have identity beyond their serialized "null". Until the
+     * cache can represent that identity, not caching them is the safe answer. */
+    if (max_age_s <= 0 || !strcmp(initiator, "null")) return;
     if (max_age_s > 86400) max_age_s = 86400;         /* the spec's own ceiling */
     struct pfcache *slot = 0;
     for (int i = 0; i < PFC_MAX; i++) {
         struct pfcache *p = &g_pfc[i];
-        if (p->used && p->creds == creds && ci_streq(p->origin, origin) &&
+        if (p->used && p->creds == creds && !strcmp(p->initiator, initiator) &&
+            !strcmp(p->origin, origin) &&
             ci_streq(p->method, method)) { slot = p; break; }
     }
     if (!slot) for (int i = 0; i < PFC_MAX; i++) if (!g_pfc[i].used) { slot = &g_pfc[i]; break; }
@@ -690,21 +756,23 @@ static void pfc_store(const char *origin, const char *method, int creds,
     memset(slot, 0, sizeof *slot);
     slot->used = 1; slot->creds = creds;
     scopy(slot->origin, origin, (int)sizeof slot->origin);
+    scopy(slot->initiator, initiator, (int)sizeof slot->initiator);
     scopy(slot->method, method, (int)sizeof slot->method);
     scopy(slot->headers, allow_hdrs ? allow_hdrs : "", (int)sizeof slot->headers);
     slot->expires_ms = now_ms() + (unsigned long long)max_age_s * 1000ull;
 }
 
 /* 1 if a live cache entry covers this exact request. */
-static int pfc_hit(const char *origin, const char *method, int creds,
+static int pfc_hit(const char *initiator, const char *origin, const char *method, int creds,
                    const struct h1_headers *author)
 {
     for (int i = 0; i < PFC_MAX; i++) {
         struct pfcache *p = &g_pfc[i];
         if (!p->used || p->creds != creds) continue;
-        if (!ci_streq(p->origin, origin) || !ci_streq(p->method, method)) continue;
+        if (strcmp(p->initiator, initiator) || strcmp(p->origin, origin) ||
+            !ci_streq(p->method, method)) continue;
         if (now_ms() > p->expires_ms) { p->used = 0; continue; }
-        if (list_has(p->headers, "*")) return 1;
+        if (!creds && list_has(p->headers, "*")) return 1;
         for (int k = 0; k < author->n; k++) {
             if (cors_safe_req_header(author->v[k].name, author->v[k].value)) continue;
             if (!list_has(p->headers, author->v[k].name)) return 0;
@@ -753,30 +821,50 @@ enum { WF_FREE = 0, WF_DIAL, WF_XFER };
 enum { WF_PH_ACTUAL = 0, WF_PH_PREFLIGHT };
 /* What to do with body bytes arriving right now.  UNKNOWN can only hold for
  * the remainder of ONE h1_conn_pump: fetch_step inspects the headers after
- * every single pump, so `hold` never needs more than one read's worth. */
+ * every single pump, so `hold` never needs more than one read's worth.
+ * Correction: that old statement applies only to HTTP/1's 4096-byte read.
+ * HTTP/2 may deliver 16384 bytes (or another stream's backlog); bxfer_pump now
+ * yields its first final headers BEFORE draining DATA to this sink. Keep the
+ * small h1 hold instead of silently turning it into another unbounded queue. */
 enum { WF_DEL_UNKNOWN = 0, WF_DEL_JS, WF_DEL_DROP };
 
 struct wfetch {
+    struct fetch_realm *owner;
     int   state;
     int   fd;
     int   started;                 /* h1_conn_start has run */
     struct h1_conn conn;
     struct wurl url;
+    /* Identity belongs to the request. Resolving a redirect, retrying a dial,
+     * and accepting response cookies must never consult the active document
+     * again: the page can have queued a navigation while this request waits. */
+    struct wurl initiator;
+    int initiator_valid;
+    /* The document URL captured when fetch() was called. Referer is a user-
+     * agent header: script cannot forge it, and consulting the active page
+     * later would let a queued navigation change an already-created request. */
+    struct wurl referrer;
+    int referrer_valid;
+    struct wurl cookie_site;
+    int cookie_site_valid;
+    int response_logged;
     char  method[H1_METHOD_MAX];
     struct h1_headers hdr;         /* caller headers, re-sent on each hop */
     char *body; int body_len;      /* request body, owned */
-    int   hops, redirected;
+    int   hops, redirected, transport_retries;
     unsigned long long deadline;
     /* When fetch_step last ran for this request.  The idle deadline above is
      * charged for SERVICED time only -- see fetch_step. */
     unsigned long long last_step;
+    int last_step_valid;            /* monotonic time zero is a valid baseline */
     JSValue resolve, reject;
     JSContext *ctx;                /* the sink runs inside js_webapi_pump(ctx) */
 
     int   gen;                     /* an abort handle is (slot, generation) */
     int   mode, creds;
     int   cross;                   /* THIS hop is cross-origin */
-    int   tainted;                 /* a cross-origin redirect happened */
+    int   tainted;                 /* Fetch redirect-taint is not same-origin */
+    int   site_tainted;            /* redirect chain is cross-site */
     int   phase;                   /* WF_PH_* */
     int   deliver;                 /* WF_DEL_* */
     int   resolved;                /* the promise has settled with a Response */
@@ -788,9 +876,59 @@ struct wfetch {
     int   js_work;
     uint8_t hold[4096];
     int   hold_len;
+    const char *failure_at;         /* exact local boundary, otherwise transport */
+    int   failed_chunk;
 };
 static struct wfetch g_fetch[WF_MAX];
 static int g_fetch_live;
+static int wf_handle(const struct wfetch *f);
+static int wf_creds(const struct wfetch *f);
+
+static const char *fetch_trace_host(const struct wfetch *f)
+{
+    /* The transport URL splitter does not yet normalize every authority form.
+     * In particular userinfo must never reach a metadata-only diagnostic. */
+    const char *host = f->url.host;
+    for (const unsigned char *p = (const unsigned char *)host; *p; p++)
+        if (!((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') ||
+              (*p >= '0' && *p <= '9') || *p == '.' || *p == '-' ||
+              *p == ':' || *p == '[' || *p == ']')) return "redacted-host";
+    return host;
+}
+
+static const char *fetch_trace_payload(const struct h1_response *r)
+{
+    /* Emit a fixed category, never an arbitrary response header value. */
+    const char *v = h1_headers_get(&r->hdr, "content-type");
+    if (!v) return "unspecified";
+    while (*v == ' ' || *v == '\t') v++;
+    static const struct { const char *mime, *label; } kinds[] = {
+        { "text/event-stream", "event-stream" },
+        { "application/json", "json" },
+        { "text/html", "html" }
+    };
+    for (unsigned i = 0; i < sizeof kinds / sizeof kinds[0]; i++) {
+        int n = (int)strlen(kinds[i].mime);
+        if (ci_strneq(v, kinds[i].mime, n) &&
+            (!v[n] || v[n] == ';' || v[n] == ' ' || v[n] == '\t'))
+            return kinds[i].label;
+    }
+    return "other";
+}
+
+static void fetch_trace_request(const struct wfetch *f)
+{
+#ifndef WEBAPI_NO_FETCH_DIAGNOSTICS
+    /* Paths, headers and bodies may contain login material. Only parsed
+     * transport metadata and local enums belong in the permanent serial log. */
+    printf("[webapi] fetch-request id=%d method=%s host=%s port=%d tls=%d phase=%d hops=%d cross=%d creds=%d\n",
+           wf_handle(f), f->phase == WF_PH_PREFLIGHT ? "OPTIONS" : f->method,
+           fetch_trace_host(f), f->url.port, f->url.https, f->phase, f->hops,
+           f->cross, wf_creds(f));
+#else
+    (void)f;
+#endif
+}
 
 /* h1_transport over a socket handle. `ctx` is the handle, cast through
  * intptr, because a transport is a vtable + one word and a socket IS one
@@ -844,7 +982,11 @@ static int wf_sink(void *ctx, const uint8_t *p, int n)
     struct wfetch *f = (struct wfetch *)ctx;
     if (f->deliver == WF_DEL_DROP) return H1_OK;
     if (f->deliver == WF_DEL_JS) return wf_push(f, p, n);
-    if (n > (int)sizeof f->hold - f->hold_len) return H1_E_TOOLARGE;
+    if (n > (int)sizeof f->hold - f->hold_len) {
+        f->failure_at = "pre-header-hold";
+        f->failed_chunk = n;
+        return H1_E_TOOLARGE;
+    }
     memcpy(f->hold + f->hold_len, p, (size_t)n);
     f->hold_len += n;
     return H1_OK;
@@ -852,6 +994,8 @@ static int wf_sink(void *ctx, const uint8_t *p, int n)
 
 static void fetch_release(JSContext *ctx, struct wfetch *f)
 {
+    /* Caller identity cannot change the runtime that owns retained values. */
+    ctx=f->ctx;
     if (f->fd >= 0) { g_net->close(f->fd); f->fd = -1; }
     if (f->started) bxfer_free(&f->conn);
     else free(f->conn.out);
@@ -871,6 +1015,7 @@ static void fetch_release(JSContext *ctx, struct wfetch *f)
     f->resolved = 0; f->hold_len = 0; f->queued = 0;
     f->deliver = WF_DEL_UNKNOWN;
     f->state = WF_FREE;
+    f->owner=NULL;f->ctx=NULL;
     f->gen++;                      /* any abort handle still held is now stale */
     if (g_fetch_live > 0) g_fetch_live--;
 }
@@ -883,11 +1028,13 @@ static void fetch_release(JSContext *ctx, struct wfetch *f)
  * js_webapi_install finished should not crash over it). */
 static JSValue mk_error(JSContext *ctx, const char *name, const char *message)
 {
-    if (JS_IsFunction(ctx, g_mk_error)) {
+    struct fetch_realm *owner=fetch_realm_for(ctx);
+    JSValue constructor=owner?owner->mk_error:JS_UNDEFINED;
+    if (JS_IsFunction(ctx, constructor)) {
         JSValue a[2];
         a[0] = JS_NewString(ctx, name);
         a[1] = JS_NewString(ctx, message);
-        JSValue e = JS_Call(ctx, g_mk_error, JS_UNDEFINED, 2, (JSValueConst *)a);
+        JSValue e = JS_Call(ctx, constructor, JS_UNDEFINED, 2, (JSValueConst *)a);
         JS_FreeValue(ctx, a[0]); JS_FreeValue(ctx, a[1]);
         if (!JS_IsException(e)) return e;
         JS_FreeValue(ctx, JS_GetException(ctx));
@@ -896,6 +1043,22 @@ static JSValue mk_error(JSContext *ctx, const char *name, const char *message)
     JS_SetPropertyStr(ctx, err, "name", JS_NewString(ctx, name));
     JS_SetPropertyStr(ctx, err, "message", JS_NewString(ctx, message));
     return err;
+}
+
+static void fetch_trace_detail(const struct wfetch *f)
+{
+#ifndef WEBAPI_NO_FETCH_DIAGNOSTICS
+    const char *ce = h1_headers_get(&f->conn.resp.hdr, "content-encoding");
+    printf("[webapi] fetch-detail id=%d state=%d error_code=%d phase=%d method=%s host=%s boundary=%s status=%d clen=%lld compressed=%d "
+           "seen=%lld buffered=%d cap=%d streaming=%d hold=%d incoming=%d\n",
+           wf_handle(f), f->state, f->conn.err ? f->conn.err : f->conn.resp.err,
+           f->phase, f->method, fetch_trace_host(f),
+           f->failure_at ? f->failure_at : "transport-or-policy",
+           f->conn.resp.code, (long long)f->conn.resp.clen,
+           ce && !ci_streq(ce, "identity"),
+           (long long)f->conn.resp.body_seen, f->conn.resp.body_len,
+           f->conn.resp.body_max, f->conn.resp.streaming, f->hold_len, f->failed_chunk);
+#endif
 }
 
 /* Fail the request.  Before the promise settled that is a rejection; after it
@@ -911,6 +1074,7 @@ static void fetch_fail(JSContext *ctx, struct wfetch *f, const char *msg, const 
     for (const char *p = msg; *p && o < (int)sizeof full - 1; p++) full[o++] = *p;
     full[o] = 0;
     printf("[webapi] %s\n", full);
+    fetch_trace_detail(f);
 
     if (f->resolved) {
         if (JS_IsFunction(ctx, f->fail)) {
@@ -934,11 +1098,56 @@ static void fetch_fail(JSContext *ctx, struct wfetch *f, const char *msg, const 
 static void fetch_reject(JSContext *ctx, struct wfetch *f, const char *msg)
 { fetch_fail(ctx, f, msg, "TypeError"); }
 
-/* The document's origin as an Origin header value. */
-static void doc_origin(char *out, int max)
+/* A redirect-tainted origin serializes identically on the wire, during CORS
+ * checks, and in the preflight key. The old wire-only null conversion silently
+ * rejected a correct ACAO:null response after following a cross-origin hop. */
+static void fetch_origin(const struct wfetch *f, char *out, int max)
 {
-    if (g_loc_valid) wurl_origin(&g_loc, out, max);
+    if (f->initiator_valid && !f->tainted) wurl_origin(&f->initiator, out, max);
     else scopy(out, "null", max);
+}
+
+/* The Fetch default is strict-origin-when-cross-origin. This is not cosmetic:
+ * media CDNs (including bilivideo) authorize an otherwise public signed URL
+ * only when the browser supplies the embedding page's Referer. Same-origin
+ * requests retain the path; cross-origin requests disclose only the origin;
+ * an HTTPS document never leaks it to an HTTP target. */
+static int fetch_referrer(const struct wfetch *f, char *out, int max)
+{
+    if (!f->referrer_valid || max <= 0 ||
+        (f->referrer.https && !f->url.https)) return 0;
+    if (same_origin(&f->referrer, &f->url)) {
+        struct wurl u = f->referrer;
+        u.hash[0] = 0;
+        wurl_href(&u, out, max);
+    } else {
+        wurl_origin(&f->referrer, out, max);
+        int n = (int)strlen(out);
+        if (n + 1 >= max) return 0;
+        out[n++] = '/';
+        out[n] = 0;
+    }
+    return out[0] != 0;
+}
+
+static void fetch_cache_url(const struct wfetch *f, char *out, int max)
+{
+#ifdef WEBAPI_PREFLIGHT_UNPARTITIONED
+    wurl_origin(&f->url, out, max);
+#else
+    struct wurl u = f->url;
+    u.hash[0] = 0;
+    wurl_href(&u, out, max);
+#endif
+}
+
+static void fetch_preflight_origin(const struct wfetch *f, char *out, int max)
+{
+#ifdef WEBAPI_PREFLIGHT_UNPARTITIONED
+    (void)f; scopy(out, "unpartitioned", max);
+#else
+    fetch_origin(f, out, max);
+#endif
 }
 
 /* 1 if this request may carry the user's credentials. */
@@ -999,11 +1208,20 @@ static int fetch_send_request(JSContext *ctx, struct wfetch *f)
      * request and the value becomes `null`, so a server cannot be told the
      * request came from somewhere it did not. */
     char origin[URL_HOST_MAX + 16];
-    doc_origin(origin, (int)sizeof origin);
+    fetch_origin(f, origin, (int)sizeof origin);
     int send_origin = f->cross || preflight ||
                       (!ci_streq(f->method, "GET") && !ci_streq(f->method, "HEAD"));
     if (send_origin)
-        h1_request_set_header(&q, "Origin", f->tainted ? "null" : origin);
+        h1_request_set_header(&q, "Origin", origin);
+
+    /* Referer is browser-controlled and therefore is deliberately absent
+     * from f->hdr and from Access-Control-Request-Headers. Preflight describes
+     * author headers; the actual request gets the navigation context. */
+    if (!preflight) {
+        char referer[WURL_MAX];
+        if (fetch_referrer(f, referer, (int)sizeof referer))
+            h1_request_set_header(&q, "Referer", referer);
+    }
 
     if (preflight) {
         h1_request_set_header(&q, "Access-Control-Request-Method", f->method);
@@ -1028,13 +1246,20 @@ static int fetch_send_request(JSContext *ctx, struct wfetch *f)
         if (wf_creds(f)) {
             struct cookie_ctx cc;
             ck_ctx(&cc, &f->url, 1);
-            int cross_site = g_loc_valid ? !cookie_same_site(g_loc.host, f->url.host)
-                                         : CK_REQ_CROSS_SITE;
+            struct cookie_request request = cookie_request_for(&f->cookie_site,
+                                                        f->cookie_site_valid && !f->site_tainted, 0, 0);
             static char cookie[CK_HEADER_MAX];   /* 8 KiB: not on the stack */
-            int n = cookie_header_ex(jar(), &cc, cross_site ? CK_REQ_CROSS_SITE
-                                                            : CK_REQ_SAME_SITE,
-                                     now_unix(), cookie, (int)sizeof cookie);
-            if (n > 0) h1_request_set_header(&q, "Cookie", cookie);
+            struct cookie_header_diagnostics diag;
+            int n = cookie_header_with_diagnostics(jar(), &cc, cookie_request_kind(&cc, &request),
+                                     now_unix(), cookie, (int)sizeof cookie, &diag);
+            if (n < 0) {
+                printf("[webapi] cookie-header error=%d required=%llu cap=%d count=%d\n",
+                       n, (unsigned long long)diag.required_bytes, (int)sizeof cookie, diag.eligible_count);
+                f->failure_at = "cookie-header"; h1_request_free(&q); return -1;
+            }
+            if (n > 0 && h1_request_set_header(&q, "Cookie", cookie) != H1_OK) {
+                f->failure_at = "cookie-attach"; h1_request_free(&q); return -1;
+            }
         }
         for (int i = 0; i < f->hdr.n; i++)
             h1_request_add_header(&q, f->hdr.v[i].name, f->hdr.v[i].value);
@@ -1051,9 +1276,21 @@ static int fetch_send_request(JSContext *ctx, struct wfetch *f)
      * joined an origin's connection speculatively, before the handshake said
      * which protocol it was, has to be given its own socket if the answer
      * turns out to be HTTP/1.1. Hence the fd by pointer. */
-    if (bxfer_start(&f->conn, &t, raw, rawlen, &f->fd,
-                    f->url.host, f->url.port, f->url.https) != H1_OK) { free(raw); return -1; }
+    /* The old -1 merged serialization with protocol startup. A valid same-
+     * origin GET on a closing multiplexed connection was consequently logged
+     * as "request could not be built" (site-general guest, 2026-09-09). Keep
+     * those boundaries distinct; this is not permission to retry a request
+     * that might already have reached the peer. */
+    int start_rc=bxfer_start(&f->conn, &t, raw, rawlen, &f->fd,
+                            f->url.host, f->url.port, f->url.https);
+    if(start_rc==BXFER_START_WAIT) {free(raw);return 1;}
+    if(start_rc!=H1_OK) {
+        printf("[webapi] fetch-start protocol_error=%d\n",start_rc);
+        free(raw);return -2;
+    }
+    fetch_trace_request(f);
     f->started = 1;                       /* the conn owns `raw` from here */
+    h1_response_limit(&f->conn.resp,BROWSER_BUFFERED_BODY_MAX);
     h1_response_head(&f->conn.resp, !preflight && ci_streq(f->method, "HEAD"));
     if (WEBAPI_STREAMING) h1_response_sink(&f->conn.resp, wf_sink, f);
     f->deliver = preflight ? WF_DEL_DROP : WF_DEL_UNKNOWN;
@@ -1066,13 +1303,22 @@ static int fetch_dial(struct wfetch *f)
 {
     net_env_init();
     if (!g_net || !g_net->open) return -1;
-    f->cross = g_loc_valid ? !same_origin(&f->url, &g_loc) : 1;
+    f->cross = f->cross || !f->initiator_valid || !same_origin(&f->url, &f->initiator);
+    f->response_logged = 0;
     f->fd = g_net->open(f->url.host, f->url.port, f->url.https);
-    if (f->fd < 0) return -1;
+    if (f->fd < 0) { fetch_trace_request(f); return -1; }
     f->state = WF_DIAL;
     f->started = 0;
-    f->deadline = now_ms() + WF_TIMEOUT;
-    f->last_step = 0;               /* first step establishes the baseline */
+    unsigned long long now=now_ms();
+    f->deadline = now + WF_TIMEOUT;
+#ifdef WEBAPI_FETCH_NO_INITIAL_BASELINE
+    f->last_step = 0;f->last_step_valid = 0;
+#else
+    /* The first pump may itself follow a long synchronous task. Establish
+     * its observation baseline when the socket is opened, not after that
+     * first pump has already tested and potentially expired the deadline. */
+    f->last_step = now;f->last_step_valid = 1;
+#endif
     return 0;
 }
 
@@ -1089,7 +1335,11 @@ static void fetch_take_cookies(struct wfetch *f)
     int n = h1_headers_count(&r->hdr, "set-cookie");
     for (int i = 0; i < n; i++) {
         const char *v = h1_headers_nth(&r->hdr, "set-cookie", i);
-        if (v) cookie_set(jar(), &cc, v, now);
+        if (v) {
+            struct cookie_request request = cookie_request_for(&f->cookie_site,
+                                                        f->cookie_site_valid && !f->site_tainted, 0, 0);
+            cookie_commit(cookie_set_ex(jar(), &cc, cookie_request_kind(&cc, &request), v, now));
+        }
     }
 }
 
@@ -1101,7 +1351,7 @@ static const char *cors_check_response(struct wfetch *f)
     if (!f->cross || f->mode != WF_MODE_CORS) return 0;
     struct h1_response *r = &f->conn.resp;
     char origin[URL_HOST_MAX + 16];
-    doc_origin(origin, (int)sizeof origin);
+    fetch_origin(f, origin, (int)sizeof origin);
 
     if (h1_headers_count(&r->hdr, "access-control-allow-origin") > 1)
         return "the server sent several Access-Control-Allow-Origin headers";
@@ -1112,7 +1362,7 @@ static const char *cors_check_response(struct wfetch *f)
     int creds = wf_creds(f);
     if (creds) {
         const char *acac = h1_headers_get(&r->hdr, "access-control-allow-credentials");
-        if (!acac || !ci_streq(acac, "true"))
+        if (!acac || strcmp(acac, "true"))
             return "credentialed cross-origin request blocked: "
                    "Access-Control-Allow-Credentials is not true";
         /* `*` plus credentials is the combination the spec forbids outright:
@@ -1122,7 +1372,7 @@ static const char *cors_check_response(struct wfetch *f)
             return "credentialed cross-origin request blocked: "
                    "Access-Control-Allow-Origin is '*'";
     }
-    if (strcmp(acao, "*") != 0 && !ci_streq(acao, origin))
+    if (strcmp(acao, "*") != 0 && strcmp(acao, origin))
         return "cross-origin request blocked: Access-Control-Allow-Origin "
                "does not name this origin";
     return 0;
@@ -1161,12 +1411,13 @@ static const char *cors_check_preflight(struct wfetch *f)
             return "the CORS preflight did not allow a request header";
     }
 
-    char origin[URL_HOST_MAX + 16];
-    wurl_origin(&f->url, origin, (int)sizeof origin);
+    char origin[WURL_MAX], initiator[URL_HOST_MAX + 16];
+    fetch_cache_url(f, origin, (int)sizeof origin);
+    fetch_preflight_origin(f, initiator, (int)sizeof initiator);
     const char *ma = h1_headers_get(&r->hdr, "access-control-max-age");
     int secs = 0;
-    if (ma) { for (const char *p = ma; *p >= '0' && *p <= '9'; p++) secs = secs * 10 + (*p - '0'); }
-    pfc_store(origin, f->method, creds, acah, secs);
+    if (ma) { for (const char *p = ma; *p >= '0' && *p <= '9'; p++) { if (secs < 86400) secs = secs * 10 + (*p - '0'); } }
+    pfc_store(initiator, origin, f->method, creds, acah, secs);
     return 0;
 }
 
@@ -1198,7 +1449,7 @@ static int fetch_deliver_headers(JSContext *ctx, struct wfetch *f)
     fetch_take_cookies(f);
 
     const char *why = cors_check_response(f);
-    if (why) { f->deliver = WF_DEL_DROP; fetch_reject(ctx, f, why); return 1; }
+    if (why) { f->failure_at="cors-response"; f->deliver = WF_DEL_DROP; fetch_reject(ctx, f, why); return 1; }
 
     int opaque = (f->cross && f->mode == WF_MODE_NO_CORS);
     const char *expose = h1_headers_get(&r->hdr, "access-control-expose-headers");
@@ -1230,17 +1481,24 @@ static int fetch_deliver_headers(JSContext *ctx, struct wfetch *f)
      * heard about -- could never trip again, so an abandoned multi-megabyte
      * transfer ran at full speed and held one of WF_MAX slots for its whole
      * duration. */
-    JSValue argv[8];
+    JSValue argv[9];
     argv[0] = JS_NewInt32(ctx, opaque ? 0 : r->code);
     argv[1] = JS_NewString(ctx, opaque ? "" : r->reason);
     argv[2] = pairs;
     argv[3] = JS_NewString(ctx, opaque ? "" : href);
-    argv[4] = JS_NewBool(ctx, f->redirected);
+    /* An opaque filter has an empty URL list. Reporting its redirect bit
+     * would reveal history that the URL/status/header filter already hid. */
+    argv[4] = JS_NewBool(ctx, !opaque && f->redirected);
     argv[5] = JS_NewString(ctx, opaque ? "opaque" : (f->cross ? "cors" : "basic"));
     argv[6] = JS_NewBool(ctx, opaque || r->no_body);
     argv[7] = JS_NewInt32(ctx, wf_handle(f));
-    JSValue hooks = JS_Call(ctx, g_mk_response, JS_UNDEFINED, 8, (JSValueConst *)argv);
-    for (int i = 0; i < 8; i++) JS_FreeValue(ctx, argv[i]);
+    int response_argc = 8;
+#ifdef JS_RUNTIME_DIAGNOSTICS
+    /* Private metadata for XHR diagnosis, never an added Response property. */
+    argv[response_argc++] = JS_NewInt32(ctx, !opaque && ci_streq(fetch_trace_payload(r), "json"));
+#endif
+    JSValue hooks = JS_Call(ctx, f->owner->mk_response, JS_UNDEFINED, response_argc, (JSValueConst *)argv);
+    for (int i = 0; i < response_argc; i++) JS_FreeValue(ctx, argv[i]);
     if (JS_IsException(hooks)) {
         JS_FreeValue(ctx, hooks);
         JS_FreeValue(ctx, JS_GetException(ctx));
@@ -1278,6 +1536,7 @@ static int fetch_finish(JSContext *ctx, struct wfetch *f)
     struct h1_response *r = &f->conn.resp;
     if (!h1_response_streaming(r) && f->deliver == WF_DEL_JS) {
         if (h1_decode_body(r) != H1_OK) {
+            f->failure_at = "content-decoding";
             fetch_fail(ctx, f, "response body could not be decoded (Content-Encoding)",
                        "TypeError");
             return 1;
@@ -1289,6 +1548,13 @@ static int fetch_finish(JSContext *ctx, struct wfetch *f)
         if (JS_IsException(v)) JS_FreeValue(ctx, JS_GetException(ctx));
         JS_FreeValue(ctx, v);
     }
+#ifndef WEBAPI_NO_FETCH_DIAGNOSTICS
+    /* Headers can succeed while the body subsequently fails. This boundary
+     * reports protocol/body decoding completion, not application success. */
+    printf("[webapi] fetch-complete id=%d status=%d payload=%s received=%lld delivery=%d\n",
+           wf_handle(f), r->code, fetch_trace_payload(r),
+           (long long)r->body_seen, f->deliver);
+#endif
     fetch_release(ctx, f);
     return 1;
 }
@@ -1306,10 +1572,41 @@ static int fetch_redial(struct wfetch *f)
     return fetch_dial(f);
 }
 
+static int fetch_retry_read(struct wfetch *f)
+{
+#ifndef WEBAPI_NO_FRESH_RETRY
+    /* The pre-send GOAWAY check cannot see a frame that arrives AFTER HEADERS
+     * were queued. bfetch already retries reads once; fetch() instead stranded
+     * an otherwise usable SPA at its config GET (guest 2026-09-10: GOAWAY last
+     * stream 1, GET streams 3/5 failed without response headers).
+     *
+     * Keep the boundary narrow: GET/HEAD only, one attempt over the ENTIRE
+     * fetch including redirects, no Response/headers delivered, transport or
+     * truncation failure only. POST/other methods are deliberately not retried
+     * even when HTTP/2 REFUSED_STREAM might permit it: their replay contract
+     * is not represented by this generic h1_response. Preserve the existing
+     * deadline so a broken server cannot buy another timeout by closing. */
+    if(f->transport_retries || f->resolved || h1_response_headers_done(&f->conn.resp) ||
+       (strcmp(f->method,"GET")&&strcmp(f->method,"HEAD")) ||
+       (f->conn.err!=H1_E_TRANSPORT&&f->conn.err!=H1_E_TRUNC))return 0;
+    f->transport_retries++;
+    unsigned long long deadline=f->deadline;
+    int rc=fetch_redial(f);
+    f->deadline=deadline;
+    if(rc==0){printf("[webapi] retrying unanswered %s once\n",f->method);return 1;}
+    f->conn.err=H1_E_TRANSPORT; /* redial cleared the old conn; never report "ok" */
+#else
+    (void)f;
+#endif
+    return 0;
+}
+
 /* A 3xx with a Location: re-target and re-dial. 1 if the request continues. */
 static int fetch_redirect(JSContext *ctx, struct wfetch *f)
 {
     struct h1_response *r = &f->conn.resp;
+    const char *why = cors_check_response(f);
+    if (why) { f->failure_at = "redirect-cors"; fetch_reject(ctx, f, why); return 1; }
     const char *loc = h1_headers_get(&r->hdr, "location");
     if (!loc || !*loc || f->hops >= WF_HOPS) return 0;
 
@@ -1319,8 +1616,25 @@ static int fetch_redirect(JSContext *ctx, struct wfetch *f)
     /* A redirect that leaves the origin taints the request: from here on the
      * server is told `Origin: null`, so it cannot be led to believe the
      * request came from the origin it started at. */
-    if (!same_origin(&next, &f->url)) f->tainted = 1;
-    if (f->mode == WF_MODE_SAME_ORIGIN && g_loc_valid && !same_origin(&next, &g_loc)) {
+    if (!same_origin(&next, &f->url)) {
+        /* The first same-origin URL may redirect cross-origin without taint;
+         * taint starts only when the PREVIOUS URL also differs from the
+         * initiator (Fetch: compute redirect-taint). Keep it across return hops. */
+        if (!f->initiator_valid || !same_origin(&f->initiator, &f->url))
+            f->tainted = 1;
+        struct cookie_ctx previous;
+        ck_ctx(&previous, &f->url, 1);
+        struct cookie_request next_site = cookie_request_for(&next, 1, 0, 0);
+        struct cookie_request start_site = cookie_request_for(&f->cookie_site,
+                                                             f->cookie_site_valid, 0, 0);
+        if (cookie_request_kind(&previous, &next_site) != CK_REQ_SAME_SITE &&
+            cookie_request_kind(&previous, &start_site) != CK_REQ_SAME_SITE)
+            f->site_tainted = 1;
+        /* Author Authorization belongs to its original origin. */
+        h1_headers_remove(&f->hdr, "authorization");
+    }
+    if (f->mode == WF_MODE_SAME_ORIGIN &&
+        (!f->initiator_valid || !same_origin(&next, &f->initiator))) {
         fetch_reject(ctx, f, "mode 'same-origin' forbids a cross-origin redirect");
         return 1;
     }
@@ -1341,9 +1655,10 @@ static int fetch_redirect(JSContext *ctx, struct wfetch *f)
     if (fetch_redial(f) != 0) { fetch_reject(ctx, f, "redirect target could not be opened"); return 1; }
     /* The new hop may be cross-origin even though the first was not. */
     if (wf_needs_preflight(f) ) {
-        char origin[URL_HOST_MAX + 16];
-        wurl_origin(&f->url, origin, (int)sizeof origin);
-        if (!pfc_hit(origin, f->method, wf_creds(f), &f->hdr)) f->phase = WF_PH_PREFLIGHT;
+        char origin[WURL_MAX], initiator[URL_HOST_MAX + 16];
+        fetch_cache_url(f, origin, (int)sizeof origin);
+        fetch_preflight_origin(f, initiator, (int)sizeof initiator);
+        if (!pfc_hit(initiator, origin, f->method, wf_creds(f), &f->hdr)) f->phase = WF_PH_PREFLIGHT;
     }
     return 1;
 }
@@ -1359,7 +1674,7 @@ static int fetch_redirect(JSContext *ctx, struct wfetch *f)
  * unconditionally every frame. */
 static int fetch_step(JSContext *ctx, struct wfetch *f)
 {
-    f->ctx = ctx;
+    if(ctx!=f->ctx||!f->owner||f->owner->stopped)return 0;
     f->js_work = 0;
     /* THE IDLE CLOCK ONLY TICKS WHILE WE CAN OBSERVE THE CONNECTION.
      *
@@ -1396,12 +1711,13 @@ static int fetch_step(JSContext *ctx, struct wfetch *f)
      * while check 2b stays green -- proof the control measures this fix. */
 #ifndef ZAIBLANK_FETCH_DEADLINE_OLD
     unsigned long long now = now_ms();
-    if (f->last_step && now > f->last_step + WF_STEP_GAP)
+    if (f->last_step_valid && now > f->last_step + WF_STEP_GAP)
         f->deadline += now - f->last_step;
     f->last_step = now;
-    if (now > f->deadline) { fetch_fail(ctx, f, "timed out", "TypeError"); return 1; }
+    f->last_step_valid = 1;
+    if (now > f->deadline) { f->failure_at="timeout"; fetch_fail(ctx, f, "timed out", "TypeError"); return 1; }
 #else
-    if (now_ms() > f->deadline) { fetch_fail(ctx, f, "timed out", "TypeError"); return 1; }
+    if (now_ms() > f->deadline) { f->failure_at="timeout"; fetch_fail(ctx, f, "timed out", "TypeError"); return 1; }
 #endif
 
     /* Backpressure: while the page is behind, stop reading.  The socket buffer
@@ -1423,11 +1739,16 @@ static int fetch_step(JSContext *ctx, struct wfetch *f)
     if (f->resolved && f->queued > WF_HIGHWATER) { f->deadline = now_ms() + WF_TIMEOUT; return 0; }
 
     int bits = g_net->poll(f->fd);
-    if (bits < 0 || (bits & SOCK_P_ERROR)) { fetch_fail(ctx, f, "connection failed", "TypeError"); return 1; }
+    if (bits < 0 || (bits & SOCK_P_ERROR)) { f->failure_at="connect-or-socket"; fetch_fail(ctx, f, "connection failed", "TypeError"); return 1; }
     if (!(bits & SOCK_P_CONNECTED)) return 0;             /* DNS/TCP/TLS still running */
 
     if (!f->started) {
-        if (fetch_send_request(ctx, f) != 0) { fetch_reject(ctx, f, "request could not be built"); return 1; }
+        int send_rc=fetch_send_request(ctx,f);
+        if(send_rc>0)return 0; /* pre-send replacement: poll its TLS next frame */
+        if(send_rc!=0) {
+            fetch_reject(ctx,f,send_rc==-2?"request transport could not start":"request could not be built");
+            return 1;
+        }
         f->state = WF_XFER;
     }
 
@@ -1435,10 +1756,19 @@ static int fetch_step(JSContext *ctx, struct wfetch *f)
         if (f->state == WF_FREE) return 1;    /* released underneath us */
         int64_t before = f->conn.resp.body_seen + f->conn.resp.hdr_bytes;
         int st = bxfer_pump(&f->conn);
+        if (!f->response_logged && h1_response_headers_done(&f->conn.resp)) {
+#ifndef WEBAPI_NO_FETCH_DIAGNOSTICS
+            printf("[webapi] fetch-response id=%d status=%d phase=%d hops=%d payload=%s\n",
+                   wf_handle(f), f->conn.resp.code, f->phase, f->hops,
+                   fetch_trace_payload(&f->conn.resp));
+#endif
+            f->response_logged = 1;
+        }
         /* Any progress re-arms the idle timeout. */
         if (f->conn.resp.body_seen + f->conn.resp.hdr_bytes != before)
             f->deadline = now_ms() + WF_TIMEOUT;
         if (st == H1_C_ERROR) {
+            if(fetch_retry_read(f))return 0;
             fetch_fail(ctx, f, h1_strerror(f->conn.err), "TypeError");
             return 1;
         }
@@ -1463,7 +1793,7 @@ static int fetch_step(JSContext *ctx, struct wfetch *f)
         if (st == H1_C_DONE) {
             if (f->phase == WF_PH_PREFLIGHT) {
                 const char *why = cors_check_preflight(f);
-                if (why) { fetch_reject(ctx, f, why); return 1; }
+                if (why) { f->failure_at="cors-preflight"; fetch_reject(ctx, f, why); return 1; }
                 f->phase = WF_PH_ACTUAL;
                 if (fetch_redial(f) != 0) { fetch_reject(ctx, f, "could not reopen after the preflight"); return 1; }
                 return f->js_work;
@@ -1491,6 +1821,68 @@ static uint8_t *ab_bytes(JSContext *ctx, JSValueConst v, size_t *len)
     uint8_t *p = JS_GetArrayBuffer(ctx, len, v);
     if (!p) JS_FreeValue(ctx, JS_GetException(ctx));
     return p;
+}
+
+/* Forgiving base64 for data: URLs. Keeping this in native code matters on the
+ * guest: Bilibili bootstraps its safety module from roughly half a megabyte
+ * of base64, and QuickJS spent an entire watchdog slice in String.replace
+ * before it decoded one byte. This implements the same whitespace/padding
+ * rules as the Fetch data-URL algorithm and returns an ArrayBuffer, or null
+ * for malformed input. */
+static int b64_value(unsigned char c)
+{
+    if (c >= 'A' && c <= 'Z') return c - 'A';
+    if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+    if (c >= '0' && c <= '9') return c - '0' + 52;
+    if (c == '+') return 62;
+    if (c == '/') return 63;
+    return -1;
+}
+
+static int b64_ws(unsigned char c)
+{ return c == 9 || c == 10 || c == 12 || c == 13 || c == 32; }
+
+static JSValue js_base64_decode(JSContext *ctx, JSValueConst t,
+                                int argc, JSValueConst *argv)
+{
+    (void)t;
+    size_t inlen = 0;
+    const char *in = argc ? JS_ToCStringLen(ctx, &inlen, argv[0]) : 0;
+    if (!in) return JS_EXCEPTION;
+    char *clean = (char *)malloc(inlen + 1);
+    if (!clean) { JS_FreeCString(ctx, in); return JS_ThrowOutOfMemory(ctx); }
+    size_t n = 0;
+    for (size_t i = 0; i < inlen; i++)
+        if (!b64_ws((unsigned char)in[i])) clean[n++] = in[i];
+    JS_FreeCString(ctx, in);
+
+    if (n % 4 == 0 && n && clean[n - 1] == '=') {
+        n -= (n > 1 && clean[n - 2] == '=') ? 2 : 1;
+    }
+    if (n % 4 == 1) { free(clean); return JS_NULL; }
+    for (size_t i = 0; i < n; i++) {
+        if (b64_value((unsigned char)clean[i]) < 0) {
+            free(clean); return JS_NULL;
+        }
+    }
+    size_t outlen = n * 6 / 8;
+    uint8_t *out = outlen ? (uint8_t *)malloc(outlen) : 0;
+    if (outlen && !out) { free(clean); return JS_ThrowOutOfMemory(ctx); }
+    size_t oi = 0;
+    for (size_t i = 0; i < n; i += 4) {
+        size_t rem = n - i;
+        int a = b64_value((unsigned char)clean[i]);
+        int b = rem > 1 ? b64_value((unsigned char)clean[i + 1]) : 0;
+        int c = rem > 2 ? b64_value((unsigned char)clean[i + 2]) : 0;
+        int d = rem > 3 ? b64_value((unsigned char)clean[i + 3]) : 0;
+        out[oi++] = (uint8_t)((a << 2) | (b >> 4));
+        if (rem >= 3) out[oi++] = (uint8_t)((b << 4) | (c >> 2));
+        if (rem >= 4) out[oi++] = (uint8_t)((c << 6) | d);
+    }
+    free(clean);
+    JSValue v = JS_NewArrayBufferCopy(ctx, out, outlen);
+    free(out);
+    return v;
 }
 
 /* An abort handle names both the slot and the generation that occupied it, so
@@ -1539,6 +1931,8 @@ static JSValue js_fetch_slots(JSContext *ctx, JSValueConst t, int argc, JSValueC
 static JSValue js_fetch_start(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
 {
     (void)t;
+    struct fetch_realm *owner=fetch_realm_for(ctx);
+    if(!owner||owner->stopped)return JS_ThrowTypeError(ctx,"fetch realm is closed");
 
     struct wfetch *f = 0;
     for (int i = 0; i < WF_MAX; i++) if (g_fetch[i].state == WF_FREE) { f = &g_fetch[i]; break; }
@@ -1570,14 +1964,20 @@ static JSValue js_fetch_start(JSContext *ctx, JSValueConst t, int argc, JSValueC
     else
 #endif
     if (!us) msg = "no URL";
-    else if (wurl_parse(us, g_loc_valid ? &g_loc : 0, &u) != 0) msg = "invalid URL";
+    else if (wurl_parse(us, owner->base_valid ? &owner->base : 0, &u) != 0) msg = "invalid URL";
 
     if (!msg) {
         int gen = f->gen;                    /* the generation must survive the wipe */
         memset(f, 0, sizeof *f);
         f->gen = gen;
         f->fd = -1;
+        f->owner=owner;f->ctx=ctx;
         f->url = u;
+        f->initiator = owner->origin;
+        f->initiator_valid = owner->origin_valid;
+        f->referrer = owner->base;
+        f->referrer_valid = owner->base_valid;
+        f->cookie_site=owner->site;f->cookie_site_valid=owner->site_valid;
         f->resolve = f->reject = JS_UNDEFINED;
         f->push = f->fin = f->fail = JS_UNDEFINED;
         h1_headers_init(&f->hdr);
@@ -1644,15 +2044,16 @@ static JSValue js_fetch_start(JSContext *ctx, JSValueConst t, int argc, JSValueC
             }
             JS_FreeValue(ctx, cv);
         }
-        if (fetch_dial(f) != 0) { h1_headers_free(&f->hdr); free(f->body); f->body = 0; msg = "could not open a socket"; }
+        if (fetch_dial(f) != 0) { f->failure_at = "connect-start"; f->conn.err = H1_E_TRANSPORT; fetch_trace_detail(f); h1_headers_free(&f->hdr); free(f->body); f->body = 0; msg = "could not open a socket"; }
         else if (f->mode == WF_MODE_SAME_ORIGIN && f->cross) {
             g_net->close(f->fd); f->fd = -1;
             h1_headers_free(&f->hdr); free(f->body); f->body = 0;
             msg = "mode 'same-origin' forbids a cross-origin request";
         } else if (wf_needs_preflight(f)) {
-            char origin[URL_HOST_MAX + 16];
-            wurl_origin(&f->url, origin, (int)sizeof origin);
-            if (!pfc_hit(origin, f->method, wf_creds(f), &f->hdr))
+            char origin[WURL_MAX], initiator[URL_HOST_MAX + 16];
+            fetch_cache_url(f, origin, (int)sizeof origin);
+            fetch_preflight_origin(f, initiator, (int)sizeof initiator);
+            if (!pfc_hit(initiator, origin, f->method, wf_creds(f), &f->hdr))
                 f->phase = WF_PH_PREFLIGHT;
         }
     }
@@ -1693,10 +2094,26 @@ static JSValue js_fetch_abort(JSContext *ctx, JSValueConst t, int argc, JSValueC
     if (slot < 0 || slot >= WF_MAX) return JS_FALSE;
     struct wfetch *f = &g_fetch[slot];
     if (f->state == WF_FREE || (f->gen & 4095) != gen) return JS_FALSE;
-    f->ctx = ctx;
-    fetch_fail(ctx, f, "aborted", "AbortError");
+#ifndef WEBAPI_FETCH_NO_OWNER
+    if(f->ctx!=ctx||f->owner!=fetch_realm_for(ctx)||f->owner->stopped)return JS_FALSE;
+#endif
+    fetch_fail(f->ctx, f, "aborted", "AbortError");
     return JS_TRUE;
 }
+
+#ifdef WEBAPI_FETCH_TEST_HOOKS
+int js_webapi_fetch_test_handle(JSContext *ctx)
+{
+    for(int i=0;i<WF_MAX;i++)if(g_fetch[i].state!=WF_FREE&&
+        (ctx?g_fetch[i].ctx==ctx:g_fetch[i].owner!=g_page_fetch))return wf_handle(&g_fetch[i]);
+    return -1;
+}
+int js_webapi_fetch_test_abort(JSContext *ctx,int handle)
+{
+    JSValue h=JS_NewInt32(ctx,handle),v=js_fetch_abort(ctx,JS_UNDEFINED,1,(JSValueConst*)&h);
+    int result=JS_ToBool(ctx,v);JS_FreeValue(ctx,h);JS_FreeValue(ctx,v);return result;
+}
+#endif
 
 /* ---- a delay the pump owns --------------------------------------------
  * EventSource has to wait `retry` milliseconds before reconnecting, and it has
@@ -1704,22 +2121,21 @@ static JSValue js_fetch_abort(JSContext *ctx, JSValueConst t, int argc, JSValueC
  * setTimeout) is not linked at all.  This is NOT a second event loop: the queue
  * is drained from js_webapi_pump, on the same clock the sockets are stepped
  * with, so a delay cannot fire between two steps of anything. */
-#define WT_MAX 8
-struct wtimer { int used; unsigned long long due; JSValue fn; };
-static struct wtimer g_timers[WT_MAX];
 
 static JSValue js_later(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
 {
+    struct fetch_realm *owner=fetch_realm_for(ctx);
+    if(!owner||owner->stopped)return JS_NewInt32(ctx,-1);
     (void)t;
     if (argc < 2 || !JS_IsFunction(ctx, argv[1])) return JS_NewInt32(ctx, -1);
     int32_t ms = 0;
     JS_ToInt32(ctx, &ms, argv[0]);
     if (ms < 0) ms = 0;
     for (int i = 0; i < WT_MAX; i++) {
-        if (g_timers[i].used) continue;
-        g_timers[i].used = 1;
-        g_timers[i].due = now_ms() + (unsigned long long)ms;
-        g_timers[i].fn = JS_DupValue(ctx, argv[1]);
+        if (owner->timers[i].used) continue;
+        owner->timers[i].used = 1;
+        owner->timers[i].due = now_ms() + (unsigned long long)ms;
+        owner->timers[i].fn = JS_DupValue(ctx, argv[1]);
         return JS_NewInt32(ctx, i);
     }
     return JS_NewInt32(ctx, -1);
@@ -1727,44 +2143,50 @@ static JSValue js_later(JSContext *ctx, JSValueConst t, int argc, JSValueConst *
 
 static JSValue js_cancel_later(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
 {
+    struct fetch_realm *owner=fetch_realm_for(ctx);
+    if(!owner||owner->stopped)return JS_NewInt32(ctx,-1);
     (void)t;
     int32_t id = -1;
     if (argc > 0) JS_ToInt32(ctx, &id, argv[0]);
-    if (id < 0 || id >= WT_MAX || !g_timers[id].used) return JS_FALSE;
-    g_timers[id].used = 0;
-    JS_FreeValue(ctx, g_timers[id].fn);
-    g_timers[id].fn = JS_UNDEFINED;
+    if (id < 0 || id >= WT_MAX || !owner->timers[id].used) return JS_FALSE;
+    owner->timers[id].used = 0;
+    JS_FreeValue(ctx, owner->timers[id].fn);
+    owner->timers[id].fn = JS_UNDEFINED;
     return JS_TRUE;
 }
 
 static int timers_run(JSContext *ctx)
 {
+    struct fetch_realm *owner=fetch_realm_for(ctx);
+    if(!owner||owner->stopped)return 0;
     int ran = 0;
     unsigned long long t = now_ms();
     for (int i = 0; i < WT_MAX; i++) {
-        if (!g_timers[i].used || g_timers[i].due > t) continue;
-        JSValue fn = g_timers[i].fn;
-        g_timers[i].used = 0;
-        g_timers[i].fn = JS_UNDEFINED;
+        if (!owner->timers[i].used || owner->timers[i].due > t) continue;
+        JSValue fn = owner->timers[i].fn;
+        owner->timers[i].used = 0;
+        owner->timers[i].fn = JS_UNDEFINED;
         JSValue r = JS_Call(ctx, fn, JS_UNDEFINED, 0, 0);
         if (JS_IsException(r)) JS_FreeValue(ctx, JS_GetException(ctx));
         JS_FreeValue(ctx, r);
         JS_FreeValue(ctx, fn);
         ran++;
+        if(owner->stopped)break;
     }
     return ran;
 }
 
-static int timers_live(void)
-{ for (int i = 0; i < WT_MAX; i++) if (g_timers[i].used) return 1; return 0; }
+static int timers_live(JSContext *ctx)
+{ struct fetch_realm *owner=fetch_realm_for(ctx);if(!owner||owner->stopped)return 0; for (int i = 0; i < WT_MAX; i++) if (owner->timers[i].used) return 1; return 0; }
 
 static void timers_clear(JSContext *ctx)
 {
+    struct fetch_realm *owner=fetch_realm_for(ctx);if(!owner)return;
     for (int i = 0; i < WT_MAX; i++) {
-        if (!g_timers[i].used) continue;
-        g_timers[i].used = 0;
-        if (ctx) JS_FreeValue(ctx, g_timers[i].fn);
-        g_timers[i].fn = JS_UNDEFINED;
+        if (!owner->timers[i].used) continue;
+        owner->timers[i].used = 0;
+        if (ctx) JS_FreeValue(ctx, owner->timers[i].fn);
+        owner->timers[i].fn = JS_UNDEFINED;
     }
 }
 
@@ -1779,7 +2201,14 @@ static JSValue js_cookie_get(JSContext *ctx, JSValueConst t)
     struct cookie_ctx cc;
     ck_ctx(&cc, &g_loc, 0);
     static char buf[CK_HEADER_MAX];              /* 8 KiB: not on the stack */
-    int n = cookie_header(jar(), &cc, now_unix(), buf, (int)sizeof buf);
+    struct cookie_header_diagnostics diag;
+    int n = cookie_header_with_diagnostics(jar(), &cc, CK_REQ_SAME_SITE,
+                                          now_unix(), buf, (int)sizeof buf, &diag);
+    if (n < 0) {
+        printf("[webapi] document-cookie error=%d required=%llu cap=%d count=%d\n",
+               n, (unsigned long long)diag.required_bytes, (int)sizeof buf, diag.eligible_count);
+        return JS_ThrowInternalError(ctx, "Cookie header exceeds capacity");
+    }
     return JS_NewString(ctx, n > 0 ? buf : "");
 }
 
@@ -1791,7 +2220,8 @@ static JSValue js_cookie_set(JSContext *ctx, JSValueConst t, JSValueConst v)
     if (!s) return JS_EXCEPTION;
     struct cookie_ctx cc;
     ck_ctx(&cc, &g_loc, 0);
-    cookie_set(jar(), &cc, s, now_unix());   /* a refusal is the normal outcome */
+    struct cookie_request request = cookie_request_for(&g_loc, g_loc_valid, 0, 0);
+    cookie_commit(cookie_set_ex(jar(), &cc, cookie_request_kind(&cc, &request), s, now_unix()));
     JS_FreeCString(ctx, s);
     return JS_UNDEFINED;
 }
@@ -1810,6 +2240,38 @@ static JSValue js_utf8(JSContext *ctx, JSValueConst t, int argc, JSValueConst *a
 /* The Encoding Standard's label table and single-byte indexes, plus the two
  * lookups the prelude's TextDecoder needs. Data, so it lives apart. */
 #include "js_encoding.inc"
+
+/* Workers need the same byte codecs as pages, but js_webapi_install owns ONE
+ * page's retained callbacks, location and fetch slots. Calling that installer
+ * in a worker would silently retarget the parent's state. This small prelude
+ * closes over only immutable table lookups and its own realm's globals. */
+static const char ENCODING_REALM_PRELUDE[] =
+"(function (__encLabel, __encIndex) { var G = globalThis;\n"
+#include "js_encoding_prelude.inc"
+"})\n";
+
+int js_webapi_install_encoding(JSContext *ctx)
+{
+    JSValue fn = JS_Eval(ctx, ENCODING_REALM_PRELUDE,
+                        sizeof ENCODING_REALM_PRELUDE - 1,
+                        "<encoding realm>", JS_EVAL_TYPE_GLOBAL);
+    if (JS_IsException(fn)) return -1;
+    JSValue args[2] = {
+        JS_NewCFunction(ctx, js_enc_label, "__encLabel", 1),
+        JS_NewCFunction(ctx, js_enc_index, "__encIndex", 1)
+    };
+    if (JS_IsException(args[0]) || JS_IsException(args[1])) {
+        JS_FreeValue(ctx, args[0]); JS_FreeValue(ctx, args[1]);
+        JS_FreeValue(ctx, fn);
+        return -1;
+    }
+    JSValue r = JS_Call(ctx, fn, JS_UNDEFINED, 2, (JSValueConst *)args);
+    JS_FreeValue(ctx, args[0]); JS_FreeValue(ctx, args[1]);
+    JS_FreeValue(ctx, fn);
+    int failed = JS_IsException(r);
+    JS_FreeValue(ctx, r);
+    return failed ? -1 : 0;
+}
 
 /* ---- non-special schemes ------------------------------------------------
  *
@@ -2044,8 +2506,13 @@ static int mq_feature(const char *feat, const char *val)
         return has_val && (!strcmp(val, g_vw >= g_vh ? "landscape" : "portrait"));
     if (!strcmp(feat, "prefers-color-scheme"))
         return has_val && !strcmp(val, "light");        /* the browser paints light */
-    if (!strcmp(feat, "prefers-reduced-motion"))
-        return !has_val ? 0 : !strcmp(val, "no-preference");
+    if (!strcmp(feat, "prefers-reduced-motion")) {
+        int reduced=0;
+#ifndef WEBAPI_HOST
+        reduced=setting_int("ui.reduce_motion",0)!=0;
+#endif
+        return !has_val ? reduced : !strcmp(val,reduced?"reduce":"no-preference");
+    }
     if (!strcmp(feat, "pointer") || !strcmp(feat, "any-pointer"))
         return has_val && !strcmp(val, "fine");         /* PS/2 mouse */
     if (!strcmp(feat, "hover") || !strcmp(feat, "any-hover"))
@@ -2102,12 +2569,25 @@ static int mq_one(const char *q, int len)
     return negate ? !ok : ok;
 }
 
+/* Optional for network-only host embeddings; the shipping browser always
+ * links the cascade. Keep its evaluator authoritative without replacing the
+ * live JS list/listeners with CSSOM's former snapshot object. */
+extern int css_media_matches(const char *, int) LOGIT_WEAK;
+LOGIT_WEAK_STUB(css_media_matches);
+
 static JSValue js_media_match(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
 {
     (void)t;
     if (argc < 1) return JS_FALSE;
     const char *q = JS_ToCString(ctx, argv[0]);
     if (!q) return JS_FALSE;
+#ifndef CSS_LIVE_NEGCTL_MEDIA_SCANNER
+    if (LOGIT_HAVE(css_media_matches)) {
+        int m = css_media_matches(q, -1);
+        JS_FreeCString(ctx, q);
+        return JS_NewBool(ctx, m);
+    }
+#endif
     int m = 0;
     const char *start = q;
     for (const char *p = q;; p++) {
@@ -2119,6 +2599,21 @@ static JSValue js_media_match(JSContext *ctx, JSValueConst t, int argc, JSValueC
     }
     JS_FreeCString(ctx, q);
     return JS_NewBool(ctx, m);
+}
+
+/* Correction 2026-09-09: screen.width/height were initialized from g_vw/g_vh,
+ * i.e. the browser window. The cascade owns the measured display dimensions;
+ * native accessors keep JS and device media queries on that same authority. */
+extern int css_screen_width(void) LOGIT_WEAK;
+extern int css_screen_height(void) LOGIT_WEAK;
+LOGIT_WEAK_STUB(css_screen_width);
+LOGIT_WEAK_STUB(css_screen_height);
+static JSValue screen_dimension(JSContext *ctx, JSValueConst t, int magic)
+{
+    (void)t;
+    int n = magic ? (LOGIT_HAVE(css_screen_height) ? css_screen_height() : 0)
+                  : (LOGIT_HAVE(css_screen_width) ? css_screen_width() : 0);
+    return JS_NewInt32(ctx, n);
 }
 
 /* ---- location (live) -------------------------------------------------- */
@@ -2219,8 +2714,7 @@ static JSValue loc_set(JSContext *ctx, JSValueConst t, JSValueConst v, int magic
         scopy(g_loc_raw, want, WURL_MAX);
         return JS_UNDEFINED;
     }
-    scopy(g_pending_nav, want, WURL_MAX);
-    g_have_pending_nav = 1;
+    queue_navigation(want);
     printf("[webapi] navigation requested: %s (the loader does not consume this yet)\n", want);
     return JS_UNDEFINED;
 }
@@ -2233,8 +2727,7 @@ static JSValue loc_assign(JSContext *ctx, JSValueConst t, int argc, JSValueConst
 static JSValue loc_reload(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
 {
     (void)ctx; (void)t; (void)argc; (void)argv;
-    scopy(g_pending_nav, g_loc_raw, WURL_MAX);
-    g_have_pending_nav = 1;
+    queue_navigation(g_loc_raw);
     return JS_UNDEFINED;
 }
 static JSValue loc_tostring(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
@@ -2259,77 +2752,108 @@ static const JSCFunctionListEntry loc_funcs[] = {
 /* ---- Storage (JS side) ------------------------------------------------ */
 
 static JSClassID storage_cid;
-static JSClassDef storage_class = { "Storage", 0, 0, 0, 0 };
+struct storage_binding { struct storage_key key; char *origin; };
+static void storage_finalizer(JSRuntime *rt, JSValue value)
+{
+    (void)rt;
+    struct storage_binding *b = JS_GetOpaque(value, storage_cid);
+    if (b) { free(b->origin); free(b); }
+}
+static JSClassDef storage_class = { "Storage", storage_finalizer, 0, 0, 0 };
 
-/* `new Storage()` is a TypeError on the platform: the interface object exists
- * to be referenced and to be the right-hand side of `instanceof`, not to be
- * constructed. Throwing is the behaviour, and it also means a page cannot make
- * an object that answers to `instanceof Storage` and is not one. */
 static JSValue storage_illegal_ctor(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
 {
     (void)t; (void)argc; (void)argv;
     return JS_ThrowTypeError(ctx, "Illegal constructor");
 }
+static struct storage_binding *store_of(JSContext *ctx, JSValueConst t)
+{ return JS_GetOpaque2(ctx, t, storage_cid); }
 
-static struct store *store_of(JSContext *ctx, JSValueConst t)
+static JSValue storage_io_error(JSContext *ctx, int rc)
 {
-    (void)ctx;
-    return (struct store *)JS_GetOpaque(t, storage_cid);
+    if(rc==STORAGE_NOMEM)return JS_ThrowOutOfMemory(ctx);
+    return JS_Throw(ctx,mk_error(ctx,"InvalidStateError",rc==STORAGE_CORRUPT?
+        "localStorage snapshots are corrupt; existing files were preserved":
+        "localStorage commit failed; reopen the browser before retrying"));
 }
-
 static JSValue st_get(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
 {
-    struct store *s = store_of(ctx, t);
-    if (!s || argc < 1) return JS_NULL;
-    const char *k = JS_ToCString(ctx, argv[0]);
-    if (!k) return JS_NULL;
-    int i = store_find(s, k);
+    struct storage_binding *s = store_of(ctx, t);
+    if (!s) return JS_EXCEPTION;
+    if (argc < 1) return JS_ThrowTypeError(ctx, "getItem requires a key");
+    size_t kn, vn;
+    const char *k = JS_ToCStringLen(ctx, &kn, argv[0]);
+    if (!k) return JS_EXCEPTION;
+    int status=storage_backend_status(&s->key);
+    if(status==STORAGE_CORRUPT || status==STORAGE_NOMEM){JS_FreeCString(ctx,k);return storage_io_error(ctx,status);}
+    const char *v = storage_backend_get(&s->key, k, kn, &vn);
     JS_FreeCString(ctx, k);
-    return i < 0 ? JS_NULL : JS_NewString(ctx, s->v[i].v);
+    return v ? JS_NewStringLen(ctx, v, vn) : JS_NULL;
 }
 static JSValue st_set(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
 {
-    struct store *s = store_of(ctx, t);
-    if (!s || argc < 2) return JS_UNDEFINED;
-    const char *k = JS_ToCString(ctx, argv[0]);
-    const char *v = JS_ToCString(ctx, argv[1]);          /* String() coercion, per spec */
-    int rc = (k && v) ? store_set(s, k, v) : -1;
-    if (k) JS_FreeCString(ctx, k);
-    if (v) JS_FreeCString(ctx, v);
-    if (rc == -2) return JS_ThrowRangeError(ctx, "QuotaExceededError: storage is full");
-    if (rc == -1) return JS_ThrowOutOfMemory(ctx);
+    struct storage_binding *s = store_of(ctx, t);
+    if (!s) return JS_EXCEPTION;
+    if (argc < 2) return JS_ThrowTypeError(ctx, "setItem requires a key and value");
+    size_t kn, vn;
+    const char *k = JS_ToCStringLen(ctx, &kn, argv[0]);
+    if (!k) return JS_EXCEPTION;
+    const char *v = JS_ToCStringLen(ctx, &vn, argv[1]);
+    if (!v) { JS_FreeCString(ctx, k); return JS_EXCEPTION; }
+    int rc = storage_backend_set(&s->key, k, kn, v, vn);
+    JS_FreeCString(ctx, k); JS_FreeCString(ctx, v);
+    if (rc == STORAGE_QUOTA) {
+#ifdef STORAGE_QUOTA_WRONG_CLASS
+        return JS_ThrowRangeError(ctx, "QuotaExceededError: storage is full");
+#else
+        return JS_Throw(ctx, mk_error(ctx, "QuotaExceededError", "storage is full"));
+#endif
+    }
+    if (rc == STORAGE_NOMEM) return JS_ThrowOutOfMemory(ctx);
+    if (rc == STORAGE_IO || rc == STORAGE_CORRUPT) return storage_io_error(ctx,rc);
+    if (rc != STORAGE_OK) return JS_ThrowTypeError(ctx, "invalid storage key");
     return JS_UNDEFINED;
 }
 static JSValue st_remove(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
 {
-    struct store *s = store_of(ctx, t);
-    if (!s || argc < 1) return JS_UNDEFINED;
-    const char *k = JS_ToCString(ctx, argv[0]);
-    if (!k) return JS_UNDEFINED;
-    int i = store_find(s, k);
-    if (i >= 0) store_erase(s, i);
+    struct storage_binding *s = store_of(ctx, t);
+    if (!s) return JS_EXCEPTION;
+    if (argc < 1) return JS_ThrowTypeError(ctx, "removeItem requires a key");
+    size_t kn;
+    const char *k = JS_ToCStringLen(ctx, &kn, argv[0]);
+    if (!k) return JS_EXCEPTION;
+    int rc=storage_backend_remove(&s->key, k, kn);
     JS_FreeCString(ctx, k);
-    return JS_UNDEFINED;
+    return rc==STORAGE_OK?JS_UNDEFINED:storage_io_error(ctx,rc);
 }
 static JSValue st_clear(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
 {
     (void)argc; (void)argv;
-    struct store *s = store_of(ctx, t);
-    if (s) while (s->n) store_erase(s, s->n - 1);
-    return JS_UNDEFINED;
+    struct storage_binding *s = store_of(ctx, t);
+    if (!s) return JS_EXCEPTION;
+    int rc=storage_backend_clear(&s->key);
+    return rc==STORAGE_OK?JS_UNDEFINED:storage_io_error(ctx,rc);
 }
 static JSValue st_key(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
 {
-    struct store *s = store_of(ctx, t);
-    if (!s || argc < 1) return JS_NULL;
-    int32_t i = 0;
-    JS_ToInt32(ctx, &i, argv[0]);
-    return (i < 0 || i >= s->n) ? JS_NULL : JS_NewString(ctx, s->v[i].k);
+    struct storage_binding *s = store_of(ctx, t);
+    if (!s) return JS_EXCEPTION;
+    if (argc < 1) return JS_ThrowTypeError(ctx, "key requires an index");
+    uint32_t i;
+    if (JS_ToUint32(ctx, &i, argv[0]) < 0) return JS_EXCEPTION;
+    size_t n;
+    int status=storage_backend_status(&s->key);
+    if(status==STORAGE_CORRUPT || status==STORAGE_NOMEM)return storage_io_error(ctx,status);
+    const char *k = storage_backend_key(&s->key, i, &n);
+    return k ? JS_NewStringLen(ctx, k, n) : JS_NULL;
 }
 static JSValue st_length(JSContext *ctx, JSValueConst t)
 {
-    struct store *s = store_of(ctx, t);
-    return JS_NewInt32(ctx, s ? s->n : 0);
+    struct storage_binding *s = store_of(ctx, t);
+    if(!s)return JS_EXCEPTION;
+    int status=storage_backend_status(&s->key);
+    if(status==STORAGE_CORRUPT || status==STORAGE_NOMEM)return storage_io_error(ctx,status);
+    return JS_NewInt32(ctx,(int)storage_backend_length(&s->key));
 }
 
 static const JSCFunctionListEntry storage_proto[] = {
@@ -2512,1306 +3036,16 @@ static const JSCFunctionListEntry hist_funcs[] = {
  * primitives arrive as ARGUMENTS rather than as globals a page could reach --
  * `__fetchStart` is not something script should be able to see or replace.
  * It returns the hooks C needs to call back into. */
+#ifdef JS_RUNTIME_DIAGNOSTICS
+#include "js_runtime_diagnostics.inc"
+#endif
 static const char *PRELUDE =
 "(function (__fetchStart, __utf8, __urlParse, __mediaMatch, __fetchAbort, __later,\n"
-"          __cancelLater, __fetchSlots, __encLabel, __encIndex) {\n"
+"          __cancelLater, __fetchSlots, __encLabel, __encIndex, __base64Decode, __xhrDiag) {\n"
 "'use strict';\n"
 "var G = globalThis;\n"
 
-/* ---- Headers ----
- * Used to be a bare [name,value] array with no guard, no validation and
- * insertion-order iteration. Four spec mechanisms were simply absent -- see
- * the cluster this closed for the corpus evidence -- and the fix is guard +
- * validation + sorted/combined iteration + getSetCookie, in that order,
- * because the guard is what stops a page from reading Host/Cookie/Origin back
- * off a Request it built itself (fetch's kernel side already drops those
- * before they reach the wire; this object used to just lie about it). */
-   /* mimesniff's HTTP-token helpers (isHTTPToken, stripHTTPWS, mimeParse) are
-      already installed by js_blob_prelude.inc, above. */
-"function hdrValidName(n) {\n"
-"  var s = String(n);\n"
-"  if (!isHTTPToken(s)) throw new TypeError(\"Invalid header name: '\" + s + \"'\");\n"
-"  return s;\n"
-"}\n"
-   /* Header values are ByteString in the IDL (a byte sequence, not text) --
-      any code unit above U+00FF must throw at the binding boundary, before
-      the value-specific rule even runs. That is checked on the RAW value,
-      before HTTP-whitespace stripping; the strip-then-check-for-NUL/CR/LF
-      that follows is the spec's own order for the rest of the rule, so a
-      bare \\n in the middle is still rejected even though leading/trailing
-      whitespace is not. */
-"function hdrValidValue(v) {\n"
-"  v = String(v);\n"
-"  for (var bi = 0; bi < v.length; bi++) if (v.charCodeAt(bi) > 255) throw new TypeError('Invalid header value');\n"
-"  var s = stripHTTPWS(v, true, true);\n"
-"  for (var i = 0; i < s.length; i++) {\n"
-"    var c = s.charCodeAt(i);\n"
-"    if (c === 0 || c === 10 || c === 13) throw new TypeError('Invalid header value');\n"
-"  }\n"
-"  return s;\n"
-"}\n"
-"var FORBIDDEN_REQ_HDR = ['accept-charset', 'accept-encoding', 'access-control-request-headers',\n"
-"  'access-control-request-method', 'connection', 'content-length', 'cookie', 'cookie2', 'date', 'dnt',\n"
-"  'expect', 'host', 'keep-alive', 'origin', 'referer', 'set-cookie', 'te', 'trailer', 'transfer-encoding',\n"
-"  'upgrade', 'via'];\n"
-"var FORBIDDEN_METHODS = ['connect', 'trace', 'track'];\n"
-   /* The override header's value can be a comma-separated list ("GET,track ");
-      ANY element naming a forbidden method makes the whole header forbidden,
-      not just an exact single-method match -- \"trace,\" (trailing comma, one
-      empty element) and \"GET,track \" (trailing space on the second element)
-      are both in the corpus specifically to catch a version that only
-      compares the trimmed WHOLE string. */
-"function isForbiddenMethod(v) {\n"
-"  var parts = String(v).split(',');\n"
-"  for (var i = 0; i < parts.length; i++)\n"
-"    if (FORBIDDEN_METHODS.indexOf(stripHTTPWS(parts[i], true, true).toLowerCase()) >= 0) return true;\n"
-"  return false;\n"
-"}\n"
-   /* The X-HTTP-Method(-Override) trio is forbidden only when its VALUE names
-      a forbidden method -- so this is a name+value check, not a name-only
-      one, and it is why delete() (which has no value) treats it as allowed. */
-"function isForbiddenReqHeaderName(n, v) {\n"
-"  var k = n.toLowerCase();\n"
-"  if (FORBIDDEN_REQ_HDR.indexOf(k) >= 0) return true;\n"
-"  if (k.slice(0, 6) === 'proxy-' || k.slice(0, 4) === 'sec-') return true;\n"
-"  if (k === 'x-http-method' || k === 'x-http-method-override' || k === 'x-method-override')\n"
-"    return v !== undefined && isForbiddenMethod(v);\n"
-"  return false;\n"
-"}\n"
-   /* CORS-unsafe-request-header-byte (fetch #cors-unsafe-request-header-byte):
-      a control byte other than TAB, or one of the punctuation bytes that make
-      a header value look like it is trying to smuggle syntax. */
-"function isCorsUnsafeByte(c) {\n"
-"  if (c < 0x20 && c !== 9) return true;\n"
-"  return c === 0x22 || c === 0x28 || c === 0x29 || c === 0x3A || c === 0x3C || c === 0x3E ||\n"
-"         c === 0x3F || c === 0x40 || c === 0x5B || c === 0x5C || c === 0x5D || c === 0x7B ||\n"
-"         c === 0x7D || c === 0x7F;\n"
-"}\n"
-"function hasCorsUnsafeByte(v) {\n"
-"  for (var i = 0; i < v.length; i++) if (isCorsUnsafeByte(v.charCodeAt(i))) return true;\n"
-"  return false;\n"
-"}\n"
-"function isCorsSafelistedLangValue(v) {\n"
-"  for (var i = 0; i < v.length; i++) {\n"
-"    var c = v.charCodeAt(i);\n"
-"    if (!((c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) ||\n"
-"          c === 32 || c === 42 || c === 44 || c === 45 || c === 46 || c === 59 || c === 61)) return false;\n"
-"  }\n"
-"  return true;\n"
-"}\n"
-"function isCorsSafelistedReqHeader(n, v) {\n"
-"  var k = String(n).toLowerCase(); v = String(v);\n"
-"  if (v.length > 128) return false;\n"
-"  if (k === 'accept') return !hasCorsUnsafeByte(v);\n"
-"  if (k === 'accept-language' || k === 'content-language') return isCorsSafelistedLangValue(v);\n"
-"  if (k === 'content-type') {\n"
-"    if (hasCorsUnsafeByte(v)) return false;\n"
-"    var m = mimeParse(v);\n"
-"    if (!m) return false;\n"
-"    var ess = m.type + '/' + m.subtype;\n"
-"    return ess === 'application/x-www-form-urlencoded' || ess === 'multipart/form-data' || ess === 'text/plain';\n"
-"  }\n"
-"  return false;\n"
-"}\n"
-   /* Whether a `set` (or an `append`'s OWN value, before combining -- see
-      below) with this guard must be silently dropped. 'immutable' is handled
-      separately by the callers below -- it THROWS rather than drops, per
-      spec, so it is not folded in here. */
-"function hdrGuardDrops(guard, n, v) {\n"
-"  if (guard === 'request') return isForbiddenReqHeaderName(n, v);\n"
-"  if (guard === 'request-no-cors') return !isCorsSafelistedReqHeader(n, v);\n"
-"  if (guard === 'response') { var k = n.toLowerCase(); return k === 'set-cookie' || k === 'set-cookie2'; }\n"
-"  return false;\n"
-"}\n"
-   /* delete()'s guard rule is a STRICT SUBSET of set()'s: the spec's "delete a
-      header" algorithm has cases for 'request' and 'response' but NONE for
-      'request-no-cors' -- a no-cors Headers object still allows deleting a
-      header it would have refused to ADD. Folding this into hdrGuardDrops
-      would make delete() silently keep a header the spec says must go. */
-"function hdrGuardDropsDelete(guard, n) {\n"
-"  if (guard === 'request') return isForbiddenReqHeaderName(n, undefined);\n"
-"  if (guard === 'response') { var k = n.toLowerCase(); return k === 'set-cookie' || k === 'set-cookie2'; }\n"
-"  return false;\n"
-"}\n"
-   /* Sorted-and-combined view (fetch #concept-header-list-sort-and-combine):
-      every iteration surface goes through this, and it is why Set-Cookie is
-      the one name that yields ONE ENTRY PER OCCURRENCE instead of a single
-      ', '-joined string -- combining Set-Cookie values the way every other
-      header combines is not merely wrong formatting, it is unparsiable back
-      into separate cookies. */
-"function hdrSortedCombined(l) {\n"
-"  var names = [];\n"
-"  for (var i = 0; i < l.length; i++) { var k = l[i][0].toLowerCase(); if (names.indexOf(k) < 0) names.push(k); }\n"
-"  names.sort();\n"
-"  var out = [];\n"
-"  for (i = 0; i < names.length; i++) {\n"
-"    var k2 = names[i];\n"
-"    if (k2 === 'set-cookie') {\n"
-"      for (var j = 0; j < l.length; j++) if (l[j][0].toLowerCase() === 'set-cookie') out.push([k2, l[j][1]]);\n"
-"    } else {\n"
-"      var vs = [];\n"
-"      for (j = 0; j < l.length; j++) if (l[j][0].toLowerCase() === k2) vs.push(l[j][1]);\n"
-"      out.push([k2, vs.join(', ')]);\n"
-"    }\n"
-"  }\n"
-"  return out;\n"
-"}\n"
-"G.Headers = function Headers(init) {\n"
-"  this._l = []; this._guard = 'none';\n"
-"  if (init !== undefined && init !== null) {\n"
-"    if (Array.isArray(init)) {\n"
-"      for (var i = 0; i < init.length; i++) {\n"
-"        var pair = init[i];\n"
-"        if (pair === null || typeof pair !== 'object' || typeof pair.length !== 'number' || pair.length !== 2)\n"
-"          throw new TypeError('Headers: each init entry must be a name/value pair');\n"
-"        this.append(pair[0], pair[1]);\n"
-"      }\n"
-"    } else if (init instanceof G.Headers) {\n"
-"      for (var j = 0; j < init._l.length; j++) this.append(init._l[j][0], init._l[j][1]);\n"
-"    } else if (typeof init.forEach === 'function') {\n"
-"      var self = this; init.forEach(function (v, k) { self.append(k, v); });\n"
-       /* Own enumerable string keys only -- NOT for...in, which would also
-          walk the prototype chain and pick up keys the caller never wrote. */
-"    } else {\n"
-"      var keys = Object.keys(init);\n"
-"      for (var kk = 0; kk < keys.length; kk++) this.append(keys[kk], init[keys[kk]]);\n"
-"    }\n"
-"  }\n"
-"};\n"
-"G.Headers.prototype = {\n"
-"  constructor: G.Headers,\n"
-"  append: function (n, v) {\n"
-"    n = hdrValidName(n); v = hdrValidValue(v);\n"
-"    if (this._guard === 'immutable') throw new TypeError('Headers is immutable');\n"
-     /* request-no-cors checks the COMBINED value (existing + ', ' + new), not
-        the new value alone -- appending "" onto an already-127-byte-long
-        Accept value must be refused because the RESULT would be 129 bytes,
-        even though "" by itself passes every per-value rule trivially. Get
-        this wrong and two safelisted appends in a row silently smuggle a
-        combined value that was never checked as a whole. */
-"    if (this._guard === 'request-no-cors') {\n"
-"      var existing = this.get(n);\n"
-"      var combined = existing === null ? v : existing + ', ' + v;\n"
-"      if (!isCorsSafelistedReqHeader(n, combined)) return;\n"
-"    } else if (hdrGuardDrops(this._guard, n, v)) return;\n"
-"    this._l.push([n, v]);\n"
-"  },\n"
-"  set: function (n, v) {\n"
-"    n = hdrValidName(n); v = hdrValidValue(v);\n"
-"    if (this._guard === 'immutable') throw new TypeError('Headers is immutable');\n"
-"    if (hdrGuardDrops(this._guard, n, v)) return;\n"
-"    var k = n.toLowerCase();\n"
-"    this._l = this._l.filter(function (p) { return p[0].toLowerCase() !== k; });\n"
-"    this._l.push([n, v]);\n"
-"  },\n"
-"  delete: function (n) {\n"
-"    n = hdrValidName(n);\n"
-"    if (this._guard === 'immutable') throw new TypeError('Headers is immutable');\n"
-"    if (!this.has(n)) return;\n"
-"    if (hdrGuardDropsDelete(this._guard, n)) return;\n"
-"    var k = n.toLowerCase();\n"
-"    this._l = this._l.filter(function (p) { return p[0].toLowerCase() !== k; });\n"
-"  },\n"
-"  has: function (n) { n = hdrValidName(n); var k = n.toLowerCase();\n"
-"    return this._l.some(function (p) { return p[0].toLowerCase() === k; }); },\n"
-   /* Several same-named headers join with ', ', which is what the spec says
-      and what makes Set-Cookie the one header you must not read this way --
-      get('set-cookie') still joins (the spec requires it, for callers that
-      have not been updated to getSetCookie), but nothing else in this file
-      should read Set-Cookie through get(). */
-"  get: function (n) { n = hdrValidName(n); var k = n.toLowerCase();\n"
-"    var v = this._l.filter(function (p) { return p[0].toLowerCase() === k; }).map(function (p) { return p[1]; });\n"
-"    return v.length ? v.join(', ') : null; },\n"
-"  getSetCookie: function () {\n"
-"    return this._l.filter(function (p) { return p[0].toLowerCase() === 'set-cookie'; }).map(function (p) { return p[1]; });\n"
-"  },\n"
-"  forEach: function (fn, t) { var s = this; hdrSortedCombined(this._l).forEach(function (p) { fn.call(t, p[1], p[0], s); }); },\n"
-"  keys: function () { return hdrSortedCombined(this._l).map(function (p) { return p[0]; })[Symbol.iterator](); },\n"
-"  values: function () { return hdrSortedCombined(this._l).map(function (p) { return p[1]; })[Symbol.iterator](); },\n"
-"  entries: function () { return hdrSortedCombined(this._l)[Symbol.iterator](); }\n"
-"};\n"
-"G.Headers.prototype[Symbol.iterator] = G.Headers.prototype.entries;\n"
-   /* Symbol.toStringTag: Object.prototype.toString on a Headers used to read
-      '[object Object]'. That is not cosmetic -- axios's kindOfTest and every
-      library built the same way (isXxx(v) = Object.prototype.toString.call(v)
-      === '[object Xxx]') use exactly this string to answer "is this a
-      Headers/Request/Response/ReadableStream", and gate real behaviour on the
-      answer. See the matching tags on Response/Request/ReadableStream below;
-      this is the same fix, once per interface, done where each prototype is
-      already being finished. */
-"Object.defineProperty(G.Headers.prototype, Symbol.toStringTag, { value: 'Headers', configurable: true });\n"
-
-/* ---- streams ----
- * A real ReadableStream, because Response.body has to be one and because a
- * chat reply is a stream before it is a string. The queue is a plain array and
- * a byte count; the byte count is what C reads back from push() to decide
- * whether to keep reading the socket, so it is load-bearing rather than
- * decorative. */
-   /* Captured HERE, before any page script has had a chance to run, so it is
-      the REAL Promise.prototype.then and not whatever a page later assigns
-      to that name. getReader() below uses it to mark a reader's `closed`
-      promise as handled without going through the (patchable) exposed
-      `.then`/`.catch` -- calling those instead makes `rs.pipeTo(ws)` itself
-      throw synchronously on a page that has patched Promise.prototype.then
-      (streams/readable-streams/patched-global.any.js does exactly this),
-      because getReader() runs synchronously at the top of pipeTo(), outside
-      the `new Promise` executor that would otherwise swallow it. */
-"var __nativeThen = Promise.prototype.then;\n"
-"function chLen(c) { return c == null ? 0 : (c.byteLength !== undefined ? c.byteLength : (c.length || 0)); }\n"
-"function rsPut(s, ch) {\n"
-"  if (s._st !== 'readable') return;\n"
-"  if (s._w.length) { s._w.shift()[0]({ value: ch, done: false }); return; }\n"
-"  s._q.push(ch); s._qb += chLen(ch);\n"
-"}\n"
-   /* rsClosedSettle notifies every watcher of reader.closed that the stream
-      has finished -- fulfilled on a normal close, rejected with the same
-      error on an error. It is the piece that was entirely missing: before
-      this, `closed` was `new Promise(function () {})`, an executor that
-      captures neither resolve nor reject, so nothing anywhere could ever
-      settle it and a page awaiting it hung forever with no error and no log
-      line (see the header of this finding in the tree's own notes). */
-"function rsClosedSettle(s) {\n"
-"  var w = s._cw; s._cw = [];\n"
-"  for (var i = 0; i < w.length; i++) {\n"
-"    if (s._st === 'errored') w[i][1](s._e); else w[i][0](undefined);\n"
-"  }\n"
-"}\n"
-"function rsEnd(s) {\n"
-"  if (s._st !== 'readable') return;\n"
-"  s._st = 'closed';\n"
-"  while (s._w.length) s._w.shift()[0]({ value: undefined, done: true });\n"
-"  rsClosedSettle(s);\n"
-"}\n"
-"function rsErr(s, e) {\n"
-"  if (s._st !== 'readable') { return; }\n"
-"  s._st = 'errored'; s._e = e;\n"
-"  while (s._w.length) s._w.shift()[1](e);\n"
-"  s._q = []; s._qb = 0;\n"
-"  rsClosedSettle(s);\n"
-"}\n"
-   /* pull() may be an async function -- its return value is a promise, and a
-      SYNCHRONOUS throw inside it never happens; the rejection surfaces only
-      through that promise. Before this fix the promise pull() returned was
-      simply dropped, so an async pull that rejected settled nothing: the
-      reader's read() stayed pending forever, with no error and no log line
-      (measured against axios's trackStream, whose pull ends
-      `.catch(err => { onFinish(err); throw err })` -- exactly this shape, and
-      exactly the shape a mid-stream network failure produces). Route it to
-      rsErr the same way a synchronous throw already is. */
-"function rsPull(s) {\n"
-"  if (typeof s._src.pull !== 'function') return;\n"
-"  try {\n"
-"    var __rp = s._src.pull(s._c);\n"
-"    if (__rp && typeof __rp.then === 'function') __rp.then(undefined, function (e) { rsErr(s, e); });\n"
-"  } catch (e) { rsErr(s, e); }\n"
-"}\n"
-"function rsRead(s) {\n"
-"  if (s._q.length) { var c = s._q.shift(); s._qb -= chLen(c); if (s._qb < 0) s._qb = 0;\n"
-"    rsPull(s); return Promise.resolve({ value: c, done: false }); }\n"
-"  if (s._st === 'closed') return Promise.resolve({ value: undefined, done: true });\n"
-"  if (s._st === 'errored') return Promise.reject(s._e);\n"
-"  return new Promise(function (res, rej) { s._w.push([res, rej]); rsPull(s); });\n"
-"}\n"
-"function rsCancel(s, reason) {\n"
-"  if (s._st === 'readable') { s._st = 'closed';\n"
-"    while (s._w.length) s._w.shift()[0]({ value: undefined, done: true });\n"
-"    rsClosedSettle(s); }\n"
-"  s._q = []; s._qb = 0;\n"
-"  if (typeof s._src.cancel === 'function') { try { s._src.cancel(reason); } catch (e) {} }\n"
-"  return Promise.resolve();\n"
-"}\n"
-"G.ReadableStream = function ReadableStream(src) {\n"
-"  var s = this;\n"
-"  s._src = src || {}; s._q = []; s._qb = 0; s._st = 'readable'; s._e = undefined;\n"
-"  s._w = []; s._cw = []; s._locked = false;\n"
-"  s._c = {\n"
-"    enqueue: function (ch) { rsPut(s, ch); },\n"
-"    close: function () { rsEnd(s); },\n"
-"    error: function (e) { rsErr(s, e); },\n"
-"    bytes: function () { return s._qb; },\n"
-"    get desiredSize() { return 65536 - s._qb; }\n"
-"  };\n"
-"  if (typeof s._src.start === 'function') s._src.start(s._c);\n"
-"};\n"
-"G.ReadableStream.prototype = {\n"
-"  constructor: G.ReadableStream,\n"
-"  get locked() { return this._locked; },\n"
-   /* getReader() gives the reader a real identity (`released`/`pair`) rather
-      than just flipping the stream's lock bit, because release() has to undo
-      exactly what THIS acquisition did: reject the reads THIS reader left
-      pending and settle THIS reader's `closed`, in a stream a second reader
-      may already be locking again by the time release() runs (spec:
-      ReadableStreamDefaultReaderRelease). `closedP` is built already-settled
-      when the stream finished before acquisition; otherwise its [res, rej]
-      pair is parked on s._cw for rsClosedSettle to find later.
-      `closedP` is a `var`, not a `const`, because the spec's release
-      algorithm has TWO cases and they are not the same case: if the stream
-      is still "readable" when release() runs, the EXISTING closedPromise is
-      rejected in place (same identity, now settled); otherwise (already
-      closed or errored) it is REPLACED with a brand-new rejected promise,
-      because the old one is already fulfilled/rejected and cannot be
-      un-settled. WPT tests this identity distinction directly
-      (default-reader.any.js "closed is replaced when stream closes and
-      reader releases its lock", templated.any.js "releasing the lock should
-      cause closed to reject and change identity") -- getting the branch
-      backwards is invisible to any test that only checks `.closed` rejects,
-      which is why it is called out here rather than left for the next
-      reader to rediscover. */
-"  getReader: function () {\n"
-"    if (this._locked) throw new TypeError('ReadableStream is locked');\n"
-"    var s = this; s._locked = true;\n"
-"    var released = false, pair = null;\n"
-"    var closedP = new Promise(function (res, rej) {\n"
-"      if (s._st === 'closed') { res(undefined); return; }\n"
-"      if (s._st === 'errored') { rej(s._e); return; }\n"
-"      pair = [res, rej]; s._cw.push(pair);\n"
-"    });\n"
-     /* Mark `closedP` handled through the CAPTURED native then, not the
-        exposed (patchable) one -- see __nativeThen's own comment above. */
-"    __nativeThen.call(closedP, undefined, function () {});\n"
-"    function release() {\n"
-"      if (released) return; released = true; s._locked = false;\n"
-"      var e = new TypeError('Reader was released');\n"
-"      while (s._w.length) s._w.shift()[1](e);\n"
-"      if (s._st === 'readable') {\n"
-"        if (pair) { var i = s._cw.indexOf(pair); if (i >= 0) s._cw.splice(i, 1); pair[1](e); }\n"
-"      } else {\n"
-"        closedP = Promise.reject(e);\n"
-"        __nativeThen.call(closedP, undefined, function () {});\n"
-"      }\n"
-"    }\n"
-"    return {\n"
-"      read: function () {\n"
-"        if (released) return Promise.reject(new TypeError('Reader was released'));\n"
-"        return rsRead(s);\n"
-"      },\n"
-     /* reader.cancel() does NOT release the reader -- ReadableStreamDefaultReaderCancel
-        is a thin wrapper over ReadableStreamCancel and never touches the lock.
-        The stream stays locked to THIS reader until an explicit releaseLock(),
-        same as a real browser: `await reader.cancel(); stream.locked` is still
-        true. This used to unlock unconditionally and mark the reader released
-        right here, which made a later releaseLock() a no-op (release()'s
-        `if (released) return` guard) -- and that silently skipped the
-        identity-replace `closed` needs on release (see getReader's own
-        comment on `closedP`), which is exactly what
-        templated.any.js's "(closed via cancel after getting reader):
-        releasing the lock should cause closed to reject and change identity"
-        checks. */
-"      cancel: function (r) {\n"
-"        if (released) return Promise.reject(new TypeError('Reader was released'));\n"
-"        return rsCancel(s, r);\n"
-"      },\n"
-"      releaseLock: function () { release(); },\n"
-"      get closed() { return closedP; }\n"
-"    };\n"
-"  },\n"
-"  cancel: function (r) { return rsCancel(this, r); },\n"
-"  tee: function () {\n"
-"    var cs = [null, null];\n"
-"    var out = [new G.ReadableStream({ start: function (c) { cs[0] = c; } }),\n"
-"               new G.ReadableStream({ start: function (c) { cs[1] = c; } })];\n"
-"    var rd = this.getReader();\n"
-"    (function loop() {\n"
-"      rd.read().then(function (r) {\n"
-"        if (r.done) { cs[0].close(); cs[1].close(); return; }\n"
-"        cs[0].enqueue(r.value); cs[1].enqueue(r.value); loop();\n"
-"      }, function (e) { cs[0].error(e); cs[1].error(e); });\n"
-"    })();\n"
-"    return out;\n"
-"  },\n"
-"  pipeTo: function (w) {\n"
-"    var rd = this.getReader(), wr = w.getWriter();\n"
-"    return new Promise(function (res, rej) {\n"
-"      (function loop() {\n"
-"        rd.read().then(function (r) {\n"
-"          if (r.done) { Promise.resolve(wr.close()).then(res, rej); return; }\n"
-"          Promise.resolve(wr.write(r.value)).then(loop, rej);\n"
-"        }, function (e) { try { wr.abort(e); } catch (x) {} rej(e); });\n"
-"      })();\n"
-"    });\n"
-"  },\n"
-"  pipeThrough: function (t) { this.pipeTo(t.writable); return t.readable; }\n"
-"};\n"
-"Object.defineProperty(G.ReadableStream.prototype, Symbol.toStringTag, { value: 'ReadableStream', configurable: true });\n"
-"if (typeof Symbol !== 'undefined' && Symbol.asyncIterator) {\n"
-"  G.ReadableStream.prototype[Symbol.asyncIterator] = function () {\n"
-"    var rd = this.getReader();\n"
-     /* return() cancels AND releases -- spec's CreateReadableStreamAsyncIterator
-        returnSteps do both (ReadableStreamReaderGenericCancel then
-        ReadableStreamReaderGenericRelease), synchronously one after the
-        other, not waiting for the cancel promise to settle. Before
-        reader.cancel() stopped auto-releasing (see cancel()'s own comment
-        above), this line got the release for free as cancel()'s side effect;
-        now that cancel() no longer does that, a `for await` loop that
-        `break`s would otherwise leave the stream locked forever. */
-"    return { next: function () { return rd.read(); },\n"
-"             'return': function () { rd.cancel(); rd.releaseLock(); return Promise.resolve({ done: true }); },\n"
-"             '@@asyncIterator': function () { return this; } };\n"
-"  };\n"
-"}\n"
-"G.WritableStream = function WritableStream(sink) { this._sink = sink || {}; this._locked = false; };\n"
-"G.WritableStream.prototype = {\n"
-"  constructor: G.WritableStream,\n"
-"  get locked() { return this._locked; },\n"
-"  getWriter: function () {\n"
-"    var s = this; s._locked = true;\n"
-"    return {\n"
-"      write: function (c) { return Promise.resolve(s._sink.write ? s._sink.write(c) : undefined); },\n"
-"      close: function () { return Promise.resolve(s._sink.close ? s._sink.close() : undefined); },\n"
-"      abort: function (e) { return Promise.resolve(s._sink.abort ? s._sink.abort(e) : undefined); },\n"
-"      releaseLock: function () { s._locked = false; },\n"
-"      ready: Promise.resolve(), closed: Promise.resolve()\n"
-"    };\n"
-"  }\n"
-"};\n"
-"G.TransformStream = function TransformStream(t) {\n"
-"  t = t || {};\n"
-"  var rc = null;\n"
-"  this.readable = new G.ReadableStream({ start: function (c) { rc = c; } });\n"
-"  var tc = { enqueue: function (c) { rc.enqueue(c); },\n"
-"             terminate: function () { rc.close(); },\n"
-"             error: function (e) { rc.error(e); } };\n"
-"  this.writable = new G.WritableStream({\n"
-"    write: function (chunk) { return Promise.resolve(t.transform ? t.transform(chunk, tc) : tc.enqueue(chunk)); },\n"
-"    close: function () { return Promise.resolve(t.flush ? t.flush(tc) : undefined).then(function () { rc.close(); }); },\n"
-"    abort: function (e) { rc.error(e); }\n"
-"  });\n"
-"  if (typeof t.start === 'function') t.start(tc);\n"
-"};\n"
-
-/* ---- bytes <-> text: TextEncoder / TextDecoder ----
- * Four hundred lines of Encoding Standard, in its own file. The thirty that
- * used to be here decoded UTF-8 and ignored the label argument entirely --
- * see the header of js_encoding_prelude.inc for what that cost and for what
- * is still not implemented. */
-#include "js_encoding_prelude.inc"
-
-/* ---- document.fonts ----
- * Ranked second in the corpus by files killed (182), behind only `CSS`, and
- * every one of them dies on `document.fonts.ready.then(...)` before its first
- * assertion. See the file header for why a promise that resolves immediately
- * is the true answer in this engine and not a stub. */
-#include "js_fontface_prelude.inc"
-
-/* ---- Blob / File ----
- * Real ones, not a fallback: see js_blob_prelude.inc's header for why this is
- * the file that gets to define G.Blob first. Needs TextEncoder (just
- * installed above) and __utf8/u8ab/rsOf (the last is a function DECLARATION
- * further down, hoisted to the top of this whole prelude function -- so
- * referencing it here, before its own text, is not a forward-reference bug). */
-#include "js_blob_prelude.inc"
-
-/* ---- AbortController ----
- * A real cancellation now that the socket ABI has a close: abort() shuts the
- * connection, it does not merely stop looking at what arrives. */
-   /* A real DOMException, not a plain Error wearing a `.name` property that
-      only LOOKS like one. `e instanceof DOMException` is the guard every
-      abort-aware fetch wrapper writes (`catch (e) { if (e instanceof
-      DOMException && e.name === 'AbortError') return; throw e; }`), and a
-      plain Error fails it, so a deliberate cancellation rethrows as an
-      uncaught error. `G.DOMException` is installed by js_platform.c, which
-      this file's OWN comment above js_webapi_install (search "Layering,
-      load-bearing") says runs AFTER js_webapi_install -- but that only
-      matters for code that runs at INSTALL time; abortError() is a function
-      body, not evaluated until a page actually calls .abort(), by which
-      point every install is long done. `|| TypeError` is the same
-      already-fallen-back-to-here shape as URL.createObjectURL's quota
-      errors above, for the pathological case of a fetch that aborts before
-      install finished. */
-"function abortError() { return new (G.DOMException || TypeError)('The operation was aborted.', 'AbortError'); }\n"
-"G.AbortSignal = function AbortSignal() { this.aborted = false; this.reason = undefined;\n"
-"  this.onabort = null; this._l = []; };\n"
-"G.AbortSignal.prototype = {\n"
-"  constructor: G.AbortSignal,\n"
-"  addEventListener: function (t, f) { if (t === 'abort' && typeof f === 'function') this._l.push(f); },\n"
-"  removeEventListener: function (t, f) { var i = this._l.indexOf(f); if (i >= 0) this._l.splice(i, 1); },\n"
-"  throwIfAborted: function () { if (this.aborted) throw this.reason; },\n"
-"  dispatchEvent: function () { return true; }\n"
-"};\n"
-"G.AbortController = function AbortController() { this.signal = new G.AbortSignal(); };\n"
-"G.AbortController.prototype.abort = function (reason) {\n"
-"  var s = this.signal;\n"
-"  if (s.aborted) return;\n"
-"  s.aborted = true;\n"
-"  s.reason = reason !== undefined ? reason : abortError();\n"
-"  var e = { type: 'abort', target: s };\n"
-"  if (typeof s.onabort === 'function') s.onabort(e);\n"
-"  s._l.slice().forEach(function (f) { f.call(s, e); });\n"
-"};\n"
-
-/* ---- the Body mixin, and extractBody ----
- * Shared between Response and Request (N2): before this, Response had
- * _drain/arrayBuffer/text/json/blob/clone and Request had NONE of it -- no
- * prototype at all, so `new Request(u).blob` was inherited from
- * Object.prototype and `new Request(u).blob()` threw "blob is not a
- * function". The two were never going to agree by construction once they
- * were two separately hand-maintained copies, so this is one copy installed
- * onto both prototypes. bytes() is new here too -- neither side had it. */
-"function rsOf(chunk) { return new G.ReadableStream({ start: function (c) { c.enqueue(chunk); c.close(); } }); }\n"
-"function bytesIndexOf(hay, needle, from) {\n"
-"  outer: for (var i = from; i <= hay.length - needle.length; i++) {\n"
-"    for (var j = 0; j < needle.length; j++) if (hay[i + j] !== needle[j]) continue outer;\n"
-"    return i;\n"
-"  }\n"
-"  return -1;\n"
-"}\n"
-   /* multipart/form-data (RFC 7578) at the byte level: each part is framed by
-      CRLF "--" boundary [CRLF | "--"], a CRLF-terminated header block, CRLF,
-      then the payload, ending 2 bytes before the next delimiter (the CRLF
-      that belongs to the delimiter, not the payload). Content-Disposition's
-      name/filename are read with a bare quoted-string regex -- no backslash-
-      unescaping -- which is the subset this draws the line at. */
-   /* No opening delimiter at all (an empty body, or one that never contained
-      the declared boundary) is a MALFORMED multipart body, not an empty-but-
-      valid one -- it throws, which formData() (a .then() callback) turns
-      into a rejected promise. An empty FormData is a legitimate RESULT of a
-      well-formed body with zero parts; it is not what a missing delimiter
-      means. */
-"function parseMultipart(bytes, boundary, fd) {\n"
-"  var db = new G.TextEncoder().encode('--' + boundary);\n"
-"  var pos = bytesIndexOf(bytes, db, 0);\n"
-"  if (pos < 0) throw new TypeError('formData: malformed multipart/form-data body');\n"
-"  pos += db.length;\n"
-"  for (;;) {\n"
-"    if (bytes[pos] === 45 && bytes[pos + 1] === 45) return;\n"
-"    if (bytes[pos] === 13 && bytes[pos + 1] === 10) pos += 2;\n"
-"    var hdrEnd = bytesIndexOf(bytes, [13, 10, 13, 10], pos);\n"
-"    if (hdrEnd < 0) return;\n"
-"    var hdrText = bytes.length ? __utf8(u8ab(bytes.slice(pos, hdrEnd))) : '';\n"
-"    pos = hdrEnd + 4;\n"
-"    var nextDelim = bytesIndexOf(bytes, db, pos);\n"
-"    if (nextDelim < 0) return;\n"
-"    var bodyEnd = nextDelim;\n"
-"    if (bytes[bodyEnd - 1] === 10 && bytes[bodyEnd - 2] === 13) bodyEnd -= 2;\n"
-"    var partBytes = bytes.slice(pos, bodyEnd);\n"
-"    var name = null, filename = null, partType = '';\n"
-"    hdrText.split('\\r\\n').forEach(function (line) {\n"
-"      var ci = line.indexOf(':');\n"
-"      if (ci < 0) return;\n"
-"      var hn = stripHTTPWS(line.slice(0, ci), true, true).toLowerCase();\n"
-"      var hv = stripHTTPWS(line.slice(ci + 1), true, true);\n"
-"      if (hn === 'content-disposition') {\n"
-"        var nm = /;\\s*name=\"([^\"]*)\"/i.exec(hv); if (nm) name = nm[1];\n"
-"        var fnm = /;\\s*filename=\"([^\"]*)\"/i.exec(hv); if (fnm) filename = fnm[1];\n"
-"      } else if (hn === 'content-type') { partType = hv; }\n"
-"    });\n"
-"    if (name !== null) {\n"
-"      if (filename !== null) fd.append(name, new G.File([partBytes], filename, { type: partType }), filename);\n"
-"      else fd.append(name, partBytes.length ? __utf8(u8ab(partBytes)) : '');\n"
-"    }\n"
-"    pos = nextDelim + db.length;\n"
-"  }\n"
-"}\n"
-   /* bodyUsed is a readonly IDL attribute on both interfaces -- a getter on
-      the shared prototype, backed by a private field internal code writes
-      directly (never through the public name, which has no setter). */
-"function installBody(proto) {\n"
-"  Object.defineProperty(proto, 'bodyUsed', {\n"
-"    get: function () { return !!this._bodyUsed; }, enumerable: true, configurable: true });\n"
-   /* bodyUsed's real definition (fetch #dom-body-bodyused) is "this's body is
-      non-null AND its stream is disturbed" -- NOT "a consuming method was
-      called". A bodyless Request/Response (no body: init member at all) can
-      have .text()/.blob()/etc called on it any number of times and bodyUsed
-      stays false throughout, because there was never a stream to disturb.
-      Setting the flag unconditionally at the top of drain (rather than only
-      once a real body exists) is exactly the bug the corpus's own
-      request-consume-empty.any.js is built to catch: repeated `assert_false
-      (request.bodyUsed)` after consuming a request that had no body. */
-"  proto._drain = function () {\n"
-"    if (this._bodyUsed) return Promise.reject(new TypeError('body already read'));\n"
-"    var b = this.body;\n"
-"    if (!b) return Promise.resolve([]);\n"
-"    this._bodyUsed = true;\n"
-"    var rd = b.getReader(), parts = [];\n"
-"    return new Promise(function (res, rej) {\n"
-"      (function loop() {\n"
-"        rd.read().then(function (r) {\n"
-"          if (r.done) { res(parts); return; }\n"
-"          parts.push(r.value); loop();\n"
-"        }, rej);\n"
-"      })();\n"
-"    });\n"
-"  };\n"
-"  proto.arrayBuffer = function () { return this._drain().then(joinParts); };\n"
-"  proto.text = function () { return this._drain().then(function (p) {\n"
-"    var ab = joinParts(p); return ab.byteLength ? __utf8(ab) : ''; }); };\n"
-"  proto.json = function () { return this.text().then(function (t) { return JSON.parse(t); }); };\n"
-   /* A real Blob, not an ArrayBuffer wearing a promise -- .blob()'s type must
-      carry Content-Type, and code that does `blob instanceof Blob` (or feeds
-      it straight back into `new Blob([...])`) needs the real class. The type
-      goes through G.Blob's own constructor, which runs it through
-      blobNormType (mimeParse + mimeSerialize, N3) -- so this already gets the
-      spec's "parse the header, serialize the record" behaviour for free. */
-"  proto.blob = function () { var self = this; return this._drain().then(function (p) {\n"
-"    return new G.Blob([joinParts(p)], { type: self.headers.get('content-type') || '' }); }); };\n"
-"  proto.bytes = function () { return this._drain().then(function (p) { return new Uint8Array(joinParts(p)); }); };\n"
-   /* formData(): the two BodyInit encodings a form actually produces. Content-
-      Type decides which -- application/x-www-form-urlencoded is decoded as
-      text (it is one), multipart/form-data is decoded at the BYTE level (a
-      part's payload is arbitrary binary, e.g. an uploaded file, and running
-      it through a text decoder first would corrupt it before parseMultipart
-      ever saw it). Neither branch is a stub: both build a real G.FormData
-      with real entries, not an empty one that merely satisfies `in`. What is
-      NOT here: content-transfer-encoding (quoted-printable/base64 parts) and
-      backslash-escaped quotes inside a filename -- undescribed rather than
-      silently wrong, because no caller in this tree's corpus needed them. */
-"  proto.formData = function () {\n"
-"    var self = this;\n"
-"    return this._drain().then(function (parts) {\n"
-"      var ct = self.headers.get('content-type') || '';\n"
-"      var rec = mimeParse(ct);\n"
-"      if (!rec) throw new TypeError('formData: missing or invalid Content-Type');\n"
-"      var essence = rec.type + '/' + rec.subtype;\n"
-"      var fd = new G.FormData();\n"
-"      if (essence === 'application/x-www-form-urlencoded') {\n"
-"        var ab = joinParts(parts);\n"
-"        var text = ab.byteLength ? __utf8(ab) : '';\n"
-"        if (text.length) text.split('&').forEach(function (pair) {\n"
-"          if (!pair) return;\n"
-"          var eq = pair.indexOf('=');\n"
-"          var k = eq < 0 ? pair : pair.slice(0, eq), v = eq < 0 ? '' : pair.slice(eq + 1);\n"
-"          fd.append(decodeURIComponent(k.replace(/\\+/g, ' ')), decodeURIComponent(v.replace(/\\+/g, ' ')));\n"
-"        });\n"
-"        return fd;\n"
-"      }\n"
-"      if (essence === 'multipart/form-data') {\n"
-"        var boundary = null;\n"
-"        for (var pi = 0; pi < rec.params.length; pi++) if (rec.params[pi][0] === 'boundary') boundary = rec.params[pi][1];\n"
-"        if (!boundary) throw new TypeError('formData: multipart/form-data with no boundary');\n"
-"        parseMultipart(new Uint8Array(joinParts(parts)), boundary, fd);\n"
-"        return fd;\n"
-"      }\n"
-"      throw new TypeError('formData: unsupported Content-Type');\n"
-"    });\n"
-"  };\n"
-"}\n"
-   /* fetch #concept-bodyinit-extract, the subset this engine needs. Returns
-      {stream, contentType}; contentType is null when the BodyInit carries no
-      opinion (ReadableStream, ArrayBuffer/view) and the caller must set it
-      itself only when the caller has not already set one -- same rule for
-      Request and Response because it is the same spec step on both sides of
-      the connection, which is the whole reason this is one function instead
-      of two copies that could drift. */
-"function extractBody(v) {\n"
-"  if (v === undefined || v === null) return { stream: null, contentType: null };\n"
-"  if (v instanceof G.ReadableStream) return { stream: v, contentType: null };\n"
-   /* The body IS the snapshot already taken at Blob-construction time, so no
-      re-copy is needed beyond the one .slice() that keeps the stream's chunk
-      independent of the Blob's own storage. */
-"  if (v instanceof G.Blob) return { stream: rsOf(v._b.slice()), contentType: v.type || null };\n"
-"  if (typeof v === 'string')\n"
-"    return { stream: rsOf(new G.TextEncoder().encode(v)), contentType: 'text/plain;charset=UTF-8' };\n"
-"  if (G.URLSearchParams && v instanceof G.URLSearchParams)\n"
-"    return { stream: rsOf(new G.TextEncoder().encode(v.toString())), contentType: 'application/x-www-form-urlencoded;charset=UTF-8' };\n"
-   /* FormData -> multipart/form-data, the wire encoding formData() (installBody,
-      above) decodes back -- the two are meant to round-trip. The boundary is
-      random per call, as any implementation's must be: the whole reason a
-      boundary exists is that it cannot collide with anything a part's own
-      bytes could contain. */
-"  if (G.FormData && v instanceof G.FormData) {\n"
-"    var boundary = 'LogitFormBoundary' + Math.random().toString(36).slice(2) + Date.now().toString(36);\n"
-"    var enc = new G.TextEncoder(), chunks = [];\n"
-"    v.forEach(function (val, key) {\n"
-"      chunks.push(enc.encode('--' + boundary + '\\r\\n'));\n"
-"      if (val instanceof G.Blob) {\n"
-"        var filename = val.name !== undefined ? val.name : 'blob';\n"
-"        chunks.push(enc.encode('Content-Disposition: form-data; name=\"' + key + '\"; filename=\"' + filename + '\"\\r\\n'));\n"
-"        chunks.push(enc.encode('Content-Type: ' + (val.type || 'application/octet-stream') + '\\r\\n\\r\\n'));\n"
-"        chunks.push(val._b);\n"
-"      } else {\n"
-"        chunks.push(enc.encode('Content-Disposition: form-data; name=\"' + key + '\"\\r\\n\\r\\n'));\n"
-"        chunks.push(enc.encode(String(val)));\n"
-"      }\n"
-"      chunks.push(enc.encode('\\r\\n'));\n"
-"    });\n"
-"    chunks.push(enc.encode('--' + boundary + '--\\r\\n'));\n"
-"    var total = 0, ci;\n"
-"    for (ci = 0; ci < chunks.length; ci++) total += chunks[ci].length;\n"
-"    var all = new Uint8Array(total), o = 0;\n"
-"    for (ci = 0; ci < chunks.length; ci++) { all.set(chunks[ci], o); o += chunks[ci].length; }\n"
-"    return { stream: rsOf(all), contentType: 'multipart/form-data; boundary=' + boundary };\n"
-"  }\n"
-"  return { stream: rsOf(toU8(v)), contentType: null };\n"
-"}\n"
-
-"var NULL_BODY_STATUS = [204, 205, 304];\n"
-/* ---- Response ----
- * The body is a ReadableStream in every case, including the one where C
- * already had all the bytes: one shape means text()/json() cannot accidentally
- * work only for buffered responses. */
-"G.Response = function Response(body, init) {\n"
-"  init = init || {};\n"
-"  this.status = init.status === undefined ? 200 : (init.status | 0);\n"
-   /* __allowStatus0 is not part of the public interface -- it exists so
-      Response.error() (status 0, per spec) and Response.prototype.clone()
-      (which may be cloning an error response) can reach this constructor
-      without going through the validation an ordinary `new Response(...)`
-      call must satisfy. */
-"  if (!init.__allowStatus0 && (this.status < 200 || this.status > 599))\n"
-"    throw new RangeError('Response: status must be in the range 200 to 599, inclusive');\n"
-"  this.statusText = init.statusText === undefined ? '' : String(init.statusText);\n"
-   /* A reason-phrase is HTAB / SP-~ / obs-text (RFC 7230) -- the exact set
-      isHTTPQSChar already enforces for header VALUES, reused here rather than
-      writing a second copy of the same byte-range check. "\\n" and "Ā"
-      (U+0100, outside 0x00..0xFF entirely) are the corpus's own two cases. */
-"  for (var __sti = 0; __sti < this.statusText.length; __sti++)\n"
-"    if (!isHTTPQSChar(this.statusText.charCodeAt(__sti)))\n"
-"      throw new TypeError('Response: statusText is not a valid reason phrase');\n"
-   /* Always a FRESH Headers, even when init.headers is already one -- cloning
-      a Response used to alias the same Headers object between clone and
-      original (a mutation to one's headers silently reached the other)
-      because this used to reuse init.headers when it was already a Headers
-      instance instead of copying it. new G.Headers(headers) copies. */
-"  this.headers = new G.Headers(init.headers);\n"
-"  this.headers._guard = 'response';\n"
-"  this.url = init.url || '';\n"
-"  this.redirected = !!init.redirected;\n"
-   /* A script-constructed Response is ALWAYS 'default' -- basic/cors/opaque/
-      opaqueredirect are properties of a response that came off the NETWORK
-      (set explicitly by mkResponse, below, from the real fetch machinery),
-      never a default a bare `new Response()` should invent for itself. */
-"  this.type = init.type || 'default';\n"
-"  this.ok = this.status >= 200 && this.status < 300;\n"
-"  this._bodyUsed = false;\n"
-"  if (body === undefined || body === null) { this.body = null; }\n"
-"  else {\n"
-     /* fetch #null-body-status: 204/205/304 may never carry a body, script-
-        constructed or not. */
-"    if (NULL_BODY_STATUS.indexOf(this.status) >= 0)\n"
-"      throw new TypeError('Response: a ' + this.status + ' response cannot have a body');\n"
-"    var eb = extractBody(body);\n"
-"    this.body = eb.stream;\n"
-"    if (eb.contentType && !this.headers.has('content-type')) this.headers.set('content-type', eb.contentType);\n"
-"  }\n"
-"};\n"
-"G.Response.prototype = {\n"
-"  constructor: G.Response,\n"
-"  clone: function () {\n"
-"    if (this.bodyUsed) throw new TypeError('body already read');\n"
-"    var t = this.body ? this.body.tee() : [null, null];\n"
-"    this.body = t[0];\n"
-"    return new G.Response(t[1], { status: this.status, statusText: this.statusText,\n"
-"      headers: this.headers, url: this.url, redirected: this.redirected, type: this.type,\n"
-"      __allowStatus0: this.status === 0 });\n"
-"  }\n"
-"};\n"
-"installBody(G.Response.prototype);\n"
-"Object.defineProperty(G.Response.prototype, Symbol.toStringTag, { value: 'Response', configurable: true });\n"
-   /* Response.error(): status 0, an IMMUTABLE Headers (append/set/delete all
-      throw) and type 'error' -- the immutability is the one thing that
-      cannot be reached any other way: response-static-error.any.js's only
-      subtest is that `.headers.append(...)` throws on the object this
-      returns. */
-"G.Response.error = function () {\n"
-"  var r = new G.Response(null, { status: 0, type: 'error', __allowStatus0: true });\n"
-"  r.headers._guard = 'immutable';\n"
-"  return r;\n"
-"};\n"
-"G.Response.redirect = function (url, status) {\n"
-"  var u;\n"
-"  try { u = new G.URL(String(url), (G.document && G.document.baseURI) || (G.location && G.location.href)); }\n"
-"  catch (e) { throw new TypeError(\"Response.redirect: '\" + url + \"' is not a valid URL\"); }\n"
-"  status = status === undefined ? 302 : (status | 0);\n"
-"  if ([301, 302, 303, 307, 308].indexOf(status) < 0)\n"
-"    throw new RangeError('Response.redirect: status must be one of 301, 302, 303, 307, 308');\n"
-"  var r = new G.Response(null, { status: status, type: 'default' });\n"
-"  r.headers.set('Location', u.href);\n"
-"  return r;\n"
-"};\n"
-"G.Response.json = function (v, init) {\n"
-"  init = init || {};\n"
-"  if (init.status !== undefined && ((init.status | 0) < 200 || (init.status | 0) > 599))\n"
-"    throw new RangeError('Response.json: status must be in the range 200 to 599, inclusive');\n"
-"  var body = JSON.stringify(v);\n"
-"  if (body === undefined) throw new TypeError('Response.json: value has no JSON representation');\n"
-"  var h = new G.Headers(init.headers);\n"
-"  if (!h.has('content-type')) h.set('content-type', 'application/json');\n"
-"  return new G.Response(body, { status: init.status, statusText: init.statusText, headers: h, type: 'default' });\n"
-"};\n"
-
-/* ---- fetch ---- */
-"function pairsOf(o) { var p = [], k; for (k in o) p.push([k, o[k]]); return p; }\n"
-/* data: URLs. A fetch of one must never reach the socket: there is no host to
- * connect to, and before this it went through url parsing, came out as a
- * hostname of "text/plain;base64,..." and failed DNS -- which is a confusing
- * way to say "this URL contains its own answer".
- *
- * It matters beyond neatness because it is the transport for
- * URL.createObjectURL (js_platform.c): that returns a data: URL rather than a
- * blob: one precisely so that the thing it returns can be dereferenced, and a
- * fetch that could not read one would make that a lie.
- *
- * The response is a real Response, built through the same ReadableStream path
- * as a network one -- so `await (await fetch(u)).text()` behaves identically --
- * with status 200 and the declared Content-Type. RFC 2397: an omitted type is
- * text/plain;charset=US-ASCII, and ;base64 is the only supported encoding. */
-   /* ASCII whitespace (Infra): TAB LF FF CR SPACE -- note this INCLUDES \\f,
-      unlike the HTTP whitespace used by mimeParse above. That difference is
-      not pedantry: the data: URL processor works on the raw path text, where
-      a literal \\f in the source has already been PERCENT-ENCODED to the
-      three bytes "%0c" by the URL parser before this function ever runs (a
-      C0 control cannot survive into an opaque path unescaped) -- so the type
-      string this function strips whitespace from never contains a raw \\f to
-      strip in the first place, and the surviving "%0c" text passes straight
-      through mimeParse as ordinary token bytes ('%' is a valid HTTP token
-      character -- see the note on isHTTPTokenChar). Get that backwards and
-      the "%0c" reads as needing decoding, which is exactly the trap this
-      comment exists to name before someone reaches for decodeURIComponent. */
-"function isASCIIWSc(c) { return c === 9 || c === 10 || c === 12 || c === 13 || c === 32; }\n"
-"function stripASCIIWS(s, lead, trail) {\n"
-"  var i = 0, j = s.length;\n"
-"  if (lead) while (i < j && isASCIIWSc(s.charCodeAt(i))) i++;\n"
-"  if (trail) while (j > i && isASCIIWSc(s.charCodeAt(j - 1))) j--;\n"
-"  return s.slice(i, j);\n"
-"}\n"
-   /* Percent-decode to BYTES, not to a JS string via decodeURIComponent --
-      decodeURIComponent throws on a %-triplet that is not valid UTF-8 (e.g.
-      "data:,%FF"), and the spec's answer for that input is the single byte
-      0xFF, not an exception and not the three literal characters "%FF". Runs
-      of plain (non-percent-triplet) characters are batched and handed to
-      TextEncoder together, which is what keeps a surrogate pair intact. */
-"function isHexDigit(c) { return (c >= 48 && c <= 57) || (c >= 65 && c <= 70) || (c >= 97 && c <= 102); }\n"
-"function percentDecodeBytes(s) {\n"
-"  var out = [], i = 0, n = s.length;\n"
-"  while (i < n) {\n"
-"    if (s.charCodeAt(i) === 37 && i + 2 < n && isHexDigit(s.charCodeAt(i + 1)) && isHexDigit(s.charCodeAt(i + 2))) {\n"
-"      out.push(parseInt(s.substr(i + 1, 2), 16));\n"
-"      i += 3;\n"
-"    } else {\n"
-"      var j = i;\n"
-"      while (j < n && !(s.charCodeAt(j) === 37 && j + 2 < n && isHexDigit(s.charCodeAt(j + 1)) && isHexDigit(s.charCodeAt(j + 2)))) j++;\n"
-"      var enc = new G.TextEncoder().encode(s.slice(i, j));\n"
-"      for (var k = 0; k < enc.length; k++) out.push(enc[k]);\n"
-"      i = j;\n"
-"    }\n"
-"  }\n"
-"  return out;\n"
-"}\n"
-   /* Forgiving-base64 decode (Infra #forgiving-base64-decode). Every failure
-      mode here is its own subtest in the corpus (a lone '=' pair when
-      length%4 isn't 0, a length%4===1 remainder, a non-alphabet byte) rather
-      than one blanket "invalid base64" check, which is what the old
-      `.replace(/[^A-Za-z0-9+/]/g, '')` version collapsed them all into --
-      deleting illegal characters instead of failing is why it silently
-      accepted "abcd ===" and every other case in this cluster's evidence. */
-"function forgivingBase64Decode(data) {\n"
-"  data = data.replace(/[\\t\\n\\f\\r ]/g, '');\n"
-"  var n = data.length;\n"
-"  if (n % 4 === 0 && n > 0 && data.charAt(n - 1) === '=') {\n"
-"    data = data.charAt(n - 2) === '=' ? data.slice(0, n - 2) : data.slice(0, n - 1);\n"
-"    n = data.length;\n"
-"  }\n"
-"  if (n % 4 === 1) return null;\n"
-"  var B64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';\n"
-"  for (var ci = 0; ci < n; ci++) if (B64.indexOf(data.charAt(ci)) < 0) return null;\n"
-"  var out = [];\n"
-"  for (var gi = 0; gi < n; gi += 4) {\n"
-"    var rem = n - gi;\n"
-"    var c0 = B64.indexOf(data.charAt(gi));\n"
-"    var c1 = rem > 1 ? B64.indexOf(data.charAt(gi + 1)) : 0;\n"
-"    var c2 = rem > 2 ? B64.indexOf(data.charAt(gi + 2)) : 0;\n"
-"    var c3 = rem > 3 ? B64.indexOf(data.charAt(gi + 3)) : 0;\n"
-"    out.push(((c0 << 2) | (c1 >> 4)) & 255);\n"
-"    if (rem >= 3) out.push(((c1 << 4) | (c2 >> 2)) & 255);\n"
-"    if (rem >= 4) out.push(((c2 << 6) | c3) & 255);\n"
-"  }\n"
-"  return out;\n"
-"}\n"
-   /* fetch #data-url-processor, transcribed step for step -- reusing the real
-      URL parser (rather than string-splitting on "data:") is what makes the
-      fragment get stripped correctly ("data:,X#X" is ONE byte, not three) and
-      what makes an opaque-path parse failure ("data://test:test/,X") reject
-      the same way the spec's step 1 assertion would. */
-"function dataURL(url) {\n"
-"  var u = parsedURLOrNull(url);\n"
-"  if (!u || u.protocol.toLowerCase() !== 'data:') return null;\n"
-"  var full = u.hash ? u.href.slice(0, u.href.length - u.hash.length) : u.href;\n"
-"  var input = full.slice(5);\n"
-"  var comma = input.indexOf(',');\n"
-"  if (comma < 0) return null;\n"
-"  var mimeType = stripASCIIWS(input.slice(0, comma), true, true);\n"
-"  var encodedBody = input.slice(comma + 1);\n"
-"  var bodyBytes = percentDecodeBytes(encodedBody);\n"
-"  var bytes;\n"
-   /* The ";base64" marker tolerates ASCII whitespace around the ';' and
-      after "base64", but NOT inside the word "base64" itself --
-      "data:; base64,WA" and "data:;  base64,WA" are still base64 (the
-      corpus's own cases), but "data:;base 64,WA" (a space INSIDE the word)
-      must stay literal. A blanket "strip every whitespace character, then
-      compare" pass (the first thing this looked like it should be) matches
-      "base 64" too, which is why it is a regex anchored on a literal,
-      unbroken "base64" instead. Only the base64-detection path folds the
-      surrounding whitespace away; the ordinary (non-base64) path keeps it
-      exactly as written, because a quoted parameter value is allowed to
-      contain it. */
-"  var b64m = /;[\\t\\n\\f\\r ]*base64[\\t\\n\\f\\r ]*$/i.exec(mimeType);\n"
-"  if (b64m) {\n"
-"    var s = '';\n"
-"    for (var bi = 0; bi < bodyBytes.length; bi++) s += String.fromCharCode(bodyBytes[bi]);\n"
-"    var decoded = forgivingBase64Decode(s);\n"
-"    if (decoded === null) return null;\n"
-"    bytes = new Uint8Array(decoded);\n"
-"    mimeType = stripASCIIWS(mimeType.slice(0, b64m.index), false, true);\n"
-"  } else {\n"
-"    bytes = new Uint8Array(bodyBytes);\n"
-"  }\n"
-"  if (mimeType.charAt(0) === ';') mimeType = 'text/plain' + mimeType;\n"
-"  var rec = mimeParse(mimeType);\n"
-"  var type = rec ? mimeSerialize(rec) : 'text/plain;charset=US-ASCII';\n"
-"  var ctrl = null;\n"
-"  var stream = new G.ReadableStream({ start: function (c) { ctrl = c; } });\n"
-"  var r = new G.Response(stream, { status: 200, statusText: 'OK',\n"
-"    headers: [['content-type', type], ['content-length', String(bytes.length)]],\n"
-"    url: url, redirected: false, type: 'basic' });\n"
-"  ctrl.enqueue(bytes);\n"
-"  ctrl.close();\n"
-"  return r;\n"
-"}\n"
-/* ---- the request queue ----
- * WHY: WF_MAX is 8, and before this a ninth concurrent fetch was REJECTED with
- * `TypeError: too many requests in flight`. That is not what a browser does
- * and it is not a limit a page can be expected to respect -- bing's own script
- * loader fires a burst of a dozen, and eight of them arriving and four failing
- * leaves the page in a state it has no code for. tests/qmp/qmp_bing.py is
- * where that showed up: the fixture served 13 resources and the serial log
- * filled with the rejection.
- *
- * So requests past the limit WAIT instead. The limit is 6 rather than WF_MAX
- * so a slot is always left for something the browser itself needs (a
- * stylesheet, an image) rather than a page's telemetry burst taking all of
- * them -- and because the kernel's socket table is the real scarce resource
- * underneath.
- *
- * The queue is FIFO, which is the only ordering a page can reason about; an
- * abort while queued rejects immediately and never dials. */
-/* THE QUEUE WAS RIGHT AND ITS PERMIT WAS MEASURING THE WRONG THING.
- *
- * MEASURED on the real machine, kimi.com over the real network: 144 x
- * `Uncaught (in promise) TypeError: too many requests in flight`, with 30
- * sub-resources arriving out of 108 requests -- the page painted its shell and
- * none of its data, because the sidebar, the logo and the feature chips all
- * come from calls that were among the 144. One bug, not two.
- *
- * The reason a queue with an UNBOUNDED array still rejected: `st.p` settles
- * when the RESPONSE HEADERS arrive, which is what the spec says and what makes
- * streaming work -- but the C-side `struct wfetch` slot stays occupied until
- * the BODY finishes. So fqLive was released at header time, the queue admitted
- * the next request, and with eight slots and bodies still draining it
- * eventually asked for a ninth. fqLive counted permits; the slots were the
- * resource.
- *
- * Three changes, and the third is the one that makes the failure impossible
- * rather than unlikely:
- *   - admission is gated on __fetchSlots(), the real free-slot count, as well
- *     as on FQ_MAX;
- *   - a full slot table reports `busy` instead of rejecting (see
- *     js_fetch_start), and the entry goes back to the FRONT of the queue so
- *     FIFO order survives a retry;
- *   - the drain is re-armed on a timer while anything is waiting, because a
- *     slot frees when a BODY completes and that is not an event the JS side
- *     can otherwise observe. 16 ms, on the pump's own clock (__later), so it
- *     cannot fire between two steps of a transfer.
- *
- * The queue's depth is bounded by memory, as it should be: a page may
- * legitimately have hundreds of fetches outstanding, and kimi does. */
-"var FQ_MAX = 6;\n"
-"var fqLive = 0, fqQ = [], fqTimer = -1;\n"
-"function fqRearm() {\n"
-"  if (fqTimer >= 0 || !fqQ.length) return;\n"
-"  fqTimer = __later(16, function () { fqTimer = -1; fqDrain(); });\n"
-   /* __later has eight slots and EventSource reconnections can hold them. A
-      queue that failed to re-arm would stall until some other fetch finished,
-      and if none were live it would stall for ever -- so fall back to the
-      page's own timer when there is one. */
-"  if (fqTimer < 0 && typeof G.setTimeout === 'function')\n"
-"    G.setTimeout(function () { fqDrain(); }, 16);\n"
-"}\n"
-"function fqCanStart() {\n"
-"  if (fqLive >= FQ_MAX) return false;\n"
-"  return __fetchSlots() > 0;\n"
-"}\n"
-"function fqStart(e) {\n"
-"  var st = __fetchStart(e.url, e.method, e.pairs, e.body, e.opts);\n"
-   /* Lost the race for the slot between fqCanStart and here, or called
-      without one. Put it back at the FRONT -- it was next -- and wait. */
-"  if (!st || !st.p) { fqQ.unshift(e); fqRearm(); return; }\n"
-"  e.started = true;\n"
-"  fqLive++;\n"
-"  if (e.sig && typeof e.sig.addEventListener === 'function')\n"
-"    e.sig.addEventListener('abort', function () { __fetchAbort(st.h); });\n"
-"  if (e.sig && e.sig.aborted) __fetchAbort(st.h);\n"
-"  var done = function () { fqLive--; fqDrain(); };\n"
-"  st.p.then(function (v) { done(); e.res(v); }, function (x) { done(); e.rej(x); });\n"
-"}\n"
-"function fqDrain() {\n"
-"  while (fqQ.length && fqCanStart()) {\n"
-"    var e = fqQ.shift();\n"
-"    if (e.cancelled) continue;\n"
-"    var before = fqQ.length;\n"
-"    fqStart(e);\n"
-     /* fqStart put it back: no slot after all, so stop rather than spin. */
-"    if (fqQ.length > before) break;\n"
-"  }\n"
-"  fqRearm();\n"
-"}\n"
-"function fqEnqueue(url, method, pairs, body, opts, sig) {\n"
-"  return new Promise(function (res, rej) {\n"
-"    var e = { url: url, method: method, pairs: pairs, body: body, opts: opts,\n"
-"              sig: sig, res: res, rej: rej, cancelled: false };\n"
-     /* The abort listener is attached whether or not the request starts
-        immediately: a queued entry that is aborted must reject now and never
-        dial, and one that started has its handle aborted in fqStart. */
-"    if (sig && typeof sig.addEventListener === 'function')\n"
-"      sig.addEventListener('abort', function () {\n"
-"        if (e.cancelled || e.started) return;\n"
-"        e.cancelled = true;\n"
-"        rej(sig.reason || abortError());\n"
-"      });\n"
-"    if (fqCanStart()) { fqStart(e); return; }\n"
-"    fqQ.push(e);\n"
-"    fqRearm();\n"
-"  });\n"
-"}\n"
-/* fetch #port-blocking. Neither fetch nor Request looked at the URL's port at
- * all -- a page could dial the local SMTP or IRC port and get a real
- * connection, which is the one item in this whole area with a security shape
- * rather than a merely-incomplete one. Port 0 is not on the spec's own table
- * (it is blocked because it is not a valid connection target, not because
- * the table names it) but the corpus's own test file puts it in the same
- * blocked list it drives the assertions from, so it is folded in here rather
- * than argued about. */
-"var BAD_PORTS = [0, 1, 7, 9, 11, 13, 15, 17, 19, 20, 21, 22, 23, 25, 37, 42, 43, 53, 69, 77, 79, 87, 95,\n"
-"  101, 102, 103, 104, 109, 110, 111, 113, 115, 117, 119, 123, 135, 137, 139, 143, 161, 179, 389, 427, 465,\n"
-"  512, 513, 514, 515, 526, 530, 531, 532, 540, 548, 554, 556, 563, 587, 601, 636, 989, 990, 993, 995,\n"
-"  1719, 1720, 1723, 2049, 3659, 4045, 4190, 5060, 5061, 6000, 6566, 6665, 6666, 6667, 6668, 6669, 6679,\n"
-"  6697, 10080];\n"
-"function isBadPort(u) {\n"
-"  var scheme = u.protocol ? u.protocol.toLowerCase() : '';\n"
-"  if (scheme !== 'http:' && scheme !== 'https:' && scheme !== 'ws:' && scheme !== 'wss:') return false;\n"
-"  if (u.port === '') return false;\n"
-"  return BAD_PORTS.indexOf(parseInt(u.port, 10)) >= 0;\n"
-"}\n"
-"function parsedURLOrNull(url) {\n"
-"  try { return new G.URL(url, (G.document && G.document.baseURI) || (G.location && G.location.href)); }\n"
-"  catch (e) { return null; }\n"
-"}\n"
-/* fetch of a blob: URL used to ignore Range entirely: always 200, a
- * malformed Range never failed. There is no socket on this path at all --
- * the whole thing is inside the browser -- so parsing the Range header and
- * answering 206 (or rejecting on a bad one) is pure computation, same shape
- * as the data: URL processor above. rangeParse returns null on ANY malformed
- * input, which the caller turns into a TypeError rejection rather than
- * silently falling back to a full 200 response -- the corpus enumerates each
- * malformed shape (no "bytes=", no "-", non-digit bounds, both bounds empty,
- * a trailing comma, more than one range) as its OWN subtest specifically to
- * catch an implementation that folds them all into one check. */
-   /* Lenient about ASCII whitespace around "bytes", '=' and '-' -- the
-      corpus's OWN "supported" fixtures include "bytes= \\t9-21", "bytes=5 -
-      10", "bytes=-\\t 5" and "bytes \\t =\\t 6-" as cases that must still
-      succeed, which is stricter-than-real-browsers territory the fetch
-      spec's formal grammar does not actually require rejecting. What must
-      still fail: the wrong keyword ("byte="), no '=' at all, more than one
-      range (a literal ',' anywhere in the range-spec), and both bounds
-      empty. */
-"function rangeParse(h, size) {\n"
-"  var i = 0, n = h.length;\n"
-"  while (i < n && isASCIIWSc(h.charCodeAt(i))) i++;\n"
-"  if (h.slice(i, i + 5) !== 'bytes') return null;\n"
-"  i += 5;\n"
-"  while (i < n && isASCIIWSc(h.charCodeAt(i))) i++;\n"
-"  if (h.charAt(i) !== '=') return null;\n"
-"  i++;\n"
-"  while (i < n && isASCIIWSc(h.charCodeAt(i))) i++;\n"
-"  var spec = h.slice(i);\n"
-"  if (spec.indexOf(',') >= 0) return null;\n"
-"  var dash = spec.indexOf('-');\n"
-"  if (dash < 0) return null;\n"
-"  var a = stripASCIIWS(spec.slice(0, dash), true, true), b = stripASCIIWS(spec.slice(dash + 1), true, true);\n"
-"  if (a === '' && b === '') return null;\n"
-"  if (a !== '' && !/^[0-9]+$/.test(a)) return null;\n"
-"  if (b !== '' && !/^[0-9]+$/.test(b)) return null;\n"
-"  var start, end;\n"
-"  if (a === '') {\n"
-       /* suffix range: bytes=-N -- the last N bytes. */
-"    var suffix = parseInt(b, 10);\n"
-"    if (suffix === 0) return null;\n"
-"    start = Math.max(size - suffix, 0); end = size - 1;\n"
-"  } else {\n"
-"    start = parseInt(a, 10);\n"
-"    if (start >= size) return null;\n"
-"    end = b === '' ? size - 1 : Math.min(parseInt(b, 10), size - 1);\n"
-"    if (end < start) return null;\n"
-"  }\n"
-"  return { start: start, end: end };\n"
-"}\n"
-"function fetchBlobURL(url, init, input) {\n"
-"  var bo = Object.prototype.hasOwnProperty.call(__objURLs, url) ? __objURLs[url] : null;\n"
-"  if (!bo) return Promise.reject(new TypeError('Failed to fetch: unknown or revoked blob: URL'));\n"
-"  var reqHeaders = new G.Headers(init && init.headers !== undefined ? init.headers : (input && input.headers));\n"
-"  var range = reqHeaders.get('range');\n"
-   /* Content-Type is always PRESENT, even as '' for a typeless Blob -- the
-      corpus checks headers.get('Content-Type') against `type || ''`, which
-      only agrees with an implementation that sets the header unconditionally
-      rather than omitting it when the Blob's type is the empty string. */
-"  if (range === null) {\n"
-"    var bh = [['content-type', bo.type || ''], ['content-length', String(bo.size)]];\n"
-"    return Promise.resolve(new G.Response(rsOf(bo._b.slice()), { status: 200, statusText: 'OK',\n"
-"      headers: bh, url: url, redirected: false, type: 'basic' }));\n"
-"  }\n"
-"  var r = rangeParse(range, bo.size);\n"
-"  if (!r) return Promise.reject(new TypeError('fetch: malformed Range header'));\n"
-"  var slice = bo._b.slice(r.start, r.end + 1);\n"
-"  var rh = [['content-type', bo.type || ''], ['content-length', String(slice.length)],\n"
-"            ['content-range', 'bytes ' + r.start + '-' + r.end + '/' + bo.size]];\n"
-"  return Promise.resolve(new G.Response(rsOf(slice), { status: 206, statusText: 'Partial Content',\n"
-"    headers: rh, url: url, redirected: false, type: 'basic' }));\n"
-"}\n"
-"G.fetch = function fetch(input, init) {\n"
-"  init = init || {};\n"
-"  var url = (input && typeof input === 'object' && input.url) ? input.url : String(input);\n"
-"  if (url.slice(0, 5).toLowerCase() === 'data:') {\n"
-"    var dr = dataURL(url);\n"
-"    return dr ? Promise.resolve(dr)\n"
-"              : Promise.reject(new TypeError('Failed to fetch: malformed data: URL'));\n"
-"  }\n"
-"  if (url.slice(0, 5).toLowerCase() === 'blob:') {\n"
-"    return fetchBlobURL(url, init, input);\n"
-"  }\n"
-"  var __fpu = parsedURLOrNull(url);\n"
-"  if (__fpu && isBadPort(__fpu)) return Promise.reject(new TypeError('fetch: blocked port ' + __fpu.port));\n"
-"  var method = String(init.method || (input && input.method) || 'GET').toUpperCase();\n"
-"  var hs = new G.Headers(init.headers || (input && input.headers));\n"
-"  var body = init.body;\n"
-"  if (body !== undefined && body !== null) {\n"
-"    if (G.URLSearchParams && body instanceof G.URLSearchParams) {\n"
-"      if (!hs.has('content-type')) hs.set('content-type', 'application/x-www-form-urlencoded;charset=UTF-8');\n"
-"      body = body.toString();\n"
-       /* A Blob body's bytes are what go over the wire; its .type becomes
-          Content-Type when the caller did not already set one -- same rule
-          Response's constructor uses, because it is the same spec step
-          (extractBody) on both sides of the connection. Before this branch
-          existed a Blob fell to String(body) below and sent the literal text
-          "[object Blob]" instead of the Blob's bytes. */
-"    } else if (body instanceof G.Blob) {\n"
-"      if (body.type && !hs.has('content-type')) hs.set('content-type', body.type);\n"
-"      body = u8ab(body._b);\n"
-"    } else if (ArrayBuffer.isView(body)) {\n"
-"      body = body.buffer.slice(body.byteOffset, body.byteOffset + body.byteLength);\n"
-"    } else if (!(body instanceof ArrayBuffer) && typeof body !== 'string') {\n"
-"      body = String(body);\n"
-"    }\n"
-"  } else body = null;\n"
-"  var pairs = []; hs.forEach(function (v, k) { pairs.push([k, v]); });\n"
-"  var opts = { mode: init.mode, credentials: init.credentials };\n"
-"  var sig = init.signal || (input && input.signal);\n"
-"  if (sig && typeof sig === 'object' && sig.aborted)\n"
-"    return Promise.reject(sig.reason || abortError());\n"
-"  return fqEnqueue(url, method, pairs, body, opts, sig);\n"
-"};\n"
-/* ---- Request ----
- * Used to be a five-line object literal with no prototype at all -- Request
- * instances inherited straight from Object.prototype, so `.blob()`/`.text()`/
- * `.clone()` were all "is not a function". This is what N2 in the cluster
- * write-up closed: the shared Body mixin (installBody, above) plus the
- * plain readonly members request-structure.any.js enumerates by name, plus
- * the four throws the spec requires (forbidden method; a body on GET/HEAD; a
- * ReadableStream body without duplex:'half'; a blocked port, N6). */
-"G.Request = function Request(input, init) {\n"
-"  init = init || {};\n"
-"  var src = (input && typeof input === 'object' && input instanceof G.Request) ? input : null;\n"
-"  if (src && src.bodyUsed) throw new TypeError('Request: input has already been used');\n"
-"  this._url = src ? src.url : String(input);\n"
-"  var __ru = parsedURLOrNull(this._url);\n"
-"  if (__ru && isBadPort(__ru)) throw new TypeError('Request: blocked port ' + __ru.port);\n"
-"  var method = String(init.method !== undefined ? init.method : (src ? src.method : 'GET')).toUpperCase();\n"
-"  if (isForbiddenMethod(method)) throw new TypeError(\"Request: method '\" + method + \"' is forbidden\");\n"
-"  this._method = method;\n"
-"  this._headers = new G.Headers(init.headers !== undefined ? init.headers : (src ? src.headers : (input && input.headers)));\n"
-"  this._headers._guard = (init.mode || (src && src.mode)) === 'no-cors' ? 'request-no-cors' : 'request';\n"
-"  this._mode = init.mode || (src ? src.mode : 'cors');\n"
-"  this._credentials = init.credentials || (src ? src.credentials : 'same-origin');\n"
-"  this._cache = init.cache || (src ? src.cache : 'default');\n"
-"  this._redirect = init.redirect || (src ? src.redirect : 'follow');\n"
-"  this._referrer = init.referrer !== undefined ? String(init.referrer) : (src ? src.referrer : 'about:client');\n"
-"  this._referrerPolicy = init.referrerPolicy !== undefined ? init.referrerPolicy : (src ? src.referrerPolicy : '');\n"
-"  this._integrity = init.integrity !== undefined ? String(init.integrity) : (src ? src.integrity : '');\n"
-"  this.keepalive = init.keepalive !== undefined ? !!init.keepalive : (src ? !!src.keepalive : false);\n"
-"  this._destination = '';\n"
-"  this._isReloadNavigation = false;\n"
-"  this._isHistoryNavigation = false;\n"
-"  this.signal = init.signal !== undefined ? init.signal : (src ? src.signal : ((input && input.signal) || null));\n"
-"  this._bodyUsed = false;\n"
-"  this._duplex = init.duplex !== undefined ? init.duplex : (src ? src._duplex : undefined);\n"
-"  if (init.body !== undefined) {\n"
-"    var bodySrc = init.body;\n"
-"    if (bodySrc !== null && (this._method === 'GET' || this._method === 'HEAD'))\n"
-"      throw new TypeError('Request: a ' + this._method + ' request cannot have a body');\n"
-"    if (bodySrc instanceof G.ReadableStream && init.duplex !== 'half')\n"
-"      throw new TypeError(\"Request: a ReadableStream body requires duplex: 'half'\");\n"
-"    if (bodySrc === null) { this.body = null; }\n"
-"    else {\n"
-"      var eb = extractBody(bodySrc);\n"
-"      this.body = eb.stream;\n"
-"      if (eb.contentType && !this._headers.has('content-type')) this._headers.set('content-type', eb.contentType);\n"
-"    }\n"
-   /* input was a Request and this Request is taking its body -- the source
-      cannot be read from again (fetch spec: "set this's body to input's
-      body", which moves ownership rather than copying). Both sides write the
-      PRIVATE field: bodyUsed is a readonly getter (below) precisely so that
-      script cannot forge it, which means internal code cannot go through the
-      public name either. */
-"  } else if (src) {\n"
-"    this.body = src.body;\n"
-"    if (src.body) { src._bodyUsed = true; src.body = null; }\n"
-"  } else { this.body = null; }\n"
-"};\n"
-"G.Request.prototype = {\n"
-"  constructor: G.Request,\n"
-"  clone: function () {\n"
-"    if (this.bodyUsed) throw new TypeError('body already read');\n"
-"    var r = Object.create(G.Request.prototype);\n"
-"    if (this.body) { var t = this.body.tee(); this.body = t[0]; r.body = t[1]; } else r.body = null;\n"
-"    r._url = this._url; r._method = this._method;\n"
-"    r._headers = new G.Headers(this._headers); r._headers._guard = this._headers._guard;\n"
-"    r._duplex = this._duplex; r._bodyUsed = false;\n"
-"    r._mode = this._mode; r._credentials = this._credentials; r._cache = this._cache; r._redirect = this._redirect;\n"
-"    r._referrer = this._referrer; r._referrerPolicy = this._referrerPolicy; r._integrity = this._integrity;\n"
-"    r.keepalive = this.keepalive; r._destination = this._destination;\n"
-"    r._isReloadNavigation = this._isReloadNavigation; r._isHistoryNavigation = this._isHistoryNavigation;\n"
-"    r.signal = this.signal;\n"
-"    return r;\n"
-"  }\n"
-"};\n"
-"installBody(G.Request.prototype);\n"
-"Object.defineProperty(G.Request.prototype, Symbol.toStringTag, { value: 'Request', configurable: true });\n"
-   /* request-structure.any.js's whole point: these fourteen are IDL attributes
-      with a getter and NO setter, so `request.method = 'POST'` must be a
-      silent no-op (sloppy-mode [[Set]] on an inherited accessor with no
-      setter does not fall through to creating an own property). Getter-only
-      accessors on the PROTOTYPE achieve that; a plain `this.method = ...` own
-      data property, which is what this constructor used to write, does not --
-      an own data property is always writable regardless of what the
-      prototype says. */
-"function roGet(field) { return function () { return this[field]; }; }\n"
-"Object.defineProperties(G.Request.prototype, {\n"
-"  method:             { get: roGet('_method'), enumerable: true, configurable: true },\n"
-"  url:                { get: roGet('_url'), enumerable: true, configurable: true },\n"
-"  headers:            { get: roGet('_headers'), enumerable: true, configurable: true },\n"
-"  destination:        { get: roGet('_destination'), enumerable: true, configurable: true },\n"
-"  referrer:           { get: roGet('_referrer'), enumerable: true, configurable: true },\n"
-"  referrerPolicy:     { get: roGet('_referrerPolicy'), enumerable: true, configurable: true },\n"
-"  mode:               { get: roGet('_mode'), enumerable: true, configurable: true },\n"
-"  credentials:        { get: roGet('_credentials'), enumerable: true, configurable: true },\n"
-"  cache:              { get: roGet('_cache'), enumerable: true, configurable: true },\n"
-"  redirect:           { get: roGet('_redirect'), enumerable: true, configurable: true },\n"
-"  integrity:          { get: roGet('_integrity'), enumerable: true, configurable: true },\n"
-"  isReloadNavigation:  { get: roGet('_isReloadNavigation'), enumerable: true, configurable: true },\n"
-"  isHistoryNavigation: { get: roGet('_isHistoryNavigation'), enumerable: true, configurable: true },\n"
-   /* No init.duplex means 'half' is still the READ value even though nothing
-      was stored -- 'half' is the only value this engine's bodies ever need,
-      so there is no second mode to distinguish. */
-"  duplex:             { get: function () { return this._duplex || 'half'; }, enumerable: true, configurable: true }\n"
-"});\n"
+#include "js_fetch_body_prelude.inc"
 
 /* ---- EventSource + the text/event-stream framing ----
  * This is the reason the whole streaming path exists. The framing is small and
@@ -4023,52 +3257,7 @@ static const char *PRELUDE =
 "});\n"
 "Object.defineProperty(G.URL.prototype, 'searchParams', { get: function () { return this._sp; } });\n"
 
-/* ---- URL.createObjectURL / revokeObjectURL, backed by a real table ----
- * Until now this fell through to js_platform.c's own fallback (guarded on
- * `!G.URL.createObjectURL`): a Blob became a `data:` URL, which fetch() can
- * dereference but which is neither revocable nor bounded -- an 8 MB Blob
- * became an 11+ MB base64 string sitting in a URL forever. This is the real
- * thing instead: a bounded, revocable table keyed by a `blob:<origin>/<serial>`
- * id that only this table (and fetch(), just below) can resolve.
- *
- * Layering, load-bearing: js_webapi_install runs before js_media_install and
- * js_platform_install (see js_page.c), and both of those guard their own
- * installs on `if (!G.URL.createObjectURL) ...` -- so this, running first,
- * wins and theirs quietly never fire. That is also why a MediaSource still
- * works: this only claims Blob/File, and falls through to
- * `G.__createObjectURL` (js_media.c's primitive, installed onto the global
- * object -- not onto G.URL -- by the C side of that file) for anything else.
- * It is looked up BY NAME at call time rather than captured now, because
- * js_media_install has not run yet at the point this line executes; by the
- * time a page actually calls URL.createObjectURL(mediaSource), every install
- * is long done. Same shape for revokeObjectURL/G.__revokeObjectURL. */
-"var __objURLs = Object.create(null), __objURLCount = 0, __objURLBytes = 0, __objURLSerial = 0;\n"
-"var OBJURL_MAX = 64, OBJURL_MAX_BYTES = 8 * 1024 * 1024;\n"
-"G.URL.createObjectURL = function (obj) {\n"
-"  if (obj instanceof G.Blob) {\n"
-"    if (__objURLCount >= OBJURL_MAX)\n"
-"      throw new (G.DOMException || TypeError)(\n"
-"        'createObjectURL: too many live object URLs (max ' + OBJURL_MAX + ')', 'QuotaExceededError');\n"
-"    if (__objURLBytes + obj.size > OBJURL_MAX_BYTES)\n"
-"      throw new (G.DOMException || TypeError)(\n"
-"        'createObjectURL: object URL table is full (max ' + OBJURL_MAX_BYTES + ' bytes total)', 'QuotaExceededError');\n"
-"    var origin = (G.location && G.location.origin) || 'null';\n"
-"    var id = 'blob:' + origin + '/' + (++__objURLSerial);\n"
-"    __objURLs[id] = obj; __objURLCount++; __objURLBytes += obj.size;\n"
-"    return id;\n"
-"  }\n"
-"  if (typeof G.__createObjectURL === 'function') return G.__createObjectURL(obj);\n"
-"  throw new TypeError('createObjectURL: needs a Blob (or a File, or a MediaSource if media is linked)');\n"
-"};\n"
-"G.URL.revokeObjectURL = function (url) {\n"
-"  url = String(url);\n"
-"  if (Object.prototype.hasOwnProperty.call(__objURLs, url)) {\n"
-"    __objURLBytes -= __objURLs[url].size; __objURLCount--;\n"
-"    delete __objURLs[url];\n"
-"    return;\n"
-"  }\n"
-"  if (typeof G.__revokeObjectURL === 'function') G.__revokeObjectURL(url);\n"
-"};\n"
+#include "js_fetch_object_url_prelude.inc"
 
 /* ---- XMLHttpRequest, over fetch ----
  * Async only. abort() is now a REAL abort: it aborts the AbortController the
@@ -4077,16 +3266,56 @@ static const char *PRELUDE =
  * arrives in pieces, readyState 3 and `progress` are real events with real
  * partial responseText behind them, not a pair fired back to back once
  * everything had already been buffered. */
+/* Event callback exceptions belong to the page's error reporting channel.
+ * They must not enter fetch's rejection chain (HEADERS_RECEIVED used to
+ * become status=0), or strand the separate body Promise from a progress
+ * callback. Isolate each listener so later listeners and completion run. */
+#ifdef JS_RUNTIME_DIAGNOSTICS
+"var xhrDiagRecords = new WeakMap(), xhrResponseDiag = new WeakMap(), xhrDiagNext = 0;\n"
+"var xhrDiagGet = Function.prototype.call.bind(WeakMap.prototype.get), xhrDiagSet = Function.prototype.call.bind(WeakMap.prototype.set);\n"
+"function xhrDiagEvent(t) { return t === 'readystatechange' ? 1 : t === 'progress' ? 2 : t === 'load' ? 3 : t === 'error' ? 4 : t === 'abort' ? 5 : t === 'loadend' ? 6 : 0; }\n"
+#endif
+"function xhrInvoke(self, fn, ev, event) {\n"
+#ifndef XHR_CALLBACKS_PROPAGATE
+"  try {\n"
+#endif
+"    if (typeof fn === 'function') fn.call(self, ev);\n"
+"    else if (fn && typeof fn.handleEvent === 'function') fn.handleEvent(ev);\n"
+#ifndef XHR_CALLBACKS_PROPAGATE
+"  } catch (e) {\n"
+#ifdef JS_RUNTIME_DIAGNOSTICS
+"    var diag = xhrDiagGet(xhrDiagRecords, self);\n"
+"    if (diag) __xhrDiag(1, diag.id, diag.fetch, xhrDiagEvent(event), e);\n"
+#endif
+"    try { if (typeof G.reportError === 'function') G.reportError(e);\n"
+"      else if (G.console && typeof G.console.error === 'function') G.console.error(e); } catch (ignored) {}\n"
+"  }\n"
+#endif
+"}\n"
+/* A page may wrap readonly prototype getters before constructing an XHR.
+ * Qwen's actual stat.js did so on 2026-09-13: the old constructor's assignment
+ * to responseText threw before any request could start. Native response state
+ * must be independent of those public descriptors; keep it in a private map
+ * and publish real getters, also for updates after headers/body/abort. */
+#ifdef XHR_PUBLIC_RESPONSE_LEGACY
+"function xhrStateNew(self) { return self; }\n"
+"function xhrStateGet(self) { return self; }\n"
+#else
+"var xhrStates = new WeakMap();\n"
+"var xhrSlotGet = Function.prototype.call.bind(WeakMap.prototype.get);\n"
+"var xhrSlotSet = Function.prototype.call.bind(WeakMap.prototype.set);\n"
+"function xhrStateNew(self) { var s = {}; xhrSlotSet(xhrStates, self, s); return s; }\n"
+"function xhrStateGet(self) { var s = xhrSlotGet(xhrStates, self); if (!s) throw new TypeError('Illegal XMLHttpRequest receiver'); return s; }\n"
+#endif
 "G.XMLHttpRequest = function XMLHttpRequest() {\n"
-"  this.readyState = 0; this.status = 0; this.statusText = ''; this.responseText = '';\n"
-"  this.response = ''; this.responseType = ''; this.responseURL = ''; this.timeout = 0;\n"
-"  this.withCredentials = false; this.upload = {};\n"
-"  this.onreadystatechange = null; this.onload = null; this.onerror = null;\n"
-"  this.onloadend = null; this.onabort = null; this.ontimeout = null; this.onprogress = null;\n"
+"  var state = xhrStateNew(this);\n"
+"  state.readyState = 0; state.status = 0; state.statusText = ''; state.responseText = '';\n"
+"  state.response = ''; state.responseURL = ''; state.responseType = ''; state.timeout = 0;\n"
+"  state.withCredentials = false; state.upload = {};\n"
+"  state.onreadystatechange = null; state.onload = null; state.onerror = null;\n"
+"  state.onloadend = null; state.onabort = null; state.ontimeout = null; state.onprogress = null;\n"
 "  this._h = []; this._hdr = null; this._ev = {}; this._aborted = false; this._ac = null;\n"
 "};\n"
-"G.XMLHttpRequest.UNSENT = 0; G.XMLHttpRequest.OPENED = 1; G.XMLHttpRequest.HEADERS_RECEIVED = 2;\n"
-"G.XMLHttpRequest.LOADING = 3; G.XMLHttpRequest.DONE = 4;\n"
 "G.XMLHttpRequest.prototype = {\n"
 "  constructor: G.XMLHttpRequest,\n"
 "  open: function (m, u) { this._m = String(m); this._u = String(u); this._rs(1); },\n"
@@ -4100,33 +3329,60 @@ static const char *PRELUDE =
 "    var i = l.indexOf(f); if (i >= 0) l.splice(i, 1); },\n"
 "  abort: function () { this._aborted = true;\n"
 "    if (this._ac) { try { this._ac.abort(); } catch (e) {} }\n"
-"    this.readyState = 0; this._fire('abort'); this._fire('loadend'); },\n"
-"  _fire: function (t) { var e = { type: t, target: this, currentTarget: this };\n"
-"    var h = this['on' + t]; if (typeof h === 'function') h.call(this, e);\n"
-"    (this._ev[t] || []).slice().forEach(function (f) { f.call(this, e); }, this); },\n"
-"  _rs: function (s) { this.readyState = s; this._fire('readystatechange'); },\n"
+"    xhrStateGet(this).readyState = 0; this._fire('abort'); this._fire('loadend'); },\n"
+"  _fire: function (t, loaded, total) { var e = { type: t, target: this, currentTarget: this,\n"
+"      lengthComputable: total > 0, loaded: loaded || 0, total: total || 0 };\n"
+#ifdef JS_RUNTIME_DIAGNOSTICS
+"    var diag = xhrDiagGet(xhrDiagRecords, this);\n"
+"    if (diag) { if (t === 'progress') diag.progress++; else if (t === 'load') diag.load++; else if (t === 'error') diag.error++; else if (t === 'abort') diag.abort++;\n"
+"      if (t === 'loadend') __xhrDiag(4, diag.id, diag.fetch, diag.progress, diag.load, diag.error, diag.abort, diag.received, diag.chars); }\n"
+#endif
+"    xhrInvoke(this, this['on' + t], e, t);\n"
+"    (this._ev[t] || []).slice().forEach(function (f) { xhrInvoke(this, f, e, t); }, this); },\n"
+"  _rs: function (s) { xhrStateGet(this).readyState = s; this._fire('readystatechange'); },\n"
 "  send: function (body) {\n"
-"    var self = this;\n"
+"    var self = this, state = xhrStateGet(this);\n"
+"    var received = 0, total = 0;\n"
+#ifdef JS_RUNTIME_DIAGNOSTICS
+"    var diag = {id: ++xhrDiagNext, fetch: -1, json: 0, progress: 0, load: 0, error: 0, abort: 0, received: 0, chars: 0};\n"
+"    xhrDiagSet(xhrDiagRecords, self, diag);\n"
+#endif
 "    self._ac = new G.AbortController();\n"
 "    G.fetch(this._u, { method: this._m || 'GET', headers: this._h, body: body,\n"
 "                       signal: self._ac.signal,\n"
-"                       credentials: this.withCredentials ? 'include' : 'same-origin' })\n"
+"                       credentials: state.withCredentials ? 'include' : 'same-origin' })\n"
 "      .then(function (r) {\n"
 "        if (self._aborted) return null;\n"
-"        self._hdr = r.headers; self.status = r.status; self.statusText = r.statusText;\n"
-"        self.responseURL = r.url; self._rs(2);\n"
-"        if (!r.body) return '';\n"
-"        var rd = r.body.getReader(), dec = new G.TextDecoder(), text = '';\n"
+"        self._hdr = r.headers; state.status = r.status; state.statusText = r.statusText;\n"
+#ifdef JS_RUNTIME_DIAGNOSTICS
+"        var meta = xhrDiagGet(xhrResponseDiag, r);\n"
+"        if (meta) { diag.fetch = meta.fetch; diag.json = meta.json; __xhrDiag(0, diag.id, diag.fetch, meta.status, diag.json); }\n"
+#endif
+"        var length = r.headers.get('content-length');\n"
+"        if (length !== null && /^[0-9]+$/.test(length)) { var n = Number(length); if (n > 0 && n <= 9007199254740991) total = n; }\n"
+"        state.responseURL = r.url; self._rs(2);\n"
+"        if (!r.body) return state.responseType === 'arraybuffer' ? new ArrayBuffer(0) : '';\n"
+"        var binary = state.responseType === 'arraybuffer';\n"
+"        var rd = r.body.getReader(), dec = binary ? null : new G.TextDecoder(), text = '', chunks = binary ? [] : null;\n"
 "        return new Promise(function (res, rej) {\n"
 "          (function loop() {\n"
 "            rd.read().then(function (c) {\n"
 "              if (self._aborted) { res(null); return; }\n"
-"              if (c.done) { text += dec.decode(new Uint8Array(0)); res(text); return; }\n"
-"              text += dec.decode(c.value, { stream: true });\n"
-"              self.responseText = text;\n"
-"              if (self.responseType !== 'json') self.response = text;\n"
-"              if (self.readyState !== 3) self._rs(3);\n"
-"              self._fire('progress');\n"
+"              if (c.done) {\n"
+"                if (binary) { var out = new Uint8Array(received), off = 0;\n"
+"                  chunks.forEach(function (part) { out.set(part, off); off += part.byteLength; });\n"
+"                  res(out.buffer); return; }\n"
+"                text += dec.decode(new Uint8Array(0)); res(text); return; }\n"
+"              received += c.value.byteLength;\n"
+"              if (binary) chunks.push(new Uint8Array(c.value));\n"
+"              else text += dec.decode(c.value, { stream: true });\n"
+#ifdef JS_RUNTIME_DIAGNOSTICS
+"              diag.received = received; diag.chars = text.length;\n"
+#endif
+"              if (!binary) { state.responseText = text;\n"
+"                if (state.responseType !== 'json') state.response = text; }\n"
+"              if (state.readyState !== 3) self._rs(3);\n"
+"              self._fire('progress', received, total);\n"
 "              loop();\n"
 "            }, rej);\n"
 "          })();\n"
@@ -4134,19 +3390,53 @@ static const char *PRELUDE =
 "      })\n"
 "      .then(function (t) {\n"
 "        if (self._aborted || t === null) return;\n"
-"        self.responseText = t;\n"
-"        if (self.responseType === 'json') { try { self.response = JSON.parse(t); } catch (e) { self.response = null; } }\n"
-"        else self.response = t;\n"
-"        if (self.readyState !== 3) self._rs(3);\n"
+"        if (state.responseType === 'arraybuffer') { state.responseText = ''; state.response = t; }\n"
+"        else state.responseText = t;\n"
+#ifdef JS_RUNTIME_DIAGNOSTICS
+"        diag.chars = state.responseType === 'arraybuffer' ? t.byteLength : t.length;\n"
+"        __xhrDiag(3, diag.id, diag.fetch, received, diag.chars, diag.json, diag.json && t.length <= 65536 ? t : undefined);\n"
+#endif
+"        if (state.responseType === 'json') { try { state.response = JSON.parse(t); } catch (e) { state.response = null; } }\n"
+"        else if (state.responseType !== 'arraybuffer') state.response = t;\n"
+"        if (state.readyState !== 3) self._rs(3);\n"
+/* The decoder may only emit its final replacement/code point at EOF. XHR's
+ * terminal progress event must expose that final responseText before DONE,
+ * load and loadend, including an empty body; chunk callbacks alone miss it. */
+#ifndef XHR_NO_FINAL_PROGRESS
+"        self._fire('progress', received, total);\n"
+"        if (self._aborted) return;\n"
+#endif
 "        self._rs(4);\n"
-"        self._fire('load'); self._fire('loadend');\n"
+"        self._fire('load', received, total); self._fire('loadend', received, total);\n"
 "      })\n"
 "      .catch(function (e) {\n"
 "        if (self._aborted) return;\n"
-"        self.status = 0; self._rs(4); self._fire('error'); self._fire('loadend');\n"
+#ifdef JS_RUNTIME_DIAGNOSTICS
+"        __xhrDiag(2, diag.id, diag.fetch, e);\n"
+#endif
+"        state.status = 0; self._rs(4); self._fire('error'); self._fire('loadend');\n"
 "      });\n"
 "  }\n"
 "};\n"
+#ifndef XHR_PUBLIC_RESPONSE_LEGACY
+"['readyState','status','statusText','responseText','response','responseURL','upload'].forEach(function (key) {\n"
+"  Object.defineProperty(G.XMLHttpRequest.prototype, key, {configurable: true, enumerable: true, get: function () { return xhrStateGet(this)[key]; }});\n"
+"});\n"
+"['responseType','timeout','withCredentials','onreadystatechange','onload','onerror','onloadend','onabort','ontimeout','onprogress'].forEach(function (key) {\n"
+"  Object.defineProperty(G.XMLHttpRequest.prototype, key, {configurable: true, enumerable: true, get: function () { return xhrStateGet(this)[key]; }, set: function (value) { xhrStateGet(this)[key] = value; }});\n"
+"});\n"
+#endif
+/* WebIDL constants live on BOTH the interface and its prototype. A normal
+ * XHR adapter compares request.readyState with request.HEADERS_RECEIVED; the
+ * old constructor-only assignments made that comparison silently false, so
+ * its one-shot headers listener was removed without delivering the headers.
+ * This does not by itself prevent independent progress/body listeners. */
+"['UNSENT','OPENED','HEADERS_RECEIVED','LOADING','DONE'].forEach(function (name, value) {\n"
+"  Object.defineProperty(G.XMLHttpRequest, name, {value: value, enumerable: true});\n"
+#ifndef XHR_CONSTANTS_CONSTRUCTOR_ONLY
+"  Object.defineProperty(G.XMLHttpRequest.prototype, name, {value: value, enumerable: true});\n"
+#endif
+"});\n"
 /* ---- matchMedia ---- */
 "var mqls = [];\n"
 "G.matchMedia = function matchMedia(q) {\n"
@@ -4163,63 +3453,8 @@ static const char *PRELUDE =
 "  return m;\n"
 "};\n"
 
-/* The hooks C calls back through. */
-   /* Used by fetch_fail (C) so a network failure rejects with a REAL
-      TypeError -- one whose `.constructor === TypeError` and `instanceof
-      TypeError` both hold -- rather than a plain Error wearing a `.name`
-      property that only LOOKS like one in a printed message.
-      AbortError/NetworkError/TimeoutError are the three DOMException names
-      the fetch spec rejects with (fetch_fail's `name` argument at every C
-      call site is one of these three or "TypeError"), and they go through
-      G.DOMException rather than G[name] -- there is no global constructor
-      named `AbortError`, so the old `G[name] || Error` fell back to a plain
-      Error wearing a `.name` for exactly these, same trap as
-      AbortController's own abortError() helper had (see its comment above).
-      Genuine TypeErrors (a real network failure, per the fetch spec) still
-      go through G.TypeError below -- turning THOSE into a DOMException
-      would be the opposite error. */
-"var DOM_ERROR_NAMES = { AbortError: 1, NetworkError: 1, TimeoutError: 1 };\n"
-"function mkError(name, message) {\n"
-"  if (DOM_ERROR_NAMES[name] === 1) return new (G.DOMException || TypeError)(message, name);\n"
-"  var C = G[name];\n"
-"  if (typeof C === 'function') return new C(message);\n"
-"  var e = new Error(message); e.name = name; return e;\n"
-"}\n"
-"return {\n"
-"  mkError: mkError,\n"
-   /* Called when the HEADERS arrive, not when the body does. C keeps the
-      three functions handed back and drives the body through them, which is
-      what makes the response a stream the page can read from while the
-      network is still writing to it. `handle` is the SAME abort handle
-      __fetchAbort() already takes (fetch_deliver_headers passes wf_handle(f)
-      as argv[7]); wiring it as this stream's underlying-source `cancel` is
-      what makes `response.body.getReader().cancel()` (and a `for await`
-      loop's `break`, which calls the same thing) a REAL cancellation rather
-      than a no-op the C side never hears about. Before this, rsCancel would
-      settle the JS-side stream and stop there: fetch_step kept pumping the
-      abandoned transfer to completion off the wire, and the WF_HIGHWATER
-      byte counter it throttles on -- reset to 0 by the very cancel that was
-      supposed to stop it -- could never trip again, so a cancelled download
-      ran at full speed for the rest of its length and held one of WF_MAX
-      slots the whole time. __fetchAbort's own generation check (js_fetch_abort,
-      above) is what makes calling this safe on a handle whose slot the body
-      already finished and released: a stale handle is a no-op by
-      construction, not by a guard added here. */
-"  mkResponse: function (status, statusText, pairs, url, redirected, type, nobody, handle) {\n"
-"    var ctrl = null;\n"
-"    var stream = new G.ReadableStream({ start: function (c) { ctrl = c; },\n"
-"      cancel: function () { __fetchAbort(handle); } });\n"
-"    var r = new G.Response(nobody ? null : stream, { status: status, statusText: statusText,\n"
-"      headers: pairs, url: url, redirected: redirected, type: type });\n"
-"    return { r: r,\n"
-"      push: function (buf) { ctrl.enqueue(new Uint8Array(buf)); return ctrl.bytes(); },\n"
-"      close: function () { ctrl.close(); },\n"
-   /* The failure that arrives AFTER the promise settled belongs to the body
-      stream -- which is what a browser does when a connection dies (or is
-      aborted) mid-download. The name is carried through so an abort reads as
-      an AbortError to the page and not as a generic network failure. */
-"      error: function (m, n) { ctrl.error(mkError(n || 'TypeError', m)); } };\n"
-"  },\n"
+#include "js_fetch_hooks_prelude.inc"
+
 "  viewportChanged: function () {\n"
 "    mqls.forEach(function (m) {\n"
 "      var now = __mediaMatch(m.media);\n"
@@ -4248,7 +3483,170 @@ static const char *PRELUDE =
 "};\n"
 "})\n";
 
+/* The worker shares the exact Fetch/Body/stream implementation; its native
+ * URL is already installed. No document, viewport, storage or history surface
+ * is evaluated here, and its object URLs have a separate realm-owned table. */
+#define WEBAPI_FETCH_WORKER_PRELUDE
+static const char *WORKER_FETCH_PRELUDE =
+"(function (__fetchStart, __utf8, __urlParse, __mediaMatch, __fetchAbort, __later,\n"
+"          __cancelLater, __fetchSlots, __encLabel, __encIndex, __base64Decode) {\n"
+"'use strict'; var G = globalThis;\n"
+#include "js_fetch_body_prelude.inc"
+#include "js_fetch_object_url_prelude.inc"
+#include "js_fetch_hooks_prelude.inc"
+"};\n})\n";
+#undef WEBAPI_FETCH_WORKER_PRELUDE
+
 static JSValue g_fire_fn = JS_UNDEFINED;   /* the prelude's popstate/hashchange dispatcher */
+static JSValue g_blob_fn = JS_UNDEFINED;
+static char g_blob_origin[URL_HOST_MAX + 16];
+static unsigned long long g_blob_generation;
+
+/* The closure also owns a generation. A native embedder may close and reopen
+ * the same JSContext while an old reader/abort closure is still reachable;
+ * context equality alone would let it operate on the replacement realm. */
+static JSValue fetch_bound_call(JSContext *ctx,JSValueConst self,int argc,
+                                JSValueConst *argv,int magic,JSValue *data)
+{
+    uint32_t identity=0;JS_ToUint32(ctx,&identity,data[0]);
+    struct fetch_realm *r=fetch_realm_for(ctx);
+    if(!r||r->stopped||r->identity!=identity){
+        if(magic==0)return JS_ThrowTypeError(ctx,"fetch realm is closed");
+        return magic==2?JS_NewInt32(ctx,0):JS_NewInt32(ctx,-1);
+    }
+    switch(magic){
+    case 0:return js_fetch_start(ctx,self,argc,argv);
+    case 1:return js_fetch_abort(ctx,self,argc,argv);
+    case 2:return js_fetch_slots(ctx,self,argc,argv);
+    case 3:return js_later(ctx,self,argc,argv);
+    default:return js_cancel_later(ctx,self,argc,argv);
+    }
+}
+static JSValue fetch_binding(JSContext *ctx,int kind,int argc)
+{
+    struct fetch_realm *r=fetch_realm_for(ctx);
+    JSValue token=JS_NewUint32(ctx,r->identity);
+    JSValue fn=JS_NewCFunctionData(ctx,fetch_bound_call,argc,kind,1,(JSValueConst*)&token);
+    JS_FreeValue(ctx,token);return fn;
+}
+
+/* Install the shared fetch surface into an already-created Worker context.
+ * Its pure URL constructor and worker timers are installed by js_worker.c.
+ * No parent callback is used as a proxy: all values originate in ctx. */
+int js_webapi_fetch_install(JSContext *ctx,const char *base_url,
+                           const char *origin_url,const char *site_url)
+{
+    struct fetch_realm *owner=fetch_realm_new(ctx,base_url,origin_url,site_url);
+    if(!owner)return -1;
+    JSValue fn=JS_Eval(ctx,WORKER_FETCH_PRELUDE,strlen(WORKER_FETCH_PRELUDE),
+                       "<worker-fetch>",JS_EVAL_TYPE_GLOBAL);
+    if(JS_IsException(fn)){JS_FreeValue(ctx,fn);js_webapi_fetch_close(ctx);return -1;}
+    JSValue args[11]={
+        fetch_binding(ctx,0,5),
+        JS_NewCFunction(ctx,js_utf8,"utf8",1),JS_UNDEFINED,JS_UNDEFINED,
+        fetch_binding(ctx,1,1),
+        fetch_binding(ctx,3,2),
+        fetch_binding(ctx,4,1),
+        fetch_binding(ctx,2,0),
+        JS_NewCFunction(ctx,js_enc_label,"encodingLabel",1),
+        JS_NewCFunction(ctx,js_enc_index,"encodingIndex",1),
+        JS_NewCFunction(ctx,js_base64_decode,"base64Decode",1)};
+    JSValue hooks=JS_Call(ctx,fn,JS_UNDEFINED,11,(JSValueConst*)args);
+    for(int i=0;i<11;i++)JS_FreeValue(ctx,args[i]);JS_FreeValue(ctx,fn);
+    if(JS_IsException(hooks)){JS_FreeValue(ctx,hooks);js_webapi_fetch_close(ctx);return -1;}
+    owner->mk_response=JS_GetPropertyStr(ctx,hooks,"mkResponse");
+    owner->mk_error=JS_GetPropertyStr(ctx,hooks,"mkError");
+    char origin[URL_HOST_MAX+16],generation[24];
+    if(owner->origin_valid)wurl_origin(&owner->origin,origin,sizeof origin);else strcpy(origin,"null");
+    snprintf(generation,sizeof generation,"%llu",++g_blob_generation);
+    JSValue configure=JS_GetPropertyStr(ctx,hooks,"blobConfigure");
+    JSValue config[2]={JS_NewString(ctx,origin),JS_NewString(ctx,generation)};
+    JSValue result=JS_Call(ctx,configure,JS_UNDEFINED,2,(JSValueConst*)config);
+    JS_FreeValue(ctx,config[0]);JS_FreeValue(ctx,config[1]);JS_FreeValue(ctx,configure);
+    JS_FreeValue(ctx,hooks);
+    int failed=JS_IsException(result);JS_FreeValue(ctx,result);
+    if(failed){js_webapi_fetch_close(ctx);return -1;}
+    return 0;
+}
+
+void js_webapi_fetch_stop(JSContext *ctx)
+{
+    struct fetch_realm *r=fetch_realm_for(ctx);if(r)r->stopped=1;
+}
+
+void js_webapi_fetch_close(JSContext *ctx)
+{
+    struct fetch_realm *r=fetch_realm_for(ctx);if(!r)return;
+    r->stopped=1;
+    /* No JS callbacks during destruction. Release sockets and retained values
+     * with their owning context before that runtime's GC tears it down. */
+    for(int i=0;i<WF_MAX;i++)if(g_fetch[i].state!=WF_FREE&&g_fetch[i].owner==r)
+        fetch_release(ctx,&g_fetch[i]);
+    timers_clear(ctx);
+    JS_FreeValue(ctx,r->mk_response);JS_FreeValue(ctx,r->mk_error);
+    struct fetch_realm **link=&g_fetch_realms;
+    while(*link&&*link!=r)link=&(*link)->next;
+    if(*link)*link=r->next;
+    if(g_page_fetch==r)g_page_fetch=NULL;
+    free(r);
+}
+
+int js_webapi_fetch_pending(JSContext *ctx)
+{
+    struct fetch_realm *r=fetch_realm_for(ctx);if(!r||r->stopped)return 0;
+    for(int i=0;i<WF_MAX;i++)if(g_fetch[i].state!=WF_FREE&&g_fetch[i].owner==r)return 1;
+    return timers_live(ctx);
+}
+
+long long js_webapi_fetch_next_due(JSContext *ctx)
+{
+    struct fetch_realm *r=fetch_realm_for(ctx);if(!r||r->stopped)return -1;
+    long long next=-1;
+    for(int i=0;i<WF_MAX;i++)if(g_fetch[i].state!=WF_FREE&&g_fetch[i].owner==r){next=(long long)now_ms()+16;break;}
+    for(int i=0;i<WT_MAX;i++)if(r->timers[i].used&&(next<0||(long long)r->timers[i].due<next))
+        next=(long long)r->timers[i].due;
+    return next;
+}
+
+int js_webapi_fetch_checkpoint(JSContext *ctx)
+{
+    struct fetch_realm *r=fetch_realm_for(ctx);if(!r||r->stopped)return 0;
+    int ran=0;
+    for(int i=0;i<WF_MAX&&!r->stopped;i++)if(g_fetch[i].state!=WF_FREE&&g_fetch[i].owner==r)
+        ran+=fetch_step(ctx,&g_fetch[i]);
+    return ran;
+}
+
+int js_webapi_fetch_pump(JSContext *ctx)
+{
+    int ran=js_webapi_fetch_checkpoint(ctx);
+    struct fetch_realm *r=fetch_realm_for(ctx);
+    if(r&&!r->stopped)ran+=timers_run(ctx);
+    return ran;
+}
+
+int js_webapi_blob_snapshot(JSContext *ctx, const char *url,
+    unsigned char **out, int *length, int max_bytes, char *origin, int origin_cap)
+{
+    if(out)*out=0;if(length)*length=0;if(origin&&origin_cap>0)origin[0]=0;
+    if(!ctx||ctx!=g_webapi_ctx||!url||!JS_IsFunction(ctx,g_blob_fn))return 0;
+    if(!out||!length||!origin||max_bytes<0||origin_cap<=(int)strlen(g_blob_origin))return -1;
+    JSValue arg=JS_NewString(ctx,url);
+    JSValue bytes=JS_Call(ctx,g_blob_fn,JS_UNDEFINED,1,(JSValueConst*)&arg);
+    JS_FreeValue(ctx,arg);
+    if(JS_IsException(bytes)){JS_FreeValue(ctx,JS_GetException(ctx));return -1;}
+    if(JS_IsNull(bytes)||JS_IsUndefined(bytes)){JS_FreeValue(ctx,bytes);return 0;}
+    size_t offset=0,len=0,unit=0,total=0;
+    JSValue buffer=JS_GetTypedArrayBuffer(ctx,bytes,&offset,&len,&unit);
+    if(JS_IsException(buffer)){JS_FreeValue(ctx,JS_GetException(ctx));JS_FreeValue(ctx,bytes);return -1;}
+    unsigned char *data=JS_GetArrayBuffer(ctx,&total,buffer);
+    int valid=unit==1&&len<=(size_t)max_bytes&&offset<=total&&len<=total-offset&&(data||!len);
+    unsigned char *copy=valid?malloc(len+1):0;
+    if(copy){if(len)memcpy(copy,data+offset,len);copy[len]=0;}
+    JS_FreeValue(ctx,buffer);JS_FreeValue(ctx,bytes);
+    if(!copy)return -1;
+    *out=copy;*length=(int)len;scopy(origin,g_blob_origin,origin_cap);return 1;
+}
 
 /* ---- install / close / pump ------------------------------------------ */
 
@@ -4256,14 +3654,28 @@ static JSValue make_storage(JSContext *ctx, const char *origin, int session)
 {
     JSValue o = JS_NewObjectClass(ctx, (int)storage_cid);
     if (JS_IsException(o)) return o;
-    JS_SetOpaque(o, store_for(origin, session));
+    /* Wrappers keep an immutable partition key, never a recycled area slot.
+     * Empty reads do not allocate backend areas, and clear/drop can release
+     * their slots without redirecting a surviving wrapper to another origin. */
+    struct storage_binding *b = calloc(1, sizeof *b);
+    size_t n = strlen(origin);
+    if (b) b->origin = malloc(n + 1);
+    if (!b || !b->origin) { free(b); JS_FreeValue(ctx, o); return JS_ThrowOutOfMemory(ctx); }
+    memcpy(b->origin, origin, n + 1);
+    b->key.origin = b->origin;
+    b->key.kind = session ? STORAGE_SESSION : STORAGE_LOCAL;
+    b->key.session_id = g_storage_session;
+    JS_SetOpaque(o, b);
     return o;
 }
 
 static int g_vp_dirty;
+void js_webapi_media_changed(void) { g_vp_dirty = 1; }
 
 void js_webapi_set_viewport(int w, int h)
 {
+    /* The embedder updates css_viewport first: listeners and stylesheet
+     * matching must observe one viewport when the deferred pump runs. */
     if (w <= 0 || h <= 0) return;
     if (w == g_vw && h == g_vh) return;
     g_vw = w; g_vh = h;
@@ -4275,12 +3687,20 @@ void js_webapi_set_viewport(int w, int h)
 void js_webapi_install(JSContext *ctx, const char *url)
 {
     if (!ctx) return;
+    if (g_webapi_ctx) {
+        /* Installing over a live realm used to orphan fetch resolvers and
+         * replace the other realm's location, cookies, history and timers.
+         * Multi-realm Web APIs require per-realm state before this can widen. */
+        printf("[webapi] install refused: a realm is already active\n");
+        return;
+    }
+    g_webapi_ctx = ctx;
     set_location(url);
+    g_page_fetch=fetch_realm_new(ctx,url,url,url);
+    if(!g_page_fetch){g_webapi_ctx=NULL;return;}
     hist_reset(0, g_loc_raw);
     g_popstate_state = JS_NULL;
     g_popstate_queued = g_hashchange_queued = 0;
-    for (int i = 0; i < WF_MAX; i++) { g_fetch[i].state = WF_FREE; g_fetch[i].fd = -1; }
-    g_fetch_live = 0;
 
     JSRuntime *rt = JS_GetRuntime(ctx);
     JSValue g = JS_GetGlobalObject(ctx);
@@ -4535,10 +3955,18 @@ void js_webapi_install(JSContext *ctx, const char *url)
         JS_FreeValue(ctx, cur);
         if (absent) JS_SetPropertyStr(ctx, g, "devicePixelRatio", JS_NewFloat64(ctx, 1.0));
         JSValue scr = JS_NewObject(ctx);
-        JS_SetPropertyStr(ctx, scr, "width", JS_NewInt32(ctx, g_vw));
-        JS_SetPropertyStr(ctx, scr, "height", JS_NewInt32(ctx, g_vh));
-        JS_SetPropertyStr(ctx, scr, "availWidth", JS_NewInt32(ctx, g_vw));
-        JS_SetPropertyStr(ctx, scr, "availHeight", JS_NewInt32(ctx, g_vh));
+        const char *screen_names[] = { "width", "height" };
+        for (int i = 0; i < 2; i++) {
+            JSAtom a = JS_NewAtom(ctx, screen_names[i]);
+            JS_DefinePropertyGetSet(ctx, scr, a,
+                JS_NewCFunctionMagic(ctx, (JSCFunctionMagic *)screen_dimension,
+                                     screen_names[i], 0, JS_CFUNC_getter_magic, i),
+                JS_UNDEFINED, JS_PROP_ENUMERABLE | JS_PROP_CONFIGURABLE);
+            JS_FreeAtom(ctx, a);
+        }
+        /* availWidth/availHeight deliberately absent: the GUI screen syscall
+         * does not report the work area reserved by desktop panels. Reporting
+         * the window or full screen there would fabricate a different fact. */
         JS_SetPropertyStr(ctx, scr, "colorDepth", JS_NewInt32(ctx, 24));
         JS_SetPropertyStr(ctx, scr, "pixelDepth", JS_NewInt32(ctx, 24));
         JS_SetPropertyStr(ctx, g, "screen", scr);
@@ -4557,19 +3985,24 @@ void js_webapi_install(JSContext *ctx, const char *url)
         JS_FreeValue(ctx, g);
         return;
     }
-    JSValue args[10];
-    args[0] = JS_NewCFunction(ctx, js_fetch_start, "__fetchStart", 5);
+    JSValue args[12];
+    args[0] = fetch_binding(ctx,0,5);
     args[1] = JS_NewCFunction(ctx, js_utf8, "__utf8", 1);
     args[2] = JS_NewCFunction(ctx, js_url_parse, "__urlParse", 2);
     args[3] = JS_NewCFunction(ctx, js_media_match, "__mediaMatch", 1);
-    args[4] = JS_NewCFunction(ctx, js_fetch_abort, "__fetchAbort", 1);
-    args[5] = JS_NewCFunction(ctx, js_later, "__later", 2);
-    args[6] = JS_NewCFunction(ctx, js_cancel_later, "__cancelLater", 1);
-    args[7] = JS_NewCFunction(ctx, js_fetch_slots, "__fetchSlots", 0);
+    args[4] = fetch_binding(ctx,1,1);
+    args[5] = fetch_binding(ctx,3,2);
+    args[6] = fetch_binding(ctx,4,1);
+    args[7] = fetch_binding(ctx,2,0);
     args[8] = JS_NewCFunction(ctx, js_enc_label, "__encLabel", 1);
     args[9] = JS_NewCFunction(ctx, js_enc_index, "__encIndex", 1);
-    JSValue hooks = JS_Call(ctx, fn, JS_UNDEFINED, 10, (JSValueConst *)args);
-    for (int i = 0; i < 10; i++) JS_FreeValue(ctx, args[i]);
+    args[10] = JS_NewCFunction(ctx, js_base64_decode, "__base64Decode", 1);
+    int prelude_argc = 11;
+#ifdef JS_RUNTIME_DIAGNOSTICS
+    args[prelude_argc++] = make_xhr_diag_hook(ctx);
+#endif
+    JSValue hooks = JS_Call(ctx, fn, JS_UNDEFINED, prelude_argc, (JSValueConst *)args);
+    for (int i = 0; i < prelude_argc; i++) JS_FreeValue(ctx, args[i]);
     JS_FreeValue(ctx, fn);
     if (JS_IsException(hooks)) {
         JSValue e = JS_GetException(ctx);
@@ -4585,16 +4018,31 @@ void js_webapi_install(JSContext *ctx, const char *url)
     g_viewport_changed = JS_GetPropertyStr(ctx, hooks, "viewportChanged");
     g_fire_fn          = JS_GetPropertyStr(ctx, hooks, "fire");
     g_mk_error         = JS_GetPropertyStr(ctx, hooks, "mkError");
+    g_page_fetch->mk_response=JS_DupValue(ctx,g_mk_response);
+    g_page_fetch->mk_error=JS_DupValue(ctx,g_mk_error);
+    g_blob_fn          = JS_GetPropertyStr(ctx, hooks, "blobSnapshot");
+    scopy(g_blob_origin,g_loc_valid?origin:"null",sizeof g_blob_origin);
+    {
+        char generation[24];
+        snprintf(generation,sizeof generation,"%llu",++g_blob_generation);
+        JSValue configure=JS_GetPropertyStr(ctx,hooks,"blobConfigure");
+        JSValue config[2]={JS_NewString(ctx,g_blob_origin),JS_NewString(ctx,generation)};
+        JSValue r=JS_Call(ctx,configure,JS_UNDEFINED,2,(JSValueConst*)config);
+        if(JS_IsException(r))JS_FreeValue(ctx,JS_GetException(ctx));
+        JS_FreeValue(ctx,r);JS_FreeValue(ctx,config[0]);JS_FreeValue(ctx,config[1]);JS_FreeValue(ctx,configure);
+    }
     JS_FreeValue(ctx, hooks);
     JS_FreeValue(ctx, g);
 }
 
 void js_webapi_close(JSContext *ctx)
 {
-    for (int i = 0; i < WF_MAX; i++)
-        if (g_fetch[i].state != WF_FREE) fetch_release(ctx, &g_fetch[i]);
-    g_fetch_live = 0;
-    timers_clear(ctx);
+    if (!g_webapi_ctx || ctx != g_webapi_ctx) return;
+    /* A pagehide handler can enqueue a form/location request while the loader
+     * is retiring this realm. It must not navigate the replacement document
+     * on its first outer turn; the consumer already copied the chosen URL. */
+    g_have_pending_nav = 0;g_pending_nav[0] = 0;
+    js_webapi_fetch_close(ctx);
     /* The cookie jar and the preflight cache are NOT cleared: both outlive the
      * page for the same reason Storage does. A session that evaporated on
      * every navigation would not be a session. */
@@ -4605,19 +4053,23 @@ void js_webapi_close(JSContext *ctx)
         JS_FreeValue(ctx, g_viewport_changed);
         JS_FreeValue(ctx, g_fire_fn);
         JS_FreeValue(ctx, g_mk_error);
+        JS_FreeValue(ctx, g_blob_fn);
     }
     g_popstate_state = JS_NULL;
     g_mk_response = g_viewport_changed = g_fire_fn = g_mk_error = JS_UNDEFINED;
+    g_blob_fn=JS_UNDEFINED;g_blob_origin[0]=0;
     g_popstate_queued = g_hashchange_queued = 0;
     g_hist_n = 0; g_hist_i = 0;
+    g_webapi_ctx = 0;
+    set_location("about:blank");
 }
 
 int js_webapi_pending(void)
-{ return g_fetch_live > 0 || g_popstate_queued || g_hashchange_queued || g_vp_dirty ||
-         timers_live(); }
+{ return js_webapi_fetch_pending(g_webapi_ctx) || g_popstate_queued || g_hashchange_queued || g_vp_dirty; }
 
 int js_webapi_pump(JSContext *ctx)
 {
+    if (!g_webapi_ctx || ctx != g_webapi_ctx) return 0;
     if (!ctx) return 0;
     int ran = 0;
 
@@ -4657,11 +4109,6 @@ int js_webapi_pump(JSContext *ctx)
         }
     }
 
-    for (int i = 0; i < WF_MAX; i++)
-        if (g_fetch[i].state != WF_FREE) ran += fetch_step(ctx, &g_fetch[i]);
-
-    /* EventSource's reconnect delay. Last, so a reconnection scheduled by a
-     * stream that ended during THIS pump waits at least one more frame. */
-    ran += timers_run(ctx);
+    ran += js_webapi_fetch_pump(ctx);
     return ran;
 }

@@ -8,6 +8,10 @@
 #include "dom.h"
 #include "js_dom.h"
 #include "js_page.h"
+#include "js_task_budget.h"
+/* The queue is compiled here so every existing host consumer of js_page uses
+ * the same scheduling code as browser.aex; do not also link page_runtime.c. */
+#include "page_runtime.c"
 /* fetch/Storage/history/URL live in js_webapi.c, which the browser links and
  * the host tests of THIS file do not. Every entry point is weak, so a build
  * without it links and simply has no network API -- see js_webapi.h. */
@@ -45,6 +49,7 @@
  * host tests of THIS file link without it and simply have no WebSocket. */
 #define JS_WEBSOCKET_OPTIONAL
 #include "js_websocket.h"
+#define JS_WASM_OPTIONAL
 #include "js_wasm.h"
 /* `indexedDB` -- js_idb.c, layered over G.EventTarget from js_events.c above
  * and G.DOMException/G.structuredClone from js_platform.c. Weak for the same
@@ -78,6 +83,9 @@ void js_forms_install(JSContext *ctx) LOGIT_WEAK;
  * same reason as the others; a build without that TU keeps today's behaviour
  * exactly. */
 void js_semantics_install(JSContext *ctx) LOGIT_WEAK;
+void js_download_install(JSContext *ctx) LOGIT_WEAK;
+LOGIT_WEAK_STUB(js_download_install);
+void js_semantics_close(JSContext *ctx) LOGIT_WEAK;
 /* Element.prototype.animate and the computed-style overlay that makes it
  * observable -- js_anim.c. Weak like every install above, and here the
  * weakness is also the MEASUREMENT: with js_anim.c off the link line this call
@@ -85,6 +93,7 @@ void js_semantics_install(JSContext *ctx) LOGIT_WEAK;
  * that differs only in whether the file is linked. That is what makes "2,202
  * subtests gained" attributable rather than asserted. */
 void js_anim_install(JSContext *ctx) LOGIT_WEAK;
+void js_anim_close(JSContext *ctx) LOGIT_WEAK;
 /* `new DOMParser().parseFromString(str, "text/html")` -- js_domparser.c, a
  * SEPARATE detached-document wrapper (see that file's header for why it is
  * not layered over js_dom.c's own, page-bound one). Weak like the rest: a
@@ -99,7 +108,9 @@ void js_canvas_install(JSContext *ctx) LOGIT_WEAK;
 /* The Mach-O half of all five: see include/weaksym.h. */
 LOGIT_WEAK_STUB(js_forms_install);
 LOGIT_WEAK_STUB(js_semantics_install);
+LOGIT_WEAK_STUB(js_semantics_close);
 LOGIT_WEAK_STUB(js_anim_install);
+LOGIT_WEAK_STUB(js_anim_close);
 LOGIT_WEAK_STUB(js_domparser_install);
 LOGIT_WEAK_STUB(js_canvas_install);
 
@@ -133,7 +144,9 @@ LOGIT_WEAK_STUB(css_anim_tick);
  * had already paid for it once and built include/weaksym.h to fix it. The
  * mechanism was there; the one line registering this symbol with it was not.
  * A new js_*_install must join this list in the same commit as its call. */
-LOGIT_WEAK_STUB(js_wasm_install);
+/* Correction (2026-09-09): JS_WASM_OPTIONAL above now asks js_wasm.h to
+ * register BOTH install and reset stubs. Keeping a local install-only stub
+ * fixed the old link but made the uncalled teardown easy to overlook. */
 /* The WHATWG URL parser and URLSearchParams -- js_url.c. Weak for the same
  * reason as the six above. */
 #define JS_URL_OPTIONAL
@@ -245,9 +258,20 @@ static long long g_slice_fuel_max = JS_SLICE_FUEL_DEFAULT;
 static long long g_slice_fuel;                /* handler calls this slice */
 static int g_slice_armed;
 static int g_slice_hits;
+static unsigned long long g_slice_epoch;
+static unsigned int g_slice_io_depth;
+static long long g_slice_io_begin, g_slice_io_ms, g_slice_begin_ms;
+static js_page_interrupt_probe_fn g_interrupt_probe;
+static void *g_interrupt_probe_opaque;
+static int g_embedder_cancel, g_entry_depth;
 void js_page_set_slice_ms(int ms) { g_slice_ms = ms > 0 ? ms : JS_SLICE_MS_DEFAULT; }
 void js_page_set_slice_fuel(long long calls)
 { g_slice_fuel_max = calls > 0 ? calls : JS_SLICE_FUEL_DEFAULT; }
+void js_page_set_interrupt_probe(js_page_interrupt_probe_fn fn, void *opaque)
+{ g_interrupt_probe = fn; g_interrupt_probe_opaque = opaque; }
+void js_page_request_cancel(void) { g_embedder_cancel = 1; }
+int js_page_cancel_requested(void) { return g_embedder_cancel; }
+int js_page_entry_active(void) { return g_entry_depth > 0; }
 int  js_page_slice_hits(void) { return g_slice_hits; }
 /* The WATCHDOG's own fuel counter for the slice that just ran -- deliberately a
  * different counter from js_prof's `fuel`, and exported for exactly one reason:
@@ -262,13 +286,63 @@ void js_page_slice_begin(void);               /* defined after now_ms() */
 
 static void prof_begin(long long t);          /* the profiler, defined below */
 
+static void slice_disarm(void)
+{
+#ifndef JS_PAGE_STALE_WATCHDOG
+    /* A deadline belongs to an active JS entry, never its idle page or the
+     * next runtime. The old slice_end only ended profiler accounting. Measured
+     * in the Python guest: new-page webapi installation was interrupted after
+     * ONE poll, charged 246620 ms since the previous completed script, leaving
+     * fetch undefined. Clear at both entry end and runtime teardown: a caller
+     * may close while a manually opened slice is still armed. Do not raise the
+     * watchdog budget or disable the handler; active entries remain bounded. */
+    g_slice_armed = 0;
+    g_slice_due = 0;
+    g_slice_io_depth = 0;
+#endif
+}
+
 void js_page_slice_begin(void)
 {
+    g_entry_depth++;
     long long t = g_clock ? (long long)now_ms() : 0;
     g_slice_due = g_clock ? t + g_slice_ms : 0;
+    g_slice_begin_ms = t;
+    g_slice_io_ms = 0;
+    g_slice_io_depth = 0;
+    if (++g_slice_epoch == 0) ++g_slice_epoch;
     g_slice_fuel = 0;
     g_slice_armed = 1;
     prof_begin(t);
+}
+
+/* Explicit native I/O scopes, not a heuristic that forgives any long gap.
+ * GitHub's module graph hit the 45 s rail after 52,590 ms and ONE interrupt
+ * poll (10,000 branches/calls): synchronous dependency fetches had consumed
+ * the deadline before evaluation. Only the module loader's blocking fetch
+ * and prefetch-wait doors use this API. Compilation, module evaluation and
+ * arbitrary native calls remain charged; neither the fuel nor time budget is
+ * reset. The transport waits must not dispatch author JS inside the scope.
+ *
+ * An epoch prevents a late completion extending another script's deadline;
+ * a nesting count charges overlapping wait scopes once. No clock means no
+ * excluded wall time, while the frozen-clock fuel rail keeps running. */
+unsigned long long js_page_slice_io_begin(void)
+{
+    if (!g_slice_armed || !g_clock) return 0;
+    if (g_slice_io_depth++ == 0) g_slice_io_begin = (long long)now_ms();
+    return g_slice_epoch;
+}
+
+void js_page_slice_io_end(unsigned long long epoch)
+{
+    if (!epoch || epoch != g_slice_epoch || !g_slice_armed || !g_slice_io_depth) return;
+    if (--g_slice_io_depth) return;
+    long long elapsed = (long long)now_ms() - g_slice_io_begin;
+    if (elapsed > 0) {
+        g_slice_io_ms += elapsed;
+        if (g_slice_due) g_slice_due += elapsed;
+    }
 }
 
 /* ---- js_prof: WHERE A SLICE'S TIME ACTUALLY GOES ------------------------
@@ -435,6 +509,8 @@ static void prof_begin(long long t)
  * instrument was built to answer. */
 void js_page_slice_end(void)
 {
+    if (g_entry_depth > 0) g_entry_depth--;
+    slice_disarm();
     if (g_prof_on) {
         long long t = (long long)now_ms();
         struct js_prof_slice *s = prof_cur();
@@ -528,8 +604,16 @@ static int slice_interrupt(JSRuntime *rt, void *opaque)
      * On the device now_ms() is a syscall; a second one here would make the
      * instrument the largest thing it measures. */
     long long t = g_clock ? (long long)now_ms() : 0;
+    /* A close is not a watchdog failure. Poll it at the interpreter's existing
+     * interrupt cadence, unwind normally, and let browser.c exit only after no
+     * QuickJS frame remains. Calling js_page_close from this callback would
+     * free the runtime that is executing slice_interrupt itself. */
+    int embedder_interrupt = g_interrupt_probe &&
+                             g_interrupt_probe(g_interrupt_probe_opaque);
+    if (embedder_interrupt) g_embedder_cancel = 1;
     g_polls++;
     if (g_prof_on) prof_sample(t);
+    if (g_embedder_cancel) { slice_disarm(); return 1; }
     if (!g_slice_armed) return 0;
     int over_time = g_slice_due && g_clock && t > g_slice_due;
     int over_fuel = ++g_slice_fuel > g_slice_fuel_max;
@@ -548,11 +632,12 @@ static int slice_interrupt(JSRuntime *rt, void *opaque)
         struct js_prof_slice *s = g_prof_on ? prof_cur() : 0;
         if (s) s->bitten = over_time ? 1 : 2;
         printf("[js] watchdog: fuel=%lld (=%lld branches+calls) since_begin_ms=%lld"
-               " js_ms=%lld out_ms=%lld resumed=%d slice=%s\n",
+               " js_ms=%lld out_ms=%lld resumed=%d slice=%s network_wait_ms=%lld charged_ms=%lld\n",
                g_slice_fuel, g_slice_fuel * 10000,
-               g_slice_due ? t - (g_slice_due - g_slice_ms) : -1,
+               g_clock ? t - g_slice_begin_ms : -1,
                s ? s->js_ms : -1, s ? s->out_ms : -1, s ? s->resumed : -1,
-               s ? s->what : "<prof off>");
+               s ? s->what : g_prof_label, g_slice_io_ms,
+               g_clock ? t - g_slice_begin_ms - g_slice_io_ms : -1);
     }
     return 1;
 }
@@ -584,21 +669,26 @@ const char *js_page_location(void) { return g_location; }
  * the order they were created, or `setTimeout(a,0); setTimeout(b,0)` becomes a
  * coin flip. */
 struct jstimer {
-    struct jstimer *next;
+    struct page_task task;
     int id;
     int raf;                       /* requestAnimationFrame callback */
     int interval_ms;               /* >0: re-arm after firing (setInterval) */
-    unsigned long long due;
-    unsigned long long seq;
     JSValue fn;
     JSValue *argv; int argc;       /* extra setTimeout(fn, ms, ...args) arguments */
 };
 
-static struct jstimer *g_timers;
+static struct page_runtime g_page;
 static int g_next_id = 1;                    /* setTimeout/setInterval handles */
 static int g_next_raf_id = 1;                /* rAF has its own handle space, per spec */
-static unsigned long long g_seq;
 static unsigned long long g_frame_due;       /* the next animation-frame boundary */
+/* Resume a partially dispatched turn at its next phase. A fixed fetch ->
+ * worker -> timer order with a fresh budget at each phase can still starve
+ * both input and timers. Timer due/sequence snapshots survive the yield so
+ * callbacks appended by this turn keep waiting for a later snapshot. */
+static unsigned g_due_phase;
+static int g_due_timer_active;
+static unsigned long long g_due_timer_now;
+static uint64_t g_due_timer_limit;
 
 /* 60 Hz is the target; the monotonic clock advances in 10 ms steps, so the real
  * cadence is 20 ms. Asking for 16 and letting the clock round up is honest --
@@ -613,16 +703,9 @@ static void timer_free(JSContext *ctx, struct jstimer *t)
     free(t);
 }
 
-static void timers_clear(JSContext *ctx)
+static void timer_dispose(void *context, void *payload)
 {
-    while (g_timers) { struct jstimer *t = g_timers; g_timers = t->next; timer_free(ctx, t); }
-    g_frame_due = 0;
-}
-
-static void timer_unlink(struct jstimer *t)
-{
-    for (struct jstimer **pp = &g_timers; *pp; pp = &(*pp)->next)
-        if (*pp == t) { *pp = t->next; return; }
+    timer_free(context, payload);
 }
 
 int js_page_pending(void)
@@ -643,7 +726,8 @@ int js_page_pending(void)
      * clock read is inside slice_end's own g_prof_on guard, which matters
      * because on the device now_ms() is a syscall and this runs every pass. */
     if (g_prof_on && g_prof_in_js) js_page_slice_end();
-    if (g_timers) return 1;
+    if (g_due_phase || g_page.count) return 1;
+    if (LOGIT_HAVE(js_platform_rejections_pending) && js_platform_rejections_pending()) return 1;
     /* A running CSS animation/transition ticks on THIS queue's frame
      * boundary; without this line the main loop would park until an event
      * and a page whose only activity is CSS animation would never advance
@@ -666,9 +750,9 @@ int js_page_pending(void)
 
 long long js_page_next_due(void)
 {
-    long long best = -1;
-    for (struct jstimer *t = g_timers; t; t = t->next)
-        if (best < 0 || (long long)t->due < best) best = (long long)t->due;
+    if(g_due_phase)return (long long)now_ms();
+    long long best = page_runtime_next_due(&g_page);
+    if (LOGIT_HAVE(js_platform_rejections_pending) && js_platform_rejections_pending()) best = 0;
     if (LOGIT_HAVE(js_worker_next_due)) {
         long long wbest = js_worker_next_due();
         if (wbest >= 0 && (best < 0 || wbest < best)) best = wbest;
@@ -685,67 +769,155 @@ long long js_page_next_due(void)
 
 int js_page_pump(void) { return js_dom_run_jobs(g_ctx); }
 
+static void con_stack(JSContext *ctx, JSValueConst v);
+
 int js_page_run_due(void)
 {
-    if (!g_ctx) return 0;
+    if (!g_ctx || js_page_cancel_requested()) return 0;
     int ran = 0;
+    const unsigned long long deadline=now_ms()+JS_TASK_TURN_MS;
+    int finish_previous=g_due_phase!=0;
+    /* A partially-dispatched turn resumes after the phase that exhausted its
+     * budget.  In particular, a large due-timer snapshot resumes at phase 5
+     * for as many outer-loop passes as it takes to drain.  Skipping phase 1 on
+     * every one of those passes used to starve already-started fetches: the
+     * live Bilibili page queued enough timer/rAF work that three HTTP/2 streams
+     * sent their request headers and were then never pumped for the whole
+     * acceptance run.  Give network exchanges one bounded checkpoint at each
+     * resumed entry.  This does not dispatch timers, workers, or general Web
+     * API events out of order; it only services sockets whose promises remain
+     * queued until the normal microtask checkpoint below.
+     */
+    if (finish_previous && LOGIT_HAVE(js_webapi_fetch_checkpoint)) {
+        int n = js_webapi_fetch_checkpoint(g_ctx);
+        if (n > 0) { js_dom_run_jobs(g_ctx); ran += n; }
+    }
+run_phases:
+    /* Notify only after the previous turn's microtasks had a chance to attach
+     * handlers. A rejection created by work below waits for the next turn. */
+    if(g_due_phase==0){
+      if (LOGIT_HAVE(js_platform_rejections_pending) && js_platform_rejections_pending()) {
+        js_dom_run_jobs(g_ctx);
+        if (LOGIT_HAVE(js_platform_rejections_flush)) ran += js_platform_rejections_flush(g_ctx);
+      }
+      g_due_phase=1;
+      if(js_task_budget_expired(now_ms(),deadline))return ran;
+    }
 
     /* In-flight fetches first: they are the thing that must make progress on
      * EVERY pass of the loop, timers or no timers. A resolved promise queues
      * its reactions, so drain the microtask queue before returning -- the
      * embedder repaints on a non-zero return and the .then() that writes the
      * DOM has to have run by then. */
-    if (LOGIT_HAVE(js_webapi_pump)) {
+    if(g_due_phase==1){
+      if (LOGIT_HAVE(js_webapi_pump)) {
         int n = js_webapi_pump(g_ctx);
         if (n > 0) { js_dom_run_jobs(g_ctx); ran += n; }
+      }
+      g_due_phase=2;
+      if(js_task_budget_expired(now_ms(),deadline))return ran;
     }
     /* WebSocket connections next, same reasoning: a socket that only makes
      * progress when a timer happens to be pending is a socket that hangs on
      * a page with none -- which describes most of the WPT websockets/ corpus,
      * whose async_test()s have no timer at all. */
-    if (LOGIT_HAVE(js_websocket_pump)) {
+    if(g_due_phase==2){
+      if (LOGIT_HAVE(js_websocket_pump)) {
         int n = js_websocket_pump(g_ctx);
         if (n > 0) { js_dom_run_jobs(g_ctx); ran += n; }
+      }
+      g_due_phase=3;
+      if(js_task_budget_expired(now_ms(),deadline))return ran;
     }
     /* Every worker task due on this pass: a queued startup, a delivered
      * message in either direction, a worker's own timer. Unconditional, like
      * the two pumps above -- a page with zero timers of its own but a live
      * worker must still be driven every pass, which is why this runs before
-     * the `!g_timers` early return below. */
-    if (LOGIT_HAVE(js_worker_run_due)) ran += js_worker_run_due();
+     * the empty-queue early return below. */
+    if(g_due_phase==3){
+      int parent_handoff=0;
+      if(LOGIT_HAVE(js_worker_run_due_for_page))ran+=js_worker_run_due_for_page(deadline,&parent_handoff);
+      else if(LOGIT_HAVE(js_worker_run_due_until))ran+=js_worker_run_due_until(deadline);
+      else if(LOGIT_HAVE(js_worker_run_due))ran+=js_worker_run_due();
+      /* Parent deliveries complete their page checkpoint before the next
+       * page task. Worker checkpoints may resume separately because those
+       * realms have separate event loops; a page checkpoint is not split.
+       * Reset the page watchdog at this cross-realm boundary: elapsed time
+       * in a worker's native call is not this page reaction's CPU slice. */
+      js_page_slice_begin();
+      /* A short result handler can have queued a fetch after phase 1. Give
+       * that request one ordinary non-blocking service pass before another
+       * worker runs. No handshake wait, timer dispatch, or worker callback
+       * is part of this checkpoint; pending network work stays scheduled. */
+      if(parent_handoff&&LOGIT_HAVE(js_webapi_fetch_checkpoint))
+          ran+=js_webapi_fetch_checkpoint(g_ctx);
+      ran+=js_dom_run_jobs(g_ctx);
+      js_page_slice_end();
+      if (js_page_cancel_requested()) return ran;
+      g_due_phase=4;
+      if(parent_handoff)return ran; /* input/paint before the next worker */
+      if(js_task_budget_expired(now_ms(),deadline))return ran;
+    }
     /* The CSS animation tick, BEFORE the timer scan and unconditional like
      * the pumps above: an animating page with no JS timer at all (the
      * common case -- a page that animates with CSS has usually no script)
      * must still advance. It overlays values and returns whether a pixel
      * changed; browser.c reads css_anim_needs_layout() to decide whether
      * the frame owes a relayout (opacity) or only a repaint (transform).
-     * It is not JS, so it takes no slice and pumps no jobs. */
-    if (LOGIT_HAVE(css_anim_tick) && css_anim_tick(now_ms())) ran++;
-    if (!g_timers) return ran;
+     * Historical claim: "It is not JS, so it takes no slice and pumps no
+     * jobs." WAAPI made both halves false: it can settle finished without a
+     * pixel change and without any timer remaining to drain the reaction. */
+    if(g_due_phase==4){
+      if (LOGIT_HAVE(css_anim_tick)) {
+        /* WAAPI sampling now enters JS through this formerly C-only clock.
+         * Give it the same interrupt budget as timer callbacks: keyframe/effect
+         * accessors are page code, and an unbounded accessor must not freeze IO. */
+        js_page_slice_begin();
+        if (css_anim_tick(now_ms())) ran++;
+#ifndef JS_WAAPI_NO_CHECKPOINT
+        /* Do not gate this on the tick's paint-dirty result. A constant-value
+         * animation still completes; its promise can change the DOM. Count
+         * those jobs so the browser settles/repaints that change this turn. */
+        ran += js_dom_run_jobs(g_ctx);
+#endif
+        js_page_slice_end();
+        if (js_page_cancel_requested()) return ran;
+      }
+      g_due_phase=5;
+      if(js_task_budget_expired(now_ms(),deadline))return ran;
+    }
+    if (!g_page.count) goto phases_done;
 
-    unsigned long long now = now_ms();
+    if(!g_due_timer_active){
+        g_due_timer_now=now_ms();
+        g_due_timer_limit=page_runtime_turn(&g_page);
+        g_due_timer_active=1;
+    }
+    const unsigned long long now=g_due_timer_now;
     /* Snapshot the sequence counter: a callback that schedules another timer for
      * "now" must wait for the next pass. Without this, `setTimeout(f, 0)` calling
      * itself would spin inside this loop and the browser would never repaint.
      * (A re-armed setInterval takes a fresh seq for the same reason.) */
-    unsigned long long limit = g_seq;
+    uint64_t limit = g_due_timer_limit;
 
     for (;;) {
-        struct jstimer *best = 0;
-        for (struct jstimer *t = g_timers; t; t = t->next) {
-            if (t->due > now || t->seq > limit) continue;
-            if (!best || t->due < best->due || (t->due == best->due && t->seq < best->seq))
-                best = t;
-        }
-        if (!best) break;
+        struct page_task *ready = page_runtime_ready(&g_page, now, limit);
+        if (!ready) break;
+        struct jstimer *best = ready->payload;
 
         /* Take our own references before calling: the callback may clear this
          * very timer (clearInterval(self) is idiomatic), which would otherwise
          * free the JSValue we are about to invoke. */
         JSValue fn = JS_DupValue(g_ctx, best->fn);
+        /* A one-shot is freed BEFORE dispatch so cancellation/reentrancy sees
+         * an already-removed timer. The old profiler label read best->raf after
+         * timer_free: an ordinary timeout trips ASan even with profiling off.
+         * Snapshot metadata as well as JS references; delaying free until after
+         * the callback would let self-cancellation free the same entry twice. */
+        const int is_raf = best->raf;
         int nargs = best->argc;
         JSValue *args = 0;
-        if (best->raf) {
+        if (is_raf) {
             nargs = 1;
             args = malloc(sizeof *args);
             if (args) args[0] = JS_NewFloat64(g_ctx, (double)(now - g_t0));
@@ -760,20 +932,29 @@ int js_page_run_due(void)
             /* Re-arm from NOW, not from the old deadline: catching up on missed
              * ticks after a slow page load would fire a burst of callbacks the
              * page never asked for. */
-            best->due = now + (unsigned long long)best->interval_ms;
-            best->seq = ++g_seq;
+            page_task_rearm(&g_page, &best->task,
+                            now + (unsigned long long)best->interval_ms);
         } else {
-            timer_unlink(best);
-            timer_free(g_ctx, best);
+            page_task_cancel(&g_page, &best->task);
         }
 
-        js_prof_label(best->raf ? "<rAF callback>" : "<timer callback>");
+        js_prof_label(is_raf ? "<rAF callback>" : "<timer callback>");
         js_page_slice_begin();       /* each timer callback is its own slice */
-        JSValue r = JS_Call(g_ctx, fn, JS_UNDEFINED, nargs, (JSValueConst *)args);
+        /* HTML timer initialization supplies the page's WindowProxy as this,
+         * including for strict functions. Passing undefined only appeared to
+         * work because sloppy JS substitutes its global. This runtime exposes
+         * its page global as window. rAF uses Web IDL's default undefined this
+         * instead; sharing a queue must not merge the two invocation rules.
+         * JS_Call itself preserves bound/arrow receivers. */
+        JSValue receiver = is_raf ? JS_UNDEFINED : JS_GetGlobalObject(g_ctx);
+        JSValue r = JS_Call(g_ctx, fn, receiver, nargs, (JSValueConst *)args);
+        JS_FreeValue(g_ctx, receiver);
         if (JS_IsException(r)) {
             JSValue e = JS_GetException(g_ctx);
             const char *m = JS_ToCString(g_ctx, e);
             printf("[js] uncaught in timer: %s\n", m ? m : "?");
+            con_stack(g_ctx, e);
+            printf("\n");
             note("[exception] "); if (m) note(m); note("\n");
             if (m) JS_FreeCString(g_ctx, m);
             JS_FreeValue(g_ctx, e);
@@ -785,53 +966,74 @@ int js_page_run_due(void)
         js_dom_run_jobs(g_ctx);          /* a timer that resolves a promise: run its reactions now */
         js_page_slice_end();
         ran++;
+        if (js_page_cancel_requested()) return ran;
+        if(js_task_budget_expired(now_ms(),deadline))return ran;
     }
 
     /* The frame boundary has passed; the next rAF starts a new frame. */
-    if (g_frame_due && g_frame_due <= now) g_frame_due = 0;
+phases_done:
+    if (g_due_timer_active && g_frame_due && g_frame_due <= g_due_timer_now) g_frame_due = 0;
+    g_due_phase=0;g_due_timer_active=0;
+    /* A resumed turn can have an empty tail (no animation/timer work). Use
+     * its remaining budget for one new phase sweep instead of returning an
+     * empty pump while ready worker messages wait. At most one wrap per
+     * entry; a new timer snapshot still excludes callbacks it later queues. */
+    if(finish_previous&&!js_task_budget_expired(now_ms(),deadline)){
+        finish_previous=0;goto run_phases;
+    }
     return ran;
 }
 
 static int timer_add(JSContext *ctx, JSValueConst fn, long delay, int interval,
                      int raf, int argc, JSValueConst *argv)
 {
+    /* The old queue grew until allocation failed. A shared explicit ceiling
+     * now bounds timer/rAF ownership at JS_PAGE_TASK_CAPACITY entries; refusal
+     * returns the existing failure handle 0 and retains no callback references.
+     * Check before allocating, then let enqueue enforce the same ownership rule. */
+    if (ctx != g_page.context || !page_runtime_accepts(page_runtime_token(&g_page)) ||
+        g_page.count >= g_page.capacity) return 0;
     struct jstimer *t = calloc(1, sizeof *t);
     if (!t) return 0;
-    unsigned long long now = now_ms();
+    unsigned long long now = now_ms(), due;
     if (raf) {
         /* Every rAF callback registered before the boundary runs in the same
          * frame with the same timestamp -- that is what lets a page schedule
          * several animations and have them stay in step. */
         if (!g_frame_due || g_frame_due <= now) g_frame_due = now + FRAME_MS;
-        t->due = g_frame_due;
+        due = g_frame_due;
         t->id = g_next_raf_id++;
         t->raf = 1;
     } else {
         if (delay < 0) delay = 0;
-        t->due = now + (unsigned long long)delay;
+        due = now + (unsigned long long)delay;
         t->id = g_next_id++;
         t->interval_ms = interval ? (delay > 0 ? (int)delay : 1) : 0;
     }
-    t->seq = ++g_seq;
     t->fn = JS_DupValue(ctx, fn);
     if (argc > 0) {
         t->argv = malloc((size_t)argc * sizeof *t->argv);
         if (t->argv) { for (int i = 0; i < argc; i++) t->argv[i] = JS_DupValue(ctx, argv[i]); t->argc = argc; }
     }
-    t->next = g_timers;
-    g_timers = t;
+    if (page_task_enqueue(&g_page, &t->task, page_runtime_token(&g_page), due,
+                          raf ? PAGE_TASK_ANIMATION_FRAME : PAGE_TASK_TIMER,
+                          t, timer_dispose) != PAGE_TASK_OK) {
+        timer_free(ctx, t);
+        return 0;
+    }
     return t->id;
 }
 
 static void timer_cancel(JSContext *ctx, int id, int raf)
 {
-    for (struct jstimer **pp = &g_timers; *pp; pp = &(*pp)->next)
-        if ((*pp)->id == id && (*pp)->raf == raf) {
-            struct jstimer *t = *pp;
-            *pp = t->next;
-            timer_free(ctx, t);
+    (void)ctx;
+    for (struct page_task *task = g_page.tasks; task; task = task->next) {
+        struct jstimer *t = task->payload;
+        if (t->id == id && t->raf == raf) {
+            page_task_cancel(&g_page, task);
             return;
         }
+    }
 }
 
 /* setTimeout(fn, delay, ...args). A string first argument (the eval form) is
@@ -1023,10 +1225,55 @@ void js_page_begin_script(struct node *node)
 }
 void js_page_end_script(void) { g_cur_script = 0; }
 
+/* Opt-in guest instrumentation. Installer totals include both compiling and
+ * executing their built-in JS; they are not a compiler profile. Keep the
+ * timestamp rows in memory until every installer has finished, then emit one
+ * buffer: serial writes between stages would change the quantity being timed.
+ * JS_PAGE_INSTALL_PROFILE compiles all clock reads and storage out when absent.
+ * Clock resolution is the embedder's monotonic milliseconds (0 means <1 tick).
+ * Use an empty document first, then the same page twice in one guest process;
+ * host elapsed time and cross-boot comparisons are not startup measurements. */
+#ifdef JS_PAGE_INSTALL_PROFILE
+struct js_install_sample { const char *name; unsigned long long ms; };
+#define JS_OPEN_STEP(label, action) do { \
+    unsigned long long js_step_start = now_ms(); \
+    action; \
+    if (js_sample_count < (int)(sizeof js_samples / sizeof js_samples[0])) { \
+        js_samples[js_sample_count].name = (label); \
+        js_samples[js_sample_count++].ms = now_ms() - js_step_start; \
+    } \
+} while (0)
+static void js_install_report(const struct js_install_sample *samples, int count,
+                              unsigned long long total)
+{
+    int snprintf(char *, size_t, const char *, ...);
+    char out[4096]; int used = 0;
+    unsigned long long sum = 0;
+    for (int i = 0; i < count; i++) {
+        sum += samples[i].ms;
+        int n = snprintf(out + used, sizeof out - (size_t)used,
+            "[js-install] stage=%s ms=%llu\n",samples[i].name,samples[i].ms);
+        if (n < 0 || n >= (int)sizeof out - used) break;
+        used += n;
+    }
+    snprintf(out + used, sizeof out - (size_t)used,
+        "[js-install] total_ms=%llu stages_ms=%llu other_ms=%llu clock=guest-ms\n",
+        total,sum,total >= sum ? total-sum : 0);
+    printf("%s",out);
+}
+#else
+#define JS_OPEN_STEP(label, action) do { action; } while (0)
+#endif
+
 int js_page_open(struct node *root)
 {
-    js_page_close();
-    g_rt = JS_NewRuntime();
+#ifdef JS_PAGE_INSTALL_PROFILE
+    struct js_install_sample js_samples[48];
+    int js_sample_count = 0;
+    unsigned long long js_open_start = now_ms();
+#endif
+    JS_OPEN_STEP("previous-close", js_page_close());
+    JS_OPEN_STEP("JS_NewRuntime", g_rt = JS_NewRuntime());
     if (!g_rt) return 0;
     /* The browser's ring-3 user stack is 8 MiB (wm.c gives it double the normal
      * app stack). Bound QuickJS's overflow guard well under that so a deeply
@@ -1036,11 +1283,17 @@ int js_page_open(struct node *root)
      * the guard. 2 MiB limit -> the guard fires with ~6 MiB still free. */
     JS_SetMaxStackSize(g_rt, 2 * 1024 * 1024);
     JS_SetInterruptHandler(g_rt, slice_interrupt, 0);   /* the CPU-slice watchdog */
-    g_ctx = JS_NewContext(g_rt);
+    JS_OPEN_STEP("JS_NewContext", g_ctx = JS_NewContext(g_rt));
     if (!g_ctx) { JS_FreeRuntime(g_rt); g_rt = 0; return 0; }
 
     g_t0 = now_ms();
-    g_seq = 0; g_next_id = 1; g_next_raf_id = 1; g_frame_due = 0;
+    int page_opened;
+    JS_OPEN_STEP("page_runtime_open", page_opened = page_runtime_open(&g_page, g_rt, g_ctx, root, JS_PAGE_TASK_CAPACITY));
+    if (!page_opened) {
+        JS_FreeContext(g_ctx); JS_FreeRuntime(g_rt);
+        g_ctx = 0; g_rt = 0; return 0;
+    }
+    g_next_id = 1; g_next_raf_id = 1; g_frame_due = 0;
     g_cur_script = 0;
 
     JSValue g = JS_GetGlobalObject(g_ctx);
@@ -1105,39 +1358,39 @@ int js_page_open(struct node *root)
     JS_SetPropertyStr(g_ctx, g, "self", JS_DupValue(g_ctx, g));
 
     js_dom_set_note(note);
-    js_dom_init(g_ctx, root);            /* installs document + Element + Event */
+    JS_OPEN_STEP("js_dom_init", js_dom_init(g_ctx, root));            /* installs document + Element + Event */
     /* AFTER js_dom_init: no dependency on it (DOMParser's documents are
      * detached, never on `root`), placed here only to keep the DOM-adjacent
      * installers together rather than scattered above it. See js_domparser.c's
      * header for the lifetime scheme -- no close hook is registered because
      * none is needed (ordinary QuickJS object teardown is sufficient). */
-    if (LOGIT_HAVE(js_domparser_install)) js_domparser_install(g_ctx);
-    js_dom_bind_event_target(g_ctx, g);  /* window.addEventListener + window.on* */
+    if (LOGIT_HAVE(js_domparser_install)) JS_OPEN_STEP("js_domparser_install", js_domparser_install(g_ctx));
+    JS_OPEN_STEP("window-event-target", js_dom_bind_event_target(g_ctx, g));  /* window.addEventListener + window.on* */
     /* AFTER the DOM: js_webapi publishes document.location and dispatches
      * popstate through window.dispatchEvent, both of which js_dom.c owns. */
-    if (LOGIT_HAVE(js_webapi_install)) js_webapi_install(g_ctx, g_location);
+    if (LOGIT_HAVE(js_webapi_install)) JS_OPEN_STEP("js_webapi_install", js_webapi_install(g_ctx, g_location));
     /* LAST. js_platform.c fills gaps in what the two above publish (document,
      * navigator, performance, localStorage) and every one of its installs is
      * conditional on the property being absent -- which only means anything
      * once everyone who owns one has had their turn. */
-    if (LOGIT_HAVE(js_select_install)) js_select_install(g_ctx);
-    if (LOGIT_HAVE(js_intl_install)) js_intl_install(g_ctx);
+    if (LOGIT_HAVE(js_select_install)) JS_OPEN_STEP("js_select_install", js_select_install(g_ctx));
+    if (LOGIT_HAVE(js_intl_install)) JS_OPEN_STEP("js_intl_install", js_intl_install(g_ctx));
     /* AFTER js_dom_init (it takes the Element prototype) and after the platform
      * fills in `document`; MediaSource has no dependency on either, but the
      * HTMLMediaElement members are installed on the element prototype. */
-    if (LOGIT_HAVE(js_media_install)) js_media_install(g_ctx);
-    if (LOGIT_HAVE(js_platform_install)) js_platform_install(g_ctx);
+    if (LOGIT_HAVE(js_media_install)) JS_OPEN_STEP("js_media_install", js_media_install(g_ctx));
+    if (LOGIT_HAVE(js_platform_install)) JS_OPEN_STEP("js_platform_install", js_platform_install(g_ctx));
     /* AFTER js_platform_install: it is what creates `crypto` in the first
      * place (getRandomValues, randomUUID). js_subtle_install only fills in
      * `.subtle` on whatever `crypto` object already exists. */
-    if (LOGIT_HAVE(js_subtle_install)) js_subtle_install(g_ctx);
+    if (LOGIT_HAVE(js_subtle_install)) JS_OPEN_STEP("js_subtle_install", js_subtle_install(g_ctx));
     /* LAST of the last. The event layer needs js_dom.c's native Event classes
      * to wrap, js_webapi.c's AbortSignal for the `signal` option, and it
      * deliberately REPLACES two placeholders js_platform.c installs when
      * nobody better has (EventTarget, PromiseRejectionEvent) -- so unlike
      * js_platform.c's "only if absent" rule, this one has to run after the
      * placeholder exists in order to take it over. */
-    if (LOGIT_HAVE(js_events_install)) js_events_install(g_ctx);
+    if (LOGIT_HAVE(js_events_install)) JS_OPEN_STEP("js_events_install", js_events_install(g_ctx));
     /* AFTER js_events_install (needs the real, constructible G.EventTarget --
      * IDBRequest/IDBTransaction/IDBDatabase all extend it) and after
      * js_platform_install above (needs G.DOMException and G.structuredClone).
@@ -1147,27 +1400,27 @@ int js_page_open(struct node *root)
      * built around. Weak, like every install above: a build without that TU
      * keeps `typeof indexedDB === 'undefined'`, the correct feature-detect
      * answer for a browser that does not have it. */
-    if (LOGIT_HAVE(js_idb_install)) js_idb_install(g_ctx);
+    if (LOGIT_HAVE(js_idb_install)) JS_OPEN_STEP("js_idb_install", js_idb_install(g_ctx));
     /* AFTER js_webapi_install (needs the real, singleton-bound G.fetch/
      * Request/Response/Headers -- js_cache.c is deliberately NOT a second
      * implementation of any of the four) and after js_platform_install
      * (needs G.DOMException). Weak like every install above: a build
      * without js_cache.c keeps `typeof caches === 'undefined'`. */
-    if (LOGIT_HAVE(js_cache_install)) js_cache_install(g_ctx);
+    if (LOGIT_HAVE(js_cache_install)) JS_OPEN_STEP("js_cache_install", js_cache_install(g_ctx));
     /* AFTER js_platform_install (needs G.DOMException) and after `navigator`
      * already exists -- js_page.c creates that object directly, well before
      * this line, so the ordering requirement is trivially satisfied. Weak
      * like every install above: a build without js_swreg.c keeps
      * `'serviceWorker' in navigator === false`. See js_swreg.c's header for
      * why register() always rejects rather than half-executing. */
-    if (LOGIT_HAVE(js_swreg_install)) js_swreg_install(g_ctx);
+    if (LOGIT_HAVE(js_swreg_install)) JS_OPEN_STEP("js_swreg_install", js_swreg_install(g_ctx));
     /* AFTER all of the above, and the ordering is not a preference. js_cssom.c
      * takes the Element prototype js_dom.c published, and it deliberately
      * REPLACES two bindings older files install: getBoundingClientRect (its
      * version flushes a pending layout first) and matchMedia (its version is
      * the cascade's own media evaluator, which closes the divergence css.h
      * names). Installing it earlier means those two get overwritten again. */
-    if (LOGIT_HAVE(js_cssom_install)) js_cssom_install(g_ctx);
+    if (LOGIT_HAVE(js_cssom_install)) JS_OPEN_STEP("js_cssom_install", js_cssom_install(g_ctx));
     /* The form controls and the focus model -- js_forms.c: element.value,
      * .checked, .focus(), document.activeElement, form.submit(). LAST, and
      * "only if absent" like js_platform.c: every property it defines is one an
@@ -1176,7 +1429,7 @@ int js_page_open(struct node *root)
      * rather than only for controls. Weak, like every other install above, so a
      * build without that object (the focus negative control, and the host tests
      * of this file) links and simply has no form bindings. */
-    if (LOGIT_HAVE(js_forms_install)) js_forms_install(g_ctx);
+    if (LOGIT_HAVE(js_forms_install)) JS_OPEN_STEP("js_forms_install", js_forms_install(g_ctx));
     /* AFTER js_webapi_install, and that ordering is the point. js_webapi.c
      * ships a URL / URLSearchParams built as a JS prelude over
      * c/net/http/url.c -- the four-field parser the fetch needs, which has no
@@ -1184,7 +1437,8 @@ int js_page_open(struct node *root)
      * REPLACES both globals with the standard's algorithm, and replacing
      * something means running after the thing that installed it. Weak, like
      * every install above, so a build without that TU keeps the old pair. */
-    if (LOGIT_HAVE(js_url_install)) js_url_install(g_ctx);
+    if (LOGIT_HAVE(js_url_install)) JS_OPEN_STEP("js_url_install", js_url_install(g_ctx));
+    if (LOGIT_HAVE(js_download_install)) JS_OPEN_STEP("js_download_install", js_download_install(g_ctx));
     /* AFTER js_events_install (needs G.EventTarget/CloseEvent/MessageEvent)
      * and js_webapi_install (needs G.TextEncoder/TextDecoder); AFTER
      * js_url_install so a `new WebSocket(url)` validates its argument with
@@ -1192,7 +1446,7 @@ int js_page_open(struct node *root)
      * Weak, like every install above: a build without js_websocket.c keeps
      * `typeof WebSocket === 'undefined'`, the correct feature-detect answer
      * for a browser that does not have it. */
-    if (LOGIT_HAVE(js_websocket_install)) js_websocket_install(g_ctx);
+    if (LOGIT_HAVE(js_websocket_install)) JS_OPEN_STEP("js_websocket_install", js_websocket_install(g_ctx));
     /* AFTER js_platform_install and js_events_install: the parent-side event
      * delivery a Worker fires (`onerror`/`onmessage`) reaches for
      * G.DOMException / G.MessageEvent / G.ErrorEvent when they exist and
@@ -1200,7 +1454,7 @@ int js_page_open(struct node *root)
      * them is strictly better and not a hard requirement -- see js_worker.h.
      * Weak like every install above: a build without js_worker.c keeps
      * `typeof Worker === 'undefined'`. */
-    if (LOGIT_HAVE(js_worker_install)) js_worker_install(g_ctx);
+    if (LOGIT_HAVE(js_worker_install)) JS_OPEN_STEP("js_worker_install", js_worker_install(g_ctx));
     /* AFTER js_webapi_install, and that ordering is the one thing js_wasm.c
      * asks for: WebAssembly.instantiateStreaming takes a Response and reads it
      * with .arrayBuffer(), so it needs the real G.Response.  It degrades the
@@ -1214,19 +1468,19 @@ int js_page_open(struct node *root)
      * anywhere else in this list -- a page feature-tests the constructor and
      * then TRUSTS what it gets, so a half-built WebAssembly is worse than
      * none. */
-    if (LOGIT_HAVE(js_wasm_install)) js_wasm_install(g_ctx);
+    if (LOGIT_HAVE(js_wasm_install)) JS_OPEN_STEP("js_wasm_install", js_wasm_install(g_ctx));
     /* AFTER js_forms_install, and that ordering is load-bearing in one place:
      * js_forms.c installs focus()/blur() on HTMLInputElement.prototype only
      * (its `Object.getPrototypeOf(createElement('input'))` was the ONE shared
      * element prototype before 7fc2bec), and js_semantics.c copies that
      * descriptor up to HTMLElement.prototype so a <button> or <dialog> can be
      * focused. It can only copy a descriptor that already exists. */
-    if (LOGIT_HAVE(js_semantics_install)) js_semantics_install(g_ctx);
+    if (LOGIT_HAVE(js_semantics_install)) JS_OPEN_STEP("js_semantics_install", js_semantics_install(g_ctx));
     /* After the interface objects exist, because it asks for
      * HTMLCanvasElement.prototype BY NAME and installs nothing if it is
      * absent -- saying so out loud rather than leaving the page to rediscover
      * it as `getContext is not a function`. */
-    if (LOGIT_HAVE(js_canvas_install)) js_canvas_install(g_ctx);
+    if (LOGIT_HAVE(js_canvas_install)) JS_OPEN_STEP("js_canvas_install", js_canvas_install(g_ctx));
     /* LAST, after everyone who owns a piece of what it composes with has had
      * their turn, and the ordering is load-bearing twice over. It takes
      * Element.prototype, which js_dom.c publishes. And it REPLACES
@@ -1234,14 +1488,29 @@ int js_page_open(struct node *root)
      * installed at the time -- so it has to run after js_cssom.c and
      * js_platform.c, or it wraps a placeholder and the real one overwrites the
      * wrapper afterwards, leaving animate() present and unobservable. */
-    if (LOGIT_HAVE(js_anim_install)) js_anim_install(g_ctx);
+    if (LOGIT_HAVE(js_anim_install)) JS_OPEN_STEP("js_anim_install", js_anim_install(g_ctx));
     JS_FreeValue(g_ctx, g);
+#ifdef JS_PAGE_INSTALL_PROFILE
+    js_install_report(js_samples,js_sample_count,now_ms()-js_open_start);
+#endif
     return 1;
 }
 
+#undef JS_OPEN_STEP
+
 void js_page_close(void)
 {
-    if (!g_ctx) { g_rt = 0; return; }
+    slice_disarm();
+    g_due_phase=0;g_due_timer_active=0;
+    /* Invalidate BEFORE subsystem cleanup: no producer may queue more work
+     * for this document once closing starts. Keep the context alive until the
+     * queue has disposed every JS reference. Epochs survive context reuse. */
+    page_runtime_invalidate(&g_page);
+    if (!g_ctx) {
+        page_runtime_close(&g_page); g_rt = 0;
+        g_entry_depth = 0; g_embedder_cancel = 0;
+        return;
+    }
     /* Order is load-bearing. Everything holding a JSValue must let go before
      * JS_FreeRuntime, which asserts on live GC objects -- and js_dom_cleanup
      * also clears the DOM's weak wrapper slots, so no node is left pointing at
@@ -1254,18 +1523,28 @@ void js_page_close(void)
      * is torn down, not after. It also frees each worker's own JSRuntime --
      * a second live runtime outliving the page it belongs to is exactly the
      * kind of thing nothing downstream would notice until it crashed. */
+    if (LOGIT_HAVE(js_semantics_close)) js_semantics_close(g_ctx);
+    if (LOGIT_HAVE(js_anim_close)) js_anim_close(g_ctx);
     if (LOGIT_HAVE(js_worker_close_all)) js_worker_close_all();
-    timers_clear(g_ctx);
+    page_runtime_close(&g_page);
+    g_frame_due = 0;
     if (LOGIT_HAVE(js_platform_close)) js_platform_close(g_ctx);  /* unhooks the rejection tracker */
     if (LOGIT_HAVE(js_webapi_close)) js_webapi_close(g_ctx);   /* aborts fetches, drops promise resolvers */
     if (LOGIT_HAVE(js_websocket_close)) js_websocket_close(g_ctx); /* closes sockets, drops self refs */
     if (LOGIT_HAVE(js_media_close)) js_media_close(g_ctx);     /* stops playback, frees the DPBs */
     if (LOGIT_HAVE(js_cssom_close)) js_cssom_close(g_ctx);     /* drops the node lookup cache */
+#ifndef WASM_LIFECYCLE_NEG_RESET
+    /* wasm_js_test called reset manually; the shipping page never did.
+     * A real page retaining an imported callback that captures its Instance
+     * aborted in JS_FreeRuntime (wasm_lifecycle_test, before this hook). */
+    if (LOGIT_HAVE(js_wasm_reset)) js_wasm_reset(g_ctx);
+#endif
     js_dom_cleanup(g_ctx);
     js_dom_set_note(0);
     JS_FreeContext(g_ctx);
     JS_FreeRuntime(g_rt);
     g_ctx = 0; g_rt = 0;
+    g_entry_depth = 0; g_embedder_cancel = 0;
 }
 
 int js_page_eval(const char *src, int len, const char *filename, struct node *node)
@@ -1345,7 +1624,7 @@ int js_page_eval(const char *src, int len, const char *filename, struct node *no
      * jobs with no script in scope), and so does anything a later task queues
      * -- currentScript is bounded by the script's own checkpoint, not left
      * lying around. */
-    js_dom_run_jobs(g_ctx);
+    if (!js_page_cancel_requested()) js_dom_run_jobs(g_ctx);
     js_page_end_script();
     js_page_slice_end();
     return ok;

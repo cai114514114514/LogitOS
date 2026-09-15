@@ -78,9 +78,11 @@
  * written where the file holds 89,856, decoded=28 shown=27, ended never fired.
  * A one-frame stall out of a constant.
  *
- * AAC-LC is exactly 1024, which is why the AAC fixtures never showed it. */
+ * AAC-LC is exactly 1024, which is why the AAC fixtures never showed it.
+ * HE-AAC v1 reconstructs 2048 output samples from each 1024-sample LC core
+ * frame, so AAC_MAX_SAMPLES is the AAC side of the same contract. */
 #define MAXFRM(a, b)    ((a) > (b) ? (a) : (b))
-#define ABUF_FRAMES     MAXFRM(MP3_MAX_SAMPLES, AAC_FRAME_LEN)
+#define ABUF_FRAMES     MAXFRM(MP3_MAX_SAMPLES, AAC_MAX_SAMPLES)
 /* Two samples' worth of gap is still one buffered range. The spec calls this
  * the "fudge factor" and defines it as 2/frame-rate; we do not know the frame
  * rate before the first fragment, so 100 ms stands in and is stated. */
@@ -120,16 +122,20 @@ static unsigned long long now_ns(void)
  *     Level: accepted up to 5.1 (0x33), which is what bilibili's avc1.640033
  *     asks for and the largest picture this browser's arena can hold a DPB of.
  *
- * H.265 -- c/lib/video/h265_nal.c: the gate is on the DECLARED SAMPLE DEPTH
- *     (8..10, luma == chroma) and 4:2:0, deliberately not on
- *     general_profile_idc. Main (1) and Main 10 (2) are exactly the profiles
- *     that stay inside that; Rext (4) and the screen-content profiles are not.
- *     => yes to hvc1/hev1 profile 1 and 2, no to the rest.
+ * H.265 -- the decoder is useful for its gated elementary-stream subset, but
+ *     a codec string cannot say whether a Main-profile stream uses the B-frame
+ *     reference patterns it still rejects. Bilibili's ordinary 640x360
+ *     hev1.1.6.L120.90 stream is the counterexample: same declared profile as
+ *     our small fixture, then H265_ERR_CORRUPT at picture 8. Advertising that
+ *     profile therefore steers a player away from its working H.264 fallback.
+ *     => no to hvc1/hev1 until the full profile is actually accepted. The
+ *        standalone H.265 decoder and its narrower conformance gates remain.
  *
- * AAC -- c/lib/audio/aac.c: AAC-LC only. Object types 5 and 29 (HE-AAC v1/v2)
- *     are refused ON PURPOSE, because decoding the core alone is the right
- *     samples at half the rate, which sounds nearly right and is wrong.
- *     => yes to mp4a.40.2, no to mp4a.40.5 / .29.
+ * AAC -- c/lib/audio/aac.c: AAC-LC and HE-AAC v1. Object type 5 is decoded
+ *     through the checked SBR adapter and returns 2048 samples at the declared
+ *     output rate. Object type 29 still needs Parametric Stereo and is refused
+ *     rather than duplicating mono into plausible but wrong stereo.
+ *     => yes to mp4a.40.2 / .5, no to mp4a.40.29.
  * MP3-in-MP4 (mp4a.40.34, and the mp4a.69/mp4a.6B aliases) -- c/lib/audio/mp3.c
  *     mp3_decode() is frame-incremental, which is the shape MSE needs.
  *     => yes.
@@ -216,17 +222,7 @@ static int codec_ok(const char *c, int len)
     }
     /* --- H.265 ------------------------------------------------------------ */
     if (ci_eq_n(b, "hvc1", 4) || ci_eq_n(b, "hev1", 4)) {
-        /* hvc1.P.CCCC.TLLL.CC... -- the first field is the profile, optionally
-         * prefixed with the profile SPACE as a letter ("A1" = space 1). A
-         * non-zero profile space is not the common profiles, so it is a no. */
-        if (b[4] != '.') return 0;
-        const char *p = b + 5;
-        if ((*p >= 'A' && *p <= 'D') || (*p >= 'a' && *p <= 'd')) return 0;
-        const char *e = p;
-        while (*e && *e != '.') e++;
-        int prof;
-        if (!dec_int(p, e, &prof)) return 0;
-        return prof == 1 || prof == 2;         /* Main, Main 10 */
+        return 0;
     }
     /* --- audio ------------------------------------------------------------ */
     if (ci_eq_n(b, "mp4a", 4)) {
@@ -249,9 +245,9 @@ static int codec_ok(const char *c, int len)
         while (*qe && *qe != '.') qe++;
         int aot;
         if (!dec_int(q, qe, &aot)) return 0;
-        if (aot == 2) return 1;                        /* AAC-LC */
+        if (aot == 2 || aot == 5) return 1;            /* AAC-LC / HE-AAC v1 */
         if (aot == 34) return 1;                       /* MPEG-1 Layer 3 */
-        return 0;                                      /* 5/29 HE-AAC: refused */
+        return 0;                                      /* 29 HE-AAC v2: PS refused */
     }
     /* Everything else -- av01, vp09, vp8, opus, vorbis, ac-3, flac, ... */
     return 0;
@@ -2061,6 +2057,30 @@ int mel_pending(void)
     return 0;
 }
 
+/* `canplay` is a statement about buffered media, not about whether script has
+ * already called play(). Real players commonly wait for it before issuing
+ * that call. The old engine only raised it after a playing element first hit
+ * an underrun and later recovered, creating a deadlock for a normally paused
+ * MSE element: samples were buffered, readyState stayed HAVE_METADATA, and the
+ * player quite reasonably never started. Require every track that has become
+ * visible to the element to have a future sample; a late independent audio
+ * SourceBuffer will be folded in on the next pump by mel_bind_tracks(). */
+static int mel_has_future_data(melem *el)
+{
+    int any = 0;
+    if (el->vsb && el->vsb->dm && el->vsb->vtrack >= 0) {
+        const media_track *t = media_track_info(el->vsb->dm, el->vsb->vtrack);
+        if (!t || t->nsamples <= el->vcursor) return 0;
+        any = 1;
+    }
+    if (el->asb && el->asb->dm && el->asb->atrack >= 0) {
+        const media_track *t = media_track_info(el->asb->dm, el->asb->atrack);
+        if (!t || t->nsamples <= el->acursor) return 0;
+        any = 1;
+    }
+    return any;
+}
+
 int media_pump(void)
 {
     int painted = 0;
@@ -2070,9 +2090,22 @@ int media_pump(void)
         if (!el->used || !el->ms) continue;
         mel_bind_tracks(el);
 
+        /* TRACKS DO NOT BECOME PARSABLE AT THE SAME TIME. The first Bilibili
+         * specimen fetched video and audio SourceBuffers concurrently; the
+         * first video media segment completed while audio still held only its
+         * init box. We opened H.264, moved to HAVE_METADATA, and because the
+         * opens lived inside the HAVE_NOTHING branch we never tried AAC again:
+         * 603 pictures decoded, audio_frames_written stayed zero. Network
+         * completion order is not a metadata contract, so keep opening either
+         * missing decoder as its buffer grows. Existing decoders are never
+         * reopened, and avclock_audio_end cannot be undone because the master
+         * switch happens only on the transition from no decoder to a decoder. */
+        int v = (el->d4 || el->d5) ? 1 : mel_open_video(el);
+        int opened_audio = 0;
+        int a = (el->aac || el->mp3) ? 1 : (opened_audio = mel_open_audio(el));
+        if (opened_audio && !el->adone) el->clk.have_audio = 1;
+
         if (el->ready_state == HAVE_NOTHING && (el->vsb || el->asb)) {
-            int v = mel_open_video(el);
-            int a = mel_open_audio(el);
             if (v || a) {
                 el->ready_state = HAVE_METADATA;
                 el->events |= MEV_LOADEDMETADATA | MEV_DURATIONCHANGE;
@@ -2080,6 +2113,10 @@ int media_pump(void)
             } else if (el->err_code) {
                 el->events |= MEV_ERROR;
             }
+        }
+        if (el->ready_state < HAVE_FUTURE_DATA && mel_has_future_data(el)) {
+            el->ready_state = HAVE_FUTURE_DATA;
+            el->events |= MEV_CANPLAY;
         }
         if (el->paused || el->ended) continue;
         if (!el->playing) { el->playing = 1; el->events |= MEV_PLAYING; }

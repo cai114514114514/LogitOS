@@ -322,3 +322,5 @@ test-js-callee-os: $(ISO) $(DISK)
 # runs it never, which is worse than being stranded because it looks fixed.
 ci-host: test-js-stack
 ci-boot: test-js-callee-os
+# Standards parsing regression exposed by a live editor module.
+include tests/regexp_class_escape.mk

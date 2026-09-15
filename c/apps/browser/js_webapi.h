@@ -88,6 +88,25 @@ WEBAPI_FN void js_webapi_set_net(const struct webapi_net *n);   /* NULL = defaul
  * Call AFTER js_dom_init (it defines window.location, which nothing else may
  * have claimed) and once per page. */
 WEBAPI_FN void js_webapi_install(JSContext *ctx, const char *url);
+/* Install only the shared Encoding Standard constructors in another realm.
+ * No page/global fetch, storage, cookie, location or retained JSValue state is
+ * touched. Returns -1 with the JS exception pending if installation fails. */
+WEBAPI_FN int js_webapi_install_encoding(JSContext *ctx);
+/* Dedicated fetch realm, sharing HTTP/CORS/Cookie policy but no page globals.
+ * base_url is the script URL (Blob stays opaque), origin_url is its immutable
+ * creator origin, site_url is the creator's site-for-cookies. Copies are owned.
+ * stop is safe inside a callback; close must run after it unwinds and before
+ * freeing ctx. Neither may cancel another realm's requests. */
+WEBAPI_FN int js_webapi_fetch_install(JSContext *ctx, const char *base_url,
+                                    const char *origin_url, const char *site_url);
+WEBAPI_FN int js_webapi_fetch_pump(JSContext *ctx);
+/* One bounded pass over this realm's native fetches, without running its
+ * timers. Used when a worker notification has just queued page requests. */
+WEBAPI_FN int js_webapi_fetch_checkpoint(JSContext *ctx);
+WEBAPI_FN int js_webapi_fetch_pending(JSContext *ctx);
+WEBAPI_FN long long js_webapi_fetch_next_due(JSContext *ctx);
+WEBAPI_FN void js_webapi_fetch_stop(JSContext *ctx);
+WEBAPI_FN void js_webapi_fetch_close(JSContext *ctx);
 
 /* Step every in-flight request. Returns how many JS callbacks (promise
  * resolutions, popstate dispatches) it ran -- 0 means nothing observable
@@ -108,9 +127,40 @@ WEBAPI_FN int  js_webapi_pending(void);
  * only reason it lives in C. */
 WEBAPI_FN void js_webapi_close(JSContext *ctx);
 
+/* Resolve only this live realm's private Blob URL table. 1 returns a malloc
+ * source snapshot (caller frees it) plus immutable creator origin; 0 means
+ * unknown/revoked/foreign owner; -1 means a bounded-copy or allocation error.
+ * A snapshot survives URL revocation; no JS value crosses into a worker. */
+WEBAPI_FN int js_webapi_blob_snapshot(JSContext *ctx, const char *url,
+    unsigned char **out, int *length, int max_bytes, char *origin, int origin_cap);
+
 /* The viewport matchMedia and window.innerWidth/innerHeight report. Defaults
  * to the browser's fixed content area; the embedder may correct it. */
-WEBAPI_FN void js_webapi_set_viewport(int w, int h);
+WEBAPI_FN void js_webapi_media_changed(void); /* queue MQL change evaluation without a resize */
+void js_webapi_set_viewport(int w, int h);
+
+/* Stable top-level tab identity, set before js_webapi_install/js_page_open.
+ * 0 is the single-context default for embedders without tabs. The binding
+ * snapshots this id; changing it does not retarget existing Storage objects.
+ * Drop only after the tab's runtimes are gone, never on ordinary navigation.
+ * No disk durability or cross-realm binding is implied by this service. */
+/* Configure once before pages open. Returns 0 if the store loaded, negative
+ * for corrupt/unreadable state. LOCAL mutations are synchronously committed;
+ * session data remains memory-only. Pass NULL only for a memory-only embedder. */
+struct bstore_ops;
+WEBAPI_FN int js_webapi_set_storage_store(const struct bstore_ops *ops);
+WEBAPI_FN int js_webapi_set_cookie_store(const struct bstore_ops *ops);
+WEBAPI_FN int js_webapi_cookie_persistence_status(void);
+/* Network-only Cookie bridge. The initiator record belongs to the REQUEST,
+ * not the active page at response time; its strings must survive the call.
+ * Negative header results are failures, never permission to send cookieless. */
+struct cookie_request;
+int webapi_cookie_line_request(const char *host, const char *path, int secure,
+                              const struct cookie_request *request, char *out, int cap);
+void webapi_cookie_store_request(const char *host, const char *path, int secure,
+                                const struct cookie_request *request, const char *value);
+WEBAPI_FN void js_webapi_set_storage_session(unsigned long long id);
+WEBAPI_FN void js_webapi_drop_storage_session(unsigned long long id);
 
 /* A navigation the page asked for by assigning location.href (or calling
  * location.assign/replace/reload). Returns 1 and copies the absolute URL out,
@@ -122,6 +172,9 @@ WEBAPI_FN void js_webapi_set_viewport(int w, int h);
  * the DOM the caller is standing on. This is the hook for doing it safely from
  * the top of the event loop. */
 WEBAPI_FN int  js_webapi_take_navigation(char *out, int max);
+/* Queue a resolved HTTP(S) form destination without entering the loader on a
+ * JS callback stack. Unlike assigning href, same-URL submissions reload. */
+WEBAPI_FN int  js_webapi_request_navigation(const char *absolute_url);
 
 /* Attempt `delta` (-1 back, +1 forward; any nonzero value is honoured) within
  * the CURRENT document's own same-document history -- the pushState/
@@ -155,11 +208,26 @@ WEBAPI_FN int  js_webapi_hist_step(JSContext *ctx, int delta, char *out, int max
 #ifdef JS_WEBAPI_OPTIONAL
 LOGIT_WEAK_STUB(js_webapi_set_net);
 LOGIT_WEAK_STUB(js_webapi_install);
+LOGIT_WEAK_STUB(js_webapi_install_encoding);
+LOGIT_WEAK_STUB(js_webapi_fetch_install);
+LOGIT_WEAK_STUB(js_webapi_fetch_pump);
+LOGIT_WEAK_STUB(js_webapi_fetch_checkpoint);
+LOGIT_WEAK_STUB(js_webapi_fetch_pending);
+LOGIT_WEAK_STUB(js_webapi_fetch_next_due);
+LOGIT_WEAK_STUB(js_webapi_fetch_stop);
+LOGIT_WEAK_STUB(js_webapi_fetch_close);
 LOGIT_WEAK_STUB(js_webapi_pump);
 LOGIT_WEAK_STUB(js_webapi_pending);
 LOGIT_WEAK_STUB(js_webapi_close);
+LOGIT_WEAK_STUB(js_webapi_blob_snapshot);
 LOGIT_WEAK_STUB(js_webapi_set_viewport);
+LOGIT_WEAK_STUB(js_webapi_set_storage_store);
+LOGIT_WEAK_STUB(js_webapi_set_cookie_store);
+LOGIT_WEAK_STUB(js_webapi_cookie_persistence_status);
+LOGIT_WEAK_STUB(js_webapi_set_storage_session);
+LOGIT_WEAK_STUB(js_webapi_drop_storage_session);
 LOGIT_WEAK_STUB(js_webapi_take_navigation);
+LOGIT_WEAK_STUB(js_webapi_request_navigation);
 LOGIT_WEAK_STUB(js_webapi_hist_step);
 #endif
 
