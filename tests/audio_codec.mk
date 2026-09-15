@@ -100,7 +100,12 @@ SCALE ?= 6
 SEED  ?= 0x243F6A8885A308D3
 ASAN_FLAGS := -fsanitize=address,undefined -fno-sanitize-recover=all \
               -fno-omit-frame-pointer
-ASAN_ENV   := ASAN_OPTIONS=detect_leaks=1:halt_on_error=1:abort_on_error=0 \
+# Apple's ASan runtime rejects detect_leaks=1 instead of ignoring it, which
+# made the aggregate codec gate stop before exercising any malformed bytes on
+# macOS. LeakSanitizer remains enabled everywhere its runtime supports it; the
+# address/undefined checks and their negative controls are unchanged.
+ASAN_LEAKS ?= $(if $(filter Darwin,$(shell uname -s)),0,1)
+ASAN_ENV   := ASAN_OPTIONS=detect_leaks=$(ASAN_LEAKS):halt_on_error=1:abort_on_error=0 \
               UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1
 
 test-audio-codec-fuzz:
@@ -226,7 +231,8 @@ test-audio-codec-os: $(ISO) $(DISK) $(BUILD)/audiocheck_host
 
 .PHONY: test-aac test-aac-conformance test-aac-fetch test-aac-negctl
 
-AAC_SRC   := c/lib/audio/aac.c c/lib/audio/afft.c c/lib/audio/amath.c
+AAC_SRC   := c/lib/audio/aac.c c/lib/audio/aac_sbr.c c/lib/audio/afft.c \
+             c/lib/audio/amath.c
 AAC_REF   := $(BUILD)/aacref
 AAC_STAMP := $(AAC_REF)/.stamp-aac-v1
 ISO_AAC   := $(BUILD)/isoaac
@@ -292,9 +298,9 @@ test-aac-negctl: $(AAC_STAMP)
 VORBIS_SRC   := c/lib/audio/vorbis.c c/lib/audio/ogg.c c/lib/audio/afft.c \
                 c/lib/audio/amath.c
 VORBIS_REF   := $(BUILD)/vorbref
-VORBIS_STAMP := $(VORBIS_REF)/.stamp-vorbis-v1
+VORBIS_STAMP := $(VORBIS_REF)/.stamp-vorbis-v3
 
-$(VORBIS_STAMP): tests/unit/vorbis_gen.sh
+$(VORBIS_STAMP): tests/unit/vorbis_gen.sh tests/unit/vorbis_encode.py
 	@bash tests/unit/vorbis_gen.sh $(VORBIS_REF)
 
 test-vorbis: $(VORBIS_STAMP)

@@ -261,6 +261,19 @@ int main(void)
     eq("clearRect clears",                 "px(3,3)", "0,0,0,0");
     eq("clearRect leaves its neighbour",   "px(6,3)", "255,255,255,255");
 
+    /* Independent interior pixels: these fail when clearRect ignores clip,
+     * for both an axis-aligned and a sheared rectangle. */
+    run("g.fillStyle='#ffffff'; g.fillRect(0,0,40,20); g.save();"
+        "g.beginPath(); g.rect(2,2,4,4); g.clip(); g.clearRect(0,0,20,20);");
+    eq("clearRect respects clip interior", "px(3,3)", "0,0,0,0");
+    eq("clearRect preserves outside clip", "px(8,3)", "255,255,255,255");
+    run("g.restore(); g.fillRect(0,0,40,20); g.save();"
+        "g.beginPath(); g.rect(2,2,4,4); g.clip();"
+        "g.transform(1,0.25,0,1,0,0); g.clearRect(0,0,20,20);");
+    eq("transformed clearRect respects clip interior", "px(3,3)", "0,0,0,0");
+    eq("transformed clearRect preserves outside clip", "px(8,3)", "255,255,255,255");
+    run("g.restore();");
+
     /* ---- ImageData in both directions -------------------------------------- */
     eq("createImageData is transparent black and the right size",
        "(function(){ var d = g.createImageData(3,2);"

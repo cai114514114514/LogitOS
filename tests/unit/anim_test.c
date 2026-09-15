@@ -59,7 +59,7 @@ static const char STUB_JS[] =
  *     broke 275 previously-passing subtests when the first cut of this
  *     binding reported an interpolated SPECIFIED value, so they are modelled
  *     here rather than only in the corpus. */
-"globalThis.__store = { 'margin-left': '0px', 'opacity': '0',\n"
+"globalThis.__store = { 'margin-left': '0px', 'opacity': '0', 'transform':'none',\n"
 "                       'border-top-width': '0px', 'top': 'auto' };\n"
 "globalThis.__collapse = { 'border-top-width': '0px', 'top': 'auto' };\n"
 "globalThis.getComputedStyle = function(el, pseudo){\n"
@@ -90,143 +90,44 @@ static const char STUB_JS[] =
 "  return e;\n"
 "};\n";
 
+/* Correction 2026-09-09, kept beside the historical claim above: the
+ * margin-left proxy assertions proved interpolation math, not presentation.
+ * That property never reached a display-list producer. Use transform's real
+ * supported subset to observe the SAME seven easing values; native paint has
+ * its separate test-waapi-paint gate. Unsupported properties must now refuse. */
 static const char TEST_JS[] =
-"var out = [];\n"
-"function say(name, got, want){\n"
-"  out.push((String(got) === String(want) ? 'ok   ' : 'FAIL ') + name +\n"
-"           (String(got) === String(want) ? '' : '  got ' + got + ' want ' + want));\n"
+"var out=[];\n"
+"function say(name,got,want){out.push((String(got)===String(want)?'ok   ':'FAIL ')+name+(String(got)===String(want)?'':'  got '+got+' want '+want));}\n"
+"function createEasing(y){if(y==0)return 'steps(1, end)';if(y==1)return 'steps(1, start)';if(y==.5)return 'linear';var b=(8*y-1)/6;return 'cubic-bezier(0, '+b+', 1, '+b+')';}\n"
+"function translation(el){var v=getComputedStyle(el).getPropertyValue('transform');return Math.round(Number(v.slice(7,-1).split(',')[4])*1000)/1000;}\n"
+"say('animate exists on Element.prototype','animate' in Element.prototype,true);\n"
+"var ats=[-.3,0,.3,.5,.6,1,1.5];\n"
+"for(var i=0;i<ats.length;i++){\n"
+" var at=ats[i],el=mkel(),a=el.animate([{transform:'translateX(0px)'},{transform:'translateX(100px)'}],{fill:'both',duration:100000,easing:createEasing(at)});\n"
+" a.pause();a.currentTime=50000;say('at '+at,translation(el),at*100);\n"
 "}\n"
-"\n"
-/* Verbatim from third_party/wpt/css/support/interpolation-testcommon.js. */
-"function createEasing(y) {\n"
-"  if (y == 0) return 'steps(1, end)';\n"
-"  if (y == 1) return 'steps(1, start)';\n"
-"  if (y == 0.5) return 'linear';\n"
-"  var b = (8 * y - 1) / 6;\n"
-"  return 'cubic-bezier(0, ' + b + ', 1, ' + b + ')';\n"
-"}\n"
-"\n"
-"say('animate exists on Element.prototype', ('animate' in Element.prototype), true);\n"
-"\n"
-/* The corpus's own seven progress values. */
-"var ats = [-0.3, 0, 0.3, 0.5, 0.6, 1, 1.5];\n"
-"for (var i = 0; i < ats.length; i++) {\n"
-"  var at = ats[i];\n"
-"  var el = mkel();\n"
-"  var a = el.animate([{ offset: 0, marginLeft: '0px' },\n"
-"                      { offset: 1, marginLeft: '100px' }],\n"
-"                     { fill: 'forwards', duration: 100 * 1000, easing: createEasing(at) });\n"
-"  a.pause();\n"
-"  a.currentTime = 50 * 1000;\n"
-"  say('at ' + at, getComputedStyle(el).getPropertyValue('margin-left'),\n"
-"      (at * 100) + 'px');\n"
-"}\n"
-"\n"
-/* The keyframes are camelCase and the read is dashed -- the harness does
- * exactly this, and a binding that does not fold the two computes the right
- * value under a key nothing ever looks up. */
 "(function(){\n"
-"  var el = mkel();\n"
-"  var a = el.animate([{ offset: 0, marginLeft: '0px' }, { offset: 1, marginLeft: '40px' }],\n"
-"                     { duration: 100, easing: 'linear' });\n"
-"  a.pause(); a.currentTime = 25;\n"
-"  say('camelCase keyframe read back dashed',\n"
-"      getComputedStyle(el).getPropertyValue('margin-left'), '10px');\n"
-"  say('and through the named accessor', getComputedStyle(el).marginLeft, '10px');\n"
-"})();\n"
-"\n"
-/* An un-animated element must come back completely untouched -- same object
- * shape, same answers, no proxy. */
-"(function(){\n"
-"  var el = mkel();\n"
-"  say('no animation, no overlay',\n"
-"      getComputedStyle(el).getPropertyValue('margin-left'), '0px');\n"
-"})();\n"
-"\n"
-/* RULE 1. `margin-top` is not in the stub's table, so the engine reports ''\n"
- * for it -- as it really does for every shorthand and every property LibCSS\n"
- * does not know. The overlay must stay silent: a great many corpus subtests\n"
- * pass today only because BOTH the target and the expected element read '',\n"
- * and answering here would turn those passes into failures. */
-"(function(){\n"
-"  var el = mkel();\n"
-"  var a = el.animate([{ offset: 0, marginTop: '0px' }, { offset: 1, marginTop: '100px' }],\n"
-"                     { duration: 100, easing: 'linear' });\n"
-"  a.pause(); a.currentTime = 50;\n"
-"  say('RULE 1: silent for a property the engine does not report',\n"
-"      getComputedStyle(el).getPropertyValue('margin-top'), '');\n"
-"})();\n"
-"\n"
-/* RULE 2. css_interp declines `initial` against a length -- resolving a\n"
- * keyword needs the cascade, which this layer does not have. The overlay must\n"
- * leave today's answer standing rather than invent one. */
-"(function(){\n"
-"  var el = mkel();\n"
-"  var a = el.animate([{ offset: 0, marginLeft: 'initial' }, { offset: 1, marginLeft: '100px' }],\n"
-"                     { duration: 100, easing: 'linear' });\n"
-"  a.pause(); a.currentTime = 50;\n"
-"  say('RULE 2: silent when the interpolation declines',\n"
-"      getComputedStyle(el).getPropertyValue('margin-left'), '0px');\n"
-"})();\n"
-"\n"
-/* An animation that is not in effect contributes nothing: before its delay\n"
- * with no backwards fill, and after cancel(). */
-"(function(){\n"
-"  var el = mkel();\n"
-"  var a = el.animate([{ offset: 0, marginLeft: '0px' }, { offset: 1, marginLeft: '100px' }],\n"
-"                     { duration: 100, delay: 1000, easing: 'linear' });\n"
-"  a.pause(); a.currentTime = 0;\n"
-"  say('before the delay with fill:none contributes nothing',\n"
-"      getComputedStyle(el).getPropertyValue('margin-left'), '0px');\n"
-"  a.currentTime = 1050;\n"
-"  say('inside the active interval it does',\n"
-"      getComputedStyle(el).getPropertyValue('margin-left'), '50px');\n"
-"  a.cancel();\n"
-"  say('cancel() removes it',\n"
-"      getComputedStyle(el).getPropertyValue('margin-left'), '0px');\n"
-"})();\n"
-"\n"
-"\n"
-/* THE 275-SUBTEST REGRESSION, kept as a check because measuring found it and
- * reading the spec did not. A keyframe value is a COMPUTED value: the engine
- * collapses border-top-width to 0px when border-style is none, WPT's expected
- * element goes through the same rule and also reads 0px, and a binding that
- * interpolates the specified 100px..200px reports 150px against an expected
- * 0px. Both endpoints must be resolved through the target first. */
-"(function(){\n"
-"  var el = mkel();\n"
-"  var a = el.animate([{ offset: 0, borderTopWidth: '100px' },\n"
-"                      { offset: 1, borderTopWidth: '200px' }],\n"
-"                     { duration: 100, easing: 'linear' });\n"
-"  a.pause(); a.currentTime = 50;\n"
-"  say('endpoints resolve to computed values (collapsing width)',\n"
-"      getComputedStyle(el).getPropertyValue('border-top-width'), '0px');\n"
+" var el=mkel(),a=el.animate([{opacity:0},{opacity:1}],{duration:100,fill:'both'});\n"
+" a.pause();a.currentTime=25;say('named opacity accessor',getComputedStyle(el).opacity,'0.25');\n"
+" a.cancel();say('cancel restores base',getComputedStyle(el).getPropertyValue('opacity'),'0');\n"
 "})();\n"
 "(function(){\n"
-"  var el = mkel();\n"
-"  var a = el.animate([{ offset: 0, top: '100px' }, { offset: 1, top: '200px' }],\n"
-"                     { duration: 100, easing: 'linear' });\n"
-"  a.pause(); a.currentTime = 50;\n"
-"  say('endpoints resolve to computed values (auto)',\n"
-"      getComputedStyle(el).getPropertyValue('top'), 'auto');\n"
+" var el=mkel();el.style.setProperty('opacity','.7');\n"
+" var a=el.animate([{opacity:0},{opacity:1}],{duration:100,delay:1000});a.pause();a.currentTime=0;\n"
+" say('before delay restores base',getComputedStyle(el).getPropertyValue('opacity'),'.7');\n"
+" a.currentTime=1050;say('inside interval',getComputedStyle(el).getPropertyValue('opacity'),'0.5');\n"
+" say('inline value preserved',el.style.getPropertyValue('opacity'),'.7');\n"
 "})();\n"
-"\n"
-/* Resolving writes to the target's inline style and must put it back exactly.
- * The composition tests set an underlying value there before calling
- * animate(), and losing it would corrupt the very thing being animated. */
-"(function(){\n"
-"  var el = mkel();\n"
-"  el.style.setProperty('margin-left', '50px');\n"
-"  var a = el.animate([{ offset: 0, marginLeft: '0px' }, { offset: 1, marginLeft: '100px' }],\n"
-"                     { duration: 100, easing: 'linear' });\n"
-"  say('the underlying inline value survives endpoint resolution',\n"
-"      el.style.getPropertyValue('margin-left'), '50px');\n"
-"  a.pause(); a.currentTime = 50;\n"
-"  say('and the animation still runs over it',\n"
-"      getComputedStyle(el).getPropertyValue('margin-left'), '50px');\n"
-"})();\n"
-"\n"
-"globalThis.__result = out.join('\\n');\n";
+"function refuses(name,kf,opt){try{mkel().animate(kf,opt||100);say(name,'accepted','NotSupportedError');}catch(e){say(name,e.name,'NotSupportedError');}}\n"
+"refuses('width cannot report unpainted success',[{width:'0px'},{width:'100px'}]);\n"
+"refuses('unknown property refusal',[{frobnicate:'a'},{frobnicate:'b'}]);\n"
+"refuses('relative transform refused',[{transform:'translateX(0%)'},{transform:'translateX(100%)'}]);\n"
+"refuses('3D transform refused',[{transform:'rotateX(0deg)'},{transform:'rotateX(90deg)'}]);\n"
+"refuses('unresolved keyword refused',[{opacity:'initial'},{opacity:1}]);\n"
+"refuses('pseudo targeting refused',[{opacity:0},{opacity:1}],{duration:100,pseudoElement:'::before'});\n"
+"refuses('composite refused',[{opacity:0},{opacity:1}],{duration:100,composite:'add'});\n"
+"globalThis.__result=out.join('\\n');\n"
+;
 
 static int run_js(JSContext *ctx, const char *src, size_t n, const char *name)
 {

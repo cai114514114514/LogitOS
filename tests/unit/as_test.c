@@ -458,6 +458,18 @@ int main(void)
     ok("fdiv",   "print(7.0 / 2)\n", "3.5\n");
     ok("mod",    "print(17 % 5)\n", "2\n");
     ok("mixed",  "print(2 + 3.5)\n", "5.5\n");
+    /* vm.c now consumes C23 <stdckdint.h>. Exercise every checked operation,
+     * including the second multiply site in exponentiation: these must promote
+     * to float rather than silently wrap an i64 result. */
+    ok("ckd_ovf",
+       "print(9223372036854775807 + 1)\n"
+       "print(-9223372036854775807 - 2)\n"
+       "print(3037000500 * 3037000500)\n"
+       "print(2 ** 63)\n",
+       "9.223372036854776e+18\n"
+       "-9.223372036854776e+18\n"
+       "9.22337203700025e+18\n"
+       "9.223372036854776e+18\n");
 
     /* float formatting: shortest round-trip + ".0" for whole floats (Python/JS-like) */
     ok("fwhole", "print(2.5 * 4.0)\n", "10.0\n");                 /* not "10" (looks like int) */

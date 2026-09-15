@@ -74,7 +74,7 @@ endif
 # quickjs.c references it anyway).
 ANIMCLK_CF   := -O1 -g -w -Ic/apps/browser -Ithird_party/quickjs \
                 -Ithird_party/libm -DCONFIG_VERSION='"host"' -DCONFIG_BIGNUM
-ANIMCLK_SRC  := c/apps/browser/css_interp.c c/apps/browser/js_anim.c $(QJS_SRC)
+ANIMCLK_SRC  := c/apps/browser/css_interp.c c/apps/browser/js_anim.c $(QJS_SRC) c/lib/gfx/openlogit_anim.c c/lib/gfx/gfx_math.c
 
 # --- host: the timing functions and the shorthand parsers -------------------
 test-anim-clock: test-anim-clock-negctl

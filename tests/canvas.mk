@@ -399,3 +399,11 @@ probe-canvas-fingerprint: $(ISO) $(DISK)
 # Turnstile loader, which dies compiling a regex that V8 accepts.
 probe-regex-turnstile: $(ISO) $(DISK)
 	python3 tests/qmp/qmp_regex_turnstile.py $(ISO) $(DISK)
+
+# Keep both rectangle branches honest: the ordinary public-API readback suite
+# must observe erased pixels OUTSIDE the saved clip with the old bug restored.
+test-canvas-clear-clip-negctl: canvas-link-check $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
+	@$(CC) -O2 -w $(CANVAS_CF) -DCANVAS_CLEAR_CLIP_DISABLED -o $(BUILD)/canvas_clear_clip_negctl $(CANVAS_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
+	@rc=0; $(BUILD)/canvas_clear_clip_negctl > $(BUILD)/canvas_clear_clip_negctl.log 2>&1 || rc=$$?; test $$rc -ne 0 && rg '^FAIL: (transformed )?clearRect preserves outside clip' $(BUILD)/canvas_clear_clip_negctl.log
+test-canvas: test-canvas-clear-clip-negctl
+.PHONY: test-canvas-clear-clip-negctl

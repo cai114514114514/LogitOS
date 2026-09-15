@@ -5,11 +5,11 @@
 # same bytes.
 #
 # This is the only test that says the audio decoders work ON LogitOS. The host
-# build is glibc on x86-64 Linux; the target build is clang -ffreestanding
-# against mini-libc, with a different malloc, a 24 MiB arena instead of an OS
-# heap, SSE enabled by boot code rather than by the ABI, and file I/O through
-# virtio-blk and LogitFS. MP3 in particular is a floating-point decoder whose
-# every sample passes through an IMDCT and a 512-tap filter bank; if the guest
+# build uses the host libc and ABI; the target build is clang -ffreestanding
+# against mini-libc, with a different malloc, a 24 MiB arena instead of a host
+# heap, SSE enabled by boot code rather than by the host ABI, and file I/O
+# through virtio-blk and LogitFS. MP3 in particular is a floating-point decoder
+# whose every sample passes through an IMDCT and a 512-tap filter bank; if the guest
 # disagreed with the host about one rounding anywhere in a quarter of a million
 # samples, the CRC would differ.
 #
@@ -33,7 +33,7 @@ QEMU="${QEMU:-qemu-system-x86_64}"
 
 [ -x "$HOSTBIN" ] || { echo "FAIL: missing host reference binary $HOSTBIN"; exit 1; }
 
-# host path  ->  guest path. The three original fixtures live under /media/;
+# host path  ->  guest path. The original fixtures live under /media/;
 # sample.aac is packed from fsroot/ instead, and lands at the root, because the
 # disk image file list lives in the shared Makefile and that file had another
 # session's uncommitted work in it. fsroot/* is picked up by the existing
@@ -54,8 +54,19 @@ host_path() {
     esac
 }
 
+# Keep the reference table in a temporary file instead of a Bash associative
+# array: macOS still ships Bash 3.2, which has neither `declare -A` nor
+# `mapfile`.  The guest harness must be runnable from the supported host.
+LOG="$(mktemp)"
+WANTFILE="$(mktemp)"
+cleanup() {
+    [ -n "${QPID:-}" ] && kill "$QPID" 2>/dev/null
+    [ -n "${QPID:-}" ] && wait "$QPID" 2>/dev/null
+    rm -f "$LOG" "$WANTFILE"
+}
+trap cleanup EXIT
+
 # Host reference values first: if these cannot be produced there is no test.
-declare -A WANT
 for f in $FILES; do
     line="$("$HOSTBIN" "$(host_path "$f")" | grep '^AUDIO-CRC')"
     crc="$(echo "$line" | awk '{print $2}')"
@@ -63,17 +74,9 @@ for f in $FILES; do
         echo "FAIL: host build produced no CRC for $f"
         exit 1
     fi
-    WANT[$f]="$crc"
+    printf '%s %s\n' "$f" "$crc" >>"$WANTFILE"
     echo "host   $f -> $crc"
 done
-
-LOG="$(mktemp)"
-cleanup() {
-    [ -n "${QPID:-}" ] && kill "$QPID" 2>/dev/null
-    [ -n "${QPID:-}" ] && wait "$QPID" 2>/dev/null
-    rm -f "$LOG"
-}
-trap cleanup EXIT
 
 # -snapshot: ephemeral disk writes, so repeated runs are deterministic.
 # Decoding under TCG is not fast; give it room before the shell input ends.
@@ -101,15 +104,15 @@ done
 rc=0
 n=0
 # The guest prints one AUDIO-CRC line per file, in the order they were fed in.
-mapfile -t GOTLINES < <(grep -a "AUDIO-CRC" "$LOG" | tr -d '\r')
 for f in $FILES; do
-    line="${GOTLINES[$n]:-}"
+    line="$(grep -a "AUDIO-CRC" "$LOG" | sed -n "$((n + 1))p" | tr -d '\r')"
     got="$(echo "$line" | awk '{print $2}')"
+    want="$(awk -v file="$f" '$1 == file { print $2; exit }' "$WANTFILE")"
     if [ -z "$got" ]; then
         echo "FAIL: guest printed no CRC for $f"
         rc=1
-    elif [ "$got" != "${WANT[$f]}" ]; then
-        echo "FAIL: $f on-device CRC $got, host CRC ${WANT[$f]}"
+    elif [ "$got" != "$want" ]; then
+        echo "FAIL: $f on-device CRC $got, host CRC $want"
         echo "  ($line)"
         echo "  The decoders agree with ffmpeg on the host, so a mismatch here is"
         echo "  the target build: mini-libc, the arena allocator, or SSE state."

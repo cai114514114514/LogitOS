@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Play the FIRST VIDEO on bilibili, on the real machine, over the real wire.
 
-    python3 tests/qmp/qmp_biliplay_page.py <iso> <disk.img> [--mode live|offline]
+    python3 tests/qmp/qmp_biliplay_page.py <iso> <disk.img>
+                                            [--mode live|offline|probe|mirror]
                                             [--specimen URL] [--secs N]
+                                            [--control no-video] [--trace-input]
 
 WHY THIS HARNESS EXISTS (and why nothing else in the tree answers it). The
 video line proved the pipeline end to end on LOCAL fixtures: <video src> direct
@@ -35,6 +37,7 @@ vehicle is the one that carries the regression burden.
 """
 
 import os
+import re
 import sys
 import subprocess
 import tempfile
@@ -52,6 +55,8 @@ QEMU = os.environ.get("QEMU", "qemu-system-x86_64")
 MODE = "live"
 SPECIMEN = "https://www.bilibili.com/video/BV1GJ411x7h7/"
 SECS = 150
+CONTROL = ""
+TRACE_INPUT = False
 _args = sys.argv[3:]
 _i = 0
 while _i < len(_args):
@@ -61,6 +66,10 @@ while _i < len(_args):
         SPECIMEN = _args[_i + 1]
     elif _args[_i] == "--secs" and _i + 1 < len(_args):
         SECS = int(_args[_i + 1])
+    elif _args[_i] == "--control" and _i + 1 < len(_args):
+        CONTROL = _args[_i + 1]
+    elif _args[_i] == "--trace-input":
+        TRACE_INPUT = True
     _i += 1
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -82,7 +91,17 @@ class Fixture(http.server.BaseHTTPRequestHandler):
         served.append(self.path)
         raw, ctype = None, "application/octet-stream"
         if self.path.startswith("/page"):
-            raw, ctype = offline_page(), "text/html"
+            # BaseHTTPRequestHandler's stream accepts bytes only. Returning the
+            # Python str writes the headers, raises TypeError in wfile.write,
+            # and leaves the guest diagnosing a plausible but false
+            # "connection closed mid-message" network failure.
+            if MODE == "probe":
+                page = probe_page()
+            elif MODE == "mirror":
+                page = mirror_page()
+            else:
+                page = offline_page()
+            raw, ctype = page.encode("utf-8"), "text/html"
         elif self.path.startswith("/bili/"):
             name = os.path.basename(self.path)
             path = os.path.join(BILIFX, name)
@@ -121,6 +140,12 @@ def manifest():
     while os.path.exists(os.path.join(BILIFX, "audio-%d.m4s" % m)):
         a.append("/bili/audio-%d.m4s" % m)
         m += 1
+    # Negative control: retain the valid video init segment and the complete
+    # audio stream, but withhold every video media segment. A gate wired only
+    # to page paint, fetch or audio will still look healthy; the decoder's
+    # framesDecoded counter must be the check that makes this run red.
+    if CONTROL == "no-video":
+        v = v[:1]
     return v, a
 
 
@@ -134,7 +159,7 @@ def offline_page():
 html, body { background:#101014; margin:0; color:#e8e8ee; }
 video { display:block; width:640px; height:360px; background:#000; }
 </style></head><body>
-<video id="v" autoplay muted></video>
+<video id="v" autoplay></video>
 <script>
 """ + segs + """
 var v = document.getElementById('v');
@@ -184,6 +209,16 @@ ms.addEventListener('sourceopen', function () {
   function oneDone() {
     if (--left) return;
     try { ms.endOfStream(); } catch (e) { console.log('BILI-eos ' + e); }
+    /* Real player libraries call play() after attaching/buffering. `autoplay`
+       is still present so attribute handling remains observable, but relying
+       on it alone made this vehicle stop before the media engine: every byte
+       appended successfully while currentTime remained exactly zero. */
+    /* The acceptance gate captures HDA PCM outside the guest. Keep this
+       explicitly audible so a muted element cannot make a healthy decoder
+       indistinguishable from an audio pipeline that produced silence. */
+    v.muted = false;
+    v.volume = 1;
+    v.play();
     console.log('BILI-APPENDED buffered=' +
         (v.buffered.length ? v.buffered.end(0).toFixed(2) : 'none') +
         ' duration=' + v.duration);
@@ -207,6 +242,87 @@ ms.addEventListener('sourceopen', function () {
 """)
 
 
+def probe_page():
+    """Run Bilibili's current production player core with the specimen's real
+    identity, but let the bootstrap exception reach the serial console.
+
+    The live page deliberately wraps createPlayer()+connect() in an empty
+    catch.  That is reasonable production behaviour but makes a missing Web
+    Platform primitive indistinguishable from a player that chose to stay
+    idle.  This page is diagnostic only: it cannot satisfy the live gate and
+    it uses the exact production core URL rather than a forked player.
+    """
+    return r'''<!doctype html><html><head><title>bili-core-probe</title></head>
+<body><div id="bilibili-player" style="width:670px;height:412px"></div>
+<div class="danmaku-wrap"></div>
+<script src="https://s1.hdslb.com/bfs/static/player/main/core.9b2f4c3c.js"></script>
+<script>
+console.log('BILI-PROBE nano=' + typeof window.nano);
+function h2probe(label, url) {
+  fetch(url)
+    .then(function (r) { console.log('BILI-PROBE-H2-' + label + ' status=' + r.status); return r.text(); })
+    .then(function (t) { console.log('BILI-PROBE-H2-' + label + ' bytes=' + t.length); })
+    .catch(function (e) { console.log('BILI-PROBE-H2-' + label + '-FAIL ' + e); });
+}
+// Three requests started in the same turn reproduce the live player's first
+// API burst and, critically, share one negotiated HTTP/2 connection.
+h2probe('A', 'https://api.bilibili.com/x/player/online/total?aid=80433022&cid=137649199&bvid=BV1GJ411x7h7');
+h2probe('B', 'https://api.bilibili.com/x/player/online/total?aid=80433022&cid=137649199&bvid=BV1GJ411x7h7&probe=2');
+h2probe('C', 'https://api.bilibili.com/x/player/online/total?aid=80433022&cid=137649199&bvid=BV1GJ411x7h7&probe=3');
+try {
+  var setting = {
+    element: document.getElementById('bilibili-player'),
+    auxiliary: document.querySelector('.danmaku-wrap'),
+    aid: 80433022, cid: 137649199, bvid: 'BV1GJ411x7h7', p: 1, t: 0,
+    fromDid: null, kind: nano.GroupKind.Ugc,
+    featureList: new Set(['blackGap']),
+    stats: {spmId:'333.788.0.0',spmIdFrom:'333.788.0.0',trackId:''},
+    enableHEVC: true, enableAV1: true, revision: 1
+  };
+  window.player = nano.createPlayer(setting, {});
+  console.log('BILI-PROBE created=' + typeof window.player);
+  window.player.connect();
+  console.log('BILI-PROBE connected');
+} catch (e) {
+  console.log('BILI-PROBE-THREW ' + e + '\n' + (e && e.stack ? e.stack : ''));
+}
+setTimeout(function () { console.log('BILI-PROBE-TIMER player=' + typeof window.player); }, 5000);
+</script></body></html>'''
+
+
+def mirror_page():
+    """Serve a captured real page with only its swallowed bootstrap exception
+    made observable.  The capture is supplied explicitly so it never becomes
+    test evidence and no stale snapshot can be mistaken for the live gate.
+    """
+    path = os.environ.get("BILIPLAY_MIRROR_HTML", "")
+    if not path:
+        return "<!doctype html><script>console.log('BILI-MIRROR-NO-HTML')</script>"
+    with open(path, "r", encoding="utf-8") as fh:
+        page = fh.read()
+    old = """          try {
+            connectPlayer()
+          } catch(e) {}"""
+    new = """          console.log('BILI-MIRROR-CONNECT-ENTER')
+          try {
+            connectPlayer()
+            console.log('BILI-MIRROR-CONNECT-RETURN')
+          } catch(e) {
+            console.log('BILI-MIRROR-CONNECT-THREW ' + e + '\\n' +
+              (e && e.stack ? e.stack : ''))
+          }"""
+    if old not in page:
+        return page.replace(
+            "<head>",
+            "<head><script>console.log('BILI-MIRROR-PATCH-MISS')</script>",
+            1)
+    page = page.replace(old, new, 1)
+    # The captured document is served from the host fixture but its resources
+    # and relative URL resolution must remain those of the real specimen.
+    page = page.replace("<head>", '<head><base href="%s">' % SPECIMEN, 1)
+    return page
+
+
 # The MIME types the manifest family declares for these very segments,
 # recorded at capture time in type-video.txt / type-audio.txt. Reading them
 # back keeps the fixture honest: the offline gate asks the browser the SAME
@@ -223,12 +339,13 @@ def _type_line(name, fallback):
 
 srv = None
 PORT = 0
-if MODE == "offline":
+if MODE in ("offline", "probe", "mirror"):
     srv = http.server.ThreadingHTTPServer(("0.0.0.0", 0), Fixture)
     PORT = srv.server_port
     threading.Thread(target=srv.serve_forever, daemon=True).start()
 
-PAGE_URL = ("http://10.0.2.2:%d/page.html" % PORT) if MODE == "offline" else SPECIMEN
+PAGE_URL = ("http://10.0.2.2:%d/page.html" % PORT) if MODE in (
+    "offline", "probe", "mirror") else SPECIMEN
 
 # A REAL SOUND CARD, wav backend rather than none: the master clock is the
 # card's play cursor and the wav file is the only channel that distinguishes
@@ -285,7 +402,8 @@ def wait_serial(needle, secs, what):
     return False
 
 
-print("== qmp_biliplay_page mode=%s url=%s ==" % (MODE, PAGE_URL))
+print("== qmp_biliplay_page mode=%s control=%s url=%s ==" %
+      (MODE, CONTROL or "none", PAGE_URL))
 if not wait_serial("LOGIT_BOOT_OK", 300, "boot"):
     print("FAIL: kernel never printed LOGIT_BOOT_OK")
     print(serial()[-4000:])
@@ -300,7 +418,11 @@ time.sleep(3)
 
 ui = Session(qmp_path, serial=serial_path)
 try:
-    ui.launch_app("browser")
+    # The boot path is busy enough that a burst of PS/2 relative packets can
+    # be dropped even at 1280x800.  A dead-reckoned Dock click then looks like
+    # a slow Browser launch.  Make the guest's own pointer report the
+    # precondition, just as the later live-player click already does.
+    ui.launch_app("browser", probe=os.path.join(tmp, "browser-launch-pointer.ppm"))
 except AssertionError as e:
     print("FAIL: %s" % e)
     proc.kill()
@@ -322,6 +444,10 @@ ui.key("ret")
 DONE_MARKER = "BILIPLAY-OFFLINE-DONE" if MODE == "offline" else None
 end = time.time() + SECS
 shots = 0
+live_clicked = False
+live_click_error = None
+live_mounted_clicked = False
+live_keyed = False
 while time.time() < end and proc.poll() is None:
     time.sleep(5)
     tail = serial_new()
@@ -329,11 +455,110 @@ while time.time() < end and proc.poll() is None:
         sys.stdout.write(tail)
         sys.stdout.flush()
     shots += 1
-    ui.screendump(os.path.join(tmp, "shot-%02d.ppm" % shots), settle=0.1)
+    shot_path = os.path.join(tmp, "shot-%02d.ppm" % shots)
+    ui.screendump(shot_path, settle=0.1)
+    if (MODE == "live" and not live_clicked and
+            "Never Gonna Give You Up" in serial() and
+            "[load-complete]" in serial()):
+        # Bilibili intentionally leaves an unmuted player behind its poster
+        # until it sees a real user gesture.  Drive the same click a person
+        # would: through QEMU's PS/2 path, confirmed by the guest's own pointer
+        # report, on the visible play triangle at the bottom-left of the
+        # 670x412 player at 1280x800.  A centre click is not equivalent here:
+        # the current production skin leaves the black poster area inert while
+        # paused, so that gesture reached the page but never called play(). The
+        # title also exists in Bilibili's early skeleton paint, so wait for the
+        # browser's lifecycle-complete marker: a click before player scripts
+        # mount is a gesture delivered to the wrong DOM, not a playback test.
+        # Merely calling HTMLMediaElement.play() from injected JS would bypass
+        # the site player and would not prove that Bilibili can play here.
+        try:
+            ui.click_at_confirmed(
+                os.path.join(tmp, "live-click-pointer.ppm"), 202, 711)
+            live_clicked = True
+            print("BILIPLAY-LIVE-CLICK point=202,711 confirmed=1")
+        except AssertionError as e:
+            live_click_error = str(e)
+            live_clicked = True
+            print("BILIPLAY-LIVE-CLICK-FAIL " + live_click_error)
+    # The lifecycle marker can precede the asynchronously mounted production
+    # player under TCG. Once the real player reaches its first SourceBuffer
+    # request, repeat the same control click once. This is still physical QMP
+    # input; no player state, quality preference, API response or media byte is
+    # changed by the harness.
+    sourcebuffer_attempt = 'addSourceBuffer("audio/mp4;codecs="mp4a.40.' in serial()
+    if (MODE == "live" and live_clicked and sourcebuffer_attempt and
+            not live_mounted_clicked):
+        try:
+            if TRACE_INPUT:
+                # about:input is an on-demand browser diagnostic that arms 64
+                # native hit/focus/key trace points while deliberately
+                # preserving the current document and JS realm. Drive it
+                # through the address bar so this debug mode does not inject
+                # script into, or otherwise impersonate, the public site.
+                # The caret-derived locator can only discover a fresh Browser
+                # that is already in address editing mode.  This is a loaded
+                # page, so use the browser's real Ctrl+L shortcut: it both
+                # focuses the bar and selects the complete current URL.  That
+                # keeps the diagnostic physical without relying on a caret
+                # which intentionally is not on screen before the chord.
+                ui.key_mods(("ctrl",), "l", settle=0.2)
+                ui.typ("about:input")
+                ui.key("ret", settle=0.5)
+                print("BILIPLAY-LIVE-INPUT-TRACE armed=1")
+            ui.click_at_confirmed(
+                os.path.join(tmp, "live-mounted-click-pointer.ppm"), 202, 711)
+            live_mounted_clicked = True
+            print("BILIPLAY-LIVE-MOUNTED-CLICK point=202,711 confirmed=1")
+            # The player has focus now. Space is Bilibili's documented/user
+            # playback gesture and crosses QEMU's PS/2 path like a real key;
+            # it does not call the media shim or mutate player state from the
+            # harness. Keep the click as the focus precondition and send the
+            # key only after SourceBuffers prove that the production player,
+            # rather than the early page skeleton, is the event consumer.
+            ui.key("spc", settle=0.5)
+            live_keyed = True
+            print("BILIPLAY-LIVE-PLAY-KEY key=space confirmed=1")
+        except AssertionError as e:
+            live_click_error = str(e)
+            live_mounted_clicked = True
+            print("BILIPLAY-LIVE-MOUNTED-CLICK-FAIL " + live_click_error)
+    # Do not burn the remainder of a long public-site allowance after the
+    # substantive gate is already settled. Two rising engine samples prove
+    # motion and a positive audio counter proves that decoded PCM reached the
+    # guest sound path; QEMU is then closed normally so the host WAV supplies
+    # the independent audio assertion below.
+    if MODE == "live" and live_keyed:
+        stats_lines = [l for l in serial().splitlines()
+                       if "[media] stats" in l and "shown=" in l]
+        shown_now = [int(re.search(r"shown=(\d+)", l).group(1))
+                     for l in stats_lines if re.search(r"shown=(\d+)", l)]
+        audio_now = [int(re.search(r"audio=(\d+)", l).group(1))
+                     for l in stats_lines if re.search(r"audio=(\d+)", l)]
+        if (len(shown_now) >= 2 and
+                any(b > a for a, b in zip(shown_now, shown_now[1:])) and
+                any(n > 0 for n in audio_now)):
+            print("BILIPLAY-LIVE-EVIDENCE-COMPLETE shown=%s audio=%s" %
+                  (shown_now[-4:], audio_now[-4:]))
+            break
     if DONE_MARKER and DONE_MARKER in serial():
         break
 
 time.sleep(2)
+# Close the browser before stopping the machine.  Besides matching a user
+# leaving the page, this runs the normal page/transport teardown and prints the
+# HTTP/2 session counters.  Killing QEMU first used to hide whether a stalled
+# fetch had sent no frames, received no frames, or hit a protocol error.
+if proc.poll() is None:
+    try:
+        ui.key_mods(("meta_l",), "w", settle=0.5)
+        time.sleep(3)
+        tail = serial_new()
+        if tail:
+            sys.stdout.write(tail)
+            sys.stdout.flush()
+    except Exception as e:
+        print("BILIPLAY-CLOSE-DIAG-FAIL " + str(e))
 proc.terminate()
 try:
     proc.wait(timeout=20)
@@ -437,26 +662,24 @@ if MODE == "offline":
     print("BILIPLAY-OFFLINE-" + ("OK" if ok else "FAIL"))
     sys.exit(0 if ok else 1)
 
-# live mode: the verdict is whatever the chain actually did. Today the known
-# wall is printed; when the player-API diffs land, the same assertions as the
-# offline gate apply (shown>0, rising, ended optional on a long video, PCM).
+# Live mode uses the same substantive assertions as offline (shown>0, rising,
+# and PCM); reaching `ended` is optional because the public video is long.
 media_lines = [l for l in serial().splitlines() if "[media]" in l]
-first_frame = [l for l in media_lines if "shown=" in l and
-               int(l.split("shown=")[1].split()[0]) > 0]
+shown_samples = [int(l.split("shown=")[1].split()[0]) for l in media_lines
+                 if "shown=" in l]
 ck(len(media_lines) > 0,
    "the page's player stack asked this browser a media question (%d [media] "
    "lines)" % len(media_lines))
 for l in media_lines[:6]:
     print("     " + l.strip())
-ck(len(first_frame) > 0,
+ck(live_clicked and live_click_error is None,
+   "a confirmed user click reached the LIVE player")
+ck(any(n > 0 for n in shown_samples),
    "the FIRST FRAME was shown on the LIVE specimen (engine counters)")
+ck(any(b > a for a, b in zip(shown_samples, shown_samples[1:])),
+   "framesShown ROSE on the LIVE specimen -- playback, not one frame and a "
+   "stall (over time: %s)" % shown_samples)
 ck(frames > 0 and loud > 1000, "audio PCM was captured on the LIVE specimen")
-wall = ("NotSupportedError: importing or adopting a node from a document created "
-        "by new DOMParser" in serial())
-if wall:
-    print("NOTE: the known player-API wall fired (DOMParser cross-document "
-          "adoption, js_platform.c CROSS_DOC) -- see the biliplay report for "
-          "the exact js_domparser.c diff that closes it.")
 ok = all(c for c, _ in checks)
 print("\nqmp_biliplay live: %d checks, %d failures" %
       (len(checks), len(checks) - sum(1 for c, _ in checks if c)))

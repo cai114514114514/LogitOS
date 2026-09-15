@@ -1,0 +1,39 @@
+<!doctype html><meta charset="utf-8"><title>Animation refresh measurement</title>
+<style>
+body{margin:20px;font:16px sans-serif;background:#f4f7fb}
+#fade{width:360px;height:48px;background:#186dcc;color:white}
+#grid{display:grid;grid-template-columns:repeat(8,1fr);gap:4px;width:1000px}
+.cell{display:flex;gap:4px;padding:4px;background:#d9e6f4}
+</style>
+<div id="fade">Live opacity animation</div><p>Fixed geometry and native keyboard input</p><div id="grid"></div>
+<script>
+for(var i=0;i<240;i++){
+  var cell=document.createElement('div');cell.className='cell';
+  cell.innerHTML='<b>Cell</b><span>'+i+'</span><span>text</span>';grid.appendChild(cell);
+}
+var inputs=0;
+document.addEventListener('keydown',function(){inputs++;console.log('ANIMATION-INPUT '+inputs)});
+window.addEventListener('load',function(){
+  var a=fade.animate([{opacity:0},{opacity:1}],{duration:1000,iterations:Infinity,direction:'alternate'});
+  var count=0,start=0,last=0,maxGap=0,box=fade.getBoundingClientRect();
+  function sample(now){
+    if(!count){start=last=now;console.log('ANIMATION-START')}
+    else maxGap=Math.max(maxGap,now-last);
+    last=now;
+    if(++count<49){requestAnimationFrame(sample);return}
+    var elapsed=now-start;
+    // Let cancellation cross an animation update before setting the photo's
+    // fixed CSS pose. A marker inside the cancelling callback is too early.
+    a.cancel();
+    requestAnimationFrame(function(){
+      fade.style.opacity='.5';
+      requestAnimationFrame(function(){
+      var r=fade.getBoundingClientRect();
+      console.log('ANIMATION-DONE '+JSON.stringify({frames:48,elapsed_ms:elapsed,max_gap_ms:maxGap,
+        inputs:inputs,geometry_same:r.x===box.x&&r.y===box.y&&r.width===box.width&&r.height===box.height}));
+      });
+    });
+  }
+  requestAnimationFrame(sample);
+});
+</script>

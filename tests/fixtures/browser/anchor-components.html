@@ -1,0 +1,37 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Hyperlink URL components guest check</title>
+<style>body{font:18px sans-serif;margin:24px}#status{padding:16px;background:#edf3f8}</style>
+<h1>Hyperlink URL components</h1>
+<div id="status">ANCHOR-COMPONENTS PENDING</div>
+<script>
+(function () {
+  var count=0, status=document.getElementById('status');
+  function check(ok,why){if(!ok)throw new Error(why);count++;}
+  try {
+    var a=document.createElement('a');
+    a.href='https://user:pass@example.test:8443/a/b?q=1#part';
+    check(a.hostname==='example.test'&&a.host==='example.test:8443'&&a.protocol==='https:', 'parsed host components');
+    check(a.pathname==='/a/b'&&a.search==='?q=1'&&a.hash==='#part'&&a.port==='8443', 'parsed path components');
+    check(a.origin==='https://example.test:8443'&&a.username==='user'&&a.password==='pass', 'origin and credentials');
+    a.hostname='other.test';a.pathname='/next';a.search='x=2';a.hash='tail';a.port='443';
+    check(a.getAttribute('href')==='https://user:pass@other.test/next?x=2#tail', 'component setters synchronize href attribute');
+    a.setAttribute('href','/relative.js');
+    check(a.hostname===new URL(document.baseURI).hostname&&a.pathname==='/relative.js', 'relative attribute uses actual document base');
+    var area=document.createElement('area');area.href='https://area.example.test/path';
+    check(area.hostname==='area.example.test'&&area.pathname==='/path', 'area uses same hyperlink binding');
+    // The native append consumer shape from the failing host replay. A data
+    // script keeps this fixture deterministic without making a network request.
+    var nativeAppend=Element.prototype.appendChild, reached=false;
+    var script=document.createElement('script');script.type='application/json';script.src='/fixture-resource.js';
+    function appendChecked(node){
+      var parsed=document.createElement('A');parsed.href=node.src;
+      check(parsed.href.length>0&&parsed.hostname.length>0, 'href to hostname length consumer');
+      reached=true;return nativeAppend.call(document.body,node);
+    }
+    check(appendChecked(script)===script&&reached&&script.parentNode===document.body, 'consumer reaches native insertion');
+    status.textContent='ANCHOR-COMPONENTS PASS ('+count+' checks)';status.style.color='#08662a';
+    console.log('ANCHOR-COMPONENTS PASS');
+  }catch(e){status.textContent='ANCHOR-COMPONENTS FAIL: '+e.message;status.style.color='#b00020';console.log('ANCHOR-COMPONENTS FAIL: '+e.message);}
+})();
+</script>
