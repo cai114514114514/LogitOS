@@ -24,12 +24,16 @@
 # Do NOT reuse $(BUILD)/jsobj/third_party/libm/*.o: those carry -DLOGIT_OS,
 # -DCONFIG_STACK_CHECK and -Ithird_party/quickjs, and reusing them would make
 # /bin/lua depend on the browser's flag set.
-LIBM_SRC := $(sort $(wildcard third_party/libm/*.c))
-LIBM_OBJ := $(patsubst %.c,$(BUILD)/libmobj/%.o,$(LIBM_SRC))
-
-$(BUILD)/libmobj/%.o: %.c
-	@mkdir -p $(dir $@)
-	$(CC) $(UCFLAGS) -w -include features.h -Ithird_party/libm -c $< -o $@
+# LIBM_SRC/LIBM_OBJ AND THE COMPILE RULE MOVED TO THE MAKEFILE, beside
+# VID_OBJ and AUD_OBJ. They used to live here, and that made every use of
+# $(LIBM_OBJ) in a PREREQUISITE list above line 4267 expand to nothing:
+# prerequisites are expanded when the rule is READ, recipes when it is RUN,
+# so build/audiocheck.elf named 83 object files in its recipe and ZERO in
+# its prerequisites. It linked only when some other target happened to
+# build them first -- a pure ordering accident, and it failed as
+# `cannot open build/libmobj/third_party/libm/*.o` with third_party/libm
+# sitting right there on disk. The flags and the scoping argument above are
+# unchanged and still apply; only the three lines moved.
 
 # --- /bin/libmcheck: the port is bit-identical to a native build --------------
 #

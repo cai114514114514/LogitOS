@@ -154,6 +154,14 @@ struct mdemux {
     int             ntracks;
     mtrack          tr[MEDIA_MAX_TRACKS];
     int             selected;          /* -1 = all */
+    /* Set only by ts_parse/ps_parse on success, when they reassign `data` to
+     * a scratch buffer THEY allocated (a PES payload is chopped across
+     * ~184-byte TS packets -- see ts.h/ps.h). media_close() frees `data`
+     * when this is set and never otherwise, since every other format's
+     * `data` is the caller's own buffer and was never this library's to
+     * free. This is the "one-line change" ts.h's own header comment named
+     * before demux.c dispatched to these formats at all. */
+    int             owns_data;
 };
 
 /* Grow-and-append. Returns 0 or MEDIA_ERR_*. The cap doubles, so building an

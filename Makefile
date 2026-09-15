@@ -1382,6 +1382,19 @@ $(BUILD)/imgcheck.aex: $(BUILD)/imgcheck.elf tools/mkaex.py
 # every transcendental is a constant in the generated mp3_tables.h and the two
 # run-time nonlinearities are computed from scratch -- so it links with nothing
 # but LIBC_OBJS.
+# musl libm, cross-built for ring 3. DEFINED HERE, NOT IN tests/libm.mk,
+# because $(LIBM_OBJ) appears in PREREQUISITE lists below and a prerequisite
+# is expanded when the rule is read -- a definition that arrives with an
+# -include 3,000 lines later expands to nothing there, and the link then
+# names object files make was never told to build. The flags and the reason
+# they are scoped to $(BUILD)/libmobj are argued in tests/libm.mk's header.
+LIBM_SRC := $(sort $(wildcard third_party/libm/*.c))
+LIBM_OBJ := $(patsubst %.c,$(BUILD)/libmobj/%.o,$(LIBM_SRC))
+
+$(BUILD)/libmobj/%.o: %.c
+	@mkdir -p $(dir $@)
+	$(CC) $(UCFLAGS) -w -include features.h -Ithird_party/libm -c $< -o $@
+
 AUD_SRC  := $(wildcard c/lib/audio/*.c)
 AUD_HDRS := $(wildcard c/lib/audio/*.h)
 AUD_OBJ  := $(patsubst %.c,$(BUILD)/audobj/%.o,$(AUD_SRC))
@@ -1442,8 +1455,9 @@ $(BUILD)/audiocheck.aex: $(BUILD)/audiocheck.elf tools/mkaex.py
 # runs on content -- see opens_in_preview() in c/kernel/gui/wm.c.
 $(BUILD)/preview.elf: $(GUIDIR)/preview.c $(APPDIR)/logit.h $(VID_HDRS) \
                       c/lib/image/img.h c/apps/coreutils/logit_sniff.h \
-                      $(BUILD)/apps/crt0.o $(VID_OBJ) $(IMGCHK_OBJ) $(GFX_OBJ) $(RUST_LIB) \
-                      $(LIBM_OBJ) $(LIBC_OBJS)
+                      $(BUILD)/apps/crt0.o $(VID_OBJ) $(MED_OBJ) $(AUD_OBJ) \
+                      $(IMGCHK_OBJ) $(GFX_OBJ) $(RUST_LIB) $(LIBM_OBJ) \
+                      $(LIBC_OBJS)
 	@mkdir -p $(BUILD)/apps
 	$(CC) $(UCFLAGS) $(PREVIEW_CF) -c $(GUIDIR)/preview.c -o $(BUILD)/apps/preview.o
 	$(LD) -nostdlib -e _start -Ttext=0x48000000 -o $@ --start-group \
