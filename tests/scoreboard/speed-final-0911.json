@@ -1,0 +1,969 @@
+{
+ "date": "speed-final-0911",
+ "generated": "2026-09-11T15:55:07",
+ "iso": "build-browser-speed-0911/final/logit.iso",
+ "iso_sha256_16": "89466926e7e34e11",
+ "commit": "41d7a74e8",
+ "wall_seconds": 632.5,
+ "repeat": 2,
+ "sites": [
+  {
+   "name": "deepseek",
+   "url": "https://www.deepseek.com/",
+   "started": "2026-09-11T15:44:35",
+   "verdict": "PAINTED",
+   "why": "painted 326280 changed px in 2.5s, no JS exceptions, no subresource gap",
+   "host": {
+    "ok": true,
+    "status": 200,
+    "final_url": "https://www.deepseek.com/",
+    "bytes": 90207,
+    "redirects": [],
+    "script_tags": 37,
+    "script_src": 16,
+    "img_tags": 3,
+    "inventory": {
+     "stylesheets": 3,
+     "script_src": 15,
+     "inline_scripts": 21,
+     "images": 3,
+     "preloads": 3,
+     "fonts": 0,
+     "mandatory": 19
+    },
+    "elapsed": 0.1
+   },
+   "guest": {
+    "exceptions": [],
+    "timer_exceptions": [],
+    "module_exceptions": [],
+    "console_errors": [],
+    "webapi_errors": [],
+    "fetch_failed": [],
+    "fetch_stalled": [],
+    "cannot_fetch": [],
+    "skipped_scripts": 0,
+    "requests": 19,
+    "dials": 0,
+    "reused": 1,
+    "modules": 0,
+    "modules_failed": 0,
+    "heap_peak_k": 17527,
+    "load_done": true,
+    "page_fetch_failed": null,
+    "app_fault": null,
+    "panic": false,
+    "load_phases_ms": [
+     {
+      "total_ms": 2120,
+      "teardown": 100,
+      "document": 0,
+      "first_style_layout_paint": 110,
+      "styles_fetch": 240,
+      "full_style_layout_paint": 210,
+      "images": 10,
+      "runtime_init": 340,
+      "scripts_fetch": 170,
+      "scripts_execute": 780,
+      "lifecycle_settle": 160
+     },
+     {
+      "total_ms": 1490,
+      "teardown": 80,
+      "document": 0,
+      "first_style_layout_paint": 50,
+      "styles_fetch": 20,
+      "full_style_layout_paint": 150,
+      "images": 0,
+      "runtime_init": 290,
+      "scripts_fetch": 40,
+      "scripts_execute": 640,
+      "lifecycle_settle": 220
+     }
+    ],
+    "module_phases_ms": [
+     {
+      "compile_ms": 0,
+      "prefetch_ms": 0,
+      "fetch_ms": 0,
+      "link_ms": 0,
+      "eval_jobs_ms": 0,
+      "compile_bytes": 0,
+      "compiles": 0,
+      "fetches": 0,
+      "prefetch_batches": 0
+     },
+     {
+      "compile_ms": 0,
+      "prefetch_ms": 0,
+      "fetch_ms": 0,
+      "link_ms": 0,
+      "eval_jobs_ms": 0,
+      "compile_bytes": 0,
+      "compiles": 0,
+      "fetches": 0,
+      "prefetch_batches": 0
+     }
+    ],
+    "module_fetch_observations": [],
+    "load_seconds": 2.5,
+    "paint_seconds": 16.3,
+    "settled": true
+   },
+   "pixels": {
+    "changed_px": 326280,
+    "changed_bbox": [
+     112,
+     12,
+     1264,
+     736
+    ],
+    "ink_px": 24523,
+    "ink_px_blank": 4119,
+    "colours": 1489,
+    "rich_tiles_proxy": 53
+   },
+   "shot": "build-browser-speed-0911/evidence/live-final/deepseek.png",
+   "serial_log": "build-browser-speed-0911/evidence/live-final/deepseek.serial.txt",
+   "url_confirmed": "https://www.deepseek.com/",
+   "url_attempts": 1,
+   "about_text_completed": true,
+   "about_text_arrived": true,
+   "late_observation": {
+    "text_runs": 42,
+    "text_bytes": 245,
+    "text": "148,425 DeepThin\n148,445 k\n239,425 Searc\n239,445 h\n335,124 The\n363,124 official\n410,124 version\n462,124 of\n478,124 DeepSeek-V4.1-Flash\n622,124 has\n649,124 been\n686,124 released,\n750,124 featuring\n299,148 comprehensive\n405,148 improvements\n505,148 in\n521,148 text\n549,148 and\n578,148 Agent\n620,148 performance,\n712,148 along\n753,148 with\n786,148 native\n401,172 multimodal\n482,172 visual\n524,172 understanding\n626,172 capabilities.\n406,220 Into\n485,220 the\n551,220 Unknown\n412,510 Chat\n446,510 with\n479,510 DeepSeek\n620,510 Use\n648,510 API\n673,510 Platform\n1050,77 中\n1050,95 文\n1096,77 E\n1096,95 N\n939,85 Get\n965,85 App",
+    "shot": "build-browser-speed-0911/evidence/live-final/deepseek.late.png",
+    "changed_px": 324500,
+    "initial_to_late_changed_px": 3584,
+    "basis": "after diagnostic turns; not a completion or usability guarantee"
+   },
+   "host_document": "build-browser-speed-0911/evidence/live-final/deepseek.host.html",
+   "paint_text_history": [
+    {
+     "runs": 42,
+     "bytes": 245
+    }
+   ],
+   "text_runs": 42,
+   "text_bytes": 245,
+   "text": "335,155 The\n363,155 official\n410,155 version\n462,155 of\n478,155 DeepSeek-V4.1-Flash\n622,155 has\n649,155 been\n686,155 released,\n750,155 featuring\n299,179 comprehensive\n405,179 improvements\n505,179 in\n521,179 text\n549,179 and\n578,179 Agent\n620,179 performance,\n712,179 along\n753,179 with\n786,179 native\n401,203 multimodal\n482,203 visual\n524,203 understanding\n626,203 capabilities.\n406,251 Into\n485,251 the\n551,251 Unknown\n148,461 DeepThin\n148,481 k\n239,461 Searc\n239,481 h\n412,546 Chat\n446,546 with\n479,546 DeepSeek\n620,546 Use\n648,546 API\n673,546 Platform\n1050,77 中\n1050,95 文\n1096,77 E\n1096,95 N\n939,85 Get\n965,85 App",
+   "subresources": {
+    "host_inventory": {
+     "stylesheets": 3,
+     "script_src": 15,
+     "inline_scripts": 21,
+     "images": 3,
+     "preloads": 3,
+     "fonts": 0,
+     "mandatory": 19
+    },
+    "gap": null
+   },
+   "finished": "2026-09-11T15:45:22",
+   "reported": "blank; needs Worker",
+   "wall_seconds": 46.9,
+   "runs": 2,
+   "all_verdicts": [
+    "PAINTED",
+    "PAINTED"
+   ]
+  },
+  {
+   "name": "github",
+   "url": "https://github.com/",
+   "started": "2026-09-11T15:45:22",
+   "verdict": "ERRORS",
+   "why": "painted 579620 changed px, with 0 page-reported error(s) and 4 fetch error(s)",
+   "host": {
+    "ok": true,
+    "status": 200,
+    "final_url": "https://github.com/",
+    "bytes": 577388,
+    "redirects": [],
+    "script_tags": 14,
+    "script_src": 8,
+    "img_tags": 24,
+    "inventory": {
+     "stylesheets": 18,
+     "script_src": 8,
+     "inline_scripts": 0,
+     "images": 22,
+     "preloads": 77,
+     "fonts": 1,
+     "mandatory": 27
+    },
+    "elapsed": 2.7
+   },
+   "guest": {
+    "exceptions": [],
+    "timer_exceptions": [],
+    "module_exceptions": [],
+    "console_errors": [],
+    "webapi_errors": [
+     "fetch: timed out",
+     "fetch: timed out",
+     "fetch: timed out",
+     "fetch: timed out"
+    ],
+    "fetch_failed": [
+     "[img] fetch failed (status 0): //images.ctfassets.net/8aevphvgewt8/5suLHnkyPm3laA8qENQmMZ/6b267a9e449ae94968dd85c8f96fb64e/accordion-1-38ad6b6d1b20.webp: stalled: no response",
+     "[img] fetch failed (status 0): //images.ctfassets.net/8aevphvgewt8/20DkYnWbPsbb8mdDnIs32f/a43850b7e0e8e45ec87761d1ba91e19b/accordion-2-c0a62cfc31a1.webp: stalled: no response",
+     "[img] fetch failed (status 0): //images.ctfassets.net/8aevphvgewt8/39mo3IRGhK995HzuwZANhY/cabfd393551e0d2aae92bc105121ca9c/accordion-3-5d5d222f1830.webp: stalled: no response",
+     "[img] fetch failed (status 0): //images.ctfassets.net/8aevphvgewt8/7GOAeyecyEQqY12hHwvwXg/69877012458c9d42916b2a18e0e36a37/accordion-4-7abff9233556.webp: stalled: no response"
+    ],
+    "fetch_stalled": [
+     "fetch stalled: no response after 12 s: https://images.ctfassets.net/8aevphvgewt8/5suLHnkyPm3laA8qENQmMZ/6b267a9e449ae94968dd85c8f96fb64e/accordion-1-38ad6b6d1b20.webp",
+     "fetch stalled: no response after 12 s: https://images.ctfassets.net/8aevphvgewt8/20DkYnWbPsbb8mdDnIs32f/a43850b7e0e8e45ec87761d1ba91e19b/accordion-2-c0a62cfc31a1.webp",
+     "fetch stalled: no response after 12 s: https://images.ctfassets.net/8aevphvgewt8/39mo3IRGhK995HzuwZANhY/cabfd393551e0d2aae92bc105121ca9c/accordion-3-5d5d222f1830.webp",
+     "fetch stalled: no response after 12 s: https://images.ctfassets.net/8aevphvgewt8/7GOAeyecyEQqY12hHwvwXg/69877012458c9d42916b2a18e0e36a37/accordion-4-7abff9233556.webp"
+    ],
+    "cannot_fetch": [],
+    "skipped_scripts": 6,
+    "requests": 90,
+    "dials": 2,
+    "reused": 88,
+    "modules": 62,
+    "modules_failed": 0,
+    "heap_peak_k": 88930,
+    "load_done": true,
+    "page_fetch_failed": null,
+    "app_fault": null,
+    "panic": false,
+    "load_phases_ms": [
+     {
+      "total_ms": 39370,
+      "teardown": 1840,
+      "document": 0,
+      "first_style_layout_paint": 370,
+      "styles_fetch": 3050,
+      "full_style_layout_paint": 8080,
+      "images": 0,
+      "runtime_init": 290,
+      "scripts_fetch": 2280,
+      "scripts_execute": 13850,
+      "lifecycle_settle": 9610
+     }
+    ],
+    "module_phases_ms": [
+     {
+      "compile_ms": 4130,
+      "prefetch_ms": 6220,
+      "fetch_ms": 670,
+      "link_ms": 130,
+      "eval_jobs_ms": 2700,
+      "compile_bytes": 6151828,
+      "compiles": 70,
+      "fetches": 62,
+      "prefetch_batches": 5
+     }
+    ],
+    "module_fetch_observations": [
+     {
+      "bytes": 82333,
+      "url": "https://github.githubassets.com/assets/wp-runtime-0df7897b09855896.js"
+     },
+     {
+      "bytes": 4533,
+      "url": "https://github.githubassets.com/assets/app-foundation-13e668e8647c754c.js"
+     },
+     {
+      "bytes": 84477,
+      "url": "https://github.githubassets.com/assets/app-runtime-79f2476139a75354.js"
+     },
+     {
+      "bytes": 7138,
+      "url": "https://github.githubassets.com/assets/fetch-utilities-5305162aa9984914.js"
+     },
+     {
+      "bytes": 29356,
+      "url": "https://github.githubassets.com/assets/ser-cd1b421ad0ad7ed5.js"
+     },
+     {
+      "bytes": 6405,
+      "url": "https://github.githubassets.com/assets/catalyst-044fa3a2acdaf0a9.js"
+     },
+     {
+      "bytes": 3952,
+      "url": "https://github.githubassets.com/assets/selector-observer-e88088f989b27670.js"
+     },
+     {
+      "bytes": 20317,
+      "url": "https://github.githubassets.com/assets/relative-time-element-85cb37305f54dec4.js"
+     },
+     {
+      "bytes": 20237,
+      "url": "https://github.githubassets.com/assets/by-6b3c07383371bf58.js"
+     },
+     {
+      "bytes": 14027,
+      "url": "https://github.githubassets.com/assets/ja9-36f036c13c2e3a4c.js"
+     },
+     {
+      "bytes": 18099,
+      "url": "https://github.githubassets.com/assets/kw-866fd9513ae95106.js"
+     },
+     {
+      "bytes": 18680,
+      "url": "https://github.githubassets.com/assets/r1-b075aab3204f32f9.js"
+     },
+     {
+      "bytes": 16915,
+      "url": "https://github.githubassets.com/assets/jz5-7c5d1669717041f8.js"
+     },
+     {
+      "bytes": 12258,
+      "url": "https://github.githubassets.com/assets/hj-5126390ff433704d.js"
+     },
+     {
+      "bytes": 132331,
+      "url": "https://github.githubassets.com/assets/j05-dce4d588268f0f7e.js"
+     },
+     {
+      "bytes": 3118,
+      "url": "https://github.githubassets.com/assets/runtime-helpers-f3f5d71440009c48.js"
+     },
+     {
+      "bytes": 539,
+      "url": "https://github.githubassets.com/assets/aria-live-76b18916d0c8ec4d.js"
+     },
+     {
+      "bytes": 5311,
+      "url": "https://github.githubassets.com/assets/hotkey-5109c77d7ac61078.js"
+     },
+     {
+      "bytes": 271167,
+      "url": "https://github.githubassets.com/assets/react-core-7fa41ffc30596003.js"
+     },
+     {
+      "bytes": 224347,
+      "url": "https://github.githubassets.com/assets/react-lib-33858e668cc159ef.js"
+     },
+     {
+      "bytes": 10219,
+      "url": "https://github.githubassets.com/assets/04-2e0b5b7403cb7b99.js"
+     },
+     {
+      "bytes": 15944,
+      "url": "https://github.githubassets.com/assets/ur-024971cb63acad59.js"
+     },
+     {
+      "bytes": 9853,
+      "url": "https://github.githubassets.com/assets/4t-9933bcccf9a9524f.js"
+     },
+     {
+      "bytes": 75169,
+      "url": "https://github.githubassets.com/assets/6n-71c0ae3e489775ef.js"
+     },
+     {
+      "bytes": 10001,
+      "url": "https://github.githubassets.com/assets/yhq-3a209035a30b1a09.js"
+     },
+     {
+      "bytes": 41602,
+      "url": "https://github.githubassets.com/assets/z1-43f07743b557bfbe.js"
+     },
+     {
+      "bytes": 36500,
+      "url": "https://github.githubassets.com/assets/wo-09f85d22a6c8931b.js"
+     },
+     {
+      "bytes": 34586,
+      "url": "https://github.githubassets.com/assets/9y-75e8f8c6f5eccd49.js"
+     },
+     {
+      "bytes": 15801,
+      "url": "https://github.githubassets.com/assets/j0-e9bfed51669329e8.js"
+     },
+     {
+      "bytes": 11860,
+      "url": "https://github.githubassets.com/assets/0p-c8fed99e921442ca.js"
+     },
+     {
+      "bytes": 6758,
+      "url": "https://github.githubassets.com/assets/chunk-xg-0bc1b5900d59e0d9.js"
+     },
+     {
+      "bytes": 71741,
+      "url": "https://github.githubassets.com/assets/chunk-3m-d4d4f0b14560f459.js"
+     },
+     {
+      "bytes": 15510,
+      "url": "https://github.githubassets.com/assets/pc-006b8647c7fa047f.js"
+     },
+     {
+      "bytes": 398782,
+      "url": "https://github.githubassets.com/assets/primer-react-fad6c97f07e0280a.js"
+     },
+     {
+      "bytes": 28608,
+      "url": "https://github.githubassets.com/assets/aq-0dbf7d12b4d37e14.js"
+     },
+     {
+      "bytes": 17656,
+      "url": "https://github.githubassets.com/assets/t7l-0a8b07066f584f39.js"
+     },
+     {
+      "bytes": 67440,
+      "url": "https://github.githubassets.com/assets/fe-7576d9b281e2106a.js"
+     },
+     {
+      "bytes": 13292,
+      "url": "https://github.githubassets.com/assets/ps6-85a59b16b0ceea7e.js"
+     },
+     {
+      "bytes": 99462,
+      "url": "https://github.githubassets.com/assets/ns-65bc1e8fea42ae55.js"
+     },
+     {
+      "bytes": 19512,
+      "url": "https://github.githubassets.com/assets/sa-8e83e231e0e5ab71.js"
+     },
+     {
+      "bytes": 192965,
+      "url": "https://github.githubassets.com/assets/nvz-d8ae5b1b70e399a7.js"
+     },
+     {
+      "bytes": 277703,
+      "url": "https://github.githubassets.com/assets/mz-504eb598d2e57128.js"
+     },
+     {
+      "bytes": 11396,
+      "url": "https://github.githubassets.com/assets/fz-30a6af7c53dfa4f1.js"
+     },
+     {
+      "bytes": 91080,
+      "url": "https://github.githubassets.com/assets/vy-087f34169ed42405.js"
+     },
+     {
+      "bytes": 69775,
+      "url": "https://github.githubassets.com/assets/a3-76157d41f727609e.js"
+     },
+     {
+      "bytes": 113469,
+      "url": "https://github.githubassets.com/assets/t1r-583b0fe1b14d8c0b.js"
+     },
+     {
+      "bytes": 21883,
+      "url": "https://github.githubassets.com/assets/mmn-aecad24997e2e9b3.js"
+     },
+     {
+      "bytes": 469257,
+      "url": "https://github.githubassets.com/assets/d8-b4dcfc4e3fec2aab.js"
+     },
+     {
+      "bytes": 40553,
+      "url": "https://github.githubassets.com/assets/23-c1384c30371782e1.js"
+     },
+     {
+      "bytes": 126313,
+      "url": "https://github.githubassets.com/assets/ks-e4fd0d186b74afde.js"
+     },
+     {
+      "bytes": 3853,
+      "url": "https://github.githubassets.com/assets/rx-e0752c62d87c4b17.js"
+     },
+     {
+      "bytes": 21845,
+      "url": "https://github.githubassets.com/assets/a8a-338ca3bbebfda502.js"
+     },
+     {
+      "bytes": 7150,
+      "url": "https://github.githubassets.com/assets/3np-b8ac617a3f77670d.js"
+     },
+     {
+      "bytes": 24480,
+      "url": "https://github.githubassets.com/assets/dgq-0eca2e0e93c1eb43.js"
+     },
+     {
+      "bytes": 32407,
+      "url": "https://github.githubassets.com/assets/js-9f65c476840ac516.js"
+     },
+     {
+      "bytes": 112960,
+      "url": "https://github.githubassets.com/assets/3d-82c347d20a13fb90.js"
+     },
+     {
+      "bytes": 64756,
+      "url": "https://github.githubassets.com/assets/sg-16c40574e068a9bd.js"
+     },
+     {
+      "bytes": 87735,
+      "url": "https://github.githubassets.com/assets/ip-f05468584e029f16.js"
+     },
+     {
+      "bytes": 10510,
+      "url": "https://github.githubassets.com/assets/amz-e54355795eb777f6.js"
+     },
+     {
+      "bytes": 32591,
+      "url": "https://github.githubassets.com/assets/w82-742e418b12354a67.js"
+     },
+     {
+      "bytes": 97274,
+      "url": "https://github.githubassets.com/assets/w0-f9354ea3f785ee41.js"
+     },
+     {
+      "bytes": 19349,
+      "url": "https://github.githubassets.com/assets/nv-92c6be379d5284f6.js"
+     },
+     {
+      "bytes": 18177,
+      "url": "https://github.githubassets.com/assets/chunk-lazy-element-select-panel-c1e7af998a1d00c5.js"
+     },
+     {
+      "bytes": 915,
+      "url": "https://github.githubassets.com/assets/chunk-lazy-element-toggle-switch-0b0e875a5b4f4f2e.js"
+     },
+     {
+      "bytes": 454,
+      "url": "https://github.githubassets.com/assets/chunk-lazy-element-cookie-consent-link-107acedd3d61c045.js"
+     },
+     {
+      "bytes": 6595,
+      "url": "https://github.githubassets.com/assets/chunk-dg-c9fddb85345164af.js"
+     },
+     {
+      "bytes": 1497,
+      "url": "https://github.githubassets.com/assets/chunk-lazy-element-fullstory-capture-2484cc12a67724f1.js"
+     },
+     {
+      "bytes": 747,
+      "url": "https://github.githubassets.com/assets/chunk-lazy-element-ghcc-consent-c2868a800ad1375a.js"
+     },
+     {
+      "bytes": 8314,
+      "url": "https://github.githubassets.com/assets/chunk-lazy-element-webauthn-get-feb0edd03376a730.js"
+     },
+     {
+      "bytes": 13502,
+      "url": "https://github.githubassets.com/assets/obo5-8a5f0070d148d90b.js"
+     },
+     {
+      "bytes": 45912,
+      "url": "https://github.githubassets.com/assets/bi0-fa59350332fdd7ab.js"
+     },
+     {
+      "bytes": 3564,
+      "url": "https://github.githubassets.com/assets/chunk-lazy-react-partial-keyboard-shortcuts-dialog-03f30d5bc860fee3.js"
+     },
+     {
+      "bytes": 32066,
+      "url": "https://github.githubassets.com/assets/5t-941f87969b59ba51.js"
+     },
+     {
+      "bytes": 13290,
+      "url": "https://github.githubassets.com/assets/pg-072b0d7181450bc0.js"
+     },
+     {
+      "bytes": 32147,
+      "url": "https://github.githubassets.com/assets/lht-d07b466cb387fec6.js"
+     },
+     {
+      "bytes": 13822,
+      "url": "https://github.githubassets.com/assets/1lf-a0b5bbf5742c0fd3.js"
+     },
+     {
+      "bytes": 17222,
+      "url": "https://github.githubassets.com/assets/tua-07c0f2fd28675950.js"
+     },
+     {
+      "bytes": 17214,
+      "url": "https://github.githubassets.com/assets/lazy-react-partial-marketing-header-866751d51954477d.js"
+     },
+     {
+      "bytes": 2267,
+      "url": "https://github.githubassets.com/assets/chunk-c1-38178dc0e7cae70d.js"
+     },
+     {
+      "bytes": 2247,
+      "url": "https://github.githubassets.com/assets/chunk-8x-e6fcfc76692041a9.js"
+     }
+    ],
+    "load_seconds": 29.8,
+    "paint_seconds": 16.2,
+    "settled": true
+   },
+   "pixels": {
+    "changed_px": 579620,
+    "changed_bbox": [
+     112,
+     12,
+     1264,
+     736
+    ],
+    "ink_px": 384212,
+    "ink_px_blank": 4119,
+    "colours": 1523,
+    "rich_tiles_proxy": 33
+   },
+   "shot": "build-browser-speed-0911/evidence/live-final/github.png",
+   "serial_log": "build-browser-speed-0911/evidence/live-final/github.serial.txt",
+   "url_confirmed": "https://github.com/",
+   "url_attempts": 1,
+   "about_text_completed": false,
+   "about_text_arrived": false,
+   "late_observation": {
+    "text_runs": 55,
+    "text_bytes": 321,
+    "text": "142,316 The future of building happens\n444,385 together\n308,474 Tools\n355,474 and\n390,474 trends\n444,474 evolve,\n504,474 but\n535,474 collaboration\n645,474 endures.\n717,474 With\n756,474 GitHub,\n320,501 developers,\n416,501 agents,\n478,501 and\n513,501 code\n556,501 come\n604,501 together\n674,501 on\n698,501 one\n731,501 platform.\n162,86 Join\n191,86 GitHub\n237,86 Copilot\n283,86 Day,\n312,86 live\n335,86 on\n354,86 Sept\n385,86 10.\n405,86 Come\n443,86 for\n463,86 the\n486,86 product\n538,86 news,\n576,86 stay\n604,86 for\n624,86 the\n647,86 demos,\n694,86 live\n717,86 coding,\n764,86 and\n790,86 surprises.\n855,86 Set\n878,86 your\n909,86 reminder\n528,80 Pricing\n56,80 Platform\n141,80 Solutions\n229,80 Resources\n323,80 Open\n363,80 Source\n434,80 Enterprise\n1033,81 Sign\n1062,81 in\n1081,81 Sign\n1110,81 up",
+    "shot": "build-browser-speed-0911/evidence/live-final/github.late.png",
+    "changed_px": 579736,
+    "initial_to_late_changed_px": 40288,
+    "basis": "after diagnostic turns; not a completion or usability guarantee"
+   },
+   "host_document": "build-browser-speed-0911/evidence/live-final/github.host.html",
+   "paint_text_history": [
+    {
+     "runs": 96,
+     "bytes": 489
+    },
+    {
+     "runs": 55,
+     "bytes": 321
+    }
+   ],
+   "text_runs": 55,
+   "text_bytes": 321,
+   "text": "142,316 The future of building happens\n444,385 together\n308,474 Tools\n355,474 and\n390,474 trends\n444,474 evolve,\n504,474 but\n535,474 collaboration\n645,474 endures.\n717,474 With\n756,474 GitHub,\n320,501 developers,\n416,501 agents,\n478,501 and\n513,501 code\n556,501 come\n604,501 together\n674,501 on\n698,501 one\n731,501 platform.\n162,86 Join\n191,86 GitHub\n237,86 Copilot\n283,86 Day,\n312,86 live\n335,86 on\n354,86 Sept\n385,86 10.\n405,86 Come\n443,86 for\n463,86 the\n486,86 product\n538,86 news,\n576,86 stay\n604,86 for\n624,86 the\n647,86 demos,\n694,86 live\n717,86 coding,\n764,86 and\n790,86 surprises.\n855,86 Set\n878,86 your\n909,86 reminder\n528,80 Pricing\n56,80 Platform\n141,80 Solutions\n229,80 Resources\n323,80 Open\n363,80 Source\n434,80 Enterprise\n1033,81 Sign\n1062,81 in\n1081,81 Sign\n1110,81 up",
+   "subresources": {
+    "host_inventory": {
+     "stylesheets": 18,
+     "script_src": 8,
+     "inline_scripts": 0,
+     "images": 22,
+     "preloads": 77,
+     "fonts": 1,
+     "mandatory": 27
+    },
+    "gap": null
+   },
+   "finished": "2026-09-11T15:47:54",
+   "reported": "\"很奇怪\"",
+   "wall_seconds": 152.3,
+   "runs": 2,
+   "all_verdicts": [
+    "ERRORS",
+    "ERRORS"
+   ]
+  },
+  {
+   "name": "control-wikipedia",
+   "url": "https://en.wikipedia.org/wiki/Operating_system",
+   "started": "2026-09-11T15:47:54",
+   "verdict": "FLAKY",
+   "why": "verdicts disagreed across 2 measured run(s): ERRORS, PAINTED",
+   "host": {
+    "ok": true,
+    "status": 200,
+    "final_url": "https://en.wikipedia.org/wiki/Operating_system",
+    "bytes": 676052,
+    "redirects": [],
+    "script_tags": 5,
+    "script_src": 1,
+    "img_tags": 26,
+    "inventory": {
+     "stylesheets": 2,
+     "script_src": 1,
+     "inline_scripts": 3,
+     "images": 24,
+     "preloads": 2,
+     "fonts": 0,
+     "mandatory": 4
+    },
+    "elapsed": 3.3
+   },
+   "guest": {
+    "exceptions": [],
+    "timer_exceptions": [],
+    "module_exceptions": [],
+    "console_errors": [],
+    "webapi_errors": [],
+    "fetch_failed": [
+     "[img] fetch failed (status 0): //thumb.wikimedia.org/wikipedia/en/thumb/1/1b/Semi-protection-shackle.svg/20px-Semi-protection-shackle.svg.png?utm_source=en.wikipedia.org&utm_campaign=parser&utm_content=thumbnail: TLS refused: handshake or certificate verification failed"
+    ],
+    "fetch_stalled": [],
+    "cannot_fetch": [],
+    "skipped_scripts": 1,
+    "requests": 5,
+    "dials": 2,
+    "reused": 3,
+    "modules": 0,
+    "modules_failed": 0,
+    "heap_peak_k": 24804,
+    "load_done": true,
+    "page_fetch_failed": null,
+    "app_fault": null,
+    "panic": false,
+    "load_phases_ms": [
+     {
+      "total_ms": 16690,
+      "teardown": 5280,
+      "document": 0,
+      "first_style_layout_paint": 830,
+      "styles_fetch": 3880,
+      "full_style_layout_paint": 3210,
+      "images": 0,
+      "runtime_init": 400,
+      "scripts_fetch": 510,
+      "scripts_execute": 90,
+      "lifecycle_settle": 2490
+     }
+    ],
+    "module_phases_ms": [
+     {
+      "compile_ms": 0,
+      "prefetch_ms": 0,
+      "fetch_ms": 0,
+      "link_ms": 0,
+      "eval_jobs_ms": 0,
+      "compile_bytes": 0,
+      "compiles": 0,
+      "fetches": 0,
+      "prefetch_batches": 0
+     }
+    ],
+    "module_fetch_observations": [],
+    "load_seconds": 14.6,
+    "paint_seconds": 16.3,
+    "settled": true
+   },
+   "pixels": {
+    "changed_px": 46468,
+    "changed_bbox": [
+     124,
+     16,
+     1260,
+     736
+    ],
+    "ink_px": 15848,
+    "ink_px_blank": 4119,
+    "colours": 1242,
+    "rich_tiles_proxy": 25
+   },
+   "shot": "build-browser-speed-0911/evidence/live-final/control-wikipedia.png",
+   "serial_log": "build-browser-speed-0911/evidence/live-final/control-wikipedia.serial.txt",
+   "url_confirmed": "https://en.wikipedia.org/wiki/Operating_system",
+   "url_attempts": 1,
+   "about_text_completed": true,
+   "about_text_arrived": true,
+   "late_observation": {
+    "text_runs": 186,
+    "text_bytes": 1040,
+    "text": "60,220 Contents\n133,224 hide\n82,262 (Top)\n82,291 Definition\n143,291 and\n169,291 purpose\n82,320 Types\n121,320 of\n136,320 operating\n82,337 systems\n82,366 History\n82,395 Components\n82,424 Operating\n145,424 system\n82,441 development\n165,441 as\n181,441 a\n82,458 hobby\n82,487 Diversity\n137,487 of\n152,487 operating\n82,504 systems\n134,504 and\n160,504 portability\n82,533 Popular\n132,533 operating\n82,550 systems\n82,579 See\n107,579 also\n82,608 Notes\n264,150 Operating\n401,150 system\n739,161 164\n766,161 languages\n286,198 Article\n340,198 Talk\n633,198 Read\n679,198 View\n711,198 source\n768,198 View\n800,198 history\n902,220 Appearance\n997,224 hide\n609,292 Operating\n697,292 systems\n601,569 Common\n663,569 features\n620,587 Process\n662,587 management\n734,587 Interrupts\n785,587  ·\n801,587 Memory\n846,587 management\n620,604  ·\n636,604 File\n656,604 system\n693,604  ·\n709,604 Device\n746,604 drivers\n781,604  ·\n797,604 Networking\n620,621  ·\n636,621 Security\n679,621  ·\n695,621 Input/output\n763,621  ·\n264,233 From\n299,233 Wikipedia,\n363,233 the\n386,233 free\n412,233 encyclopedia\n264,286 An\n283,286 operating\n350,286 system\n399,286 (\n403,286 OS\n421,286 )\n428,286 is\n440,286 system\n486,286 software\n542,286 that\n264,308 manages\n321,308 computer\n384,308 hardware\n445,308 and\n471,308 software\n264,330 resources,\n329,330 and\n355,330 provides\n410,330 common\n468,330 services\n519,330 for\n264,352 computer\n327,352 programs\n385,352 .\n388,352 [\n391,352 1\n397,352 ]\n264,395 Time-sharing\n345,395 operating\n406,395 systems\n458,395 schedule\n515,395 tasks\n549,395 for\n264,417 efficient\n315,417 use\n339,417 of\n354,417 the\n377,417 system\n423,417 and\n449,417 may\n478,417 also\n505,417 include\n264,439 accounting\n335,439 software\n391,439 for\n411,439 cost\n440,439 allocation\n502,439 of\n517,439 processor\n264,461 time\n291,461 ,\n297,461 mass\n331,461 storage\n376,461 ,\n382,461 peripherals,\n455,461 and\n481,461 other\n517,461 resources.\n264,504 For\n287,504 hardware\n348,504 functions\n408,504 such\n440,504 as\n456,504 input\n491,504 and\n517,504 output\n264,526 and\n290,526 memory\n344,526 allocation\n403,526 ,\n409,526 the\n432,526 operating\n493,526 system\n539,526 acts\n567,526 as\n264,548 an\n282,548 intermediary\n362,548 between\n418,548 programs\n479,548 and\n505,548 the\n264,570 computer\n327,570 hardware,\n388,570 [\n391,570 2\n397,570 ]\n400,570 [\n403,570 3\n409,570 ]\n415,570 although\n472,570 the\n495,570 application\n264,592 code\n297,592 is\n309,592 usually\n354,592 executed\n412,592 directly\n460,592 by\n478,592 the\n501,592 hardware\n264,614 and\n290,614 frequently\n355,614 makes\n397,614 system\n443,614 calls\n472,614 to\n488,614 an\n506,614 OS\n527,614 function\n688,80 Search\n890,84 Donate\n942,84 Create\n984,84 account\n1042,84 Log\n1067,84 in",
+    "shot": "build-browser-speed-0911/evidence/live-final/control-wikipedia.late.png",
+    "changed_px": 77696,
+    "initial_to_late_changed_px": 35036,
+    "basis": "after diagnostic turns; not a completion or usability guarantee"
+   },
+   "host_document": "build-browser-speed-0911/evidence/live-final/control-wikipedia.host.html",
+   "paint_text_history": [
+    {
+     "runs": 50,
+     "bytes": 244
+    },
+    {
+     "runs": 174,
+     "bytes": 997
+    },
+    {
+     "runs": 186,
+     "bytes": 1040
+    }
+   ],
+   "text_runs": 186,
+   "text_bytes": 1040,
+   "text": "60,220 Contents\n133,224 hide\n82,262 (Top)\n82,291 Definition\n143,291 and\n169,291 purpose\n82,320 Types\n121,320 of\n136,320 operating\n82,337 systems\n82,366 History\n82,395 Components\n82,424 Operating\n145,424 system\n82,441 development\n165,441 as\n181,441 a\n82,458 hobby\n82,487 Diversity\n137,487 of\n152,487 operating\n82,504 systems\n134,504 and\n160,504 portability\n82,533 Popular\n132,533 operating\n82,550 systems\n82,579 See\n107,579 also\n82,608 Notes\n264,150 Operating\n401,150 system\n739,161 164\n766,161 languages\n286,198 Article\n340,198 Talk\n633,198 Read\n679,198 View\n711,198 source\n768,198 View\n800,198 history\n902,220 Appearance\n997,224 hide\n609,292 Operating\n697,292 systems\n601,569 Common\n663,569 features\n620,587 Process\n662,587 management\n734,587 Interrupts\n785,587  ·\n801,587 Memory\n846,587 management\n620,604  ·\n636,604 File\n656,604 system\n693,604  ·\n709,604 Device\n746,604 drivers\n781,604  ·\n797,604 Networking\n620,621  ·\n636,621 Security\n679,621  ·\n695,621 Input/output\n763,621  ·\n264,233 From\n299,233 Wikipedia,\n363,233 the\n386,233 free\n412,233 encyclopedia\n264,286 An\n283,286 operating\n350,286 system\n399,286 (\n403,286 OS\n421,286 )\n428,286 is\n440,286 system\n486,286 software\n542,286 that\n264,308 manages\n321,308 computer\n384,308 hardware\n445,308 and\n471,308 software\n264,330 resources,\n329,330 and\n355,330 provides\n410,330 common\n468,330 services\n519,330 for\n264,352 computer\n327,352 programs\n385,352 .\n388,352 [\n391,352 1\n397,352 ]\n264,395 Time-sharing\n345,395 operating\n406,395 systems\n458,395 schedule\n515,395 tasks\n549,395 for\n264,417 efficient\n315,417 use\n339,417 of\n354,417 the\n377,417 system\n423,417 and\n449,417 may\n478,417 also\n505,417 include\n264,439 accounting\n335,439 software\n391,439 for\n411,439 cost\n440,439 allocation\n502,439 of\n517,439 processor\n264,461 time\n291,461 ,\n297,461 mass\n331,461 storage\n376,461 ,\n382,461 peripherals,\n455,461 and\n481,461 other\n517,461 resources.\n264,504 For\n287,504 hardware\n348,504 functions\n408,504 such\n440,504 as\n456,504 input\n491,504 and\n517,504 output\n264,526 and\n290,526 memory\n344,526 allocation\n403,526 ,\n409,526 the\n432,526 operating\n493,526 system\n539,526 acts\n567,526 as\n264,548 an\n282,548 intermediary\n362,548 between\n418,548 programs\n479,548 and\n505,548 the\n264,570 computer\n327,570 hardware,\n388,570 [\n391,570 2\n397,570 ]\n400,570 [\n403,570 3\n409,570 ]\n415,570 although\n472,570 the\n495,570 application\n264,592 code\n297,592 is\n309,592 usually\n354,592 executed\n412,592 directly\n460,592 by\n478,592 the\n501,592 hardware\n264,614 and\n290,614 frequently\n355,614 makes\n397,614 system\n443,614 calls\n472,614 to\n488,614 an\n506,614 OS\n527,614 function\n688,80 Search\n890,84 Donate\n942,84 Create\n984,84 account\n1042,84 Log\n1067,84 in",
+   "subresources": {
+    "host_inventory": {
+     "stylesheets": 2,
+     "script_src": 1,
+     "inline_scripts": 3,
+     "images": 24,
+     "preloads": 2,
+     "fonts": 0,
+     "mandatory": 4
+    },
+    "gap": null
+   },
+   "finished": "2026-09-11T15:48:57",
+   "reported": "CONTROL: known to render since M13",
+   "wall_seconds": 63.1,
+   "runs": 2,
+   "all_verdicts": [
+    "ERRORS",
+    "PAINTED"
+   ]
+  },
+  {
+   "name": "python",
+   "url": "https://www.python.org/",
+   "started": "2026-09-11T15:48:57",
+   "verdict": "ERRORS",
+   "why": "painted 619708 changed px, with 1 page-reported error(s) and 0 fetch error(s) -- and the document asked for 15 subresources (4 stylesheets, 10 script srcs) against 13 requests issued, short by 2",
+   "host": {
+    "ok": true,
+    "status": 200,
+    "final_url": "https://www.python.org/",
+    "bytes": 53119,
+    "redirects": [],
+    "script_tags": 13,
+    "script_src": 10,
+    "img_tags": 1,
+    "inventory": {
+     "stylesheets": 4,
+     "script_src": 10,
+     "inline_scripts": 2,
+     "images": 1,
+     "preloads": 2,
+     "fonts": 0,
+     "mandatory": 15
+    },
+    "elapsed": 5.6
+   },
+   "guest": {
+    "exceptions": [],
+    "timer_exceptions": [],
+    "module_exceptions": [],
+    "console_errors": [
+     "Uncaught (in promise) Error: No ad placements found."
+    ],
+    "webapi_errors": [],
+    "fetch_failed": [],
+    "fetch_stalled": [],
+    "cannot_fetch": [],
+    "skipped_scripts": 1,
+    "requests": 13,
+    "dials": 5,
+    "reused": 8,
+    "modules": 0,
+    "modules_failed": 0,
+    "heap_peak_k": 13383,
+    "load_done": true,
+    "page_fetch_failed": null,
+    "app_fault": null,
+    "panic": false,
+    "load_phases_ms": [
+     {
+      "total_ms": 10540,
+      "teardown": 920,
+      "document": 0,
+      "first_style_layout_paint": 110,
+      "styles_fetch": 4210,
+      "full_style_layout_paint": 460,
+      "images": 0,
+      "runtime_init": 300,
+      "scripts_fetch": 1610,
+      "scripts_execute": 780,
+      "lifecycle_settle": 2150
+     }
+    ],
+    "module_phases_ms": [
+     {
+      "compile_ms": 0,
+      "prefetch_ms": 0,
+      "fetch_ms": 0,
+      "link_ms": 0,
+      "eval_jobs_ms": 0,
+      "compile_bytes": 0,
+      "compiles": 0,
+      "fetches": 0,
+      "prefetch_batches": 0
+     }
+    ],
+    "module_fetch_observations": [],
+    "load_seconds": 8.5,
+    "paint_seconds": 16.3,
+    "settled": true
+   },
+   "pixels": {
+    "changed_px": 619708,
+    "changed_bbox": [
+     112,
+     16,
+     1264,
+     736
+    ],
+    "ink_px": 495078,
+    "ink_px_blank": 4119,
+    "colours": 1735,
+    "rich_tiles_proxy": 41
+   },
+   "shot": "build-browser-speed-0911/evidence/live-final/python.png",
+   "serial_log": "build-browser-speed-0911/evidence/live-final/python.serial.txt",
+   "url_confirmed": "https://www.python.org/",
+   "url_attempts": 1,
+   "about_text_completed": true,
+   "about_text_arrived": true,
+   "late_observation": {
+    "text_runs": 145,
+    "text_bytes": 481,
+    "text": "954,240 GO\n13,71 Python\n204,71 PSF\n395,71 Docs\n586,71 PyPI\n777,71 Jobs\n13,116 Community\n727,163 Donate\n716,232 S\n716,248 e\n716,264 a\n716,280 r\n716,296 c\n716,312 h\n716,328 T\n716,344 h\n716,360 i\n716,376 s\n716,392 S\n716,408 i\n716,424 t\n716,440 e\n1031,227 Socialize\n140,302 About\n234,302 Downloads\n371,302 Documentation\n540,302 Community\n679,302 Success\n746,302 Stories\n846,302 News\n937,302 Events\n1085,364 All\n1111,364 the\n1145,364 Flow\n1193,364 You’d\n1266,364 Expect\n1085,394 Python\n1139,394 knows\n1187,394 the\n1213,394 usual\n1254,394 control\n1308,394 flow\n1341,394 statements\n1424,394 that\n1457,394 other\n1498,394 languages\n1574,394 speak\n1618,394 —\n1641,394 if\n1659,394 ,\n1672,394 for\n1699,394 ,\n1712,394 while\n1760,394 and\n1796,394 range\n1844,394 —\n1861,394 with\n1895,394 some\n1936,394 of\n1953,394 its\n1085,420 own\n1118,420 twists,\n1167,420 of\n1184,420 course.\n1238,420 More\n1276,420 control\n1330,420 flow\n1363,420 tools\n1401,420 in\n1417,420 Python 3\n89,364 #\n98,364  For\n134,364  loop\n179,364  on\n206,364  a\n224,364  list\n89,388 >>>\n116,388  \n125,388 numbers\n188,388  \n197,388 =\n206,388  \n215,388 [\n224,388 2\n233,388 ,\n242,388  \n251,388 4\n260,388 ,\n269,388  \n278,388 6\n287,388 ,\n296,388  \n305,388 8\n314,388 ]\n89,412 >>>\n116,412  \n125,412 product\n188,412  \n197,412 =\n206,412  \n215,412 1\n89,436 >>>\n116,436  \n125,436 for\n152,436  \n161,436 number\n215,436  \n224,436 in\n242,436  \n251,436 numbers\n314,436 :\n89,460 ...\n116,460  \n125,460    \n152,460 product\n215,460  \n224,460 =\n233,460  \n242,460 product\n305,460  \n314,460 *\n323,460  \n332,460 number\n89,484 ...\n116,484  \n89,508 >>>\n116,508  \n125,508 print\n170,508 (\n179,508 'The\n215,508  product\n287,508  is:'\n332,508 ,\n341,508  \n350,508 product\n413,508 )\n89,532 The\n116,532  product\n188,532  is:\n224,532  384\n800,578 3\n716,578 1\n758,578 2\n842,578 4\n884,578 5",
+    "shot": "build-browser-speed-0911/evidence/live-final/python.late.png",
+    "changed_px": 619592,
+    "initial_to_late_changed_px": 15372,
+    "basis": "after diagnostic turns; not a completion or usability guarantee"
+   },
+   "host_document": "build-browser-speed-0911/evidence/live-final/python.host.html",
+   "paint_text_history": [
+    {
+     "runs": 71,
+     "bytes": 337
+    },
+    {
+     "runs": 137,
+     "bytes": 549
+    },
+    {
+     "runs": 36,
+     "bytes": 126
+    },
+    {
+     "runs": 121,
+     "bytes": 460
+    },
+    {
+     "runs": 116,
+     "bytes": 455
+    },
+    {
+     "runs": 141,
+     "bytes": 594
+    },
+    {
+     "runs": 136,
+     "bytes": 589
+    }
+   ],
+   "text_runs": 136,
+   "text_bytes": 589,
+   "text": "954,240 GO\n13,71 Python\n204,71 PSF\n395,71 Docs\n586,71 PyPI\n777,71 Jobs\n13,116 Community\n727,163 Donate\n716,232 S\n716,248 e\n716,264 a\n716,280 r\n716,296 c\n716,312 h\n716,328 T\n716,344 h\n716,360 i\n716,376 s\n716,392 S\n716,408 i\n716,424 t\n716,440 e\n1031,227 Socialize\n140,302 About\n234,302 Downloads\n371,302 Documentation\n540,302 Community\n679,302 Success\n746,302 Stories\n846,302 News\n937,302 Events\n1085,364 Compound\n1195,364 Data\n1242,364 Types\n1085,394 Lists\n1120,394 (known\n1175,394 as\n1194,394 arrays\n1242,394 in\n1258,394 other\n1299,394 languages)\n1380,394 are\n1406,394 one\n1435,394 of\n1452,394 the\n1478,394 compound\n1557,394 data\n1593,394 types\n1634,394 that\n1667,394 Python\n1721,394 understands.\n1816,394 Lists\n1851,394 can\n1880,394 be\n1900,394 indexed,\n1085,420 sliced\n1128,420 and\n1158,420 manipulated\n1251,420 with\n1285,420 other\n1326,420 built-in\n1379,420 functions.\n1452,420 More\n1490,420 about\n1535,420 lists\n1566,420 in\n1582,420 Python 3\n89,364 #\n98,364  Python\n161,364  3:\n188,364  List\n233,364  comprehensions\n89,388 >>>\n116,388  \n125,388 fruits\n179,388  \n188,388 =\n197,388  \n206,388 [\n215,388 'Banana'\n287,388 ,\n296,388  \n305,388 'Apple'\n368,388 ,\n377,388  \n386,388 'Lime'\n440,388 ]\n89,412 >>>\n116,412  \n125,412 loud_fruits\n224,412  \n233,412 =\n242,412  \n251,412 [\n260,412 fruit\n305,412 .\n314,412 upper\n359,412 ()\n377,412  \n386,412 for\n413,412  \n422,412 fruit\n467,412  \n476,412 in\n494,412  \n503,412 fruits\n557,412 ]\n89,436 >>>\n116,436  \n125,436 print\n170,436 (\n179,436 loud_fruits\n278,436 )\n89,460 ['BANANA',\n179,460  'APPLE',\n260,460  'LIME']\n89,508 #\n98,508  List\n143,508  and\n179,508  the\n215,508  enumerate\n305,508  function\n89,532 >>>\n116,532  \n125,532 list\n161,532 (\n170,532 enumerate\n251,532 (\n260,532 fruits\n314,532 ))\n89,556 [(0,\n125,556  'Banana'),\n224,556  (1,\n260,556  'Apple'),\n350,556  (2,\n386,556  'Lime')]",
+   "subresources": {
+    "host_inventory": {
+     "stylesheets": 4,
+     "script_src": 10,
+     "inline_scripts": 2,
+     "images": 1,
+     "preloads": 2,
+     "fonts": 0,
+     "mandatory": 15
+    },
+    "gap": {
+     "mandatory": 15,
+     "requested": 13,
+     "short_by": 2,
+     "stylesheets": 4,
+     "script_src": 10
+    }
+   },
+   "finished": "2026-09-11T15:49:51",
+   "reported": "(new 2026-08-28: user reports it does not open)",
+   "wall_seconds": 53.5,
+   "runs": 2,
+   "all_verdicts": [
+    "ERRORS",
+    "ERRORS"
+   ]
+  }
+ ]
+}

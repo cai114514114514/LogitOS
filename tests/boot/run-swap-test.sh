@@ -228,7 +228,7 @@ if [ "$MODE" = "swap" ]; then
     # say how many, not merely appear to work.
     KIB=$(( (${SW:-0} + ${IN:-0}) * 4 ))
     say "THRASH: ${SW:-0} pages out + ${IN:-0} pages in = ${KIB} KiB moved; ${SECOND:-0} second chances"
-    grep -a "^\[swap\] on demand: BKL held" "$LOG" | tail -1
+    grep -a "^\[swap\] on demand: CPU polling" "$LOG" | tail -1
 
     [ "${BUGS:-1}" = "0" ] || bad "the kernel reported ${BUGS} memory-management bugs"
 

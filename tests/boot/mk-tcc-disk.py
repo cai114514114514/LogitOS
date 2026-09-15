@@ -22,19 +22,19 @@ import importlib.util
 import os
 import re
 import sys
+from make_disk_recipe import disk_recipe
 
 repo, mkn, out = sys.argv[1], sys.argv[2], sys.argv[3]
 extras = sys.argv[4:]
 
 text = open(mkn, encoding="utf-8", errors="replace").read()
-text = re.sub(r"\\\r?\n[ \t]*", " ", text)       # join continuations FIRST
-lines = [l for l in text.split("\n") if "tools/mkfs.py" in l]
-if len(lines) != 1:
-    sys.exit("mk-tcc-disk: expected exactly one mkfs.py line in %s, got %d"
-             % (mkn, len(lines)))
-argv = lines[0].split()
-# argv[0] python3, argv[1] tools/mkfs.py, argv[2] the image path, then specs.
-specs = argv[3:]
+# The original argv[3:] assumed the output immediately followed mkfs.py.
+# Production recipes now carry preservation options before that output. A
+# private image has no old contents to preserve; only its file specs are reused.
+try:
+    _, specs = disk_recipe(text)
+except ValueError as error:
+    sys.exit('mk-tcc-disk: ' + str(error))
 if any(a.endswith("\\") for a in specs):
     sys.exit("mk-tcc-disk: a spec still ends in a backslash -- the join failed")
 

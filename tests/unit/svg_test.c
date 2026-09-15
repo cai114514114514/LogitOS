@@ -110,9 +110,10 @@ int main(void)
     px(&im, 0, 0, 0, 255, 0, 127, "g inherited half-alpha green");
     img_free(&im);
 
-    /* 7: unsupported stuff (defs/style/transform/text) is skipped, not fatal */
+    /* 7: defs/style/text remain non-rendering. Transform used to be ignored;
+     * dedicated svg_scene tests now check it, so this control is untransformed. */
     ok(!dec("<svg width=\"2\" height=\"2\"><defs><rect width=\"2\" height=\"2\" fill=\"red\"/></defs>"
-            "<style>.a{fill:#fff}</style><g transform=\"rotate(45)\">"
+            "<style>.a{fill:#fff}</style><g>"
             "<rect x=\"0\" y=\"0\" width=\"2\" height=\"2\" fill=\"blue\"/></g>"
             "<text x=\"0\" y=\"1\">hi</text></svg>", &im), "unsupported skipped");
     px(&im, 1, 1, 0, 0, 255, 255, "only real rect drawn");

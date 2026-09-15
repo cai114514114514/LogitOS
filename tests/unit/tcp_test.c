@@ -370,6 +370,28 @@ static void server_tests(void)
 {
     const uint16_t LISTEN_PORT = 8080;
 
+    /* Descriptor lifetime is independent of transport state: a final close
+     * still belongs to this accepted session after the wire has finished. */
+    {
+        srv_reset();
+        int lid = tcp_listen(LISTEN_PORT, 4, 1);
+        struct peer p = { .port = 41000, .isn = 0x12345000 };
+        int id = srv_connect(&p, lid, LISTEN_PORT, NULL);
+        CHECK(id >= 0, "accepted lifetime: connection established");
+        if (id >= 0) {
+#ifdef TCP_ACCEPT_LIFETIME_NEGCTL
+            conns[id].app_owned = 0; /* old handoff omitted descriptor ownership */
+#endif
+            conn_closed(&conns[id]);
+            CHECK(conns[id].used && conns[id].state == CLOSED,
+                  "accepted lifetime: closed transport stays owned by descriptor");
+            CHECK(tcp_available(id) < 0, "accepted lifetime: owner sees EOF");
+            tcp_close(id);
+            CHECK(!conns[id].used, "accepted lifetime: final close releases slot");
+        }
+        tcp_listen_close(lid);
+    }
+
     /* S1) listen() takes a port, and taking it twice is refused. */
     {
         srv_reset();

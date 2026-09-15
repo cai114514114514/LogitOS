@@ -1,0 +1,1116 @@
+{
+ "date": "speed-0913-final",
+ "generated": "2026-09-13T12:22:30",
+ "iso": "build-browser-speed-0913/final/logit.iso",
+ "iso_sha256_16": "5e33a17a9acfce48",
+ "commit": "41d7a74e8",
+ "wall_seconds": 243.5,
+ "repeat": 1,
+ "sites": [
+  {
+   "name": "baidu",
+   "url": "https://www.baidu.com/",
+   "started": "2026-09-13T12:18:27",
+   "verdict": "ERRORS",
+   "why": "painted 80208 changed px in 0.7s but 2 JS exception(s)",
+   "host": {
+    "ok": true,
+    "status": 200,
+    "final_url": "https://www.baidu.com/",
+    "bytes": 227,
+    "redirects": [],
+    "script_tags": 1,
+    "script_src": 0,
+    "img_tags": 0,
+    "inventory": {
+     "stylesheets": 0,
+     "script_src": 0,
+     "inline_scripts": 1,
+     "images": 0,
+     "preloads": 0,
+     "fonts": 0,
+     "mandatory": 1
+    },
+    "elapsed": 0.1
+   },
+   "guest": {
+    "exceptions": [],
+    "timer_exceptions": [
+     "event listener: TypeError: cannot read property 'ownerDocument' of undefined",
+     "timer: Error: [MODULE_TIMEOUT]Hang: all_async_search, san, head-script/pc/static/page-log/ubc-log, modules/pc/static/services/load-more/results-page-context, @baidu/inject-js, modules/pc/static/page/main-page.module, @baidu/search-api, modules/pc/static/services/hydrate/hydrate.service, modules/pc/static/services/load-more/page-load-more.service, @baidu/www-api; Miss: every-cookie, @baidu/webb, @baidu/codeCover, @baidu/ubc-report-sdk/dist/ubc-web-sdk.umd.min, @baidu/ala-util/ala, @baidu/chat-pcsearch-common, @baidu/ai-search-box-entry, superman-san/app/chat-input/result_954e738, superman/components/placeholder"
+    ],
+    "module_exceptions": [],
+    "console_errors": [],
+    "webapi_errors": [],
+    "fetch_failed": [],
+    "fetch_stalled": [],
+    "cannot_fetch": [],
+    "skipped_scripts": 5,
+    "requests": 17,
+    "dials": 5,
+    "reused": 12,
+    "modules": 0,
+    "modules_failed": 0,
+    "heap_peak_k": 11894,
+    "load_done": true,
+    "page_fetch_failed": null,
+    "app_fault": null,
+    "panic": false,
+    "load_phases_ms": [
+     {
+      "total_ms": 640,
+      "teardown": 140,
+      "document": 0,
+      "first_style_layout_paint": 20,
+      "styles_fetch": 0,
+      "full_style_layout_paint": 30,
+      "images": 10,
+      "runtime_init": 410,
+      "scripts_fetch": 0,
+      "scripts_execute": 10,
+      "lifecycle_settle": 20
+     },
+     {
+      "total_ms": 9300,
+      "teardown": 150,
+      "document": 0,
+      "first_style_layout_paint": 620,
+      "styles_fetch": 240,
+      "full_style_layout_paint": 450,
+      "images": 0,
+      "runtime_init": 420,
+      "scripts_fetch": 380,
+      "scripts_execute": 6690,
+      "lifecycle_settle": 350
+     }
+    ],
+    "module_phases_ms": [
+     {
+      "compile_ms": 0,
+      "prefetch_ms": 0,
+      "fetch_ms": 0,
+      "link_ms": 0,
+      "eval_jobs_ms": 0,
+      "compile_bytes": 0,
+      "compiles": 0,
+      "fetches": 0,
+      "prefetch_batches": 0
+     },
+     {
+      "compile_ms": 0,
+      "prefetch_ms": 0,
+      "fetch_ms": 0,
+      "link_ms": 0,
+      "eval_jobs_ms": 0,
+      "compile_bytes": 0,
+      "compiles": 0,
+      "fetches": 0,
+      "prefetch_batches": 0
+     }
+    ],
+    "module_fetch_observations": [],
+    "load_seconds": 0.7,
+    "paint_seconds": 16.3,
+    "settled": true
+   },
+   "pixels": {
+    "changed_px": 80208,
+    "changed_bbox": [
+     152,
+     12,
+     1260,
+     764
+    ],
+    "ink_px": 8461,
+    "ink_px_blank": 4256,
+    "colours": 788,
+    "rich_tiles_proxy": 13
+   },
+   "shot": "build-browser-speed-0913/evidence/live-final/baidu.png",
+   "serial_log": "build-browser-speed-0913/evidence/live-final/baidu.serial.txt",
+   "url_confirmed": "https://www.baidu.com/",
+   "url_attempts": 1,
+   "about_text_completed": true,
+   "about_text_arrived": true,
+   "late_observation": {
+    "text_runs": 43,
+    "text_bytes": 501,
+    "text": "605,392 \n570,392 复杂问题就找文心助手，深入思考回答更优\n238,486 \n209,510 习近平会见印度总理莫迪\n596,510 广东小伙去沈阳旅游被大爷霸气提醒\n209,546 “是他撞的你吗”“不是\n388,546 他是好心”\n596,546 敬一丹去世\n209,582 文字失语症\n596,582 男生去年考上北大放弃\n759,582 今年又进北大\n209,618 服贸会见证中国服务贸易焕新升级\n596,618 半年内订单爆发！百亿风口来了\n901,486 换一换\n883,486 \n183,510 \n570,510 5\n860,510 新\n183,546 1\n570,546 6\n684,546 热\n183,582 2\n297,582 新\n570,582 7\n183,618 3\n570,618 8\n828,618 热\n1068,488 下载\n1068,544 辅助\n844,291 百度一下\n24,79 新闻\n71,79 hao123\n134,79 地图\n181,79 贴吧\n228,79 视频\n275,79 图片\n322,79 网盘\n369,79 库库AI\n426,79 文心\n473,79 百度搭子\n546,79 更多\n986,82 设置\n1058,80 登录",
+    "shot": "build-browser-speed-0913/evidence/live-final/baidu.late.png",
+    "changed_px": 79836,
+    "initial_to_late_changed_px": 948,
+    "basis": "after diagnostic turns; not a completion or usability guarantee"
+   },
+   "host_document": "build-browser-speed-0913/evidence/live-final/baidu.host.html",
+   "paint_text_history": [
+    {
+     "runs": 43,
+     "bytes": 501
+    }
+   ],
+   "text_runs": 43,
+   "text_bytes": 501,
+   "text": "592,392 \n557,392 复杂问题就找文心助手，深入思考回答更优\n238,486 \n209,510 习近平会见印度总理莫迪\n596,510 广东小伙去沈阳旅游被大爷霸气提醒\n209,546 “是他撞的你吗”“不是\n388,546 他是好心”\n596,546 敬一丹去世\n209,582 文字失语症\n596,582 男生去年考上北大放弃\n759,582 今年又进北大\n209,618 服贸会见证中国服务贸易焕新升级\n596,618 半年内订单爆发！百亿风口来了\n901,486 换一换\n883,486 \n183,510 \n570,510 5\n860,510 新\n183,546 1\n570,546 6\n684,546 热\n183,582 2\n297,582 新\n570,582 7\n183,618 3\n570,618 8\n828,618 热\n1068,488 下载\n1068,544 辅助\n844,291 百度一下\n24,79 新闻\n71,79 hao123\n134,79 地图\n181,79 贴吧\n228,79 视频\n275,79 图片\n322,79 网盘\n369,79 库库AI\n426,79 文心\n473,79 百度搭子\n546,79 更多\n986,82 设置\n1058,80 登录",
+   "subresources": {
+    "host_inventory": {
+     "stylesheets": 0,
+     "script_src": 0,
+     "inline_scripts": 1,
+     "images": 0,
+     "preloads": 0,
+     "fonts": 0,
+     "mandatory": 1
+    },
+    "gap": null
+   },
+   "finished": "2026-09-13T12:19:31",
+   "reported": "opens but unusable; a redirect works host-side and not on the machine",
+   "wall_seconds": 64.8,
+   "runs": 1,
+   "all_verdicts": [
+    "ERRORS"
+   ]
+  },
+  {
+   "name": "bilibili",
+   "url": "https://www.bilibili.com/",
+   "started": "2026-09-13T12:18:27",
+   "verdict": "ERRORS",
+   "why": "painted 266464 changed px, with 1 page-reported error(s) and 0 fetch error(s)",
+   "host": {
+    "ok": true,
+    "status": 200,
+    "final_url": "https://www.bilibili.com/",
+    "bytes": 117750,
+    "redirects": [],
+    "script_tags": 21,
+    "script_src": 8,
+    "img_tags": 13,
+    "inventory": {
+     "stylesheets": 1,
+     "script_src": 6,
+     "inline_scripts": 12,
+     "images": 12,
+     "preloads": 1,
+     "fonts": 0,
+     "mandatory": 8
+    },
+    "elapsed": 0.2
+   },
+   "guest": {
+    "exceptions": [],
+    "timer_exceptions": [],
+    "module_exceptions": [],
+    "console_errors": [
+     "Hydration completed but contains mismatches."
+    ],
+    "webapi_errors": [],
+    "fetch_failed": [],
+    "fetch_stalled": [],
+    "cannot_fetch": [],
+    "skipped_scripts": 0,
+    "requests": 9,
+    "dials": 3,
+    "reused": 6,
+    "modules": 0,
+    "modules_failed": 0,
+    "heap_peak_k": 11548,
+    "load_done": true,
+    "page_fetch_failed": null,
+    "app_fault": null,
+    "panic": false,
+    "load_phases_ms": [
+     {
+      "total_ms": 7800,
+      "teardown": 240,
+      "document": 0,
+      "first_style_layout_paint": 210,
+      "styles_fetch": 230,
+      "full_style_layout_paint": 760,
+      "images": 10,
+      "runtime_init": 460,
+      "scripts_fetch": 460,
+      "scripts_execute": 4670,
+      "lifecycle_settle": 760
+     }
+    ],
+    "module_phases_ms": [
+     {
+      "compile_ms": 1320,
+      "prefetch_ms": 0,
+      "fetch_ms": 0,
+      "link_ms": 10,
+      "eval_jobs_ms": 2510,
+      "compile_bytes": 1132316,
+      "compiles": 3,
+      "fetches": 0,
+      "prefetch_batches": 0
+     }
+    ],
+    "module_fetch_observations": [],
+    "load_seconds": 7.3,
+    "paint_seconds": 16.2,
+    "settled": true
+   },
+   "pixels": {
+    "changed_px": 266464,
+    "changed_bbox": [
+     140,
+     12,
+     1264,
+     764
+    ],
+    "ink_px": 177768,
+    "ink_px_blank": 4256,
+    "colours": 15793,
+    "rich_tiles_proxy": 784
+   },
+   "shot": "build-browser-speed-0913/evidence/live-final/bilibili.png",
+   "serial_log": "build-browser-speed-0913/evidence/live-final/bilibili.serial.txt",
+   "url_confirmed": "https://www.bilibili.com/",
+   "url_attempts": 1,
+   "about_text_completed": false,
+   "about_text_arrived": false,
+   "late_observation": {
+    "text_runs": 49,
+    "text_bytes": 372,
+    "text": "883,235 专栏\n883,273 直播\n952,235 活动\n952,273 课堂\n1021,235 社区中心\n1021,273 新歌热榜\n57,279 动态\n108,279 热门\n176,233 番剧\n176,271 电影\n251,233 国创\n244,271 电视剧\n326,233 综艺\n319,271 纪录片\n401,233 动画\n401,271 游戏\n476,233 鬼畜\n476,271 音乐\n551,233 舞蹈\n551,271 影视\n626,233 娱乐\n626,271 知识\n690,233 科技数码\n701,271 资讯\n776,233 美食\n770,271 更多\n573,458 剥蒜的情谊175.0\n590,506 NinthA-\n637,506 ·\n652,506 09-07\n833,458 异环最强画质mod\n833,480 分不清现实了\n850,506 樱岛-柳津子\n925,506 ·\n940,506 09-11\n600,427 125.0万\n676,427 420\n774,427 02:01\n860,427 9.7万\n922,427 143\n1034,427 04:26\n42,60 首页\n86,60 番剧\n124,60 直播\n162,60 游戏中心\n228,60 会员购\n280,60 漫画\n318,60 赛事\n372,60 下载客户端",
+    "shot": "build-browser-speed-0913/evidence/live-final/bilibili.late.png",
+    "changed_px": 266488,
+    "initial_to_late_changed_px": 220,
+    "basis": "after diagnostic turns; not a completion or usability guarantee"
+   },
+   "host_document": "build-browser-speed-0913/evidence/live-final/bilibili.host.html",
+   "paint_text_history": [
+    {
+     "runs": 74,
+     "bytes": 542
+    },
+    {
+     "runs": 49,
+     "bytes": 373
+    },
+    {
+     "runs": 49,
+     "bytes": 372
+    }
+   ],
+   "text_runs": 49,
+   "text_bytes": 372,
+   "text": "883,235 专栏\n883,273 直播\n952,235 活动\n952,273 课堂\n1021,235 社区中心\n1021,273 新歌热榜\n57,279 动态\n108,279 热门\n176,233 番剧\n176,271 电影\n251,233 国创\n244,271 电视剧\n326,233 综艺\n319,271 纪录片\n401,233 动画\n401,271 游戏\n476,233 鬼畜\n476,271 音乐\n551,233 舞蹈\n551,271 影视\n626,233 娱乐\n626,271 知识\n690,233 科技数码\n701,271 资讯\n776,233 美食\n770,271 更多\n573,458 剥蒜的情谊175.0\n590,506 NinthA-\n637,506 ·\n652,506 09-07\n833,458 异环最强画质mod\n833,480 分不清现实了\n850,506 樱岛-柳津子\n925,506 ·\n940,506 09-11\n600,427 125.0万\n676,427 420\n774,427 02:01\n860,427 9.7万\n922,427 143\n1034,427 04:26\n42,60 首页\n86,60 番剧\n124,60 直播\n162,60 游戏中心\n228,60 会员购\n280,60 漫画\n318,60 赛事\n372,60 下载客户端",
+   "subresources": {
+    "host_inventory": {
+     "stylesheets": 1,
+     "script_src": 6,
+     "inline_scripts": 12,
+     "images": 12,
+     "preloads": 1,
+     "fonts": 0,
+     "mandatory": 8
+    },
+    "gap": null
+   },
+   "finished": "2026-09-13T12:20:36",
+   "reported": "TypeError split of undefined",
+   "wall_seconds": 129.9,
+   "runs": 1,
+   "all_verdicts": [
+    "ERRORS"
+   ]
+  },
+  {
+   "name": "weixin",
+   "url": "https://weixin.qq.com/",
+   "started": "2026-09-13T12:19:31",
+   "verdict": "PAINTED",
+   "why": "painted 618664 changed px in 1.9s, no JS exceptions, no subresource gap",
+   "host": {
+    "ok": true,
+    "status": 200,
+    "final_url": "https://weixin.qq.com/",
+    "bytes": 112625,
+    "redirects": [],
+    "script_tags": 10,
+    "script_src": 5,
+    "img_tags": 0,
+    "inventory": {
+     "stylesheets": 1,
+     "script_src": 3,
+     "inline_scripts": 3,
+     "images": 0,
+     "preloads": 5,
+     "fonts": 0,
+     "mandatory": 5
+    },
+    "elapsed": 0.1
+   },
+   "guest": {
+    "exceptions": [],
+    "timer_exceptions": [],
+    "module_exceptions": [],
+    "console_errors": [],
+    "webapi_errors": [],
+    "fetch_failed": [],
+    "fetch_stalled": [],
+    "cannot_fetch": [],
+    "skipped_scripts": 1,
+    "requests": 5,
+    "dials": 4,
+    "reused": 1,
+    "modules": 0,
+    "modules_failed": 0,
+    "heap_peak_k": 8209,
+    "load_done": true,
+    "page_fetch_failed": null,
+    "app_fault": null,
+    "panic": false,
+    "load_phases_ms": [
+     {
+      "total_ms": 1810,
+      "teardown": 140,
+      "document": 0,
+      "first_style_layout_paint": 250,
+      "styles_fetch": 150,
+      "full_style_layout_paint": 130,
+      "images": 10,
+      "runtime_init": 320,
+      "scripts_fetch": 170,
+      "scripts_execute": 540,
+      "lifecycle_settle": 100
+     }
+    ],
+    "module_phases_ms": [
+     {
+      "compile_ms": 370,
+      "prefetch_ms": 0,
+      "fetch_ms": 0,
+      "link_ms": 0,
+      "eval_jobs_ms": 170,
+      "compile_bytes": 373947,
+      "compiles": 4,
+      "fetches": 0,
+      "prefetch_batches": 0
+     }
+    ],
+    "module_fetch_observations": [
+     {
+      "bytes": 9247,
+      "url": "https://res.wxqcloud.qq.com.cn/t/wx_fed/base/weixin-portal-new/res/_nuxt/D9bP--kn.js"
+     },
+     {
+      "bytes": 3250,
+      "url": "https://res.wxqcloud.qq.com.cn/t/wx_fed/base/weixin-portal-new/res/_nuxt/DOatkjD2.js"
+     },
+     {
+      "bytes": 6038,
+      "url": "https://res.wxqcloud.qq.com.cn/t/wx_fed/base/weixin-portal-new/res/_nuxt/BizCj2xo.js"
+     }
+    ],
+    "load_seconds": 1.9,
+    "paint_seconds": 16.2,
+    "settled": true
+   },
+   "pixels": {
+    "changed_px": 618664,
+    "changed_bbox": [
+     140,
+     12,
+     1260,
+     764
+    ],
+    "ink_px": 4256,
+    "ink_px_blank": 4256,
+    "colours": 576,
+    "rich_tiles_proxy": 19
+   },
+   "shot": "build-browser-speed-0913/evidence/live-final/weixin.png",
+   "serial_log": "build-browser-speed-0913/evidence/live-final/weixin.serial.txt",
+   "url_confirmed": "https://weixin.qq.com/",
+   "url_attempts": 1,
+   "about_text_completed": true,
+   "about_text_arrived": true,
+   "late_observation": {
+    "text_runs": 24,
+    "text_bytes": 152,
+    "text": "343,341 微信\n380,341 8.0.78\n427,341 for\n451,341 Android\n514,341 全新发布\n733,340 09-09\n343,368 微信\n380,368 8.0.78\n427,368 for\n451,368 iOS\n480,368 全新发布\n733,367 09-08\n343,405 微信\n380,405 8.0.21\n427,405 for\n451,405 HarmonyOS\n546,405 全新发布\n733,404 09-04\n343,467 更多日志\n416,467 >\n879,92 WeChat\n938,92 (繁体)\n997,92 WeChat\n1056,92 (EN)",
+    "shot": "build-browser-speed-0913/evidence/live-final/weixin.late.png",
+    "changed_px": 618468,
+    "initial_to_late_changed_px": 1488,
+    "basis": "after diagnostic turns; not a completion or usability guarantee"
+   },
+   "host_document": "build-browser-speed-0913/evidence/live-final/weixin.host.html",
+   "paint_text_history": [
+    {
+     "runs": 4,
+     "bytes": 24
+    },
+    {
+     "runs": 24,
+     "bytes": 152
+    },
+    {
+     "runs": 4,
+     "bytes": 24
+    },
+    {
+     "runs": 24,
+     "bytes": 152
+    }
+   ],
+   "text_runs": 24,
+   "text_bytes": 152,
+   "text": "343,384 微信\n380,384 8.0.78\n427,384 for\n451,384 Android\n514,384 全新发布\n733,383 09-09\n343,411 微信\n380,411 8.0.78\n427,411 for\n451,411 iOS\n480,411 全新发布\n733,410 09-08\n343,448 微信\n380,448 8.0.21\n427,448 for\n451,448 HarmonyOS\n546,448 全新发布\n733,447 09-04\n343,510 更多日志\n416,510 >\n879,92 WeChat\n938,92 (繁体)\n997,92 WeChat\n1056,92 (EN)",
+   "subresources": {
+    "host_inventory": {
+     "stylesheets": 1,
+     "script_src": 3,
+     "inline_scripts": 3,
+     "images": 0,
+     "preloads": 5,
+     "fonts": 0,
+     "mandatory": 5
+    },
+    "gap": null
+   },
+   "finished": "2026-09-13T12:20:17",
+   "reported": "same as douyin -- nothing renders",
+   "wall_seconds": 45.7,
+   "runs": 1,
+   "all_verdicts": [
+    "PAINTED"
+   ]
+  },
+  {
+   "name": "apple",
+   "url": "https://www.apple.com/",
+   "started": "2026-09-13T12:20:17",
+   "verdict": "ERRORS",
+   "why": "painted 520668 changed px, with 1 resource failure diagnostics",
+   "host": {
+    "ok": true,
+    "status": 200,
+    "final_url": "https://www.apple.com/",
+    "bytes": 312779,
+    "redirects": [],
+    "script_tags": 17,
+    "script_src": 12,
+    "img_tags": 100,
+    "inventory": {
+     "stylesheets": 9,
+     "script_src": 12,
+     "inline_scripts": 1,
+     "images": 43,
+     "preloads": 0,
+     "fonts": 0,
+     "mandatory": 22
+    },
+    "elapsed": 0.1
+   },
+   "guest": {
+    "exceptions": [],
+    "timer_exceptions": [],
+    "module_exceptions": [],
+    "console_errors": [],
+    "webapi_errors": [],
+    "fetch_failed": [
+     "[browser] fetch failed (status 404) /wss/fonts?families=SF+Pro,v3|SF+Pro+Icons,v3: no error"
+    ],
+    "fetch_stalled": [],
+    "cannot_fetch": [],
+    "skipped_scripts": 4,
+    "requests": 28,
+    "dials": 2,
+    "reused": 26,
+    "modules": 6,
+    "modules_failed": 0,
+    "heap_peak_k": 23723,
+    "load_done": true,
+    "page_fetch_failed": null,
+    "app_fault": null,
+    "panic": false,
+    "load_phases_ms": [
+     {
+      "total_ms": 9720,
+      "teardown": 100,
+      "document": 0,
+      "first_style_layout_paint": 320,
+      "styles_fetch": 310,
+      "full_style_layout_paint": 2400,
+      "images": 20,
+      "runtime_init": 690,
+      "scripts_fetch": 350,
+      "scripts_execute": 5330,
+      "lifecycle_settle": 200
+     }
+    ],
+    "module_phases_ms": [
+     {
+      "compile_ms": 180,
+      "prefetch_ms": 210,
+      "fetch_ms": 0,
+      "link_ms": 0,
+      "eval_jobs_ms": 3830,
+      "compile_bytes": 266096,
+      "compiles": 10,
+      "fetches": 6,
+      "prefetch_batches": 4
+     }
+    ],
+    "module_fetch_observations": [
+     {
+      "bytes": 4359,
+      "url": "https://www.apple.com/v/homepage/a/scripts/ComponentMap-thvKzGgL.built.js"
+     },
+     {
+      "bytes": 823,
+      "url": "https://www.apple.com/v/homepage/a/scripts/inlineMediaSource-CPCc_KTS.built.js"
+     },
+     {
+      "bytes": 983,
+      "url": "https://www.apple.com/v/homepage/a/scripts/HpViewport-DHyTaS-L.built.js"
+     },
+     {
+      "bytes": 635,
+      "url": "https://www.apple.com/v/homepage/a/scripts/_commonjsHelpers-JypJ4tLA.built.js"
+     },
+     {
+      "bytes": 1921,
+      "url": "https://www.apple.com/v/homepage/a/scripts/AnimSystemModel-CyyfEbM8.built.js"
+     },
+     {
+      "bytes": 258,
+      "url": "https://www.apple.com/v/homepage/a/scripts/index-DSp7vY0t.built.js"
+     }
+    ],
+    "load_seconds": 10.3,
+    "paint_seconds": 16.2,
+    "settled": true
+   },
+   "pixels": {
+    "changed_px": 520668,
+    "changed_bbox": [
+     140,
+     12,
+     1260,
+     764
+    ],
+    "ink_px": 421343,
+    "ink_px_blank": 4256,
+    "colours": 690,
+    "rich_tiles_proxy": 12
+   },
+   "shot": "build-browser-speed-0913/evidence/live-final/apple.png",
+   "serial_log": "build-browser-speed-0913/evidence/live-final/apple.serial.txt",
+   "url_confirmed": "https://www.apple.com/",
+   "url_attempts": 1,
+   "about_text_completed": true,
+   "about_text_arrived": true,
+   "late_observation": {
+    "text_runs": 33,
+    "text_bytes": 150,
+    "text": "157,144 For\n180,144 a\n190,144 limited\n234,144 time,\n267,144 get\n289,144 a\n299,144 gift\n321,144 card\n351,144 up\n370,144 to\n386,144 $150\n423,144 when you\n486,144 buy\n512,144 Mac\n540,144 or\n556,144 iPad\n585,144 with\n615,144 education savings.\n729,144 Shop\n414,144 *\n761,144 \n385,236 iPhone\n578,236 18\n652,236 Pro\n492,302 Pro\n541,302 further.\n471,343 Available\n551,343 starting\n620,343 9.18\n520,381 Learn\n566,381 more\n527,403 Pre-order\n1088,80 0",
+    "shot": "build-browser-speed-0913/evidence/live-final/apple.late.png",
+    "changed_px": 520188,
+    "initial_to_late_changed_px": 1700,
+    "basis": "after diagnostic turns; not a completion or usability guarantee"
+   },
+   "host_document": "build-browser-speed-0913/evidence/live-final/apple.host.html",
+   "paint_text_history": [
+    {
+     "runs": 18,
+     "bytes": 73
+    },
+    {
+     "runs": 33,
+     "bytes": 150
+    }
+   ],
+   "text_runs": 33,
+   "text_bytes": 150,
+   "text": "157,144 For\n180,144 a\n190,144 limited\n234,144 time,\n267,144 get\n289,144 a\n299,144 gift\n321,144 card\n351,144 up\n370,144 to\n386,144 $150\n423,144 when you\n486,144 buy\n512,144 Mac\n540,144 or\n556,144 iPad\n585,144 with\n615,144 education savings.\n729,144 Shop\n414,144 *\n761,144 \n385,236 iPhone\n578,236 18\n652,236 Pro\n492,302 Pro\n541,302 further.\n471,343 Available\n551,343 starting\n620,343 9.18\n520,381 Learn\n566,381 more\n527,403 Pre-order\n1088,80 0",
+   "subresources": {
+    "host_inventory": {
+     "stylesheets": 9,
+     "script_src": 12,
+     "inline_scripts": 1,
+     "images": 43,
+     "preloads": 0,
+     "fonts": 0,
+     "mandatory": 22
+    },
+    "gap": null
+   },
+   "finished": "2026-09-13T12:21:14",
+   "reported": "0 images; TypeError split of undefined",
+   "wall_seconds": 57.8,
+   "runs": 1,
+   "all_verdicts": [
+    "ERRORS"
+   ]
+  },
+  {
+   "name": "stripe",
+   "url": "https://stripe.com/",
+   "started": "2026-09-13T12:20:37",
+   "verdict": "ERRORS",
+   "why": "painted 8896 changed px, with 16 page-reported error(s) and 0 fetch error(s)",
+   "host": {
+    "ok": true,
+    "status": 200,
+    "final_url": "https://stripe.com/jp",
+    "bytes": 720872,
+    "redirects": [
+     "307 -> https://stripe.com/jp"
+    ],
+    "script_tags": 76,
+    "script_src": 73,
+    "img_tags": 29,
+    "inventory": {
+     "stylesheets": 5,
+     "script_src": 72,
+     "inline_scripts": 0,
+     "images": 29,
+     "preloads": 13,
+     "fonts": 2,
+     "mandatory": 78
+    },
+    "elapsed": 2.8
+   },
+   "guest": {
+    "exceptions": [],
+    "timer_exceptions": [],
+    "module_exceptions": [],
+    "console_errors": [
+     "Error: Minified React error #425; visit https://reactjs.org/docs/error-decoder.html?invariant=425 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.",
+     "Error: Minified React error #418; visit https://reactjs.org/docs/error-decoder.html?invariant=418 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.",
+     "Error: Minified React error #418; visit https://reactjs.org/docs/error-decoder.html?invariant=418 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.",
+     "Error: Minified React error #418; visit https://reactjs.org/docs/error-decoder.html?invariant=418 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.",
+     "Error: Minified React error #418; visit https://reactjs.org/docs/error-decoder.html?invariant=418 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.",
+     "Error: Minified React error #418; visit https://reactjs.org/docs/error-decoder.html?invariant=418 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.",
+     "Error: Minified React error #418; visit https://reactjs.org/docs/error-decoder.html?invariant=418 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.",
+     "Error: Minified React error #418; visit https://reactjs.org/docs/error-decoder.html?invariant=418 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.",
+     "Error: Minified React error #418; visit https://reactjs.org/docs/error-decoder.html?invariant=418 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.",
+     "Error: Minified React error #418; visit https://reactjs.org/docs/error-decoder.html?invariant=418 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.",
+     "Error: Minified React error #418; visit https://reactjs.org/docs/error-decoder.html?invariant=418 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.",
+     "Error: Minified React error #418; visit https://reactjs.org/docs/error-decoder.html?invariant=418 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.",
+     "Error: Minified React error #418; visit https://reactjs.org/docs/error-decoder.html?invariant=418 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.",
+     "Error: Minified React error #418; visit https://reactjs.org/docs/error-decoder.html?invariant=418 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.",
+     "Error: Minified React error #423; visit https://reactjs.org/docs/error-decoder.html?invariant=423 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.",
+     "NotSupportedError: keyframe cannot be painted: transform"
+    ],
+    "webapi_errors": [],
+    "fetch_failed": [
+     "[img] fetch failed (status 0): https://q.stripe.com?cid=3397d412-78fe-fd0a-12fa-ec69854c6788&lsid=3397d412-78fe-fd0a-12fa-ec69854c6788&analytics_ua=analytics.js-CURRENT_VERSION&page=%2Fjp&referrer=&domain=stripe: cookie header exceeds capacity",
+     "[img] fetch failed (status 0): https://q.stripe.com?cid=3397d412-78fe-fd0a-12fa-ec69854c6788&lsid=3397d412-78fe-fd0a-12fa-ec69854c6788&analytics_ua=analytics.js-CURRENT_VERSION&page=%2Fjp&referrer=&domain=stripe: cookie header exceeds capacity",
+     "[img] fetch failed (status 0): https://q.stripe.com?cid=3397d412-78fe-fd0a-12fa-ec69854c6788&lsid=3397d412-78fe-fd0a-12fa-ec69854c6788&analytics_ua=analytics.js-CURRENT_VERSION&page=%2Fjp&referrer=&domain=stripe: cookie header exceeds capacity"
+    ],
+    "fetch_stalled": [],
+    "cannot_fetch": [],
+    "skipped_scripts": 3,
+    "requests": 78,
+    "dials": 2,
+    "reused": 77,
+    "modules": 0,
+    "modules_failed": 0,
+    "heap_peak_k": 18734,
+    "load_done": true,
+    "page_fetch_failed": null,
+    "app_fault": null,
+    "panic": false,
+    "load_phases_ms": [
+     {
+      "total_ms": 20780,
+      "teardown": 1800,
+      "document": 0,
+      "first_style_layout_paint": 440,
+      "styles_fetch": 3020,
+      "full_style_layout_paint": 1480,
+      "images": 10,
+      "runtime_init": 350,
+      "scripts_fetch": 9520,
+      "scripts_execute": 4120,
+      "lifecycle_settle": 40
+     }
+    ],
+    "module_phases_ms": [
+     {
+      "compile_ms": 0,
+      "prefetch_ms": 0,
+      "fetch_ms": 0,
+      "link_ms": 0,
+      "eval_jobs_ms": 0,
+      "compile_bytes": 0,
+      "compiles": 0,
+      "fetches": 0,
+      "prefetch_batches": 0
+     }
+    ],
+    "module_fetch_observations": [],
+    "load_seconds": 21.2,
+    "paint_seconds": 20.1,
+    "settled": true
+   },
+   "pixels": {
+    "changed_px": 8896,
+    "changed_bbox": [
+     152,
+     12,
+     1264,
+     764
+    ],
+    "ink_px": 6647,
+    "ink_px_blank": 4256,
+    "colours": 675,
+    "rich_tiles_proxy": 8
+   },
+   "shot": "build-browser-speed-0913/evidence/live-final/stripe.png",
+   "serial_log": "build-browser-speed-0913/evidence/live-final/stripe.serial.txt",
+   "url_confirmed": "https://stripe.com/",
+   "url_attempts": 1,
+   "about_text_completed": true,
+   "about_text_arrived": true,
+   "late_observation": {
+    "text_runs": 11,
+    "text_bytes": 330,
+    "text": "158,80 予期しないエラー\n158,126 申し訳ありませんが、このページで問題が発生しています。ページを更新してみてください。\n158,170 探しているものが見つからない場合は、\n374,170 ダッシュボードを確認したり\n530,170 、\n542,170 Stripe\n575,170 API\n594,170 ステータスを確認したり\n726,170 、\n738,170 連絡するなどしてください\n882,170 。",
+    "shot": "build-browser-speed-0913/evidence/live-final/stripe.late.png",
+    "changed_px": 8796,
+    "initial_to_late_changed_px": 1432,
+    "basis": "after diagnostic turns; not a completion or usability guarantee"
+   },
+   "host_document": "build-browser-speed-0913/evidence/live-final/stripe.host.html",
+   "paint_text_history": [
+    {
+     "runs": 29,
+     "bytes": 580
+    },
+    {
+     "runs": 30,
+     "bytes": 178
+    },
+    {
+     "runs": 11,
+     "bytes": 330
+    }
+   ],
+   "text_runs": 11,
+   "text_bytes": 330,
+   "text": "158,80 予期しないエラー\n158,126 申し訳ありませんが、このページで問題が発生しています。ページを更新してみてください。\n158,170 探しているものが見つからない場合は、\n374,170 ダッシュボードを確認したり\n530,170 、\n542,170 Stripe\n575,170 API\n594,170 ステータスを確認したり\n726,170 、\n738,170 連絡するなどしてください\n882,170 。",
+   "subresources": {
+    "host_inventory": {
+     "stylesheets": 5,
+     "script_src": 72,
+     "inline_scripts": 0,
+     "images": 29,
+     "preloads": 13,
+     "fonts": 2,
+     "mandatory": 78
+    },
+    "gap": null
+   },
+   "finished": "2026-09-13T12:21:45",
+   "reported": "73 scripts, extremely slow",
+   "wall_seconds": 68.8,
+   "runs": 1,
+   "all_verdicts": [
+    "ERRORS"
+   ]
+  },
+  {
+   "name": "bing-search",
+   "url": "https://www.bing.com/search?q=python",
+   "started": "2026-09-13T12:21:15",
+   "verdict": "ERRORS",
+   "why": "painted 10660 changed px, with 0 page-reported error(s) and 1 fetch error(s) -- and the document asked for 99 subresources (92 stylesheets, 6 script srcs) against 98 requests issued, short by 1",
+   "host": {
+    "ok": true,
+    "status": 200,
+    "final_url": "https://cn.bing.com/search?q=python",
+    "bytes": 97928,
+    "redirects": [
+     "302 -> https://cn.bing.com/search?q=python"
+    ],
+    "script_tags": 20,
+    "script_src": 6,
+    "img_tags": 3,
+    "inventory": {
+     "stylesheets": 92,
+     "script_src": 6,
+     "inline_scripts": 14,
+     "images": 1,
+     "preloads": 4,
+     "fonts": 0,
+     "mandatory": 99
+    },
+    "elapsed": 0.5
+   },
+   "guest": {
+    "exceptions": [],
+    "timer_exceptions": [],
+    "module_exceptions": [],
+    "console_errors": [],
+    "webapi_errors": [
+     "fetch: aborted"
+    ],
+    "fetch_failed": [],
+    "fetch_stalled": [],
+    "cannot_fetch": [],
+    "skipped_scripts": 0,
+    "requests": 98,
+    "dials": 4,
+    "reused": 95,
+    "modules": 0,
+    "modules_failed": 0,
+    "heap_peak_k": 8325,
+    "load_done": true,
+    "page_fetch_failed": null,
+    "app_fault": null,
+    "panic": false,
+    "load_phases_ms": [
+     {
+      "total_ms": 3090,
+      "teardown": 660,
+      "document": 0,
+      "first_style_layout_paint": 120,
+      "styles_fetch": 1340,
+      "full_style_layout_paint": 300,
+      "images": 0,
+      "runtime_init": 320,
+      "scripts_fetch": 90,
+      "scripts_execute": 170,
+      "lifecycle_settle": 90
+     }
+    ],
+    "module_phases_ms": [
+     {
+      "compile_ms": 0,
+      "prefetch_ms": 0,
+      "fetch_ms": 0,
+      "link_ms": 0,
+      "eval_jobs_ms": 0,
+      "compile_bytes": 0,
+      "compiles": 0,
+      "fetches": 0,
+      "prefetch_batches": 0
+     }
+    ],
+    "module_fetch_observations": [],
+    "load_seconds": 3.1,
+    "paint_seconds": 16.2,
+    "settled": true
+   },
+   "pixels": {
+    "changed_px": 10660,
+    "changed_bbox": [
+     140,
+     12,
+     1264,
+     764
+    ],
+    "ink_px": 4962,
+    "ink_px_blank": 4256,
+    "colours": 516,
+    "rich_tiles_proxy": 11
+   },
+   "shot": "build-browser-speed-0913/evidence/live-final/bing-search.png",
+   "serial_log": "build-browser-speed-0913/evidence/live-final/bing-search.serial.txt",
+   "url_confirmed": "https://www.bing.com/search?q=python",
+   "url_attempts": 1,
+   "about_text_completed": true,
+   "about_text_arrived": true,
+   "late_observation": {
+    "text_runs": 29,
+    "text_bytes": 215,
+    "text": "8,68 跳至内容\n8,88 辅助功能反馈\n8,256 国内版\n8,276 国际版\n14,304 •\n36,304 网页\n14,324 •\n36,324 图片\n14,344 •\n36,344 视频\n14,364 •\n36,364 学术\n14,384 •\n36,384 词典\n14,404 •\n36,404 地图\n14,424 •\n36,424 航班\n8,460 约\n27,460 224,000\n82,460 个结果\n8,480 在新选项卡中打开链接\n8,524 时间不限\n18,552 1.\n49,552 ◦\n64,576 trae.com.cn\n64,596 https://www.trae.com.cn\n1125,59  \n1125,59  ",
+    "shot": "build-browser-speed-0913/evidence/live-final/bing-search.late.png",
+    "changed_px": 14952,
+    "initial_to_late_changed_px": 21732,
+    "basis": "after diagnostic turns; not a completion or usability guarantee"
+   },
+   "host_document": "build-browser-speed-0913/evidence/live-final/bing-search.host.html",
+   "paint_text_history": [
+    {
+     "runs": 29,
+     "bytes": 208
+    },
+    {
+     "runs": 72,
+     "bytes": 423
+    },
+    {
+     "runs": 9,
+     "bytes": 60
+    },
+    {
+     "runs": 10,
+     "bytes": 67
+    }
+   ],
+   "text_runs": 10,
+   "text_bytes": 67,
+   "text": "168,218 网页\n230,218 图片\n292,218 视频\n354,218 学术\n416,218 词典\n478,218 地图\n540,218 航班\n1150,218 Rewards\n246,127 国际版\n173,127 国内版",
+   "subresources": {
+    "host_inventory": {
+     "stylesheets": 92,
+     "script_src": 6,
+     "inline_scripts": 14,
+     "images": 1,
+     "preloads": 4,
+     "fonts": 0,
+     "mandatory": 99
+    },
+    "gap": {
+     "mandatory": 99,
+     "requested": 98,
+     "short_by": 1,
+     "stylesheets": 92,
+     "script_src": 6
+    }
+   },
+   "finished": "2026-09-13T12:22:03",
+   "reported": "\"我使用bing搜索python成功返回了结果!!!可是......CSS渲染根本无法正常使用\"",
+   "wall_seconds": 48.3,
+   "runs": 1,
+   "all_verdicts": [
+    "ERRORS"
+   ]
+  },
+  {
+   "name": "control-example",
+   "url": "http://example.com/",
+   "started": "2026-09-13T12:21:45",
+   "verdict": "PAINTED",
+   "why": "painted 8780 changed px in 1.3s, no JS exceptions, no subresource gap",
+   "host": {
+    "ok": true,
+    "status": 200,
+    "final_url": "http://example.com/",
+    "bytes": 559,
+    "redirects": [],
+    "script_tags": 0,
+    "script_src": 0,
+    "img_tags": 0,
+    "inventory": {
+     "stylesheets": 0,
+     "script_src": 0,
+     "inline_scripts": 0,
+     "images": 0,
+     "preloads": 0,
+     "fonts": 0,
+     "mandatory": 1
+    },
+    "elapsed": 2.6
+   },
+   "guest": {
+    "exceptions": [],
+    "timer_exceptions": [],
+    "module_exceptions": [],
+    "console_errors": [],
+    "webapi_errors": [],
+    "fetch_failed": [],
+    "fetch_stalled": [],
+    "cannot_fetch": [],
+    "skipped_scripts": 0,
+    "requests": 1,
+    "dials": 1,
+    "reused": 0,
+    "modules": 0,
+    "modules_failed": 0,
+    "heap_peak_k": 8209,
+    "load_done": true,
+    "page_fetch_failed": null,
+    "app_fault": null,
+    "panic": false,
+    "load_phases_ms": [
+     {
+      "total_ms": 1220,
+      "teardown": 760,
+      "document": 0,
+      "first_style_layout_paint": 30,
+      "styles_fetch": 0,
+      "full_style_layout_paint": 50,
+      "images": 0,
+      "runtime_init": 380,
+      "scripts_fetch": 0,
+      "scripts_execute": 0,
+      "lifecycle_settle": 0
+     }
+    ],
+    "module_phases_ms": [
+     {
+      "compile_ms": 0,
+      "prefetch_ms": 0,
+      "fetch_ms": 0,
+      "link_ms": 0,
+      "eval_jobs_ms": 0,
+      "compile_bytes": 0,
+      "compiles": 0,
+      "fetches": 0,
+      "prefetch_batches": 0
+     }
+    ],
+    "module_fetch_observations": [],
+    "load_seconds": 1.3,
+    "paint_seconds": 16.3,
+    "settled": true
+   },
+   "pixels": {
+    "changed_px": 8780,
+    "changed_bbox": [
+     152,
+     12,
+     1264,
+     764
+    ],
+    "ink_px": 9184,
+    "ink_px_blank": 4256,
+    "colours": 545,
+    "rich_tiles_proxy": 8
+   },
+   "shot": "build-browser-speed-0913/evidence/live-final/control-example.png",
+   "serial_log": "build-browser-speed-0913/evidence/live-final/control-example.serial.txt",
+   "url_confirmed": "http://example.com/",
+   "url_attempts": 1,
+   "about_text_completed": true,
+   "about_text_arrived": true,
+   "late_observation": {
+    "text_runs": 19,
+    "text_bytes": 109,
+    "text": "225,158 Example\n329,158 Domain\n225,202 This\n257,202 domain\n314,202 is\n328,202 for\n351,202 use\n378,202 in\n394,202 documentation\n506,202 examples\n575,202 without\n633,202 needing\n692,202 permission.\n776,202 Avoid\n818,202 use\n845,202 in\n225,222 operations.\n225,250 Learn\n268,250 more",
+    "shot": "build-browser-speed-0913/evidence/live-final/control-example.late.png",
+    "changed_px": 8352,
+    "initial_to_late_changed_px": 1504,
+    "basis": "after diagnostic turns; not a completion or usability guarantee"
+   },
+   "host_document": "build-browser-speed-0913/evidence/live-final/control-example.host.html",
+   "paint_text_history": [
+    {
+     "runs": 19,
+     "bytes": 109
+    }
+   ],
+   "text_runs": 19,
+   "text_bytes": 109,
+   "text": "225,158 Example\n329,158 Domain\n225,202 This\n257,202 domain\n314,202 is\n328,202 for\n351,202 use\n378,202 in\n394,202 documentation\n506,202 examples\n575,202 without\n633,202 needing\n692,202 permission.\n776,202 Avoid\n818,202 use\n845,202 in\n225,222 operations.\n225,250 Learn\n268,250 more",
+   "subresources": {
+    "host_inventory": {
+     "stylesheets": 0,
+     "script_src": 0,
+     "inline_scripts": 0,
+     "images": 0,
+     "preloads": 0,
+     "fonts": 0,
+     "mandatory": 1
+    },
+    "gap": null
+   },
+   "finished": "2026-09-13T12:22:30",
+   "reported": "CONTROL: the simplest page on the web, no JS, no CSS worth the name",
+   "wall_seconds": 44.8,
+   "runs": 1,
+   "all_verdicts": [
+    "PAINTED"
+   ]
+  }
+ ]
+}
