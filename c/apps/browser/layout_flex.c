@@ -113,16 +113,12 @@ static void axis_setup(struct axis *a, int dir, int wrap, int wm, int rtl)
 
 /* ---------------- style accessors ---------------- */
 
-/* A margin, by physical edge. cstyle spells `auto` as -1 -- which is also how
- * it would have to spell a -1px margin. That conflation is css_engine.c's and
- * predates this file; it is reported rather than papered over here. */
-static int margin_edge(const struct cstyle *st, int e, unsigned char *isauto)
+/* Auto has its own bit; -1px is an ordinary signed length. Percentage margins
+ * in both axes resolve against the flex container's inline size (§ 4.2). */
+static int margin_edge(const struct cstyle *st, int e, int cbw, unsigned char *isauto)
 {
-    int v = 0;
-    if (st) v = (e == 0) ? st->mt : (e == 1) ? st->mr : (e == 2) ? st->mb : st->ml;
-    if (v == -1) { *isauto = 1; return 0; }
-    *isauto = 0;
-    return v;
+    *isauto = st ? (unsigned char)((st->margin_auto >> e) & 1) : 0;
+    return css_margin_px(st, e, cbw);
 }
 
 static int pad_border_edge(const struct cstyle *st, int e)
@@ -202,6 +198,7 @@ struct fitem {
     unsigned char frozen;
     int viol;                           /* sign of this pass's clamp adjustment */
     int used_main, hypo_cross, used_cross;
+    int cross_stretched;
     int baseline;
     int line, main_pos, cross_pos;
 };
@@ -608,15 +605,17 @@ int layout_flex_run(const struct flex_in *c, const struct flex_item_in *in, int 
     int *lpos   = lcross + (n + 1);
     int *lasc   = lpos + (n + 1);            /* per-line max baseline ascent */
 
+    int margin_basis = ax.main_is_inline ? c->avail_main : c->avail_cross;
+
     /* ---- § 9.1: build one work item per input, indexed BY INPUT INDEX ---- */
     for (i = 0; i < n; i++) {
         struct fitem *f = &it[i];
         f->in = &in[i]; f->st = in[i].st; f->idx = i;
         f->order = in[i].st ? in[i].st->order : 0;
-        f->ms  = margin_edge(f->st, ax.ms_edge, &f->ms_auto);
-        f->me  = margin_edge(f->st, ax.me_edge, &f->me_auto);
-        f->cms = margin_edge(f->st, ax.cs_edge, &f->cms_auto);
-        f->cme = margin_edge(f->st, ax.ce_edge, &f->cme_auto);
+        f->ms  = margin_edge(f->st, ax.ms_edge, margin_basis, &f->ms_auto);
+        f->me  = margin_edge(f->st, ax.me_edge, margin_basis, &f->me_auto);
+        f->cms = margin_edge(f->st, ax.cs_edge, margin_basis, &f->cms_auto);
+        f->cme = margin_edge(f->st, ax.ce_edge, margin_basis, &f->cme_auto);
         f->bp_main  = pad_border_edge(f->st, ax.ms_edge) + pad_border_edge(f->st, ax.me_edge);
         f->bp_cross = pad_border_edge(f->st, ax.cs_edge) + pad_border_edge(f->st, ax.ce_edge);
         f->grow   = f->st ? f->st->flex_grow   : 0;
@@ -783,6 +782,7 @@ int layout_flex_run(const struct flex_in *c, const struct flex_item_in *in, int 
             int v = lcross[f->line] - f->cms - f->cme - f->bp_cross;
             if (v < 0) v = 0;
             f->used_cross = clampi(v, f->minc, f->maxc);
+            f->cross_stretched = 1;
         }
     }
 
@@ -885,6 +885,7 @@ int layout_flex_run(const struct flex_in *c, const struct flex_item_in *in, int 
         o->main_pos  = f->main_pos;
         o->cross_pos = lpos[f->line] + f->cross_pos;
         o->baseline  = f->baseline;
+        o->cross_stretched = f->cross_stretched;
         int pm = ax.main_rev  ? cmain  - o->main_pos  - o->main_outer  : o->main_pos;
         int pc = ax.cross_rev ? ccross - o->cross_pos - o->cross_outer : o->cross_pos;
         o->x = ax.main_horiz ? pm : pc;

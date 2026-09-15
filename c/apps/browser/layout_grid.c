@@ -27,6 +27,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "layout_grid.h"
+#include "css.h"
 
 #define INF64  ((long long)1 << 40)
 
@@ -53,7 +54,7 @@ static int ieq(const char *a, int alen, const char *b) {
     return b[alen] == 0;
 }
 
-struct scan { const char *s; int i, n; };
+struct scan { const char *s; int i, n; int root_px; };
 static void sk(struct scan *z) { while (z->i < z->n && g_isspace((unsigned char)z->s[z->i])) z->i++; }
 static int  at(struct scan *z, char c) { sk(z); return z->i < z->n && z->s[z->i] == c; }
 
@@ -108,7 +109,10 @@ static int number(struct scan *z, int scale, long long *out) {
     return 1;
 }
 
-/* <track-breadth>. `font_px` resolves em/rem. Returns 1 on success. */
+/* <track-breadth>. The old single font_px argument resolved BOTH em/rem.
+ * Keep em local; rem uses the explicit root basis carried by the parser.
+ * Host bridge control root=20/local=32: 2rem was 64px, must be 40px.
+ * A root fixed at 16 would merely hide the bug on default-font pages. */
 static int breadth(struct scan *z, int font_px, struct gsize *g)
 {
     sk(z);
@@ -125,8 +129,10 @@ static int breadth(struct scan *z, int font_px, struct gsize *g)
         }
         if (ieq(u, ul, "fr"))  { g->kind = GSF_FR; g->v = (int)v; return 1; }
         if (ieq(u, ul, "px"))  { g->kind = GSF_PX; g->v = (int)(v/1000); return 1; }
-        if (ieq(u, ul, "em") || ieq(u, ul, "rem"))
-                               { g->kind = GSF_PX; g->v = (int)((v*font_px)/1000); return 1; }
+        if (ieq(u, ul, "em") || ieq(u, ul, "rem")) {
+            int basis = ieq(u, ul, "rem") ? z->root_px : font_px;
+            g->kind = GSF_PX; g->v = (int)((v*basis)/1000); return 1;
+        }
         if (ul == 0 && v == 0) { g->kind = GSF_PX; g->v = 0; return 1; }
         /* Any other unit (ch, vw, pt, ...) is a length we cannot resolve here.
          * `auto` is the honest fallback: it is what an unsupported <length>
@@ -316,12 +322,12 @@ static int parse_flat(struct scan *z, int font_px, struct gtracklist *out, int s
     return 0;
 }
 
-int grid_parse_tracklist(const char *s, int len, int font_px, struct gtracklist *out)
+int grid_parse_tracklist_units(const char *s, int len, int font_px, int root_px, struct gtracklist *out)
 {
     memset(out, 0, sizeof *out);
     if (!s) return -1;
     if (len < 0) len = (int)strlen(s);
-    struct scan z = { s, 0, len };
+    struct scan z = { s, 0, len, root_px };
     sk(&z);
     if (z.i < z.n) {
         const char *p; int save = z.i, l = ident(&z, &p);
@@ -332,12 +338,12 @@ int grid_parse_tracklist(const char *s, int len, int font_px, struct gtracklist 
     return 0;
 }
 
-int grid_parse_template(const char *s, int len, int font_px, struct gtemplate *out)
+int grid_parse_template_units(const char *s, int len, int font_px, int root_px, struct gtemplate *out)
 {
     memset(out, 0, sizeof *out);
     if (!s) return -1;
     if (len < 0) len = (int)strlen(s);
-    struct scan z = { s, 0, len };
+    struct scan z = { s, 0, len, root_px };
 
     sk(&z);
     if (z.i < z.n) {
@@ -388,6 +394,13 @@ bad:
     grid_template_free(out);
     return -1;
 }
+
+/* Compatibility entry points for pure parser users that intentionally use
+ * the same local/root font. Browser layout must use the two-basis APIs. */
+int grid_parse_tracklist(const char *s, int len, int font_px, struct gtracklist *out)
+{ return grid_parse_tracklist_units(s, len, font_px, font_px, out); }
+int grid_parse_template(const char *s, int len, int font_px, struct gtemplate *out)
+{ return grid_parse_template_units(s, len, font_px, font_px, out); }
 
 /* ---- grid-template-areas ------------------------------------------------- */
 
@@ -1948,6 +1961,7 @@ int grid_layout(const struct gridcfg *cfg, const struct griditem *items, int nit
     struct gtrackitem *ti = NULL;
     struct gmeas *mc = NULL, *mr = NULL;
     int *gapc = NULL, *gapr = NULL;
+    int (*used_margin)[4] = NULL;
     int nrepc = 0, nrepr = 0;
 
     memset(out, 0, sizeof *out);
@@ -2036,12 +2050,17 @@ int grid_layout(const struct gridcfg *cfg, const struct griditem *items, int nit
     mr = (struct gmeas *)calloc((size_t)(nitems ? nitems : 1), sizeof *mr);
     if (!ti || !mc || !mr) goto done;
 
+    used_margin = calloc((size_t)(nitems ? nitems : 1), sizeof *used_margin);
+    if (!used_margin) goto done;
+    for (i = 0; i < nitems; i++)
+        for (x = 0; x < 4; x++) used_margin[i][x] = items[i].margin[x];
+
     /* ---- s11.1 step 1: size the COLUMNS ---------------------------------- */
     for (i = 0; i < nitems; i++) {
         struct gmeas m; memset(&m, 0, sizeof m);
         if (measure) measure(ctx, i, GAX_COL, GRID_INDEFINITE, &m);
         if (items[i].def_w != GRID_INDEFINITE) {
-            int w = items[i].def_w;
+            int w = items[i].def_w + used_margin[i][1] + used_margin[i][3];
             if (w > m.max_content) m.max_content = w;
             if (w > m.min_content) m.min_content = w;
             if (w > m.minimum)     m.minimum     = w;
@@ -2069,14 +2088,24 @@ int grid_layout(const struct gridcfg *cfg, const struct griditem *items, int nit
         for (c = out->items[i].col; c < out->items[i].col + out->items[i].colspan && c < ncols; c++)
             aw += out->colsz[c];
         aw += (int)span_gap(gapc, ncols, out->items[i].col, out->items[i].colspan);
-        int inner = aw - items[i].margin[1] - items[i].margin[3];
+        /* A grid item's containing block is its area, not the grid's full
+         * width. Percentages contribute zero while columns are intrinsically
+         * sized, then resolve before row measurement and final alignment. */
+        for (x = 0; x < 4; x++)
+            used_margin[i][x] += css_margin_percent_px(items[i].margin_pct[x], aw);
+        int inner = aw - used_margin[i][1] - used_margin[i][3];
         if (inner < 0) inner = 0;
+        int preferred = cfg->resolve_width ? cfg->resolve_width(ctx, i, aw) : items[i].def_w;
+        if (preferred != GRID_INDEFINITE) inner = preferred;
         struct gmeas m; memset(&m, 0, sizeof m);
         if (measure) measure(ctx, i, GAX_ROW, inner, &m);
         if (items[i].def_h != GRID_INDEFINITE) {
-            int h = items[i].def_h;
+            int h = items[i].def_h + items[i].margin[0] + items[i].margin[2];
             m.max_content = m.min_content = m.minimum = h;
         }
+        int pct_vertical = used_margin[i][0] + used_margin[i][2]
+                         - items[i].margin[0] - items[i].margin[2];
+        m.minimum += pct_vertical; m.min_content += pct_vertical; m.max_content += pct_vertical;
         if (m.min_content > m.max_content) m.max_content = m.min_content;
         if (m.minimum > m.min_content)     m.minimum     = m.min_content;
         mr[i] = m;
@@ -2096,7 +2125,7 @@ int grid_layout(const struct gridcfg *cfg, const struct griditem *items, int nit
             if (out->items[i].row != x || out->items[i].rowspan != 1) continue;
             unsigned char a = items[i].align_self != GA_AUTO ? items[i].align_self : cfg->align_items;
             if (a != GA_BASELINE || items[i].baseline < 0) continue;
-            int b = items[i].baseline + items[i].margin[0];
+            int b = items[i].baseline + used_margin[i][0];
             if (b > maxb) maxb = b;
         }
         if (maxb < 0) continue;
@@ -2104,7 +2133,7 @@ int grid_layout(const struct gridcfg *cfg, const struct griditem *items, int nit
             if (out->items[i].row != x || out->items[i].rowspan != 1) continue;
             unsigned char a = items[i].align_self != GA_AUTO ? items[i].align_self : cfg->align_items;
             if (a != GA_BASELINE || items[i].baseline < 0) continue;
-            int shim = maxb - (items[i].baseline + items[i].margin[0]);
+            int shim = maxb - (items[i].baseline + used_margin[i][0]);
             if (shim <= 0) continue;
             ti[i].m.minimum     += shim;
             ti[i].m.min_content += shim;
@@ -2152,10 +2181,10 @@ int grid_layout(const struct gridcfg *cfg, const struct griditem *items, int nit
         p->area_h = out->rowpos[r1] + out->rowsz[r1] - out->rowpos[r0];
 
         int ax, aw, ay, ah;
-        ax = p->area_x + items[i].margin[3];
-        aw = p->area_w - items[i].margin[1] - items[i].margin[3];
-        ay = p->area_y + items[i].margin[0];
-        ah = p->area_h - items[i].margin[0] - items[i].margin[2];
+        ax = p->area_x + used_margin[i][3];
+        aw = p->area_w - used_margin[i][1] - used_margin[i][3];
+        ay = p->area_y + used_margin[i][0];
+        ah = p->area_h - used_margin[i][0] - used_margin[i][2];
         if (aw < 0) aw = 0;
         if (ah < 0) ah = 0;
 
@@ -2166,7 +2195,8 @@ int grid_layout(const struct gridcfg *cfg, const struct griditem *items, int nit
         /* Used size: a definite preferred size wins; otherwise stretch fills the
          * area and every other value shrink-to-fits. */
         int w, h;
-        if (items[i].def_w != GRID_INDEFINITE)      w = items[i].def_w;
+        int preferred = cfg->resolve_width ? cfg->resolve_width(ctx, i, p->area_w) : items[i].def_w;
+        if (preferred != GRID_INDEFINITE)           w = preferred;
         else if (jd == 3)                            w = aw;
         else                                         w = imax(mc[i].min_content, imin(mc[i].max_content, aw));
         if (items[i].def_h != GRID_INDEFINITE)      h = items[i].def_h;
@@ -2201,7 +2231,7 @@ int grid_layout(const struct gridcfg *cfg, const struct griditem *items, int nit
             if (out->items[i].row != x || out->items[i].rowspan != 1) continue;
             unsigned char a = items[i].align_self != GA_AUTO ? items[i].align_self : cfg->align_items;
             if (a != GA_BASELINE || items[i].baseline < 0) continue;
-            int b = items[i].baseline + items[i].margin[0];
+            int b = items[i].baseline + used_margin[i][0];
             if (b > maxb) maxb = b;
         }
         if (maxb < 0) continue;
@@ -2218,6 +2248,7 @@ int grid_layout(const struct gridcfg *cfg, const struct griditem *items, int nit
     out->ncols_explicit = nec; out->nrows_explicit = ner;
     rc = 0;
 done:
+    free(used_margin);
     free(tc); free(tr); free(ti); free(mc); free(mr); free(gapc); free(gapr);
     free(Lc.nm); free(Lr.nm);
     grid_tracklist_free(&ec); grid_tracklist_free(&er);

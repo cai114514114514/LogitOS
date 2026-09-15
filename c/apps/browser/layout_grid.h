@@ -162,7 +162,8 @@ struct griditem {
     int def_w, def_h;
 
     unsigned char justify_self, align_self;   /* GA_AUTO -> use *-items */
-    int  margin[4];                           /* top, right, bottom, left (px) */
+    int  margin[4];                           /* fixed px; signed, auto is zero */
+    int margin_pct[4];                       /* percent * 1024, resolved by area */
     unsigned char m_auto[4];                  /* 1 where that margin is `auto` */
 
     /* Distance from the item's margin-box start edge to its first baseline in
@@ -172,6 +173,11 @@ struct griditem {
 };
 
 struct gridcfg {
+    /* Optional late preferred-width resolver. Percent widths are auto during
+     * intrinsic column sizing and only become definite once the item's full
+     * (possibly spanning) area is known. Receives the measure callback's ctx;
+     * return GRID_INDEFINITE to retain the ordinary auto/stretch behavior. */
+    int (*resolve_width)(void *ctx, int item, int area_width);
     struct gtemplate cols, rows;      /* grid-template-columns / -rows */
     struct gtracklist auto_cols;      /* grid-auto-columns (cycled) */
     struct gtracklist auto_rows;      /* grid-auto-rows   (cycled) */
@@ -221,6 +227,9 @@ struct gridout {
  * failure. A parse error leaves the output zeroed, which is the property's
  * initial value in every case -- an invalid declaration must not half-apply. */
 
+/* Production callers provide the actual root font separately from em. */
+int  grid_parse_template_units(const char *s, int len, int font_px, int root_px, struct gtemplate *out);
+int  grid_parse_tracklist_units(const char *s, int len, int font_px, int root_px, struct gtracklist *out);
 int  grid_parse_template(const char *s, int len, int font_px, struct gtemplate *out);
 int  grid_parse_tracklist(const char *s, int len, int font_px, struct gtracklist *out);
 int  grid_parse_areas(const char *s, int len, struct gridareas *out);

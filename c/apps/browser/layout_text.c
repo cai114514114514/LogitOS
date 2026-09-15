@@ -723,6 +723,16 @@ static int transform_is_wordchar(uint32_t c)
            cls == LB_AI || cls == LB_CM || cls == LB_AK || cls == LB_AS;
 }
 
+/* An untransformed inline still participates in capitalization boundaries;
+ * resetting at each span incorrectly capitalizes the middle of a DOM word. */
+void ltx_transform_state(const char *in,int len,int *at_word_start)
+{
+    /* Only the final scalar determines the state; do not rescan long default
+     * text merely because a later sibling might request capitalization. */
+    if(len>0&&at_word_start){int i=len-1;uint32_t cp;
+        while(i>0&&((unsigned char)in[i]&0xc0)==0x80)i--;
+        u8_next(in,len,i,&cp);*at_word_start=!transform_is_wordchar(cp);}
+}
 int ltx_text_transform(const char *in, int len, int tt, int *at_word_start,
                        char *out, int outmax)
 {
@@ -731,6 +741,7 @@ int ltx_text_transform(const char *in, int len, int tt, int *at_word_start,
     if (tt == LTX_TT_NONE) {
         if (len > outmax) return -1;
         memcpy(out, in, (size_t)len);
+        ltx_transform_state(in,len,at_word_start);
         return len;
     }
     while (i < len) {
@@ -801,22 +812,30 @@ int ltx_text_transform(const char *in, int len, int tt, int *at_word_start,
 
 /* --------------------------------------------------------- measuring ------ */
 
+/* A nonzero letter spacing disables cross-character ligatures in the
+ * current GUI contract: each scalar is drawn separately. Word-spacing alone
+ * preserves shaped words. Measurement MUST use the same segments as paint;
+ * measuring full prefixes then drawing isolated glyphs keeps kerning in only
+ * one half of the contract, and costs O(n*n) on long preformatted lines. This
+ * shared segmentation is linear; grapheme/complex-script cluster spacing
+ * needs the font API to return shaped clusters and remains outside this seam. */
+int ltx_spacing_next(const char *s,int len,int pos,int letter_spacing)
+{
+    int q=pos+1;
+    if(letter_spacing){while(q<len&&((unsigned char)s[q]&0xc0)==0x80)q++;}
+    else if(s[pos]!=' '){while(q<len&&s[q]!=' ')q++;}
+    return q;
+}
 int ltx_measure_run(const struct ltx_env *env, const struct ltx_style *st,
                     const char *s, int len)
 {
-    int w, i, nchar = 0, nspace = 0;
-    if (len <= 0) return 0;
-    w = env && env->measure ? env->measure(env->ctx, s, len, st) : 0;
-    if (!st) return w;
-    if (st->letter_spacing || st->word_spacing) {
-        for (i = 0; i < len; ) {
-            uint32_t c;
-            i += u8_next(s, len, i, &c);
-            nchar++;
-            if (c == 0x20) nspace++;
-        }
-        w += nchar * st->letter_spacing + nspace * st->word_spacing;
-    }
+    if(len<=0)return 0;
+    if(!st||(!st->letter_spacing&&!st->word_spacing))
+        return env&&env->measure?env->measure(env->ctx,s,len,st):0;
+    int w=0;
+    for(int p=0;p<len;){int q=ltx_spacing_next(s,len,p,st->letter_spacing);
+        if(env&&env->measure)w+=env->measure(env->ctx,s+p,q-p,st);
+        w+=st->letter_spacing;if(s[p]==' ')w+=st->word_spacing;p=q;}
     return w;
 }
 
@@ -847,7 +866,8 @@ static int run_at(const struct build *b, int pos)
 static int line_height_of(const struct ltx_style *st)
 {
     int px = st && st->font_px > 0 ? st->font_px : 16;
-    if (st && st->line_px > px) return st->line_px;
+    /* Formerly clamped below-em line heights to normal, unlike CSS. */
+    if (st && (st->has_line_px || st->line_px > 0)) return st->line_px;
     return px * 5 / 4;
 }
 
@@ -1100,6 +1120,7 @@ int ltx_layout_runs(const struct ltx_run *runs, int nrun,
             if (n < 0) { free(tmp); goto fail; }
             src = tmp; slen = n;
         }
+        if(st->text_transform==LTX_TT_NONE)ltx_transform_state(src,slen,&word_start);
         n = ltx_collapse(src, slen, st->wsc, &ws, b.text + b.len, cap - b.len);
         free(tmp);
         if (n < 0) goto fail;

@@ -190,6 +190,7 @@ int ltx_trim_end(const char *s, int len, int wsc);
  * SpecialCasing.txt conditioned on the element's language, and neither the DOM
  * nor `struct cstyle` carries a language today.  Greek final sigma IS handled
  * because it is conditioned on position, not on locale. */
+void ltx_transform_state(const char *in,int len,int *at_word_start);
 int ltx_text_transform(const char *in, int len, int tt, int *at_word_start,
                        char *out, int outmax);
 
@@ -211,7 +212,8 @@ struct ltx_style {
     int tab_size;                  /* in `space` advances if tab_px == 0,
                                     * otherwise in px */
     unsigned char tab_px;
-    int line_px;                   /* line-height in px; 0 = derive 1.25*font */
+    int line_px;                   /* line-height in px; 0 derives unless explicit */
+    unsigned char has_line_px;     /* explicit zero and sub-em values are valid */
 };
 
 /* Advance of one styled string, in px.  This is the ONE place font advances and
@@ -226,6 +228,7 @@ struct ltx_style {
  * Firefox and Safari on the width of every letter-spaced element).
  * word-spacing is added at every U+0020 only, per CSS Text 3 §8.2. */
 struct ltx_env;                    /* below */
+int ltx_spacing_next(const char *s,int len,int pos,int letter_spacing);
 int ltx_measure_run(const struct ltx_env *env, const struct ltx_style *st,
                     const char *s, int len);
 
@@ -312,6 +315,12 @@ void ltx_layout_free(struct ltx_layout *l);
  * Nothing here is wired in.  layout.c belongs to another line and three lines
  * cannot share one file, so this is written down instead of done.  Read it as
  * a description of the work, not as a claim that it is finished.
+ * Correction 2026-09-09: layout.c flow_ltx_paragraph now consumes output for
+ * fixed-width horizontal text-only blocks when transform/spacing/indent is
+ * requested. Owned processed bytes feed IT_TEXT and text_paint_wiring.inc.
+ * Decorated/atomic/float contexts keep iflow with shared transformation and
+ * spacing; text-indent there, vertical layout and shaped-cluster spacing are
+ * still absent. The callback proposal below remains for that wider migration.
  *
  * WHAT IT REPLACES.  layout.c's `flow_text()` and the `struct iflow` pen it
  * drives.  Today flow_text does five jobs in one loop: white-space branching,

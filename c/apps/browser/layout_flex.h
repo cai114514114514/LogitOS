@@ -152,6 +152,8 @@ struct flex_item_out {
                                  * border, etc.) -- what x/y/w/h are built from */
     int baseline;               /* used baseline offset from the border-box
                                  * cross-start edge, or -1 */
+    int cross_stretched;        /* §9.4: relayout contents with this definite
+                                 * cross size; auto margins do not stretch */
     int x, y, w, h;             /* PHYSICAL border box from the container's
                                  * content-box top-left */
 };

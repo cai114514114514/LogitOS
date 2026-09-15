@@ -96,7 +96,7 @@ int main(void)
 
     /* 2. CSS width/height beats viewBox */
     const char *html2 =
-        "<body><svg class='ic' viewBox='0 0 16 16'>"
+        "<body><svg class='ic' width='2500' height='2500' viewBox='0 0 16 16'>"
         "<path d='M0 0L16 0L16 16L0 16Z'/></svg></body>";
     const char *css2 = ".ic{width:32px;height:24px}";
     struct node *r2 = dom_parse(html2, (int)strlen(html2));
@@ -105,6 +105,8 @@ int main(void)
     layout_page(r2, 400);
     const struct item *im2 = find_img(0);
     CHECK(im2 && im2->w == 32 && im2->h == 24, "CSS width/height override viewBox");
+    CHECK(im2 && im2->img && im2->img->w == 32 && im2->img->h == 24,
+          "CSS-sized SVG raster avoids the 2048px source bitmap");
     dom_free(r2);
 
     /* 3. width/height attributes beat viewBox; lone width keeps the aspect */
@@ -207,6 +209,25 @@ int main(void)
         CHECK(sx >= 0 && sy == ty, "flex: icon and label share the row");
     }
     dom_free(r8);
+
+    /* 8. A hostile but syntactically numeric viewBox must not overflow the
+     * layout-side aspect helper.  Both CSS axes are already definite here;
+     * the enormous source coordinate system is decoder input, not a reason to
+     * allocate source-sized pixels or cast a double outside int range. */
+    const char *html9 =
+        "<body><svg class='huge' viewBox='0 0 999999999999999999999999999999999999 16' "
+        "preserveAspectRatio='xMinYMin meet'><rect width='1' height='1'/></svg></body>";
+    const char *css9 = ".huge{width:32px;height:24px}";
+    struct node *r9 = dom_parse(html9, (int)strlen(html9));
+    CHECK(r9 != NULL, "huge viewBox dom_parse");
+    css_apply(r9, css9, (int)strlen(css9));
+    layout_page(r9, 400);
+    const struct item *im9 = find_img(0);
+    CHECK(im9 && im9->w == 32 && im9->h == 24,
+          "definite CSS size survives enormous viewBox coordinates");
+    CHECK(im9 && im9->img && im9->img->w == 32 && im9->img->h == 24,
+          "enormous viewBox still rasterizes only the final CSS size");
+    dom_free(r9);
 
     printf(fail ? "\nLAYOUT SVG TEST FAILED\n" : "\nLAYOUT SVG TEST PASSED\n");
     return fail;
