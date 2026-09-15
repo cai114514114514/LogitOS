@@ -1,22 +1,18 @@
 #!/usr/bin/env python3
-"""Boot the passive display driver through BIOS LFB and UEFI GOP.
+"""Exercise amd-bootfb against QEMU's real 1002:5046 ati-vga model.
 
-QEMU does not emulate a GP107.  The isolated PASCALVERIFY kernel therefore
-adds 1234:1111 (QEMU stdvga) as an unmistakably TEST-ONLY match.  This guest
-gate proves the linker-section declaration reaches dev_probe_all(), the probe
-correlates the actual Multiboot framebuffer with the PCI BAR that contains it,
-and the desktop remains visible after the passive bind.  Exact NVIDIA IDs and
-the zero-write property are established by the host gate; only a real GTX 1050
-can establish physical hardware operation.
+The gate correlates the firmware LFB with the emulated function's BAR, checks
+that the device model bound amd-bootfb, and captures the retained scanout.  It
+does not claim physical AMD hardware support or native GPU acceleration.
 """
 import argparse
+import hashlib
 import json
 import os
 import re
 import shutil
 import subprocess
 import sys
-import tempfile
 import time
 from pathlib import Path
 
@@ -34,30 +30,36 @@ def read(path):
         return ""
 
 
+def sha256(path):
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
 def firmware_path(env, candidates):
-    value = os.environ.get(env)
-    if value:
-        p = Path(value)
-        return p if p.is_file() else None
-    for value in candidates:
-        p = Path(value)
-        if p.is_file():
-            return p
+    configured = os.environ.get(env)
+    if configured:
+        path = Path(configured)
+        return path if path.is_file() else None
+    for candidate in candidates:
+        path = Path(candidate)
+        if path.is_file():
+            return path
     return None
 
 
 def frame_stats(path):
-    p = PPM(str(path))
+    frame = PPM(str(path))
     colours, lit, samples = set(), 0, 0
-    # Sampling every eighth row/column keeps this bounded while still crossing
-    # every large desktop surface and the wallpaper gradient.
-    for y in range(0, p.h, 8):
-        for x in range(0, p.w, 8):
-            rgb = p.at(x, y)
+    for y in range(0, frame.h, 8):
+        for x in range(0, frame.w, 8):
+            rgb = frame.at(x, y)
             colours.add(rgb)
             lit += int(sum(rgb) > 24)
             samples += 1
-    return p.w, p.h, len(colours), lit, samples
+    return frame.w, frame.h, len(colours), lit, samples
 
 
 def run_one(kind, image, out, ovmf_code=None, ovmf_vars=None):
@@ -67,10 +69,6 @@ def run_one(kind, image, out, ovmf_code=None, ovmf_vars=None):
     stderr = run / "qemu.stderr.log"
     sock = run / "qmp.sock"
     shot = run / "desktop.ppm"
-
-    # QEMU opens its serial file after Popen returns.  Without clearing a prior
-    # run first, the polling loop can momentarily see old success markers and
-    # capture the new VM before it has selected the requested video mode.
     for stale in (serial, stderr, sock, shot, run / "result.json"):
         try:
             stale.unlink()
@@ -78,23 +76,22 @@ def run_one(kind, image, out, ovmf_code=None, ovmf_vars=None):
             pass
 
     common = [
-        QEMU, "-cpu", os.environ.get("NVIDIA_PASCAL_CPU", "SandyBridge"),
-        "-m", "512M", "-smp", "2",
-        "-accel", "tcg,thread=multi", "-net", "none", "-no-reboot",
-        "-display", "none", "-serial", "file:" + str(serial),
+        QEMU, "-cpu", os.environ.get("AMD_BOOTFB_CPU", "SandyBridge"),
+        "-m", "512M", "-smp", "2", "-accel", "tcg,thread=multi",
+        "-net", "none", "-no-reboot", "-display", "none",
+        "-serial", "file:" + str(serial),
         "-qmp", "unix:%s,server=on,wait=off" % sock,
-        "-vga", "none", "-device", "VGA,vgamem_mb=16,xres=1280,yres=800",
+        "-vga", "none", "-device", "ati-vga,vgamem_mb=16,xres=1280,yres=800",
     ]
-    temp_vars = None
     if kind == "bios":
         command = common + ["-cdrom", str(image), "-boot", "d"]
     else:
-        temp_vars = run / "OVMF_VARS.fd"
-        shutil.copyfile(ovmf_vars, temp_vars)
+        vars_copy = run / "OVMF_VARS.fd"
+        shutil.copyfile(ovmf_vars, vars_copy)
         command = common + [
             "-machine", "q35",
             "-drive", "if=pflash,format=raw,readonly=on,file=" + str(ovmf_code),
-            "-drive", "if=pflash,format=raw,file=" + str(temp_vars),
+            "-drive", "if=pflash,format=raw,file=" + str(vars_copy),
             "-device", "ich9-ahci,id=ahci0",
             "-drive", "file=%s,format=raw,if=none,id=esp0,file.locking=off" % image,
             "-device", "ide-hd,drive=esp0,bus=ahci0.0",
@@ -104,25 +101,33 @@ def run_one(kind, image, out, ovmf_code=None, ovmf_vars=None):
     with stderr.open("wb") as err:
         proc = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=err)
     try:
-        deadline = time.time() + float(os.environ.get("NVIDIA_PASCAL_BOOT_TIMEOUT", "300"))
+        deadline = time.time() + float(os.environ.get("AMD_BOOTFB_BOOT_TIMEOUT", "300"))
         marker = None
         while time.time() < deadline:
             text = read(serial)
+            if kind == "uefi" and "[efi] gop none" in text:
+                raise RuntimeError("OVMF exposes no GOP for QEMU ati-vga")
+            if "LOGIT_FB_FAIL" in text:
+                raise RuntimeError("guest has no usable firmware framebuffer")
             marker = re.search(
-                r"\[nv-bootfb\] ([^\n]*1234:1111[^\n]*TEST-ONLY[^\n]*"
+                r"\[amd-bootfb\] ([^\n]*1002:5046[^\n]*"
                 r"source=multiboot-lfb bar=(\d+)[^\n]*)", text)
             if marker and "[wm] desktop live" in text:
                 break
             if proc.poll() is not None:
-                raise RuntimeError("QEMU exited before passive display bind")
+                raise RuntimeError("QEMU exited before AMD passive display bind")
             time.sleep(0.2)
         else:
             raise RuntimeError("guest timed out before bind + desktop-live markers")
 
         text = read(serial)
-        if not re.search(r"\[dev\] [^\n]*1234:1111 class=03\.00\.00 [^\n]*driver=nv-bootfb", text):
-            raise RuntimeError("device model did not publish driver=nv-bootfb")
-        if "[nv-bootfb] framebuffer retained; no GPU command, modeset, clocks, DMA, IRQ or 3D" not in text:
+        if not re.search(
+                r"\[dev\] [^\n]*1002:5046 class=03\.00\.00 "
+                r"[^\n]*driver=amd-bootfb", text):
+            raise RuntimeError("device model did not publish driver=amd-bootfb")
+        retained = ("[amd-bootfb] framebuffer retained; no modeset, GPU command, "
+                    "BAR map, DMA, IRQ or MMIO write")
+        if retained not in text:
             raise RuntimeError("passive/no-takeover marker missing")
         if "LOGIT_FB_FAIL" in text:
             raise RuntimeError("kernel rejected the firmware framebuffer")
@@ -142,19 +147,23 @@ def run_one(kind, image, out, ovmf_code=None, ovmf_vars=None):
         if colours < 32 or lit * 4 < samples:
             raise RuntimeError("post-bind scanout is blank/flat (%d colours, %d/%d lit)" %
                                (colours, lit, samples))
+
         result = {
             "firmware": kind,
-            "evidence": "synthetic-qemu-stdvga",
+            "evidence": "qemu-ati-vga-1002:5046",
             "bar": int(marker.group(2)),
             "width": width,
             "height": height,
             "sample_colours": colours,
             "lit_samples": lit,
             "samples": samples,
-            "physical_gtx1050_verified": False,
+            "image": str(image),
+            "image_sha256": sha256(image),
+            "physical_amd_gpu_verified": False,
+            "native_gpu_acceleration_verified": False,
         }
         (run / "result.json").write_text(json.dumps(result, indent=2) + "\n")
-        print("PASS %-4s synthetic bind + retained %dx%d scanout (%d sampled colours)" %
+        print("PASS %-4s QEMU ati-vga bind + retained %dx%d scanout (%d sampled colours)" %
               (kind, width, height, colours))
         return result
     except Exception:
@@ -174,40 +183,46 @@ def run_one(kind, image, out, ovmf_code=None, ovmf_vars=None):
 
 
 def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--iso", required=True)
-    ap.add_argument("--esp", required=True)
-    ap.add_argument("--out", required=True)
-    args = ap.parse_args()
-    iso, esp, out = Path(args.iso).resolve(), Path(args.esp).resolve(), Path(args.out).resolve()
-    if not iso.is_file() or not esp.is_file():
-        ap.error("--iso and --esp must exist")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--iso", required=True)
+    parser.add_argument("--esp")
+    parser.add_argument("--out", required=True)
+    parser.add_argument("--firmware", choices=("bios", "uefi", "both"),
+                        default="both")
+    args = parser.parse_args()
+    iso = Path(args.iso).resolve()
+    esp = Path(args.esp).resolve() if args.esp else None
+    out = Path(args.out).resolve()
+    if not iso.is_file():
+        parser.error("--iso must exist")
+    if args.firmware in ("uefi", "both") and (not esp or not esp.is_file()):
+        parser.error("--esp must exist for UEFI")
     if not shutil.which(QEMU):
-        ap.error("QEMU not found: " + QEMU)
-
-    code = firmware_path("OVMF_CODE", [
-        "/opt/homebrew/share/qemu/edk2-x86_64-code.fd",
-        "/usr/share/OVMF/OVMF_CODE_4M.fd",
-    ])
-    vars_image = firmware_path("OVMF_VARS_SRC", [
-        "/opt/homebrew/share/qemu/edk2-i386-vars.fd",
-        "/usr/share/OVMF/OVMF_VARS_4M.fd",
-    ])
-    if not code or not vars_image:
-        ap.error("OVMF unavailable; set OVMF_CODE and OVMF_VARS_SRC to run the UEFI half")
+        parser.error("QEMU not found: " + QEMU)
 
     out.mkdir(parents=True, exist_ok=True)
-    try:
-        (out / "summary.json").unlink()
-    except FileNotFoundError:
-        pass
-    results = [run_one("bios", iso, out),
-               run_one("uefi", esp, out, code, vars_image)]
-    (out / "summary.json").write_text(json.dumps({
-        "scope": "synthetic boot-framebuffer integration; not physical GP107",
+    results = []
+    if args.firmware in ("bios", "both"):
+        results.append(run_one("bios", iso, out))
+    if args.firmware in ("uefi", "both"):
+        code = firmware_path("OVMF_CODE", [
+            "/opt/homebrew/share/qemu/edk2-x86_64-code.fd",
+            "/usr/share/OVMF/OVMF_CODE_4M.fd",
+        ])
+        vars_image = firmware_path("OVMF_VARS_SRC", [
+            "/opt/homebrew/share/qemu/edk2-i386-vars.fd",
+            "/usr/share/OVMF/OVMF_VARS_4M.fd",
+        ])
+        if not code or not vars_image:
+            parser.error("OVMF unavailable; set OVMF_CODE and OVMF_VARS_SRC")
+        results.append(run_one("uefi", esp, out, code, vars_image))
+    summary = {
+        "scope": "QEMU ati-vga boot framebuffer integration; not physical AMD hardware",
         "runs": results,
-    }, indent=2) + "\n")
-    print("NVIDIA_PASCAL_GUEST: BIOS + UEFI synthetic framebuffer paths passed; physical GTX 1050 unverified")
+    }
+    (out / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
+    print("AMD_BOOTFB_GUEST: %s QEMU ati-vga path passed; physical AMD GPU unverified" %
+          args.firmware.upper())
 
 
 if __name__ == "__main__":

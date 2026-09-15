@@ -1,6 +1,7 @@
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "driver.h"
@@ -45,6 +46,11 @@ void dev_enable(struct device *d, int master)
 { (void)d; (void)master; enables++; }
 uint64_t dev_bar_map(struct device *d, int i)
 { (void)d; (void)i; maps++; return 0; }
+int vfs_size(const char *path) { (void)path; return -1; }
+int vfs_read(const char *path, void *buf, int max)
+{ (void)path; (void)buf; (void)max; return -1; }
+void *kmalloc(size_t n) { return malloc(n); }
+void kfree(void *p) { free(p); }
 int dev_irq_request(struct device *d, irq_handler_t fn, void *arg, const char *name)
 { (void)d; (void)fn; (void)arg; (void)name; irqs++; return -1; }
 uint32_t fb_width(void) { return screen_w; }

@@ -6,6 +6,10 @@
 struct device;
 struct dev_match;
 
+/* Native acceleration staging lives in nvidia_pascal_accel.h.  It is kept out
+ * of this passive-observer header so a caller cannot mistake a successful
+ * bootfb probe for a working GPU channel. */
+
 /* These names describe NVIDIA's marketed PCI IDs, not a chip register probe.
  * NULL means the ID is outside the deliberately narrow GTX 1050 family. */
 const char *nvidia_pascal_model_name(uint16_t device_id);

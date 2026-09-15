@@ -5,13 +5,16 @@
  * starts.  GRUB or our UEFI loader describes that existing linear framebuffer
  * with Multiboot2 tag 8, and fb.c maps it.  Reclocking GP107, loading firmware,
  * programming display heads, or creating graphics channels without NVIDIA's
- * full initialisation sequence can turn a working boot display black.  This
- * probe therefore performs PCI CONFIGURATION READS only, verifies that a live
+ * full initialisation sequence can turn a working boot display black.  The
+ * original probe therefore performed PCI CONFIGURATION READS only.  It still
+ * verifies that a live
  * display-class function still has memory decoding, is in D0 when it exposes
  * PCI PM, and owns at least one sane memory BAR, then binds as an observer.
  *
- * In particular it does not call dev_enable(), dev_bar_map(), request an IRQ,
- * enable bus mastering, or touch GPU MMIO.  The CPU keeps writing the firmware
+ * It still does not call dev_enable(), request an IRQ, enable bus mastering or
+ * write GPU MMIO.  After every passive check succeeds, nvidia_pascal_accel.c
+ * may map BAR0 and read BOOT0/BOOT1/PMC_ENABLE, but only after all 22 pinned
+ * firmware files pass size and SHA-256.  The CPU keeps writing the firmware
  * framebuffer fb.c already selected.  fb_boot_lfb_range() supplies the missing
  * provenance: the complete boot framebuffer must lie inside one of this PCI
  * function's decoded memory BARs.  This stops a secondary/3D-only NVIDIA GPU
@@ -25,6 +28,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include "nvidia_pascal.h"
+#include "nvidia_pascal_accel.h"
 #include "driver.h"
 #include "pci.h"
 #include "fb.h"
@@ -182,7 +186,12 @@ int nvidia_pascal_bootfb_probe(struct device *dev)
                 (void *)(uintptr_t)r->size,
                 (r->flags & DEV_RES_PREFETCH) ? "/pref" : "");
     }
-    kprintf("\n[nv-bootfb] framebuffer retained; no GPU MMIO, modeset, clocks, DMA, IRQ or 3D\n");
+    kprintf("\n[nv-bootfb] framebuffer retained; no GPU command, modeset, clocks, DMA, IRQ or 3D\n");
+    /* Acceleration failure is not passive display failure.  prepare() is a
+     * staged, read-only capability probe and leaves software_fallback set on
+     * every current exit, so missing firmware never makes a visible GOP mode
+     * disappear. */
+    (void)nvidia_pascal_accel_prepare(dev);
     dev_set_drvdata(dev, (void *)model);
     return 0;
 }
@@ -190,6 +199,7 @@ int nvidia_pascal_bootfb_probe(struct device *dev)
 static void nvidia_pascal_bootfb_remove(struct device *dev)
 {
     /* Probe acquired no hardware or memory resource. */
+    nvidia_pascal_accel_reset();
     if (dev) dev_set_drvdata(dev, NULL);
 }
 
