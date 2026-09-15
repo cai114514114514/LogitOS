@@ -66,6 +66,7 @@
  * paint compositor -- because they differ only in what they do with a finished
  * row. That is the difference between one rasterizer and two. */
 #include "gfx.h"
+#include "openlogit_sw.h"
 
 struct edge {
     int ytop, ybot;      /* device 24.8, half-open [ytop, ybot)  */
@@ -74,11 +75,24 @@ struct edge {
     int dir;             /* +1 downward, -1 upward               */
 };
 
-static struct edge g_edge[GFX_MAX_EDGES];
-static short g_order[GFX_MAX_EDGES];       /* edge indices sorted by ytop */
-static short g_act[GFX_MAX_ACTIVE];
-static struct { int x; int dir; } g_cross[GFX_MAX_ACTIVE];
-static unsigned char g_row[GFX_MAX_W];
+/* 2026-09-13: OpenLogit's device API supplies one workspace per device.
+ * Legacy entry points retain their previous single workspace; the new API
+ * never borrows it, so independent devices can render concurrently without
+ * a process-global lock or a second implementation of scan conversion. */
+struct gfx_raster_workspace {
+    struct edge edge[GFX_MAX_EDGES];
+    short order[GFX_MAX_EDGES], active[GFX_MAX_ACTIVE];
+    struct { int x, dir; } cross[GFX_MAX_ACTIVE];
+    unsigned char row[GFX_MAX_W], row_clip[GFX_MAX_W];
+    unsigned short acc[GFX_MAX_W];
+};
+static struct gfx_raster_workspace legacy_workspace;
+#define g_edge ws->edge
+#define g_order ws->order
+#define g_act ws->active
+#define g_cross ws->cross
+#define g_row ws->row
+#define g_acc ws->acc
 
 /* THE ROW ACCUMULATOR, and why it is not the byte row itself.
  *
@@ -107,7 +121,7 @@ static unsigned char g_row[GFX_MAX_W];
  * summed over at most GFX_MAX_SUBS sub-scanlines, so it cannot exceed 32*256 =
  * 8192. That is 8,192 B of .bss (4,096 B more than the byte row alone), against
  * 16,384 B for an int row -- and this is kernel .bss, see gfx.h's LIMITS. */
-static unsigned short g_acc[GFX_MAX_W];
+unsigned long gfx_raster_workspace_size(void) { return sizeof(struct gfx_raster_workspace); }
 
 #ifndef GFX_NO_AA
 /* Accumulate the covered LENGTH of the half-open span [x0,x1) (both in 1/256
@@ -159,7 +173,7 @@ static void span_hard(unsigned short *acc, int n, long x0, long x1)
  * every (subs, acc) pair. The two short-circuits are not micro-optimisation
  * either: empty and fully-covered pixels are almost all of a row, and they are
  * the two cases where an approximate reciprocal would be most visible. */
-static void acc_to_row(int w, int full, unsigned inv)
+static void acc_to_row(struct gfx_raster_workspace *ws, int w, int full, unsigned inv)
 {
     for (int i = 0; i < w; i++) {
         unsigned a = g_acc[i];
@@ -179,7 +193,7 @@ static void acc_to_row(int w, int full, unsigned inv)
  * engine was written; nothing caught it until glyphs moved onto this rasterizer
  * and `make test-font-fuzz` -- an ASan/UBSan build that mutates real fonts --
  * became the first sanitizer build in the tree that reaches gfx at all. */
-static int add_edge(int n, int x0, int y0, int x1, int y1)
+static int add_edge(struct gfx_raster_workspace *ws, int n, int x0, int y0, int x1, int y1)
 {
     if (y0 == y1) return n;                    /* horizontal: contributes nothing */
     if (n >= GFX_MAX_EDGES) return -1;
@@ -194,7 +208,7 @@ static int add_edge(int n, int x0, int y0, int x1, int y1)
 /* Every subpath is closed implicitly -- a fill has no notion of an open
  * contour, and leaving the closing edge out is how a path that the caller
  * forgot to close() bleeds sideways across the whole scanline. */
-static int build_edges(const struct gfx_path *p)
+static int build_edges(struct gfx_raster_workspace *ws, const struct gfx_path *p)
 {
     int n = 0;
     for (int s = 0; s < p->nsub; s++) {
@@ -202,11 +216,11 @@ static int build_edges(const struct gfx_path *p)
         int b = (s + 1 < p->nsub) ? p->sub[s + 1] : p->npt;
         if (b - a < 2) continue;
         for (int i = a; i < b - 1; i++) {
-            n = add_edge(n, p->pt[i * 2], p->pt[i * 2 + 1],
+            n = add_edge(ws, n, p->pt[i * 2], p->pt[i * 2 + 1],
                             p->pt[i * 2 + 2], p->pt[i * 2 + 3]);
             if (n < 0) return -1;
         }
-        n = add_edge(n, p->pt[(b - 1) * 2], p->pt[(b - 1) * 2 + 1],
+        n = add_edge(ws, n, p->pt[(b - 1) * 2], p->pt[(b - 1) * 2 + 1],
                         p->pt[a * 2], p->pt[a * 2 + 1]);
         if (n < 0) return -1;
     }
@@ -216,7 +230,7 @@ static int build_edges(const struct gfx_path *p)
 /* Shell sort of the edge order by ytop. Insertion sort is quadratic and this
  * table can hold GFX_MAX_EDGES entries; shell sort is a dozen lines, needs no
  * recursion and no scratch, and is comfortably fast at that size. */
-static void sort_order(int n)
+static void sort_order(struct gfx_raster_workspace *ws, int n)
 {
     static const int gaps[] = { 701, 301, 132, 57, 23, 10, 4, 1 };
     for (int i = 0; i < n; i++) g_order[i] = (short)i;
@@ -253,7 +267,7 @@ typedef void (*row_fn)(void *user, int y, const unsigned char *row, int w);
  * overflow checks (rather than assuming the dry run already proved them
  * unreachable) so a bug that ever let the two passes diverge fails loud
  * instead of silently trusting a stale guarantee. */
-static int sweep(int ne, int rule, int ox, int y0, int y1, int w, int subs,
+static int sweep(struct gfx_raster_workspace *ws, int ne, int rule, int ox, int y0, int y1, int w, int subs,
                  row_fn fn, void *user, int commit)
 {
     int nact = 0, next = 0;
@@ -323,7 +337,7 @@ static int sweep(int ne, int rule, int ox, int y0, int y1, int w, int subs,
                 }
             }
         }
-        if (commit) { acc_to_row(w, full, inv); fn(user, y, g_row, w); }
+        if (commit) { acc_to_row(ws, w, full, inv); fn(user, y, g_row, w); }
     }
     return 1;
 }
@@ -333,7 +347,7 @@ static int sweep(int ne, int rule, int ox, int y0, int y1, int w, int subs,
  * row. `subs` is a caller choice (glyphs want more than a button) but is
  * clamped to GFX_MAX_SUBS and, under -DGFX_NO_AA, forced to the single centre
  * sample the negative control requires regardless of what was asked for. */
-static int raster(const struct gfx_path *p, int rule, int ox, int y0, int y1,
+static int raster(struct gfx_raster_workspace *ws, const struct gfx_path *p, int rule, int ox, int y0, int y1,
                   int w, int subs, row_fn fn, void *user)
 {
     if (p->overflow) return 0;                 /* refuse a truncated path (or
@@ -346,9 +360,9 @@ static int raster(const struct gfx_path *p, int rule, int ox, int y0, int y1,
     if (subs <= 0) subs = 1;
     if (subs > GFX_MAX_SUBS) subs = GFX_MAX_SUBS;
 #endif
-    int ne = build_edges(p);
+    int ne = build_edges(ws, p);
     if (ne <= 0) return ne == 0 ? 1 : 0;       /* empty is a success, overflow is not */
-    sort_order(ne);
+    sort_order(ws, ne);
 
     /* The dry run's whole purpose is proving the active list and crossing
      * list can't overflow -- and nact (how many of `ne` edges are ever
@@ -368,10 +382,10 @@ static int raster(const struct gfx_path *p, int rule, int ox, int y0, int y1,
      * sweep, and that is exactly the geometry the two-pass check exists to
      * protect. */
     if (ne <= GFX_MAX_ACTIVE)
-        return sweep(ne, rule, ox, y0, y1, w, subs, fn, user, 1);
+        return sweep(ws, ne, rule, ox, y0, y1, w, subs, fn, user, 1);
 
-    if (!sweep(ne, rule, ox, y0, y1, w, subs, fn, user, 0)) return 0;
-    return sweep(ne, rule, ox, y0, y1, w, subs, fn, user, 1);
+    if (!sweep(ws, ne, rule, ox, y0, y1, w, subs, fn, user, 0)) return 0;
+    return sweep(ws, ne, rule, ox, y0, y1, w, subs, fn, user, 1);
 }
 
 /* --------------------------------------------------------- coverage mask -- */
@@ -387,20 +401,13 @@ static void mask_row(void *user, int y, const unsigned char *row, int w)
     for (int i = 0; i < w; i++) d[i] = row[i];
 }
 
-int gfx_fill_mask_subs(const struct gfx_path *p, int rule,
-                       unsigned char *cov, int w, int h, int ox, int oy, int subs)
+static int mask_workspace(struct gfx_raster_workspace *ws, const struct gfx_path *p, int rule,
+                          unsigned char *cov, int w, int h, int ox, int oy, int subs)
 {
-    if (!cov || w <= 0 || h <= 0) return 0;
+    if (!cov || w <= 0 || h <= 0 || w > GFX_MAX_W || h > GFX_MAX_W) return 0;
     gfx_zero(cov, w * h);
-    struct mask_sink m;
-    m.cov = cov; m.w = w; m.h = h; m.oy = oy;
-    return raster(p, rule, ox, oy, oy + h, w, subs, mask_row, &m);
-}
-
-int gfx_fill_mask(const struct gfx_path *p, int rule,
-                  unsigned char *cov, int w, int h, int ox, int oy)
-{
-    return gfx_fill_mask_subs(p, rule, cov, w, h, ox, oy, GFX_SUBS);
+    struct mask_sink m = {cov, w, h, oy};
+    return raster(ws, p, rule, ox, oy, oy + h, w, subs, mask_row, &m);
 }
 
 /* ------------------------------------------------------------- surface -- */
@@ -422,7 +429,7 @@ static void fill_row(void *user, int y, const unsigned char *row, int w)
     gfx_paint_row(f->paint, f->dst, y, f->x0, f->x1, row, f->x0);
 }
 
-int gfx_fill_subs(struct gfx_surface *dst, const struct gfx_path *p, int rule,
+static int fill_workspace(struct gfx_raster_workspace *ws, struct gfx_surface *dst, const struct gfx_path *p, int rule,
                   const struct gfx_paint *paint, const struct gfx_rect *clip, int subs)
 {
     if (!dst || !dst->px || !p || !paint) return 0;
@@ -452,13 +459,7 @@ int gfx_fill_subs(struct gfx_surface *dst, const struct gfx_path *p, int rule,
 
     struct fill_sink f;
     f.dst = dst; f.paint = paint; f.x0 = cx0; f.x1 = cx1;
-    return raster(p, rule, cx0, cy0, cy1, cx1 - cx0, subs, fill_row, &f);
-}
-
-int gfx_fill(struct gfx_surface *dst, const struct gfx_path *p, int rule,
-             const struct gfx_paint *paint, const struct gfx_rect *clip)
-{
-    return gfx_fill_subs(dst, p, rule, paint, clip, GFX_SUBS);
+    return raster(ws, p, rule, cx0, cy0, cy1, cx1 - cx0, subs, fill_row, &f);
 }
 
 /* ------------------------------------------------------------ path clip --
@@ -508,9 +509,11 @@ int gfx_fill(struct gfx_surface *dst, const struct gfx_path *p, int rule,
  * cast. Same size as g_row (GFX_MAX_W) and so the same kernel-.bss delta,
  * GFX_MAX_W bytes -- see gfx.h's LIMITS comment for the running total this
  * adds to. */
-static unsigned char g_row_clip[GFX_MAX_W];
+/* 2026-09-13: clip scratch belongs to the same device as edge scratch.
+ * Keeping the former global would race even two independent device submits. */
+#define g_row_clip ws->row_clip
 
-static const unsigned char *clip_row(const unsigned char *row, int w, int ox, int y,
+static const unsigned char *clip_row(struct gfx_raster_workspace *ws, const unsigned char *row, int w, int ox, int y,
                                      const struct gfx_clip_mask *clip)
 {
     int cy = y - clip->oy;
@@ -536,6 +539,7 @@ static const unsigned char *clip_row(const unsigned char *row, int w, int ox, in
 }
 
 struct mask_sink_clipped {
+    struct gfx_raster_workspace *ws;
     unsigned char *cov; int w, h, ox, oy;
     const struct gfx_clip_mask *clip;
 };
@@ -545,7 +549,7 @@ static void mask_row_clipped(void *user, int y, const unsigned char *row, int w)
     struct mask_sink_clipped *m = (struct mask_sink_clipped *)user;
     int j = y - m->oy;
     if (j < 0 || j >= m->h) return;
-    const unsigned char *cr = clip_row(row, w, m->ox, y, m->clip);
+    const unsigned char *cr = clip_row(m->ws, row, w, m->ox, y, m->clip);
     unsigned char *d = m->cov + (long)j * m->w;
     for (int i = 0; i < w; i++) d[i] = cr[i];
 }
@@ -569,11 +573,11 @@ static int clip_bad(const struct gfx_clip_mask *clip)
     return 0;
 }
 
-int gfx_fill_mask_clipped(const struct gfx_path *p, int rule,
+static int mask_clipped_workspace(struct gfx_raster_workspace *ws, const struct gfx_path *p, int rule,
                           unsigned char *cov, int w, int h, int ox, int oy,
                           int subs, const struct gfx_clip_mask *clip)
 {
-    if (!cov || w <= 0 || h <= 0) return 0;
+    if (!cov || w <= 0 || h <= 0 || w > GFX_MAX_W || h > GFX_MAX_W) return 0;
     if (clip_bad(clip)) return 0;
     gfx_zero(cov, w * h);
 
@@ -592,11 +596,12 @@ int gfx_fill_mask_clipped(const struct gfx_path *p, int rule,
         return 1;
 
     struct mask_sink_clipped m;
-    m.cov = cov; m.w = w; m.h = h; m.ox = ox; m.oy = oy; m.clip = clip;
-    return raster(p, rule, ox, oy, oy + h, w, subs, mask_row_clipped, &m);
+    m.ws = ws; m.cov = cov; m.w = w; m.h = h; m.ox = ox; m.oy = oy; m.clip = clip;
+    return raster(ws, p, rule, ox, oy, oy + h, w, subs, mask_row_clipped, &m);
 }
 
 struct fill_sink_clipped {
+    struct gfx_raster_workspace *ws;
     struct gfx_surface *dst;
     const struct gfx_paint *paint;
     int x0, x1;
@@ -608,11 +613,11 @@ static void fill_row_clipped(void *user, int y, const unsigned char *row, int w)
     struct fill_sink_clipped *f = (struct fill_sink_clipped *)user;
     (void)w;
     if (y < 0 || y >= f->dst->h) return;
-    const unsigned char *cr = clip_row(row, f->x1 - f->x0, f->x0, y, f->clip);
+    const unsigned char *cr = clip_row(f->ws, row, f->x1 - f->x0, f->x0, y, f->clip);
     gfx_paint_row(f->paint, f->dst, y, f->x0, f->x1, cr, f->x0);
 }
 
-int gfx_fill_clipped(struct gfx_surface *dst, const struct gfx_path *p, int rule,
+static int fill_clipped_workspace(struct gfx_raster_workspace *ws, struct gfx_surface *dst, const struct gfx_path *p, int rule,
                      const struct gfx_paint *paint, const struct gfx_rect *rectclip,
                      int subs, const struct gfx_clip_mask *clip)
 {
@@ -666,6 +671,24 @@ int gfx_fill_clipped(struct gfx_surface *dst, const struct gfx_path *p, int rule
     if (cx1 <= cx0 || cy1 <= cy0) return 1;
 
     struct fill_sink_clipped f;
-    f.dst = dst; f.paint = paint; f.x0 = cx0; f.x1 = cx1; f.clip = clip;
-    return raster(p, rule, cx0, cy0, cy1, cx1 - cx0, subs, fill_row_clipped, &f);
+    f.ws = ws; f.dst = dst; f.paint = paint; f.x0 = cx0; f.x1 = cx1; f.clip = clip;
+    return raster(ws, p, rule, cx0, cy0, cy1, cx1 - cx0, subs, fill_row_clipped, &f);
+}
+
+/* Backend-only entry points. NULL workspace serves the synchronous borrowed
+ * target API; native command devices always pass their private workspace. */
+int ol_sw_raster_fill(void *storage, struct gfx_surface *dst, const struct gfx_path *p, int rule,
+                      const struct gfx_paint *paint, const struct gfx_rect *clip, int samples,
+                      const struct gfx_clip_mask *mask)
+{
+    struct gfx_raster_workspace *ws = storage ? storage : &legacy_workspace;
+    return mask ? fill_clipped_workspace(ws, dst, p, rule, paint, clip, samples, mask)
+                : fill_workspace(ws, dst, p, rule, paint, clip, samples);
+}
+int ol_sw_raster_mask(void *storage, const struct gfx_path *p, int rule, unsigned char *cov,
+                      int w, int h, int ox, int oy, int samples, const struct gfx_clip_mask *clip)
+{
+    struct gfx_raster_workspace *ws = storage ? storage : &legacy_workspace;
+    return clip ? mask_clipped_workspace(ws,p,rule,cov,w,h,ox,oy,samples,clip)
+                : mask_workspace(ws,p,rule,cov,w,h,ox,oy,samples);
 }

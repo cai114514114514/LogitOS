@@ -35,6 +35,9 @@
  * gradient / image), Porter-Duff src-over, an affine transform applied to paths,
  * and a rectangle clip. Stroking and path clipping are phase 2 and are not
  * started; see the note at the bottom of this header for what they will cost.
+ * 2026-09-13 correction: gfx_stroke.c and the clipped entry points below now
+ * implement phase 2. This header remains the software geometry/paint layer;
+ * openlogit.h is the native device/resource/command/version API above it.
  *
  * THREE TECHNIQUES CARRIED OVER FROM THE TOOLKIT, because they are why it is
  * cheap enough to run a desktop on:
@@ -334,6 +337,13 @@ int gfx_fill(struct gfx_surface *dst, const struct gfx_path *p, int rule,
              const struct gfx_paint *paint, const struct gfx_rect *clip);
 int gfx_fill_subs(struct gfx_surface *dst, const struct gfx_path *p, int rule,
                   const struct gfx_paint *paint, const struct gfx_rect *clip, int subs);
+/* 2026-09-13: independent device workspaces for openlogit.h. Storage is
+ * caller-owned, aligned to 8 bytes and never shared during rendering.
+ * Legacy fill/mask/clip entry points retain their serial-call contract. */
+unsigned long gfx_raster_workspace_size(void);
+int gfx_fill_with_workspace(void *storage, unsigned long bytes,
+                           struct gfx_surface *dst, const struct gfx_path *p, int rule,
+                           const struct gfx_paint *paint, const struct gfx_rect *clip, int subs);
 
 /* Composite one straight-RGBA source pixel over one straight-RGBA destination
  * pixel, src-over, with `cov` (0..255) modulating the source alpha. */

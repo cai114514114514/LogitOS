@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width">
+<title>签名文件 · LogitOS</title>
+<style>
+body{max-width:780px;margin:40px auto;padding:0 24px;font:18px sans-serif;line-height:1.7;color:#20334b;background:#f6f8fc}
+h1{font-size:32px}textarea{width:95%;height:170px;padding:12px;font:17px monospace;background:white;border:1px solid #ccd5df}
+button{padding:12px 20px;margin:12px 8px 12px 0;border:0;background:#245ac4;color:white;font-size:17px}p{margin:16px 0}#status{padding:16px;background:#e6eefb}
+</style>
+<h1>把内容保存为可验证的签名文件</h1>
+<p>输入一段记录，生成带有公钥、SHA-256 摘要和 Ed25519 签名的 JSON 文件。私钥只在本页本次操作中使用。文件保存到 <strong>/download</strong>。</p>
+<textarea id="text" aria-label="需要签名的内容">这是一份来自 LogitOS 的交付记录。</textarea>
+<button id="sign">签名并下载</button>
+<p>收到文件后，选择 JSON 文件验证它的内容和签名。文件里的公钥可以检查一致性；确认发送者身份时，还需要通过可信渠道核对公钥。</p>
+<input id="file" type="file" accept=".json,application/json" aria-label="选择签名文件">
+<button id="verify">验证文件</button>
+<p id="status" role="status">准备就绪</p>
+<script>
+var subtle=crypto.subtle;
+function reportHex(buffer){return Array.from(new Uint8Array(buffer)).map(function(x){return x.toString(16).padStart(2,'0')}).join('')}
+function reportBytes(hex){if(typeof hex!=='string'||!/^[0-9a-f]+$/i.test(hex)||hex.length%2)throw Error('无效的十六进制数据');return new Uint8Array(hex.match(/../g).map(function(x){return parseInt(x,16)}))}
+async function createSignedReport(text){
+ if(typeof text!=='string'||text.length>1048576)throw Error('内容最多为 1 MiB 字符');
+ var data=new TextEncoder().encode(text),key=await subtle.generateKey('Ed25519',false,['sign','verify']);
+ return {format:'logitos-signed-report-v1',text:text,sha256:reportHex(await subtle.digest('SHA-256',data)),publicKey:await subtle.exportKey('jwk',key.publicKey),signature:reportHex(await subtle.sign('Ed25519',key.privateKey,data))};
+}
+async function verifySignedReport(report){
+ if(!report||report.format!=='logitos-signed-report-v1'||typeof report.text!=='string'||report.text.length>1048576)return false;
+ var data=new TextEncoder().encode(report.text);
+ if(reportHex(await subtle.digest('SHA-256',data))!==report.sha256)return false;
+ var key=await subtle.importKey('jwk',report.publicKey,'Ed25519',false,['verify']);
+ return subtle.verify('Ed25519',key,reportBytes(report.signature),data);
+}
+function saveSignedReport(report){
+ var a=document.createElement('a');a.href=URL.createObjectURL(new Blob([JSON.stringify(report,null,2)],{type:'application/json'}));
+ a.download='signed-report.json';a.click();URL.revokeObjectURL(a.href);
+}
+function say(text){document.getElementById('status').textContent=text}
+document.getElementById('sign').addEventListener('click',async function(){try{
+ say('正在签名…');var report=await createSignedReport(document.getElementById('text').value);
+ if(!await verifySignedReport(report))throw Error('签名自检失败');saveSignedReport(report);say('签名已验证，已提交下载。按 Ctrl+J 查看下载结果。');
+}catch(e){say('无法签名：'+e.message)}});
+document.getElementById('verify').addEventListener('click',async function(){try{
+ var file=document.getElementById('file').files[0];if(!file)throw Error('请先选择文件');if(file.size>8*1024*1024)throw Error('文件超过 8 MiB');
+ var report=JSON.parse(await file.text());say(await verifySignedReport(report)?'内容和签名匹配。请另行核对公钥来源。':'验证失败：文件内容、摘要或签名不匹配。');
+}catch(e){say('无法验证：'+e.message)}});
+</script></html>

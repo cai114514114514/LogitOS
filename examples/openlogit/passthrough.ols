@@ -1,0 +1,4 @@
+ols 1 pixel
+# A constant custom pixel program for the guest compiler example.
+const r0 0.2 0.6 1.0 1.0
+color r0

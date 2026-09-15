@@ -115,8 +115,11 @@ static int unit(int dx, int dy, int *ux, int *uy)
     if (q > (1LL << 44)) L = (unsigned long long)gfx_isqrt((unsigned long long)q) << 8;
     else                 L = gfx_isqrt((unsigned long long)(q << 16));
     if (!L) return 0;
-    *ux = (int)(((long long)dx << 24) / (long long)L);
-    *uy = (int)(((long long)dy << 24) / (long long)L);
+    /* A normal left/up segment has a negative component. Signed shifts are
+     * undefined for it (SVG nonuniform-stroke UBSan gate); multiplication
+     * keeps the exact fixed-point scale and stays within int64 here. */
+    *ux = (int)(((long long)dx * 16777216LL) / (long long)L);
+    *uy = (int)(((long long)dy * 16777216LL) / (long long)L);
     return 1;
 }
 

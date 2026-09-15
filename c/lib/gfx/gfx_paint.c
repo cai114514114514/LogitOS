@@ -14,6 +14,7 @@
  * a radial gradient and the reason not to reach for one when a linear will do.
  */
 #include "gfx.h"
+#include "openlogit_sw.h"
 
 void gfx_surface_init(struct gfx_surface *s, unsigned char *px, int w, int h, int stride)
 {
@@ -21,7 +22,7 @@ void gfx_surface_init(struct gfx_surface *s, unsigned char *px, int w, int h, in
     s->stride = stride > 0 ? stride : w * 4;
 }
 
-void gfx_surface_clear(struct gfx_surface *s)
+void ol_sw_surface_clear(struct gfx_surface *s)
 {
     if (!s || !s->px) return;
     for (int y = 0; y < s->h; y++) gfx_zero(s->px + (long)y * s->stride, s->w * 4);

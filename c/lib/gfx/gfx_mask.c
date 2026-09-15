@@ -1,3 +1,6 @@
+#include "openlogit_draw.h"
+/* 2026-09-13: borrowed pixel targets render through the SDK. Parsing and
+ * layout stay here; the compatibility rasterizer is no longer a dependency. */
 /* Open Logit -- the device-geometry mask cache and the corner tiles.
  *
  * WHY MASKS AND NOT FULL SURFACES. A rounded rect is three opaque bands plus
@@ -61,7 +64,7 @@ void gfx_corner_fill(unsigned char *m, int w, int h)
     gfx_path_init(&p, cpt, 512, csub, 8);
     gfx_path_tolerance(&p, GFX_ONE / 64);
     arc_quadrant(&p, w * GFX_ONE, h * GFX_ONE, w * GFX_ONE, h * GFX_ONE);
-    gfx_fill_mask(&p, GFX_NONZERO, m, w, h, 0, 0);
+    ol_raster_mask(&p, GFX_NONZERO, m, w, h, 0, 0);
 }
 
 /* The same quadrant hollowed by `t` device pixels.
@@ -86,7 +89,7 @@ void gfx_corner_ring(unsigned char *m, int w, int h, int t)
     /* EVENODD, not nonzero: the inner region is wholly inside the outer, so the
      * difference is their symmetric difference and the two subpaths need not be
      * wound opposite ways for it to come out right. */
-    gfx_fill_mask(&p, GFX_EVENODD, m, w, h, 0, 0);
+    ol_raster_mask(&p, GFX_EVENODD, m, w, h, 0, 0);
 }
 
 int gfx_shadow_falloff(long d256, long blur256)
