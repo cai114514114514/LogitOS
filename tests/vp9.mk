@@ -19,7 +19,7 @@
 # uncommitted work from a line whose workflow died" -- so what shipped that day
 # was the INSTRUMENT, deliberately, and the 14,274 lines it measures never
 # followed it into git. The product agrees from the other end:
-# `c/apps/gui/preview.c:28` lists "video is vp9" among the refusals it prints
+# `c/apps/gui/preview/preview.c:28` lists "video is vp9" among the refusals it prints
 # for a file with NO DECODER HERE. Two independent places in the tree say the
 # same thing, which is what makes this a fact rather than a missing file.
 #

@@ -31,6 +31,29 @@ source, writes = re.subn(
 if (reads, writes) != (3, 3):
     raise SystemExit(f"HDA MMIO seam drifted: reads={reads}, writes={writes}")
 
+# Production io_lock must mask interrupts and spin with x86 PAUSE.  This host
+# model is single-threaded and never exercises an interrupt instruction; using
+# that header made the test artificially x86-only.  Keep the lock call sites in
+# hda.c, but replace only the included header in the generated test TU.  This
+# lets Apple Silicon execute the register/ownership model natively instead of
+# depending on Rosetta being installed.
+source, locks = re.subn(
+    r'#include "\.\./core/io_lock\.h"',
+    '#define IO_GUARD(lock) ((void)(lock))\n'
+    'typedef unsigned io_lock_t;\n'
+    '#define IO_LOCK_INIT 0',
+    source,
+)
+if locks != 1:
+    raise SystemExit(f"HDA io-lock host seam drifted: replacements={locks}")
+
+# `pause` is an x86 implementation detail of the bounded waits.  The host test
+# controls the modeled clocks and iteration ceilings, so a compiler barrier is
+# the faithful portable replacement; changing/removing either bound still
+# changes the tested production source around it.
+source = source.replace('__asm__ volatile ("pause")',
+                        '__asm__ volatile ("" ::: "memory")')
+
 include_dirs = [
     path
     for base in ("c", "include")
@@ -65,7 +88,7 @@ def compile_and_run(tag: str, macro: str | None, expect_fail: str | None) -> Non
     if macro:
         command.insert(8, "-D" + macro)
     if platform.system() == "Darwin":
-        command += ["-arch", "x86_64", "-Wl,-dead_strip"]
+        command += ["-Wl,-dead_strip"]
     else:
         command += ["-Wl,--gc-sections"]
     if not macro:

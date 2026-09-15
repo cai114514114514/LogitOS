@@ -145,3 +145,67 @@ wpt-worker-baseline: $(BUILD)/wpt_test
 # wired onto ci-host so tools/ci.sh's recipe-derived host/boot split picks
 # them up without a hand-maintained suite list to forget.
 ci-host: test-worker test-wpt-worker
+
+WORKER_CONTEXT_SRC = $(filter-out tests/unit/worker_test.c,$(WORKER_TEST_SRC)) tests/unit/worker_context_test.c tests/unit/worker_fetch_net.c
+WORKER_CONTEXT_DEPS = $(WORKER_CONTEXT_SRC) tests/unit/worker_test.c tests/unit/worker_fetch_net.h tests/unit/stream_net.h tests/worker.mk $(wildcard c/apps/browser/*.h c/apps/browser/*.inc) $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
+$(BUILD)/worker-context/current: $(WORKER_CONTEXT_DEPS)
+	@mkdir -p $(dir $@)
+	@$(CC) -O2 -w $(WORKER_CF) -o $@ $(WORKER_CONTEXT_SRC) $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
+$(BUILD)/worker-context/shared: $(WORKER_CONTEXT_DEPS)
+	@mkdir -p $(dir $@)
+	@sed 's/worker_owner=s?s:\&worker_default;/worker_owner=\&worker_default;/' c/apps/browser/js_worker.c > $@.c
+	@! cmp -s c/apps/browser/js_worker.c $@.c
+	@$(CC) -O2 -w $(WORKER_CF) -o $@ $(filter-out c/apps/browser/js_worker.c,$(WORKER_CONTEXT_SRC)) $@.c $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
+.PHONY: test-worker-context-negctl test-worker-context test-worker-context-san
+$(BUILD)/worker-context/unbalanced: $(WORKER_CONTEXT_DEPS)
+	@mkdir -p $(dir $@)
+	@sed 's/if(LOGIT_HAVE(js_page_slice_end))js_page_slice_end();/(void)0;/' c/apps/browser/js_worker.c > $@.c
+	@! cmp -s c/apps/browser/js_worker.c $@.c
+	@$(CC) -O2 -w $(WORKER_CF) -o $@ $(filter-out c/apps/browser/js_worker.c,$(WORKER_CONTEXT_SRC)) $@.c $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
+$(BUILD)/worker-context/wrong-site: $(WORKER_CONTEXT_DEPS)
+	@mkdir -p $(dir $@)
+	@sed 's/worker_owner->policy.site_url:w->creator_origin/w->creator_origin:w->creator_origin/' c/apps/browser/js_worker.c > $@.c
+	@! cmp -s c/apps/browser/js_worker.c $@.c
+	@$(CC) -O2 -w $(WORKER_CF) -o $@ $(filter-out c/apps/browser/js_worker.c,$(WORKER_CONTEXT_SRC)) $@.c $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
+$(BUILD)/worker-context/creator-policy: $(WORKER_CONTEXT_DEPS)
+	@mkdir -p $(dir $@)
+	@sed 's/return !w->policy.allow||w->policy.allow(w->policy.opaque,op,url);/return worker_allowed(op,url);/' c/apps/browser/js_worker.c > $@.c
+	@! cmp -s c/apps/browser/js_worker.c $@.c
+	@$(CC) -O2 -w $(WORKER_CF) -o $@ $(filter-out c/apps/browser/js_worker.c,$(WORKER_CONTEXT_SRC)) $@.c $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
+test-worker-context-negctl: $(BUILD)/worker-context/shared $(BUILD)/worker-context/unbalanced $(BUILD)/worker-context/wrong-site $(BUILD)/worker-context/creator-policy
+	@rc=0; $(BUILD)/worker-context/shared > $(BUILD)/worker-context/shared.log 2>&1 || rc=$$?; test $$rc -eq 1 && grep -q 'FAIL.*child pump does not advance parent Worker queue' $(BUILD)/worker-context/shared.log
+	@rc=0; $(BUILD)/worker-context/unbalanced > $(BUILD)/worker-context/unbalanced.log 2>&1 || rc=$$?; test $$rc -eq 1 && grep -q 'FAIL.*context switch after worker callbacks succeeds' $(BUILD)/worker-context/unbalanced.log
+	@rc=0; $(BUILD)/worker-context/wrong-site > $(BUILD)/worker-context/wrong-site.log 2>&1 || rc=$$?; test $$rc -eq 1 && test "$$(grep -c '^FAIL:' $(BUILD)/worker-context/wrong-site.log)" -eq 2 && grep -q 'FAIL.*cross-site ancestor prevents Worker SameSite cookie leakage' $(BUILD)/worker-context/wrong-site.log && grep -q 'FAIL.*network Worker retains opaque ancestor cookie site' $(BUILD)/worker-context/wrong-site.log
+	@rc=0; $(BUILD)/worker-context/creator-policy > $(BUILD)/worker-context/creator-policy.log 2>&1 || rc=$$?; test $$rc -eq 1 && grep -q 'FAIL.*network Worker uses response policy and final URL for imports and fetch' $(BUILD)/worker-context/creator-policy.log
+test-worker-context: test-worker-context-negctl $(BUILD)/worker-context/current
+	@$(BUILD)/worker-context/current
+test-worker-context-san: test-worker-context
+	@$(CC) -O1 -g -w -fsanitize=address,undefined -fno-omit-frame-pointer $(WORKER_CF) -o $(BUILD)/worker-context/san $(WORKER_CONTEXT_SRC) $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
+	@ASAN_OPTIONS=detect_leaks=0 $(BUILD)/worker-context/san
+ci-host: test-worker-context
+
+# Standalone native port ownership needs no page fixture: two actual runtimes
+# and the production serializer are sufficient to exercise transfer fences.
+NATIVE_PORTS_SRC = tests/unit/native_ports_test.c c/apps/browser/js_ports.c
+NATIVE_PORTS_DEP = $(NATIVE_PORTS_SRC) c/apps/browser/js_ports.h $(QJS_SRC) tests/worker.mk
+$(BUILD)/native-ports/current: $(NATIVE_PORTS_DEP)
+	@mkdir -p $(dir $@)
+	@$(CC) -O1 -g -w $(WORKER_CF) -o $@ $(NATIVE_PORTS_SRC) $(QJS_SRC) -lm
+$(BUILD)/native-ports/not-detached: $(NATIVE_PORTS_DEP)
+	@mkdir -p $(dir $@)
+	@$(CC) -O1 -g -w $(WORKER_CF) -DPORT_TEST_NO_DETACH -o $@ $(NATIVE_PORTS_SRC) $(QJS_SRC) -lm
+$(BUILD)/native-ports/not-closed: $(NATIVE_PORTS_DEP)
+	@mkdir -p $(dir $@)
+	@sed 's/if(op==2){close_endpoint(e);return JS_UNDEFINED;}/if(op==2){return JS_UNDEFINED;}/' c/apps/browser/js_ports.c > $@.c
+	@! cmp -s c/apps/browser/js_ports.c $@.c
+	@$(CC) -O1 -g -w $(WORKER_CF) -o $@ tests/unit/native_ports_test.c $@.c $(QJS_SRC) -lm
+.PHONY: test-native-ports test-native-ports-negctl test-native-ports-san
+test-native-ports-negctl: $(BUILD)/native-ports/not-detached $(BUILD)/native-ports/not-closed
+	@rc=0; $(BUILD)/native-ports/not-detached > $(BUILD)/native-ports/not-detached.log 2>&1 || rc=$$?; test $$rc -eq 1 && grep -q 'FAIL.*transferred endpoint attaches only in destination runtime' $(BUILD)/native-ports/not-detached.log
+	@rc=0; $(BUILD)/native-ports/not-closed > $(BUILD)/native-ports/not-closed.log 2>&1 || rc=$$?; test $$rc -eq 1 && grep -q 'FAIL.*closed port drops its queued callbacks' $(BUILD)/native-ports/not-closed.log
+test-native-ports: test-native-ports-negctl $(BUILD)/native-ports/current
+	@$(BUILD)/native-ports/current
+test-native-ports-san: test-native-ports
+	@$(CC) -O1 -g -w $(WORKER_CF) -fsanitize=address,undefined -fno-omit-frame-pointer -o $(BUILD)/native-ports/san $(NATIVE_PORTS_SRC) $(QJS_SRC) -lm
+	@ASAN_OPTIONS=detect_leaks=0 $(BUILD)/native-ports/san
+ci-host: test-native-ports

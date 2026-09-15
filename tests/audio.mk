@@ -1,4 +1,5 @@
 # Audio test targets (M29).
+-include tests/drivers/audio/tests.mk
 #
 # Kept in its own fragment for the same reason tests/nic.mk is: several agents
 # are editing the Makefile at once, and a shared-file edit cannot be committed

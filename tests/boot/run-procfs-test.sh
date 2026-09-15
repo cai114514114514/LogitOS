@@ -38,7 +38,7 @@ CLI_ALL="$CLI_BASE ps free uptime"
 if [ "${SKIP_BUILD:-0}" != "1" ]; then
     # MAKE is a variable so a tree whose kernel does not link for an unrelated
     # reason can point this at a wrapper that drops the offending object. It
-    # was needed on the day this landed -- c/kernel/mm/reclaim/reclaim/oom.c was untracked and
+    # was needed on the day this landed -- c/kernel/mm/reclaim/oom.c was untracked and
     # mid-flight, referencing three symbols nothing defined -- and the wrapper
     # is four lines. Nothing about /proc depends on it.
     "${MAKE:-make}" CLI="$CLI_ALL" "$ISO" "$DISK" || { echo "FAIL: build"; exit 1; }

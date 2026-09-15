@@ -16,5 +16,7 @@
 set -u
 ISO="${1:?usage: run-ch-test.sh <iso> <disk.img>}"
 DISK="${2:?usage: run-ch-test.sh <iso> <disk.img>}"
+# Keep visual evidence with the selected image. The old Python default wrote
+# into shared build/ch-shots even when the caller supplied an isolated BUILD.
 exec python3 "$(dirname "$0")/../qmp/qmp_ch.py" --iso "$ISO" --disk "$DISK" \
-     --only "${CH_ONLY:-all}"
+     --only "${CH_ONLY:-all}" --shots "$(dirname "$DISK")/ch-shots"

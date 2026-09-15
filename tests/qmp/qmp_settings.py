@@ -33,7 +33,7 @@ from qmp_ui import Session, configure, pt, PPM                              # no
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-# c/apps/gui/settings.c: probe_rgb[], one per tab.
+# c/apps/gui/settings/settings.c: probe_rgb[], one per tab.
 PROBES = {
     "appearance": (0xFF, 0x00, 0x80),
     "desktop":    (0x00, 0xFF, 0x80),

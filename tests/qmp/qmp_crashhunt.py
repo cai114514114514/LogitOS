@@ -25,7 +25,7 @@ house rule is "is the harness looking at the machine or at itself":
      nothing), so without this line a fault-kill and a user close are the same
      picture.
   2. `[oom] page fault: out of memory ...` + `[oom] victim: pid N "browser"
-     rss=... [window]` (c/kernel/mm/reclaim/reclaim/oom.c) -- the kernel OOM-killed the
+     rss=... [window]` (c/kernel/mm/reclaim/oom.c) -- the kernel OOM-killed the
      browser. The kill is a MARK; the process dies at its next kernel entry,
      and `[proc] kill: pid N marked` names the moment.
   3. `LOGIT_PANIC` -- the kernel itself died; every app "disappears".

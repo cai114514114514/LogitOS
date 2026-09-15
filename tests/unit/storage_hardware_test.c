@@ -145,7 +145,7 @@ int main(void)
     uint8_t ns[4096]={0}; uint64_t sectors=0; uint32_t lba=0;
     ns[1]=0x10; ns[130]=9;
     CHECK(!nvme_namespace_format(ns,&sectors,&lba)&&sectors==4096&&lba==512, "NVMe valid namespace keeps hardware capacity");
-    ns[130]=12; CHECK(nvme_namespace_format(ns,&sectors,&lba)<0, "NVMe refuses native 4Kn through 512B API");
+    ns[130]=12; CHECK(!nvme_namespace_format(ns,&sectors,&lba)&&sectors==32768&&lba==4096, "NVMe converts native 4Kn capacity to 512B sectors");
     ns[130]=255; CHECK(nvme_namespace_format(ns,&sectors,&lba)<0, "NVMe invalid LBADS cannot invoke undefined shift");
     ns[130]=9;ns[128]=8;CHECK(nvme_namespace_format(ns,&sectors,&lba)<0, "NVMe metadata needs an explicit data path");
     ns[128]=0;ns[29]=1;CHECK(nvme_namespace_format(ns,&sectors,&lba)<0, "NVMe protection information cannot be silently omitted");

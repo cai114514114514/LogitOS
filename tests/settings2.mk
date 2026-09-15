@@ -1,6 +1,6 @@
 # tests/settings2.mk -- gates for /bin/pref (the coreutil onto the "app."
 # preference namespace) and the window-geometry consumer wired through it
-# (c/apps/gui/textedit.c). See c/apps/coreutils/pref.c's header comment for
+# (c/apps/gui/textedit/textedit.c). See c/apps/coreutils/pref.c's header comment for
 # what this store is and tests/boot/run-pref-test.sh for what "test-pref"
 # actually proves.
 #

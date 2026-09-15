@@ -1,3 +1,4 @@
+# aether: 2
 # The association, exercised the way the Finder exercises it.
 #
 # A double-click in the Finder is SYS_OPEN_PATH and nothing else: the kernel

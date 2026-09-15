@@ -6,20 +6,31 @@
 -include tests/storage_hardware.mk
 -include tests/virtio_scsi.mk
 -include tests/usb_input_extensions.mk
+-include tests/drivers/usb/hid/generic.mk
+-include tests/drivers/wifi/tests.mk
+-include tests/drivers/power/acpi/test.mk
+-include tests/drivers/power/acpi/ec/test.mk
 -include tests/pci_intx.mk
 -include tests/xeon_e5.mk
 -include tests/raptor_lake.mk
 -include tests/x79_platform.mk
 -include tests/usb_hub.mk
 -include tests/usb_storage.mk
+-include tests/usb_hotplug.mk
 -include tests/ehci.mk
 -include tests/x79_chipset.mk
 -include tests/nvidia_pascal.mk
+-include tests/gpu/amd/tests.mk
+-include tests/fb_native_present.mk
+-include tests/intel_bootfb.mk
 -include tests/hda_x79.mk
 -include tests/pci_bar_safety.mk
 -include tests/x2apic.mk
 -include tests/raptor_smp.mk
 -include tests/e1000_pch2.mk
+-include tests/acpi_integrity.mk
+-include tests/hpet.mk
+-include tests/tools/make/wired.mk
 
 .PHONY: test-pci-hardware test-pci-hardware-negctl test-driver-host test-driver-os
 ci-host: test-pci-hardware
@@ -34,13 +45,26 @@ test-driver-host: test-pci-hardware test-pci test-pci-intx-host test-netif test-
     test-pcnet-ring test-e1000e-ring test-storage-hardware-host \
     test-usb-input-extensions test-usb-hid test-dma-virtio test-dma-drivers \
     test-blk-async test-ehci-host test-usb-hub-host test-xhci-xfer-host test-usb-storage-host \
-    test-x79-chipset-host test-nvidia-pascal-host test-pci-bar-safety-host test-xeon-e5-host \
+    test-usb-hotplug-host \
+    test-x79-chipset-host test-nvidia-pascal-host test-amd-bootfb-host test-amd-accel-host \
+    test-intel-bootfb-host test-pci-bar-safety-host test-xeon-e5-host \
     test-raptor-lake-host test-raptor-smp-host \
     test-x2apic-host test-hda-x79-host
 
 test-driver-host: test-e1000-pch2-host
+test-driver-host: test-acpi-integrity-host
+test-driver-host: test-hpet-host
+test-driver-host: test-amd-host
+test-driver-host: test-usb-hid-generic test-wifi-adapter-host
+test-driver-host: test-power-aml-host test-power-ec-aml
 
 test-driver-os: test-driver-host test-pcnet-guest test-e1000e-guest \
     test-nvme-bridge test-nvme-bridge-uefi test-ahci-sector \
     test-usb-tablet-os test-virtio-scsi test-virtio-scsi-transitional \
     test-pci-intx-guest test-ehci-hid test-ehci-multi test-usb-hub-guest test-usb-storage-dual
+
+test-driver-os: test-usb-hotplug
+test-driver-os: test-hpet-guest
+test-driver-os: test-amd-bootfb-guest
+test-driver-os: test-amd-accel-guest
+test-driver-os: test-nvme-4kn

@@ -17,7 +17,7 @@
  * least as much as red, the outermost pixel is exactly the caller's REFRACT,
  * and nothing past the edge band is nonzero.
  *
- *   cc -o glass_lut_test tests/unit/glass_lut_test.c c/kernel/gui/fb/fb/glass.c -lm
+ *   cc -o glass_lut_test tests/unit/glass_lut_test.c c/kernel/gui/fb/glass.c -lm
  */
 #include <math.h>
 #include "glass.h"

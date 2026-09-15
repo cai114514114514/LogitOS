@@ -21,7 +21,7 @@ frame. This boots the desktop, opens Gallery from the Dock, and measures:
 Finding things without hard-coding the compositor: each page paints a 6x6 PROBE
 rect in an unmistakable colour at window-local (4,4). Its position in the
 screendump gives the window's content origin, so every other coordinate below is
-a plain window-local point out of c/apps/gui/gallery.c.
+a plain window-local point out of c/apps/gui/gallery/gallery.c.
 
 Usage: qmp_gallery.py [--xres N] [--yres N] [--out shot.png] [--keep]
 """

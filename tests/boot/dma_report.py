@@ -49,7 +49,7 @@ result['artifacts_sha256']={name:digest(b/name) for name in ('kernel.elf','logit
 paths=set()
 for sub in ('c/drivers','c/kernel/mm','c/kernel/audio'):
     paths.update(f for f in (r/sub).rglob('*') if f.suffix in ('.c','.h'))
-paths.update(r/f for f in ('c/kernel/init/kmain.c','c/kernel/gui/fb/fb/fb.c','c/kernel/gui/fb/fb/fb.h'))
+paths.update(r/f for f in ('c/kernel/init/kmain.c','c/kernel/gui/fb/fb.c','c/kernel/gui/fb/fb.h'))
 result['sources_sha256']={str(f.relative_to(r)):digest(f) for f in sorted(paths)}
 result['limits']=['RTL8169 has driver-model coverage only; no QEMU model or physical hardware validation','Legacy PMM and kernel heap remain low; no IOMMU','Unconfirmed block DMA stop quarantines resources and fail-stops to protect caller buffers']
 a.out.parent.mkdir(parents=True,exist_ok=True);a.out.write_text(json.dumps(result,ensure_ascii=False,indent=2)+'\n')

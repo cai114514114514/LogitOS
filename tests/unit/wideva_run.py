@@ -27,7 +27,10 @@ def main():
     if not source_line:
         raise SystemExit("Cannot locate authoritative MM source list in mm_run.sh")
     src = shlex.split(source_line[1].replace("$MM", str(mm)))
-    inc = [root / "tests/unit", root / "tests/unit/mmstub", mm]
+    # c/kernel/mm was split into subdirectories on 2026-09-15 and this list is the
+    # gate's whole include path -- INCDIRS does not reach here on purpose.
+    inc = [root / "tests/unit", root / "tests/unit/mmstub", mm,
+           mm / "phys", mm / "virt", mm / "cache", mm / "reclaim"]
     flags = ["-std=c11", "-O1", "-g", "-Wall", "-Wextra", "-Werror", "-DMM_HOSTTEST",
              "-fsanitize=address,undefined", "-fno-sanitize-recover=all"]
     cc = shlex.split(os.environ.get("CC", "cc"))

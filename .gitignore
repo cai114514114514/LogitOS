@@ -188,3 +188,8 @@ work-*/
 docs/reports/**/*.aex
 docs/reports/**/*.pcm
 docs/reports/**/*.wav
+
+# Playwright's CLI cache, written at the repo root by the website's test run.
+# website/.gitignore already excludes it inside that directory; this catches the
+# copy the tool drops beside the checkout instead.
+.playwright-cli/

@@ -403,7 +403,7 @@ def t_focus(g, shots, W, H):
     # colour (draw_frame in wm.c), and that circle's centre is at
     # (win.x + S(16), win.y + S(15)) -- so its bounding box locates the window.
     # TextEdit draws its text at window-local (10, 8) points, below the S(30)
-    # titlebar (c/apps/gui/textedit.c redraw()).
+    # titlebar (c/apps/gui/textedit/textedit.c redraw()).
     n, cb = find_in(base, CLOSE_RGB, (0, 0, W, H))
     assert cb is not None, "no focused window on screen -- TextEdit did not open"
     wx = (cb[0] + cb[2]) // 2 - pt(16)

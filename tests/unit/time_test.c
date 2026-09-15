@@ -368,6 +368,35 @@ static void test_source_switch(void)
     CHECK(time_mono_ns() >= after, "the clock went backwards switching back");
 }
 
+static uint64_t switch_window_ns;
+static void read_inside_switch_window(void)
+{
+    switch_window_ns = time_mono_raw_ns();
+}
+
+static void test_source_switch_publication(void)
+{
+    /* Make the two sources numerically far apart.  A reader that combines the
+     * new TSC with the PIT's old fold point observes a multi-second jump; a
+     * coherent old or new tuple stays on the one-second timeline.  The hook
+     * runs inside the exact publication window, so this does not rely on a
+     * host scheduler hitting a two-store race by chance. */
+    time_host_reset(1000000000ull, ~0ull);
+    time_host_set_cycles(1000000000ull);
+    time_tick();
+    time_host_set_ticks(100);
+    CHECK(time_set_source(TIMESRC_PIT) == 0, "publication test could not select PIT");
+    uint64_t before = time_mono_raw_ns();
+    time_host_set_cycles(5000000000ull);
+    switch_window_ns = UINT64_MAX;
+    time_host_set_switch_probe(read_inside_switch_window);
+    CHECK(time_set_source(TIMESRC_TSC) == 0, "publication test could not restore TSC");
+    time_host_set_switch_probe(NULL);
+    CHECK(switch_window_ns >= before && switch_window_ns - before < 1000000ull,
+          "source/fold point published as a torn tuple: jump=%lluns",
+          (unsigned long long)(switch_window_ns - before));
+}
+
 /* ----------------------------------------- 3. the 2x negative control */
 
 static void test_xcheck_negative_control(void)
@@ -448,6 +477,7 @@ int main(void)
     test_wall_vs_mono();
     test_clock_ids();
     test_source_switch();
+    test_source_switch_publication();
     test_xcheck_negative_control();
     test_cpu_accounting();
     printf("time_test: %d checks, %d failures\n", checks, fails);

@@ -45,7 +45,7 @@ WHAT EACH CASE PROVES
            blank would have one or two. This is the unit's negative control and
            it PASSES by showing a refusal, not by failing to draw.
   scope    the same picture, decoded by a process whose capability was narrowed
-           away from it (`as --scope /usr/as`). M28 refusals are catchable, so
+           away from it (a native restricted child scoped to /usr/as). Refusals are catchable, so
            the app must still open a window and must NAME the capability.
 
 Usage: qmp_asview.py --iso ISO --disk DISK [--out DIR] [--only a,b] [--keep]
@@ -60,12 +60,17 @@ import sys
 import tempfile
 import time
 import zlib
+from pathlib import Path
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
 sys.path.insert(0, HERE)
 
 from qmp_ui import Session, configure, PPM  # noqa: E402
+sys.path.insert(0, os.path.join(ROOT, "tools"))
+sys.path.insert(0, os.path.join(ROOT, "tests", "unit"))
+from as_examples import guest_command
+from as_capability_test import kernel_grants
 
 # --- the viewer's own geometry, mirrored from fsroot/as/examples/asview.as ---
 # Mirrored and not imported because there is nothing to import from: the
@@ -234,6 +239,12 @@ def main(argv):
     os.makedirs(outdir, exist_ok=True)
     configure(1280, 800)                  # scale 100: a point IS a device pixel
     tmp = tempfile.mkdtemp(prefix="logit-asview-")
+    # Keep this prebuilt-disk adapter on the same native launch mapping as
+    # Make packaging. Missing AEX files must fail, never invoke an A2 compiler.
+    viewer = guest_command(Path(ROOT) / "fsroot/as/examples/asview.as")
+    assert viewer.startswith("/usr/as/bin/"), "asview must be a native A3 artifact"
+    grants = kernel_grants(Path(tmp))
+    scope_mask = grants["fs"][0] | grants["raw"][0] | grants["gui"][0]
     sock = os.path.join(tmp, "qmp.sock")
     serial = os.path.join(tmp, "serial.log")
     fails = []
@@ -324,7 +335,7 @@ def main(argv):
             # `&` so the console shell stays usable for the later cases. The
             # window is adopted by the script's process on its first
             # SYS_GUI_CREATE (wm.c) and raised, so it has the keyboard.
-            shell("as /usr/as/examples/asview.as /media/dot.png &")
+            shell(viewer + " /media/dot.png &")
             ready = wait_for(r"asview: ready", mark, 120)
             ck(ready is not None, "asview starts and reports ready")
             if ready is None:
@@ -414,7 +425,7 @@ def main(argv):
         if only is None or "next" in only:
             mark = len(read(serial))
             time.sleep(1.0)
-            shell("as /usr/as/examples/asview.as /media/img/still.bmp &")
+            shell(viewer + " /media/img/still.bmp &")
             m = wait_for(r"asview: image (\S+) (\d+)x(\d+)", mark, 120)
             ck(m is not None and m.group(1) == "BMP",
                "a second format decodes: BMP", m.group(0) if m else "no line")
@@ -477,7 +488,7 @@ def main(argv):
         if only is None or "refuse" in only:
             mark = len(read(serial))
             time.sleep(1.0)
-            shell("as /usr/as/examples/asview.as /media/sample.h264 &")
+            shell(viewer + " /media/sample.h264 &")
             m = wait_for(r"asview: error (.*)", mark, 120)
             msg = m.group(1).strip() if m else ""
             ck(m is not None, "the viewer refuses a file that is not an image")
@@ -508,11 +519,10 @@ def main(argv):
         if only is None or "scope" in only:
             mark = len(read(serial))
             time.sleep(1.0)
-            # --scope BEFORE the script path: as.c refuses a trailing one
-            # outright (see run-as-cap-test.sh's history). The narrowed process
-            # can still read its own library tree and still open a window; what
-            # it may not do is reach /media.
-            shell("as --scope /usr/as /usr/as/examples/asview.as /media/dot.png &")
+            # The old `as --scope` path required the VM. Use a real native
+            # SYS_CAP_SPAWN child instead; do not simulate a grant via env vars.
+            shell("/bin/native-capture --caps " + str(scope_mask) + " /usr/as "
+                  + viewer + " /media/dot.png &")
             m = wait_for(r"asview: error (.*)", mark, 120)
             msg = m.group(1).strip() if m else ""
             ck(m is not None, "a narrowed process is refused the file")

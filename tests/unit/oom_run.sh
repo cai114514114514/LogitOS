@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build + run the out-of-memory killer's host test (c/kernel/mm/reclaim/reclaim/oom.c).
+# Build + run the out-of-memory killer's host test (c/kernel/mm/reclaim/oom.c).
 #
 # WHY THIS IS ITS OWN SCRIPT AND NOT THREE LINES IN mm_run.sh, which is where it
 # belongs: mm_run.sh and leak_run.sh compile the SAME source list and a comment
@@ -37,12 +37,12 @@ MMSRC="$MM/phys/pmm.c $MM/virt/vmm.c $MM/virt/fault.c $MM/virt/vma.c $MM/reclaim
 # 2026-08-20 the block line had an in-flight edit that left dev_read() defined
 # and unreferenced:
 #
-#     c/kernel/mm/reclaim/reclaim/swap.c:101:12: error: 'dev_read' defined but not used
+#     c/kernel/mm/reclaim/swap.c:101:12: error: 'dev_read' defined but not used
 #
 # The comment ended "delete these four lines and put $MM/reclaim/swap.c back in MMSRC
 # the day that edit settles". Measured 2026-08-28: it has settled -- dev_read()
 # is called at swap.c:137 and :161, and `cc -Wall -Wextra -Werror -DMM_HOSTTEST
-# -c c/kernel/mm/reclaim/reclaim/swap.c` is clean. Keeping the waiver would have left this
+# -c c/kernel/mm/reclaim/swap.c` is clean. Keeping the waiver would have left this
 # script the only one of the three mm host scripts that cannot see an unused
 # static in that file, while tests/unit/mm_run.sh compiles the same TU -Werror
 # and would go red on it anyway -- a shield over one gate and not the other.

@@ -7,6 +7,8 @@
 # the same builtins, the same fork/exec of the same coreutils, the same pipes,
 # the same `>` redirect and the same cp/mv/mkdir/rm round-trip, driven by a shell
 # written in AetherScript instead of 971 lines of C.
+# A3 correction: /bin/ash is now compiled from that same shipped source ahead
+# of boot. The input sequence stays intact; no in-guest source runner is needed.
 #
 # The C /bin/sh is still init. It launches ash and BLOCKS on it, so every command
 # after that first line is handled by ash -- which the ordering assertion below
@@ -29,9 +31,12 @@ NET="-netdev user,id=n0 -device e1000,netdev=n0"
 # first prompt -- which looks exactly like the shell being broken. The guest
 # consumes one character per tty_read, so the rest of the stream simply waits:
 # /bin/sh takes the first line, and ash, once running, takes all the others.
-CMDS='as /usr/as/examples/ash.as\nuname\necho hello-logit-shell\nls /bin | wc\ncat /docs/readme.txt | wc\nmkdir /cptest\necho cpmvprobe > /cptest/a.txt\ncp /cptest/a.txt /cptest/b.txt\ncat /cptest/b.txt\nmv /cptest/b.txt /cptest/c.txt\nls /cptest\nrm /cptest/a.txt\nrm /cptest/c.txt\nrm /cptest\nexit\nexit\n'
+CMDS='/bin/ash\nuname\necho hello-logit-shell\nls /bin | wc\ncat /docs/readme.txt | wc\nmkdir /cptest\necho cpmvprobe > /cptest/a.txt\ncp /cptest/a.txt /cptest/b.txt\ncat /cptest/b.txt\nmv /cptest/b.txt /cptest/c.txt\nls /cptest\nrm /cptest/a.txt\nrm /cptest/c.txt\nrm /cptest\nexit\nexit\n'
 # -snapshot: ephemeral disk writes, so the test is deterministic across runs.
-{ sleep 4; printf "$CMDS"; sleep 10; } | \
+# Match the C shell gate's boot allowance: sending before login owns the tty
+# can discard the first command and accidentally leave /bin/sh running tests.
+SHELL_BOOT_DELAY="${SHELL_BOOT_DELAY:-7}"
+{ sleep "$SHELL_BOOT_DELAY"; printf "$CMDS"; sleep 10; } | \
   "$QEMU" -cpu "${QEMU_CPU:-max}" -cdrom "$ISO" -drive file="$DISK",format=raw,if=none,id=hd0,file.locking=off -device virtio-blk-pci,drive=hd0 -boot d -snapshot \
     -m 512M -smp 4 -accel tcg,thread=multi -vga none -device virtio-gpu-pci $NET -serial stdio -display none -no-reboot >"$LOG" 2>/dev/null &
 QPID=$!

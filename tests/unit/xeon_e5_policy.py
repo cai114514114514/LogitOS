@@ -31,7 +31,7 @@ def tree_errors(root):
         errors += osxsave_errors((root / rel).read_text(), rel)
     errors += lockdiag_errors((root / "c/kernel/cpu/spinlock.c").read_text())
 
-    percpu = (root / "c/kernel/cpu/smp/smp/percpu.h").read_text()
+    percpu = (root / "c/kernel/cpu/smp/percpu.h").read_text()
     for token in ("#define PERCPU_MAXCPU 32", "#define PERCPU_MAXCPU 8",
                   "LOGIT_CPU_CAP_NEGCTL"):
         if token not in percpu:

@@ -24,9 +24,9 @@ that is 108 pixels of alpha per frame. See tests/unit/img_dump.c.
 The comparison itself:
 
   * the aspect-fit rect is recomputed exactly as blit_fit_src() in
-    c/apps/gui/preview.c computes it,
+    c/apps/gui/preview/preview.c computes it,
   * the nearest-neighbour source lookup is recomputed exactly as
-    fb_blit_rgba() in c/kernel/gui/fb/fb/fb.c computes it (i*sw/dw, integer),
+    fb_blit_rgba() in c/kernel/gui/fb/fb.c computes it (i*sw/dw, integer),
   * and alpha is composited over the window background with the same integer
     formula the kernel uses, (p*a + b*(255-a))/255.
 
@@ -84,7 +84,7 @@ from qmp_ui import Session, configure, dock_icon, pt, PPM  # noqa: E402
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 FIX = os.path.join(ROOT, "tests", "fixtures")
 
-# c/apps/gui/preview.c
+# c/apps/gui/preview/preview.c
 WINW, WINH = 760, 560
 CONTH = WINH - 30
 IMG_BG = (28, 28, 32)          # gui_clear() behind a still or an animation
@@ -251,7 +251,7 @@ def compare_image(ppm, origin, img, tol=0):
         checked - bad, checked, ("  [%s]" % first) if first else "")
 
 
-# Every gui_clear() colour c/apps/gui/preview.c uses: the picture/list screens,
+# Every gui_clear() colour c/apps/gui/preview/preview.c uses: the picture/list screens,
 # the audio screen and the video screen each pick their own.
 BACKGROUNDS = [IMG_BG, (18, 18, 22), (18, 18, 20)]
 
@@ -582,7 +582,7 @@ def main(argv):
             idx = picks[name]
             for _ in range(3):
                 mark = len(read(serial))
-                # PICK_Y0 + row*PICK_DY + half a row, in c/apps/gui/preview.c.
+                # PICK_Y0 + row*PICK_DY + half a row, in c/apps/gui/preview/preview.c.
                 # The list never scrolls here: it fits PICK_ROWS entries.
                 click_row(idx)
                 got = wait_for(r"preview: open (\S+) ", mark, 40)

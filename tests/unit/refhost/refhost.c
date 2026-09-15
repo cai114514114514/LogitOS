@@ -125,7 +125,7 @@ int refhost_fonts(void)
 }
 
 /* ----------------------------------------------------------- the surface -- */
-/* Mirrors c/kernel/gui/fb/fb/fb.h's struct surface. Kept as a local definition rather
+/* Mirrors c/kernel/gui/fb/fb.h's struct surface. Kept as a local definition rather
  * than an #include so this file does not need the kernel's header tree; the
  * layout is asserted by refhost_begin's use of fb_target, which would corrupt
  * memory rather than fail quietly if it drifted -- so surf_check() below

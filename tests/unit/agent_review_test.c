@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: MIT */
 #include "../../c/lib/agent/review.h"
-#include "../../c/apps/gui/textedit_document.h"
+#include "../../c/apps/gui/textedit/textedit_document.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

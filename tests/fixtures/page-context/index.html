@@ -1,0 +1,10 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Document runtime regression</title>
+<style>body{font-family:sans-serif;margin:40px;color:#17324d;background:#edf4fa}h1{font-size:30px}button,input{padding:12px;margin:8px}#result{font-size:24px;color:#087d52}</style></head>
+<body><h1>Browser runtime regression</h1><p>This checks the ordinary top-level browser after the document-owner refactor.</p>
+<p id="result">Waiting for timer</p><input id="entry" value=""><button id="button">Click</button>
+<script>
+var clicks=0;
+document.getElementById('button').addEventListener('click',function(){clicks++;this.textContent='Clicked '+clicks});
+document.getElementById('entry').addEventListener('input',function(){console.log('RUNTIME-INPUT:'+this.value)});
+setTimeout(function(){Promise.resolve().then(function(){document.getElementById('result').textContent='Timer and microtask passed';console.log('RUNTIME-GUEST-PASS')})},20);
+</script></body></html>

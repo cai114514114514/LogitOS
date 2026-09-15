@@ -69,10 +69,8 @@ $CC -O2 -w -c "$WORK/raster.c" -o "$OUT.legacy.o" \
 $CC -O2 -Wall -Wextra -DGLYPH_AGREE_LEGACY -o "$OUT" \
     tests/unit/glyph_agree_test.c \
     c/lib/text/ttf.c c/lib/text/cff.c c/lib/text/otlayout.c c/lib/text/fontcolor.c \
-    c/lib/text/glyphras.c c/lib/gfx/gfx_math.c c/lib/gfx/gfx_path.c \
-    c/lib/gfx/gfx_raster.c c/lib/gfx/gfx_paint.c c/lib/gfx/gfx_mask.c \
-    c/lib/gfx/gfx_stroke.c "$OUT.legacy.o" \
-    -Ic/lib/text -Ic/kernel/gui -Ic/lib/gfx -lm
+    c/lib/text/glyphras.c $(find c/lib/gfx -name '*.c' | sort) "$OUT.legacy.o" \
+    -Ic/lib/text -Ic/kernel/gui -Ic/kernel/gui/fb -Ic/kernel/gui/ime -Ic/kernel/gui/input -Ic/lib/gfx/include -Ic/lib/gfx/internal -lm
 
 "$OUT" fsroot/fonts/ui.ttf fsroot/fonts/mono.ttf \
        tests/fixtures/fonts/SourceSans3-Regular.otf \

@@ -757,9 +757,11 @@ def main():
     ap.add_argument("--sample-registers", action="store_true",
                     help="diagnostic only: sample guest CPU registers during slow initial load")
     input_target = ap.add_mutually_exclusive_group()
-    input_target.add_argument("--input-id", help="ordinary input/textarea ID from the latest box dump; no scrolling or submit")
+    input_target.add_argument("--input-id", help="ordinary input/textarea ID from the latest box dump; no scrolling")
     input_target.add_argument("--input-class", help="first reported class of one unique ordinary input/textarea in the box dump")
     ap.add_argument("--input-text", help="literal text to type, without newline; requires one input selector")
+    ap.add_argument("--submit-input", action="store_true",
+                    help="explicitly press Enter in the selected field and record the subsequent navigation separately")
     ap.add_argument("--trace-input", action="store_true", help="arm bounded native hit/focus diagnostics before explicit input attempt")
     ap.add_argument("--diagnostic-wait", type=float, default=25.0,
                     help="host observation budget per diagnostic trigger; never a guest performance measurement")
@@ -767,7 +769,9 @@ def main():
     if args.diagnostic_wait <= 0 or args.diagnostic_wait > 60:
         ap.error('--diagnostic-wait must be in (0, 60] seconds')
     if bool(args.input_id or args.input_class) != (args.input_text is not None) or (args.input_text and any(c in args.input_text for c in '\r\n')):
-        ap.error('one input selector and --input-text must be paired; multiline/submitting input is not supported')
+        ap.error('one input selector and --input-text must be paired; multiline text is not supported')
+    if args.submit_input and args.input_text is None:
+        ap.error('--submit-input requires an explicit input selector and text')
 
     shots_dir = args.shots or os.path.dirname(os.path.abspath(args.out))
     os.makedirs(shots_dir, exist_ok=True)
@@ -1157,10 +1161,10 @@ def main():
             initial_to_late_changed_px=changed_pixels(after, late),
             basis="after diagnostic turns; not a completion or usability guarantee")
 
+        homepage_end = None
         if args.input_id or args.input_class:
-            # Explicit opt-in only; never press Enter, solve a challenge or
-            # silently choose a field. The untouched photo above remains the
-            # scored observation; this later artifact records a native attempt.
+            # The untouched photo above remains the scored observation. Enter
+            # is separately opt-in: typing a field must not submit by default.
             try:
                 if args.trace_input:
                     trace_mark = len(serial())
@@ -1199,7 +1203,36 @@ def main():
                     'basis': 'key events sent; inspect screenshot for actual field contents'}
                 if args.trace_input:
                     rec['native_input_attempt'].update(native_input_progress(serial(input_mark)))
-                if args.boxes:
+                if args.submit_input:
+                    # Keep the first page's score/log interval separate from
+                    # the next page; otherwise a results-page exception gets
+                    # incorrectly attributed to the successfully loaded home.
+                    homepage_end = len(serial())
+                    ui.key('ret')
+                    deadline = time.monotonic() + LOAD_BUDGET
+                    while time.monotonic() < deadline:
+                        ss = serial(homepage_end)
+                        if '[browser] load done:' in ss or '[browser] page fetch failed' in ss:
+                            break
+                        if proc.poll() is not None:
+                            break
+                        time.sleep(0.4)
+                    time.sleep(15)
+                    submit_ppm = os.path.join(tmp, 'submit.ppm')
+                    ui.goto(*PARK)
+                    ui.screendump(submit_ppm, settle=0.8)
+                    submit_png = os.path.join(shots_dir, args.name + '.submit.png')
+                    ppm_to_png(submit_ppm, submit_png)
+                    ss = serial(homepage_end)
+                    urls = re.findall(r'\[browser\] load: ([^\r\n]+)', ss)
+                    spath = os.path.join(shots_dir, args.name + '.submit.serial.txt')
+                    with open(spath, 'w', encoding='utf-8') as fh:
+                        fh.write(ss)
+                    rec['native_input_attempt']['submitted'] = bool(urls)
+                    rec['submission'] = {'enter_sent': True, 'navigations': urls,
+                        'guest': parse_serial(ss), 'shot': submit_png, 'serial_log': spath,
+                        'basis': 'native Enter plus observed navigation; inspect results screenshot separately'}
+                elif args.boxes:
                     # Preserve the input photo FIRST. A newly focused modal
                     # may not exist in the pre-input boxes; its actual layout
                     # distinguishes hidden UI from a focus-routing failure.
@@ -1232,7 +1265,7 @@ def main():
 
         # The serial from the moment Enter was pressed, kept BESIDE the JSON: a
         # verdict without the log that produced it cannot be argued with.
-        tail = serial(mark)
+        tail = serial(mark) if homepage_end is None else serial()[mark:homepage_end]
         # THE LAST summary, not the first. browser_paint prints one line every
         # time the pair CHANGES, so the first is an early frame -- often the
         # empty tab -- and reading it would report a settled page's text as

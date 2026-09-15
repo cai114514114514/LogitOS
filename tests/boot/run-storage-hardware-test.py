@@ -20,7 +20,7 @@ ap.add_argument('--iso',required=True,type=Path)
 ap.add_argument('--disk',required=True,type=Path)
 ap.add_argument('--esp',type=Path,help='private copy of this ESP boots through OVMF instead of BIOS')
 ap.add_argument('--out',required=True,type=Path)
-ap.add_argument('--mode',choices=('nvme-bridge','ahci-sector'),required=True)
+ap.add_argument('--mode',choices=('nvme-bridge','nvme-4kn','ahci-sector'),required=True)
 ap.add_argument('--timeout',type=int,default=150)
 a=ap.parse_args();a.out=a.out.resolve();a.out.mkdir(parents=True,exist_ok=True)
 with tempfile.TemporaryDirectory(prefix='disks-',dir=a.out) as d:
@@ -37,6 +37,7 @@ with tempfile.TemporaryDirectory(prefix='disks-',dir=a.out) as d:
             (a.out/'4kn-refusal/result.json').write_text(json.dumps({'skipped':True,'reason':reason},indent=2))
             print('SKIP '+reason+'; settle on a native 4Kn SATA disk with this kernel',flush=True)
         mode='ahci-512e'
-    else:mode='nvme-bridge'
+    else:
+        mode = a.mode
     for boot in (1,2):
         guest.run_boot(a,disk,extra,mode,boot,a.out/f'boot{boot}')

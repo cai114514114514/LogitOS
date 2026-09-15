@@ -10,7 +10,7 @@
  *
  * Build + run (no make target; self-contained host program):
  *   cc -O2 -g -Wall -Wextra -o /tmp/fb_scale_bl_bench tests/unit/fb_scale_bl_bench.c \
- *      c/kernel/gui/fb/fb/fb.c -Ic/kernel/gui -Ic/drivers/virtio -Ic/kernel/mm \
+ *      c/kernel/gui/fb/fb.c -Ic/kernel/gui -Ic/drivers/virtio -Ic/kernel/mm \
  *      -Ic/lib/text && /tmp/fb_scale_bl_bench
  *
  * Writes two PPM files next to the binary's cwd: fb_scale_bl_compare.ppm (a

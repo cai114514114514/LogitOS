@@ -28,9 +28,9 @@ $(AGENT_DIR)/libc.a: $(AGENT_LIBC_OBJ) tools/agent_archive.py
 $(AGENT_TARGETS): $(AGENT_DIR)/entry.o $(AGENT_DIR)/sdk.a $(AGENT_DIR)/libc.a tools/agent_link.py
 $(AGENT_TARGETS): LD = python3 tools/agent_link.py $(BUILD) $(AGENT_REAL_LD)
 
-$(BUILD)/assistant.elf: c/apps/gui/assistant.c $(AGENT_DIR)/c/apps/gui/assistant.o $(BUILD)/apps/aui.o $(GFX_OBJ) c/apps/crt0_cli.asm
+$(BUILD)/assistant.elf: c/apps/gui/assistant/assistant.c $(AGENT_DIR)/c/apps/gui/assistant/assistant.o $(BUILD)/apps/aui.o $(GFX_OBJ) c/apps/crt0_cli.asm
 	$(ASM) -f elf64 c/apps/crt0_cli.asm -o $(AGENT_DIR)/assistant-crt.o
-	$(LD) -nostdlib -e _start -Ttext=0x4D000000 -o $@ $(AGENT_DIR)/assistant-crt.o $(AGENT_DIR)/c/apps/gui/assistant.o $(BUILD)/apps/aui.o $(GFX_OBJ)
+	$(LD) -nostdlib -e _start -Ttext=0x4D000000 -o $@ $(AGENT_DIR)/assistant-crt.o $(AGENT_DIR)/c/apps/gui/assistant/assistant.o $(BUILD)/apps/aui.o $(GFX_OBJ)
 $(BUILD)/assistant.aex: $(BUILD)/assistant.elf tools/mkaex.py
 	python3 tools/mkaex.py $< $@ Tasks - A 80 160 240 --gui
 $(BUILD)/agentd.elf: $(AGENT_DIR)/c/apps/agent/agentd.o $(AGENT_DIR)/c/apps/agent/userfs.o $(AGENT_DIR)/c/lib/agent/model.o $(AGENT_DIR)/c/lib/agent/model_config.o $(AGENT_DIR)/c/net/http/http1.o c/apps/crt0_cli.asm
@@ -60,7 +60,7 @@ $(AGENT_DIR)/link-contract: tools/agent_link.py tests/agent.mk
 	@touch $@
 $(AGENT_TARGETS): $(AGENT_DIR)/link-contract
 -include $(AGENT_SDK_OBJ:.o=.d) $(AGENT_LIBC_OBJ:.o=.d)
--include $(AGENT_DIR)/c/apps/agent/agentd.d $(AGENT_DIR)/c/lib/agent/model.d $(AGENT_DIR)/c/apps/gui/assistant.d
+-include $(AGENT_DIR)/c/apps/agent/agentd.d $(AGENT_DIR)/c/lib/agent/model.d $(AGENT_DIR)/c/apps/gui/assistant/assistant.d
 -include $(AGENT_DIR)/c/apps/agent/userfs.d
 -include $(AGENT_DIR)/c/lib/agent/model_config.d
 
@@ -147,9 +147,11 @@ test-agent-startup-negctl:
 AGENT_SESSION_DISK ?= $(DISK)
 AGENT_SESSION_LIMIT ?= 32
 AGENT_QEMU_NET ?= -netdev user,id=n0 -device e1000,netdev=n0
+AGENT_SESSION_LAUNCH = python3 tools/agent_session.py --broker $(BUILD)/agentd.aex --finder $(BUILD)/files.aex --textedit $(BUILD)/textedit.aex --assistant $(BUILD)/assistant.aex --agentctl $(BUILD)/agentctl.aex --snapshot-helper $(BUILD)/lfs_snapshot --env $(AGENT_ENV) --state-dir $(BUILD)/agent-sessions --limit $(AGENT_SESSION_LIMIT)
 .PHONY: run-agent
-run-agent: $(ISO) $(BUILD)/agentd.aex $(BUILD)/agentctl.aex $(BUILD)/assistant.aex $(BUILD)/textedit.aex $(BUILD)/lfs_snapshot
-	python3 tools/agent_session.py --disk $(AGENT_SESSION_DISK) --broker $(BUILD)/agentd.aex --textedit $(BUILD)/textedit.aex --assistant $(BUILD)/assistant.aex --agentctl $(BUILD)/agentctl.aex --snapshot-helper $(BUILD)/lfs_snapshot --env $(AGENT_ENV) --state-dir $(BUILD)/agent-sessions --limit $(AGENT_SESSION_LIMIT) -- $(QEMU) -cdrom $(ISO) -drive file=$(AGENT_SESSION_DISK),format=raw,if=none,id=hd0 -device virtio-blk-pci,drive=hd0 -boot d $(QEMU_RAM) $(QEMU_SMP) $(QEMU_CPU) $(QEMU_RTC) $(QEMU_GPU) $(AGENT_QEMU_NET) $(QEMU_DISP) $(QEMU_SND) -serial stdio -no-reboot -qmp unix:/tmp/logit-qmp.sock,server,nowait
+run run-agent: $(BUILD)/agentd.aex $(BUILD)/agentctl.aex $(BUILD)/files.aex $(BUILD)/assistant.aex $(BUILD)/textedit.aex $(BUILD)/lfs_snapshot
+run-agent: $(ISO)
+	$(AGENT_SESSION_LAUNCH) --disk $(AGENT_SESSION_DISK) -- $(QEMU) -cdrom $(ISO) -drive file=$(AGENT_SESSION_DISK),format=raw,if=none,id=hd0 -device virtio-blk-pci,drive=hd0 -boot d $(QEMU_RAM) $(QEMU_SMP) $(QEMU_CPU) $(QEMU_RTC) $(QEMU_GPU) $(AGENT_QEMU_NET) $(QEMU_DISP) $(QEMU_SND) -serial stdio -no-reboot -qmp unix:/tmp/logit-qmp.sock,server,nowait
 
 .PHONY: test-agent-session test-agent-session-negctl
 test-agent: test-agent-session
@@ -165,7 +167,7 @@ test-agent-session-guest: test-agent-session
 
 # TextEdit's native workspace is kept local to its translation unit; changes
 # to the layout or bounded editor must rebuild the ordinary app as well.
-$(BUILD)/textedit.elf: c/apps/gui/textedit_work.inc c/apps/gui/textedit_document.h
+$(BUILD)/textedit.elf: c/apps/gui/textedit/textedit_work.inc c/apps/gui/textedit/textedit_document.h
 .PHONY: test-agent-review
 test-agent-review:
 	python3 tests/unit/agent_review_test.py --build $(AGENT_DIR)/review-host
@@ -185,7 +187,7 @@ test-textedit-document: test-textedit-work-negctl
 test-textedit-work: test-textedit-document
 
 # Project identities are tested through the real filesystem and native apps.
-$(BUILD)/files.elf: c/apps/gui/files_project.inc
+$(BUILD)/files.elf: c/apps/gui/files/files_project.inc
 $(AGENT_DIR)/c/apps/agent/agentd.o: c/apps/agent/project_bindings.inc
 PROJECT_OUT ?= $(BUILD)/project-acceptance
 .PHONY: test-project-identity test-project
@@ -218,3 +220,12 @@ test-project-real: test-project
 	python3 tests/boot/run-project-real.py --build $(BUILD) --out $(PROJECT_OUT)/real --env $(AGENT_ENV)
 test-project-session: test-project-install $(ISO) $(BUILD)/lfs_snapshot $(addprefix $(BUILD)/,$(addsuffix .aex,$(PROJECT_GUEST_BINS)))
 	python3 tests/boot/run-project-session.py --build $(BUILD) --source $(PROJECT_SOURCE_DISK) --out $(PROJECT_OUT)/session --env $(AGENT_ENV)
+
+DEFAULT_SESSION_OUT ?= $(BUILD)/default-session-acceptance
+.PHONY: test-default-session test-default-session-negctl test-default-session-real
+test-default-session: test-default-session-negctl
+	python3 tests/unit/default_session_test.py
+test-default-session-negctl:
+	python3 tests/unit/default_session_test.py --negative
+test-default-session-real: test-default-session test-agent-session $(ISO) $(addprefix $(BUILD)/,agentd.aex agentctl.aex files.aex textedit.aex assistant.aex agent-runtime-test.aex login.aex sh.aex cat.aex echo.aex)
+	python3 tests/boot/run-default-session.py --build $(BUILD) --out $(DEFAULT_SESSION_OUT) --env $(AGENT_ENV)

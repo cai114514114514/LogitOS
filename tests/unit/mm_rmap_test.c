@@ -1,4 +1,4 @@
-/* Host test for the reverse map (c/kernel/mm/reclaim/reclaim/rmap.c, compiled -DMM_HOSTTEST).
+/* Host test for the reverse map (c/kernel/mm/reclaim/rmap.c, compiled -DMM_HOSTTEST).
  *
  * WHY THIS FILE EXISTS BEFORE THE RECLAIM TEST DOES
  *

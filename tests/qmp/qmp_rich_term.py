@@ -39,7 +39,7 @@ OUT = sys.argv[3] if len(sys.argv) > 3 else "/tmp/richterm.ppm"
 # TERMINAL_SLOT = 3 used to live here; the tile now comes from the guest's own
 # [wm] dock line -- see launch_terminal() below.
 
-# The terminal's LIGHT palette, from c/apps/gui/terminal.c. g_ui_dark defaults to
+# The terminal's LIGHT palette, from c/apps/gui/terminal/terminal.c. g_ui_dark defaults to
 # 0, so this is what boots. Every colour used below is a SOLID fill (rects and
 # rounded rects) or the fully-covered core of a glyph, both of which land on the
 # framebuffer exactly -- which is what makes an exact-match search meaningful.
@@ -612,7 +612,7 @@ chk(b"\x1b[2J" in body5,
 chk(b"LRT\x01" not in body5, "and emits no protocol bytes there")
 
 # ----------------------------- 9. a truncated table says it was truncated ----
-# The terminal's table storage is TROW=48 rows (c/apps/gui/terminal.c). /bin on
+# The terminal's table storage is TROW=48 rows (c/apps/gui/terminal/terminal.c). /bin on
 # this disk holds 55 programs and `dir` sends every one of them in a single
 # frame, so seven rows used to be dropped in silence -- a table that simply
 # ended, indistinguishable on screen from a directory with 48 entries in it.

@@ -70,6 +70,7 @@ grep -aq "LOGIT_BOOT_OK" "$LOG" || fail "the kernel did not reach LOGIT_BOOT_OK"
 [ -n "$SRC_LINE" ] || fail "the kernel printed no clocksource line at all -- on unfamiliar hardware that line IS the diagnosis"
 case "$SRC_LINE" in
     *"source=tsc"*) SRC=tsc ;;
+    *"source=hpet"*) SRC=hpet ;;
     *"source=pit"*) SRC=pit ;;
     *) fail "unrecognised clocksource line: $SRC_LINE" ;;
 esac

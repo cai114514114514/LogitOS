@@ -57,7 +57,7 @@ def main():
                     from PIL import Image
                     img=Image.open(out/'embedded.ppm').convert('RGB');img.save(out/'embedded.png')
                     green=sum(1 for p in img.getdata() if p==(20,172,135));pink=sum(1 for p in img.getdata() if p==(232,37,180))
-                    notice='嵌入预览，页面脚本尚未运行' in text
+                    notice='嵌入页面部分脚本不可用' in text
                     result.update(child_text_painted=painted,svg_green_pixels=green,svg_pink_pixels=pink,preview_notice=notice)
                     if args.expect_no_paint:assert not painted and green==0 and pink==0,'no-paint negative control did not fail visibly'
                     else:assert painted and green>=2500 and pink>=900 and notice,'real child text/image or native capability notice missing from guest pixels'

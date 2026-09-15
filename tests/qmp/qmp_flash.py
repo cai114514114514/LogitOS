@@ -73,7 +73,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 
 # The Finder is the one window the desktop opens with, and wm.c places the first
 # window deterministically: x = S(110), y = S(70), under a 30-point titlebar,
-# with the canvas size the app asks for (c/apps/gui/files.c WINW/WINH). So the
+# with the canvas size the app asks for (c/apps/gui/files/files.c WINW/WINH). So the
 # content rectangle is arithmetic, not a search -- which matters, because every
 # way of FINDING the window in the picture (its close button, its frame) is
 # itself something that could be missing in the very frame this is hunting.

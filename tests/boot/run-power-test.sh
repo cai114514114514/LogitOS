@@ -258,6 +258,12 @@ grep -aq "\[fs\] mounted" "$b2" || fail "boot 2: filesystem did not mount"
 grep -aqF "$PATTERN" "$b2" || fail "boot 2: /pwprobe.txt did not read back the pattern written in boot 1 -- the write did not survive the poweroff"
 echo "PASS: /pwprobe.txt survived the poweroff, byte-for-byte"
 
+# Boot 2 invokes no power syscall. These markers therefore require the real
+# post-scheduler discovery thread, not shutdown's lazy AML initialization.
+grep -aq '^\[power\] AML ready=1 .* error=0$' "$b2" || fail "boot 2: background AML discovery did not complete"
+grep -aq '^\[power\] EC bound=[0-9][0-9]* error=0$' "$b2" || fail "boot 2: no successful EC discovery snapshot"
+echo "PASS: AML and EC discovery completed at boot without a power request"
+
 if grep -aq "\[fs\] log: replayed" "$b2"; then
     fail "boot 2: '[fs] log: replayed' appeared -- a CLEAN poweroff left the journal something to finish, so the shutdown was not actually clean"
 fi

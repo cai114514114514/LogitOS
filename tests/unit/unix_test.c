@@ -20,7 +20,7 @@
  * unaccepted connection, a half-closed direction, a recycled slot) are not
  * reachable from the syscall face without a kernel around it.
  *
- * THE STUB THAT MATTERS is tests/unit/unixstub/kernel/core/wait.h -- read its
+ * THE STUB THAT MATTERS is tests/unit/unixstub/kernel/sync/wait.h -- read its
  * header before adding a blocking case. It turns "this thread parks" into "the
  * other process acts", counts the parks so a test can prove the call really
  * blocked, and ABORTS on a wait nothing satisfies, which is what makes a
@@ -42,7 +42,7 @@ long  ustub_live_allocs = 0;
  * c/net is spelled through include/weaksym.h, whose Mach-O half is a weak
  * DEFINITION of a trapping stub that a real provider overrides -- across
  * objects. This file concatenates the provider (the ksig_* bodies in
- * tests/unit/unixstub/kernel/core/wait.h, which count the SIGPIPEs the
+ * tests/unit/unixstub/kernel/sync/wait.h, which count the SIGPIPEs the
  * `write to a dead peer` checks read back) into the SAME translation unit as
  * unix.c, so both would land in one assembly file: "symbol
  * '_ksig_post_current' is already defined". Suppressing the stub is the right

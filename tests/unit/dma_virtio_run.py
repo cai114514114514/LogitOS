@@ -42,7 +42,7 @@ def run(negative=None):
         out = Path(td)
         for p in (ROOT/'c/drivers/virtio').glob('*.[ch]'):
             shutil.copy2(p, out/p.name)
-        shutil.copy2(ROOT/'c/kernel/gui/fb/fb/fb.c',out/'fb.c')
+        shutil.copy2(ROOT/'c/kernel/gui/fb/fb.c',out/'fb.c')
         if negative:
             name, old, new, evidence = CONTROLS[negative]
             p=out/name; text=p.read_text()
@@ -55,7 +55,7 @@ def run(negative=None):
              '-O1','-g','-Wall','-Wextra','-Wno-unused-parameter','-Wno-unused-variable',
              '-fsanitize=address,undefined','-I'+str(out)]
         cmd += ['-I'+str(ROOT/d) for d in dirs]
-        cmd += [str(ROOT/'tests/unit/dma_virtio_test.c'),str(ROOT/'c/drivers/core/dma.c'),str(out/'fb.c'),str(ROOT/'c/kernel/gui/fb/fb/glass.c'),*[str(p) for p in sorted((ROOT/'c/lib/gfx').glob('*.c'))],'-lm','-o',str(out/'test')]
+        cmd += [str(ROOT/'tests/unit/dma_virtio_test.c'),str(ROOT/'c/drivers/core/dma.c'),str(out/'fb.c'),str(ROOT/'c/kernel/gui/fb/glass.c'),*[str(p) for p in sorted((ROOT/'c/lib/gfx').glob('*.c'))],'-lm','-o',str(out/'test')]
         subprocess.run(cmd,check=True,cwd=ROOT)
         env=dict(os.environ);env['ASAN_OPTIONS']='detect_leaks=0'
         r=subprocess.run([str(out/'test')],text=True,capture_output=True,env=env)

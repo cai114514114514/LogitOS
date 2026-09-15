@@ -18,8 +18,8 @@
 
 set -u
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-# Exercise parser refusals before booting: only complete CLI records separated
-# by known kernel diagnostics may join, never arbitrary decimal fragments.
+# Exercise parser refusals before booting: only one complete CLI result plus its
+# exact SHA-256 may pass; known diagnostics may separate writes, never digits.
 python3 "$ROOT/tests/unit/dma_nic_parse_test.py" || exit 1
 
 ISO="${1:?usage: run-nic-test.sh <iso> <disk.img> <qemu-device> <driver-name>}"
@@ -83,7 +83,7 @@ PORT="$(cat "$PORTFILE")"
 QPID=$!
 
 for _ in $(seq 1 400); do
-    grep -aq "fnv1a" "$LOG" && break
+    grep -aq "sha256 611253a4531dea3d840789b4f11a1ad9c4329fbbf85ee1634f2ae601e6da6db0" "$LOG" && break
     kill -0 "$QPID" 2>/dev/null || break
     sleep 0.1
 done
@@ -109,7 +109,8 @@ BOUND="$(grep -ao '\[net\] NIC bound: .*' "$LOG" | head -1 | \
 grep -aq "\[dhcp\] bound 10.0.2.15" "$LOG" || fail "driver '$DRV' bound but got no DHCP lease"
 # Keep LOG untouched. The guest's separate write syscalls can be interleaved by
 # e.g. "[mm] fork...": the old one-line grep rejected a real 32768-byte reply.
-# The parser requires rc=0/status=2 AND exact length/hash, and only removes known
+# The ring-3 CLI emits these records only after HTTP framing and a 2xx status
+# succeed.  Require exact length, FNV and SHA-256, and only permit known
 # diagnostic records between complete write tokens (never inside a number).
 python3 "$ROOT/tests/boot/nic_http_result.py" "$LOG" || fail "DHCP lease taken but the exact HTTP body/checksum was not observed"
 

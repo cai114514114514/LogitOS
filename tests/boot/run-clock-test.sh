@@ -14,6 +14,8 @@
 #
 # Same shape as run-video-test.sh: boot, run one program, compare a printed
 # value. Portable -- no `timeout` dependency, polls the log.
+# Correction to "100x" above: a 100 Hz tick represents 10 ms; the native
+# control returns ticks and must therefore fail at one tenth of the real rate.
 
 set -u
 
@@ -22,10 +24,11 @@ DISK="${2:?usage: run-clock-test.sh <iso> <disk.img>}"
 QEMU="${QEMU:-qemu-system-x86_64}"
 
 LOG="$(mktemp)"
+READINGS="$(mktemp)"
 cleanup() {
     [ -n "${QPID:-}" ] && kill "$QPID" 2>/dev/null
     [ -n "${QPID:-}" ] && wait "$QPID" 2>/dev/null
-    rm -f "$LOG"
+    rm -f "$LOG" "$READINGS"
 }
 trap cleanup EXIT
 
@@ -33,7 +36,11 @@ trap cleanup EXIT
 # -rtc base=localtime: the guest RTC follows the host clock, which is the whole
 # point -- the wall clock has to be an independent time source, not another view
 # of the same tick counter.
-{ sleep 4; printf 'as /usr/as/examples/monotonic.as\nexit\n'; sleep 25; } | \
+# Keep the standalone prebuilt-disk harness usable as well as make test-clock.
+# The shared source-version router selects the packaged native artifact and
+# never falls back to the retired VM when that artifact is missing.
+CLOCK_COMMAND="$(python3 tools/as_examples.py commands fsroot/as/examples/monotonic.as)" || exit 1
+{ sleep 4; printf '%s\nexit\n' "$CLOCK_COMMAND"; sleep 25; } | \
   "$QEMU" -cpu "${QEMU_CPU:-max}" -cdrom "$ISO" \
     -drive file="$DISK",format=raw,if=none,id=hd0,file.locking=off -device virtio-blk-pci,drive=hd0 \
     -boot d -snapshot -m 512M -smp 4 -accel tcg,thread=multi -rtc base=localtime \
@@ -47,49 +54,11 @@ for _ in $(seq 1 600); do
     sleep 0.1
 done
 
-LINE="$(grep -a '^MONO ' "$LOG" | tail -1 | tr -d '\r')"
-STEP="$(grep -a '^MONO-STEP ' "$LOG" | tail -1 | tr -d '\r')"
-if [ -z "$LINE" ] || [ -z "$STEP" ]; then
-    echo "FAIL: monotonic.as printed no reading"
-    echo "----- serial output (tail) -----"
+# Extract only the program records from the interleaved serial console. The
+# shared oracle checks their complete structure, arithmetic, rate and step.
+# Keeping a second copy of those bounds here previously let harnesses drift.
+grep -aE '^MONO(-STEP)? ' "$LOG" | tr -d '\r' > "$READINGS"
+if ! python3 tests/unit/as_clock_test.py "$READINGS"; then
     tail -40 "$LOG"
-    echo "--------------------------------"
     exit 1
 fi
-
-T0="$(echo "$LINE"  | awk '{print $2}')"
-T1="$(echo "$LINE"  | awk '{print $3}')"
-DELTA="$(echo "$LINE" | awk '{print $4}')"
-WALL="$(echo "$LINE"  | awk '{print $5}')"
-SPINS="$(echo "$LINE" | awk '{print $6}')"
-S0="$(echo "$STEP"  | awk '{print $2}')"
-S1="$(echo "$STEP"  | awk '{print $3}')"
-
-fail() { echo "FAIL: $1"; echo "  ($LINE / $STEP)"; exit 1; }
-
-# A zero spin count means the wait loop exited on its first look at the wall
-# clock, so nothing was measured at all -- a different bug from a stopped
-# counter, and worth saying so rather than reporting "the clock did not advance".
-[ "${SPINS:-0}" -gt 100 ] 2>/dev/null || fail "the wait loop ran only ${SPINS:-?} times: the wall clock jumped, so no interval was measured"
-[ "$T1" -gt "$T0" ] 2>/dev/null || fail "the clock did not advance (t0=$T0 t1=$T1)"
-[ "$WALL" -ge 4 ] 2>/dev/null   || fail "the wall clock did not advance 4s; the cross-check is meaningless"
-
-# The RTC reports whole seconds, so WALL of them means the real elapsed time is
-# in (WALL-1, WALL+1); the extra 25% of slack is for TCG, where a loaded guest
-# can miss PIT interrupts and read SLOW -- an honest limit of an emulated tick,
-# not a unit error.
-#
-# These bounds are tight enough to catch a factor of two, which is not
-# hypothetical: the PIT was programmed in mode 3 (square wave) and the tick ran
-# at exactly 2x the requested rate for the life of the kernel, invisible because
-# every consumer was a timeout whose only specification was a comment. See
-# c/drivers/timer/pit.c.
-LO=$(( (WALL - 1) * 1000 * 3 / 4 ))
-HI=$(( (WALL + 1) * 1000 * 5 / 4 ))
-[ "$DELTA" -ge "$LO" ] 2>/dev/null || fail "delta ${DELTA}ms over ${WALL}s wall -- clock too slow (want >= ${LO})"
-[ "$DELTA" -le "$HI" ] 2>/dev/null || fail "delta ${DELTA}ms over ${WALL}s wall -- clock too fast (want <= ${HI})"
-
-[ "$S0" = "0" ] && [ "$S1" = "0" ] || fail "readings are not 10 ms aligned (t0%10=$S0 t1%10=$S1); the ABI documents a 10 ms step"
-
-echo "PASS: SYS_MONOTONIC_MS advanced ${DELTA}ms across ${WALL}s of wall clock (want ${LO}..${HI}), 10 ms aligned"
-exit 0

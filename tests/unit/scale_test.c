@@ -1,4 +1,4 @@
-/* Host unit test for the points<->device-pixel conversion in c/kernel/gui/fb/fb/fb.c.
+/* Host unit test for the points<->device-pixel conversion in c/kernel/gui/fb/fb.c.
  *
  * This compiles the REAL fb.c with stubs for the things it talks to (the VMM,
  * the text engine, virtio-gpu, the kernel heap), rather than restating the

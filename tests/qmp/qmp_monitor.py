@@ -56,7 +56,7 @@ PROBES = {
     "system":    (255, 200, 0),
 }
 
-# Window-local points out of c/apps/gui/monitor.c.
+# Window-local points out of c/apps/gui/monitor/monitor.c.
 WINW, WINH = 660, 470
 TAB_Y = 44 + 17                   # the tab strip's vertical centre
 # Tab centres. aui_tabs lays tabs out by TEXT WIDTH (tw(item) + AUI_SP(6)), so

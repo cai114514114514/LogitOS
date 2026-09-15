@@ -104,12 +104,16 @@ def run_unit_test():
          os.path.join(ROOT, "tests/unit/fb_clip_test.c"),
          os.path.join(ROOT, "c/kernel/gui/fb/fb.c"),
          os.path.join(ROOT, "c/kernel/gui/fb/glass.c")]
-        + sorted(glob.glob(os.path.join(ROOT, "c/lib/gfx/*.c")))
-        + ["-I" + os.path.join(ROOT, "c/kernel/gui"),
-           "-I" + os.path.join(ROOT, "c/lib/gfx"),
-           "-I" + os.path.join(ROOT, "c/drivers/virtio"),
-           "-I" + os.path.join(ROOT, "c/kernel/mm"),
-           "-I" + os.path.join(ROOT, "c/lib/text")],
+        + sorted(glob.glob(os.path.join(ROOT, "c/lib/gfx/**/*.c"), recursive=True))
+        # c/kernel/{gui,mm} were split into subdirectories on 2026-09-15. This driver
+        # passes its own include path rather than the Makefile's INCDIRS, so each
+        # subdirectory has to be named here.
+        + ["-I" + os.path.join(ROOT, d) for d in (
+               "c/kernel/gui", "c/kernel/gui/fb", "c/kernel/gui/ime", "c/kernel/gui/input",
+               "c/lib/gfx/include", "c/lib/gfx/internal", "c/drivers/virtio",
+               "c/kernel/mm", "c/kernel/mm/phys", "c/kernel/mm/virt",
+               "c/kernel/mm/cache", "c/kernel/mm/reclaim",
+               "c/lib/text")],
         capture_output=True, text=True)
     if cc.returncode != 0:
         print(cc.stderr[-2000:])

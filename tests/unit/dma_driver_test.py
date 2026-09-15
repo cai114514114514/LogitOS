@@ -24,6 +24,14 @@ for kind,name in enumerate(names,1):
  for variant in variants:
     d=b/f'{kind}-{variant}';d.mkdir(exist_ok=True)
     txt=(r/f'c/drivers/{name}.c').read_text()
+    # The host model controls every MMIO read, completion and wait bound.  Keep
+    # the production ordering semantics while replacing x86-only instruction
+    # spellings, so Apple Silicon can execute the actual driver logic without
+    # requiring Rosetta.  The target kernel still compiles the untouched files.
+    txt=txt.replace('__asm__ volatile ("mfence" ::: "memory")',
+                    '__atomic_thread_fence(__ATOMIC_SEQ_CST)')
+    txt=txt.replace('__asm__ volatile ("pause")',
+                    '__asm__ volatile ("" ::: "memory")')
     # Leaf MMIO reads/writes only; the complete production logic is unchanged.
     txt,nread=re.subn(r'return \*\(volatile uint(8|16|32)_t\s*\*\)\(([^;]+)\);',lambda m:f'return test_read({m[2]}, {int(m[1])//8});',txt)
     txt,nwrite=re.subn(r'\*\(volatile uint(8|16|32)_t\s*\*\)\(([^;]+)\) = v;',lambda m:f'test_write({m[2]}, {int(m[1])//8}, v);',txt)
@@ -56,7 +64,7 @@ for kind,name in enumerate(names,1):
         txt=txt.replace(old,'if (0 && dev_enable_checked(dev, 0) != 0) {')
     (d/'dma_driver.inc').write_text(txt)
     cmd=[os.environ.get('CC','clang'),'-O1','-g','-ffunction-sections','-fdata-sections','-DLOGIT_HOST_TEST',f'-DDRIVER_KIND={kind}','-Wall','-Wextra','-o',str(d/'test'),str(tests/'dma_driver_test.c'),'-I'+str(d),'-I'+str(tests/'dma_driver_stub')]+['-I'+str(p) for p in incs]
-    if platform.system()=='Darwin':cmd+=['-arch','x86_64','-Wl,-dead_strip']
+    if platform.system()=='Darwin':cmd+=['-Wl,-dead_strip']
     else:cmd+=['-Wl,--gc-sections']
     if a.asan:cmd+=['-fsanitize=address,undefined']
     if kind==4:cmd+=[str(r/'c/drivers/usb/xhci_ring.c')]

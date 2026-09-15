@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
 # A machine with NO sound card must boot cleanly and go quiet.
 #
-# This is the case real hardware hits first -- most machines this kernel will
-# ever run on have no HDA controller the driver can claim, and a driver that
-# hangs, faults or refuses to boot without one is worse than no driver. So this
-# asserts the DEGRADATION, not the absence:
+# A machine may have no controller any audio driver can claim. A driver that
+# hangs, faults or refuses to boot without one is worse than no driver. This
+# checks that the system remains usable:
 #
 #   1. the kernel still reaches LOGIT_BOOT_OK,
 #   2. the audio layer says so explicitly ("no audio device found") rather than
@@ -18,10 +17,9 @@
 # Two device sets, because "no card" has two shapes and only one of them is
 # tested by passing no -device flag:
 #   SET=none   no audio hardware at all
-#   SET=other  an AC'97 present but NOT claimed by the HDA driver (class
-#              0x04/0x01 vs 0x04/0x03) -- a card we cannot drive must be as
-#              harmless as no card, and this is the case a class-match table
-#              gets wrong by being too greedy.
+#   SET=other  a virtio-sound PCI device, which has no LogitOS driver yet.
+#              An unfamiliar sound card must not be claimed by a driver with
+#              an incompatible register layout.
 set -u
 
 ISO="${1:?usage: run-audio-none-test.sh <iso> <disk.img>}"
@@ -30,7 +28,13 @@ QEMU="${QEMU:-qemu-system-x86_64}"
 
 run_one() {
     local label="$1" devs="$2"
-    local log; log="$(mktemp)"
+    local log
+    if [ -n "${AUDIO_NONE_LOG_DIR:-}" ]; then
+        mkdir -p "$AUDIO_NONE_LOG_DIR" || return 1
+        log="$(mktemp "$AUDIO_NONE_LOG_DIR/$label.XXXXXX")" || return 1
+    else
+        log="$(mktemp)" || return 1
+    fi
     local qpid
 
     { sleep 12; printf 'sndtest info\necho SHELL-STILL-ALIVE\nexit\n'; sleep 8; } | \
@@ -39,7 +43,7 @@ run_one() {
         -device virtio-blk-pci,drive=hd0 -boot d -snapshot \
         -m 512M -smp 4 -accel tcg,thread=multi -vga none -device virtio-gpu-pci \
         -netdev user,id=n0 -device e1000,netdev=n0 $devs \
-        -serial stdio -display none -no-reboot >"$log" 2>/dev/null &
+        -serial stdio -display none -no-reboot >"$log" 2>"$log.stderr" &
     qpid=$!
 
     for _ in $(seq 1 250); do
@@ -66,17 +70,20 @@ run_one() {
 
     [ "$bad" = 0 ] && echo "ok  [$label] booted, reported no device, degraded to silence"
     [ "$bad" != 0 ] && { echo "----- serial -----"; tail -40 "$log"; }
-    rm -f "$log"
+    if [ -n "${AUDIO_NONE_LOG_DIR:-}" ]; then
+        echo "    serial evidence: $log"
+    else
+        rm -f "$log" "$log.stderr"
+    fi
     return $bad
 }
 
 fail=0
 run_one none  ""              || fail=1
-# An AC'97 is class 0x04 subclass 0x01. The HDA driver matches 0x04/0x03, so it
-# must NOT bind here -- if it does, the machine has a driver talking HDA
-# registers to an AC'97, which is exactly the failure a class match without a
-# subclass produces.
-run_one other "-device AC97"  || fail=1
+# AC'97 and ES1370 now have drivers, so neither is an absence control. Keep
+# this test independent of host speakers by giving the unsupported card a
+# silent backend.
+run_one other "-audiodev none,id=unsupported -device virtio-sound-pci,audiodev=unsupported" || fail=1
 
 [ "$fail" != 0 ] && exit 1
 echo "PASS: no sound card, and a card we do not drive, both degrade to silence"

@@ -4,7 +4,7 @@
 #ifndef AS_COMPLETE_TEST
 #define AS_COMPLETE_TEST
 #endif
-#include "complete.h"
+#include "editor/completion.h"
 
 static int fails = 0, checks = 0;
 #define CHECK(c, msg) do { checks++; if (!(c)) { fails++; printf("FAIL: %s\n", msg); } } while (0)

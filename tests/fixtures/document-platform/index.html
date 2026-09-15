@@ -1,0 +1,44 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Document platform regression</title>
+<h1>Document platform regression</h1>
+<p id="result">Waiting for fetch, XHR and observer</p>
+<p id="observed">original</p>
+<label>Input check <input id="entry" oninput="console.log('PLATFORM-INPUT:'+this.value)"></label>
+<script>
+/* Ordinary top-level Web APIs. This does not claim an active iframe test. */
+var result = document.getElementById('result');
+var target = document.getElementById('observed').firstChild;
+var observer = new MutationObserver(function (records) {
+  if (records.length !== 1 || records[0].target !== target || records[0].oldValue !== 'original') {
+    result.textContent = 'FAIL: observer record';
+    console.log('PLATFORM-GUEST-FAIL:observer');
+    return;
+  }
+  result.textContent = 'Fetch, XHR, timer and observer passed';
+  console.log('PLATFORM-GUEST-PASS');
+  observer.disconnect();
+});
+observer.observe(target, {characterDataOldValue: true});
+var xhrBody = new Promise(function (resolve, reject) {
+  var request = new XMLHttpRequest();
+  request.open('GET', 'body.txt');
+  request.onload = function () {
+    if (request.status === 200) resolve(request.responseText.trim());
+    else reject(new Error('XHR status'));
+  };
+  request.onerror = function () { reject(new Error('XHR network')); };
+  request.send();
+});
+Promise.all([fetch('body.txt').then(function (r) {
+  if (!r.ok) throw new Error('fetch status');
+  return r.text();
+}), xhrBody]).then(function (values) {
+  if (values[0].trim() !== 'document-network-ok' || values[1] !== 'document-network-ok')
+    throw new Error('response bytes');
+  setTimeout(function () { target.data = 'Network and native mutation delivered'; }, 10);
+}).catch(function (error) {
+  result.textContent = 'FAIL: ' + error;
+  console.log('PLATFORM-GUEST-FAIL:' + error);
+});
+</script>

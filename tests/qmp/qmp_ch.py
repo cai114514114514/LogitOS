@@ -656,7 +656,15 @@ def run_stream(g, port):
     # THE REPAINT BOUND. 200 of those tokens went out with no delay at all; a
     # window that repainted per token would have drawn 224 frames.
     ms = int(kv.get("ms", "0"))
-    rep = int(kv.get("repaints", "0"))
+    total_rep = int(kv.get("repaints", "0"))
+    motion_rep = int(kv.get("motion_repaints", "-1"))
+    chk(0 <= motion_rep <= total_rep, "guest distinguishes pure animation frames from transcript frames")
+    rep = total_rep - max(0, motion_rep)
+    # The original assertion counted every frame. Once the SDK spinner is
+    # alive during pauses between tokens, a slow response can legitimately
+    # contain more animation frames than tokens. Keep the total visible, and
+    # apply the token-budget assertions to frames carrying transcript work.
+    print("      total frames %d, pure animation %d, remaining %d" % (total_rep, motion_rep, rep))
     bound = ms // 40 + 20
     print("      repaint budget: %d repaints for %d deltas over %d ms "
           "(bound %d, skipped %s)" % (rep, len(TOKENS), ms, bound, kv.get("skipped")))
@@ -678,6 +686,65 @@ def run_stream(g, port):
         chk('"stream":true' in body.replace(" ", ""), "the body asked for stream:true")
         chk('"mock-stream-1"' in body, "the body carried the configured model")
         chk('"role":"user"' in body, "the body carried the user turn")
+
+    run_scroll(g)
+
+
+def run_scroll(g):
+    """The real idle Chat loop must continue a wheel leg without another key.
+
+    Compare exact translated transcript pixels, excluding chrome/caret. A
+    changed screenshot alone could be a spinner, selection or the wall clock.
+    """
+    matches = list(WINRE.finditer(g.snap()))
+    if not matches:
+        g.die("no Chat geometry for scrolling")
+    m = matches[-1]
+    fx, fy, fh, cw, chh = (int(m.group(i)) for i in (2, 3, 5, 6, 7))
+    cy = fy + fh - chh
+    x0, x1, y0, y1 = fx + 20, fx + cw - 20, cy + 58, cy + chh - 80
+    stride = (x1 - x0) * 3
+
+    def pixels(im):
+        return b"".join(im.px[(y*im.w+x0)*3:(y*im.w+x1)*3] for y in range(y0, y1))
+
+    def fast_shot(name):
+        path = os.path.join(g.shots, name + ".ppm")
+        result = g.cmd({"execute": "screendump", "arguments": {"filename": path}})
+        if not isinstance(result, dict) or "return" not in result:
+            g.die("scroll scanout capture failed: %r" % result)
+        return PPM(path)
+
+    def wheel(button):
+        g.cmd({"execute": "input-send-event", "arguments": {"events": [
+            {"type": "btn", "data": {"button": button, "down": True}},
+            {"type": "btn", "data": {"button": button, "down": False}}]}})
+
+    g.goto(fx + cw//2, cy + 180)
+    base = pixels(g.screendump("ch-scroll-before"))
+    wheel("wheel-up")
+    intermediate = None
+    until = time.monotonic() + 1.5
+    while time.monotonic() < until:
+        im = fast_shot("ch-scroll-probe")
+        current = pixels(im)
+        if current != base and any(current[d*stride:] == base[:-d*stride] for d in range(1, 48)):
+            intermediate = im
+            break
+        time.sleep(.005)
+    chk(intermediate is not None, "idle Chat displays a real intermediate wheel-scroll frame")
+    if intermediate:
+        intermediate.to_png(os.path.join(g.shots, "ch-scroll-intermediate.png"))
+    g.pump(.5)
+    final = g.screendump("ch-scroll-endpoint")
+    moved = pixels(final)
+    chk(moved != base and moved[48*stride:] == base[:-48*stride],
+        "Chat reaches the full 48-pixel scroll endpoint without another input")
+    final.to_png(os.path.join(g.shots, "ch-scroll-endpoint.png"))
+    wheel("wheel-down")
+    g.pump(.5)
+    chk(pixels(g.screendump("ch-scroll-returned")) == base,
+        "Chat reverse scroll restores the exact transcript pixels")
 
 
 def run_failures(g, port):

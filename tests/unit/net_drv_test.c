@@ -244,6 +244,14 @@ static void test_match_tables(void)
           "82545EM binds the e1000 driver");
     CHECK(resolve(0x8086, 0x1004) && !strcmp(resolve(0x8086, 0x1004), "e1000"),
           "82544GC binds the e1000 driver");
+    CHECK(resolve(0x8086, 0x1015) && !strcmp(resolve(0x8086, 0x1015), "e1000"),
+          "82540EM LOM binds the same 82540 MAC backend");
+    CHECK(resolve(0x8086, 0x1016) && !strcmp(resolve(0x8086, 0x1016), "e1000"),
+          "82540EP LOM binds the same 82540 MAC backend");
+    CHECK(resolve(0x8086, 0x1017) && !strcmp(resolve(0x8086, 0x1017), "e1000"),
+          "82540EP binds the same 82540 MAC backend");
+    CHECK(resolve(0x8086, 0x101E) && !strcmp(resolve(0x8086, 0x101E), "e1000"),
+          "82540EP low-profile binds the same 82540 MAC backend");
     /* Formerly both cards were unclaimed. Include the new real tables in
      * this resolver too: merely #including net_ids.inc left these tests green
      * while the production driver registry had already changed. */
@@ -275,11 +283,15 @@ static void test_match_tables(void)
     struct device newer = { .bus_type = DEV_BUS_PCI, .vendor = 0x8086, .device = 0x10D3 };
     CHECK(!dev_match_table(e1000_ids, &newer), "82574L is NOT claimed by the legacy e1000 driver");
     CHECK(!resolve(0x8086, 0x153B), "PCH I217-V is not claimed by the 82574 driver");
+    CHECK(!resolve(0x8086, 0x1559), "PCH I218-V is not claimed by the PCH2 driver");
     CHECK(!resolve(0x8086, 0x15B8), "PCH I219-V is not claimed by the 82574 driver");
     CHECK(!resolve(0x8086, 0x1533), "igb I210 is not claimed by the 82574 driver");
+    CHECK(!resolve(0x8086, 0x15F3), "igc I225-V is not claimed by an e1000-family driver");
+    CHECK(!resolve(0x8086, 0x125C), "igc I226-V is not claimed by an e1000-family driver");
     CHECK(!resolve(0x1AF4, 0x1001), "virtio-blk is not a NIC");
     CHECK(!resolve(0x1AF4, 0x1050), "virtio-gpu is not a NIC");
     CHECK(!resolve(0x10EC, 0x8129), "the RTL8129 is not claimed");
+    CHECK(!resolve(0x10EC, 0x8125), "RTL8125 is not claimed by the older RTL8169 backend");
     CHECK(!resolve(0x1234, 0x1111), "QEMU's stdvga is not a NIC");
     CHECK(!resolve(0x10EC, 0x8029), "an ne2k_pci (10EC:8029) is left unclaimed");
     CHECK(!resolve(0xFFFF, 0xFFFF), "an absent PCI slot matches nothing");

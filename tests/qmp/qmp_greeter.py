@@ -62,7 +62,7 @@ QEMU = os.environ.get("QEMU", "qemu-system-x86_64")
 PW = "correct-horse-battery"
 BADPW = "correct-horse-batteru"
 
-PROBE = (0x00, 0xE5, 0xC8)          # c/apps/gui/greeter.c
+PROBE = (0x00, 0xE5, 0xC8)          # c/apps/gui/greeter/greeter.c
 XRES, YRES = 1280, 800
 
 fails = []
@@ -217,7 +217,7 @@ def main():
         ck(box is not None, "the greeter is ON SCREEN (its probe is in the frame)")
 
         # The password field, in device pixels. Derived the same way the greeter
-        # derives it (c/apps/gui/greeter.c paint()), from the screen size, at
+        # derives it (c/apps/gui/greeter/greeter.c paint()), from the screen size, at
         # scale 100 -- so this is a band of the картинка and not a magic number:
         #   card 380x250 centred, field at card-local (28, 178) size (324, 36).
         cw, ch = 380, 250

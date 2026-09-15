@@ -23,6 +23,15 @@ FS_FILES    := $(filter-out fsroot/fonts fsroot/as,$(wildcard fsroot/*))
 # AetherScript layout: example scripts (source, run directly) vs library modules
 # (precompiled to .la). Packed to /usr/as/examples/ and /usr/as/lib/ respectively.
 AS_EXAMPLES := $(wildcard fsroot/as/examples/*.as)
+# A3 source stays available for editing, with a native artifact beside it in
+# /usr/as/bin. A malformed declaration must fail the build rather than silently
+# producing an empty native inventory (GNU make ignores shell exit status).
+AS_NATIVE_EXAMPLES := $(shell python3 tools/as_examples.py sources $(AS_EXAMPLES) || echo AS_EXAMPLE_SELECTION_FAILED)
+ifneq ($(filter AS_EXAMPLE_SELECTION_FAILED,$(AS_NATIVE_EXAMPLES)),)
+$(error Could not classify AetherScript examples; see the declaration error above)
+endif
+AS_NATIVE_EXAMPLE_AEX := $(patsubst fsroot/as/examples/%.as,$(BUILD)/as-native/%.aex,$(AS_NATIVE_EXAMPLES))
+AS_NATIVE_EXAMPLE_PACK := $(foreach e,$(AS_NATIVE_EXAMPLE_AEX),$(e):/usr/as/bin/$(notdir $(e)))
 AS_LIB_SRCS := $(wildcard fsroot/as/lib/*.as)
 # Rewritten native library sources stay in the original directory. A2 callers
 # temporarily use frozen bytecode for these names; compiling A3 through the VM
@@ -93,7 +102,10 @@ QEMU        := qemu-system-x86_64
 #     `#include "sched.h"` can ever see. Put any FUTURE userland-only header
 #     whose basename collides with a kernel header here, not at the top level
 #     of c/apps/libc/include -- see UCFLAGS below for the matching -I.
-INCDIRS := $(addprefix -I,$(filter-out %/include/sys %/include/uonly,$(sort $(shell find c include -type d))))
+# AS compiler internals use paths relative to c/apps/as, not a public flat
+# include namespace. Its runtime/file.h otherwise shadows the kernel's file.h
+# in kmain and every other out-of-directory file consumer after a clean build.
+INCDIRS := $(addprefix -I,$(filter-out %/include/sys %/include/uonly c/apps/as/%,$(sort $(shell find c include -type d))))
 # Host-built unit tests compile kernel sources against the host libc: the
 # mini-libc headers (c/apps/libc/include) would shadow glibc's <features.h>
 # and break <stdint.h>, so host tests use INCDIRS without that dir.
@@ -102,6 +114,37 @@ INCDIRS := $(addprefix -I,$(filter-out %/include/sys %/include/uonly,$(sort $(sh
 # every rule that needs it would be the hand-copied-source-list failure CLAUDE.md
 # names, one level down. Add a directory here, not in sixteen recipes.
 FS_INC := -Ic/fs/vfs -Ic/fs/logitfs -Ic/fs/cache -Ic/fs/ramfs -Ic/fs/ctl -Ic/fs/procfs
+
+# Same rule as FS_INC above, and it earned its own line the same way: c/kernel/core
+# was split on 2026-09-15 and the first fix pasted four -I flags into thirty-five
+# recipes before this variable replaced them. Add a directory here.
+KCORE_INC := -Ic/kernel/core -Ic/kernel/init -Ic/kernel/diag -Ic/kernel/sync
+
+# The same variable, four more times: c/kernel/{cpu,exec,mm,gui} were split into
+# subdirectories on 2026-09-15. INCDIRS is a `find`, so the KERNEL build picked the
+# new directories up with no edit at all -- these exist only for the HOST gates,
+# which deliberately pass a narrow -I set instead of INCDIRS. That narrowness is
+# the point (a host test that can see every header proves nothing about what its
+# translation units actually need), and it is also why the list cannot be derived:
+# it has to be written down once. Sixty-nine recipes spelled `-Ic/kernel/cpu` and
+# friends before these four lines replaced them. Add a directory here, not there.
+KCPU_INC  := -Ic/kernel/cpu -Ic/kernel/cpu/acpi -Ic/kernel/cpu/irq -Ic/kernel/cpu/smp
+KEXEC_INC := -Ic/kernel/exec -Ic/kernel/exec/load -Ic/kernel/exec/signal -Ic/kernel/exec/fd
+KMM_INC   := -Ic/kernel/mm -Ic/kernel/mm/phys -Ic/kernel/mm/virt -Ic/kernel/mm/cache -Ic/kernel/mm/reclaim
+KGUI_INC  := -Ic/kernel/gui -Ic/kernel/gui/fb -Ic/kernel/gui/ime -Ic/kernel/gui/input
+
+# The -iquote spelling of the same five lists, DERIVED rather than retyped. Five
+# host fragments pass `$(KEXEC_IQ)` and friends instead of -I (-iquote
+# applies to "..." includes only, which is the narrower and better choice for a
+# host gate). Writing those subdirectory lists out a second time would be one jar
+# with two doors -- the exact failure CLAUDE.md's third rule names -- so they are
+# a patsubst over the list above. Add a directory to the -I line; this follows.
+KCPU_IQ  := $(patsubst -I%,-iquote %,$(KCPU_INC))
+KEXEC_IQ := $(patsubst -I%,-iquote %,$(KEXEC_INC))
+KMM_IQ   := $(patsubst -I%,-iquote %,$(KMM_INC))
+KGUI_IQ  := $(patsubst -I%,-iquote %,$(KGUI_INC))
+KCORE_IQ := $(patsubst -I%,-iquote %,$(KCORE_INC))
+FS_IQ    := $(patsubst -I%,-iquote %,$(FS_INC))
 
 HOST_INCDIRS := $(filter-out -Ic/apps/libc/include,$(INCDIRS))
 
@@ -183,7 +226,7 @@ endif
 ifeq ($(FILECLOSEOK),1)
 CFLAGS += -DFILE_CLOSE_ALWAYS_OK
 endif
-#   make GLASSSLOW=1  build fb_liquid_glass_cut (c/kernel/gui/fb/fb/fb.c) with the
+#   make GLASSSLOW=1  build fb_liquid_glass_cut (c/kernel/gui/fb/fb.c) with the
 #                  binary-search row-dominant run collapsed out, i.e. every
 #                  pixel of a glass panel re-walks the general per-pixel path
 #                  (isqrt + SDF + normal) that the row/column hoisting in this
@@ -399,8 +442,19 @@ RING3_NET := c/net/http/cookies.c c/net/http/http1.c c/net/http/hpool.c \
 # directory out of the kernel, including files added by later SDK revisions.
 C_SRC   := $(filter-out c/lib/gfx3d/% c/lib/image/inflate.c c/lib/image/png.c c/lib/image/svg.c $(wildcard c/lib/video/*.c) $(wildcard c/lib/audio/*.c) $(wildcard c/lib/media/*.c) $(wildcard c/lib/nn/*.c) $(wildcard c/lib/agent/*.c) $(RING3_NET),$(shell find c/kernel c/drivers c/lib c/fs c/net c/crypto -name '*.c'))
 ASM_SRC := $(wildcard c/boot/*.asm)
+# uACPI is kept outside c/: its generic io.h/types.h names must not enter the
+# kernel's recursive include search. Only the interpreter and its adapter see
+# these headers. Include its sources before OBJ and target prerequisites expand.
+C_SRC += $(wildcard third_party/uacpi/source/*.c)
 OBJ     := $(patsubst %.c,$(BUILD)/%.o,$(C_SRC)) \
            $(patsubst %.asm,$(BUILD)/%.o,$(ASM_SRC))
+
+# Bound firmware AML loops and recursion on the kernel stack. The interpreter
+# and adapter must compile with identical configuration values.
+UACPI_CFLAGS := -Ithird_party/uacpi/include \
+                -DUACPI_DEFAULT_LOOP_TIMEOUT_SECONDS=2 \
+                -DUACPI_DEFAULT_MAX_CALL_STACK_DEPTH=64
+$(BUILD)/third_party/uacpi/source/%.o $(BUILD)/c/drivers/power/%.o: CFLAGS += $(UACPI_CFLAGS)
 
 # --- Hybrid C+Rust: a no_std staticlib (rust/) linked with the C objects. Rust
 # owns the memory-safety-critical untrusted-input parsers; C owns the core. Use
@@ -522,29 +576,31 @@ CLIDIR := c/apps/coreutils
 # that draws a shape: every GUI app through aui, plus the browser's painter.
 # It links no libc -- clock.aex is crt0 + aui + this and nothing else -- so it
 # has to stay that way; a stray memset would break six apps at link time.
-GFX_SRC := $(sort $(wildcard c/lib/gfx/*.c))
+GFX_SRC := $(sort $(shell find c/lib/gfx -name '*.c'))
+GFX_HEADERS := $(sort $(shell find c/lib/gfx -name '*.h'))
+GFX_INC := $(addprefix -I,$(sort $(dir $(GFX_HEADERS))))
 GFX_OBJ := $(patsubst c/lib/gfx/%.c,$(BUILD)/apps/gfx_%.o,$(GFX_SRC))
-$(BUILD)/apps/gfx_%.o: c/lib/gfx/%.c c/lib/gfx/gfx.h
-	@mkdir -p $(BUILD)/apps
+$(BUILD)/apps/gfx_%.o: c/lib/gfx/%.c $(GFX_HEADERS)
+	@mkdir -p $(dir $@)
 	$(CC) $(UCFLAGS) -c $< -o $@
 
 # the aui widget toolkit (immediate-mode), compiled once + linked into every GUI app
-$(BUILD)/apps/aui.o: $(GUIDIR)/aui.c $(GUIDIR)/aui.h $(APPDIR)/logit.h c/lib/gfx/gfx.h
+$(BUILD)/apps/aui.o: $(GUIDIR)/aui.c $(GUIDIR)/aui.h $(APPDIR)/logit.h c/lib/gfx/include/gfx.h
 	@mkdir -p $(BUILD)/apps
 	$(CC) $(UCFLAGS) -c $(GUIDIR)/aui.c -o $@
 
 define APP_RULE
-$(BUILD)/$(1).elf: $(GUIDIR)/$(1).c $(APPDIR)/crt0.asm $(APPDIR)/logit.h $(GUIDIR)/aui.h $(BUILD)/apps/aui.o $(GFX_OBJ)
+$(BUILD)/$(1).elf: $(GUIDIR)/$(1)/$(1).c $(APPDIR)/crt0.asm $(APPDIR)/logit.h $(GUIDIR)/aui.h $(BUILD)/apps/aui.o $(GFX_OBJ)
 	@mkdir -p $(BUILD)/apps
 	$(ASM) -f elf64 $(APPDIR)/crt0.asm -o $(BUILD)/apps/$(1).crt0.o
-	$(CC) $(UCFLAGS) -c $(GUIDIR)/$(1).c -o $(BUILD)/apps/$(1).o
+	$(CC) $(UCFLAGS) -c $(GUIDIR)/$(1)/$(1).c -o $(BUILD)/apps/$(1).o
 	$$(LD) -nostdlib -e _start -Ttext=$(strip $(2)) -o $$@ $(BUILD)/apps/$(1).crt0.o $(BUILD)/apps/$(1).o $(BUILD)/apps/aui.o $(GFX_OBJ)
 $(BUILD)/$(1).aex: $(BUILD)/$(1).elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/$(1).elf $$@ '$(3)' $(4) '$(5)' $(6) $(7) $(8)
 endef
 
 #                     name      base       display  ext icon r   g   b   ('-' ext = none)
-$(eval $(call APP_RULE,clock,   0x40000000,Clock,-,C,100,160,255))
+include tests/clock_ui.mk
 $(eval $(call APP_RULE,textedit,0x41000000,TextEdit,txt,T,90,200,120))
 $(eval $(call APP_RULE,monitor, 0x42000000,Monitor,-,M,255,100,100))
 # Terminal is NOT built by APP_RULE any more -- it links the H.264/H.265
@@ -609,19 +665,22 @@ $(eval $(call APP_RULE,settings,0x4B000000,Settings,-,S,140,150,165))
 # that archive and never includes its implementation or owns compiler state.
 STUDIO_SRC := $(wildcard c/apps/studio/*.c)
 STUDIO_OBJ := $(patsubst c/apps/studio/%.c,$(BUILD)/apps/studio/%.o,$(STUDIO_SRC))
-$(BUILD)/apps/studio/%.o: c/apps/studio/%.c $(wildcard c/apps/studio/*.h) c/apps/as/complete.h
+$(BUILD)/apps/studio/%.o: c/apps/studio/%.c $(wildcard c/apps/studio/*.h) c/apps/as/editor/completion.h
 	@mkdir -p $(dir $@)
 	$(CC) $(UCFLAGS) -c $< -o $@
 $(BUILD)/apps/studio-engine.a: $(STUDIO_OBJ)
 	$(AGENT_AR) rcs $@ $(STUDIO_OBJ)
-$(BUILD)/apps/complete.o: c/apps/as/complete.c c/apps/as/complete.h
-	@mkdir -p $(BUILD)/apps
-	$(CC) $(UCFLAGS) -c c/apps/as/complete.c -o $@
-$(BUILD)/studio.elf: $(GUIDIR)/studio.c $(APPDIR)/crt0.asm $(APPDIR)/logit.h $(GUIDIR)/aui.h $(BUILD)/apps/aui.o $(GFX_OBJ) $(BUILD)/apps/studio-engine.a $(BUILD)/apps/complete.o c/apps/studio/engine.h $(wildcard c/apps/studio/studio_*.inc)
+# Keep the object path aligned with the moved source. Reusing apps/complete.o
+# also imports its old .d prerequisite, c/apps/as/complete.c; -MP only protects
+# removed headers, so existing build trees would fail before recompilation.
+$(BUILD)/apps/as/editor/completion.o: c/apps/as/editor/completion.c c/apps/as/editor/completion.h
+	@mkdir -p $(dir $@)
+	$(CC) $(UCFLAGS) -c c/apps/as/editor/completion.c -o $@
+$(BUILD)/studio.elf: $(GUIDIR)/studio/studio.c $(APPDIR)/crt0.asm $(APPDIR)/logit.h $(GUIDIR)/aui.h $(BUILD)/apps/aui.o $(GFX_OBJ) $(BUILD)/apps/studio-engine.a $(BUILD)/apps/as/editor/completion.o c/apps/studio/engine.h $(wildcard c/apps/studio/studio_*.inc)
 	@mkdir -p $(BUILD)/apps
 	$(ASM) -f elf64 $(APPDIR)/crt0.asm -o $(BUILD)/apps/studio.crt0.o
-	$(CC) $(UCFLAGS) -c $(GUIDIR)/studio.c -o $(BUILD)/apps/studio.o -Ic/apps/as
-	$(LD) -nostdlib -e _start -Ttext=0x49000000 -o $@ $(BUILD)/apps/studio.crt0.o $(BUILD)/apps/studio.o $(BUILD)/apps/aui.o $(GFX_OBJ) $(BUILD)/apps/studio-engine.a $(BUILD)/apps/complete.o
+	$(CC) $(UCFLAGS) -c $(GUIDIR)/studio/studio.c -o $(BUILD)/apps/studio.o -Ic/apps/as
+	$(LD) -nostdlib -e _start -Ttext=0x49000000 -o $@ $(BUILD)/apps/studio.crt0.o $(BUILD)/apps/studio.o $(BUILD)/apps/aui.o $(GFX_OBJ) $(BUILD)/apps/studio-engine.a $(BUILD)/apps/as/editor/completion.o
 $(BUILD)/studio.aex: $(BUILD)/studio.elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/studio.elf $@ 'Code Studio' as '{' 200 160 250
 
@@ -855,7 +914,7 @@ CLI_AEX += $(BUILD)/login.aex
 # (acct_check_password in c/apps/coreutils/accounts.h), one control for both
 # doors. The stamp forces the rebuild; see the LOGIN_NEGCTL comment above for
 # why a flag that does not force one is a control that is a lie.
-GREETER_CSRC := c/apps/gui/greeter.c c/crypto/kdf/pbkdf2.c \
+GREETER_CSRC := c/apps/gui/greeter/greeter.c c/crypto/kdf/pbkdf2.c \
                 c/crypto/hash/hmac_hkdf.c c/crypto/hash/sha256.c c/crypto/hash/sha384.c
 GREETER_OBJ  := $(patsubst %.c,$(BUILD)/greeterobj/%.o,$(GREETER_CSRC))
 GREETER_AEX  := $(BUILD)/greeter.aex
@@ -1196,6 +1255,11 @@ $(BUILD)/js-install-profile.flags: browser-install-profile-force
 	@rm -f $@.tmp
 $(BUILD)/jsobj/c/apps/browser/js_page.o: $(BUILD)/js-install-profile.flags
 $(BROWSER_JS_OBJ): JS_CF := $(BROWSER_JS_CF)
+# The embedding loader now owns JS values, but stays a pipeline consumer:
+# platform-only host source lists derive from BROWSER_JS_SRC and deliberately
+# have no network/display implementation. Give just this object the engine
+# ABI/headers without pulling the loader into those unrelated host programs.
+$(BUILD)/browserobj/c/apps/browser/passive_frame.o: UCFLAGS := $(BROWSER_JS_CF)
 
 # Diagnostic provenance must not silently survive a release rebuild, nor be
 # omitted because the object was already current. Only this producer needs it.
@@ -1248,7 +1312,7 @@ $(BUILD)/browser.aex: $(BUILD)/browser.elf tools/mkaex.py
 # --- AetherScript: /bin/as -- a ring-3 CLI program. Links the as core + mini-libc
 # (fopen/malloc/snprintf/strtod) at the common CLI base via crt0_cli. (CLI_RULE
 # can't be reused: those programs use logit.h inline syscalls, not mini-libc.) ---
-AS_C    := $(wildcard c/apps/as/*.c)
+include c/apps/as/sources.mk
 AS_LIBC := $(wildcard c/apps/libc/src/*.c)
 AS_LASM := $(wildcard c/apps/libc/src/*.asm)
 AS_OBJ  := $(patsubst %.c,$(BUILD)/asobj/%.o,$(AS_C)) \
@@ -1257,7 +1321,8 @@ AS_OBJ  := $(patsubst %.c,$(BUILD)/asobj/%.o,$(AS_C)) \
 # as.h carries AS_BC_VERSION + the opcode enum; depend on it so a version bump
 # rebuilds EVERY asobj (esp. as_bc.o, whose .c rarely changes) -- otherwise a
 # stale as_bc.o in /bin/as rejects the freshly-bumped .la files on Logit.
-AS_HDRS := $(wildcard c/apps/as/*.h c/apps/as/runtime/*.h)
+# Header and source groups now come from sources.mk. In particular, runtime/
+# belongs to generated native programs and is not part of AS_C.
 
 $(BUILD)/asobj/%.o: %.c $(AS_HDRS)
 	@mkdir -p $(dir $@)
@@ -1276,7 +1341,7 @@ $(BUILD)/asobj/%.o: %.asm
 # Correction (2026-09-15): the shared lexer and the version-3 typed frontend
 # now ship for local checks. Legacy source -> bytecode still uses asc.la;
 # compiler.c remains excluded and the old self-hosting gate checks that path.
-AS_OBJ_SHIPPED := $(filter-out $(BUILD)/asobj/c/apps/as/compiler.o,$(AS_OBJ))
+AS_OBJ_SHIPPED := $(filter-out $(BUILD)/asobj/c/apps/as/legacy/compiler.o,$(AS_OBJ))
 
 $(BUILD)/as.elf: $(AS_OBJ_SHIPPED) $(APPDIR)/crt0_cli.asm
 	@mkdir -p $(BUILD)/apps
@@ -1520,13 +1585,13 @@ $(BUILD)/audiocheck.aex: $(BUILD)/audiocheck.elf tools/mkaex.py
 # THE EXTENSION IT CLAIMS IS NOT HOW IT GETS FILES ANY MORE. `h264` is kept so
 # nothing that relied on the registry match regresses, but the association now
 # runs on content -- see opens_in_preview() in c/kernel/gui/wm.c.
-$(BUILD)/preview.elf: $(GUIDIR)/preview.c $(APPDIR)/logit.h $(VID_HDRS) \
+$(BUILD)/preview.elf: $(GUIDIR)/preview/preview.c $(APPDIR)/logit.h $(VID_HDRS) \
                       c/lib/image/img.h c/apps/coreutils/logit_sniff.h \
                       $(BUILD)/apps/crt0.o $(VID_OBJ) $(MED_OBJ) $(AUD_OBJ) \
                       $(IMGCHK_OBJ) $(GFX_OBJ) $(RUST_LIB) $(LIBM_OBJ) \
                       $(LIBC_OBJS)
 	@mkdir -p $(BUILD)/apps
-	$(CC) $(UCFLAGS) $(PREVIEW_CF) -c $(GUIDIR)/preview.c -o $(BUILD)/apps/preview.o
+	$(CC) $(UCFLAGS) $(PREVIEW_CF) -c $(GUIDIR)/preview/preview.c -o $(BUILD)/apps/preview.o
 	$(LD) -nostdlib -e _start -Ttext=0x48000000 -o $@ --start-group \
 	    $(BUILD)/apps/crt0.o $(BUILD)/apps/preview.o $(VID_OBJ) $(MED_OBJ) \
 	    $(AUD_OBJ) $(IMGCHK_OBJ) $(GFX_OBJ) $(RUST_LIB) $(LIBM_OBJ) $(LIBC_OBJS) --end-group
@@ -1547,13 +1612,13 @@ $(BUILD)/preview.aex: $(BUILD)/preview.elf tools/mkaex.py
 # audiocheck.elf rule above). Naming both here, at the moment the source that
 # calls adec_open() is added, is how this terminal avoids being the SECOND
 # time that link line does not follow the dependency.
-$(BUILD)/terminal.elf: $(GUIDIR)/terminal.c $(APPDIR)/logit.h $(CLIDIR)/logit_rich.h \
+$(BUILD)/terminal.elf: $(GUIDIR)/terminal/terminal.c $(APPDIR)/logit.h $(CLIDIR)/logit_rich.h \
                        $(CLIDIR)/logit_sniff.h $(VID_HDRS) $(AUD_HDRS) $(APPDIR)/crt0.asm \
                        $(BUILD)/apps/aui.o $(GFX_OBJ) $(VID_OBJ) $(AUD_OBJ) $(IMGCHK_OBJ) \
                        $(RUST_LIB) $(LIBM_OBJ) $(LIBC_OBJS)
 	@mkdir -p $(BUILD)/apps
 	$(ASM) -f elf64 $(APPDIR)/crt0.asm -o $(BUILD)/apps/terminal.crt0.o
-	$(CC) $(UCFLAGS) -c $(GUIDIR)/terminal.c -o $(BUILD)/apps/terminal.o
+	$(CC) $(UCFLAGS) -c $(GUIDIR)/terminal/terminal.c -o $(BUILD)/apps/terminal.o
 	$(LD) -nostdlib -e _start -Ttext=0x43000000 -o $@ --start-group \
 	    $(BUILD)/apps/terminal.crt0.o $(BUILD)/apps/terminal.o $(BUILD)/apps/aui.o $(GFX_OBJ) \
 	    $(VID_OBJ) $(AUD_OBJ) $(IMGCHK_OBJ) $(RUST_LIB) $(LIBM_OBJ) $(LIBC_OBJS) --end-group
@@ -1640,7 +1705,7 @@ MODEL_LM_ON_DISK := $(if $(MODEL_LM),$(MODEL_LM):/model.lm,)
 # added, and nested .studio recovery slots/empty folders retain their metadata.
 # The packer validates and recovers a private copy, then replaces atomically; disk_guard rejects an
 # image held by QEMU. A same-image reboot test alone cannot catch this failure.
-$(DISK): $(FS_FILES) $(AS_EXAMPLES) $(AS_LA) $(FONTS) $(FONT_TEXT) $(RELEASE_NOTICES) $(AEX) $(BUILD)/libctest.aex $(BUILD)/closefull.aex $(BUILD)/vidcheck.aex $(BUILD)/audiocheck.aex $(BUILD)/h2check.aex $(BUILD)/dot.png tools/mkfs.py $(BUILD)/imgcheck.aex $(IMG_FIXTURES) $(BUILD)/asnative.aex $(LPK_FIXTURES) $(GREETER_AEX) $(CH_AEX) $(BUILD)/lm.aex $(MODEL_LM) $(BUILD)/tcc/tcc.aex
+$(DISK): $(FS_FILES) $(AS_EXAMPLES) $(AS_LA) $(AS_NATIVE_EXAMPLE_AEX) $(FONTS) $(FONT_TEXT) $(RELEASE_NOTICES) $(AEX) $(BUILD)/ash.aex $(BUILD)/libctest.aex $(BUILD)/closefull.aex $(BUILD)/vidcheck.aex $(BUILD)/audiocheck.aex $(BUILD)/h2check.aex $(BUILD)/dot.png tools/mkfs.py $(BUILD)/imgcheck.aex $(IMG_FIXTURES) $(BUILD)/asnative.aex $(LPK_FIXTURES) $(GREETER_AEX) $(CH_AEX) $(BUILD)/lm.aex $(MODEL_LM) $(BUILD)/tcc/tcc.aex
 	@mkdir -p $(BUILD)
 	@if [ -n "$(MODEL_LM)" ]; then \
 	    sz=$$(bash tools/filesize.sh $(MODEL_LM)); \
@@ -1653,6 +1718,7 @@ $(DISK): $(FS_FILES) $(AS_EXAMPLES) $(AS_LA) $(FONTS) $(FONT_TEXT) $(RELEASE_NOT
 	    $(BUILD)/foreign.lpk:/pkg/foreign.lpk \
 	    $(BUILD)/pkgverify.aex:/bin/pkgverify \
 	    $(BUILD)/login.aex:/bin/login \
+	    $(BUILD)/as-typed-capture.aex:/bin/native-capture \
 	    $(BUILD)/sshd.aex:/bin/sshd \
 	    examples/browser/signed-report.html:/www/signed-report.html \
 	    $(GREETER_AEX):/sbin/greeter.aex \
@@ -1690,7 +1756,8 @@ $(DISK): $(FS_FILES) $(AS_EXAMPLES) $(AS_LA) $(FONTS) $(FONT_TEXT) $(RELEASE_NOT
 	    tests/fixtures/audio/sample.mp3:/media/sample.mp3 \
 	    tests/fixtures/audio/sample.flac:/media/sample.flac \
 	    tests/fixtures/audio/sample.wav:/media/sample.wav \
-	    $(foreach e,$(AS_EXAMPLES),$(e):/usr/as/examples/$(notdir $(e))) \
+	    $(BUILD)/ash.aex:/bin/ash $(foreach e,$(AS_EXAMPLES),$(e):/usr/as/examples/$(notdir $(e))) \
+	    $(AS_NATIVE_EXAMPLE_PACK) \
 	    $(foreach l,$(AS_LA),$(l):/usr/as/lib/$(notdir $(l))) \
 	    $(foreach s,$(AS_LIB_SRCS),$(s):/usr/as/lib/$(notdir $(s))) \
 	    $(BUILD)/sysroot:/ $(BUILD)/tcc/tcc.aex:/bin/tcc
@@ -2527,8 +2594,10 @@ test-evq:
 # Does the monotonic clock actually advance, at the rate it claims? Cross-checked
 # on device against the CMOS RTC, which is an independent timer -- so a tick/ms
 # confusion or a wrong PIT mode fails instead of agreeing with itself.
-test-clock: $(ISO) $(DISK)
-	@bash tests/boot/run-clock-test.sh $(ISO) $(DISK)
+# A3 migration: the old recipe launched source through /bin/as. The native
+# gate builds real AEX files and packages a private disk without a VM; it also
+# executes broken-clock controls in both optimization modes.
+test-clock: test-as-clock-guest
 
 # Drives real PS/2 input over QMP: move, press, release, right button, wheel
 # both ways, shift held, window-local coordinates -- then floods the ring and
@@ -3246,7 +3315,15 @@ test-smp: $(ISO) $(DISK)
 # completion engine (own -DAS_COMPLETE_TEST target, doesn't include as.h). This
 # used to be a hand-written list, so a new core .c built into /bin/as fine and
 # then failed to link every host test until someone remembered to add it here.
-AS_CORE := $(filter-out c/apps/as/as.c c/apps/as/complete.c,$(AS_C))
+# AS_CORE is derived in c/apps/as/sources.mk. Mutation tests query this same
+# inventory so a directory move cannot silently remove their compiler units.
+.PHONY: as-host-sources as-shipped-sources
+as-host-sources:
+	@printf '%s\n' $(AS_HOST_SOURCES)
+
+as-shipped-sources:
+	@printf '%s\n' $(filter-out c/apps/as/legacy/compiler.c,$(AS_C)) $(AS_LIBC)
+
 test-as: check-asops check-abi
 	@mkdir -p $(BUILD)
 	@$(CC) -O2 -Wall -Wextra -o $(BUILD)/as_test tests/unit/as_test.c $(AS_CORE) -Ic/apps/as -Iinclude/abi
@@ -3276,14 +3353,14 @@ check-abi:
 # as_native.c #includes the generated asserts; rebuild it when they change, or a
 # stale object would keep vouching for the old layout (cf. the roots_bundle.inc
 # gotcha, where a missing dep silently kept the old CA roots in the kernel).
-$(BUILD)/asobj/c/apps/as/as_native.o: c/apps/as/abi_layout.inc
-$(BUILD)/c/apps/as/as_native.o: c/apps/as/abi_layout.inc
+$(BUILD)/asobj/c/apps/as/legacy/builtins.o: c/apps/as/legacy/abi_layout.inc
+$(BUILD)/c/apps/as/legacy/builtins.o: c/apps/as/legacy/abi_layout.inc
 
 # libcomplete host unit tests: the completion engine is self-contained C, so it
 # builds and runs natively -- no QEMU.
 test-complete:
 	@mkdir -p $(BUILD)
-	@$(CC) -O2 -Wall -Wextra -DAS_COMPLETE_TEST -o $(BUILD)/complete_test tests/unit/complete_test.c c/apps/as/complete.c -Ic/apps/as
+	@$(CC) -O2 -Wall -Wextra -DAS_COMPLETE_TEST -o $(BUILD)/complete_test tests/unit/complete_test.c c/apps/as/editor/completion.c -Ic/apps/as
 	@$(BUILD)/complete_test
 
 # Framebuffer clip is per-target (struct surface), not global: this builds the
@@ -3322,9 +3399,9 @@ ASC := $(BUILD)/asc
 # opcode change forces asc (and therefore every .la) to rebuild. Without this
 # dep a bumped AS_BC_VERSION silently keeps stale .la files that the kernel's
 # as_load then rejects (cf. the roots_bundle.inc dep gotcha).
-$(ASC): $(AS_CORE) c/apps/as/as.c c/apps/as/as.h
+$(ASC): $(AS_CORE) c/apps/as/cli/main.c c/apps/as/legacy/vm.h
 	@mkdir -p $(BUILD)
-	$(CC) -O2 -o $@ c/apps/as/as.c $(AS_CORE) -Ic/apps/as -Iinclude/abi
+	$(CC) -O2 -o $@ c/apps/as/cli/main.c $(AS_CORE) -Ic/apps/as -Iinclude/abi
 
 # Precompile the LibLogit library modules (fsroot/as/lib/*.as) to .la (compiled
 # bytecode). -c is compile-only (no run), so even a lib with module-mate calls
@@ -3490,7 +3567,7 @@ test-malloc:
 # The tests self-stub kmalloc/kfree/img_* so they link the real pipeline
 # sources (dom/css_engine/css_vars/layout/js_dom) on the host. LibCSS is
 # archived once per build tree (libcss_host.a) and shared by the CSS tests.
-# -Ic/lib/gfx: browser_paint.c draws through Open Logit, so every host build
+# $(GFX_INC): browser_paint.c draws through Open Logit, so every host build
 # that links the painter needs the engine's header AND $(GFX_SRC) in its
 # source list. The two travel together -- adding the include without the
 # sources fails at link with five undefined gfx_* symbols.
@@ -3502,7 +3579,7 @@ test-malloc:
 # logit_exec.h, logit_pack.h, sockerr.h) are unique across c/, include/, tests/
 # and third_party/ -- checked, because CLAUDE.md's flat-include-list trap is
 # exactly a new -I shadowing a header somebody else was including by basename.
-BTEST_INC := -Ic/apps/browser -Ic/lib/image -Ic/net/http -Ic/lib/text -Ic/lib/gfx \
+BTEST_INC := -Ic/apps/browser -Ic/lib/image -Ic/net/http -Ic/lib/text $(GFX_INC) \
              -Iinclude/abi
 # The painter draws through logit.h's `int 0x80` wrappers, which a host process
 # cannot execute. tests/unit/painthost/logit.h shadows them with recorders, so
@@ -4882,7 +4959,7 @@ clean-scratch:
 # Own fragment for the same reason as every other one above.
 -include tests/mem.mk
 
-# How far is c/kernel/mm/reclaim/reclaim/reclaim/reclaim.c's clock from the offline optimum? An exact
+# How far is c/kernel/mm/reclaim/reclaim/reclaim.c's clock from the offline optimum? An exact
 # answer, from a recorded reference string and Belady MIN. The tracer is a QEMU
 # plugin, so the kernel and this ISO are untouched by it.
 -include tests/mmtrace.mk
@@ -4895,7 +4972,7 @@ clean-scratch:
 # right" that is cheap to get wrong and cheap to check.
 test-aui-mask:
 	@mkdir -p $(BUILD)
-	$(CC) -O1 -g -Wall -Wextra -Ic/apps/gui -Ic/apps -Ic/lib/gfx -Iinclude -Iinclude/abi \
+	$(CC) -O1 -g -Wall -Wextra -Ic/apps/gui -Ic/apps $(GFX_INC) -Iinclude -Iinclude/abi \
 	    -o $(BUILD)/aui_mask_test tests/unit/aui_mask_test.c $(GFX_SRC) -lm
 	$(BUILD)/aui_mask_test
 
@@ -4915,13 +4992,13 @@ test-aui-mask:
 test-glass:
 	@mkdir -p $(BUILD)
 	$(CC) -O1 -g -Wall -Wextra $(KGUI_INC) \
-	    -o $(BUILD)/glass_lut_test tests/unit/glass_lut_test.c c/lib/gfx/openlogit_glass.c -lm
+	    -o $(BUILD)/glass_lut_test tests/unit/glass_lut_test.c c/lib/gfx/effects/openlogit_glass.c -lm
 	$(BUILD)/glass_lut_test
 
 test-glass-negctl:
 	@mkdir -p $(BUILD)
 	$(CC) -O1 -g -Wall -Wextra -DGLASS_NO_DISPERSION $(KGUI_INC) \
-	    -o $(BUILD)/glass_lut_negctl tests/unit/glass_lut_test.c c/lib/gfx/openlogit_glass.c -lm
+	    -o $(BUILD)/glass_lut_negctl tests/unit/glass_lut_test.c c/lib/gfx/effects/openlogit_glass.c -lm
 	@if $(BUILD)/glass_lut_negctl > $(BUILD)/glass_negctl.log 2>&1; then \
 	    echo "NEGATIVE CONTROL FAILED: the test passes without dispersion"; exit 1; \
 	else \
@@ -4955,15 +5032,15 @@ test-aui: $(ISO) $(BUILD)/gallery.aex
 	$(MAKE) DISK=$(BUILD)/disk_gallery.img GALLERY_AEX=$(BUILD)/gallery.aex $(BUILD)/disk_gallery.img
 	bash tests/boot/run-aui-test.sh $(ISO) $(BUILD)/disk_gallery.img
 
-$(BUILD)/apps/aui_noaa.o: $(GUIDIR)/aui.c $(GUIDIR)/aui.h $(APPDIR)/logit.h c/lib/gfx/gfx.h
+$(BUILD)/apps/aui_noaa.o: $(GUIDIR)/aui.c $(GUIDIR)/aui.h $(APPDIR)/logit.h c/lib/gfx/include/gfx.h
 	@mkdir -p $(BUILD)/apps
 	$(CC) $(UCFLAGS) -DAUI_NO_AA -c $(GUIDIR)/aui.c -o $@
 
-$(BUILD)/gallery_noaa.elf: $(GUIDIR)/gallery.c $(APPDIR)/crt0.asm $(APPDIR)/logit.h \
+$(BUILD)/gallery_noaa.elf: $(GUIDIR)/gallery/gallery.c $(APPDIR)/crt0.asm $(APPDIR)/logit.h \
                            $(GUIDIR)/aui.h $(BUILD)/apps/aui_noaa.o $(GFX_OBJ)
 	@mkdir -p $(BUILD)/apps
 	$(ASM) -f elf64 $(APPDIR)/crt0.asm -o $(BUILD)/apps/gallery_noaa.crt0.o
-	$(CC) $(UCFLAGS) -c $(GUIDIR)/gallery.c -o $(BUILD)/apps/gallery_noaa.o
+	$(CC) $(UCFLAGS) -c $(GUIDIR)/gallery/gallery.c -o $(BUILD)/apps/gallery_noaa.o
 	$(LD) -nostdlib -e _start -Ttext=0x4A000000 -o $@ $(BUILD)/apps/gallery_noaa.crt0.o \
 	    $(BUILD)/apps/gallery_noaa.o $(BUILD)/apps/aui_noaa.o $(GFX_OBJ)
 $(BUILD)/gallery_noaa.aex: $(BUILD)/gallery_noaa.elf tools/mkaex.py
@@ -4990,11 +5067,11 @@ test-monitor: $(ISO) $(DISK)
 # the console shell, and (b) aims its kill at pid 0. Nothing dies and nothing is
 # refused, so the refusal assertion and all three "it is gone" assertions fail.
 # The target succeeds when the test fails.
-$(BUILD)/monitor_negctl.elf: $(GUIDIR)/monitor.c $(APPDIR)/crt0.asm $(APPDIR)/logit.h \
+$(BUILD)/monitor_negctl.elf: $(GUIDIR)/monitor/monitor.c $(APPDIR)/crt0.asm $(APPDIR)/logit.h \
                              $(GUIDIR)/aui.h $(BUILD)/apps/aui.o $(GFX_OBJ)
 	@mkdir -p $(BUILD)/apps
 	$(ASM) -f elf64 $(APPDIR)/crt0.asm -o $(BUILD)/apps/monitor_negctl.crt0.o
-	$(CC) $(UCFLAGS) -DMONITOR_NEGCTL -c $(GUIDIR)/monitor.c -o $(BUILD)/apps/monitor_negctl.o
+	$(CC) $(UCFLAGS) -DMONITOR_NEGCTL -c $(GUIDIR)/monitor/monitor.c -o $(BUILD)/apps/monitor_negctl.o
 	$(LD) -nostdlib -e _start -Ttext=0x42000000 -o $@ $(BUILD)/apps/monitor_negctl.crt0.o \
 	    $(BUILD)/apps/monitor_negctl.o $(BUILD)/apps/aui.o $(GFX_OBJ)
 $(BUILD)/monitor_negctl.aex: $(BUILD)/monitor_negctl.elf tools/mkaex.py

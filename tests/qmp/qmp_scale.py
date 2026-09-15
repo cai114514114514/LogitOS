@@ -45,7 +45,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 # qmp_ui. The tiles come off the guest's [wm] dock line now, via launch_app --
 # which also refuses to measure if the click opened anything but the named
 # app, because every check below asserts about a NAMED window.
-# Geometry the Widgets app draws, in POINTS -- read straight off c/apps/gui/widgets.c
+# Geometry the Widgets app draws, in POINTS -- read straight off c/apps/gui/widgets/widgets.c
 # and c/apps/gui/aui.c. These are the app's own numbers; the whole point is that
 # they did not change and do not have to.
 SWATCH_ERR_PT = (252, 250, 18, 18)     # hstack(AUI_PAD=16, 250, gap=28), 3rd item

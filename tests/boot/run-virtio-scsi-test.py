@@ -65,10 +65,16 @@ def run_boot(args, disk, extra, mode, boot, out):
                     '-device', 'ide-hd,drive=esp,bus=bootahci.0,bootindex=1']
         else:
             cmd += ['-cdrom', str(args.iso.resolve()), '-boot', 'd']
-        rootname = b'nvme0' if mode == 'nvme-bridge' else b'ahci0' if mode.startswith('ahci-') else b'vscsi0'
-        if mode == 'nvme-bridge':
+        rootname = b'nvme0' if mode.startswith('nvme-') else b'ahci0' if mode.startswith('ahci-') else b'vscsi0'
+        if mode in ('nvme-bridge', 'nvme-4kn'):
             cmd += ['-machine', 'q35', '-device', 'pcie-root-port,id=rp1,chassis=1,slot=1',
-                    '-device', 'nvme,drive=root,serial=storage-hardware,bus=rp1,max_ioqpairs=1']
+                    '-device', 'nvme,id=nvme,serial=storage-hardware,bus=rp1,max_ioqpairs=1']
+            # An explicit namespace exposes native 4Kn media. The guest block
+            # API still counts 512-byte sectors; the same filesystem byte
+            # oracle must survive those conversions and a second cold boot.
+            blocksize = 4096 if mode == 'nvme-4kn' else 512
+            cmd += ['-device', f'nvme-ns,drive=root,bus=nvme,nsid=1,'
+                    f'logical_block_size={blocksize},physical_block_size={blocksize}']
         elif mode.startswith('ahci-'):
             blocksize = 4096 if mode == 'ahci-4kn' else 512
             cmd += ['-device', 'ich9-ahci,id=ahci0', '-device',
@@ -149,8 +155,10 @@ def run_boot(args, disk, extra, mode, boot, out):
                         require(log, b'[efi] jump')
                     if mode in ('positive', 'transitional'):
                         require(log, b'[virtio-scsi] vscsi3 target=3 lun=0 sectors=16384')
-                    elif mode == 'nvme-bridge':
+                    elif mode in ('nvme-bridge', 'nvme-4kn'):
                         require(log, b'[nvme] queue grant=1 pair(s)')
+                        if mode == 'nvme-4kn':
+                            require(log, b'ns=1 lba=4096')
                         addresses = re.findall(rb'\[nvme\] PCI ([0-9a-f]+):([0-9a-f]+)\.([0-9]+)', log)
                         if len(addresses) != 1 or int(addresses[0][0], 16) == 0:
                             raise AssertionError('NVMe was not found beyond root PCI bus')

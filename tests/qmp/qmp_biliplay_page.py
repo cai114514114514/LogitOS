@@ -57,6 +57,10 @@ SPECIMEN = "https://www.bilibili.com/video/BV1GJ411x7h7/"
 SECS = 150
 CONTROL = ""
 TRACE_INPUT = False
+# This fixed public specimen currently primes two init segments plus nine media
+# ranges before exposing its control.  Fewer leaves the production loading
+# panel above the button even after the media element itself has fired canplay.
+LIVE_INITIAL_APPENDS = 11
 _args = sys.argv[3:]
 _i = 0
 while _i < len(_args):
@@ -447,7 +451,9 @@ shots = 0
 live_clicked = False
 live_click_error = None
 live_mounted_clicked = False
-live_keyed = False
+live_play_clicked = False
+live_append_count = 0
+live_last_append_at = 0.0
 while time.time() < end and proc.poll() is None:
     time.sleep(5)
     tail = serial_new()
@@ -482,12 +488,26 @@ while time.time() < end and proc.poll() is None:
             live_clicked = True
             print("BILIPLAY-LIVE-CLICK-FAIL " + live_click_error)
     # The lifecycle marker can precede the asynchronously mounted production
-    # player under TCG. Once the real player reaches its first SourceBuffer
-    # request, repeat the same control click once. This is still physical QMP
-    # input; no player state, quality preference, API response or media byte is
-    # changed by the harness.
-    sourcebuffer_attempt = 'addSourceBuffer("audio/mp4;codecs="mp4a.40.' in serial()
-    if (MODE == "live" and live_clicked and sourcebuffer_attempt and
+    # player under TCG. Once the real media timeline reaches `canplay` and the
+    # first DASH burst has settled, repeat the same control click once. This is
+    # still physical QMP input; no player state, quality preference, API
+    # response or media byte is changed by the harness.
+    media_log = serial()
+    media_canplay = "[media] event key=" in media_log and " canplay" in media_log
+    append_count = media_log.count("[media] appendBuffer ")
+    if append_count > live_append_count:
+        live_append_count = append_count
+        live_last_append_at = time.time()
+    # `canplay` describes the media element, not the site's overlays.  Bilibili
+    # keeps its loading panel above the control for the rest of the initial
+    # DASH burst; clicking in that interval is a confirmed physical click on
+    # the wrong DOM node.  Require the complete first burst plus one quiet
+    # observation interval.  This is still only an input precondition: the
+    # page chooses every URL/codec and its own button handles the click.
+    player_controls_settled = (media_canplay and
+                               append_count >= LIVE_INITIAL_APPENDS and
+                               time.time() - live_last_append_at >= 5.0)
+    if (MODE == "live" and live_clicked and player_controls_settled and
             not live_mounted_clicked):
         try:
             if TRACE_INPUT:
@@ -509,37 +529,56 @@ while time.time() < end and proc.poll() is None:
             ui.click_at_confirmed(
                 os.path.join(tmp, "live-mounted-click-pointer.ppm"), 202, 711)
             live_mounted_clicked = True
+            live_play_clicked = True
+            # The public page may spend nearly the whole nominal allowance on
+            # player bootstrap and its first DASH burst under TCG. A gesture
+            # delivered in the final loop iteration must still get a bounded
+            # observation window; otherwise the harness closes the tab before
+            # even one stats timer can fire and reports a false zero-frame
+            # failure. This extends only after the confirmed production-control
+            # click, never while an unresponsive page is merely waiting.
+            end = max(end, time.time() + 45.0)
             print("BILIPLAY-LIVE-MOUNTED-CLICK point=202,711 confirmed=1")
-            # The player has focus now. Space is Bilibili's documented/user
-            # playback gesture and crosses QEMU's PS/2 path like a real key;
-            # it does not call the media shim or mutate player state from the
-            # harness. Keep the click as the focus precondition and send the
-            # key only after SourceBuffers prove that the production player,
-            # rather than the early page skeleton, is the event consumer.
-            ui.key("spc", settle=0.5)
-            live_keyed = True
-            print("BILIPLAY-LIVE-PLAY-KEY key=space confirmed=1")
+            # One control activation is one toggle.  Sending Space after this
+            # click used to activate the now-focused play control a second
+            # time, pausing the video immediately after its `play()` call.
         except AssertionError as e:
             live_click_error = str(e)
             live_mounted_clicked = True
             print("BILIPLAY-LIVE-MOUNTED-CLICK-FAIL " + live_click_error)
     # Do not burn the remainder of a long public-site allowance after the
     # substantive gate is already settled. Two rising engine samples prove
-    # motion and a positive audio counter proves that decoded PCM reached the
-    # guest sound path; QEMU is then closed normally so the host WAV supplies
-    # the independent audio assertion below.
-    if MODE == "live" and live_keyed:
+    # motion, a positive audio counter proves that decoded PCM reached the
+    # guest sound path, and the renderer diagnostics must prove that a
+    # non-black decoded frame had a real on-screen box and was actually blit.
+    # This last condition is intentionally stronger than framesShown: it
+    # catches a decoded player whose positioned <video> never entered the
+    # display list -- exactly the black rectangle a person would otherwise
+    # see. QEMU is then closed normally so the host WAV supplies the
+    # independent audio assertion below.
+    if MODE == "live" and live_play_clicked:
         stats_lines = [l for l in serial().splitlines()
                        if "[media] stats" in l and "shown=" in l]
         shown_now = [int(re.search(r"shown=(\d+)", l).group(1))
                      for l in stats_lines if re.search(r"shown=(\d+)", l)]
         audio_now = [int(re.search(r"audio=(\d+)", l).group(1))
                      for l in stats_lines if re.search(r"audio=(\d+)", l)]
+        visual_now = []
+        for line in stats_lines:
+            rgb = re.search(r"rgb=(\d+)", line)
+            box = re.search(r"box=(\d+),(-?\d+),(-?\d+),(\d+),(\d+)", line)
+            blit = re.search(r"blit=(\d+)", line)
+            if rgb and box and blit:
+                visual_now.append((int(rgb.group(1)), int(box.group(1)),
+                                   int(box.group(4)), int(box.group(5)),
+                                   int(blit.group(1))))
+        visible_now = any(rgb > 10 and valid == 1 and bw > 0 and bh > 0 and n > 0
+                          for rgb, valid, bw, bh, n in visual_now)
         if (len(shown_now) >= 2 and
                 any(b > a for a, b in zip(shown_now, shown_now[1:])) and
-                any(n > 0 for n in audio_now)):
-            print("BILIPLAY-LIVE-EVIDENCE-COMPLETE shown=%s audio=%s" %
-                  (shown_now[-4:], audio_now[-4:]))
+                any(n > 0 for n in audio_now) and visible_now):
+            print("BILIPLAY-LIVE-EVIDENCE-COMPLETE shown=%s audio=%s visual=%s" %
+                  (shown_now[-4:], audio_now[-4:], visual_now[-4:]))
             break
     if DONE_MARKER and DONE_MARKER in serial():
         break
@@ -667,6 +706,16 @@ if MODE == "offline":
 media_lines = [l for l in serial().splitlines() if "[media]" in l]
 shown_samples = [int(l.split("shown=")[1].split()[0]) for l in media_lines
                  if "shown=" in l]
+visible_samples = []
+for line in media_lines:
+    rgb = re.search(r"rgb=(\d+)", line)
+    box = re.search(r"box=(\d+),(-?\d+),(-?\d+),(\d+),(\d+)", line)
+    blit = re.search(r"blit=(\d+)", line)
+    if rgb and box and blit:
+        visible_samples.append((int(rgb.group(1)), int(box.group(1)),
+                                int(box.group(2)), int(box.group(3)),
+                                int(box.group(4)), int(box.group(5)),
+                                int(blit.group(1))))
 ck(len(media_lines) > 0,
    "the page's player stack asked this browser a media question (%d [media] "
    "lines)" % len(media_lines))
@@ -679,6 +728,10 @@ ck(any(n > 0 for n in shown_samples),
 ck(any(b > a for a, b in zip(shown_samples, shown_samples[1:])),
    "framesShown ROSE on the LIVE specimen -- playback, not one frame and a "
    "stall (over time: %s)" % shown_samples)
+ck(any(rgb > 10 and valid == 1 and w > 0 and h > 0 and blits > 0
+       for rgb, valid, x, y, w, h, blits in visible_samples),
+   "a non-black decoded frame had an on-screen video box and was blit "
+   "(rgb,valid,x,y,w,h,blits: %s)" % visible_samples)
 ck(frames > 0 and loud > 1000, "audio PCM was captured on the LIVE specimen")
 ok = all(c for c, _ in checks)
 print("\nqmp_biliplay live: %d checks, %d failures" %

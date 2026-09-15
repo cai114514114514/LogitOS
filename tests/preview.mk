@@ -80,7 +80,7 @@ test-preview: $(ISO) $(DISK) $(BUILD)/previewref/.stamp
 # so a decoder-level test of the delays still passes, which is the point. If
 # the timing assertion can still pass against that build, it is not measuring
 # the player and the 1490 ms it reports is a number nobody checked.
-PREVIEW_CLI_DEPS := $(GUIDIR)/preview.c $(APPDIR)/logit.h $(VID_HDRS) \
+PREVIEW_CLI_DEPS := $(GUIDIR)/preview/preview.c $(APPDIR)/logit.h $(VID_HDRS) \
                     c/lib/image/img.h c/apps/coreutils/logit_sniff.h \
                     $(VID_OBJ) $(MED_OBJ) $(AUD_OBJ) $(IMGCHK_OBJ) $(GFX_OBJ) \
                     $(RUST_LIB) $(LIBC_OBJS) $(APPDIR)/crt0_cli.asm
@@ -88,7 +88,7 @@ PREVIEW_CLI_DEPS := $(GUIDIR)/preview.c $(APPDIR)/logit.h $(VID_HDRS) \
 $(BUILD)/previewplay.elf: $(PREVIEW_CLI_DEPS)
 	@mkdir -p $(BUILD)/apps
 	$(ASM) -f elf64 $(APPDIR)/crt0_cli.asm -o $(BUILD)/apps/previewplay.crt0c.o
-	$(CC) $(UCFLAGS) -DPREVIEW_CLI -c $(GUIDIR)/preview.c -o $(BUILD)/apps/previewplay.o
+	$(CC) $(UCFLAGS) -DPREVIEW_CLI -c $(GUIDIR)/preview/preview.c -o $(BUILD)/apps/previewplay.o
 	$(LD) -nostdlib -e _start -Ttext=0x50000000 -o $@ --start-group \
 	    $(BUILD)/apps/previewplay.crt0c.o $(BUILD)/apps/previewplay.o \
 	    $(VID_OBJ) $(MED_OBJ) $(AUD_OBJ) $(IMGCHK_OBJ) $(GFX_OBJ) $(RUST_LIB) \
@@ -99,7 +99,7 @@ $(BUILD)/previewplay.aex: $(BUILD)/previewplay.elf tools/mkaex.py
 $(BUILD)/previewnegctl.elf: $(PREVIEW_CLI_DEPS)
 	@mkdir -p $(BUILD)/apps
 	$(ASM) -f elf64 $(APPDIR)/crt0_cli.asm -o $(BUILD)/apps/previewnegctl.crt0c.o
-	$(CC) $(UCFLAGS) -DPREVIEW_CLI -DPREVIEW_NO_ANIM_TIMING -c $(GUIDIR)/preview.c \
+	$(CC) $(UCFLAGS) -DPREVIEW_CLI -DPREVIEW_NO_ANIM_TIMING -c $(GUIDIR)/preview/preview.c \
 	    -o $(BUILD)/apps/previewnegctl.o
 	$(LD) -nostdlib -e _start -Ttext=0x50000000 -o $@ --start-group \
 	    $(BUILD)/apps/previewnegctl.crt0c.o $(BUILD)/apps/previewnegctl.o \
@@ -121,12 +121,12 @@ $(BUILD)/previewnegctl.aex: $(BUILD)/previewnegctl.elf tools/mkaex.py
 # a second copy of the $(DISK) recipe -- which would rot the first time another
 # line added a file -- the recipe is asked for itself with `make -n` and one
 # argument is substituted. It cannot drift.
-$(BUILD)/previewneg.elf: $(GUIDIR)/preview.c $(APPDIR)/logit.h $(VID_HDRS) \
+$(BUILD)/previewneg.elf: $(GUIDIR)/preview/preview.c $(APPDIR)/logit.h $(VID_HDRS) \
                          c/lib/image/img.h c/apps/coreutils/logit_sniff.h \
                          $(BUILD)/apps/crt0.o $(VID_OBJ) $(MED_OBJ) $(AUD_OBJ) \
                          $(IMGCHK_OBJ) $(GFX_OBJ) $(RUST_LIB) $(LIBC_OBJS)
 	@mkdir -p $(BUILD)/apps
-	$(CC) $(UCFLAGS) -DPREVIEW_NO_ANIM_TIMING -c $(GUIDIR)/preview.c \
+	$(CC) $(UCFLAGS) -DPREVIEW_NO_ANIM_TIMING -c $(GUIDIR)/preview/preview.c \
 	    -o $(BUILD)/apps/previewneg.o
 	$(LD) -nostdlib -e _start -Ttext=0x48000000 -o $@ --start-group \
 	    $(BUILD)/apps/crt0.o $(BUILD)/apps/previewneg.o $(VID_OBJ) $(MED_OBJ) \

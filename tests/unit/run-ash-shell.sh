@@ -11,11 +11,17 @@
 #
 # The commands are the ones in tests/boot/run-shell-test.sh, rewritten only where
 # a path has to be one the host also has.
-set -u
+set -eu
 ASC="${1:?usage: run-ash-shell.sh <asc>}"
 ROOT="$PWD"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
+
+# The old command ran the source through the VM. Compile the actual shipped
+# shell first: no interpreter or frozen library cache participates at runtime.
+"$ASC" build "$ROOT/fsroot/as/examples/ash.as" \
+  --stdlib "$ROOT/fsroot/as/lib" --toolchain "$ROOT/c/apps/as/runtime" \
+  -o "$TMP/ash"
 
 mkdir -p "$TMP/docs"
 printf 'readme line one\nreadme line two\nreadme line three\n' > "$TMP/docs/readme.txt"
@@ -34,7 +40,7 @@ printf 'readme line one\nreadme line two\nreadme line three\n' > "$TMP/docs/read
   echo "rm $TMP/cptest/a.txt"
   echo "rm $TMP/cptest/c.txt"
   echo "exit"
-} | "$ROOT/$ASC" "$ROOT/fsroot/as/examples/ash.as" > "$TMP/out" 2>&1
+} | "$TMP/ash" > "$TMP/out" 2>&1
 
 fails=0
 check() {   # check <name> <pattern>

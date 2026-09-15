@@ -6,7 +6,7 @@
 # ---------------------------------------------------------------------------
 # WHY A TEST THAT ONLY CHECKS "SOMETHING DIED" PASSES FOR THE BUG THIS FIXES
 #
-# Before c/kernel/mm/reclaim/reclaim/oom.c, fault.c returned 0 when memory was gone and the
+# Before c/kernel/mm/reclaim/oom.c, fault.c returned 0 when memory was gone and the
 # faulting process was terminated. Something always died -- that was never the
 # problem. The problem is WHICH: on a machine one program has emptied, the next
 # process to fault is essentially never that program, because it already has its
@@ -49,7 +49,7 @@
 # hog exits and becomes a zombie STILL HOLDING EVERY FRAME IT TOOK, for as long
 # as that shell lives.
 #
-# A kill that frees nothing is not a kill, so c/kernel/mm/reclaim/reclaim/oom.c strips zombie
+# A kill that frees nothing is not a kill, so c/kernel/mm/reclaim/oom.c strips zombie
 # address spaces itself -- tier 0 before choosing anyone, and again on every
 # park of the wait (see oom_task_reap_dead() in c/kernel/exec/proc.c). This
 # shape puts that mechanism directly under test rather than staging around it.
@@ -219,7 +219,7 @@ else
     if [ "${VRSS:-0}" -lt "$MINVICTIM" ]; then
         bad "the victim held ${VRSS} frames, less than half the hog's ${MINVICTIM}.
       The WRONG process was chosen -- most likely the innocent one, which is
-      exactly the behaviour c/kernel/mm/reclaim/reclaim/oom.c exists to replace."
+      exactly the behaviour c/kernel/mm/reclaim/oom.c exists to replace."
     else
         say "PASS: the victim was the hog -- ${VRSS} frames, against a ${MINVICTIM}-frame bar"
     fi

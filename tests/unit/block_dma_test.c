@@ -84,7 +84,7 @@ static struct dma_buffer *g_prp_mem[NVME_IOQ_MAX];
 static int g_ready=1,g_nioq=1,g_health_ok=1;
 static struct nvme_q g_admin;
 static struct device *g_device=&fixture_device;
-static uint32_t g_max_sectors=65535,g_nsid=1;
+static uint32_t g_max_sectors=65535,g_nsid=1,g_lba=512;
 #else
 static struct ahci_port g_ports[AHCI_MAX_DISKS];
 static int g_ndisks;
@@ -93,12 +93,131 @@ static void ahci_count_cmd(struct ahci_port*p){p->req_cmds++;}
 #include "block_dma_functions.inc"
 #ifdef TEST_NVME
 static void setup(void){
+ g_regs=registers;g_lba=512;
  memset(registers,0,sizeof registers);memset(g_io,0,sizeof g_io);dma_device_init(&g_dma,"nvme",DMA_MASK_64);g_ready=1;
  struct nvme_q*q=&g_io[0];q->sq=calloc(64,sizeof *q->sq);q->cq=calloc(64,sizeof *q->cq);q->depth=64;q->cq_phase=1;
  q->sq_db=registers+4096;q->cq_db=registers+4100;
  g_prp_mem[0]=dma_alloc_coherent(&g_dma,4096,4096,0);g_prp_list[0]=g_prp_mem[0]->cpu;
 }
 static void done(struct blk_req*r,int status){struct nvme_q*q=&g_io[0];q->cq[q->cq_head].cid=(uint16_t)r->tag;q->cq[q->cq_head].status=(uint16_t)(status*2+q->cq_phase);}
+
+/* The controller fixture supplies the whole native block after READ. Compare
+ * every byte before WRITE completion, so a successful state transition cannot
+ * hide destruction of sectors outside the caller's requested range. */
+static void check_native_sector_transfers(void)
+{
+    uint8_t original[4096];
+    uint8_t expected[4096];
+    for (size_t i = 0; i < sizeof original; ++i)
+        original[i] = (uint8_t)(i * 17 + i / 512);
+    memset(payload, 0xa5, 1024);
+
+    setup();
+    g_lba = 4096;
+    struct nvme_q *queue = &g_io[0];
+    queue->sector_mem = dma_alloc_coherent(&g_dma, 4096, 4096, 0);
+    struct blk_req request = {
+        .op = BLK_OP_WRITE, .dev_lba = 11, .count = 2, .buf = payload,
+    };
+    check(nvme_issue(&request) == 0, "NVMe partial write submits native read");
+    struct nvme_sqe *command = &queue->sq[0];
+    check((command->cdw0 & 0xff) == 2 && command->cdw10 == 1 && command->cdw12 == 0,
+          "NVMe partial write first reads the containing native block");
+    check(command->prp1 == queue->sector_mem->dma.value,
+          "NVMe native bounce uses its bus address");
+    check(nvme_blk_poll(&request) == 0 && request.done == 0,
+          "NVMe pending native read leaves caller write incomplete");
+
+    memcpy(queue->sector_mem->cpu, original, sizeof original);
+    memcpy(expected, original, sizeof expected);
+    memcpy(expected + 3 * 512, payload, 1024);
+    uint64_t read_token = queue->sector_token;
+    done(&request, 0);
+    check(nvme_blk_poll(&request) == 0 && request.done == 0,
+          "NVMe native read completion only prepares the merged write");
+    check(queue->sector_token != read_token &&
+          queue->sector_mem->state == DMA_DEVICE_OWNED,
+          "NVMe merged write renews DMA ownership after the read");
+    command = &queue->sq[1];
+    check((command->cdw0 & 0xff) == 1 && command->cdw10 == 1 && command->cdw12 == 0,
+          "NVMe merged write targets the same native block");
+    check(memcmp(queue->sector_mem->cpu, expected, sizeof expected) == 0,
+          "NVMe partial write preserves neighbouring sectors");
+    done(&request, 0);
+    check(nvme_blk_poll(&request) == 1 && request.status == 0 && request.done == 2,
+          "NVMe merged write completion advances caller exactly once");
+
+    request = (struct blk_req){
+        .op = BLK_OP_READ, .dev_lba = 7, .count = 2, .buf = payload,
+    };
+    check(nvme_issue(&request) == 0 && request.chunk == 1,
+          "NVMe partial read splits at native block boundary");
+    memcpy(queue->sector_mem->cpu, original, sizeof original);
+    done(&request, 0);
+    check(nvme_blk_poll(&request) == 0 && request.done == 1 && request.chunk == 1,
+          "NVMe crossing read issues the next native block");
+    memset(queue->sector_mem->cpu, 0x67, 4096);
+    done(&request, 0);
+    check(nvme_blk_poll(&request) == 1 && request.done == 2,
+          "NVMe crossing read completes both requested sectors");
+    check(memcmp(payload, original + 7 * 512, 512) == 0 &&
+          payload[512] == 0x67 && payload[1023] == 0x67,
+          "NVMe crossing read returns only selected bytes from each block");
+
+    request = (struct blk_req){
+        .op = BLK_OP_WRITE, .dev_lba = 1, .count = 1, .buf = payload,
+    };
+    check(nvme_issue(&request) == 0, "NVMe failing partial write starts with read");
+    unsigned tail_before_failure = queue->sq_tail;
+    done(&request, 1);
+    check(nvme_blk_poll(&request) == 1 && request.status < 0 && request.done == 0 &&
+          queue->sq_tail == tail_before_failure,
+          "NVMe failed native read never publishes a destructive write");
+
+    request = (struct blk_req){
+        .op = BLK_OP_READ, .dev_lba = 16, .count = 16, .buf = payload,
+    };
+    unsigned command_slot = queue->sq_tail;
+    check(nvme_issue(&request) == 0, "NVMe aligned 4Kn request uses mapped transfer");
+    command = &queue->sq[command_slot];
+    check(command->cdw10 == 2 && command->cdw12 == 1,
+          "NVMe aligned transfer converts start and count into native blocks");
+    done(&request, 0);
+    check(nvme_blk_poll(&request) == 1 && request.done == 16,
+          "NVMe aligned native completion retains block API sector count");
+
+    request = (struct blk_req){
+        .op = BLK_OP_WRITE, .dev_lba = 7, .count = 2, .buf = payload,
+    };
+    check(nvme_issue(&request) == 0 && request.chunk == 1,
+          "NVMe crossing write starts with the first block tail");
+    memcpy(queue->sector_mem->cpu, original, sizeof original);
+    done(&request, 0);
+    check(nvme_blk_poll(&request) == 0 && request.done == 0,
+          "NVMe crossing write waits for its first merged write");
+    done(&request, 0);
+    check(nvme_blk_poll(&request) == 0 && request.done == 1 && request.chunk == 1,
+          "NVMe crossing write advances only after first native write completes");
+    memcpy(queue->sector_mem->cpu, original, sizeof original);
+    done(&request, 0);
+    check(nvme_blk_poll(&request) == 0 && request.done == 1,
+          "NVMe crossing write waits for its second merged write");
+    done(&request, 1);
+    check(nvme_blk_poll(&request) == 1 && request.status < 0 && request.done == 1,
+          "NVMe failed merged write leaves the failing chunk uncommitted");
+
+    request = (struct blk_req){
+        .op = BLK_OP_WRITE, .dev_lba = 1, .count = 1, .buf = payload,
+    };
+    check(nvme_issue(&request) == 0, "NVMe timeout case starts native read");
+    memcpy(queue->sector_mem->cpu, original, sizeof original);
+    done(&request, 0);
+    check(nvme_blk_poll(&request) == 0, "NVMe timeout case publishes merged write");
+    request.deadline = 0;
+    check(nvme_blk_poll(&request) == 1 && request.status < 0 && request.done == 0 &&
+          queue->sector_mem->state == DMA_QUIESCED && !queue->sector_token,
+          "NVMe merged write timeout stops DMA without committing the chunk");
+}
 int main(void){
  (void)hold_running;setup();struct blk_req r={.op=BLK_OP_READ,.count=20,.buf=payload+128,.dev_lba=25};
  check(nvme_issue(&r)==0,"NVMe submits mapped fragmented buffer");
@@ -140,6 +259,7 @@ int main(void){
        "NVMe normal remove releases admin IO and PRP buffers");
  nvme_shutdown();check(freed==before_free+5,"NVMe repeated shutdown does not double free");
  (void)other_device;
+ check_native_sector_transfers();
  host_cleanup();printf("NVMe DMA: %d checks, %d failures\n",checks,failures);return failures?1:0;
 }
 #else

@@ -46,7 +46,7 @@ structs='\n'.join([
     re.search(r'struct ahci_cmdspec \{.*?\n\};',ahci,re.S).group(0),
     re.search(r'struct ahci_hba \{.*?\n\};',ahci,re.S).group(0),
 ])
-defines='\n'.join(re.findall(r'^#define (?:AQ_DEPTH|NVME_IOQ_MAX|AHCI_[A-Z0-9_]+|HBA_[A-Z0-9_]+|GHC_[A-Z0-9_]+|CAP_[A-Z0-9_]+|BOHC_[A-Z0-9_]+|P_[A-Z0-9_]+|CMD_[A-Z0-9_]+|SPIN_INIT|ATA_IDENTIFY)\s+.*',nvme+'\n'+ahci,re.M))
+defines='\n'.join(re.findall(r'^#define (?:AQ_DEPTH|NVME_IOQ_MAX|NVME_BLOCK_SECTOR_BYTES|NVME_NATIVE_4K_BYTES|NVME_SECTORS_PER_4K|AHCI_[A-Z0-9_]+|HBA_[A-Z0-9_]+|GHC_[A-Z0-9_]+|CAP_[A-Z0-9_]+|BOHC_[A-Z0-9_]+|P_[A-Z0-9_]+|CMD_[A-Z0-9_]+|SPIN_INIT|ATA_IDENTIFY)\s+.*',nvme+'\n'+ahci,re.M))
 (b/'storage_hardware_types.inc').write_text(
     defines+'\n'+structs+'\n'
     +'static uint32_t g_ahci_quarantine[AHCI_MAX_HBA];\n'
