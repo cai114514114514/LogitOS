@@ -1,3 +1,6 @@
+#include "../../lib/agent/gui.h"
+#include <stdio.h>
+#include <string.h>
 /* Clock -- an analog face, drawn with Open Logit.
  *
  * WHAT THIS REPLACES. Three digits and a date, centred by `(240 - tw) / 2`
@@ -17,6 +20,8 @@
  * INTEGER ONLY. This app links crt0 + aui + gfx and no libc -- there is no
  * sin(), and adding one would pull in libm for three hands. A quarter turn in
  * six-degree steps is sixteen numbers; the other three quarters are symmetry.
+ * 2026-09-13 correction: the current agent-enabled GUI link includes libc.
+ * The drawing runtime still requires no allocator or floating-point library.
  *
  * IT RESIZES, which no GUI app in this tree did. The window manager has
  * supported resize for a while (eight edge and corner drags in test-window) and
@@ -25,6 +30,8 @@
  * aui_height() on the frame it is drawn. */
 #include "aui.h"
 #include "gfx.h"
+#include "openlogit_window.h"
+#include "clock_geometry.h"
 
 /* The face is capped by these two buffers, which are static because this app
  * has no allocator. MASK_MAX is the widest face in DEVICE pixels; the layout
@@ -32,13 +39,20 @@
  * window at 100% and simply gets smaller at 200% rather than overrunning. */
 #define MASK_MAX  384
 
-static unsigned char cov[MASK_MAX * MASK_MAX];
 static unsigned char rgba[MASK_MAX * MASK_MAX * 4];
+static unsigned char work_rgba[MASK_MAX * MASK_MAX * 4];
+/* The ceilings are application storage budgets, checked against runtime size
+ * queries at startup. No application depends on the runtime's private layout. */
+static unsigned long device_storage[32768],surface_storage[32],list_storage[2048];
+static struct ol_device *graphics;
+static struct ol_surface *face;
+static struct ol_list *commands;
+static int face_w,face_h,graphics_error;
 /* gfx_path_init's capacity counts POINTS and the buffer holds two ints each --
  * declaring ptbuf[N] and then passing N is a two-times overrun that only shows
  * up once a path gets long. Two flattened circles at this radius are a few
  * hundred points, which is what sets the number. */
-#define PTCAP 512
+#define PTCAP CLOCK_PATH_CAP
 static int  ptbuf[PTCAP * 2];
 static int  subbuf[16];
 
@@ -99,12 +113,28 @@ static void hand(struct gfx_path *p, int cx, int cy, int k, int tip, int tail, i
  * about -- at -O2 clang is entitled to turn it into a call to memset, and this
  * app links crt0 + aui + gfx and no libc, so that is a link error waiting for
  * whoever next changes an optimisation flag. */
+/* 2026-09-13 correction: the coverage-to-RGBA staging described above is now
+ * owned by the OpenLogit device runtime. Clock records clear/fill commands,
+ * submits an atomic surface update and composites its completed RGBA view. */
 static void stamp(struct gfx_path *p, int rule, int fx, int fy, int fs,
                   int dw, int dh, unsigned color)
 {
-    if (!gfx_fill_mask(p, rule, cov, dw, dh, 0, 0)) return;
-    gfx_mask_to_rgba(rgba, cov, dw, dh, color, 255, 0, 0);
-    gui_blit(fx, fy, fs, fs, rgba, dw, dh);
+    if(graphics_error)return;
+    if(!face||dw!=face_w||dh!=face_h){
+        if(face){graphics_error=ol_surface_destroy(face);if(graphics_error)return;face=0;}
+        struct ol_surface_desc desc={sizeof desc,OL_FORMAT_RGBA8_STRAIGHT,dw,dh,dw*4,
+            rgba,work_rgba,sizeof rgba,sizeof work_rgba};
+        graphics_error=ol_surface_create(graphics,surface_storage,sizeof surface_storage,&desc,&face);
+        if(graphics_error)return;face_w=dw;face_h=dh;
+    }
+    struct gfx_paint paint;gfx_paint_solid(&paint,color,255);
+    int r=ol_list_reset(commands);
+    if(!r)r=ol_cmd_clear(commands,0,0);
+    if(!r)r=ol_cmd_fill(commands,p,rule,&paint,0,GFX_SUBS);
+    if(!r)r=ol_list_close(commands);
+    if(!r)r=ol_submit(graphics,commands,face,0);
+    if(!r)r=ol_window_composite(face,fx,fy,fs,fs);
+    graphics_error=r;
 }
 
 static void two(char *b, int v) { b[0] = '0' + (v / 10) % 10; b[1] = '0' + v % 10; }
@@ -150,12 +180,11 @@ static void draw(const struct logit_time *t)
             struct gfx_path p;
             int dcx = dw / 2, dcy = dh / 2, dR = (dw < dh ? dw : dh) / 2;
             gfx_path_init(&p, ptbuf, PTCAP, subbuf, 16);
-            gfx_path_circle(&p, GFX_PX(dcx), GFX_PX(dcy), GFX_PX(dR - 1));
+            clock_face_path(&p,dcx,dcy,dR,0);
             stamp(&p, GFX_NONZERO, fx, fy, fs, dw, dh, AUI_SURFACE);
 
             gfx_path_reset(&p);
-            gfx_path_circle(&p, GFX_PX(dcx), GFX_PX(dcy), GFX_PX(dR - 1));
-            gfx_path_circle(&p, GFX_PX(dcx), GFX_PX(dcy), GFX_PX(dR - 2));
+            clock_face_path(&p,dcx,dcy,dR,1);
             stamp(&p, GFX_EVENODD, fx, fy, fs, dw, dh, AUI_BORDER);
         }
 
@@ -209,11 +238,23 @@ static void draw(const struct logit_time *t)
     int dwid = text_measure_px(d, 10, AUI_FS_LABEL, 0);
     aui_text_sz((W - dwid) / 2, ty + AUI_FS_TITLE + AUI_SP(1), d, AUI_MUTED, AUI_FS_LABEL);
 
-    aui_end();
+    /* The face is drawn outside aui.c's primitive recorder. Its damage must
+     * join the toolkit's label damage, or a moving hand can be omitted from
+     * the flush rectangle while only the time string reaches the display. */
+    if(graphics_error)aui_text_sz(AUI_PAD,AUI_PAD,ol_status_string(graphics_error),AUI_ACCENT,AUI_FS_LABEL);
+    aui_end_rect(fx,fy,fs>0?fs:0,fs>0?fs:0);
 }
 
 void app_main(void)
 {
+    graphics_error=ol_device_create(device_storage,sizeof device_storage,OL_API_VERSION,
+        OL_CAP_PATH_FILL|OL_CAP_ATOMIC_FRAME,&graphics);
+    if(!graphics_error)graphics_error=ol_list_create(graphics,list_storage,sizeof list_storage,&commands);
+    struct ol_caps caps={.size=sizeof caps};
+    if(!graphics_error)graphics_error=ol_device_caps(graphics,&caps);
+    if(!graphics_error)printf("OPENLOGIT_CLOCK api=%u.%u backend=%s ready revision=%u\n",
+        caps.api_version>>16,caps.api_version&65535u,
+        caps.backend==OL_BACKEND_SOFTWARE?"software":"unknown",caps.implementation_revision);
     int w = 260, h = 300;
     gui_create("Clock", w, h);
     aui_set_size(w, h);
@@ -227,6 +268,7 @@ void app_main(void)
         struct logit_event e;
         int force = 0;
         while (poll_event(&e)) {
+            if(ag_gui_event(&e))continue;
             if (e.type == EV_CLOSE) app_exit(0);
             /* A theme flip and a resize both invalidate every pixel, and
              * neither of them moves the second hand -- so they cannot wait for
@@ -240,3 +282,7 @@ void app_main(void)
         wait_idle(100);   /* was sys_yield(): a spin. the second hand only needs to be right to within a frame */
     }
 }
+
+/* Published on Ctrl+L; ownership of the live data remains with this app. */
+const char *ag_gui_context(unsigned *bytes)
+{struct logit_time t;get_time(&t);static char b[120];int n=snprintf(b,sizeof b,"Current clock: %04d-%02d-%02d %02d:%02d:%02d",t.year,t.month,t.day,t.hour,t.minute,t.second);*bytes=(unsigned)n;return b;}

@@ -11,10 +11,12 @@
  * means "empty" when it is zero, so the service is live from the first
  * instruction the kernel executes and needs no hook in anyone else's boot path.
  *
- * LOCKING: none of its own. Every entry point below runs under the big kernel
+ * Historical locking (before BKL removal): none of its own. Every entry point below runs under the big kernel
  * lock -- the syscall path takes it (SYS_CLIP_* is not in syscall_is_bkl_free)
  * and the window manager holds it whenever it is running kernel code. Do not
- * call any of this from an interrupt handler. */
+ * call any of this from an interrupt handler.
+ * Correction: a private short store lock publishes immutable, refcounted
+ * payloads; getters retain a payload through usercopy without holding a lock. */
 
 /* The SYS_CLIP_* back end. `pid` is the calling process's id, passed in rather
  * than looked up so that this file has no dependency on the process table and

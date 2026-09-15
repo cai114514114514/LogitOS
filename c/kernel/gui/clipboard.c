@@ -33,6 +33,7 @@
 #include "kheap.h"
 #include "usercopy.h"
 #include "notify.h"
+#include "gui_sync.h"
 
 /* ---- the store ------------------------------------------------------------
  *
@@ -44,10 +45,15 @@
  * nothing, copy), so presence is the pointer and NOT `len > 0`; kmalloc(0)
  * would blur that, hence the +1 on every allocation below. The spare byte is
  * also what makes the store safe for a consumer that wants a C string. */
-static struct {
-    char *p;
-    int   len;
-} g_flav[CLIP_NFLAVOUR];
+/* Published payloads are immutable. The store owns one reference and each
+ * getter borrows another under clip_lock before dropping it for usercopy.
+ * Replacement frees an old selection only after its last reader, even when
+ * usercopy blocks. No lock spans allocation or access to user memory. */
+struct clip_payload { unsigned refs; int len; char bytes[]; };
+static struct clip_payload *g_flav[CLIP_NFLAVOUR];
+static struct gui_spin clip_lock = GUI_SPIN_INIT;
+static void payload_put(struct clip_payload *p)
+{ if (p && !__atomic_sub_fetch(&p->refs, 1, __ATOMIC_ACQ_REL)) kfree(p); }
 
 static unsigned g_serial;      /* bumps on every successful set */
 static int      g_owner_pid;   /* informational only -- see CLIP_Q_OWNER */
@@ -127,25 +133,18 @@ static int utf8_cut(const unsigned char *p, int len, int cut)
 
 /* ---- the store's one mutator ---------------------------------------------- */
 
-static void flav_drop(int f)
+static void flav_install(int f, struct clip_payload *buf, int add, int pid)
 {
-    if (g_flav[f].p) kfree(g_flav[f].p);
-    g_flav[f].p = NULL;
-    g_flav[f].len = 0;
-}
-
-/* Install `n` bytes (already in kernel memory, already validated) as `f`.
- * Takes ownership of `buf`. */
-static void flav_install(int f, char *buf, int n, int add, int pid)
-{
-    if (!add)
-        for (int i = 0; i < CLIP_NFLAVOUR; i++) flav_drop(i);
-    else
-        flav_drop(f);
-    g_flav[f].p = buf;
-    g_flav[f].len = n;
+    struct clip_payload *old[CLIP_NFLAVOUR] = {0};
+    gui_spin_lock(&clip_lock);
+    for (int i = 0; i < CLIP_NFLAVOUR; i++) {
+        if (!add || i == f) { old[i] = g_flav[i]; g_flav[i] = NULL; }
+    }
+    g_flav[f] = buf;
     g_serial++;
     g_owner_pid = pid;
+    gui_spin_unlock(&clip_lock);
+    for (int i = 0; i < CLIP_NFLAVOUR; i++) payload_put(old[i]);
 }
 
 /* The single set path. `from_user` says whether `src` needs user_copy_from;
@@ -170,11 +169,13 @@ static long clip_set_common(int flavour, int flags, const char *src, int len,
     if (len && !src) return CLIP_E_ARG;
     if (from_user && len && !user_range_ok(src, (uint64_t)len, 0)) return CLIP_E_ARG;
 
-    char *buf = kmalloc((size_t)len + 1);
-    if (!buf) return CLIP_E_NOMEM;
+    struct clip_payload *payload = kmalloc(sizeof *payload + (size_t)len + 1);
+    if (!payload) return CLIP_E_NOMEM;
+    payload->refs = 1; payload->len = len;
+    char *buf = payload->bytes;
     if (len) {
         if (from_user) {
-            if (user_copy_from(buf, src, (uint64_t)len) < 0) { kfree(buf); return CLIP_E_ARG; }
+            if (user_copy_from(buf, src, (uint64_t)len) < 0) { payload_put(payload); return CLIP_E_ARG; }
         } else {
             for (int i = 0; i < len; i++) buf[i] = src[i];
         }
@@ -187,36 +188,37 @@ static long clip_set_common(int flavour, int flags, const char *src, int len,
      * between, and the invariant this whole file rests on would then be a
      * statement about bytes that are no longer there. */
     if (flavour == CLIP_F_TEXT && !utf8_valid((const unsigned char *)buf, len)) {
-        kfree(buf);
+        payload_put(payload);
         return CLIP_E_UTF8;
     }
 
-    flav_install(flavour, buf, len, (flags & CLIP_SET_ADD) != 0, pid);
+    flav_install(flavour, payload, (flags & CLIP_SET_ADD) != 0, pid);
     return len;
 }
 
 static long clip_get_common(int flavour, char *dst, int max, int to_user)
 {
-    if (flavour < 0 || flavour >= CLIP_NFLAVOUR) return CLIP_E_ARG;
-    if (max < 0) return CLIP_E_ARG;
-    if (!g_flav[flavour].p) return CLIP_E_EMPTY;
-    if (max == 0) return 0;
-    if (!dst) return CLIP_E_ARG;
-    if (to_user && !user_range_ok(dst, (uint64_t)max, 1)) return CLIP_E_ARG;
-
-    const unsigned char *p = (const unsigned char *)g_flav[flavour].p;
-    int len = g_flav[flavour].len;
-    int n = max < len ? max : len;
-    /* Only the text flavour has characters to split. The others are byte
-     * strings by definition and a prefix of one is a prefix. */
-    if (flavour == CLIP_F_TEXT) n = utf8_cut(p, len, n);
-    if (n <= 0) return 0;
-    if (to_user) {
-        if (user_copy_to(dst, p, (uint64_t)n) < 0) return CLIP_E_ARG;
-    } else {
-        for (int i = 0; i < n; i++) dst[i] = (char)p[i];
+    if (flavour < 0 || flavour >= CLIP_NFLAVOUR || max < 0) return CLIP_E_ARG;
+    if (max && (!dst || (to_user && !user_range_ok(dst, (uint64_t)max, 1)))) return CLIP_E_ARG;
+    gui_spin_lock(&clip_lock);
+    struct clip_payload *v = g_flav[flavour];
+#ifndef GUI_CTL_CLIP_NO_PIN
+    if (v) __atomic_add_fetch(&v->refs, 1, __ATOMIC_RELAXED);
+#endif
+    gui_spin_unlock(&clip_lock);
+    if (!v) return CLIP_E_EMPTY;
+    const unsigned char *p = (const unsigned char *)v->bytes;
+    int n = max < v->len ? max : v->len;
+    if (flavour == CLIP_F_TEXT) n = utf8_cut(p, v->len, n);
+    long rc = n;
+    if (n > 0) {
+        if (to_user) { if (user_copy_to(dst, p, (uint64_t)n) < 0) rc = CLIP_E_ARG; }
+        else for (int i = 0; i < n; i++) dst[i] = (char)p[i];
     }
-    return n;
+#ifndef GUI_CTL_CLIP_NO_PIN
+    payload_put(v);
+#endif
+    return rc;
 }
 
 /* ---- the kernel-side face (Cmd+C / Cmd+V land here) ----------------------- */
@@ -233,7 +235,10 @@ int clip_get_text(char *buf, int max)
 int clip_len(int flavour)
 {
     if (flavour < 0 || flavour >= CLIP_NFLAVOUR) return 0;
-    return g_flav[flavour].p ? g_flav[flavour].len : 0;
+    gui_spin_lock(&clip_lock);
+    int n = g_flav[flavour] ? g_flav[flavour]->len : 0;
+    gui_spin_unlock(&clip_lock);
+    return n;
 }
 
 /* ---- the syscall back end ------------------------------------------------- */
@@ -248,21 +253,24 @@ long clip_syscall(long num, long a, long b, long c, int pid)
                                (const char *)b, (int)c, 1, pid);
     case SYS_CLIP_GET:
         return clip_get_common((int)a, (char *)b, (int)c, 1);
-    case SYS_CLIP_INFO:
+    case SYS_CLIP_INFO: {
+        long rc = CLIP_E_ARG;
+        gui_spin_lock(&clip_lock);
         switch ((int)a) {
-        case CLIP_Q_FLAVOURS: {
-            long m = 0;
-            for (int i = 0; i < CLIP_NFLAVOUR; i++) if (g_flav[i].p) m |= 1L << i;
-            return m;
-        }
+        case CLIP_Q_FLAVOURS:
+            rc = 0; for (int i = 0; i < CLIP_NFLAVOUR; i++) if (g_flav[i]) rc |= 1L << i;
+            break;
         case CLIP_Q_LEN:
-            if ((int)b < 0 || (int)b >= CLIP_NFLAVOUR) return CLIP_E_ARG;
-            return g_flav[(int)b].p ? g_flav[(int)b].len : CLIP_E_EMPTY;
-        case CLIP_Q_SERIAL: return (long)g_serial;
-        case CLIP_Q_OWNER:  return g_owner_pid;
-        case CLIP_Q_MAX:    return CLIP_MAX_BYTES;
-        default:            return CLIP_E_ARG;
+            if ((int)b >= 0 && (int)b < CLIP_NFLAVOUR)
+                rc = g_flav[(int)b] ? g_flav[(int)b]->len : CLIP_E_EMPTY;
+            break;
+        case CLIP_Q_SERIAL: rc = (long)g_serial; break;
+        case CLIP_Q_OWNER: rc = g_owner_pid; break;
+        case CLIP_Q_MAX: rc = CLIP_MAX_BYTES; break;
         }
+        gui_spin_unlock(&clip_lock);
+        return rc;
+    }
     default:
         return CLIP_E_ARG;
     }

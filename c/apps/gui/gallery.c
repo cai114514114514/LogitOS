@@ -1,3 +1,6 @@
+#include "../../lib/agent/gui.h"
+#include <stdio.h>
+#include <string.h>
 #include "aui.h"
 
 /* ============================================================================
@@ -337,6 +340,7 @@ void app_main(void)
     for (;;) {
         int drew = 0;
         while (poll_event(&e)) {
+            if(ag_gui_event(&e))continue;
             if (e.type == EV_CLOSE) app_exit(0);
             aui_feed(&e);
             /* Hover IS a repaint, which is the whole reason the toolkit can have
@@ -350,3 +354,7 @@ void app_main(void)
         wait_idle(aui_anim_wait());
     }
 }
+
+/* Published on Ctrl+L; ownership of the live data remains with this app. */
+const char *ag_gui_context(unsigned *bytes)
+{static char b[128];int n=snprintf(b,sizeof b,"Widget gallery tab=%d slider=%d progress=%d dialog=%d",tab,slider_v,prog_v,dlg_open);*bytes=(unsigned)n;return b;}

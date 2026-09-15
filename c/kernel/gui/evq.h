@@ -24,26 +24,42 @@
  * flooding the real ring with 100k samples and asserting zero drops is a
  * different claim from reading the code and believing it.
  *
- * Locking: none, deliberately. Every caller (the WM thread draining input, an
+ * Historical locking: none, deliberately. Every caller (the WM thread draining input, an
  * app's SYS_POLL_EVENT, wm_set_dark) runs holding the BKL, as they did when
  * this was inline in wm.c. The input IRQs do NOT reach here -- they push onto
- * wm.c's raw inq[] and the WM thread does the real work. */
+ * wm.c's raw inq[] and the WM thread does the real work.
+ * Correction: a per-ring lock now protects head, tail and motion coalescing.
+ * The waiter takes evwq.lock before checking this ring; the producer releases
+ * the ring lock before waking evwq, preserving that order without a BKL. */
 
 #include "logit_abi.h"
+#include "gui_sync.h"
 
 #define EVQ_N 256        /* deep enough that a burst of keystrokes isn't dropped
                           * while the app repaints; motion is bounded by the
                           * coalescing above, not by this number */
 
 struct evq {
+    struct gui_spin lock;
     struct logit_event q[EVQ_N];
     int head, tail;      /* head == tail: empty. One slot is always left free. */
 };
 
+enum evq_push_result {
+    EVQ_PUSH_DROPPED = 0,
+    EVQ_PUSH_APPENDED = 1,     /* one new unread slot was added */
+    EVQ_PUSH_COALESCED = 2,
+};
+
 /* Append `e`, coalescing a motion sample onto an unread motion sample at the
- * tail. Silently drops when full (the caller has nothing useful to do about a
- * queue an app is not draining). */
-void evq_push(struct evq *q, const struct logit_event *e);
+ * tail. A semantic event arriving at a full ring replaces one old motion
+ * sample when possible; a missing release can wedge a drag, while an old
+ * absolute pointer position is already obsolete. EVQ_PUSH_APPENDED means one
+ * new unread slot exists and must wake one waiter: multiple threads may wait
+ * on the same process/window, so an already-readable ring can still have
+ * another sleeper for that new event. A coalesced motion adds no slot and needs
+ * no additional wake. */
+int evq_push(struct evq *q, const struct logit_event *e);
 
 /* -> 1 and fills *out, or 0 when empty. */
 int evq_pop(struct evq *q, struct logit_event *out);
@@ -52,7 +68,8 @@ int evq_pop(struct evq *q, struct logit_event *out);
  * predicate, which must be able to ask without consuming. */
 int evq_empty(const struct evq *q);
 
-/* Forget everything queued (a window slot being reused). */
+/* Forget everything queued (a window slot being reused). A new queue must be
+ * zero-initialized before first use; resetting a live queue never resets its lock. */
 void evq_reset(struct evq *q);
 
 /* System-wide counters since boot, reported by SYS_SYSINFO so the coalescing is
@@ -63,5 +80,6 @@ void evq_reset(struct evq *q);
 unsigned long long evq_queued(void);
 unsigned long long evq_coalesced(void);
 unsigned long long evq_dropped(void);
+unsigned long long evq_evicted_motion(void);
 
 #endif /* LOGIT_EVQ_H */

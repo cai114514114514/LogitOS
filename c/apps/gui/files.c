@@ -1,5 +1,9 @@
 #include "aui.h"
 #include "hidden.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "../../lib/agent/sdk.h"
 
 /* Logit Files -- a macOS-Finder-style file manager (ring-3, aui toolkit).
  *
@@ -12,14 +16,16 @@
  *
  * The app owns its own cwd (starts at "/") and always builds absolute paths. */
 
-#define WINW       640
-#define WINH       444
+#define WINW       1120
+#define PROJECT_W  320
+#define CONTENT_RIGHT (WINW - PROJECT_W)
+#define WINH       660
 #define SIDEBAR_W  168
 #define TOOLBAR_H  46
 #define CX         SIDEBAR_W          /* content origin x */
 #define CY         TOOLBAR_H          /* content origin y */
-#define CWID       (WINW - SIDEBAR_W) /* content width  */
-#define CHGT       (WINH - TOOLBAR_H) /* content height */
+#define CWID       (CONTENT_RIGHT - SIDEBAR_W) /* content width  */
+#define CHGT       (WINH - TOOLBAR_H - 34) /* content height */
 #define GW         104                /* grid cell w */
 #define GH         96                 /* grid cell h */
 #define GICON      52                 /* grid icon px */
@@ -28,8 +34,8 @@
 #define PMAX   128
 
 /* --- app state --- */
-static char cwd[PMAX] = "/";
-static int  view_mode;              /* 0 = icon grid, 1 = list */
+static char cwd[PMAX] = "/docs";
+static int  view_mode = 1;              /* 0 = icon grid, 1 = list */
 static int  sel[N];
 static int  sel_count;
 static int  anchor = -1;
@@ -41,9 +47,11 @@ static char clip[N][PMAX];
 static int  clip_count, clip_cut;
 static char delbuf[N][PMAX];            /* do_delete: path snapshot (row indices drift as entries are removed) */
 static int  shift_down, ctrl_down;
-static int  last_click_row = -1, last_click_frame = -1, frame_no;
+static int  last_click_row = -1;
+static uint64_t last_click_ms;
 static int  info_open;
 static char info_text[256];
+static char agent_notice[96];
 static int  show_hidden;            /* Ctrl+H; per-session, deliberately not persisted */
 
 /* --- the visible view of cwd -------------------------------------------------
@@ -207,13 +215,29 @@ static int row_path(int i, char *out, int max, int *is_dir_out)
     char nm[64];
     long sz = vis_name(i, nm);
     if (sz == -1 || !nm[0]) return -1;
+    int need = slen(cwd) + slen(nm) + (cwd[slen(cwd)-1] == '/' ? 1 : 2);
+    if (need > max) return -1;
     pjoin(out, cwd, nm, max);
     if (is_dir_out) *is_dir_out = (sz == -2);
     return 0;
 }
 
+static void ask_logit(void)
+{
+    char names[AG_OBJECTS][AG_PATH];const char *paths[AG_OBJECTS];
+    if(sel_count>AG_OBJECTS){scpy(agent_notice,"Select at most 32 sources.",sizeof agent_notice);return;}
+    unsigned n=0;
+    for(int i=0;i<sel_count;i++){int dir;
+        if(row_path(sel[i],names[n],AG_PATH,&dir)<0){scpy(agent_notice,"The selected path is unavailable or too long.",sizeof agent_notice);return;}
+        paths[n]=names[n];n++;}
+    if(!n){paths[0]=cwd;n=1;}
+    uint64_t context;
+    if(ag_publish_selection(paths,n,cwd,&context)==0){agent_notice[0]=0;ag_show_assistant(context);}
+    else scpy(agent_notice,"Task service unavailable. Selection retained.",sizeof agent_notice);
+}
+
 /* --- navigation --- */
-static void reset_view(void) { clear_sel(); scroll = 0; anchor = -1; info_open = 0; }
+static void reset_view(void) { clear_sel(); scroll = 0; anchor = -1; last_click_row = -1; info_open = 0; }
 
 static void navigate(const char *path) { scpy(cwd, path, PMAX); reset_view(); }
 
@@ -307,13 +331,23 @@ static void start_rename(void)
     rename_mode = 1; newfolder_mode = 0; info_open = 0;
 }
 
+static int new_name_valid(void)
+{
+    int n=slen(editbuf),base=slen(cwd);
+    if(!n||n>=60||strchr(editbuf,'/')||streq(editbuf,".")||streq(editbuf,"..")||base+n+2>PMAX){
+        scpy(agent_notice,"名称须为 1–59 字节，完整路径须短于 128 字节",sizeof agent_notice);return 0;}
+    return 1;
+}
+
 static void commit_rename(void)
 {
+    if(!new_name_valid())return;
     if (editbuf[0] && sel_count == 1) {
         char old[PMAX]; int isd;
         if (row_path(sel[0], old, PMAX, &isd) == 0) {
             char np[PMAX]; pjoin(np, cwd, editbuf, PMAX);
-            sys_rename(old, np);
+            if(sys_rename(old, np)<0){scpy(agent_notice,"改名未完成，请检查名称和权限",sizeof agent_notice);return;}
+            agent_notice[0]=0;
         }
     }
     rename_mode = 0; editbuf[0] = 0; clear_sel(); anchor = -1;
@@ -323,7 +357,10 @@ static void start_newfolder(void) { editbuf[0] = 0; newfolder_mode = 1; rename_m
 
 static void commit_newfolder(void)
 {
-    if (editbuf[0]) { char np[PMAX]; pjoin(np, cwd, editbuf, PMAX); make_dir(np); }
+    if(!new_name_valid())return;
+    if (editbuf[0]) { char np[PMAX]; pjoin(np, cwd, editbuf, PMAX);
+        if(make_dir(np)<0){scpy(agent_notice,"Project 未创建，请检查名称和权限",sizeof agent_notice);return;}}
+    agent_notice[0]=0;
     newfolder_mode = 0; editbuf[0] = 0;
 }
 
@@ -339,7 +376,7 @@ static void do_get_info(void)
     seg = "Name: "; for (int i = 0; seg[i]; i++) o[oi++] = seg[i];
     for (int i = 0; nm[i] && oi < 200; i++) o[oi++] = nm[i];
     o[oi++] = '\n';
-    seg = isd ? "Type: Folder" : "Type: File"; for (int i = 0; seg[i]; i++) o[oi++] = seg[i];
+    seg = isd ? "Type: Project" : "Type: File"; for (int i = 0; seg[i]; i++) o[oi++] = seg[i];
     o[oi++] = '\n';
     if (isd) {
         seg = "Items: "; for (int i = 0; seg[i]; i++) o[oi++] = seg[i];
@@ -354,7 +391,7 @@ static void do_get_info(void)
 }
 
 /* --- context menu --- */
-static const char *MENU[] = { "Open", "New Folder", "Rename", "Delete", "Copy", "Cut", "Paste", "Get Info" };
+static const char *MENU[] = { "Open", "New Project", "Rename", "Delete", "Copy", "Cut", "Paste", "Get Info" };
 #define MENU_N 8
 #define MENU_W 124
 #define MENU_IH 24
@@ -398,11 +435,14 @@ static void fit_label(const char *s, int maxpx, char *out, int omax)
     if (len < omax - 2) { out[len] = '.'; out[len + 1] = '.'; out[len + 2] = 0; }
 }
 
+#include "files_project.inc"
+
 /* --- sidebar model --- */
 struct side { const char *label; const char *path; int icon; int header; };
 static const struct side SIDE[] = {
-    { "个人收藏", 0, 0, 1 },
+    { "我的 Project", 0, 0, 1 },
     { "文稿",    "/docs",  GICON_DOC,    0 },
+    { "系统位置", 0, 0, 1 },
     { "字体",    "/fonts", GICON_FOLDER, 0 },
     { "位置", 0, 0, 1 },
     { "LogitOS HD", "/",    GICON_GRID,   0 },
@@ -448,9 +488,9 @@ static void draw_sidebar(void)
 #define TB_BTN_H 26
 #define TB_BACK_X (CX + 8)
 #define TB_BACK_W 30
-#define TB_NEW_X  (WINW - 8 - 50)
-#define TB_NEW_W  50
-#define TB_VIEW_X (WINW - 8 - 50 - 56)
+#define TB_NEW_X  (CONTENT_RIGHT - 8 - 72)
+#define TB_NEW_W  72
+#define TB_VIEW_X (CONTENT_RIGHT - 8 - 72 - 56)
 #define TB_VIEW_W 52
 
 static int hit(int px, int py, int x, int y, int w, int h)
@@ -482,7 +522,7 @@ static void draw_toolbar(void)
         aui_heading(CX + 48, 12, title, AUI_TEXT);
     }
     glass_btn(TB_VIEW_X, TB_BTN_Y, TB_VIEW_W, TB_BTN_H, view_mode ? "Icons" : "List");
-    glass_btn(TB_NEW_X, TB_BTN_Y, TB_NEW_W, TB_BTN_H, "+New");
+    glass_btn(TB_NEW_X, TB_BTN_Y, TB_NEW_W, TB_BTN_H, "+Project");
 }
 
 static void draw_grid(void)
@@ -518,8 +558,8 @@ static void draw_list(void)
         gui_icon(icon, CX + 10, y, 20, col);
         char lab[48]; fit_label(nm, CWID - 150, lab, sizeof lab);
         gui_text_run(CX + 38, y + 4, 14, 0, AUI_TEXT, lab, slen(lab));
-        if (isd) gui_text_run(WINW - 96, y + 4, 13, 0, AUI_MUTED, "--", 2);
-        else { char num[24]; itoa_(sz, num); gui_text_run(WINW - 96, y + 4, 13, 0, AUI_MUTED, num, slen(num)); }
+        if (isd) gui_text_run(CONTENT_RIGHT - 96, y + 4, 13, 0, AUI_MUTED, "--", 2);
+        else { char num[24]; itoa_(sz, num); gui_text_run(CONTENT_RIGHT - 96, y + 4, 13, 0, AUI_MUTED, num, slen(num)); }
     }
     gui_clip(0, 0, 0, 0);
 }
@@ -541,6 +581,7 @@ static void frame(void)
     if (view_mode) draw_list(); else draw_grid();
     draw_sidebar();
     draw_toolbar();
+    draw_project();
 
     if (info_open) {
         int pw = 248, ph = 104, px = CX + (CWID - pw) / 2, py = CY + (CHGT - ph) / 2;
@@ -560,7 +601,7 @@ static void frame(void)
 
     if (menu_open) {
         int mh = MENU_N * MENU_IH + 4, mx = menu_x, my = menu_y;
-        if (mx + MENU_W > WINW) mx = WINW - MENU_W;
+        if (mx + MENU_W > CONTENT_RIGHT) mx = CONTENT_RIGHT - MENU_W;
         if (my + mh > WINH) my = WINH - mh;
         if (mx < 0) mx = 0; if (my < 0) my = 0;
         gui_rect(mx - 1, my - 1, MENU_W + 2, mh + 2, AUI_BORDER);
@@ -569,6 +610,8 @@ static void frame(void)
             gui_text_run(mx + 12, my + 6 + i * MENU_IH, 14, 0, AUI_TEXT, MENU[i], slen(MENU[i]));
     }
 
+    if(aui_button(CONTENT_RIGHT-118,WINH-30,108,24,"Ask Logit"))ask_logit();
+    if(agent_notice[0])aui_label(CX+8,WINH-27,agent_notice,AUI_MUTED);
     aui_end();
 }
 
@@ -578,7 +621,7 @@ static int menu_hit(int x, int y, int *item)
     *item = -1;
     if (!menu_open) return 0;
     int mh = MENU_N * MENU_IH + 4, mx = menu_x, my = menu_y;
-    if (mx + MENU_W > WINW) mx = WINW - MENU_W;
+    if (mx + MENU_W > CONTENT_RIGHT) mx = CONTENT_RIGHT - MENU_W;
     if (my + mh > WINH) my = WINH - mh;
     if (mx < 0) mx = 0; if (my < 0) my = 0;
     if (x >= mx && x < mx + MENU_W && y >= my && y < my + mh) {
@@ -591,7 +634,7 @@ static int menu_hit(int x, int y, int *item)
 /* map a content click to an item index, or -1 */
 static int entry_at(int x, int y)
 {
-    if (x < CX || y < CY) return -1;
+    if (x < CX || x >= CONTENT_RIGHT || y < CY || y >= WINH-34) return -1;
     int total = total_items();
     if (view_mode) {
         int r = scroll + (y - (CY + 2)) / LH;
@@ -616,7 +659,12 @@ static void sidebar_click(int y)
 
 static void handle_click(int x, int y)
 {
+    /* The footer action consumes the current selection in frame(). Treating
+     * it as empty directory space first would clear that selection and grant
+     * the whole current directory instead of the selected objects. */
     if (menu_open) { int item; menu_hit(x, y, &item); menu_open = 0; if (item >= 0) run_menu(item); return; }
+    if(x>=CONTENT_RIGHT)return;
+    if(hit(x,y,CONTENT_RIGHT-118,WINH-30,108,24))return;
     if (x < SIDEBAR_W) { sidebar_click(y); return; }
     if (y < TOOLBAR_H) {                              /* toolbar glass-pill buttons */
         if (hit(x, y, TB_BACK_X, TB_BTN_Y, TB_BACK_W, TB_BTN_H)) go_up();
@@ -630,33 +678,33 @@ static void handle_click(int x, int y)
     if (ctrl_down) { toggle_sel(row); anchor = row; }
     else if (shift_down) { select_range(anchor, row); }
     else {
-        if (row == last_click_row && frame_no - last_click_frame <= 12) { do_open(row); last_click_row = -1; return; }
+        if (row == last_click_row && monotonic_ms() - last_click_ms <= 500) { do_open(row); last_click_row = -1; return; }
         select_one(row);
     }
-    last_click_row = row; last_click_frame = frame_no;
+    last_click_row = row; last_click_ms = monotonic_ms();
 }
 
 void app_main(void)
 {
     gui_create("Finder", WINW, WINH);
-    frame();
+    project_refresh(1);frame();
     struct logit_event e;
     for (;;) {
-        if (!poll_event(&e)) { wait_idle(100);   /* was sys_yield(): a spin. input-driven */ continue; }
+        if (!poll_event(&e)) { if(project_refresh(0))frame();wait_idle(250);   /* was sys_yield(): a spin. input-driven */ continue; }
         /* The WM delivers EV_MOUSE_MOVE now, at pointer rate (~100/s). New event
          * types are additive and this app ignores the ones it does not know --
          * but "ignore" here means falling through to the frame() at the bottom
          * of the loop, i.e. a full repaint per sample. The Finder has no hover
          * state, so drop motion explicitly and keep costing what it cost before
-         * the ABI grew. Before frame_no++, so that still counts painted frames. */
+         * the ABI grew. Double-click timing uses the monotonic clock, independently of repaint events. */
         if (e.type == EV_MOUSE_MOVE) continue;
-        frame_no++;
         if (e.type == EV_CLOSE) app_exit(0);
 
         if (e.type == EV_THEME) { frame(); continue; }   /* system light/dark changed */
 
         if (e.type == EV_KEY) {
             int k = e.a;
+            if(k==12){ask_logit();continue;}
             if (k == KEY_PGUP) { scroll -= visible_rows(); if (scroll < 0) scroll = 0; }
             else if (k == KEY_PGDN) scroll += visible_rows();
             else if (k == KEY_UP) { if (scroll > 0) scroll--; }
@@ -672,12 +720,22 @@ void app_main(void)
             aui_feed(&e); frame(); aui_feed_done();
             continue;
         }
+        if(strcmp(cwd,project_path))project_refresh(1);
         if (e.type == EV_MOUSE_R) {
+            if(e.a>=CONTENT_RIGHT)continue;
             int row = entry_at(e.a, e.b);            /* right-click selects the item under it */
             if (row >= 0 && !in_sel(row)) select_one(row);
             menu_open = 1; menu_x = e.a; menu_y = e.b; info_open = 0; frame(); continue;
         }
-        if (e.type == EV_MOUSE) { handle_click(e.a, e.b); aui_feed(&e); frame(); aui_feed_done(); continue; }
+        if (e.type == EV_MOUSE) { int had_menu=menu_open;handle_click(e.a, e.b);if(!had_menu)aui_feed(&e);frame();aui_feed_done();continue; }
         frame();
     }
+}
+
+int main(void)
+{
+    struct aex_agent_identity identity;
+    if(ag_self(&identity)<0)return 1;
+    if(identity.mode==AEX_ACT_WORKER)return ag_worker(AG_FINDER);
+    app_main();return 0;
 }

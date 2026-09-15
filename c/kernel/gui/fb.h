@@ -10,6 +10,11 @@ int fb_init(uint64_t mb_info_addr);
 uint32_t fb_width(void);
 uint32_t fb_height(void);
 
+/* Return the physical linear-framebuffer aperture supplied by Multiboot2/GOP.
+ * This is false for virtio-gpu because its CPU backing is ordinary DMA memory.
+ * Passive display drivers use the range to verify ownership against PCI BARs. */
+int fb_boot_lfb_range(uint64_t *addr, uint64_t *bytes);
+
 /* ---- UI scale: points vs device pixels ---------------------------------
  *
  * The desktop is authored in POINTS -- a resolution-independent unit -- and the
@@ -61,6 +66,9 @@ void fb_present_rect(int x, int y, int w, int h);   /* push one rect back->frame
 uint64_t fb_present_px(void);
 uint64_t fb_present_calls(void);
 void fb_copy_rect(int x, int y, int w, int h);      /* raw band copy (parallel workers) */
+/* Revoke the GPU's borrowed CPU framebuffer and wait for in-flight AP bands.
+ * Returns -1 if a writer cannot be drained; the owner MUST retain the backing. */
+int fb_detach_gpu(const uint32_t *backing);
 void fb_set_present_par(void (*fn)(int, int, int, int));  /* register SMP parallel present */
 void fb_fb_put(int x, int y, uint32_t color);       /* write straight to the framebuffer */
 void fb_flush_rect(int x, int y, int w, int h);     /* display a rect drawn straight into fb_mem */
@@ -185,10 +193,11 @@ void fb_liquid_glass(int x, int y, int w, int h, int radius,
  * one. NOT inferred from the target's bounds on purpose: a titlebar panel
  * spans its window surface edge-to-edge and genuinely ENDS there, wanting its
  * bevel -- only the caller knows which truncations are physical. */
-#define GLASS_CUT_TOP    1u
-#define GLASS_CUT_BOTTOM 2u
-#define GLASS_CUT_LEFT   4u
-#define GLASS_CUT_RIGHT  8u
+#include "../../lib/gfx/openlogit_display.h"
+#define GLASS_CUT_TOP    OL_GLASS_CUT_TOP
+#define GLASS_CUT_BOTTOM OL_GLASS_CUT_BOTTOM
+#define GLASS_CUT_LEFT   OL_GLASS_CUT_LEFT
+#define GLASS_CUT_RIGHT  OL_GLASS_CUT_RIGHT
 void fb_liquid_glass_cut(int x, int y, int w, int h, int radius,
                          uint8_t tr, uint8_t tg, uint8_t tb, uint8_t ta,
                          unsigned cut);
@@ -200,4 +209,10 @@ void fb_round_rect_vgrad(int x, int y, int w, int h, int radius, uint32_t top, u
 /* Lighten (delta>0) / darken (delta<0) a packed color by delta per channel. */
 uint32_t fb_shade(uint32_t c, int delta);
 
+int fb_blit_user_rgba(int dx, int dy, int dw, int dh, const uint8_t *rgba, int sw, int sh);
+
+/* Kernel raster scratch ownership, shared with the image decoder wrapper. */
+uint64_t fb_openlogit_batches(void); /* SDK draw batches, not displayed frames */
+void fb_graphics_lock(void);
+void fb_graphics_unlock(void);
 #endif /* LOGIT_FB_H */

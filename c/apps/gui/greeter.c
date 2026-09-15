@@ -1,3 +1,6 @@
+#include "../../lib/agent/gui.h"
+#include <stdio.h>
+#include <string.h>
 #include "aui.h"
 #include "accounts.h"
 
@@ -68,13 +71,14 @@
 /* accounts.h is shared with a program that links no libc; these come along for
  * the same reason they do in login.c (clang emits them for struct assignment
  * regardless, and pbkdf2.c calls them outright). aui/gfx do not provide them. */
-void *memcpy(void *d, const void *s, unsigned long n)
+/* Standalone fallbacks; the optional agent libc may supply strong versions. */
+__attribute__((weak)) void *memcpy(void *d, const void *s, unsigned long n)
 {
     unsigned char *a = (unsigned char *)d; const unsigned char *b = (const unsigned char *)s;
     for (unsigned long i = 0; i < n; i++) a[i] = b[i];
     return d;
 }
-void *memset(void *d, int c, unsigned long n)
+__attribute__((weak)) void *memset(void *d, int c, unsigned long n)
 {
     unsigned char *a = (unsigned char *)d;
     for (unsigned long i = 0; i < n; i++) a[i] = (unsigned char)c;
@@ -277,6 +281,7 @@ void app_main(void)
     for (;;) {
         struct logit_event e;
         while (poll_event(&e)) {
+            if(ag_gui_event(&e))continue;
             /* EV_CLOSE is not honoured. There is no close button drawn while
              * the machine is locked and the WM does not hit-test one, so this
              * can only arrive from a shortcut -- and a greeter a keystroke can
@@ -316,3 +321,7 @@ void app_main(void)
         wait_idle(100);   /* was sys_yield(): a spin. input-driven */
     }
 }
+
+/* Published on Ctrl+L; ownership of the live data remains with this app. */
+const char *ag_gui_context(unsigned *bytes)
+{const char *s="Sign-in screen. Authentication fields are private and excluded from this object.";*bytes=(unsigned)strlen(s);return s;}

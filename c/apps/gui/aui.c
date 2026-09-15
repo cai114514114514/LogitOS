@@ -1,5 +1,7 @@
+#include "openlogit_bitmap.h"
 #include "aui.h"
 #include "gfx.h"
+#include "openlogit_anim.h"
 
 /* ============================================================================
  * aui -- immediate-mode widgets over the gui_* syscalls.
@@ -946,12 +948,7 @@ static void vgrad_corner(unsigned char *rbuf, long rcap, int devx, int devy, int
         unsigned c = aui_mix(top, bot, iclamp(grow * 255 / hd, 0, 255));
         unsigned char *d = rbuf + (long)j * cw * 4;
         const unsigned char *s = m + (long)sj * cw;
-        for (int i = 0; i < cw; i++) {
-            d[i * 4 + 0] = (unsigned char)((c >> 16) & 255);
-            d[i * 4 + 1] = (unsigned char)((c >> 8) & 255);
-            d[i * 4 + 2] = (unsigned char)(c & 255);
-            d[i * 4 + 3] = s[fx ? cw - 1 - i : i];
-        }
+        ol_bitmap_tint_row(d,s,cw,c,255,fx);
     }
     gui_blit(devx, devy, r, r, rbuf, cw, ch);
 }
@@ -1233,6 +1230,7 @@ struct anim_slot {
 };
 
 static struct anim_slot anim_tab[AUI_ANIM_MAX];
+static int anim_reduced;
 static unsigned anim_gen = 1;      /* frames since process start; aui_begin++ */
 static unsigned anim_frames_n;     /* frames drawn because a deadline fired   */
 static unsigned anim_due_ms;       /* absolute deadline, ms                   */
@@ -1306,7 +1304,7 @@ int aui_anim(int key, int target, int ms, int curve)
     if (id <= 0) return target;
     s = anim_slot_for(id, key, &fresh);
 
-    if (fresh) {
+    if (fresh || anim_reduced) {
         s->from = s->to = s->cur = target;
         s->arrived = 1;
     } else if (target != s->to) {
@@ -1331,15 +1329,15 @@ int aui_anim(int key, int target, int ms, int curve)
             s->cur = s->to;
             s->arrived = 1;
         } else {
-            int t = (int)(el * 256u / (unsigned)s->dur);      /* 0..255 */
-            int e = curve == AUI_EASE_INOUT  ? gfx_ease_inout(t)
-                  : curve == AUI_EASE_LINEAR ? t
-                                             : gfx_ease_out(t);
+            int sdk_curve = curve == AUI_EASE_INOUT ? OL_EASE_INOUT
+                          : curve == AUI_EASE_LINEAR ? OL_LINEAR : OL_EASE_OUT;
             /* THE 255/256 SEAM IS CLOSED HERE AND NOWHERE ELSE. The curves are
              * exact on 0..256 because 256 is a power of two; aui_mix is on
              * 0..255. Scaling the DELTA by e/256 lands on `to` exactly when e
              * hits 256 and never overshoots, so no widget ever sees a 256. */
-            s->cur = s->from + (s->to - s->from) * e / 256;
+            /* 2026-09-13: widget identity and scheduling remain here; the
+             * actual interpolation now belongs to the shared SDK. */
+            s->cur = ol_transition256(s->from,s->to,el,(uint64_t)s->dur,sdk_curve,0);
         }
     }
     if (!s->arrived) anim_live++;
@@ -1347,7 +1345,7 @@ int aui_anim(int key, int target, int ms, int curve)
 #endif /* AUI_ANIM_OFF */
 }
 
-unsigned aui_anim_loop(void) { anim_loop_want = 1; return frame_ms; }
+unsigned aui_anim_loop(void) { if(anim_reduced)return 0; anim_loop_want = 1; return frame_ms; }
 
 void aui_anim_reset(void)
 {
@@ -1396,6 +1394,10 @@ static void anim_schedule(void)
 int aui_anim_due(void)
 {
     if (!anim_have_due) { anim_armed = 0; return 0; }
+    /* A minimized window keeps its state, but cannot show intermediate frames.
+     * Leave the deadline pending; restore's focus event makes the endpoint
+     * eligible again without a periodic hidden-window wake. */
+    if (_sys(SYS_GUI_WIN_STATE, WINS_MINIMIZED, 0, 0) > 0) return 0;
     unsigned now = (unsigned)monotonic_ms();
     if ((int)(now - anim_due_ms) < 0) return 0;     /* signed delta: wrap-safe */
     anim_armed = 1;
@@ -1409,6 +1411,7 @@ int aui_anim_wait(void)
      * safe answer is also the default answer and no app can reintroduce a spin
      * by forgetting a case. */
     if (!anim_have_due) return 0;
+    if (_sys(SYS_GUI_WIN_STATE, WINS_MINIMIZED, 0, 0) > 0) return 0;
     unsigned now = (unsigned)monotonic_ms();
     int d = (int)(anim_due_ms - now);
     /* ...and never 0 on this path, because 0 means FOREVER. A deadline already
@@ -1604,6 +1607,7 @@ void aui_begin(unsigned bg)
     if (!theme_inited || s != theme_dark) { aui_set_dark(s); bg = aui_t.bg; }
     aui_ensure();
     frame_ms = (unsigned)monotonic_ms();
+    anim_reduced = setting_int("ui.reduce_motion",0) != 0;
     /* The animation frame counter. It is what the continuity rule in section 5c
      * compares against, so it advances here -- once per DRAWN frame -- and not
      * on a clock. `anim_live` and `anim_loop_want` are re-derived by the widgets
@@ -2748,7 +2752,7 @@ int aui_dialog_begin(const char *title, int w, int h)
     if (!dlg_last_gen || dlg_last_gen + 1 != anim_gen) dlg_t0 = frame_ms;   /* a fresh open */
     dlg_last_gen = anim_gen;
     unsigned el = frame_ms - dlg_t0;
-    int e = (int)el >= AUI_T_SLOW ? 256 : gfx_ease_out((int)(el * 256u / AUI_T_SLOW));
+    int e = anim_reduced || (int)el >= AUI_T_SLOW ? 256 : ol_ease256(OL_EASE_OUT,(int)(el * 256u / AUI_T_SLOW));
     if (e < 256) anim_live++;      /* keep the wake contract awake for the rest of the entrance */
     int scrim_a = 110 * e / 256;
     int rise = 12 * (256 - e) / 256;

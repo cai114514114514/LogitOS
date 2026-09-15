@@ -1,3 +1,6 @@
+#include "../../lib/agent/gui.h"
+#include <stdio.h>
+#include <string.h>
 /* ch -- the chat window. An assistant reply arrives token by token and the
  * text grows in front of you.
  *
@@ -1020,6 +1023,7 @@ void app_main(void)
         struct logit_event e;
         int drew = 0;
         while (poll_event(&e)) {
+            if(ag_gui_event(&e))continue;
             if (e.type == EV_CLOSE) {
                 /* MID-STREAM CLOSE. The socket is the thing that outlives this
                  * process if it is not closed here: the kernel's socket table
@@ -1112,3 +1116,7 @@ void app_main(void)
         }
     }
 }
+
+/* Published on Ctrl+L; ownership of the live data remains with this app. */
+const char *ag_gui_context(unsigned *bytes)
+{*bytes=(unsigned)tr_len;return tr;}
