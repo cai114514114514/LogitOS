@@ -34,7 +34,7 @@
 # that is the shape of bug that passes every assertion.
 US_CFLAGS := -O1 -g -Wall -Wextra -Wno-unused-function \
              -fsanitize=address,undefined -fno-omit-frame-pointer
-US_INC    := -Ic/kernel/core -Ic/fs -Ic/drivers/block -Iinclude/abi -Ic/kernel/mm \
+US_INC    := -Ic/kernel/core $(FS_INC) -Ic/drivers/block -Iinclude/abi -Ic/kernel/mm \
              -Ic/apps/coreutils
 US_SRC    := tests/unit/usersettings_test.c c/kernel/core/settings.c c/drivers/block/crc32.c
 

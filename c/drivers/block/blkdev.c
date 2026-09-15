@@ -2,7 +2,11 @@
 #include <stddef.h>
 #include "blkdev.h"
 #include "part.h"
-#include "../../fs/logitfs_fmt.h"
+/* Bare name, not a relative path: INCDIRS carries every directory under c/,
+ * so a ../.. spelling only survives until the target moves -- which it did on
+ * 2026-09-15 when c/fs was split into subdirectories and this was the one
+ * include in the tree that broke. */
+#include "logitfs_fmt.h"
 #include "ata.h"
 #include "ahci.h"
 #include "virtio_blk.h"

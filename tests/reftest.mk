@@ -147,7 +147,7 @@ REFT_SRC      := $(sort $(REFT_HARNESS) $(REFT_PIPELINE) $(REFT_KERNEL) $(GFX_SR
 # CLAUDE.md documents for uonly/ -- put it after $(BTEST_INC) and the real header
 # wins and the link fails on _sys.
 REFT_INC := -Itests/unit/refhost -Iinclude/abi $(BTEST_INC) $(CSS_INC) \
-            -Ic/kernel/gui -Ic/kernel/mm -Ic/kernel/core -Ic/fs \
+            -Ic/kernel/gui -Ic/kernel/mm -Ic/kernel/core $(FS_INC) \
             -Ic/drivers/virtio -Ic/kernel/cpu
 
 $(REFT_BIN): $(REFT_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) \
@@ -193,7 +193,7 @@ test-reftest-ahem: $(BUILD)/reftest/ahem_test
 $(BUILD)/reftest/ahem_test: tests/unit/ahem_test.c tests/unit/refhost/refhost.c $(REFT_KERNEL) $(GFX_SRC)
 	@mkdir -p $(BUILD)/reftest
 	$(CC) -O2 -w -Itests/unit/refhost -Ic/kernel/gui -Ic/lib/text -Ic/kernel/mm \
-	    -Ic/kernel/core -Ic/kernel/cpu -Ic/fs -Ic/drivers/virtio -Ic/lib/gfx \
+	    -Ic/kernel/core -Ic/kernel/cpu $(FS_INC) -Ic/drivers/virtio -Ic/lib/gfx \
 	    -Ic/lib/image -Iinclude/abi \
 	    -o $@ tests/unit/ahem_test.c tests/unit/refhost/refhost.c \
 	    $(sort $(REFT_KERNEL) $(GFX_SRC)) -lm

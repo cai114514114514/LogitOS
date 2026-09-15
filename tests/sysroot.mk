@@ -260,7 +260,7 @@ $(SYSROOT_WORK)/disk.img: $(SYSROOT_WORK)/sysroot.stamp $(SYSROOT_WORK)/hello-tc
 # the same recipe test-fs-format uses, pointed at this image.
 test-sysroot-image: $(SYSROOT_WORK)/disk.img tests/unit/sysroot_img_test.py
 	@$(CC) $(FS_CFLAGS) -o $(SYSROOT_WORK)/fs_format_test tests/unit/fs_format_test.c \
-	    c/fs/fsck.c c/drivers/block/crc32.c $(FS_STUB)
+	    c/fs/logitfs/fsck.c c/drivers/block/crc32.c $(FS_STUB)
 	$(SYSROOT_WORK)/fs_format_test $(SYSROOT_WORK)/disk.img
 	python3 tests/unit/sysroot_img_test.py $(SYSROOT_WORK)/disk.img $(SYSROOT)
 

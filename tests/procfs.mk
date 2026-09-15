@@ -9,7 +9,7 @@
 # comes out.
 #
 # THE KERNEL SIDE NEEDS NO BUILD-SYSTEM CHANGE. C_SRC globs c/fs, so
-# c/fs/procfs.c and c/fs/procfs_src.c compile and link by existing. Verified:
+# c/fs/procfs/procfs.c and c/fs/procfs/procfs_src.c compile and link by existing. Verified:
 # build/c/fs/procfs.o and build/c/fs/procfs_src.o appear in the kernel link
 # line.
 #
@@ -37,10 +37,10 @@
 ci-host: test-procfs
 test-procfs: test-procfs-negctl
 
-PROCFS_SRC := tests/unit/procfs_test.c c/fs/procfs.c
-PROCFS_DEP := c/fs/procfs.h c/fs/vfs.h c/fs/vfs_path.h
+PROCFS_SRC := tests/unit/procfs_test.c c/fs/procfs/procfs.c
+PROCFS_DEP := c/fs/procfs/procfs.h c/fs/vfs/vfs.h c/fs/vfs/vfs_path.h
 
-# -iquote AND NOT -I. c/fs/vfs.h pulls in vfs_meta.h, and this directory list
+# -iquote AND NOT -I. c/fs/vfs/vfs.h pulls in vfs_meta.h, and this directory list
 # would otherwise put mini-libc's own headers on the path for the HOST compiler
 # -- the flat-namespace trap CLAUDE.md records twice and tests/poll.mk met from
 # this same side. -iquote applies only to "quoted" includes, so the tree's own

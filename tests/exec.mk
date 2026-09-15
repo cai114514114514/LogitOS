@@ -287,7 +287,7 @@ ci-boot: test-bigexec
 # the Makefile is contended and `-include` nests. See the header of tests/poll.mk.
 -include tests/poll.mk
 
-# /proc -- c/fs/procfs.c + procfs_src.c, and /bin/{ps,free,uptime}. Its own
+# /proc -- c/fs/procfs/procfs.c + procfs_src.c, and /bin/{ps,free,uptime}. Its own
 # fragment, included from here rather than from the top-level Makefile, because
 # the Makefile is contended and `-include` nests. See the header of
 # tests/procfs.mk.
@@ -316,7 +316,7 @@ ci-boot: test-bigexec
 #   /bin/sh                 c/apps/coreutils/sh.c  (words per command, bytes per line,
 #                           glob expansion, expanded-argv arena)
 #   the kernel's execve     c/kernel/exec/exec.c copy_uvec (LOGIT_EXEC_E2BIG)
-#   the file-name limit     c/fs/vfs_path.h now DERIVES VFS_NAME_MAX from the on-disk
+#   the file-name limit     c/fs/vfs/vfs_path.h now DERIVES VFS_NAME_MAX from the on-disk
 #                           LFS_NAME_MAX instead of carrying its own 60
 # include/abi/logit_exec.h is the one definition both ends of execve read.
 #
@@ -361,12 +361,12 @@ test-sh-limits-negctl:
 test-namemax: test-namemax-negctl
 test-namemax:
 	@mkdir -p $(BUILD)
-	@$(CC) $(FS_CFLAGS) -o $(BUILD)/namemax_test tests/unit/namemax_test.c $(FS_CORE) c/fs/vfs_path.c $(FS_STUB)
+	@$(CC) $(FS_CFLAGS) -o $(BUILD)/namemax_test tests/unit/namemax_test.c $(FS_CORE) c/fs/vfs/vfs_path.c $(FS_STUB)
 	@$(BUILD)/namemax_test
 
 test-namemax-negctl:
 	@mkdir -p $(BUILD)
-	@$(CC) $(FS_CFLAGS) -DVFS_NAME_MAX_LEGACY -o $(BUILD)/namemax_negctl tests/unit/namemax_test.c $(FS_CORE) c/fs/vfs_path.c $(FS_STUB)
+	@$(CC) $(FS_CFLAGS) -DVFS_NAME_MAX_LEGACY -o $(BUILD)/namemax_negctl tests/unit/namemax_test.c $(FS_CORE) c/fs/vfs/vfs_path.c $(FS_STUB)
 	@if $(BUILD)/namemax_negctl > $(BUILD)/namemax_negctl.log 2>&1; then \
 	    echo "FAIL: the typed-60 VFS_NAME_MAX PASSES the name-limit suite -- the crack is not measured"; exit 1; fi
 	@n=$$(grep -c 'FAIL:' $(BUILD)/namemax_negctl.log); \

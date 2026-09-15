@@ -29,7 +29,7 @@ RAW_INC := -Ic/net/core -Ic/net/link -Ic/net/ip -Ic/net/transport -Ic/net/dns \
 # queue-full drop rule (newest loses, mirrors udp.c).
 #
 # WHAT IT DOES NOT COVER: c/net/core/lsock.c's LOGIT_SOCK_RAW branch (the
-# SYS_SOCKET glue and the root-only privilege check against c/fs/vfs_cred.c)
+# SYS_SOCKET glue and the root-only privilege check against c/fs/vfs/vfs_cred.c)
 # is not reachable from a host test -- lsock.c pulls in file.c, proc.c and
 # vfs_cred.c, i.e. most of the kernel's process model. See the on-device note
 # below for how that half is meant to be checked instead.
@@ -188,7 +188,7 @@ test-agent-channel-negctl:
 test-agent-channel-host: test-agent-channel-negctl
 	@python3 tests/unit/agent_channel_test.py --build $(BUILD)/agent-channel --positive
 
-UNIX_INC := -Itests/unit/unixstub -Ic/net/core -Iinclude/abi -Ic/fs
+UNIX_INC := -Itests/unit/unixstub -Ic/net/core -Iinclude/abi $(FS_INC)
 
 # -D_FORTIFY_SOURCE=0 IS NOT TIDINESS AND IT IS NOT OPTIONAL ON THIS HOST.
 # unix_test.c includes the host <string.h> and then #includes unix.c, whose

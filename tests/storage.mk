@@ -100,13 +100,13 @@ STORAGE_HOST_INC := -iquote c -iquote c/kernel/exec -iquote c/kernel/mm \
 # silent by nature and this is the cheapest instrument that can see them.
 STORAGE_HOST_CF  := -O1 -g -Wall -Wextra -fsanitize=address,undefined
 
-$(BUILD)/storage_test: $(STORAGE_HOST_SRC) c/kernel/exec/file.h c/fs/vfs.h \
+$(BUILD)/storage_test: $(STORAGE_HOST_SRC) c/kernel/exec/file.h c/fs/vfs/vfs.h \
                        include/abi/logit_abi.h
 	@mkdir -p $(BUILD)
 	$(CC) $(STORAGE_HOST_CF) -o $@ $(STORAGE_HOST_SRC) $(STORAGE_HOST_INC)
 
 $(BUILD)/storage_test_negctl: $(STORAGE_HOST_SRC) c/kernel/exec/file.h \
-                              c/fs/vfs.h include/abi/logit_abi.h
+                              c/fs/vfs/vfs.h include/abi/logit_abi.h
 	@mkdir -p $(BUILD)
 	$(CC) $(STORAGE_HOST_CF) -DSTORAGE_NEGCTL -o $@ $(STORAGE_HOST_SRC) $(STORAGE_HOST_INC)
 

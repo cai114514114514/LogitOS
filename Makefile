@@ -97,6 +97,12 @@ INCDIRS := $(addprefix -I,$(filter-out %/include/sys %/include/uonly,$(sort $(sh
 # Host-built unit tests compile kernel sources against the host libc: the
 # mini-libc headers (c/apps/libc/include) would shadow glibc's <features.h>
 # and break <stdint.h>, so host tests use INCDIRS without that dir.
+# One list, used everywhere a host test needs the filesystem headers. c/fs was
+# split into subdirectories on 2026-09-15; scattering the subdirectory list into
+# every rule that needs it would be the hand-copied-source-list failure CLAUDE.md
+# names, one level down. Add a directory here, not in sixteen recipes.
+FS_INC := -Ic/fs/vfs -Ic/fs/logitfs -Ic/fs/cache -Ic/fs/ramfs -Ic/fs/ctl -Ic/fs/procfs
+
 HOST_INCDIRS := $(filter-out -Ic/apps/libc/include,$(INCDIRS))
 
 # -MMD -MP: every compile also emits a .d makefile fragment listing its real
@@ -2085,7 +2091,7 @@ test-nvme: $(ISO) $(DISK)
 # chain, a symlink to an absolute path, a path exactly at the buffer limit, the
 # empty path. None of them needs a disk or a boot, and all of them are silent
 # in an end-to-end test -- a truncated path is still a valid path, to the wrong
-# file. c/fs/vfs_path.c is kept free of kernel headers precisely so the code
+# file. c/fs/vfs/vfs_path.c is kept free of kernel headers precisely so the code
 # under test here is the code that ships.
 # A .PHONY line of its own rather than an entry on the big one at the top: that
 # line is being appended to by a dozen lines at once, and a merge conflict in a
@@ -2095,7 +2101,7 @@ test-nvme: $(ISO) $(DISK)
 test-vfs-path:
 	@mkdir -p $(BUILD)
 	@$(CC) -O2 -Wall -Wextra -o $(BUILD)/vfs_path_test tests/unit/vfs_path_test.c \
-	    c/fs/vfs_path.c -Ic/fs
+	    c/fs/vfs/vfs_path.c $(FS_INC)
 	@$(BUILD)/vfs_path_test
 
 # The same under ASan/UBSan: the walker splices symlink targets into a scratch
@@ -2104,29 +2110,29 @@ test-vfs-path:
 test-vfs-path-asan:
 	@mkdir -p $(BUILD)
 	@$(CC) -O1 -g -Wall -Wextra -fsanitize=address,undefined -fno-omit-frame-pointer \
-	    -o $(BUILD)/vfs_path_asan tests/unit/vfs_path_test.c c/fs/vfs_path.c -Ic/fs
+	    -o $(BUILD)/vfs_path_asan tests/unit/vfs_path_test.c c/fs/vfs/vfs_path.c $(FS_INC)
 	@UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1 $(BUILD)/vfs_path_asan
 
 # The VFS layer itself: the mount table, permission enforcement, hard and
-# symbolic links. Links the REAL c/fs/vfs.c -- only the kernel's synthetic-file
+# symbolic links. Links the REAL c/fs/vfs/vfs.c -- only the kernel's synthetic-file
 # providers and "the credential of the current process" are stubbed, so the
 # code deciding every permission here is the code that decides them on the
 # machine. Two filesystems really are mounted and a file really is read from
 # each; the device test then proves the same refusals reach a ring-3 process.
-VFS_TEST_SRC := c/fs/vfs.c c/fs/vfs_meta.c c/fs/vfs_path.c c/fs/ramfs.c
+VFS_TEST_SRC := c/fs/vfs/vfs.c c/fs/vfs/vfs_meta.c c/fs/vfs/vfs_path.c c/fs/ramfs/ramfs.c
 .PHONY: test-vfs-mount test-vfs-mount-asan test-vfs test-vfs-os
 
 test-vfs-mount:
 	@mkdir -p $(BUILD)
 	@$(CC) -O2 -Wall -Wextra -o $(BUILD)/vfs_mount_test tests/unit/vfs_mount_test.c \
-	    $(VFS_TEST_SRC) -Ic/fs -Ic/kernel/core
+	    $(VFS_TEST_SRC) $(FS_INC) -Ic/kernel/core
 	@$(BUILD)/vfs_mount_test
 
 test-vfs-mount-asan:
 	@mkdir -p $(BUILD)
 	@$(CC) -O1 -g -Wall -Wextra -fsanitize=address,undefined -fno-omit-frame-pointer \
 	    -o $(BUILD)/vfs_mount_asan tests/unit/vfs_mount_test.c $(VFS_TEST_SRC) \
-	    -Ic/fs -Ic/kernel/core
+	    $(FS_INC) -Ic/kernel/core
 	@UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1 $(BUILD)/vfs_mount_asan
 
 # THE NEGATIVE CONTROL. The same suite against a build where the mode, the
@@ -2139,7 +2145,7 @@ test-vfs-mount-asan:
 test-vfs-negctl:
 	@mkdir -p $(BUILD)
 	@$(CC) -O2 -w -DVFS_NEGCTL_STORE_ONLY -o $(BUILD)/vfs_negctl \
-	    tests/unit/vfs_mount_test.c $(VFS_TEST_SRC) -Ic/fs -Ic/kernel/core
+	    tests/unit/vfs_mount_test.c $(VFS_TEST_SRC) $(FS_INC) -Ic/kernel/core
 	@if $(BUILD)/vfs_negctl > $(BUILD)/vfs_negctl.log 2>&1; then \
 	    echo "CONTROL FAILED: a build that never checks the mode passed the suite"; \
 	    exit 1; \
@@ -2162,8 +2168,8 @@ test-vfs: test-vfs-path test-vfs-path-asan test-vfs-mount test-vfs-mount-asan te
 
 LOGIN_TEST_SRC := tests/unit/login_test.c c/crypto/kdf/pbkdf2.c \
                   c/crypto/hash/hmac_hkdf.c c/crypto/hash/sha256.c \
-                  c/crypto/hash/sha384.c c/fs/vfs_meta.c c/fs/vfs_path.c
-LOGIN_TEST_INC := -Ic/apps/coreutils -Ic/crypto -Ic/fs -Iinclude/abi
+                  c/crypto/hash/sha384.c c/fs/vfs/vfs_meta.c c/fs/vfs/vfs_path.c
+LOGIN_TEST_INC := -Ic/apps/coreutils -Ic/crypto $(FS_INC) -Iinclude/abi
 
 test-login:
 	@mkdir -p $(BUILD)
@@ -2571,8 +2577,8 @@ test-fsreplay: $(ISO) $(DISK)
 # is accepted but not on media until blk_flush(), and a power cut lands an
 # arbitrary subset of what was pending. A stub that wrote straight through would
 # make every barrier a no-op and every one of these tests vacuous.
-FS_STUB   := -Itests/unit/fsstub -Ic/fs -Ic/drivers/block
-FS_CORE   := c/fs/logitfs.c c/fs/bcache.c c/fs/fsck.c c/drivers/block/crc32.c
+FS_STUB   := -Itests/unit/fsstub $(FS_INC) -Ic/drivers/block
+FS_CORE   := c/fs/logitfs/logitfs.c c/fs/cache/bcache.c c/fs/logitfs/fsck.c c/drivers/block/crc32.c
 FS_CFLAGS := -O1 -g -Wall -Wextra -Wno-unused-function -Wno-type-limits              -fsanitize=address,undefined -fno-omit-frame-pointer
 
 # The buffer cache's contract: reads are served without a device round trip,
@@ -2580,7 +2586,7 @@ FS_CFLAGS := -O1 -g -Wall -Wextra -Wno-unused-function -Wno-type-limits         
 # a sync everything written before it is on media and a barrier was issued.
 test-fs-cache:
 	@mkdir -p $(BUILD)
-	@$(CC) $(FS_CFLAGS) -o $(BUILD)/fs_cache_test tests/unit/fs_cache_test.c c/fs/bcache.c $(FS_STUB)
+	@$(CC) $(FS_CFLAGS) -o $(BUILD)/fs_cache_test tests/unit/fs_cache_test.c c/fs/cache/bcache.c $(FS_STUB)
 	@$(BUILD)/fs_cache_test
 
 # The commit record's framing and the replay rules: a complete record replays
@@ -2590,7 +2596,7 @@ test-fs-cache:
 # stale record, and installing what it pointed at destroyed live data.
 test-fs-journal:
 	@mkdir -p $(BUILD)
-	@$(CC) $(FS_CFLAGS) -o $(BUILD)/fs_journal_test tests/unit/fs_journal_test.c 	    c/fs/fsck.c c/drivers/block/crc32.c $(FS_STUB)
+	@$(CC) $(FS_CFLAGS) -o $(BUILD)/fs_journal_test tests/unit/fs_journal_test.c 	    c/fs/logitfs/fsck.c c/drivers/block/crc32.c $(FS_STUB)
 	@$(BUILD)/fs_journal_test
 
 # Crash injection at EVERY device write of write/mkdir/delete/rename/overwrite,
@@ -2613,13 +2619,13 @@ test-fsck:
 	@$(CC) $(FS_CFLAGS) -o $(BUILD)/fs_fsck_test tests/unit/fs_fsck_test.c $(FS_CORE) $(FS_STUB)
 	@$(BUILD)/fs_fsck_test
 
-# The on-disk format has a C definition (c/fs/logitfs_fmt.h) and a Python one
+# The on-disk format has a C definition (c/fs/logitfs/logitfs_fmt.h) and a Python one
 # (tools/mkfs.py). This reads the REAL image the kernel boots with the C one and
 # asserts every offset, so a field that moved on one side is caught here rather
 # than by a kernel reading inodes at the wrong offsets.
 test-fs-format: $(DISK)
 	@mkdir -p $(BUILD)
-	@$(CC) $(FS_CFLAGS) -o $(BUILD)/fs_format_test tests/unit/fs_format_test.c 	    c/fs/fsck.c c/drivers/block/crc32.c $(FS_STUB)
+	@$(CC) $(FS_CFLAGS) -o $(BUILD)/fs_format_test tests/unit/fs_format_test.c 	    c/fs/logitfs/fsck.c c/drivers/block/crc32.c $(FS_STUB)
 	@$(BUILD)/fs_format_test $(DISK)
 
 # "The device was asked fewer times for the same bytes" -- an exact number, on
@@ -2645,9 +2651,13 @@ test-bulkread:
 NEGCTL_REV ?= b9b33ef
 test-bulkread-negctl:
 	@mkdir -p $(BUILD)/negctl
+	@# THE PATH HERE IS HISTORICAL AND MUST NOT FOLLOW THE 2026-09-15 SPLIT.
+	@# It names logitfs.c inside revision $(NEGCTL_REV), where the file still
+	@# lived at c/fs/. Rewriting it to c/fs/logitfs/ makes git show fail and
+	@# takes this control out of service silently.
 	@git show $(NEGCTL_REV):c/fs/logitfs.c > $(BUILD)/negctl/logitfs.c
 	@$(CC) $(FS_CFLAGS) -o $(BUILD)/fs_bulkread_negctl tests/unit/fs_bulkread_test.c \
-	    $(BUILD)/negctl/logitfs.c c/fs/bcache.c c/fs/fsck.c c/drivers/block/crc32.c $(FS_STUB) -Ic/fs
+	    $(BUILD)/negctl/logitfs.c c/fs/cache/bcache.c c/fs/logitfs/fsck.c c/drivers/block/crc32.c $(FS_STUB) $(FS_INC)
 	@if $(BUILD)/fs_bulkread_negctl > $(BUILD)/negctl.log 2>&1; then \
 	    echo "NEGATIVE CONTROL FAILED: the pre-change read path PASSED the coalescing test"; \
 	    cat $(BUILD)/negctl.log; exit 1; \
@@ -4467,7 +4477,7 @@ test-glyph-agree:
 FONT_WEIGHT_SRC := c/kernel/gui/text.c c/lib/text/bidi.c c/lib/text/script.c \
                    c/lib/text/shape.c c/lib/text/utf8.c $(FONT_SRC) $(FONT_RAS)
 FONT_WEIGHT_INC := $(FONT_INC) -Iinclude/abi -Ic/kernel/cpu -Ic/kernel/core \
-                   -Ic/kernel/mm -Ic/fs
+                   -Ic/kernel/mm $(FS_INC)
 
 $(BUILD)/font_weight_test: tests/unit/font_weight_test.c $(FONT_WEIGHT_SRC)
 	@mkdir -p $(BUILD)
@@ -5522,6 +5532,7 @@ include tests/document_referrer.mk
 
 -include tests/servers.mk
 -include tests/bootself.mk
+-include tests/pty.mk
 
 include tests/agent.mk
 

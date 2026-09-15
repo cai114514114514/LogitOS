@@ -36,7 +36,7 @@
 # WHY NOT A HOST TEST. file.c's read path is three lines over vfs_pread; what is
 # actually being measured is the KERNEL HEAP, and a host harness would have to
 # supply its own kmalloc and would then be measuring that. The instrument is
-# /dev/fsbench's `openfd` (c/fs/fsbench.c), which this line of work neither
+# /dev/fsbench's `openfd` (c/fs/ctl/fsbench.c), which this line of work neither
 # wrote nor owns.
 
 .PHONY: test-fdstream test-fdstream-negctl test-fdstream-big

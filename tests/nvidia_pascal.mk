@@ -3,16 +3,54 @@
 # synthetic: QEMU stdvga is admitted only by NVIDIA_PASCAL_QEMU_TEST so BIOS
 # LFB and UEFI GOP can exercise the complete declarative binding path without
 # pretending QEMU emulates a GP107.
-NV_PASCAL_SRC := tests/unit/nvidia_pascal_test.c c/drivers/gpu/nvidia_pascal.c
-NV_PASCAL_INC := -Ic/drivers/gpu -Ic/drivers/core -Ic/kernel/pci -Ic/kernel/gui -Ic/kernel/core
+NV_PASCAL_SRC := tests/unit/nvidia_pascal_test.c c/drivers/gpu/nvidia_pascal.c \
+                 c/drivers/gpu/nvidia_pascal_accel.c c/crypto/hash/sha256.c
+NV_ACCEL_SRC := tests/unit/nvidia_pascal_accel_test.c \
+                c/drivers/gpu/nvidia_pascal_accel.c c/crypto/hash/sha256.c
+NV_PASCAL_INC := -Ic/drivers/gpu -Ic/drivers/core -Ic/kernel/pci -Ic/kernel/gui \
+                 -Ic/kernel/core -Ic/kernel/mm $(FS_INC) -Ic/crypto
 NV_PASCAL_ESP := $(BUILD)/esp.img
 
 ifeq ($(PASCALVERIFY),1)
 CFLAGS += -DNVIDIA_PASCAL_QEMU_TEST
 endif
 
-.PHONY: test-nvidia-pascal-negctl test-nvidia-pascal-host \
+.PHONY: test-nvidia-pascal-negctl test-nvidia-pascal-accel-negctl \
+        test-nvidia-pascal-accel-host test-nvidia-pascal-host \
         test-nvidia-pascal-synthetic-guest
+
+# Two mutations prove the ordering and digest checks rather than merely naming
+# them: absent firmware must not map BAR0, and a corrupt GP107 blob must not
+# advance into the identity reads.  Each mutation changes one observable check.
+test-nvidia-pascal-accel-negctl:
+	@mkdir -p $(BUILD)
+	@$(CC) -std=c11 -O1 -Wall -Wextra -Werror -DLOGIT_HOST_TEST \
+	    -DNV1050_NEGCTL_MAP_ON_MISSING $(NV_PASCAL_INC) $(NV_ACCEL_SRC) \
+	    -o $(BUILD)/nvidia-pascal-accel-neg-map
+	@if $(BUILD)/nvidia-pascal-accel-neg-map >$(BUILD)/nvidia-pascal-accel-neg-map.log 2>&1; then \
+	    cat $(BUILD)/nvidia-pascal-accel-neg-map.log; exit 1; fi
+	@grep -q '^FAIL: missing firmware preserves software fallback with zero MMIO$$' \
+	    $(BUILD)/nvidia-pascal-accel-neg-map.log
+	@grep -q '^NV_ACCEL_BRINGUP: 38 checks, 1 failures$$' \
+	    $(BUILD)/nvidia-pascal-accel-neg-map.log
+	@echo 'NV_ACCEL_NEGCTL: missing firmware reached BAR map (exactly one failure)'
+	@$(CC) -std=c11 -O1 -Wall -Wextra -Werror -DLOGIT_HOST_TEST \
+	    -DNV1050_NEGCTL_ACCEPT_BAD_HASH $(NV_PASCAL_INC) $(NV_ACCEL_SRC) \
+	    -o $(BUILD)/nvidia-pascal-accel-neg-hash
+	@if $(BUILD)/nvidia-pascal-accel-neg-hash >$(BUILD)/nvidia-pascal-accel-neg-hash.log 2>&1; then \
+	    cat $(BUILD)/nvidia-pascal-accel-neg-hash.log; exit 1; fi
+	@grep -q '^FAIL: corrupt firmware SHA-256 cannot reach MMIO$$' \
+	    $(BUILD)/nvidia-pascal-accel-neg-hash.log
+	@grep -q '^NV_ACCEL_BRINGUP: 38 checks, 1 failures$$' \
+	    $(BUILD)/nvidia-pascal-accel-neg-hash.log
+	@echo 'NV_ACCEL_NEGCTL: corrupt firmware reached BAR map (exactly one failure)'
+
+test-nvidia-pascal-accel-host: test-nvidia-pascal-accel-negctl
+	@mkdir -p $(BUILD)
+	@$(CC) -std=c11 -O1 -g -fsanitize=address,undefined -Wall -Wextra -Werror \
+	    -DLOGIT_HOST_TEST $(NV_PASCAL_INC) $(NV_ACCEL_SRC) \
+	    -o $(BUILD)/nvidia-pascal-accel-host
+	@$(BUILD)/nvidia-pascal-accel-host
 
 test-nvidia-pascal-negctl:
 	@mkdir -p $(BUILD)
@@ -33,7 +71,7 @@ test-nvidia-pascal-negctl:
 	@grep -q '^NV_BOOTFB: 56 checks, 1 failures$$' $(BUILD)/nvidia-pascal-neg-d3.log
 	@echo 'NV_BOOTFB_NEGCTL: accepting D3 violated passive-probe contract (exactly one failure)'
 
-test-nvidia-pascal-host: test-nvidia-pascal-negctl
+test-nvidia-pascal-host: test-nvidia-pascal-negctl test-nvidia-pascal-accel-host
 	@mkdir -p $(BUILD)
 	@$(CC) -std=c11 -O1 -g -fsanitize=address,undefined -Wall -Wextra -Werror \
 	    -DLOGIT_HOST_TEST $(NV_PASCAL_INC) $(NV_PASCAL_SRC) \

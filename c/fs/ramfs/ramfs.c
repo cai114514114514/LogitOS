@@ -1,4 +1,4 @@
-#include "../drivers/core/io_lock.h"
+#include "../../drivers/core/io_lock.h"
 /* Only instance claims use this gate; file operations use their mount owner. */
 static io_lock_t ramfs_pool_gate = IO_LOCK_INIT;
 /* An in-memory filesystem. See ramfs.h for why it exists.

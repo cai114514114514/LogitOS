@@ -4,7 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include "vfsctl.h"
-#include "../drivers/core/io_domain.h"
+#include "../../drivers/core/io_domain.h"
 #include "vfs.h"
 static struct io_domain control_owner = IO_DOMAIN_INIT;
 int vfsctl_drain_lock(void)

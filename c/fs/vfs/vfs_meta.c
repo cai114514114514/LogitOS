@@ -3,12 +3,12 @@
  * tests alongside vfs.c. */
 
 #include "vfs_meta.h"
-#include "../drivers/core/io_domain.h"
+#include "../../drivers/core/io_domain.h"
 /* Only the in-memory metadata object is held. No filesystem callback or disk
  * wait runs under this owner. VFS mount transaction -> metadata is the order. */
 static struct io_domain meta_owner = IO_DOMAIN_INIT;
 #include "vfs_path.h"
-#include "../../include/weaksym.h"  /* the weak vfs_cred_ingroup below */
+#include "../../../include/weaksym.h"  /* the weak vfs_cred_ingroup below */
 
 struct vrec {
     char     path[VMETA_PATH];       /* "" = free slot */

@@ -7,12 +7,12 @@
 
 #include <stddef.h>
 #include "vfs.h"
-#include "../drivers/core/io_domain.h"
-#include "../drivers/core/io_lock.h"
+#include "../../drivers/core/io_domain.h"
+#include "../../drivers/core/io_lock.h"
 #include "vfs_path.h"
 #include "vfs_meta.h"
 #include "vfsctl.h"     /* the VFS's own control + introspection nodes under /dev */
-#include "../../include/weaksym.h"  /* every weak declaration below goes through it */
+#include "../../../include/weaksym.h"  /* every weak declaration below goes through it */
 
 /* Synthetic files come first. They are served by the kernel itself (no disk, no
  * inode) and every one of them returns SYN_NOT_MINE for a path it does not

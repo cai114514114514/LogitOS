@@ -3,7 +3,7 @@
 
 #include "vfs_path.h"    /* VFS_E* and the path walker */
 #include "vfs_meta.h"    /* struct vattr / struct vcred / MAY_* */
-#include "../../include/abi/fs_ref.h"
+#include "../../../include/abi/fs_ref.h"
 
 /* ---------------------------------------------------------------------------
  * The virtual filesystem layer.

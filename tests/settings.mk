@@ -20,7 +20,7 @@
 # one.
 SET_CFLAGS := -O1 -g -Wall -Wextra -Wno-unused-function \
               -fsanitize=address,undefined -fno-omit-frame-pointer
-SET_INC    := -Ic/kernel/core -Ic/fs -Ic/drivers/block -Iinclude/abi -Ic/kernel/mm
+SET_INC    := -Ic/kernel/core $(FS_INC) -Ic/drivers/block -Iinclude/abi -Ic/kernel/mm
 SET_SRC    := tests/unit/settings_test.c c/kernel/core/settings.c c/drivers/block/crc32.c
 
 # The truncate-at-every-byte-offset sweep, the garbage battery, the frame codec

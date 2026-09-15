@@ -15,7 +15,7 @@
 #include "procfs.h"
 #include "vfs.h"
 #include "vfs_path.h"
-#include "../../include/weaksym.h"   /* the weak vfs_mount_at below */
+#include "../../../include/weaksym.h"   /* the weak vfs_mount_at below */
 
 /* vfs_mount_at, weak, for exactly the reason c/fs/vfs.c declares kdiag weakly:
  * this file is linked into a host unit test that has no mount table and wants
