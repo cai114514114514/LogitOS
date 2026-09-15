@@ -320,3 +320,112 @@ test-bios-mb2-differential: test-bios-mb2-differential-negctl \
     $(BIOS_MB2_IMAGE) $(BIOS_MB2_GRUB_IMAGE) $(BIOS_MB2_TEST)
 	@python3 $(BIOS_MB2_TEST) --qemu $(BIOS_MB2_QEMU) compare \
 	    $(BIOS_MB2_IMAGE) $(BIOS_MB2_GRUB_IMAGE)
+
+# Stage 3 keeps the product ISO and grub.cfg untouched: this sibling image
+# contains preload, loader, and the diagnostic kernel ELF as consecutive native
+# CD extents.  The GRUB image above is still built because its BOOT_MB2_DUMP is
+# the oracle for consumed tags, not because GRUB participates in our boot.
+BIOS_BOOT_DIR := $(BUILD)/bios-boot
+BIOS_BOOT_PRELOAD := $(BIOS_BOOT_DIR)/preload.bin
+BIOS_BOOT_LOADER := $(BIOS_BOOT_DIR)/loader.bin
+BIOS_BOOT_BAD_MAGIC_LOADER := $(BIOS_BOOT_DIR)/loader-bad-magic.bin
+BIOS_BOOT_SHORT_SEGMENT_LOADER := $(BIOS_BOOT_DIR)/loader-short-segment.bin
+BIOS_BOOT_SKIP_BSS_LOADER := $(BIOS_BOOT_DIR)/loader-skip-bss-zero.bin
+BIOS_BOOT_IMAGE := $(BIOS_BOOT_DIR)/ours.iso
+BIOS_BOOT_BAD_MAGIC_IMAGE := $(BIOS_BOOT_DIR)/bad-magic.iso
+BIOS_BOOT_SHORT_SEGMENT_IMAGE := $(BIOS_BOOT_DIR)/short-segment.iso
+BIOS_BOOT_SKIP_BSS_IMAGE := $(BIOS_BOOT_DIR)/skip-bss-zero.iso
+BIOS_BOOT_DUMP_IMAGE := $(BIOS_BOOT_DIR)/ours-dump.iso
+BIOS_BOOT_KERNEL := $(BIOS_BOOT_DIR)/kernel.elf
+BIOS_BOOT_KERNEL_STAMP := $(BIOS_BOOT_DIR)/kernel-normal.stamp
+BIOS_BOOT_DUMP_KERNEL := $(BIOS_MB2_GRUB_KERNEL)
+BIOS_BOOT_GRUB_IMAGE := $(BIOS_MB2_GRUB_IMAGE)
+BIOS_BOOT_DISK := $(BUILD)/disk.img
+BIOS_BOOT_TEST := tests/unit/bios_mb2_test.py
+BIOS_BOOT_QEMU ?= qemu-system-x86_64
+
+.PHONY: test-bios-boot test-bios-boot-negctl
+
+$(BIOS_BOOT_PRELOAD): c/boot/bios/preload.asm tests/bootself.mk
+	@mkdir -p $(BIOS_BOOT_DIR)
+	nasm -f bin -o $@ $<
+
+$(BIOS_BOOT_LOADER): c/boot/bios/loader.asm tests/bootself.mk
+	@mkdir -p $(BIOS_BOOT_DIR)
+	nasm -f bin -o $@ $<
+
+$(BIOS_BOOT_BAD_MAGIC_LOADER): c/boot/bios/loader.asm tests/bootself.mk
+	@mkdir -p $(BIOS_BOOT_DIR)
+	nasm -f bin -DLOADER_NEGCTL_BAD_MB2_MAGIC -o $@ $<
+
+$(BIOS_BOOT_SHORT_SEGMENT_LOADER): c/boot/bios/loader.asm tests/bootself.mk
+	@mkdir -p $(BIOS_BOOT_DIR)
+	nasm -f bin -DLOADER_NEGCTL_SHORT_SEGMENT -o $@ $<
+
+$(BIOS_BOOT_SKIP_BSS_LOADER): c/boot/bios/loader.asm tests/bootself.mk
+	@mkdir -p $(BIOS_BOOT_DIR)
+	nasm -f bin -DLOADER_NEGCTL_SKIP_BSS_ZERO -o $@ $<
+
+# The differential recipe deliberately leaves mb2dump.o and kmain.o compiled
+# with BOOT_MB2_DUMP.  Recompile those two without it before linking the normal
+# sibling kernel; otherwise an incremental run can silently call a dump-and-
+# exit artifact "normal" and make LOGIT_BOOT_OK impossible by construction.
+$(BIOS_BOOT_KERNEL_STAMP): $(BIOS_BOOT_GRUB_IMAGE) c/kernel/core/mb2dump.c \
+    c/kernel/core/kmain.c tests/bootself.mk
+	$(CC) $(CFLAGS) -c c/kernel/core/mb2dump.c -o $(BUILD)/c/kernel/core/mb2dump.o
+	$(CC) $(CFLAGS) -c c/kernel/core/kmain.c -o $(BUILD)/c/kernel/core/kmain.o
+	rm -f $(BIOS_BOOT_KERNEL)
+	$(MAKE) BUILD=$(BUILD) KERNEL=$(BIOS_BOOT_KERNEL) $(BIOS_BOOT_KERNEL)
+	@touch $@
+
+$(BIOS_BOOT_IMAGE): tools/mkiso.py $(BIOS_BOOT_PRELOAD) $(BIOS_BOOT_LOADER) \
+    $(BIOS_BOOT_KERNEL_STAMP) tests/bootself.mk
+	python3 tools/mkiso.py $@ --boot-image $(BIOS_BOOT_PRELOAD) \
+	    --loader $(BIOS_BOOT_LOADER) --kernel $(BIOS_BOOT_KERNEL)
+
+$(BIOS_BOOT_BAD_MAGIC_IMAGE): tools/mkiso.py $(BIOS_BOOT_PRELOAD) \
+    $(BIOS_BOOT_BAD_MAGIC_LOADER) $(BIOS_BOOT_KERNEL_STAMP) tests/bootself.mk
+	python3 tools/mkiso.py $@ --boot-image $(BIOS_BOOT_PRELOAD) \
+	    --loader $(BIOS_BOOT_BAD_MAGIC_LOADER) --kernel $(BIOS_BOOT_KERNEL)
+
+$(BIOS_BOOT_SHORT_SEGMENT_IMAGE): tools/mkiso.py $(BIOS_BOOT_PRELOAD) \
+    $(BIOS_BOOT_SHORT_SEGMENT_LOADER) $(BIOS_BOOT_KERNEL_STAMP) tests/bootself.mk
+	python3 tools/mkiso.py $@ --boot-image $(BIOS_BOOT_PRELOAD) \
+	    --loader $(BIOS_BOOT_SHORT_SEGMENT_LOADER) --kernel $(BIOS_BOOT_KERNEL)
+
+$(BIOS_BOOT_SKIP_BSS_IMAGE): tools/mkiso.py $(BIOS_BOOT_PRELOAD) \
+    $(BIOS_BOOT_SKIP_BSS_LOADER) $(BIOS_BOOT_KERNEL_STAMP) tests/bootself.mk
+	python3 tools/mkiso.py $@ --boot-image $(BIOS_BOOT_PRELOAD) \
+	    --loader $(BIOS_BOOT_SKIP_BSS_LOADER) --kernel $(BIOS_BOOT_KERNEL)
+
+$(BIOS_BOOT_DUMP_IMAGE): tools/mkiso.py $(BIOS_BOOT_PRELOAD) $(BIOS_BOOT_LOADER) \
+    $(BIOS_BOOT_GRUB_IMAGE) tests/bootself.mk
+	python3 tools/mkiso.py $@ --boot-image $(BIOS_BOOT_PRELOAD) \
+	    --loader $(BIOS_BOOT_LOADER) --kernel $(BIOS_BOOT_DUMP_KERNEL)
+
+# These mutations are prerequisites of the positive gate.  The BSS half is
+# allowed to SKIP only after the serial transcript proves zeroing was omitted
+# and entry was attempted: zero-filled emulator RAM can make the defect
+# unobservable, and treating that luck as a failed control would be fabricated
+# evidence.  The wrong-magic and short-segment halves must fail on every run.
+test-bios-boot-negctl: $(BIOS_BOOT_BAD_MAGIC_IMAGE) \
+    $(BIOS_BOOT_SHORT_SEGMENT_IMAGE) $(BIOS_BOOT_SKIP_BSS_IMAGE) \
+    $(BIOS_BOOT_DISK) $(BIOS_BOOT_TEST)
+	@if ! command -v $(BIOS_BOOT_QEMU) >/dev/null 2>&1; then \
+	  echo 'SKIP: test-bios-boot-negctl requires $(BIOS_BOOT_QEMU) to watch the kernel-entry controls'; \
+	  exit 0; \
+	 fi
+	@python3 $(BIOS_BOOT_TEST) --qemu $(BIOS_BOOT_QEMU) --disk $(BIOS_BOOT_DISK) kernel-control \
+	    $(BIOS_BOOT_BAD_MAGIC_IMAGE) --reason bad-magic
+	@python3 $(BIOS_BOOT_TEST) --qemu $(BIOS_BOOT_QEMU) --disk $(BIOS_BOOT_DISK) kernel-control \
+	    $(BIOS_BOOT_SHORT_SEGMENT_IMAGE) --reason short-segment
+	@python3 $(BIOS_BOOT_TEST) --qemu $(BIOS_BOOT_QEMU) --disk $(BIOS_BOOT_DISK) kernel-control \
+	    $(BIOS_BOOT_SKIP_BSS_IMAGE) --reason skip-bss-zero
+	@echo 'PASS: bios-boot negative controls completed with any unobservable half skipped loudly'
+
+test-bios-boot: test-bios-boot-negctl $(BIOS_BOOT_IMAGE) \
+    $(BIOS_BOOT_DUMP_IMAGE) $(BIOS_BOOT_TEST)
+	@python3 $(BIOS_BOOT_TEST) --qemu $(BIOS_BOOT_QEMU) --disk $(BIOS_BOOT_DISK) kernel-compare \
+	    $(BIOS_BOOT_DUMP_IMAGE) $(BIOS_BOOT_GRUB_IMAGE)
+	@python3 $(BIOS_BOOT_TEST) --qemu $(BIOS_BOOT_QEMU) --disk $(BIOS_BOOT_DISK) kernel-check \
+	    $(BIOS_BOOT_IMAGE)

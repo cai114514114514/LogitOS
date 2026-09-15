@@ -10,9 +10,22 @@ ORG 0
 %define VBE_MODE_INFO        0x6200
 %define MB2_INFO             0x8000
 %define MB2_LIMIT            0xa000
+%define PHDR_BUFFER          0x3000
+%define PHDR_BUFFER_BYTES    (MMAP_BUFFER - PHDR_BUFFER)
+%define BOUNCE_SEGMENT       0x7000
+%define BOUNCE_BUFFER        0x70000
+%define BOUNCE_BYTES         0x8000
+%define KERNEL_LOAD_BASE     0x02000000
+%define LOADER_PHYSICAL      0x10000
+%define KERNEL_PATCH_OFFSET  0x1ff0
+
+%define GDT_CODE32           0x08
+%define GDT_DATA32           0x10
+%define GDT_CODE16           0x18
+%define GDT_DATA16           0x20
 
 %ifndef LOADER_HANDOFF
-%define LOADER_HANDOFF loader_halt
+%define LOADER_HANDOFF load_kernel_and_enter
 %endif
 
 loader_entry:
@@ -25,6 +38,7 @@ loader_entry:
     mov sp, 0x7c00
     sti
     cld
+    mov [boot_drive], dl
 
     call serial_init
     mov si, loader_marker
@@ -599,6 +613,377 @@ align_di_8:
     pop bx
     ret
 
+; The ELF64 header and program-header table are data even though the entry
+; contract is 32-bit protected mode.  Read the table from the CD instead of
+; baking in either the linked entry or segment layout: linker changes must
+; move the bytes described by PT_LOAD, not require a matching loader edit.
+load_kernel_and_enter:
+    call read_kernel_headers
+    jc kernel_load_failed
+
+    mov word [phdr_cursor], PHDR_BUFFER
+    mov ax, [kernel_phnum]
+    mov [phdr_left], ax
+    mov byte [loaded_segment_count], 0
+%ifdef LOADER_NEGCTL_SHORT_SEGMENT
+    mov byte [short_segment_applied], 0
+%endif
+
+.next_phdr:
+    cmp word [phdr_left], 0
+    je .segments_done
+    xor ax, ax
+    mov es, ax
+    mov bx, [phdr_cursor]
+    cmp dword [es:bx], 1                  ; ELF PT_LOAD
+    jne .advance
+
+    cmp dword [es:bx + 12], 0            ; p_offset high half
+    jne kernel_elf_failed
+    cmp dword [es:bx + 28], 0            ; p_paddr high half
+    jne kernel_elf_failed
+    cmp dword [es:bx + 36], 0            ; p_filesz high half
+    jne kernel_elf_failed
+    cmp dword [es:bx + 44], 0            ; p_memsz high half
+    jne kernel_elf_failed
+    mov eax, [es:bx + 8]
+    mov [segment_offset], eax
+    mov eax, [es:bx + 24]
+    mov [segment_address], eax
+    mov eax, [es:bx + 32]
+    mov [segment_filesz], eax
+    mov eax, [es:bx + 40]
+    mov [segment_memsz], eax
+
+    cmp eax, [segment_filesz]
+    jb kernel_elf_failed
+    mov edx, [segment_address]
+    cmp edx, KERNEL_LOAD_BASE
+    jb kernel_elf_failed
+    add edx, eax
+    jc kernel_elf_failed
+    mov eax, [segment_offset]
+    add eax, [segment_filesz]
+    jc kernel_elf_failed
+    cmp eax, [kernel_file_limit]
+    ja kernel_elf_failed
+
+    inc byte [loaded_segment_count]
+    mov eax, [segment_filesz]
+    mov [segment_copy_bytes], eax
+%ifdef LOADER_NEGCTL_SHORT_SEGMENT
+    ; Gate-only mutation: damage exactly one loadable segment while leaving its
+    ; declared BSS boundary untouched.  Zeroing must not accidentally repair
+    ; the omitted file-backed page and turn this into a different control.
+    cmp byte [short_segment_applied], 0
+    jne .copy_segment
+    cmp eax, 4096
+    jb .copy_segment
+    sub dword [segment_copy_bytes], 4096
+    mov byte [short_segment_applied], 1
+    mov si, short_segment_control
+    call serial_print
+%endif
+.copy_segment:
+    call load_segment_file
+    jc kernel_read_failed
+
+    mov eax, [segment_memsz]
+    sub eax, [segment_filesz]
+    jz .advance
+%ifdef LOADER_NEGCTL_SKIP_BSS_ZERO
+    ; Gate-only mutation.  On zero-filled QEMU RAM this can remain invisible;
+    ; the oracle must report that as SKIP rather than pretending a failure.
+    mov si, bss_zero_control
+    call serial_print
+%else
+    mov [physical_count], eax
+    mov edx, [segment_address]
+    add edx, [segment_filesz]
+    mov [physical_destination], edx
+    mov byte [physical_operation], 1
+    call protected_memory_operation
+%endif
+
+.advance:
+    add word [phdr_cursor], 56
+    dec word [phdr_left]
+    jmp .next_phdr
+
+.segments_done:
+    cmp byte [loaded_segment_count], 0
+    je kernel_elf_failed
+%ifdef LOADER_NEGCTL_SHORT_SEGMENT
+    cmp byte [short_segment_applied], 1
+    jne kernel_elf_failed
+%endif
+    mov si, kernel_load_ok
+    call serial_print
+    mov si, kernel_enter_marker
+    call serial_print
+
+    ; This is the final transition, not a copy round-trip: paging and
+    ; interrupts remain off, and the flat 32-bit selectors are the state the
+    ; existing boot.asm entry contract requires.
+    cli
+    lgdt [gdt_descriptor]
+    mov eax, cr0
+    or eax, 1
+    mov cr0, eax
+    jmp dword GDT_CODE32:(LOADER_PHYSICAL + protected_kernel_entry)
+
+kernel_load_failed:
+    mov si, kernel_load_fail
+    call serial_print
+    jmp loader_halt
+
+kernel_elf_failed:
+    mov si, kernel_elf_fail
+    call serial_print
+    jmp loader_halt
+
+kernel_read_failed:
+    mov si, kernel_read_fail
+    call serial_print
+    jmp loader_halt
+
+; Read and validate enough leading native-CD blocks to contain every ELF64
+; program header, then copy the table away from the bounce buffer before that
+; buffer is reused for segment data.  The explicit low-memory ceiling prevents
+; a malformed e_phnum from overwriting the E820 apparatus at 0x5000.
+read_kernel_headers:
+    movzx eax, word [kernel_block_count]
+    test eax, eax
+    jz .bad
+    shl eax, 11
+    mov [kernel_file_limit], eax
+    xor eax, eax
+    mov cx, 1
+    call read_kernel_blocks
+    jc .read_bad
+
+    mov ax, BOUNCE_SEGMENT
+    mov es, ax
+    cmp dword [es:0], 0x464c457f
+    jne .bad
+    cmp byte [es:4], 2                    ; ELFCLASS64
+    jne .bad
+    cmp byte [es:5], 1                    ; little endian
+    jne .bad
+    cmp byte [es:6], 1                    ; current ELF version
+    jne .bad
+    cmp word [es:18], 0x3e                ; EM_X86_64
+    jne .bad
+    cmp dword [es:28], 0                  ; e_entry high half
+    jne .bad
+    cmp dword [es:36], 0                  ; e_phoff high half
+    jne .bad
+    cmp word [es:54], 56                  ; sizeof(Elf64_Phdr)
+    jne .bad
+    cmp word [es:56], 0
+    je .bad
+    mov eax, [es:24]
+    mov [kernel_entry_address], eax
+    mov eax, [es:32]
+    mov [kernel_phoff], eax
+    mov ax, [es:56]
+    mov [kernel_phnum], ax
+    movzx eax, ax
+    imul eax, 56
+    cmp eax, PHDR_BUFFER_BYTES
+    ja .bad
+    mov [kernel_phbytes], ax
+    mov edx, [kernel_phoff]
+    add edx, eax
+    jc .bad
+    cmp edx, BOUNCE_BYTES
+    ja .bad
+    cmp edx, [kernel_file_limit]
+    ja .bad
+    mov eax, edx
+    add eax, 2047
+    jc .bad
+    shr eax, 11
+    mov cx, ax
+    xor eax, eax
+    call read_kernel_blocks
+    jc .read_bad
+
+    mov ax, BOUNCE_SEGMENT
+    mov ds, ax
+    mov si, [cs:kernel_phoff]
+    xor ax, ax
+    mov es, ax
+    mov di, PHDR_BUFFER
+    mov cx, [cs:kernel_phbytes]
+    rep movsb
+    mov ax, cs
+    mov ds, ax
+    clc
+    ret
+.read_bad:
+    stc
+    ret
+.bad:
+    mov ax, cs
+    mov ds, ax
+    stc
+    ret
+
+; Copy one PT_LOAD segment in at most 32 KiB pieces.  INT 13h executes only in
+; real mode into the 0x70000 bounce buffer; protected_memory_operation then
+; copies above 1 MiB and returns for the next firmware call.  A persistent
+; unreal-mode cache was rejected because firmware is not required to preserve
+; its hidden segment state across INT 13h, a failure that would be silent.
+load_segment_file:
+    mov eax, [segment_offset]
+    mov [load_file_offset], eax
+    mov eax, [segment_address]
+    mov [load_destination], eax
+    mov eax, [segment_copy_bytes]
+    mov [load_remaining], eax
+.chunk:
+    cmp dword [load_remaining], 0
+    je .done
+    mov eax, [load_file_offset]
+    mov edx, eax
+    and edx, 2047
+    mov [load_skip], dx
+    mov ecx, BOUNCE_BYTES
+    sub ecx, edx
+    cmp ecx, [load_remaining]
+    jbe .size_ready
+    mov ecx, [load_remaining]
+.size_ready:
+    mov [load_chunk_bytes], ecx
+    mov eax, edx
+    add eax, ecx
+    add eax, 2047
+    shr eax, 11
+    mov cx, ax
+    mov eax, [load_file_offset]
+    shr eax, 11
+    call read_kernel_blocks
+    jc .read_bad
+
+    movzx eax, word [load_skip]
+    add eax, BOUNCE_BUFFER
+    mov [physical_source], eax
+    mov eax, [load_destination]
+    mov [physical_destination], eax
+    mov eax, [load_chunk_bytes]
+    mov [physical_count], eax
+    mov byte [physical_operation], 0
+    call protected_memory_operation
+
+    mov eax, [load_chunk_bytes]
+    add [load_file_offset], eax
+    add [load_destination], eax
+    sub [load_remaining], eax
+    jmp .chunk
+.done:
+    clc
+    ret
+.read_bad:
+    stc
+    ret
+
+; EAX is a sector offset relative to the patched kernel LBA; CX is a count of
+; 2,048-byte native CD blocks.  The same ten-byte L2P descriptor format used by
+; preload names this payload too; the legacy magic spelling is retained so the
+; image has one patch mechanism rather than a second almost-identical protocol.
+read_kernel_blocks:
+    test cx, cx
+    jz .bad
+    cmp cx, BOUNCE_BYTES / 2048
+    ja .bad
+    mov [kernel_dap + 2], cx
+    add eax, [kernel_lba]
+    mov [kernel_dap + 8], eax
+    mov dword [kernel_dap + 12], 0
+    mov dl, [boot_drive]
+    mov si, kernel_dap
+    mov ah, 0x42
+    int 0x13
+    pushf
+    mov ax, cs
+    mov ds, ax
+    popf
+    ret
+.bad:
+    stc
+    ret
+
+; Copying through protected mode is slightly more transition work than unreal
+; mode, but it makes the 32 MiB write independent of undocumented BIOS segment
+; cache preservation.  Record the post-CALL SP: restoring the stack top instead
+; silently pops address zero and restarts loader_entry after every chunk.
+protected_memory_operation:
+    mov [protected_return_sp], sp
+    cli
+    lgdt [gdt_descriptor]
+    mov eax, cr0
+    or eax, 1
+    mov cr0, eax
+    jmp dword GDT_CODE32:(LOADER_PHYSICAL + protected_memory_entry)
+
+BITS 32
+protected_memory_entry:
+    mov ax, GDT_DATA32
+    mov ds, ax
+    mov es, ax
+    mov ss, ax
+    mov esp, 0x7c00
+    cld
+    mov edi, [LOADER_PHYSICAL + physical_destination]
+    mov ecx, [LOADER_PHYSICAL + physical_count]
+    cmp byte [LOADER_PHYSICAL + physical_operation], 0
+    jne .zero
+    mov esi, [LOADER_PHYSICAL + physical_source]
+    rep movsb
+    jmp .return_real
+.zero:
+    xor eax, eax
+    rep stosb
+.return_real:
+    jmp word GDT_CODE16:protected_return_16
+
+protected_kernel_entry:
+    mov ax, GDT_DATA32
+    mov ds, ax
+    mov es, ax
+    mov ss, ax
+    mov esp, 0x7c00
+    cld
+    mov edx, [LOADER_PHYSICAL + kernel_entry_address]
+%ifdef LOADER_NEGCTL_BAD_MB2_MAGIC
+    mov eax, 0x0badc0de
+%else
+    mov eax, MB2_MAGIC
+%endif
+    mov ebx, MB2_INFO
+    jmp edx
+
+BITS 16
+protected_return_16:
+    mov ax, GDT_DATA16
+    mov ds, ax
+    mov es, ax
+    mov ss, ax
+    mov eax, cr0
+    and eax, 0xfffffffe
+    mov cr0, eax
+    jmp 0x1000:protected_return_real
+
+protected_return_real:
+    mov ax, cs
+    mov ds, ax
+    xor ax, ax
+    mov es, ax
+    mov ss, ax
+    mov sp, [protected_return_sp]
+    ret
+
 serial_init:
     mov dx, COM1 + 1
     xor al, al
@@ -644,6 +1029,7 @@ serial_putc:
     out dx, al
     ret
 
+boot_drive: db 0
 a20_was_enabled: db 0
 mmap_count: dw 0
 rsdp_segment: dw 0
@@ -662,6 +1048,55 @@ vbe_green_size: db 0
 vbe_blue_pos: db 0
 vbe_blue_size: db 0
 
+kernel_file_limit: dd 0
+kernel_entry_address: dd 0
+kernel_phoff: dd 0
+kernel_phnum: dw 0
+kernel_phbytes: dw 0
+phdr_cursor: dw 0
+phdr_left: dw 0
+loaded_segment_count: db 0
+short_segment_applied: db 0
+segment_offset: dd 0
+segment_address: dd 0
+segment_filesz: dd 0
+segment_memsz: dd 0
+segment_copy_bytes: dd 0
+load_file_offset: dd 0
+load_destination: dd 0
+load_remaining: dd 0
+load_chunk_bytes: dd 0
+load_skip: dw 0
+physical_source: dd 0
+physical_destination: dd 0
+physical_count: dd 0
+physical_operation: db 0
+protected_return_sp: dw 0
+
+align 4
+kernel_dap:
+    db 0x10, 0
+    dw 0
+    dw 0
+    dw BOUNCE_SEGMENT
+    dq 0
+
+align 8
+gdt:
+    dq 0
+    dw 0xffff, 0x0000
+    db 0x00, 0x9a, 0xcf, 0x00           ; flat 32-bit code
+    dw 0xffff, 0x0000
+    db 0x00, 0x92, 0xcf, 0x00           ; flat 32-bit data
+    dw 0xffff, LOADER_PHYSICAL & 0xffff
+    db (LOADER_PHYSICAL >> 16) & 0xff, 0x9a, 0x00, (LOADER_PHYSICAL >> 24) & 0xff
+    dw 0xffff, 0x0000
+    db 0x00, 0x92, 0x00, 0x00           ; 64 KiB data for PM-to-real return
+gdt_end:
+gdt_descriptor:
+    dw gdt_end - gdt - 1
+    dd LOADER_PHYSICAL + gdt
+
 rsdp_signature: db 'RSD PTR '
 loader_marker: db 'LOGIT_BIOS_LOADER_MB2', 13, 10, 0
 a20_ok: db 'LOADER A20 VERIFY PASS', 13, 10, 0
@@ -671,3 +1106,19 @@ e820_fail: db 'LOADER E820 FAIL', 13, 10, 0
 e820_overflow: db 'LOADER E820 OVERFLOW', 13, 10, 0
 rsdp_control_rejected: db 'LOADER CONTROL RSDP CHECKSUM REJECTED', 13, 10, 0
 mb2_fail: db 'LOADER MB2 OVERFLOW', 13, 10, 0
+kernel_load_ok: db 'LOADER KERNEL LOAD OK', 13, 10, 0
+kernel_enter_marker: db 'LOADER ENTER KERNEL', 13, 10, 0
+kernel_load_fail: db 'LOADER KERNEL LOAD FAIL', 13, 10, 0
+kernel_elf_fail: db 'LOADER KERNEL ELF FAIL', 13, 10, 0
+kernel_read_fail: db 'LOADER KERNEL READ FAIL', 13, 10, 0
+short_segment_control: db 'LOADER CONTROL PT_LOAD ONE PAGE SHORT', 13, 10, 0
+bss_zero_control: db 'LOADER CONTROL BSS ZERO SKIPPED', 13, 10, 0
+
+; mkiso.py patches this with the kernel's native-CD LBA and block count using
+; the exact descriptor format preload uses for loader.  Pinning it away from
+; executable bytes lets the writer reject moved or duplicate magic instead of
+; guessing at a byte sequence inside code or strings.
+times KERNEL_PATCH_OFFSET - ($ - $$) db 0
+kernel_patch_magic: db 'L2P!'
+kernel_lba: dd 0
+kernel_block_count: dw 0

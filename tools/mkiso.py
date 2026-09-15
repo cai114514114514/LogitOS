@@ -3,6 +3,7 @@
 
 Usage:
     mkiso.py <out.iso> --boot-image <real-mode.bin> [--loader <real-mode.bin>]
+             [--kernel <kernel.elf>]
 
 SCOPE: ISO9660 with one primary volume descriptor, a root directory (and no
 subdirectories), and one El Torito BIOS entry in no-emulation mode.  There is
@@ -57,6 +58,7 @@ MIN_BOOT_SECTOR_COUNT = 4
 #   0x04  uint32   loader LBA   little-endian ISO/native-sector LBA
 #   0x08  uint16   block count  little-endian 2,048-byte block count
 LOADER_PATCH_OFFSET = 0x1F0
+KERNEL_PATCH_OFFSET = 0x1FF0
 LOADER_PATCH = struct.Struct("<4sIH")
 LOADER_PATCH_MAGIC = b"L2P!"
 LOADER_LOAD_MAX_BLOCKS = 127
@@ -219,29 +221,30 @@ def ceil_div(value, divisor):
     return (value + divisor - 1) // divisor
 
 
-def patch_loader_location(boot_image, loader_lba, loader_blocks, args):
-    """Patch the single authoritative L2P! record in a preload image."""
+def patch_payload_location(image, patch_offset, payload_lba, payload_blocks,
+                           image_name, lba_adjust=0):
+    """Patch one authoritative L2P! payload record in preload or loader."""
     occurrences = []
     start = 0
     while True:
-        offset = boot_image.find(LOADER_PATCH_MAGIC, start)
+        offset = image.find(LOADER_PATCH_MAGIC, start)
         if offset < 0:
             break
         occurrences.append(offset)
         start = offset + 1
-    if occurrences != [LOADER_PATCH_OFFSET]:
+    if occurrences != [patch_offset]:
         found = ", ".join(f"0x{offset:x}" for offset in occurrences) or "none"
-        die(f"preload patch magic must occur once at 0x{LOADER_PATCH_OFFSET:x}; found {found}")
+        die(f"{image_name} patch magic must occur once at 0x{patch_offset:x}; found {found}")
 
-    patched = bytearray(boot_image)
-    patched_lba = loader_lba + (1 if args.negctl_loader_lba_plus_one else 0)
+    patched = bytearray(image)
     LOADER_PATCH.pack_into(
-        patched, LOADER_PATCH_OFFSET, LOADER_PATCH_MAGIC, patched_lba, loader_blocks
+        patched, patch_offset, LOADER_PATCH_MAGIC,
+        payload_lba + lba_adjust, payload_blocks
     )
     return bytes(patched)
 
 
-def build_image(boot_image, loader, args):
+def build_image(boot_image, loader, kernel, args):
     if not boot_image:
         die("boot image is empty")
     boot_sector_count = max(MIN_BOOT_SECTOR_COUNT, ceil_div(len(boot_image), BIOS_SECTOR))
@@ -251,6 +254,8 @@ def build_image(boot_image, loader, args):
     boot_iso_blocks = ceil_div(boot_bytes, ISO_SECTOR)
     loader_lba = BOOT_IMAGE_LBA + boot_iso_blocks
     loader_blocks = 0
+    kernel_lba = loader_lba
+    kernel_blocks = 0
     if loader is not None:
         if not loader:
             die("loader image is empty")
@@ -261,11 +266,30 @@ def build_image(boot_image, loader, args):
         if loader_blocks > LOADER_LOAD_MAX_BLOCKS:
             die(f"loader needs {loader_blocks} native CD blocks; preload's one-DAP limit is "
                 f"{LOADER_LOAD_MAX_BLOCKS}")
-        boot_image = patch_loader_location(boot_image, loader_lba, loader_blocks, args)
+        boot_image = patch_payload_location(
+            boot_image, LOADER_PATCH_OFFSET, loader_lba, loader_blocks,
+            "preload", 1 if args.negctl_loader_lba_plus_one else 0
+        )
     elif args.negctl_loader_lba_plus_one:
         die("--negctl-loader-lba-plus-one requires --loader")
 
-    volume_sectors = max(BASE_VOLUME_SECTORS, loader_lba + loader_blocks)
+    kernel_lba = loader_lba + loader_blocks
+    if kernel is not None:
+        if loader is None:
+            die("--kernel requires --loader")
+        if not kernel:
+            die("kernel image is empty")
+        kernel_blocks = ceil_div(len(kernel), ISO_SECTOR)
+        if kernel_blocks > 0xFFFF:
+            die(f"kernel needs {kernel_blocks} native CD blocks; the L2P descriptor stores only 16 bits")
+        # Preload and loader deliberately use the same ten-byte descriptor and
+        # patch routine.  A second kernel-specific wire format would create two
+        # authorities for the same LBA/count fact before the kernel can check us.
+        loader = patch_payload_location(
+            loader, KERNEL_PATCH_OFFSET, kernel_lba, kernel_blocks, "loader"
+        )
+
+    volume_sectors = max(BASE_VOLUME_SECTORS, kernel_lba + kernel_blocks)
     image = bytearray(volume_sectors * ISO_SECTOR)
     image[PVD_LBA * ISO_SECTOR:(PVD_LBA + 1) * ISO_SECTOR] = primary_volume_descriptor(volume_sectors)
     image[BOOT_RECORD_LBA * ISO_SECTOR:(BOOT_RECORD_LBA + 1) * ISO_SECTOR] = boot_record_descriptor()
@@ -283,7 +307,11 @@ def build_image(boot_image, loader, args):
     if loader is not None:
         start = loader_lba * ISO_SECTOR
         image[start:start + len(loader)] = loader
-    return image, boot_sector_count, loader_lba, loader_blocks
+    if kernel is not None:
+        start = kernel_lba * ISO_SECTOR
+        image[start:start + len(kernel)] = kernel
+    return (image, boot_sector_count, loader_lba, loader_blocks,
+            kernel_lba, kernel_blocks)
 
 
 def main():
@@ -294,6 +322,8 @@ def main():
                         help="raw real-mode image loaded at physical 0x7C00")
     parser.add_argument("--loader",
                         help="raw payload placed at a native CD LBA and patched into preload")
+    parser.add_argument("--kernel",
+                        help="ELF payload placed after loader and patched into loader")
     controls = parser.add_mutually_exclusive_group()
     controls.add_argument("--negctl-bad-catalog-checksum", action="store_true",
                           help=argparse.SUPPRESS)
@@ -317,7 +347,14 @@ def main():
             die(f"no such loader image: {args.loader}")
         with open(args.loader, "rb") as source:
             loader = source.read()
-    image, boot_sector_count, loader_lba, loader_blocks = build_image(boot_image, loader, args)
+    kernel = None
+    if args.kernel:
+        if not os.path.isfile(args.kernel):
+            die(f"no such kernel image: {args.kernel}")
+        with open(args.kernel, "rb") as source:
+            kernel = source.read()
+    (image, boot_sector_count, loader_lba, loader_blocks,
+     kernel_lba, kernel_blocks) = build_image(boot_image, loader, kernel, args)
     with open(args.out, "wb") as output:
         output.write(image)
 
@@ -336,6 +373,9 @@ def main():
         patched_lba = loader_lba + (1 if args.negctl_loader_lba_plus_one else 0)
         print(f"mkiso: loader {len(loader)} bytes at native-CD LBA {loader_lba}, "
               f"preload patch LBA {patched_lba}, blocks {loader_blocks}")
+    if kernel is not None:
+        print(f"mkiso: kernel {len(kernel)} bytes at native-CD LBA {kernel_lba}, "
+              f"loader patch LBA {kernel_lba}, blocks {kernel_blocks}")
 
 
 if __name__ == "__main__":

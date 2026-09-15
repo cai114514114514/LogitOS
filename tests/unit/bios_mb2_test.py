@@ -3,8 +3,12 @@
 
 import argparse
 import itertools
+import json
+import os
 import subprocess
 import sys
+import tempfile
+import time
 
 
 CONSUMED = {6, 8, 14, 15}
@@ -15,23 +19,105 @@ def fail(message):
     raise SystemExit(1)
 
 
-def boot(qemu, iso):
+def boot_command(qemu, iso, serial="stdio", disk=None):
+    # `-vga none` verifies tag 8 stays optional; virtio-gpu is the independent
+    # shipping framebuffer path a full kernel boot needs after MB2 validation.
     command = [
         qemu, "-machine", "q35", "-m", "512M", "-smp", "1",
-        "-display", "none", "-serial", "stdio", "-monitor", "none",
+        "-display", "none", "-serial", serial, "-monitor", "none",
         "-no-reboot", "-vga", "none",
+        "-device", "virtio-gpu-pci",
         "-device", "isa-debug-exit,iobase=0xf4,iosize=0x04",
         "-boot", "d", "-cdrom", iso,
     ]
+    if disk:
+        # Snapshot mode keeps three destructive controls from sharing guest
+        # filesystem writes while still exercising the ordinary root disk.
+        command += ["-drive", f"file={disk},format=raw,if=virtio,snapshot=on"]
+    return command
+
+
+def boot(qemu, iso, timeout=20, disk=None):
+    command = boot_command(qemu, iso, disk=disk)
     try:
         run = subprocess.run(command, stdout=subprocess.PIPE,
-                             stderr=subprocess.STDOUT, text=True, timeout=20)
+                             stderr=subprocess.STDOUT, text=True, timeout=timeout)
     except subprocess.TimeoutExpired as exc:
         output = exc.stdout or ""
         if isinstance(output, bytes):
             output = output.decode("utf-8", "replace")
         return output.replace("\r", ""), None
     return run.stdout.replace("\r", ""), run.returncode
+
+
+def qmp_execute(reader, writer, command):
+    writer.write(json.dumps(command) + "\n")
+    writer.flush()
+    while True:
+        line = reader.readline()
+        if not line:
+            fail("QMP disconnected before replying")
+        reply = json.loads(line)
+        if "error" in reply:
+            fail(f"QMP command failed: {reply['error']}")
+        if "return" in reply:
+            return reply["return"]
+
+
+def boot_and_read_vga(qemu, iso, disk=None):
+    """Boot until handoff, then read the kernel's VGA error cells via QMP."""
+    # Keep QEMU's transient serial and pmemsave artifacts outside the build;
+    # stdio QMP is deliberate because this sandbox forbids listener sockets.
+    with tempfile.TemporaryDirectory(prefix="logit-bios-", dir="/tmp") as temp:
+        serial_path = os.path.join(temp, "serial.log")
+        vga_path = os.path.join(temp, "vga.bin")
+        command = boot_command(qemu, iso, f"file:{serial_path}", disk=disk)
+        command += ["-qmp", "stdio"]
+        process = subprocess.Popen(command, stdin=subprocess.PIPE,
+                                   stdout=subprocess.PIPE,
+                                   stderr=subprocess.DEVNULL, text=True)
+        deadline = time.monotonic() + 20
+        try:
+            greeting = json.loads(process.stdout.readline())
+            if "QMP" not in greeting:
+                fail("QMP greeting was malformed")
+            qmp_execute(process.stdout, process.stdin,
+                        {"execute": "qmp_capabilities"})
+            output = ""
+            while time.monotonic() < deadline:
+                if os.path.exists(serial_path):
+                    with open(serial_path, encoding="utf-8", errors="replace") as serial:
+                        output = serial.read().replace("\r", "")
+                if "LOADER ENTER KERNEL" in output:
+                    break
+                if process.poll() is not None:
+                    break
+                time.sleep(0.02)
+            if "LOADER ENTER KERNEL" not in output:
+                return output, ""
+            # check_multiboot writes six character/attribute pairs before
+            # halting.  Reading guest physical VGA memory observes the
+            # kernel's own error path even though it predates serial init.
+            time.sleep(0.05)
+            command_line = f'pmemsave 0xb8000 12 "{vga_path}"'
+            response = qmp_execute(
+                process.stdout, process.stdin,
+                {"execute": "human-monitor-command",
+                 "arguments": {"command-line": command_line}})
+            if not os.path.exists(vga_path):
+                fail(f"QMP pmemsave produced no VGA snapshot: {response}")
+            with open(vga_path, "rb") as vga:
+                cells = vga.read(12)
+            text = cells[0::2].decode("ascii", "replace")
+            return output, text
+        finally:
+            if process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait()
 
 
 def dump_lines(output, require_pass=True):
@@ -112,6 +198,25 @@ def print_side_by_side(left, right, left_name="OURS", right_name="GRUB"):
         print(f"{a:<{width}} | {b}")
 
 
+def print_guest_evidence(output):
+    """Print only stable serial evidence, not QEMU's host-side banner noise."""
+    for line in output.splitlines():
+        if (line.startswith(("LOGIT", "LOADER", "MB2", "ERR:")) or
+                "LOGIT_BOOT_OK" in line):
+            print(line)
+
+
+def compare_consumed(left, right, left_name="OURS", right_name="GRUB"):
+    left_consumed = consumed_blocks(left)
+    right_consumed = consumed_blocks(right)
+    if left_consumed != right_consumed:
+        print("CONSUMED-TAG DIFFERENCE (adjacent lines):")
+        print_side_by_side([line for block in left_consumed for line in block],
+                           [line for block in right_consumed for line in block],
+                           left_name, right_name)
+        fail("consumed Multiboot2 tags 6/8/14/15 differ")
+
+
 def check_one(args):
     output, _ = boot(args.qemu, args.iso)
     lines = dump_lines(output)
@@ -143,15 +248,71 @@ def compare(args):
     grub = dump_lines(grub_output)
     validate(ours)
     validate(grub)
-    ours_consumed = consumed_blocks(ours)
-    grub_consumed = consumed_blocks(grub)
     print_side_by_side(ours, grub)
-    if ours_consumed != grub_consumed:
-        print("CONSUMED-TAG DIFFERENCE (adjacent lines):")
-        print_side_by_side([line for block in ours_consumed for line in block],
-                           [line for block in grub_consumed for line in block])
-        fail("consumed Multiboot2 tags 6/8/14/15 differ")
+    compare_consumed(ours, grub)
     print("PASS: bios-mb2 differential -- consumed tags 6/8/14/15 are equivalent")
+
+
+def kernel_compare(args):
+    ours_output, _ = boot(args.qemu, args.ours, disk=args.disk)
+    grub_output, _ = boot(args.qemu, args.grub, disk=args.disk)
+    ours = dump_lines(ours_output)
+    grub = dump_lines(grub_output)
+    validate(ours)
+    validate(grub)
+    compare_consumed(ours, grub)
+    print("PASS: bios-boot differential -- consumed tags 6/8/14/15 are equivalent")
+
+
+def kernel_check(args):
+    # Full initialization includes guest-timed wait and clock selftests after
+    # the desktop appears; the MB2 dump/control paths finish within 20 seconds,
+    # but the product end marker needs the same wider budget as boot gates.
+    output, _ = boot(args.qemu, args.iso, timeout=60, disk=args.disk)
+    if "LOADER ENTER KERNEL" not in output:
+        fail("our loader did not reach the kernel handoff\n" + output)
+    if "LOGIT_BOOT_OK" not in output:
+        fail("our loader entered the kernel but it did not reach LOGIT_BOOT_OK\n" + output)
+    # Quote the kernel's marker as its own line so the make transcript is an
+    # artifact-bound boot result rather than a summary invented by the host.
+    print("LOGIT_BOOT_OK")
+    print("PASS: bios-boot -- our loader reached the kernel end-of-init marker")
+
+
+def kernel_control(args):
+    if args.reason == "bad-magic":
+        output, vga_text = boot_and_read_vga(args.qemu, args.iso, disk=args.disk)
+    else:
+        output, _ = boot(args.qemu, args.iso, disk=args.disk)
+        vga_text = ""
+    print_guest_evidence(output)
+    reached_boot = "LOGIT_BOOT_OK" in output
+    if args.reason == "bad-magic":
+        if "LOADER ENTER KERNEL" not in output:
+            fail("bad-magic control did not reach the kernel handoff")
+        print(vga_text)
+        if vga_text != "ERR: 0" or reached_boot:
+            fail("bad-magic control did not print ERR: 0 and stop before LOGIT_BOOT_OK")
+        print("PASS: bad-magic control was watched failing: ERR: 0; LOGIT_BOOT_OK absent")
+        return
+    if args.reason == "short-segment":
+        if ("LOADER CONTROL PT_LOAD ONE PAGE SHORT" not in output or
+                "LOADER ENTER KERNEL" not in output):
+            fail("short-segment control did not omit one page and attempt entry")
+        if reached_boot:
+            fail("short-segment control unexpectedly reached LOGIT_BOOT_OK")
+        print("PASS: short-segment control was watched failing: LOGIT_BOOT_OK absent")
+        return
+    if args.reason == "skip-bss-zero":
+        if ("LOADER CONTROL BSS ZERO SKIPPED" not in output or
+                "LOADER ENTER KERNEL" not in output):
+            fail("BSS control did not skip a non-empty tail and attempt entry")
+        if reached_boot:
+            print("SKIP: BSS failure half -- the kernel still reached LOGIT_BOOT_OK when the loader "
+                  "left the tail unzeroed; this QEMU run did not expose non-zero initial RAM")
+        else:
+            print("PASS: BSS-zero control was watched failing: LOGIT_BOOT_OK absent")
+        return
 
 
 def expect_difference(args):
@@ -186,6 +347,7 @@ def expect_difference(args):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--qemu", default="qemu-system-x86_64")
+    parser.add_argument("--disk")
     sub = parser.add_subparsers(dest="action", required=True)
     one = sub.add_parser("check")
     one.add_argument("iso")
@@ -197,6 +359,18 @@ def main():
     diff.add_argument("ours")
     diff.add_argument("grub")
     diff.set_defaults(func=compare)
+    kernel = sub.add_parser("kernel-compare")
+    kernel.add_argument("ours")
+    kernel.add_argument("grub")
+    kernel.set_defaults(func=kernel_compare)
+    kernel_check_parser = sub.add_parser("kernel-check")
+    kernel_check_parser.add_argument("iso")
+    kernel_check_parser.set_defaults(func=kernel_check)
+    control = sub.add_parser("kernel-control")
+    control.add_argument("iso")
+    control.add_argument("--reason", required=True,
+                         choices=("bad-magic", "short-segment", "skip-bss-zero"))
+    control.set_defaults(func=kernel_control)
     neg = sub.add_parser("expect-difference")
     neg.add_argument("control")
     neg.add_argument("grub")
