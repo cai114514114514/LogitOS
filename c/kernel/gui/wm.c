@@ -4898,97 +4898,32 @@ static void wm_render_locked(void)
     dirty_all = 0; ndmg = 0;
 
     uint64_t t_start = time_mono_ns();
-    /* ---- THE BKL COMES OFF HERE, for the pixel pass and nothing else ----
+    /* ---- ORIGIN/MAIN PEELED THE BKL HERE. THIS BRANCH HAS NO BKL TO PEEL. ----
      *
-     * WHY THIS LINE IS THE POINT. Sampled from inside the timer tick
-     * (kb_bkl_sample runs BEFORE the interrupt entry takes the lock, so the
-     * observer is not itself a holder), `wm_run` is 54% of BKL-held time on
-     * four cores and 99% on one. The lock is FREE about 80% of the time --
-     * this was never a contention problem. It is a HOLD-DURATION problem, and
-     * the duration is one composite: 16.1 ms against 0.81 ms for the present.
-     * Everything else on the machine waits behind a frame being painted.
+     * The merge of 2026-09-15 brought in ~95 lines from origin/main that
+     * released g_bkl around the pixel pass and re-took it afterwards, guarded
+     * on smp_cpu_count() <= 1 && this_cpu()->in_kernel. Its argument was sound
+     * and its measurement was real: wm_run was 99% of BKL-held time on one
+     * core, and the hold duration was one composite.
      *
-     * WHAT MAKES IT SAFE, each a property somebody had to go and check:
-     *   - The only code that REALLOCATES a window surface is win_apply_size(),
-     *     on this thread, earlier in this same loop iteration.
-     *   - The only code that FREES one is reap(), the first statement of this
-     *     function -- also this thread, also before any pixel is touched.
-     *   - The window list is win_lock's now, and order[] carries the rule that
-     *     a window is in it only after its surface exists.
-     *   - Text is text_lock's, added a step early for exactly this moment.
-     *   - The back buffer is the WM's alone.
-     * What is NOT excluded is an app writing its own surface mid-frame. That
-     * is TEARING, not corruption, and WM_MIDFRAME_GUARD / rect_blocked /
-     * perf_torn already exist for it.
+     * It does not belong on this line, and taking it was a mistake that did not
+     * even compile: `g_bkl` has no declaration anywhere in this kernel. Every
+     * remaining mention of it in c/ is a COMMENT -- which is exactly why a grep
+     * that counts FILES rather than DECLARATIONS said the lock still existed.
+     * docs/BKL_REMOVAL_2026-09-10.md is the reason: ordinary kernel entry and
+     * IRQ dispatch stopped taking a big lock at all on this branch.
      *
-     * THE IF=0 WINDOWS ARE NOT OPTIONAL -- the same discipline the idle hlt
-     * below uses. A timer IRQ landing between `in_kernel = 0` and the unlock,
-     * or between the lock and `in_kernel = 1`, reads nested = 0 and
-     * re-acquires a lock this core already holds: self-deadlock, presenting
-     * as a flaky whole-system freeze.
+     * So the two lines solved the same problem twice, by different routes, and
+     * this one wins here by having removed the lock rather than working around
+     * holding it. What serialises a frame now is one level up: wm_render()
+     * wraps wm_render_locked() in fb_graphics_lock(), a gui_mutex -- a sleeping
+     * lock, which MAY legally be held across a preemption, unlike the spinlock
+     * that made origin/main's peel need its cli/sti windows in the first place.
      *
-     * One entry, one exit: the only `return` in this function is the
-     * `!back || !bg` line above, before this point.
-     *
-     * AND IT IS GUARDED, because the first version was not and the kernel
-     * caught it on the first boot:
-     *
-     *   [bkl] BUG: unlock with ticket==serving at ra=0x13a874
-     *         -- serving passes ticket; every later acquirer spins forever
-     *
-     * kmain.c:208 calls wm_render() for the first frame, BEFORE wm_run()
-     * takes the BKL, so the release ran on a lock nobody held. That was found
-     * by enumerating callers with a grep of wm.c alone -- wm_render_first()
-     * is dead code and the real second caller is in another file. percpu.h:24
-     * defines in_kernel as "1 while this core holds the BKL", so it is the
-     * predicate, not a proxy for one. */
-    /* GATED TO ONE CORE, ON PURPOSE, AND THIS IS NOT CAUTION -- IT IS A LIST.
-     *
-     * An adversarial review of this peel (four independent lenses, each
-     * refuted by a skeptic) found that the five-bullet safety argument above
-     * enumerates the objects being DRAWN -- surfaces, the window list, the
-     * back buffer -- and omits the globals that SELECT and SCRATCH them. Every
-     * one of those is a file-scope mutable the BKL was serialising:
-     *
-     *   fb.c:35        `T`, the global draw target, re-read by clip_ij after
-     *                  the caller already read it (fb.c:207 vs :536)
-     *   fb.c:908,991   blur_scratch / glass_buf / glass_line -- grown in place
-     *                  with the pointer captured BEFORE a long write loop, and
-     *                  reachable from SYS_GUI_GLASS with an app-chosen size
-     *   icons.c:136    the icon cache: kfree, then four separate publishing
-     *                  stores read by three separate loads
-     *   gfx_raster.c   the rasterizer's file-static edge tables, which the
-     *                  file's own header says are NOT reentrant
-     *   glass.c:239    the LUT publishes its cache KEY after the tables
-     *   virtio.c:173   g_virtio_busy is a non-atomic RMW, and a lost update
-     *                  kills schedule() AND softirqs machine-wide, permanently
-     *
-     * All of them need two cores to bite. So the peel runs where it is proven
-     * and not where it is not: one core keeps the measured result (BKL-held
-     * samples 126/605 -> 3, 10, 10 of ~606), and every defect above is
-     * structurally unreachable because an app's GUI syscall on a single core
-     * runs IF=0 and non-preemptible.
-     *
-     * The condition to delete this gate is a LIST, not a feeling: make `T` and
-     * the clip per-CPU or a parameter (and collapse the double read), give the
-     * fb/icon/gfx scratches one lock ordered BKL -> fb_lock -> text_lock ->
-     * kheap_lock, publish the mask and glass keys AFTER their tables, and make
-     * g_virtio_busy atomic. Two of the ship blockers that review found are
-     * already fixed here: the unconditional `sti` below, and text_lock, which
-     * this peel had turned into a lock held across a preemption -- a
-     * whole-machine freeze that sched.h:213 says cannot happen. */
-    int bkl_peeled = 0;
-    __asm__ volatile ("cli");
-    if (smp_cpu_count() <= 1 && this_cpu()->in_kernel) {
-        this_cpu()->in_kernel = 0;
-        spin_unlock(&g_bkl);
-        bkl_peeled = 1;
-    }
-    /* THE `sti` IS CONDITIONAL, and the first version of it was not. kmain.c
-     * calls wm_render() for the boot frame with the BKL not held and
-     * interrupts OFF; an unconditional `sti` there turns them on early, every
-     * single boot. Only restore what was actually changed. */
-    if (bkl_peeled) __asm__ volatile ("sti");
+     * DO NOT RE-ADD THE PEEL. If a future merge offers it again, the question
+     * to ask is not "is the peel correct" but "does this kernel still have a
+     * big lock" -- and the way to answer it is to grep for a DECLARATION
+     * (`spinlock_t g_bkl` or an extern of it), never for the name. */
 #if WM_MIDFRAME_GUARD
     struct drect defer[NDMG];
     int ndef = 0, late = 0;
@@ -5003,16 +4938,6 @@ static void wm_render_locked(void)
         }
 #endif
         render_region(&r[k]);
-    }
-    /* ---- and back on, before anything that is not a pixel ----
-     * Everything below this line touches shared kernel state again: the
-     * damage list, the perf counters, dirty_full(). Re-acquire FIRST, with
-     * the same IF=0 window as the release above. */
-    if (bkl_peeled) {
-        __asm__ volatile ("cli");
-        spin_lock(&g_bkl);
-        this_cpu()->in_kernel = 1;
-        __asm__ volatile ("sti");
     }
     /* origin/main re-armed a full frame here while a window's open pop was
      * still running, off a flag its render_region() returned. That flag has
