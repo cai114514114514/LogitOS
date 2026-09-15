@@ -143,17 +143,17 @@ no-emulation image).
 
 ---
 
-## 5. Stage 2 — stage1, the 512-byte boot sector
+## 5. Stage 2 — preload, the 512-byte boot sector
 
-`c/boot/bios/stage1.asm`. El Torito no-emulation loads it at `0x7C00` with
+`c/boot/bios/preload.asm`. El Torito no-emulation loads it at `0x7C00` with
 `dl` = the BIOS drive number.
 
-Its only job is to load stage2 and jump.
+Its only job is to load loader and jump.
 
 > **Correction, measured 2026-09-15 against `build-biliplay-rickroll/logit.iso`,
 > and the original sentence is kept beside it because somebody will arrive
 > holding it.** This section first read: *"It must fit in 512 bytes including
-> the `0xAA55` signature, which is the whole reason stage2 exists as a separate
+> the `0xAA55` signature, which is the whole reason loader exists as a separate
 > thing."* Both halves are wrong, and they are the two things a person carries
 > over from MBR boot without noticing that El Torito is not MBR:
 >
@@ -161,7 +161,7 @@ Its only job is to load stage2 and jump.
 >   catalog entry, and that count is ours to choose. GRUB's own entry asks for
 >   **4** — 2,048 bytes, exactly one ISO sector, which is the sensible unit — and
 >   then leaves sectors 1, 2 and 3 entirely zero (186 non-zero bytes in the whole
->   image, all in sector 0). So the stage1/stage2 split is a choice about
+>   image, all in sector 0). So the preload/loader split is a choice about
 >   clarity, not a constraint the format imposes. Make it on purpose or not at
 >   all.
 > - **There is no `0xAA55`.** Offset 510 of GRUB's boot image is `00 00`. The
@@ -170,15 +170,15 @@ Its only job is to load stage2 and jump.
 >   the image ends `55 AA` would fail on a correct image, which is worse than no
 >   gate.
 
-Read stage2 with **INT 13h AH=42h** (extended read, LBA) — not CHS. Check for
+Read loader with **INT 13h AH=42h** (extended read, LBA) — not CHS. Check for
 the extensions first with AH=41h, and if they are absent, print one line and
 halt rather than issuing a CHS read that will silently read the wrong sector on
 a CD. Every BIOS that can boot an El Torito CD has the extensions; the check is
 there so the failure names itself.
 
-**Gate** `test-stage1`: host assertion that the built sector is exactly 512
-bytes and ends `55 AA`; then a QEMU boot reaching a stage1 serial marker.
-**Negative control**: `-DSTAGE1_NO_EXT_CHECK` removes the AH=41h check — the
+**Gate** `test-preload`: host assertion that the built sector is exactly 512
+bytes and ends `55 AA`; then a QEMU boot reaching a preload serial marker.
+**Negative control**: `-DPRELOAD_NO_EXT_CHECK` removes the AH=41h check — the
 gate that boots it on a machine with extensions still passes, so this control
 is **only meaningful with a second fixture that reports no extensions**. If you
 cannot build that fixture under QEMU, say so and mark the control
@@ -187,9 +187,9 @@ control that cannot fail.
 
 ---
 
-## 6. Stage 3 — stage2, the real work
+## 6. Stage 3 — loader, the real work
 
-`c/boot/bios/stage2.asm` plus `c/boot/bios/stage2.c` (16-bit-capable C is
+`c/boot/bios/loader.asm` plus `c/boot/bios/loader.c` (16-bit-capable C is
 painful; prefer assembly for the real-mode parts and C only for the MB2 block
 assembly, compiled `-m32 -ffreestanding`). Do these in this order, because the
 order is the design:
@@ -235,10 +235,10 @@ defence never has to fire.
 point (read it from the header; do not hardcode 32 MiB + 0).
 
 **Negative controls**, each built as its own image and watched failing:
-`-DSTAGE2_SKIP_A20_VERIFY` (boot must corrupt or hang, and if it does NOT on
+`-DLOADER_SKIP_A20_VERIFY` (boot must corrupt or hang, and if it does NOT on
 this machine, say so — that is a finding about QEMU, not a pass),
-`-DSTAGE2_BAD_MB2_MAGIC` (the kernel must print `ERR: 0` from `boot.asm:41`),
-`-DSTAGE2_TRUNCATE_MMAP` (the PMM must report less memory — assert the number,
+`-DLOADER_BAD_MB2_MAGIC` (the kernel must print `ERR: 0` from `boot.asm:41`),
+`-DLOADER_TRUNCATE_MMAP` (the PMM must report less memory — assert the number,
 not merely that it booted).
 
 ---
@@ -262,7 +262,7 @@ same memory-map entries in the same order, the same RSDP pointer, the same
 framebuffer presence or absence.
 
 `make test-boot-differential` runs it. Its negative control is free and strong:
-feed it the `-DSTAGE2_TRUNCATE_MMAP` image and the diff must go red.
+feed it the `-DLOADER_TRUNCATE_MMAP` image and the diff must go red.
 
 ---
 

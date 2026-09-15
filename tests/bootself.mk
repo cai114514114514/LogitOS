@@ -38,7 +38,7 @@ test-boot-contract: test-boot-contract-negctl $(BOOT_CONTRACT_TEST) $(BOOT_CONTR
 
 # This gate boots a deliberately tiny serial-printing real-mode fixture.  It
 # proves our catalog is accepted and control reaches its boot image; it cannot
-# yet prove the real loader path because stage1.asm deliberately does not exist.
+# yet prove the real loader path because preload.asm deliberately does not exist.
 # Each corrupt image must fail both the host parser and the firmware transfer,
 # and the negative target is a prerequisite so that evidence cannot be skipped.
 MKISO_DIR := $(BUILD)/mkiso
@@ -115,3 +115,104 @@ test-mkiso-negctl: tools/mkiso.py $(MKISO_FIXTURE) $(MKISO_TEST)
 
 test-mkiso: test-mkiso-negctl $(MKISO_IMAGE) $(MKISO_TEST)
 	@python3 $(MKISO_TEST) $(MKISO_IMAGE) --qemu $(MKISO_QEMU)
+
+# El Torito gives preload one native 2,048-byte CD sector even though the
+# catalog spells that preload as four 512-byte units.  The split below is not
+# inherited from the MBR's nonexistent limit: it freezes the firmware-loaded
+# surface at one CD sector, then makes all growth cross an explicit, measured
+# AH=42h handoff.  The 1,152-sector probe asks SeaBIOS for 576 KiB and checks a
+# controlled sentinel at the far end, so its result measures delivered bytes
+# rather than trusting the catalog field.
+BIOS_PRELOAD_DIR := $(BUILD)/bios-preload
+BIOS_PRELOAD_BIN := $(BIOS_PRELOAD_DIR)/preload.bin
+BIOS_PRELOAD_BAD_DAP_BIN := $(BIOS_PRELOAD_DIR)/preload-bad-dap.bin
+BIOS_PRELOAD_WRONG_DRIVE_BIN := $(BIOS_PRELOAD_DIR)/preload-wrong-drive.bin
+BIOS_LOADER_BIN := $(BIOS_PRELOAD_DIR)/loader-marker.bin
+BIOS_PRELOAD_IMAGE := $(BIOS_PRELOAD_DIR)/preload.iso
+BIOS_PRELOAD_BAD_LBA_IMAGE := $(BIOS_PRELOAD_DIR)/preload-bad-lba.iso
+BIOS_PRELOAD_BAD_DAP_IMAGE := $(BIOS_PRELOAD_DIR)/preload-bad-dap.iso
+BIOS_PRELOAD_WRONG_DRIVE_IMAGE := $(BIOS_PRELOAD_DIR)/preload-wrong-drive.iso
+BIOS_CATALOG_PROBE_SECTORS := 1152
+BIOS_CATALOG_PROBE_BIN := $(BIOS_PRELOAD_DIR)/catalog-load-$(BIOS_CATALOG_PROBE_SECTORS).bin
+BIOS_CATALOG_PROBE_IMAGE := $(BIOS_PRELOAD_DIR)/catalog-load-$(BIOS_CATALOG_PROBE_SECTORS).iso
+BIOS_PRELOAD_TEST := tests/unit/bios_preload_test.py
+BIOS_PRELOAD_QEMU ?= qemu-system-x86_64
+
+.PHONY: test-bios-preload test-bios-preload-negctl test-bios-preload-probe
+
+$(BIOS_PRELOAD_BIN): c/boot/bios/preload.asm tests/bootself.mk
+	@mkdir -p $(BIOS_PRELOAD_DIR)
+	nasm -f bin -o $@ $<
+
+$(BIOS_PRELOAD_BAD_DAP_BIN): c/boot/bios/preload.asm tests/bootself.mk
+	@mkdir -p $(BIOS_PRELOAD_DIR)
+	nasm -f bin -DPRELOAD_NEGCTL_BAD_DAP -o $@ $<
+
+$(BIOS_PRELOAD_WRONG_DRIVE_BIN): c/boot/bios/preload.asm tests/bootself.mk
+	@mkdir -p $(BIOS_PRELOAD_DIR)
+	nasm -f bin -DPRELOAD_NEGCTL_WRONG_DRIVE -o $@ $<
+
+$(BIOS_LOADER_BIN): tests/fixtures/bios/loader-marker.asm tests/bootself.mk
+	@mkdir -p $(BIOS_PRELOAD_DIR)
+	nasm -f bin -o $@ $<
+
+$(BIOS_PRELOAD_IMAGE): tools/mkiso.py $(BIOS_PRELOAD_BIN) $(BIOS_LOADER_BIN) tests/bootself.mk
+	python3 tools/mkiso.py $@ --boot-image $(BIOS_PRELOAD_BIN) --loader $(BIOS_LOADER_BIN)
+
+$(BIOS_PRELOAD_BAD_LBA_IMAGE): tools/mkiso.py $(BIOS_PRELOAD_BIN) $(BIOS_LOADER_BIN) tests/bootself.mk
+	python3 tools/mkiso.py $@ --boot-image $(BIOS_PRELOAD_BIN) --loader $(BIOS_LOADER_BIN) \
+	    --negctl-loader-lba-plus-one
+
+$(BIOS_PRELOAD_BAD_DAP_IMAGE): tools/mkiso.py $(BIOS_PRELOAD_BAD_DAP_BIN) $(BIOS_LOADER_BIN) tests/bootself.mk
+	python3 tools/mkiso.py $@ --boot-image $(BIOS_PRELOAD_BAD_DAP_BIN) --loader $(BIOS_LOADER_BIN)
+
+$(BIOS_PRELOAD_WRONG_DRIVE_IMAGE): tools/mkiso.py $(BIOS_PRELOAD_WRONG_DRIVE_BIN) $(BIOS_LOADER_BIN) tests/bootself.mk
+	python3 tools/mkiso.py $@ --boot-image $(BIOS_PRELOAD_WRONG_DRIVE_BIN) --loader $(BIOS_LOADER_BIN)
+
+$(BIOS_CATALOG_PROBE_BIN): tests/fixtures/bios/catalog-load-probe.asm tests/bootself.mk
+	@mkdir -p $(BIOS_PRELOAD_DIR)
+	nasm -f bin -DPROBE_SECTORS=$(BIOS_CATALOG_PROBE_SECTORS) -o $@ $<
+
+$(BIOS_CATALOG_PROBE_IMAGE): tools/mkiso.py $(BIOS_CATALOG_PROBE_BIN) tests/bootself.mk
+	python3 tools/mkiso.py $@ --boot-image $(BIOS_CATALOG_PROBE_BIN)
+
+# Run the ordinary positive oracle against every mutation and require its
+# exact failure.  The wrong-LBA and malformed-DAP controls are the requested
+# transfer failures; wrong-drive is the extra control because losing DL while
+# setting up segments is a silent and common real-mode error.  Each must show
+# preload spoke and loader did not, so a QEMU startup failure cannot satisfy it.
+test-bios-preload-negctl: $(BIOS_PRELOAD_BAD_LBA_IMAGE) $(BIOS_PRELOAD_BAD_DAP_IMAGE) \
+    $(BIOS_PRELOAD_WRONG_DRIVE_IMAGE) $(BIOS_PRELOAD_TEST)
+	@set -e; \
+	 if ! command -v $(BIOS_PRELOAD_QEMU) >/dev/null 2>&1; then \
+	   echo 'SKIP: test-bios-preload-negctl requires $(BIOS_PRELOAD_QEMU); install QEMU to watch the guest controls fail'; \
+	   exit 0; \
+	 fi; \
+	 failed=0; \
+	 for spec in \
+	   'bad-lba:$(BIOS_PRELOAD_BAD_LBA_IMAGE)' \
+	   'bad-dap:$(BIOS_PRELOAD_BAD_DAP_IMAGE)' \
+	   'wrong-drive:$(BIOS_PRELOAD_WRONG_DRIVE_IMAGE)'; do \
+	   name=$${spec%%:*}; iso=$${spec#*:}; log=$(BIOS_PRELOAD_DIR)/$$name.log; \
+	   rc=0; python3 $(BIOS_PRELOAD_TEST) $$iso --loader $(BIOS_LOADER_BIN) \
+	     --qemu-only --qemu $(BIOS_PRELOAD_QEMU) >$$log 2>&1 || rc=$$?; \
+	   cat $$log; \
+	   if ! { test "$$rc" -eq 1 && \
+	     grep -Fq 'FAIL: QEMU observed LOGIT_BIOS_PRELOAD_OK but not LOGIT_BIOS_LOADER_OK' $$log; }; then \
+	     echo "test-bios-preload-negctl: FAIL -- $$name did not fail at the handoff as required"; \
+	     failed=1; \
+	   else \
+	     echo "PASS: $$name control was watched failing before loader"; \
+	   fi; \
+	 done; \
+	 test "$$failed" -eq 0 || exit 1; \
+	 echo 'PASS: bios-preload negative controls all failed as required'
+
+test-bios-preload-probe: $(BIOS_CATALOG_PROBE_IMAGE) $(BIOS_PRELOAD_TEST)
+	@python3 $(BIOS_PRELOAD_TEST) $(BIOS_CATALOG_PROBE_IMAGE) \
+	    --catalog-probe-sectors $(BIOS_CATALOG_PROBE_SECTORS) --qemu $(BIOS_PRELOAD_QEMU)
+
+test-bios-preload: test-bios-preload-negctl test-bios-preload-probe \
+    $(BIOS_PRELOAD_IMAGE) $(BIOS_PRELOAD_TEST)
+	@python3 $(BIOS_PRELOAD_TEST) $(BIOS_PRELOAD_IMAGE) --loader $(BIOS_LOADER_BIN) \
+	    --qemu $(BIOS_PRELOAD_QEMU)
