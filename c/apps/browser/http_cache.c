@@ -54,6 +54,7 @@
 #define WAC_COOKIE_CLAMP_S 60
 
 struct wac_ent {
+    char content_type[128], content_disposition[768];
     int    used;
     char   url[768];                 /* BF_URLMAX; duplicated deliberately so
                                       * this TU does not depend on bfetch.h */
@@ -394,6 +395,8 @@ int  wacache_store(const char *u, const char *ckl, const unsigned char *b, int l
 void wacache_refresh(const char *u, const char *ckl, const char *cc, const char *ex, const char *d)
 { (void)u; (void)ckl; (void)cc; (void)ex; (void)d; }
 void wacache_invalidate(const char *u) { (void)u; }
+void wacache_invalidate_matching(int (*matches)(const char *, void *), void *ctx)
+{ (void)matches; (void)ctx; }
 void wacache_stats(int *en, int *by, int *h, int *rv)
 { if (en) *en = 0; if (by) *by = 0; if (h) *h = 0; if (rv) *rv = 0; }
 #else /* the real cache */
@@ -511,7 +514,7 @@ int wacache_store(const char *url, const char *cookie_line,
     if (len > WAC_MAX_BYTES) return -1;
     unsigned long long ckh = ck_hash(cookie_line);
     struct wac_ent *e = find_ent_h(url, ckh);
-    if (e) { wac_bytes -= e->len; free(e->body); e->body = 0; }
+    if (e) { wac_bytes -= e->len; free(e->body); e->body = 0; e->content_type[0]=e->content_disposition[0]=0; }
     else {
         while (wac_bytes + len > WAC_MAX_BYTES) {
             struct wac_ent *v = lru_victim();
@@ -569,6 +572,13 @@ void wacache_refresh(const char *url, const char *cookie_line,
     e->lifetime_ms = life;
 }
 
+void wacache_invalidate_matching(int (*matches)(const char *, void *), void *ctx)
+{
+    if (!matches) return;
+    for (int i = 0; i < WAC_N; i++)
+        if (wac[i].used && matches(wac[i].url, ctx)) drop_ent(&wac[i]);
+}
+
 void wacache_invalidate(const char *url)
 {
     /* ALL cookie variants of `url` -- find_ent_any has no ckh to filter on
@@ -593,3 +603,30 @@ void wacache_stats(int *entries, int *bytes, int *hits, int *revalidations)
 }
 
 #endif /* !WACACHE_OFF */
+
+/* Preserve metadata with the exact cache entry and Cookie key that owns its
+ * bytes. Dropping these headers would make a cached attachment render as HTML;
+ * bypassing navigation caching instead would regress ordinary page loads. */
+static void cache_meta_copy(char *out,int cap,const char *value)
+{if(cap<=0)return;int n=0;while(value&&value[n]&&n<cap-1){out[n]=value[n];n++;}out[n]=0;}
+void wacache_response_set(const char *url,const char *ck,const char *type,const char *disposition)
+{
+#ifndef WACACHE_OFF
+    struct wac_ent *e=find_ent_h(url,ck_hash(ck));if(!e)return;
+    cache_meta_copy(e->content_type,sizeof e->content_type,type);
+    cache_meta_copy(e->content_disposition,sizeof e->content_disposition,disposition);
+#else
+    (void)url;(void)ck;(void)type;(void)disposition;
+#endif
+}
+void wacache_response_get(const char *url,const char *ck,char *type,int tn,char *disposition,int dn)
+{
+    if(tn>0)type[0]=0;if(dn>0)disposition[0]=0;
+#ifndef WACACHE_OFF
+    struct wac_ent *e=find_ent_h(url,ck_hash(ck));if(!e)return;
+    if(tn>0)cache_meta_copy(type,tn,e->content_type);
+    if(dn>0)cache_meta_copy(disposition,dn,e->content_disposition);
+#else
+    (void)url;(void)ck;
+#endif
+}

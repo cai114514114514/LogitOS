@@ -156,8 +156,17 @@ void wacache_refresh(const char *url, const char *cookie_line,
  * for every cookie variant" is the conservative reading of an invalidate with
  * no such context. */
 void wacache_invalidate(const char *url);
+/* Invalidate all cookie variants of every matching URI. The transport owns
+ * URL parsing (this policy module also serves parser-free host tests), so it
+ * supplies equivalence here: explicit default ports and host case must not
+ * let a successful mutation leave a second spelling of the target fresh. */
+void wacache_invalidate_matching(int (*matches)(const char *url, void *ctx), void *ctx);
+
 
 /* Observability: entries held, bytes held, fresh/stale lookups served. */
 void wacache_stats(int *entries, int *bytes, int *hits, int *revalidations);
+
+void wacache_response_set(const char *,const char *,const char *,const char *);
+void wacache_response_get(const char *,const char *,char *,int,char *,int);
 
 #endif /* LOGIT_HTTP_CACHE_H */

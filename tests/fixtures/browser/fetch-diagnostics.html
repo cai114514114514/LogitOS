@@ -1,0 +1,49 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Request diagnostics</title>
+<style>body { margin: 32px; font: 18px sans-serif; } pre { white-space: pre-wrap; }</style>
+<h1>Request diagnostics</h1>
+<p>Local responses check HTTP status handling and interrupted connections.</p>
+<pre id="result">Running…</pre>
+<script>
+// SPDX-License-Identifier: MIT
+(function () {
+  var cross = "CROSS_ORIGIN_PLACEHOLDER";
+  var cases = [
+    {name:"application", path:"/application", status:200, reject:false},
+    {name:"http-refusal", path:"/http-refusal", status:403, reject:false},
+    {name:"no-response", path:"/no-response", method:"POST", status:-1, reject:true},
+    {name:"truncated", path:"/truncated", method:"POST", status:200, reject:true},
+    {name:"cors", path:cross+"/cors", status:-1, reject:true},
+    {name:"redirect", path:"/redirect", status:200, reject:false},
+    {name:"preflight", path:cross+"/preflight", method:"POST", status:200, reject:false}
+  ];
+  var lines = [], errors = 0;
+  function next(i) {
+    if (i === cases.length) {
+      lines.push("Finished: " + errors + " failures");
+      document.getElementById("result").textContent = lines.join("\n");
+      console.log("DIAG-GUEST-DONE failures=" + errors);
+      return;
+    }
+    var item = cases[i], status = -1, rejected = false;
+    console.log("DIAG-CASE " + item.name);
+    var init = {method:item.method || "GET"};
+    if (item.method) init.body = "fixture_request_body_secret";
+    if (item.name === "preflight") init.headers = {"X-Test":"fixture_header_secret"};
+    fetch(item.path + "?token=fixture_query_secret#fixture_fragment_secret", init)
+      .then(function (r) { status = r.status; return r.text(); })
+      .then(function () {}, function () { rejected = true; })
+      .then(function () {
+        var ok = status === item.status && rejected === item.reject;
+        if (!ok) errors++;
+        var text = item.name + ": " + (ok ? "PASS" : "FAIL") + " status=" + status + " rejected=" + rejected;
+        lines.push(text);
+        document.getElementById("result").textContent = lines.join("\n");
+        console.log("DIAG-GUEST " + text);
+        next(i + 1);
+      });
+  }
+  next(0);
+})();
+</script>
