@@ -27,6 +27,7 @@ LBOX_DIR := $(BUILD)/layoutbox
 LBOX_SRC := tests/unit/layout_box_test.c c/apps/browser/layout.c c/apps/browser/layout_text.c \
             c/apps/browser/css_engine.c c/apps/browser/css_vars.c \
             c/apps/browser/css_extra.c
+include tests/layout_capacity.mk
 
 $(LBOX_DIR)/layout_box_test: $(LBOX_SRC) $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a \
                              c/apps/browser/layout.h

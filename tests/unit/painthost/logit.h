@@ -13,6 +13,9 @@
 #define PAINTHOST_LOGIT_H
 
 #include <stdint.h>
+/* Record the real syscall types and face bits. The former private run/blit
+ * copies collided as soon as a real painter consumer needed the ABI header. */
+#include "logit_abi.h"
 
 enum { OP_CLIP, OP_RECT, OP_RRECT, OP_BLIT, OP_TEXT };
 
@@ -70,8 +73,6 @@ static inline struct paintop *paint_push(int kind)
     return o;
 }
 
-struct logit_run { int x, y, px, mono; unsigned color; const char *s; int len; int bold; };
-struct logit_blit { int x, y, w, h; const unsigned char *rgba; int sw, sh; };
 
 static inline void gui_rect(int x, int y, int w, int h, unsigned color)
 { struct paintop *o = paint_push(OP_RECT); o->x=x; o->y=y; o->w=w; o->h=h; o->color=color; }
@@ -121,5 +122,16 @@ static inline void gui_blit(int x, int y, int w, int h, const unsigned char *rgb
  * points and device pixels the same thing, which is what the recorded op
  * geometry is asserted in. */
 static inline int ui_scale(void) { return 100; }
+
+
+/* Ordinary host painter tests have no WM metrics query. Explicitly model an
+ * older kernel unless the finite ink-placement fixture supplies its oracle. */
+#ifdef PAINTHOST_TEXT_METRICS
+int text_run_metrics_px(const char *, int, int, int, struct logit_text_metrics *);
+#else
+static inline int text_run_metrics_px(const char *s, int len, int px, int face,
+                                      struct logit_text_metrics *out)
+{ (void)s; (void)len; (void)px; (void)face; (void)out; return 0; }
+#endif
 
 #endif /* PAINTHOST_LOGIT_H */

@@ -2,13 +2,22 @@
 """Build an LogitFS v4 disk image: a hierarchical, inode-based filesystem with a
 free-block bitmap, subdirectories, and a write-ahead log (Unix-style).
 
-Usage: mkfs.py <out.img> <host[:/dest/path] | host | dir[:/dest]> ...
+Usage: mkfs.py [--preserve /root --snapshot-helper lfs_snapshot] <out.img>
+               <host[:/dest/path] | host | dir[:/dest]> ...
   host                -> placed at /<basename(host)>
   host:/docs/note.txt -> placed at that absolute path (dirs auto-created)
   host:name.txt       -> placed at /name.txt
   dir:/usr            -> the whole tree under dir, packed at /usr (add_tree:
                          sorted walk, symlinks refused, kernel path limits
                          checked on every destination)
+
+The main disk recipe explicitly retains /browser across system repacks. A
+preservation root is copied opaquely from a validated/recovered private image;
+it cannot overlap packaged files. 2026-09-10: --preserve-merge explicitly
+allows configuration directories such as /etc to overlap defaults; existing
+bytes/metadata win, new packaged siblings are retained, type changes fail.
+No roots means a fresh filesystem. Every
+write uses the shared lifecycle guard (host lsof required) and an atomic rename.
 
 Layout (4 KiB blocks = 8 x 512B sectors):
   block 0                      superblock
@@ -45,6 +54,7 @@ import sys
 import os
 import struct
 import time
+import argparse
 
 SECTOR = 512
 BS = 4096                       # block size
@@ -206,6 +216,7 @@ class Builder:
         # 0 = never set, which is what every inode was before programs needed an
         # execute bit; see is_program() above.
         self.xmode = [0] * INODE_COUNT
+        self.metadata = {}                       # preserved inode time/mode/owner bytes
         self.children = {}                        # ino -> list[(name, child_ino)]
         self.next_ino = 0
         self.root = self.alloc_inode(T_DIR)       # ino 0
@@ -475,6 +486,8 @@ class Builder:
                 # kernel would then have to be told to disbelieve.
                 if self.xmode[ino]:
                     struct.pack_into("<I", img, off + OFF_XMODE, self.xmode[ino])
+                if ino in self.metadata:
+                    img[off + OFF_ATIME:off + OFF_GID + 4] = self.metadata[ino]
 
         return img, nextb
 
@@ -508,20 +521,35 @@ def add_spec(b, spec):
 
 
 def main():
-    if len(sys.argv) < 2:
-        sys.exit("usage: mkfs.py <out.img> [host[:/dest] | dir[:/dest] ...]")
-    out = sys.argv[1]
-    b = Builder()
-    nfiles = 0
-    for spec in sys.argv[2:]:
-        nfiles += add_spec(b, spec)[0]
-    img, used = b.serialize()
-    with open(out, "wb") as f:
-        f.write(img)
+    from disk_guard import image_guard
+    from disk_profile import preserve, atomic_write
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--preserve", action="append", default=[])
+    parser.add_argument("--preserve-merge", action="append", default=[])
+    parser.add_argument("--snapshot-helper")
+    parser.add_argument("out")
+    parser.add_argument("spec", nargs="*")
+    args = parser.parse_args()
+    out = args.out
+    # Rebuilding used to open the running guest's root disk with wb. Fail
+    # before building/reading state when a VM owns it, then replace atomically.
+    with image_guard(out):
+        b = Builder()
+        nfiles = 0
+        for spec in args.spec:
+            nfiles += add_spec(b, spec)[0]
+        kept = preserve(b, out, args.preserve, args.snapshot_helper, args.preserve_merge)
+        img, used = b.serialize()
+        atomic_write(out, img)
+    if args.preserve or args.preserve_merge:
+        print(f"mkfs: retained {kept} user-state inode(s)")
     print(f"mkfs: {out} -> LogitFS v4, {TOTAL_BLOCKS} blocks "
           f"({TOTAL_BLOCKS * BS // 1024} KiB), {used} used, {b.next_ino} inode(s), "
           f"{nfiles} file(s)")
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except (RuntimeError, OSError, ValueError) as exc:
+        sys.exit("mkfs: " + str(exc))

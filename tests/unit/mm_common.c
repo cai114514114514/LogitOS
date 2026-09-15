@@ -7,11 +7,19 @@
 #include <stdint.h>
 #include "mm_common.h"
 #include "pmm.h"
+#ifdef MM_CONCURRENT
+#include <pthread.h>
+static pthread_mutex_t mm_print_lock=PTHREAD_MUTEX_INITIALIZER;
+#endif
 
 /* --- the seam (c/kernel/mm/mmhost.h) ------------------------------------ */
 uint64_t mm_host_base;      /* host address of simulated physical 0 */
 uint64_t mm_host_kend;      /* simulated "end of kernel image" */
-uint64_t mm_host_cr3;       /* simulated CR3 */
+#ifdef MM_CONCURRENT
+_Thread_local uint64_t mm_host_cr3;
+#else
+uint64_t mm_host_cr3;
+#endif       /* simulated CR3 */
 
 void *mm_sim_ptr(uint64_t phys) { return (void *)(uintptr_t)(mm_host_base + phys); }
 
@@ -21,6 +29,9 @@ static char log_last[512];
 
 void kprintf(const char *fmt, ...)
 {
+    #ifdef MM_CONCURRENT
+    pthread_mutex_lock(&mm_print_lock);
+    #endif
     va_list ap; va_start(ap, fmt);
     vsnprintf(log_last, sizeof log_last, fmt, ap);
     va_end(ap);
@@ -29,6 +40,9 @@ void kprintf(const char *fmt, ...)
         log_bugs++;
     if (!log_quiet)
         fputs(log_last, stdout);
+    #ifdef MM_CONCURRENT
+    pthread_mutex_unlock(&mm_print_lock);
+    #endif
 }
 
 int  mm_log_lines(void) { return log_lines; }

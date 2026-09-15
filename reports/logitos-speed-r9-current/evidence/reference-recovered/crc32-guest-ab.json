@@ -1,0 +1,111 @@
+{
+  "method": "11 interleaved independent TCG boots; direct /browser.aex shell exec; guest [aex] rdtsc report",
+  "scope": "isolated candidate links frozen build-os-speed-final-r5 objects except c/drivers/block/crc32.o; disk image identical",
+  "browser_kib": 6532,
+  "control": {
+    "container_crc_mcyc": [
+      77,
+      110,
+      238,
+      182,
+      102,
+      123,
+      93,
+      218,
+      297,
+      129,
+      105
+    ],
+    "median_mcyc": 123,
+    "elf_mcyc": [
+      27,
+      42,
+      57,
+      60,
+      36,
+      43,
+      33,
+      46,
+      94,
+      38,
+      39
+    ],
+    "elf_median_mcyc": 42
+  },
+  "candidate": {
+    "container_crc_mcyc": [
+      53,
+      73,
+      64,
+      162,
+      197,
+      130,
+      51,
+      96,
+      156,
+      129,
+      60
+    ],
+    "median_mcyc": 96,
+    "elf_mcyc": [
+      30,
+      52,
+      35,
+      40,
+      92,
+      46,
+      31,
+      41,
+      39,
+      69,
+      37
+    ],
+    "elf_median_mcyc": 40
+  },
+  "paired_candidate_minus_control_mcyc": [
+    -24,
+    -37,
+    -174,
+    -20,
+    95,
+    7,
+    -42,
+    -122,
+    -141,
+    0,
+    -45
+  ],
+  "paired_median_delta_mcyc": -37,
+  "faster_pairs": 8,
+  "relative_median_change_pct": -21.95121951219512,
+  "artifacts": {
+    "control_iso": {
+      "path": "build-os-speed-final-r5/logit.iso",
+      "sha256": "1a1d84c252b5633388d1c195dcad29ad7887fa1238b11a3e789c71c020e38fe1"
+    },
+    "candidate_iso": {
+      "path": "build-crc32-guest-ab/candidate/logit.iso",
+      "sha256": "bae12ac2470df0d43c7f886b349c2e38ec09357b106ac14173e7582715da5470"
+    },
+    "disk": {
+      "path": "build-os-speed-final-r5/disk.img",
+      "sha256": "14d713918aeb443179bdc25854de223160f110fc00fb23fa4227fd5bc45c7779"
+    },
+    "frozen_crc_object": {
+      "path": "build-os-speed-final-r5/c/drivers/block/crc32.o",
+      "sha256": "336c2d0a2db909c3ed336ba078283fc19b3e23a24861059e0385a21fde4ce46e"
+    },
+    "candidate_crc_object": {
+      "path": "build-crc32-guest-ab/candidate/c/drivers/block/crc32.o",
+      "sha256": "d22deae970bdb4c4ef3197b6b730bd1beeb47eeb8212f33a7382b8f8270f554f"
+    },
+    "control_kernel": {
+      "path": "build-os-speed-final-r5/kernel.elf",
+      "sha256": "860f102f7cbfe09b691743e9da0ae3d4b20d509075eceb6cac888336199eca8a"
+    },
+    "candidate_kernel": {
+      "path": "build-crc32-guest-ab/candidate/kernel.elf",
+      "sha256": "fc4210a459ddfe162e5501d41d75971c30f0c33099a31ec02ba3385fbf0fb3e5"
+    }
+  }
+}

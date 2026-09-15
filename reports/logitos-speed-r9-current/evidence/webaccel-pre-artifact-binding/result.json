@@ -1,0 +1,122 @@
+{
+  "page": "heavy.html",
+  "visits": [
+    {
+      "t_nav": 15510,
+      "t_docdone": 15620,
+      "t_t0": 760.0,
+      "t_end": 2400.0,
+      "t_loadend": 18740,
+      "loadend_counts": [
+        14,
+        3,
+        11,
+        14,
+        656,
+        0,
+        0
+      ],
+      "idles": [
+        [
+          15620,
+          1,
+          1,
+          0
+        ],
+        [
+          15930,
+          4,
+          3,
+          1
+        ],
+        [
+          17060,
+          14,
+          3,
+          11
+        ],
+        [
+          19430,
+          22,
+          3,
+          19
+        ]
+      ],
+      "loaddone": [
+        14,
+        3,
+        11
+      ],
+      "wm": [
+        13526,
+        14528,
+        15541,
+        16541,
+        17541,
+        18562,
+        19562,
+        20565,
+        21566,
+        23586
+      ],
+      "tls_full": 0,
+      "tls_resumed": 0,
+      "tls_tickets": 0
+    },
+    {
+      "t_nav": 27640,
+      "t_docdone": 27640,
+      "t_t0": 460.0,
+      "t_end": 2070.0,
+      "t_loadend": 30160,
+      "loadend_counts": [
+        14,
+        0,
+        0,
+        22,
+        797,
+        14,
+        0
+      ],
+      "idles": [],
+      "loaddone": [
+        14,
+        0,
+        0
+      ],
+      "wm": [
+        25598,
+        26599,
+        27600,
+        28608,
+        29609,
+        30629,
+        31636,
+        33646,
+        35649
+      ],
+      "tls_full": 0,
+      "tls_resumed": 0,
+      "tls_tickets": 0
+    }
+  ],
+  "control": null,
+  "serial_log": "webaccel-current/serial.txt",
+  "gate": null,
+  "started": "2026-09-13T19:44:30",
+  "first_ms": 3230,
+  "second_ms": 2520,
+  "why": "measured, ungated (--json-only)",
+  "finished": "2026-09-13T19:45:07",
+  "serial_tail": "external = 92358 to the parser  (nothing truncated)\r\n[css] parsed: 0 sheet(s) accepted, 0 refused; 0 declarations kept\r\n[css] 1 sheet(s) served from the parse cache -- byte-identical to the previous parse, so the DROP COUNTS BELOW ARE NOT THIS LOAD'S\r\n[css] dropped: 0  (0 selector, 0 at-rule, 0 unknown-prop, 0 bad-value, 0 trailing)\r\n[css] no rule or declaration was discarded\r\n[browser] scripts collected: 10 external classic, 0 external module, 2 inline\r\nWA-T0 460\r\n[wm] perf t=28608 composites=336 ns=2573515096 max=48929755 motions=9 curmoves=10 curns=445998 full=26 rects=339 cpx=110443267 fpx=110443267 presns=102994466 torn=216 defer=68 late=243 drawmax=54 evdrop=0 evevict=0 inmerge=7 inevict=0 indrop=0/0 inback=0 inhwm=1 sdk_draws=1068778\n[wm] locks calls=42045 hold_ns=3497417596 max_ns=56488716\n[mm] fork: cow=on, 24 forks, 3427 pages shared, 0 copied, 336 kcycles/fork; 226952 frames free, 687 shared, 0 bugs, 4 live\n[sched] first-run tid 56 (agentd)\n[sched] first-run tid 57 (agentd)\n[wm] perf t=29609 composites=340 ns=2623013846 max=48929755 motions=9 curmoves=10 curns=445998 full=28 rects=343 cpx=112552707 fpx=112552707 presns=104361459 torn=218 defer=68 late=245 drawmax=54 evdrop=0 evevict=0 inmerge=7 inevict=0 indrop=0/0 inback=0 inhwm=1 sdk_draws=1069112\n[wm] locks calls=43770 hold_ns=3574648202 max_ns=56488716\nWA-END 2070\r\n[wa] t=30160 loadend reqs=14 dials=0 reuses=0 cache ents=22 797K hits=14 rvs=0\r\n[browser] load done: 14 requests, 0 connections dialled, 0 reused, 0 modules loaded (0 failed)\r\n[browser] pool: 19 hits, 0 evicted, 3 closed\r\n[browser] resources: 0 from tab, 13 from network (tab 0 of 1)\r\n[layout-perf] svg_decodes=0 svg_ms=0 trials=0 items=15874\r\n[dl] painted text: 3 run(s), 21 byte(s)\r\n[dl] ---8<--- begin painted text\r\n[dl] 8,82 webaccel\r\n[dl] 158,82 heavy\r\n[dl] 257,82 specimen\r\n[dl] ---8<--- end painted text\r\n[load-complete] elapsed_ms=2910\r\n[load-perf] total_ms=2920 teardown=30 document=0 first_style_layout_paint=160 styles_fetch=40 full_style_layout_paint=210 images=10 runtime_init=400 scripts_fetch=60 scripts_execute=1610 lifecycle_settle=400\r\n[reflow-perf] cssom_calls=0 cssom_ms=0 live_sheet_rebuilds=0 dom_restyles=1\r\n[module-perf] compile_ms=0 prefetch_ms=0 fetch_ms=0 link_ms=0 eval_jobs_ms=0 compile_bytes=0 compiles=0 fetches=0 prefetch_batches=0\r\n[wm] perf t=30629 composites=343 ns=2646407729 max=48929755 motions=9 curmoves=10 curns=445998 full=28 rects=346 cpx=113456567 fpx=113456567 presns=105222456 torn=219 defer=68 late=246 drawmax=54 evdrop=0 evevict=0 inmerge=7 inevict=0 indrop=0/0 inback=0 inhwm=1 sdk_draws=1072249\n[wm] locks calls=45440 hold_ns=3652817809 max_ns=56488716\n[sched] first-run tid 58 (agentd)\n[sched] first-run tid 59 (agentd)\n[wm] perf t=31636 composites=348 ns=2708711413 max=48929755 motions=9 curmoves=10 curns=445998 full=30 rects=351 cpx=116408427 fpx=116408427 presns=107113447 torn=222 defer=68 late=249 drawmax=54 evdrop=0 evevict=0 inmerge=7 inevict=0 indrop=0/0 inback=0 inhwm=1 sdk_draws=1072676\n[wm] locks calls=46332 hold_ns=3721987462 max_ns=56488716\n[sched] first-run tid 60 (agentd)\n[sched] first-run tid 61 (agentd)\n[wm] perf t=33646 composites=354 ns=2761267148 max=48929755 motions=9 curmoves=10 curns=445998 full=32 rects=357 cpx=118579307 fpx=118579307 presns=109152438 torn=224 defer=68 late=251 drawmax=54 evdrop=0 evevict=0 inmerge=7 inevict=0 indrop=0/0 inback=0 inhwm=1 sdk_draws=1073096\n[wm] locks calls=47305 hold_ns=3781249178 max_ns=56488716\n[mm] fork: cow=on, 30 forks, 4297 pages shared, 0 copied, 318 kcycles/fork; 226952 frames free, 687 shared, 0 bugs, 4 live\n[sched] first-run tid 62 (agentd)\n[sched] first-run tid 63 (agentd)\n[wm] perf t=35649 composites=360 ns=2816292872 max=48929755 motions=9 curmoves=10 curns=445998 full=34 rects=363 cpx=120750187 fpx=120750187 presns=110818432 torn=226 defer=68 late=253 drawmax=54 evdrop=0 evevict=0 inmerge=7 inevict=0 indrop=0/0 inback=0 inhwm=1 sdk_draws=1073516\n[wm] locks calls=50169 hold_ns=3849852825 max_ns=56488716\n",
+  "runtime_serial_log": "/var/folders/5n/cg5_2k414dj_mt1q9__6mx_r0000gn/T/qmp_webaccel_dcxfz3t4/serial.log",
+  "launch_pointer_confirmation": {
+    "dock_line": 193,
+    "pointer_line": 281,
+    "launch_line": 297,
+    "coordinate": [
+      800,
+      753
+    ]
+  }
+}

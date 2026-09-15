@@ -9,6 +9,31 @@
 
 test-browser: test-loader test-loader-negctl test-tabs-negctl test-media-negctl
 
+# The source set includes the actual loader/painter and all existing runtime
+# seams. The transport alone gains a caller for the registered progress tick.
+PROGRESS_PAINT_SRC = $(filter-out tests/unit/runtime_scroll_test.c tests/unit/loader_fakebfetch.c,$(RUNTIME_SCROLL_SRC)) tests/unit/progress_paint_test.c tests/unit/progress_paint_fake.c
+PROGRESS_PAINT_DIR = $(BUILD)/site-general/progress-paint
+# runtime_scroll.mk is parsed later: its deferred source variable works in a
+# recipe, NOT in a prerequisite expanded now. Use concrete browser/header
+# dependencies here or editing browser.c silently keeps yesterday's binary.
+PROGRESS_PAINT_DEPS = tests/unit/progress_paint_test.c tests/unit/progress_paint_fake.c tests/unit/loader_test.c tests/unit/loader_fakebfetch.c $(wildcard c/apps/browser/*.c c/apps/browser/*.h c/apps/browser/*.inc) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
+$(PROGRESS_PAINT_DIR)/current: $(PROGRESS_PAINT_DEPS)
+	@mkdir -p $(PROGRESS_PAINT_DIR)
+	$(CC) $(RUNTIME_SCROLL_CF) -o $@ $(PROGRESS_PAINT_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
+$(PROGRESS_PAINT_DIR)/old: $(PROGRESS_PAINT_DEPS)
+	@mkdir -p $(PROGRESS_PAINT_DIR)
+	$(CC) $(RUNTIME_SCROLL_CF) -DBROWSER_PROGRESS_STALE_PAINT -o $@ $(PROGRESS_PAINT_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
+.PHONY: test-progress-paint test-progress-paint-negctl test-progress-paint-sanitize
+test-progress-paint-negctl: $(PROGRESS_PAINT_DIR)/old
+	@rc=0; $< > $(PROGRESS_PAINT_DIR)/old.log 2>&1 || rc=$$?; \
+	 test $$rc -eq 1 && grep -F 'FAIL: progress callback does not paint an unsettled DOM' $(PROGRESS_PAINT_DIR)/old.log && grep -F 'ok: committed replacement is painted after settling' $(PROGRESS_PAINT_DIR)/old.log
+test-progress-paint: test-progress-paint-negctl $(PROGRESS_PAINT_DIR)/current
+	@$(PROGRESS_PAINT_DIR)/current
+test-progress-paint-sanitize: test-progress-paint
+	$(CC) $(RUNTIME_SCROLL_CF) -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=all -o $(PROGRESS_PAINT_DIR)/sanitize $(PROGRESS_PAINT_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
+	@ASAN_OPTIONS=detect_leaks=0 $(PROGRESS_PAINT_DIR)/sanitize
+ci-host: test-progress-paint
+
 # --- test-loader: the REAL browser.c load path, host-side ------------------
 # Every other host test in test-browser links a piece of the pipeline. This one
 # links the LOADER -- c/apps/browser/browser.c itself -- because the bug it
@@ -180,4 +205,3 @@ test-tabs: $(ISO) $(DISK)
 # tests/audit-unwired.baseline from the day it landed -- reachable by nobody,
 # reading like coverage.
 ci-boot: test-tabs
-

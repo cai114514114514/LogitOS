@@ -1,0 +1,49 @@
+{
+  "provenance": "historical causal A/B JSON recovered from pre-cleanup command outputs; current source hashes independently matched the frozen R9 key-source manifest",
+  "html_rawtext": {
+    "evidence": "reports/logitos-speed-r9-current/evidence/reference-recovered/html-parse-host-ab.json",
+    "current_sources": {
+      "c/apps/browser/html_tokenizer.c": "bed4ce90fcd96d8ccd8819a2798b5cca4810747f3fb236de592d791d9173b9f9",
+      "c/apps/browser/html_tokenizer.h": "edcac9eb67f4fec73c1a906e6e49e15c9df0c28d191209e590050173a7bcb8fb"
+    },
+    "script_1mib": {
+      "trials": 9,
+      "speedup_x": 3.014
+    },
+    "style_1mib": {
+      "trials": 9,
+      "speedup_x": 2.735
+    },
+    "apnews_full_dom_change_percent": 2.69,
+    "wikipedia_full_dom_change_percent": 3.66,
+    "limit": "host parser attribution, not whole-page guest timing"
+  },
+  "svg_display_size_raster": {
+    "evidence": "reports/logitos-speed-r9-current/evidence/reference-recovered/svg-raster-host-ab.json",
+    "current_sources": {
+      "c/apps/browser/layout.c": "903e08a7575c80e9b208007aba64dc27bf6beb5d8d717780b1c6383d75bec4fc",
+      "c/apps/browser/svg_dom_paint.inc": "57f64e86336868b23c370bb343cde9220086bfcf29ca802529f7659e61ef1bd4",
+      "c/lib/image/svg.c": "08dfcf644ff9fda9b469a280b9e68e3e0b8bbfd5e7244deb1fe5c285779ba930"
+    },
+    "rounds": 11,
+    "repetitions_per_round": 30,
+    "control_median_ms_per_30": 649.876,
+    "candidate_median_ms_per_30": 140.627,
+    "speedup_x": 4.621,
+    "reduction_percent": 78.36,
+    "limit": "host real-decoder/layout attribution, not a whole-page claim"
+  },
+  "aex_crc32": {
+    "evidence": "reports/logitos-speed-r9-current/evidence/reference-recovered/crc32-guest-ab.json",
+    "current_source": {
+      "c/drivers/block/crc32.c": "880ee173b721c5f90ab5eb829cbb575848245d610454492c041429d788b74988"
+    },
+    "boots": 11,
+    "control_median_mcycles": 123,
+    "candidate_median_mcycles": 96,
+    "change_percent": -21.95,
+    "paired_median_delta_mcycles": -37,
+    "faster_pairs": 8,
+    "limit": "historical interleaved QEMU TCG AEX-load attribution; current R9 source identical, but this R9 image was not rerun as an 11-pair CRC A/B"
+  }
+}

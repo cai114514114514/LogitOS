@@ -411,9 +411,12 @@ static void t_fork(int sh)
      * copy-on-write, the very same call is served by copying -- and that copy is
      * the exact instant the two processes stop hearing from each other. */
     mm_host_cr3 = ch;
-    mm_eqi(mm_fault_in(ch, vs, PF_P | PF_W | PF_U), 0,
-           "a write fault on the child's shared page is DECLINED -- there is "
-           "nothing to resolve, it is already writable");
+    /* Correction: a concurrent reclaim/permission transition can queue a
+     * fault whose PTE is writable again by the time its AS guard is acquired.
+     * Retry the instruction without copying; the identity/content assertions
+     * below still reject turning a shared mapping into private COW storage. */
+    mm_eqi(mm_fault_in(ch, vs, PF_P | PF_W | PF_U), 1,
+           "stale fault on currently writable shared page retries without COW");
     mm_eqi((long long)frame_at(ch, vs), (long long)shared_frame,
            "so the child was NOT given a private copy");
     fill_pattern(mm_sim_ptr(frame_at(ch, vs)), 6);

@@ -1,0 +1,22 @@
+== visit 1 ==
+  nav (address bar -> fetch armed)                           t=15720      +None ms
+  docdone (document settled)                                 t=15830      +110 ms
+  idle (a subresource batch drained; reqs/dials/reuses cumulative: (1, 1, 0)) t=15830      +0 ms
+  idle (a subresource batch drained; reqs/dials/reuses cumulative: (4, 3, 1)) t=16150      +320 ms
+  idle (a subresource batch drained; reqs/dials/reuses cumulative: (14, 3, 11)) t=17290      +1140 ms
+  idle (a subresource batch drained; reqs/dials/reuses cumulative: (22, 3, 19)) t=19550      +2260 ms
+  WA-T0..WA-END (first script ran -> last script ran; page clock, own segment) t=None       +1570.0 page-ms
+  loadend (bfetch_stats, one clock with nav)                 t=18900      +3180 ms
+  load done: 14 requests, 3 dialled, 11 reused
+  idle stamps: [(15830, 1, 1, 0), (16150, 4, 3, 1), (17290, 14, 3, 11), (19550, 22, 3, 19)]
+== visit 2 ==
+  nav (address bar -> fetch armed)                           t=28000      +None ms
+  docdone (document settled)                                 t=28000      +0 ms
+  WA-T0..WA-END (first script ran -> last script ran; page clock, own segment) t=None       +1570.0 page-ms
+  loadend (bfetch_stats, one clock with nav)                 t=30430      +2430 ms
+  load done: 14 requests, 0 dialled, 0 reused
+first=3180 ms second=2430 ms ratio=0.764 dials 3->0 hits2=14
+{
+ "gate": null,
+ "why": "measured, ungated (--json-only)"
+}

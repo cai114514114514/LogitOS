@@ -63,8 +63,28 @@ extern struct logit_event host_evq[HOST_EVQ];
 extern int host_evq_head, host_evq_tail;
 static inline void host_post_event(const struct logit_event *e)
 { if (host_evq_tail < HOST_EVQ) host_evq[host_evq_tail++] = *e; }
+#ifdef LOADER_POLL_HOOK
+/* A bounded host event/clock source for real app_main loop tests. Called even
+ * on an empty queue so a deferred frame can finish before the next input is
+ * posted. The default loader recorder remains entirely passive. */
+extern void loader_poll_hook(void);
+#endif
 static inline int poll_event(struct logit_event *e)
-{ if (host_evq_head >= host_evq_tail) return 0; *e = host_evq[host_evq_head++]; return 1; }
+{
+#ifdef LOADER_POLL_HOOK
+    /* A browser interrupt probe can poll while a fixture hook is itself using
+     * JS_Eval to observe the page. Do not recursively enter QuickJS from its
+     * own interrupt callback; the real kernel poll has no such observer hook. */
+    static int hook_active;
+    if (!hook_active) {
+        hook_active = 1;
+        loader_poll_hook();
+        hook_active = 0;
+    }
+#endif
+    if (host_evq_head >= host_evq_tail) return 0;
+    *e = host_evq[host_evq_head++]; return 1;
+}
 
 /* ---- lifetime + clock ---- */
 extern jmp_buf host_exit_jmp;
@@ -73,7 +93,16 @@ static inline void app_exit(int code)
 { host_exit_code = code; host_exited = 1; longjmp(host_exit_jmp, 1); }
 
 extern unsigned long long host_clock;
+#ifdef LOADER_CLOCK_HOOK
+/* Lets a host test inject an event from the same deterministic clock edge the
+ * real QuickJS interrupt handler reads. It avoids a racing helper pthread and
+ * is absent from every ordinary loader build. */
+extern void loader_clock_hook(void);
+static inline unsigned long long monotonic_ms(void)
+{ loader_clock_hook(); return host_clock; }
+#else
 static inline unsigned long long monotonic_ms(void) { return host_clock; }
+#endif
 static inline void sys_yield(void) { }
 
 /* ---- the clipboard ----

@@ -1,0 +1,25 @@
+{
+  "method": "one deterministic 48-frame real-guest animation fixture; elapsed and max gap are guest clock values",
+  "baseline_source": "build-browser-speed-r7/evidence/animation-baseline/result.json",
+  "candidate_source": "build-browser-speed-final-r8/evidence/animation-final-current/result.json",
+  "baseline": {
+    "frames": 48,
+    "elapsed_ms": 3520,
+    "max_gap_ms": 320,
+    "inputs": 1,
+    "geometry_same": true,
+    "layout_builds_observed": 5
+  },
+  "candidate": {
+    "frames": 48,
+    "elapsed_ms": 1360,
+    "max_gap_ms": 90,
+    "inputs": 1,
+    "geometry_same": true,
+    "layout_builds_observed": 5
+  },
+  "change_percent": {
+    "elapsed_ms": -61.36,
+    "max_gap_ms": -71.88
+  }
+}

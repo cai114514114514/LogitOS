@@ -78,7 +78,7 @@ static void *resolve_host(const char *name, void *ctx)
 /* The seven names c/drivers/core/qemu_edu.c leaves undefined. Addresses are
  * this test's own functions -- never called, only pointed at -- because what
  * test 14 checks is the relocated struct, not the driver's behaviour. */
-static void  fake_enable(struct device *d, int bm)   { (void)d; (void)bm; }
+static int   fake_enable_checked(struct device *d, int bm) { (void)d; (void)bm; return 0; }
 static uint64_t fake_bar(struct device *d, int i)    { (void)d; (void)i; return 0; }
 static int   fake_irq_req(struct device *d, irq_handler_t f, void *a, const char *n)
                                                      { (void)d;(void)f;(void)a;(void)n; return -1; }
@@ -90,7 +90,7 @@ static int   fake_printf(const char *f, ...)         { (void)f; return 0; }
 static void *resolve_edu(const char *name, void *ctx)
 {
     (void)ctx;
-    if (!strcmp(name, "dev_enable"))      return (void *)(uintptr_t)fake_enable;
+    if (!strcmp(name, "dev_enable_checked")) return (void *)(uintptr_t)fake_enable_checked;
     if (!strcmp(name, "dev_bar_map"))     return (void *)(uintptr_t)fake_bar;
     if (!strcmp(name, "dev_irq_request")) return (void *)(uintptr_t)fake_irq_req;
     if (!strcmp(name, "dev_irq_release")) return (void *)(uintptr_t)fake_irq_rel;

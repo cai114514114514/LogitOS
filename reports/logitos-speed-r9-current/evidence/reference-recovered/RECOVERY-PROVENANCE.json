@@ -1,0 +1,70 @@
+{
+  "reason": "shared workspace build-* directories were concurrently removed after read-only inspection; these JSON values were recovered from the current Codex session command outputs recorded before removal",
+  "limits": "text JSON only; binary artifacts and PPMs are not reconstructed and current R9 guest runs must generate fresh ones",
+  "captures": [
+    {
+      "session": "/Users/wangzhe/.codex/sessions/2026/09/10/rollout-2026-09-10T22-45-40-01a08bc8-1497-7d73-83e0-cf653d799f28.jsonl",
+      "event_id": "exec-3aab1928-2166-4973-b7eb-dae7a215f7dc",
+      "timestamp": "2026-09-13T11:25:07.841Z",
+      "marker": "### build-browser-speed-final-r8/evidence/browser-comparison-current.json",
+      "recovered_file": "reports/logitos-speed-r9-current/evidence/reference-recovered/r8-browser-comparison.json"
+    },
+    {
+      "session": "/Users/wangzhe/.codex/sessions/2026/09/10/rollout-2026-09-10T22-45-40-01a08bc8-1497-7d73-83e0-cf653d799f28.jsonl",
+      "event_id": "exec-3aab1928-2166-4973-b7eb-dae7a215f7dc",
+      "timestamp": "2026-09-13T11:25:07.841Z",
+      "marker": "### build-browser-speed-final-r8/evidence/animation-comparison-current.json",
+      "recovered_file": "reports/logitos-speed-r9-current/evidence/reference-recovered/r8-animation-comparison.json"
+    },
+    {
+      "session": "/Users/wangzhe/.codex/sessions/2026/09/10/rollout-2026-09-10T22-45-40-01a08bc8-1497-7d73-83e0-cf653d799f28.jsonl",
+      "event_id": "exec-3aab1928-2166-4973-b7eb-dae7a215f7dc",
+      "timestamp": "2026-09-13T11:25:07.841Z",
+      "marker": "### build-browser-speed-final-r8/evidence/webaccel-final-current.json",
+      "recovered_file": "reports/logitos-speed-r9-current/evidence/reference-recovered/r8-webaccel-result.json"
+    },
+    {
+      "session": "/Users/wangzhe/.codex/sessions/2026/09/10/rollout-2026-09-10T22-45-40-01a08bc8-1497-7d73-83e0-cf653d799f28.jsonl",
+      "event_id": "exec-50e34f81-9e33-4b03-ab31-69d15993da61",
+      "timestamp": "2026-09-13T11:24:56.379Z",
+      "marker": "### build-browser-speed-final-r8/evidence/interactions-final-live-current/result.json",
+      "recovered_file": "reports/logitos-speed-r9-current/evidence/reference-recovered/r8-interactions-result.json"
+    },
+    {
+      "session": "/Users/wangzhe/.codex/sessions/2026/09/10/rollout-2026-09-10T22-45-40-01a08bc8-1497-7d73-83e0-cf653d799f28.jsonl",
+      "event_id": "exec-8a014bcc-970b-4bac-86ab-d028c52bf4dc",
+      "timestamp": "2026-09-13T10:24:50.856Z",
+      "marker": "build-browser-speed-final-r7/evidence/webaccel-comparison-current.json",
+      "recovered_file": "reports/logitos-speed-r9-current/evidence/reference-recovered/r7-webaccel-comparison.json"
+    },
+    {
+      "session": "/Users/wangzhe/.codex/sessions/2026/09/10/rollout-2026-09-10T22-45-40-01a08bc8-1497-7d73-83e0-cf653d799f28.jsonl",
+      "event_id": "exec-8a014bcc-970b-4bac-86ab-d028c52bf4dc",
+      "timestamp": "2026-09-13T10:24:50.856Z",
+      "marker": "build-browser-speed-r6/net-ab/raw.json",
+      "recovered_file": "reports/logitos-speed-r9-current/evidence/reference-recovered/r6-network-raw.json"
+    },
+    {
+      "session": "/Users/wangzhe/.codex/sessions/2026/09/10/rollout-2026-09-10T22-45-40-01a08bc8-1497-7d73-83e0-cf653d799f28.jsonl",
+      "event_id": "exec-a11867ba-f4f1-4e43-978b-0fa79e4f6452",
+      "timestamp": "2026-09-13T11:25:35.671Z",
+      "marker": "build-crc32-guest-ab/evidence/aex-ab-summary.json",
+      "recovered_file": "reports/logitos-speed-r9-current/evidence/reference-recovered/crc32-guest-ab.json"
+    },
+    {
+      "session": "/Users/wangzhe/.codex/sessions/2026/09/10/rollout-2026-09-10T22-45-40-01a08bc8-1497-7d73-83e0-cf653d799f28.jsonl",
+      "event_id": "exec-bd7149a8-6480-4a9b-91c6-fb954163eba9",
+      "timestamp": "2026-09-13T11:25:35.694Z",
+      "marker": "build-browser-speed-parse/html-parse-bench.json",
+      "recovered_file": "reports/logitos-speed-r9-current/evidence/reference-recovered/html-parse-host-ab.json"
+    },
+    {
+      "session": "/Users/wangzhe/.codex/sessions/2026/09/10/rollout-2026-09-10T22-45-40-01a08bc8-1497-7d73-83e0-cf653d799f28.jsonl",
+      "event_id": "exec-1c2cf6d7-53eb-4ef0-bf00-e04139cb446a",
+      "timestamp": "2026-09-13T11:25:35.696Z",
+      "marker": "build-svg-raster-review/evidence/svg-raster-host-ab.json",
+      "recovered_file": "reports/logitos-speed-r9-current/evidence/reference-recovered/svg-raster-host-ab.json"
+    }
+  ],
+  "r6_browser_reconstruction": "round-aligned metric arrays from captured r8-browser-comparison.json baseline_cases"
+}

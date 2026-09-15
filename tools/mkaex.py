@@ -23,7 +23,7 @@ The file:  [ 64-byte fixed header ][ TLV metadata ][ ELF64 image ]
 c/kernel/exec/aex.h is the definition site; this mirrors it, and
 tests/unit/exec_test.c asserts the two agree against a real file.
 """
-import sys, struct, os, zlib, argparse, subprocess
+import sys, struct, os, zlib, argparse, subprocess, json, re
 
 
 def write_atomic(path, data):
@@ -194,12 +194,20 @@ def elf_entry_and_shape(data):
     """(entry, lowest user-region PT_LOAD vaddr) of an ELF64 image."""
     if len(data) < 64 or data[:4] != b"\x7fELF":
         die("input is not an ELF64 image")
+    etype = struct.unpack_from("<H", data, 16)[0]
+    if etype not in (2, 3):
+        die("expected ET_EXEC or static ET_DYN")
     entry, phoff = struct.unpack_from("<QQ", data, 24)
     phentsize, phnum = struct.unpack_from("<HH", data, 54)
+    if phentsize != 56 or not phnum or phoff + phnum * phentsize > len(data):
+        die("invalid ELF program header table")
     base = None
     for i in range(phnum):
         pt, pf, po, pv, pp, pfs, pms, pa = struct.unpack_from("<II6Q", data, phoff + i * phentsize)
-        if pt == 1 and pv >= 0x40000000:
+        # PIE segment addresses are relative. The kernel chooses the base and
+        # validates relocations; packaging must not invent a fixed load address.
+        user = 0x40000000 <= pv < 0x80000000 or 0x10000000000 <= pv < 0x800000000000
+        if pt == 1 and (etype == 3 or user):
             base = pv if base is None else min(base, pv)
     return entry, base
 
@@ -207,7 +215,7 @@ def elf_entry_and_shape(data):
 def build(elf_bytes, name, ext, icon, rgb, opts):
     entry, base = elf_entry_and_shape(elf_bytes)
     if base is None:
-        die("the ELF has no PT_LOAD in the private user region (0x40000000+)")
+        die("the ELF has no loadable segment in a supported user window")
     if opts.sign_seed and opts.v1:
         # v1 has no TLV region at all (see the --v1 branch below, which
         # returns before `body` is ever consulted) -- so silently ignoring
@@ -235,6 +243,25 @@ def build(elf_bytes, name, ext, icon, rgb, opts):
 
     body = tlv(T_CRC32, struct.pack("<I", zlib.crc32(elf_bytes) & 0xFFFFFFFF))
     body += tlv(T_APPID, app_id.encode() + b"\0")
+    agent_path = getattr(opts, "agent", None) or getattr(opts, "agent_manifest", None)
+    if agent_path:
+        if opts.v1 or not re.fullmatch(r"[a-z0-9._-]{1,63}", app_id):
+            die("v3 requires a valid stable app id and cannot use --v1")
+        if isinstance(agent_path, dict):
+            manifest = agent_path
+        else:
+            with open(agent_path, encoding="utf-8") as f:
+                manifest = json.load(f)
+        keys = ("abi", "capability_version", "state_version", "objects", "actions",
+                "contexts", "document_max", "reserved")
+        if set(manifest) != set(keys):
+            die("agent manifest fields must be: " + ", ".join(keys))
+        v = [manifest[k] for k in keys]
+        if any(type(x) is not int or x < 0 or x > 0xffffffff for x in v) or \
+           v[0] != 1 or not v[1] or not v[2] or v[3] & ~7 or v[4] & ~15 or \
+           v[5] & ~7 or v[6] > 1048576 or v[7]:
+            die("unsupported agent manifest")
+        body += tlv(0x544e4741, struct.pack("<8I", *v))
     if opts.types:
         ids = [int(t, 0) for t in opts.types.split(",") if t.strip()]
         body += tlv(T_TYPES, struct.pack("<%dH" % len(ids), *ids))
@@ -265,7 +292,7 @@ def build(elf_bytes, name, ext, icon, rgb, opts):
 
     hdr = bytearray(HDR_FIXED)
     hdr[0:4] = b"AEX1"
-    struct.pack_into("<HH", hdr, 4, AEX_VERSION, flags)
+    struct.pack_into("<HH", hdr, 4, 3 if agent_path else AEX_VERSION, flags)
     # Truncate to 31 bytes on a UTF-8 character boundary (decode + drop the
     # partial tail sequence), never mid-codepoint.
     nb = name.encode()[:31].decode("utf-8", "ignore").encode()
@@ -370,6 +397,7 @@ def main():
     ap.add_argument("--gui", action="store_true")
     ap.add_argument("--cli", action="store_true")
     ap.add_argument("--id", default=None, help="stable app id, e.g. os.logit.browser")
+    ap.add_argument("--agent", default=None, help="v3 agent manifest JSON; ordinary output remains v2")
     ap.add_argument("--category", choices=sorted(CATS), default=None)
     ap.add_argument("--sort", type=int, default=0)
     ap.add_argument("--stack-pages", dest="stack_pages", type=int, default=0)
@@ -407,6 +435,18 @@ def main():
             die("usage: mkaex.py <in.elf> <out.aex> <name> [ext] [icon] [r] [g] [b]")
         out, tail = opts.rest[1], opts.rest[2:]
         elf = open(opts.rest[0], "rb").read()
+        # The link wrapper is opt-in per owned target. No sidecar means v2,
+        # including browser and third-party builds. Refuse stale sidecars.
+        sidecar = opts.rest[0] + ".agent.json"
+        if os.path.isfile(sidecar) and not opts.v1 and not opts.agent:
+            import hashlib
+            record = json.load(open(sidecar, encoding="utf-8"))
+            if record["elf_sha256"] != hashlib.sha256(elf).hexdigest():
+                die("v3 activation sidecar does not match ELF; relink the application")
+            if opts.id and opts.id != record["id"]:
+                die("application ID differs from activation catalogue")
+            opts.id = record["id"]
+            opts.agent_manifest = record["manifest"]
 
     # From here both modes see the same tail: name [ext] [icon] [r] [g] [b].
     def at(i, dflt=""):
@@ -426,7 +466,7 @@ def main():
     kind = "cli" if flags & F_CLI else "gui"
     signed = " signed" if (opts.sign_seed and not opts.v1) else ""
     print("mkaex: %s  v%d %s '%s' ext='%s' id=%s base=0x%x hdr=%d elf=%d%s"
-          % (out, 1 if opts.v1 else AEX_VERSION, kind, name, ext, app_id,
+          % (out, struct.unpack_from("<H", blob, 4)[0], kind, name, ext, app_id,
              base, hdr_size if not opts.v1 else 64, len(elf), signed))
 
 

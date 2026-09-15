@@ -1,0 +1,1268 @@
+[cpu] AuthenticAMD -- QEMU TCG CPU version 2.5+
+[cpu] 51/60 known features present: fpu tsc msr mce apic mca cmov clflush mmx fxsr sse sse2 htt sse3 pclmulqdq monitor ssse3 fma cx16 sse4.1 sse4.2 x2apic movbe popcnt aes xsave avx f16c rdrand hypervisor fsgsbase bmi1 avx2 smep bmi2 erms rdseed adx smap clflushopt sha_ni umip pku vaes rdpid lzcnt prefetchw nx pdpe1gb rdtscp lm
+[cpu-platform] family=6 model=0x6 stepping=3 generation=other
+[cpu] topology: source=cpuid.0xb x2apic_id=0 package=0 core=0 thread=0 cpuid-addressable/package=4 cores/package=4 threads/core=1
+[cpu] hfi: hw=0 performance=0 efficiency=0 table-pages=0 current-lp-row=0 thread-director-hw=0 classes=0 (inventory only; no config MSR write)
+[cpu] apic: x2apic_hw=1 mode=xapic base=0xfee00000
+[cpu] mca: banks=10 ctl=1 cmci=0 tes=0 ser=1 (enumerated, not enabled)
+[cpu] tsc: invariant_hw=0
+[cpu] xsave: 2696 B holds every supported state, xcr0 mask 0x21f, osxsave=0
+[cpu] xstate: avx_hw=1 avx_os=0 osxsave=0 xcr0=0x0 abi=fxsave
+[cpu] aes-gcm backend: aesni (constant-time); rdrand=1 rdseed=1
+[cpu] aes-gcm 16 KiB: aesni=746000 cycles, c=6793000 cycles, speedup x9.10
+
+[logitos] long mode, C kernel running
+[rust] inflate selftest OK
+[prot] bsp: nx sup/ON  wxsplit ON  smep sup/ON  smap sup/off
+[time] source=tsc 1000.005 MHz res=1ns  (invariant-tsc=no hypervisor=yes calib=pit-ch2)
+[time] fallback=pit 100 Hz res=10000000ns  timers=heap/128  mono=64-bit ns (wraps in 584 years)
+[time] calib samples(Hz) 999932179 1000005007 1000005007 -> median chosen
+[cpu] simd selftest: backend=aesni xmm_corrupt=0 (6 ticks) crypto_mismatch=0 kat=0 (850 rounds, 6 ticks)
+CPU_SIMD_SELFTEST_OK
+[physmap] metadata base=0x2ebc000 bytes=884634 kernel_end=0x2ebc000
+[mm] low: 249928 frames free (976 MiB), 12181 used, 0 shared, 0 bugs
+[physmap] ready: base=0xffff800000000000 high_pages=0 table_pages=4 low_free=249925 NX=1
+[mm] boot: 262109 frames total (1023 MiB), 249925 free, 12184 used, 0 shared, 12184 refs (+0 saved = 0 KiB), 0 pinned, 0 bugs
+[physmap] boot: high_allocs=0 high_live=0 high_max=0x0 high_free=0 low_free=249925
+[mm] boot: metadata 863 KiB (bitmap + poison map + 2-byte refcounts + pins), poison level 1
+[mm] boot: 0 frames pinned against reclaim, 128 reserve frames (0 dips), 0 allocations refused
+[mm] low: 249672 frames free (975 MiB), 12437 used, 0 shared, 0 bugs
+[mm] low: 249416 frames free (974 MiB), 12693 used, 0 shared, 0 bugs
+[mm] low: 249160 frames free (973 MiB), 12949 used, 0 shared, 0 bugs
+[mm] low: 248904 frames free (972 MiB), 13205 used, 0 shared, 0 bugs
+[mm] low: 248648 frames free (971 MiB), 13461 used, 0 shared, 0 bugs
+[mm] low: 248392 frames free (970 MiB), 13717 used, 0 shared, 0 bugs
+[mm] low: 248136 frames free (969 MiB), 13973 used, 0 shared, 0 bugs
+[rmap] 262109 frames, 393163 nodes (7199 KiB total: 1023 KiB heads + 6143 KiB nodes)
+[logitos] interrupts + memory + gdt/tss online
+[mm] low: 247880 frames free (968 MiB), 14229 used, 0 shared, 0 bugs
+[mm] low: 247624 frames free (967 MiB), 14485 used, 0 shared, 0 bugs
+[mm] low: 247368 frames free (966 MiB), 14741 used, 0 shared, 0 bugs
+[mm] low: 247112 frames free (965 MiB), 14997 used, 0 shared, 0 bugs
+[pcache] up: 131054 page slots (524216 KiB ceiling), 32 file slots, 32768 buckets; tables 4224 KiB from the PMM (16 B/frame of RAM)
+[klog] ring 512 lines x 112 bytes; `cat /dev/kmsg`, `cat /dev/kstat`
+[acpi] RSDP from the bootloader's multiboot2 tag
+[pci] no MCFG; legacy 0xCF8 config ports (no extended caps)
+[pci] 7 function(s) enumerated across all buses
+[mm] low: 246856 frames free (964 MiB), 15253 used, 0 shared, 0 bugs
+[mm] low: 246600 frames free (963 MiB), 15509 used, 0 shared, 0 bugs
+[mm] low: 246344 frames free (962 MiB), 15765 used, 0 shared, 0 bugs
+[mm] low: 246088 frames free (961 MiB), 16021 used, 0 shared, 0 bugs
+[kheap] arena domain=physmap cpu=0xffff800003ac3000 phys=0x3ac3000 bytes=4194304
+[kheap] grow #1: +4096 KiB -> arena 4096 KiB, live 0 KiB, free 4095 KiB, over-allocated 0 KiB
+[rust] png selftest OK
+[virtio] 1050 up (0000:00:03.0, 2 queues)
+[dma] alloc 0000:00:03.0 cpu=0xffff800003ec5000 dma=0x3ec5000 bytes=4096 mask=0xffffffffffffffff
+[virtio-dma] 0000:00:03.0 queue=0 cpu=0xffff800003ec5000 dma=0x3ec5000 avail=0x3ec6000 used=0x3ec7000
+[virtio-dma] 0000:00:03.0 queue=1 cpu=0xffff800003ec8000 dma=0x3ec8000 avail=0x3ec9000 used=0x3eca000
+[mm] low: 245832 frames free (960 MiB), 16277 used, 0 shared, 0 bugs
+[mm] low: 245576 frames free (959 MiB), 16533 used, 0 shared, 0 bugs
+[mm] low: 245320 frames free (958 MiB), 16789 used, 0 shared, 0 bugs
+[mm] low: 245064 frames free (957 MiB), 17045 used, 0 shared, 0 bugs
+[dma] virtio-gpu coherent=10 bytes=4132864 mappings=0 pins=0 direct=0 bounce=0 quarantine=0/0/0 high=0 max=0x42b5fff stale=0 completed_direct=0 completed_high=0
+[virtio-gpu] 1280x800, RAM fb @ 0xffff800003ece000, cursor plane yes
+[virtio] 1001 up (0000:00:02.0, 4 queues)
+[dma] alloc 0000:00:02.0 cpu=0xffff8000042ba000 dma=0x42ba000 bytes=4096 mask=0xffffffffffffffff
+[virtio-dma] 0000:00:02.0 queue=0 cpu=0xffff8000042ba000 dma=0x42ba000 avail=0x42bb000 used=0x42bc000
+[dma] virtio-blk coherent=15 bytes=4165632 mappings=0 pins=0 direct=0 bounce=0 quarantine=0/0/0 high=0 max=0x42bdfff stale=0 completed_direct=0 completed_high=0
+[virtio-blk] ready, cache=writeback (barriers REQUIRED)
+[blk] vblk0: virtio-blk, 1048576 sectors (512.0 MiB)
+[dma] map 0000:00:02.0 cpu=0x2ebba80 dma=0x2ebba80 bytes=512 sg=1 bounce=0
+[part] vblk0: no partition table (raw filesystem image)
+[blk] 1 disk, 0 partitions; root = vblk0 (LogitFS superblock)
+[fsck] mount check: clean
+[fs] mounted
+[fs] /proc mounted
+[pcache] backend installed over c/fs/vfs.h (statx + vfs_pread, VFS-identity gated)
+[set] /etc/settings.conf: 0 keys, none stored (defaults)
+SETTINGS_READY diag=1 keys=0
+SETTINGS_SELFTEST offsets=733 failures=0
+[tls] trust store: 130 roots, 0 skipped
+[tls]   isrg_x1 isrg_x2 digicert_global_ca digicert_global_g2 digicert_global_g3
+[tls]   globalsign_r1 globalsign_r3 gts_r1 gts_r4 usertrust_rsa usertrust_ecc
+[tls]   amazon_root_1 amazon_root_3 dtrust_root3_2009 sslcom_ecc_2022
+[tls]   aaa_certificate_services accvraiz1 actalis_authentication_root_ca
+[tls]   affirmtrust_commercial affirmtrust_networking affirmtrust_premium
+[tls]   affirmtrust_premium_ecc amazon_root_ca_2 amazon_root_ca_4
+[tls]   atos_trustedroot_2011 autoridad_de_certificacion_firmaprofesional_cif_
+[tls]   baltimore_cybertrust_root buypass_class_2_root_ca buypass_class_3_root_ca
+[tls]   ca_disig_root_r2 certigna certigna_root_ca certsign certsign_sa
+[tls]   certum_trusted_network_ca cfca_ev_root chambers_of_commerce_root_2008
+[tls]   chunghwa_telecom_co comodo_certification_authority
+[tls]   comodo_ecc_certification_authority comodo_rsa_certification_authority
+[tls]   cybertrust_global_root d_trust_root_class_3_ca_2_ev_2009
+[tls]   digicert_assured_id_root_ca digicert_assured_id_root_g2
+[tls]   digicert_assured_id_root_g3 digicert_high_assurance_ev_root_ca
+[tls]   digicert_trusted_root_g4 e_szigno_root_ca_2017 e_tugra_certification_authority
+[tls]   ec_acc emsign_ecc_root_ca_c3 emsign_ecc_root_ca_g3 emsign_root_ca_c1
+[tls]   emsign_root_ca_g1 entrust_net_certification_authority_2048
+[tls]   entrust_root_certification_authority entrust_root_certification_authority_ec1
+[tls]   entrust_root_certification_authority_g2
+[tls]   entrust_root_certification_authority_g4 fnmt_rcm gdca_trustauth_r5_root
+[tls]   geotrust_global_ca geotrust_primary_certification_authority_g2
+[tls]   global_chambersign_root_2008 globalsign globalsign_1 globalsign_2 globalsign_3
+[tls]   go_daddy_root_certificate_authority_g2 gts_root_r2 gts_root_r3
+[tls]   hellenic_academic_and_research_institutions_ecc_
+[tls]   hellenic_academic_and_research_institutions_root
+[tls]   hellenic_academic_and_research_institutions_root_1 hongkong_post_root_ca_1
+[tls]   hongkong_post_root_ca_3 identrust_commercial_root_ca_1
+[tls]   identrust_public_sector_root_ca_1 izenpe_com microsec_e_szigno_root_ca_2009
+[tls]   microsoft_ecc_root_certificate_authority_2017
+[tls]   microsoft_rsa_root_certificate_authority_2017
+[tls]   naver_global_root_certification_authority
+[tls]   netlock_arany_class_gold_f_c5_91tan_c3_bas_c3_ad
+[tls]   network_solutions_certificate_authority oiste_wisekey_global_root_gb_ca
+[tls]   oiste_wisekey_global_root_gc_ca quovadis_root_ca_1_g3 quovadis_root_ca_2
+[tls]   quovadis_root_ca_2_g3 quovadis_root_ca_3 quovadis_root_ca_3_g3
+[tls]   quovadis_root_certification_authority secom_trust_net secom_trust_systems_co
+[tls]   secure_global_ca securesign_rootca11 securetrust_ca sonera_class2_ca
+[tls]   ssl_com_ev_root_certification_authority_ecc
+[tls]   ssl_com_ev_root_certification_authority_rsa_r2
+[tls]   ssl_com_root_certification_authority_ecc
+[tls]   ssl_com_root_certification_authority_rsa staat_der_nederlanden_ev_root_ca
+[tls]   staat_der_nederlanden_root_ca_g3 starfield_root_certificate_authority_g2
+[tls]   starfield_services_root_certificate_authority_g2 starfield_technologies
+[tls]   swisssign_gold_ca_g2 swisssign_silver_ca_g2 szafir_root_ca2
+[tls]   t_telesec_globalroot_class_2 t_telesec_globalroot_class_3
+[tls]   teliasonera_root_ca_v1 the_go_daddy_group trustcor_eca_1
+[tls]   trustcor_rootcert_ca_1 trustcor_rootcert_ca_2 trustis_limited
+[tls]   trustwave_global_certification_authority
+[tls]   trustwave_global_ecc_p256_certification_authorit
+[tls]   trustwave_global_ecc_p384_certification_authorit
+[tls]   tubitak_kamu_sm_ssl_kok_sertifikasi_surum_1 twca_global_root_ca
+[tls]   twca_root_certification_authority uca_extended_validation_root
+[tls]   uca_global_g2_root verisign_universal_root_certification_authority
+[tls]   xramp_global_certification_authority
+[net] e1000: found 8086:100e at 0000:00:04.0
+[dma] alloc e1000 cpu=0xffff8000042be000 dma=0x42be000 bytes=4096 mask=0xffffffffffffffff
+[e1000] link: UP 1000 Mb/s full duplex
+[e1000] up: mmio=0xfebc0000
+[net] NIC bound: eth0 = e1000  MAC 52:54:0:12:34:56  irq=11
+[net] if 1 lo flags up running loopback  127.0.0.1/8
+[net] if 2 eth0 flags up running broadcast  mac 52:54:0:12:34:56 drv e1000 irq=11  [primary]
+[netlock] acq 11 recursive 1 maxdepth 2 violations 0
+[ip6] link-local fe80::5054:ff:fe12:3456 tentative (dad)
+[netlock] acq 91 recursive 11 maxdepth 2 violations 0
+[netlock] acq 731 recursive 75 maxdepth 2 violations 0
+[ip6] dad ok fe80::5054:ff:fe12:3456/64
+[ip6] nd fe80::2 -> 52:56:00:00:00:02 stale
+[ip6] router fe80::2 lifetime 1800s
+[ip6] slaac fec0::5054:ff:fe12:3456/64 valid 86400s pref 14400s
+[dhcp] bound 10.0.2.15/24 gw 10.0.2.2 dns 10.0.2.3
+[eth] rx 5 (1990 B) arp 0 ip 3 ip6 2 vlan 0 bcast 3 mcast 2
+[eth] rx drops: runt 0 toolong 0 not-ours 0 vlan-bad 0 unhandled 0 (last type 0)
+[eth] tx 8 (1374 B) padded 1 toolong 0  loopback 0 dropped 0
+[arp] rx 0 (req 0 reply 0 grat 0 bad 0) tx (req 1 reply 0 ann 1)
+[arp] entries 0  evict 0 expire 0  queued 0 sent 0 dropped 0  unresolved 0 conflicts 0 poison-blocked 0
+[net] tcp timers: 10 ms ktimer -> SOFTIRQ_NET (independent of the WM loop)
+[mm] low: 244808 frames free (956 MiB), 17301 used, 0 shared, 0 bugs
+[mm] low: 244552 frames free (955 MiB), 17557 used, 0 shared, 0 bugs
+[mm] low: 244296 frames free (954 MiB), 17813 used, 0 shared, 0 bugs
+[mm] low: 244040 frames free (953 MiB), 18069 used, 0 shared, 0 bugs
+[kheap] arena domain=physmap cpu=0xffff800004308000 phys=0x4308000 bytes=4194304
+[kheap] grow #2: +4096 KiB -> arena 8192 KiB, live 2344 KiB, free 5845 KiB, over-allocated 27 KiB
+[text] /fonts/ui.ttf: 7655 glyphs, upem=1000
+[text] /fonts/mono.ttf: 97 glyphs, upem=1000
+[text] /fonts/text.ttf: 6253 glyphs, upem=2048
+[mm] low: 243784 frames free (952 MiB), 18325 used, 0 shared, 0 bugs
+[mm] low: 243528 frames free (951 MiB), 18581 used, 0 shared, 0 bugs
+[mm] low: 243272 frames free (950 MiB), 18837 used, 0 shared, 0 bugs
+[mm] low: 243016 frames free (949 MiB), 19093 used, 0 shared, 0 bugs
+[kheap] arena domain=physmap cpu=0xffff800004708000 phys=0x4708000 bytes=4194304
+[kheap] grow #3: +4096 KiB -> arena 12288 KiB, live 5266 KiB, free 7019 KiB, over-allocated 27 KiB
+[text] /fonts/ui-bold.ttf: 7655 glyphs, upem=1000
+[text] /fonts/mono-bold.ttf: 97 glyphs, upem=1000
+[mm] low: 242760 frames free (948 MiB), 19349 used, 0 shared, 0 bugs
+[mm] low: 242504 frames free (947 MiB), 19605 used, 0 shared, 0 bugs
+[mm] low: 242248 frames free (946 MiB), 19861 used, 0 shared, 0 bugs
+[mm] low: 241992 frames free (945 MiB), 20117 used, 0 shared, 0 bugs
+[mm] low: 241736 frames free (944 MiB), 20373 used, 0 shared, 0 bugs
+[mm] low: 241480 frames free (943 MiB), 20629 used, 0 shared, 0 bugs
+[mm] low: 241224 frames free (942 MiB), 20885 used, 0 shared, 0 bugs
+[mm] low: 240968 frames free (941 MiB), 21141 used, 0 shared, 0 bugs
+[wm] display 1280x800 px, scale 100%, desktop 1280x800 pt
+[mm] low: 240712 frames free (940 MiB), 21397 used, 0 shared, 0 bugs
+[mm] low: 240456 frames free (939 MiB), 21653 used, 0 shared, 0 bugs
+[mm] low: 240200 frames free (938 MiB), 21909 used, 0 shared, 0 bugs
+[mm] low: 239944 frames free (937 MiB), 22165 used, 0 shared, 0 bugs
+[kheap] arena domain=physmap cpu=0xffff8000052d8000 phys=0x52d8000 bytes=4194304
+[kheap] grow #4: +4096 KiB -> arena 16384 KiB, live 7443 KiB, free 8938 KiB, over-allocated 27 KiB
+[ime] /ime/pinyin-qwen.dat: 1983418 bytes, 49000 pinyin keys -- Shift+Space toggles pinyin input
+[ime] learn: no /var/ime-learn.conf yet -- ranking is the dictionary's own frequency order until something is committed
+[wm] pointer: display cursor plane (motion does not composite)
+[wm] dock 10 apps: 0=clock.aex,shown 1=textedit.aex,shown 2=monitor.aex,shown 3=terminal.aex,shown 4=files.aex,shown 5=preview.aex,shown 6=studio.aex,shown 7=browser.aex,shown 8=settings.aex,shown 9=assistant.aex,shown
+[wm] menu title 0 LogitOS x0 8 y0 0 x1 102 y1 24
+[wm] menu title 1 File x0 118 y0 0 x1 170 y1 24
+[wm] menu title 2 View x0 186 y0 0 x1 247 y1 24
+[logitos] desktop up; mouse + keyboard armed
+[acpi] MADT CPUs type0=4 type9=0 duplicate=0 rejected=0
+[lapic] mode=xapic id=0 source=IA32_APIC_BASE
+[smp] CPU 0 apic_id=0 topology=cpuid.0b pkg=0 core=0 thread=0 type=unknown native-valid=0 native=0 hybrid=0
+[smp] 4 CPU(s) detected, BSP apic_id=0
+[ioapic] device IRQs routed via I/O APIC
+[irq] 0000:00:04.0: intx vector 96 (e1000)
+[net] IRQ route: eth0 = e1000 vector 96 via device model
+[smp] CPU 1 apic_id=1 topology=cpuid.0b pkg=0 core=1 thread=0 type=unknown native-valid=0 native=0 hybrid=0
+[prot] ap: nx sup/ON  wxsplit ON  smep sup/ON  smap sup/off
+[smp] CPU 1 apic_id=1 online
+[smp] CPU 2 apic_id=2 topology=cpuid.0b pkg=0 core=2 thread=0 type=unknown native-valid=0 native=0 hybrid=0
+[prot] ap: nx sup/ON  wxsplit ON  smep sup/ON  smap sup/off
+[smp] CPU 2 apic_id=2 online
+[smp] CPU 3 apic_id=3 topology=cpuid.0b pkg=0 core=3 thread=0 type=unknown native-valid=0 native=0 hybrid=0
+[prot] ap: nx sup/ON  wxsplit ON  smep sup/ON  smap sup/off
+[smp] CPU 3 apic_id=3 online
+[smp] 4/4 CPUs online
+[smp] topology logical=4 cores=4 p=0/0 e=0/0 unknown=4/4 mismatch=0 conflict=0
+[smp] scheduler topology policy=uniform-online-cpus
+[smp] parallel present on 4 cores (IPI 241)
+[dev] 0000:00:00.0 8086:1237 class=06.00.00 host-bridge  driver=-
+[dev] 0000:00:01.0 8086:7000 class=06.01.00 isa-bridge   driver=-
+[dev] 0000:00:01.1 8086:7010 class=01.01.80 ide          driver=- bar4=io:0xc0c0/0x10
+[dev] 0000:00:01.3 8086:7113 class=06.80.00 bridge       driver=-
+[dev] 0000:00:02.0 1af4:1001 class=01.00.00 scsi         driver=virtio-blk caps=msix,vndr, bar0=io:0xc000/0x80 bar1=0xfebe0000/0x1000 bar4=0xfebf8000/0x4000
+[dev] 0000:00:03.0 1af4:1050 class=03.80.00 display      driver=virtio-gpu caps=msix,vndr, bar1=0xfebe1000/0x1000 bar4=0xfebfc000/0x4000
+[dev] 0000:00:04.0 8086:100e class=02.00.00 ethernet     driver=e1000 irq=intx/96 bar0=0xfebc0000/0x20000 bar1=io:0xc080/0x40
+[dev] 7 device(s), 3 bound, 4 unclaimed
+[dma] boot coherent=89 bytes=4468736 mappings=0 pins=0 direct=0 bounce=0 quarantine=0/0/0 high=0 max=0x4307fff stale=0 completed_direct=10066432 completed_high=0
+
+LOGIT_BOOT_OK
+
+[wm] desktop live; launching apps as ring-3 processes
+[wm] no accounts on this machine: the desktop starts unauthenticated
+[aex] 'Finder' is unsigned: no AEX_T_SIG record. Loading anyway (log but allow) -- see the comment above the CRC check in aex.c for what a signature here would and would not mean.
+[mm] low: 239688 frames free (936 MiB), 22421 used, 0 shared, 0 bugs
+[exec] load files.aex: 0 pages file-backed in 0 areas, 284 copied
+[wm] launched Finder
+[sched] first-run tid 8 (Finder)
+[exec] load /bin/login: 0 pages file-backed in 0 areas, 42 copied
+[sched] first-run tid 9 (login)
+[mm] low: 239432 frames free (935 MiB), 22677 used, 0 shared, 0 bugs
+[mm] low: 239176 frames free (934 MiB), 22933 used, 0 shared, 0 bugs
+[mm] low: 238920 frames free (933 MiB), 23189 used, 0 shared, 0 bugs
+[mm] low: 238664 frames free (932 MiB), 23445 used, 0 shared, 0 bugs
+[kheap] arena domain=physmap cpu=0xffff800005830000 phys=0x5830000 bytes=4194304
+[kheap] grow #5: +4096 KiB -> arena 20480 KiB, live 9942 KiB, free 10535 KiB, over-allocated 29 KiB
+login: no accounts on this machine (`login -a NAME` to create one)
+[mm] low: 238408 frames free (931 MiB), 23701 used, 0 shared, 0 bugs
+[execve] pid 2: /bin/sh loading
+[exec] load /bin/agentd: 0 pages file-backed in 0 areas, 101 copied
+[sched] first-run tid 10 (agentd)
+[swap] no eligible device -- swap is OFF (reclaim keeps the drop tier)
+[reclaim] watermarks: start below 8190 frames (31 MiB free), stop at 16381 (63 MiB); swap OFF (drop tier only)
+[exec] load /bin/sh: 0 pages file-backed in 0 areas, 64 copied
+LogitOS shell -- type 'help'
+/ $ [wm] anim open win 0 p 54 rect 154 97 1032 636 alpha 255 home 110 70 1120 690 damage from 164 91 1175 753 cur 121 64 1219 780 sent 121 64 1219 780
+[wm] perf t=1505 composites=2 ns=23157883 max=22993884 motions=0 curmoves=1 curns=23000 full=2 rects=2 cpx=1024000 fpx=1024000 presns=2340988 torn=0 defer=1 late=0 drawmax=0 evdrop=0 evevict=0 inmerge=0 inevict=0 indrop=0/0 inback=0 inhwm=1 sdk_draws=1024164
+[wm] locks calls=35 hold_ns=49729747 max_ns=19587900
+[wm] anim open win 0 p 70 rect 145 92 1050 646 alpha 255 home 110 70 1120 690 damage from 121 64 1219 780 cur 112 59 1228 785 sent 112 59 1228 785
+[wm] anim open win 0 p 80 rect 138 88 1063 654 alpha 255 home 110 70 1120 690 damage from 112 59 1228 785 cur 105 55 1234 789 sent 105 55 1234 789
+[wm] anim open win 0 p 150 rect 117 74 1106 681 alpha 255 home 110 70 1120 690 damage from 105 55 1234 789 cur 84 41 1256 802 sent 84 41 1256 802
+[wm] ptr 640 400
+[wm] anim open win 0 p 187 rect 112 71 1115 687 alpha 255 home 110 70 1120 690 damage from 84 41 1256 802 cur 79 38 1260 805 sent 79 38 1260 805
+[wm] anim open win 0 p 203 rect 112 71 1115 687 alpha 255 home 110 70 1120 690 damage from 79 38 1260 805 cur 79 38 1260 805 sent 79 38 1260 805
+[wm] anim open win 0 p 219 rect 110 70 1120 690 alpha 255 home 110 70 1120 690 damage from 79 38 1260 805 cur 77 37 1263 807 sent 77 37 1263 807
+[wm] anim open win 0 p 235 rect 110 70 1120 690 alpha 255 home 110 70 1120 690 damage from 77 37 1263 807 cur 77 37 1263 807 sent 77 37 1263 807
+[wm] anim open win 0 p 251 rect 110 70 1120 690 alpha 255 home 110 70 1120 690 damage from 77 37 1263 807 cur 77 37 1263 807 sent 77 37 1263 807
+[time] tickloss +5/s worstgap=43817us missed=5 of 201 expected (2.487% of the clock); uptime 2s
+[time] tickloss   worst gap: observed cpu 0 ra=0x201dfb2; tick on cpu 0, pid -1, in kernel
+[time] accuracy n=32 late_us min=326 p50=5351 p90=9319 max=9407 (TCG; delivery is quantised to the 100Hz tick)
+[ip6] dad ok fec0::5054:ff:fe12:3456/64
+AGENTD model credential unavailable; task service remains available
+AGENTD_READY model=deepseek-flash tasks=8
+[wm] perf t=2507 composites=47 ns=93078530 max=40918793 motions=0 curmoves=1 curns=23000 full=2 rects=47 cpx=3093478 fpx=3093478 presns=4665977 torn=2 defer=41 late=2 drawmax=46 evdrop=0 evevict=0 inmerge=0 inevict=0 indrop=0/0 inback=0 inhwm=1 sdk_draws=1024854
+[wm] locks calls=422 hold_ns=159107201 max_ns=41761790
+[sched] first-run tid 21 (agentd)
+[mm] fork: cow=on, 1 forks, 110 pages shared, 0 copied, 1463 kcycles/fork; 238365 frames free, 0 shared, 0 bugs, 3 live
+[sched] first-run tid 22 (agentd)
+PROJECT_VIEW path=/docs tasks=0 first=0 phase=0
+[netlock] acq 5852 recursive 822 maxdepth 2 violations 0
+[wm] perf t=4508 composites=53 ns=142146283 max=40918793 motions=0 curmoves=1 curns=23000 full=4 rects=53 cpx=5264358 fpx=5264358 presns=6744966 torn=4 defer=41 late=4 drawmax=46 evdrop=0 evevict=0 inmerge=0 inevict=0 indrop=0/0 inback=0 inhwm=1 sdk_draws=1025470
+[wm] locks calls=2279 hold_ns=240757798 max_ns=41761790
+[wm] ptr 800 753
+[mm] low: 238152 frames free (930 MiB), 23957 used, 0 shared, 0 bugs
+[mm] low: 237896 frames free (929 MiB), 24213 used, 0 shared, 0 bugs
+[mm] low: 237640 frames free (928 MiB), 24469 used, 0 shared, 0 bugs
+[mm] low: 237384 frames free (927 MiB), 24725 used, 0 shared, 0 bugs
+[mm] low: 237128 frames free (926 MiB), 24981 used, 0 shared, 0 bugs
+[mm] low: 236872 frames free (925 MiB), 25237 used, 0 shared, 0 bugs
+[mm] low: 236616 frames free (924 MiB), 25493 used, 0 shared, 0 bugs
+[mm] low: 236360 frames free (923 MiB), 25749 used, 0 shared, 0 bugs
+[kheap] arena domain=physmap cpu=0xffff800005d39000 phys=0x5d39000 bytes=8388608
+[kheap] grow #6: +8192 KiB -> arena 28672 KiB, live 13263 KiB, free 15402 KiB, over-allocated 89 KiB
+[mm] low: 236104 frames free (922 MiB), 26005 used, 0 shared, 0 bugs
+[mm] low: 235848 frames free (921 MiB), 26261 used, 0 shared, 0 bugs
+[mm] low: 235592 frames free (920 MiB), 26517 used, 0 shared, 0 bugs
+[mm] low: 235336 frames free (919 MiB), 26773 used, 0 shared, 0 bugs
+[exec] load browser.aex: 1360 pages file-backed in 2 areas, 1170 copied
+[wm] launched Browser
+[sched] first-run tid 29 (Browser)
+[mm] low: 235080 frames free (918 MiB), 27029 used, 1 shared, 0 bugs
+[wm] anim open win 1 p 1 rect 226 150 950 565 alpha 255 home 138 98 1126 670 damage from 193 117 1209 762 cur 193 117 1209 762 sent 193 117 1209 762
+[mm] low: 234824 frames free (917 MiB), 27285 used, 138 shared, 0 bugs
+[mm] low: 234568 frames free (916 MiB), 27541 used, 138 shared, 0 bugs
+[mm] low: 234312 frames free (915 MiB), 27797 used, 138 shared, 0 bugs
+[mm] low: 234056 frames free (914 MiB), 28053 used, 138 shared, 0 bugs
+[mm] low: 233800 frames free (913 MiB), 28309 used, 138 shared, 0 bugs
+[mm] low: 233544 frames free (912 MiB), 28565 used, 138 shared, 0 bugs
+[mm] low: 233288 frames free (911 MiB), 28821 used, 138 shared, 0 bugs
+[mm] low: 233032 frames free (910 MiB), 29077 used, 138 shared, 0 bugs
+[mm] low: 232776 frames free (909 MiB), 29333 used, 138 shared, 0 bugs
+[mm] low: 232520 frames free (908 MiB), 29589 used, 138 shared, 0 bugs
+[mm] low: 232264 frames free (907 MiB), 29845 used, 138 shared, 0 bugs
+[mm] low: 232008 frames free (906 MiB), 30101 used, 138 shared, 0 bugs
+[kheap] arena domain=physmap cpu=0xffff800006eac000 phys=0x6eac000 bytes=8388608
+[kheap] grow #7: +8192 KiB -> arena 36864 KiB, live 16112 KiB, free 20746 KiB, over-allocated 91 KiB
+[browser] session restored 0 tabs (restore=1)
+[browser] sock probe: rodata=0 stack=1 bss=2 caps=0x1f
+[wm] anim open win 1 p 59 rect 180 123 1042 620 alpha 255 home 138 98 1126 670 damage from 193 117 1209 762 cur 147 90 1255 790 sent 147 90 1255 790
+[waitq] 200 ms of waiting: sched_poll_wait spin re-tested 48 times / 2 dispatches; blocked sleeper 0 dispatches
+[waitq] sem items=192 mutex=1000/1000 softirqs=398 work=1 blocked_now=5
+
+WAITQ_SELFTEST_OK (0 failures)
+[wm] anim open win 1 p 142 rect 147 103 1108 659 alpha 255 home 138 98 1126 670 damage from 147 90 1255 790 cur 114 70 1288 809 sent 114 70 1288 809
+[wm] anim open win 1 p 158 rect 145 102 1112 662 alpha 255 home 138 98 1126 670 damage from 114 70 1288 809 cur 112 69 1290 811 sent 112 69 1290 811
+[wm] anim open win 1 p 195 rect 140 99 1121 667 alpha 255 home 138 98 1126 670 damage from 112 69 1290 811 cur 107 66 1294 813 sent 107 66 1294 813
+[wm] anim open win 1 p 200 rect 140 99 1121 667 alpha 255 home 138 98 1126 670 damage from 107 66 1294 813 cur 107 66 1294 813 sent 107 66 1294 813
+[wm] anim open win 1 p 203 rect 140 99 1121 667 alpha 255 home 138 98 1126 670 damage from 107 66 1294 813 cur 107 66 1294 813 sent 107 66 1294 813
+[wm] anim open win 1 p 204 rect 140 99 1121 667 alpha 255 home 138 98 1126 670 damage from 107 66 1294 813 cur 107 66 1294 813 sent 107 66 1294 813
+[dl] painted text: 0 run(s), 0 byte(s)
+[dl] ---8<--- begin painted text
+[dl] ---8<--- end painted text
+[wm] anim open win 1 p 209 rect 140 99 1121 667 alpha 255 home 138 98 1126 670 damage from 107 66 1294 813 cur 107 66 1294 813 sent 107 66 1294 813
+[wm] anim open win 1 p 219 rect 138 98 1126 670 alpha 255 home 138 98 1126 670 damage from 107 66 1294 813 cur 105 65 1297 815 sent 105 65 1297 815
+[mm] low: 231752 frames free (905 MiB), 30357 used, 171 shared, 0 bugs
+[wm] anim open win 1 p 254 rect 138 98 1126 670 alpha 255 home 138 98 1126 670 damage from 105 65 1297 815 cur 105 65 1297 815 sent 105 65 1297 815
+[wm] win 1 frame 138 98 1126 670 content 1126 640 pt zoom 0 min 0 Browser
+[wm] perf t=5516 composites=80 ns=391828025 max=48929755 motions=3 curmoves=4 curns=258998 full=5 rects=81 cpx=11009419 fpx=11009419 presns=13380932 torn=23 defer=48 late=30 drawmax=50 evdrop=0 evevict=0 inmerge=2 inevict=0 indrop=0/0 inback=0 inhwm=1 sdk_draws=1027499
+[wm] locks calls=3401 hold_ns=593306026 max_ns=56488716
+[sched] first-run tid 30 (agentd)
+[sched] first-run tid 31 (agentd)
+[time] xcheck src=tsc rtc=5s mono=4300ms tick=4300ms err=-139ppt OK lost=0/430 worstgap=43817us
+[time] negctl 2x-tick err=+720ppt -> REJECTED (guard works)
+[wm] perf t=6516 composites=102 ns=577212085 max=48929755 motions=3 curmoves=4 curns=258998 full=7 rects=103 cpx=14704011 fpx=14704011 presns=18089909 torn=43 defer=48 late=50 drawmax=50 evdrop=0 evevict=0 inmerge=2 inevict=0 indrop=0/0 inback=0 inhwm=1 sdk_draws=1029451
+[wm] locks calls=4818 hold_ns=794793013 max_ns=56488716
+[kbench] --- kernel entry cost, boot through desktop live (4 cores, TCG) ---
+[kbench] entry syscall: 9173 entries, mean 1421046.658 ns each, 13035 ms total
+[kbench] entry timer: 9647 entries, mean 1251753.705 ns each, 12075 ms total
+[kbench] entry fault: 336 entries, mean 80955.357 ns each, 27 ms total
+[kbench] entry irq: 28 entries, mean 29285.714 ns each, 0 ms total
+[kbench] entry ipi: 144 entries, mean 135298.611 ns each, 19 ms total
+[kbench] tty console wait: 2453 wakes, 9970 us awake in total (4.064 us each), 7458 ms uptime -- 1/1000 of ONE core
+[kbench] scheduler: 1013 context switches, 4 threads parked now, 4328 poll passes through sched_poll_wait
+[kbench]   poll 0x2059c9a: 2455 pass(es)
+[kbench]   poll 0x20345f3: 1816 pass(es)
+[kbench]   poll 0x200a67c: 57 pass(es)
+[kbench] tlb: 0 shootdown(s) never acked
+[kbench] syscalls: 9173 calls, 13019 ms inside the dispatcher (blocking calls include time descheduled)
+[kbench]   SYS 56: 7593 calls (82%), mean 60905.175 ns in handler, 462 ms total
+[kbench]   SYS 75: 242 calls (2%), mean 1293.388 ns in handler, 0 ms total
+[kbench]   SYS 55: 215 calls (2%), mean 3497.674 ns in handler, 0 ms total
+[kbench]   SYS 8: 132 calls (1%), mean 765083.333 ns in handler, 100 ms total
+[kbench]   SYS 165: 123 calls (1%), mean 59895552.845 ns in handler, 7367 ms total
+[kbench]   SYS 54: 93 calls (1%), mean 131677.419 ns in handler, 12 ms total
+[kbench]   SYS 173: 92 calls (1%), mean 50118760.869 ns in handler, 4610 ms total
+[kbench]   SYS 38: 87 calls (0%), mean 470620.689 ns in handler, 40 ms total
+[kbench]   SYS 1: 84 calls (0%), mean 70273.809 ns in handler, 5 ms total
+[kbench]   SYS 159: 54 calls (0%), mean 3296.296 ns in handler, 0 ms total
+[kbench]   SYS 52: 53 calls (0%), mean 31641.509 ns in handler, 1 ms total
+[kbench]   SYS 5: 50 calls (0%), mean 55200.000 ns in handler, 2 ms total
+[kbench]   SYS 143: 49 calls (0%), mean 10938.775 ns in handler, 0 ms total
+[kbench]   SYS 72: 35 calls (0%), mean 2553171.428 ns in handler, 89 ms total
+[kbench]   SYS 40: 32 calls (0%), mean 40156.250 ns in handler, 1 ms total
+[kbench]   SYS 37: 30 calls (0%), mean 23466.666 ns in handler, 0 ms total
+[mm] kbench: 262109 frames total (1023 MiB), 231743 free, 30366 used, 182 shared, 30548 refs (+182 saved = 728 KiB), 0 pinned, 0 bugs
+[physmap] kbench: high_allocs=0 high_live=0 high_max=0x0 high_free=0 low_free=231743
+[mm] kbench: metadata 863 KiB (bitmap + poison map + 2-byte refcounts + pins), poison level 1
+[mm] kbench: 0 frames pinned against reclaim, 128 reserve frames (0 dips), 0 allocations refused
+[kheap] kbench: physmap 36864 KiB, low 0 KiB, above4g 0 KiB, max_phys=0x76abfff
+[kheap] kbench: arena 36864 KiB, live 16065 KiB (319 blocks), free 20792 KiB, over-allocated 95 KiB of 102180 KiB served, 25855 allocs, 25536 frees, 7 grows, 22771 splits, 22407 merges
+[kheap] kbench: magazines 4 CPUs, 7924 hits / 7963 puts, 0 KiB cached, 7 drains
+[mm] kbench: cow=on, 88 pages shared copy-on-write; faults: 12 copied, 61 reused, 1138 anon, 0 declined; 4 address spaces with areas
+[mm] kbench: fault cost (kcycles total / cycles each): cow-copy 328/27333, cow-reuse 104/1704, anon 5895/5180, swap-in 0/0
+[mm] kbench: file faults 182 (22792 kcycles total / 125230 each); HIT 10 (10500 cyc each), MISS 172 (131 kcyc each, 99% of the time)
+[mm] kbench: shm faults 0 (0 kcycles total / 0 each)
+[pcache] kbench: 212 pages resident (peak 212 of 131054 slots), 5 files; 10 hits, 172 misses, 0 shared
+[pcache] kbench: 0 dropped by reclaim, 0 evicted here, 0 invalidated by a write, 0 whole-file reads bypassed
+[pcache] kbench: pool 212/131054 slots used at peak (0%); 0 entries orphaned (pool full of mapped pages), 0 pages handed back UNCACHED AND LEAKED
+[pcache] kbench: readahead 12 batches, 40 pages ahead, 12 backend reads (4 pages/read), 0 short; K 4..32
+[pcache] kbench: backend 172 calls for 212 pages, 18 Mcyc total (107 kcyc/call, 87 kcyc/page, worst 604 kcyc)
+[shm] kbench: 0 segments, 0 pages (0 KiB unreclaimable), 0 bugs
+[reclaim] kbench: on, 0 passes, 0 frames scanned, 0 evicted (0 dropped free [0 zero + 0 cache] + 0 swapped), 0 second chances
+[reclaim] kbench: skipped 0 unmapped / 0 pinned / 0 partially-known / 0 too-shared / 0 running elsewhere; failed 0 no-slot / 0 io; 0 bugs
+[reclaim] kbench: page-cache frames met 0, dropped 0, UNACCOUNTED-FOR REFERENCE 0, too-shared 0
+[reclaim] kbench: 0 swap-ins (0 failed); 0 kcycles scanning (0 per frame evicted)
+[rmap] kbench: 2950/393163 nodes used (peak 3096), 0 overflows, 0 frames incomplete, 0 bugs
+[swap] kbench: OFF (no device)
+KBENCH_DONE
+[sched] first-run tid 32 (agentd)
+[sched] first-run tid 33 (agentd)
+[time] fallback pit ran 500ms (want ~500), switch back rc=0 continuity=3999ns monotonic
+[wm] perf t=8520 composites=107 ns=618797977 max=48929755 motions=3 curmoves=4 curns=258998 full=9 rects=108 cpx=16844171 fpx=16844171 presns=18443906 torn=45 defer=48 late=52 drawmax=50 evdrop=0 evevict=0 inmerge=2 inevict=0 indrop=0/0 inback=0 inhwm=1 sdk_draws=1029844
+[wm] locks calls=7420 hold_ns=865467859 max_ns=56488716
+[mm] fork: cow=on, 6 forks, 817 pages shared, 0 copied, 503 kcycles/fork; 231743 frames free, 182 shared, 0 bugs, 4 live
+[time] smp-mono cores=4 seen=f reads=400000 observed-backsteps=0 clamped=72 max=43000ns
+[sched] first-run tid 38 (agentd)
+[sched] first-run tid 39 (agentd)
+[wm] perf t=10520 composites=113 ns=674963691 max=48929755 motions=3 curmoves=4 curns=258998 full=11 rects=114 cpx=19015051 fpx=19015051 presns=20078896 torn=47 defer=48 late=54 drawmax=50 evdrop=0 evevict=0 inmerge=2 inevict=0 indrop=0/0 inback=0 inhwm=1 sdk_draws=1030280
+[wm] locks calls=10445 hold_ns=936800487 max_ns=56488716
+[sched] first-run tid 40 (agentd)
+[sched] first-run tid 41 (agentd)
+[wm] perf t=12522 composites=123 ns=766192229 max=48929755 motions=9 curmoves=10 curns=445998 full=13 rects=124 cpx=21538187 fpx=21538187 presns=22897880 torn=53 defer=48 late=60 drawmax=50 evdrop=0 evevict=0 inmerge=7 inevict=0 indrop=0/0 inback=0 inhwm=1 sdk_draws=1031066
+[wm] locks calls=13384 hold_ns=1045748930 max_ns=56488716
+[wm] ptr 40 780
+[browser] ctrl+L: address bar focused
+[wm] perf t=13526 composites=135 ns=886814620 max=48929755 motions=9 curmoves=10 curns=445998 full=13 rects=136 cpx=26789267 fpx=26789267 presns=27996853 torn=63 defer=48 late=70 drawmax=50 evdrop=0 evevict=0 inmerge=7 inevict=0 indrop=0/0 inback=0 inhwm=1 sdk_draws=1031836
+[wm] locks calls=14560 hold_ns=1197745161 max_ns=56488716
+[mm] fork: cow=on, 10 forks, 1397 pages shared, 0 copied, 416 kcycles/fork; 231743 frames free, 186 shared, 0 bugs, 4 live
+[netlock] acq 46825 recursive 6041 maxdepth 2 violations 0
+[sched] first-run tid 42 (agentd)
+[sched] first-run tid 43 (agentd)
+[wm] perf t=14528 composites=163 ns=1141879330 max=48929755 motions=9 curmoves=10 curns=445998 full=15 rects=164 cpx=39413107 fpx=39413107 presns=39065794 torn=89 defer=48 late=96 drawmax=50 evdrop=0 evevict=0 inmerge=7 inevict=0 indrop=0/0 inback=0 inhwm=1 sdk_draws=1033640
+[wm] locks calls=15738 hold_ns=1505415615 max_ns=56488716
+[wm] perf t=15541 composites=198 ns=1434248851 max=48929755 motions=9 curmoves=10 curns=445998 full=15 rects=199 cpx=54336167 fpx=54336167 presns=52577727 torn=122 defer=48 late=129 drawmax=50 evdrop=0 evevict=0 inmerge=7 inevict=0 indrop=0/0 inback=0 inhwm=1 sdk_draws=1035991
+[wm] locks calls=16882 hold_ns=1849101879 max_ns=56488716
+[browser] load: http://10.0.2.2:61467/heavy.html
+[wa] t=15510 (+15510) nav
+[route] 127.0.0.0/8 onlink dev 1 src 127.0.0.1 metric 0 local
+[route] 10.0.2.0/24 onlink dev 2 src 10.0.2.15 metric 0
+[route] 0.0.0.0/0 via 10.0.2.2 dev 2 src 10.0.2.15 metric 0
+[sock] connected 10.0.2.2 via ipv4 ::ffff:10.0.2.2
+[net] rx path: frames 72 irq 5 softirq 0 inline 0 poll 6 idle 0/0 halt/skip
+[wa] t=15620 (+110) idle reqs=1 dials=1 reuses=0
+[wa] t=15620 (+0) docdone status=200 len=175375
+[mm] low: 231496 frames free (904 MiB), 30613 used, 305 shared, 0 bugs
+[mm] low: 231240 frames free (903 MiB), 30869 used, 305 shared, 0 bugs
+[mm] low: 230984 frames free (902 MiB), 31125 used, 306 shared, 0 bugs
+[mm] low: 230728 frames free (901 MiB), 31381 used, 306 shared, 0 bugs
+[mm] low: 230472 frames free (900 MiB), 31637 used, 306 shared, 0 bugs
+[mm] low: 230216 frames free (899 MiB), 31893 used, 306 shared, 0 bugs
+[mm] low: 229960 frames free (898 MiB), 32149 used, 306 shared, 0 bugs
+[layout-perf] svg_decodes=0 svg_ms=0 trials=0 items=15864
+[style-perf] phase=first bytes=0 cascade_ms=40 extra_ms=0 layout_ms=90 items=15864 pseudo_compose=0 pseudo_skip=0
+[dl] painted text: 255 run(s), 976 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 8,82 webaccel
+[dl] 158,82 heavy
+[dl] 257,82 specimen
+[dl] 8,172 Section
+[dl] 99,172 0
+[dl] 8,214 row
+[dl] 38,214 0
+[dl] 49,214 text
+[dl] 79,214 content
+[dl] 137,214 for
+[dl] 160,214 layout
+[dl] 208,214 measurement
+[dl] 309,214 0
+[dl] 317,214 note
+[dl] 352,214 0
+[dl] 8,242 paragraph
+[dl] 86,242 0
+[dl] 97,242 with
+[dl] 131,242 enough
+[dl] 187,242 words
+[dl] 233,242 to
+[dl] 251,242 shape
+[dl] 296,242 and
+[dl] 326,242 lay
+[dl] 350,242 out
+[dl] 377,242 across
+[dl] 426,242 a
+[dl] 438,242 line
+[dl] 466,242 or
+[dl] 484,242 two
+[dl] 514,242 at
+[dl] 532,242 16px,
+[dl] 571,242 so
+[dl] 590,242 the
+[dl] 616,242 layout
+[dl] 664,242 engine
+[dl] 714,242 does
+[dl] 750,242 the
+[dl] 776,242 work
+[dl] 814,242 a
+[dl] 826,242 real
+[dl] 856,242 page
+[dl] 894,242 asks
+[dl] 928,242 of
+[dl] 945,242 it.
+[dl] 8,278 row
+[dl] 38,278 1
+[dl] 49,278 text
+[dl] 79,278 content
+[dl] 137,278 for
+[dl] 160,278 layout
+[dl] 208,278 measurement
+[dl] 309,278 1
+[dl] 317,278 note
+[dl] 352,278 1
+[dl] 8,306 paragraph
+[dl] 86,306 1
+[dl] 97,306 with
+[dl] 131,306 enough
+[dl] 187,306 words
+[dl] 233,306 to
+[dl] 251,306 shape
+[dl] 296,306 and
+[dl] 326,306 lay
+[dl] 350,306 out
+[dl] 377,306 across
+[dl] 426,306 a
+[dl] 438,306 line
+[dl] 466,306 or
+[dl] 484,306 two
+[dl] 514,306 at
+[dl] 532,306 16px,
+[dl] 571,306 so
+[dl] 590,306 the
+[dl] 616,306 layout
+[dl] 664,306 engine
+[dl] 714,306 does
+[dl] 750,306 the
+[dl] 776,306 work
+[dl] 814,306 a
+[dl] 826,306 real
+[dl] 856,306 page
+[dl] 894,306 asks
+[dl] 928,306 of
+[dl] 945,306 it.
+[dl] 8,342 row
+[dl] 38,342 2
+[dl] 49,342 text
+[dl] 79,342 content
+[dl] 137,342 for
+[dl] 160,342 layout
+[dl] 208,342 measurement
+[dl] 309,342 2
+[dl] 317,342 note
+[dl] 352,342 2
+[dl] 8,370 paragraph
+[dl] 86,370 2
+[dl] 97,370 with
+[dl] 131,370 enough
+[dl] 187,370 words
+[dl] 233,370 to
+[dl] 251,370 shape
+[dl] 296,370 and
+[dl] 326,370 lay
+[dl] 350,370 out
+[dl] 377,370 across
+[dl] 426,370 a
+[dl] 438,370 line
+[dl] 466,370 or
+[dl] 484,370 two
+[dl] 514,370 at
+[dl] 532,370 16px,
+[dl] 571,370 so
+[dl] 590,370 the
+[dl] 616,370 layout
+[dl] 664,370 engine
+[dl] 714,370 does
+[dl] 750,370 the
+[dl] 776,370 work
+[dl] 814,370 a
+[dl] 826,370 real
+[dl] 856,370 page
+[dl] 894,370 asks
+[dl] 928,370 of
+[dl] 945,370 it.
+[dl] 8,406 row
+[dl] 38,406 3
+[dl] 49,406 text
+[dl] 79,406 content
+[dl] 137,406 for
+[dl] 160,406 layout
+[dl] 208,406 measurement
+[dl] 309,406 3
+[dl] 317,406 note
+[dl] 352,406 3
+[dl] 8,434 paragraph
+[dl] 86,434 3
+[dl] 97,434 with
+[dl] 131,434 enough
+[dl] 187,434 words
+[dl] 233,434 to
+[dl] 251,434 shape
+[dl] 296,434 and
+[dl] 326,434 lay
+[dl] 350,434 out
+[dl] 377,434 across
+[dl] 426,434 a
+[dl] 438,434 line
+[dl] 466,434 or
+[dl] 484,434 two
+[dl] 514,434 at
+[dl] 532,434 16px,
+[dl] 571,434 so
+[dl] 590,434 the
+[dl] 616,434 layout
+[dl] 664,434 engine
+[dl] 714,434 does
+[dl] 750,434 the
+[dl] 776,434 work
+[dl] 814,434 a
+[dl] 826,434 real
+[dl] 856,434 page
+[dl] 894,434 asks
+[dl] 928,434 of
+[dl] 945,434 it.
+[dl] 8,470 row
+[dl] 38,470 4
+[dl] 49,470 text
+[dl] 79,470 content
+[dl] 137,470 for
+[dl] 160,470 layout
+[dl] 208,470 measurement
+[dl] 309,470 4
+[dl] 317,470 note
+[dl] 352,470 4
+[dl] 8,498 paragraph
+[dl] 86,498 4
+[dl] 97,498 with
+[dl] 131,498 enough
+[dl] 187,498 words
+[dl] 233,498 to
+[dl] 251,498 shape
+[dl] 296,498 and
+[dl] 326,498 lay
+[dl] 350,498 out
+[dl] 377,498 across
+[dl] 426,498 a
+[dl] 438,498 line
+[dl] 466,498 or
+[dl] 484,498 two
+[dl] 514,498 at
+[dl] 532,498 16px,
+[dl] 571,498 so
+[dl] 590,498 the
+[dl] 616,498 layout
+[dl] 664,498 engine
+[dl] 714,498 does
+[dl] 750,498 the
+[dl] 776,498 work
+[dl] 814,498 a
+[dl] 826,498 real
+[dl] 856,498 page
+[dl] 894,498 asks
+[dl] 928,498 of
+[dl] 945,498 it.
+[dl] 8,534 row
+[dl] 38,534 5
+[dl] 49,534 text
+[dl] 79,534 content
+[dl] 137,534 for
+[dl] 160,534 layout
+[dl] 208,534 measurement
+[dl] 309,534 5
+[dl] 317,534 note
+[dl] 352,534 5
+[dl] 8,562 paragraph
+[dl] 86,562 5
+[dl] 97,562 with
+[dl] 131,562 enough
+[dl] 187,562 words
+[dl] 233,562 to
+[dl] 251,562 shape
+[dl] 296,562 and
+[dl] 326,562 lay
+[dl] 350,562 out
+[dl] 377,562 across
+[dl] 426,562 a
+[dl] 438,562 line
+[dl] 466,562 or
+[dl] 484,562 two
+[dl] 514,562 at
+[dl] 532,562 16px,
+[dl] 571,562 so
+[dl] 590,562 the
+[dl] 616,562 layout
+[dl] 664,562 engine
+[dl] 714,562 does
+[dl] 750,562 the
+[dl] 776,562 work
+[dl] 814,562 a
+[dl] 826,562 real
+[dl] 856,562 page
+[dl] 894,562 asks
+[dl] 928,562 of
+[dl] 945,562 it.
+[dl] 8,598 row
+[dl] 38,598 6
+[dl] 49,598 text
+[dl] 79,598 content
+[dl] 137,598 for
+[dl] 160,598 layout
+[dl] 208,598 measurement
+[dl] 309,598 6
+[dl] 317,598 note
+[dl] 352,598 6
+[dl] ---8<--- end painted text
+[sock] connected 10.0.2.2 via ipv4 ::ffff:10.0.2.2
+[sock] connected 10.0.2.2 via ipv4 ::ffff:10.0.2.2
+[wa] t=15930 (+310) idle reqs=4 dials=3 reuses=1
+[css-import] 0 loaded, 0 failed, 0 cycles, 0 limited, 0 unsupported; 0 requests, 0 bytes
+[mm] low: 229704 frames free (897 MiB), 32405 used, 333 shared, 0 bugs
+[mm] low: 229448 frames free (896 MiB), 32661 used, 333 shared, 0 bugs
+[mm] low: 229192 frames free (895 MiB), 32917 used, 333 shared, 0 bugs
+[layout-perf] svg_decodes=0 svg_ms=0 trials=0 items=15864
+[style-perf] phase=full bytes=92361 cascade_ms=120 extra_ms=130 layout_ms=70 items=15864 pseudo_compose=0 pseudo_skip=0
+[browser] heap peak 14334K
+[css] linked: 0 <style>, 3 <link rel=stylesheet> (0 not fetched)
+[css] fetched: 3 ok, 0 empty, 0 http-error, 0 transport-error  (content-type: NOT CHECKED -- no MIME filter on <link>)
+[css] bytes: 0 inline + 92358 external = 92358 to the parser  (nothing truncated)
+[css] parsed: 1 sheet(s) accepted, 0 refused; 2718 declarations kept
+[css] dropped: 264  (0 selector, 0 at-rule, 264 unknown-prop, 0 bad-value, 0 trailing)
+[css]      264  unknown-prop transform                | transform
+[mm] low: 228936 frames free (894 MiB), 33173 used, 565 shared, 0 bugs
+[sched] first-run tid 44 (agentd)
+[sched] first-run tid 45 (agentd)
+[wm] perf t=16541 composites=212 ns=1548813270 max=48929755 motions=9 curmoves=10 curns=445998 full=17 rects=213 cpx=59815287 fpx=59815287 presns=57673700 torn=128 defer=54 late=141 drawmax=54 evdrop=0 evevict=0 inmerge=7 inevict=0 indrop=0/0 inback=0 inhwm=1 sdk_draws=1041875
+[wm] locks calls=27213 hold_ns=2051383846 max_ns=56488716
+[browser] scripts collected: 10 external classic, 0 external module, 2 inline
+[wa] t=17060 (+1130) idle reqs=14 dials=3 reuses=11
+WA-T0 760
+[e1000] stats: rx 511 pkt / 705415 B, tx 398 pkt / 28801 B; drop rnbc 0 mpc 0; err crc 0 rlec 0; col 0 ecol 0 late 0; goct rx 0* tx 0*; irq 34 (+34)
+[e1000] goct*: this register cannot be read on this device (MAC_ACCESS_FLAG_NEEDED, hw/net/e1000.c QEMU 11.0.0) -- 0 does NOT mean zero good bytes
+[wm] perf t=17541 composites=221 ns=1672528642 max=48929755 motions=9 curmoves=10 curns=445998 full=17 rects=222 cpx=65773667 fpx=65773667 presns=63494668 torn=135 defer=54 late=148 drawmax=54 evdrop=0 evevict=0 inmerge=7 inevict=0 indrop=0/0 inback=0 inhwm=1 sdk_draws=1049803
+[wm] locks calls=30407 hold_ns=2267739759 max_ns=56488716
+[sched] first-run tid 46 (agentd)
+[sched] first-run tid 47 (agentd)
+[wm] perf t=18562 composites=224 ns=1697238517 max=48929755 motions=9 curmoves=10 curns=445998 full=18 rects=225 cpx=66859107 fpx=66859107 presns=64353663 torn=136 defer=54 late=149 drawmax=54 evdrop=0 evevict=0 inmerge=7 inevict=0 indrop=0/0 inback=0 inhwm=1 sdk_draws=1050013
+[wm] locks calls=31993 hold_ns=2280366692 max_ns=56488716
+[mm] fork: cow=on, 16 forks, 2267 pages shared, 0 copied, 366 kcycles/fork; 228735 frames free, 673 shared, 0 bugs, 4 live
+WA-END 2400
+[wa] t=18740 loadend reqs=14 dials=3 reuses=11 cache ents=14 656K hits=0 rvs=0
+[browser] load done: 14 requests, 3 connections dialled, 11 reused, 0 modules loaded (0 failed)
+[browser] pool: 11 hits, 0 evicted, 1 closed
+[browser] resources: 0 from tab, 13 from network (tab 0 of 1)
+[mm] low: 228680 frames free (893 MiB), 33429 used, 674 shared, 0 bugs
+[mm] low: 228424 frames free (892 MiB), 33685 used, 674 shared, 0 bugs
+[mm] low: 228168 frames free (891 MiB), 33941 used, 674 shared, 0 bugs
+[mm] low: 227912 frames free (890 MiB), 34197 used, 674 shared, 0 bugs
+[mm] low: 227656 frames free (889 MiB), 34453 used, 674 shared, 0 bugs
+[layout-perf] svg_decodes=0 svg_ms=0 trials=0 items=15874
+[load-perf] total_ms=3610 teardown=120 document=0 first_style_layout_paint=210 styles_fetch=140 full_style_layout_paint=360 images=0 runtime_init=460 scripts_fetch=310 scripts_execute=1640 lifecycle_settle=370
+[reflow-perf] cssom_calls=0 cssom_ms=0 live_sheet_rebuilds=0 dom_restyles=1
+[module-perf] compile_ms=0 prefetch_ms=0 fetch_ms=0 link_ms=0 eval_jobs_ms=0 compile_bytes=0 compiles=0 fetches=0 prefetch_batches=0
+[mm] low: 227400 frames free (888 MiB), 34709 used, 680 shared, 0 bugs
+[layout-perf] svg_decodes=0 svg_ms=0 trials=0 items=15874
+[img] 2/6 decoded (0 failed, cap 8) [+0 from cache, 0 unfetchable, 4 deferred, 0 refused; cache 4/256 ents 705K]
+[layout-perf] svg_decodes=0 svg_ms=0 trials=0 items=15874
+[dl] painted text: 165 run(s), 633 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 8,82 webaccel
+[dl] 158,82 heavy
+[dl] 257,82 specimen
+[dl] 8,336 Section
+[dl] 99,336 0
+[dl] 8,378 row
+[dl] 38,378 0
+[dl] 49,378 text
+[dl] 79,378 content
+[dl] 137,378 for
+[dl] 160,378 layout
+[dl] 208,378 measurement
+[dl] 309,378 0
+[dl] 317,378 note
+[dl] 352,378 0
+[dl] 8,406 paragraph
+[dl] 86,406 0
+[dl] 97,406 with
+[dl] 131,406 enough
+[dl] 187,406 words
+[dl] 233,406 to
+[dl] 251,406 shape
+[dl] 296,406 and
+[dl] 326,406 lay
+[dl] 350,406 out
+[dl] 377,406 across
+[dl] 426,406 a
+[dl] 438,406 line
+[dl] 466,406 or
+[dl] 484,406 two
+[dl] 514,406 at
+[dl] 532,406 16px,
+[dl] 571,406 so
+[dl] 590,406 the
+[dl] 616,406 layout
+[dl] 664,406 engine
+[dl] 714,406 does
+[dl] 750,406 the
+[dl] 776,406 work
+[dl] 814,406 a
+[dl] 826,406 real
+[dl] 856,406 page
+[dl] 894,406 asks
+[dl] 928,406 of
+[dl] 945,406 it.
+[dl] 8,442 row
+[dl] 38,442 1
+[dl] 49,442 text
+[dl] 79,442 content
+[dl] 137,442 for
+[dl] 160,442 layout
+[dl] 208,442 measurement
+[dl] 309,442 1
+[dl] 317,442 note
+[dl] 352,442 1
+[dl] 8,470 paragraph
+[dl] 86,470 1
+[dl] 97,470 with
+[dl] 131,470 enough
+[dl] 187,470 words
+[dl] 233,470 to
+[dl] 251,470 shape
+[dl] 296,470 and
+[dl] 326,470 lay
+[dl] 350,470 out
+[dl] 377,470 across
+[dl] 426,470 a
+[dl] 438,470 line
+[dl] 466,470 or
+[dl] 484,470 two
+[dl] 514,470 at
+[dl] 532,470 16px,
+[dl] 571,470 so
+[dl] 590,470 the
+[dl] 616,470 layout
+[dl] 664,470 engine
+[dl] 714,470 does
+[dl] 750,470 the
+[dl] 776,470 work
+[dl] 814,470 a
+[dl] 826,470 real
+[dl] 856,470 page
+[dl] 894,470 asks
+[dl] 928,470 of
+[dl] 945,470 it.
+[dl] 8,506 row
+[dl] 38,506 2
+[dl] 49,506 text
+[dl] 79,506 content
+[dl] 137,506 for
+[dl] 160,506 layout
+[dl] 208,506 measurement
+[dl] 309,506 2
+[dl] 317,506 note
+[dl] 352,506 2
+[dl] 8,534 paragraph
+[dl] 86,534 2
+[dl] 97,534 with
+[dl] 131,534 enough
+[dl] 187,534 words
+[dl] 233,534 to
+[dl] 251,534 shape
+[dl] 296,534 and
+[dl] 326,534 lay
+[dl] 350,534 out
+[dl] 377,534 across
+[dl] 426,534 a
+[dl] 438,534 line
+[dl] 466,534 or
+[dl] 484,534 two
+[dl] 514,534 at
+[dl] 532,534 16px,
+[dl] 571,534 so
+[dl] 590,534 the
+[dl] 616,534 layout
+[dl] 664,534 engine
+[dl] 714,534 does
+[dl] 750,534 the
+[dl] 776,534 work
+[dl] 814,534 a
+[dl] 826,534 real
+[dl] 856,534 page
+[dl] 894,534 asks
+[dl] 928,534 of
+[dl] 945,534 it.
+[dl] 8,570 row
+[dl] 38,570 3
+[dl] 49,570 text
+[dl] 79,570 content
+[dl] 137,570 for
+[dl] 160,570 layout
+[dl] 208,570 measurement
+[dl] 309,570 3
+[dl] 317,570 note
+[dl] 352,570 3
+[dl] 8,598 paragraph
+[dl] 86,598 3
+[dl] 97,598 with
+[dl] 131,598 enough
+[dl] 187,598 words
+[dl] 233,598 to
+[dl] 251,598 shape
+[dl] 296,598 and
+[dl] 326,598 lay
+[dl] 350,598 out
+[dl] 377,598 across
+[dl] 426,598 a
+[dl] 438,598 line
+[dl] 466,598 or
+[dl] 484,598 two
+[dl] 514,598 at
+[dl] 532,598 16px,
+[dl] 571,598 so
+[dl] 590,598 the
+[dl] 616,598 layout
+[dl] 664,598 engine
+[dl] 714,598 does
+[dl] 750,598 the
+[dl] 776,598 work
+[dl] 814,598 a
+[dl] 826,598 real
+[dl] 856,598 page
+[dl] 894,598 asks
+[dl] 928,598 of
+[dl] 945,598 it.
+[dl] ---8<--- end painted text
+[net] rx path: frames 598 irq 42 softirq 6 inline 9 poll 12 idle 0/0 halt/skip
+[mm] low: 227144 frames free (887 MiB), 34965 used, 681 shared, 0 bugs
+[layout-perf] svg_decodes=0 svg_ms=0 trials=0 items=15874
+[wa] t=19430 (+2370) idle reqs=22 dials=3 reuses=19
+[wm] perf t=19562 composites=229 ns=1755919220 max=48929755 motions=9 curmoves=10 curns=445998 full=19 rects=230 cpx=69629387 fpx=69629387 presns=66693651 torn=139 defer=54 late=152 drawmax=54 evdrop=0 evevict=0 inmerge=7 inevict=0 indrop=0/0 inback=0 inhwm=1 sdk_draws=1052832
+[wm] locks calls=33297 hold_ns=2400290085 max_ns=56488716
+[layout-perf] svg_decodes=0 svg_ms=0 trials=0 items=15874
+[load-complete] elapsed_ms=4030
+[dl] painted text: 3 run(s), 21 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 8,82 webaccel
+[dl] 158,82 heavy
+[dl] 257,82 specimen
+[dl] ---8<--- end painted text
+[wm] perf t=20565 composites=234 ns=1776947115 max=48929755 motions=9 curmoves=10 curns=445998 full=19 rects=235 cpx=70533247 fpx=70533247 presns=67670647 torn=140 defer=56 late=155 drawmax=54 evdrop=0 evevict=0 inmerge=7 inevict=0 indrop=0/0 inback=0 inhwm=1 sdk_draws=1055981
+[wm] locks calls=33681 hold_ns=2473527724 max_ns=56488716
+[sched] first-run tid 48 (agentd)
+[sched] first-run tid 49 (agentd)
+[wm] perf t=21566 composites=238 ns=1818535904 max=48929755 motions=9 curmoves=10 curns=445998 full=21 rects=239 cpx=72642687 fpx=72642687 presns=69288639 torn=142 defer=56 late=157 drawmax=54 evdrop=0 evevict=0 inmerge=7 inevict=0 indrop=0/0 inback=0 inhwm=1 sdk_draws=1056315
+[wm] locks calls=33983 hold_ns=2518178504 max_ns=56488716
+[sched] first-run tid 50 (agentd)
+[sched] first-run tid 51 (agentd)
+[wm] perf t=23586 composites=244 ns=1865295670 max=48929755 motions=9 curmoves=10 curns=445998 full=23 rects=245 cpx=74813567 fpx=74813567 presns=71017630 torn=144 defer=56 late=159 drawmax=54 evdrop=0 evevict=0 inmerge=7 inevict=0 indrop=0/0 inback=0 inhwm=1 sdk_draws=1056735
+[wm] locks calls=34599 hold_ns=2570590258 max_ns=56488716
+[mm] fork: cow=on, 20 forks, 2847 pages shared, 0 copied, 352 kcycles/fork; 226957 frames free, 682 shared, 0 bugs, 4 live
+[sched] first-run tid 52 (agentd)
+[sched] first-run tid 53 (agentd)
+[browser] ctrl+L: address bar focused
+[wm] perf t=25598 composites=258 ns=1995886012 max=48929755 motions=9 curmoves=10 curns=445998 full=25 rects=259 cpx=81297887 fpx=81297887 presns=76037603 torn=154 defer=56 late=169 drawmax=54 evdrop=0 evevict=0 inmerge=7 inevict=0 indrop=0/0 inback=0 inhwm=1 sdk_draws=1059152
+[wm] locks calls=37157 hold_ns=2734061444 max_ns=56488716
+[wm] perf t=26599 composites=284 ns=2203919959 max=48929755 motions=9 curmoves=10 curns=445998 full=25 rects=286 cpx=91907507 fpx=91907507 presns=85787553 torn=179 defer=56 late=194 drawmax=54 evdrop=0 evevict=0 inmerge=7 inevict=0 indrop=0/0 inback=0 inhwm=1 sdk_draws=1060743
+[wm] locks calls=38445 hold_ns=3014868024 max_ns=56488716
+[sched] first-run tid 54 (agentd)
+[sched] first-run tid 55 (agentd)
+[wm] perf t=27600 composites=316 ns=2481559560 max=48929755 motions=9 curmoves=10 curns=445998 full=26 rects=319 cpx=106135947 fpx=106135947 presns=99329485 torn=210 defer=56 late=225 drawmax=54 evdrop=0 evevict=0 inmerge=7 inevict=0 indrop=0/0 inback=0 inhwm=1 sdk_draws=1062993
+[wm] locks calls=39650 hold_ns=3356324301 max_ns=56488716
+[browser] load: http://10.0.2.2:61467/heavy.html
+[wa] t=27640 (+8210) nav
+[wa] t=27640 (+0) docdone status=200 len=175375
+[layout-perf] svg_decodes=0 svg_ms=0 trials=0 items=15864
+[style-perf] phase=first bytes=0 cascade_ms=30 extra_ms=0 layout_ms=60 items=15864 pseudo_compose=0 pseudo_skip=0
+[dl] painted text: 255 run(s), 976 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 8,82 webaccel
+[dl] 158,82 heavy
+[dl] 257,82 specimen
+[dl] 8,172 Section
+[dl] 99,172 0
+[dl] 8,214 row
+[dl] 38,214 0
+[dl] 49,214 text
+[dl] 79,214 content
+[dl] 137,214 for
+[dl] 160,214 layout
+[dl] 208,214 measurement
+[dl] 309,214 0
+[dl] 317,214 note
+[dl] 352,214 0
+[dl] 8,242 paragraph
+[dl] 86,242 0
+[dl] 97,242 with
+[dl] 131,242 enough
+[dl] 187,242 words
+[dl] 233,242 to
+[dl] 251,242 shape
+[dl] 296,242 and
+[dl] 326,242 lay
+[dl] 350,242 out
+[dl] 377,242 across
+[dl] 426,242 a
+[dl] 438,242 line
+[dl] 466,242 or
+[dl] 484,242 two
+[dl] 514,242 at
+[dl] 532,242 16px,
+[dl] 571,242 so
+[dl] 590,242 the
+[dl] 616,242 layout
+[dl] 664,242 engine
+[dl] 714,242 does
+[dl] 750,242 the
+[dl] 776,242 work
+[dl] 814,242 a
+[dl] 826,242 real
+[dl] 856,242 page
+[dl] 894,242 asks
+[dl] 928,242 of
+[dl] 945,242 it.
+[dl] 8,278 row
+[dl] 38,278 1
+[dl] 49,278 text
+[dl] 79,278 content
+[dl] 137,278 for
+[dl] 160,278 layout
+[dl] 208,278 measurement
+[dl] 309,278 1
+[dl] 317,278 note
+[dl] 352,278 1
+[dl] 8,306 paragraph
+[dl] 86,306 1
+[dl] 97,306 with
+[dl] 131,306 enough
+[dl] 187,306 words
+[dl] 233,306 to
+[dl] 251,306 shape
+[dl] 296,306 and
+[dl] 326,306 lay
+[dl] 350,306 out
+[dl] 377,306 across
+[dl] 426,306 a
+[dl] 438,306 line
+[dl] 466,306 or
+[dl] 484,306 two
+[dl] 514,306 at
+[dl] 532,306 16px,
+[dl] 571,306 so
+[dl] 590,306 the
+[dl] 616,306 layout
+[dl] 664,306 engine
+[dl] 714,306 does
+[dl] 750,306 the
+[dl] 776,306 work
+[dl] 814,306 a
+[dl] 826,306 real
+[dl] 856,306 page
+[dl] 894,306 asks
+[dl] 928,306 of
+[dl] 945,306 it.
+[dl] 8,342 row
+[dl] 38,342 2
+[dl] 49,342 text
+[dl] 79,342 content
+[dl] 137,342 for
+[dl] 160,342 layout
+[dl] 208,342 measurement
+[dl] 309,342 2
+[dl] 317,342 note
+[dl] 352,342 2
+[dl] 8,370 paragraph
+[dl] 86,370 2
+[dl] 97,370 with
+[dl] 131,370 enough
+[dl] 187,370 words
+[dl] 233,370 to
+[dl] 251,370 shape
+[dl] 296,370 and
+[dl] 326,370 lay
+[dl] 350,370 out
+[dl] 377,370 across
+[dl] 426,370 a
+[dl] 438,370 line
+[dl] 466,370 or
+[dl] 484,370 two
+[dl] 514,370 at
+[dl] 532,370 16px,
+[dl] 571,370 so
+[dl] 590,370 the
+[dl] 616,370 layout
+[dl] 664,370 engine
+[dl] 714,370 does
+[dl] 750,370 the
+[dl] 776,370 work
+[dl] 814,370 a
+[dl] 826,370 real
+[dl] 856,370 page
+[dl] 894,370 asks
+[dl] 928,370 of
+[dl] 945,370 it.
+[dl] 8,406 row
+[dl] 38,406 3
+[dl] 49,406 text
+[dl] 79,406 content
+[dl] 137,406 for
+[dl] 160,406 layout
+[dl] 208,406 measurement
+[dl] 309,406 3
+[dl] 317,406 note
+[dl] 352,406 3
+[dl] 8,434 paragraph
+[dl] 86,434 3
+[dl] 97,434 with
+[dl] 131,434 enough
+[dl] 187,434 words
+[dl] 233,434 to
+[dl] 251,434 shape
+[dl] 296,434 and
+[dl] 326,434 lay
+[dl] 350,434 out
+[dl] 377,434 across
+[dl] 426,434 a
+[dl] 438,434 line
+[dl] 466,434 or
+[dl] 484,434 two
+[dl] 514,434 at
+[dl] 532,434 16px,
+[dl] 571,434 so
+[dl] 590,434 the
+[dl] 616,434 layout
+[dl] 664,434 engine
+[dl] 714,434 does
+[dl] 750,434 the
+[dl] 776,434 work
+[dl] 814,434 a
+[dl] 826,434 real
+[dl] 856,434 page
+[dl] 894,434 asks
+[dl] 928,434 of
+[dl] 945,434 it.
+[dl] 8,470 row
+[dl] 38,470 4
+[dl] 49,470 text
+[dl] 79,470 content
+[dl] 137,470 for
+[dl] 160,470 layout
+[dl] 208,470 measurement
+[dl] 309,470 4
+[dl] 317,470 note
+[dl] 352,470 4
+[dl] 8,498 paragraph
+[dl] 86,498 4
+[dl] 97,498 with
+[dl] 131,498 enough
+[dl] 187,498 words
+[dl] 233,498 to
+[dl] 251,498 shape
+[dl] 296,498 and
+[dl] 326,498 lay
+[dl] 350,498 out
+[dl] 377,498 across
+[dl] 426,498 a
+[dl] 438,498 line
+[dl] 466,498 or
+[dl] 484,498 two
+[dl] 514,498 at
+[dl] 532,498 16px,
+[dl] 571,498 so
+[dl] 590,498 the
+[dl] 616,498 layout
+[dl] 664,498 engine
+[dl] 714,498 does
+[dl] 750,498 the
+[dl] 776,498 work
+[dl] 814,498 a
+[dl] 826,498 real
+[dl] 856,498 page
+[dl] 894,498 asks
+[dl] 928,498 of
+[dl] 945,498 it.
+[dl] 8,534 row
+[dl] 38,534 5
+[dl] 49,534 text
+[dl] 79,534 content
+[dl] 137,534 for
+[dl] 160,534 layout
+[dl] 208,534 measurement
+[dl] 309,534 5
+[dl] 317,534 note
+[dl] 352,534 5
+[dl] 8,562 paragraph
+[dl] 86,562 5
+[dl] 97,562 with
+[dl] 131,562 enough
+[dl] 187,562 words
+[dl] 233,562 to
+[dl] 251,562 shape
+[dl] 296,562 and
+[dl] 326,562 lay
+[dl] 350,562 out
+[dl] 377,562 across
+[dl] 426,562 a
+[dl] 438,562 line
+[dl] 466,562 or
+[dl] 484,562 two
+[dl] 514,562 at
+[dl] 532,562 16px,
+[dl] 571,562 so
+[dl] 590,562 the
+[dl] 616,562 layout
+[dl] 664,562 engine
+[dl] 714,562 does
+[dl] 750,562 the
+[dl] 776,562 work
+[dl] 814,562 a
+[dl] 826,562 real
+[dl] 856,562 page
+[dl] 894,562 asks
+[dl] 928,562 of
+[dl] 945,562 it.
+[dl] 8,598 row
+[dl] 38,598 6
+[dl] 49,598 text
+[dl] 79,598 content
+[dl] 137,598 for
+[dl] 160,598 layout
+[dl] 208,598 measurement
+[dl] 309,598 6
+[dl] 317,598 note
+[dl] 352,598 6
+[dl] ---8<--- end painted text
+[css-import] 0 loaded, 0 failed, 0 cycles, 0 limited, 0 unsupported; 0 requests, 0 bytes
+[layout-perf] svg_decodes=0 svg_ms=0 trials=0 items=15864
+[style-perf] phase=full bytes=92361 cascade_ms=50 extra_ms=70 layout_ms=70 items=15864 pseudo_compose=0 pseudo_skip=0
+[browser] heap peak 20388K
+[css] linked: 0 <style>, 3 <link rel=stylesheet> (0 not fetched)
+[css] fetched: 3 ok, 0 empty, 0 http-error, 0 transport-error  (content-type: NOT CHECKED -- no MIME filter on <link>)
+[css] bytes: 0 inline + 92358 external = 92358 to the parser  (nothing truncated)
+[css] parsed: 0 sheet(s) accepted, 0 refused; 0 declarations kept
+[css] 1 sheet(s) served from the parse cache -- byte-identical to the previous parse, so the DROP COUNTS BELOW ARE NOT THIS LOAD'S
+[css] dropped: 0  (0 selector, 0 at-rule, 0 unknown-prop, 0 bad-value, 0 trailing)
+[css] no rule or declaration was discarded
+[browser] scripts collected: 10 external classic, 0 external module, 2 inline
+WA-T0 460
+[wm] perf t=28608 composites=336 ns=2573515096 max=48929755 motions=9 curmoves=10 curns=445998 full=26 rects=339 cpx=110443267 fpx=110443267 presns=102994466 torn=216 defer=68 late=243 drawmax=54 evdrop=0 evevict=0 inmerge=7 inevict=0 indrop=0/0 inback=0 inhwm=1 sdk_draws=1068778
+[wm] locks calls=42045 hold_ns=3497417596 max_ns=56488716
+[mm] fork: cow=on, 24 forks, 3427 pages shared, 0 copied, 336 kcycles/fork; 226952 frames free, 687 shared, 0 bugs, 4 live
+[sched] first-run tid 56 (agentd)
+[sched] first-run tid 57 (agentd)
+[wm] perf t=29609 composites=340 ns=2623013846 max=48929755 motions=9 curmoves=10 curns=445998 full=28 rects=343 cpx=112552707 fpx=112552707 presns=104361459 torn=218 defer=68 late=245 drawmax=54 evdrop=0 evevict=0 inmerge=7 inevict=0 indrop=0/0 inback=0 inhwm=1 sdk_draws=1069112
+[wm] locks calls=43770 hold_ns=3574648202 max_ns=56488716
+WA-END 2070
+[wa] t=30160 loadend reqs=14 dials=0 reuses=0 cache ents=22 797K hits=14 rvs=0
+[browser] load done: 14 requests, 0 connections dialled, 0 reused, 0 modules loaded (0 failed)
+[browser] pool: 19 hits, 0 evicted, 3 closed
+[browser] resources: 0 from tab, 13 from network (tab 0 of 1)
+[layout-perf] svg_decodes=0 svg_ms=0 trials=0 items=15874
+[dl] painted text: 3 run(s), 21 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 8,82 webaccel
+[dl] 158,82 heavy
+[dl] 257,82 specimen
+[dl] ---8<--- end painted text
+[load-complete] elapsed_ms=2910
+[load-perf] total_ms=2920 teardown=30 document=0 first_style_layout_paint=160 styles_fetch=40 full_style_layout_paint=210 images=10 runtime_init=400 scripts_fetch=60 scripts_execute=1610 lifecycle_settle=400
+[reflow-perf] cssom_calls=0 cssom_ms=0 live_sheet_rebuilds=0 dom_restyles=1
+[module-perf] compile_ms=0 prefetch_ms=0 fetch_ms=0 link_ms=0 eval_jobs_ms=0 compile_bytes=0 compiles=0 fetches=0 prefetch_batches=0
+[wm] perf t=30629 composites=343 ns=2646407729 max=48929755 motions=9 curmoves=10 curns=445998 full=28 rects=346 cpx=113456567 fpx=113456567 presns=105222456 torn=219 defer=68 late=246 drawmax=54 evdrop=0 evevict=0 inmerge=7 inevict=0 indrop=0/0 inback=0 inhwm=1 sdk_draws=1072249
+[wm] locks calls=45440 hold_ns=3652817809 max_ns=56488716
+[sched] first-run tid 58 (agentd)
+[sched] first-run tid 59 (agentd)
+[wm] perf t=31636 composites=348 ns=2708711413 max=48929755 motions=9 curmoves=10 curns=445998 full=30 rects=351 cpx=116408427 fpx=116408427 presns=107113447 torn=222 defer=68 late=249 drawmax=54 evdrop=0 evevict=0 inmerge=7 inevict=0 indrop=0/0 inback=0 inhwm=1 sdk_draws=1072676
+[wm] locks calls=46332 hold_ns=3721987462 max_ns=56488716
+[sched] first-run tid 60 (agentd)
+[sched] first-run tid 61 (agentd)
+[wm] perf t=33646 composites=354 ns=2761267148 max=48929755 motions=9 curmoves=10 curns=445998 full=32 rects=357 cpx=118579307 fpx=118579307 presns=109152438 torn=224 defer=68 late=251 drawmax=54 evdrop=0 evevict=0 inmerge=7 inevict=0 indrop=0/0 inback=0 inhwm=1 sdk_draws=1073096
+[wm] locks calls=47305 hold_ns=3781249178 max_ns=56488716
+[mm] fork: cow=on, 30 forks, 4297 pages shared, 0 copied, 318 kcycles/fork; 226952 frames free, 687 shared, 0 bugs, 4 live
+[sched] first-run tid 62 (agentd)
+[sched] first-run tid 63 (agentd)
+[wm] perf t=35649 composites=360 ns=2816292872 max=48929755 motions=9 curmoves=10 curns=445998 full=34 rects=363 cpx=120750187 fpx=120750187 presns=110818432 torn=226 defer=68 late=253 drawmax=54 evdrop=0 evevict=0 inmerge=7 inevict=0 indrop=0/0 inback=0 inhwm=1 sdk_draws=1073516
+[wm] locks calls=50169 hold_ns=3849852825 max_ns=56488716

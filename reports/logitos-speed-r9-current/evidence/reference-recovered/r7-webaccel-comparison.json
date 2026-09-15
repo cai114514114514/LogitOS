@@ -1,0 +1,19 @@
+{
+  "baseline": {
+    "first_ms": 9250,
+    "second_ms": 6160
+  },
+  "candidate": {
+    "first_ms": 4690,
+    "second_ms": 4570
+  },
+  "change_percent": {
+    "first_ms": -49.3,
+    "second_ms": -25.81
+  },
+  "candidate_second_visit_cache": {
+    "requests": 14,
+    "dials": 0,
+    "hits": 14
+  }
+}

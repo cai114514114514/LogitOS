@@ -214,4 +214,15 @@ static inline int ui_scale(void) { return 100; }
  * exactly the "one jar, TWO doors" shape, and the second door was silently
  * wrong for as long as it took somebody to add a field. */
 
+
+/* Ordinary host painter tests have no WM metrics query. Explicitly model an
+ * older kernel unless the finite ink-placement fixture supplies its oracle. */
+#ifdef PAINTHOST_TEXT_METRICS
+int text_run_metrics_px(const char *, int, int, int, struct logit_text_metrics *);
+#else
+static inline int text_run_metrics_px(const char *s, int len, int px, int face,
+                                      struct logit_text_metrics *out)
+{ (void)s; (void)len; (void)px; (void)face; (void)out; return 0; }
+#endif
+
 #endif /* REFHOST_LOGIT_H */

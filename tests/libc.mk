@@ -46,7 +46,13 @@
 # needs that (err()/warn() embed the program name), and it re-execs both
 # binaries under a common argv[0] with `exec -a`; see its own recipe below.
 
-.PHONY: test-libc-host test-libc2 $(addprefix test-libc-,$(LIBC_DIFFS))
+.PHONY: test-libc-host test-libc2 test-libc-expand-host test-libc-expand-control \
+        $(addprefix test-libc-,$(LIBC_DIFFS))
+
+# The root rule owns the recipe; this fragment adds the expansion half's
+# header dependency so changing a guest assertion can never reuse a stale
+# libctest object.
+$(BUILD)/asobj/tests/unit/libctest_main.o: tests/unit/libctest_expand.h
 
 LIBC_HOST_INC := -nostdinc -isystem $(shell $(CC) -print-resource-dir)/include \
                  -Ic/apps/libc/include -Ic/apps/libc/include/uonly -Ic/apps/libc/src
@@ -133,6 +139,37 @@ test-libc-err: test-libc-libgen
 # This runs them together, host-side, in one pass.
 test-libc-host: $(addprefix test-libc-,$(LIBC_DIFFS)) test-libc-err
 	@echo "PASS: all host-diffed libc additions agree with glibc"
+
+# Broad, fast host coverage for the GNU/BSD/C23 compatibility wave.  The
+# syscall-backed entropy and UTF-16 state-machine cases remain in /bin/libctest
+# because a Darwin process cannot exercise Logit's int-0x80 ABI or its mbstate_t.
+LIBC_EXPAND_HOST_SRC := tests/unit/libc_expand_host_test.c \
+    c/apps/libc/src/argz.c c/apps/libc/src/envz.c c/apps/libc/src/intl.c \
+    c/apps/libc/src/string_ext.c c/apps/libc/src/compat.c \
+    c/apps/libc/src/drand48.c c/apps/libc/src/locale_ext.c \
+    c/apps/libc/src/ctype_l.c $(LIBC_SHIM)
+
+test-libc-expand-control:
+	@mkdir -p $(BUILD)/libchost
+	@$(CC) -std=c11 -O1 -w $(LIBC_HOST_INC) -DLIBC_EXPAND_NEGATIVE_CONTROL \
+	    -o $(BUILD)/libchost/libc_expand_control $(LIBC_EXPAND_HOST_SRC)
+	@$(BUILD)/libchost/libc_expand_control > $(BUILD)/libchost/libc_expand_control.out; rc=$$?; \
+	  if [ $$rc -eq 0 ] || ! grep -q '^EXPECTED_CONTROL_FAILURE argz_replace multi-hit$$' \
+	       $(BUILD)/libchost/libc_expand_control.out; then \
+	    echo "CONTROL FAILED: the sabotaged multi-hit argz_replace was not detected"; \
+	    cat $(BUILD)/libchost/libc_expand_control.out; exit 1; \
+	  fi; \
+	  echo "control ok: host gate rejected the sabotaged second argz replacement"
+
+test-libc-expand-host: test-libc-expand-control
+	@mkdir -p $(BUILD)/libchost
+	@$(CC) -std=c11 -O1 -w $(LIBC_HOST_INC) \
+	    -o $(BUILD)/libchost/libc_expand_host $(LIBC_EXPAND_HOST_SRC)
+	@$(BUILD)/libchost/libc_expand_host
+
+# Make the aggregate name reach the expansion even though an older unrelated
+# inet differential currently reddens earlier on Darwin (reported separately).
+test-libc-host: test-libc-expand-host
 
 # --- on-target: the syscall-backed additions (glob, pwd/grp, uname, mman,
 # sched, getrlimit, environ) that CANNOT be host-diffed because they talk to

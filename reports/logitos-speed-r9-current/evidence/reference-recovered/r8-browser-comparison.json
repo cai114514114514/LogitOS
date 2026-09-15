@@ -1,0 +1,1226 @@
+{
+  "method": "median of three sequential real-guest [load-perf] completions per fixed local fixture; negative percent is faster",
+  "baseline": "build-browser-speed-r6/evidence/browser-baseline/results.json",
+  "candidate": "build-browser-speed-final-r8/evidence/browser-final-current/results.json",
+  "summary": {
+    "deepseek": {
+      "baseline_median_ms": 7190,
+      "candidate_median_ms": 880,
+      "change_ms": -6310,
+      "change_percent": -87.76,
+      "speedup_x": 8.17
+    },
+    "lean": {
+      "baseline_median_ms": 1660,
+      "candidate_median_ms": 600,
+      "change_ms": -1060,
+      "change_percent": -63.86,
+      "speedup_x": 2.767
+    },
+    "script": {
+      "baseline_median_ms": 2220,
+      "candidate_median_ms": 750,
+      "change_ms": -1470,
+      "change_percent": -66.22,
+      "speedup_x": 2.96
+    },
+    "style": {
+      "baseline_median_ms": 2040,
+      "candidate_median_ms": 770,
+      "change_ms": -1270,
+      "change_percent": -62.25,
+      "speedup_x": 2.649
+    },
+    "wikipedia": {
+      "baseline_median_ms": 19520,
+      "candidate_median_ms": 5700,
+      "change_ms": -13820,
+      "change_percent": -70.8,
+      "speedup_x": 3.425
+    }
+  },
+  "baseline_cases": {
+    "deepseek": {
+      "n": 3,
+      "rounds": [
+        0,
+        1,
+        2
+      ],
+      "total_ms": {
+        "values": [
+          7190,
+          6350,
+          8340
+        ],
+        "median": 7190,
+        "min": 6350,
+        "max": 8340
+      },
+      "teardown": {
+        "values": [
+          20,
+          10,
+          10
+        ],
+        "median": 10,
+        "min": 10,
+        "max": 20
+      },
+      "document": {
+        "values": [
+          0,
+          0,
+          0
+        ],
+        "median": 0,
+        "min": 0,
+        "max": 0
+      },
+      "first_style_layout_paint": {
+        "values": [
+          2680,
+          2620,
+          3020
+        ],
+        "median": 2680,
+        "min": 2620,
+        "max": 3020
+      },
+      "styles_fetch": {
+        "values": [
+          320,
+          250,
+          320
+        ],
+        "median": 320,
+        "min": 250,
+        "max": 320
+      },
+      "full_style_layout_paint": {
+        "values": [
+          2910,
+          2660,
+          3560
+        ],
+        "median": 2910,
+        "min": 2660,
+        "max": 3560
+      },
+      "images": {
+        "values": [
+          20,
+          10,
+          30
+        ],
+        "median": 20,
+        "min": 10,
+        "max": 30
+      },
+      "runtime_init": {
+        "values": [
+          1150,
+          740,
+          1290
+        ],
+        "median": 1150,
+        "min": 740,
+        "max": 1290
+      },
+      "scripts_fetch": {
+        "values": [
+          10,
+          0,
+          0
+        ],
+        "median": 0,
+        "min": 0,
+        "max": 10
+      },
+      "scripts_execute": {
+        "values": [
+          0,
+          0,
+          0
+        ],
+        "median": 0,
+        "min": 0,
+        "max": 0
+      },
+      "lifecycle_settle": {
+        "values": [
+          80,
+          60,
+          110
+        ],
+        "median": 80,
+        "min": 60,
+        "max": 110
+      }
+    },
+    "lean": {
+      "n": 3,
+      "rounds": [
+        0,
+        1,
+        2
+      ],
+      "total_ms": {
+        "values": [
+          1720,
+          1590,
+          1660
+        ],
+        "median": 1660,
+        "min": 1590,
+        "max": 1720
+      },
+      "teardown": {
+        "values": [
+          140,
+          0,
+          50
+        ],
+        "median": 50,
+        "min": 0,
+        "max": 140
+      },
+      "document": {
+        "values": [
+          0,
+          0,
+          0
+        ],
+        "median": 0,
+        "min": 0,
+        "max": 0
+      },
+      "first_style_layout_paint": {
+        "values": [
+          100,
+          50,
+          30
+        ],
+        "median": 50,
+        "min": 30,
+        "max": 100
+      },
+      "styles_fetch": {
+        "values": [
+          180,
+          160,
+          160
+        ],
+        "median": 160,
+        "min": 160,
+        "max": 180
+      },
+      "full_style_layout_paint": {
+        "values": [
+          70,
+          100,
+          110
+        ],
+        "median": 100,
+        "min": 70,
+        "max": 110
+      },
+      "images": {
+        "values": [
+          10,
+          10,
+          0
+        ],
+        "median": 10,
+        "min": 0,
+        "max": 10
+      },
+      "runtime_init": {
+        "values": [
+          1160,
+          1200,
+          1180
+        ],
+        "median": 1180,
+        "min": 1160,
+        "max": 1200
+      },
+      "scripts_fetch": {
+        "values": [
+          0,
+          0,
+          0
+        ],
+        "median": 0,
+        "min": 0,
+        "max": 0
+      },
+      "scripts_execute": {
+        "values": [
+          10,
+          10,
+          10
+        ],
+        "median": 10,
+        "min": 10,
+        "max": 10
+      },
+      "lifecycle_settle": {
+        "values": [
+          50,
+          60,
+          120
+        ],
+        "median": 60,
+        "min": 50,
+        "max": 120
+      }
+    },
+    "script": {
+      "n": 3,
+      "rounds": [
+        0,
+        1,
+        2
+      ],
+      "total_ms": {
+        "values": [
+          1520,
+          2220,
+          2320
+        ],
+        "median": 2220,
+        "min": 1520,
+        "max": 2320
+      },
+      "teardown": {
+        "values": [
+          0,
+          0,
+          10
+        ],
+        "median": 0,
+        "min": 0,
+        "max": 10
+      },
+      "document": {
+        "values": [
+          0,
+          0,
+          0
+        ],
+        "median": 0,
+        "min": 0,
+        "max": 0
+      },
+      "first_style_layout_paint": {
+        "values": [
+          200,
+          340,
+          300
+        ],
+        "median": 300,
+        "min": 200,
+        "max": 340
+      },
+      "styles_fetch": {
+        "values": [
+          0,
+          0,
+          0
+        ],
+        "median": 0,
+        "min": 0,
+        "max": 0
+      },
+      "full_style_layout_paint": {
+        "values": [
+          200,
+          300,
+          270
+        ],
+        "median": 270,
+        "min": 200,
+        "max": 300
+      },
+      "images": {
+        "values": [
+          0,
+          10,
+          10
+        ],
+        "median": 10,
+        "min": 0,
+        "max": 10
+      },
+      "runtime_init": {
+        "values": [
+          870,
+          1220,
+          1270
+        ],
+        "median": 1220,
+        "min": 870,
+        "max": 1270
+      },
+      "scripts_fetch": {
+        "values": [
+          0,
+          0,
+          0
+        ],
+        "median": 0,
+        "min": 0,
+        "max": 0
+      },
+      "scripts_execute": {
+        "values": [
+          50,
+          80,
+          90
+        ],
+        "median": 80,
+        "min": 50,
+        "max": 90
+      },
+      "lifecycle_settle": {
+        "values": [
+          200,
+          270,
+          370
+        ],
+        "median": 270,
+        "min": 200,
+        "max": 370
+      }
+    },
+    "style": {
+      "n": 3,
+      "rounds": [
+        0,
+        1,
+        2
+      ],
+      "total_ms": {
+        "values": [
+          1690,
+          2040,
+          2380
+        ],
+        "median": 2040,
+        "min": 1690,
+        "max": 2380
+      },
+      "teardown": {
+        "values": [
+          0,
+          10,
+          10
+        ],
+        "median": 10,
+        "min": 0,
+        "max": 10
+      },
+      "document": {
+        "values": [
+          0,
+          0,
+          0
+        ],
+        "median": 0,
+        "min": 0,
+        "max": 0
+      },
+      "first_style_layout_paint": {
+        "values": [
+          270,
+          310,
+          370
+        ],
+        "median": 310,
+        "min": 270,
+        "max": 370
+      },
+      "styles_fetch": {
+        "values": [
+          160,
+          120,
+          170
+        ],
+        "median": 160,
+        "min": 120,
+        "max": 170
+      },
+      "full_style_layout_paint": {
+        "values": [
+          240,
+          330,
+          430
+        ],
+        "median": 330,
+        "min": 240,
+        "max": 430
+      },
+      "images": {
+        "values": [
+          0,
+          10,
+          10
+        ],
+        "median": 10,
+        "min": 0,
+        "max": 10
+      },
+      "runtime_init": {
+        "values": [
+          900,
+          1110,
+          1250
+        ],
+        "median": 1110,
+        "min": 900,
+        "max": 1250
+      },
+      "scripts_fetch": {
+        "values": [
+          0,
+          0,
+          0
+        ],
+        "median": 0,
+        "min": 0,
+        "max": 0
+      },
+      "scripts_execute": {
+        "values": [
+          0,
+          0,
+          0
+        ],
+        "median": 0,
+        "min": 0,
+        "max": 0
+      },
+      "lifecycle_settle": {
+        "values": [
+          120,
+          150,
+          140
+        ],
+        "median": 140,
+        "min": 120,
+        "max": 150
+      }
+    },
+    "wikipedia": {
+      "n": 3,
+      "rounds": [
+        0,
+        1,
+        2
+      ],
+      "total_ms": {
+        "values": [
+          26390,
+          13430,
+          19520
+        ],
+        "median": 19520,
+        "min": 13430,
+        "max": 26390
+      },
+      "teardown": {
+        "values": [
+          100,
+          20,
+          80
+        ],
+        "median": 80,
+        "min": 20,
+        "max": 100
+      },
+      "document": {
+        "values": [
+          0,
+          0,
+          0
+        ],
+        "median": 0,
+        "min": 0,
+        "max": 0
+      },
+      "first_style_layout_paint": {
+        "values": [
+          3460,
+          1470,
+          2970
+        ],
+        "median": 2970,
+        "min": 1470,
+        "max": 3460
+      },
+      "styles_fetch": {
+        "values": [
+          630,
+          600,
+          430
+        ],
+        "median": 600,
+        "min": 430,
+        "max": 630
+      },
+      "full_style_layout_paint": {
+        "values": [
+          21170,
+          9910,
+          14670
+        ],
+        "median": 14670,
+        "min": 9910,
+        "max": 21170
+      },
+      "images": {
+        "values": [
+          20,
+          20,
+          20
+        ],
+        "median": 20,
+        "min": 20,
+        "max": 20
+      },
+      "runtime_init": {
+        "values": [
+          880,
+          1250,
+          1180
+        ],
+        "median": 1180,
+        "min": 880,
+        "max": 1250
+      },
+      "scripts_fetch": {
+        "values": [
+          0,
+          0,
+          0
+        ],
+        "median": 0,
+        "min": 0,
+        "max": 0
+      },
+      "scripts_execute": {
+        "values": [
+          0,
+          0,
+          0
+        ],
+        "median": 0,
+        "min": 0,
+        "max": 0
+      },
+      "lifecycle_settle": {
+        "values": [
+          130,
+          160,
+          170
+        ],
+        "median": 160,
+        "min": 130,
+        "max": 170
+      }
+    }
+  },
+  "candidate_cases": {
+    "deepseek": {
+      "n": 3,
+      "rounds": [
+        0,
+        1,
+        2
+      ],
+      "total_ms": {
+        "values": [
+          890,
+          810,
+          880
+        ],
+        "median": 880,
+        "min": 810,
+        "max": 890
+      },
+      "teardown": {
+        "values": [
+          10,
+          20,
+          10
+        ],
+        "median": 10,
+        "min": 10,
+        "max": 20
+      },
+      "document": {
+        "values": [
+          0,
+          0,
+          0
+        ],
+        "median": 0,
+        "min": 0,
+        "max": 0
+      },
+      "first_style_layout_paint": {
+        "values": [
+          110,
+          70,
+          70
+        ],
+        "median": 70,
+        "min": 70,
+        "max": 110
+      },
+      "styles_fetch": {
+        "values": [
+          110,
+          110,
+          140
+        ],
+        "median": 110,
+        "min": 110,
+        "max": 140
+      },
+      "full_style_layout_paint": {
+        "values": [
+          230,
+          180,
+          170
+        ],
+        "median": 180,
+        "min": 170,
+        "max": 230
+      },
+      "images": {
+        "values": [
+          10,
+          0,
+          10
+        ],
+        "median": 10,
+        "min": 0,
+        "max": 10
+      },
+      "runtime_init": {
+        "values": [
+          370,
+          370,
+          430
+        ],
+        "median": 370,
+        "min": 370,
+        "max": 430
+      },
+      "scripts_fetch": {
+        "values": [
+          0,
+          0,
+          0
+        ],
+        "median": 0,
+        "min": 0,
+        "max": 0
+      },
+      "scripts_execute": {
+        "values": [
+          0,
+          0,
+          0
+        ],
+        "median": 0,
+        "min": 0,
+        "max": 0
+      },
+      "lifecycle_settle": {
+        "values": [
+          50,
+          60,
+          50
+        ],
+        "median": 50,
+        "min": 50,
+        "max": 60
+      }
+    },
+    "lean": {
+      "n": 3,
+      "rounds": [
+        0,
+        1,
+        2
+      ],
+      "total_ms": {
+        "values": [
+          910,
+          600,
+          560
+        ],
+        "median": 600,
+        "min": 560,
+        "max": 910
+      },
+      "teardown": {
+        "values": [
+          110,
+          10,
+          0
+        ],
+        "median": 10,
+        "min": 0,
+        "max": 110
+      },
+      "document": {
+        "values": [
+          0,
+          0,
+          0
+        ],
+        "median": 0,
+        "min": 0,
+        "max": 0
+      },
+      "first_style_layout_paint": {
+        "values": [
+          60,
+          10,
+          20
+        ],
+        "median": 20,
+        "min": 10,
+        "max": 60
+      },
+      "styles_fetch": {
+        "values": [
+          80,
+          60,
+          60
+        ],
+        "median": 60,
+        "min": 60,
+        "max": 80
+      },
+      "full_style_layout_paint": {
+        "values": [
+          60,
+          60,
+          50
+        ],
+        "median": 60,
+        "min": 50,
+        "max": 60
+      },
+      "images": {
+        "values": [
+          0,
+          0,
+          0
+        ],
+        "median": 0,
+        "min": 0,
+        "max": 0
+      },
+      "runtime_init": {
+        "values": [
+          560,
+          410,
+          390
+        ],
+        "median": 410,
+        "min": 390,
+        "max": 560
+      },
+      "scripts_fetch": {
+        "values": [
+          0,
+          0,
+          0
+        ],
+        "median": 0,
+        "min": 0,
+        "max": 0
+      },
+      "scripts_execute": {
+        "values": [
+          10,
+          10,
+          10
+        ],
+        "median": 10,
+        "min": 10,
+        "max": 10
+      },
+      "lifecycle_settle": {
+        "values": [
+          30,
+          40,
+          30
+        ],
+        "median": 30,
+        "min": 30,
+        "max": 40
+      }
+    },
+    "script": {
+      "n": 3,
+      "rounds": [
+        0,
+        1,
+        2
+      ],
+      "total_ms": {
+        "values": [
+          790,
+          730,
+          750
+        ],
+        "median": 750,
+        "min": 730,
+        "max": 790
+      },
+      "teardown": {
+        "values": [
+          10,
+          0,
+          10
+        ],
+        "median": 10,
+        "min": 0,
+        "max": 10
+      },
+      "document": {
+        "values": [
+          0,
+          0,
+          0
+        ],
+        "median": 0,
+        "min": 0,
+        "max": 0
+      },
+      "first_style_layout_paint": {
+        "values": [
+          100,
+          100,
+          110
+        ],
+        "median": 100,
+        "min": 100,
+        "max": 110
+      },
+      "styles_fetch": {
+        "values": [
+          0,
+          0,
+          0
+        ],
+        "median": 0,
+        "min": 0,
+        "max": 0
+      },
+      "full_style_layout_paint": {
+        "values": [
+          100,
+          90,
+          110
+        ],
+        "median": 100,
+        "min": 90,
+        "max": 110
+      },
+      "images": {
+        "values": [
+          10,
+          10,
+          0
+        ],
+        "median": 10,
+        "min": 0,
+        "max": 10
+      },
+      "runtime_init": {
+        "values": [
+          410,
+          390,
+          380
+        ],
+        "median": 390,
+        "min": 380,
+        "max": 410
+      },
+      "scripts_fetch": {
+        "values": [
+          0,
+          10,
+          0
+        ],
+        "median": 0,
+        "min": 0,
+        "max": 10
+      },
+      "scripts_execute": {
+        "values": [
+          30,
+          20,
+          30
+        ],
+        "median": 30,
+        "min": 20,
+        "max": 30
+      },
+      "lifecycle_settle": {
+        "values": [
+          130,
+          110,
+          110
+        ],
+        "median": 110,
+        "min": 110,
+        "max": 130
+      }
+    },
+    "style": {
+      "n": 3,
+      "rounds": [
+        0,
+        1,
+        2
+      ],
+      "total_ms": {
+        "values": [
+          810,
+          770,
+          740
+        ],
+        "median": 770,
+        "min": 740,
+        "max": 810
+      },
+      "teardown": {
+        "values": [
+          0,
+          0,
+          0
+        ],
+        "median": 0,
+        "min": 0,
+        "max": 0
+      },
+      "document": {
+        "values": [
+          0,
+          0,
+          0
+        ],
+        "median": 0,
+        "min": 0,
+        "max": 0
+      },
+      "first_style_layout_paint": {
+        "values": [
+          110,
+          100,
+          110
+        ],
+        "median": 110,
+        "min": 100,
+        "max": 110
+      },
+      "styles_fetch": {
+        "values": [
+          70,
+          90,
+          90
+        ],
+        "median": 90,
+        "min": 70,
+        "max": 90
+      },
+      "full_style_layout_paint": {
+        "values": [
+          140,
+          130,
+          120
+        ],
+        "median": 130,
+        "min": 120,
+        "max": 140
+      },
+      "images": {
+        "values": [
+          0,
+          10,
+          10
+        ],
+        "median": 10,
+        "min": 0,
+        "max": 10
+      },
+      "runtime_init": {
+        "values": [
+          410,
+          370,
+          340
+        ],
+        "median": 370,
+        "min": 340,
+        "max": 410
+      },
+      "scripts_fetch": {
+        "values": [
+          0,
+          0,
+          0
+        ],
+        "median": 0,
+        "min": 0,
+        "max": 0
+      },
+      "scripts_execute": {
+        "values": [
+          0,
+          10,
+          0
+        ],
+        "median": 0,
+        "min": 0,
+        "max": 10
+      },
+      "lifecycle_settle": {
+        "values": [
+          80,
+          60,
+          70
+        ],
+        "median": 70,
+        "min": 60,
+        "max": 80
+      }
+    },
+    "wikipedia": {
+      "n": 3,
+      "rounds": [
+        0,
+        1,
+        2
+      ],
+      "total_ms": {
+        "values": [
+          8360,
+          5700,
+          5010
+        ],
+        "median": 5700,
+        "min": 5010,
+        "max": 8360
+      },
+      "teardown": {
+        "values": [
+          10,
+          30,
+          10
+        ],
+        "median": 10,
+        "min": 10,
+        "max": 30
+      },
+      "document": {
+        "values": [
+          0,
+          0,
+          0
+        ],
+        "median": 0,
+        "min": 0,
+        "max": 0
+      },
+      "first_style_layout_paint": {
+        "values": [
+          1190,
+          1040,
+          910
+        ],
+        "median": 1040,
+        "min": 910,
+        "max": 1190
+      },
+      "styles_fetch": {
+        "values": [
+          220,
+          230,
+          150
+        ],
+        "median": 220,
+        "min": 150,
+        "max": 230
+      },
+      "full_style_layout_paint": {
+        "values": [
+          6430,
+          3840,
+          3510
+        ],
+        "median": 3840,
+        "min": 3510,
+        "max": 6430
+      },
+      "images": {
+        "values": [
+          10,
+          0,
+          0
+        ],
+        "median": 0,
+        "min": 0,
+        "max": 10
+      },
+      "runtime_init": {
+        "values": [
+          430,
+          470,
+          340
+        ],
+        "median": 430,
+        "min": 340,
+        "max": 470
+      },
+      "scripts_fetch": {
+        "values": [
+          0,
+          0,
+          0
+        ],
+        "median": 0,
+        "min": 0,
+        "max": 0
+      },
+      "scripts_execute": {
+        "values": [
+          0,
+          0,
+          10
+        ],
+        "median": 0,
+        "min": 0,
+        "max": 10
+      },
+      "lifecycle_settle": {
+        "values": [
+          70,
+          90,
+          80
+        ],
+        "median": 80,
+        "min": 70,
+        "max": 90
+      }
+    }
+  }
+}

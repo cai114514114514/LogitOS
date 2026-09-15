@@ -925,10 +925,10 @@ static void part3_tabs(void)
             "a page is rendered and an archive is saved");
       int d = download_record("https://h.test/a/logit.iso", (const unsigned char *)"DATA", 4);
       const struct download *rec = download_at(d);
-      CHECK(rec && rec->ok && !strcmp(rec->path, "/downloads/logit.iso"),
+      CHECK(rec && rec->ok && !strcmp(rec->path, DOWNLOAD_DIR "/logit.iso"),
             "DOWNLOAD: the bytes landed on the disk where Finder can see them");
       char back[16];
-      CHECK(memfs_read("/downloads/logit.iso", back, sizeof back) == 4 &&
+      CHECK(memfs_read(DOWNLOAD_DIR "/logit.iso", back, sizeof back) == 4 &&
             !memcmp(back, "DATA", 4),
             "and they are the bytes that arrived"); }
 }

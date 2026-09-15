@@ -1,0 +1,113 @@
+{
+  "page": "heavy.html",
+  "visits": [
+    {
+      "t_nav": 15210,
+      "t_docdone": 15330,
+      "t_t0": 690.0,
+      "t_end": 2220.0,
+      "t_loadend": 18310,
+      "loadend_counts": [
+        14,
+        3,
+        11,
+        14,
+        656,
+        0,
+        0
+      ],
+      "idles": [
+        [
+          15330,
+          1,
+          1,
+          0
+        ],
+        [
+          15670,
+          4,
+          3,
+          1
+        ],
+        [
+          16740,
+          14,
+          3,
+          11
+        ],
+        [
+          19030,
+          22,
+          3,
+          19
+        ]
+      ],
+      "loaddone": [
+        14,
+        3,
+        11
+      ],
+      "wm": [
+        12708,
+        13709,
+        14711,
+        15728,
+        16729,
+        17730,
+        18730,
+        19731,
+        21733,
+        23733
+      ],
+      "tls_full": 0,
+      "tls_resumed": 0,
+      "tls_tickets": 0
+    },
+    {
+      "t_nav": 27330,
+      "t_docdone": 27330,
+      "t_t0": 370.0,
+      "t_end": 1900.0,
+      "t_loadend": 29650,
+      "loadend_counts": [
+        14,
+        0,
+        0,
+        22,
+        797,
+        14,
+        0
+      ],
+      "idles": [],
+      "loaddone": [
+        14,
+        0,
+        0
+      ],
+      "wm": [
+        24735,
+        25735,
+        26735,
+        27737,
+        28737,
+        29746,
+        30747,
+        31749,
+        33749,
+        35749
+      ],
+      "tls_full": 0,
+      "tls_resumed": 0,
+      "tls_tickets": 0
+    }
+  ],
+  "control": null,
+  "serial_log": "/var/folders/5n/cg5_2k414dj_mt1q9__6mx_r0000gn/T/qmp_webaccel_38o60veb/serial.log",
+  "gate": null,
+  "started": "2026-09-13T19:22:21",
+  "first_ms": 3100,
+  "second_ms": 2320,
+  "why": "measured, ungated (--json-only)",
+  "finished": "2026-09-13T19:22:58",
+  "serial_tail": "2358 to the parser  (nothing truncated)\r\n[css] parsed: 0 sheet(s) accepted, 0 refused; 0 declarations kept\r\n[css] 1 sheet(s) served from the parse cache -- byte-identical to the previous parse, so the DROP COUNTS BELOW ARE NOT THIS LOAD'S\r\n[css] dropped: 0  (0 selector, 0 at-rule, 0 unknown-prop, 0 bad-value, 0 trailing)\r\n[css] no rule or declaration was discarded\r\n[browser] scripts collected: 10 external classic, 0 external module, 2 inline\r\nWA-T0 370\r\n[wm] perf t=28737 composites=506 ns=2668992769 max=40032798 motions=9 curmoves=10 curns=457999 full=28 rects=509 cpx=111826106 fpx=111826106 presns=102902462 torn=213 defer=241 late=238 drawmax=151 evdrop=0 evevict=0 inmerge=7 inevict=0 indrop=0/0 inback=0 inhwm=1 sdk_draws=1070875\n[wm] locks calls=50893 hold_ns=3589925307 max_ns=55047723\n[mm] fork: cow=on, 24 forks, 3427 pages shared, 0 copied, 308 kcycles/fork; 226819 frames free, 686 shared, 0 bugs, 4 live\n[sched] first-run tid 56 (agentd)\n[sched] first-run tid 57 (agentd)\nWA-END 1900\r\n[wa] t=29650 loadend reqs=14 dials=0 reuses=0 cache ents=22 797K hits=14 rvs=0\r\n[browser] load done: 14 requests, 0 connections dialled, 0 reused, 0 modules loaded (0 failed)\r\n[browser] pool: 19 hits, 0 evicted, 3 closed\r\n[browser] resources: 0 from tab, 13 from network (tab 0 of 1)\r\n[wm] perf t=29746 composites=510 ns=2715807533 max=40032798 motions=9 curmoves=10 curns=457999 full=30 rects=513 cpx=113935546 fpx=113935546 presns=104346453 torn=215 defer=241 late=240 drawmax=151 evdrop=0 evevict=0 inmerge=7 inevict=0 indrop=0/0 inback=0 inhwm=1 sdk_draws=1071209\n[wm] locks calls=52080 hold_ns=3641545046 max_ns=55047723\n[layout-perf] svg_decodes=0 svg_ms=0 trials=0 items=15874\r\n[dl] painted text: 3 run(s), 21 byte(s)\r\n[dl] ---8<--- begin painted text\r\n[dl] 8,82 webaccel\r\n[dl] 158,82 heavy\r\n[dl] 257,82 specimen\r\n[dl] ---8<--- end painted text\r\n[load-complete] elapsed_ms=2650\r\n[load-perf] total_ms=2670 teardown=30 document=0 first_style_layout_paint=130 styles_fetch=60 full_style_layout_paint=190 images=10 runtime_init=310 scripts_fetch=60 scripts_execute=1530 lifecycle_settle=350\r\n[reflow-perf] cssom_calls=0 cssom_ms=0 live_sheet_rebuilds=0 dom_restyles=1\r\n[module-perf] compile_ms=0 prefetch_ms=0 fetch_ms=0 link_ms=0 eval_jobs_ms=0 compile_bytes=0 compiles=0 fetches=0 prefetch_batches=0\r\n[wm] perf t=30747 composites=514 ns=2760823307 max=40032798 motions=9 curmoves=10 curns=457999 full=30 rects=517 cpx=115681826 fpx=115681826 presns=105829445 torn=217 defer=241 late=242 drawmax=151 evdrop=0 evevict=0 inmerge=7 inevict=0 indrop=0/0 inback=0 inhwm=1 sdk_draws=1074439\n[wm] locks calls=53272 hold_ns=3738710563 max_ns=55047723\n[sched] first-run tid 58 (agentd)\n[sched] first-run tid 59 (agentd)\n[wm] perf t=31749 composites=518 ns=2818244016 max=40032798 motions=9 curmoves=10 curns=457999 full=32 rects=521 cpx=117791266 fpx=117791266 presns=107790435 torn=219 defer=241 late=244 drawmax=151 evdrop=0 evevict=0 inmerge=7 inevict=0 indrop=0/0 inback=0 inhwm=1 sdk_draws=1074773\n[wm] locks calls=54843 hold_ns=3809350202 max_ns=55047723\n[sched] first-run tid 60 (agentd)\n[sched] first-run tid 61 (agentd)\n[wm] perf t=33749 composites=524 ns=2873536736 max=40032798 motions=9 curmoves=10 curns=457999 full=34 rects=527 cpx=119962146 fpx=119962146 presns=109448424 torn=221 defer=241 late=246 drawmax=151 evdrop=0 evevict=0 inmerge=7 inevict=0 indrop=0/0 inback=0 inhwm=1 sdk_draws=1075193\n[wm] locks calls=58067 hold_ns=3880162844 max_ns=55047723\n[mm] fork: cow=on, 30 forks, 4297 pages shared, 0 copied, 299 kcycles/fork; 226819 frames free, 686 shared, 0 bugs, 4 live\n[sched] first-run tid 62 (agentd)\n[sched] first-run tid 63 (agentd)\n[wm] perf t=35749 composites=530 ns=2927077467 max=40032798 motions=9 curmoves=10 curns=457999 full=36 rects=533 cpx=122133026 fpx=122133026 presns=110954419 torn=223 defer=241 late=248 drawmax=151 evdrop=0 evevict=0 inmerge=7 inevict=0 indrop=0/0 inback=0 inhwm=1 sdk_draws=1075613\n[wm] locks calls=60996 hold_ns=3940816537 max_ns=55047723\n"
+}
