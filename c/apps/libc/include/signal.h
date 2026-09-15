@@ -33,10 +33,12 @@
  *     one mask per PROCESS; a pending signal is taken by whichever thread next
  *     returns to ring 3, which POSIX permits for a process-directed signal.
  *     pthread_kill() still returns ENOSYS.
- *   - NO JOB CONTROL. There are no sessions and no process groups, so
- *     kill(0, sig) and kill(-pgid, sig) are not process-group sends, and the
- *     tty has one foreground pid (whoever last read it) rather than a
- *     foreground group. SIGSTOP/SIGCONT do stop and continue a process.
+ *   - NO COMPLETE JOB CONTROL. The historical reason was that there were no
+ *     sessions or process groups. Correction (2026-09-15): controlling PTYs
+ *     now track both, but kill(0, sig) and kill(-pgid, sig) are still not
+ *     process-group sends, tty-generated group delivery is absent, and the
+ *     legacy serial tty still has one claim-on-read foreground pid.
+ *     SIGSTOP/SIGCONT do stop and continue a process.
  *   - NO SIGCHLD DETAIL. It says a child changed state; waitpid() says which. */
 
 typedef int sig_atomic_t;

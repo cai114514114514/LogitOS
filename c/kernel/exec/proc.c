@@ -1245,7 +1245,7 @@ int procfs_src_self(void)
 }
 
 /* ======================================================================
- * THE OUT-OF-MEMORY KILLER'S SEAM  (c/kernel/mm/reclaim/reclaim/oom.h)
+ * THE OUT-OF-MEMORY KILLER'S SEAM  (c/kernel/mm/reclaim/oom.h)
  *
  * c/kernel/mm must not include this header: mm is UNDERNEATH exec -- the fault
  * path is reached from the scheduler, and pulling the process table down into

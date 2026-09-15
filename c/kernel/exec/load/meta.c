@@ -159,7 +159,6 @@ static long stat_fd(int fd, void *ubuf, long len)
     st.attr    = 0;                       /* nothing here is stored anywhere */
     switch (f->type) {
     case F_PIPE: st.mode = LST_IFIFO | 0600; break;
-    case F_PTY:
     case F_TTY:  st.mode = LST_IFCHR | 0620; break;
     default:     st.mode = LST_IFREG | 0644;
                  st.size = (unsigned long long)(f->size > 0 ? f->size : 0);

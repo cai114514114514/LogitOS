@@ -47,7 +47,7 @@
  * reaches the disk. Three separate ceilings, and the buffer is the lowest.
  *
  * So: CORE_BUF_MAX bytes, in .bss, not kmalloc. Allocating in the death path
- * is the same trap c/kernel/mm/reclaim/reclaim/swap.c argues about its own write-out path -- a
+ * is the same trap c/kernel/mm/reclaim/swap.c argues about its own write-out path -- a
  * process that died BECAUSE memory ran out is the one whose dump would then
  * fail to allocate. The buffer is serialised by the BKL, which the ring-3
  * fault path holds at the one call site (c/kernel/cpu/irq/interrupts.c).

@@ -30,6 +30,11 @@ struct elf_image;
 struct proc {
     struct aex_agent_identity agent;
     int      pid, ppid;
+    /* Process-group identity is process-table state, never a pid cached by a
+     * terminal. Fork inherits both; setsid creates sid==pgid==pid. This is the
+     * minimum stable identity a controlling PTY and one foreground job need. */
+    int      sid, pgid;
+    uint64_t ctty_id;       /* 0, or a boot-monotonic PTY object identity */
     int      state;          /* enum proc_state */
     int      exit_code;
     int      tid;            /* scheduler thread id backing this proc */
@@ -110,6 +115,13 @@ long          proc_cap_spawn(struct registers *r);  /* M28: SYS_CAP_SPAWN -- for
  * SYS_KILL's LOGIT_KILL_SIGNAL flag in logit_abi.h). Any other bit is refused
  * (SIG_E_NOSYS) rather than silently ignored -- see proc.c. */
 long          proc_waitpid(int pid, int *status, int options);
+long          proc_setsid(void);
+long          proc_setpgid(int pid, int pgid);
+long          proc_getpgid(int pid);
+int           proc_terminal_ids(int *sid, int *pgid, uint64_t *ctty_id);
+int           proc_group_in_session(int pgid, int sid);
+int           proc_attach_ctty(uint64_t ctty_id);
+void          proc_clear_ctty(uint64_t ctty_id);
 void          proc_reap(void);                      /* free orphan/GUI zombies (WM loop) */
 
 /* fd table (P2). */

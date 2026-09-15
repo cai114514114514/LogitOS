@@ -105,8 +105,10 @@ void ksig_tick(void);
  * (the shell is in waitpid, the child is computing), so the timer drains the
  * UART, turns ^C into a SIGINT and queues everything else here. */
 int  ksig_tty_getc(void);
-/* The tty's single foreground pid -- see the honest note about sessions in
- * include/abi/logit_abi.h. Set by whoever reads the console. */
+/* The serial tty's single foreground pid -- see the correction beside the old
+ * no-sessions claim in include/abi/logit_abi.h. PTYs keep their own validated
+ * foreground pgid, but group-directed tty signals are deliberately not wired.
+ * Set by whoever reads the console. */
 void ksig_tty_set_fg(int pid);
 /* "The caller is now the foreground process." Resolves proc_current() HERE
  * rather than at the call site so that c/kernel/exec/fd/file.c needs no new

@@ -359,8 +359,10 @@ int ksig_fault(int signo, uint64_t cr2, uint64_t err, uint64_t vector)
  * Latency is one tick, 10 ms.
  *
  * THE FOREGROUND PID is whichever process most recently blocked reading the
- * console. That is not job control and is not pretending to be: there are no
- * sessions and no process groups here. It gets the common case right -- the
+ * console. That is not job control and is not pretending to be: historically
+ * there were no sessions or process groups here. Correction (2026-09-15): PTY
+ * sessions/groups now exist, but this serial-console path deliberately does
+ * not borrow their policy or claim to be a controlling terminal. It gets the common case right -- the
  * shell reads, so the shell is foreground; the shell then forks a child and
  * waits, and the SIGINT goes to the shell, which is exactly where a shell wants
  * it. What it does NOT do is deliver to the child, so `sleep 100` is not

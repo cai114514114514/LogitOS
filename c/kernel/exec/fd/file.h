@@ -5,14 +5,18 @@
 #include "kernel/sync/wait.h"
 
 /* An open file description (the thing a file descriptor points at). Shared by
- * dup/dup2/fork via refcount. Three backends:
+ * dup/dup2/fork via refcount. Five backends:
  *   F_VFS  -- a regular file. A READ-ONLY description holds NO bytes at all and
  *             serves every read from vfs_pread() at its own offset (`stream`,
  *             below); a WRITABLE one holds the whole file in a kmalloc buffer
  *             with an offset cursor, because the VFS write op is whole-file and
  *             there is nothing else to modify a piece of. See file_open_vfs().
  *   F_PIPE -- an in-kernel ring buffer with two ends (P3).
- *   F_TTY  -- the serial console (P5).
+ *   F_TTY  -- a terminal byte stream (P5). `backing == NULL` is the serial
+ *             console; a non-NULL backing is one endpoint of the native PTY.
+ *             Keeping both behind this one type is what makes fstat/isatty and
+ *             fd inheritance use the existing terminal path rather than a
+ *             sixth fd kind.
  *   F_SOCK -- a network socket; `backing` is owned by c/net/core/lsock.c and
  *             read/write/close dispatch into it. It is a type here, rather than
  *             a separate handle table like the client sockets in
@@ -31,7 +35,6 @@
 #define F_TTY   3
 #define F_SOCK  4
 #define F_EVENT 5
-#define F_PTY   6
 
 struct file {
     /* BKL removal: only VFS operations take this sleeping, per-description
@@ -90,7 +93,7 @@ struct file {
      * live description is. A new type would have needed all six of them
      * duplicated to say the same thing. */
     int   live;
-    void *backing;      /* F_VFS: file bytes; F_PIPE: struct pipe* */
+    void *backing;      /* F_VFS bytes; F_PIPE pipe*; F_TTY NULL=console/pty* */
     char  path[128];    /* F_VFS write-back path */
 };
 

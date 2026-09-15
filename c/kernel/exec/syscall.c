@@ -409,6 +409,12 @@ static void syscall_do(struct registers *r, const void *user_fxarea)
     switch (r->rax) {
     case SYS_PTY_OPEN: case SYS_PTY_CTL:
         r->rax = (uint64_t)pty_syscall(r->rax,r->rdi,r->rsi,r->rdx);return;
+    case SYS_SETSID:
+        r->rax = (uint64_t)proc_setsid(); return;
+    case SYS_SETPGID:
+        r->rax = (uint64_t)proc_setpgid((int)r->rdi,(int)r->rsi); return;
+    case SYS_GETPGID:
+        r->rax = (uint64_t)proc_getpgid((int)r->rdi); return;
     case SYS_AGENT_SPAWN:
         r->rax = (uint64_t)proc_agent_spawn(r); return;
     case SYS_AGENT_SELF: {
