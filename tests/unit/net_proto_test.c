@@ -507,6 +507,38 @@ int main(void)
     }
     CHECK(order_ok, "overflow: first four datagrams survived in order");
 
+    /* 14) Oversize reassembled datagram. IP reassembly can hand udp_input up
+     * to 65527 payload bytes, but a queue slot is UDP_SLOT (1500): the enqueue
+     * must refuse and count the datagram instead of memcpy past the slot.
+     * Regression for the 2026-09-16 remote kernel-memory bug (two forged
+     * fragments at any bound port used to overwrite socks[] and beyond). */
+    {
+        static uint8_t bigframe[2100];
+        static uint8_t bigl4[2056];
+        static uint8_t bigpay[2048];
+        memset(bigpay, 0x5a, sizeof bigpay);
+        int sbig = udp_bind(0x6666);
+        CHECK(sbig >= 0, "oversize: bind 0x6666 failed");
+        ulen = make_udp(bigl4, REMOTE_IP, LOCAL_IP, 53, 0x6666,
+                        bigpay, sizeof bigpay, 1);
+        flen = make_frame(bigframe, REMOTE_IP, LOCAL_IP, IP_PROTO_UDP,
+                          bigl4, ulen, 0, 64);
+        CHECK(flen > 1500, "oversize: frame did not exceed one slot");
+        ip_input(bigframe, (uint16_t)flen);
+        CHECK(udp_drops(sbig) == 1,
+              "oversize: drops=%u want 1", udp_drops(sbig));
+        CHECK(trecv(sbig, recvbuf, sizeof recvbuf, NULL, NULL) == -1,
+              "oversize: nothing may be queued");
+        const uint8_t pb = 7;
+        ulen = make_udp(datagram, REMOTE_IP, LOCAL_IP, 53, 0x6666, &pb, 1, 1);
+        flen = make_frame(frame, REMOTE_IP, LOCAL_IP, IP_PROTO_UDP,
+                          datagram, ulen, 0, 64);
+        ip_input(frame, (uint16_t)flen);
+        CHECK(trecv(sbig, recvbuf, sizeof recvbuf, NULL, NULL) == 1 &&
+              recvbuf[0] == 7,
+              "oversize: socket still delivers normal datagrams");
+    }
+
     /* no socket on 0x9999: rate-limited ICMP port-unreachable */
     ulen = make_udp(datagram, REMOTE_IP, LOCAL_IP, 9999, 0x9999,
                     odd_payload, sizeof odd_payload, 1);

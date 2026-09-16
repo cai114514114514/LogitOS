@@ -24,7 +24,8 @@ struct udp_sock {
     int      used;
     uint16_t port;
     int      err;                       /* ICMP error pending report */
-    uint32_t drops;                     /* queue-full drops */
+    uint32_t drops;                     /* datagrams dropped: queue full, or
+                                           larger than one slot (oversize) */
     int      qhead;                     /* oldest datagram */
     int      qcount;
     uint16_t qlen[UDP_QUEUES];
@@ -101,7 +102,12 @@ int udp_recv(int sock, void *buf, int max, uint32_t *src, uint16_t *sport)
         rc = -1;
         s->err = 0;                 /* report an ICMP error exactly once */
     } else if (s->qcount > 0) {
-        int n = s->qlen[s->qhead] > (uint16_t)max ? max : s->qlen[s->qhead];
+        /* Compare in int: qlen never exceeds UDP_SLOT, so the old
+         * (uint16_t)max narrowing made a huge `max` read as tiny. */
+        int n = s->qlen[s->qhead];
+        if (n > max) {
+            n = max;
+        }
         memcpy(buf, s->q[s->qhead], (size_t)n);
         if (src)   *src   = s->qsrc[s->qhead];
         if (sport) *sport = s->qsport[s->qhead];
@@ -209,6 +215,14 @@ void udp_input(uint32_t src, const uint8_t *data, uint16_t len,
     if (s) {
         if (s->qcount == UDP_QUEUES) {
             s->drops++;             /* newest loses; drain faster */
+        } else if (dlen > UDP_SLOT) {
+            /* IP reassembly can hand us up to 65527 payload bytes, but a
+             * slot is one MTU and udp_recv caps at the caller's buffer: an
+             * oversize datagram cannot be delivered honestly, so refuse it
+             * here rather than memcpy past the queue (a remote kernel-memory
+             * write -- found by the 2026-09-16 audit, regression in
+             * tests/unit/net_proto_test.c case 14). */
+            s->drops++;
         } else {
             int tail = (s->qhead + s->qcount) % UDP_QUEUES;
             memcpy(s->q[tail], payload, dlen);
