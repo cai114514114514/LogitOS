@@ -291,9 +291,13 @@ static uint64_t setup_user_stack(uint64_t cr3, const struct elf_image *img,
     uint64_t entry = img->entry;
     uint64_t base = entry & ~(uint64_t)0xFFFFF;
     uint64_t top = base + 0x4000000;                 /* 64 MiB above base */
-    /* Retain legacy stack placement; a large PIE BSS needs its stack above
-     * the entire image, rather than blindly 64 MiB above the entry. */
-    if ((img->load_bias || img->interp_base) && top < img->top + (uint64_t)stack_pages * 0x1000)
+    /* A large BSS needs the stack above the entire image, not blindly 64 MiB
+     * above the entry. This used to run only for PIEs (load_bias ||
+     * interp_base); a legacy ET_EXEC passes the loader's 256 MiB cap just as
+     * legally, and the eager stack pages then silently re-mapped image pages
+     * -- leaked frames, clobbered BSS (2026-09-16 audit; wm_launch already
+     * raised unconditionally). */
+    if (img->top && top < img->top + (uint64_t)stack_pages * 0x1000)
         top = (img->top + (uint64_t)stack_pages * 0x1000 + 0xFFF) & ~0xFFFull;
     uint64_t bottom = top - (uint64_t)stack_pages * 0x1000;
     if (!mm_user_range(bottom, top - bottom)) return 0;
@@ -344,9 +348,14 @@ static uint64_t setup_user_stack(uint64_t cr3, const struct elf_image *img,
     int want_nx = !(img->stack_flags & PF_X) && cpu_prot_nx_usable();
     uint64_t stack_flags = VMM_WRITABLE | VMM_USER | (want_nx ? PTE_NX : 0);
     for (int i = 1; i <= eager; i++) {
+        uint64_t va = top - (uint64_t)i * 0x1000;
+        /* Never replace an already-mapped page: a colliding image page would
+         * leak the stack frame and corrupt the image (same refusal as
+         * place_page()). */
+        if (vmm_pte(cr3, va)) return 0;
         uint64_t frame = pmm_alloc_any();
         if (!frame) return 0;
-        vmm_map_page(top - (uint64_t)i * 0x1000, frame, stack_flags);
+        vmm_map_page(va, frame, stack_flags);
     }
     /* Static rather than two 2 KiB arrays on the kernel stack: at LOGIT_ARG_MAX
      * entries they are 4 KiB together, an eighth of the 32 KiB kstack, for a
