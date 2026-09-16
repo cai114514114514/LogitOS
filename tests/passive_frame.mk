@@ -82,6 +82,41 @@ test-frame-focus-san: test-frame-focus
 	@ASAN_OPTIONS=detect_leaks=0 $(PASSIVE_FRAME_DIR)/focus-san active-focus
 ci-host: test-frame-focus
 
+# Full parent/child consumer: neither a bare fresh Context nor a JSON alias
+# can satisfy the real contentWindow path, CSP, navigation and teardown checks.
+FRAME_REALM_SRC = $(FRAME_PORT_SRC) $(filter-out $(FRAME_PORT_SRC),c/apps/browser/js_frame.c c/apps/browser/js_domparser.c)
+# Later make fragments append platform sources to shared recursive lists.
+# Recipe expansion sees them, prerequisite expansion here does not. Name the
+# modified translation unit explicitly or a platform-only edit runs OLD code.
+FRAME_REALM_DEP = $(FRAME_PORT_DEP) c/apps/browser/js_frame.c c/apps/browser/js_frame.h c/apps/browser/js_domparser.c c/apps/browser/js_platform.c
+$(PASSIVE_FRAME_DIR)/realm: $(FRAME_REALM_DEP)
+	@mkdir -p $(PASSIVE_FRAME_DIR)
+	@$(CC) $(RUNTIME_SCROLL_CF) $(IMG_HOST_INC) -o $@ $(FRAME_REALM_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
+$(PASSIVE_FRAME_DIR)/realm-no-globals: $(FRAME_REALM_DEP)
+	@mkdir -p $(PASSIVE_FRAME_DIR)
+	@$(CC) $(RUNTIME_SCROLL_CF) $(IMG_HOST_INC) -DFRAME_NO_REALM_GLOBALS -o $@ $(FRAME_REALM_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
+.PHONY: test-frame-realm test-frame-realm-negctl test-frame-realm-san
+test-frame-realm-negctl: $(PASSIVE_FRAME_DIR)/realm-no-globals
+	@rc=0; $< active-realm > $(PASSIVE_FRAME_DIR)/realm-no-globals.log 2>&1 || rc=$$?; test $$rc -eq 1 && grep -q '^FAIL: native child click and bidirectional message repaint embedded pixels' $(PASSIVE_FRAME_DIR)/realm-no-globals.log
+test-frame-realm: test-frame-realm-negctl $(PASSIVE_FRAME_DIR)/realm
+	@$(PASSIVE_FRAME_DIR)/realm active-realm
+test-frame-realm-san: test-frame-realm
+	@$(CC) $(RUNTIME_SCROLL_CF) $(IMG_HOST_INC) -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -o $(PASSIVE_FRAME_DIR)/realm-san $(FRAME_REALM_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
+	@ASAN_OPTIONS=detect_leaks=0 $(PASSIVE_FRAME_DIR)/realm-san active-realm
+ci-host: test-frame-realm
+
+$(PASSIVE_FRAME_DIR)/transport-diag: $(FRAME_REALM_DEP)
+	@mkdir -p $(PASSIVE_FRAME_DIR)
+	@$(CC) $(RUNTIME_SCROLL_CF) $(IMG_HOST_INC) -DJS_RUNTIME_DIAGNOSTICS -o $@ $(FRAME_REALM_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
+.PHONY: test-frame-transport-diag test-frame-transport-diag-negctl
+test-frame-transport-diag-negctl: $(PASSIVE_FRAME_DIR)/realm
+	@$< active-ports > $(PASSIVE_FRAME_DIR)/transport-no-diag.log 2>&1
+	@rc=0; python3 tests/unit/frame_transport_diagnostics_check.py $(PASSIVE_FRAME_DIR)/transport-no-diag.log > $(PASSIVE_FRAME_DIR)/transport-no-diag-check.log 2>&1 || rc=$$?; test $$rc -eq 1 && grep -q '^FAIL: native frame transport observable' $(PASSIVE_FRAME_DIR)/transport-no-diag-check.log
+test-frame-transport-diag: test-frame-transport-diag-negctl $(PASSIVE_FRAME_DIR)/transport-diag
+	@$(PASSIVE_FRAME_DIR)/transport-diag active-ports > $(PASSIVE_FRAME_DIR)/transport-diag.log 2>&1
+	@python3 tests/unit/frame_transport_diagnostics_check.py $(PASSIVE_FRAME_DIR)/transport-diag.log
+ci-host: test-frame-transport-diag
+
 PASSIVE_TRANSPORT_SRC = $(filter-out tests/unit/range_test.c,$(RANGE_SRC)) tests/unit/passive_frame_transport_test.c c/net/http/cookies.c
 .PHONY: test-passive-frame-transport test-passive-frame-transport-negctl
 test-passive-frame-transport-negctl:

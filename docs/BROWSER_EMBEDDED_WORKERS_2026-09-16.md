@@ -196,3 +196,165 @@ a5f85e3b776ba913973b3b19f54154653a923cfc56a93ed944521e045239195c  focus-work.stT
 在驱动退出、释放 QMP 后，根据已检查截图，仅向新客机的启动框发送一次原生点击（198,542），没有选题或点击 Submit。串口边界为第 80894 字节之后；`public-after-start.png` 已目视核对：复选框仍在，尚未出现题目。新边界中未重现 `focus is not a function`，仍有 3 次 `cannot read property 'parse' of undefined`。这支持“焦点异常不再重现”，不支持“验证完成”或“已能人工做题”。启动前已经存在同类 parse 异常及超时，因此也不能仅凭点击后日志认定全部由本次点击引发。
 
 下一缺口尚未定位 receiver：源码确认旧同源 iframe 的 `makeWindow()` 仍返回不转发新 realm 内建对象的外观对象，而子页面的 legacy-frame installer 仍被隔离关闭；这是需要独立最小消费者验证的候选原因，不是 parse 异常的已证实根因。不能把父页面 JSON 塞入其中冒充独立 realm，也不能据此声称已支持同源跨文档访问。本阶段未改这些接口。
+
+## 第九阶段：辅助 iframe 的独立内建对象
+
+保留上段尚未定位的结论作为当时证据边界；本阶段进一步只检查公开脚本中 parse 接收者的 API 路径，确认回调获取 iframe.contentWindow.JSON。没有分析或实现挑战答案、信号伪装、令牌或挑战算法。通用本地消费者随即复现缺口：network child 未安装 DOMParser，空白 iframe 文档为 null；即使顶层拥有解析文档，makeWindow 的外观对象也不转发该文档的独立 ECMAScript 内建对象。
+
+实现：DOMParser 的节点/文档原型从进程全局借用指针移到每个 JSContext 的 class-prototype 槽，再为 network child 启用它。辅助 iframe 使用 creator 的同一 JSRuntime 上的独立 JSContext，窗口读取转发到该 context 的真实全局对象；JSON、Object、Array 和 parse 结果的原型不是父页面复制品。窗口按当前 r.doc 获取对象，因此 srcdoc 导航保留窗口 identity、替换文档/内建对象，移除后不会通过旧窗口重新创建 realm。补上子页面缺失 src/srcdoc IDL descriptor 时的真实属性反射/导航，并让 about:blank 继承创建者语境，而不把 URL.origin 的 null 当成跨源网络地址。
+
+js_frame 每个 creator 保留 8 个辅助 realm 上限，全进程最多 64 个；清理按 creator，而非子页面关闭时清空父兄弟全部 context。普通 legacy 子文档保留原有脚本执行路径；network child 创建的辅助 realm 只供独立内建对象访问，不启用旧版嵌入脚本/DOM 路径。新增 QuickJS 只读 code-generation policy getter，使新 realm 继承实际策略；meta 策略收紧同步更新既有辅助 context，包括已取得的 Function 构造器。此处没有扩大 CSP 许可。
+
+仍非完整 WindowProxy：属性描述符/枚举转发、辅助 realm 内的 document/DOM 与事件循环、嵌套网络 iframe 像素仍未实现。原有 postMessage 空操作外观不被当成本阶段成果，跨源真实网络文档继续走原生端口桥。不能据本阶段称已支持任意同源跨文档访问。
+
+测试仪器先修两处真实缺陷：fake_site_add 保留同 URL 的首次样本，最初正对照仍执行普通 465 字节脚本；已改为重置记录后添加实际消费者，后续门禁消费独立 realm 的完整脚本。另，后续 make fragment 对递归源码变量追加 js_platform.c，recipe 能看到、先前展开的 prerequisites 看不到；为本门禁显式补上修改的 TU，避免平台源码变更后运行旧二进制。早期失败日志保留，不能用 first-positive 的 PASS 替代最终证据。
+
+`frame-realm-fresh-gates.log`：active-realm 普通及 ASan/UBSan 均 PASS，要求真实父子消息/点击/画面、JSON.parse 返回对象归属独立原型、原型污染隔离、窗口别名、CSP 拒绝、导航换 realm、移除不复活、12 次顺序创建释放及父 DOMParser 不串 context。FRAME_NO_REALM_GLOBALS 负对照实际报 fresh intrinsics，并让画面、父消息、父辅助 realm 共 3 项断言失败，是正门禁先决条件。
+
+`frame-realm-build-final.log` 的 test-frame 既有脚本执行/释放负对照和正对照通过，新增 6 项独立 runtime/策略继承/保留构造器/关闭 child 后 parent 仍可用的检查通过。还修复该原有 standalone 链接门禁：DOMParser 到 live DOM 的 import/adopt 接口改为真正可选；无 live DOM 依赖时不暴露接口，不返回假成功。`frame-realm-regression.log` 中 Page contexts 34/0，frame-bootstrap-wiring 的 parser/dynamic srcdoc、sandbox 和 malformed URL 负对照及正对照通过。`frame-realm-wiring.log` 378/377/1。
+
+制品来自显式 browser.aex 重建，新私有磁盘保留 5 个用户状态 inode，未改已有客机背板：
+
+```text
+0fec9afe3f9f9021776d89e3d203a411e5492a4503b8ba7dc68006bd76c1a83f  realm-work.3Avx7r/browser.aex
+0297ceba20155c902e53b487be650c1b418add62218afb89d0928549402a4588  realm-work.3Avx7r/disk.img
+```
+
+`active_frame_guest.py --realms --large-script --tab-roundtrip` 要求父、子各一次真实辅助 realm 消费，以及原有焦点、键盘、端口、Worker 和标签恢复绘制。新客机 PID 9349 的本地消费者已通过，公共页面的最终观察在下文追加；在实测之前不声称 parse 错误消失或挑战出现。
+
+`guest-frame-realms/results.json` 最终本地六项消费者均 true，公共搜索标志仍 false。PID 9349 / QMP `/tmp/active-frame-ch9rprw0/qmp.sock` 留在可见窗口。官方 demo 的新日志没有重现 parse 或 focus 缺失，但初始化有 reCAPTCHA Timeout。第一次点击（串口边界 72242 字节）发生在驱动 90 秒观察之后，未出现题目，因此不能排除控件已经超时。
+
+为排除此测试因素，在同一活客机中仅新加载一次 demo。35 秒内未等到新的 robot 绘制串口标记，观察脚本超时；没有据此重启或替换客机。随后同一个 QMP 的截图确认控件已经显示，才向 (198,542) 做一次启动点击（边界 94516 字节）。`fresh-after-start.png` 目视确认真实复选框变成蓝色加载圈：原生启动事件执行，但仍无题目。该边界后又有两次 reCAPTCHA Timeout，无 parse/focus 缺失、无新的明确网络请求记录。这里的超时原因仍未定位，不能直接归咎服务端或宣称通信已经成功；也未完全证明“刚就绪即点击”，因为串口就绪等待本身未命中。
+
+本阶段只做上述两次普通启动点击，未选择挑战答案、未提交表单、未自动刷新重试。保留新现场，下一项应查启动后的异步通信/初始化链路；Worker.postMessage 非空 transfer 仍为显式拒绝的已知能力边界，但尚未证明它就是本次超时的原因。当前目标仍未完成，不能把蓝色圈当成可手工作答的验证码。
+
+## 第十阶段：消息预算诊断与大消息消费者
+
+2026-09-16 续接时，`build-active-frame` 已位于 `/Users/wangzhe/.Trash/`，旧客机仍持有该目录中的文件。本轮没有移动或删除它们；新制品与证据在 `build-frame-budget/`。只读核实旧诊断客机 30066 的实际文件句柄及日志，确认原生父子端口有双向消息往返，随后 `port-error kind=byte-budget`。不能把笼统的 clone-refused 当成“不支持对象类型”。Worker 的第二参数被忽略也有记录，但当时不足以证明其内容非空或它就是超时根因。
+
+新增 opt-in 元数据诊断只输出固定类别、字节数、队列/所有权状态，不输出消息、来源参数、验证内容或令牌。`guest-before/serial.log` 实测被拒绝消息 **300,617 字节**，retained=0、limit=65,536、total=8,388,608；因此是单条上限，而非队列总量耗尽。随后仍有超时。只向已目视确认的启动框做一次普通点击，未答题或提交。
+
+通用端口单条预算从 64 KiB 改为 **1 MiB**，总量仍 **8 MiB**，队列长度与端点数量不变。这些数限制保留的序列化包，不声称限制 `JS_WriteObject` 的瞬时分配；序列化仍受 runtime 内存限制。新 host 消费者验证 256 KiB 缓冲长度和边界字节、异步性、2 MiB 拒绝后端口仍归发送者、累计预算以及丢弃后预算回收。普通及 ASan/UBSan 均 **32/0**；恢复 64 KiB 的负对照 **32/4**，原不分离及不关闭负对照仍按预期失败，都是正门禁先决条件。诊断消费者六项检查通过；test-mk-wired 为 378/377/1。
+
+`guest-after/results.json` 新增双向 300 KiB 真端口消费者，原生点击后父子绘制、Worker、焦点键盘和独立 realm 均通过。串口真实排队及派发两份 **307,206 字节**包；官方组件随后 **301,065 字节**消息也成功入队、派发，不再出现该次预算拒绝。但页面仍超时，点击后也未确认题目；因此只证明排除了一个实际阻塞，不证明验证成功。此时制品：
+
+```text
+a7d853bfa083280b56fb8c1da7b7a0d4f1a5d1a42d92642b89960448131dff64  after/browser.aex
+3d1d7f541d004c6a721ceb189f264cdb1c70ce04f7928968ba32320596278bcd  after/disk.img
+```
+
+## 第十一阶段：Worker 返回 MessagePort 的所有权转移
+
+修正旧注释“非空 transfer 一律拒绝”：此前只有父到 Worker 显式拒绝，Worker 自身的 `postMessage` C 绑定实际上忽略第二参数。现为 Worker 到父文档接入原生 prepare/commit/read 包：所有克隆、分配及 author 属性读取先于分离；排队时只持有序列化字节与原生在途端点，直到父任务派发才创建父 realm 包装。取消/close/document teardown 丢弃包并关闭在途端点，避免提前创建包装后取消消息却遗留端点。接收者通过冻结的 `MessageEvent.ports` 取得端口。
+
+范围明确：父到 Worker 的非空 transfer 仍显式拒绝；ArrayBuffer 转移、端口嵌入 data 图仍拒绝，未声称完整 Worker transfer 或完整 MessageEvent 语义。未改验证算法、浏览器身份、CSP 或来源隔离。
+
+新 `test-worker-ports` 普通及 ASan/UBSan 各 **7/0**：异步传递、接收 realm/冻结数组、转移前排队与端口往返、克隆/重复列表拒绝不分离、270 次关闭丢弃后不耗尽 256 端点池、文档关闭无残留任务。旧忽略参数负对照 **7/3**；漏掉包释放负对照 **7/1**，命中端点耗尽检查；均为正门禁先决条件。真实客机新增 `--worker-port`，要求 Worker 将端口转给子文档，ready 与原生点击回声必须经过该端口才绘制 PASS。客机与公共页面结果在完成后追加，不能以 host 测试提前宣称验证码可用。
+
+### 第十一阶段客机结果与尚未通过的边界
+
+`worker-context-regression.log` 普通及 ASan/UBSan **31/0**；既有 `test-worker` **28/0**（含其 terminate/silent-error 负对照）。`guest-worker/results.json` 本地七项消费者均 true，包括 Worker 返回端口、双向 300 KiB、焦点键盘和辅助 realm；`embedded-pass.png` 与 `focus-key-pass.png` 是对应客机画面，公共搜索标志仍为 false。
+
+```text
+3106febc1b482c0a6277c5a10fa3e0c2840db3565faa323a5da329bce9826f96  worker/browser.aex
+e30358eaa7df8ceeb7f5d9f162fc51766f0514b5c4c49ef47fb1d5fc9011c266  worker/disk.img
+```
+
+当前新窗口 PID **22533** / QMP `/tmp/active-frame-nbr94j15/qmp.sock`；所有路径均相对新 `build-frame-budget/`。首次普通公共导航中 api.js 因 `no source address for any dst` 失败，`public-observation.png` 只有 demo 表单，没有验证框，不能把此次失败归因于 Worker 修复。在同客机普通 Ctrl+R 一次（串口边界 58,754）后，846,252 字节子脚本、36,291 字节内联脚本与 102 字节网络 Worker 均加载。`after-reload.png` 已目视确认内嵌复选框。
+
+真实组件这次使用了新 outbound native-packet；端口 11/12 均 start，随后 Worker 端派发 **1,145 字节**，父端派发 **48 字节**回复，证明新增边界有实际公共消费者，不只是空数组被接受。只向可见启动框做一次原生点击（串口边界 **89,195**），未选择题目、未提交表单。`after-start.png` 仍只有勾选框，没有题目，并出现两次 reCAPTCHA Timeout。未观察到新的 port-error/port-budget 或端口回调异常；不能据此排除其它异步/API/网络缺口。**验证码题目和 Google 搜索验收仍未完成**；窗口保留，未标记目标完成，未自动刷新重试或处理验证答案。
+
+## 第十二阶段：Worker 时间上限定位与 libc 记账事务（仍未弹出题目）
+
+补查上一阶段串口发现确实有 Worker watchdog 中断，不能再把 Timeout 只当作未知 API/网络问题。新增 opt-in `worker-budget` / `worker-job` 元数据，仅输出固定阶段、客机时长、轮询数、最大间隔、完成/中断状态，不记录消息内容或验证数据；普通构建不含这些诊断。原 **8,000 ms / 400,000 polls** 上限没有修改。每 poll 对应 10,000 次分支/调用，不是字节码数。合成时钟门禁 `test-worker-budget-diagnostics` **3/0**，有限 Promise 正常完成、无限循环仍被中断；关闭诊断负对照明确输出 `FAIL: Worker budget rail has bounded numeric execution metadata`，并作为正门禁先决条件。
+
+诊断装置也出过两次错误，均保留日志：最初每次读时钟就跳 1 秒，导致外层 12 ms 调度器根本无法启动 Worker；改为每 32 次跳变并保持推进到 Worker 结束。新分配器测试最初错误地链接私有 `malloc_cur`，改为测试专用翻译单元包含真实 allocator 后观察其内部计数，没有为了测试给产品导出该全局变量。
+
+参考客机 `guest-profile/serial.log` 两次命中 job 时间上限：**8,010 ms / 799 polls** 和 **8,010 ms / 797 polls**，max-gap 都为 50 ms。只读 QMP 用户态 RIP 定位（`vm-samples.log`，匹配当时 ELF）显示 `JS_CallInternal`、`malloc_usable_size`、分配/释放和锁路径为热点；这不是 CPU 百分比或速度测试。旧 live build 仍在 Trash，未恢复或覆盖它；本阶段都在 `build-frame-budget/` 私有磁盘上。
+
+### 一次加锁完成分配/释放与容量记账
+
+libc 新增内部 `__libc_malloc_size`、`__libc_realloc_size`、`__libc_free_size`，把操作与取得真实容量放入同一锁事务。保留所有 header 检查、边界、线程锁和失败语义；free 返回合并相邻空闲块**之前**的容量，失败容量为 0。QuickJS 的 LogitOS 默认 allocator 消费它，其他 host 与 `JS_NewRuntime2` 自定义 allocator 不变。不增加未受保护的 header 缓存，不把请求大小当成 usable-size。
+
+`test-malloc-sized` 的 split/fused 两种路径各 **15/0**，ASan/UBSan 各 **15/0**：四线程×4,000 次分配/增长/逐字节检查、强制搬移、缩小、溢出拒绝保留旧内存、零尺寸释放、合并前容量、QuickJS 计算结果/配额/完整释放。相同 JS 工作负载的锁事务 **3,329,510 → 1,742,898**；两者 `QJS_ACCOUNT count=881 size=70080 result=72078000` 完全一致。负对照使用未融合 split 路径，明确输出 `FAIL: QuickJS allocator transactions: 3329510 -> 3329510`。`test-malloc` 原有 ASan/UBSan 回归 0 failures；`test-worker-ports-san` 7/0（含既有负对照），mk-wired **378 fragments / 377 reachable / 1 declared**。
+
+### 客机对照与公共页面边界
+
+本地 `--worker-bench` 只在自有 fixture 的 Worker 中运行：先暖机，再做五轮相同 4,000×12 对象分配，校验 sum=8,026,000，使用客机 Date.now 包围计算，不计网络与宿主输入等待。每轮单独任务，原 watchdog 仍生效。所有轮次保留在对应 `results.json`：
+
+| 客机 | 五轮 ms | 中位 ms |
+| --- | --- | --- |
+| guest-fused（首次） | 260, 220, 220, 260, 310 | 260 |
+| bench-split | 270, 260, 260, 280, 310 | 270 |
+| bench-fused | 230, 230, 230, 240, 220 | 230 |
+| bench-split-repeat | 260, 250, 260, 260, 260 | 260 |
+
+只能说明这个受控消费者有改善迹象，首次样本存在重叠，不能据此宣称浏览器或验证码整体加速某个百分比。完整本地跨 origin iframe、Worker 端口、双向 300 KiB、辅助 realm、焦点/原生键盘都通过。公共 demo 首次 `guest-fused` 未出现 watchdog，并返回 **284,152 字节** Worker 回复，但回复前已出现 Timeout；点击可见启动框一次后仍没有题目。诊断复测 `guest-job-diag` 又记录 **8,010 ms / 1,055 polls** 的时间上限，单 job **8,060 ms** 后 interrupted，随后仍有两个 Timeout。因此，之前“一次未中断”不能升级为“中断已修复”。没有调整站点计时器、伪造信号、处理答案或提交表单。
+
+```text
+46f95037dd3385080342fc9544a4a9304784516d14eed12b0da54517cb587ef5  fused/browser.aex
+a0a797b667ac89e2b2f3491096cddd544998966228421e2ac4836f85e0f75f01  fused/disk.img
+6719b233789506e0bcb8cc57a37fefbac8358aeca7265f12a28a39b9ec9a1444  job-diag/browser.aex
+262ec9632646b9db181d91128e8074ec6b24d6b1e324fe285f7376586494c838  job-diag/disk.img
+```
+
+以上公共观测没有验证码题目，没有搜索结果页验收；`public_search_accepted` 保持 false。剩余明确问题是长 Promise 工作与端到端响应超时，不应通过放宽 watchdog 或伪装站点特征掩盖。最终源码还将 job 诊断格式改为与 64 位 poll 计数匹配的 `%lld`，不改变执行路径；最终私有打包与本地消费者结果在后文记录。
+
+最终 `final/browser.aex` SHA256 `e5d0867f77a4f554adf425a49fbe988959658bca92f124d6325afd7ad0b7d152`；`final/disk.img` SHA256 `8386ef6081789cf6ac403e60ffa0a2750befc779c0d433922c7f9346afd432df`。`guest-final/results.json` 七项本地消费者均 true，客机已正常退出；没有在最终 headless 测试中重复请求公共页面。保留公共观测窗口 PID **20317** / `/tmp/active-frame-rs617h3v/qmp.sock` 与 PID **33302** / `/tmp/active-frame-fa5p6bq8/qmp.sock`。最终 `final-regression.log` 含 Worker ports 普通和 ASan/UBSan 各 7/0、budget 3/0 对应检查以及 mk-wired 通过；诊断截图仍只有嵌入复选框。普通默认磁盘未被覆盖，未改动并行 AetherScript 工作。
+
+## 第十三阶段：分配器候选优化与原生点击取证（题目仍未出现）
+
+以下路径仍相对 `build-frame-budget/`。本阶段没有启用默认小块缓存或默认 LTO，没有改站点脚本、时钟、watchdog、浏览器身份、CSP 或来源检查。
+
+### 先排除构建与测试装置问题
+
+上一阶段 sized allocator 的 `LOGIT_OS` 条件过宽：host 语义探针也定义它，却不链接 mini-libc，导致 `__libc_malloc_size` 等未定义（`hostguard-before.log`）。修正为 freestanding 的 `LOGIT_OS && __STDC_HOSTED__ == 0`，保留专门测试开关。`test-malloc-sized-hostguard` 恢复 host 链接；强制在 host 使用该 API 的负对照必须链接失败，并成为正门禁先决条件。
+
+这不等于 JS 语义门禁通过：`hostguard-after.log` 与 Node 对照仍有 12 个非控制用例差异及预期的 99-control 差异。单独比较 baseline 与 `-O3 -flto`，19 个用例的 stdout/stderr/返回码一致（`lto-language-parity-fixed.log`）；只证明候选与当前实现一致，不证明 Node 兼容。
+
+LTO host 检测最初因 Mach-O 弱 stub 与测试强锁提供者重复定义失败；只在 `malloc_sized_arena.c` 测试包装中禁止那两个 fallback，不更改产品弱符号。四线程 churn 后缓存布局依赖调度，不能要求其后两次 JS usable-size 自然一致；现在先显式排空缓存，再比较记账。`malloc_test.c` 的损坏检测曾假设连续三次分配地址递增，缓存并不承诺地址顺序；改为先按地址排序再执行原来的有界损坏检测，没有删除检测。初始及修正日志都保留。
+
+### 只读热点定位与有界小块复用
+
+`active_frame_guest.py --pc-profile-elf` 在启动前校验相邻 `.aex` 内 ELF 字节与传入 ELF 完全一致，错误 ELF 负对照退出 2，未启动客机。QMP 只保留 CPL3 的浏览器 RIP，不保存其它寄存器。`pc-trace/source-hotspots.log` 的 974 次查询取得 Worker running 前 143、之后 752 个样本，后段包含 JS_CallInternal、malloc/free、bin/trim 和锁路径。**后段包含主页面及 Worker，不是 Worker 专属 CPU 占比，也不是性能基准**；DWARF 名字还可能是内联函数。
+
+实验宏 `MALLOC_SMALL_CACHE`（默认关闭）让 16..512 字节的 32 个 exact class 每类最多缓存 8 块：最多 256 块、67,584 payload 字节，加 header 共 71,680 字节。仍使用原 heap 锁、带 seal 的独立 cached tag、检查过的 arena-relative 链；cached 块不是活分配，usable-size 和 double-free 路径不会将其当成 USED。普通分配无可用块时排空缓存并合并，再作一次正常分配。rebuild 丢弃缓存链，按检查过的物理链恢复，不信任释放后 payload 链。
+
+新增回归还抓到一个候选缺陷：8 个 cached 64-byte 块位于低地址时，普通 free tail 已在 512-byte ceiling 之上，256-byte 请求提前失败。`small-ceiling-before.log` 明确 **10 checks / 1 failure**。现在普通候选不满足 commit ceiling 时也先排空，再通过原 ceiling 检查重试；不提高或跳过上限。排空后 `small_total=0`，不会无限重试。
+
+最终 `test-malloc-small` ASan/UBSan **10/0**；禁用排空负对照 **10/2**（整堆回收、ceiling 下前缀回收），跳过 cached reuse bound 的负对照 **10/1**，均作为正门禁先决条件。实际 QuickJS 消费者 split/fused 两路各 15/0，记账一致 `count=881 size=69376 result=72078000`，锁事务 3,329,490 → 1,742,883。默认 allocator 与 cache-enabled 的完整原有 allocator ASan/UBSan 门禁分别见 `malloc-final-default.log` / `malloc-final-cache.log`，均 0 failures。缓存只在私有候选中启用。
+
+### 客机测量与仍然失败的公共观察
+
+私有 LTO 候选仅将 QuickJS、malloc、pthread、string 编译成 `-O3 -flto`，链接 `--lto-O3`，其它对象不变。没有把全仓库切为新优化参数。受控本地 Worker 同一分配任务、客机时钟五轮结果：
+
+| 构建 | 五轮 ms | 中位 ms | 公共观察 |
+| --- | --- | --- | --- |
+| guest-lto | 210,210,200,200,210 | 210 | 8,010 ms / 952 polls 中断 |
+| guest-small | 200,270,270,250,210 | 250 | 8,010 ms / 1,033 polls 中断 |
+| guest-small-lto | 170,170,170,180,170 | 170 | 首 job 6,810 ms 完成，但后续仍超时 |
+
+不能把这些连续、受并行宿主负载影响的样本转换成浏览器整体加速百分比。`guest-small-lto/serial.log` 先记录 job 完成，随后两次 reCAPTCHA Timeout，再记录 3,660 ms job 完成及 **285,614 字节**端口回复。先前“本次没有 watchdog”不能推出页面成功，更不能推出稳定修复；`guest-small-input` 复测仍为 **8,010 ms / 1,058 polls** watchdog，job 8,050 ms interrupted。
+
+### 点击已到达，不再把无题目归因于坐标
+
+新增 opt-in `frame-input` 仅记录固定事件名、slot、坐标、node serial、最近 role=checkbox 祖先 serial、是否允许默认动作及是否派发 click；不记录 author id/class/text、URL 或消息。先于脚本派发保存节点 serial，避免 handler 删除节点后诊断再解引用。每进程最多 64 行，普通构建不包含它。`test-frame-transport-diag` 现在明确要求原生 mouseup 的 click=1，七项检查通过；关闭诊断的负对照包含 `FAIL: native embedded click observable`，不只是宽松接受新日志语法。
+
+`guest-small-input/serial.log` 本地 fixture 为 hit=9 / click=1；公共启动点击（串口边界 63,071）随后记录 down/up 均 hit=88、checkbox=87，down allowed=0，up allowed=1、click=1。起初短观察窗口未见日志，后来确实出现，因此**不是已证明的丢失点击或坐标错误**。只能确认输入完成，不能由此推断服务端为何没有给题目。长 Worker 与页面共用线程导致输入延迟是已知实现限制；端到端超时的全部因果链尚未证明。
+
+之后只开启已有的 `about:input` 非导航诊断，没有再次点公共控件、没有答题或 Submit。`guest-small-input/latest-state.png` 仍是 demo 内嵌复选框；地址栏保留诊断命令，不表示文档被替换。保留当前窗口 PID **80839** / `/tmp/active-frame-kkrpdbmt/qmp.sock`。四个本阶段已取证的私有测试实例 45766、50323、59817、68912 经 PID/磁盘/QMP 三项匹配后正常 quit，日志与磁盘保留（`phase13-owned-cleanup.log`）；之前阶段的窗口和其它服务未动。
+
+最终 host 汇总 `phase13-close-gates.log`：缓存及 sized 消费者、host guard、frame transport 七项、Worker budget、mk-wired 均通过，包含各自预期失败的负对照。最终私有制品 `small-final/` 含 ceiling 回收修复；不覆盖默认磁盘，不再次请求公共验证服务。其本地客机验收结果完成后追加。
+
+最终打包的第一次尝试被 disk guard 拒绝：打包与本轮哈希读取错误地并行，报磁盘由 PID 94959 打开。外层命令又未将 pack 失败作为启动前提，`guest-small-final` 因而启动复制来的旧浏览器，在 aux realm intrinsics 检查失败。没有绕过保护，也不能把这个失败算成新候选的语义回归。改为 `set -e` / `pipefail` 的单独打包步骤，确认成功后才哈希、启动；原失败日志保留。
+
+`small-final/pack-retry.log` 明确打包 325 文件 / 357 inode，保留 5 个 user-state inode。额外从新打包镜像读取实际 `/browser.aex`（不是 `/bin/browser.aex`），逐字节与候选比较，通过结果在 `small-final/packed-browser-check.log`；不再仅信任镜像旁的文件哈希。
+
+`guest-small-final-retry/results.json` 本地七项消费者全部 true，Worker 五轮为 **170,180,170,170,190 ms**，中位 170 ms；这是本地有界分配消费者，不是验证码整体速度。测试客机已退出，`public_search_accepted` 仍 false，本次没有公共导航。对应制品：
+
+```text
+fd1957cc13f71ec51d501a57045d9ec76c9736da225b706ec634d3b09fb0ace9  small-final/browser.aex
+d2b260cac9d8620a04dc8514a202decbd18a3a56aefd6239c8992395630160bc  small-final/disk.img
+```
+
+当前验收边界不变：原生 iframe 输入、端口及本地 Worker 消费者已取证，**公共验证码题目尚未出现，Google 搜索页面仍未验收**。默认构建未启用实验缓存/LTO，普通默认磁盘未覆盖。下一步应定位长任务到回复的端到端调度时序，而不是根据 checkbox 或局部 benchmark 宣称目标完成。

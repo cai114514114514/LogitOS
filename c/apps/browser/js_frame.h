@@ -30,6 +30,11 @@
 #endif
 
 FRAME_FN void js_frame_install(JSContext *pctx);
+/* Auxiliary same-origin realms inside an active network document expose
+ * fresh intrinsics but do not acquire the legacy script/DOM execution path. */
+FRAME_FN void js_frame_install_inert(JSContext *pctx);
+FRAME_FN void js_frame_close_context(JSContext *pctx);
+FRAME_FN void js_frame_refresh_policy(JSContext *pctx);
 
 /* Free every live frame's JSContext. MUST run before JS_FreeRuntime(g_rt) --
  * see js_page_close()'s own ordering comment for js_worker_close_all(), the
@@ -42,6 +47,9 @@ FRAME_FN void js_frame_close_all(void);
 #ifdef JS_FRAME_OPTIONAL
 LOGIT_WEAK_STUB(js_frame_install);
 LOGIT_WEAK_STUB(js_frame_close_all);
+LOGIT_WEAK_STUB(js_frame_install_inert);
+LOGIT_WEAK_STUB(js_frame_close_context);
+LOGIT_WEAK_STUB(js_frame_refresh_policy);
 #endif
 
 #endif /* LOGIT_JS_FRAME_H */

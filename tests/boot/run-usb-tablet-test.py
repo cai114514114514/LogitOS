@@ -18,6 +18,8 @@ import tempfile
 import time
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "tools"))
+from as_examples import guest_command
 sys.path.insert(0, str(ROOT / "tests/qmp"))
 from owned_process import stop_owned
 
@@ -127,7 +129,8 @@ def main():
                     require(re.search(r"USB_HUB .*children=2",log),"hub did not enumerate both downstream input devices")
                 require("role=keyboard decode=report-descriptor" in log,"USB keyboard did not bind")
                 require("role=mouse decode=report-descriptor" in log,"USB tablet did not bind")
-                ser.sendall(b"as /usr/as/examples/events.as &\n")
+                events_command = guest_command(ROOT / "fsroot/as/examples/events.as", background=True)
+                ser.sendall((events_command + "\n").encode())
                 wait("EVENTS-READY",90); pump(1)
                 first=len(log);point(650,420)
                 a=[e for e in events(first) if e[0]==7]

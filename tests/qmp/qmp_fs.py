@@ -23,7 +23,7 @@ Notes baked in from debugging this stack:
     guest's own [wm] dock line and refuses to continue unless the guest says
     the click launched Terminal. See tests/qmp/qmp_ui.py's dock block.
 """
-import socket, json, shutil, sys, os, time, subprocess, tempfile
+import socket, json, shutil, sys, os, time, subprocess, tempfile, atexit
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__))))
 import qmp_ui                                    # noqa: E402
@@ -38,6 +38,14 @@ out = sys.argv[3] if len(sys.argv) > 3 else "build/fs_smoke.ppm"
 # wired up, so it failed unobserved. A private copy boots writable and is
 # thrown away whole.
 work = tempfile.mkdtemp(prefix="logit-fs-")
+# "thrown away whole" is what the comment above PROMISES; until this line it
+# was never thrown away at all, and the copy below is 512 MB. atexit rather
+# than a finally: the dir is created at module scope, so there is no block to
+# attach to, and this also covers the fail() paths that sys.exit() out early.
+# Registered BEFORE the copyfile, not after: a copy that raises (a missing or
+# unreadable disk image) would otherwise leave the directory behind having
+# never reached the registration -- measured, not reasoned about.
+atexit.register(shutil.rmtree, work, ignore_errors=True)
 private_disk = os.path.join(work, "disk.img")
 shutil.copyfile(disk, private_disk)
 fd, sock = tempfile.mkstemp(suffix=".qmp"); os.close(fd); os.unlink(sock)  # QEMU binds the socket itself

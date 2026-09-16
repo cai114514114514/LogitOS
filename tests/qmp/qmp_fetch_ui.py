@@ -35,6 +35,7 @@ measured.
 import http.server
 import json
 import os
+from pathlib import Path
 import re
 import socket
 import subprocess
@@ -42,6 +43,10 @@ import sys
 import tempfile
 import threading
 import time
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "tools"))
+from as_examples import guest_command
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import qmp_ui                                                 # noqa: E402
@@ -286,7 +291,8 @@ if "typeof-fetch=function" not in log:
 # ------------------------------------------------- the app the clicks reach
 # Launched last, so its window sits on top of the browser at the screen centre
 # where the pointer starts.
-ser.sendall(b"as /usr/as/examples/events.as &\n")
+events_command = guest_command(ROOT / "fsroot/as/examples/events.as", background=True)
+ser.sendall((events_command + "\n").encode())
 if not wait_for("EVENTS-READY", 120):
     die("events.as did not open its window")
 pump(2)

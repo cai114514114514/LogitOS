@@ -12,7 +12,10 @@
  * async path is held to, and the long list of things REFUSED BY NAME rather
  * than half-built: SharedWorker, module workers, transferables, a
  * MessagePort crossing the worker boundary, nested workers, importScripts on
- * the window.
+ * the window. Correction 2026-09-16: Worker-to-parent MessagePorts now cross
+ * through native queued ownership transfer and MessageEvent.ports. Parent-to-
+ * Worker transfer, ArrayBuffer transfer and ports embedded in data still fail
+ * explicitly; this is not a claim of complete transferable support.
  *
  * NOT PARALLELISM, AND SAY SO EVERYWHERE THIS MATTERS. A worker task runs to
  * completion on the main thread before the next one starts -- this gives a

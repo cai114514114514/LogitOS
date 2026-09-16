@@ -49,7 +49,9 @@
  *   - SharedWorker: stays undefined. A half-SharedWorker is the indexedDB
  *     trap; ReferenceError is the correct, currently-passing answer.
  *   - {type:'module'}: throws NotSupportedError naming module workers.
- *   - a non-empty transfer list, or a MessagePort in postMessage: throws,
+ *   - a non-empty parent-to-worker transfer list, or a MessagePort in data:
+ *     throws. Worker-to-parent ports now use the native packet broker below;
+ *     the old outbound C binding silently ignored its second argument.
  *     naming what was refused. A silent copy is worse than a refusal -- a
  *     page that transfers a buffer and checks `byteLength === 0` afterwards
  *     would walk on holding live data if the "transfer" were actually a copy.
@@ -122,6 +124,7 @@ static JSValue js_worker_diag_ctor(JSContext *ctx, JSValueConst self,
     if (argc && JS_VALUE_GET_TAG(argv[0]) == JS_TAG_INT) {
         int code = JS_VALUE_GET_INT(argv[0]);
         if (code == 1) worker_diag(0, "constructor", "module-unsupported");
+        if (code == 2) worker_diag(0, "post-message", "transfer-unsupported");
     }
     return JS_UNDEFINED;
 }
@@ -214,6 +217,8 @@ struct jsworker {
     JSContext *wctx;             /* the worker's own context; NULL until started */
 #ifdef JS_RUNTIME_DIAGNOSTICS
     struct worker_promise_diag promise_diag;
+    long long diag_begin,diag_last,diag_gap;
+    const char *diag_phase;
 #endif
     JSValue self_obj;             /* worker's globalThis, dup'd */
     JSContext *pctx;               /* the page context this worker belongs to */
@@ -335,13 +340,23 @@ static int worker_slice_interrupt(JSRuntime *rt, void *opaque)
     struct jsworker *w = (struct jsworker *)opaque;
     (void)rt;
     if (!w->wd_armed) return 0;
-    int over_time = w->wd_due && (long long)js_page_now_ms() > w->wd_due;
+    long long now=(long long)js_page_now_ms();
+    int over_time = w->wd_due && now > w->wd_due;
     int over_fuel = ++w->wd_fuel > w->wd_fuel_max;
+#ifdef JS_RUNTIME_DIAGNOSTICS
+    /* Reuse the watchdog's clock sample. A gap is time between 10,000-poll
+     * intervals, not proof of CPU consumption or the name of a native call. */
+    long long gap=now-w->diag_last;if(gap>w->diag_gap)w->diag_gap=gap;w->diag_last=now;
+#endif
     if (!over_time && !over_fuel) return 0;
     w->wd_hit = 1;
     w->wd_armed = 0;
     printf("[worker %d] watchdog: script exceeded its CPU slice (%s) -- interrupted\n",
            w->id, over_time ? "wall time" : "instruction fuel");
+#ifdef JS_RUNTIME_DIAGNOSTICS
+    if(worker_diag_lines++<256)printf("[runtime-diag] worker-budget id=%d phase=%s elapsed=%lld polls=%lld max-gap=%lld rail=%s\n",
+        w->id,w->diag_phase?w->diag_phase:"other",now-w->diag_begin,w->wd_fuel,w->diag_gap,over_time?"time":"fuel");
+#endif
     return 1;
 }
 
@@ -349,10 +364,19 @@ static void worker_slice_begin(struct jsworker *w)
 {
     if(w->wctx)JS_SetStringCodeGenerationAllowed(w->wctx,worker_response_allowed(w,JSW_EVAL,NULL));
     w->wd_due = (long long)js_page_now_ms() + JSW_SLICE_MS_DEFAULT;
+#ifdef JS_RUNTIME_DIAGNOSTICS
+    w->diag_begin=w->diag_last=w->wd_due-JSW_SLICE_MS_DEFAULT;w->diag_gap=0;w->diag_phase="other";
+#endif
     w->wd_fuel = 0;
     w->wd_fuel_max = JSW_SLICE_FUEL_DEFAULT;
     w->wd_armed = 1;
 }
+
+#ifdef JS_RUNTIME_DIAGNOSTICS
+#define WORKER_PHASE(w,name) ((w)->diag_phase=(name))
+#else
+#define WORKER_PHASE(w,name) ((void)0)
+#endif
 
 /* =========================================================================
  * the task queue -- ONE JAR, ONE DOOR (see the file header)
@@ -378,11 +402,15 @@ struct wtask {
     int interval_ms;          /* >0: re-arm after firing (a worker's own setInterval) */
     int timer_id;               /* >0: cancellable by the worker's clearTimeout/Interval */
     unsigned long long seq;
+    struct js_port_packet *packet; /* outbound transfer, materialized at dispatch */
 };
 
 
 static void task_free(struct wtask *t)
 {
+#ifndef JS_WORKER_TEST_LEAK_PACKETS
+    if(t->packet&&LOGIT_HAVE(js_ports_discard))js_ports_discard(t->packet);
+#endif
     if (t->ctx) {
         JS_FreeValue(t->ctx, t->callee);
         JS_FreeValue(t->ctx, t->thisArg);
@@ -613,7 +641,24 @@ static int worker_drain_jobs(struct jsworker *w)
          * reaction or manufacture a new parent delivery from that dead realm. */
         if(w->state==WK_DEAD || worker_turn_expired())break;
         JSContext *jc = 0;
+        WORKER_PHASE(w,"job");
+#ifdef JS_RUNTIME_DIAGNOSTICS
+        /* Completion matters as much as interruption: a finite job can miss
+         * its caller's deadline without ever tripping our 8 s rail. Numeric
+         * metadata only, and compiled out of ordinary builds. */
+        long long diag_job_begin=(long long)js_page_now_ms();
+        long long diag_job_polls=w->wd_fuel;
+#endif
         int r = JS_ExecutePendingJob(w->rt, &jc);
+#ifdef JS_RUNTIME_DIAGNOSTICS
+        long long diag_job_ms=(long long)js_page_now_ms()-diag_job_begin;
+        if(r!=0&&diag_job_ms>=100&&worker_diag_lines<256){
+            worker_diag_lines++;
+            printf("[runtime-diag] worker-job id=%d elapsed=%lld polls=%lld outcome=%s begin=%lld\n",
+                   w->id,diag_job_ms,w->wd_fuel-diag_job_polls,
+                   w->wd_hit?"interrupted":(r<0?"error":"complete"),diag_job_begin);
+        }
+#endif
         if (r == 0) break;               /* queue empty */
         if (r < 0) {
             /* The job itself threw uncaught -- report it the same way
@@ -703,6 +748,7 @@ static void deliver_message_to_worker_now(struct jsworker *w, const unsigned cha
     if (JS_IsFunction(ctx, callee)) {
         worker_diag(w->id, "inbound-message-dispatch", "message");
         worker_slice_begin(w);
+        WORKER_PHASE(w,"startup-message");
         JSValueConst args[1]; args[0] = v;
         JSValue r = JS_Call(ctx, callee, g, 1, args);
         if (JS_IsException(r)) {
@@ -745,6 +791,43 @@ static JSValue js__wPostMessage(JSContext *ctx, JSValueConst t, int argc, JSValu
     struct jsworker *w = find_worker(wid);
     if(!w||w->state==WK_DEAD)return JS_UNDEFINED;
     JSValueConst data = argc > 0 ? argv[0] : JS_UNDEFINED;
+#ifndef JS_WORKER_TEST_DROP_OUTBOUND_PORTS
+    if(argc>1&&!JS_IsUndefined(argv[1])){
+        /* Unlike the former ignored argument, this is a real ownership move.
+         * Keep the packet in transit until the parent's task runs: attaching
+         * wrappers at enqueue time would leave them alive after cancellation.
+         * No foreign JSValue survives in the packet, and all allocations and
+         * author property reads precede commit/detachment. The parent->worker
+         * transfer path remains explicitly unsupported for now. */
+        int array=JS_IsArray(ctx,argv[1]);if(array<0)return JS_EXCEPTION;
+        JSValue transfer=array?JS_DupValue(ctx,argv[1]):JS_IsNull(argv[1])?JS_UNDEFINED:JS_GetPropertyStr(ctx,argv[1],"transfer");
+        if(JS_IsException(transfer))return transfer;
+        if(!LOGIT_HAVE(js_ports_prepare)||!LOGIT_HAVE(js_ports_commit)||
+           !LOGIT_HAVE(js_ports_read)||!LOGIT_HAVE(js_ports_discard)){
+            JS_FreeValue(ctx,transfer);
+            return throw_dom_exception(ctx,"DataCloneError","native port transfer is unavailable");
+        }
+        struct js_port_packet *packet=js_ports_prepare(ctx,data,transfer);
+        JS_FreeValue(ctx,transfer);if(!packet)return JS_EXCEPTION;
+        JSValue callee=get_method(w->pctx,w->worker_obj,"__deliverMessage");
+        if(w->state==WK_DEAD||!JS_IsFunction(w->pctx,callee)){
+            JS_FreeValue(w->pctx,callee);js_ports_discard(packet);return JS_UNDEFINED;
+        }
+        if(!task_add(wid,WTK_CALL,w->pctx,callee,JS_DupValue(w->pctx,w->worker_obj),NULL,0,
+                     (long long)js_page_now_ms(),0,0)){
+            js_ports_discard(packet);return JS_ThrowOutOfMemory(ctx);
+        }
+        struct wtask *queued=g_tasks;
+        if(!js_ports_commit(ctx,packet)){
+            g_tasks=queued->next;task_free(queued);js_ports_discard(packet);return JS_EXCEPTION;
+        }
+        queued->packet=packet;
+        worker_diag(wid,"outbound-message-enqueue","native-packet");
+        return JS_UNDEFINED;
+    }
+#else
+    if(argc>1&&!JS_IsUndefined(argv[1]))worker_diag(wid,"outbound-message","transfer-argument-ignored");
+#endif
     size_t len = 0;
     unsigned char *buf = clone_write(ctx, data, &len);
     if (!buf) {
@@ -1125,6 +1208,7 @@ static void worker_start(struct jsworker *w)
 
     worker_diag(w->id, "eval", "begin");
     worker_slice_begin(w);
+    WORKER_PHASE(w,"eval");
     JSValue r = JS_Eval(wctx, (const char *)src, (size_t)srclen, w->url, JS_EVAL_TYPE_GLOBAL);
     free(src);
     if (JS_IsException(r)) {
@@ -1408,6 +1492,9 @@ static const char WORKER_PARENT_JS[] =
 "  if (arguments.length > 1) {\n"
 "    var opt = arguments[1];\n"
 "    var xfer = Array.isArray(opt) ? opt : (opt && typeof opt === 'object' ? opt.transfer : undefined);\n"
+#ifdef JS_RUNTIME_DIAGNOSTICS
+"    if (xfer && xfer.length > 0) __workerDiag(2);\n"
+#endif
 "    if (xfer && xfer.length > 0) throw DE('transferable objects are not supported', 'DataCloneError');\n"
 "  }\n"
 "  __workerPostToWorker(this._wid, data);\n"
@@ -1433,10 +1520,10 @@ static const char WORKER_PARENT_JS[] =
 "  }\n"
 "  return !ev.defaultPrevented;\n"
 "};\n"
-"Worker.prototype.__deliverMessage = function (data) {\n"
+"Worker.prototype.__deliverMessage = function (data, ports) {\n"
 "  var ev;\n"
-"  if (typeof G.MessageEvent === 'function') { try { ev = new G.MessageEvent('message', { data: data }); } catch (q) {} }\n"
-"  if (!ev) ev = { type: 'message', data: data, defaultPrevented: false,\n"
+"  if (typeof G.MessageEvent === 'function') { try { ev = new G.MessageEvent('message', { data: data, ports: ports || [] }); } catch (q) {} }\n"
+"  if (!ev) ev = { type: 'message', data: data, ports: ports || [], defaultPrevented: false,\n"
 "                  preventDefault: function () { this.defaultPrevented = true; } };\n"
 "  this.dispatchEvent(ev);\n"
 "};\n"
@@ -1602,7 +1689,19 @@ static void worker_dispatch_task(struct wtask *best,long long now)
          * `is_worker_call` alone is the correct and sufficient guard. */
         if (is_worker_call && w->state == WK_DEAD) { task_free(best); return; }
 
-        if (is_worker_call) worker_slice_begin(w);
+        if(best->packet){
+            JSValue *args=malloc(2*sizeof *args);
+            if(!args){task_free(best);return;}
+            args[0]=js_ports_read(best->ctx,best->packet,&args[1]);
+            if(JS_IsException(args[0])){
+                JS_FreeValue(best->ctx,JS_GetException(best->ctx));
+                JS_FreeValue(best->ctx,args[1]);free(args);task_free(best);return;
+            }
+            js_ports_discard(best->packet);best->packet=NULL;
+            best->argv=args;best->argc=2;
+        }
+
+        if (is_worker_call) {worker_slice_begin(w);WORKER_PHASE(w,"task");}
         else js_page_slice_begin();   /* a delivery INTO the parent gets the page's own watchdog */
 
 #ifdef JS_RUNTIME_DIAGNOSTICS
@@ -1678,11 +1777,13 @@ static int worker_run_due_until(unsigned long long deadline_ms,int *parent_hando
             ran+=worker_flush_inbound(w);
             if(w->state==WK_DEAD||worker_jobs_pending(w)||w->inbound_head||worker_turn_expired())continue;
             if(LOGIT_HAVE(js_ports_pump)){
+                WORKER_PHASE(w,"port");
                 ran+=js_ports_pump(w->wctx);ran+=worker_drain_jobs(w);
                 if(w->state==WK_DEAD||worker_jobs_pending(w)||worker_turn_expired())continue;
             }
 #ifndef WORKER_FETCH_NO_PUMP
             if(LOGIT_HAVE(js_webapi_fetch_pump)){
+                WORKER_PHASE(w,"fetch");
                 int work=js_webapi_fetch_pump(w->wctx);
                 ran+=work;
                 if(work)ran+=worker_drain_jobs(w);

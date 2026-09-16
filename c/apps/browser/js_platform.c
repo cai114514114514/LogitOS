@@ -3219,6 +3219,7 @@ static const char *PLATFORM_PRELUDE =
 "  var IFP = null;\n"
 "  try { IFP = Object.getPrototypeOf(D.createElement('iframe')); } catch (e) {}\n"
 "  if (!IFP || Object.prototype.hasOwnProperty.call(IFP, 'contentWindow')) return;\n"
+"  var nativeFrameGlobal = G.__frameGlobal;\n"
    /* One record per element, an own non-enumerable expando -- lives exactly as
       long as the element does. ~~It needs no C-side lifetime hook.~~ That old
       claim was refuted by WPT creating and removing more than eight sequential
@@ -3415,6 +3416,10 @@ static const char *PLATFORM_PRELUDE =
        /* An unparseable src is not a navigation at all in real browsers --
           treated here the same as no src: about:blank. */
 "    if (!u) { settle(el, r, gen, parseDoc(''), null); return; }\n"
+/* about:blank inherits the embedding origin; URL.origin is "null", which
+ * must not feed the ordinary cross-origin network check below. Sandbox was
+ * already refused above this branch. Other about: URLs remain refused. */
+"    if (u.protocol === 'about:' && u.pathname === 'blank') { settle(el, r, gen, parseDoc(''), null); return; }\n"
 /* Network frames now have a separate native document owner. Do not ALSO fetch
  * their bytes through parent fetch/CORS, expose a DOMParser copy, execute child
  * scripts in the compatibility realm, or fabricate a load event before pixels
@@ -3538,6 +3543,33 @@ static const char *PLATFORM_PRELUDE =
           this getter returns, and the next thing to build here, not something
           to half-wire by making postMessage enqueue to nobody. */
 "    win.postMessage = function () {};\n"
+/* Correction to the plain-window comment above: keep the existing DOM and
+ * location facade, but resolve realm-owned globals in the actual auxiliary
+ * JSContext. Copying G.JSON/G.Array here would make prototype isolation false.
+ * Read against r.doc each time so navigation never reuses old intrinsics, and
+ * enforce the same origin gate for retained windows, not only the getter.
+ * This is not a complete WindowProxy exotic object: descriptor/enumeration
+ * forwarding and frame-side DOM/event-loop support remain separate work. */
+#ifndef FRAME_NO_REALM_GLOBALS
+"    if (typeof nativeFrameGlobal === 'function') {\n"
+"      var realm = function () { if (r.blocked) throw blockedErr(r); return r.doc ? nativeFrameGlobal(r.doc) : null; };\n"
+"      var proxy = new Proxy(win, {\n"
+"        get: function (target, key, receiver) {\n"
+"          var g = realm();\n"
+"          if (Object.prototype.hasOwnProperty.call(target, key)) return Reflect.get(target, key, receiver);\n"
+"          return g ? Reflect.get(g, key, g) : undefined;\n"
+"        },\n"
+"        set: function (target, key, value, receiver) {\n"
+"          var g = realm();\n"
+"          if (Object.prototype.hasOwnProperty.call(target, key)) return Reflect.set(target, key, value, receiver);\n"
+"          return g ? Reflect.set(g, key, value, g) : false;\n"
+"        },\n"
+"        has: function (target, key) { var g=realm(); return key in target || !!(g && key in g); }\n"
+"      });\n"
+"      win.window = win.self = win.globalThis = proxy;\n"
+"      return proxy;\n"
+"    }\n"
+#endif
 "    return win;\n"
 "  };\n"
 "  Object.defineProperty(IFP, 'contentWindow', { configurable: true, get: function () {\n"
@@ -3796,10 +3828,18 @@ static const char *PLATFORM_PRELUDE =
       existing resolved-URL semantics for src). */
 "  ['src', 'srcdoc'].forEach(function (attr) {\n"
 "    var d = Object.getOwnPropertyDescriptor(IFP, attr);\n"
-"    if (!d || typeof d.get !== 'function' || !d.configurable) return;\n"
-"    var origGet = d.get;\n"
+/* Network children omit js_forms and may have no IDL descriptor at all.
+ * Installing only when an existing getter is found leaves srcdoc assignment
+ * as an inert expando: getAttribute never changes and no navigation occurs. */
+"    if (d && !d.configurable) return;\n"
+"    var origGet = d && d.get;\n"
+"    if (typeof origGet !== 'function') origGet = function () {\n"
+"      var v = this.getAttribute(attr); if (v === null) return '';\n"
+"      if (attr === 'src') { try { return new G.URL(v, D.baseURI || G.location.href).href; } catch(e) {} }\n"
+"      return v;\n"
+"    };\n"
 "    try {\n"
-"      Object.defineProperty(IFP, attr, { configurable: true, enumerable: d.enumerable,\n"
+"      Object.defineProperty(IFP, attr, { configurable: true, enumerable: d ? d.enumerable : true,\n"
 "        get: function () { return origGet.call(this); },\n"
 "        set: function (v) { this.setAttribute(attr, String(v)); } });\n"
 "    } catch (e) {}\n"
@@ -4058,6 +4098,7 @@ void js_platform_install(JSContext *ctx)
      * installed by js_page_open before this entry; frame_install itself only
      * registers C sinks/functions and has no platform-prelude dependency. */
     if (g_legacy_frames && LOGIT_HAVE(js_frame_install)) js_frame_install(ctx);
+    else if(LOGIT_HAVE(js_frame_install_inert)) js_frame_install_inert(ctx);
 #endif
     JSValue fn = JS_Eval(ctx, PLATFORM_PRELUDE, strlen(PLATFORM_PRELUDE), "<platform>",
                          JS_EVAL_TYPE_GLOBAL);
@@ -4144,7 +4185,10 @@ void js_platform_close(JSContext *ctx)
      * function is itself called from js_page_close() before
      * JS_FreeContext(g_ctx)/JS_FreeRuntime(g_rt), which is the whole reason
      * the hook lives here. */
-    if (g_legacy_frames && LOGIT_HAVE(js_frame_close_all)) js_frame_close_all();
+    /* Only this creator's auxiliary realms: closing a network document must
+     * not tear down parent/sibling contexts or leave child contexts live at
+     * JS_FreeRuntime. The old process-wide close remains a test backstop. */
+    if (LOGIT_HAVE(js_frame_close_context)) js_frame_close_context(ctx);
     if (ctx) {
         JS_SetHostPromiseRejectionTracker(JS_GetRuntime(ctx), 0, 0);
         rejections_close(ctx);

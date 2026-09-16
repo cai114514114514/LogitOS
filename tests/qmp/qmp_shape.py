@@ -55,8 +55,16 @@ proc = subprocess.Popen([
     qemu, "-cpu", "max", "-cdrom", iso,
     "-drive", f"file={diskcopy},format=raw,if=none,id=hd0",
     "-device", "virtio-blk-pci,drive=hd0", "-boot", "d",
-    "-snapshot", "-m", "512M",
-    "-vga", "none", "-device", "virtio-gpu-pci",
+    # 1 GiB and an explicit scanout size, both matching tools/shot.sh. This read
+    # `-m 512M` with a bare virtio-gpu-pci and screendumped a BLANK Finder: the
+    # window frame was composited, the app's own content never appeared, and
+    # every coordinate below was then being measured against an empty rectangle.
+    # shot.sh's own header records the same lesson about the memory size -- it
+    # used to hardcode 512M here too. The resolution matters for a second
+    # reason: every coordinate in this file was calibrated at 1280x800, and the
+    # default scanout is not that.
+    "-snapshot", "-m", "1G",
+    "-vga", "none", "-device", "virtio-gpu-pci,xres=1280,yres=800",
     "-display", "none", "-no-reboot",
     "-serial", f"file:{serial}", "-qmp", f"unix:{sock},server,nowait",
 ])
@@ -72,21 +80,31 @@ def fail(msg):
 
 
 def armed():
+    """Wait for the DESKTOP, not for the kernel.
+
+    This used to read LOGIT_BOOT_OK, which the kernel prints when it reaches
+    64-bit C -- long before wm_run has spawned anything -- and then sleep 2 s.
+    On this host that lands the screendump on an empty Finder: the window frame
+    is drawn by the compositor, the app's first frame() has not run, and every
+    coordinate below is then measured against a blank rectangle. The same two
+    seconds after `desktop live` is what tools/shot.sh waits for, and the
+    difference between the two markers is the whole desktop coming up.
+    """
     try:
         with open(serial, encoding="utf-8", errors="replace") as fh:
-            return "LOGIT_BOOT_OK" in fh.read()
+            return "desktop live" in fh.read()
     except OSError:
         return False
 
 
-for _ in range(400):
+for _ in range(900):
     if armed():
         break
     if proc.poll() is not None:
         fail("qemu exited during boot")
     time.sleep(0.1)
 else:
-    fail("LOGIT_BOOT_OK never appeared")
+    fail("the desktop never reported live")
 time.sleep(2.0)
 
 s = socket.socket(socket.AF_UNIX)
@@ -175,7 +193,7 @@ if explore:
 # on the success path -- and this file was already reading that serial log for
 # the font report. Asserting on it costs nothing and converts a fabricated
 # shaping bug into one true sentence naming the app that actually opened.
-goto(594, 215)
+goto(386, 215)
 click()
 time.sleep(0.25)
 click()
@@ -196,7 +214,7 @@ apps = launched()
 cmd({"execute": "quit"})
 if "textedit" not in apps:
     print("apps launched:", ", ".join(apps) if apps else "(none)")
-    fail("the click at (594,215) did not open TextEdit -- it opened %s. "
+    fail("the click at (386,215) did not open TextEdit -- it opened %s. "
          "The icon grid depends on what is in fsroot/, so this coordinate goes "
          "stale whenever the disk contents change; re-find it with "
          "`python3 tests/qmp/qmp_shape.py <iso> <disk> out.ppm --explore` and "

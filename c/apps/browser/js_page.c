@@ -1402,7 +1402,10 @@ int js_page_open(struct node *root)
      * installers together rather than scattered above it. See js_domparser.c's
      * header for the lifetime scheme -- no close hook is registered because
      * none is needed (ordinary QuickJS object teardown is sufficient). */
-    if (PAGE_HAVE(js_domparser_install)) JS_OPEN_STEP("js_domparser_install", js_domparser_install(g_ctx));
+    /* DOMParser prototypes now belong to this JSContext. The former blanket
+     * extension gate left auxiliary about:blank documents null in network
+     * children even though their contentWindow getter was installed. */
+    if (PAGE_PLATFORM_HAVE(js_domparser_install)) JS_OPEN_STEP("js_domparser_install", js_domparser_install(g_ctx));
     JS_OPEN_STEP("window-event-target", js_dom_bind_event_target(g_ctx, g));  /* window.addEventListener + window.on* */
     /* AFTER the DOM: js_webapi publishes document.location and dispatches
      * popstate through window.dispatchEvent, both of which js_dom.c owns. */

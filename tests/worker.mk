@@ -200,12 +200,42 @@ $(BUILD)/native-ports/not-closed: $(NATIVE_PORTS_DEP)
 	@! cmp -s c/apps/browser/js_ports.c $@.c
 	@$(CC) -O1 -g -w $(WORKER_CF) -o $@ tests/unit/native_ports_test.c $@.c $(QJS_SRC) -lm
 .PHONY: test-native-ports test-native-ports-negctl test-native-ports-san
-test-native-ports-negctl: $(BUILD)/native-ports/not-detached $(BUILD)/native-ports/not-closed
+$(BUILD)/native-ports/small-budget: $(NATIVE_PORTS_DEP)
+	@mkdir -p $(dir $@)
+	@sed 's/#define PORT_BYTES (1024\*1024)/#define PORT_BYTES (64*1024)/' c/apps/browser/js_ports.c > $@.c
+	@! cmp -s c/apps/browser/js_ports.c $@.c
+	@$(CC) -O1 -g -w $(WORKER_CF) -o $@ tests/unit/native_ports_test.c $@.c $(QJS_SRC) -lm
+test-native-ports-negctl: $(BUILD)/native-ports/not-detached $(BUILD)/native-ports/not-closed $(BUILD)/native-ports/small-budget
 	@rc=0; $(BUILD)/native-ports/not-detached > $(BUILD)/native-ports/not-detached.log 2>&1 || rc=$$?; test $$rc -eq 1 && grep -q 'FAIL.*transferred endpoint attaches only in destination runtime' $(BUILD)/native-ports/not-detached.log
 	@rc=0; $(BUILD)/native-ports/not-closed > $(BUILD)/native-ports/not-closed.log 2>&1 || rc=$$?; test $$rc -eq 1 && grep -q 'FAIL.*closed port drops its queued callbacks' $(BUILD)/native-ports/not-closed.log
+	@rc=0; $(BUILD)/native-ports/small-budget > $(BUILD)/native-ports/small-budget.log 2>&1 || rc=$$?; test $$rc -eq 1 && grep -q 'FAIL.*large port message preserves complete buffer bytes' $(BUILD)/native-ports/small-budget.log
 test-native-ports: test-native-ports-negctl $(BUILD)/native-ports/current
 	@$(BUILD)/native-ports/current
 test-native-ports-san: test-native-ports
 	@$(CC) -O1 -g -w $(WORKER_CF) -fsanitize=address,undefined -fno-omit-frame-pointer -o $(BUILD)/native-ports/san $(NATIVE_PORTS_SRC) $(QJS_SRC) -lm
 	@ASAN_OPTIONS=detect_leaks=0 $(BUILD)/native-ports/san
 ci-host: test-native-ports
+
+# Outbound Worker transfer uses the same real page/Worker runtime apparatus.
+# Keep both former silent transfer loss and cancellation leaks observable.
+WORKER_PORTS_SRC = $(filter-out tests/unit/worker_test.c,$(WORKER_TEST_SRC)) tests/unit/worker_ports_test.c
+WORKER_PORTS_DEP = $(WORKER_PORTS_SRC) tests/unit/worker_test.c tests/worker.mk $(wildcard c/apps/browser/*.h c/apps/browser/*.inc) $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
+$(BUILD)/worker-ports/current: $(WORKER_PORTS_DEP)
+	@mkdir -p $(dir $@)
+	@$(CC) -O1 -g -w $(WORKER_CF) -o $@ $(WORKER_PORTS_SRC) $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
+$(BUILD)/worker-ports/dropped: $(WORKER_PORTS_DEP)
+	@mkdir -p $(dir $@)
+	@$(CC) -O1 -g -w $(WORKER_CF) -DJS_WORKER_TEST_DROP_OUTBOUND_PORTS -o $@ $(WORKER_PORTS_SRC) $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
+$(BUILD)/worker-ports/leaked: $(WORKER_PORTS_DEP)
+	@mkdir -p $(dir $@)
+	@$(CC) -O1 -g -w $(WORKER_CF) -DJS_WORKER_TEST_LEAK_PACKETS -o $@ $(WORKER_PORTS_SRC) $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
+.PHONY: test-worker-ports test-worker-ports-negctl test-worker-ports-san
+test-worker-ports-negctl: $(BUILD)/worker-ports/dropped $(BUILD)/worker-ports/leaked
+	@rc=0; $(BUILD)/worker-ports/dropped > $(BUILD)/worker-ports/dropped.log 2>&1 || rc=$$?; test $$rc -eq 1 && grep -q '^FAIL: Worker handoff exposes recipient-realm frozen event ports' $(BUILD)/worker-ports/dropped.log
+	@rc=0; $(BUILD)/worker-ports/leaked > $(BUILD)/worker-ports/leaked.log 2>&1 || rc=$$?; test $$rc -eq 1 && grep -q '^FAIL: close discards in-transit ports without exhausting broker slots' $(BUILD)/worker-ports/leaked.log
+test-worker-ports: test-worker-ports-negctl $(BUILD)/worker-ports/current
+	@$(BUILD)/worker-ports/current
+test-worker-ports-san: test-worker-ports
+	@$(CC) -O1 -g -w $(WORKER_CF) -fsanitize=address,undefined -fno-omit-frame-pointer -o $(BUILD)/worker-ports/san $(WORKER_PORTS_SRC) $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
+	@ASAN_OPTIONS=detect_leaks=0 $(BUILD)/worker-ports/san
+ci-host: test-worker-ports

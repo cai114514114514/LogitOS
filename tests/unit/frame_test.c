@@ -66,6 +66,21 @@ void  kfree(void *p) { free(p); }
 void js_domparser_install(JSContext *ctx);
 void js_frame_install(JSContext *ctx);
 void js_frame_close_all(void);
+void js_frame_install_inert(JSContext *ctx);
+void js_frame_close_context(JSContext *ctx);
+void js_frame_refresh_policy(JSContext *ctx);
+
+static int eval_bool(JSContext *ctx,const char *source)
+{
+    JSValue v=JS_Eval(ctx,source,strlen(source),"<realm-ownership>",JS_EVAL_TYPE_GLOBAL);
+    int ok=!JS_IsException(v)&&JS_ToBool(ctx,v);
+    if(JS_IsException(v)){
+        JSValue e=JS_GetException(ctx);const char *s=JS_ToCString(ctx,e);
+        printf("realm check exception: %s\n",s?s:"?");
+        if(s)JS_FreeCString(ctx,s);JS_FreeValue(ctx,e);
+    }
+    JS_FreeValue(ctx,v);return ok;
+}
 
 static int g_fail;
 #define CHECK(cond, msg) do { \
@@ -313,6 +328,21 @@ int main(void)
     }
 
     js_frame_close_all();
+    /* Independent network documents use different runtimes. Install in the
+     * second one, then operate on the first again: singleton DP prototypes
+     * and process-wide frame teardown both fail this order. */
+    CHECK(eval_bool(ctx,"var pd=new DOMParser().parseFromString('','text/html');var pg=__frameGlobal(pd);pg.JSON!==JSON && pg.Function('return 9')()===9"),"creator exposes fresh working realm intrinsics");
+    JSRuntime *child_rt=JS_NewRuntime();JSContext *child=JS_NewContext(child_rt);
+    js_domparser_install(child);js_frame_install_inert(child);
+    JS_SetStringCodeGenerationAllowed(child,0);
+    CHECK(eval_bool(child,"var cd=new DOMParser().parseFromString('','text/html');var cg=__frameGlobal(cd);var denied=false;try{cg.Function('return 1')()}catch(e){denied=e.name==='EvalError'};denied&&cg.JSON.parse('[7]')[0]===7"),"auxiliary realm inherits denied code generation but parses JSON");
+    CHECK(eval_bool(ctx,"var pn=pd.createElement('p');pn.textContent='parent';pd.body.appendChild(pn);pd.body.textContent==='parent' && __frameGlobal(pd)===pg"),"DOMParser prototypes and realm identity stay in creator runtime");
+    CHECK(eval_bool(ctx,"var savedFunction=pg.Function;true"),"retain a constructor before policy tightens");
+    JS_SetStringCodeGenerationAllowed(ctx,0);js_frame_refresh_policy(ctx);
+    CHECK(eval_bool(ctx,"var denied=false;try{savedFunction('return 1')()}catch(e){denied=e.name==='EvalError'};denied"),"policy tightening reaches retained auxiliary constructors");
+    js_frame_close_context(child);JS_FreeContext(child);JS_FreeRuntime(child_rt);
+    CHECK(eval_bool(ctx,"__frameGlobal(pd)===pg && pg.JSON.parse('{\"ok\":true}').ok && pd.createElement('b').tagName==='B'"),"closing child runtime preserves parent auxiliary realm and prototypes");
+    js_frame_close_context(ctx);
     JS_FreeContext(ctx);
     JS_FreeRuntime(rt);
 

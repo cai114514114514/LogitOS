@@ -509,7 +509,9 @@ TITLEBAR = 30            # points; c/kernel/gui/wm.c TITLEBAR_H
 
 def launch(g):
     mark = len(g.log)
-    g.sh("as /usr/as/examples/chlaunch.as")
+    # This is the packaged A3 launcher. Missing native output must be a visible
+    # launch failure, never a request to execute the source with the old VM.
+    g.sh("/usr/as/bin/chlaunch.aex")
     if not g.wait_for("CHLAUNCH_OK", 60, mark):
         g.die("chlaunch.as did not report CHLAUNCH_OK")
     if not g.wait_for("CH_READY", 90, mark):
@@ -826,7 +828,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--iso", required=True)
     ap.add_argument("--disk", required=True)
-    ap.add_argument("--only", default="all")
+    ap.add_argument("--only", choices=("all", "refusal", "stream", "failures", "close"), default="all")
     ap.add_argument("--shots", default=None)
     args = ap.parse_args()
 
@@ -868,7 +870,10 @@ def main():
         for f in fails:
             print("   - " + f)
         sys.exit(1)
-    print("PASS: the reply arrived in pieces and each piece was drawn")
+    if args.only == "refusal":
+        print("PASS: native Chat launch and visible missing-configuration refusal")
+    else:
+        print("PASS: requested Chat interaction checks")
     print("screenshots in " + shots)
 
 

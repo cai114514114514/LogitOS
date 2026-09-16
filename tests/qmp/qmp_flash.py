@@ -57,6 +57,7 @@ Usage:
                            [--rounds N] [--keep DIR] [--negative]
 """
 
+import atexit
 import os
 import shutil
 import subprocess
@@ -118,6 +119,10 @@ def build_negative():
     stop applying when the surrounding code moves -- and the run says so out
     loud if the line it is looking for has gone."""
     tmp = tempfile.mkdtemp(prefix="logit-flash-negctl-")
+    # atexit, not finally: what this returns is a path INSIDE tmp that the
+    # caller boots, so the tree has to outlive this function and can only be
+    # released when the process is.
+    atexit.register(shutil.rmtree, tmp, ignore_errors=True)
     dst = os.path.join(tmp, "tree")
     print("     copying the tree to %s ..." % dst)
     # `build*`, not `build`: a working tree that several lines are building in
@@ -403,6 +408,10 @@ def main(argv):
         qemu.kill()
         if keep:
             print("     frames kept in %s" % tmp)
+        else:
+            # `keep` is the caller's own directory and is never ours to
+            # delete; tmp is ours only when mkdtemp made it above.
+            shutil.rmtree(tmp, ignore_errors=True)
 
 
 if __name__ == "__main__":

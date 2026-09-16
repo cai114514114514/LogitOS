@@ -9,7 +9,7 @@
  * that happened to reuse a slot. Closing a sender does not erase already
  * queued messages at its live peer. No callback runs from postMessage.
  *
- * Bounds: 256 endpoints, 16 transfers/packet, 64 KiB/packet, 8 MiB total
+ * Bounds: 256 endpoints, 16 transfers/packet, 1 MiB/packet, 8 MiB total
  * packet bytes, 64 queued messages/endpoint, 32 listeners/port. Endpoint
  * wrappers are retained until close/transfer/realm teardown (not a full
  * reachability-based port GC implementation). No native identifier is public.
@@ -19,9 +19,18 @@
 #include <string.h>
 #include <stdint.h>
 #include <stdio.h>
+#ifdef JS_RUNTIME_DIAGNOSTICS
+#include "js_page.h"
+#endif
 #define PORT_MAX 256
 #define PORT_XFER 16
-#define PORT_BYTES (64*1024)
+/* The original 64 KiB ceiling rejected a 300,617-byte real page message
+ * with ZERO bytes retained (guest port-budget trace, 2026-09-16). This is
+ * serialized application data, not a fixed-size control record. Allow up to
+ * 1 MiB per packet while retaining the existing 8 MiB aggregate quota and
+ * FIFO count bound. These bound retained packets, not JS_WriteObject's
+ * temporary allocation; the runtime memory limit still covers serialization. */
+#define PORT_BYTES (1024*1024)
 #define PORT_TOTAL (8*1024*1024)
 #define PORT_QUEUE 64
 #define PORT_LISTENERS 32
@@ -37,12 +46,41 @@ struct port_binding {uint64_t id,generation;};
 struct js_port_packet {
     struct js_port_packet *next;unsigned char *bytes;size_t length;uint64_t seq;
     int count,committed;uint64_t ids[PORT_XFER],generations[PORT_XFER];
+#ifdef JS_RUNTIME_DIAGNOSTICS
+    unsigned long long queued_at;
+#endif
 };
 static struct endpoint endpoints[PORT_MAX];
 static struct port_realm *realms;
 static uint64_t next_id=1,next_sequence=1;
 static size_t packet_bytes;
 static JSClassID port_class;
+#ifdef JS_RUNTIME_DIAGNOSTICS
+static unsigned port_diag_lines;
+static unsigned port_timing_lines;
+/* Queue residence is not callback cost. Capture native clock/sequence only,
+ * before entering author code; callbacks may transfer or close the endpoint
+ * and the serialized packet is freed before they run. No JS property reads. */
+static void port_timing(uint64_t id,uint64_t seq,unsigned long long queued,
+                        unsigned long long begin,unsigned long long end)
+{
+    if(port_timing_lines++>=256)return;
+    printf("[runtime-diag] port-timing id=%llu seq=%llu queued-at=%llu begin=%llu elapsed=%llu\n",
+        (unsigned long long)id,(unsigned long long)seq,queued,begin,end>=begin?end-begin:0);
+}
+static void port_diag(struct endpoint *e,const char *phase,size_t bytes)
+{if(port_diag_lines++<256)printf("[runtime-diag] port id=%llu phase=%s bytes=%u started=%d queued=%d\n",(unsigned long long)e->id,phase,(unsigned)bytes,e->started,e->nqueue);}
+static void port_diag_error(const char *kind)
+{if(port_diag_lines++<256)printf("[runtime-diag] port-error kind=%s\n",kind);}
+/* Size is sufficient to distinguish the per-message ceiling from aggregate
+ * queue pressure. Never print serialized data or author exception strings. */
+static void port_diag_budget(size_t bytes)
+{if(port_diag_lines++<256)printf("[runtime-diag] port-budget bytes=%llu retained=%llu limit=%u total=%u\n",(unsigned long long)bytes,(unsigned long long)packet_bytes,PORT_BYTES,PORT_TOTAL);}
+#else
+#define port_diag(e,phase,bytes) ((void)0)
+#define port_diag_error(kind) ((void)0)
+#define port_diag_budget(bytes) ((void)0)
+#endif
 static struct endpoint *by_id(uint64_t id)
 {if(id)for(int i=0;i<PORT_MAX;i++)if(endpoints[i].id==id)return &endpoints[i];return NULL;}
 static struct port_realm *realm(JSContext *ctx)
@@ -92,22 +130,22 @@ struct js_port_packet *js_ports_prepare(JSContext *ctx,JSValueConst data,JSValue
 {
     struct js_port_packet *p=calloc(1,sizeof *p);if(!p){JS_ThrowOutOfMemory(ctx);return NULL;}
     if(!JS_IsUndefined(transfer)){
-        if(JS_IsArray(ctx,transfer)!=1){error(ctx,"TypeError","transfer must be an array in this implementation");goto fail;}
+        if(JS_IsArray(ctx,transfer)!=1){port_diag_error("transfer-not-array");error(ctx,"TypeError","transfer must be an array in this implementation");goto fail;}
         JSValue l=JS_GetPropertyStr(ctx,transfer,"length");uint32_t n=0;
         int ok=JS_ToUint32(ctx,&n,l);JS_FreeValue(ctx,l);if(ok<0)goto fail;
-        if(n>PORT_XFER){error(ctx,"QuotaExceededError","too many transferred ports");goto fail;}
+        if(n>PORT_XFER){port_diag_error("transfer-capacity");error(ctx,"QuotaExceededError","too many transferred ports");goto fail;}
         for(uint32_t i=0;i<n;i++){
             JSValue v=JS_GetPropertyUint32(ctx,transfer,i);
             if(JS_IsException(v)){JS_FreeValue(ctx,v);goto fail;}
             struct endpoint *e=owned(ctx,v);JS_FreeValue(ctx,v);
-            if(!e){error(ctx,"DataCloneError","transfer requires a live owned MessagePort");goto fail;}
+            if(!e){port_diag_error("transfer-not-owned-port");error(ctx,"DataCloneError","transfer requires a live owned MessagePort");goto fail;}
             for(int j=0;j<p->count;j++)if(p->ids[j]==e->id){error(ctx,"DataCloneError","duplicate transferred port");goto fail;}
             p->ids[p->count]=e->id;p->generations[p->count++]=e->generation;
         }
     }
     size_t len=0;uint8_t *raw=JS_WriteObject(ctx,&len,data,JS_WRITE_OBJ_REFERENCE);
-    if(!raw){JS_FreeValue(ctx,JS_GetException(ctx));error(ctx,"DataCloneError","message cannot be cloned");goto fail;}
-    if(len>PORT_BYTES||packet_bytes>PORT_TOTAL-len){js_free(ctx,raw);error(ctx,"QuotaExceededError","message byte budget exceeded");goto fail;}
+    if(!raw){port_diag_error("data-serialization");JS_FreeValue(ctx,JS_GetException(ctx));error(ctx,"DataCloneError","message cannot be cloned");goto fail;}
+    if(len>PORT_BYTES||packet_bytes>PORT_TOTAL-len){port_diag_error("byte-budget");port_diag_budget(len);js_free(ctx,raw);error(ctx,"QuotaExceededError","message byte budget exceeded");goto fail;}
     p->bytes=malloc(len?len:1);if(!p->bytes){js_free(ctx,raw);JS_ThrowOutOfMemory(ctx);goto fail;}
     memcpy(p->bytes,raw,len);js_free(ctx,raw);p->length=len;packet_bytes+=len;return p;
 fail:js_ports_discard(p);return NULL;
@@ -188,14 +226,14 @@ static JSValue operation(JSContext *ctx,JSValueConst self,int argc,JSValueConst 
     if(!JS_GetOpaque(self,port_class))return JS_ThrowTypeError(ctx,"Illegal MessagePort receiver");
     struct endpoint *e=owned(ctx,self);
     if(!e)return JS_UNDEFINED; /* a detached/closed wrapper cannot control a new owner */
-    if(op==1){e->started=1;return JS_UNDEFINED;}
+    if(op==1){e->started=1;port_diag(e,"start",0);return JS_UNDEFINED;}
     if(op==2){close_endpoint(e);return JS_UNDEFINED;}
     if(argc<1)return JS_ThrowTypeError(ctx,"postMessage requires data");
     JSValue xfer=argc>1?JS_DupValue(ctx,argv[1]):JS_UNDEFINED;
     if(JS_IsObject(xfer)&&JS_IsArray(ctx,xfer)==0){JSValue opt=xfer;xfer=JS_GetPropertyStr(ctx,opt,"transfer");JS_FreeValue(ctx,opt);}
     if(JS_IsException(xfer))return xfer;
     struct js_port_packet *p=js_ports_prepare(ctx,argv[0],xfer);JS_FreeValue(ctx,xfer);
-    if(!p)return JS_EXCEPTION;
+    if(!p){port_diag(e,"clone-refused",0);return JS_EXCEPTION;}
     e=owned(ctx,self);if(!e){js_ports_discard(p);return JS_UNDEFINED;}
     for(int i=0;i<p->count;i++)if(p->ids[i]==e->id||p->ids[i]==e->peer){
         js_ports_discard(p);return error(ctx,"DataCloneError","cannot transfer either endpoint through its own channel");
@@ -203,9 +241,12 @@ static JSValue operation(JSContext *ctx,JSValueConst self,int argc,JSValueConst 
     struct endpoint *dest=by_id(e->peer);
     if(dest&&dest->nqueue==PORT_QUEUE){js_ports_discard(p);return error(ctx,"QuotaExceededError","port queue limit");}
     if(!js_ports_commit(ctx,p)){js_ports_discard(p);return JS_EXCEPTION;}
-    if(!dest){js_ports_discard(p);return JS_UNDEFINED;}
+    if(!dest){port_diag(e,"peer-closed",0);js_ports_discard(p);return JS_UNDEFINED;}
     p->seq=next_sequence++;if(dest->tail)dest->tail->next=p;else dest->head=p;
-    dest->tail=p;dest->nqueue++;return JS_UNDEFINED;
+#ifdef JS_RUNTIME_DIAGNOSTICS
+    p->queued_at=js_page_now_ms();
+#endif
+    dest->tail=p;dest->nqueue++;port_diag(dest,"queued",p->length);return JS_UNDEFINED;
 }
 static JSValue get_handler(JSContext *ctx,JSValueConst self)
 {struct endpoint *e=owned(ctx,self);return e?JS_DupValue(ctx,e->handler):JS_NULL;}
@@ -246,12 +287,20 @@ int js_ports_pump(JSContext *ctx)
         if(!e->id||e->owner!=r||!e->started||!e->head||e->head->seq>limit)continue;
         struct js_port_packet *p=e->head;e->head=p->next;if(!e->head)e->tail=NULL;e->nqueue--;ran++;
         uint64_t id=e->id,generation=e->generation;JSValue object=JS_DupValue(ctx,e->object),ports;
+#ifdef JS_RUNTIME_DIAGNOSTICS
+        unsigned long long diag_begin=js_page_now_ms(),diag_queued=p->queued_at;
+        uint64_t diag_seq=p->seq;
+#define PORT_TIMING_DONE() port_timing(id,diag_seq,diag_queued,diag_begin,js_page_now_ms())
+#else
+#define PORT_TIMING_DONE() ((void)0)
+#endif
+        port_diag(e,"dispatch",p->length);
         JSValue data=js_ports_read(ctx,p,&ports);js_ports_discard(p);
-        if(JS_IsException(data)){report(ctx);JS_FreeValue(ctx,ports);JS_FreeValue(ctx,object);continue;}
+        if(JS_IsException(data)){report(ctx);JS_FreeValue(ctx,ports);JS_FreeValue(ctx,object);PORT_TIMING_DONE();continue;}
         JSValue init=JS_NewObject(ctx);JS_SetPropertyStr(ctx,init,"data",data);JS_SetPropertyStr(ctx,init,"ports",ports);
         JSValue args[2]={JS_NewString(ctx,"message"),init};
         JSValue ev=JS_CallConstructor(ctx,r->event,2,(JSValueConst *)args);JS_FreeValue(ctx,args[0]);JS_FreeValue(ctx,init);
-        if(JS_IsException(ev)){report(ctx);JS_FreeValue(ctx,object);continue;}
+        if(JS_IsException(ev)){report(ctx);JS_FreeValue(ctx,object);PORT_TIMING_DONE();continue;}
         JS_DefinePropertyValueStr(ctx,ev,"isTrusted",JS_TRUE,JS_PROP_ENUMERABLE);
         JS_DefinePropertyValueStr(ctx,ev,"target",JS_DupValue(ctx,object),JS_PROP_ENUMERABLE);
         JS_DefinePropertyValueStr(ctx,ev,"currentTarget",JS_DupValue(ctx,object),JS_PROP_CONFIGURABLE);
@@ -271,6 +320,8 @@ int js_ports_pump(JSContext *ctx)
         }
         JS_DefinePropertyValueStr(ctx,ev,"currentTarget",JS_NULL,JS_PROP_CONFIGURABLE);
         JS_FreeValue(ctx,ev);JS_FreeValue(ctx,object);
+        PORT_TIMING_DONE();
+#undef PORT_TIMING_DONE
     }return ran;
 }
 static JSValue illegal(JSContext *ctx,JSValueConst nt,int argc,JSValueConst *argv)

@@ -375,6 +375,8 @@ void JS_SetContextOpaque(JSContext *ctx, void *opaque);
 /* Embedder policy for JavaScript-originated eval and Function constructors.
    Does not disable trusted host JS_Eval calls. Default: allowed. */
 void JS_SetStringCodeGenerationAllowed(JSContext *ctx, JS_BOOL allowed);
+/* Child realms inherit their creator's embedder policy, not the default. */
+JS_BOOL JS_GetStringCodeGenerationAllowed(JSContext *ctx);
 JSRuntime *JS_GetRuntime(JSContext *ctx);
 void JS_SetClassProto(JSContext *ctx, JSClassID class_id, JSValue obj);
 JSValue JS_GetClassProto(JSContext *ctx, JSClassID class_id);

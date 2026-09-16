@@ -51,6 +51,7 @@ const char *bfetch_response_header(int id,const char *name){
  if(!strcmp(name,"content-type")&&!strcmp(mode,"bad-mime")&&strstr(u,"child.html"))return "text/html-unknown";
  if(!strcmp(name,"content-type"))return strstr(u,".css")?"text/css":strstr(u,".svg")?"image/svg+xml":strstr(u,".js")?"text/javascript":"text/html";
  if(!strcmp(name,"content-security-policy")){
+  if(!strcmp(mode,"active-realm")&&strstr(u,"child.html"))return "script-src 'self';style-src 'unsafe-inline'";
   if(restore_mode()&&!strcmp(u,parent))return "frame-src https://child.test";
   if(restore_mode()&&strstr(u,"other.html"))return "frame-src 'none'";
   if(!strcmp(mode,"parent-csp")&&!strcmp(u,parent))return "frame-src 'none'";
@@ -74,10 +75,15 @@ static int image_painted(void){for(int i=0;i<paint_nops;i++)if(paint_ops[i].kind
 static void post(int t){struct logit_event e={0};e.type=t;if(t==EV_RESIZE){e.a=1180;e.b=620;}host_post_event(&e);}
 static void finish(void){finished=1;CHECK(!strcmp(js_page_location(),parent),"embedding never navigates or replaces the parent document");CHECK(tabs_count()==(restore_mode()?2:1),"embedding never opens a second tab");CHECK(textop("PARENT-RETAINED")!=0,"parent still paints after the child context is restored");CHECK(expr("document.querySelector('#inside')===null && typeof childRan==='undefined'"),"child DOM and scripts do not enter the parent realm");CHECK(fake_site_fetched("never.js")==0&&fake_site_fetched("nested.html")==0,"policy-blocked scripts and nested documents never fetch");
  if(active()){
-  CHECK(textop("FRAME-MESSAGE")!=0,"native child click and bidirectional message repaint embedded pixels");
+  CHECK(textop(!strcmp(mode,"active-focus")?"FRAME-KEY":"FRAME-MESSAGE")!=0,"native child click and bidirectional message repaint embedded pixels");
   CHECK(expr("got===1 && bad===0 && sourceOK"),"parent receives exact child origin and stable source identity");
   CHECK(!js_dom_has_activation(),"window messages do not grant parent user activation");
+  if(!strcmp(mode,"active-realm"))CHECK(expr("parentRealm.JSON.parse('{\"v\":7}').v===7 && parentRealm.JSON!==JSON && new DOMParser().parseFromString('<b>after child</b>','text/html').body.textContent==='after child'"),"parent auxiliary realm and DOMParser survive child owner switches");
   if(!strcmp(mode,"active-focus"))CHECK(focus_current()==dom_get_element_by_id_in(js_dom_root(),"f"),"parent focus holder is the iframe host, never a child node");
+  if(!strcmp(mode,"active-focus")){
+   const struct paintop *p=textop("FRAME-KEY");
+   CHECK(p&&(p->color&0xffffff)==0x123456,"child focus selector and native keyboard target survive parent message turn");
+  }
   CHECK(fake_site_fetched("active.js")== (restore_mode()?2:1),"external classic child script loaded once per document runtime");
   if(restore_mode()){
    CHECK(restored==2&&fake_site_fetched("page.html")==1,"restored tab reuses its original document bytes");
@@ -102,6 +108,10 @@ void loader_poll_hook(void){host_clock+=25;if(finished||restored==1)return;if(++
   }
   const struct paintop *p=textop("FRAME-READY");
   if(!mutated&&p){mutated=1;struct logit_event e={0};e.type=EV_MOUSE;e.button=EV_BTN_LEFT;e.a=p->x+8;e.b=p->y+5;host_post_event(&e);e.type=EV_MOUSE_UP;host_post_event(&e);}
+  if(!strcmp(mode,"active-focus")){
+   if(textop("FRAME-KEY")){finish();return;}
+   if(textop("FRAME-MESSAGE")&&stage!=88){stage=88;struct logit_event e={0};e.type=EV_KEY;e.a='x';host_post_event(&e);}return;
+  }
   if(textop("FRAME-MESSAGE")){finish();return;}return;
  }
  if(stage==0){if(!textop("PARENT-RETAINED")||!js_page_live()||js_page_entry_active()||
@@ -128,6 +138,7 @@ int main(int argc,char **argv){mode=argc>1?argv[1]:"paint";blocked=!strcmp(mode,
  char page[2000];snprintf(page,sizeof page,"<!doctype html><style>body{margin:0}iframe{position:absolute;left:40px;top:100px;width:200px;height:140px;border:2px solid blue;%s}</style><body>PARENT-RETAINED<iframe id=f src='https://child.test/child.html' %s></iframe>",!strcmp(mode,"geometry")?"display:none":"",!strcmp(mode,"sandbox")?"sandbox=''":"");
  if(active())strcat(page,"<script>var got=0,bad=0,sourceOK=false;var savedWindow=document.getElementById('f').contentWindow;addEventListener('message',function(e){if(e.data==='wrong'){bad++;return;}if(e.data==='clicked'&&e.origin==='https://child.test'){got++;sourceOK=e.source===savedWindow;e.source.postMessage('reply','https://child.test');}});</script>");
  if(restore_mode())policy_retention_checks();
+ if(!strcmp(mode,"active-realm"))strcat(page,"<script>var auxParent=document.createElement('iframe');auxParent.style.display='none';document.body.appendChild(auxParent);var parentRealm=auxParent.contentWindow;if(parentRealm.JSON===JSON)throw Error('parent realm alias');</script>");
  if(port_mode()){
   /* Same native input and paint consumer, but no ordinary Window reply can
    * finish it: the reply must use a transferred recipient-owned endpoint. */
@@ -141,7 +152,26 @@ int main(int argc,char **argv){mode=argc>1?argv[1]:"paint";blocked=!strcmp(mode,
  const char *child="<!doctype html><head><base href='https://child.test/'><link rel=stylesheet href='/child.css'></head><body><span id=inside>FRAME-CONTENT</span><img src='/qr.svg' width=32 height=32><input type=file value=FORGED-FILE><input type=password value=SECRET-MARKUP><video></video><canvas width=2 height=2></canvas><script>childRan=true</script><script src='/never.js'></script><iframe src='/nested.html'></iframe></body>";
  fake_site_reset();fake_site_add(parent,page);char child_page[1800];snprintf(child_page,sizeof child_page,"%s%s",!strcmp(mode,"base-blocked")?"<base href='https://forbidden.test/'>":"",child);if(!strcmp(mode,"static")){char *a;while((a=strstr(child_page,"<script"))!=0){char *b=strstr(a,"</script>");if(!b)break;memmove(a,b+9,strlen(b+9)+1);}}if(active())strcpy(child_page,"<!doctype html><style>body{margin:0}#inside{display:block;width:190px;height:70px;background:#9f9}</style><body><div id=inside>FRAME-PENDING</div><script src='/active.js'></script></body>");fake_site_add("https://child.test/child.html",child_page);fake_site_add("https://child.test/child.css","body{margin:0}#inside{display:block;color:#c02020;font-size:12px}");fake_site_add("https://child.test/qr.svg","<svg xmlns='http://www.w3.org/2000/svg' width='32' height='32'><rect width='32' height='32' fill='white'/><path d='M0 0h12v12H0zM20 0h12v12H20zM0 20h12v12H0zM18 18h8v8h-8z' fill='black'/></svg>");
  fake_site_add("https://child.test/active.js","var childRan=true;var box=document.getElementById('inside');box.textContent='FRAME-READY';box.addEventListener('click',function(e){if(!e.isTrusted||e.clientX<0||e.clientX>=200)throw Error('input coordinates');parent.postMessage('wrong','https://not-parent.test');parent.postMessage('clicked','https://parent.test');});addEventListener('message',function(e){if(e.origin==='https://parent.test'&&e.source===parent&&e.data==='reply')box.textContent='FRAME-MESSAGE';});");
+ if(!strcmp(mode,"active-realm")){
+  /* fake_site_add retains the FIRST URL match; reset before replacing the
+   * ordinary child script or this test only exercises the parent assertion. */
+  fake_site_reset();fake_site_add(parent,page);fake_site_add("https://child.test/child.html",child_page);
+  fake_site_add("https://child.test/active.js",
+    "var childRan=true,box=document.getElementById('inside');function ck(x,m){if(!x)throw Error(m)};"
+    "var a=document.createElement('iframe');a.style.display='none';document.body.appendChild(a);var w=a.contentWindow;"
+    "ck(w.JSON&&w.JSON!==JSON&&w.Array!==Array&&typeof w.JSON.parse==='function','fresh intrinsics');\n"
+    "var v=w.JSON.parse('{\"x\":[1,2]}');ck(Object.getPrototypeOf(v)===w.Object.prototype&&v.x instanceof w.Array,'parse result realm');"
+    "w.Object.prototype.childOnly=42;ck(({}).childOnly===undefined,'prototype isolation');"
+    "ck(w.window===w&&w.self===w&&w.globalThis===w,'window aliases');"
+    "var denied=false;try{w.Function('return 1')()}catch(e){denied=e.name==='EvalError'}ck(denied,'inherited codegen policy');"
+    "var previous=w.JSON;a.srcdoc='<p>replacement</p>';ck(a.contentWindow===w&&w.JSON!==previous,'navigation replaces realm not proxy');"
+    "a.remove();ck(w.JSON===undefined,'removed realm not revived');\n"
+    "for(var i=0;i<12;i++){var n=document.createElement('iframe');n.style.display='none';document.body.appendChild(n);ck(n.contentWindow.JSON&&n.contentWindow.JSON.parse('[1]')[0]===1,'sequential realm '+i);n.remove()}\n"
+    "box.textContent='FRAME-READY';box.addEventListener('click',function(e){ck(e.isTrusted,'native click');parent.postMessage('clicked','https://parent.test')});"
+    "addEventListener('message',function(e){if(e.origin==='https://parent.test'&&e.source===parent&&e.data==='reply')box.textContent='FRAME-MESSAGE'});");
+ }
  if(!strcmp(mode,"active-focus")){
+  strcat(child_page,"<style>#inside:focus{color:#123456}</style>");
   fake_site_reset();fake_site_add(parent,page);fake_site_add("https://child.test/child.html",child_page);
   fake_site_add("https://child.test/active.js",
     "var box=document.getElementById('inside');box.setAttribute('tabindex','0');box.textContent='FRAME-READY';"
@@ -161,6 +191,7 @@ int main(int argc,char **argv){mode=argc>1?argv[1]:"paint";blocked=!strcmp(mode,
     "var removed=document.createElement('span');removed.setAttribute('tabindex','-1');document.body.appendChild(removed);removed.focus();"
     "check(document.activeElement===removed,'negative tabindex');removed.remove();check(document.activeElement===document.body,'removed fallback');box.focus();"
     "parent.postMessage('clicked','https://parent.test');});"
+    "box.addEventListener('keydown',function(e){if(e.key==='x'&&e.isTrusted&&document.activeElement===box)box.textContent='FRAME-KEY'});"
     "addEventListener('message',function(e){if(e.origin==='https://parent.test'&&e.source===parent&&e.data==='reply'&&document.activeElement===box)box.textContent='FRAME-MESSAGE';});");
  }
  if(port_mode()){

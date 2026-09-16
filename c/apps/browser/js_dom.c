@@ -3399,6 +3399,9 @@ static void report_exc(JSContext *ctx, const char *where)
  * kill the tab -- so past a cap we stop pumping for this turn and let the main
  * loop breathe. The page stays broken, but the OS does not. */
 #define MAX_JOBS_PER_PUMP 100000
+#ifdef JS_RUNTIME_DIAGNOSTICS
+static unsigned page_job_diag_lines;
+#endif
 
 int js_dom_run_jobs(JSContext *ctx)
 {
@@ -3411,7 +3414,18 @@ int js_dom_run_jobs(JSContext *ctx)
     int n = 0;
     for (; n < MAX_JOBS_PER_PUMP; n++) {
         JSContext *jc = 0;
+#ifdef JS_RUNTIME_DIAGNOSTICS
+        /* Main-page reactions can also block Worker replies. Pair this native
+         * timestamp with port queue residence, not with host wall time. */
+        unsigned long long diag_begin=js_page_now_ms();
+#endif
         int r = JS_ExecutePendingJob(rt, &jc);
+#ifdef JS_RUNTIME_DIAGNOSTICS
+        unsigned long long diag_end=js_page_now_ms();
+        if(r&&diag_end>=diag_begin+100&&page_job_diag_lines++<256)
+            printf("[runtime-diag] page-job begin=%llu elapsed=%llu outcome=%s\n",
+                   diag_begin,diag_end-diag_begin,r<0?"error":"complete");
+#endif
         if (r == 0) break;                     /* queue empty */
         if (LOGIT_HAVE(js_platform_mutations_flush)) js_platform_mutations_flush(ctx);
         if (r < 0) { report_exc(jc ? jc : ctx, "promise job"); }

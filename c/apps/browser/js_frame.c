@@ -158,19 +158,25 @@ void js_domparser_set_docfree_sink(void (*fn)(struct dom_doc *));
 void js_domparser_offer_scripts(JSValueConst v);
 
 #define JSF_MAX_FRAMES 8
+/* Eight auxiliary realms per creator, with a separate process admission
+ * ceiling. Parent and network children must not free or consume each other's
+ * eight slots. Exhaustion remains a visible failure, never a parent alias. */
+#define JSF_TOTAL_FRAMES 64
 
 struct jsframe {
     int used;
     struct dom_doc *doc;     /* key: the frame document this context belongs to */
     JSContext *fctx;         /* the frame's own context, on the PAGE's runtime */
+    JSContext *owner;
+    int execute_scripts;
 };
 
-static struct jsframe g_frames[JSF_MAX_FRAMES];
+static struct jsframe g_frames[JSF_TOTAL_FRAMES];
 
 static struct jsframe *find_by_doc(struct dom_doc *doc)
 {
     if (!doc) return 0;
-    for (int i = 0; i < JSF_MAX_FRAMES; i++)
+    for (int i = 0; i < JSF_TOTAL_FRAMES; i++)
         if (g_frames[i].used && g_frames[i].doc == doc) return &g_frames[i];
     return 0;
 }
@@ -277,6 +283,7 @@ void js_frame_offer_script(struct node *n)
                        * Deliberately NOT marked done: a document adopted later
                        * must still get its scripts, and this branch made no
                        * decision about the node, it declined to look at it. */
+    if (!f->execute_scripts) return;
 
     /* Every path from here down has DECIDED about this node -- run, or refused
      * by name -- so it is marked before any of them, and the run-once flag
@@ -350,32 +357,37 @@ void js_frame_offer_script(struct node *n)
  * document, but idempotence costs one comparison and is cheaper than a
  * second invariant to maintain) reuses the existing context rather than
  * leaking a second one. */
-static JSValue js__frameAdopt(JSContext *pctx, JSValueConst t, int argc, JSValueConst *argv)
+static struct jsframe *frame_adopt(JSContext *pctx,JSValueConst value,int execute_scripts)
 {
-    (void)t;
-    if (argc < 1) return JS_UNDEFINED;
-    struct dom_doc *doc = js_domparser_doc_of(argv[0]);
-    if (!doc) return JS_UNDEFINED;   /* not a dp Document wrapper -- nothing to adopt */
-    if (find_by_doc(doc)) return JS_UNDEFINED;   /* already live */
+    struct dom_doc *doc = js_domparser_doc_of(value);
+    if (!doc) return NULL;
+    struct jsframe *existing=find_by_doc(doc);
+    if(existing)return existing->owner==pctx?existing:NULL;
 
-    int slot = -1;
-    for (int i = 0; i < JSF_MAX_FRAMES; i++) if (!g_frames[i].used) { slot = i; break; }
-    if (slot < 0) {
+    int slot = -1,owned=0;
+    for(int i=0;i<JSF_TOTAL_FRAMES;i++){
+        if(!g_frames[i].used){if(slot<0)slot=i;}
+        else if(g_frames[i].owner==pctx)owned++;
+    }
+    if (slot < 0 || owned>=JSF_MAX_FRAMES) {
         printf("[frame] refused: too many live frames (%d) -- this document's <script>s will not run\n",
                JSF_MAX_FRAMES);
-        return JS_UNDEFINED;
+        return NULL;
     }
 
     JSContext *fctx = JS_NewContext(JS_GetRuntime(pctx));
     if (!fctx) {
         printf("[frame] refused: could not create a JSContext for this frame (out of memory)\n");
-        return JS_UNDEFINED;
+        return NULL;
     }
+    JS_SetStringCodeGenerationAllowed(fctx,JS_GetStringCodeGenerationAllowed(pctx));
     frame_install_globals(fctx);
 
     g_frames[slot].used = 1;
     g_frames[slot].doc = doc;
     g_frames[slot].fctx = fctx;
+    g_frames[slot].owner = pctx;
+    g_frames[slot].execute_scripts = execute_scripts;
 
     /* Run whatever <script>s were ALREADY IN THIS DOCUMENT'S MARKUP when it
      * was parsed. The insertion sink above cannot see them -- nobody ever
@@ -389,8 +401,26 @@ static JSValue js__frameAdopt(JSContext *pctx, JSValueConst t, int argc, JSValue
      * before __frameAdopt returns, because js_platform.c's settle() fires the
      * element's `load` event immediately afterwards and a page is entitled to
      * observe the frame's own scripts' effects from its onload handler. */
-    js_domparser_offer_scripts(argv[0]);
+    if(execute_scripts)js_domparser_offer_scripts(value);
+    return &g_frames[slot];
+}
+static JSValue js__frameAdopt(JSContext *pctx, JSValueConst t, int argc, JSValueConst *argv)
+{
+    (void)t;if(argc)frame_adopt(pctx,argv[0],1);
     return JS_UNDEFINED;
+}
+
+/* Called only after the iframe's origin/sandbox gate has settled its parsed
+ * document. JSValues may cross contexts on this SAME runtime; duplicating an
+ * independent network frame's JSValue here would corrupt both runtimes.
+ * It is deliberately not an API to look up other documents by URL or id. */
+static JSValue js__frameGlobal(JSContext *ctx,JSValueConst t,int argc,JSValueConst *argv)
+{
+    (void)t;if(!argc)return JS_NULL;
+    struct jsframe *f=frame_adopt(ctx,argv[0],0);
+    if(!f)return JS_ThrowInternalError(ctx,"Cannot create auxiliary frame realm");
+    JS_SetStringCodeGenerationAllowed(f->fctx,JS_GetStringCodeGenerationAllowed(ctx));
+    return JS_GetGlobalObject(f->fctx);
 }
 
 /* __frameRelease(doc): end the browsing context without destroying the
@@ -410,20 +440,39 @@ static JSValue js__frameRelease(JSContext *pctx, JSValueConst t, int argc, JSVal
     return JS_UNDEFINED;
 }
 
-void js_frame_install(JSContext *pctx)
+void js_frame_install_inert(JSContext *pctx)
 {
     if (!pctx) return;
     js_domparser_set_script_sink(js_frame_offer_script);
     js_domparser_set_docfree_sink(frame_on_docfree);
     JSValue g = JS_GetGlobalObject(pctx);
-    JS_SetPropertyStr(pctx, g, "__frameAdopt", JS_NewCFunction(pctx, js__frameAdopt, "__frameAdopt", 1));
+    JS_SetPropertyStr(pctx, g, "__frameGlobal", JS_NewCFunction(pctx, js__frameGlobal, "__frameGlobal", 1));
     JS_SetPropertyStr(pctx, g, "__frameRelease", JS_NewCFunction(pctx, js__frameRelease, "__frameRelease", 1));
     JS_FreeValue(pctx, g);
+}
+void js_frame_install(JSContext *pctx)
+{
+    if(!pctx)return;
+    js_frame_install_inert(pctx);
+    JSValue g=JS_GetGlobalObject(pctx);
+    JS_SetPropertyStr(pctx,g,"__frameAdopt",JS_NewCFunction(pctx,js__frameAdopt,"__frameAdopt",1));
+    JS_FreeValue(pctx,g);
+}
+
+void js_frame_refresh_policy(JSContext *pctx)
+{
+    for(int i=0;i<JSF_TOTAL_FRAMES;i++)if(g_frames[i].used&&g_frames[i].owner==pctx)
+        JS_SetStringCodeGenerationAllowed(g_frames[i].fctx,JS_GetStringCodeGenerationAllowed(pctx));
+}
+void js_frame_close_context(JSContext *pctx)
+{
+    for(int i=0;i<JSF_TOTAL_FRAMES;i++)if(g_frames[i].used&&g_frames[i].owner==pctx)
+        frame_release_doc(g_frames[i].doc);
 }
 
 void js_frame_close_all(void)
 {
-    for (int i = 0; i < JSF_MAX_FRAMES; i++) {
+    for (int i = 0; i < JSF_TOTAL_FRAMES; i++) {
         if (!g_frames[i].used) continue;
         if (g_frames[i].fctx) JS_FreeContext(g_frames[i].fctx);
     }

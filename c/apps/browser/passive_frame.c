@@ -28,6 +28,8 @@
 #include "js_platform.h"
 #include "js_module.h"
 #include "focus.h"
+#define JS_FRAME_OPTIONAL
+#include "js_frame.h"
 #define JS_WORKER_OPTIONAL
 #include "js_worker.h"
 #define JS_PORTS_OPTIONAL
@@ -302,6 +304,7 @@ static void frame_policy_mutation(void *owner,const struct dom_mutation *m)
     /* This is a synchronous native mutation notification, not another JS
      * entry: a following eval/fetch in the same author callback sees it. */
     JS_SetStringCodeGenerationAllowed(f->ctx,!f->policy_failed&&iframe_policy_eval(f->csp));
+    if(LOGIT_HAVE(js_frame_refresh_policy))js_frame_refresh_policy(f->ctx);
 }
 static void frame_script_offer(struct node *n)
 {
@@ -429,6 +432,7 @@ static int frame_runtime_open(struct pframe *f)
     if(ok){
         f->ctx=js_page_ctx();dom_subscribe(f->root->doc,&f->policy_subscription,frame_policy_mutation,f);
         JS_SetStringCodeGenerationAllowed(js_page_ctx(),iframe_policy_eval(f->csp));
+        if(LOGIT_HAVE(js_frame_refresh_policy))js_frame_refresh_policy(js_page_ctx());
         ok=js_webapi_set_connect_policy(js_page_ctx(),frame_connect,f)&&frame_window_open_child(f)&&frame_focus_install(f);
         if(ok)css_context_set_interactive(1);
         js_dom_set_inline_handler_policy(frame_inline_handlers);
@@ -535,6 +539,23 @@ static int frame_runtime_pump(struct pframe *f)
     return changed;
 }
 void passive_frames_blur(void){focused_frame=0;}
+#ifdef JS_RUNTIME_DIAGNOSTICS
+static unsigned frame_input_lines;
+/* Element serials and fixed event names only: no author ids, classes, text,
+ * URLs or verification data. A painted box does not prove its input target. */
+static void frame_input_diag(struct pframe *f,const char *type,
+                             struct js_event_init *event,unsigned hit,unsigned checkbox,
+                             int allow,int click)
+{
+    if(strcmp(type,"mousedown")&&strcmp(type,"mouseup"))return;
+    if(frame_input_lines++>=64)return;
+    printf("[runtime-diag] frame-input slot=%d event=%s x=%d y=%d hit=%u checkbox=%u allowed=%d click=%d at=%llu\n",
+        (int)(f-frames),!strcmp(type,"mousedown")?"down":"up",event->client_x,event->client_y,
+        hit,checkbox,allow,click,js_page_now_ms());
+}
+#else
+#define frame_input_diag(f,type,event,hit,checkbox,allow,click) ((void)0)
+#endif
 int passive_frame_pointer(struct node *host,const char *type,struct js_event_init *event)
 {
 #ifdef PF_TEST_NO_INPUT
@@ -546,6 +567,14 @@ int passive_frame_pointer(struct node *host,const char *type,struct js_event_ini
     struct js_page_context *old=0;if(!js_page_context_activate(f->page,&old))return 0;
     struct layout_context *layout_old=layout_context_activate(f->layout);active_frame=f;
     struct node *n=0;browser_hittest_node_scroll(event->client_x,event->client_y,f->scroll_x,f->scroll_y,&n,0,0);
+#ifdef JS_RUNTIME_DIAGNOSTICS
+    /* Capture before dispatch: a click handler may remove its own node. */
+    unsigned diag_hit=n?n->serial:0,diag_checkbox=0;
+    for(struct node *check=n;check;check=check->parent){
+        const char *role=dom_attr(check,"role");
+        if(role&&!strcmp(role,"checkbox")){diag_checkbox=check->serial;break;}
+    }
+#endif
     if(!strcmp(type,"mousedown")){
         focused_frame=f;f->press=n;f->press_serial=n?n->serial:0;
         css_interaction_active(n);css_interaction_hover(n);
@@ -558,11 +587,15 @@ int passive_frame_pointer(struct node *host,const char *type,struct js_event_ini
         struct node *candidate=n;while(candidate&&!focus_is_focusable(candidate))candidate=candidate->parent;
         focus_set(candidate);f->want_focus=1;
     }
+    int dispatched_click=0;
     if(!strcmp(type,"mouseup")){
         css_interaction_active(0);
-        if(allow&&n==f->press&&frame_connected(f,n,f->press_serial))js_dom_dispatch(n,"click",event);
+        if(allow&&n==f->press&&frame_connected(f,n,f->press_serial)){
+            js_dom_dispatch(n,"click",event);dispatched_click=1;
+        }
         f->press=0;
     }
+    frame_input_diag(f,type,event,diag_hit,diag_checkbox,allow,dispatched_click);
     if(!strcmp(type,"wheel")&&allow){
         int max=layout_height()-f->height;if(max<0)max=0;
         f->scroll_y+=(int)event->delta_y;if(f->scroll_y<0)f->scroll_y=0;if(f->scroll_y>max)f->scroll_y=max;

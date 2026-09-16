@@ -100,6 +100,16 @@
 #include "dom.h"
 #include "html_tree.h"
 #include "js_dom.h"
+#include "../../../include/weaksym.h"
+/* Detached DOMParser users do not link the live-page DOM. Import/adopt is
+ * an optional integration door, not a reason the standalone parser cannot
+ * link. Leave its author-visible hook absent when no live DOM is available. */
+extern struct node *js_dom_root(void) LOGIT_WEAK;
+extern JSValue js_dom_wrap_node(JSContext *,struct node *) LOGIT_WEAK;
+extern JSValue js_dom_throw_dom(JSContext *,const char *,const char *) LOGIT_WEAK;
+LOGIT_WEAK_STUB(js_dom_root);
+LOGIT_WEAK_STUB(js_dom_wrap_node);
+LOGIT_WEAK_STUB(js_dom_throw_dom);
 #include <string.h>
 #include <stdlib.h>
 #include <stdint.h>
@@ -127,7 +137,7 @@ struct dp_arena {
 
 struct dp_handle { struct dp_arena *arena; struct node *n; uint32_t serial; };
 
-static JSClassID dp_cid;
+static JSClassID dp_cid, dp_doc_proto_cid;
 
 /* ============================================================================
  * MUTATION SURFACE -- added for js_frame.c (a same-origin second browsing
@@ -274,7 +284,12 @@ void js_domparser_offer_scripts(JSValueConst v)
  * first). Re-created on every install call; the previous context's values
  * become unreachable garbage inside a runtime that install's caller has
  * already torn down, never dereferenced again. */
-static JSValue g_dp_node_proto, g_dp_doc_proto;
+/* Correction to the singleton comment above: network documents now have
+ * simultaneous runtimes. Borrowed process-global prototypes would attach a
+ * child's object to another runtime (or to freed storage after child close).
+ * Class-prototype slots are owned by the calling JSContext and survive an
+ * author replacing globalThis.DOMParser. The second class is a prototype
+ * anchor only; both document and node wrappers retain the existing dp_cid. */
 
 static JSValue dp_wrap(JSContext *ctx, struct dp_arena *a, struct node *n);
 
@@ -1065,8 +1080,8 @@ static const JSCFunctionListEntry dp_doc_funcs[] = {
 #endif
 };
 
-static JSValueConst dp_proto_for(const struct node *n)
-{ return n->type == N_DOCUMENT ? g_dp_doc_proto : g_dp_node_proto; }
+static JSValue dp_proto_for(JSContext *ctx,const struct node *n)
+{ return JS_GetClassProto(ctx,n->type == N_DOCUMENT ? dp_doc_proto_cid : dp_cid); }
 
 /* One wrapper per node, cached in node->jsw exactly like js_dom.c's wrap() --
  * the PUBLIC half of that mechanism (dom.h's dom_set_wrapper), so
@@ -1076,7 +1091,9 @@ static JSValue dp_wrap(JSContext *ctx, struct dp_arena *a, struct node *n)
 {
     if (!n) return JS_NULL;
     if (n->jsw) return JS_DupValue(ctx, JS_MKPTR(JS_TAG_OBJECT, n->jsw));
-    JSValue o = JS_NewObjectProtoClass(ctx, dp_proto_for(n), dp_cid);
+    JSValue proto=dp_proto_for(ctx,n);
+    JSValue o = JS_NewObjectProtoClass(ctx, proto, dp_cid);
+    JS_FreeValue(ctx,proto);
     if (JS_IsException(o)) return o;
     struct dp_handle *h = malloc(sizeof *h);
     if (!h) { JS_FreeValue(ctx, o); return JS_NULL; }
@@ -1194,7 +1211,9 @@ void js_domparser_install(JSContext *ctx)
     if (!ctx) return;
     JSRuntime *rt = JS_GetRuntime(ctx);
     if (!dp_cid) JS_NewClassID(&dp_cid);
+    if (!dp_doc_proto_cid) JS_NewClassID(&dp_doc_proto_cid);
     JS_NewClass(rt, dp_cid, &dp_class);
+    JS_NewClass(rt, dp_doc_proto_cid, &dp_class);
 
     JSValue node_proto = JS_NewObject(ctx);
     JS_SetPropertyFunctionList(ctx, node_proto, dp_node_funcs, countof(dp_node_funcs));
@@ -1224,12 +1243,13 @@ void js_domparser_install(JSContext *ctx)
      * live exactly as long as the page runtime that installed them. */
     JS_DefinePropertyValueStr(ctx, ctor, "__dpNodeProto", node_proto, 0);
     JS_DefinePropertyValueStr(ctx, ctor, "__dpDocProto", doc_proto, 0);
-    g_dp_node_proto = node_proto;
-    g_dp_doc_proto = doc_proto;
+    JS_SetClassProto(ctx,dp_cid,JS_DupValue(ctx,node_proto));
+    JS_SetClassProto(ctx,dp_doc_proto_cid,JS_DupValue(ctx,doc_proto));
 
     JSValue g = JS_GetGlobalObject(ctx);
     JS_SetPropertyStr(ctx, g, "DOMParser", ctor);
-    JS_DefinePropertyValueStr(ctx, g, "__domParserTransfer",
+    if(LOGIT_HAVE(js_dom_root)&&LOGIT_HAVE(js_dom_wrap_node)&&LOGIT_HAVE(js_dom_throw_dom))
+      JS_DefinePropertyValueStr(ctx, g, "__domParserTransfer",
         JS_NewCFunction(ctx, dp_transfer_live, "__domParserTransfer", 3), 0);
     JS_FreeValue(ctx, g);
 }

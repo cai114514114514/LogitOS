@@ -31,6 +31,16 @@ static struct pf_window frame_windows[PF_WINDOWS];
 static struct pf_message frame_messages[PF_MESSAGES];
 static int frame_window_count,frame_message_count;
 static int frame_messages_pending(void){return frame_message_count!=0;}
+#ifdef JS_RUNTIME_DIAGNOSTICS
+/* Bounded transport metadata only: no origins, URLs, payload text, tokens or
+ * author property access. Observe refusal/drop as well as queue admission so
+ * a widget handling its own exception cannot hide the transport boundary. */
+static unsigned frame_diag_lines;
+static void frame_diag(struct pf_window *w,int up,const char *phase,size_t bytes)
+{if(frame_diag_lines++<128)printf("[runtime-diag] frame slot=%d up=%d phase=%s bytes=%u\n",(int)(w-frame_windows),up,phase,(unsigned)bytes);}
+#else
+#define frame_diag(w,up,phase,bytes) ((void)0)
+#endif
 
 static int frame_origin(const char *url,char *out)
 {
@@ -60,6 +70,7 @@ static JSValue frame_post_message(JSContext *ctx,JSValueConst self,int argc,
     (void)self;int index=-1;JS_ToInt32(ctx,&index,data[0]);
     if(index<0||index>=frame_window_count)return JS_UNDEFINED;
     struct pf_window *w=&frame_windows[index];struct pframe *f=w->child;
+    frame_diag(w,to_parent,"attempt",0);
     if((to_parent&&(!f||js_page_ctx()!=ctx||!active_frame||active_frame!=f))||
        (!to_parent&&ctx!=w->parent_ctx))return JS_ThrowTypeError(ctx,"Invalid window owner");
     if(argc<1)return JS_ThrowTypeError(ctx,"postMessage requires a message");
@@ -92,15 +103,16 @@ static JSValue frame_post_message(JSContext *ctx,JSValueConst self,int argc,
     JS_FreeValue(ctx,target);
     if(LOGIT_HAVE(js_ports_prepare)){
         struct js_port_packet *p=js_ports_prepare(ctx,argv[0],transfer);JS_FreeValue(ctx,transfer);
-        if(!p)return JS_EXCEPTION;
+        if(!p){frame_diag(w,to_parent,"clone-refused",0);return JS_EXCEPTION;}
         if(js_ports_packet_size(p)>PF_MESSAGE_BYTES||frame_message_count==PF_MESSAGES){
             js_ports_discard(p);return js_dom_throw_dom(ctx,"QuotaExceededError","Window message queue limit");
         }
         if(!js_ports_commit(ctx,p)){js_ports_discard(p);return JS_EXCEPTION;}
-        if(!f||!frame_window_connected(w)){js_ports_discard(p);return JS_UNDEFINED;}
+        if(!f||!frame_window_connected(w)){frame_diag(w,to_parent,"no-recipient",0);js_ports_discard(p);return JS_UNDEFINED;}
         struct pf_message *m=&frame_messages[frame_message_count++];memset(m,0,sizeof *m);
         m->window=w;m->epoch=w->epoch;m->to_parent=to_parent;m->packet=p;
-        strcpy(m->origin,source);strcpy(m->target,dest);return JS_UNDEFINED;
+        strcpy(m->origin,source);strcpy(m->target,dest);
+        frame_diag(w,to_parent,"queued",js_ports_packet_size(p));return JS_UNDEFINED;
     }
     JS_FreeValue(ctx,transfer);
     size_t len=0;uint8_t *serialized=JS_WriteObject(ctx,&len,argv[0],JS_WRITE_OBJ_REFERENCE);
@@ -195,6 +207,9 @@ static void frame_message_discard(struct pf_message *m)
 {if(m->packet&&LOGIT_HAVE(js_ports_discard))js_ports_discard(m->packet);free(m->bytes);}
 static void frame_windows_reset(void)
 {
+#ifdef JS_RUNTIME_DIAGNOSTICS
+    frame_diag_lines=0;
+#endif
     for(int i=0;i<frame_message_count;i++)frame_message_discard(&frame_messages[i]);
     frame_message_count=0;
     for(int i=0;i<frame_window_count;i++){
@@ -214,11 +229,11 @@ static int frame_messages_pump(void)
         struct pf_message m=frame_messages[0];
         memmove(frame_messages,frame_messages+1,(size_t)(--frame_message_count)*sizeof *frame_messages);
         struct pf_window *w=m.window;struct pframe *f=w->child;char dest[PF_URL];
-        if(!f||m.epoch!=w->epoch||!frame_window_connected(w)){frame_message_discard(&m);continue;}
+        if(!f||m.epoch!=w->epoch||!frame_window_connected(w)){frame_diag(w,m.to_parent,"drop-stale",0);frame_message_discard(&m);continue;}
         if(m.to_parent)strcpy(dest,w->origin);else if(!frame_origin(f->url,dest)){frame_message_discard(&m);continue;}
-        if(strcmp(m.target,"*")&&strcmp(m.target,dest)){frame_message_discard(&m);continue;}
+        if(strcmp(m.target,"*")&&strcmp(m.target,dest)){frame_diag(w,m.to_parent,"drop-origin",0);frame_message_discard(&m);continue;}
         struct js_page_context *old=0;
-        if(!js_page_context_activate(m.to_parent?0:f->page,&old)){frame_message_discard(&m);continue;}
+        if(!js_page_context_activate(m.to_parent?0:f->page,&old)){frame_diag(w,m.to_parent,"owner-busy",0);frame_message_discard(&m);continue;}
         struct layout_context *layout_old=0;if(!m.to_parent)layout_old=layout_context_activate(f->layout);
         active_frame=m.to_parent?0:f;
         JSContext *ctx=js_page_ctx();JSValue args[4];
@@ -230,6 +245,7 @@ static int frame_messages_pump(void)
         js_page_slice_begin();
         JSValue result=JS_IsException(args[0])?JS_EXCEPTION:JS_Call(ctx,m.to_parent?w->dispatch:f->message_dispatch,JS_UNDEFINED,4,(JSValueConst *)args);
         if(!JS_IsException(result)){
+            frame_diag(w,m.to_parent,"dispatch",0);
             JSValue delivered=js_dom_deliver_window_message(result);
             JS_FreeValue(ctx,result);result=delivered;
         }

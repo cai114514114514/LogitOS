@@ -28,6 +28,7 @@ the USB devices unplugged: the harness must FAIL).
 
 import json
 import os
+from pathlib import Path
 import re
 import signal
 import socket
@@ -35,6 +36,13 @@ import subprocess
 import sys
 import tempfile
 import time
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "tools"))
+from as_examples import guest_command
+sys.path.insert(0, str(ROOT / "tests/unit"))
+from PIL import Image
+from as_input_test import events_frame
 
 # run-dma-drivers executes this file in an instrument namespace. Resolve the
 # helper from this file, not from that namespace loader's artifact directory.
@@ -210,6 +218,28 @@ try:
         return out
 
 
+    def wait_events_window(timeout):
+        # Kernel logging may split EVENTS-READY inside the serial stream even
+        # after gui.flush() has presented the window. Check actual scanout,
+        # using the same canvas/text oracle as native input acceptance. This
+        # does not waive any later device-delivery or button assertions.
+        screenshot = Path(tmp) / "events-ready.ppm"
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline and proc.poll() is None:
+            reply = qcmd({"execute": "screendump", "arguments": {"filename": str(screenshot)}})
+            if reply is not None and "error" not in reply:
+                with Image.open(screenshot) as image:
+                    frame = image.convert("RGB")
+                try:
+                    events_frame(frame)
+                    frame.save(Path(tmp) / "events-ready.png")
+                    return True
+                except AssertionError:
+                    pass
+            pump(0.2)
+        return False
+
+
     # ------------------------------------------------------------------- boot
     if not wait_for("LOGIT_BOOT_OK", 240):
         die("kernel did not boot with the PS/2 controller removed -- i8042=off "
@@ -265,8 +295,9 @@ try:
     pump(5)
     qcmd({"execute": "qmp_capabilities"})
 
-    ser.sendall(b"as /usr/as/examples/events.as &\n")
-    if not wait_for("EVENTS-READY", 120):
+    events_command = guest_command(ROOT / "fsroot/as/examples/events.as", background=True)
+    ser.sendall((events_command + "\n").encode())
+    if not wait_events_window(40):
         die("events.as did not open its window")
     pump(1.5)
 
@@ -454,6 +485,11 @@ finally:
     try:
         stop_owned(proc)
     finally:
+        # Preserve the whole transcript alongside the readiness screenshot.
+        # A tail alone loses the interleaved line that may explain a failure.
+        if "log" in globals():
+            (Path(tmp) / "serial.log").write_text(log)
+        print("USB guest evidence:", tmp)
         for handle in (qf, qmp, ser, qerr):
             if handle is not None:
                 try:

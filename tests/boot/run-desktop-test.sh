@@ -51,7 +51,8 @@ APW='alice-correct-horse-battery'
 BPW='bob-a-different-one-entirely'
 BADPW='alice-correct-horse-batter'
 ACCENT='0x112233'
-SC=/usr/as/examples/setcheck.as
+# Execute the packaged native artifact; this source is now A3.
+SC=/usr/as/bin/setcheck.aex
 
 WORK="$(mktemp -d)"
 DISKC="$WORK/disk.img"
@@ -184,8 +185,8 @@ drive1() {
     say "login -i"
     # A SYSTEM default, written as root into /etc/settings.conf. Everything
     # later that says "the defaults still reach this user" is about this value.
-    say "as $SC set ui.accent $ACCENT"
-    say "as $SC check ui.accent $ACCENT"
+    say "$SC set ui.accent $ACCENT"
+    say "$SC check ui.accent $ACCENT"
     say "login -a alice"
     waitn "New password:" 1 30
     say "$APW"
@@ -243,9 +244,9 @@ drive2() {
     waitn "Password:" 2 30
     say "$APW"
     waitn "LogitOS shell" 1 120
-    say "as $SC check ui.accent $ACCENT"
-    say "as $SC set ui.dark 1"
-    say "as $SC check ui.dark 1"
+    say "$SC check ui.accent $ACCENT"
+    say "$SC set ui.dark 1"
+    say "$SC check ui.dark 1"
     say "cat /home/alice/.config/settings.conf"
     say "stat /home/alice/.config/settings.conf"
     say "stat /home/alice/.config/settings.conf"
@@ -320,8 +321,8 @@ drive3() {
     waitn "Password:" 1 30
     say "$APW"
     waitn "LogitOS shell" 1 120
-    say "as $SC check ui.dark 1"
-    say "as $SC check ui.accent $ACCENT"
+    say "$SC check ui.dark 1"
+    say "$SC check ui.accent $ACCENT"
     say "cat /etc/settings.conf"
     say "stat /home/alice/.config/settings.conf"
     say "stat /home/alice/.config/settings.conf"
@@ -355,11 +356,11 @@ drive4() {
     waitn "Password:" 1 30
     say "$BPW"
     waitn "LogitOS shell" 1 120
-    say "as $SC check ui.dark 0"
-    say "as $SC check ui.accent $ACCENT"
+    say "$SC check ui.dark 0"
+    say "$SC check ui.accent $ACCENT"
     say "cat /home/alice/.config/settings.conf"
     say "cat /home/alice/.config/settings.conf"
-    say "as $SC set ui.dark 1"
+    say "$SC set ui.dark 1"
     say "echo BOOT4-DONE"
 }
 boot drive4 "$WORK/b4.log" BOOT4-DONE 8

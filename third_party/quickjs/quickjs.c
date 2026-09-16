@@ -1074,6 +1074,10 @@ void JS_SetStringCodeGenerationAllowed(JSContext *ctx, JS_BOOL allowed)
 {
     ctx->string_code_gen_disabled = !allowed;
 }
+JS_BOOL JS_GetStringCodeGenerationAllowed(JSContext *ctx)
+{
+    return !ctx->string_code_gen_disabled;
+}
 
 static JSValue js_throw_eval_policy(JSContext *ctx, const char *fmt, ...);
 
@@ -1732,6 +1736,19 @@ void JS_SetRuntimeOpaque(JSRuntime *rt, void *opaque)
 }
 
 /* default memory allocation functions with memory limitation */
+/* LogitOS owns both this default allocator and the underlying arena. Its
+ * sized transactions avoid a separately locked usable-size query for accounting;
+ * custom JS_NewRuntime2 allocators and other hosts keep their original ABI.
+ * The allocation-heavy consumer test observes 3,329,510 -> 1,742,898 locked
+ * transactions with identical output/count/bytes; this is NOT a wall-time
+ * claim. Do not substitute requested size for actual usable capacity here. */
+/* Correction: LOGIT_OS alone also enables platform semantics in hosted
+ * probes which do NOT link mini-libc. Require the actual freestanding build
+ * contract, not merely that semantic feature flag (js_sem_probe found this). */
+#if ((defined(LOGIT_OS) && __STDC_HOSTED__ == 0) || defined(QUICKJS_TEST_SIZED_ALLOC)) && !defined(QUICKJS_NO_SIZED_ALLOC)
+#define QJS_SIZED_ALLOC 1
+#include "../../c/apps/libc/include/logit_malloc.h"
+#endif
 static size_t js_def_malloc_usable_size(const void *ptr)
 {
 #if defined(__APPLE__)
@@ -1751,6 +1768,7 @@ static size_t js_def_malloc_usable_size(const void *ptr)
 static void *js_def_malloc(JSMallocState *s, size_t size)
 {
     void *ptr;
+    size_t capacity;
 
     /* Do not allocate zero bytes: behavior is platform dependent */
     assert(size != 0);
@@ -1758,12 +1776,19 @@ static void *js_def_malloc(JSMallocState *s, size_t size)
     if (unlikely(s->malloc_size + size > s->malloc_limit))
         return NULL;
 
+#ifdef QJS_SIZED_ALLOC
+    ptr = __libc_malloc_size(size,&capacity);
+#else
     ptr = malloc(size);
+#endif
     if (!ptr)
         return NULL;
 
     s->malloc_count++;
-    s->malloc_size += js_def_malloc_usable_size(ptr) + MALLOC_OVERHEAD;
+#ifndef QJS_SIZED_ALLOC
+    capacity = js_def_malloc_usable_size(ptr);
+#endif
+    s->malloc_size += capacity + MALLOC_OVERHEAD;
     return ptr;
 }
 
@@ -1773,34 +1798,43 @@ static void js_def_free(JSMallocState *s, void *ptr)
         return;
 
     s->malloc_count--;
+#ifdef QJS_SIZED_ALLOC
+    s->malloc_size -= __libc_free_size(ptr) + MALLOC_OVERHEAD;
+#else
     s->malloc_size -= js_def_malloc_usable_size(ptr) + MALLOC_OVERHEAD;
     free(ptr);
+#endif
 }
 
 static void *js_def_realloc(JSMallocState *s, void *ptr, size_t size)
 {
-    size_t old_size;
+    size_t old_size,capacity;
 
     if (!ptr) {
         if (size == 0)
             return NULL;
         return js_def_malloc(s, size);
     }
-    old_size = js_def_malloc_usable_size(ptr);
     if (size == 0) {
-        s->malloc_count--;
-        s->malloc_size -= old_size + MALLOC_OVERHEAD;
-        free(ptr);
+        js_def_free(s,ptr);
         return NULL;
     }
+    old_size = js_def_malloc_usable_size(ptr);
     if (s->malloc_size + size - old_size > s->malloc_limit)
         return NULL;
 
+#ifdef QJS_SIZED_ALLOC
+    ptr = __libc_realloc_size(ptr,size,&capacity);
+#else
     ptr = realloc(ptr, size);
+#endif
     if (!ptr)
         return NULL;
 
-    s->malloc_size += js_def_malloc_usable_size(ptr) - old_size;
+#ifndef QJS_SIZED_ALLOC
+    capacity = js_def_malloc_usable_size(ptr);
+#endif
+    s->malloc_size += capacity - old_size;
     return ptr;
 }
 

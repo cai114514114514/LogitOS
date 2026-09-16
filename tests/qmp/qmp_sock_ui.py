@@ -31,6 +31,7 @@ serial console to drive /bin/sh and read the guest back.
 import http.server
 import json
 import os
+from pathlib import Path
 import re
 import socket
 import subprocess
@@ -38,6 +39,10 @@ import sys
 import tempfile
 import threading
 import time
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "tools"))
+from as_examples import guest_command
 
 ISO, DISK = sys.argv[1], sys.argv[2]
 QEMU = os.environ.get("QEMU", "qemu-system-x86_64")
@@ -276,7 +281,8 @@ if not wait_for("LOGIT_BOOT_OK", 240):
 pump(6)                                       # Finder + Clock settle
 qcmd({"execute": "qmp_capabilities"})
 
-ser.sendall(b"as /usr/as/examples/events.as &\n")
+events_command = guest_command(ROOT / "fsroot/as/examples/events.as", background=True)
+ser.sendall((events_command + "\n").encode())
 if not wait_for("EVENTS-READY", 120):
     die("events.as did not open its window")
 pump(1)
