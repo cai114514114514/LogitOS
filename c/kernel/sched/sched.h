@@ -17,7 +17,10 @@ struct thread;      /* opaque outside sched.c */
 #define THREAD_BLOCKED  1
 
 void sched_init(void);                                  /* adopt the boot context as "main" */
-void thread_create(void (*entry)(void), const char *name);
+/* Returns 0 on success, -1 when the thread struct or stack allocation
+ * failed. Callers that cannot proceed without the thread must check this:
+ * capture.c used to latch its engine "up" on a thread that never existed. */
+int thread_create(void (*entry)(void), const char *name);
 int  thread_create_user(const char *name, uint64_t entry, uint64_t ustack, void *data, uint64_t cr3);
 /* Loader-owned TLS, initialised before the new thread becomes runnable.
  * fsbase belongs to the NEW address space and must already be a valid TCB;

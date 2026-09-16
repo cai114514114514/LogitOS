@@ -335,7 +335,16 @@ int snd_cap_open(void *owner, struct logit_sndfmt *f)
     /* Scheduler publication cannot run under an audio spinlock. The claimed
      * stream is already initialised, and g_cap_running keeps the worker idle. */
     if (!g_cap_engine_up) {
-        thread_create(kcapture_thread, "kcapture");
+        /* Latch only on success. The flag used to be set unconditionally,
+         * so one allocation failure at first open silenced the microphone
+         * permanently: reads then waited out their timeout and returned 0
+         * bytes with no error and no log (2026-09-16 audit). */
+        if (thread_create(kcapture_thread, "kcapture") != 0) {
+            g_cs.used = 0;
+            g_cs.ringmem = 0;
+            kfree(ringmem);
+            return SND_E_NOMEM;
+        }
         g_cap_engine_up = 1;
     }
     fl = spin_lock_irqsave(&g_cap_lock);

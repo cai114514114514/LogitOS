@@ -584,12 +584,12 @@ void sched_init(void)
 
 extern void kthread_bootstrap(void);   /* sched.c: releases g_sched_lock, calls entry, exits */
 
-void thread_create(void (*entry)(void), const char *name)
+int thread_create(void (*entry)(void), const char *name)
 {
     struct thread *t = kmalloc(sizeof *t);
-    if (!t) return;
+    if (!t) return -1;
     t->stack = kmalloc(STACK_SIZE);
-    if (!t->stack) { kfree(t); return; }
+    if (!t->stack) { kfree(t); return -1; }
     t->kstack_top = 0;
     t->cr3 = vmm_kernel_cr3();
     t->data = NULL;
@@ -643,6 +643,7 @@ void thread_create(void (*entry)(void), const char *name)
     g_ring->next = t;
     all_link(t);
     spin_unlock_irqrestore(&g_sched_lock, f);
+    return 0;
 }
 
 /* Create a ring-3 process thread: first switch drops to `entry` in user mode
