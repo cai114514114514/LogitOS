@@ -184,10 +184,15 @@ int uthread_self(void)
  *     for the BKL does so with IF=0 and can never acknowledge the IPI), so it
  *     needs the BKL dropped and re-taken around it -- a window in the middle of
  *     a thread teardown, bought for a guarantee it does not give;
- *   - it GIVES UP SILENTLY after a bounded spin of fifty million pauses. On a
+ *   - it GAVE UP SILENTLY after a bounded spin of fifty million pauses. On a
  *     core that does not answer, that spin is the dominant cost of ending a
  *     thread -- it made 2000 create/join cycles take longer than the whole rest
- *     of the test -- and at the end of it the stale entry is still there.
+ *     of the test. CORRECTION (2026-09-16, audit): the give-up is gone --
+ *     tlb_flush_all() now fail-stops the machine when the ack window is
+ *     missed, so the spin is a live cliff for any core parked IF=0 longer
+ *     than TLB_WAIT_SPINS, not a silent degradation. The generation counter
+ *     below is therefore the primary mechanism again, not the cleanup for a
+ *     tolerated residue.
  *
  * So the generation counter in c/kernel/sched/sched.c does the whole job
  * instead: bump it here, and every core reloads CR3 the next time it goes

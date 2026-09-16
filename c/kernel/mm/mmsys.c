@@ -245,10 +245,16 @@ long mm_syscall(long num, long a, long b, long c)
          * vmm_unmap_range_in() now shoots the other cores down before it hands
          * a frame back (see the header above it -- until 2026-08-28 it did
          * neither, and a sibling thread could keep writing through a stale
-         * WRITABLE entry into a frame the PMM had already reissued). That flush
-         * is BOUNDED and can give up: a core sitting in some IF=0 region that
-         * is not spin_lock()'s poll loop never acks, tlb_late_count() records
-         * it, and that core keeps the stale entry until its next CR3 switch.
+         * WRITABLE entry into a frame the PMM had already reissued). CORRECTION
+         * (2026-09-16, audit): that flush is no longer "BOUNDED and can give
+         * up" -- tlb_flush_all() fail-stops the machine when a core misses the
+         * ack window, so tlb_late_count() only moves for the same-class
+         * bookkeeping, not as a degradation path. The gen bump below stays as
+         * belt-and-braces for any future bounded variant, but the honest
+         * description of today's behaviour is: a core stuck IF=0 longer than
+         * TLB_WAIT_SPINS (drivers do poll that long) takes the whole machine
+         * down. Reinstating a bounded degrade is a design decision, not a
+         * forgotten line.
          *
          * c/kernel/sched/uthread.c pairs its unmap with sched_tlb_gen_bump()
          * for exactly that residue -- every core reloads CR3 at its next pass
