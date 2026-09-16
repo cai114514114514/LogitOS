@@ -12,7 +12,7 @@ int st_engine_undo(StEngine *e,int redo)
 int st_engine_select(StEngine *e,int caret,int anchor)
 {
     StDocument *d=st_current(e);if(!d||!st_boundary(d->text,d->length,caret)||!st_boundary(d->text,d->length,anchor))return -1;
-    d->caret=caret;d->anchor=anchor;e->state.completion_count=0;return 0;
+    d->caret=caret;d->anchor=anchor;st_engine_dismiss_completion(e);return 0;
 }
 void st_engine_viewport(StEngine *e,int top,int left)
 {StDocument *d=st_current(e);if(d){int last=0;for(int i=0;i<d->length;i++)if(d->text[i]=='\n')last++;d->top=top<0?0:top>last?last:top;d->left=left<0?0:left;}}

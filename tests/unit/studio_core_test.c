@@ -28,7 +28,14 @@ static void settle(StEngine *e)
     CHECK("child-deadline",0);
 }
 static int candidate(StEngine *e,const char *s)
-{st_engine_complete(e);const StState *v=st_engine_state(e);for(int i=0;i<v->completion_count;i++)if(!strcmp(v->completions[i].label,s))return 1;return 0;}
+{
+    st_engine_complete(e);
+    for(int i=0;i<5000&&st_engine_completion_busy(e);i++){st_engine_tick(e);usleep(1000);}
+    CHECK("completion-deadline",!st_engine_completion_busy(e));
+    const StState *v=st_engine_state(e);
+    for(int i=0;i<v->completion_count;i++)if(!strcmp(v->completions[i].label,s))return 1;
+    return 0;
+}
 int main(int argc,char **argv)
 {
     CHECK("arguments",argc==3);signal(SIGPIPE,SIG_IGN);Host host={0};
@@ -61,15 +68,25 @@ int main(int argc,char **argv)
     st_engine_project(e2,argv[2]);st_engine_open(e2,other);replace(e2,"import m\nm.");
     CHECK("isolated-module-context",!candidate(e2,"unsaved_symbol"));CHECK("first-context-retained",candidate(e,"unsaved_symbol"));
     st_engine_destroy(e2);
-    replace(e,"x =\ny =\n");st_engine_start(e,1);settle(e);
+    int completion_count = st_engine_state(e)->completion_count;
+    st_engine_start(e, 1);
+    CHECK("completion-survives-check-start",
+          st_engine_state(e)->completion_count == completion_count);
+    settle(e);
+    CHECK("completion-survives-check-finish",
+          st_engine_state(e)->completion_count == completion_count);
+    st_engine_dismiss_completion(e);
+    st_engine_tick(e);
+    CHECK("completion-stays-dismissed", st_engine_state(e)->completion_count == 0);
+    replace(e,"# aether: 3.0\nx: i64 = \"中文\"\ny: i64 = true\n");st_engine_start(e,1);settle(e);
     const StState *v=st_engine_state(e);CHECK("structured-check",v->problem_count==2&&WEXITSTATUS(v->runner.status)==1);
-    CHECK("diagnostic-location",v->problems[1].line==2&&v->problems[1].column==4);
-    CHECK("problem-navigation",st_engine_select_problem(e,1)==0&&st_engine_document(e)->caret==7);
+    CHECK("diagnostic-location",v->problems[1].line==3&&v->problems[1].column==10);
+    CHECK("problem-navigation",st_engine_select_problem(e,1)==0&&st_engine_document(e)->caret==v->problems[1].start);
     st_engine_insert(e,"1",1);CHECK("stale-navigation",st_engine_select_problem(e,0)<0);
-    replace(e,"print(1)\n");st_engine_start(e,1);settle(e);CHECK("valid-check",v->problem_count==0);
-    replace(e,"x =\n");st_engine_start(e,1);st_engine_insert(e," ",1);st_engine_undo(e,0);settle(e);
+    replace(e,"# aether: 3.0\ndef main() -> None:\n    print(1)\n");st_engine_start(e,1);settle(e);CHECK("valid-check",v->problem_count==0);
+    replace(e,"# aether: 3.0\nx =\n");st_engine_start(e,1);st_engine_insert(e," ",1);st_engine_undo(e,0);settle(e);
     CHECK("stale-diagnostics",v->problem_count==0&&strstr(v->notice,"older version"));
-    replace(e,"print(42)\n");st_engine_start(e,0);settle(e);
+    replace(e,"# aether: 3.0\ndef main() -> None:\n    print(42)\n");st_engine_start(e,0);settle(e);
     CHECK("real-run-output",!v->runner.mode&&WIFEXITED(v->runner.status)&&WEXITSTATUS(v->runner.status)==0&&strstr(v->runner.text,"42"));
     st_engine_tick(e);CHECK("run-output-retained",!v->runner.mode);
     /* The actual engine still launches `as FILE`. This source must go through
@@ -136,7 +153,54 @@ int main(int argc,char **argv)
           !strcmp(v->problems[0].code, "AS3403") && v->problems[0].line == 5);
     CHECK("borrow-navigation", st_engine_select_problem(e, 0) == 0 &&
           st_engine_document(e)->caret == v->problems[0].start);
-    replace(e,"while true:\n    x = 1\n");st_engine_start(e,0);usleep(10000);st_engine_stop(e);settle(e);
+    /* An imported unsaved buffer must win over a valid disk module. The error
+     * belongs to that buffer's UTF-8 byte range, never to the entry tab. */
+    st_engine_activate(e,1);
+    replace(e,"# aether: 3.0\n# 导入模块的未保存版本，错误只能定位到这个文件。\ndef unsaved_symbol() -> i64:\n    return \"中文\"\n");
+    st_engine_activate(e,0);
+    replace(e,"# aether: 3.0\nfrom m import unsaved_symbol\ndef main() -> None:\n    pass\n");
+    st_engine_start(e,1);settle(e);
+    CHECK("unsaved-import-check",v->problem_count==1&&!strcmp(v->problems[0].path,module)&&v->problems[0].line==4);
+    CHECK("import-problem-navigation",st_engine_select_problem(e,0)==0&&v->active==1&&st_engine_document(e)->caret==v->problems[0].start);
+    st_engine_insert(e," ",1);
+    CHECK("import-stale-navigation",st_engine_select_problem(e,0)<0);
+    replace(e,"# aether: 3.0\ndef unsaved_symbol() -> i64:\n    return 8\n");
+    st_engine_activate(e,0);st_engine_start(e,1);settle(e);
+    CHECK("unsaved-import-fixed",v->problem_count==0&&WEXITSTATUS(v->runner.status)==0);
+    st_engine_start(e,1);
+    st_engine_activate(e,1);st_engine_insert(e," ",1);st_engine_undo(e,0);
+    st_engine_activate(e,0);settle(e);
+    CHECK("stale-import-diagnostics",v->problem_count==0&&strstr(v->notice,"older version"));
+    st_engine_activate(e,1);
+    replace(e,"# aether: 3.0\ndef unsaved_symbol() -> i64:\n    return 8\ndef _hidden() -> i64:\n    return 1\n");
+    st_engine_activate(e,0);
+    replace(e,"# aether: 3.0\nimport m as tools\ndef main() -> None:\n    tools.unsa");
+    CHECK("native-alias-completion",candidate(e,"unsaved_symbol"));
+    CHECK("native-prefix-completion",v->completion_count==1);
+    st_engine_complete(e);
+    st_engine_dismiss_completion(e);
+    for(int i=0;i<5000&&st_engine_completion_busy(e);i++){st_engine_tick(e);usleep(1000);}
+    CHECK("late-completion-dismissed",!st_engine_completion_busy(e)&&v->completion_count==0);
+    replace(e,"# aether: 3.0\nimport m as tools\ndef main() -> None:\n    tools.");
+    CHECK("native-private-completion",!candidate(e,"_hidden"));
+    st_engine_complete(e);
+    st_engine_activate(e,1);
+    st_engine_insert(e,"# changed\n",10);
+    st_engine_activate(e,0);
+    for(int i=0;i<5000&&st_engine_completion_busy(e);i++){st_engine_tick(e);usleep(1000);}
+    CHECK("stale-completion-import",!st_engine_completion_busy(e)&&v->completion_count==0);
+    CHECK("native-refresh-completion",candidate(e,"unsaved_symbol"));
+    /* The A3 class syntax is deliberately outside the old completion parser's
+     * method shape. The compiler must supply both the type and visibility. */
+    replace(e, "# aether: 3.0\nclass Box:\n    value: i64\n"
+               "    def read(self) -> i64:\n        return self.value\n"
+               "    def _secret(self) -> i64:\n        return self.value\n"
+               "def main() -> None:\n    Box(7).");
+    CHECK("native-constructor-field", candidate(e, "value"));
+    CHECK("native-constructor-method", candidate(e, "read"));
+    CHECK("native-private-method", !candidate(e, "_secret"));
+    CHECK("native-member-count", v->completion_count == 2);
+    replace(e,"# aether: 3.0\ndef main() -> None:\n    while true:\n        pass\n");st_engine_start(e,0);usleep(10000);st_engine_stop(e);settle(e);
     CHECK("cancel",v->runner.cancelled&&WIFSIGNALED(v->runner.status));
     st_engine_activate(e,1);CHECK("shutdown",st_engine_shutdown(e)==0);st_engine_destroy(e);
     e=st_engine_create(&api);st_engine_restore(e,NULL);v=st_engine_state(e);

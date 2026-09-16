@@ -52,7 +52,7 @@ static void draw_code(const StDocument *d)
         if(!focus&&caret_x>=left&&caret_x<right)gui_rect(caret_x,y+2,1,17,AUI_ACCENT);
         gui_clip(0,0,0,0);
         if(state->problem_tab==state->active&&state->problem_revision==d->revision)
-            for(int i=0;i<state->problem_count;i++)if(state->problems[i].start>=p&&state->problems[i].start<=end)gui_rect(edit_x+43,y+7,5,5,AUI_ERROR);
+            for(int i=0;i<state->problem_count;i++)if(!strcmp(state->problems[i].path,d->path)&&state->problems[i].start>=p&&state->problems[i].start<=end)gui_rect(edit_x+43,y+7,5,5,AUI_ERROR);
         if(end==d->length){
             if(partial_code&&y+ST_ROW<out_y)gui_rect(edit_x,y+ST_ROW,edit_w,out_y-y-ST_ROW,AUI_BG);
             for(int j=screen_row+1;j<128;j++)row_keys[j]=0;

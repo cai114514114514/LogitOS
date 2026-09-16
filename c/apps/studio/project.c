@@ -97,7 +97,7 @@ int st_engine_remove_entry(StEngine *e,const char *path)
             break;
         }
     }
-    e->state.problem_tab=-1;e->state.problem_count=0;e->state.completion_count=0;
+    e->state.problem_tab=-1;e->state.problem_count=0;st_engine_dismiss_completion(e);
     e->check_pending=0;st_engine_refresh(e);st_session_save(e);st_engine_notice(e,"Deleted");return 0;
 failed:
     for(int i=0;i<e->state.count;i++)if(!strcmp(e->state.docs[i].path,target))e->state.docs[i].checkpoint=0;
@@ -109,11 +109,11 @@ failed:
 int st_engine_open(StEngine *e,const char *path)
 {
     if(strlen(path)>=sizeof e->state.docs[0].path){st_engine_notice(e,"Path is too long");return -1;}
-    for(int i=0;i<e->state.count;i++)if(!strcmp(e->state.docs[i].path,path)){e->state.active=i;e->state.completion_count=0;return 0;}
+    for(int i=0;i<e->state.count;i++)if(!strcmp(e->state.docs[i].path,path)){e->state.active=i;st_engine_dismiss_completion(e);return 0;}
     struct stat st;if(stat(path,&st)==0&&S_ISDIR(st.st_mode)){return st_engine_project(e,path);}
     if(e->state.count==ST_TABS){st_engine_notice(e,"Eight documents are open. Close a tab before opening another.");return -1;}
     int r=st_open_document(&e->state.docs[e->state.count],path);if(r<0){st_engine_notice(e,r==-2?"File no longer exists and has no unsaved recovery draft.":"Could not open complete UTF-8 text (limit 1 MiB). No file was changed.");return -1;}
-    e->state.active=e->state.count++;e->state.completion_count=0;e->check_due=st_now(e)+850;e->check_pending=1;
+    e->state.active=e->state.count++;st_engine_dismiss_completion(e);e->check_due=st_now(e)+850;e->check_pending=1;
     st_engine_notice(e,r?"Recovered unsaved draft. Save checks the original file for conflicts.":"Document opened");st_session_save(e);return 0;
 }
 

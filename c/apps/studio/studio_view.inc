@@ -34,7 +34,7 @@ static void draw(void)
     gui_rect(edit_x,out_y,edit_w,h-out_y-28,AUI_SURFACE);gui_rect(edit_x,out_y,edit_w,1,AUI_BORDER);
     aui_text_sz(edit_x+12,out_y+10,state->runner.mode?"PROBLEMS / SYNTAX CHECK":"PROGRAM OUTPUT",AUI_MUTED,12);
     if(state->runner.mode){for(int i=output_top,y=out_y+35;i<state->problem_count&&y<h-30;i++,y+=ST_ROW){char line[360];
-            snprintf(line,sizeof line,"%s  %d:%d  %s",state->problems[i].code,state->problems[i].line,state->problems[i].column,state->problems[i].message);
+            snprintf(line,sizeof line,"%s  %s:%d:%d  %s",state->problems[i].code,basename_(state->problems[i].path),state->problems[i].line,state->problems[i].column,state->problems[i].message);
             aui_text_ellipsis(edit_x+12,y,edit_w-24,line,AUI_ERROR,13);}}
     else if(state->runner.text){int p=0,row=0;while(row<output_top&&p<state->runner.length)if(state->runner.text[p++]=='\n')row++;
         for(int y=out_y+35;p<state->runner.length&&y<h-30;y+=ST_ROW){int end=p;while(end<state->runner.length&&state->runner.text[end]!='\n')end++;
@@ -51,10 +51,7 @@ static void draw(void)
         aui_text_sz(work_x+16,345,"Ctrl+Z Undo    Ctrl+Y Redo",AUI_MUTED,12);
         aui_text_sz(work_x+16,372,"Ctrl+Space Complete",AUI_MUTED,12);
     }
-    if(state->completion_count&&document()&&!dialog){const StDocument *d=document();int row=st_caret_line(d),x=edit_x+54+line_width(d,st_line_start(d,row),d->caret)-d->left,y=edit_y+(row-d->top+1)*ST_ROW;
-        int rows=state->completion_count<6?state->completion_count:6;if(x+230>work_x)x=work_x-230;if(y+rows*ST_ROW>out_y)y-=ST_ROW*(rows+1);if(y<edit_y)y=edit_y;
-        gui_rect(x,y,230,rows*ST_ROW,AUI_SURFACE_2);int first=completion_selected>=rows?completion_selected-rows+1:0;
-        for(int i=0;i<rows;i++){if(first+i==completion_selected)gui_rect(x,y+i*ST_ROW,230,ST_ROW,AUI_SELECTION);aui_text_sz(x+8,y+i*ST_ROW+3,state->completions[first+i].label,AUI_TEXT,13);}}
+    draw_completion();
     if(dialog==2||dialog==3){int x=edit_x+12,wide=edit_w-24;gui_rect(x,90,wide,dialog==3?155:112,AUI_SURFACE_2);
         aui_text_sz(x+12,101,dialog==2?"Find in this file":"Replace in this file",AUI_TEXT,14);
         aui_textfield(x+12,126,wide-104,query,sizeof query);

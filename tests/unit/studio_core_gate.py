@@ -14,13 +14,16 @@ def run(executable):
         return subprocess.run([str(executable),str(compiler),tmp],cwd=ROOT,text=True,capture_output=True,timeout=45)
 if not a.negative:
     r=run(binary);print(r.stdout,end='');print(r.stderr,end='');raise SystemExit(r.returncode)
-sources=sorted((ROOT/'c/apps/studio').glob('*.c'))+[ROOT/s for s in ['c/apps/as/editor/completion.c','c/lib/agent/json.c','c/lib/agent/task.c','c/drivers/block/crc32.c']]
+sources=sorted((ROOT/'c/apps/studio').glob('*.c'))+[ROOT/s for s in ['c/apps/as/editor/completion.c','c/apps/as/common/version.c','c/lib/agent/json.c','c/lib/agent/task.c','c/drivers/block/crc32.c']]
 mutations=[('edit.c','!st_boundary(d->text,d->length,caret)||!st_boundary(d->text,d->length,anchor)','0','utf8-boundary'),
-           ('runner.c','r->tab==tab&&r->revision==d->revision&&r->source_length==d->length','r->tab==tab&&r->source_length==d->length','stale-diagnostics'),
+           ('completion_job.c','if (request == engine->completion_generation) {','if (1) {','late-completion-dismissed'),
+           ('jobs.c','if (!check) {\n        st_engine_dismiss_completion(e);','if (1) {\n        st_engine_dismiss_completion(e);','completion-survives-check-start'),
+           ('runner.c','r->tab == tab && r->revision == d->revision && r->source_length == d->length','r->tab == tab && r->source_length == d->length','stale-diagnostics'),
+           ('source_snapshot.c','source->revision != document->revision ||','0 ||','stale-import-diagnostics'),
            ('pairs.c','unsigned close=closing(cp);','unsigned close=0;','pair-open'),
            ('storage.c','if(!exists){st_dispose(d);return -2;}','if(0){st_dispose(d);return -2;}','deleted-draft-not-restored'),
            ('project.c','if(st_forget_drafts(target)<0)goto failed;','if(0)goto failed;','deleted-draft-not-restored'),
-           ('engine.c','if(st_checkpoint(d)<0&&st_dirty(d)){','if(st_checkpoint(d)<0){','clean-missing-parent-close')]
+           ('engine.c','if (st_checkpoint(d) < 0 && st_dirty(d)) {\n        st_engine_notice','if (st_checkpoint(d) < 0) {\n        st_engine_notice','clean-missing-parent-close')]
 with tempfile.TemporaryDirectory(prefix='studio-mutants-') as tmp:
     for filename,old,new,expected in mutations:
         original=ROOT/'c/apps/studio'/filename;text=original.read_text()
