@@ -5,6 +5,7 @@
  * tests/libc.mk) each bring their own narrow -I list. */
 #include "../../../../include/weaksym.h"
 #include <stdint.h>
+#include "../include/logit_malloc.h"
 
 /* mini-libc allocator: segregated free lists over one static arena.
  *
@@ -260,6 +261,9 @@ static size_t malloc_cur;
 
 #define TAG_USED 0x55534544u        /* 'USED' */
 #define TAG_FREE 0x46524545u        /* 'FREE' */
+#ifdef MALLOC_SMALL_CACHE
+#define TAG_CACHED 0x43414348u      /* logically free, not on a coalescing bin */
+#endif
 
 /* 16 bytes, so payloads stay 16-aligned. `prev` is the PREVIOUS physical
  * block's payload size (0 = first block) -- that is the boundary tag that makes
@@ -273,6 +277,23 @@ struct fnode { uint32_t next, prev; };
 #define NBIN   56u                  /* <= 64: binmap is one uint64_t */
 static uint32_t bins[NBIN];
 static uint64_t binmap;
+#ifdef MALLOC_SMALL_CACHE
+/* A bounded experiment, not an unbounded tcache. Public Worker PC sampling
+ * still found merge/split/bin maintenance hot after sized transactions.
+ * At most 8 blocks in each 16..512-byte exact class stay uncoalesced (67,584
+ * payload bytes total). Cache entries retain checked arena-relative links,
+ * a distinct sealed tag, and the SAME allocator lock. A failed ordinary
+ * allocation drains them before refusal, so a large request can reclaim the
+ * small fragments. No thread-local ownership or extra address-space reserve.
+ * Disabled unless explicitly selected while guest speed/correctness gates run. */
+#define SMALL_CACHE_PER_BIN 8u
+static uint32_t small_cache[NSMALL];
+static unsigned char small_count[NSMALL];
+static unsigned small_total;
+static int small_flushing;
+static size_t free_nl(void *p);
+static void small_flush(void);
+#endif
 
 /* --- header plumbing, all of it bounds-checked ------------------------------ */
 
@@ -298,7 +319,11 @@ static uint32_t chk_of(const struct hdr *h)
 static void seal(struct hdr *h) { h->chk = chk_of(h); }
 static int  ok(const struct hdr *h)
 {
-    return h && (h->tag == TAG_USED || h->tag == TAG_FREE) && h->chk == chk_of(h);
+    return h && (h->tag == TAG_USED || h->tag == TAG_FREE
+#ifdef MALLOC_SMALL_CACHE
+                 || h->tag == TAG_CACHED
+#endif
+                ) && h->chk == chk_of(h);
 }
 static struct fnode *fn(struct hdr *h) { return (struct fnode *)((unsigned char *)h + HDR); }
 
@@ -389,6 +414,12 @@ static void rebuild(void)
 {
     if (in_rebuild) { broken = 1; return; }
     in_rebuild = 1;
+#ifdef MALLOC_SMALL_CACHE
+    /* Rebuild trusts the physical chain, never a damaged cache payload link.
+     * Cached blocks were already subtracted from malloc_cur on free. */
+    for(unsigned i=0;i<NSMALL;i++){small_cache[i]=NIL;small_count[i]=0;}
+    small_total=0;
+#endif
     for (unsigned i = 0; i < NBIN; i++) bins[i] = NIL;
     binmap = 0;
 
@@ -397,6 +428,9 @@ static void rebuild(void)
         struct hdr *h = hdr_at(off);
         if (!h || !ok(h)) break;
         if (h->size == 0) { in_rebuild = 0; return; }      /* sentinel: walk complete */
+#ifdef MALLOC_SMALL_CACHE
+        if(h->tag==TAG_CACHED){h->tag=TAG_FREE;seal(h);}
+#endif
         if (h->tag == TAG_FREE) bin_push(h);
         uint64_t no = (uint64_t)off + HDR + h->size;
         if (no > (uint64_t)arena_size - HDR) break;
@@ -414,6 +448,10 @@ static void heap_init(void)
 
     for (unsigned i = 0; i < NBIN; i++) bins[i] = NIL;
     binmap = 0;
+#ifdef MALLOC_SMALL_CACHE
+    for(unsigned i=0;i<NSMALL;i++){small_cache[i]=NIL;small_count[i]=0;}
+    small_total=0;small_flushing=0;
+#endif
 
     struct hdr *h = (struct hdr *)arena;
     h->size = arena_size - 2 * HDR;        /* one big free block, ending AT the sentinel */
@@ -475,6 +513,39 @@ static void trim(struct hdr *h, uint32_t need)
 }
 
 /* --- malloc ----------------------------------------------------------------- */
+#ifdef MALLOC_SMALL_CACHE
+static struct hdr *small_take(unsigned c,int allocation)
+{
+    if(!small_count[c])return NULL;
+    struct hdr *h=hdr_at(small_cache[c]);
+    if(!h||!ok(h)||h->tag!=TAG_CACHED||h->size!=(c+1)*16u){rebuild();return NULL;}
+    /* A caller may have lowered the commit ceiling after this block was
+     * cached. Reuse is still an allocation, not permission to skip the bound. */
+#ifndef MALLOC_SMALL_CACHE_NO_BOUND
+    if(allocation&&!commit_ok(off_of(h)+HDR+h->size))return NULL;
+#endif
+    uint32_t next=fn(h)->next;
+    if(small_count[c]==1){if(next!=NIL){rebuild();return NULL;}}
+    else {
+        struct hdr *n=hdr_at(next);
+        if(n==h||!n||!ok(n)||n->tag!=TAG_CACHED||n->size!=h->size){rebuild();return NULL;}
+    }
+    small_cache[c]=next;small_count[c]--;small_total--;
+    h->tag=TAG_USED;seal(h);return h;
+}
+static int small_put(struct hdr *h)
+{
+    if(small_flushing||h->size>NSMALL*16u)return 0;
+    unsigned c=bin_of(h->size);
+    if(small_count[c]>=SMALL_CACHE_PER_BIN)return 0;
+    if(small_count[c]){
+        struct hdr *old=hdr_at(small_cache[c]);
+        if(!old||!ok(old)||old->tag!=TAG_CACHED||old->size!=h->size){rebuild();return 0;}
+    }
+    h->tag=TAG_CACHED;seal(h);fn(h)->next=small_cache[c];fn(h)->prev=NIL;
+    small_cache[c]=off_of(h);small_count[c]++;small_total++;return 1;
+}
+#endif
 
 /* First fitting block in bin c, scanning at most `cap` nodes. NULL = none
  * found (or the list was corrupt, in which case the bins were rebuilt). */
@@ -499,6 +570,14 @@ static void *malloc_nl(size_t n)
 
     uint32_t need = (uint32_t)align16(n);
     unsigned c = bin_of(need);
+#ifdef MALLOC_SMALL_CACHE
+    if(c<NSMALL&&small_count[c]){
+        struct hdr *cached=small_take(c,1);
+        if(cached){malloc_cur+=cached->size;if(malloc_cur>malloc_peak)malloc_peak=malloc_cur;
+            return (unsigned char *)cached+HDR;}
+        if(broken)return NULL;
+    }
+#endif
     int corrupt = 0;
     struct hdr *h = NULL;
 
@@ -527,7 +606,14 @@ static void *malloc_nl(size_t n)
             h = bin_scan(c, need, maxblk, &corrupt);
         }
     }
-    if (!h) return NULL;
+    if (!h) {
+#ifdef MALLOC_SMALL_CACHE
+#ifndef MALLOC_SMALL_CACHE_NO_FLUSH
+        if(small_total&&!broken){small_flush();return malloc_nl(n);}
+#endif
+#endif
+        return NULL;
+    }
 
     /* THE BOUND. Checked while h is still on its bin, so refusing costs nothing
      * and leaks nothing. Taking this block would occupy the arena out to
@@ -536,7 +622,18 @@ static void *malloc_nl(size_t n)
      * here already handles -- rather than hand back an address that kills the
      * process when it is written to. */
     uint32_t endoff = off_of(h) + HDR + need;
-    if (!commit_ok(endoff)) return NULL;
+    if (!commit_ok(endoff)) {
+#if defined(MALLOC_SMALL_CACHE) && !defined(MALLOC_SMALL_CACHE_NO_FLUSH)
+        /* A fitting ordinary tail can lie above the commit ceiling while
+         * cached fragments below it would coalesce into a usable prefix.
+         * Previously only "no fitting block" drained the cache, so eight
+         * cached 64-byte blocks made a 256-byte request fail at a 512-byte
+         * ceiling. Reclaim and retry ONCE (flush clears small_total), keeping
+         * the same ceiling and the same commit check on the retry. */
+        if(small_total&&!broken){small_flush();return malloc_nl(n);}
+#endif
+        return NULL;
+    }
 
     if (bin_remove(h) != 0) return NULL;          /* corrupt list; already rebuilt */
 
@@ -564,13 +661,17 @@ static struct hdr *hdr_of(void *p)
     return h;
 }
 
-static void free_nl(void *p)
+static size_t free_nl(void *p)
 {
-    if (!p || broken) return;
+    if (!p || broken) return 0;
     struct hdr *h = hdr_of(p);
-    if (!h) return;                     /* not ours / double free: never scribble */
+    if (!h) return 0;                   /* not ours / double free: never scribble */
+    size_t capacity=h->size;
 
     if (malloc_cur >= h->size) malloc_cur -= h->size; else malloc_cur = 0;
+#ifdef MALLOC_SMALL_CACHE
+    if(small_put(h))return capacity;
+#endif
 
     /* Coalesce forward, then backward, writing each merge out as we go: the
      * block stays marked USED throughout, so every intermediate state is a
@@ -596,7 +697,25 @@ static void free_nl(void *p)
     h->tag = TAG_FREE;
     seal(h);
     bin_push(h);
+    return capacity;
 }
+
+#ifdef MALLOC_SMALL_CACHE
+static void small_flush(void)
+{
+    small_flushing=1;
+    for(unsigned c=0;c<NSMALL&&!broken;c++){
+        while(small_count[c]&&!broken){
+            struct hdr *h=small_take(c,0);
+            if(!h)break; /* a failed check rebuilds from the physical chain */
+            /* free_nl owns accounting and coalescing. Balance its decrement;
+             * this transient value is private under the same heap lock. */
+            malloc_cur+=h->size;free_nl((unsigned char *)h+HDR);
+        }
+    }
+    small_flushing=0;
+}
+#endif
 
 static size_t malloc_usable_size_nl(void *p)
 {
@@ -716,3 +835,16 @@ void *calloc(size_t a, size_t b)
 
 size_t malloc_usable_size(void *p)
 { hlock(); size_t r = malloc_usable_size_nl(p); hunlock(); return r; }
+
+/* QuickJS previously acquired this lock twice per malloc/free, and three
+ * times per realloc, just to account usable bytes. Guest PC sampling placed
+ * malloc_usable_size among the leading Worker hotspots (2026-09-16). Return
+ * the capacity from the SAME transaction rather than remove locking or cache
+ * allocator headers in an unprotected caller. A free must report the OLD
+ * payload size, not the much larger free block produced by coalescing. */
+void *__libc_malloc_size(size_t bytes,size_t *capacity)
+{ hlock();void *p=malloc_nl(bytes);if(capacity)*capacity=malloc_usable_size_nl(p);hunlock();return p; }
+void *__libc_realloc_size(void *ptr,size_t bytes,size_t *capacity)
+{ hlock();void *p=realloc_nl(ptr,bytes);if(capacity)*capacity=malloc_usable_size_nl(p);hunlock();return p; }
+size_t __libc_free_size(void *ptr)
+{ hlock();size_t size=free_nl(ptr);hunlock();return size; }

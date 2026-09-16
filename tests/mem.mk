@@ -27,6 +27,72 @@
 test-arena:
 	@sh tests/unit/arena_run.sh $(BUILD)
 
+# Sized transactions do not remove the allocator lock. Link QuickJS to the
+# renamed real arena, and compare both semantic/accounting output and lock
+# traffic against the original split transaction path.
+SIZED_DIR = $(BUILD)/malloc-sized
+SIZED_RENAME = -Dmalloc=lmalloc -Dfree=lfree -Drealloc=lrealloc -Dcalloc=lcalloc -Dmalloc_usable_size=lmalloc_usable_size -Dmalloc_size=lmalloc_usable_size
+SIZED_CF = -O1 -g -w -D_GNU_SOURCE -DCONFIG_VERSION='"sized-test"' -Ithird_party/quickjs
+$(SIZED_DIR)/arena.o: tests/unit/malloc_sized_arena.c c/apps/libc/src/malloc.c c/apps/libc/include/logit_malloc.h tests/mem.mk
+	@mkdir -p $(SIZED_DIR)
+	@$(CC) $(SIZED_CF) $(SIZED_RENAME) -c $< -o $@
+$(SIZED_DIR)/qjs-%.o: third_party/quickjs/quickjs.c c/apps/libc/include/logit_malloc.h tests/mem.mk
+	@mkdir -p $(SIZED_DIR)
+	@$(CC) $(SIZED_CF) $(SIZED_RENAME) $(if $(filter fused,$*),-DQUICKJS_TEST_SIZED_ALLOC,) -c $< -o $@
+$(SIZED_DIR)/%: tests/unit/malloc_sized_test.c $(SIZED_DIR)/arena.o $(SIZED_DIR)/qjs-%.o $(filter-out third_party/quickjs/quickjs.c,$(QJS_SRC)) tests/mem.mk
+	@$(CC) $(SIZED_CF) -o $@ tests/unit/malloc_sized_test.c $(SIZED_DIR)/arena.o $(SIZED_DIR)/qjs-$*.o $(filter-out third_party/quickjs/quickjs.c,$(QJS_SRC)) -lm -lpthread
+.PHONY: test-malloc-sized test-malloc-sized-negctl
+test-malloc-sized-negctl: $(SIZED_DIR)/split
+	@$(SIZED_DIR)/split > $(SIZED_DIR)/split.log 2>&1
+	@set +e; python3 tests/unit/malloc_sized_check.py $(SIZED_DIR)/split.log $(SIZED_DIR)/split.log > $(SIZED_DIR)/negative.log 2>&1; rc=$$?; cat $(SIZED_DIR)/negative.log; test $$rc -eq 1 && grep -q '^FAIL: QuickJS allocator transactions:' $(SIZED_DIR)/negative.log
+test-malloc-sized: test-malloc-sized-negctl $(SIZED_DIR)/fused
+	@$(SIZED_DIR)/fused > $(SIZED_DIR)/fused.log 2>&1
+	@python3 tests/unit/malloc_sized_check.py $(SIZED_DIR)/split.log $(SIZED_DIR)/fused.log
+# LOGIT_OS is also used by hosted semantic probes. They must not acquire an
+# unresolved dependency on this OS's allocator merely by selecting JS semantics.
+$(SIZED_DIR)/hosted: tests/unit/js_sem_probe.c $(QJS_SRC) tests/mem.mk
+	@mkdir -p $(SIZED_DIR)
+	@$(CC) $(SIZED_CF) -DLOGIT_OS -o $@ tests/unit/js_sem_probe.c $(QJS_SRC) -lm
+.PHONY: test-malloc-sized-hostguard test-malloc-sized-hostguard-negctl
+test-malloc-sized-hostguard-negctl: $(SIZED_DIR)/hosted
+	@rc=0; $(CC) $(SIZED_CF) -DLOGIT_OS -DQUICKJS_TEST_SIZED_ALLOC -o $(SIZED_DIR)/hosted-wrong tests/unit/js_sem_probe.c $(QJS_SRC) -lm > $(SIZED_DIR)/hosted-wrong.log 2>&1 || rc=$$?; test $$rc -ne 0 && grep -q '__libc_malloc_size' $(SIZED_DIR)/hosted-wrong.log
+	@echo 'negative control: hosted LOGIT_OS cannot link the freestanding allocator API'
+test-malloc-sized-hostguard: test-malloc-sized-hostguard-negctl
+	@$(SIZED_DIR)/hosted tests/jssem/cases/99-control.js > $(SIZED_DIR)/hosted.log 2>&1
+	@grep -q '^JSSEM-DONE' $(SIZED_DIR)/hosted.log
+test-malloc-sized: test-malloc-sized-hostguard
+ci-host: test-malloc-sized
+
+# Experimental bounded small-object reuse. The two deliberately broken builds
+# must fail on reclamation and on the existing commit ceiling respectively.
+SMALL_DIR = $(BUILD)/malloc-small
+SMALL_CF = -O2 -g -fsanitize=address,undefined -fno-sanitize-recover=all -DMALLOC_SMALL_CACHE
+$(SMALL_DIR)/arena-%.o: tests/unit/malloc_sized_arena.c c/apps/libc/src/malloc.c tests/mem.mk
+	@mkdir -p $(SMALL_DIR)
+	@$(CC) $(SMALL_CF) $(SIZED_RENAME) $(if $(filter noflush,$*),-DMALLOC_SMALL_CACHE_NO_FLUSH,) $(if $(filter nobound,$*),-DMALLOC_SMALL_CACHE_NO_BOUND,) -c $< -o $@
+$(addprefix $(SMALL_DIR)/,current noflush nobound): $(SMALL_DIR)/%: tests/unit/malloc_small_test.c $(SMALL_DIR)/arena-%.o tests/mem.mk
+	@$(CC) $(SMALL_CF) -o $@ $< $(SMALL_DIR)/arena-$*.o -lpthread
+.PHONY: test-malloc-small test-malloc-small-negctl
+test-malloc-small-negctl: $(SMALL_DIR)/noflush $(SMALL_DIR)/nobound
+	@rc=0; $(SMALL_DIR)/noflush > $(SMALL_DIR)/noflush.log 2>&1 || rc=$$?; cat $(SMALL_DIR)/noflush.log; test $$rc -eq 1 && grep -q '^FAIL: large allocation drains' $(SMALL_DIR)/noflush.log
+	@rc=0; $(SMALL_DIR)/nobound > $(SMALL_DIR)/nobound.log 2>&1 || rc=$$?; cat $(SMALL_DIR)/nobound.log; test $$rc -eq 1 && grep -q '^FAIL: cached reuse obeys' $(SMALL_DIR)/nobound.log
+test-malloc-small: test-malloc-small-negctl $(SMALL_DIR)/current
+	@$(SMALL_DIR)/current
+$(SMALL_DIR)/qjs-%.o: third_party/quickjs/quickjs.c tests/mem.mk
+	@mkdir -p $(SMALL_DIR)
+	@$(CC) $(SMALL_CF) $(SIZED_CF) $(SIZED_RENAME) $(if $(filter fused,$*),-DQUICKJS_TEST_SIZED_ALLOC,) -c $< -o $@
+$(SMALL_DIR)/consumer-%: tests/unit/malloc_sized_test.c $(SMALL_DIR)/arena-current.o $(SMALL_DIR)/qjs-%.o $(filter-out third_party/quickjs/quickjs.c,$(QJS_SRC)) tests/mem.mk
+	@$(CC) $(SMALL_CF) $(SIZED_CF) -o $@ $< $(SMALL_DIR)/arena-current.o $(SMALL_DIR)/qjs-$*.o $(filter-out third_party/quickjs/quickjs.c,$(QJS_SRC)) -lm -lpthread
+.PHONY: test-malloc-small-consumer test-malloc-small-consumer-negctl
+test-malloc-small-consumer-negctl: $(SMALL_DIR)/consumer-split
+	@$(SMALL_DIR)/consumer-split > $(SMALL_DIR)/consumer-split.log 2>&1
+	@rc=0; python3 tests/unit/malloc_sized_check.py $(SMALL_DIR)/consumer-split.log $(SMALL_DIR)/consumer-split.log > $(SMALL_DIR)/consumer-negative.log 2>&1 || rc=$$?; cat $(SMALL_DIR)/consumer-negative.log; test $$rc -eq 1 && grep -q '^FAIL: QuickJS allocator transactions:' $(SMALL_DIR)/consumer-negative.log
+test-malloc-small-consumer: test-malloc-small-consumer-negctl $(SMALL_DIR)/consumer-fused
+	@$(SMALL_DIR)/consumer-fused > $(SMALL_DIR)/consumer-fused.log 2>&1
+	@python3 tests/unit/malloc_sized_check.py $(SMALL_DIR)/consumer-split.log $(SMALL_DIR)/consumer-fused.log
+test-malloc-small: test-malloc-small-consumer
+ci-host: test-malloc-small
+
 # --- bench-arena -------------------------------------------------------------
 # The same pipeline css_bench times, measured for MEMORY instead, and linked
 # against c/apps/libc/src/malloc.c under its real names so LibCSS's own

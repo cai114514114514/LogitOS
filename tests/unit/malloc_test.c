@@ -429,9 +429,16 @@ static void phase_corrupt(void)
     unsigned char *a = lmalloc(64);
     unsigned char *b = lmalloc(64);
     unsigned char *c = lmalloc(64);
-    if (!a || !b || !c || b < a) { ck(0, "corruption setup allocated three blocks"); return; }
+    if (!a || !b || !c) { ck(0, "corruption setup allocated three blocks"); return; }
+    /* The old setup assumed successive mallocs have increasing addresses.
+     * Reuse caches legitimately violate that assumption. Sort the three live
+     * allocations so the deliberate overwrite still leaves c beyond b. */
+    unsigned char *tmp;
+    if((uintptr_t)a>(uintptr_t)b){tmp=a;a=b;b=tmp;}
+    if((uintptr_t)b>(uintptr_t)c){tmp=b;b=c;c=tmp;}
+    if((uintptr_t)a>(uintptr_t)b){tmp=a;a=b;b=tmp;}
 
-    size_t span = (size_t)(b - a) + 64;               /* through b's header into b */
+    size_t span = (size_t)((uintptr_t)b - (uintptr_t)a) + 64; /* through b's header into b */
     memset(a, 0xA5, span);
     ck(1, "wrote 0xA5 through the next block's header without crashing");
 
