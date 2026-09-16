@@ -62,7 +62,23 @@
 需要四条路径的事务快照机制，最小成本方案（delete 路径恢复 + log 预算
 预检）已在报告中给出，未在本轮实施。
 
-其余 low 59 条待处理，按子系统分别记录在上列各报告中。
+### low 批（2026-09-16 深夜）
+
+已修复 18 条（提交 07087a234）：ktime 记账 LRU、modelf/ksyms 字符串表
+NUL 验证 + 有界比较、mixer/capture buffer-ms 回绕、pipe 方向校验、wm.c
+死分支守卫、ptrace 僵尸 ATTACH 返回 SRCH、SYS_READ_FILE 先量后分配、
+rng 硬件熵告警、x25519/ML-DSA 秘密擦除、eval_string OOM 拒绝、login 空名、
+aui_progress 除零、Terminal 粘贴缓冲、files do_paste 回报、vorbis
+lookup1 边界、reasm 65536 回绕、h265 entry_point 回绕、resolve_parent
+截断改拒绝。
+
+明确延后（设计决定/需机器验证/协议语义类，逐条在各报告原文中）：
+form-in-table foster、vfs_getdents 加锁重排、log_commit 体失败写头、
+pcache 回收窗口、HDA RIRB、tcp_connect 清槽窗口、SYS_WRITE 串口回退、
+utf8_next 契约、CBC 定时注释、ecdsa e 约减、GCM-SIV/scrypt 上限、
+str(range) 上限、lexer \r、parser atoi、loop.c break 根、h2 tx_frame、
+pred_weight 上界、strps 先写后拒、MMCO 强转、deblock 末 slice、backlog
+RST 序号、sftpd fchmod、tlb 降级路径取舍。
 
 ## 建议的处理顺序
 
