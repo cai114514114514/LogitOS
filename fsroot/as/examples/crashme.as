@@ -1,11 +1,12 @@
+# aether: 3.0
 # crashme -- fault on purpose, at an address chosen in advance.
 #
 #   as /usr/as/examples/crashme.as
 #
 # The fixture for `make test-coredump-os`. It stores to 0xdeadbee0, which is
 # outside every area a program on this machine has, so the CPU raises vector 14
-# and c/kernel/cpu/interrupts.c takes the ring-3 fault path -- which is where
-# c/kernel/exec/coredump.c writes the dump.
+# and c/kernel/cpu/irq/interrupts.c takes the ring-3 fault path -- which is where
+# c/kernel/exec/signal/coredump.c writes the dump.
 #
 # WHY AN .as SCRIPT AND NOT A C PROGRAM. The C one exists too --
 # c/apps/coreutils/crash.c, which additionally loads sentinel values into
@@ -25,8 +26,8 @@
 # them between the two channels the kernel itself prints -- the [fault] line,
 # which quotes the trap frame, and the [core] line, which quotes the FILE.
 #
-# poke64 is CAP_RAW-gated (c/apps/as/as_native.c) and /bin/as grants CAP_RAW by
-# default (as.c:111), so this runs as an ordinary program with no special
+# poke64 is CAP_RAW-gated (c/apps/as/sema/memory.c) and /bin/as grants CAP_RAW by
+# default (cli/main.c:111), so this runs as an ordinary program with no special
 # launch. If that default ever narrows this script stops faulting and starts
 # refusing, and the harness would otherwise read that as "the dump was not
 # written" -- so the line below is printed first and the log says which of the
@@ -34,9 +35,16 @@
 
 ADDR = 0xdeadbee0
 
-print("CRASHME about to store to", ADDR)
-poke64(ADDR, 0x1234)
 
-# Reached only if that address was writable, which is a finding of its own
-# rather than a pass: the harness greps for this line and fails on it.
-print("CRASHME DID NOT FAULT -- that address is mapped")
+def main() -> i64:
+    print("CRASHME about to store to", ADDR)
+    # unsafe permits the raw store; it does not grant CAP_RAW, which /bin/as
+    # still supplies. The u64() is explicit because A3 refuses the implicit
+    # i64 -> u64 an address literal would otherwise get for free.
+    unsafe:
+        poke64(u64(ADDR), 0x1234)
+
+    # Reached only if that address was writable, which is a finding of its own
+    # rather than a pass: the harness greps for this line and fails on it.
+    print("CRASHME DID NOT FAULT -- that address is mapped")
+    return 0

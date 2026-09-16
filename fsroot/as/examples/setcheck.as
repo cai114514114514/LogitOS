@@ -1,151 +1,168 @@
-# setcheck -- drive the settings store from a shell, so a durability harness can
-# set a value, reboot the machine, and read it back.
+# aether: 3.0
+# setcheck -- settings-store commands used by reboot/durability harnesses.
+# Run /usr/as/bin/setcheck.aex set|get|check|frame|selftest|reset|diag|reload ...
 #
-#   as /usr/as/examples/setcheck.as set   ui.dark 1
-#   as /usr/as/examples/setcheck.as get   ui.dark
-#   as /usr/as/examples/setcheck.as check ui.dark 1
-#   as /usr/as/examples/setcheck.as frame clock 40 60 320 240
-#   as /usr/as/examples/setcheck.as selftest
-#   as /usr/as/examples/setcheck.as reset
-#
-# There is no `defaults` coreutil and this does not need one: the store is four
-# syscalls, and AetherScript's raw syscall() reaches them directly. That is the
-# A3 indirection the language exists for -- see c/apps/as/as_native.c.
-#
-# `check` prints SETCHECK-OK or SETCHECK-BAD WITH BOTH VALUES, because a harness
-# that greps only for the value it wrote cannot tell a store that remembered it
-# from a store that handed back its own compiled-in default.
+# This is the original tool migrated to native code. Each invocation reaches
+# the real settings syscalls. Writes request immediate commit because a caller
+# may reboot before the desktop's next periodic save. Failed checks now return
+# nonzero status, so callers cannot mistake a printed BAD for success.
 
-SYS_SETTING_GET  = 103
-SYS_SETTING_SET  = 104
-SYS_SETTING_CTL  = 106
+BUFSZ: i64 = 256
+SETTINGS_FILE: str = "/etc/settings.conf"
 
-SETCTL_COMMIT   = 1
-SETCTL_RESET    = 2
-SETCTL_DIAG     = 4
-SETCTL_RELOAD   = 5
-SETCTL_SELFTEST = 6
-SETCTL_KVCOUNT  = 7
 
-BUFSZ = 256
+def get(key: str) -> str:
+    # A3 strings may be interior slices without a trailing NUL. Keep an owned,
+    # explicitly terminated copy alive across the syscall.
+    key_bytes = Bytes(key + "\0")
+    data = buffer(BUFSZ)
+    unsafe:
+        count = syscall(SYS_SETTING_GET, addr(key_bytes), addr(data), len(data))
+    if count == -1:
+        # Preserve the old unset-key result. A missing key still cannot satisfy
+        # a nonempty check expectation; both values appear in the failure.
+        return ""
+    if count < 0 or count >= len(data):
+        raise IOError("Invalid settings read length: " + str(count))
+    unsafe:
+        return mem2str(data, count)
 
-def get(key):
-    b = alloc(BUFSZ)
-    n = syscall(SYS_SETTING_GET, addr(key), addr(b), BUFSZ)
-    s = ""
-    if n >= 0:
-        s = mem2cstr(addr(b))
-    dealloc(b)
-    return s
 
-# commit = 1: go to disk NOW. A harness that is about to reboot the machine has
-# no later moment to do it in.
-def put(key, val):
-    return syscall(SYS_SETTING_SET, addr(key), addr(val), 1)
+def put(key: str, value: str) -> i64:
+    key_bytes = Bytes(key + "\0")
+    value_bytes = Bytes(value + "\0")
+    unsafe:
+        return syscall(SYS_SETTING_SET, addr(key_bytes), addr(value_bytes), 1)
 
-a = args()
-if len(a) < 2:
-    print("usage: setcheck.as set|get|check|frame|selftest|reset|diag|reload ...")
-else:
-    cmd = a[1]
-    if cmd == "selftest":
-        f = syscall(SYS_SETTING_CTL, SETCTL_SELFTEST, 0, 0)
-        if f == 0:
-            print("SETCHECK-SELFTEST-OK")
-        else:
-            print("SETCHECK-SELFTEST-FAIL", f)
-    elif cmd == "reset":
-        syscall(SYS_SETTING_CTL, SETCTL_RESET, 0, 0)
+
+def _control(operation: i64) -> i64:
+    unsafe:
+        result = syscall(SYS_SETTING_CTL, operation, 0, 0)
+    if result < 0:
+        raise IOError("Settings control failed: " + str(result))
+    return result
+
+
+def _set(key: str, value: str) -> i64:
+    if put(key, value) < 0:
+        print("SETCHECK-SET-FAIL", key)
+        return 1
+    print("SETCHECK-SET", key, "=", value)
+    return 0
+
+
+def _frame(arguments: List[str]) -> i64:
+    if len(arguments) < 7:
+        print("usage: setcheck.as frame APP X Y W H")
+        return 2
+    # The window manager consumes this same ordinary setting: x/y/w/h,
+    # open/zoom/minimized and the complete restore-frame rectangle.
+    rectangle = arguments[3] + " " + arguments[4] + " " + arguments[5] + " " + arguments[6]
+    value = rectangle + " 1 0 0 " + rectangle
+    if put("win." + arguments[2] + ".frame", value) < 0:
+        print("SETCHECK-SET-FAIL frame")
+        return 1
+    print("SETCHECK-SET win." + arguments[2] + ".frame =", value)
+    return 0
+
+
+def _truncate(arguments: List[str]) -> i64:
+    if len(arguments) < 3:
+        print("usage: setcheck.as truncate N")
+        return 2
+    # Byte copying preserves a partial UTF-8 sequence too. Parse before opening
+    # for write: malformed input must not change this reboot-test fixture.
+    count = parse_int(arguments[2])
+    if count < 0:
+        raise ValueError("Truncation length must be nonnegative")
+    try:
+        source = file_read(SETTINGS_FILE)
+    except IOError as error:
+        print("SETCHECK-TRUNC-FAIL no file")
+        return 1
+    if count > len(source):
+        count = len(source)
+    prefix = buffer(count)
+    for index in range(count):
+        prefix[index] = source[index]
+    try:
+        file_write(SETTINGS_FILE, Bytes(prefix))
+    except IOError as error:
+        print("SETCHECK-TRUNC-FAIL write")
+        return 1
+    print("SETCHECK-TRUNCATED", count, "of", len(source))
+    return 0
+
+
+def _garbage() -> i64:
+    # Retain the original malformed-file fixture. The reboot gate checks each
+    # rejected field by name; a valid substitute would defeat that gate.
+    content = "# hand-edited, badly\n"
+    content += "ui.dark = banana\n"
+    content += "ui.accent = 0xFFFFFFFF\n"
+    content += "desktop.restore_session = -1\n"
+    content += "net.dhcp = 2\n"
+    content += "net.ip = 999.1.1.1\n"
+    content += "win.clock.frame = -9000 -9000 4 4 1 0 0 0 0 0 0\n"
+    content += "= nokey\n"
+    content += "no_equals_sign_at_all\n"
+    content += "ui.wallpaper = /does/not/exist.png\n"
+    try:
+        file_write(SETTINGS_FILE, Bytes(content))
+    except IOError as error:
+        print("SETCHECK-GARBAGE-FAIL")
+        return 1
+    print("SETCHECK-GARBAGE-WRITTEN", len(content))
+    return 0
+
+
+def main() -> i64:
+    arguments = args()
+    if len(arguments) < 2:
+        print("usage: setcheck.as set|get|check|frame|selftest|reset|diag|reload ...")
+        return 2
+    command = arguments[1]
+    if command == "selftest":
+        failures = _control(SETCTL_SELFTEST)
+        if failures != 0:
+            print("SETCHECK-SELFTEST-FAIL", failures)
+            return 1
+        print("SETCHECK-SELFTEST-OK")
+    elif command == "reset":
+        _control(SETCTL_RESET)
         print("SETCHECK-RESET")
-    elif cmd == "diag":
-        d = syscall(SYS_SETTING_CTL, SETCTL_DIAG, 0, 0)
-        k = syscall(SYS_SETTING_CTL, SETCTL_KVCOUNT, 0, 0)
-        print("SETCHECK-DIAG", d, "keys", k)
-    elif cmd == "reload":
-        # Everything below is about what is ON THE DISK. Re-reading first is
-        # what makes that true even if something set a key without committing.
-        d = syscall(SYS_SETTING_CTL, SETCTL_RELOAD, 0, 0)
-        print("SETCHECK-RELOAD", d)
-    elif cmd == "get":
-        if len(a) < 3:
+    elif command == "diag":
+        diagnostic = _control(SETCTL_DIAG)
+        keys = _control(SETCTL_KVCOUNT)
+        print("SETCHECK-DIAG", diagnostic, "keys", keys)
+    elif command == "reload":
+        print("SETCHECK-RELOAD", _control(SETCTL_RELOAD))
+    elif command == "get":
+        if len(arguments) < 3:
             print("usage: setcheck.as get KEY")
-        else:
-            print("SETCHECK-VALUE", a[2], "=", get(a[2]))
-    elif cmd == "set":
-        if len(a) < 4:
+            return 2
+        print("SETCHECK-VALUE", arguments[2], "=", get(arguments[2]))
+    elif command == "set":
+        if len(arguments) < 4:
             print("usage: setcheck.as set KEY VALUE")
-        elif put(a[2], a[3]) < 0:
-            print("SETCHECK-SET-FAIL", a[2])
-        else:
-            print("SETCHECK-SET", a[2], "=", a[3])
-    elif cmd == "check":
-        if len(a) < 4:
+            return 2
+        return _set(arguments[2], arguments[3])
+    elif command == "check":
+        if len(arguments) < 4:
             print("usage: setcheck.as check KEY EXPECTED")
-        else:
-            got = get(a[2])
-            if got == a[3]:
-                print("SETCHECK-OK", a[2], "=", got)
-            else:
-                print("SETCHECK-BAD", a[2], "want", a[3], "got", got)
-    elif cmd == "frame":
-        # A window frame, in the format c/kernel/core/settings.h documents:
-        #   x y w h open zoomed minimized rx ry rw rh
-        # Written through the ordinary string path on purpose: it IS an ordinary
-        # key, and a harness proving frames survive a reboot should exercise the
-        # same code the window manager will.
-        if len(a) < 7:
-            print("usage: setcheck.as frame APP X Y W H")
-        else:
-            v = a[3] + " " + a[4] + " " + a[5] + " " + a[6] + " 1 0 0 " + a[3] + " " + a[4] + " " + a[5] + " " + a[6]
-            if put("win." + a[2] + ".frame", v) < 0:
-                print("SETCHECK-SET-FAIL frame")
-            else:
-                print("SETCHECK-SET win." + a[2] + ".frame =", v)
-    elif cmd == "truncate":
-        # Cut /etc/settings.conf to N bytes, in the guest, through the ordinary
-        # file API -- which is exactly what a power cut or a text editor that
-        # died mid-save would leave behind. The next boot has to come up.
-        if len(a) < 3:
-            print("usage: setcheck.as truncate N")
-        else:
-            src = file_read("/etc/settings.conf")
-            if src == nil:
-                print("SETCHECK-TRUNC-FAIL no file")
-            else:
-                n = 0
-                i = 0
-                while i < len(a[2]):
-                    n = n * 10 + (ord(a[2][i]) - 48)
-                    i = i + 1
-                if n > len(src):
-                    n = len(src)
-                out = ""
-                i = 0
-                while i < n:
-                    out = out + src[i]
-                    i = i + 1
-                if file_write("/etc/settings.conf", out) < 0:
-                    print("SETCHECK-TRUNC-FAIL write")
-                else:
-                    print("SETCHECK-TRUNCATED", n, "of", len(src))
-    elif cmd == "garbage":
-        # The hand-edited file the brief names: a negative number, a colour out
-        # of range, a window off-screen, a key that is not a key at all. Every
-        # one has to be REFUSED BY NAME on the next boot, and the desktop has to
-        # come up anyway.
-        g = "# hand-edited, badly\n"
-        g = g + "ui.dark = banana\n"
-        g = g + "ui.accent = 0xFFFFFFFF\n"
-        g = g + "desktop.restore_session = -1\n"
-        g = g + "net.dhcp = 2\n"
-        g = g + "net.ip = 999.1.1.1\n"
-        g = g + "win.clock.frame = -9000 -9000 4 4 1 0 0 0 0 0 0\n"
-        g = g + "= nokey\n"
-        g = g + "no_equals_sign_at_all\n"
-        g = g + "ui.wallpaper = /does/not/exist.png\n"
-        if file_write("/etc/settings.conf", g) < 0:
-            print("SETCHECK-GARBAGE-FAIL")
-        else:
-            print("SETCHECK-GARBAGE-WRITTEN", len(g))
+            return 2
+        actual = get(arguments[2])
+        if actual != arguments[3]:
+            print("SETCHECK-BAD", arguments[2], "want", arguments[3], "got", actual)
+            return 1
+        print("SETCHECK-OK", arguments[2], "=", actual)
+    elif command == "frame":
+        return _frame(arguments)
+    elif command == "truncate":
+        return _truncate(arguments)
+    elif command == "garbage":
+        return _garbage()
     else:
-        print("SETCHECK-BAD unknown command", cmd)
+        print("SETCHECK-BAD unknown command", command)
+        return 2
+    return 0

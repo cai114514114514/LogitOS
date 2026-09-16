@@ -92,9 +92,9 @@
 #define LOGIT_SOCK_OPEN_B_PORT(v) ((int)(((unsigned long long)(v) >> 16) & 0xFFFFULL))
 #define LOGIT_SOCK_OPEN_B_FLAGS(v) ((int)(((unsigned long long)(v) >> 0) & 0xFFFFULL))
 
-/* SYS_TEXT_MEASURE arg c: px<<1 | mono */
-#define LOGIT_TEXT_MEASURE_C_PX(v) ((int)(((unsigned long long)(v) >> 1) & 0x7FFFFFFFULL))
-#define LOGIT_TEXT_MEASURE_C_MONO(v) ((int)(((unsigned long long)(v) >> 0) & 0x1ULL))
+/* SYS_TEXT_MEASURE arg c: px<<2 | mono */
+#define LOGIT_TEXT_MEASURE_C_PX(v) ((int)(((unsigned long long)(v) >> 2) & 0x3FFFFFFFULL))
+#define LOGIT_TEXT_MEASURE_C_MONO(v) ((int)(((unsigned long long)(v) >> 0) & 0x3ULL))
 
 /* SYS_FUTEX arg b: timeout<<32 | val */
 #define LOGIT_FUTEX_B_TIMEOUT(v) ((int)(((unsigned long long)(v) >> 32) & 0xFFFFFFFFULL))

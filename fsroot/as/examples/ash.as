@@ -1,3 +1,4 @@
+# aether: 3.0
 # ash -- the LogitOS shell, written in AetherScript.
 #
 # This is M27's payoff, not a demo. A shell is the hardest possible test of "OS
@@ -26,15 +27,24 @@
 # Deliberately NOT here: job control, environment variables, globbing, `&&`.
 # sh.c has some of those; they are not what this milestone is proving.
 
+# A3 migration: Command remains an unstarted, composable value. Running
+# processes are waited for explicitly, and every port lives in a with scope.
+# The old heterogeneous [stages, infile, outfile] result is a typed value.
+import std.sys as system
+
 PROMPT = "ash$ "
-STDOUT = port(1)
+
+struct CommandLine:
+    stages: List[List[str]]
+    infile: Optional[str]
+    outfile: Optional[str]
 
 # ---- tokenizer ----------------------------------------------------------
 # Whitespace-separated words, with '...' and "..." keeping spaces, and the three
 # operators |, < and > split off even when they touch a word. An operator comes
 # back as its own one-character word.
-def tokenize(s):
-    out = []
+def tokenize(s: str) -> List[str]:
+    out: List[str] = []
     cur = ""
     have = false
     i = 0
@@ -72,24 +82,25 @@ def tokenize(s):
 
 # ---- parser -------------------------------------------------------------
 # words -> [stages, infile, outfile], stages being a list of argv lists.
+# A3 correction: CommandLine now names those three fields explicitly.
 # A malformed line RAISES; the caller reports it and reads the next line, which
 # is what a shell does with a syntax error.
-def parse(words):
-    stages = []
-    argv = []
-    infile = nil
-    outfile = nil
+def parse(words: List[str]) -> CommandLine:
+    stages: List[List[str]] = []
+    argv: List[str] = []
+    infile: Optional[str] = None
+    outfile: Optional[str] = None
     i = 0
     while i < len(words):
         w = words[i]
         if w == "|":
             if len(argv) == 0:
-                raise "syntax error near '|'"
+                raise ValueError("syntax error near '|'")
             stages.append(argv)
             argv = []
         elif w == "<" or w == ">":
             if i + 1 >= len(words):
-                raise f"syntax error: '{w}' needs a file name"
+                raise ValueError(f"syntax error: '{w}' needs a file name")
             i += 1
             if w == "<":
                 infile = words[i]
@@ -100,7 +111,7 @@ def parse(words):
         i += 1
     if len(argv) > 0:
         stages.append(argv)
-    return [stages, infile, outfile]
+    return CommandLine(stages, infile, outfile)
 
 # ---- execution ----------------------------------------------------------
 # `run(argv)` names a command without starting it, `|>` folds the stages into one
@@ -108,13 +119,13 @@ def parse(words):
 # them can be wired), `<-`/`->` attach the ends, and `.wait()` runs the lot in a
 # single fork/dup2/exec pass and answers the last stage's exit status -- which is
 # the status a shell reports. sh.c spends about 120 lines on the same thing.
-def exec_pipeline(stages, infile, outfile):
+def exec_pipeline(stages: List[List[str]], infile: Optional[str], outfile: Optional[str]) -> i64:
     cmd = run(stages[0])
     for i in range(1, len(stages)):
         cmd = cmd |> run(stages[i])
-    if infile != nil:
+    if infile is not None:
         cmd = cmd <- infile
-    if outfile != nil:
+    if outfile is not None:
         cmd = cmd -> outfile
     return cmd.wait()
 
@@ -123,20 +134,21 @@ def exec_pipeline(stages, infile, outfile):
 # them. They are the one place left in this file going through the old
 # `syscall()` keyhole: a working directory is not a port. Giving it a proper home
 # is P2's business (capabilities), not M27's -- recorded here rather than hidden.
-def do_cd(argv):
+# A3 correction: std.sys now owns these typed LogitOS operations and their
+# path marshalling. The language core itself does not depend on this OS ABI.
+def do_cd(argv: List[str]) -> i64:
     target = argv[1] if len(argv) > 1 else "/"
-    if syscall(SYS_CHDIR, addr(target)) < 0:
+    if system.chdir(target) < 0:
         print(f"ash: cd: {target}: no such directory")
     return 1
 
-def do_pwd():
-    buf = buffer(256)
-    n = syscall(SYS_GETCWD, addr(buf), 256)
-    print(mem2cstr(buf) if n >= 0 else "/")
+def do_pwd() -> i64:
+    current = system.cwd()
+    print(current if current is not None else "/")
     return 1
 
 # One command line. Returns false when the shell should stop.
-def run_line(text):
+def run_line(text: str) -> bool:
     text = text.strip()
     if len(text) == 0 or text[0] == "#":
         return true
@@ -148,7 +160,7 @@ def run_line(text):
         return false
     try:
         p = parse(words)
-        stages = p[0]
+        stages = p.stages
         if len(stages) == 0:
             return true
         if stages[0][0] == "cd":
@@ -156,49 +168,48 @@ def run_line(text):
         elif stages[0][0] == "pwd" and len(stages) == 1:
             do_pwd()
         else:
-            exec_pipeline(stages, p[1], p[2])
-    except e:
-        print(f"ash: {e}")
+            exec_pipeline(stages, p.infile, p.outfile)
+    except Error as error:
+        print(f"ash: {error.message}")
     return true
 
 # `print` always adds a newline; a prompt must not. Writing to the stdout PORT is
 # the shell using its own abstraction instead of asking the VM for a special case.
-def prompt():
-    STDOUT.write(PROMPT)
+def prompt() -> None:
+    with output = port(1):
+        output.write(PROMPT)
 
 # ---- entry --------------------------------------------------------------
 # With an argument, ash runs a script -- which is what makes it a candidate for
 # init's language, and the one place in the shell where `with` earns its keep:
 # the script file is closed at the end of the block whether the loop finishes,
 # an `exit` returns out of it, or a command raises.
-def run_script(path):
-    f = open(path, "r")
-    if f == nil:
+def run_script(path: str) -> i64:
+    try:
+        with script = open(path, "r"):
+            for line in script:
+                if not run_line(line):
+                    return 0        # Scope cleanup also runs on this return.
+    except Error:
         print(f"ash: cannot open {path}")
         return 1
-    with script = f:
-        for line in script:
-            if not run_line(line):
-                return 0        # `exit` inside the script: the file still closes
     return 0
 
 # Interactive: a port IS the read loop. One blocking line at a time off the tty,
 # ending when the console closes. No buffer, no length, no syscall in sight.
-def interactive():
-    stdin = port(0)
-    prompt()
-    for line in stdin:
-        if not run_line(line):
-            return 0
+def interactive() -> i64:
+    with stdin = port(0):
         prompt()
+        for line in stdin:
+            if not run_line(line):
+                return 0
+            prompt()
     print("ash: eof")
     return 0
 
-def main():
+def main() -> i64:
     print("ash: LogitOS AetherScript shell")
     a = args()
     if len(a) > 1:
         return run_script(a[1])
     return interactive()
-
-main()

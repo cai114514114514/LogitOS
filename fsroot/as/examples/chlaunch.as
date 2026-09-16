@@ -1,3 +1,4 @@
+# aether: 3.0
 # chlaunch -- open the chat window from a shell.
 #
 # /bin/ch.aex is a GUI app, and a GUI app on this machine cannot be started by
@@ -11,14 +12,22 @@
 # (tests/boot/run-ch-test.sh) uses, because a harness that clicked a Dock icon
 # would be asserting against an icon index that every future app moves.
 #
-#     as /usr/as/examples/chlaunch.as
+#     /usr/as/bin/chlaunch.aex
 
-from abi import open_path
+from std.abi import gui_create, open_path
 
-rc = open_path("/bin/ch.aex")
-if rc == 0:
+
+def main() -> i64:
+    # SYS_OPEN_PATH belongs to the GUI syscall group. A standalone native CLI
+    # must first own a window, just like the media-association launchers. Its
+    # temporary window is removed when this process exits; Chat owns its own.
+    if gui_create("opener", 200, 100) < 0:
+        raise IOError("Could not create the chat launcher window")
+    result = open_path("/bin/ch.aex")
+    if result != 0:
+        # A refused launch must also fail the process, otherwise a parent that
+        # checks exit status sees success while waiting for a nonexistent UI.
+        print("CHLAUNCH_FAILED rc=" + str(result))
+        return 1
     print("CHLAUNCH_OK")
-else:
-    # Loud, and with the number: a launch that fails silently looks exactly
-    # like an app that started and drew nothing.
-    print("CHLAUNCH_FAILED rc=" + str(rc))
+    return 0

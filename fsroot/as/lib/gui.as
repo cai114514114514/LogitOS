@@ -1,3 +1,4 @@
+# aether: 3.0
 # gui -- windowed Logit apps in pure AetherScript (M23.5).
 #   import gui
 #   gui.create("My App", 400, 300)
@@ -31,44 +32,45 @@ from abi import Event, Blit, gui_create, gui_clear, gui_rect, gui_rrect, gui_tex
 from abi import gui_icon, gui_glass, gui_clip, gui_flush, gui_poll_event, ui_dark_query, sys_yield
 from abi import Run, gui_blit, gui_text_run, gui_win_min, text_measure
 import image
+from image import Image
 
 # One event struct, reused: the kernel fills it on each poll and the caller is
 # expected to handle the event before polling again. Its field offsets come from
 # include/abi/logit_abi.h, so a kernel that changes struct logit_event breaks the
 # build rather than this reading the wrong words.
-_ev = Event()
+_ev: Event = Event()
 
-def create(title, w, h):
+def create(title: str, w: i64, h: i64) -> i64:
     return gui_create(title, w, h)
 
-def clear(color):
+def clear(color: i64) -> i64:
     return gui_clear(color)
 
-def rect(x, y, w, h, color):
+def rect(x: i64, y: i64, w: i64, h: i64, color: i64) -> i64:
     return gui_rect(x, y, w, h, color)
 
 # A rounded rect, like a web border-radius. radius is 8 bits (the kernel reads
 # it as such), which the header comment never said out loud.
-def rrect(x, y, w, h, radius, color):
+def rrect(x: i64, y: i64, w: i64, h: i64, radius: i64, color: i64) -> i64:
     return gui_rrect(x, y, w, h, radius, color)
 
 # Restrict drawing to a rectangle of this window's surface; (0,0,0,0) clears it.
-def clip(x, y, w, h):
+def clip(x: i64, y: i64, w: i64, h: i64) -> i64:
     return gui_clip(x, y, w, h)
 
-def text(x, y, color, s):
+def text(x: i64, y: i64, color: i64, s: str) -> i64:
     return gui_text(x, y, color, s)
 
-def text_mono(x, y, cell, color, s):
+def text_mono(x: i64, y: i64, cell: i64, color: i64, s: str) -> i64:
     return gui_text_mono(x, y, cell, color, s)
 
-def icon(x, y, id, px, color):
+def icon(x: i64, y: i64, id: i64, px: i64, color: i64) -> i64:
     return gui_icon(x, y, id, px, color)
 
 # radius and an RGBA tint, each its own argument now. It used to take one
 # pre-packed 64-bit `spec`, which meant the packing rule leaked out of this
 # module and into every caller.
-def glass(x, y, w, h, radius, tr, tg, tb, ta):
+def glass(x: i64, y: i64, w: i64, h: i64, radius: i64, tr: i64, tg: i64, tb: i64, ta: i64) -> i64:
     return gui_glass(x, y, w, h, radius, tr, tg, tb, ta)
 
 # ---- pixels ------------------------------------------------------------------
@@ -89,16 +91,24 @@ def glass(x, y, w, h, radius, tr, tg, tb, ta):
 # One Blit struct, reused, for the same reason _ev is: the kernel copies it out
 # of user memory before returning (wm.c memcpy's the whole struct), so nothing
 # survives the call that a second struct would have protected.
-_bl = Blit()
+_bl: Blit = Blit()
 
-def blit(x, y, w, h, rgba, sw, sh):
-    _bl.x = x
-    _bl.y = y
-    _bl.w = w
-    _bl.h = h
-    _bl.rgba = addr(rgba)
-    _bl.sw = sw
-    _bl.sh = sh
+def blit[B: ByteStorage](x: i64, y: i64, w: i64, h: i64, rgba: B, sw: i64, sh: i64) -> i64:
+    # A2 trusted dimensions and let the kernel dereference a raw address. A3
+    # validates the complete source extent before crossing that boundary.
+    # Divide first: sw * sh * 4 could itself overflow on an invalid request.
+    if sw <= 0 or sh <= 0 or sw > len(rgba) / 4 / sh:
+        raise ValueError("gui.blit: source dimensions exceed RGBA storage")
+    _bl.x = i32(x)
+    _bl.y = i32(y)
+    _bl.w = i32(w)
+    _bl.h = i32(h)
+    _bl.sw = i32(sw)
+    _bl.sh = i32(sh)
+    unsafe:
+        _bl.rgba = addr(rgba)
+    # The source parameter owns the bytes until the synchronous call returns.
+    # A pointer field in a layout record is never a native GC root.
     return gui_blit(_bl)
 
 # The call an application actually wants: put THIS decoded image in THIS rect.
@@ -106,7 +116,7 @@ def blit(x, y, w, h, rgba, sw, sh):
 # width and height, which have to be the ones the decode reported and not the
 # ones on screen -- come from the image itself rather than from two more
 # variables at the call site.
-def blit_image(img, x, y, w, h):
+def blit_image(img: Image, x: i64, y: i64, w: i64, h: i64) -> i64:
     return blit(x, y, w, h, img.rgba, img.w, img.h)
 
 # decode a file to an Image. A one-line re-export of image.decode() and
@@ -114,7 +124,7 @@ def blit_image(img, x, y, w, h):
 # gui to get a window should not have to learn a second module name to put a
 # picture in it, and a copy of the decode here would be the "fourth path"
 # problem in miniature. lib/image.as is where the work and the reasoning are.
-def picture(path):
+def picture(path: str) -> Image:
     return image.decode(path)
 
 # ---- measuring ---------------------------------------------------------------
@@ -124,7 +134,7 @@ def picture(path):
 # a factor of two for CJK. `mono` picks the monospace face, matching
 # text_mono(); the answer is a width only -- the kernel returns no height, so a
 # caller wanting a line height still has to use its own leading.
-def measure(s, px, mono):
+def measure(s: str, px: i64, mono: i64) -> i64:
     return text_measure(s, len(s), px, mono)
 
 # The size text() ACTUALLY DRAWS AT, in points. text() takes no size argument --
@@ -133,41 +143,44 @@ def measure(s, px, mono):
 # too, so at any scale the number to measure with is this one. Without it
 # `measure(s, 16, 0)` is a 16 someone copied out of a header, and it is wrong
 # the moment the two stop agreeing.
-UI_PX = 16
+UI_PX: i64 = 16
 
 # Text at a size of the caller's choosing, which text() cannot do: SYS_GUI_TEXT
 # has no size argument, so an app wanting a heading has to go through the run
 # struct. Same reused-struct rule as _ev and _bl -- the kernel copies it out
 # before returning.
-_run = Run()
+_run: Run = Run()
 
-def text_px(x, y, px, mono, color, s):
-    _run.x = x
-    _run.y = y
-    _run.px = px
-    _run.mono = mono
-    _run.color = color
-    _run.s = addr(s)
-    _run.len = len(s)
+def text_px(x: i64, y: i64, px: i64, mono: i64, color: i64, s: str) -> i64:
+    _run.x = i32(x)
+    _run.y = i32(y)
+    _run.px = i32(px)
+    _run.mono = i32(mono)
+    _run.color = u32(color)
+    _run.len = i32(len(s))
+    unsafe:
+        _run.s = addr(s)
+    # This ABI is length-delimited, so interior UTF-8 views need no NUL copy.
+    # Keep s as a parameter owner across the call; _run.s cannot retain it.
     return gui_text_run(_run)
 
 # The smallest CONTENT size the window manager will let the user drag this
 # window to, in points. Worth setting from any app whose layout has a floor:
 # without it a window can be resized to a few points across and every
 # subsequent rect is clipped to nothing, which looks like the app crashed.
-def win_min(w, h):
+def win_min(w: i64, h: i64) -> i64:
     return gui_win_min(w, h)
 
-def flush():
+def flush() -> i64:
     return gui_flush()
 
-def dark():
+def dark() -> i64:
     return ui_dark_query()
 
-def poll():
+def poll() -> Optional[Event]:
     if gui_poll_event(_ev) != 1:
-        return nil
+        return None
     return _ev
 
-def yield_():
+def yield_() -> i64:
     return sys_yield()

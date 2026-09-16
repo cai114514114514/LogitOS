@@ -1,3 +1,4 @@
+# aether: 3.0
 # ptracee -- a program that stays alive in RING 3 long enough to be looked at.
 #
 # The tracee half of `make test-ptrace-os`. Its whole job is to be a process
@@ -26,21 +27,33 @@
 
 SYS_MONOTONIC_MS = 75
 
-t0 = syscall(SYS_MONOTONIC_MS, 0, 0, 0)
 
-# Printed BEFORE the loop, so the line means "this process is in its loop", not
-# "this process was created": a human reading the log has to be able to tell a
-# tracee that never started from one that was never attached to.
-print("PTRACEE-UP")
+def clock_ms() -> i64:
+    # The clock read is the only thing in this file that leaves ring 3, and A3
+    # requires the raw syscall to say so. Wrapping it here keeps the loop below
+    # reading exactly as it did -- which matters, because the loop's SHAPE is the
+    # property this fixture exists to hold.
+    unsafe:
+        return syscall(SYS_MONOTONIC_MS, 0, 0, 0)
 
-i = 0
-spin = 1
-while spin == 1:
-    j = 0
-    while j < 4000:
-        i = i + j
-        j = j + 1
-    if syscall(SYS_MONOTONIC_MS, 0, 0, 0) - t0 > 20000:
-        spin = 0
 
-print("PTRACEE-DONE", i)
+def main() -> i64:
+    t0 = clock_ms()
+
+    # Printed BEFORE the loop, so the line means "this process is in its loop",
+    # not "this process was created": a human reading the log has to be able to
+    # tell a tracee that never started from one that was never attached to.
+    print("PTRACEE-UP")
+
+    i = 0
+    spin = 1
+    while spin == 1:
+        j = 0
+        while j < 4000:
+            i = i + j
+            j = j + 1
+        if clock_ms() - t0 > 20000:
+            spin = 0
+
+    print("PTRACEE-DONE", i)
+    return 0

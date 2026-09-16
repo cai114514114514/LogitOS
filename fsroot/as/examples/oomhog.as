@@ -1,3 +1,4 @@
+# aether: 3.0
 # oomhog -- take most of the machine's memory and then just sit there.
 #
 #   as /usr/as/examples/oomhog.as <mib>
@@ -31,49 +32,70 @@ SYS_YIELD = 12
 
 WORDS = 512              # 8-byte words in a 4096-byte page
 
-a = args()
-mib = 128
-if len(a) > 1:
-    if a[1] == "64":
-        mib = 64
-    if a[1] == "96":
-        mib = 96
-    if a[1] == "160":
-        mib = 160
-    if a[1] == "192":
-        mib = 192
-    if a[1] == "200":
-        mib = 200
-    if a[1] == "224":
-        mib = 224
+def map_anon(size: i64) -> i64:
+    unsafe:
+        return syscall(SYS_MMAP, size, 3, 0)
 
-npages = mib * 256
-bytes = mib * 1024 * 1024
 
-print("OOMHOG-START", mib, "MiB,", npages, "pages")
+def yield_() -> i64:
+    unsafe:
+        return syscall(SYS_YIELD, 0, 0, 0)
 
-base = syscall(SYS_MMAP, bytes, 3, 0)
-if base < 4096:
-    print("OOMHOG-FAIL mmap refused:", base)
-else:
-    p = i64ptr(base)
-    i = 0
-    while i < npages:
-        # One word per page: enough to make the page resident AND to make it
-        # hold data (so the drop tier cannot have it back for free).
-        p[i * WORDS] = i + 7
-        i = i + 1
-    print("OOMHOG-RESIDENT", npages, "pages")
 
-    # From here on: no allocation, no growth, one syscall per iteration so the
-    # kill mark can be claimed. Unbounded on purpose -- the harness kills the
-    # machine, and a hog that exits on its own would end the pressure early and
-    # let the innocent process succeed for the wrong reason.
-    n = 0
-    while 1 == 1:
-        syscall(SYS_YIELD, 0, 0, 0)
-        n = n + 1
-        if n % 2000000 == 0:
-            print("OOMHOG-ALIVE", n)
+def touch_pages(base: i64, npages: i64) -> None:
+    # The raw pointer write IS the test: nothing else makes a page resident and
+    # holding data. A3 requires the pointer construction and the store to be
+    # inside unsafe; the arithmetic below is unchanged.
+    unsafe:
+        p = i64ptr(u64(base))
+        i = 0
+        while i < npages:
+            # One word per page: enough to make the page resident AND to make
+            # it hold data (so the drop tier cannot have it back for free).
+            p[i * WORDS] = i + 7
+            i = i + 1
 
-print("OOMHOG-DONE")
+
+def main() -> i64:
+    a = args()
+    mib = 128
+    if len(a) > 1:
+        if a[1] == "64":
+            mib = 64
+        if a[1] == "96":
+            mib = 96
+        if a[1] == "160":
+            mib = 160
+        if a[1] == "192":
+            mib = 192
+        if a[1] == "200":
+            mib = 200
+        if a[1] == "224":
+            mib = 224
+
+    npages = mib * 256
+    span = mib * 1024 * 1024
+
+    print("OOMHOG-START", mib, "MiB,", npages, "pages")
+
+    base = map_anon(span)
+    if base < 4096:
+        print("OOMHOG-FAIL mmap refused:", base)
+    else:
+        touch_pages(base, npages)
+        print("OOMHOG-RESIDENT", npages, "pages")
+
+        # From here on: no allocation, no growth, one syscall per iteration so
+        # the kill mark can be claimed. Unbounded on purpose -- the harness
+        # kills the machine, and a hog that exits on its own would end the
+        # pressure early and let the innocent process succeed for the wrong
+        # reason.
+        n = 0
+        while 1 == 1:
+            yield_()
+            n = n + 1
+            if n % 2000000 == 0:
+                print("OOMHOG-ALIVE", n)
+
+    print("OOMHOG-DONE")
+    return 0

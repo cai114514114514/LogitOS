@@ -2,7 +2,7 @@
 """Generate AetherScript's view of the kernel ABI from include/abi/logit_abi.h.
 
 AetherScript reaches the kernel through syscall(), and the syscall NUMBERS are
-already an identity rather than a copy: as_native.c includes logit_abi.h and
+already an identity rather than a copy: sema/constants.c includes logit_abi.h and
 does as_define_int("SYS_WRITE", SYS_WRITE), so they cannot drift. The struct
 LAYOUTS were the half that was still a copy -- `peek32(a + 12)` for the hour
 field is a number someone counted out of a header comment, and a struct the
@@ -11,7 +11,7 @@ kernel reorders turns that into a script quietly reading the wrong field.
 Two outputs, and the second one is the whole point:
 
   fsroot/as/lib/abi.as        what AetherScript sees (layout objects)
-  c/apps/as/abi_layout.inc    _Static_asserts, included by as_native.c
+  c/apps/as/sema/abi_layout.inc      _Static_asserts, included by sema/constants.c
 
 The offsets here are computed with LP64 rules -- but nothing is asked to trust
 that. Every number is emitted twice: once for the script, and once as an
@@ -30,12 +30,13 @@ names have to match too.
 import os
 import re
 import sys
+from abi_native import render_calls, parameter_names
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 HEADER = os.path.join(ROOT, "include", "abi", "logit_abi.h")
 CALLS = os.path.join(ROOT, "include", "abi", "logit_calls.abi")
 OUT_AS = os.path.join(ROOT, "fsroot", "as", "lib", "abi.as")
-OUT_INC = os.path.join(ROOT, "c", "apps", "as", "abi_layout.inc")
+OUT_INC = os.path.join(ROOT, "c", "apps", "as", "sema/abi_layout.inc")
 OUT_PACK = os.path.join(ROOT, "include", "abi", "logit_pack.h")
 
 # LP64 (x86_64): (size, alignment, AetherScript slot kind).
@@ -264,8 +265,13 @@ def read_structs():
 # of it: the script packs, the kernel unpacks, from the same three numbers.
 
 def parse_calls():
-    """-> [(as_name, sys_symbol, [arg])] where arg is
-       ('int'|'str'|'buf', name) | ('lit', literal) | ('pack', [(f, shift, width)])"""
+    """Read call/wait entries and their typed memory descriptors.
+
+    Scalar arguments retain int/lit/pack forms. Memory arguments declare text,
+    input/output byte storage, a nominal record, or a terminated argv vector;
+    the old directionless buf form cannot describe a safe native signature.
+    tools/abi_native.py renders these descriptors into A3 wrappers.
+    """
     if not os.path.exists(CALLS):
         return []
     out = []
@@ -329,43 +335,80 @@ def parse_calls():
 
 def parse_args(where, lineno, toks):
     args = []
-    if True:
-        for a in toks:
-            m = re.match(r"^(int|str|buf|lit|pack)\((.*)\)$", a)
-            if not m:
-                raise Unsupported("%s:%d: cannot parse argument %r" % (where, lineno, a))
-            kind, body = m.group(1), m.group(2).strip()
-            if kind == "pack":
-                fields = []
-                for f in body.split(","):
-                    fm = re.match(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(\d+)\s*:\s*(\d+)\s*$", f)
-                    if not fm:
-                        raise Unsupported("%s:%d: pack field %r is not name:shift:width" % (where, lineno, f))
-                    fields.append((fm.group(1), int(fm.group(2)), int(fm.group(3))))
-                for fname, sh, w in fields:
-                    if sh + w > 64:
-                        raise Unsupported("%s:%d: field %s runs past bit 64" % (where, lineno, fname))
-                out_fields = sorted(fields, key=lambda t: -t[1])
-                for i in range(len(out_fields) - 1):           # overlapping fields = silent corruption
-                    fa, sa, wa = out_fields[i]
-                    fb, sb, wb = out_fields[i + 1]
-                    if sb + wb > sa:
-                        raise Unsupported("%s:%d: fields %s and %s overlap" % (where, lineno, fa, fb))
-                args.append(("pack", fields))
-            else:
-                args.append((kind, body))
+    for argument in toks:
+        match = re.fullmatch(r"(int|str|inbuf|outbuf|record|argv|lit|pack)\((.*)\)", argument)
+        if not match:
+            raise Unsupported(f"{where}:{lineno}: cannot parse argument {argument!r}")
+
+        kind, body = match.group(1), match.group(2).strip()
+        if kind == "pack":
+            fields = parse_packed_fields(where, lineno, body)
+            args.append((kind, fields))
+        elif kind in ("str", "inbuf", "outbuf", "record", "argv"):
+            parts = parse_memory_parts(where, lineno, kind, body)
+            args.append((kind, parts))
+        else:
+            args.append((kind, body))
+
+    # Extents may refer forward to a later scalar parameter. Validate after
+    # collecting the entire signature, before emitting a misleading wrapper.
+    parameters = parameter_names(args)
+    if len(parameters) != len(set(parameters)):
+        raise Unsupported(f"{where}:{lineno}: duplicate source parameter")
+    scalars = {body for kind, body in args if kind == "int"}
+    for kind, body in args:
+        if kind == "pack":
+            scalars.update(field[0] for field in body)
+    for kind, body in args:
+        if kind in ("str", "inbuf", "outbuf", "record"):
+            extent = body[2] if kind == "record" else body[1]
+            if extent and not extent.isdecimal() and extent not in scalars:
+                raise Unsupported(f"{where}:{lineno}: unknown byte extent {extent!r}")
     return args
 
 
+def parse_packed_fields(where, lineno, body):
+    fields = []
+    for spelling in body.split(","):
+        match = re.fullmatch(r"\s*([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(\d+)\s*:\s*(\d+)\s*", spelling)
+        if not match:
+            raise Unsupported(f"{where}:{lineno}: pack field {spelling!r} is not name:shift:width")
+        name, shift, width = match.group(1), int(match.group(2)), int(match.group(3))
+        if width == 0 or shift + width > 64:
+            raise Unsupported(f"{where}:{lineno}: field {name} has an invalid bit range")
+        fields.append((name, shift, width))
+
+    # Overlap silently changes both fields; the generator must reject it rather
+    # than leave each native caller to discover the corrupted packed argument.
+    ordered = sorted(fields, key=lambda field: field[1])
+    for previous, current in zip(ordered, ordered[1:]):
+        if previous[1] + previous[2] > current[1]:
+            raise Unsupported(f"{where}:{lineno}: fields {previous[0]} and {current[0]} overlap")
+    return fields
+
+
+def parse_memory_parts(where, lineno, kind, body):
+    parts = [part.strip() for part in body.split(",")]
+    arities = {"str": (1, 2), "argv": (1, 1), "record": (2, 3),
+               "inbuf": (2, 2), "outbuf": (2, 2)}
+    minimum, maximum = arities[kind]
+    identifier = r"[A-Za-z_][A-Za-z0-9_]*"
+    valid = minimum <= len(parts) <= maximum
+    valid = valid and all(re.fullmatch(identifier + r"|[0-9]+", part) for part in parts)
+    valid = valid and re.fullmatch(identifier, parts[0])
+    if kind == "record" and valid:
+        valid = re.fullmatch(identifier, parts[1])
+    if not valid:
+        raise Unsupported(f"{where}:{lineno}: invalid native memory argument {kind}({body})")
+
+    if (kind in ("str", "argv") and len(parts) == 1) or (kind == "record" and len(parts) == 2):
+        parts.append(None)
+    return tuple(parts)
+
+
 def call_params(args):
-    """The wrapper's parameter list, in the order the fields appear."""
-    ps = []
-    for kind, body in args:
-        if kind == "pack":
-            ps.extend(f for f, _, _ in body)
-        elif kind != "lit":
-            ps.append(body)
-    return ps
+    """Source parameter order shared with native wrapper generation."""
+    return parameter_names(args)
 
 
 def as_arg_expr(kind, body):
@@ -373,15 +416,19 @@ def as_arg_expr(kind, body):
         return body
     if kind == "lit":
         return body
-    if kind in ("str", "buf"):
-        return "addr(%s)" % body
     # pack: mask each field to its width so an out-of-range value corrupts only
     # itself instead of the field above it (the kernel masks on the way out too).
     parts = []
     for fname, sh, w in sorted(body, key=lambda t: -t[1]):
         mask = (1 << w) - 1
         term = "(%s & 0x%X)" % (fname, mask)
-        parts.append("%s << %d" % (term, sh) if sh else term)
+        # Native i64 arithmetic checks signed shifts. A field reaching bit 63 is a
+        # packed bit pattern, so explicitly wrap rather than trap on its sign
+        # bit. Narrower fields keep their existing, representable expression.
+        if sh and sh + w == 64:
+            parts.append("wrapping_shl(%s, %d)" % (term, sh))
+        else:
+            parts.append("%s << %d" % (term, sh) if sh else term)
     return "(" + ") | (".join(parts) + ")" if len(parts) > 1 else parts[0]
 
 
@@ -421,64 +468,21 @@ def render_pack(entries):
     return "\n".join(c)
 
 
-# Emitted verbatim when the description has any `wait`. The loop is written once
-# here rather than generated per operation: what differs between operations is
-# the protocol (which syscall polls, what pending looks like, what failure looks
-# like), and that is exactly what the .abi states.
-WAIT_PRELUDE = """
-# ---- waiting ----
-# Logit exposes these as start + poll: there is no in-kernel wait queue for them,
-# so the caller spins and yields. Each call site used to write that loop itself,
-# with its own retry count, and answer the same value for "failed" and "gave up".
-
-_wait_t = Time()
-
-# Seconds since midnight, off the RTC -- the WALL clock, hence the midnight
-# wrap fixup below. monotonic_ms() exists now and is the better clock for an
-# interval, but this loop deliberately stays on the wall clock: the host test
-# (make test-as) runs the real abi.as with syscalls stubbed to -1, where a
-# monotonic reading is a CONSTANT -1 and "now - start" never reaches the
-# timeout -- the wait would hang instead of failing. A timeout loop has to
-# still terminate when its clock is broken.
-def now_s():
-    get_time(_wait_t)
-    return (_wait_t.hour * 60 + _wait_t.minute) * 60 + _wait_t.second
-
-# The deadline is real seconds, not a retry count -- a count means a different
-# amount of time on every machine and every load. The three outcomes stay
-# distinct: a value is returned, a failure raises, a timeout raises something
-# else. Conflating the last two is what made sys.dns() answer 0 both when a name
-# did not resolve and when the loop simply ran out.
-def await_(poll, pending_neg, pending_val, has_fail, fail_neg, fail_val, timeout_s, label):
-    start = now_s()
-    while true:
-        v = poll()
-        pending = v < 0 if pending_neg else v == pending_val
-        if not pending:
-            failed = false
-            if has_fail:
-                failed = v < 0 if fail_neg else v == fail_val
-            if failed:
-                raise label + ": failed"
-            return v
-        now = now_s()
-        if now < start:
-            now = now + 86400            # the RTC clock wrapped past midnight
-        if now - start >= timeout_s:
-            raise label + ": timed out after " + str(timeout_s) + "s"
-        sys_yield()
-"""
-
-
 BANNER_AS = """\
+# aether: 3.0
 # GENERATED by tools/gen_abi.py from include/abi/logit_abi.h -- DO NOT EDIT.
 #
 # The kernel's structs, as AetherScript layouts. `t = Time()` allocates one the
 # collector owns; `addr(t)` is exactly the pointer a syscall expects; `t.hour`
 # reads the field at the offset below.
 #
+# Native correction: fixed fields carry static widths; s fields return Bytes.
+# Wrappers validate byte extents and writable storage, and copy str arguments
+# with a trailing NUL. Raw pointer fields/argv pointees retain explicit lifetime
+# obligations. This module requires LogitOS plus the actual kernel capabilities.
+#
 # These offsets are not this file's opinion of the layout. Each one is also
-# emitted as a _Static_assert in c/apps/as/abi_layout.inc, which as_native.c
+# emitted as a _Static_assert in c/apps/as/sema/abi_layout.inc, which sema/constants.c
 # includes -- so the compiler that builds /bin/as checks every number here
 # against the real struct, and a kernel that reorders a field breaks the build
 # instead of leaving a script reading the wrong bytes.
@@ -497,7 +501,7 @@ BANNER_INC = """\
 /* GENERATED by tools/gen_abi.py from include/abi/logit_abi.h -- DO NOT EDIT.
  *
  * Every offset and size that fsroot/as/lib/abi.as hands to layout(), asserted
- * against the real struct. Included by as_native.c, which already includes
+ * against the real struct. Included by sema/constants.c, which already includes
  * logit_abi.h, so this is checked by BOTH the host build and the x86_64-elf
  * target build of /bin/as.
  *
@@ -513,6 +517,13 @@ def render():
     structs = read_structs()
     calls = parse_calls()
 
+    records = {as_name(name) for name, _, _ in structs}
+    for entry in calls:
+        arguments = entry[3] if entry[0] == "call" else entry[4]
+        for kind, body in arguments:
+            if kind == "record" and body[1] not in records:
+                raise Unsupported(f"{CALLS}: {entry[1]} uses unknown record {body[1]!r}")
+
     a = [BANNER_AS]
     for cname, fields, size in structs:
         a.append("")
@@ -522,40 +533,7 @@ def render():
             a.append("    [\"%s\", %d, %d, \"%s\"]%s" % (fname, off, fsize, kind, comma))
         a.append("])")
 
-    plain = [e for e in calls if e[0] == "call"]
-    waits = [e for e in calls if e[0] == "wait"]
-
-    if plain:
-        a.append("")
-        a.append("# ---- calls (include/abi/logit_calls.abi) ----")
-        for _, name, sym, args in plain:
-            a.append("")
-            a.append("def %s(%s):" % (name, ", ".join(call_params(args))))
-            exprs = [sym] + [as_arg_expr(k, b) for k, b in args]
-            a.append("    return syscall(%s)" % ", ".join(exprs))
-
-    if waits:
-        a.append(WAIT_PRELUDE.rstrip("\n"))
-        for _, name, start_sym, poll_sym, args, pending, fail in waits:
-            params = call_params(args)
-            a.append("")
-            a.append("def %s_start(%s):" % (name, ", ".join(params)))
-            exprs = [start_sym] + [as_arg_expr(k, b) for k, b in args]
-            a.append("    return syscall(%s)" % ", ".join(exprs))
-            a.append("")
-            a.append("def %s_poll():" % name)
-            a.append("    return syscall(%s)" % poll_sym)
-            a.append("")
-            a.append("def wait_%s(%s):" % (name, ", ".join(params + ["timeout_s"])))
-            a.append("    if %s_start(%s) < 0:" % (name, ", ".join(params)))
-            a.append("        raise \"%s: cannot start\"" % name)
-            a.append("    return await_(%s_poll, %s, %d, %s, %s, %d, timeout_s, \"%s\")"
-                     % (name,
-                        "true" if pending[0] == "lt" else "false", pending[1],
-                        "true" if fail is not None else "false",
-                        "true" if fail is not None and fail[0] == "lt" else "false",
-                        fail[1] if fail is not None else 0,
-                        name))
+    a.append(render_calls(calls, as_arg_expr))
     a.append("")
 
     c = [BANNER_INC]
@@ -575,15 +553,15 @@ def render():
     return "\n".join(a), "\n".join(c), render_pack(calls)
 
 
-OUT_NATIVE = os.path.join(ROOT, "c", "apps", "as", "as_native.c")
+OUT_CONSTANTS = os.path.join(ROOT, "c", "apps", "as", "common/system_constants.def")
 
 
 def undefined_sys_symbols(text_as):
-    """SYS_* names a generated wrapper calls that as_native.c never defines.
+    """SYS_* names a generated wrapper calls that common/system_constants.def never defines.
 
     THE HOLE THIS CLOSES, and it was open for eighteen calls. A wrapper in
     abi.as is `syscall(SYS_SOCK_OPEN, ...)`, and SYS_SOCK_OPEN is an ordinary
-    AetherScript GLOBAL that as_native.c installs with as_define_int(). That
+    AetherScript name the constants manifest binds. That
     list is hand-maintained -- its own comment says "keep this list in step
     with include/abi/logit_calls.abi" -- and a `call` line added here without
     the matching define compiles, links, ships, and then fails at the FIRST
@@ -592,20 +570,26 @@ def undefined_sys_symbols(text_as):
     call and running it says a word.
 
     So the two lists are diffed here instead. This is a NAME check, not an
-    offset check: the numbers were never the risk (as_native.c hands the
+    offset check: the numbers were never the risk (the manifest hands the
     kernel's own SYS_* through, which is the identity the header comment
     describes) -- the risk is a name that has no binding at all.
 
-    Deliberately one-directional. as_native.c defining a symbol no wrapper
+    Deliberately one-directional. The manifest defining a symbol no wrapper
     uses is fine and common (SYS_LSEEK, SYS_CLOSE and friends are there for
     scripts that call syscall() by hand), so an extra define is not an error.
-    A wrapper naming a symbol nobody defines always is."""
+    A wrapper naming a symbol nobody defines always is.
+
+    common/system_constants.def owns these names. It was shared with the retiring
+    VM until that engine was deleted; it is now the single binding site. A missing
+    manifest must fail closed -- returning no missing names when its file
+    disappears would certify an empty API.
+    """
     used = sorted(set(re.findall(r"\bSYS_[A-Z0-9_]+", text_as)))
     try:
-        nat = open(OUT_NATIVE, encoding="utf-8", newline="").read()
+        constants = open(OUT_CONSTANTS, encoding="utf-8", newline="").read()
     except OSError:
-        return []                       # no as_native.c to check against
-    have = set(re.findall(r'as_define_int\(\s*"(SYS_[A-Z0-9_]+)"', nat))
+        return used
+    have = set(re.findall(r'^AS_SYSTEM_CONSTANT\((SYS_[A-Z0-9_]+),', constants, re.M))
     return [u for u in used if u not in have]
 
 
@@ -632,10 +616,10 @@ def main(argv):
             print("gen_abi.py: wrote %s" % os.path.relpath(path, ROOT))
         if missing:
             print("gen_abi.py: WARNING -- %d wrapper(s) name a SYS_* that "
-                  "as_native.c never defines:" % len(missing))
+                  "common/system_constants.def never defines:" % len(missing))
             print("  " + " ".join(missing))
             print("  each one is an 'undefined variable' at its FIRST CALL, not a build error.")
-            print("  add as_define_int(\"NAME\", NAME) in as_install_indirection().")
+            print("  add AS_SYSTEM_CONSTANT(NAME, NAME) to common/system_constants.def.")
         return 0
 
     bad = []
@@ -650,13 +634,13 @@ def main(argv):
         return 1
     if missing:
         print("check-abi: UNBOUND -- %d generated wrapper(s) call a SYS_* that "
-              "c/apps/as/as_native.c never defines as a script global:"
+              "c/apps/as/common/system_constants.def never defines:"
               % len(missing))
         print("  " + " ".join(missing))
         print("  These COMPILE and SHIP. The failure is at the wrapper's first")
         print("  call, and it reads 'undefined variable' -- indistinguishable")
         print("  from a typo in the calling script.")
-        print("  fix: as_define_int(\"NAME\", NAME) in as_install_indirection().")
+        print("  fix: AS_SYSTEM_CONSTANT(NAME, NAME) in common/system_constants.def.")
         return 1
     print("check-abi: ok (%d kernel structs, %d calls, %d SYS_* names bound; "
           "offsets also asserted at compile time)"

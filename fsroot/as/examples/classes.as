@@ -1,26 +1,36 @@
-# classes: init / methods / fields / inheritance / super (M22.3)
+# aether: 3.0
+# Fields keep their native layout through inheritance. super selects the
+# parent implementation while ordinary self calls dispatch to overrides.
 class Animal:
-    def init(self, name):
+    name: str
+
+    def init(self, name: str) -> None:
         self.name = name
-    def speak(self):
+
+    def speak(self) -> str:
         return self.name + " makes a sound"
 
+
 class Dog(Animal):
-    def speak(self):
+    def speak(self) -> str:
         return super.speak() + " (woof)"
 
-a = Animal("Generic")
-print("animal:", a.speak())
-d = Dog("Rex")
-print("dog:", d.speak(), "name:", d.name)
 
-# a small counter object to show mutable fields
 class Counter:
-    def init(self):
+    n: i64
+
+    def init(self) -> None:
         self.n = 0
-    def bump(self):
-        self.n = self.n + 1
+
+    def bump(self) -> i64:
+        self.n += 1
         return self.n
 
-c = Counter()
-print("counter:", c.bump(), c.bump(), c.bump())
+
+def main() -> None:
+    animal = Animal("Generic")
+    print("animal:", animal.speak())
+    dog = Dog("Rex")
+    print("dog:", dog.speak(), "name:", dog.name)
+    counter = Counter()
+    print("counter:", counter.bump(), counter.bump(), counter.bump())

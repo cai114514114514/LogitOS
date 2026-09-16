@@ -1,3 +1,4 @@
+# aether: 3.0
 # elfstat.as -- read the kernel's memory instruments from ring 3, at a named
 # moment, and optionally force a reclaim pass first.
 #
@@ -33,32 +34,43 @@ MMCTL_AUDIT   = 2
 MMCTL_RECLAIM = 3
 MMCTL_STATS   = 4
 
-a = args()
-tag = a[1] if len(a) > 1 else "?"
+# One wrapper for the whole file's ring-3 exit. A3 requires the raw syscall to
+# be inside an unsafe block; naming it once keeps the four call sites below
+# reading as the mmctl operations they are rather than as memory operations.
+def mmctl(op: i64, arg: i64) -> i64:
+    unsafe:
+        return syscall(SYS_MEMINFO, 0, op, arg)
 
-print("ELFSTAT-BEGIN", tag)
 
-# The forced pass comes FIRST, so the counters printed below already include
-# whatever it did. Asking for frames the machine is not short of is the only
-# way to make reclaim run at all here: the full desktop peaks at 229 MiB of
-# 511 and never reaches the watermark on its own, so "the counter stayed zero"
-# under natural load would be evidence about the workload, not the mechanism.
-if len(a) > 2:
-    # There is no int() builtin in this language (mempress.as says so in as
-    # many words), so the frame count is chosen by NAME rather than parsed.
-    n = 64
-    if a[2] == "256":
-        n = 256
-    if a[2] == "1024":
-        n = 1024
-    if a[2] == "4096":
-        n = 4096
-    got = syscall(SYS_MEMINFO, 0, MMCTL_RECLAIM, n)
-    print("ELFSTAT-RECLAIM", tag, "asked", n, "got", got)
+def main() -> i64:
+    a = args()
+    tag = a[1] if len(a) > 1 else "?"
 
-syscall(SYS_MEMINFO, 0, MMCTL_STATS, 0)
-syscall(SYS_MEMINFO, 0, MMCTL_REPORT, 0)
-bugs = syscall(SYS_MEMINFO, 0, MMCTL_AUDIT, 0)
-print("ELFSTAT-AUDIT", tag, bugs)
+    print("ELFSTAT-BEGIN", tag)
 
-print("ELFSTAT-END", tag)
+    # The forced pass comes FIRST, so the counters printed below already include
+    # whatever it did. Asking for frames the machine is not short of is the only
+    # way to make reclaim run at all here: the full desktop peaks at 229 MiB of
+    # 511 and never reaches the watermark on its own, so "the counter stayed
+    # zero" under natural load would be evidence about the workload, not the
+    # mechanism.
+    if len(a) > 2:
+        # There is no int() builtin in this language (mempress.as says so in as
+        # many words), so the frame count is chosen by NAME rather than parsed.
+        n = 64
+        if a[2] == "256":
+            n = 256
+        if a[2] == "1024":
+            n = 1024
+        if a[2] == "4096":
+            n = 4096
+        got = mmctl(MMCTL_RECLAIM, n)
+        print("ELFSTAT-RECLAIM", tag, "asked", n, "got", got)
+
+    mmctl(MMCTL_STATS, 0)
+    mmctl(MMCTL_REPORT, 0)
+    bugs = mmctl(MMCTL_AUDIT, 0)
+    print("ELFSTAT-AUDIT", tag, bugs)
+
+    print("ELFSTAT-END", tag)
+    return 0

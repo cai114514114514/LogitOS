@@ -1,10 +1,15 @@
-# exceptions demo (M22.4): raise+catch, and catch a built-in runtime error
-try:
-    raise "boom"
-except e:
-    print("caught:", e)
-try:
-    x = 1 / 0
-except e:
-    print("runtime caught")
-print("exc ok")
+# aether: 3.0
+# Catch a declared exception type and an arithmetic exception from native code.
+# Error.message keeps the original message; printing Error also includes its kind.
+
+def main() -> None:
+    try:
+        raise ValueError("boom")
+    except ValueError as error:
+        print("caught:", error.message)
+
+    try:
+        value = 1 / 0
+    except ZeroDivisionError as error:
+        print("runtime caught")
+    print("exc ok")

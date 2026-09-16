@@ -1,113 +1,132 @@
-# dicts -- helpers over dicts (a dict already has .get/.has/.keys/.values/.remove)
-#   from dicts import items, merge, pick, frequencies
+# aether: 3.0
+# Helpers over native dictionaries. Keys/values retain separate concrete
+# layouts; explicit Any cells preserve the existing heterogeneous pair format.
 
-def items(d):                       # [[key, value], ...]
-    out = []
-    for k in d:                     # iterating a dict yields its keys
-        out.append([k, d[k]])
+
+def items[K: Hashable, V](d: Dict[K, V]) -> List[List[Any]]:
+    out: List[List[Any]] = []
+    for key in d:
+        out.append([Any(key), Any(d[key])])
     return out
 
-def keys(d):
+
+def keys[K: Hashable, V](d: Dict[K, V]) -> List[K]:
     return d.keys()
 
-def values(d):
+
+def values[K: Hashable, V](d: Dict[K, V]) -> List[V]:
     return d.values()
 
-def has(d, k):
-    return d.has(k)
 
-def get(d, k, default):
-    return d.get(k, default)
+def has[K: Hashable, V](d: Dict[K, V], key: K) -> bool:
+    return d.has(key)
 
-def copy(d):
-    out = {}
-    for k in d:
-        out[k] = d[k]
+
+def get[K: Hashable, V](d: Dict[K, V], key: K, default: V) -> V:
+    return d.get(key, default)
+
+
+def copy[K: Hashable, V](d: Dict[K, V]) -> Dict[K, V]:
+    out: Dict[K, V] = {}
+    for key in d:
+        out[key] = d[key]
     return out
 
-def merge(a, b):                    # new dict: a then b (b wins on conflict)
+
+def merge[K: Hashable, V](a: Dict[K, V], b: Dict[K, V]) -> Dict[K, V]:
+    # Later entries win; neither input is modified.
     out = copy(a)
-    for k in b:
-        out[k] = b[k]
+    for key in b:
+        out[key] = b[key]
     return out
 
-def update(target, patch):           # mutates and returns target
-    for k in patch:
-        target[k] = patch[k]
+
+def update[K: Hashable, V](target: Dict[K, V], patch: Dict[K, V]) -> Dict[K, V]:
+    for key in patch:
+        target[key] = patch[key]
     return target
 
-def set_default(d, k, value):
-    if not d.has(k):
-        d[k] = value
-    return d[k]
 
-def pop(d, k, default):
-    if d.has(k):
-        v = d[k]
-        d.remove(k)
-        return v
+def set_default[K: Hashable, V](d: Dict[K, V], key: K, value: V) -> V:
+    if not d.has(key):
+        d[key] = value
+    return d[key]
+
+
+def pop[K: Hashable, V](d: Dict[K, V], key: K, default: V) -> V:
+    if d.has(key):
+        value = d[key]
+        d.remove(key)
+        return value
     return default
 
-def clear(d):
-    ks = d.keys()
-    for k in ks:
-        d.remove(k)
+
+def clear[K: Hashable, V](d: Dict[K, V]) -> Dict[K, V]:
+    # Dictionary iteration owns a key snapshot; removal cannot skip entries.
+    for key in d:
+        d.remove(key)
     return d
 
-def from_pairs(pairs):              # [[k, v], ...] -> dict
-    out = {}
-    for p in pairs:
-        out[p[0]] = p[1]
+
+def from_pairs[K: Hashable, V](pairs: List[List[Any]]) -> Dict[K, V]:
+    # The caller's result annotation selects K and V. Each cell is checked;
+    # malformed rows report IndexError or TypeError at the conversion site.
+    out: Dict[K, V] = {}
+    for pair in pairs:
+        out[cast[K](pair[0])] = cast[V](pair[1])
     return out
 
-def invert(d):                       # values must be valid dict keys
-    out = {}
-    for k in d:
-        out[d[k]] = k
+
+def invert[K: Hashable, V: Hashable](d: Dict[K, V]) -> Dict[V, K]:
+    out: Dict[V, K] = {}
+    for key in d:
+        out[d[key]] = key
     return out
 
-def pick(d, ks):
-    out = {}
-    for k in ks:
-        if d.has(k):
-            out[k] = d[k]
+
+def pick[K: Hashable, V](d: Dict[K, V], selected: List[K]) -> Dict[K, V]:
+    out: Dict[K, V] = {}
+    for key in selected:
+        if d.has(key):
+            out[key] = d[key]
     return out
 
-def omit(d, ks):
-    out = {}
-    for k in d:
-        if not (k in ks):
-            out[k] = d[k]
+
+def omit[K: Hashable, V](d: Dict[K, V], excluded: List[K]) -> Dict[K, V]:
+    out: Dict[K, V] = {}
+    for key in d:
+        if not (key in excluded):
+            out[key] = d[key]
     return out
 
-def without(d, k):
+
+def without[K: Hashable, V](d: Dict[K, V], key: K) -> Dict[K, V]:
     out = copy(d)
-    out.remove(k)
+    out.remove(key)
     return out
 
-def equal(a, b):                     # shallow value equality
+
+def equal[K: Hashable, V: Equatable](a: Dict[K, V], b: Dict[K, V]) -> bool:
     if len(a) != len(b):
         return false
-    for k in a:
-        if not b.has(k):
-            return false
-        if a[k] != b[k]:
+    for key in a:
+        if not b.has(key) or a[key] != b[key]:
             return false
     return true
 
-def frequencies(xs):
-    out = {}
-    for x in xs:
-        out[x] = out.get(x, 0) + 1
+
+def frequencies[K: Hashable](xs: List[K]) -> Dict[K, i64]:
+    out: Dict[K, i64] = {}
+    for value in xs:
+        out[value] = out.get(value, 0) + 1
     return out
 
-def group_by(f, xs):
-    out = {}
-    for x in xs:
-        k = f(x)
-        bucket = out.get(k, nil)
-        if bucket == nil:
-            bucket = []
-            out[k] = bucket
-        bucket.append(x)
+
+def group_by[T, K: Hashable](f: Callable[[T], K], xs: List[T]) -> Dict[K, List[T]]:
+    out: Dict[K, List[T]] = {}
+    for value in xs:
+        key = f(value)
+        if not out.has(key):
+            out[key] = []
+        out[key].append(value)
     return out

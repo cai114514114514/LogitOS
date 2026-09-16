@@ -1,3 +1,4 @@
+# aether: 3.0
 # events.as -- an app that says out loud what the window manager sent it.
 #
 # The event ABI grew mouse-up, mouse-move, wheel, a button id and modifier
@@ -14,28 +15,31 @@
 # The window is deliberately large (900x600): it lands under the cursor's boot
 # position (screen centre) at the third cascade slot, so the harness does not
 # have to walk a relative pointer to a target it cannot see.
+# The native acceptance also locates the rendered canvas and moves the pointer
+# into it, so preceding GUI applications cannot change the tested coordinates.
 
-import gui
+import std.gui as gui
 
-gui.create("Events", 900, 600)
-gui.clear(0x1E1E28)
-gui.text(16, 16, 0x9AA0B0, "events.as -- every event goes to the serial console")
-gui.flush()
-print("EVENTS-READY")
+def main() -> None:
+    gui.create("Events", 900, 600)
+    gui.clear(0x1E1E28)
+    gui.text(16, 16, 0x9AA0B0, "events.as -- every event goes to the serial console")
+    gui.flush()
+    print("EVENTS-READY")
 
-n = 0
-running = true
-while running:
-    ev = gui.poll()
-    while ev != nil:
-        if ev.type == EV_CLOSE:
-            running = false
-        elif ev.type == EV_KEY and (ev.a == 113 or ev.a == 27):
-            running = false
-        else:
-            print("EV", ev.type, ev.a, ev.b, ev.mods, ev.button, ev.wheel)
-            n = n + 1
+    n = 0
+    running = true
+    while running:
         ev = gui.poll()
-    gui.yield_()
+        while ev is not None:
+            if i64(ev.type) == EV_CLOSE:
+                running = false
+            elif i64(ev.type) == EV_KEY and (ev.a == 113 or ev.a == 27):
+                running = false
+            else:
+                print("EV", ev.type, ev.a, ev.b, ev.mods, ev.button, ev.wheel)
+                n = n + 1
+            ev = gui.poll()
+        gui.yield_()
 
-print("EVENTS-DONE", n)
+    print("EVENTS-DONE", n)

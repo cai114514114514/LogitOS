@@ -1,203 +1,256 @@
-# math -- basic numeric helpers (pure AetherScript stdlib)
-#   import math   /   from math import gcd, clamp, is_prime
+# aether: 3.0
+# Basic numeric helpers. Generic arithmetic keeps the concrete native width;
+# integer overflow remains observable in both debug and optimized programs.
+PI: f64 = 3.141592653589793
+E: f64 = 2.718281828459045
+TAU: f64 = 6.283185307179586
+HALF_PI: f64 = 1.5707963267948966
+EPS: f64 = 0.000000001
 
-PI = 3.141592653589793
-E  = 2.718281828459045
-TAU = 6.283185307179586
-HALF_PI = 1.5707963267948966
-EPS = 0.000000001
 
-def abs(x):
-    if x < 0:
-        return -x
-    return x
+def abs[T: Number](x: T) -> T:
+    return -x if x < T(0) else x
 
-def sign(x):
-    if x < 0:
+
+def sign[T: Number](x: T) -> i64:
+    if x < T(0):
         return -1
-    if x > 0:
+    if x > T(0):
         return 1
     return 0
 
-def max2(a, b):
-    if a > b:
-        return a
-    return b
 
-def min2(a, b):
-    if a < b:
-        return a
-    return b
+def max2[T: Number](a: T, b: T) -> T:
+    return a if a > b else b
 
-def clamp(x, lo, hi):
+
+def min2[T: Number](a: T, b: T) -> T:
+    return a if a < b else b
+
+
+def clamp[T: Number](x: T, lo: T, hi: T) -> T:
     if x < lo:
         return lo
     if x > hi:
         return hi
     return x
 
-def between(x, lo, hi):
+
+def between[T: Number](x: T, lo: T, hi: T) -> bool:
     return x >= lo and x <= hi
 
-def sq(x):
+
+def sq[T: Number](x: T) -> T:
     return x * x
 
-def cube(x):
+
+def cube[T: Number](x: T) -> T:
     return x * x * x
 
-def powi(base, exp):                # integer exponent; negative exp returns a float
-    if exp < 0:
-        return 1.0 / powi(base, -exp)
-    r = 1
-    i = 0
-    while i < exp:
-        r = r * base
-        i = i + 1
-    return r
 
-def pow(base, exp):                 # compatibility alias for integer exponents
+def _positive_power[T: Number](base: T, exponent: i64) -> T:
+    result = T(1)
+    factor = base
+    remaining = exponent
+    while remaining != 0:
+        if remaining % 2 != 0:
+            result *= factor
+        remaining /= 2
+        if remaining != 0:
+            factor *= factor
+    return result
+
+
+def _negative_power[T: Number](base: T, exponent: i64) -> f64:
+    # Keep the exponent negative: its positive magnitude need not fit i64.
+    # Convert before the first divide/multiply, as in the corrected old rule.
+    result = 1.0
+    factor = 1.0 / f64(base)
+    remaining = exponent
+    while remaining != 0:
+        if remaining % 2 != 0:
+            result *= factor
+        remaining /= 2
+        if remaining != 0:
+            factor *= factor
+    return result
+
+
+def powi[T: Number](base: T, exp: i64) -> Any:
+    # This API historically returned a value-dependent type. Any makes that
+    # boundary explicit without rounding positive integer powers to f64.
+    # Only the returned value is boxed; the loops use native T/f64 arithmetic.
+    if exp == 0:
+        return Any(1)
+    if exp < 0:
+        return Any(_negative_power(base, exp))
+    return Any(_positive_power(base, exp))
+
+
+def pow[T: Number](base: T, exp: i64) -> Any:
     return powi(base, exp)
 
-def gcd(a, b):
-    a = abs(a)
-    b = abs(b)
-    while b != 0:
-        t = b
-        b = a % t
-        a = t
-    return a
 
-def lcm(a, b):
-    if a == 0 or b == 0:
-        return 0
-    return abs(a * b) / gcd(a, b)   # `/` is integer division for ints
+def gcd[T: Number](a: T, b: T) -> T:
+    left = abs(a)
+    right = abs(b)
+    while right != T(0):
+        previous = right
+        right = left % right
+        left = previous
+    return left
 
-def gcd_list(xs):
+
+def lcm[T: Number](a: T, b: T) -> T:
+    if a == T(0) or b == T(0):
+        return T(0)
+    # Dividing the common factor first avoids an overflowing intermediate when
+    # the actual least common multiple still fits the caller's integer width.
+    return abs((a / gcd(a, b)) * b)
+
+
+def gcd_list[T: Number](xs: List[T]) -> T:
+    result = T(0)
+    for item in xs:
+        result = gcd(result, item)
+    return result
+
+
+def lcm_list[T: Number](xs: List[T]) -> T:
     if len(xs) == 0:
-        return 0
-    g = abs(xs[0])
-    i = 1
-    while i < len(xs):
-        g = gcd(g, xs[i])
-        i = i + 1
-    return g
+        return T(0)
+    result = abs(xs[0])
+    for index in range(1, len(xs)):
+        result = lcm(result, xs[index])
+    return result
 
-def lcm_list(xs):
-    if len(xs) == 0:
-        return 0
-    m = abs(xs[0])
-    i = 1
-    while i < len(xs):
-        m = lcm(m, xs[i])
-        i = i + 1
-    return m
 
-def fact(n):
+def fact(n: i64) -> i64:
     if n < 0:
-        raise "fact() needs a non-negative integer"
-    r = 1
-    i = 2
-    while i <= n:
-        r = r * i
-        i = i + 1
-    return r
+        raise ValueError("fact() needs a non-negative integer")
+    result = 1
+    factor = 2
+    while factor <= n:
+        result *= factor
+        factor += 1
+    return result
 
-def factorial(n):
+
+def factorial(n: i64) -> i64:
     return fact(n)
 
-def fib(n):
-    if n < 0:
-        raise "fib() needs a non-negative integer"
-    a = 0
-    b = 1
-    i = 0
-    while i < n:
-        t = a + b
-        a = b
-        b = t
-        i = i + 1
-    return a
 
-def isqrt(n):                       # integer floor of sqrt(n), n >= 0
+def fib(n: i64) -> i64:
     if n < 0:
-        raise "isqrt() needs a non-negative integer"
+        raise ValueError("fib() needs a non-negative integer")
+    if n == 0:
+        return 0
+    previous = 0
+    current = 1
+    for index in range(1, n):
+        following = previous + current
+        previous = current
+        current = following
+    # Do not compute F(n+1) to return F(n): F(92) fits, F(93) does not.
+    return current
+
+
+def isqrt(n: i64) -> i64:
+    if n < 0:
+        raise ValueError("isqrt() needs a non-negative integer")
     if n < 2:
         return n
-    x = n
-    y = (x + 1) / 2
-    while y < x:
-        x = y
-        y = (x + n / x) / 2
-    return x
+    estimate = n
+    # ceil(n / 2) avoids n + 1 overflowing at the signed maximum.
+    improved = estimate / 2 + estimate % 2
+    while improved < estimate:
+        estimate = improved
+        improved = (estimate + n / estimate) / 2
+    return estimate
 
-def sqrt(x):                        # Newton sqrt; returns a float for integer input
-    if x < 0:
-        raise "sqrt() needs a non-negative number"
-    if x == 0:
+
+def sqrt[T: Number](x: T) -> f64:
+    real = f64(x)
+    if real < 0.0:
+        raise ValueError("sqrt() needs a non-negative number")
+    if real == 0.0:
         return 0.0
-    guess = x * 1.0                  # Newton converges for any x > 0 (incl. 0 < x < 1)
-    i = 0
-    while i < 30:
-        guess = (guess + x / guess) / 2.0
-        i = i + 1
+    # Preserve the original bounded approximation; this is not a libm accuracy
+    # promise over the entire floating-point exponent range.
+    guess = real
+    for iteration in range(30):
+        guess = (guess + real / guess) / 2.0
     return guess
 
-def mod_pos(x, m):
-    r = x % m
-    if r < 0:
-        return r + abs(m)
-    return r
 
-def divmod(a, b):
-    q = a / b
-    return [q, a - q * b]
+def mod_pos[T: Number](x: T, m: T) -> T:
+    remainder = x % m
+    return remainder + abs(m) if remainder < T(0) else remainder
 
-def is_even(n):
+
+def divmod[T: Number](a: T, b: T) -> List[T]:
+    quotient = a / b
+    return [quotient, a - quotient * b]
+
+
+def is_even(n: i64) -> bool:
     return n % 2 == 0
 
-def is_odd(n):
+
+def is_odd(n: i64) -> bool:
     return n % 2 != 0
 
-def is_prime(n):
+
+def is_prime(n: i64) -> bool:
     if n < 2:
         return false
     if n == 2:
         return true
     if n % 2 == 0:
         return false
-    p = 3
-    while p * p <= n:
-        if n % p == 0:
+    divisor = 3
+    while divisor <= n / divisor:
+        if n % divisor == 0:
             return false
-        p = p + 2
+        divisor += 2
     return true
 
-def next_prime(n):
+
+def next_prime(n: i64) -> i64:
     if n <= 2:
         return 2
-    p = n
-    if p % 2 == 0:
-        p = p + 1
-    while not is_prime(p):
-        p = p + 2
-    return p
+    candidate = n
+    if candidate % 2 == 0:
+        candidate += 1
+    while not is_prime(candidate):
+        candidate += 2
+    return candidate
 
-def sum(xs):
-    s = 0
-    for x in xs:
-        s = s + x
-    return s
 
-def product(xs):
-    p = 1
-    for x in xs:
-        p = p * x
-    return p
+def sum[T: Number](xs: List[T]) -> T:
+    total = T(0)
+    for item in xs:
+        total += item
+    return total
 
-def mean(xs):
+
+def product[T: Number](xs: List[T]) -> T:
+    result = T(1)
+    for item in xs:
+        result *= item
+    return result
+
+
+def mean[T: Number](xs: List[T]) -> f64:
     if len(xs) == 0:
-        raise "mean() needs a non-empty list"
-    return sum(xs) * 1.0 / len(xs)
+        raise ValueError("mean() needs a non-empty list")
+    # Accumulate real values from the first element. Summing i64 first can
+    # overflow even when the mean of those same inputs is representable.
+    total = 0.0
+    for item in xs:
+        total += f64(item)
+    return total / f64(len(xs))
 
-def close(a, b):
-    return abs(a - b) <= EPS
+
+def close[T: Number](a: T, b: T) -> bool:
+    return f64(abs(a - b)) <= EPS

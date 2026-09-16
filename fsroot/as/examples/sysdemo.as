@@ -1,22 +1,30 @@
-# sysdemo -- the OS as a scripting surface (M23.5 lib/sys.as).
-from sys import read_file, write_file, ls, remove, mkdir, run, time, pid, cwd
+# aether: 3.0
+# The original system demo now runs as a native multi-module program. Text is
+# explicitly encoded for byte I/O, and Optional failures are checked before use.
+from std.sys import read_file, write_file, ls, remove, mkdir, run, time, pid, cwd
 
-# file round-trip
-write_file("/docs/sysdemo.txt", "written by AetherScript\n")
-back = read_file("/docs/sysdemo.txt")
-print("roundtrip:", back.strip())
 
-# directory listing (the file we just wrote must be in it)
-names = ls("/docs")
-print("ls has it:", "sysdemo.txt" in names)
-remove("/docs/sysdemo.txt")
+def main() -> None:
+    payload = Bytes("written by AetherScript\n")
+    written = write_file("/docs/sysdemo.txt", payload)
+    assert written == len(payload)
+    back = read_file("/docs/sysdemo.txt")
+    assert back is not None
+    print("roundtrip:", back.strip())
 
-# process control: fork+execve+waitpid -- a script driving real programs
-code = run("/bin/echo", ["echo", "spawned-from-script"])
-print("spawn exit:", code)
+    names = ls("/docs")
+    assert names is not None
+    print("ls has it:", "sysdemo.txt" in names)
+    assert remove("/docs/sysdemo.txt") == 0
 
-# wall clock + identity
-t = time()
-print("clock sane:", t.year >= 2024 and t.hour >= 0 and t.hour < 24)
-print(f"pid={pid() > 0} cwd={cwd()}")
-print("sysdemo ok")
+    # The child inherits the output descriptor, so its complete text and the
+    # real wait status are both observable by Studio or a command-line caller.
+    code = run("/bin/echo", ["echo", "spawned-from-script"])
+    print("spawn exit:", code)
+
+    clock = time()
+    print("clock sane:", clock.year >= 2024 and clock.hour >= 0 and clock.hour < 24)
+    directory = cwd()
+    assert directory is not None
+    print(f"pid={pid() > 0} cwd={directory}")
+    print("sysdemo ok")

@@ -19,7 +19,16 @@
 # number):
 #   int(n)                 passed through unchanged
 #   str(s)                 a string; the wrapper passes addr(s)
-#   buf(b)                 a buffer or layout; the wrapper passes addr(b)
+#   inbuf(b,n)             read-only byte storage, at least n bytes
+#   outbuf(b,n)            mutable byte storage, at least n bytes
+#   record(b,Type[,n])     a nominal ABI record, optional checked byte count
+#   argv(b)               a NULL-terminated vector of raw pointer words
+#   str(s[,n])            UTF-8 text copied with a trailing NUL; optional byte count
+#
+# A3 checks these directions and sizes before extracting an address. Raw pointer
+# fields and argv pointees remain the caller's explicit lifetime responsibility.
+# This replaces A2's undifferentiated buf(b), which admitted immutable text to
+# kernel output parameters and supplied no allocation bound.
 #   lit(N)                 a constant the caller never supplies
 #   pack(f:shift:width,..) bitfields in ONE argument, written high bits first
 #
@@ -51,12 +60,12 @@ call gui_flush_rect SYS_GUI_FLUSH_RECT pack(x:16:16, y:0:16) pack(w:16:16, h:0:1
 # fields is how the two drift.
 call gui_win_min    SYS_GUI_WIN_MIN    pack(w:16:16, h:0:16)
 call gui_win_state  SYS_GUI_WIN_STATE  int(what) int(arg)
-call gui_poll_event SYS_POLL_EVENT     buf(ev)
-call gui_wait_event SYS_WAIT_EVENT     buf(ev) int(ms)
+call gui_poll_event SYS_POLL_EVENT     record(ev,Event)
+call gui_wait_event SYS_WAIT_EVENT     record(ev,Event) int(ms)
 call ui_dark_query  SYS_UI_DARK        lit(-1)
 call ui_dark_set    SYS_UI_DARK        int(on)
 call sys_yield      SYS_YIELD
-call get_time       SYS_GET_TIME       buf(t)
+call get_time       SYS_GET_TIME       record(t,Time)
 # The monotonic clock, in milliseconds since boot. Distinct from get_time, which
 # is the WALL clock in whole seconds off a CMOS RTC a user can set backwards --
 # you cannot measure an interval with that, and await_() below had to say so in a
@@ -64,22 +73,22 @@ call get_time       SYS_GET_TIME       buf(t)
 call monotonic_ms   SYS_MONOTONIC_MS
 
 # ---- io / basics ----
-call io_write       SYS_WRITE          int(fd) buf(b) int(len)
+call io_write       SYS_WRITE          int(fd) inbuf(b,len) int(len)
 call proc_exit      SYS_EXIT           int(code)
-call get_arg        SYS_GET_ARG        buf(b) int(max)
-call sysinfo        SYS_SYSINFO        buf(b) int(max)
+call get_arg        SYS_GET_ARG        outbuf(b,max) int(max)
+call sysinfo        SYS_SYSINFO        outbuf(b,max) int(max)
 
 # ---- files / directories ----
-call file_read      SYS_READ_FILE      str(path) buf(b) int(max)
+call file_read      SYS_READ_FILE      str(path) outbuf(b,max) int(max)
 call file_count     SYS_FILE_COUNT
-call file_name      SYS_FILE_NAME      int(i) buf(b) int(max)
-call file_write     SYS_WRITE_FILE     str(path) buf(b) int(size)
+call file_name      SYS_FILE_NAME      int(i) outbuf(b,max) int(max)
+call file_write     SYS_WRITE_FILE     str(path) inbuf(b,size) int(size)
 call file_delete    SYS_DELETE_FILE    str(path)
 call file_rename    SYS_RENAME         str(old) str(new)
 call dir_make       SYS_MKDIR          str(path)
 call dir_count      SYS_DIR_COUNT      str(dir)
-call dir_name       SYS_DIR_NAME       str(dir) int(i) buf(b)
-call getcwd         SYS_GETCWD         buf(b) int(max)
+call dir_name       SYS_DIR_NAME       str(dir) int(i) outbuf(b,64)
+call getcwd         SYS_GETCWD         outbuf(b,max) int(max)
 call chdir          SYS_CHDIR          str(path)
 # stat's third argument is the SIZE OF THE STRUCT THE CALLER BROUGHT, not a
 # count or a flag -- c/kernel/exec/load/meta.c emit() copies min(len, sizeof) bytes
@@ -92,28 +101,28 @@ call chdir          SYS_CHDIR          str(path)
 # named `stlen` and not `len` on purpose: the generator turns an arg name into
 # a PARAMETER name, and a parameter called `len` shadows the len() builtin for
 # the whole body of the wrapper.
-call stat           SYS_STAT           str(path) buf(st) int(stlen)
+call stat           SYS_STAT           str(path) record(st,Stat,stlen) int(stlen)
 
 # ---- processes / file descriptors ----
 call proc_fork      SYS_FORK
-call proc_execve    SYS_EXECVE         str(path) buf(argv) int(envp)
-call proc_waitpid   SYS_WAITPID        int(pid) buf(st) int(opts)
+call proc_execve    SYS_EXECVE         str(path) argv(argv) int(envp)
+call proc_waitpid   SYS_WAITPID        int(pid) outbuf(st,4) int(opts)
 call proc_pid       SYS_GETPID
-call proc_spawn     SYS_SPAWN          str(path) buf(argv)
+call proc_spawn     SYS_SPAWN          str(path) argv(argv)
 call fd_open        SYS_OPEN           str(path) int(flags)
 call fd_close       SYS_CLOSE          int(fd)
-call fd_read        SYS_READ           int(fd) buf(b) int(len)
+call fd_read        SYS_READ           int(fd) outbuf(b,len) int(len)
 call fd_lseek       SYS_LSEEK          int(fd) int(off) int(whence)
 call fd_dup         SYS_DUP            int(fd)
 call fd_dup2        SYS_DUP2           int(oldfd) int(newfd)
-call fd_pipe        SYS_PIPE           buf(fds)
+call fd_pipe        SYS_PIPE           outbuf(fds,8)
 call fd_setnb       SYS_SETNB          int(fd)
 call fd_fsync       SYS_FSYNC          int(fd)
 call fd_ftruncate   SYS_FTRUNCATE      int(fd) int(len)
 call open_path      SYS_OPEN_PATH      str(path)
 
 # ---- network / http / render payloads ----
-call net_info       SYS_NET_INFO       buf(ni)
+call net_info       SYS_NET_INFO       record(ni,Netinfo)
 # Non-blocking sockets (M27). port and flags share one argument: the kernel takes
 # three, and spending two of them on two 16-bit values would have left nothing for
 # a third if one is ever needed. flags is SOCK_F_* -- TLS on/off plus which ALPN
@@ -121,18 +130,21 @@ call net_info       SYS_NET_INFO       buf(ni)
 # to an array of strings the kernel would have to walk out of user memory.
 call sock_open      SYS_SOCK_OPEN      str(host) pack(port:16:16, flags:0:16)
 call sock_poll      SYS_SOCK_POLL      int(fd)
-call sock_send      SYS_SOCK_SEND      int(fd) buf(b) int(len)
-call sock_recv      SYS_SOCK_RECV      int(fd) buf(b) int(max)
-call sock_alpn      SYS_SOCK_ALPN      int(fd) buf(b) int(max)
+call sock_send      SYS_SOCK_SEND      int(fd) inbuf(b,len) int(len)
+call sock_recv      SYS_SOCK_RECV      int(fd) outbuf(b,max) int(max)
+call sock_alpn      SYS_SOCK_ALPN      int(fd) outbuf(b,max) int(max)
 call sock_close     SYS_SOCK_CLOSE     int(fd)
-call http_body      SYS_HTTP_BODY      buf(b) int(max)
-call res_fetch      SYS_RES_FETCH      str(src) buf(b) int(max)
-call text_measure   SYS_TEXT_MEASURE   str(s) int(len) pack(px:1:31, mono:0:1)
+call http_body      SYS_HTTP_BODY      outbuf(b,max) int(max)
+call res_fetch      SYS_RES_FETCH      str(src) outbuf(b,max) int(max)
+# A3 viewer acceptance found the old px:1:31/mono:0:1 declaration measured at
+# half the drawing size. The kernel and C caller now use two face bits (mono,
+# bold). Preserve the public mono parameter name, which carries that face mask.
+call text_measure   SYS_TEXT_MEASURE   str(s,len) int(len) pack(px:2:30, mono:0:2)
 # SYS_TEXT_MEASURE also accepts the optional C TextMetrics query described in
 # logit_abi.h: (query pointer, -1, 0); size/version are fields of the query.
-call gui_text_run   SYS_GUI_TEXT_RUN   buf(run)
-call gui_blit       SYS_GUI_BLIT       buf(blit)
-call img_decode     SYS_IMG_DECODE     buf(req)
+call gui_text_run   SYS_GUI_TEXT_RUN   record(run,Run)
+call gui_blit       SYS_GUI_BLIT       record(blit,Blit)
+call img_decode     SYS_IMG_DECODE     record(req,Imgreq)
 call cpu_index      SYS_CPU_INDEX
 call kheap_stress   SYS_KHEAP_STRESS   int(iters) int(size) int(seed)
 
@@ -144,15 +156,16 @@ call kheap_stress   SYS_KHEAP_STRESS   int(iters) int(size) int(seed)
 # leaves val and the timeout to share. Both are 32-bit by nature -- val is a
 # 32-bit futex word or a wake count, and a timeout in milliseconds that does not
 # fit 32 bits is 49 days.
-call thread_create  SYS_THREAD_CREATE  buf(spec)
+call thread_create  SYS_THREAD_CREATE  record(spec,Thread_spec)
 call thread_exit    SYS_THREAD_EXIT    int(retval)
-call thread_join    SYS_THREAD_JOIN    int(tid) buf(retval)
+call thread_join    SYS_THREAD_JOIN    int(tid) outbuf(retval,8)
 call thread_detach  SYS_THREAD_DETACH  int(tid)
 call thread_self    SYS_THREAD_SELF
 call set_tls        SYS_SET_TLS        int(fsbase)
-call futex          SYS_FUTEX          buf(addr) pack(timeout:32:32, val:0:32) int(op)
+# The script argument must not shadow the addr() builtin used to marshal it.
+call futex          SYS_FUTEX          outbuf(word,4) pack(timeout:32:32, val:0:32) int(op)
 call thread_info    SYS_THREAD_INFO    int(what)
-call getrandom      SYS_GETRANDOM      buf(b) int(len) int(flags)
+call getrandom      SYS_GETRANDOM      outbuf(b,len) int(len) int(flags)
 
 # ---- operations you have to wait for ----
 #   wait <name> <START> <POLL> <arg>... pending(<pred>) [fail(eq:<value>)]

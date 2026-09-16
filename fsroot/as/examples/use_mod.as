@@ -1,6 +1,11 @@
-# import demo
+# aether: 3.0
+# Both qualified and from-import calls share the same native module instance.
 import mathx
-print("PI =", mathx.PI)
-print("quad(2) =", mathx.quad(2))
 from mathx import square
-print("from-import square(9) =", square(9))
+
+
+def main() -> None:
+    assert mathx.PI == 3.141592653589793
+    print("PI =", mathx.PI)
+    print("quad(2) =", mathx.quad(2))
+    print("from-import square(9) =", square(9))

@@ -1,73 +1,85 @@
-# test -- minimal assertions for AetherScript
-#   from test import assert, assert_eq, report
-# (functions can't reassign module globals, so the pass/fail counts live in a
-#  mutable list that the functions mutate in place.)
+# aether: 3.0
+# Assertions record failures and return bool; they do not throw. report()
+# prints the counters and returns the failure count for a program's exit code.
+# Module counters are ordinary typed globals, with explicit rebinding.
+_passed: i64 = 0
+_failed: i64 = 0
 
-_n = [0, 0]                         # [passed, failed]
 
-def assert(cond, msg):
-    if cond:
-        _n[0] = _n[0] + 1
+def _record(ok: bool) -> bool:
+    global _passed, _failed
+    if ok:
+        _passed += 1
     else:
-        _n[1] = _n[1] + 1
+        _failed += 1
+    return ok
+
+
+def assert(cond: bool, msg: str) -> bool:
+    if not cond:
         print("FAIL:", msg)
-    return cond
+    return _record(cond)
 
-def assert_eq(got, want, msg):
+
+def assert_eq[T: Equatable](got: T, want: T, msg: str) -> bool:
     ok = got == want
-    if ok:
-        _n[0] = _n[0] + 1
-    else:
-        _n[1] = _n[1] + 1
+    if not ok:
         print("FAIL:", msg, "-- got", got, "want", want)
-    return ok
+    return _record(ok)
 
-def assert_ne(got, want, msg):
+
+def assert_ne[T: Equatable](got: T, want: T, msg: str) -> bool:
     ok = got != want
-    if ok:
-        _n[0] = _n[0] + 1
-    else:
-        _n[1] = _n[1] + 1
+    if not ok:
         print("FAIL:", msg, "-- both", got)
-    return ok
+    return _record(ok)
 
-def assert_true(cond, msg):
+
+def assert_true(cond: bool, msg: str) -> bool:
     return assert(cond, msg)
 
-def assert_false(cond, msg):
+
+def assert_false(cond: bool, msg: str) -> bool:
     return assert(not cond, msg)
 
-def same(a, b):                     # flat-list equality (elements compared with ==)
-    if len(a) != len(b):            # (as `==` on lists is identity-based, not structural)
-        return false
-    i = 0
-    ok = true
-    while i < len(a) and ok:
-        if a[i] != b[i]:
-            ok = false
-        i = i + 1
-    return ok
 
-def assert_same(got, want, msg):
+def same[T: Equatable](a: List[T], b: List[T]) -> bool:
+    if len(a) != len(b):
+        return false
+    index = 0
+    while index < len(a):
+        if a[index] != b[index]:
+            return false
+        index += 1
+    return true
+
+
+def assert_same[T: Equatable](got: List[T], want: List[T], msg: str) -> bool:
     return assert(same(got, want), msg)
 
-def fail(msg):
+
+def fail(msg: str) -> bool:
     return assert(false, msg)
 
-def reset():
-    _n[0] = 0
-    _n[1] = 0
-    return
 
-def passed():
-    return _n[0]
+def reset() -> None:
+    global _passed, _failed
+    _passed = 0
+    _failed = 0
 
-def failed():
-    return _n[1]
 
-def summary():
-    return {"passed": _n[0], "failed": _n[1]}
+def passed() -> i64:
+    return _passed
 
-def report():
-    print("tests:", _n[0], "passed,", _n[1], "failed")
-    return _n[1]
+
+def failed() -> i64:
+    return _failed
+
+
+def summary() -> Dict[str, i64]:
+    return {"passed": _passed, "failed": _failed}
+
+
+def report() -> i64:
+    print("tests:", _passed, "passed,", _failed, "failed")
+    return _failed

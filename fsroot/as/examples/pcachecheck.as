@@ -1,6 +1,7 @@
+# aether: 3.0
 # pcachecheck.as -- the page cache's headline claim, proved on the real
 # machine: read() and mmap() of the SAME file return THE SAME MEMORY, not two
-# copies (c/kernel/mm/pcache.h's "WHY THIS IS NOT bcache.c"). Driven by
+# copies (c/kernel/mm/cache/pcache.h's "WHY THIS IS NOT bcache.c"). Driven by
 # tests/boot/run-mm-test.sh, section 5.
 #
 # WHY THIS PROGRAM AND NOT A NEW C ONE. /bin/as already has raw memory access
@@ -48,89 +49,93 @@ Req = layout("logit_mmap_file_req", 32, [
     ["prot", 28, 4, "i"]
 ])
 
-PATH = "/pcachecheck.dat"
-CONTENT = "PCACHE-IDENTITY-0123456789-the-same-frame"
+def main() -> i64:
+    unsafe:
 
-print("pcachecheck: start")
+        PATH = "/pcachecheck.dat"
+        CONTENT = "PCACHE-IDENTITY-0123456789-the-same-frame"
 
-wrote = file_write(PATH, CONTENT)
-if wrote != len(CONTENT):
-    print("PC_FAIL write", wrote)
-else:
-    # Two SEPARATE opens of the SAME path -- two open file DESCRIPTIONS, which
-    # is the distinction pcache.h's design section calls out by name: the
-    # cache is keyed on the FILE (dev, ino), not on either of these.
-    fd1 = syscall(SYS_OPEN, addr(PATH), O_RDONLY)
-    fd2 = syscall(SYS_OPEN, addr(PATH), O_RDONLY)
-    print("PC_FD", fd1, fd2)
-    if fd1 < 0 or fd2 < 0:
-        print("PC_FAIL open")
-    else:
-        r1 = Req()
-        r1.hint = 0
-        r1.len = 4096
-        r1.off = 0
-        r1.fd = fd1
-        r1.prot = MMAP_PROT_READ
-        base1 = syscall(SYS_MMAP_FILE, addr(r1), 0, 0)
-        print("PC_BASE1", base1)
+        print("pcachecheck: start")
 
-        # --- part 1: the bytes -------------------------------------------
-        ok = base1 > 0
-        if ok:
-            i = 0
-            while i < len(CONTENT):
-                if peek8(base1 + i) != ord(CONTENT[i]):
-                    ok = false
-                    print("PC_MISMATCH", i, peek8(base1 + i), ord(CONTENT[i]))
-                i = i + 1
-        print("PC_BYTES", "ok" if ok else "FAIL")
+        wrote = file_write(PATH, Bytes(CONTENT))
+        if wrote != len(CONTENT):
+            print("PC_FAIL write", wrote)
+        else:
+            # Two SEPARATE opens of the SAME path -- two open file DESCRIPTIONS, which
+            # is the distinction pcache.h's design section calls out by name: the
+            # cache is keyed on the FILE (dev, ino), not on either of these.
+            fd1 = syscall(SYS_OPEN, addr(PATH), O_RDONLY)
+            fd2 = syscall(SYS_OPEN, addr(PATH), O_RDONLY)
+            print("PC_FD", fd1, fd2)
+            if fd1 < 0 or fd2 < 0:
+                print("PC_FAIL open")
+            else:
+                r1 = Req()
+                r1.hint = 0
+                r1.len = 4096
+                r1.off = 0
+                r1.fd = i32(fd1)
+                r1.prot = i32(MMAP_PROT_READ)
+                base1 = syscall(SYS_MMAP_FILE, addr(r1), 0, 0)
+                print("PC_BASE1", base1)
 
-        # --- part 2: the second, independent mapping ----------------------
-        r2 = Req()
-        r2.hint = 0
-        r2.len = 4096
-        r2.off = 0
-        r2.fd = fd2
-        r2.prot = MMAP_PROT_READ
-        base2 = syscall(SYS_MMAP_FILE, addr(r2), 0, 0)
-        print("PC_BASE2", base2)
-        # Different addresses (two VMAs) reading the same first byte -- this
-        # alone is consistent with two copies. The [pcache] line below is
-        # what is NOT consistent with two copies.
-        same_byte = base2 > 0 and peek8(base2) == peek8(base1)
-        print("PC_SECOND", "ok" if same_byte else "FAIL")
+                # --- part 1: the bytes -------------------------------------------
+                ok = base1 > 0
+                if ok:
+                    i = 0
+                    while i < len(CONTENT):
+                        if i64(peek8(u64(base1) + u64(i))) != ord(CONTENT[i]):
+                            ok = false
+                            print("PC_MISMATCH", i, i64(peek8(u64(base1) + u64(i))), ord(CONTENT[i]))
+                        i = i + 1
+                print("PC_BYTES", "ok" if ok else "FAIL")
 
-        # THE FALSIFIABLE LINE. mm_report()'s pcache_report() prints
-        # "[pcache] on demand: N pages resident ..., H hits, M misses, K
-        # shared". Both mappings above already faulted page 0 in by this
-        # point, so the harness requires misses == 1 (one real device read
-        # served BOTH mappings) and shared >= 1 (the frame both faults
-        # landed on is referenced more than once) -- exactly what the
-        # PCACHE_PER_OPEN control cannot produce.
-        syscall(SYS_MEMINFO, 0, MMCTL_REPORT, 0)
+                # --- part 2: the second, independent mapping ----------------------
+                r2 = Req()
+                r2.hint = 0
+                r2.len = 4096
+                r2.off = 0
+                r2.fd = i32(fd2)
+                r2.prot = i32(MMAP_PROT_READ)
+                base2 = syscall(SYS_MMAP_FILE, addr(r2), 0, 0)
+                print("PC_BASE2", base2)
+                # Different addresses (two VMAs) reading the same first byte -- this
+                # alone is consistent with two copies. The [pcache] line below is
+                # what is NOT consistent with two copies.
+                same_byte = base2 > 0 and peek8(u64(base2)) == peek8(u64(base1))
+                print("PC_SECOND", "ok" if same_byte else "FAIL")
 
-        # --- part 3: a writable file mapping, refused ----------------------
-        r3 = Req()
-        r3.hint = 0
-        r3.len = 4096
-        r3.off = 0
-        r3.fd = fd1
-        r3.prot = MMAP_PROT_READ | MMAP_PROT_WRITE
-        rw = syscall(SYS_MMAP_FILE, addr(r3), 0, 0)
-        print("PC_WRITE_REFUSED", rw)
+                # THE FALSIFIABLE LINE. mm_report()'s pcache_report() prints
+                # "[pcache] on demand: N pages resident ..., H hits, M misses, K
+                # shared". Both mappings above already faulted page 0 in by this
+                # point, so the harness requires misses == 1 (one real device read
+                # served BOTH mappings) and shared >= 1 (the frame both faults
+                # landed on is referenced more than once) -- exactly what the
+                # PCACHE_PER_OPEN control cannot produce.
+                syscall(SYS_MEMINFO, 0, MMCTL_REPORT, 0)
 
-        # --- extra: an fd that names no open file at all -------------------
-        # Bounds-checked well before pcache is ever asked about it
-        # (proc_fd_get returns NULL past NFD) -- confirms a bad fd is refused
-        # rather than mapping whatever garbage happens to sit in that slot.
-        r4 = Req()
-        r4.hint = 0
-        r4.len = 4096
-        r4.off = 0
-        r4.fd = 9999
-        r4.prot = MMAP_PROT_READ
-        bad = syscall(SYS_MMAP_FILE, addr(r4), 0, 0)
-        print("PC_BADFD", bad)
+                # --- part 3: a writable file mapping, refused ----------------------
+                r3 = Req()
+                r3.hint = 0
+                r3.len = 4096
+                r3.off = 0
+                r3.fd = i32(fd1)
+                r3.prot = i32(MMAP_PROT_READ | MMAP_PROT_WRITE)
+                rw = syscall(SYS_MMAP_FILE, addr(r3), 0, 0)
+                print("PC_WRITE_REFUSED", rw)
 
-print("pcachecheck: done")
+                # --- extra: an fd that names no open file at all -------------------
+                # Bounds-checked well before pcache is ever asked about it
+                # (proc_fd_get returns NULL past NFD) -- confirms a bad fd is refused
+                # rather than mapping whatever garbage happens to sit in that slot.
+                r4 = Req()
+                r4.hint = 0
+                r4.len = 4096
+                r4.off = 0
+                r4.fd = 9999
+                r4.prot = i32(MMAP_PROT_READ)
+                bad = syscall(SYS_MMAP_FILE, addr(r4), 0, 0)
+                print("PC_BADFD", bad)
+
+        print("pcachecheck: done")
+        return 0

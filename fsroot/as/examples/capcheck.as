@@ -1,3 +1,4 @@
+# aether: 3.0
 # capcheck -- M28's headline assertion, on the real machine:
 # a script that was not granted CAP_FS provably cannot read /etc.
 #
@@ -23,53 +24,60 @@
 # inventing a second error channel) is that a program can be refused and keep
 # going -- so this one is refused, says so, and carries on to the next check.
 
-def attempt(what, f):
-    # Returns "ok" or "denied", never propagates. `f` is a zero-arg closure --
-    # M22's closures are what make this readable; without them each case would
-    # need its own try block inline.
+def attempt(what: str, f: Callable[[], None]) -> str:
+    # The old helper caught every error and never propagated. A3 catches only
+    # permission refusals here: a missing file or broken read is a failed test,
+    # not evidence of denied authority. The zero-argument callback keeps each
+    # operation separate while sharing this classification rule.
     try:
         f()
         return "ok"
-    except e:
+    except PermissionError:
         return "denied"
 
-print("capcheck: start")
 
-# --- what this process holds, as a value -------------------------------------
-# caps() reports the grant, it does not create one: the bits are whatever the
-# kernel handed this process at exec. Printing them first makes the rest of the
-# output interpretable -- a refusal below means something different depending on
-# what was held here.
-c = caps()
-print("bits", c.bits())
-print("path", c.path())
+def _read_file(path: str) -> None:
+    # A3 ports have unique ownership. Close the descriptor on every exit;
+    # an ignored open() result would make this example teach a resource leak.
+    # Only PermissionError means "denied": a missing fixture must fail loudly.
+    with file = open(path, "r"):
+        file.readall()
 
-# --- the assertion ------------------------------------------------------------
-print("read-etc", attempt("read /etc", lambda: open("/etc/logit.conf", "r")))
-print("read-usr", attempt("read /usr", lambda: open("/usr/as/lib/sys.as", "r")))
-# peek8 of an address INSIDE this process's own image. The first version
-# peeked 0x1000, reasoning that the interesting outcome was the refusal --
-# but both gate runs hold CAP_RAW (scoping narrows the PATH, not the bits),
-# so the peek actually executed, and 0x1000 is a kernel-mapped page a ring-3
-# read faults on. The fault killed the process mid-script and everything
-# below this line silently never ran; the gate's "no-regain check never ran"
-# is what caught it. addr(c) is a byte this process provably owns.
-print("raw-peek", attempt("peek", lambda: peek8(addr("capcheck-owned-byte"))))
 
-# --- attenuation is real on the device too ------------------------------------
-# Narrow to strictly less than we hold and confirm the narrowing took. If the
-# process holds nothing, scope() itself is refused, which is also correct and is
-# why this is wrapped.
-try:
-    n = c.scope("/usr/as")
-    print("narrowed", n.path())
-    # And the property that makes a chain safe: you cannot climb back up.
+def _peek_owned() -> None:
+    # The original fixture tried 0x1000, which is mapped to the kernel and
+    # faults in ring 3. Read a byte this process owns, keeping the owner live.
+    # unsafe permits the pointer operation but does not grant CAP_RAW.
+    owned = Bytes("capcheck-owned-byte")
+    unsafe:
+        assert peek8(addr(owned)) == 99
+
+
+def main() -> None:
+    print("capcheck: start")
+
+    # caps() reports the grant inherited at exec; it cannot manufacture one.
+    # Keep both bits and scope visible so the denial lines have a referent.
+    held = caps()
+    print("bits", held.bits())
+    print("path", held.path())
+
+    print("read-etc", attempt("read /etc", lambda: _read_file("/etc/logit.conf")))
+    print("read-usr", attempt("read /usr", lambda: _read_file("/usr/as/lib/sys.as")))
+    print("raw-peek", attempt("peek", _peek_owned))
+
+    # Scope attenuation creates a weaker value; it never changes the kernel
+    # process grant or grants missing bits. Even a zero-bit value may narrow
+    # its metadata, but cannot widen its path afterwards.
     try:
-        n.scope("/")
-        print("REGAINED-ROOT")     # must never print
-    except e:
-        print("no-regain ok")
-except e:
-    print("narrow denied")
+        narrowed = held.scope("/usr/as")
+        print("narrowed", narrowed.path())
+        try:
+            narrowed.scope("/")
+            print("REGAINED-ROOT")     # must never print
+        except PermissionError:
+            print("no-regain ok")
+    except PermissionError:
+        print("narrow denied")
 
-print("capcheck: done")
+    print("capcheck: done")

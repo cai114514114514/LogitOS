@@ -1,105 +1,122 @@
-# stats -- basic descriptive statistics over numeric lists
-
+# aether: 3.0
+# Descriptive statistics over native homogeneous lists. Convert each integer
+# before real-valued accumulation, so two valid i64 inputs cannot overflow an
+# unintended integer intermediate. Sorting copies its input.
 import math
 import seq
 
-def sum(xs):
+
+def sum[T: Number](xs: List[T]) -> T:
     return math.sum(xs)
 
-def count(xs):
+
+def count[T](xs: List[T]) -> i64:
     return len(xs)
 
-def min(xs):
-    if len(xs) == 0:
-        raise "min() needs a non-empty list"
-    m = xs[0]
-    for x in xs:
-        if x < m:
-            m = x
-    return m
 
-def max(xs):
+def min[T: Number](xs: List[T]) -> T:
     if len(xs) == 0:
-        raise "max() needs a non-empty list"
-    m = xs[0]
-    for x in xs:
-        if x > m:
-            m = x
-    return m
+        raise ValueError("min() needs a non-empty list")
+    result = xs[0]
+    for value in xs:
+        if value < result:
+            result = value
+    return result
 
-def range(xs):
+
+def max[T: Number](xs: List[T]) -> T:
+    if len(xs) == 0:
+        raise ValueError("max() needs a non-empty list")
+    result = xs[0]
+    for value in xs:
+        if value > result:
+            result = value
+    return result
+
+
+def range[T: Number](xs: List[T]) -> T:
     return max(xs) - min(xs)
 
-def mean(xs):
+
+def mean[T: Number](xs: List[T]) -> f64:
     return math.mean(xs)
 
-def median(xs):
-    if len(xs) == 0:
-        raise "median() needs a non-empty list"
-    ys = seq.sorted(xs)
-    mid = len(ys) / 2
-    if len(ys) % 2 == 1:
-        return ys[mid]
-    return (ys[mid - 1] + ys[mid]) / 2.0
 
-def variance(xs):
+def median[T: Number](xs: List[T]) -> Any:
     if len(xs) == 0:
-        raise "variance() needs a non-empty list"
-    m = mean(xs)
-    s = 0.0
-    for x in xs:
-        d = x - m
-        s = s + d * d
-    return s / len(xs)
+        raise ValueError("median() needs a non-empty list")
+    values = seq.sorted(xs)
+    middle = len(values) / 2
+    # The old API preserves T for odd counts and returns f64 for even counts.
+    # Any makes that value-dependent result explicit without rounding odd i64s.
+    if len(values) % 2 == 1:
+        return Any(values[middle])
+    return Any((f64(values[middle - 1]) + f64(values[middle])) / 2.0)
 
-def sample_variance(xs):
+
+def variance[T: Number](xs: List[T]) -> f64:
+    if len(xs) == 0:
+        raise ValueError("variance() needs a non-empty list")
+    average = mean(xs)
+    total = 0.0
+    for value in xs:
+        delta = f64(value) - average
+        total += delta * delta
+    return total / f64(len(xs))
+
+
+def sample_variance[T: Number](xs: List[T]) -> f64:
     if len(xs) < 2:
-        raise "sample_variance() needs at least two values"
-    m = mean(xs)
-    s = 0.0
-    for x in xs:
-        d = x - m
-        s = s + d * d
-    return s / (len(xs) - 1)
+        raise ValueError("sample_variance() needs at least two values")
+    average = mean(xs)
+    total = 0.0
+    for value in xs:
+        delta = f64(value) - average
+        total += delta * delta
+    return total / f64(len(xs) - 1)
 
-def stddev(xs):
+
+def stddev[T: Number](xs: List[T]) -> f64:
     return math.sqrt(variance(xs))
 
-def sample_stddev(xs):
+
+def sample_stddev[T: Number](xs: List[T]) -> f64:
     return math.sqrt(sample_variance(xs))
 
-def frequencies(xs):
-    out = {}
-    for x in xs:
-        out[x] = out.get(x, 0) + 1
+
+def frequencies[K: Hashable](xs: List[K]) -> Dict[K, i64]:
+    out: Dict[K, i64] = {}
+    for value in xs:
+        out[value] = out.get(value, 0) + 1
     return out
 
-def zscores(xs):
-    sd = stddev(xs)
-    if sd == 0:
-        return seq.repeat(0.0, len(xs))
-    m = mean(xs)
-    out = []
-    for x in xs:
-        out.append((x - m) / sd)
+
+def zscores[T: Number](xs: List[T]) -> List[f64]:
+    deviation = stddev(xs)
+    average = mean(xs)
+    out: List[f64] = []
+    for value in xs:
+        if deviation == 0.0:
+            out.append(0.0)
+        else:
+            out.append((f64(value) - average) / deviation)
     return out
 
-def moving_average(xs, width):
+
+def moving_average[T: Number](xs: List[T], width: i64) -> List[f64]:
     if width <= 0:
-        raise "moving_average() needs a positive width"
-    out = []
+        raise ValueError("moving_average() needs a positive width")
+    out: List[f64] = []
     i = 0
     while i < len(xs):
         start = i - width + 1
         if start < 0:
             start = 0
-        total = 0
-        n = 0
+        total = 0.0
         j = start
         while j <= i:
-            total = total + xs[j]
-            n = n + 1
-            j = j + 1
-        out.append(total * 1.0 / n)
-        i = i + 1
+            total += f64(xs[j])
+            j += 1
+        out.append(total / f64(i - start + 1))
+        i += 1
     return out

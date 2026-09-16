@@ -1,85 +1,92 @@
-# bits -- integer bit and flag helpers
+# aether: 3.0
+# Signed i64 bit-pattern helpers. Arithmetic still checks overflow; only the
+# operations whose purpose is to move/discard bits explicitly request wrapping.
 
-def bit(n):
-    return 1 << n
+def bit(n: i64) -> i64:
+    return wrapping_shl(1, n)
 
-def mask(width):
+def mask(width: i64) -> i64:
     if width <= 0:
         return 0
     if width >= 64:
-        return -1                       # all 64 bits set (i64); 1 << 64 is out of range
-    return (1 << width) - 1
+        return -1
+    # Both steps wrap: mask(63) crosses the sign bit before subtracting one.
+    return wrapping_sub(wrapping_shl(1, width), 1)
 
-def has(flags, bits):
+def has(flags: i64, bits: i64) -> bool:
     return (flags & bits) == bits
 
-def set(flags, bits):
+def set(flags: i64, bits: i64) -> i64:
     return flags | bits
 
-def clear(flags, bits):
+def clear(flags: i64, bits: i64) -> i64:
     return flags & ~bits
 
-def toggle(flags, bits):
+def toggle(flags: i64, bits: i64) -> i64:
     return flags ^ bits
 
-def put(flags, bits, on):
-    if on:
-        return set(flags, bits)
-    return clear(flags, bits)
+def put(flags: i64, bits: i64, on: bool) -> i64:
+    return set(flags, bits) if on else clear(flags, bits)
 
-def low_byte(x):
+def low_byte(x: i64) -> i64:
     return x & 0xff
 
-def high_byte(x):
+def high_byte(x: i64) -> i64:
     return (x >> 8) & 0xff
 
-def align_down(x, align):
+def align_down(x: i64, align: i64) -> i64:
     if align <= 0:
-        raise "align_down() needs a positive alignment"
+        raise ValueError("align_down() needs a positive alignment")
     return x & ~(align - 1)
 
-def align_up(x, align):
+def align_up(x: i64, align: i64) -> i64:
     if align <= 0:
-        raise "align_up() needs a positive alignment"
-    return (x + align - 1) & ~(align - 1)
+        raise ValueError("align_up() needs a positive alignment")
+    # Keep the established bit-mask API (callers supply power-of-two alignment).
+    # The addition is checked: an unrepresentable aligned address is an error.
+    return (x + (align - 1)) & ~(align - 1)
 
-def count_ones(x):
+def count_ones(x: i64) -> i64:
     if x < 0:
-        raise "count_ones() needs a non-negative integer"
-    n = 0
+        raise ValueError("count_ones() needs a non-negative integer")
+    count = 0
     while x != 0:
-        n = n + (x & 1)
-        x = x >> 1
-    return n
+        # Remove one set bit per iteration; x is positive, so subtraction fits.
+        x = x & (x - 1)
+        count += 1
+    return count
 
-def parity(x):
+def parity(x: i64) -> i64:
     return count_ones(x) % 2
 
-def rol(x, shift, width):
-    if width <= 0:
-        raise "rol() needs a positive width"
-    m = mask(width)
+def _rotation(shift: i64, width: i64) -> i64:
+    if width <= 0 or width > 64:
+        raise ValueError("rotation needs a width from 1 to 64")
     shift = shift % width
-    x = x & m
-    if shift == 0:                       # avoids x >> width (illegal at width==64)
-        return x
-    # `>>` is arithmetic, so mask the wrapped-down bits to kill sign extension.
-    return ((x << shift) | ((x >> (width - shift)) & mask(shift))) & m
+    return shift + width if shift < 0 else shift
 
-def ror(x, shift, width):
-    if width <= 0:
-        raise "ror() needs a positive width"
-    m = mask(width)
-    shift = shift % width
-    x = x & m
+def rol(x: i64, shift: i64, width: i64) -> i64:
+    shift = _rotation(shift, width)
+    x = x & mask(width)
     if shift == 0:
         return x
-    return (((x >> shift) & mask(width - shift)) | (x << (width - shift))) & m
+    # Arithmetic right shift fills with sign bits; the mask keeps only the
+    # wrapped-down bits. The zero case avoids an invalid shift by 64.
+    lower = (x >> (width - shift)) & mask(shift)
+    return (wrapping_shl(x, shift) | lower) & mask(width)
 
-def bytes_le(x, n):
-    out = []
-    i = 0
-    while i < n:
+def ror(x: i64, shift: i64, width: i64) -> i64:
+    shift = _rotation(shift, width)
+    x = x & mask(width)
+    if shift == 0:
+        return x
+    lower = (x >> shift) & mask(width - shift)
+    return (lower | wrapping_shl(x, width - shift)) & mask(width)
+
+def bytes_le(x: i64, n: i64) -> List[i64]:
+    out: List[i64] = []
+    # Like A2, asking for a ninth byte raises the invalid-shift ValueError;
+    # negative/zero counts return an empty list. No host endianness is assumed.
+    for i in range(n):
         out.append((x >> (i * 8)) & 0xff)
-        i = i + 1
     return out

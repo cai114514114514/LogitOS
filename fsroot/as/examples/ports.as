@@ -1,3 +1,4 @@
+# aether: 3.0
 # ports.as -- M27 on the machine.
 #
 # The shell (ash.as) is the milestone's real proof, but it needs a console. This
@@ -10,50 +11,57 @@
 #      far more here than on the host, because a LogitOS process gets 16 file
 #      descriptors (proc.h NFD) and the collector's own threshold is 1024
 #      objects. Opening 64 ports and closing none can only work if running out
-#      of descriptors forces a collection. It does; see acquire_fd in as_port.c.
+#      of descriptors forces a collection. It does; see acquire_fd in legacy/ports.c.
 
-print("PORTS: start")
 
-# 1. a stream, one line at a time -- no buffer, no length, no syscall.
-def count_lines(path):
-    h = open(path)
-    if h == nil:
+# A3 correction to the historical backstop claim above: file owners cannot be
+# dropped outside a with scope. Keep the 64-open workload, but prove each scope
+# closes immediately, before GC, rather than inventing GC-finalization counts.
+# Optional paths make this same shipped source runnable on the build host.
+
+
+def count_lines(path: str) -> i64:
+    try:
+        with file = open(path):
+            count = 0
+            for line in file:
+                count += 1
+            return count
+    except IOError:
         return -1
-    with f = h:
-        n = 0
-        for line in f:
-            n += 1
-        return n
 
-print("ports lines:", count_lines("/usr/as/examples/hello.as") > 0)
 
-# 2. `|>` composes two UNSTARTED commands, which is the only moment the fd
-#    between them can be wired. `cat` rather than `wc -l`, deliberately: this
-#    OS's wc takes no flags, and the thing under test is that bytes crossed the
-#    pipe, not that a coreutil can count.
-print("ports pipe:", (run("echo", "alpha") |> run("cat")).out().strip())
+def main() -> None:
+    arguments = args()
+    source = arguments[1] if len(arguments) > 1 else "/usr/as/examples/hello.as"
+    destination = arguments[2] if len(arguments) > 2 else "/ports_out.txt"
+    print("PORTS: start")
+    print("ports lines:", count_lines(source) > 0)
 
-# 3. `->` on a statement is a command statement: started and waited for here.
-run("echo", "redirected") -> "/ports_out.txt"
-with g = open("/ports_out.txt"):
-    print("ports redir:", g.line())
+    # cat checks that bytes crossed a real pipe, independent of wc options.
+    pipeline = run("echo", "alpha") |> run("cat")
+    print("ports pipe:", pipeline.out().strip())
 
-# 4. 64 ports, none closed, on a 16-entry fd table. All 64 can only succeed if
-#    running out of descriptors forces a collection and the collector closes the
-#    ones the script dropped -- so `k == 64` IS the backstop working, and
-#    `finalized >= 48` is the count it had to close (64 minus the table).
-k = 0
-for i in range(64):
-    p = open("/usr/as/examples/hello.as")
-    if p == nil:
-        break
-    k += 1
-st = port_stats()
-print("ports drop:", k, st["finalized"] >= 48)
+    run("echo", "redirected") -> destination
+    with file = open(destination):
+        line = file.line()
+        assert line is not None
+        print("ports redir:", line)
 
-# A borrowed handle is never close(2)d, whatever happens to the value.
-for i in range(8):
-    b = port(1)
-print("ports borrow:", port_stats()["finalized"] > 0)
+    before = port_stats()
+    completed = 0
+    for index in range(64):
+        with file = open(source):
+            assert port_stats()["open"] == before["open"] + 1
+            completed += 1
+        assert port_stats()["open"] == before["open"]
+    after = port_stats()
+    print("ports scopes:", completed, after["closed"] - before["closed"] == 64)
+    assert after["finalized"] == 0 and after["orphans"] == 0
 
-print("ports ok")
+    # Borrowed wrappers release no OS descriptor and do not count as closes.
+    for index in range(8):
+        with console = port(1):
+            assert console.fd() == 1
+    print("ports borrow:", port_stats()["closed"] == after["closed"])
+    print("ports ok")

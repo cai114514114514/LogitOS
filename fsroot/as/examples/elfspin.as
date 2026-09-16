@@ -1,3 +1,4 @@
+# aether: 3.0
 # elfspin.as -- a process that STAYS ALIVE and does nothing, so that two
 # instances of the SAME binary can be observed at the same instant.
 #
@@ -36,22 +37,32 @@ Ts = layout("logit_timespec", 16, [
     ["nsec", 8, 8, "i"]
 ])
 
-a = args()
-tag = a[1] if len(a) > 1 else "1"
+def sleep_timespec(t: Ts) -> i64:
+    # The only thing here that leaves ring 3. A3 makes the raw syscall and the
+    # address-of say so; the loop below keeps the shape it had, which is what
+    # this fixture is for -- it must BLOCK, not spin.
+    unsafe:
+        return syscall(SYS_NANOSLEEP, addr(t), 0)
 
-t = Ts()
-t.sec = 2
-t.nsec = 0
 
-# Printed AFTER the timespec is built, so the line means "this process is fully
-# up and about to block", not "this process has been created".
-print("ELFSPIN-UP", tag)
+def main() -> i64:
+    a = args()
+    tag = a[1] if len(a) > 1 else "1"
 
-# 600 x 2s. Bounded rather than infinite so that a harness which loses its
-# QEMU still terminates; nothing is expected to reach the end of it.
-i = 0
-while i < 600:
-    syscall(SYS_NANOSLEEP, addr(t), 0)
-    i = i + 1
+    t = Ts()
+    t.sec = 2
+    t.nsec = 0
 
-print("ELFSPIN-DONE", tag)
+    # Printed AFTER the timespec is built, so the line means "this process is
+    # fully up and about to block", not "this process has been created".
+    print("ELFSPIN-UP", tag)
+
+    # 600 x 2s. Bounded rather than infinite so that a harness which loses its
+    # QEMU still terminates; nothing is expected to reach the end of it.
+    i = 0
+    while i < 600:
+        sleep_timespec(t)
+        i = i + 1
+
+    print("ELFSPIN-DONE", tag)
+    return 0

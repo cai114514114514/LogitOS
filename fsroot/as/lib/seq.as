@@ -1,262 +1,291 @@
-# seq -- functional helpers over lists (pure AetherScript stdlib)
-#   from seq import map, filter, reduce, sorted, zip, enumerate
+# aether: 3.0
+# Native homogeneous list helpers. Copying operations preserve element values
+# and never reorder their input. Callbacks use checked native signatures.
+import math
 
-def copy(xs):
-    out = []
-    for x in xs:
-        out.append(x)
+
+def copy[T](xs: List[T]) -> List[T]:
+    out: List[T] = []
+    for value in xs:
+        out.append(value)
     return out
 
-def is_empty(xs):
+
+def is_empty[T](xs: List[T]) -> bool:
     return len(xs) == 0
 
-def first(xs):
+
+def first[T](xs: List[T]) -> T:
     if len(xs) == 0:
-        raise "first() needs a non-empty list"
+        raise ValueError("first() needs a non-empty list")
     return xs[0]
 
-def last(xs):
+
+def last[T](xs: List[T]) -> T:
     if len(xs) == 0:
-        raise "last() needs a non-empty list"
+        raise ValueError("last() needs a non-empty list")
     return xs[len(xs) - 1]
 
-def map(f, xs):
-    out = []
-    for x in xs:
-        out.append(f(x))
+
+def map[T, R](f: Callable[[T], R], xs: List[T]) -> List[R]:
+    out: List[R] = []
+    for value in xs:
+        out.append(f(value))
     return out
 
-def filter(f, xs):
-    out = []
-    for x in xs:
-        if f(x):
-            out.append(x)
+
+def filter[T](f: Callable[[T], bool], xs: List[T]) -> List[T]:
+    out: List[T] = []
+    for value in xs:
+        if f(value):
+            out.append(value)
     return out
 
-def reject(f, xs):
-    out = []
-    for x in xs:
-        if not f(x):
-            out.append(x)
+
+def reject[T](f: Callable[[T], bool], xs: List[T]) -> List[T]:
+    out: List[T] = []
+    for value in xs:
+        if not f(value):
+            out.append(value)
     return out
 
-def partition(f, xs):               # [matches, misses]
-    yes = []
-    no = []
-    for x in xs:
-        if f(x):
-            yes.append(x)
+
+def partition[T](f: Callable[[T], bool], xs: List[T]) -> List[List[T]]:
+    yes: List[T] = []
+    no: List[T] = []
+    for value in xs:
+        if f(value):
+            yes.append(value)
         else:
-            no.append(x)
+            no.append(value)
     return [yes, no]
 
-def reduce(f, xs, init):
-    acc = init
-    for x in xs:
-        acc = f(acc, x)
-    return acc
 
-def foreach(f, xs):
-    for x in xs:
-        f(x)
-    return
+def reduce[T, R](f: Callable[[R, T], R], xs: List[T], init: R) -> R:
+    result = init
+    for value in xs:
+        result = f(result, value)
+    return result
 
-def concat(a, b):
+
+def foreach[T, R](f: Callable[[T], R], xs: List[T]) -> None:
+    # R may be None. A callback result is intentionally discarded, so both
+    # side-effect-only functions and functions returning values are accepted.
+    for value in xs:
+        f(value)
+
+
+def concat[T](a: List[T], b: List[T]) -> List[T]:
     out = copy(a)
-    for x in b:
-        out.append(x)
+    for value in b:
+        out.append(value)
     return out
 
-def flatten1(xss):
-    out = []
+
+def flatten1[T](xss: List[List[T]]) -> List[T]:
+    out: List[T] = []
     for xs in xss:
-        for x in xs:
-            out.append(x)
+        for value in xs:
+            out.append(value)
     return out
 
-def sum(xs):
-    s = 0
-    for x in xs:
-        s = s + x
-    return s
 
-def maxl(xs):                       # max of a non-empty list
-    m = xs[0]
-    for x in xs:
-        if x > m:
-            m = x
-    return m
+def sum[T: Number](xs: List[T]) -> T:
+    return math.sum(xs)
 
-def minl(xs):
-    m = xs[0]
-    for x in xs:
-        if x < m:
-            m = x
-    return m
 
-def any(f, xs):                     # short-circuits (no break -> loop guard)
-    r = false
-    i = 0
-    while i < len(xs) and not r:
-        if f(xs[i]):
-            r = true
-        i = i + 1
-    return r
+def maxl[T: Ordered](xs: List[T]) -> T:
+    result = xs[0]
+    for value in xs:
+        if value > result:
+            result = value
+    return result
 
-def all(f, xs):
-    r = true
-    i = 0
-    while i < len(xs) and r:
-        if not f(xs[i]):
-            r = false
-        i = i + 1
-    return r
 
-def find(f, xs):                    # index of the first match, or -1
-    i = 0
-    res = -1
-    while i < len(xs) and res < 0:
-        if f(xs[i]):
-            res = i
-        i = i + 1
-    return res
+def minl[T: Ordered](xs: List[T]) -> T:
+    result = xs[0]
+    for value in xs:
+        if value < result:
+            result = value
+    return result
 
-def index_of(xs, v):
-    i = 0
-    while i < len(xs):
-        if xs[i] == v:
-            return i
-        i = i + 1
+
+def any[T](f: Callable[[T], bool], xs: List[T]) -> bool:
+    for value in xs:
+        if f(value):
+            return true
+    return false
+
+
+def all[T](f: Callable[[T], bool], xs: List[T]) -> bool:
+    for value in xs:
+        if not f(value):
+            return false
+    return true
+
+
+def find[T](f: Callable[[T], bool], xs: List[T]) -> i64:
+    index = 0
+    for value in xs:
+        if f(value):
+            return index
+        index += 1
     return -1
 
-def last_index_of(xs, v):
-    i = len(xs) - 1
-    while i >= 0:
-        if xs[i] == v:
-            return i
-        i = i - 1
+
+def index_of[T: Equatable](xs: List[T], value: T) -> i64:
+    index = 0
+    for item in xs:
+        if item == value:
+            return index
+        index += 1
     return -1
 
-def count(xs, v):
-    n = 0
-    for x in xs:
-        if x == v:
-            n = n + 1
-    return n
 
-def count_if(f, xs):
-    n = 0
-    for x in xs:
-        if f(x):
-            n = n + 1
-    return n
+def last_index_of[T: Equatable](xs: List[T], value: T) -> i64:
+    index = len(xs) - 1
+    while index >= 0:
+        if xs[index] == value:
+            return index
+        index -= 1
+    return -1
 
-def contains(xs, v):
-    return v in xs
 
-def unique(xs):
-    out = []
-    for x in xs:
-        if not (x in out):
-            out.append(x)
+def count[T: Equatable](xs: List[T], value: T) -> i64:
+    result = 0
+    for item in xs:
+        if item == value:
+            result += 1
+    return result
+
+
+def count_if[T](f: Callable[[T], bool], xs: List[T]) -> i64:
+    result = 0
+    for value in xs:
+        if f(value):
+            result += 1
+    return result
+
+
+def contains[T: Equatable](xs: List[T], value: T) -> bool:
+    return value in xs
+
+
+def unique[T: Equatable](xs: List[T]) -> List[T]:
+    out: List[T] = []
+    for value in xs:
+        if not (value in out):
+            out.append(value)
     return out
 
-def reverse(xs):
-    out = []
-    i = len(xs) - 1
-    while i >= 0:
-        out.append(xs[i])
-        i = i - 1
+
+def reverse[T](xs: List[T]) -> List[T]:
+    out: List[T] = []
+    index = len(xs) - 1
+    while index >= 0:
+        out.append(xs[index])
+        index -= 1
     return out
 
-def sorted_by(xs, less):            # comparator less(a, b) -> bool; stable insertion sort
-    out = []
-    for x in xs:
-        out.append(x)
-    i = 1
-    while i < len(out):
-        key = out[i]
-        j = i - 1
-        while j >= 0 and less(key, out[j]):
-            out[j + 1] = out[j]
-            j = j - 1
-        out[j + 1] = key
-        i = i + 1
+
+def sorted_by[T](xs: List[T], less: Callable[[T, T], bool]) -> List[T]:
+    # Stable insertion sort preserves the original algorithm and tie order.
+    out = copy(xs)
+    index = 1
+    while index < len(out):
+        key = out[index]
+        previous = index - 1
+        while previous >= 0 and less(key, out[previous]):
+            out[previous + 1] = out[previous]
+            previous -= 1
+        out[previous + 1] = key
+        index += 1
     return out
 
-def _asc(a, b):
+
+def _asc[T: Ordered](a: T, b: T) -> bool:
     return a < b
 
-def sorted(xs):                     # ascending (numbers / comparables)
+
+def sorted[T: Ordered](xs: List[T]) -> List[T]:
     return sorted_by(xs, _asc)
 
-def zip(a, b):                      # [[a[i], b[i]], ...], length = min(len a, len b)
-    n = len(a)
-    if len(b) < n:
-        n = len(b)
-    out = []
-    i = 0
-    while i < n:
-        out.append([a[i], b[i]])
-        i = i + 1
+
+def zip[A, B](a: List[A], b: List[B]) -> List[List[Any]]:
+    # The existing API returns two-element lists, not tuples. Each cell opts
+    # into Any explicitly because the two input element types can differ.
+    count = len(a)
+    if len(b) < count:
+        count = len(b)
+    out: List[List[Any]] = []
+    index = 0
+    while index < count:
+        out.append([Any(a[index]), Any(b[index])])
+        index += 1
     return out
 
-def enumerate(xs):                  # [[0, xs[0]], [1, xs[1]], ...]
-    out = []
-    i = 0
-    while i < len(xs):
-        out.append([i, xs[i]])
-        i = i + 1
+
+def enumerate[T](xs: List[T]) -> List[List[Any]]:
+    out: List[List[Any]] = []
+    index = 0
+    for value in xs:
+        out.append([Any(index), Any(value)])
+        index += 1
     return out
 
-def take(xs, n):
-    out = []
-    i = 0
-    while i < n and i < len(xs):
-        out.append(xs[i])
-        i = i + 1
+
+def take[T](xs: List[T], n: i64) -> List[T]:
+    out: List[T] = []
+    index = 0
+    while index < n and index < len(xs):
+        out.append(xs[index])
+        index += 1
     return out
 
-def drop(xs, n):
-    out = []
-    i = n
-    if i < 0:                           # negative n drops nothing (mirrors take + slice clamping)
-        i = 0
-    while i < len(xs):
-        out.append(xs[i])
-        i = i + 1
+
+def drop[T](xs: List[T], n: i64) -> List[T]:
+    out: List[T] = []
+    index = n
+    if index < 0:
+        index = 0
+    while index < len(xs):
+        out.append(xs[index])
+        index += 1
     return out
 
-def slice(xs, start, stop):
-    out = []
-    i = start
-    if i < 0:
-        i = len(xs) + i
+
+def slice[T](xs: List[T], start: i64, stop: i64) -> List[T]:
+    out: List[T] = []
+    index = start
+    if index < 0:
+        index = len(xs) + index
     if stop < 0:
         stop = len(xs) + stop
-    if i < 0:
-        i = 0
+    if index < 0:
+        index = 0
     if stop > len(xs):
         stop = len(xs)
-    while i < stop:
-        out.append(xs[i])
-        i = i + 1
+    while index < stop:
+        out.append(xs[index])
+        index += 1
     return out
 
-def repeat(v, n):
-    out = []
-    i = 0
-    while i < n:
-        out.append(v)
-        i = i + 1
+
+def repeat[T](value: T, n: i64) -> List[T]:
+    out: List[T] = []
+    index = 0
+    while index < n:
+        out.append(value)
+        index += 1
     return out
 
-def chunk(xs, n):
+
+def chunk[T](xs: List[T], n: i64) -> List[List[T]]:
     if n <= 0:
-        raise "chunk() needs a positive size"
-    out = []
-    i = 0
-    while i < len(xs):
-        out.append(slice(xs, i, i + n))
-        i = i + n
+        raise ValueError("chunk() needs a positive size")
+    out: List[List[T]] = []
+    index = 0
+    while index < len(xs):
+        out.append(slice(xs, index, index + n))
+        index += n
     return out

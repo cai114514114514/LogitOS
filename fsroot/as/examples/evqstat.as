@@ -1,7 +1,8 @@
+# aether: 3.0
 # evqstat.as -- print the machine's SYS_SYSINFO block.
 #
 # Exists so the window manager's event-ring accounting is readable from a
-# script, and therefore from a headless test: tests/boot/run-evq-test.sh floods
+# script, and therefore from a headless test: tests/boot/run-input-test.sh drives
 # the pointer through QEMU's input layer and then runs this to read back
 #
 #   Events <queued> queued, <merged> merged, <dropped> dropped
@@ -15,8 +16,15 @@
 # does not have to be edited every time the kernel learns to report something
 # new.
 
-from abi import sysinfo
+from std.abi import sysinfo
 
-_b = buffer(4096)
-_n = sysinfo(_b, 4096)
-print(mem2str(_b, _n))
+def main() -> None:
+    data = buffer(4096)
+    count = sysinfo(data, len(data))
+    # A failed syscall is not a zero-length report. Keep the error visible to
+    # callers, and never pass a negative/oversized count to the raw text view.
+    if count < 0 or count > len(data):
+        raise IOError("SYS_SYSINFO returned an invalid report length")
+    unsafe:
+        report = mem2str(data, count)
+    print(report)

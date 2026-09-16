@@ -1,149 +1,202 @@
-# sys -- direct Logit system access from AetherScript (M23.5).
-# Pure AetherScript over syscall()/buffer()/addr(): files, dirs, processes
-# (fork+execve+waitpid), time, network. This is the surface a sandboxed
-# scripting language doesn't get: the OS, first-class.
-#   from sys import read_file, write_file, ls, run, time
-# Strings passed to the kernel are NUL-terminated (ObjStr always is); buffers
-# come from buffer(), which the collector owns -- there is nothing to free, and
-# nothing to leak when a call in between raises. Kernel structs come from `abi`,
-# whose field offsets are generated from include/abi/logit_abi.h and checked
-# against it by the compiler that builds /bin/as.
-
+# aether: 3.0
+# sys -- typed LogitOS services over the native ABI.
+#
+# The A2 module assumed every string already ended in NUL. A3 strings may be
+# interior views, so abi owns path marshalling and _Arguments owns argv copies.
+# These are LogitOS services: the language core remains portable, and neither
+# this module nor unsafe grants capabilities that the process does not hold.
+import abi
 from abi import Time, now_s, sys_yield, wait_dns, wait_ping, get_time
 from abi import file_read, file_write, file_delete, file_rename, dir_make, dir_count, dir_name
-from abi import getcwd, chdir, proc_pid, proc_fork, proc_execve, proc_exit, proc_waitpid, cpu_index
+from abi import getcwd, proc_pid, proc_fork, proc_execve, proc_exit, proc_waitpid, cpu_index
 
-# How long a network operation is given before it is called a timeout. Seconds,
-# because it is real elapsed time: the loops these replaced counted 500 polls,
-# which is a different amount of time on every machine and under every load.
-NET_TIMEOUT_S = 5
+NET_TIMEOUT_S: i64 = 5
 
-# ---- files ----
-# The syscall invocations themselves are generated (abi): the convention --
-# which argument is the string, which is the buffer -- is stated once in
-# include/abi/logit_calls.abi, not at each of these call sites.
-def read_file(path):
+
+# ---- files and directories ----
+# Keep the original failure sentinel through Optional. Invalid text/arguments
+# still raise typed errors; arbitrary binary contents belong in Bytes, not str.
+def read_file(path: str) -> Optional[str]:
     return read_file_max(path, 262144)
 
-def read_file_max(path, max):
-    buf = buffer(max)
-    n = file_read(path, buf, max)
-    return mem2str(buf, n) if n >= 0 else nil
 
-def write_file(path, data):
+def read_file_max(path: str, maximum: i64) -> Optional[str]:
+    # This retains SYS_READ_FILE's whole-file size limit. On LogitFS a larger
+    # file fails; callers wanting a prefix use a scoped file port's read().
+    data = buffer(maximum)
+    count = file_read(path, data, maximum)
+    if count < 0:
+        return None
+    unsafe:
+        return mem2str(data, count)
+
+
+def write_file[B: ByteStorage](path: str, data: B) -> i64:
+    # Text callers explicitly encode with Bytes(text); native byte storage
+    # passes directly without a second whole-file copy in this wrapper.
     return file_write(path, data, len(data))
 
-def remove(path):
+
+def remove(path: str) -> i64:
     return file_delete(path)
 
-def rename(old, new):
+
+def rename(old: str, new: str) -> i64:
     return file_rename(old, new)
 
-def mkdir(path):
+
+def mkdir(path: str) -> i64:
     return dir_make(path)
 
-# ---- directories ----
-def ls(dir):
-    n = dir_count(dir)
-    if n < 0:
-        return nil
-    out = []
-    buf = buffer(64)
-    for i in range(n):
-        sz = dir_name(dir, i, buf)
-        if sz != -1:
-            out.append(mem2cstr(buf))
-    return out
 
-def cwd():
-    buf = buffer(128)
-    n = getcwd(buf, 128)
-    return mem2str(buf, n) if n >= 0 else nil
+def ls(directory: str) -> Optional[List[str]]:
+    count = dir_count(directory)
+    if count < 0:
+        return None
+    names: List[str] = []
+    data = buffer(64)
+    for index in range(count):
+        size = dir_name(directory, index, data)
+        # -2 denotes a directory, not an error. Enumeration can change between
+        # calls; only the ABI's -1 sentinel means that this entry disappeared.
+        if size != -1:
+            unsafe:
+                names.append(mem2cstr(data))
+    return names
 
-# chdir is imported from abi unchanged: the generated wrapper IS the convention.
 
-# ---- processes ----
-def pid():
+def chdir(path: str) -> i64:
+    return abi.chdir(path)
+
+
+def cwd() -> Optional[str]:
+    data = buffer(128)
+    count = getcwd(data, len(data))
+    if count < 0:
+        return None
+    unsafe:
+        return mem2str(data, count)
+
+
+# ---- process ownership ----
+class _Arguments:
+    values: List[Bytes]
+    pointers: Buffer
+
+    def init(self, arguments: List[str]) -> None:
+        self.values = []
+        self.pointers = buffer(8 * (len(arguments) + 1))
+        for index in range(len(arguments)):
+            argument = arguments[index]
+            if chr(0) in argument:
+                raise ValueError("process argument contains an embedded NUL")
+            value = Bytes(argument + chr(0))
+            self.values.append(value)
+            unsafe:
+                poke64(addr(self.pointers) + u64(8 * index), i64(addr(value)))
+        # buffer() zeroes the final pointer. values is an ordinary GC-scanned
+        # field: the raw pointer vector alone cannot keep its pointees alive.
+
+
+def pid() -> i64:
     return proc_pid()
 
-# Build a NULL-terminated char*[] from a list of strings, in script memory.
-# The list MUST stay live while the kernel reads the array (it does: execve
-# copies before returning) -- the addr()s point into the strings' own bytes.
-def _argv(args):
-    n = len(args)
-    pv = buffer(8 * (n + 1))
-    for i in range(n):
-        poke64(addr(pv) + 8 * i, addr(args[i]))
-    poke64(addr(pv) + 8 * n, 0)
-    return pv
 
-# spawn(path, args) -> child pid (args = full argv incl. argv[0]).
-# fork + execve in pure script: the child VM replaces itself with the program.
-def spawn(path, args):
-    p = proc_fork()
-    if p == 0:
-        pv = _argv(args)
-        proc_execve(path, pv, 0)
-        proc_exit(127)                  # execve failed
-    return p
+def spawn(path: str, arguments: List[str]) -> i64:
+    if chr(0) in path:
+        raise ValueError("process path contains an embedded NUL")
+    # Validate and own every argument before fork. A marshalling exception in
+    # the child must not accidentally return into the parent's caller logic.
+    owned = _Arguments(arguments)
+    child = proc_fork()
+    if child == 0:
+        try:
+            proc_execve(path, owned.pointers, 0)
+        except Error:
+            # Path marshalling can still allocate after fork. A typed failure
+            # has the same child-exit contract as a negative execve result.
+            pass
+        proc_exit(127)
+        raise RuntimeError("process exit unexpectedly returned")
+    return child
 
-def wait(p):
-    st = buffer(4)
-    rc = proc_waitpid(p, st, 0)
-    return peek32(addr(st)) if rc >= 0 else -1
 
-def run(path, args):
-    return wait(spawn(path, args))
+def wait(child: i64) -> i64:
+    # waitpid(-1) means ANY child. A failed spawn must not reap an unrelated
+    # process merely because the old run() blindly forwarded its sentinel.
+    if child <= 0:
+        return -1
+    status = buffer(4)
+    result = proc_waitpid(child, status, 0)
+    if result < 0:
+        return -1
+    unsafe:
+        return peek32(addr(status))
 
-def exit(code):
+
+def run(path: str, arguments: List[str]) -> i64:
+    return wait(spawn(path, arguments))
+
+
+def exit(code: i64) -> None:
     proc_exit(code)
+    raise RuntimeError("process exit unexpectedly returned")
 
-def cpu():
+
+def cpu() -> i64:
     return cpu_index()
 
-# ---- time ----
-# -> a Time layout: .year .month .day .hour .minute .second .weekday
-# (RTC wall clock). The kernel writes struct logit_time straight into it.
-def time():
-    t = Time()
-    get_time(t)
-    return t
 
-def sleep(secs):
-    start = now_s()
+# ---- clocks ----
+def time() -> Time:
+    clock = Time()
+    if get_time(clock) < 0:
+        raise IOError("wall clock unavailable")
+    return clock
+
+
+def sleep(seconds: i64) -> None:
+    if seconds < 0:
+        raise ValueError("sleep duration must be nonnegative")
+    duration = seconds * 1000
+    # The A2 implementation used RTC seconds with a midnight adjustment.
+    # Monotonic time also handles waits spanning a day or a wall-clock change.
+    start = abi.monotonic_ms()
+    if start < 0:
+        raise IOError("monotonic clock unavailable")
     while true:
-        now = now_s()
+        now = abi.monotonic_ms()
         if now < start:
-            now = now + 86400            # the RTC clock wrapped past midnight
-        if now - start >= secs:
-            return nil
+            raise IOError("monotonic clock failed or moved backwards")
+        if now - start >= duration:
+            return
         sys_yield()
 
+
 # ---- network ----
-# dns() and ping() RAISE on failure and on timeout, and those are two different
-# messages. They used to answer 0 and -1 respectively for both -- and for "no
-# network interface" as well, so three outcomes shared one value and a caller
-# could not tell them apart. The waiting itself is generated from
-# include/abi/logit_calls.abi, which is where the protocol (0 means pending,
-# 0xFFFFFFFF means failed) is now stated.
-def dns(name):
+# Polling policy and typed failure/timeout errors come from the ABI module.
+# The explicit *_or forms retain the original opt-in sentinel behavior.
+def dns(name: str) -> i64:
     return wait_dns(name, NET_TIMEOUT_S)
 
-# The old shape, for callers that would rather have a sentinel than a handler.
-def dns_or(name, default):
+
+def dns_or(name: str, default: i64) -> i64:
     try:
         return dns(name)
-    except e:
+    except Error:
         return default
 
-def ip_str(ip):
+
+def ip_str(ip: i64) -> str:
     return f"{(ip >> 24) & 255}.{(ip >> 16) & 255}.{(ip >> 8) & 255}.{ip & 255}"
 
-def ping(ip):
+
+def ping(ip: i64) -> i64:
     return wait_ping(ip, NET_TIMEOUT_S)
 
-def ping_or(ip, default):
+
+def ping_or(ip: i64, default: i64) -> i64:
     try:
         return ping(ip)
-    except e:
+    except Error:
         return default

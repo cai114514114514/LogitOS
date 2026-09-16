@@ -55,7 +55,42 @@ static inline int hidden_system(const char *dir, const char *name, int is_dir)
     if (!lh_streq(dir, "/")) return 0;
 
     if (is_dir) {
-        static const char *sysdir[] = { "bin", "usr", "fonts", "licenses" };
+        /* Four groups, and the reason differs by group.
+         *
+         *   the machine's own      bin, sbin, usr, etc, fonts, licenses, ime,
+         *                          pkg -- furniture. /etc and /sbin were as
+         *                          visible as /docs until this line named them,
+         *                          which is why the root read as a developer's
+         *                          working directory rather than a place to
+         *                          keep files.
+         *
+         *   on-device test corpora jssem, jsperf, jscallee -- packed by
+         *                          tests/{jssem,jsperf}.mk into the $(DISK)
+         *                          recipe so the guest gates have their inputs.
+         *                          They are HIDDEN rather than removed: the
+         *                          gates read them by absolute path, and a
+         *                          corpus a harness needs is not junk just
+         *                          because a person should not trip over it.
+         *
+         *   runtime and app state  proc, run, state, browser -- not packed by
+         *                          mkfs at all, which is why a reading of the
+         *                          $(DISK) recipe misses them: /proc is
+         *                          synthesised, /run and /state are created at
+         *                          boot, /browser is a --preserve root carried
+         *                          across repacks. They only appear on a
+         *                          machine that has BOOTED, which is why the
+         *                          first version of this list -- derived from
+         *                          the Makefile -- did not contain one of them.
+         *                          Check this list against a SCREENSHOT.
+         *
+         * What is deliberately still visible: docs, media, www -- content. If
+         * this list ever grows to cover those too, the question to ask is
+         * whether the root still has a reason to exist. */
+        static const char *sysdir[] = {
+            "bin", "sbin", "usr", "etc", "fonts", "licenses", "ime", "pkg",
+            "jssem", "jsperf", "jscallee",
+            "proc", "run", "state", "browser",
+        };
         for (unsigned i = 0; i < sizeof sysdir / sizeof sysdir[0]; i++)
             if (lh_streq(name, sysdir[i])) return 1;
         return 0;

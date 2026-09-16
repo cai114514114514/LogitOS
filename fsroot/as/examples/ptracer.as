@@ -1,3 +1,4 @@
+# aether: 3.0
 # ptracer -- the on-device gate for SYS_PTRACE (c/kernel/exec/ptrace.h).
 #
 #   as /usr/as/examples/ptracer.as             the tracer
@@ -37,7 +38,7 @@
 #                         earlier must now be refused.
 #   ATTACH to self        refused.
 
-from sys import spawn, wait, pid
+from std.sys import spawn, wait, pid
 
 SYS_PTRACE     = 187
 SYS_NANOSLEEP  = 84
@@ -71,173 +72,198 @@ STACK_HI = 0x54000000
 
 BAD_ADDR = 0xdeadbee0
 
-fails = 0
 
-def check(name, ok):
+def check(name: str, ok: bool) -> i64:
     if ok:
         print("ok  :", name)
     else:
         print("FAIL:", name)
     return 0 if ok else 1
 
-def pt(req, p, arg):
-    return syscall(SYS_PTRACE, req, p, arg)
+def pt(req: i64, p: i64, arg: u64) -> i64:
+    unsafe:
+        return syscall(SYS_PTRACE, req, p, arg)
 
-def getregs(p, buf):
-    return pt(PTRACE_GETREGS, p, addr(buf))
+def getregs(p: i64, buf: Buffer) -> i64:
+    unsafe:
+        return pt(PTRACE_GETREGS, p, addr(buf))
 
-def reg(buf, i):
-    return peek64(addr(buf) + 8 * i)
+def reg(buf: Buffer, i: i64) -> i64:
+    unsafe:
+        return peek64(addr(buf) + u64(8 * i))
 
 # struct logit_ptrace_word { unsigned long long addr, data; }
-def peekword(p, a, w):
-    poke64(addr(w), a)
-    poke64(addr(w) + 8, 0)
-    return pt(PTRACE_PEEKDATA, p, addr(w))
+def peekword(p: i64, a: i64, w: Buffer) -> i64:
+    unsafe:
+        poke64(addr(w), a)
+        poke64(addr(w) + u64(8), 0)
+        return pt(PTRACE_PEEKDATA, p, addr(w))
 
-def pokeword(p, a, v, w):
-    poke64(addr(w), a)
-    poke64(addr(w) + 8, v)
-    return pt(PTRACE_POKEDATA, p, addr(w))
+def pokeword(p: i64, a: i64, v: i64, w: Buffer) -> i64:
+    unsafe:
+        poke64(addr(w), a)
+        poke64(addr(w) + u64(8), v)
+        return pt(PTRACE_POKEDATA, p, addr(w))
 
+# A3 requires layout() at module scope: its metadata is a literal type
+# declaration, not a value a function can build at runtime.
 Ts = layout("logit_timespec", 16, [
     ["sec", 0, 8, "i"],
     ["nsec", 8, 8, "i"]
 ])
+
 
 # Sub-second only, and the fields are set directly rather than divided out of a
 # millisecond count: `/` on two AetherScript ints is not integer division, and a
 # float landing in a timespec's tv_sec is a sleep of an unpredictable length --
 # which in a harness reads as "ptrace was slow", not as "the argument was
 # wrong". Nothing here needs to sleep for a whole second.
-def nap_ms(ms):
+#
+# At module scope rather than nested in main(): a nested def is a CLOSURE in A3
+# and would need its parameter annotated against a Callable context it has none of.
+def nap_ms(ms: i64) -> None:
     t = Ts()
     t.sec = 0
     t.nsec = ms * 1000000
-    syscall(SYS_NANOSLEEP, addr(t), 0, 0)
+    unsafe:
+        syscall(SYS_NANOSLEEP, addr(t), 0, 0)
 
-# ---------------------------------------------------------------- INTRUDER --
-# A process that attached to nothing, walking every pid this machine can have
-# (NPROC is 32, c/kernel/exec/proc.h) and asking for its registers. It must be
-# refused by all of them -- including the one that is stopped RIGHT NOW, which
-# is the only pid where the answer could differ.
-a = args()
-if len(a) > 1 and a[1] == "intrude":
-    g = buffer(NGREG * 8)
-    readable = 0
-    p = 1
-    while p < 33:
-        if getregs(p, g) == PT_OK:
-            readable = readable + 1
-            print("PTINTRUDE read pid", p, "rip", reg(g, R_RIP))
-        p = p + 1
-    print("PTINTRUDE readable", readable)
-else:
-    me = pid()
-    print("PTRACER-UP pid", me)
 
-    child = spawn("/bin/as", ["as", "/usr/as/examples/ptracee.as"])
-    fails = fails + check("spawned a tracee", child > 0)
-    # Let it get through execve and into its loop, so the registers read below
-    # are the TRACEE's and not those of the forked copy of this program that
-    # has not called execve yet. ATTACH would work either way; this is what
-    # makes the text-range check mean something.
-    nap_ms(700)
+def main() -> i64:
+    fails = 0
 
-    fails = fails + check("ATTACH", pt(PTRACE_ATTACH, child, 0) == PT_OK)
 
-    g1 = buffer(NGREG * 8)
-    fails = fails + check("GETREGS", getregs(child, g1) == PT_OK)
-    rip1 = reg(g1, R_RIP)
-    rsp1 = reg(g1, R_RSP)
-    cs1  = reg(g1, R_CS)
-    print("     rip", rip1, "rsp", rsp1, "cs", cs1)
-    fails = fails + check("cs is a ring-3 selector", (cs1 & 3) == 3)
-    fails = fails + check("rip is inside /bin/as text", rip1 >= TEXT_LO and rip1 < TEXT_HI)
-    fails = fails + check("rsp is inside its stack", rsp1 >= STACK_LO and rsp1 < STACK_HI)
-
-    w = buffer(16)
-    at = rip1 & ~7
-    fails = fails + check("PEEKDATA at its rip", peekword(child, at, w) == PT_OK)
-    theirs = peek64(addr(w) + 8)
-    ours = peek64(at)
-    print("     word at", at, "theirs", theirs, "ours", ours)
-    fails = fails + check("the instruction word matches our own copy of /bin/as",
-                          theirs == ours)
-
-    fails = fails + check("PEEKDATA of an unmapped address is refused",
-                          peekword(child, BAD_ADDR, w) == PT_E_FAULT)
-    fails = fails + check("POKEDATA into read-only text is refused",
-                          pokeword(child, at, 0, w) == PT_E_FAULT)
-
-    # WHILE IT IS STILL STOPPED: a process that attached to nothing tries.
-    code = wait(spawn("/bin/as", ["as", "/usr/as/examples/ptracer.as", "intrude"]))
-    fails = fails + check("the intruder ran", code == 0)
-
-    # ------------------------------------------------ IS IT REALLY EXECUTING?
-    # Four stops with a resume between each, and at least two of the rips must
-    # differ. There is no PTRACE_STOP in this ABI -- DETACH continues it and
-    # ATTACH stops it, which is the whole vocabulary.
-    #
-    # WHY "AT LEAST TWO OF FOUR" AND NOT "rip2 != rip1". The tracee spins in the
-    # VM's interpreter dispatch, which is a few dozen instructions, so two
-    # independent timer interrupts land on the same one perhaps once in forty
-    # tries. A `!=` between two samples is a gate that fails a correct kernel a
-    # few percent of the time, and a gate that is occasionally wrong for no
-    # reason is worse than one check fewer -- it teaches everyone to re-run.
-    # Three resumes make an all-identical run about one in ten thousand.
-    #
-    # This is NOT the check that says whose registers these are: the POKE
-    # round-trip at the end of the file is, and it is exact. This one says the
-    # tracee is genuinely running between stops rather than wedged.
-    g2 = buffer(NGREG * 8)
-    seen = rip1
-    moved = 0
-    round = 0
-    while round < 3:
-        fails = fails + check("DETACH", pt(PTRACE_DETACH, child, 0) == PT_OK)
-        nap_ms(300)
-        fails = fails + check("re-ATTACH", pt(PTRACE_ATTACH, child, 0) == PT_OK)
-        fails = fails + check("GETREGS again", getregs(child, g2) == PT_OK)
-        r = reg(g2, R_RIP)
-        print("     stop", round + 2, "rip", r)
-        if r != seen:
-            moved = 1
-        round = round + 1
-    fails = fails + check("rip differed across four stops -- it is executing", moved == 1)
-
-    # ------------------------------------- WHOSE ADDRESS SPACE WAS THAT? EXACT
-    # A word ABOVE the tracee's stack pointer -- in the top page of its stack,
-    # which every process touches when execve builds its argv -- is written
-    # through ptrace and read back. Then this process reads the SAME ADDRESS in
-    # its own memory and it must be unchanged.
-    #
-    # That is the whole feature in one check. Both processes are /bin/as at the
-    # same link base with a stack at the same virtual address, so if PEEK/POKE
-    # were operating on the CALLER's address space -- the easiest way to get
-    # this wrong, and one that passes every check above -- the sentinel would
-    # appear right here. It does not, because c/kernel/exec/ptrace.c walks the
-    # TRACEE's page table and reaches the frame through the identity map.
-    #
-    # It is last on purpose: it writes into the tracee's live VM frames, so the
-    # tracee may not survive it. Nothing after this needs it alive.
-    SENT = 0x5AFE1234DEADBEE0
-    sa = (rsp1 + 256) & ~7
-    mine_before = peek64(sa)
-    fails = fails + check("POKEDATA into its stack", pokeword(child, sa, SENT, w) == PT_OK)
-    fails = fails + check("PEEKDATA reads it back", peekword(child, sa, w) == PT_OK)
-    print("     at", sa, "read back", peek64(addr(w) + 8), "ours now", peek64(sa))
-    fails = fails + check("the value came back", peek64(addr(w) + 8) == SENT)
-    fails = fails + check("OUR memory at that address is untouched -- it is ITS space",
-                          peek64(sa) == mine_before and peek64(sa) != SENT)
-
-    fails = fails + check("DETACH again", pt(PTRACE_DETACH, child, 0) == PT_OK)
-    fails = fails + check("GETREGS after DETACH is refused",
-                          getregs(child, g2) == PT_E_PERM)
-    fails = fails + check("ATTACH to self is refused",
-                          pt(PTRACE_ATTACH, me, 0) == PT_E_PERM)
-
-    if fails == 0:
-        print("PTRACE-OK")
+    # ---------------------------------------------------------------- INTRUDER --
+    # A process that attached to nothing, walking every pid this machine can have
+    # (NPROC is 32, c/kernel/exec/proc.h) and asking for its registers. It must be
+    # refused by all of them -- including the one that is stopped RIGHT NOW, which
+    # is the only pid where the answer could differ.
+    a = args()
+    if len(a) > 1 and a[1] == "intrude":
+        g = buffer(NGREG * 8)
+        readable = 0
+        p = 1
+        while p < 33:
+            if getregs(p, g) == PT_OK:
+                readable = readable + 1
+                print("PTINTRUDE read pid", p, "rip", reg(g, R_RIP))
+            p = p + 1
+        print("PTINTRUDE readable", readable)
     else:
-        print("PTRACE-FAILED", fails)
+        me = pid()
+        print("PTRACER-UP pid", me)
+
+        child = spawn("/bin/as", ["as", "/usr/as/examples/ptracee.as"])
+        fails = fails + check("spawned a tracee", child > 0)
+        # Let it get through execve and into its loop, so the registers read below
+        # are the TRACEE's and not those of the forked copy of this program that
+        # has not called execve yet. ATTACH would work either way; this is what
+        # makes the text-range check mean something.
+        nap_ms(700)
+
+        fails = fails + check("ATTACH", pt(PTRACE_ATTACH, child, 0) == PT_OK)
+
+        g1 = buffer(NGREG * 8)
+        fails = fails + check("GETREGS", getregs(child, g1) == PT_OK)
+        rip1 = reg(g1, R_RIP)
+        rsp1 = reg(g1, R_RSP)
+        cs1  = reg(g1, R_CS)
+        print("     rip", rip1, "rsp", rsp1, "cs", cs1)
+        fails = fails + check("cs is a ring-3 selector", (cs1 & 3) == 3)
+        fails = fails + check("rip is inside /bin/as text", rip1 >= TEXT_LO and rip1 < TEXT_HI)
+        fails = fails + check("rsp is inside its stack", rsp1 >= STACK_LO and rsp1 < STACK_HI)
+
+        w = buffer(16)
+        at = rip1 & ~7
+        fails = fails + check("PEEKDATA at its rip", peekword(child, at, w) == PT_OK)
+        unsafe:
+            theirs = peek64(addr(w) + u64(8))
+            ours = peek64(u64(at))
+        print("     word at", at, "theirs", theirs, "ours", ours)
+        fails = fails + check("the instruction word matches our own copy of /bin/as",
+                              theirs == ours)
+
+        fails = fails + check("PEEKDATA of an unmapped address is refused",
+                              peekword(child, BAD_ADDR, w) == PT_E_FAULT)
+        fails = fails + check("POKEDATA into read-only text is refused",
+                              pokeword(child, at, 0, w) == PT_E_FAULT)
+
+        # WHILE IT IS STILL STOPPED: a process that attached to nothing tries.
+        code = wait(spawn("/bin/as", ["as", "/usr/as/examples/ptracer.as", "intrude"]))
+        fails = fails + check("the intruder ran", code == 0)
+
+        # ------------------------------------------------ IS IT REALLY EXECUTING?
+        # Four stops with a resume between each, and at least two of the rips must
+        # differ. There is no PTRACE_STOP in this ABI -- DETACH continues it and
+        # ATTACH stops it, which is the whole vocabulary.
+        #
+        # WHY "AT LEAST TWO OF FOUR" AND NOT "rip2 != rip1". The tracee spins in the
+        # VM's interpreter dispatch, which is a few dozen instructions, so two
+        # independent timer interrupts land on the same one perhaps once in forty
+        # tries. A `!=` between two samples is a gate that fails a correct kernel a
+        # few percent of the time, and a gate that is occasionally wrong for no
+        # reason is worse than one check fewer -- it teaches everyone to re-run.
+        # Three resumes make an all-identical run about one in ten thousand.
+        #
+        # This is NOT the check that says whose registers these are: the POKE
+        # round-trip at the end of the file is, and it is exact. This one says the
+        # tracee is genuinely running between stops rather than wedged.
+        g2 = buffer(NGREG * 8)
+        seen = rip1
+        moved = 0
+        round = 0
+        while round < 3:
+            fails = fails + check("DETACH", pt(PTRACE_DETACH, child, 0) == PT_OK)
+            nap_ms(300)
+            fails = fails + check("re-ATTACH", pt(PTRACE_ATTACH, child, 0) == PT_OK)
+            fails = fails + check("GETREGS again", getregs(child, g2) == PT_OK)
+            r = reg(g2, R_RIP)
+            print("     stop", round + 2, "rip", r)
+            if r != seen:
+                moved = 1
+            round = round + 1
+        fails = fails + check("rip differed across four stops -- it is executing", moved == 1)
+
+        # ------------------------------------- WHOSE ADDRESS SPACE WAS THAT? EXACT
+        # A word ABOVE the tracee's stack pointer -- in the top page of its stack,
+        # which every process touches when execve builds its argv -- is written
+        # through ptrace and read back. Then this process reads the SAME ADDRESS in
+        # its own memory and it must be unchanged.
+        #
+        # That is the whole feature in one check. Both processes are /bin/as at the
+        # same link base with a stack at the same virtual address, so if PEEK/POKE
+        # were operating on the CALLER's address space -- the easiest way to get
+        # this wrong, and one that passes every check above -- the sentinel would
+        # appear right here. It does not, because c/kernel/exec/ptrace.c walks the
+        # TRACEE's page table and reaches the frame through the identity map.
+        #
+        # It is last on purpose: it writes into the tracee's live VM frames, so the
+        # tracee may not survive it. Nothing after this needs it alive.
+        SENT = 0x5AFE1234DEADBEE0
+        sa = (rsp1 + 256) & ~7
+        unsafe:
+            mine_before = peek64(u64(sa))
+        fails = fails + check("POKEDATA into its stack", pokeword(child, sa, SENT, w) == PT_OK)
+        fails = fails + check("PEEKDATA reads it back", peekword(child, sa, w) == PT_OK)
+        # Read once into locals: the same three reads appear in the print and in
+        # the two checks below, and re-reading OUR address after the check would
+        # be a different question from the one being asked.
+        unsafe:
+            came_back = peek64(addr(w) + u64(8))
+            mine_now = peek64(u64(sa))
+        print("     at", sa, "read back", came_back, "ours now", mine_now)
+        fails = fails + check("the value came back", came_back == SENT)
+        fails = fails + check("OUR memory at that address is untouched -- it is ITS space",
+                              mine_now == mine_before and mine_now != SENT)
+
+        fails = fails + check("DETACH again", pt(PTRACE_DETACH, child, 0) == PT_OK)
+        fails = fails + check("GETREGS after DETACH is refused",
+                              getregs(child, g2) == PT_E_PERM)
+        fails = fails + check("ATTACH to self is refused",
+                              pt(PTRACE_ATTACH, me, 0) == PT_E_PERM)
+
+        if fails == 0:
+            print("PTRACE-OK")
+        else:
+            print("PTRACE-FAILED", fails)
+    return 0

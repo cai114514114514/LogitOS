@@ -1,3 +1,4 @@
+# aether: 3.0
 # barriers -- how many write barriers has the kernel issued, and does writing a
 # file issue any?
 #
@@ -13,49 +14,62 @@
 # The count comes from the kernel's own sysinfo text, so this measures what the
 # filesystem actually asked the hardware for, not what the code appears to say.
 
-from abi import sysinfo
+from std.abi import sysinfo
+from std.strings import lines, starts_with
 
 # -1 means the query itself failed, -2 means it worked but had no Barriers line.
 # Two different problems deserve two different answers: collapsing them cost a
 # debugging cycle chasing a missing line that was really a refused syscall.
-def barrier_count():
-    b = buffer(1024)
-    n = sysinfo(b, 1024)
+def barrier_count() -> i64:
+    b = buffer(4096)
+    n = sysinfo(b, len(b))
     if n <= 0:
         return -1
-    text = mem2str(b, n)
-    # "Barriers <n>\n" -- pull the digits that follow the label
-    key = "Barriers "
-    at = -1
-    for i in range(len(text) - len(key) + 1):
-        hit = true
-        for k in range(len(key)):
-            if text[i + k] != key[k]:
-                hit = false
-        if hit:
-            at = i + len(key)
-    if at < 0:
-        return -2
-    v = 0
-    i = at
-    while i < len(text) and ord(text[i]) >= 48 and ord(text[i]) <= 57:
-        v = v * 10 + (ord(text[i]) - 48)
-        i = i + 1
-    return v
+    if n > len(b):
+        return -3
+    unsafe:
+        text = mem2str(b, n)
 
-before = barrier_count()
-if before == -1:
-    print("BARRIERS-FAIL sysinfo() was refused (returned <= 0)")
-elif before == -2:
-    print("BARRIERS-FAIL sysinfo has no Barriers line")
-else:
-    file_write("/dur/barrier.probe", "a barrier probe, written to force a transaction")
+    # The old substring scan accepted a label inside unrelated text and
+    # silently picked the last duplicate. Require one complete counter row.
+    # -3 distinguishes malformed data from a refused or absent query.
+    count = -2
+    for line in lines(text):
+        if starts_with(line, "Barriers "):
+            if count != -2:
+                return -3
+            count = parse_int(line.slice(9, len(line)))
+            if count < 0:
+                return -3
+    return count
+
+
+def _failure(count: i64) -> None:
+    if count == -1:
+        print("BARRIERS-FAIL sysinfo() was refused (returned <= 0)")
+    elif count == -2:
+        print("BARRIERS-FAIL sysinfo has no Barriers line")
+    else:
+        print("BARRIERS-FAIL malformed sysinfo counter")
+
+
+def main() -> i64:
+    before = barrier_count()
+    if before < 0:
+        _failure(before)
+        return 1
+    file_write("/dur/barrier.probe", Bytes("a barrier probe, written to force a transaction"))
     after = barrier_count()
+    if after < 0:
+        _failure(after)
+        return 1
     print("BARRIERS", before, "->", after, "delta", after - before)
     # One committed transaction issues three (staged blocks, commit record,
     # checkpoint). Creating a file is more than one transaction, so the floor is
     # deliberately loose -- the assertion that matters is "not zero".
     if after - before >= 3:
         print("BARRIERS-OK")
+        return 0
     else:
         print("BARRIERS-FAIL a file write issued", after - before, "barriers, expected >= 3")
+        return 1

@@ -1,8 +1,9 @@
+# aether: 3.0
 # oomsmall -- the INNOCENT process. It asks for very little and must survive.
 #
 #   as /usr/as/examples/oomsmall.as <mib>
 #
-# This is the program the bug kills. c/kernel/mm/fault.c used to return 0 when
+# This is the program the bug kills. c/kernel/mm/virt/fault.c used to return 0 when
 # memory was gone, which ends the FAULTING process -- and on a machine one hog
 # has emptied, the next process to fault is whoever the user just started. It is
 # never the hog: the hog already has its memory and is not asking for more.
@@ -66,69 +67,59 @@ LOWMARK = 20000
 # it is reached.
 MAXPOLL = 200000000
 
-def mark(i):
+def mark(i: i64) -> i64:
     return i * 1000003 + 41
 
-a = args()
-mib = 8
-if len(a) > 1:
-    if a[1] == "4":
-        mib = 4
-    if a[1] == "16":
-        mib = 16
-    if a[1] == "32":
-        mib = 32
-    if a[1] == "64":
-        mib = 64
-    if a[1] == "96":
-        mib = 96
 
-npages = mib * 256
-bytes = mib * 1024 * 1024
+def map_anon(size: i64) -> i64:
+    unsafe:
+        return syscall(SYS_MMAP, size, 3, 0)
 
-print("OOMSMALL-START", mib, "MiB,", npages, "pages")
 
-# One page to receive the meminfo struct. Taken FIRST, while memory is still
-# plentiful: an innocent process that could not even allocate its own scratch
-# would be testing the wrong thing.
-mbuf = syscall(SYS_MMAP, 4096, 3, 0)
-if mbuf < 4096:
-    print("OOMSMALL-FAIL could not map the meminfo page:", mbuf)
-else:
-    mp = i64ptr(mbuf)
-    mp[MI_FRAMES_FREE] = 0
-    syscall(SYS_MEMINFO, mbuf, 0, 0)
-    print("OOMSMALL-READY free frames now", mp[MI_FRAMES_FREE])
+def unmap(base: i64, size: i64) -> i64:
+    unsafe:
+        return syscall(SYS_MUNMAP, base, size)
 
-    polls = 0
-    free = mp[MI_FRAMES_FREE]
-    while free >= LOWMARK and polls < MAXPOLL:
-        syscall(SYS_YIELD, 0, 0, 0)
-        polls = polls + 1
-        if polls % 2000 == 0:
-            syscall(SYS_MEMINFO, mbuf, 0, 0)
-            free = mp[MI_FRAMES_FREE]
 
-    print("OOMSMALL-GO free frames", free, "after", polls, "polls")
+def yield_() -> i64:
+    unsafe:
+        return syscall(SYS_YIELD, 0, 0, 0)
 
-    base = syscall(SYS_MMAP, bytes, 3, 0)
-    if base < 4096:
-        # A refused mmap is a RESERVATION failure, not an out-of-memory: no
-        # frame is taken until the page is touched. Reported separately so it
-        # cannot be read as the thing this test is about.
-        print("OOMSMALL-FAIL mmap refused:", base)
-    else:
-        p = i64ptr(base)
+
+def read_meminfo(mbuf: i64) -> i64:
+    unsafe:
+        return syscall(SYS_MEMINFO, mbuf, 0, 0)
+
+
+# The three pointer helpers below exist because A3 requires pointer construction
+# and dereference to be inside unsafe, and the frames-free word is read from
+# inside a WHILE CONDITION. Putting the block around the loop would widen unsafe
+# over the whole poll; naming the read keeps it one word wide and leaves the
+# loop reading as the free-frame poll it is.
+def free_frames(mbuf: i64) -> i64:
+    unsafe:
+        mp = i64ptr(u64(mbuf))
+        return mp[MI_FRAMES_FREE]
+
+
+def clear_free_frames(mbuf: i64) -> None:
+    unsafe:
+        mp = i64ptr(u64(mbuf))
+        mp[MI_FRAMES_FREE] = 0
+
+
+# Written AND read back in one place. A run that survived by being handed a
+# frame somebody else still maps fails here instead of passing -- the failure
+# mode a killer creates, which a "did it exit cleanly" check cannot see.
+def touch_and_verify(base: i64, npages: i64) -> i64:
+    unsafe:
+        p = i64ptr(u64(base))
         i = 0
         while i < npages:
             p[i * WORDS] = mark(i)
             i = i + 1
         print("OOMSMALL-TOUCHED", npages)
 
-        # Verified, not merely touched: a run that survived by being handed a
-        # frame somebody else still maps fails HERE instead of passing. That is
-        # the failure mode a killer creates and a "did it exit cleanly" check
-        # cannot see.
         bad = 0
         i = 0
         while i < npages:
@@ -138,12 +129,66 @@ else:
                     print("OOMSMALL-BAD page", i, "got", got, "want", mark(i))
                 bad = bad + 1
             i = i + 1
+        return bad
 
-        if bad == 0:
-            print("OOMSMALL-OK", npages, "pages written and read back")
+
+def main() -> i64:
+    a = args()
+    mib = 8
+    if len(a) > 1:
+        if a[1] == "4":
+            mib = 4
+        if a[1] == "16":
+            mib = 16
+        if a[1] == "32":
+            mib = 32
+        if a[1] == "64":
+            mib = 64
+        if a[1] == "96":
+            mib = 96
+
+    npages = mib * 256
+    span = mib * 1024 * 1024
+
+    print("OOMSMALL-START", mib, "MiB,", npages, "pages")
+
+    # One page to receive the meminfo struct. Taken FIRST, while memory is still
+    # plentiful: an innocent process that could not even allocate its own scratch
+    # would be testing the wrong thing.
+    mbuf = map_anon(4096)
+    if mbuf < 4096:
+        print("OOMSMALL-FAIL could not map the meminfo page:", mbuf)
+    else:
+        clear_free_frames(mbuf)
+        read_meminfo(mbuf)
+        print("OOMSMALL-READY free frames now", free_frames(mbuf))
+
+        polls = 0
+        free = free_frames(mbuf)
+        while free >= LOWMARK and polls < MAXPOLL:
+            yield_()
+            polls = polls + 1
+            if polls % 2000 == 0:
+                read_meminfo(mbuf)
+                free = free_frames(mbuf)
+
+        print("OOMSMALL-GO free frames", free, "after", polls, "polls")
+
+        base = map_anon(span)
+        if base < 4096:
+            # A refused mmap is a RESERVATION failure, not an out-of-memory: no
+            # frame is taken until the page is touched. Reported separately so it
+            # cannot be read as the thing this test is about.
+            print("OOMSMALL-FAIL mmap refused:", base)
         else:
-            print("OOMSMALL-CORRUPT", bad, "pages wrong")
+            bad = touch_and_verify(base, npages)
 
-        syscall(SYS_MUNMAP, base, bytes)
+            if bad == 0:
+                print("OOMSMALL-OK", npages, "pages written and read back")
+            else:
+                print("OOMSMALL-CORRUPT", bad, "pages wrong")
 
-print("OOMSMALL-DONE")
+            unmap(base, span)
+
+    print("OOMSMALL-DONE")
+    return 0
