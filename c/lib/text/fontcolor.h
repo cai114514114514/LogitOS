@@ -83,7 +83,7 @@ int cbdt_lookup(const struct ttf_font *f, uint16_t gid, int want_ppem,
 /* Same, for sbix. bearing_y is derived from the strike's origin offsets, so a
  * caller can place both kinds identically. */
 int sbix_lookup(const struct ttf_font *f, uint16_t gid, int want_ppem,
-                struct font_bitmap *out);
+                struct font_bitmap *out, int depth);
 
 /* Either of the above, whichever the font has. */
 int font_bitmap_lookup(const struct ttf_font *f, uint16_t gid, int want_ppem,

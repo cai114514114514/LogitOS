@@ -220,9 +220,9 @@ int main(int argc, char **argv)
         case K_DUPE: {
             uint16_t gid = g16(&r), src = g16(&r), ppem = g16(&r);
             struct font_bitmap a, b;
-            if (sbix_lookup(&f, gid, ppem, &a) != 0)
+            if (sbix_lookup(&f, gid, ppem, &a, 0) != 0)
                 FAILF("gid %u: its 'dupe' record did not resolve", gid);
-            else if (sbix_lookup(&f, src, ppem, &b) != 0)
+            else if (sbix_lookup(&f, src, ppem, &b, 0) != 0)
                 FAILF("gid %u: its 'dupe' source gid %u has no bitmap", gid, src);
             else if (a.data != b.data || a.len != b.len)
                 FAILF("gid %u: 'dupe' gave %u bytes, the source has %u", gid, a.len, b.len);

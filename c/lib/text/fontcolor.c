@@ -264,7 +264,7 @@ int cbdt_lookup(const struct ttf_font *f, uint16_t gid, int want_ppem,
 /* ------------------------------------------------------------------ sbix -- */
 
 int sbix_lookup(const struct ttf_font *f, uint16_t gid, int want_ppem,
-                struct font_bitmap *out)
+                struct font_bitmap *out, int depth)
 {
     struct fr b = FR(f);
     uint32_t t = f->off_sbix;
@@ -310,11 +310,14 @@ int sbix_lookup(const struct ttf_font *f, uint16_t gid, int want_ppem,
     out->format = (tag == FONT_TAG('p','n','g',' ')) ? FONTIMG_PNG :
                   (tag == FONT_TAG('j','p','g',' ')) ? FONTIMG_JPEG :
                   (tag == FONT_TAG('t','i','f','f')) ? FONTIMG_TIFF : FONTIMG_UNKNOWN;
-    /* 'dupe' points at another glyph's bitmap; follow it once. */
+    /* 'dupe' points at another glyph's bitmap; follow it once. The depth
+     * bound is what makes "once" true -- a dupe ring (A -> B -> A) is legal
+     * to build and used to recurse until the kernel stack died
+     * (2026-09-16 audit). */
     if (tag == FONT_TAG('d','u','p','e') && out->len >= 2) {
         uint16_t other = (uint16_t)fr_u16(&b, o + 8);
-        if (other != gid) return sbix_lookup(f, other, want_ppem, out);
-        return -1;
+        if (depth >= 1 || other == gid) return -1;
+        return sbix_lookup(f, other, want_ppem, out, depth + 1);
     }
     return 0;
 }
@@ -323,6 +326,6 @@ int font_bitmap_lookup(const struct ttf_font *f, uint16_t gid, int want_ppem,
                        struct font_bitmap *out)
 {
     if (f->off_cblc && f->off_cbdt && cbdt_lookup(f, gid, want_ppem, out) == 0) return 0;
-    if (f->off_sbix && sbix_lookup(f, gid, want_ppem, out) == 0) return 0;
+    if (f->off_sbix && sbix_lookup(f, gid, want_ppem, out, 0) == 0) return 0;
     return -1;
 }
