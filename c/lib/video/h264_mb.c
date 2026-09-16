@@ -263,7 +263,11 @@ static int residual_chroma(h264dec *d, bs_t *bs, int addr, int cbp_chroma,
                             d->cabac ? cbf_inc_simple(d, addr, 3, comp) : 0, t);
         if (tc < 0) return H264_ERR_CORRUPT;
         mi->nz_cdc[comp] = (uint8_t)tc;
-        for (int i = 0; i < 4; i++) dc[comp][i] = t[i];
+        for (int i = 0; i < 4; i++) {
+            if (t[i] > 16383) t[i] = 16383;
+            else if (t[i] < -16384) t[i] = -16384;
+            dc[comp][i] = t[i];
+        }
         h264_dcdcm_transform(dc[comp]);
         const int *ls = pps->ls4[ls_idx(intra, comp + 1)][qpc[comp] % 6];
         int k = qpc[comp] / 6;
@@ -827,7 +831,15 @@ static int decode_i16(h264dec *d, bs_t *bs, int addr, int *qpyp, int t16)
                             d->cabac ? cbf_inc_simple(d, addr, 0, 0) : 0, coef);
         if (tc < 0) return H264_ERR_CORRUPT;
         mi->nz_i16dc = (uint8_t)tc;
-        for (int i = 0; i < 16; i++) dc[zz4[i]] = coef[i];
+        for (int i = 0; i < 16; i++) {
+            /* Same clamp as idct_add_dc_ac, applied BEFORE the Hadamard:
+             * CAVLC/CABAC levels reach +-3.4e7 and the transform then the
+             * dequant multiply would overflow int32 otherwise
+             * (2026-09-16 audit). */
+            if (coef[i] > 16383) coef[i] = 16383;
+            else if (coef[i] < -16384) coef[i] = -16384;
+            dc[zz4[i]] = coef[i];
+        }
         h264_dc16_transform(dc);
         int k = qpy / 6;
         for (int i = 0; i < 16; i++) {

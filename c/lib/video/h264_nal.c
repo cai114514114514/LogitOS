@@ -317,6 +317,20 @@ int h264_parse_sps(h264dec *d, bs_t *bs)
     s.crop_flag = (int)bs_u1(bs);
     if (s.crop_flag) {
         for (int i = 0; i < 4; i++) s.crop[i] = (int)bs_ue(bs);
+        /* Crop units here are *2 luma samples (4:2:0 only). A negative crop
+         * makes new_picture() report a frame wider/taller than the decoded
+         * planes and the caller blits out of the allocation; a huge value
+         * also overflows the *2. Spec: crop offsets are non-negative and the
+         * cropped frame stays positive. Found by the 2026-09-16 audit --
+         * same family as the H.265 conf_win guard. */
+        for (int i = 0; i < 4; i++) {
+            int limit = (i < 2 ? s.mb_width : s.mb_height) * 16 / 2;
+            if (s.crop[i] < 0 || s.crop[i] > limit)
+                return H264_ERR_CORRUPT;
+        }
+        if ((s.crop[0] + s.crop[1]) * 2 >= s.mb_width * 16 ||
+            (s.crop[2] + s.crop[3]) * 2 >= s.mb_height * 16)
+            return H264_ERR_CORRUPT;
     }
     if (bs_u1(bs)) {                          /* vui_parameters_present */
         int rc = parse_vui(&s, bs);
