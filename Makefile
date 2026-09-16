@@ -15,6 +15,17 @@
 
 ARCH        := x86_64
 BUILD       := build
+
+# The CommandLineTools 27.0 upgrade ships a libSystem.tbd whose format the
+# ld.lld in the same toolchain cannot parse ("unknown architecture
+# arm64e.x1-macos"), which broke every HOST link -- kernel links are
+# freestanding and never noticed. Until CLT and its SDKs agree again, pin the
+# host SDK to the last release whose tbd still parses. DELETE this block once
+# the toolchain pair is upgraded together; both -d tests exist so the pin is a
+# no-op on machines without this exact breakage signature.
+ifeq ($(shell test -d /Library/Developer/CommandLineTools/SDKs/MacOSX27.0.sdk && test -d /Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk && echo y),y)
+export SDKROOT := /Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk
+endif
 ISO_DIR     := $(BUILD)/iso
 KERNEL      := $(BUILD)/kernel.elf
 ISO         := $(BUILD)/logit.iso
