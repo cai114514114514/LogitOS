@@ -101,6 +101,12 @@ static const char *op_name(int op)
         return ">>";
     case T_POW:
         return "**";
+    case T_MINUS:
+        return "-";
+    case T_TILDE:
+        return "~";
+    case T_NOT:
+        return "not";
     default:
         return "this operator";
     }
@@ -329,11 +335,23 @@ static Ev eval_expr(Ex *x, AtNode *n)
             } else {
                 a.i = -a.i;
             }
+        } else if (n->op == T_MINUS && a.kind == EV_FLOAT) {
+            a.f = -a.f;
         } else if (n->op == T_NOT) {
             int truth = a.kind == EV_BOOL ? (int)a.i : a.kind == EV_INT ? a.i != 0 : a.kind == EV_STR ? a.n != 0 : 0;
             ev_clear(&a);
             a.kind = EV_BOOL;
             a.i = !truth;
+        } else if (!x->failed) {
+            /* Refuse by name, like every other gap here: returning the
+             * operand unchanged made `print(-1.5)` print 1.5 and `print(~5)`
+             * print 5 -- a wrong answer is worse than a refusal
+             * (2026-09-16 audit). */
+            char buf[96];
+            snprintf(buf, sizeof buf,
+                     "guest execution does not implement unary `%s` here",
+                     op_name(n->op));
+            fail(x, "RuntimeError", buf);
         }
         return a;
     }
@@ -376,6 +394,22 @@ static int eval_stmts(Ex *x, AtNode *n)
             /* nothing */
         } else if (n->kind == AN_ASSIGN && n->a && n->a->kind == AN_NAME && n->op == T_ASSIGN) {
             Ev v = eval_expr(x, n->b);
+            /* A string read from another local arrives as a borrow
+             * (owned == NULL): deep-copy it before it enters the slot, or the
+             * next reassignment of the SOURCE slot would free a buffer this
+             * slot still points at. ASan-confirmed UAF before this copy
+             * (2026-09-16 audit). */
+            if (!x->failed && v.kind == EV_STR && !v.owned && v.s) {
+                char *copy = malloc((size_t)v.n + 1);
+                if (!copy) {
+                    fail(x, "MemoryError", "string assignment");
+                } else {
+                    memcpy(copy, v.s, (size_t)v.n);
+                    copy[v.n] = 0;
+                    v.s = copy;
+                    v.owned = copy;
+                }
+            }
             if (!x->failed && n->a->symbol >= 0 && n->a->symbol < AT_LOCALS) {
                 ev_clear(&x->locals[n->a->symbol]);
                 x->locals[n->a->symbol] = v;
