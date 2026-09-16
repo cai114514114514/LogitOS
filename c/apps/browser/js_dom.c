@@ -1116,6 +1116,13 @@ static int can_insert(struct node *p, struct node *c)
     if (p->type != N_ELEM && p->type != N_DOCUMENT) return 0;   /* not a container */
     if (p->doc != c->doc) return 0;
     if (is_ancestor(c, p)) return 0;                            /* would make a cycle */
+    /* Depth cap, the same DOM_MAX_TREE_DEPTH the fragment parser enforces:
+     * script-built nesting used to be unbounded, and every layout/style/
+     * selector walk is recursive -- ~8k appendChild levels overflowed the
+     * ring-3 stack and killed the whole browser (2026-09-16 audit). */
+    int depth = 0;
+    for (struct node *a = p; a && a->type != N_DOCUMENT; a = a->parent)
+        if (++depth >= DOM_MAX_TREE_DEPTH) return 0;
     return 1;
 }
 

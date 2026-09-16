@@ -372,6 +372,18 @@ static struct wac_ent *lru_victim(void)
     return best;
 }
 
+/* LRU pick excluding one entry (the in-flight replacement). */
+static struct wac_ent *lru_victim_after(struct wac_ent *skip)
+{
+    struct wac_ent *best = 0;
+    for (int i = 0; i < WAC_N; i++) {
+        struct wac_ent *cand = &wac[i];
+        if (!cand->used || cand == skip) continue;
+        if (!best || cand->last_used_ms < best->last_used_ms) best = cand;
+    }
+    return best;
+}
+
 static struct wac_ent *alloc_ent(void)
 {
     for (int i = 0; i < WAC_N; i++)
@@ -514,13 +526,36 @@ int wacache_store(const char *url, const char *cookie_line,
     if (len > WAC_MAX_BYTES) return -1;
     unsigned long long ckh = ck_hash(cookie_line);
     struct wac_ent *e = find_ent_h(url, ckh);
-    if (e) { wac_bytes -= e->len; free(e->body); e->body = 0; e->content_type[0]=e->content_disposition[0]=0; }
-    else {
-        while (wac_bytes + len > WAC_MAX_BYTES) {
-            struct wac_ent *v = lru_victim();
+    if (e) {
+        wac_bytes -= e->len;
+        free(e->body);
+        e->body = 0;
+        /* len goes to zero with the body: drop_ent() subtracts e->len, and
+         * the OOM path below used to subtract the OLD length a second time,
+         * sinking wac_bytes and stalling future eviction (2026-09-16
+         * audit). */
+        e->len = 0;
+        e->content_type[0]=e->content_disposition[0]=0;
+    }
+    /* The cap holds for the replace path too: in-place growth used to skip
+     * eviction entirely, so WAC_N replacements of 8 MiB each could legalise
+     * WAC_N times the byte budget. The victim pick excludes e -- the entry
+     * this very call is about to refill (e->len is already 0, so evicting it
+     * buys nothing and losing it would drop the slot mid-store).
+     * (2026-09-16 audit.) */
+    while (wac_bytes + len > WAC_MAX_BYTES) {
+        struct wac_ent *v = lru_victim();
+        if (!v) break;
+        if (v == e) {
+            /* e is the only candidate left; it carries no bytes. Any other
+             * entry is newer than e, so honouring strict LRU here would
+             * mean evicting newer-than-e entries: keep evicting those. */
+            v = lru_victim_after(e);
             if (!v) break;
-            drop_ent(v);
         }
+        drop_ent(v);
+    }
+    if (!e) {
         e = alloc_ent();
         if (!e) {
             struct wac_ent *v = lru_victim();
