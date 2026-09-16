@@ -196,17 +196,29 @@ int __libc_vscan(struct __scan_src *src, const char *fmt, va_list ap)
             eu(&E, c);
             int base = (conv == 'd' || conv == 'u') ? 10
                      : (conv == 'i') ? 0 : (conv == 'o') ? 8 : 16;
-            int n = collect(&E, buf, (int)sizeof buf, width, NULL, base, 1);
-            if (n == 0) goto out;                              /* matching failure */
+            /* A width above the shared 512-byte scratch gets its own heap
+             * buffer: clamping here used to consume fewer characters than
+             * glibc, which the byte-identical diff gate observes as a
+             * behaviour divergence (2026-09-16 audit). */
+            char *numbuf = buf, *heapbuf = 0;
+            int bcap = (int)sizeof buf;
+            if (width > 0 && width + 1 > (int)sizeof buf) {
+                heapbuf = malloc((size_t)width + 1);
+                if (!heapbuf) { eof_hit = 1; goto out; }   /* allocation failure reads as input failure */
+                numbuf = heapbuf; bcap = width + 1;
+            }
+            int n = collect(&E, numbuf, bcap, width, NULL, base, 1);
+            if (n == 0) { free(heapbuf); goto out; }       /* matching failure */
             char *endp;
             int uns = (conv != 'd' && conv != 'i');
             unsigned long long uv = 0; long long sv = 0;
-            if (uns) uv = strtoull(buf, &endp, base); else sv = strtoll(buf, &endp, base);
+            if (uns) uv = strtoull(numbuf, &endp, base); else sv = strtoll(numbuf, &endp, base);
             /* C: the directive consumes the longest prefix-OF-a-match, and then
              * fails unless that item IS a match. So "0x" under %i is consumed
              * and reported as a matching failure -- it is not silently the
              * number 0 with the "x" pushed back. */
-            if (endp != buf + n) goto out;
+            if (endp != numbuf + n) { free(heapbuf); goto out; }
+            free(heapbuf);
             if (suppress) break;
             if (conv == 'p') { *va_arg(ap, void **) = (void *)(uintptr_t)uv; assigned++; break; }
             if (uns) {
@@ -230,13 +242,21 @@ int __libc_vscan(struct __scan_src *src, const char *fmt, va_list ap)
             while ((c = eg(&E)) != EOFC && sp(c)) ;
             if (c == EOFC) { eof_hit = 1; goto out; }
             eu(&E, c);
-            int n = collect(&E, buf, (int)sizeof buf, width, flt_prefix, 0, 0);
-            if (n == 0) goto out;
+            char *numbuf = buf, *fheapbuf = 0;
+            int fcap = (int)sizeof buf;
+            if (width > 0 && width + 1 > (int)sizeof buf) {
+                fheapbuf = malloc((size_t)width + 1);
+                if (!fheapbuf) { eof_hit = 1; goto out; }
+                numbuf = fheapbuf; fcap = width + 1;
+            }
+            int n = collect(&E, numbuf, fcap, width, flt_prefix, 0, 0);
+            if (n == 0) { free(fheapbuf); goto out; }
             char *endp;
             /* Same rule as the integer case: "1e" is a prefix of "1e5", so it
              * is consumed and then fails, rather than converting to 1.0. */
-            double dv = strtod(buf, &endp);
-            if (endp != buf + n) goto out;
+            double dv = strtod(numbuf, &endp);
+            if (endp != numbuf + n) { free(fheapbuf); goto out; }
+            free(fheapbuf);
             if (suppress) break;
             if (lmod == 3) *va_arg(ap, long double *) = (long double)dv;
             else if (lmod >= 1) *va_arg(ap, double *) = dv;

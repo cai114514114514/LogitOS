@@ -1118,7 +1118,12 @@ static void handle_video(struct rt_rd *r)
      * with ten live decoders in it would be a memory leak with a play button.
      * Recycling a slot stops the older clip -- its last frame stays on screen
      * because the object keeps its pixels. */
-    int slot = nvid < MAXVID ? nvid++ : (objgen_next % MAXVID);
+    /* A dedicated FIFO cursor: objgen_next is shared with the scroll-object
+     * table, so `objgen_next % MAXVID` alternated by GLOBAL parity and evicted
+     * the newest clip half the time instead of the oldest (2026-09-16 audit). */
+    static int vid_fifo;
+    int slot = nvid < MAXVID ? nvid++ : (vid_fifo % MAXVID);
+    vid_fifo++;
     struct vidobj *v = &vids[slot];
     vid_free(v);
     v->err[0] = 0;
@@ -1400,7 +1405,10 @@ static void handle_audio(struct rt_rd *r)
      * decoder holds a malloc'd copy of the whole file plus its own parser
      * state, and a scrollback with ten of them open would be a leak with a
      * play button. */
-    int slot = naud < MAXAUD ? naud++ : (objgen_next % MAXAUD);
+    /* FIFO cursor here too -- same parity bug as the video table. */
+    static int aud_fifo;
+    int slot = naud < MAXAUD ? naud++ : (aud_fifo % MAXAUD);
+    aud_fifo++;
     struct audobj *a = &auds[slot];
     aud_free(a);
     a->err[0] = 0;

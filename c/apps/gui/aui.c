@@ -2759,7 +2759,13 @@ static void draw_popup(void)
         if (in.ev == EV_KEY) {
             if (in.a == KEY_DOWN)      pop.hi = iclamp(pop.hi + 1, 0, pop.n - 1);
             else if (in.a == KEY_UP)   pop.hi = iclamp(pop.hi - 1, 0, pop.n - 1);
-            else if (in.a == '\n')     { *pop.sel = pop.hi; pop_changed_id = pop.owner; pop.kind = 0; }
+            else if (in.a == '\n')     {
+                /* Nothing highlighted yet: Enter cancels. Writing pop.hi (-1)
+                 * through pop.sel handed the caller an out-of-range index
+                 * (2026-09-16 audit); the iclamp paths above never do. */
+                if (pop.hi >= 0) { *pop.sel = pop.hi; pop_changed_id = pop.owner; }
+                pop.kind = 0;
+            }
             else if (in.a == 27)       pop.kind = 0;     /* Escape: see the note in aui.h */
             in.key_used = 1;
         }

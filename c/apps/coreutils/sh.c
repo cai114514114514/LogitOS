@@ -1027,11 +1027,19 @@ static int wait_foreground(struct job *j)
             sys_close(j->stdin_fd); j->stdin_fd = -1;      /* real EOF for the child */
         }
         if (pend_text_n && j->stdin_fd >= 0) {
-            int n = pend_text_n; pend_text_n = 0;
-            for (int i = 0; i < n; ) {
-                int w = sys_write(j->stdin_fd, pend_text + i, n - i);
+            /* Deliver what fits; KEEP the rest pending for the next pass.
+             * Zeroing pend_text_n up front made a big paste into a child
+             * that is not reading yet silently lose the tail (EAGAIN break)
+             * -- the one drop-shaped direction in a file whose stdout side
+             * always waits instead (2026-09-16 audit). */
+            for (int i = 0; i < pend_text_n; ) {
+                int w = sys_write(j->stdin_fd, pend_text + i, pend_text_n - i);
                 if (w <= 0) break;
                 i += w;
+                if (i == pend_text_n) { pend_text_n = 0; break; }
+                memmove(pend_text, pend_text + i, (size_t)(pend_text_n - i));
+                pend_text_n -= i;
+                i = 0;
             }
         }
         if (!job_running(j)) break;
