@@ -2169,8 +2169,10 @@ static void ctl_send(int type, struct rt_enc *e)
     flush_ctl();
 }
 
-/* Typed characters, batched into one frame per event pump. */
-static char typed[256];
+/* Typed characters, batched into one frame per event pump. Sized to the
+ * clipboard cap: a ^V paste used to silently drop everything past 256 bytes
+ * (2026-09-16 audit). */
+static char typed[4096];
 static int  typed_n;
 static void type_char(char c) { if (typed_n < (int)sizeof typed) typed[typed_n++] = c; }
 

@@ -1177,6 +1177,11 @@ static uint32_t resolve_parent(const char *path, char *leaf)
     if (leaf[0] == '.' && (leaf[1] == 0 || (leaf[1] == '.' && leaf[2] == 0)))
         return NOINO;                                   /* never create/remove "." or ".." entries */
 
+    /* The parent must be the WHOLE prefix, not the first 127 bytes of it:
+     * a silent truncation landed create/delete/rename in a shorter prefix
+     * directory that happened to exist (2026-09-16 audit). Longer than the
+     * fs limit -> refuse, like resolve() above. */
+    if (s >= MAX_PATH) return NOINO;
     char dirpath[MAX_PATH];
     int dl = 0;
     for (int i = 0; i < s && dl < MAX_PATH - 1; i++) dirpath[dl++] = path[i];

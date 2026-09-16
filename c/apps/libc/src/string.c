@@ -276,8 +276,11 @@ char *strerror(int e)
     const char *pre = "Unknown error ";
     size_t n = 0;
     while (pre[n]) { unknown[n] = pre[n]; n++; }
-    int v = e; char t[16]; int k = 0;
-    if (v < 0) { unknown[n++] = '-'; v = -v; }
+    /* Negating INT_MIN is UB: print the magnitude from the unsigned value
+     * instead (2026-09-16 audit). */
+    unsigned v = e < 0 ? (unsigned)-(unsigned)e : (unsigned)e;
+    char t[16]; int k = 0;
+    if (e < 0) unknown[n++] = '-';
     do { t[k++] = (char)('0' + v % 10); v /= 10; } while (v);
     while (k--) unknown[n++] = t[k];
     unknown[n] = 0;

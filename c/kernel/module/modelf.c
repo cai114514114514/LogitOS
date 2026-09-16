@@ -53,6 +53,17 @@ static int m_streq(const char *a, const char *b)
     while (*a && *a == *b) { a++; b++; }
     return *a == *b;
 }
+/* Same compare, but `a` carries no NUL guarantee: it lives inside a string
+ * table of `alen` bytes and must not walk past it (a truncated .ko is
+ * ordinary input for this loader -- 2026-09-16 audit). */
+static int m_streqn(const char *a, uint32_t alen, const char *b)
+{
+    for (uint32_t i = 0; i < alen; i++) {
+        if (b[i] == 0) return a[i] == 0;
+        if (a[i] != b[i]) return 0;
+    }
+    return b[alen] == 0;
+}
 
 /* ------------------------------------------------------------ ELF types -- */
 struct e64_ehdr {
@@ -242,6 +253,12 @@ static int hdrs(const void *img, uint32_t imglen,
             s->sh_offset <= imglen && s->sh_size <= (uint64_t)imglen - s->sh_offset) {
             shstr = (const char *)(base + s->sh_offset);
             shstr_len = (uint32_t)s->sh_size;
+            /* Every consumer treats this as a C string: the spec's mandatory
+             * trailing NUL is validated here rather than trusted, so a
+             * truncated table cannot send the name compares past the image
+             * (2026-09-16 audit). */
+            if (shstr_len == 0 || shstr[shstr_len - 1] != 0)
+                return MOD_E_FORMAT;
         }
     }
 
@@ -383,7 +400,9 @@ int mod_elf_load(const void *img, uint32_t imglen, void *dstv, uint32_t dstlen,
             out->text_off = off[i];
             out->text_size = (uint32_t)sh[i].sh_size;
         }
-        if (m_streq(sec_name(ss, sslen, sh[i].sh_name), "logit_drivers")) {
+        if (m_streqn(sec_name(ss, sslen, sh[i].sh_name),
+                     sslen > sh[i].sh_name ? sslen - sh[i].sh_name : 0,
+                     "logit_drivers")) {
             out->drv_start = dst + off[i];
             out->drv_stop  = dst + off[i] + sh[i].sh_size;
         }
@@ -416,6 +435,10 @@ int mod_elf_load(const void *img, uint32_t imglen, void *dstv, uint32_t dstlen,
         if (strsec < nsec && sh[strsec].sh_type == SHT_STRTAB) {
             strtab = (const char *)(base + sh[strsec].sh_offset);
             strtab_len = (uint32_t)sh[strsec].sh_size;
+            if (strtab_len == 0 || strtab[strtab_len - 1] != 0)
+                return MOD_E_FORMAT;      /* symval()'s names must be NUL-bounded too */
+        } else {
+            return MOD_E_FORMAT;          /* no symbol string table, no names */
         }
 
         const struct e64_rela *ra = (const struct e64_rela *)(base + sh[i].sh_offset);

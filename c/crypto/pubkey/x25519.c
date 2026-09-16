@@ -1,4 +1,6 @@
 #include "crypto.h"
+#include <stddef.h>
+void *memset(void *, int, size_t);
 
 /* Curve25519 field arithmetic mod p = 2^255 - 19, represented as 5 limbs of
  * 51 bits in uint64_t (standard radix-2^51 representation). RFC 7748. */
@@ -145,6 +147,11 @@ void x25519(uint8_t out[32], const uint8_t scalar[32], const uint8_t point[32])
     cswap(swap,x2,x3); cswap(swap,z2,z3);
     fe_invert(z2,z2); fe_mul(x2,x2,z2);
     fe_tobytes(out, x2);
+    /* The clamped scalar IS the private key and the ladder carries
+     * secret-derived state; both are secret-derived key material left on the
+     * stack after return (2026-09-16 audit). Same discipline as mlkem. */
+    memset(e, 0, sizeof e);
+    for (int i=0;i<10;i++) { x2[i]=0; z2[i]=0; x3[i]=0; z3[i]=0; tmp0[i]=0; tmp1[i]=0; }
 }
 
 void x25519_base(uint8_t out[32], const uint8_t scalar[32])

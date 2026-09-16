@@ -96,6 +96,8 @@ int reasm_input(uint32_t src, uint32_t dst, uint8_t proto, uint16_t id,
     }
 
     if (s->have_last && s->rcvd == s->total) {
+        if (s->total > 0xFFFF) return 0;   /* 65536 wraps the u16 l4len to 0
+                                              (2026-09-16 audit) */
         out->iph = s->hdr;
         out->l4 = s->data;
         out->l4len = (uint16_t)s->total;

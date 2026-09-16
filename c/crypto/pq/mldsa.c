@@ -612,6 +612,7 @@ void mldsa_keygen_internal(const mldsa_params *p, const uint8_t xi[32],
 
     wipe(rho_prime, sizeof rho_prime);
     wipe(s1, sizeof s1); wipe(s2, sizeof s2); wipe(s1_hat, sizeof s1_hat);
+    wipe(t0, sizeof t0);   /* t0 is part of the secret key (2026-09-16 audit) */
 }
 
 /* --------------------------------------------------------------- Sign */
@@ -688,7 +689,8 @@ int mldsa_sign_internal(const mldsa_params *p, const uint8_t *sk,
              * refuse. See MLDSA_CTL_WEAK_ZBOUND below and the file header. */
             if (poly_norm_ge(&z[i], p->gamma1 - p->beta)) reject = 1;
         }
-        if (reject) continue;
+        if (reject) { wipe(y, sizeof y); wipe(y_hat, sizeof y_hat); continue; }
+        if (reject) { wipe(y, sizeof y); wipe(y_hat, sizeof y_hat); continue; }
 
         poly h[MLDSA_K_MAX];
         int total_hint = 0;
@@ -714,17 +716,18 @@ int mldsa_sign_internal(const mldsa_params *p, const uint8_t *sk,
             poly_make_hint(&h[i], &low, &low_plus_ct0, alpha);
             total_hint += sum_hint(&h[i]);
         }
-        if (reject) continue;
-        if (total_hint > p->omega) continue;
+        if (reject) { wipe(y, sizeof y); wipe(y_hat, sizeof y_hat); continue; }
+        if (total_hint > p->omega) { wipe(y, sizeof y); wipe(y_hat, sizeof y_hat); continue; }
 
         cp(sig, c_tilde, (size_t)p->c_tilde_bytes);
         for (int i = 0; i < p->l; i++) pack_z(sig + p->c_tilde_bytes + i * zb, &z[i], p->gamma1);
         pack_h(sig + p->c_tilde_bytes + p->l * zb, h, p->k, p->omega);
 
-        wipe(s1_hat, sizeof s1_hat); wipe(s2_hat, sizeof s2_hat); wipe(rho_prime, sizeof rho_prime);
+        wipe(y, sizeof y); wipe(y_hat, sizeof y_hat);   /* mask dies with the sig */
+        wipe(s1_hat, sizeof s1_hat); wipe(s2_hat, sizeof s2_hat); wipe(t0_hat, sizeof t0_hat); wipe(rho_prime, sizeof rho_prime);
         return 0;
     }
-    wipe(s1_hat, sizeof s1_hat); wipe(s2_hat, sizeof s2_hat); wipe(rho_prime, sizeof rho_prime);
+    wipe(s1_hat, sizeof s1_hat); wipe(s2_hat, sizeof s2_hat); wipe(t0_hat, sizeof t0_hat); wipe(rho_prime, sizeof rho_prime);
     return -1;
 }
 

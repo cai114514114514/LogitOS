@@ -259,7 +259,15 @@ static long do_attach(int pid)
     if (!me) return PT_E_PERM;
     if (pid == me->pid) return PT_E_PERM;        /* no self-tracing            */
     if (pid <= 1) return PT_E_PERM;              /* not init                   */
-    if (!proc_exists(pid)) return PT_E_SRCH;
+    /* A zombie passes proc_exists() but can never take the SIGSTOP the wait
+     * loop below arms -- the tracer used to spin the full 2 s and then get
+     * PT_E_TIMEOUT, a code that means "alive but won't stop". SRCH is the
+     * honest answer (2026-09-16 audit). */
+    {
+        struct proc st;
+        if (!proc_snapshot(pid, &st) || st.state != PROC_RUNNING)
+            return PT_E_SRCH;
+    }
     if (!may_attach(me->pid, pid)) return PT_E_PERM;
 
     uint64_t f = spin_lock_irqsave(&g_pt_lock);

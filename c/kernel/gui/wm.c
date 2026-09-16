@@ -2823,7 +2823,11 @@ static long wm_gui_dispatch(long num, long a, long b, long c)
     case SYS_FILE_COUNT:
         return vfs_count("/");
     case SYS_FILE_NAME: {
+        /* Dead today -- syscall.c owns this number -- but kept correct: the
+         * live twin checks the index, and scopy() does not tolerate NULL
+         * (2026-09-16 audit). */
         int i = (int)a;
+        if (i < 0 || i >= vfs_count("/")) return -1;
         if ((int)c <= 0 || !user_range_ok((void *)b, (uint64_t)(int)c, 1)) return -1;
         char name[256];
         int cap = (int)c < (int)sizeof name ? (int)c : (int)sizeof name;

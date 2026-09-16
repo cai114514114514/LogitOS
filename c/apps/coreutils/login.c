@@ -348,7 +348,9 @@ int main(int argc, char **argv)
         char name[ACCT_NAME];
         int n = readline(0, name, sizeof name);
         if (n < 0) return 1;
-        if (n == 0) { tries--; continue; }
+        if (n == 0) continue;   /* an empty name must not refund a try:
+                                   a serial script could loop forever
+                                   (2026-09-16 audit) */
 
         char pw[PWMAX];
         if (read_secret("Password: ", pw, sizeof pw) < 0) return 1;

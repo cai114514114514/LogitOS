@@ -96,7 +96,7 @@ static uint32_t lookup1_values(uint32_t entries, int dim)
         }
         if (p > (double)entries) return r;
         r = next;
-        if (r > 65535) return r;
+        if (r > 65535) return 65535;   /* clamp, not a wrong smaller value */
     }
 }
 

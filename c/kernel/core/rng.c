@@ -113,6 +113,11 @@ static int rng_gather(uint64_t *buf)
             else break;
         }
         if (got) buf[n++] = v;
+        /* The flag said hardware entropy exists but every retry failed:
+         * say so once per gather, or a silently weakened epoch is
+         * indistinguishable from a healthy one (2026-09-16 audit). */
+        if (!got && (has_rdseed || has_rdrand))
+            kprintf("[rng] WARN: hardware entropy retries exhausted\n");
     }
     buf[n++] = rdtsc();
     buf[n++] = timer_ticks();

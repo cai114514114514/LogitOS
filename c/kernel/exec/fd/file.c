@@ -207,6 +207,10 @@ struct pipe {
 static long pipe_read(struct file *f, void *vbuf, long len)
 {
     if (!len) return 0;
+    /* Direction is a maintained property of the descriptor (file.h), and
+     * file_poll already answers by it: honour it here too instead of letting
+     * a read end drain the writer's queue (2026-09-16 audit). */
+    if (f->is_write) return -1;
     struct pipe *p = f->backing;
     uint64_t fl = spin_lock_irqsave(&p->wq.lock);
     while (p->count == 0 && p->writers && !ksig_interrupted()) {
@@ -231,6 +235,7 @@ static long pipe_read(struct file *f, void *vbuf, long len)
 }
 static long pipe_write(struct file *f, const void *vbuf, long len)
 {
+    if (!f->is_write) return -1;      /* reading through the write end (see pipe_read) */
     struct pipe *p = f->backing;
     const char *in = vbuf;
     long n = 0;

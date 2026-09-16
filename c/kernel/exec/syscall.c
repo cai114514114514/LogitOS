@@ -561,9 +561,19 @@ static void syscall_do(struct registers *r, const void *user_fxarea)
         if (!p || max < 0 || user_copy_string(name, sizeof name, (const char *)r->rdi) < 0) { r->rax = (uint64_t)-1; return; }
         if (max > 0 && !user_range_ok((void *)r->rsi, (uint64_t)max, 1)) { r->rax = (uint64_t)-1; return; }
         proc_resolve(p, name, abs, sizeof abs);
-        SYSCALL_BUF(tmp, max);
+        /* Size first: `max` is caller-controlled and a huge value used to
+         * force a ~2 GiB contiguous allocation attempt (full PMM scan + an
+         * [oom] line per call) for bytes vfs_read would never return
+         * (2026-09-16 audit). The dead wm.c twin did this in the right
+         * order. */
+        long fsize = vfs_size(abs);
+        if (fsize < 0) { r->rax = (uint64_t)-1; return; }
+        long want = max;
+        if (want > SYSCALL_IO_MAX) want = SYSCALL_IO_MAX;
+        if (want > fsize) want = fsize;
+        SYSCALL_BUF(tmp, want);
         if (!tmp) { r->rax = (uint64_t)-1; return; }
-        long got = vfs_read(abs, tmp, max);
+        long got = vfs_read(abs, tmp, want);
         if (got > 0 && user_copy_to((void *)r->rsi, tmp, (uint64_t)got) < 0) got = -1;
         r->rax = (uint64_t)got;
         return;

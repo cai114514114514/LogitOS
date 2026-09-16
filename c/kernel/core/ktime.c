@@ -708,21 +708,37 @@ void ktimer_run(uint64_t now_ns)
 
 #define CPUACC_MAX 64
 
-struct cpuacc { int pid; uint64_t user_ns, sys_ns; };
+struct cpuacc { int pid; uint64_t user_ns, sys_ns; uint64_t last_touched; };
 static struct cpuacc g_acc[CPUACC_MAX];
 static uint64_t g_acc_total, g_acc_idle;
 static uint64_t g_acc_last_ns;
 
+static unsigned acc_clock;
+
 static struct cpuacc *acc_slot(int pid, int create)
 {
-    int free_i = -1;
+    /* LRU eviction: without it the 65th distinct pid had its whole CPU time
+     * folded into g_acc_idle and SYS_RUSAGE returned -1 for it, silently
+     * (2026-09-16 audit). A recycled slot loses its old counters -- an
+     * accepted gap, bounded and visible in the pid change itself. */
+    int free_i = -1, lru_i = -1;
     for (int i = 0; i < CPUACC_MAX; i++) {
-        if (g_acc[i].pid == pid) return &g_acc[i];
+        if (g_acc[i].pid == pid) {
+            g_acc[i].last_touched = ++acc_clock;
+            return &g_acc[i];
+        }
         if (free_i < 0 && g_acc[i].pid == 0) free_i = i;
     }
-    if (!create || free_i < 0) return 0;
+    if (!create) return 0;
+    if (free_i < 0) {
+        for (int i = 0; i < CPUACC_MAX; i++)
+            if (lru_i < 0 || g_acc[i].last_touched < g_acc[lru_i].last_touched)
+                lru_i = i;
+        free_i = lru_i;
+    }
     g_acc[free_i].pid = pid;
     g_acc[free_i].user_ns = g_acc[free_i].sys_ns = 0;
+    g_acc[free_i].last_touched = ++acc_clock;
     return &g_acc[free_i];
 }
 

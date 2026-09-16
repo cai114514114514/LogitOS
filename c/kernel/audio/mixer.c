@@ -515,7 +515,7 @@ void snd_report(void)
             g_dev->period_bytes / (g_dev->channels * 2u),
             (g_dev->period_bytes / (g_dev->channels * 2u)) * 1000u / g_dev->rate,
             g_dev->periods,
-            (g_dev->period_bytes / (g_dev->channels * 2u)) * 1000u * g_dev->periods / g_dev->rate,
+            (unsigned)((uint64_t)(g_dev->period_bytes / (g_dev->channels * 2u)) * 1000u * g_dev->periods / g_dev->rate),
             g_dev->irq_mode == 3 ? "msix" : g_dev->irq_mode == 2 ? "msi"
           : g_dev->irq_mode == 1 ? "intx" : "polled");
     snd_cap_report();

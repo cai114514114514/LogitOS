@@ -443,7 +443,7 @@ void snd_cap_report(void)
             g_capdev->period_bytes / (g_capdev->channels * 2u),
             (g_capdev->period_bytes / (g_capdev->channels * 2u)) * 1000u / g_capdev->rate,
             g_capdev->periods,
-            (g_capdev->period_bytes / (g_capdev->channels * 2u)) * 1000u * g_capdev->periods / g_capdev->rate,
+            (unsigned)((uint64_t)(g_capdev->period_bytes / (g_capdev->channels * 2u)) * 1000u * g_capdev->periods / g_capdev->rate),
             g_capdev->irq_mode == 3 ? "msix" : g_capdev->irq_mode == 2 ? "msi"
           : g_capdev->irq_mode == 1 ? "intx" : "polled");
 }

@@ -815,7 +815,9 @@ entry_points:
             return H265_ERR_CORRUPT;
         if (sl->num_entry_points > 0) {
             int len = (int)bs_ue(bs) + 1;
-            if (len < 1 || len > 32) return H265_ERR_CORRUPT;
+            /* len 32 lets an all-ones field read as 0xFFFFFFFF, and +1 wraps
+             * it back to 0 (2026-09-16 audit). */
+            if (len < 1 || len > 31) return H265_ERR_CORRUPT;
             for (int i = 0; i < sl->num_entry_points; i++)
                 sl->entry_point_offset[i] = bs_u(bs, len) + 1;
         }

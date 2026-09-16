@@ -115,13 +115,16 @@ static const char *op_name(int op)
 static Ev eval_expr(Ex *x, AtNode *n);
 static int eval_stmts(Ex *x, AtNode *n);
 
-static Ev eval_string(AtNode *n)
+static Ev eval_string(Ex *x, AtNode *n)
 {
     int bytes = as_token_decode(n->token, NULL);
     char *s = malloc((size_t)bytes + 1);
     if (!s) {
-        Ev v = {0};
-        return v;
+        /* OOM used to return a silent zero-Ev, which print() rendered as
+         * the string "None" -- a wrong answer instead of a refusal
+         * (2026-09-16 audit). */
+        fail(x, "MemoryError", "string literal");
+        return (Ev){0};
     }
     as_token_decode(n->token, s);
     s[bytes] = 0;
@@ -313,7 +316,7 @@ static Ev eval_expr(Ex *x, AtNode *n)
         return v;
     }
     if (n->kind == AN_STR) {
-        return eval_string(n);
+        return eval_string(x, n);
     }
     if (n->kind == AN_NONE) {
         return v;

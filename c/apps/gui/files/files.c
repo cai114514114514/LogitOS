@@ -437,7 +437,8 @@ static void do_paste(void)
         pjoin(dst, cwd, leaf, PMAX);
         if (path_under(clip[i], dst)) continue;
         if (clip_cut) sys_rename(clip[i], dst);
-        else          copy_tree(clip[i], dst, 0);
+        else if (copy_tree(clip[i], dst, 0) < 0)
+            fprintf(stderr, "files: paste failed for %s\n", clip[i]);
     }
     if (clip_cut) clip_count = 0;
     sel_clear();
