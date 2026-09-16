@@ -1106,6 +1106,13 @@ static void take_sack(struct tcp_conn *c, const struct tcp_opts *o)
 static void conn_closed(struct tcp_conn *c)
 {
     c->state = CLOSED;
+    /* Unacked data can never be acknowledged now: stop the RTO and persist
+     * timers instead of retransmitting into a dead path until the slot is
+     * reaped (up to ~3 minutes of RST-provoking traffic). Slot retention
+     * itself is unchanged -- see the backlog ownership notes below.
+     * (2026-09-16 audit, docs/bugs/04-net.md.) */
+    rtx_stop(c);
+    c->persist_running = 0;
     /* A connection sitting in an accept backlog KEEPS ITS SLOT. The queue holds
      * a bare index, so freeing the slot here would let the next tcp_connect()
      * reuse it and accept() would then hand the application somebody else's
@@ -1727,7 +1734,12 @@ void tcp_poll(void)
             c->rto = rto * 2;                   /* RFC 6298 §5.5 backoff */
             if (c->rto > RTO_MAX) c->rto = RTO_MAX;
             c->rtt_pending = 0;                 /* Karn */
-            if (c->state == SYN_SENT) {
+            if (c->state == CLOSED) {
+                /* conn_closed/tcp_error stop the timers at the transition;
+                 * this guard keeps a CLOSED connection out of retransmit_head
+                 * even if one raced in. */
+                c->rtx_tick = now;
+            } else if (c->state == SYN_SENT) {
                 send_seg(c, SYN, c->snd_una, 0);
                 c->n_rexmit++;
             } else if (c->state == SYN_RCVD) {
@@ -2401,6 +2413,9 @@ void tcp_error(uint16_t lport, uint32_t rip, uint16_t rport, int type, int code)
         return;
     int was_syn_sent = (c->state == SYN_SENT);
     c->state = CLOSED;
+    /* Same timer reasoning as conn_closed: dead path, nothing to acknowledge. */
+    rtx_stop(c);
+    c->persist_running = 0;
     /* Keep used=1 so a blocked tcp_recv() reports the failure and frees the
      * slot (same convention as the FIN_WAIT -> CLOSED path). In SYN_SENT
      * there is no reader to notify; free now so tcp_connect() fails fast
