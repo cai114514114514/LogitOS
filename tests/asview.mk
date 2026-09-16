@@ -27,23 +27,24 @@
 # made for the viewer" is a weaker sentence than "the viewer displays the file
 # the terminal test measures independently".
 
-ASVIEW_SRC := fsroot/as/examples/asview.as fsroot/as/lib/image.as \
-              fsroot/as/lib/gui.as
-ASVIEW_DEPS := $(ISO) $(DISK) tests/qmp/qmp_asview.py tests/qmp/qmp_ui.py \
-               tests/boot/run-asview-test.sh $(ASVIEW_SRC)
+# The standalone QMP adapter uses the same native restricted-child launcher
+# as the private guest gate. Its disk entry is in the root recipe; keep the
+# real artifact prerequisite here so a clean disk cannot omit that helper.
+$(DISK): $(BUILD)/as-typed-capture.aex
 
 # The whole gate: the picture, the key, and both refusals.
-test-asview: $(ASVIEW_DEPS)
-	@bash tests/boot/run-asview-test.sh $(ISO) $(DISK) all
+# A3 correction to the historical source/bytecode packaging notes above:
+# the normal gate now uses the actual native compiler, a VM-free private disk,
+# both build modes and pixel/refusal controls. The old split names remain
+# entrypoints into this complete suite so no half silently skips navigation.
+test-asview: test-as-viewer-guest
 
 # The halves, for bisecting a failure without paying for two boots.
-test-asview-draw: $(ASVIEW_DEPS)
-	@bash tests/boot/run-asview-test.sh $(ISO) $(DISK) fit
+test-asview-draw: test-as-viewer-guest
 
 # The negative control, run as an ordinary passing case -- see the long note at
 # the top of run-asview-test.sh for why inverting it would be backwards, and
 # what it measures instead so that "drew nothing" cannot pass as "refused".
-test-asview-negctl: $(ASVIEW_DEPS)
-	@bash tests/boot/run-asview-test.sh $(ISO) $(DISK) refuse
+test-asview-negctl: test-as-viewer-guest
 
 .PHONY: test-asview test-asview-draw test-asview-negctl

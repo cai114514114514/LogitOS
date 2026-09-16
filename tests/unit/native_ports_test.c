@@ -57,6 +57,29 @@ int main(void)
     run(b,"var unstarted=new MessageChannel(),started=[];unstarted.port2.addEventListener('message',e=>started.push(e.data));unstarted.port1.postMessage(1);");
     ck(!js_ports_pending(b),"addEventListener alone does not start a port");
     run(b,"unstarted.port2.start()");drain(b);expect(b,"started[0]===1","start enables pending message delivery");
+    /* A port can carry application buffers larger than an IPC control record.
+     * Verify bytes after asynchronous delivery, not just a successful enqueue.
+     * Refusals must leave transferable ownership intact and release quota. */
+    run(a,"var bulk=new MessageChannel(),bulkSeen=0,bulkOK=true;bulk.port2.onmessage=e=>{var v=new Uint8Array(e.data);bulkSeen=v.length===262144&&v[0]===17&&v[v.length-1]===93};var bytes=new Uint8Array(262144);bytes[0]=17;bytes[bytes.length-1]=93;try{bulk.port1.postMessage(bytes.buffer)}catch(e){bulkOK=false}");
+    expect(a,"bulkOK&&!bulkSeen","large port message accepted without synchronous dispatch");
+    drain(a);expect(a,"bulkSeen","large port message preserves complete buffer bytes");
+    run(a,"var over=new MessageChannel(),overSeen=0,overName='';over.port1.onmessage=e=>overSeen=e.data;try{bulk.port1.postMessage(new ArrayBuffer(2097152),[over.port2])}catch(e){overName=e.name}over.port2.postMessage(123)");
+    drain(a);expect(a,"overName==='QuotaExceededError'&&overSeen===123","oversized message refusal preserves transferred endpoint ownership");
+    struct js_port_packet *held[16]={0};int held_n=0,quota=0;
+    for(;held_n<16;held_n++){
+        held[held_n]=packet(a,"new ArrayBuffer(700*1024)","undefined");
+        if(!held[held_n]){
+            JSValue ex=JS_GetException(a),name=JS_GetPropertyStr(a,ex,"name");
+            const char *s=JS_ToCString(a,name);quota=s&&!strcmp(s,"QuotaExceededError");
+            if(s)JS_FreeCString(a,s);JS_FreeValue(a,name);JS_FreeValue(a,ex);break;
+        }
+    }
+    ck(held_n>1&&held_n<16&&quota,"aggregate port byte budget remains bounded");
+    for(int i=0;i<held_n;i++)js_ports_discard(held[i]);
+    p=packet(a,"new ArrayBuffer(700*1024)","undefined");
+    ck(p!=NULL,"discarding queued packets releases aggregate byte quota");
+    if(!p)JS_FreeValue(a,JS_GetException(a));js_ports_discard(p);
+    run(a,"bulk.port1.close();bulk.port2.close();over.port1.close();over.port2.close()");
     run(a,"x.port1.postMessage({n:9})");js_ports_close(b);
     ck(!js_ports_pending(b),"closing receiving realm discards its pending port work");
     run(a,"x.port1.postMessage({n:10})");ck(!js_ports_pending(a),"surviving peer does not retain a closed realm");

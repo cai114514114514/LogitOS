@@ -1,10 +1,25 @@
-# S1 harness driver: dump tokens from the self-hosted lexer in the same
-# "type line len checksum" format as `asc -lex`.
-from aslex import lex
-src = file_read(args()[1])
-for t in lex(src):
-    s = 0
-    txt = t[1]
-    for k in range(len(txt)):
-        s = (s + ord(txt[k])) % 9973
-    print(f"{t[0]} {t[2]} {len(txt)} {s}")
+# aether: 3.0
+# The original S1 tool now runs as native A3. Keep its four-column output so
+# callers can compare it with the independent C frontend's `as -lex` stream.
+# The lexer's public token sequence uses explicit Any fields; casts validate
+# that interface instead of relying on the retired VM's implicit conversions.
+from std.aslex import lex
+
+def main() -> i64:
+    arguments = args()
+    if len(arguments) != 2:
+        print("usage: aslexdump SOURCE")
+        return 2
+    # Keep only the source bytes after leaving this scope. Tokenization and
+    # later GC must not keep a file descriptor alive for the whole tool run.
+    with file = open(arguments[1]):
+        source = file.readall().decode()
+    for token in lex(source):
+        checksum = 0
+        text = cast[str](token[1])
+        for index in range(len(text)):
+            checksum = (checksum + ord(text[index])) % 9973
+        kind = cast[i64](token[0])
+        line = cast[i64](token[2])
+        print(f"{kind} {line} {len(text)} {checksum}")
+    return 0

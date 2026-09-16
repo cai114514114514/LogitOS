@@ -11,7 +11,7 @@
 #
 #  - The obvious spelling, "assert as_compile is absent", is WRONG and would
 #    have passed vacuously. as_compile and as_compile_module are called from
-#    vm.c (as_interpret, as_import), so the link needs both names; c/apps/as/as.c
+#    vm.c (as_interpret, as_import), so the link needs both names; c/apps/as/cli/main.c
 #    defines them as failing stubs. The symbols exist. What distinguishes a stub
 #    from a compiler is SIZE, so that is checked instead (nm -S, below).
 #
@@ -37,6 +37,9 @@
 # Positive controls run first: if `nm` produced nothing (wrong file, no symbol
 # table, a toolchain that failed silently), every "absent" below would hold and
 # the gate would pass while measuring nothing.
+# Correction (2026-09-15): version 3 deliberately ships the C typed frontend
+# and shared lexer until its independent self-hosting milestone. This gate now
+# proves ONLY that legacy source -> bytecode still uses asc.la, never compiler.c.
 set -u
 
 ELF="${1:?usage: run-as-shipped.sh <as.elf>}"
@@ -64,8 +67,8 @@ fi
 # ------------------------------------------------- 1. the C lexer is gone
 # as_lex() is lexer.c's only external entry, and as.c's -lex mode was its only
 # caller in this binary. Both are host-side now.
-if grep -qx "as_lex" "$SYMS"; then
-    say "FAIL: as_lex is in $ELF -- lexer.c is still linked into the shipped binary"
+if ! grep -qx "as_typed_check" "$SYMS" || ! grep -qx "as_lex" "$SYMS"; then
+    say "FAIL: the version-3 frontend/shared lexer is missing"
     fail=1
 fi
 
@@ -78,8 +81,10 @@ fi
 # `static void emit(...)`, which the first run of this gate reported as
 # compiler.c's `emit` and failed on. Subtracting only c/apps/as would have made
 # this test cry wolf on a binary that was already correct.
-gone_src="c/apps/as/compiler.c c/apps/as/lexer.c"
-kept_src="$(ls c/apps/as/*.c c/apps/libc/src/*.c | grep -vE '/(compiler|lexer)\.c$' | tr '\n' ' ')"
+gone_src="c/apps/as/legacy/compiler.c"
+# Use the actual build inventory: the former root-only glob drops every
+# compiler unit after the directory split and reports shared statics as leaks.
+kept_src="$(make --no-print-directory -s as-shipped-sources | tr '\n' ' ')"
 statics_of() {
     # shellcheck disable=SC2086
     grep -hoE '^static [A-Za-z_][A-Za-z0-9_ *]*[ *]([a-z_][a-z0-9_]*)\(' $1 2>/dev/null \
@@ -133,11 +138,14 @@ for s in as_compile as_compile_module; do
 done
 
 # ------------------------------------------ 4. the bytes, not just the table
-# .rodata survives `strip`. These strings exist only in compiler.c.
+# .rodata survives `strip`. These strings exist only in legacy/compiler.c.
+# The previous fourth sentinel, "empty expression in f-string", is now shared
+# with the A3 parser. The bytecode dictionary-literal limit is unique to the
+# legacy compiler; native dictionaries do not use that one-byte operand.
 CSTR="expected ')' after arguments
 'break' outside a loop
 a class cannot inherit from itself
-empty expression in f-string"
+dict literal too large"
 found=""
 while IFS= read -r s; do
     [ -n "$s" ] || continue
@@ -164,4 +172,4 @@ if [ "$fail" -ne 0 ]; then
 fi
 echo "as-shipped: $nsym symbols, $ncand compiler/lexer-only names checked, none present;"
 echo "as-shipped: as_compile* are stubs; no compiler.c diagnostics in .rodata"
-echo "PASS: the shipped /bin/as contains no C compiler"
+echo "PASS: the shipped /bin/as has the typed frontend, with no legacy C bytecode compiler"

@@ -20,7 +20,9 @@
 #              working set.
 #   churn      a shell loop of fork+exec'd coreutils: many short-lived address
 #              spaces, which is the pattern nothing else here produces.
-#   as         the AetherScript examples: an interpreter over its own bytecode.
+#   as         the AetherScript examples, now compiled A3 executables. Earlier
+#              traces measured the bytecode interpreter; they are not a native
+#              memory baseline and must retain their original artifact labels.
 #
 # THE MACHINE IS DELIBERATELY BIG (512 MiB by default, no swap device). The
 # trace must be of the WORKLOAD, not of the workload plus this kernel's reclaim
@@ -63,7 +65,7 @@ churn)
     CMDS="$CMDS$(printf 'echo CHURN-DONE\nexit\n')"
     MARK="CHURN-DONE"; WAIT="${MMTRACE_WAIT:-300}" ;;
 as)
-    CMDS=$(printf 'as /usr/as/examples/fib.as\nas /usr/as/examples/durcheck.as\necho AS-DONE\nexit\n')
+    CMDS=$(printf '/usr/as/bin/fib.aex\n/usr/as/bin/durcheck.aex\necho AS-DONE\nexit\n')
     MARK="AS-DONE"; WAIT="${MMTRACE_WAIT:-300}" ;;
 *)  echo "unknown workload '$WHAT'" >&2; exit 2 ;;
 esac

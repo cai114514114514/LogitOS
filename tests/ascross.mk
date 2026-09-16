@@ -14,7 +14,7 @@
 
 .PHONY: test-as-crosscheck test-as-crosscheck-negctl
 
-test-as-crosscheck: check-asops check-abi $(BUILD)/asc
+test-as-crosscheck: check-abi $(BUILD)/asc
 	@bash tests/unit/run-as-crosscheck.sh $(BUILD)/asc
 
 # NEGATIVE CONTROL. A gate nobody has watched fail is a gate nobody knows the
@@ -32,7 +32,7 @@ test-as-crosscheck: check-asops check-abi $(BUILD)/asc
 # The scratch copy lives in $(BUILD) and is deleted before and after; nothing
 # under fsroot/ is touched, so a Ctrl-C here cannot leave a drifted compiler
 # behind.
-test-as-crosscheck-negctl: check-asops check-abi $(BUILD)/asc
+test-as-crosscheck-negctl: check-abi $(BUILD)/asc
 	@rm -rf $(BUILD)/ascross-perturb
 	@mkdir -p $(BUILD)/ascross-perturb
 	@cp fsroot/as/lib/*.as $(BUILD)/ascross-perturb/

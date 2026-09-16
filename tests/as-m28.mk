@@ -44,7 +44,7 @@ AS_CAP_SRC := tests/unit/as_cap_test.c
 # 64 x 64 ordered (held, requested) pairs -- rather than a handful of hand-picked
 # ones, so there is no interesting case left to have overlooked, plus the prefix
 # boundary cases where a substring test would let scope("/usr") reach "/usrx".
-test-as-cap: check-asops check-abi
+test-as-cap: check-abi
 	@mkdir -p $(BUILD)
 	@$(CC) -O2 -Wall -Wextra -o $(BUILD)/as_cap_test $(AS_CAP_SRC) $(AS_CORE) \
 	    -Ic/apps/as -Iinclude/abi
@@ -59,7 +59,7 @@ test-as-cap: check-asops check-abi
 # break, and it is why the positive gate runs twice.
 
 define AS_M28_NEGCTL
-test-as-$(1)-negctl: check-asops check-abi
+test-as-$(1)-negctl: check-abi
 	@mkdir -p $$(BUILD)
 	@$$(CC) -O2 -w -D$(2) -o $$(BUILD)/as_cap_$(1)_negctl $$(AS_CAP_SRC) $$(AS_CORE) \
 	    -Ic/apps/as -Iinclude/abi
@@ -93,8 +93,10 @@ $(eval $(call AS_M28_NEGCTL,cap,AS_CAP_NO_CHECK,the capability check))
 # It is here rather than in a branch because the harness is the deliverable: the
 # moment the kernel builds, this runs, and nobody has to reconstruct what the
 # on-device assertion was supposed to be.
-test-as-cap-os: $(ISO) $(DISK)
-	@bash tests/boot/run-as-cap-test.sh $(ISO) $(DISK)
+# A3 correction: the normal gate cross-compiles the original example and
+# checks three real kernel grants in each build mode. The standalone shell
+# entry still accepts an existing ISO/disk and validates its installed AEX.
+test-as-cap-os: test-as-capcheck-guest
 
 # Everything M28 can currently prove, in one target.
 test-as-m28: test-as-cap test-as-region-negctl test-as-cap-negctl

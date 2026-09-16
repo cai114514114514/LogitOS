@@ -36,7 +36,7 @@ set -u
 ISO="${1:?usage: run-durability-test.sh <iso> <disk.img>}"
 DISK="${2:?usage: run-durability-test.sh <iso> <disk.img>}"
 QEMU="${QEMU:-qemu-system-x86_64}"
-DC=/usr/as/examples/durcheck.as
+DC=/usr/as/bin/durcheck.aex
 
 WORK="$(mktemp -d)"
 DISKC="$WORK/disk.img"
@@ -94,23 +94,23 @@ verify_all() {   # $1 = log, $2 = which boot
     grep -aq "DURCHECK-OK /dur/mid.bin"   "$1" || fail "boot $2: /dur/mid.bin (single-indirect) did not verify"
 }
 
-VERIFY="as $DC verify /dur/tiny.bin tiny
-as $DC verify /dur/small.bin small
-as $DC verify /dur/mid.bin mid
+VERIFY="$DC verify /dur/tiny.bin tiny
+$DC verify /dur/small.bin small
+$DC verify /dur/mid.bin mid
 "
 
 # ---- boot 1: write ----------------------------------------------------------
 boot "mkdir /dur
-as $DC write /dur/tiny.bin tiny
-as $DC write /dur/small.bin small
-as $DC write /dur/mid.bin mid
+$DC write /dur/tiny.bin tiny
+$DC write /dur/small.bin small
+$DC write /dur/mid.bin mid
 ${VERIFY}echo BOOT1-DONE
 " "$WORK/b1.log" 10
 grep -aq "BOOT1-DONE" "$WORK/b1.log" || fail "boot 1 never finished its commands"
 verify_all "$WORK/b1.log" "1 (before any reboot -- the writes themselves are wrong)"
 
 # ---- boot 2: verify across the first reboot, then churn ---------------------
-boot "${VERIFY}as $DC churn /dur
+boot "${VERIFY}$DC churn /dur
 echo BOOT2-DONE
 " "$WORK/b2.log" 10
 grep -aq "BOOT2-DONE" "$WORK/b2.log" || fail "boot 2 never finished its commands"
@@ -118,7 +118,7 @@ verify_all "$WORK/b2.log" 2
 grep -aq "DURCHECK-CHURN-DONE" "$WORK/b2.log" || fail "boot 2: churn did not complete"
 
 # ---- boot 3: verify after churn, churn again --------------------------------
-boot "${VERIFY}as $DC churn /dur
+boot "${VERIFY}$DC churn /dur
 echo BOOT3-DONE
 " "$WORK/b3.log" 10
 grep -aq "BOOT3-DONE" "$WORK/b3.log" || fail "boot 3 never finished its commands"

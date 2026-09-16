@@ -1,19 +1,43 @@
 #!/usr/bin/env bash
-# M21-P3 S1 gate: the AetherScript lexer (lib/aslex.as) must produce a token
-# stream identical to the C lexer over the whole in-tree .as corpus.
-set -u
-ASC="${1:?usage: run-selfhost-lex.sh <asc>}"
+# S1 gate: compile the real token-dump tool as A3, then compare its output with
+# the independent C frontend over the entire shipped library/example corpus.
+# Previously this copied compat2/aslex.lacache and executed the A2 VM. That
+# fallback is gone here; a native build failure must fail the tool's gate.
+# test-as-lexer-lib additionally compares complete token bytes under ASan.
+set -eu
+INPUT="${1:?usage: run-selfhost-lex.sh <asc>}"
+ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+ASC="$(cd "$(dirname "$INPUT")" && pwd)/$(basename "$INPUT")"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
-cp fsroot/as/lib/aslex.as "$TMP/aslex.as"
-cp tests/unit/aslexdump.as "$TMP/aslexdump.as"
-pass=0; fail=0
-for f in fsroot/as/lib/*.as fsroot/as/examples/*.as; do
-    "$ASC" -lex "$f" > "$TMP/c.out" 2>/dev/null || { echo "SKIP (C lex error) $f"; continue; }
-    ( cd "$TMP" && "$OLDPWD/$ASC" aslexdump.as "$OLDPWD/$f" > as.out 2>err.txt ) \
-        || { echo "FAIL (as error) $f: $(cat "$TMP/err.txt")"; fail=$((fail+1)); continue; }
-    if cmp -s "$TMP/c.out" "$TMP/as.out"; then pass=$((pass+1));
-    else echo "FAIL (mismatch) $f"; diff "$TMP/c.out" "$TMP/as.out" | head -5; fail=$((fail+1)); fi
+pass=0
+fail=0
+for mode in debug release; do
+    options=()
+    if [ "$mode" = debug ]; then options=(--debug); fi
+    # Empty arrays need this expansion on macOS's Bash 3.2 with set -u.
+    "$ASC" build "$ROOT/tests/unit/aslexdump.as" \
+        --stdlib "$ROOT/fsroot/as/lib" --toolchain "$ROOT/c/apps/as/runtime" \
+        ${options[@]+"${options[@]}"} -o "$TMP/aslexdump"
+    for source in "$ROOT"/fsroot/as/lib/*.as "$ROOT"/fsroot/as/examples/*.as; do
+        if ! "$ASC" -lex "$source" > "$TMP/c.out" 2> "$TMP/c.err"; then
+            echo "FAIL (C lex error, $mode) $source"
+            sed -n '1,5p' "$TMP/c.err"
+            fail=$((fail+1))
+            continue
+        fi
+        if ! "$TMP/aslexdump" "$source" > "$TMP/as.out" 2> "$TMP/as.err"; then
+            echo "FAIL (native A3 error, $mode) $source"
+            sed -n '1,5p' "$TMP/as.err"
+            fail=$((fail+1))
+        elif cmp -s "$TMP/c.out" "$TMP/as.out"; then
+            pass=$((pass+1))
+        else
+            echo "FAIL (token mismatch, $mode) $source"
+            diff "$TMP/c.out" "$TMP/as.out" | head -5
+            fail=$((fail+1))
+        fi
+    done
 done
-echo "selfhost-lex: $pass identical, $fail failed"
+echo "selfhost-lex: $pass native A3 streams identical (debug/release), $fail failed"
 [ "$fail" -eq 0 ] && [ "$pass" -gt 0 ]

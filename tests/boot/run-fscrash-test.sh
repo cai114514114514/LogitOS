@@ -27,7 +27,7 @@ set -u
 ISO="${1:?usage: run-fscrash-test.sh <iso> <disk.img>}"
 DISK="${2:?usage: run-fscrash-test.sh <iso> <disk.img>}"
 QEMU="${QEMU:-qemu-system-x86_64}"
-DC=/usr/as/examples/durcheck.as
+DC=/usr/as/bin/durcheck.aex
 ROUNDS=4
 
 WORK="$(mktemp -d)"
@@ -112,16 +112,16 @@ verify_victim() {       # $1 = log, $2 = context
     fi
 }
 
-VERIFY="as $DC verify /dur/tiny.bin tiny
-as $DC verify /dur/small.bin small
-as $DC verify /dur/mid.bin mid
+VERIFY="$DC verify /dur/tiny.bin tiny
+$DC verify /dur/small.bin small
+$DC verify /dur/mid.bin mid
 "
 
 # ---- boot 1: lay down the bystanders, cleanly ---------------------------------
 boot "mkdir /dur
-as $DC write /dur/tiny.bin tiny
-as $DC write /dur/small.bin small
-as $DC write /dur/mid.bin mid
+$DC write /dur/tiny.bin tiny
+$DC write /dur/small.bin small
+$DC write /dur/mid.bin mid
 ${VERIFY}echo BOOTMARK-DONE
 " "$WORK/b1.log" 8
 grep -aq "BOOTMARK-DONE" "$WORK/b1.log" || fail "boot 1 never finished"
@@ -135,7 +135,7 @@ for round in $(seq 1 "$ROUNDS"); do
     vb="$WORK/bv$round.log"
 
     # ---- pull the plug mid-write ---------------------------------------------
-    start_qemu "as $DC crashwrite /dur/victim.bin
+    start_qemu "$DC crashwrite /dur/victim.bin
 " "$cb"
     armed=0
     for _ in $(seq 1 900); do
@@ -149,8 +149,8 @@ for round in $(seq 1 "$ROUNDS"); do
     normlog "$cb"
 
     # ---- reboot: mount, replay if needed, assert the contract -----------------
-    boot "${VERIFY}as $DC verify /dur/victim.bin big
-as $DC write /dur/new$round.bin small
+    boot "${VERIFY}$DC verify /dur/victim.bin big
+$DC write /dur/new$round.bin small
 ${VERIFY}echo BOOTMARK-DONE
 " "$vb" 10
     grep -aq "BOOTMARK-DONE" "$vb" || fail "round $round: never finished -- the filesystem may not have mounted after the crash"

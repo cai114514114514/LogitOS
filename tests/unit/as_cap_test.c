@@ -25,7 +25,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "as.h"
+#include "legacy/vm.h"
 
 static int fails = 0, total = 0;
 

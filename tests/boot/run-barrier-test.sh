@@ -38,7 +38,10 @@ cleanup() { [ -n "${QPID:-}" ] && kill -9 "$QPID" 2>/dev/null; rm -f "$LOG"; rm 
 trap cleanup EXIT
 
 NET="-netdev user,id=n0 -device e1000,netdev=n0"
-{ logit_wait_for_shell "$LOG" 120; printf 'mkdir /dur\nas /usr/as/examples/barriers.as\necho BARRIER-RUN-DONE\n'; sleep 12; } | \
+# The same version-aware router used by packaging selects the native A3
+# executable. A missing AEX is a failed installation, never a VM fallback.
+BARRIER_COMMAND="$(python3 tools/as_examples.py commands fsroot/as/examples/barriers.as)" || exit 1
+{ logit_wait_for_shell "$LOG" 120; printf 'mkdir /dur\n%s\necho BARRIER-RUN-DONE\n' "$BARRIER_COMMAND"; sleep 12; } | \
   "$QEMU" -cpu "${QEMU_CPU:-max}" -cdrom "$ISO" \
     -drive file="$DISK",format=raw,if=none,id=hd0 -device virtio-blk-pci,drive=hd0 \
     -boot d -snapshot -m 512M -smp 4 -accel tcg,thread=multi -vga none -device virtio-gpu-pci \

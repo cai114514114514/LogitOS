@@ -15,15 +15,15 @@
 # mapped to the wrong place -- an off-by-one in the L1/L2 split -- shows up as
 # a named first-bad-byte, not a shrug.
 #
-# Slow by nature: the AS interpreter builds 4.4 MB of string twice per verify.
-# Budget several minutes per boot.
+# Native A3 now constructs binary Bytes. Retain the original generous boot
+# deadline for storage emulation; it is not a measured native runtime bound.
 
 set -u
 
 ISO="${1:?usage: run-hugefile-test.sh <iso> <disk.img>}"
 DISK="${2:?usage: run-hugefile-test.sh <iso> <disk.img>}"
 QEMU="${QEMU:-qemu-system-x86_64}"
-DC=/usr/as/examples/durcheck.as
+DC=/usr/as/bin/durcheck.aex
 
 WORK="$(mktemp -d)"
 DISKC="$WORK/disk.img"
@@ -32,7 +32,7 @@ cleanup() { [ -n "${QPID:-}" ] && kill -9 "$QPID" 2>/dev/null; rm -rf "$WORK"; }
 trap cleanup EXIT
 
 NET="-netdev user,id=n0 -device e1000,netdev=n0"
-WAITMAX=900        # AS builds 4.4 MB char by char; give it room
+WAITMAX=900        # Conservative storage/boot deadline, not a speed claim
 
 start_qemu() {   # $1 = what to type, $2 = log
     { sleep 5; printf '%s' "$1"; sleep 1200; } | \
@@ -94,8 +94,8 @@ check_ok() {       # $1 = log, $2 = context
 # ---- boot 1: write across the ceiling, verify in the same boot ----------------
 echo "== boot 1: write + verify 4.4 MB (double-indirect) =="
 boot "mkdir /dur
-as $DC write /dur/huge.bin huge
-as $DC verify /dur/huge.bin huge
+$DC write /dur/huge.bin huge
+$DC verify /dur/huge.bin huge
 echo BOOTMARK-DONE
 " "$WORK/b1.log"
 check_ok "$WORK/b1.log" "boot 1"
@@ -103,7 +103,7 @@ echo "  write + same-boot verify: OK"
 
 # ---- boot 2: clean reboot, verify from disk -----------------------------------
 echo "== boot 2: verify after reboot =="
-boot "as $DC verify /dur/huge.bin huge
+boot "$DC verify /dur/huge.bin huge
 echo BOOTMARK-DONE
 " "$WORK/b2.log"
 check_ok "$WORK/b2.log" "boot 2"

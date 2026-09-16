@@ -12,13 +12,63 @@
 # The full argument, the scoring rules and the stated limits are in the header
 # of tests/unit/run-as-diag.sh; the corpus and what each class declares are in
 # tests/unit/asdiag/CLASSES.txt. Prerequisites are the same as every other
-# test-as* target: check-asops guards the hand-copied opcode table, check-abi
-# the shared constants.
+# test-as* target: check-abi guards the shared constants. check-asops used to
+# stand beside it and guarded the A2 opcode table; it went with the bytecode.
 
 .PHONY: test-as-diag test-as-diag-negctl-guard test-as-diag-negctl-line
 
-test-as-diag: check-asops check-abi $(BUILD)/asc
+test-as-diag: check-abi $(BUILD)/asc
 	@bash tests/unit/run-as-diag.sh $(BUILD)/asc
+
+# The host exercises the same engine objects without any GUI/Logit syscalls.
+$(BUILD)/asc: c/apps/as/common/diagnostic.h
+STUDIO_HOST_SRC := $(wildcard c/apps/studio/*.c) c/apps/as/editor/completion.c c/apps/as/common/version.c c/lib/agent/json.c c/lib/agent/task.c c/drivers/block/crc32.c
+.PHONY: test-studio-core test-studio-core-negctl test-as-check
+$(BUILD)/studio-core-test: tests/unit/studio_core_test.c $(STUDIO_HOST_SRC) $(wildcard c/apps/studio/*.h)
+	@mkdir -p $(BUILD)
+	$(CC) -std=c11 -D_DEFAULT_SOURCE -Wall -Wextra -Wno-unused-function -Wno-misleading-indentation -O1 -g -fsanitize=address,undefined tests/unit/studio_core_test.c $(STUDIO_HOST_SRC) -o $@
+test-studio-core-negctl: $(BUILD)/studio-core-test $(BUILD)/asc as-toolchain
+	@python3 tests/unit/studio_core_gate.py --negative $(BUILD)/studio-core-test $(BUILD)/asc
+test-studio-core: test-studio-core-negctl $(BUILD)/studio-core-test $(BUILD)/asc
+	@python3 tests/unit/studio_core_gate.py $(BUILD)/studio-core-test $(BUILD)/asc
+test-as-check: check-abi $(BUILD)/asc
+	@python3 tests/unit/as_check_test.py $(BUILD)/asc
+
+# Completion consumes the same snapshot and module declarations as checking.
+# Run the privacy mutation before its positive target so the gate cannot rot.
+.PHONY: test-as-completion test-as-completion-negctl
+test-as-completion-negctl: $(BUILD)/asc
+	@python3 tests/unit/as_semantic_completion_test.py --negative $(BUILD)/asc
+	@python3 tests/unit/as_object_completion_test.py --negative $(BUILD)/asc
+test-as-completion: test-as-completion-negctl $(BUILD)/asc-numeric-debug
+	@python3 tests/unit/as_semantic_completion_test.py $(BUILD)/asc-numeric-debug
+	@python3 tests/unit/as_object_completion_test.py $(BUILD)/asc-numeric-debug
+test-as-typed test-studio-core: test-as-completion
+
+.PHONY: test-as-recovery test-as-recovery-negctl
+$(BUILD)/as-lex-recovery-test: tests/unit/as_lex_recovery_test.c c/apps/as/frontend/lexer.c c/apps/as/frontend/lexer.h
+	@mkdir -p $(BUILD)
+	$(CC) -std=c11 -O1 -g -fsanitize=address,undefined -Ic/apps/as tests/unit/as_lex_recovery_test.c c/apps/as/frontend/lexer.c -o $@
+test-as-recovery-negctl: $(BUILD)/as-lex-recovery-test
+	@python3 tests/unit/as_lex_recovery_gate.py --negative $<
+test-as-recovery: test-as-recovery-negctl $(BUILD)/asc $(BUILD)/asc-numeric-debug
+	@python3 tests/unit/as_recovery_test.py $(BUILD)/asc
+	@python3 tests/unit/as_recovery_test.py $(BUILD)/asc-numeric-debug
+test-as-typed test-as-completion: test-as-recovery
+
+# The same language contract runs optimized and unoptimized under sanitizers.
+# Controls perturb private compiler sources, never the working tree.
+.PHONY: test-as-numeric test-as-numeric-negctl
+$(BUILD)/asc: c/apps/as/common/numeric.h
+$(BUILD)/asc-numeric-debug: $(AS_CORE) c/apps/as/cli/main.c c/apps/as/common/numeric.h c/apps/as/common/diagnostic.h c/apps/as/sema/abi_layout.inc
+	@mkdir -p $(BUILD)
+	$(CC) -O0 -g -fsanitize=address,undefined -o $@ c/apps/as/cli/main.c $(AS_CORE) -Ic/apps/as -Iinclude/abi
+$(BUILD)/asc-numeric-debug: $(AS_HDRS)
+test-as-numeric-negctl: check-abi
+	@python3 tests/unit/as_numeric_negative.py
+test-as-numeric: test-as-numeric-negctl $(BUILD)/asc $(BUILD)/asc-numeric-debug
+	@python3 tests/unit/as_numeric_test.py $(BUILD)/asc
+	@python3 tests/unit/as_numeric_test.py $(BUILD)/asc-numeric-debug
 
 # ---------------------------------------------------------------------------
 # NEGATIVE CONTROLS. Two, because this gate has two independent arms and a gate
@@ -33,7 +83,7 @@ test-as-diag: check-asops check-abi $(BUILD)/asc
 # parentheses exhaust the C VM's 256-frame stack and the user gets "as: call
 # depth exceeded" from inside asc.grouping: no line, no mention of their
 # program. The gate must call that a CRASH and fail.
-test-as-diag-negctl-guard: check-asops check-abi $(BUILD)/asc
+test-as-diag-negctl-guard: check-abi $(BUILD)/asc
 	@rm -rf $(BUILD)/asdiag-perturb
 	@mkdir -p $(BUILD)/asdiag-perturb
 	@cp fsroot/as/lib/*.as $(BUILD)/asdiag-perturb/
@@ -62,7 +112,7 @@ test-as-diag-negctl-guard: check-asops check-abi $(BUILD)/asc
 # messages stay word-for-word identical, only the location goes. Nothing about
 # (a) changes, so this arm proves the baseline comparison is load-bearing on its
 # own and not carried by the hard arm.
-test-as-diag-negctl-line: check-asops check-abi $(BUILD)/asc
+test-as-diag-negctl-line: check-abi $(BUILD)/asc
 	@rm -rf $(BUILD)/asdiag-perturb2
 	@mkdir -p $(BUILD)/asdiag-perturb2
 	@cp fsroot/as/lib/*.as $(BUILD)/asdiag-perturb2/
@@ -85,3 +135,26 @@ test-as-diag-negctl-line: check-asops check-abi $(BUILD)/asc
 	  grep -q 'REGRESSION' $(BUILD)/asdiag-negctl-line.log || \
 	      { echo "test-as-diag-negctl-line: FAIL -- gate failed, but not against the baseline (wrong reason)"; exit 1; }; \
 	  echo "test-as-diag-negctl-line: PASS (gate failed, per-class, against the committed baseline)"
+
+# Recording primitives execute the actual Studio renderer, not a copied model.
+.PHONY: test-studio-render test-studio-render-negctl
+$(BUILD)/studio-render-test: tests/unit/studio_render_test.c c/apps/studio/studio_render.inc c/apps/studio/studio_code.inc c/apps/studio/studio_completion.inc $(STUDIO_HOST_SRC) $(wildcard c/apps/studio/*.h)
+	$(CC) -std=c11 -D_DEFAULT_SOURCE -O1 -g -fsanitize=address,undefined -Wno-unused-function tests/unit/studio_render_test.c $(STUDIO_HOST_SRC) -o $@
+test-studio-render-negctl: $(BUILD)/studio-render-test
+	@python3 tests/unit/studio_render_gate.py --negative
+test-studio-render: test-studio-render-negctl $(BUILD)/studio-render-test
+	@$(BUILD)/studio-render-test
+
+# The guest gate builds a PRIVATE disk; never overwrite a running desktop.
+# Base contains the kernel/fonts' core CLI peers; Studio/AS come from BUILD.
+STUDIO_GUEST_BASE ?= build
+.PHONY: test-studio-completion
+test-studio-completion: test-studio-render test-studio-core $(BUILD)/studio.aex $(BUILD)/as.aex
+	@python3 tests/boot/run-studio-completion.py --build $(BUILD) --base $(STUDIO_GUEST_BASE) --out $(BUILD)/studio-completion-$$$$
+.PHONY: test-studio-ui
+test-studio-ui: test-studio-render test-studio-core $(BUILD)/studio.aex $(BUILD)/as.aex
+	@python3 tests/boot/run-studio-ui.py --build $(BUILD) --base $(STUDIO_GUEST_BASE) --out $(BUILD)/studio-ui-$$$$
+
+.PHONY: test-studio-persistence-os
+test-studio-persistence-os: test-studio-persistence test-studio-render test-studio-core $(BUILD)/studio.aex $(BUILD)/as.aex
+	@python3 tests/boot/run-studio-ui.py --build $(BUILD) --base $(STUDIO_GUEST_BASE) --rebuild --out $(BUILD)/studio-rebuild-$$$$
