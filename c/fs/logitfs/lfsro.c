@@ -5,6 +5,7 @@
 #include <stddef.h>
 #include "lfsro.h"
 #include "logitfs_fmt.h"
+#include "fsck.h"
 #include "blkdev.h"
 #include "vfs_path.h"
 #include "kprintf.h"
@@ -99,10 +100,18 @@ static int name_eq(const char *on_disk, const char *want)
 
 static uint32_t dir_lookup(struct lro *L, const struct lfs_dinode *dino, const char *name)
 {
-    uint32_t nblk = (dino->size + LFS_BS - 1) / LFS_BS;
+    /* size is on-disk data: clamp it to the device before turning it into a
+     * block count, and treat a missing block as the END of the directory
+     * (same semantics as logitfs.c). A forged multi-GiB directory used to
+     * spin ~10^6 device commands under the mount's irqsave lock.
+     * (2026-09-16 audit.) */
+    uint64_t size = dino->size;
+    uint64_t cap = (uint64_t)L->sb.total_blocks * LFS_BS;
+    if (size > cap) size = cap;
+    uint32_t nblk = (uint32_t)((size + LFS_BS - 1) / LFS_BS);
     for (uint32_t b = 0; b < nblk; b++) {
         uint32_t phys = bmap(L, dino, b);
-        if (!phys || rd(L, phys, L->dblk) < 0) continue;
+        if (!phys || rd(L, phys, L->dblk) < 0) break;
         uint32_t nent = LFS_BS / LFS_DIRENT_SZ;
         for (uint32_t i = 0; i < nent; i++) {
             if (b * (LFS_BS / LFS_DIRENT_SZ) + i >= dino->size / LFS_DIRENT_SZ) break;
@@ -155,7 +164,8 @@ static int lr_mount_locked(struct filesystem *f)
         kprintf("[lfsro] %s: no LogitFS superblock\n", L->name);
         return -1;
     }
-    if (L->sb.block_size != LFS_BS || !L->sb.total_blocks || !L->sb.inode_count) {
+    if (L->sb.block_size != LFS_BS || !L->sb.total_blocks || !L->sb.inode_count ||
+        fsck_super_valid(&L->sb) < 0) {
         kprintf("[lfsro] %s: superblock geometry rejected\n", L->name);
         return -1;
     }
@@ -216,10 +226,12 @@ static int lr_count_locked(struct filesystem *f, const char *dir)
     struct lfs_dinode ino;
     if (path_ino(L, dir, &ino) == LFSRO_NOINO || ino.type != LFS_T_DIR) return -1;
     int n = 0;
-    uint32_t nent = ino.size / LFS_DIRENT_SZ;
+    uint64_t cap = (uint64_t)L->sb.total_blocks * LFS_BS;
+    uint64_t size = ino.size > cap ? cap : ino.size;
+    uint32_t nent = (uint32_t)(size / LFS_DIRENT_SZ);
     for (uint32_t i = 0; i < nent; i++) {
         uint32_t phys = bmap(L, &ino, i / (LFS_BS / LFS_DIRENT_SZ));
-        if (!phys || rd(L, phys, L->dblk) < 0) continue;
+        if (!phys || rd(L, phys, L->dblk) < 0) break;
         struct lfs_dirent *de =
             (struct lfs_dirent *)(L->dblk + (i % (LFS_BS / LFS_DIRENT_SZ)) * LFS_DIRENT_SZ);
         if (de->name[0]) n++;
@@ -234,10 +246,12 @@ static int nth_ent(struct lro *L, const char *dir, int idx, struct lfs_dirent *d
     struct lfs_dinode ino;
     if (path_ino(L, dir, &ino) == LFSRO_NOINO || ino.type != LFS_T_DIR) return -1;
     int n = 0;
-    uint32_t nent = ino.size / LFS_DIRENT_SZ;
+    uint64_t cap = (uint64_t)L->sb.total_blocks * LFS_BS;
+    uint64_t size = ino.size > cap ? cap : ino.size;
+    uint32_t nent = (uint32_t)(size / LFS_DIRENT_SZ);
     for (uint32_t i = 0; i < nent; i++) {
         uint32_t phys = bmap(L, &ino, i / (LFS_BS / LFS_DIRENT_SZ));
-        if (!phys || rd(L, phys, L->dblk) < 0) continue;
+        if (!phys || rd(L, phys, L->dblk) < 0) break;
         struct lfs_dirent *d =
             (struct lfs_dirent *)(L->dblk + (i % (LFS_BS / LFS_DIRENT_SZ)) * LFS_DIRENT_SZ);
         if (!d->name[0]) continue;
