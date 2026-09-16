@@ -305,8 +305,8 @@ make test-audit      # fails the build on a harness that cannot fail (no target,
 
 make test            # boot smoke test (asserts the kernel prints LOGIT_BOOT_OK)
 make test-shell      # fork/exec + pipes + coreutils via /bin/sh
-make test-as         # AetherScript language core (host unit tests, no QEMU)
-make test-as-os      # AetherScript on LogitOS: runs the examples incl. the LibLogit stdlib
+make test-as-typed   # AetherScript typed compiler: the host gate fleet (tests/astyped.mk)
+make test-as-os      # AetherScript on LogitOS: boots and runs every packaged example
 make test-net        # TCP + IPv4/UDP/ICMP protocol unit tests (host)
 make test-net-os     # QEMU: guest fetches a 32 KiB file from a host-local HTTP server
 make test-smp        # boots -smp 4 and asserts genuine cross-core parallelism

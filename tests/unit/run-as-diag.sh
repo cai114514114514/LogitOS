@@ -3,7 +3,7 @@
 #
 # tests/unit/run-as-crosscheck.sh proves the two compilers
 #
-#     the C compiler        c/apps/as/compiler.c + lexer.c
+#     the C compiler        c/apps/as/legacy/compiler.c + lexer.c
 #     the self-hosted one   fsroot/as/lib/asc.as + aslex.as
 #
 # emit byte-identical bytecode for every .as file in the tree. Every file in
@@ -93,7 +93,8 @@ trap 'rm -rf "$TMP"' EXIT
 mkdir -p "$TMP/src"
 
 # The self-hosted compiler runs as a program and imports its own modules from
-# the cwd. Same mechanism run-as-crosscheck.sh and run-selfhost-compile.sh use.
+# the cwd. Same mechanism run-as-crosscheck.sh uses; run-selfhost-compile.sh
+# (retired with the A2 engine) used it too.
 cp "$LIBDIR"/*.as "$TMP/" || exit 1
 cp tests/unit/asc_driver.as "$TMP/" || exit 1
 

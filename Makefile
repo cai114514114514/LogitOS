@@ -19,16 +19,78 @@ ISO_DIR     := $(BUILD)/iso
 KERNEL      := $(BUILD)/kernel.elf
 ISO         := $(BUILD)/logit.iso
 DISK        := $(BUILD)/disk.img
-FS_FILES    := $(filter-out fsroot/fonts fsroot/as,$(wildcard fsroot/*))
+# EVERY fsroot ENTRY NAMES ITS DESTINATION. This was
+#     FS_FILES := $(filter-out fsroot/fonts fsroot/as,$(wildcard fsroot/*))
+# and the wildcard is what made the device root untidy, not the files in it:
+# mkfs.py places a bare `host` at /<basename(host)>, so ANYTHING dropped into
+# fsroot/ appeared at the machine's root with no mapping written down and
+# nothing to review. That is how /sample.aac, /sample.ogg, /shaping.txt and
+# /demo.as came to sit beside /bin and /usr, and how /readme.txt came to be
+# packed TWICE -- once bare here and once as :/docs/readme.txt below.
+#
+# The root is not a junk drawer: wm.c's scan_apps() reads vfs_count("/") and
+# takes every *.aex as a Dock application. Under the wildcard, dropping an .aex
+# into fsroot/ silently put an icon on the desktop. An explicit list costs one
+# line per file and makes "what is on this machine" answerable by reading.
+#
+# fonts and as are still absent because they have their own rules further down.
+# THREE VARIABLES, because one could not do all three jobs.
+#
+# FS_FILES was the mkfs argument list, the $(DISK) prerequisite list, AND the
+# append point six test fragments add their fixtures to. A prerequisite holding
+# a colon is a make syntax error ("multiple target patterns"), so as long as the
+# base list was also the prerequisite list, every entry had to be a bare path --
+# and mkfs.py places a bare path at /<basename>. That is the whole reason the
+# device root filled up: not carelessness, a variable doing two jobs.
+#
+# (The fragments get away with `FS_FILES += host:/dest` only because every
+# `-include tests/*.mk` sits BELOW the $(DISK) rule, so the prerequisite list was
+# already parsed before their colons arrived. The recipe, expanded at run time,
+# sees them. That is load-bearing and easy to break by moving an include.)
+#
+#   FS_SPECS       what fsroot puts on the disk, each with its destination
+#   FS_BASE_HOSTS  the host side of those, colon-free, for the dependency graph
+#   FS_FILES       the fragments' append point, and fsroot/licenses, which
+#                  tests/ime.mk reorders to the end (it is a staged copy of
+#                  LICENSES/ and must pack after the directories above)
+#
+# fonts and as are absent because they have their own rules further down.
+# ORDER MATTERS FOR /docs, and only there. LogitFS lists a directory in
+# INSERTION order, the Files window starts in /docs (files.c), and
+# tests/qmp/qmp_shape.py drives the whole on-device text-shaping gate by
+# clicking an icon at a fixed coordinate. shaping.txt is FIRST so that the cell
+# it lands in is the one adding another document cannot move.
+FS_SPECS      := fsroot/etc fsroot/ime fsroot/www \
+                 fsroot/docs/shaping.txt:/docs/shaping.txt \
+                 fsroot/docs/readme.txt:/docs/readme.txt \
+                 fsroot/docs/demo.as:/docs/demo.as \
+                 fsroot/media/sample.aac:/media/sample.aac \
+                 fsroot/media/sample.ogg:/media/sample.ogg
+FS_BASE_HOSTS := $(foreach s,$(FS_SPECS),$(firstword $(subst :, ,$(s))))
+FS_FILES      := fsroot/licenses
 # AetherScript layout: example scripts (source, run directly) vs library modules
 # (precompiled to .la). Packed to /usr/as/examples/ and /usr/as/lib/ respectively.
 AS_EXAMPLES := $(wildcard fsroot/as/examples/*.as)
 AS_LIB_SRCS := $(wildcard fsroot/as/lib/*.as)
-# Rewritten native library sources stay in the original directory. A2 callers
-# temporarily use frozen bytecode for these names; compiling A3 through the VM
-# would silently bypass the static-language boundary.
-AS_A2_CACHES := $(wildcard fsroot/as/compat2/*.lacache)
-AS_LA       := $(patsubst fsroot/as/lib/%.as,$(BUILD)/%.la,$(AS_LIB_SRCS))
+# Defined before test fragments are included: Make expands prerequisites when
+# reading the rule, so a later default turned the Preview dependency into the
+# nonexistent absolute path /preview.aex. Recipes alone hid that mistake.
+AS_TYPED_GUEST_BASE ?= build
+# Select by source declaration, never by whether a stale executable exists.
+# Make discards shell exit status; the sentinel prevents a classifier failure
+# from silently producing a disk without its native programs.
+AS_NATIVE_EXAMPLES := $(shell python3 tools/as_examples.py sources $(AS_EXAMPLES) || echo AS_CLASSIFY_FAILED)
+ifneq ($(filter AS_CLASSIFY_FAILED,$(AS_NATIVE_EXAMPLES)),)
+$(error Could not classify AetherScript examples)
+endif
+AS_NATIVE_EXAMPLE_AEX := $(patsubst fsroot/as/examples/%.as,$(BUILD)/as-native/%.aex,$(AS_NATIVE_EXAMPLES))
+AS_NATIVE_EXAMPLE_PACK := $(foreach entry,$(AS_NATIVE_EXAMPLE_AEX),$(entry):/usr/as/bin/$(notdir $(entry)))
+# AS_A2_CACHES and AS_LA lived here until the A2 engine was deleted. The library
+# shipped TWICE: once as A3 source under /usr/as/lib/*.as, and once as a .la
+# copied verbatim out of fsroot/as/compat2/ -- frozen A2 bytecode from an older
+# build. The VM's as_import preferred the .la, so on the machine the A3 sources
+# were present and never read. Nothing loads bytecode now, and a native .aex
+# links the library statically, so /usr/as/lib ships the source alone.
 # Four faces, two weights. The Bold pair is an INSTANCE of the same vendored
 # variable fonts at wght=700 -- same source file, same OFL licence, same
 # mkfont.py -- which is why FONT_UI_SRC/FONT_MONO_SRC below did not grow.
@@ -460,7 +522,7 @@ RUST_LIB  := rust/target/x86_64-unknown-none/release/liblogit_rust.a
 RUST_SRC  := $(shell find rust/src -name '*.rs') rust/Cargo.toml
 
 .PHONY: test-img test-img-still test-img-anim test-img-exif test-img-fuzz test-img-fuzz-negctl test-imgcheck
-.PHONY: test-fs test-fs-boot probe-webapi test-platform test-platform-control test-platform-asan test-platform-page test-platform-page-control test-webapi test-webapi-asan test-webapi-page test-webapi-page-control test-fetch-ui all run shot debug test test-durability test-barrier test-fscrash test-hugefile test-fsreplay test-fs-cache test-fs-journal test-fs-crash test-fsck test-fs-format test-fs-host test-fsmount test-h264 test-h264-units test-h264-diff test-browser test-css-asan test-css-fidelity test-nvme test-part test-part-asan test-ahci test-ahci-raw test-ahci-mbr test-ahci-gpt test-ahci-two test-selfhost test-selfhost-lex test-selfhost-compile test-selfhost-fixpoint clean test-as test-as-gcstress test-as-stress test-as-asan test-as-fast check-asops check-abi test-as-bcstable test-shell test-as-port-negctl test-ash test-shell-as test-video test-evq test-clock test-input test-html5lib test-html5lib-tok test-html5lib-asan test-js-dom-asan test-live-page test-as-os test-smp test-net test-net-os test-sock test-sock-ui test-tcp-host test-tcp-negctl test-net-proto test-ip6 test-ip6-dns test-ip6-dns-negctl test-ip6-host test-ip6-negctl test-nd-host test-nd-negctl test-ip6-fallback test-ip6-fallback-negctl test-ip6-os test-dhcp-host test-dhcp-os test-https-smoke test-browser-https test-complete test-libc test-fb-clip test-kheap test-malloc test-png test-jpeg test-webp-vp8 test-webp-vp8-negctl test-svg test-crypto test-crypto-diff test-tls-interop test-tls-resume-control test-p521 test-p521-control test-tls-psk test-tls-psk-control test-libc-diff test-x509-fuzz test-http-fuzz test-font test-font-otl test-font-color test-font-fuzz test-font-control test-glyph-agree test-font-weight test-font-weight-negctl test-h2 test-h2-fuzz test-h2-control test-h2-os check-ring3-net test-modules test-handshakes test-time-host test-time-negctl test-time test-time-smp test-klog test-klog-control test-panic test-panic-log test-stream test-stream-control test-stream-asan test-cookie-cors test-cookie-cors-asan test-sse-page test-sse-page-control
+.PHONY: test-fs test-fs-boot probe-webapi test-platform test-platform-control test-platform-asan test-platform-page test-platform-page-control test-webapi test-webapi-asan test-webapi-page test-webapi-page-control test-fetch-ui all run shot debug test test-durability test-barrier test-fscrash test-hugefile test-fsreplay test-fs-cache test-fs-journal test-fs-crash test-fsck test-fs-format test-fs-host test-fsmount test-h264 test-h264-units test-h264-diff test-browser test-css-asan test-css-fidelity test-nvme test-part test-part-asan test-ahci test-ahci-raw test-ahci-mbr test-ahci-gpt test-ahci-two test-selfhost test-selfhost-lex clean test-as-fast check-abi test-shell test-ash test-shell-as test-video test-evq test-clock test-input test-html5lib test-html5lib-tok test-html5lib-asan test-js-dom-asan test-live-page test-as-os test-smp test-net test-net-os test-sock test-sock-ui test-tcp-host test-tcp-negctl test-net-proto test-ip6 test-ip6-dns test-ip6-dns-negctl test-ip6-host test-ip6-negctl test-nd-host test-nd-negctl test-ip6-fallback test-ip6-fallback-negctl test-ip6-os test-dhcp-host test-dhcp-os test-https-smoke test-browser-https test-complete test-libc test-fb-clip test-kheap test-malloc test-png test-jpeg test-webp-vp8 test-webp-vp8-negctl test-svg test-crypto test-crypto-diff test-tls-interop test-tls-resume-control test-p521 test-p521-control test-tls-psk test-tls-psk-control test-libc-diff test-x509-fuzz test-http-fuzz test-font test-font-otl test-font-color test-font-fuzz test-font-control test-glyph-agree test-font-weight test-font-weight-negctl test-h2 test-h2-fuzz test-h2-control test-h2-os check-ring3-net test-modules test-handshakes test-time-host test-time-negctl test-time test-time-smp test-klog test-klog-control test-panic test-panic-log test-stream test-stream-control test-stream-asan test-cookie-cors test-cookie-cors-asan test-sse-page test-sse-page-control
 
 .PHONY: test-aui-mask test-aui test-aui-negctl bench-aui
 .PHONY: test-monitor test-monitor-negctl
@@ -584,11 +646,30 @@ $(BUILD)/apps/aui.o: $(GUIDIR)/aui.c $(GUIDIR)/aui.h $(APPDIR)/logit.h c/lib/gfx
 	@mkdir -p $(BUILD)/apps
 	$(CC) $(UCFLAGS) -c $(GUIDIR)/aui.c -o $@
 
+# The .o has its own target, and that is the whole point of the next three
+# lines. It used to be compiled as a SIDE EFFECT inside the .elf recipe, with
+# the .elf carrying a hand-written list of the headers its source includes --
+# and `-MMD -MP` was on the whole time, writing build/apps/files.d, which named
+# c/apps/hidden.h correctly. Line 4838 `-include`s every .d under $(BUILD). So
+# the dependency information was complete, accurate, and attached to
+# `build/apps/files.o`, WHICH WAS THE TARGET OF NO RULE. `make -n
+# build/apps/files.o` answered "Nothing to be done". Editing hidden.h and
+# running `make build/disk.img` printed nothing, exited 0, and shipped the old
+# Finder -- the rule-4 shape, except the list that failed to follow was not the
+# link line but the header list, and the generator that would have maintained
+# it was already running.
+#
+# What is left on the .o line by hand is the toolkit contract and nothing else,
+# because those two are the only headers that must be there on a tree with no
+# .d yet. Do not grow it: anything else a source includes arrives through the
+# fragment.
 define APP_RULE
-$(BUILD)/$(1).elf: $(GUIDIR)/$(1)/$(1).c $(APPDIR)/crt0.asm $(APPDIR)/logit.h $(GUIDIR)/aui.h $(BUILD)/apps/aui.o $(GFX_OBJ)
+$(BUILD)/apps/$(1).o: $(GUIDIR)/$(1)/$(1).c $(APPDIR)/logit.h $(GUIDIR)/aui.h
+	@mkdir -p $(BUILD)/apps
+	$(CC) $(UCFLAGS) -c $(GUIDIR)/$(1)/$(1).c -o $(BUILD)/apps/$(1).o
+$(BUILD)/$(1).elf: $(BUILD)/apps/$(1).o $(APPDIR)/crt0.asm $(BUILD)/apps/aui.o $(GFX_OBJ)
 	@mkdir -p $(BUILD)/apps
 	$(ASM) -f elf64 $(APPDIR)/crt0.asm -o $(BUILD)/apps/$(1).crt0.o
-	$(CC) $(UCFLAGS) -c $(GUIDIR)/$(1)/$(1).c -o $(BUILD)/apps/$(1).o
 	$$(LD) -nostdlib -e _start -Ttext=$(strip $(2)) -o $$@ $(BUILD)/apps/$(1).crt0.o $(BUILD)/apps/$(1).o $(BUILD)/apps/aui.o $(GFX_OBJ)
 $(BUILD)/$(1).aex: $(BUILD)/$(1).elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/$(1).elf $$@ '$(3)' $(4) '$(5)' $(6) $(7) $(8)
@@ -660,19 +741,26 @@ $(eval $(call APP_RULE,settings,0x4B000000,Settings,-,S,140,150,165))
 # that archive and never includes its implementation or owns compiler state.
 STUDIO_SRC := $(wildcard c/apps/studio/*.c)
 STUDIO_OBJ := $(patsubst c/apps/studio/%.c,$(BUILD)/apps/studio/%.o,$(STUDIO_SRC))
-$(BUILD)/apps/studio/%.o: c/apps/studio/%.c $(wildcard c/apps/studio/*.h) c/apps/as/complete.h
+$(BUILD)/apps/studio/%.o: c/apps/studio/%.c $(wildcard c/apps/studio/*.h) c/apps/as/editor/completion.h
 	@mkdir -p $(dir $@)
 	$(CC) $(UCFLAGS) -c $< -o $@
 $(BUILD)/apps/studio-engine.a: $(STUDIO_OBJ)
 	$(AGENT_AR) rcs $@ $(STUDIO_OBJ)
-$(BUILD)/apps/complete.o: c/apps/as/complete.c c/apps/as/complete.h
-	@mkdir -p $(BUILD)/apps
-	$(CC) $(UCFLAGS) -c c/apps/as/complete.c -o $@
-$(BUILD)/studio.elf: $(GUIDIR)/studio/studio.c $(APPDIR)/crt0.asm $(APPDIR)/logit.h $(GUIDIR)/aui.h $(BUILD)/apps/aui.o $(GFX_OBJ) $(BUILD)/apps/studio-engine.a $(BUILD)/apps/complete.o c/apps/studio/engine.h $(wildcard c/apps/studio/studio_*.inc)
+# Keep the object path aligned with the moved source. Reusing apps/complete.o
+# also imports its old .d prerequisite, c/apps/as/complete.c; -MP only protects
+# removed headers, so existing build trees would fail before recompilation.
+$(BUILD)/apps/as/editor/completion.o: c/apps/as/editor/completion.c c/apps/as/editor/completion.h
+	@mkdir -p $(dir $@)
+	$(CC) $(UCFLAGS) -c c/apps/as/editor/completion.c -o $@
+$(BUILD)/apps/as/common/version.o: c/apps/as/common/version.c c/apps/as/common/numeric.h
+	@mkdir -p $(dir $@)
+	$(CC) $(UCFLAGS) -c $< -o $@
+$(BUILD)/studio.elf: $(BUILD)/apps/as/common/version.o
+$(BUILD)/studio.elf: $(GUIDIR)/studio/studio.c $(APPDIR)/crt0.asm $(APPDIR)/logit.h $(GUIDIR)/aui.h $(BUILD)/apps/aui.o $(GFX_OBJ) $(BUILD)/apps/studio-engine.a $(BUILD)/apps/as/editor/completion.o c/apps/studio/engine.h $(wildcard c/apps/studio/studio_*.inc)
 	@mkdir -p $(BUILD)/apps
 	$(ASM) -f elf64 $(APPDIR)/crt0.asm -o $(BUILD)/apps/studio.crt0.o
 	$(CC) $(UCFLAGS) -c $(GUIDIR)/studio/studio.c -o $(BUILD)/apps/studio.o -Ic/apps/as
-	$(LD) -nostdlib -e _start -Ttext=0x49000000 -o $@ $(BUILD)/apps/studio.crt0.o $(BUILD)/apps/studio.o $(BUILD)/apps/aui.o $(GFX_OBJ) $(BUILD)/apps/studio-engine.a $(BUILD)/apps/complete.o
+	$(LD) -nostdlib -e _start -Ttext=0x49000000 -o $@ $(BUILD)/apps/studio.crt0.o $(BUILD)/apps/studio.o $(BUILD)/apps/aui.o $(GFX_OBJ) $(BUILD)/apps/studio-engine.a $(BUILD)/apps/as/editor/completion.o $(BUILD)/apps/as/common/version.o
 $(BUILD)/studio.aex: $(BUILD)/studio.elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/studio.elf $@ 'Code Studio' as '{' 200 160 250
 
@@ -778,11 +866,17 @@ $(BUILD)/netcliobj/%.o: %.c
 	@mkdir -p $(dir $@)
 	$(CC) $(UCFLAGS) -ffunction-sections -fdata-sections -c $< -o $@
 
+# Same split as APP_RULE above and for the same reason -- the .o is a target
+# rather than a side effect, so build/apps/$(1).cli.d is attached to something
+# make visits. The four headers below were the hand-written list; `ls.c` had
+# grown a fifth (hidden.h) and editing it rebuilt nothing.
 define CLI_RULE
-$(BUILD)/$(1).elf: $(CLIDIR)/$(1).c $(APPDIR)/crt0_cli.asm $(APPDIR)/clib.h $(CLIDIR)/logit_rich.h $(CLIDIR)/logit_sniff.h $(CLIDIR)/logit_cells.h $(CLI_EXTRA_$(1))
+$(BUILD)/apps/$(1).cli.o: $(CLIDIR)/$(1).c $(APPDIR)/clib.h
+	@mkdir -p $(BUILD)/apps
+	$(CC) $(UCFLAGS) -c $(CLIDIR)/$(1).c -o $(BUILD)/apps/$(1).cli.o
+$(BUILD)/$(1).elf: $(BUILD)/apps/$(1).cli.o $(APPDIR)/crt0_cli.asm $(CLI_EXTRA_$(1))
 	@mkdir -p $(BUILD)/apps
 	$(ASM) -f elf64 $(APPDIR)/crt0_cli.asm -o $(BUILD)/apps/$(1).crt0c.o
-	$(CC) $(UCFLAGS) -c $(CLIDIR)/$(1).c -o $(BUILD)/apps/$(1).cli.o
 	$$(LD) $(CLI_LINK_$(1)) -nostdlib -e _start -Ttext=0x50000000 -o $$@ $(BUILD)/apps/$(1).crt0c.o $(BUILD)/apps/$(1).cli.o $(CLI_EXTRA_$(1))
 $(BUILD)/$(1).aex: $(BUILD)/$(1).elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/$(1).elf $$@ $(1) - '*' 150 150 150
@@ -1304,7 +1398,7 @@ $(BUILD)/browser.aex: $(BUILD)/browser.elf tools/mkaex.py
 # --- AetherScript: /bin/as -- a ring-3 CLI program. Links the as core + mini-libc
 # (fopen/malloc/snprintf/strtod) at the common CLI base via crt0_cli. (CLI_RULE
 # can't be reused: those programs use logit.h inline syscalls, not mini-libc.) ---
-AS_C    := $(wildcard c/apps/as/*.c)
+include c/apps/as/sources.mk
 AS_LIBC := $(wildcard c/apps/libc/src/*.c)
 AS_LASM := $(wildcard c/apps/libc/src/*.asm)
 AS_OBJ  := $(patsubst %.c,$(BUILD)/asobj/%.o,$(AS_C)) \
@@ -1313,7 +1407,8 @@ AS_OBJ  := $(patsubst %.c,$(BUILD)/asobj/%.o,$(AS_C)) \
 # as.h carries AS_BC_VERSION + the opcode enum; depend on it so a version bump
 # rebuilds EVERY asobj (esp. as_bc.o, whose .c rarely changes) -- otherwise a
 # stale as_bc.o in /bin/as rejects the freshly-bumped .la files on Logit.
-AS_HDRS := $(wildcard c/apps/as/*.h c/apps/as/runtime/*.h)
+# Header and source groups now come from sources.mk. In particular, runtime/
+# belongs to generated native programs and is not part of AS_C.
 
 $(BUILD)/asobj/%.o: %.c $(AS_HDRS)
 	@mkdir -p $(dir $@)
@@ -1332,7 +1427,7 @@ $(BUILD)/asobj/%.o: %.asm
 # Correction (2026-09-15): the shared lexer and the version-3 typed frontend
 # now ship for local checks. Legacy source -> bytecode still uses asc.la;
 # compiler.c remains excluded and the old self-hosting gate checks that path.
-AS_OBJ_SHIPPED := $(filter-out $(BUILD)/asobj/c/apps/as/compiler.o,$(AS_OBJ))
+AS_OBJ_SHIPPED := $(AS_OBJ)
 
 $(BUILD)/as.elf: $(AS_OBJ_SHIPPED) $(APPDIR)/crt0_cli.asm
 	@mkdir -p $(BUILD)/apps
@@ -1696,7 +1791,7 @@ MODEL_LM_ON_DISK := $(if $(MODEL_LM),$(MODEL_LM):/model.lm,)
 # added, and nested .studio recovery slots/empty folders retain their metadata.
 # The packer validates and recovers a private copy, then replaces atomically; disk_guard rejects an
 # image held by QEMU. A same-image reboot test alone cannot catch this failure.
-$(DISK): $(FS_FILES) $(AS_EXAMPLES) $(AS_LA) $(FONTS) $(FONT_TEXT) $(RELEASE_NOTICES) $(AEX) $(BUILD)/libctest.aex $(BUILD)/closefull.aex $(BUILD)/vidcheck.aex $(BUILD)/audiocheck.aex $(BUILD)/h2check.aex $(BUILD)/dot.png tools/mkfs.py $(BUILD)/imgcheck.aex $(IMG_FIXTURES) $(BUILD)/asnative.aex $(LPK_FIXTURES) $(GREETER_AEX) $(CH_AEX) $(BUILD)/lm.aex $(MODEL_LM) $(BUILD)/tcc/tcc.aex
+$(DISK): $(FS_BASE_HOSTS) $(AS_EXAMPLES) $(FONTS) $(FONT_TEXT) $(RELEASE_NOTICES) $(AEX) $(BUILD)/libctest.aex $(BUILD)/closefull.aex $(BUILD)/vidcheck.aex $(BUILD)/audiocheck.aex $(BUILD)/h2check.aex $(BUILD)/dot.png tools/mkfs.py $(BUILD)/imgcheck.aex $(IMG_FIXTURES) $(BUILD)/asnative.aex $(LPK_FIXTURES) $(GREETER_AEX) $(CH_AEX) $(BUILD)/lm.aex $(MODEL_LM) $(BUILD)/tcc/tcc.aex
 	@mkdir -p $(BUILD)
 	@if [ -n "$(MODEL_LM)" ]; then \
 	    sz=$$(bash tools/filesize.sh $(MODEL_LM)); \
@@ -1704,7 +1799,7 @@ $(DISK): $(FS_FILES) $(AS_EXAMPLES) $(AS_LA) $(FONTS) $(FONT_TEXT) $(RELEASE_NOT
 	else \
 	    echo "disk: build/model.lm not present -- packing without /model.lm (run build/lmtrain to add it, see tools/lmtrain.md)"; \
 	fi
-	python3 tools/mkfs.py --preserve /browser --preserve /state --preserve-merge /docs --preserve-merge /etc --preserve /home --preserve /download --snapshot-helper $(BUILD)/lfs_snapshot $(DISK) $(FS_FILES) fsroot/readme.txt:/docs/readme.txt \
+	python3 tools/mkfs.py --preserve /browser --preserve /state --preserve-merge /docs --preserve-merge /etc --preserve /home --preserve /download --snapshot-helper $(BUILD)/lfs_snapshot $(DISK) $(FS_SPECS) $(FS_FILES) \
 	    $(BUILD)/hello.lpk:/pkg/hello.lpk $(BUILD)/tampered.lpk:/pkg/tampered.lpk \
 	    $(BUILD)/foreign.lpk:/pkg/foreign.lpk \
 	    $(BUILD)/pkgverify.aex:/bin/pkgverify \
@@ -1748,7 +1843,7 @@ $(DISK): $(FS_FILES) $(AS_EXAMPLES) $(AS_LA) $(FONTS) $(FONT_TEXT) $(RELEASE_NOT
 	    tests/fixtures/audio/sample.flac:/media/sample.flac \
 	    tests/fixtures/audio/sample.wav:/media/sample.wav \
 	    $(foreach e,$(AS_EXAMPLES),$(e):/usr/as/examples/$(notdir $(e))) \
-	    $(foreach l,$(AS_LA),$(l):/usr/as/lib/$(notdir $(l))) \
+	    $(AS_NATIVE_EXAMPLE_PACK) \
 	    $(foreach s,$(AS_LIB_SRCS),$(s):/usr/as/lib/$(notdir $(s))) \
 	    $(BUILD)/sysroot:/ $(BUILD)/tcc/tcc.aex:/bin/tcc
 
@@ -3224,8 +3319,12 @@ test-browser-https: $(ISO) $(DISK)
 	@python3 tests/qmp/qmp_browser_https.py $(ISO) $(DISK)
 
 # On-Logit AetherScript test: boots and runs /bin/as on the /usr/as examples.
-test-as-os: check-asops check-abi $(ISO) $(DISK)
-	@sh tests/boot/run-as-test.sh $(ISO) $(DISK)
+# Was `sh tests/boot/run-as-test.sh` until the A2 engine left; that harness
+# still passed the deleted examples/selfhost.as and grepped for the A2-only
+# "selfhost magic: LAQ1" marker. Re-pointed at the typed guest umbrella
+# (2026-09-16): run-as-packaged.py boots every Make-packaged A3 example on a
+# disk with no VM and asserts the same frozen outputs, demo included.
+test-as-os: check-abi test-as-packaged-guest
 
 # mini-libc on-target test battery: boots Logit, runs /bin/libctest, asserts LIBC_OK.
 test-libc: $(ISO) $(DISK)
@@ -3305,22 +3404,42 @@ test-smp: $(ISO) $(DISK)
 # completion engine (own -DAS_COMPLETE_TEST target, doesn't include as.h). This
 # used to be a hand-written list, so a new core .c built into /bin/as fine and
 # then failed to link every host test until someone remembered to add it here.
-AS_CORE := $(filter-out c/apps/as/as.c c/apps/as/complete.c,$(AS_C))
-test-as: check-asops check-abi
-	@mkdir -p $(BUILD)
-	@$(CC) -O2 -Wall -Wextra -o $(BUILD)/as_test tests/unit/as_test.c $(AS_CORE) -Ic/apps/as -Iinclude/abi
-	@$(BUILD)/as_test
+# AS_CORE is derived in c/apps/as/sources.mk. Mutation tests query this same
+# inventory so a directory move cannot silently remove their compiler units.
+.PHONY: as-host-sources as-shipped-sources
+as-host-sources:
+	@printf '%s\n' $(AS_HOST_SOURCES)
 
-# The opcode/token/builtin numbers are hand-copied into three implementations
-# (as.h -> asc.as, lexer.h -> aslex.as, vm.c -> complete.c). A drift in the first
-# two is a SILENT miscompile: the self-hosted compiler emits an instruction the C
-# VM decodes as a different one -- and NOTHING else catches it. Verified: setting
-# OP_RET to 99 in asc.as still leaves test-as and test-as-gcstress at 254/254
-# green. So every as-facing target depends on this; being a phony prerequisite is
-# why it stays off file targets like $(ASC) (that would force a rebuild each run).
-# Read-only: it never rewrites asc.as/aslex.as.
-check-asops:
-	@python3 tools/gen_as_opcodes.py --check
+as-shipped-sources:
+	@printf '%s\n' $(AS_C) $(AS_LIBC)
+
+# test-as (as_test.c, 270 inline snippets through the in-process A2
+# interpreter), test-as-gcstress, test-as-stress (as_stress.c), test-as-asan
+# and the test-as-port-negctl backstop stood here until the A2 engine left
+# (2026-09-16). Every one of them links legacy/vm.h / as_interpret, which died
+# with the VM -- the suite failed at #include before a single assertion ran.
+# Their coverage lives on elsewhere: language semantics through the typed
+# fleet in tests/astyped.mk (test-as-typed and its sub-gates), the whole
+# lib+examples corpus through test-as-lexer-lib, and exact program behaviour
+# through test-as-examples' frozen native outputs. The port-fd backstop idea
+# transfers to A3's runtime when ports regain a collector; it is not rebuilt
+# speculatively here. as_test.c and as_stress.c were deleted in the same
+# change -- a red gate that cannot compile is not coverage.
+
+# check-asops stood here, and what it guarded is worth recording because the
+# hazard it named was real: the A2 opcode and token numbers were hand-copied into
+# three implementations (vm.h -> asc.as, lexer.h -> aslex.as, vm.c -> complete.c),
+# and a drift in the first two was a SILENT miscompile -- the self-hosted compiler
+# emitting an instruction the C VM decoded as a different one, with nothing else
+# able to see it. Measured at the time: setting OP_RET to 99 in asc.as left
+# test-as and test-as-gcstress at 254/254 green.
+#
+# Two of its three jars are gone with A2: there is no bytecode and no asc.as. The
+# third, aslex.as against the C lexer, is still live and is still checked -- by
+# test-as-lexer-lib, which is a DIFFERENTIAL run of both lexers over the whole
+# corpus rather than a comparison of two constant tables. That is the stronger
+# form; it was always the one that would have caught a renumber plus a matching
+# table edit, which check-asops could not.
 
 # The kernel struct layouts AetherScript reads (fsroot/as/lib/abi.as) are
 # generated from include/abi/logit_abi.h, and every offset in them is ALSO
@@ -3335,14 +3454,12 @@ check-abi:
 # as_native.c #includes the generated asserts; rebuild it when they change, or a
 # stale object would keep vouching for the old layout (cf. the roots_bundle.inc
 # gotcha, where a missing dep silently kept the old CA roots in the kernel).
-$(BUILD)/asobj/c/apps/as/as_native.o: c/apps/as/abi_layout.inc
-$(BUILD)/c/apps/as/as_native.o: c/apps/as/abi_layout.inc
 
 # libcomplete host unit tests: the completion engine is self-contained C, so it
 # builds and runs natively -- no QEMU.
 test-complete:
 	@mkdir -p $(BUILD)
-	@$(CC) -O2 -Wall -Wextra -DAS_COMPLETE_TEST -o $(BUILD)/complete_test tests/unit/complete_test.c c/apps/as/complete.c -Ic/apps/as
+	@$(CC) -O2 -Wall -Wextra -DAS_COMPLETE_TEST -o $(BUILD)/complete_test tests/unit/complete_test.c c/apps/as/editor/completion.c -Ic/apps/as
 	@$(BUILD)/complete_test
 
 # Framebuffer clip is per-target (struct surface), not global: this builds the
@@ -3356,20 +3473,7 @@ test-fb-clip:
 	@$(CC) -O2 -Wall -Wextra -o $(BUILD)/fb_clip_test tests/unit/fb_clip_test.c c/kernel/gui/fb/fb.c c/kernel/gui/fb/glass.c $(GFX_SRC) $(HOST_INCDIRS) -lm
 	@$(BUILD)/fb_clip_test
 
-# GC stress: collect before EVERY allocation -> any missing GC root becomes a crash
-# or wrong output. Runs the same host unit suite under -DAS_GC_STRESS.
-test-as-gcstress: check-asops check-abi
-	@mkdir -p $(BUILD)
-	@$(CC) -O2 -Wall -Wextra -DAS_GC_STRESS -o $(BUILD)/as_test_gcstress tests/unit/as_test.c $(AS_CORE) -Ic/apps/as -Iinclude/abi
-	@$(BUILD)/as_test_gcstress
 
-# Robustness suite: deep recursion, huge allocations, many locals, boundary
-# values -- the paths that a runtime rewrite breaks first. Uses only the public
-# API (as_interpret/as_capture/as_gc_live), so it survives representation changes.
-test-as-stress: check-asops check-abi
-	@mkdir -p $(BUILD)
-	@$(CC) -O2 -Wall -Wextra -o $(BUILD)/as_stress tests/unit/as_stress.c $(AS_CORE) -Ic/apps/as -Iinclude/abi
-	@$(BUILD)/as_stress
 
 # Host `asc`: the as core + the as.c entry built natively (no --target -> arm64
 # host binary), used at `make` time to precompile the stdlib .as to .la. `-c`
@@ -3381,75 +3485,39 @@ ASC := $(BUILD)/asc
 # opcode change forces asc (and therefore every .la) to rebuild. Without this
 # dep a bumped AS_BC_VERSION silently keeps stale .la files that the kernel's
 # as_load then rejects (cf. the roots_bundle.inc dep gotcha).
-$(ASC): $(AS_CORE) c/apps/as/as.c c/apps/as/as.h
+$(ASC): $(AS_CORE) c/apps/as/cli/main.c
 	@mkdir -p $(BUILD)
-	$(CC) -O2 -o $@ c/apps/as/as.c $(AS_CORE) -Ic/apps/as -Iinclude/abi
+	$(CC) -O2 -o $@ c/apps/as/cli/main.c $(AS_CORE) -Ic/apps/as -Iinclude/abi
 
-# Precompile the LibLogit library modules (fsroot/as/lib/*.as) to .la (compiled
-# bytecode). -c is compile-only (no run), so even a lib with module-mate calls
-# (mathx) is fine; packed to /usr/as/lib/.
-$(BUILD)/%.la: fsroot/as/lib/%.as $(ASC) | check-asops
-	$(ASC) -c $< -o $@
+# The rule that precompiled fsroot/as/lib/*.as to .la bytecode stood here. Its
+# output was packed to /usr/as/lib/ and preferred over the source by the VM's
+# module loader. Nothing loads bytecode now: a native .aex links the library
+# statically at build time, and /usr/as/lib ships the A3 source alone.
 
 # M21-P3 self-hosting S1: the AetherScript lexer (lib/aslex.as) must emit a
 # token stream byte-identical to the C lexer over the whole in-tree corpus.
-test-selfhost-lex: check-asops check-abi $(BUILD)/asc
+test-selfhost-lex: check-abi $(BUILD)/asc
 	@bash tests/unit/run-selfhost-lex.sh $(BUILD)/asc
 
-# S2/S3: programs compiled by the self-hosted compiler (lib/asc.as) run identically.
-test-selfhost-compile: check-asops check-abi test-as-examples $(BUILD)/asc
-	@bash tests/unit/run-selfhost-compile.sh $(BUILD)/asc
+# test-selfhost-compile, test-selfhost-fixpoint and test-as-bcstable stood here
+# until the A2 engine left (2026-09-16). Their inputs died with it: lib/asc.as
+# (the AetherScript-written A2 compiler), its compat2 .lacache staging and
+# asc_driver.as are deleted, and `asc -c` bytecode emission no longer exists,
+# so each gate failed at its first cp/compile before any assertion could run.
+# The fixpoint itself remains a proven, dated result (c75cc4799, M21-P3); what
+# is gone is the ability to re-run it, which is what a gate is. Their scripts
+# were deleted in the same change. test-selfhost-lex survives because it was
+# already re-pointed at native A3 stream comparison; the self-hosting story now
+# lives there (aslex.as is still AetherScript-written and still shipped).
+test-selfhost: test-selfhost-lex
 
-# S4: the self-hosting fixpoint -- the compiler compiled by itself reproduces itself.
-test-selfhost-fixpoint: check-asops check-abi $(BUILD)/asc
-	@bash tests/unit/run-selfhost-fixpoint.sh $(BUILD)/asc
-
-test-selfhost: test-selfhost-lex test-selfhost-compile test-selfhost-fixpoint
-
-# Bytecode stability: the runtime-rewrite milestone changes how values, objects,
-# the GC and lookups are represented -- but NOT what the compiler emits. Hashes
-# every compiled stdlib module against a checked-in baseline, so a slice that
-# accidentally perturbs codegen is caught at the module level (and long before
-# the fixpoint test would notice a 37 KB binary moved).
-test-as-bcstable: check-asops check-abi $(BUILD)/asc
-	@bash tests/unit/run-bcstable.sh $(BUILD)/asc
-
-# The runtime rewrite replaces the allocator and object headers: a chunk overrun
-# corrupts a DIFFERENT object, so the crash lands far from the cause. The target
-# can't run a sanitizer (freestanding, no runtime), but the host can -- use it.
-# Slow (gcstress x asan), so it is not part of test-as-fast.
-test-as-asan: check-asops check-abi
-	@mkdir -p $(BUILD)
-	@$(CC) -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer \
-	    -o $(BUILD)/as_test_asan tests/unit/as_test.c $(AS_CORE) -Ic/apps/as -Iinclude/abi
-	@$(BUILD)/as_test_asan
-	@$(CC) -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -DAS_GC_STRESS \
-	    -o $(BUILD)/as_stress_asan tests/unit/as_stress.c $(AS_CORE) -Ic/apps/as -Iinclude/abi
-	@$(BUILD)/as_stress_asan
-
-# M27 NEGATIVE CONTROL. A port owns a file descriptor, so the one thing the
-# collector must do for a port the script dropped is close it -- and a backstop
-# nobody has watched fail is not a backstop. -DAS_PORT_NO_FINALIZE removes
-# exactly that one close() in as_port.c and nothing else. `port_drop_backstop`
-# in as_test.c then opens 400 files without closing any of them and asserts that
-# after a collection the live count is back at zero; without the finalizer it
-# stays at 400. On the host that is a leak the counter sees; on Logit, whose fd
-# table is 16 entries, it is the 17th open() failing. This target REQUIRES the
-# suite to fail, and requires the failure to be that one check.
-# Watched failing on 2026-08-08: 1/350, port_drop_backstop, want [true true]
-# got [true false] -- the second `true` is `port_stats()["open"] <= 1`.
-test-as-port-negctl: check-asops check-abi
-	@mkdir -p $(BUILD)
-	@$(CC) -O2 -Wall -Wextra -DAS_PORT_NO_FINALIZE -o $(BUILD)/as_test_noport \
-	    tests/unit/as_test.c $(AS_CORE) -Ic/apps/as -Iinclude/abi
-	@if $(BUILD)/as_test_noport > $(BUILD)/as_noport.log 2>&1; then \
-	    echo "FAIL: the suite passed WITHOUT the port finalizer -- the backstop is not load-bearing"; \
-	    exit 1; \
-	 else \
-	    echo "negative control ok: without the GC's close() the handles stay open --"; \
-	    grep -a -A2 "port_drop_backstop" $(BUILD)/as_noport.log | head -4; \
-	    tail -2 $(BUILD)/as_noport.log; \
-	 fi
+# The M27 port-fd backstop negative control (test-as-port-negctl) retired with
+# the A2 suite it exercised (2026-09-16): -DAS_PORT_NO_FINALIZE removed exactly
+# one close() in as_port.c and required `port_drop_backstop` in as_test.c to
+# fail -- watched failing 2026-08-08 (1/350, want [true true] got [true
+# false]). A3's ports are native runtime values, not GC'd VM objects; the idea
+# transfers if and when ports regain a collector, and is not rebuilt
+# speculatively here.
 
 # The M27 shell suite, host-side: the same command sequence tests/boot/run-shell-test.sh
 # feeds /bin/sh, fed instead to fsroot/as/examples/ash.as. Seconds, not minutes --
@@ -3462,13 +3530,12 @@ test-ash: $(ASC)
 test-shell-as: $(ISO) $(DISK)
 	@bash tests/boot/run-shell-as-test.sh $(ISO) $(DISK)
 
-# The gate every runtime slice must pass before it is committed: unit + GC stress
-# + robustness + completion + the three self-hosting stages + the bytecode
-# baseline. All host, ~1 minute. `test-as-os` (QEMU) is the separate slow gate --
-# a host-green slice can still break on the 24 MiB static arena.
-test-as-fast: test-as test-as-gcstress test-as-stress test-complete \
-              test-selfhost-lex test-selfhost-compile test-selfhost-fixpoint test-as-bcstable \
-              test-as-port-negctl test-ash
+# The fast host AS gate: completion + the surviving self-hosting lex stage +
+# the ash shell suite. The A2 core family (test-as/gcstress/stress/asan/
+# port-negctl), the selfhost compile/fixpoint stages, bcstable and the
+# A1-to-A2 migration gate retired with the A2 engine -- tombstones above say
+# where each one's coverage went. `test-as-os` (QEMU) is the separate slow gate.
+test-as-fast: test-complete test-selfhost-lex test-ash
 
 # --- the kernel log ring, host-side ---------------------------------------
 # Compiles the REAL c/kernel/diag/klog.c + kprintf.c against tests/unit/klogstub
@@ -5142,7 +5209,6 @@ bench-aui: $(ISO) $(BUILD)/gallery.aex
 -include tests/libc.mk
 -include tests/as-m28.mk
 -include tests/asview.mk
--include tests/asshipped.mk
 -include tests/asdiag.mk
 -include tests/smpstorm.mk
 -include tests/sweep.mk
@@ -5617,4 +5683,3 @@ include tests/crc32_perf.mk
 include tests/svg_stylesheet.mk
 
 -include tests/astyped.mk
--include tests/asmigration.mk

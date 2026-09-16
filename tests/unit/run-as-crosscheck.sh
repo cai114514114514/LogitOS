@@ -7,16 +7,18 @@
 # reference. AetherScript is the one place that already HAS two full
 # implementations of the same specification --
 #
-#     the C compiler        c/apps/as/compiler.c + lexer.c  (what /bin/as runs)
+#     the C compiler        c/apps/as/legacy/compiler.c + lexer.c  (what /bin/as runs)
 #     the self-hosted one   fsroot/as/lib/asc.as + aslex.as (written in AS)
 #
 # -- and until this script they were never compared. The neighbouring gates do
 # not close it:
 #   * run-selfhost-lex.sh compares TOKENS, not bytecode -- it stops at the lexer.
-#   * run-selfhost-compile.sh compares RUNTIME OUTPUT of 9 programs. Two
+#   * run-selfhost-compile.sh (retired with the A2 engine, 2026-09-16)
+#     compared RUNTIME OUTPUT of 9 programs. Two
 #     compilers can emit different code that prints the same thing, and nine
 #     programs is nine.
-#   * run-selfhost-fixpoint.sh compiles exactly ONE input, asc.as. It proves the
+#   * run-selfhost-fixpoint.sh (retired with the A2 engine) compiled exactly
+#     ONE input, asc.as. It proves the
 #     self-hosted compiler is a fixed point of ITSELF; it says nothing about any
 #     other program, and nothing about the C compiler on any program but that
 #     one.
