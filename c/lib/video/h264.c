@@ -547,7 +547,12 @@ static int decode_slice(h264dec *d, bs_t *bs, slice_t *sl,
         total = d->mbw * d->mbh;
     } else {
         if (!d->cur) return H264_ERR_CORRUPT;
-        if (sl->first_mb_in_slice >= total) return H264_ERR_CORRUPT;
+        /* Signed guard: bs_ue yields 0..2^32-1 and the parse cast keeps it in
+         * int, so a crafted first_mb_in_slice >= 2^31 arrives negative and a
+         * bare `>= total` would wave it through to &d->mb[addr]. Found by the
+         * 2026-09-16 audit. */
+        if (sl->first_mb_in_slice < 0 || sl->first_mb_in_slice >= total)
+            return H264_ERR_CORRUPT;
         if (d->cur_sps->mb_width != d->mbw || d->cur_sps->mb_height != d->mbh)
             return H264_ERR_CORRUPT;
     }
