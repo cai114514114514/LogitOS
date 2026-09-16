@@ -44,7 +44,25 @@
   use-after-free、修后干净）；一元 `-`/`~` 静默丢弃（补 float 取负 +
   其余按名拒绝）。test-as-examples 保持绿。
 
-其余 78 条待处理，按子系统分别记录在上列各报告中。
+### 中危批（2026-09-16 晚，全部 16 条已处理）
+
+已修复 14 条：01 capture 闩死（thread_create 改返 0/-1）、02 exec 栈放置、
+03 lfsro 越界与空洞语义、04 TCP 死连接重传、06 sbix dupe 递归深度、
+07 DC 钳制 + SPS crop 校验、08 缓存上限/双重递减 + DOM 树深、09 scanf
+宽域堆缓冲、10 aui Enter(-1)/sh stdin 保留/terminal FIFO 槽位。
+提交：2d1a40b91 324d32cd8 ceafa7ec1 3b76db470 296e03780 9f71ec61c
+96d3db3b7 867ed33bb f8c73642a。
+
+按设计决定延后 2 条（已与发现一起记录）：
+- 01 tlb fail-stop vs 降级路径：行为语义属 owner 的设计决定，本轮仅把
+  mmsys/uthread 的过期注释对齐现实；
+- 10 sftpd chmod-by-path：修复需要内核新增 SYS_FCHMOD（ABI 扩展），
+  单独成项。
+另 03 的 logitfs "flush 失败不回滚 RAM"（同文件 medium 之一）：完整回滚
+需要四条路径的事务快照机制，最小成本方案（delete 路径恢复 + log 预算
+预检）已在报告中给出，未在本轮实施。
+
+其余 low 59 条待处理，按子系统分别记录在上列各报告中。
 
 ## 建议的处理顺序
 
