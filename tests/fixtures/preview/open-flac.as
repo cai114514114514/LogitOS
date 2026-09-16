@@ -1,4 +1,4 @@
-# aether: 2
+# aether: 3.0
 # The association, exercised the way the Finder exercises it.
 #
 # A double-click in the Finder is SYS_OPEN_PATH and nothing else: the kernel
@@ -12,8 +12,10 @@
 # GUI call except SYS_GUI_CREATE from a process that has no window, and
 # SYS_OPEN_PATH is one of them. The Finder has a window; a CLI script has to
 # ask for one. 200x100, and it is never drawn into.
-title = "opener"
-syscall(SYS_GUI_CREATE, addr(title), 200 * 65536 + 100, 0)
-p = "/media/sample.flac"
-print("opening " + p)
-syscall(SYS_OPEN_PATH, addr(p), 0, 0)
+
+# A3 uses the checked ABI wrappers through one shared association helper.
+from association import open_media
+
+
+def main() -> i64:
+    return open_media("/media/sample.flac")

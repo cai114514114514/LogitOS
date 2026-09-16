@@ -29,7 +29,10 @@ static void project_create(void)
     if(!project_goal[0])return;
     char names[AG_OBJECTS][AG_PATH];const char *paths[AG_OBJECTS];unsigned n=0;
     if(sel_count>AG_OBJECTS){scpy(agent_notice,"最多选择 32 份资料",sizeof agent_notice);return;}
-    for(int i=0;i<sel_count;i++){int dir;if(row_path(sel[i],names[n],AG_PATH,&dir)<0)return;paths[n]=names[n];n++;}
+    /* sel[] holds NAMES now, not row numbers -- see the selection section in
+     * files.c. sel_path() joins them onto cwd, which is sound because the
+     * selection never outlives the directory it was made in. */
+    for(int i=0;i<sel_count;i++){if(sel_path(i,names[n],AG_PATH)<0)return;paths[n]=names[n];n++;}
     if(!n){paths[0]=cwd;n=1;}
     uint64_t context;int rc=ag_publish_selection(paths,n,cwd,&context);
     if(!rc){struct ag_create req={.context=context};scpy(req.goal,project_goal,sizeof req.goal);scpy(req.output,cwd,sizeof req.output);

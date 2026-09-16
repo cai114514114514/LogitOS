@@ -68,7 +68,9 @@ pointer is confirmed on the pixel before the button goes down.
 Usage: qmp_preview.py [--iso X] [--disk X] [--out DIR] [--only NAME,NAME]
                       [--timing-only] [--keep]
 """
+import atexit
 import os
+from pathlib import Path
 import re
 import shutil
 import struct
@@ -82,6 +84,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from qmp_ui import Session, configure, dock_icon, pt, PPM  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.join(ROOT, "tools"))
+from as_examples import guest_command
+from license_audit import _LogitFS
 FIX = os.path.join(ROOT, "tests", "fixtures")
 
 # c/apps/gui/preview/preview.c
@@ -350,8 +355,9 @@ def main(argv):
         print("note: PIL is absent -- the INDEPENDENT still-image check is")
         print("      skipped; the reference dumps still gate every format.")
     if not os.path.isdir(refdir):
-        print("note: no reference dumps in %s (make build/previewref/.stamp) --" % refdir)
-        print("      the per-pixel comparisons degrade to 'not blank'.")
+        if not assoc_only:
+            print("note: no reference dumps in %s (make build/previewref/.stamp) --" % refdir)
+            print("      the per-pixel comparisons degrade to 'not blank'.")
         refdir = None
 
     if timing_only:
@@ -400,8 +406,17 @@ def main(argv):
         ["qemu-system-x86_64",
          "-cdrom", iso,
          "-drive", "file=%s,format=raw,if=none,id=hd0,file.locking=off" % disk,
-         "-device", "virtio-blk-pci,drive=hd0", "-boot", "d", "-snapshot",
-         "-m", "512M", "-smp", "4", "-accel", "tcg,thread=multi", "-cpu", "max",
+         "-device", "virtio-blk-pci,drive=hd0", "-boot", "d",
+         # Association status is read from the private copied disk. A QEMU
+         # snapshot would hide those writes in an inaccessible overlay.
+         *([] if assoc_only else ["-snapshot"]),
+         # Association validates launch arguments, not SMP behavior. Current
+         # compositor diagnostics can interleave inside even a single app
+         # SYS_WRITE on four CPUs (observed inside "open sample.wav"). Use one
+         # CPU for this serial oracle instead of weakening its exact filename
+         # and format assertions. Decode/timing modes retain their four CPUs.
+         "-m", "512M", "-smp", "1" if assoc_only else "4",
+         "-accel", "tcg,thread=multi", "-cpu", "max",
          "-rtc", "base=localtime",
          "-vga", "none", "-device", "virtio-gpu-pci,xres=1280,yres=800",
          # A real sound card, so the audio paths run against a real play cursor
@@ -449,9 +464,41 @@ def main(argv):
 
         # --- the association ------------------------------------------------
         if assoc_only:
+            def process_status(path, timeout=60):
+                """Read the actual child status without serial reconstruction."""
+                deadline = time.monotonic() + timeout
+                while time.monotonic() < deadline and qemu.poll() is None:
+                    ui.cmd({"execute": "stop"})
+                    try:
+                        filesystem = _LogitFS(disk)
+                        try:
+                            inode = filesystem.lookup(path)
+                            data = filesystem.read_file(inode) if inode is not None else b""
+                        finally:
+                            filesystem.close()
+                    finally:
+                        ui.cmd({"execute": "cont"})
+                    if re.fullmatch(rb"\d+\n", data):
+                        return int(data)
+                    time.sleep(0.25)
+                return None
+
             for n, (script, base, label, want) in enumerate(ASSOC):
                 mark = len(read(serial))
-                shell("as /usr/as/%s.as" % script)
+                fixture = Path(FIX) / "preview" / (script + ".as")
+                shell(guest_command(fixture))
+                # A first attempt used an echoed status marker. Four-core
+                # kernel logs split that line inside the value, although the
+                # launcher succeeded. Persist the shell's saved status instead;
+                # a unique path prevents a previous run satisfying this one.
+                status_path = "/a3-exit-%s-%s.txt" % (Path(tmp).name, script)
+                shell("echo $? > " + status_path)
+                status = process_status(status_path)
+                ck(status == 0,
+                   "%s: native launcher exited successfully" % script,
+                   str(status) if status is not None else "no process exit result")
+                if status != 0:
+                    return 1
                 launched = wait_for(r"\[wm\] launched Preview", mark, 60)
                 ck(launched is not None,
                    "%s (%s): a double-click launches Preview" % (base, label),
@@ -472,8 +519,15 @@ def main(argv):
                        "%s: is larger than the 64-byte peek that used to fail"
                        % base, "%s bytes" % opened.group(1))
                 got = wait_for(want, mark, 90)
-                ck(got is not None, "%s (%s): decoded, not refused" % (base, label),
+                ck(got is not None, "%s (%s): Preview recognized the selected format" % (base, label),
                    got.group(0).strip() if got else "no line matching %r" % want)
+                if script == "open-webm":
+                    # A recognized Matroska container is not decoded VP9 or
+                    # Opus. The old association label incorrectly claimed
+                    # decoding here; require the actual two-codec refusal.
+                    refusal = wait_for(r"preview: error clip\.webm: video is vp9 -- no decoder for it here; "
+                                       r"audio is opus -- no decoder for it here", mark, 30)
+                    ck(refusal is not None, "WebM: refusal identifies both unavailable codecs")
 
                 # A picture, because a claim about a viewer that is not a
                 # screenshot is not a claim.
@@ -501,7 +555,7 @@ def main(argv):
                 for f in fails:
                     print("  " + f)
                 return 1
-            print("\nPASS: every association opened in Preview and decoded")
+            print("\nPASS: every native association reached Preview with the expected format or refusal")
             return 0
 
         # --- open Preview from the Dock -----------------------------------
@@ -829,6 +883,14 @@ def main(argv):
             pass
         if keep:
             print("kept %s (serial log, wav capture)" % tmp)
+        else:
+            # tmp holds a PRIVATE COPY of disk.img and logit.iso -- see the
+            # comment above the copyfile pair for why the copy is deliberate.
+            # It is ~587 MB per run, and without this branch every run left
+            # one behind: the `keep` message above implied an else that was
+            # never written, and the leak measured ~100 GB/day across the
+            # boot harnesses.
+            shutil.rmtree(tmp, ignore_errors=True)
 
     if fails:
         print("\n%d FAILED:" % len(fails))

@@ -26,15 +26,35 @@
 # "mse/video-1.m4s" shows up in its list at all.
 PREVIEW_FX := tests/fixtures/media/aac.m4a tests/fixtures/media/pcm.mov \
               tests/fixtures/media/h265.mp4 tests/fixtures/media/mp3.mka
-PREVIEW_AS := $(sort $(wildcard tests/fixtures/preview/*.as))
+PREVIEW_AS := $(sort $(wildcard tests/fixtures/preview/open-*.as))
+PREVIEW_AS_HELPER := tests/fixtures/preview/association.as
+PREVIEW_NATIVE_AEX := $(patsubst tests/fixtures/preview/%.as,$(BUILD)/as-preview/%.aex,$(PREVIEW_AS))
+# These launchers are real A3 executables, installed beside the other native
+# language tools. Keep their sources/helper available for editing as before.
+$(BUILD)/as-preview/%.aex: tests/fixtures/preview/%.as $(PREVIEW_AS_HELPER) $(AS_LIB_SRCS) $(BUILD)/asc $(BUILD)/aether-toolchain/native.a $(BUILD)/aether-toolchain/libc.a $(BUILD)/aether-toolchain/crt0.o | as-toolchain
+	@mkdir -p $(dir $@)
+	$(BUILD)/asc build $< --target logitos-x86_64 --stdlib fsroot/as/lib -o $@
 FS_FILES += tests/fixtures/media/aac.m4a:/media/aac.m4a \
             tests/fixtures/media/pcm.mov:/media/pcm.mov \
             tests/fixtures/media/h265.mp4:/media/clip-h265.mp4 \
             tests/fixtures/media/mp3.mka:/media/clip-audio.mka \
             $(foreach s,$(PREVIEW_AS),$(s):/usr/as/$(notdir $(s))) \
+            $(PREVIEW_AS_HELPER):/usr/as/association.as \
+            $(foreach a,$(PREVIEW_NATIVE_AEX),$(a):/usr/as/bin/$(notdir $(a))) \
             $(BUILD)/previewplay.aex:/bin/previewplay \
             $(BUILD)/previewnegctl.aex:/bin/previewnegctl
-$(DISK): $(PREVIEW_FX) $(PREVIEW_AS) $(BUILD)/previewplay.aex $(BUILD)/previewnegctl.aex
+$(DISK): $(PREVIEW_FX) $(PREVIEW_AS) $(PREVIEW_AS_HELPER) $(PREVIEW_NATIVE_AEX) $(BUILD)/previewplay.aex $(BUILD)/previewnegctl.aex
+
+.PHONY: test-as-preview-launchers-negctl test-as-preview-launchers
+test-as-preview-launchers-negctl: $(BUILD)/asc
+	python3 tests/unit/as_preview_launcher_test.py $(BUILD)/asc --negative-control
+test-as-preview-launchers: test-as-preview-launchers-negctl
+test-as-typed test-preview-assoc: test-as-preview-launchers
+AS_PREVIEW_GUEST_OUT ?= $(BUILD)/preview-native-$(shell date +%Y%m%d-%H%M%S)
+.PHONY: test-as-preview-guest
+test-as-preview-guest: test-as-preview-launchers as-toolchain $(AS_TYPED_GUEST_BASE)/logit.iso $(AS_TYPED_GUEST_BASE)/preview.aex $(addprefix $(AS_TYPED_GUEST_BASE)/,login.aex sh.aex echo.aex cat.aex)
+	python3 tests/boot/run-as-preview.py --build $(BUILD) --base $(AS_TYPED_GUEST_BASE) --out $(AS_PREVIEW_GUEST_OUT)
+test-as-a3-only: test-as-preview-guest
 
 # --- the reference decode the screen is compared against --------------------
 # See the header of tests/unit/img_dump.c for why the ANIMATED cases cannot use

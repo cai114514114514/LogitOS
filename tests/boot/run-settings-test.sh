@@ -42,7 +42,8 @@ set -u
 ISO="${1:?usage: run-settings-test.sh <iso> <disk.img>}"
 DISK="${2:?usage: run-settings-test.sh <iso> <disk.img>}"
 QEMU="${QEMU:-qemu-system-x86_64}"
-SC=/usr/as/examples/setcheck.as
+# Execute the packaged native artifact; this source is now A3.
+SC=/usr/as/bin/setcheck.aex
 
 WORK="$(mktemp -d)"
 DISKC="$WORK/disk.img"
@@ -106,14 +107,14 @@ common() {   # $1 = log, $2 = which boot
 }
 
 # ---- boot 1: a machine that has never been configured -----------------------
-boot "as $SC diag
-as $SC set ui.dark 1
-as $SC set ui.accent 0xC81E64
-as $SC set net.dhcp 0
-as $SC set net.ip 10.0.2.99
-as $SC set net.gw 10.0.2.2
-as $SC frame clock 120 140 400 300
-as $SC set notify.history 7
+boot "$SC diag
+$SC set ui.dark 1
+$SC set ui.accent 0xC81E64
+$SC set net.dhcp 0
+$SC set net.ip 10.0.2.99
+$SC set net.gw 10.0.2.2
+$SC frame clock 120 140 400 300
+$SC set notify.history 7
 cat /etc/settings.conf
 echo BOOT1-DONE
 " "$WORK/b1.log" 12
@@ -135,13 +136,13 @@ grep -aq "^ui.dark = 1$" "$WORK/b1.log" || fail "boot 1: /etc/settings.conf is n
 grep -aq "^# crc32 = " "$WORK/b1.log" || fail "boot 1: no crc32 diagnostic line was written"
 
 # ---- boot 2: the whole feature ----------------------------------------------
-boot "as $SC check ui.dark 1
-as $SC check ui.accent 0xC81E64
-as $SC check net.dhcp 0
-as $SC check net.ip 10.0.2.99
-as $SC check win.clock.frame '120 140 400 300 1 0 0 120 140 400 300'
-as $SC check notify.history 7
-as $SC diag
+boot "$SC check ui.dark 1
+$SC check ui.accent 0xC81E64
+$SC check net.dhcp 0
+$SC check net.ip 10.0.2.99
+$SC check win.clock.frame '120 140 400 300 1 0 0 120 140 400 300'
+$SC check notify.history 7
+$SC diag
 echo BOOT2-DONE
 " "$WORK/b2.log" 10
 grep -aq "BOOT2-DONE" "$WORK/b2.log" || fail "boot 2 never finished its commands"
@@ -171,7 +172,7 @@ grep -aq "SETTINGS_READY diag=0" "$WORK/b2.log" || \
     fail "boot 2: the settings file did not load cleanly on the second boot"
 
 # ---- boot 3: cut the file in half -------------------------------------------
-boot "as $SC truncate 90
+boot "$SC truncate 90
 cat /etc/settings.conf
 echo BOOT3-DONE
 " "$WORK/b3.log" 10
@@ -180,8 +181,8 @@ common "$WORK/b3.log" 3
 grep -aq "SETCHECK-TRUNCATED 90" "$WORK/b3.log" || fail "boot 3: the truncation did not happen"
 
 # ---- boot 4: boot INTO the truncated file -----------------------------------
-boot "as $SC diag
-as $SC check ui.dark 0
+boot "$SC diag
+$SC check ui.dark 0
 echo BOOT4-DONE
 " "$WORK/b4.log" 10
 grep -aq "BOOT4-DONE" "$WORK/b4.log" || fail "boot 4 never finished its commands"
@@ -192,7 +193,7 @@ grep -aq "SETCHECK-OK ui.dark = 0" "$WORK/b4.log" || \
     fail "boot 4: a truncated file did not fall back to defaults"
 
 # ---- boot 5: a badly hand-edited file ---------------------------------------
-boot "as $SC garbage
+boot "$SC garbage
 cat /etc/settings.conf
 echo BOOT5-DONE
 " "$WORK/b5.log" 10
@@ -201,9 +202,9 @@ common "$WORK/b5.log" 5
 grep -aq "SETCHECK-GARBAGE-WRITTEN" "$WORK/b5.log" || fail "boot 5: the garbage file was not written"
 
 # ---- boot 6: boot INTO the garbage ------------------------------------------
-boot "as $SC diag
-as $SC check ui.dark 0
-as $SC check net.ip 10.0.2.15
+boot "$SC diag
+$SC check ui.dark 0
+$SC check net.ip 10.0.2.15
 echo BOOT6-DONE
 " "$WORK/b6.log" 10
 grep -aq "BOOT6-DONE" "$WORK/b6.log" || fail "boot 6 never finished its commands"
