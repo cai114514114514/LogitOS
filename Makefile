@@ -5693,4 +5693,6 @@ include tests/crc32_perf.mk
 
 include tests/svg_stylesheet.mk
 
+include tests/aseval.mk
+
 -include tests/astyped.mk

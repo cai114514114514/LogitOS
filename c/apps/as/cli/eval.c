@@ -31,12 +31,35 @@ typedef struct {
     char *owned;
 } Ev;
 
+/* HOW A STATEMENT LIST ENDS. This used to be 0 = fell through, 1 = returned,
+ * and `break` had nowhere to go. Two more answers is the whole mechanism: a
+ * loop consumes UN_BREAK and UN_CONTINUE, everything else passes them
+ * outward, and UN_RETURN keeps travelling until a function body absorbs it.
+ * A caller that treated any non-zero as "returned" would carry a break out
+ * through its own function, which is the bug this enum exists to make
+ * unrepresentable. */
+enum { UN_FALL = 0, UN_RETURN, UN_BREAK, UN_CONTINUE };
+
+/* One per PROGRAM, as against Ex which is one per CALL.
+ *
+ * Globals live here because two frames share them: a module's top-level
+ * statements are compiled into __as_initialize_module and every other
+ * function reads what they wrote. `failed` and `status` moved here for the
+ * same reason -- a failure inside a callee has to stop the caller, and before
+ * user calls existed there was only ever one frame to hold them. */
 typedef struct {
     AsTypedProject *p;
-    AtFunction *f;
-    Ev locals[AT_LOCALS];
+    int depth;
     int failed;
     int64_t status;
+    Ev globals[AT_GLOBALS];
+} Run;
+
+typedef struct {
+    Run *r;
+    AtFunction *f;
+    Ev locals[AT_LOCALS];
+    Ev ret;
 } Ex;
 
 static void ev_clear(Ev *v)
@@ -60,8 +83,8 @@ static Ev ev_str(const char *s, int64_t n, char *owned)
 static int fail(Ex *x, const char *name, const char *detail)
 {
     fprintf(stderr, "%s: %s\n", name, detail);
-    x->failed = 1;
-    x->status = 1;
+    x->r->failed = 1;
+    x->r->status = 1;
     return 0;
 }
 
@@ -114,6 +137,28 @@ static const char *op_name(int op)
 
 static Ev eval_expr(Ex *x, AtNode *n);
 static int eval_stmts(Ex *x, AtNode *n);
+static Ev eval_call(Ex *x, AtNode *n);
+
+/* A value leaving the frame that owns it. A borrowed string (owned == NULL)
+ * points into a local slot the callee is about to clear, so it is copied; an
+ * owned one is moved. This is the same rule assignment already states, at the
+ * other boundary. */
+static Ev ev_export(Ex *x, Ev v)
+{
+    if (v.kind != EV_STR || v.owned || !v.s) {
+        return v;
+    }
+    char *copy = malloc((size_t)v.n + 1);
+    if (!copy) {
+        fail(x, "MemoryError", "returned string");
+        return (Ev){0};
+    }
+    memcpy(copy, v.s, (size_t)v.n);
+    copy[v.n] = 0;
+    v.s = copy;
+    v.owned = copy;
+    return v;
+}
 
 static Ev eval_string(Ex *x, AtNode *n)
 {
@@ -157,7 +202,7 @@ static Ev eval_print(Ex *x, AtNode *n)
             fputc(' ', stdout);
         }
         Ev a = eval_expr(x, n->args[i]);
-        if (!x->failed) {
+        if (!x->r->failed) {
             print_value(a);
         }
         ev_clear(&a);
@@ -172,7 +217,7 @@ static Ev eval_binary(Ex *x, AtNode *n)
     Ev left = eval_expr(x, n->a);
     Ev right = eval_expr(x, n->b);
     Ev out = {0};
-    if (x->failed) {
+    if (x->r->failed) {
         ev_clear(&left);
         ev_clear(&right);
         return out;
@@ -232,6 +277,75 @@ static Ev eval_binary(Ex *x, AtNode *n)
         }
         r = a / b;
         break;
+    /* THE BITWISE AND SHIFT OPERATORS, AND WHY THEY CARRY THE BACKEND'S
+     * CHECKS RATHER THAN C's SEMANTICS. This evaluator and the LLVM backend
+     * share no arithmetic, so every rule the backend spends instructions on
+     * has to be restated here or the two disagree in the direction that is
+     * hardest to see: a plausible number. at_ir_shift() (backend/llvm/
+     * numeric.c) rejects a count outside [0, bits) with an UNSIGNED compare,
+     * so a negative count is refused by the same test; and for `<<` it shifts
+     * the result back and requires the original, which is how it catches a
+     * value shifted off the top -- including a changed sign. C would give
+     * undefined behaviour for both. */
+    case T_AMP:
+        r = a & b;
+        break;
+    case T_PIPE:
+        r = a | b;
+        break;
+    case T_CARET:
+        r = a ^ b;
+        break;
+    case T_SHL:
+        if ((uint64_t)b >= 64) {
+            fail(x, "ValueError", "shift count is outside the width of the type");
+            break;
+        }
+        r = (int64_t)((uint64_t)a << b);
+        if ((r >> b) != a) {
+            fail(x, "OverflowError", "integer <<");
+            r = 0;
+        }
+        break;
+    case T_SHR:
+        if ((uint64_t)b >= 64) {
+            fail(x, "ValueError", "shift count is outside the width of the type");
+            break;
+        }
+        r = a >> b;
+        break;
+    case T_POW: {
+        /* Exponentiation by squaring with a CHECKED multiply, which is
+         * checked_power() in the backend -- and its comment names the trap
+         * this loop copies: never square the base after the last exponent
+         * bit, because 100**1 fits while the unused 100*100 would not. */
+        if (b < 0) {
+            fail(x, "ValueError", "negative exponent for integer **");
+            break;
+        }
+        int64_t acc = 1, factor = a;
+        uint64_t rem = (uint64_t)b;
+        while (rem) {
+            if (rem & 1) {
+                if (factor && (acc > INT64_MAX / factor || acc < INT64_MIN / factor)) {
+                    fail(x, "OverflowError", "integer **");
+                    break;
+                }
+                acc *= factor;
+            }
+            rem >>= 1;
+            if (!rem) {
+                break;
+            }
+            if (factor && (factor > INT64_MAX / factor || factor < INT64_MIN / factor)) {
+                fail(x, "OverflowError", "integer **");
+                break;
+            }
+            factor *= factor;
+        }
+        r = acc;
+        break;
+    }
     case T_PERCENT:
         if (!b) {
             fail(x, "ZeroDivisionError", "integer %");
@@ -299,7 +413,7 @@ static Ev eval_binary(Ex *x, AtNode *n)
 static Ev eval_expr(Ex *x, AtNode *n)
 {
     Ev v = {0};
-    if (!n || x->failed) {
+    if (!n || x->r->failed) {
         return v;
     }
     if (n->kind == AN_INT) {
@@ -330,6 +444,28 @@ static Ev eval_expr(Ex *x, AtNode *n)
         fail(x, "RuntimeError", "unbound name in guest execution");
         return v;
     }
+    /* A MODULE-SCOPE VARIABLE IS NOT A LOCAL, and nothing here read one until
+     * now. The four lines a person types first --
+     *
+     *     a = 1
+     *     b = 2
+     *     print(a / b)
+     *
+     * -- have no `def` at all, so the checker puts the assignments in
+     * __as_initialize_module and the names become GLOBALS (AS3900 says so:
+     * "top-level statements that become main()"). Reading one fell through to
+     * the bottom of this function and reported `guest execution does not
+     * implement this expression yet`, which named a node kind rather than the
+     * thing the program did. Borrowed, not owned, exactly like a local. */
+    if (n->kind == AN_GLOBAL) {
+        if (n->symbol >= 0 && n->symbol < AT_GLOBALS) {
+            Ev g = x->r->globals[n->symbol];
+            g.owned = NULL;
+            return g;
+        }
+        fail(x, "RuntimeError", "unbound global in guest execution");
+        return v;
+    }
     if (n->kind == AN_UNARY) {
         Ev a = eval_expr(x, n->a);
         if (n->op == T_MINUS && a.kind == EV_INT) {
@@ -340,12 +476,16 @@ static Ev eval_expr(Ex *x, AtNode *n)
             }
         } else if (n->op == T_MINUS && a.kind == EV_FLOAT) {
             a.f = -a.f;
+        } else if (n->op == T_TILDE && a.kind == EV_INT) {
+            /* ~x is -(x+1) and cannot overflow for any int64: the backend
+             * emits `xor -1` with no guard, so neither does this. */
+            a.i = ~a.i;
         } else if (n->op == T_NOT) {
             int truth = a.kind == EV_BOOL ? (int)a.i : a.kind == EV_INT ? a.i != 0 : a.kind == EV_STR ? a.n != 0 : 0;
             ev_clear(&a);
             a.kind = EV_BOOL;
             a.i = !truth;
-        } else if (!x->failed) {
+        } else if (!x->r->failed) {
             /* Refuse by name, like every other gap here: returning the
              * operand unchanged made `print(-1.5)` print 1.5 and `print(~5)`
              * print 5 -- a wrong answer is worse than a refusal
@@ -371,72 +511,192 @@ static Ev eval_expr(Ex *x, AtNode *n)
         if (n->symbol == AT_CALL_PRINT) {
             return eval_print(x, n);
         }
-        char buf[160];
-        if (n->symbol >= 0 && n->symbol < x->p->nfunctions) {
-            snprintf(buf, sizeof buf,
-                     "guest execution does not implement the call to `%s` here — run the program on the host",
-                     x->p->functions[n->symbol].name);
-        } else {
-            snprintf(buf, sizeof buf,
-                     "guest execution does not implement this call here — run the program on the host");
-        }
-        fail(x, "RuntimeError", buf);
-        return v;
+        return eval_call(x, n);
     }
     fail(x, "RuntimeError", "guest execution does not implement this expression yet");
     return v;
 }
 
+/* CALLING A FUNCTION THE PROGRAM DECLARED.
+ *
+ * THE FRAME IS ON THE HEAP, NOT THE C STACK, and that is a property of where
+ * this runs rather than a style choice: Ex carries AT_LOCALS (256) Ev slots,
+ * about 14 KiB, and Studio's Run executes /bin/as as an ordinary CLI program
+ * with a 1 MiB stack (CLI_STACK_PAGES in c/kernel/exec/load/exec.c). Frames on
+ * the C stack would put the recursion ceiling at roughly seventy calls and
+ * spend it as a #PF with no message; on the heap the ceiling is a number this
+ * file chooses and reports.
+ *
+ * EV_DEPTH_MAX is that number. Infinite recursion is a program bug the
+ * evaluator has to survive, because the alternative on this machine is a
+ * silent fault inside the editor the program was launched from. */
+#define EV_DEPTH_MAX 256
+
+static Ev eval_call(Ex *x, AtNode *n)
+{
+    Ev out = {0};
+    if (n->symbol < 0 || n->symbol >= x->r->p->nfunctions) {
+        fail(x, "RuntimeError",
+             "guest execution does not implement this call here — run the program on the host");
+        return out;
+    }
+    AtFunction *f = &x->r->p->functions[n->symbol];
+    /* The refusals that remain are the ones whose CALLING CONVENTION this does
+     * not model, named individually so a refusal still points at a construct
+     * rather than at "a call". */
+    if (f->method_owner || f->lexical_parent || f->capture_count) {
+        char buf[160];
+        snprintf(buf, sizeof buf,
+                 "guest execution does not implement the call to `%s` here (methods and closures "
+                 "need a receiver) — run the program on the host",
+                 f->name);
+        fail(x, "RuntimeError", buf);
+        return out;
+    }
+    if (n->count != f->nparams || n->count > AT_LOCALS) {
+        fail(x, "RuntimeError", "argument count does not match the declaration");
+        return out;
+    }
+    if (x->r->depth >= EV_DEPTH_MAX) {
+        fail(x, "RecursionError", "call depth exceeded in guest execution");
+        return out;
+    }
+    Ex *callee = calloc(1, sizeof *callee);
+    if (!callee) {
+        fail(x, "MemoryError", "call frame");
+        return out;
+    }
+    callee->r = x->r;
+    callee->f = f;
+    /* "Parameters occupy the first nparams entries" -- AtFunction's own
+     * comment in ir/model.h, which is what makes this binding a fact about the
+     * checker rather than an assumption. Arguments are evaluated in the
+     * CALLER's frame and exported into the callee's, so a string argument read
+     * out of a caller local does not point into a slot the callee may
+     * overwrite. */
+    for (int i = 0; i < n->count && !x->r->failed; i++) {
+        callee->locals[i] = ev_export(x, eval_expr(x, n->args[i]));
+    }
+    if (!x->r->failed) {
+        x->r->depth++;
+        eval_stmts(callee, f->body);
+        x->r->depth--;
+        out = ev_export(callee, callee->ret);
+        callee->ret.owned = NULL;
+    }
+    for (int i = 0; i < AT_LOCALS; i++) {
+        ev_clear(&callee->locals[i]);
+    }
+    ev_clear(&callee->ret);
+    free(callee);
+    return out;
+}
+
+/* Store into a local or a global slot, taking ownership of `v`. Returns the
+ * slot so a compound assignment can read it back. */
+static void ev_store(Ex *x, AtNode *target, Ev v)
+{
+    Ev *slot = NULL;
+    if (target->kind == AN_NAME && target->symbol >= 0 && target->symbol < AT_LOCALS) {
+        slot = &x->locals[target->symbol];
+    } else if (target->kind == AN_GLOBAL && target->symbol >= 0 && target->symbol < AT_GLOBALS) {
+        slot = &x->r->globals[target->symbol];
+    }
+    if (!slot) {
+        ev_clear(&v);
+        fail(x, "RuntimeError", "guest execution does not implement this assignment target");
+        return;
+    }
+    ev_clear(slot);
+    *slot = v;
+}
+
 static int eval_stmts(Ex *x, AtNode *n)
 {
-    while (n && !x->failed) {
+    while (n && !x->r->failed) {
         if (n->kind == AN_EXPR) {
             Ev v = eval_expr(x, n->a);
             ev_clear(&v);
         } else if (n->kind == AN_PASS) {
             /* nothing */
-        } else if (n->kind == AN_ASSIGN && n->a && n->a->kind == AN_NAME && n->op == T_ASSIGN) {
-            Ev v = eval_expr(x, n->b);
+        } else if (n->kind == AN_ASSIGN && n->a &&
+                   (n->a->kind == AN_NAME || n->a->kind == AN_GLOBAL)) {
+            /* `name op= value` is `name = name op value` and nothing more --
+             * the checker has already proved the target readable, which is why
+             * the read below needs no separate initialization test. Splitting
+             * the two spellings apart here would be a second arithmetic
+             * implementation for the operators eval_binary already owns. */
+            Ev v;
+            if (n->op == T_ASSIGN) {
+                v = eval_expr(x, n->b);
+            } else {
+                AtNode compound = *n;
+                compound.kind = AN_BINARY;
+                compound.op = as_compound_operator(n->op);
+                if (compound.op == n->op) {
+                    char buf[96];
+                    snprintf(buf, sizeof buf,
+                             "guest execution does not implement compound `%s` here",
+                             op_name(n->op));
+                    fail(x, "RuntimeError", buf);
+                    return UN_FALL;
+                }
+                v = eval_binary(x, &compound);
+            }
             /* A string read from another local arrives as a borrow
              * (owned == NULL): deep-copy it before it enters the slot, or the
              * next reassignment of the SOURCE slot would free a buffer this
              * slot still points at. ASan-confirmed UAF before this copy
              * (2026-09-16 audit). */
-            if (!x->failed && v.kind == EV_STR && !v.owned && v.s) {
-                char *copy = malloc((size_t)v.n + 1);
-                if (!copy) {
-                    fail(x, "MemoryError", "string assignment");
-                } else {
-                    memcpy(copy, v.s, (size_t)v.n);
-                    copy[v.n] = 0;
-                    v.s = copy;
-                    v.owned = copy;
-                }
+            v = ev_export(x, v);
+            if (!x->r->failed) {
+                ev_store(x, n->a, v);
+            } else {
+                ev_clear(&v);
             }
-            if (!x->failed && n->a->symbol >= 0 && n->a->symbol < AT_LOCALS) {
-                ev_clear(&x->locals[n->a->symbol]);
-                x->locals[n->a->symbol] = v;
-                v.owned = NULL;
-            }
-            ev_clear(&v);
+        } else if (n->kind == AN_BREAK) {
+            return UN_BREAK;
+        } else if (n->kind == AN_CONTINUE) {
+            return UN_CONTINUE;
         } else if (n->kind == AN_IF) {
             Ev c = eval_expr(x, n->a);
             int truth = c.kind == EV_BOOL ? (int)c.i : c.kind == EV_INT ? c.i != 0 : 0;
             ev_clear(&c);
-            if (eval_stmts(x, truth ? n->b : n->c)) {
-                return 1;
+            /* PROPAGATE, do not translate: a `break` inside the branch belongs
+             * to the enclosing LOOP, and an `if` that answered UN_RETURN for
+             * all three would end the function instead. */
+            int unwind = eval_stmts(x, truth ? n->b : n->c);
+            if (unwind) {
+                return unwind;
             }
         } else if (n->kind == AN_WHILE) {
             for (;;) {
                 Ev c = eval_expr(x, n->a);
                 int truth = c.kind == EV_BOOL ? (int)c.i : c.kind == EV_INT ? c.i != 0 : 0;
                 ev_clear(&c);
-                if (!truth || x->failed) {
+                if (!truth || x->r->failed) {
                     break;
                 }
-                if (eval_stmts(x, n->b)) {
-                    return 1;
+                int unwind = eval_stmts(x, n->b);
+#ifdef AS_EVAL_NO_UNWIND
+                /* NEGATIVE CONTROL (tests/aseval.mk): the shape this code had
+                 * before break existed -- any non-zero answer ends the
+                 * function. `break` then returns from the enclosing function
+                 * instead of leaving the loop, and `continue` ends the program.
+                 * The gate's break/continue cases must go red against this. */
+                if (unwind) {
+                    return UN_RETURN;
                 }
+#else
+                if (unwind == UN_BREAK) {
+                    break;
+                }
+                if (unwind == UN_RETURN) {
+                    return unwind;
+                }
+                /* UN_CONTINUE is the loop's to absorb, and absorbing it IS the
+                 * next iteration -- there is no separate step to skip. */
+#endif
             }
         } else if (n->kind == AN_FOR && n->b && n->b->kind == AN_CALL &&
                    n->b->symbol == AT_CALL_RANGE && n->a && n->a->kind == AN_NAME) {
@@ -463,34 +723,71 @@ static int eval_stmts(Ex *x, AtNode *n)
                 return 0;
             }
             int slot = n->a->symbol;
-            for (int64_t i = start; !x->failed && (step > 0 ? i < stop : i > stop); i += step) {
+            for (int64_t i = start; !x->r->failed && (step > 0 ? i < stop : i > stop); i += step) {
                 if (slot >= 0 && slot < AT_LOCALS) {
                     ev_clear(&x->locals[slot]);
                     x->locals[slot] = ev_int(i);
                 }
-                if (eval_stmts(x, n->c)) {
-                    return 1;
+                int unwind = eval_stmts(x, n->c);
+#ifdef AS_EVAL_NO_UNWIND
+                if (unwind) {
+                    return UN_RETURN;
                 }
+#else
+                if (unwind == UN_BREAK) {
+                    break;
+                }
+                if (unwind == UN_RETURN) {
+                    return unwind;
+                }
+#endif
             }
         } else if (n->kind == AN_RETURN) {
+            /* The value goes in the FRAME, not straight into the process exit
+             * status. It used to go into the status because there was only one
+             * frame and it was main's; with user calls, `return n * n` inside
+             * sq() would otherwise overwrite the program's exit code with 49.
+             * as_typed_eval() takes the status from main's frame alone. */
             if (n->a) {
-                Ev v = eval_expr(x, n->a);
-                if (v.kind == EV_INT) {
-                    x->status = v.i;
-                }
-                ev_clear(&v);
+                ev_clear(&x->ret);
+                x->ret = ev_export(x, eval_expr(x, n->a));
             }
-            return 1;
+            return UN_RETURN;
         } else {
             char buf[160];
             snprintf(buf, sizeof buf,
                      "guest execution does not implement `%s` here — run the program on the host",
                      stmt_name(n));
             fail(x, "RuntimeError", buf);
-            return 0;
+            return UN_FALL;
         }
         n = n->next;
     }
+    return UN_FALL;
+}
+
+/* Run one function to completion in a fresh frame. The frame is heap-allocated
+ * for eval_call()'s reason: Ex is ~14 KiB and this runs on a 1 MiB stack. */
+static int run_function(Run *r, AtFunction *f, Ev *result)
+{
+    Ex *x = calloc(1, sizeof *x);
+    if (!x) {
+        fprintf(stderr, "MemoryError: call frame\n");
+        r->failed = 1;
+        return -1;
+    }
+    x->r = r;
+    x->f = f;
+    eval_stmts(x, f->body);
+    if (result) {
+        *result = ev_export(x, x->ret);
+        x->ret.owned = NULL;
+    }
+    for (int i = 0; i < AT_LOCALS; i++) {
+        ev_clear(&x->locals[i]);
+    }
+    ev_clear(&x->ret);
+    free(x);
     return 0;
 }
 
@@ -511,10 +808,52 @@ int as_typed_eval(AsTypedProject *p)
         fprintf(stderr, "Native executable requires main() -> i64 or main() -> None\n");
         return 1;
     }
-    Ex x = {.p = p, .f = &p->functions[main]};
-    eval_stmts(&x, x.f->body);
-    for (int i = 0; i < AT_LOCALS; i++) {
-        ev_clear(&x.locals[i]);
+    /* Run is heap-allocated because it carries AT_GLOBALS (1024) Ev slots --
+     * about 57 KiB, which is not a thing to put on the stack of a program
+     * running with 1 MiB of it. */
+    Run *r = calloc(1, sizeof *r);
+    if (!r) {
+        fprintf(stderr, "MemoryError: program state\n");
+        return 1;
     }
-    return x.failed ? 1 : (int)x.status;
+    r->p = p;
+    /* THE MODULE INITIALIZERS RUN FIRST, and skipping them was not a missing
+     * feature so much as a missing HALF of the program: the checker compiles a
+     * file's top-level statements into __as_initialize_module, so for a script
+     * with no `def` at all, every line the person wrote is in there and main()
+     * holds only what followed. Running main alone executed the second half of
+     * a program against globals that were never assigned. The order is the
+     * checker's (initialization_order), not source order, because imports must
+     * initialize before the module that imports them -- the same order
+     * emit.c's @global_initialized flags are built from. */
+#ifdef AS_EVAL_NO_INIT
+    /* NEGATIVE CONTROL (tests/aseval.mk): run main without the module
+     * initializers, which is exactly what this function did before. Every
+     * program whose variables live at module scope -- the shape a person
+     * writes first -- then executes against globals nothing assigned. */
+    p->ninitializers = 0;
+#endif
+    for (int i = 0; i < p->ninitializers && !r->failed; i++) {
+        int module = p->initialization_order[i];
+        for (int j = 0; j < p->nfunctions; j++) {
+            if (p->functions[j].module_initializer && p->functions[j].module == module) {
+                run_function(r, &p->functions[j], NULL);
+                break;
+            }
+        }
+    }
+    Ev status = {0};
+    if (!r->failed) {
+        run_function(r, &p->functions[main], &status);
+    }
+    if (status.kind == EV_INT) {
+        r->status = status.i;
+    }
+    ev_clear(&status);
+    for (int i = 0; i < AT_GLOBALS; i++) {
+        ev_clear(&r->globals[i]);
+    }
+    int code = r->failed ? 1 : (int)r->status;
+    free(r);
+    return code;
 }

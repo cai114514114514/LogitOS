@@ -351,8 +351,20 @@ static uint64_t setup_user_stack(uint64_t cr3, const struct elf_image *img,
         uint64_t va = top - (uint64_t)i * 0x1000;
         /* Never replace an already-mapped page: a colliding image page would
          * leak the stack frame and corrupt the image (same refusal as
-         * place_page()). */
-        if (vmm_pte(cr3, va)) return 0;
+         * place_page()).
+         *
+         * THE TEST IS THE PRESENT BIT, NOT THE POINTER. vmm_pte() returns the
+         * address of the leaf ENTRY and is non-NULL as soon as a page TABLE
+         * covers `va` -- it says nothing about whether `va` is mapped. Asking
+         * only whether the pointer is non-NULL refused every eager page after
+         * the first: page 1 allocates the leaf table, and pages 2..n are its
+         * neighbours in that same table, so the guard fired on an entry it had
+         * just watched being created empty. That returned 0 -> "[wm] launch:
+         * load failed" for every app whose stack takes two eager pages, which
+         * is all of them (CLI_STACK_EAGER_MIN is 2). place_page() is the
+         * contract this cites and it dereferences: `e && (*e & 1)`. */
+        uint64_t *pte = vmm_pte(cr3, va);
+        if (pte && (*pte & 1)) return 0;
         uint64_t frame = pmm_alloc_any();
         if (!frame) return 0;
         vmm_map_page(va, frame, stack_flags);

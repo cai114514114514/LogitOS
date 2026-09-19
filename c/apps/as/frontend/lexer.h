@@ -118,4 +118,32 @@ Token *as_lex_recover(const char *source, int *count, AsLexError *error,
  * read AsLexError, which says whether the failure was lexical or an allocation
  * -- a distinction as_err could not carry. */
 
+/* THE OPERATOR INSIDE A COMPOUND ASSIGNMENT. `a += b` is `a = a + b`, and
+ * which `+` that is was decided in backend/llvm/compound.c and, once the guest
+ * evaluator learned to run one, would have been decided a second time in
+ * cli/eval.c. That is CLAUDE.md rule 3 -- one jar, two doors -- on a mapping
+ * that grows every time the language gains an operator: the day `**=` or `&=`
+ * is added, a second table that did not follow turns `x **= 2` into a silent
+ * `x %= 2` rather than an error, because the backend's form ended in an
+ * unguarded `: T_PERCENT`. Returns the token UNCHANGED when it is not a
+ * compound assignment, so a caller can refuse by name instead of computing
+ * with a fallback. */
+static inline int as_compound_operator(int op)
+{
+    switch (op) {
+    case T_PLUSEQ:
+        return T_PLUS;
+    case T_MINUSEQ:
+        return T_MINUS;
+    case T_STAREQ:
+        return T_STAR;
+    case T_SLASHEQ:
+        return T_SLASH;
+    case T_PERCENTEQ:
+        return T_PERCENT;
+    default:
+        return op;
+    }
+}
+
 #endif /* AETHERSCRIPT_LEXER_H */

@@ -154,11 +154,11 @@ void at_ir_compound_assignment(Gen *g, AtNode *node)
                    previous.text, node->a->id);
     }
     Val right = at_ir_expression(g, node->b);
-    int operation = node->op == T_PLUSEQ    ? T_PLUS
-                    : node->op == T_MINUSEQ ? T_MINUS
-                    : node->op == T_STAREQ  ? T_STAR
-                    : node->op == T_SLASHEQ ? T_SLASH
-                                            : T_PERCENT;
+    /* The same mapping the guest evaluator needs; shared rather than spelled
+     * twice (as_compound_operator, frontend/lexer.h). Its unchanged-token
+     * fallback replaces the `: T_PERCENT` that used to stand here, which would
+     * have turned any compound operator added later into a silent remainder. */
+    int operation = as_compound_operator(node->op);
     Val result = at_ir_numeric(g, operation, previous, right, node, 0);
     if (at_ir_references(g, result.type)) {
         /* A subsequent dictionary insertion can allocate too. */
