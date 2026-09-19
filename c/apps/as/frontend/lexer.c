@@ -452,9 +452,17 @@ static Token *lex_source(const char *src, int *count, AsLexError *error,
                     }
                     break;
                 case '*':
+                    /* A4-F3 longest match: `**=` is ONE token. It must beat
+                     * both `**` + `=` and `*` + `*=`, so the third char is
+                     * tested only inside the `**` branch. */
                     if (*p == '*') {
                         p++;
-                        push(&b, T_POW, s, 2, line);
+                        if (*p == '=') {
+                            p++;
+                            push(&b, T_POWEQ, s, 3, line);
+                        } else {
+                            push(&b, T_POW, s, 2, line);
+                        }
                     } else if (*p == '=') {
                         p++;
                         push(&b, T_STAREQ, s, 2, line);
@@ -479,19 +487,32 @@ static Token *lex_source(const char *src, int *count, AsLexError *error,
                     }
                     break;
                 case '&':
-                    push(&b, T_AMP, s, 1, line);
+                    if (*p == '=') {
+                        p++;
+                        push(&b, T_AMPEQ, s, 2, line);
+                    } else {
+                        push(&b, T_AMP, s, 1, line);
+                    }
                     break;
                 case '|':
                     if (*p == '>') {
                         p++;
                         push(&b, T_PIPEOP, s, 2, line);
                     } /* M27 pipeline */
-                    else {
+                    else if (*p == '=') {
+                        p++;
+                        push(&b, T_PIPEEQ, s, 2, line);
+                    } else {
                         push(&b, T_PIPE, s, 1, line);
                     }
                     break;
                 case '^':
-                    push(&b, T_CARET, s, 1, line);
+                    if (*p == '=') {
+                        p++;
+                        push(&b, T_CARETEQ, s, 2, line);
+                    } else {
+                        push(&b, T_CARET, s, 1, line);
+                    }
                     break;
                 case '~':
                     push(&b, T_TILDE, s, 1, line);
@@ -520,7 +541,16 @@ static Token *lex_source(const char *src, int *count, AsLexError *error,
                         push(&b, T_LE, s, 2, line);
                     } else if (*p == '<') {
                         p++;
-                        push(&b, T_SHL, s, 2, line);
+                        /* A4-F3 longest match: `<<=` is ONE token, decided by
+                         * testing the third char inside the `<<` branch, so
+                         * `a << = b` still lexes SHL + ASSIGN and is refused
+                         * by the parser, not misread as compound assignment. */
+                        if (*p == '=') {
+                            p++;
+                            push(&b, T_SHLEQ, s, 3, line);
+                        } else {
+                            push(&b, T_SHL, s, 2, line);
+                        }
                     } else if (*p == '-') {
                         p++;
                         push(&b, T_LARROW, s, 2, line);
@@ -535,7 +565,20 @@ static Token *lex_source(const char *src, int *count, AsLexError *error,
                         push(&b, T_GE, s, 2, line);
                     } else if (*p == '>') {
                         p++;
-                        push(&b, T_SHR, s, 2, line);
+                        /* A4-F3 longest match: `>>=` is ONE token. The C++ trap
+                         * this invites -- a greedy `>>` stealing the two `>`s
+                         * that close nested generics (`vector<vector<int>>`) --
+                         * does not exist here: A3 generics close with `]`
+                         * (`Dict[str, List[i64]]`), so no grammar position has
+                         * `>>` legally followed by `=`. The lexer gate PROVES
+                         * the generic-close form lexes unchanged rather than
+                         * trusting this sentence. */
+                        if (*p == '=') {
+                            p++;
+                            push(&b, T_SHREQ, s, 3, line);
+                        } else {
+                            push(&b, T_SHR, s, 2, line);
+                        }
                     } else {
                         push(&b, T_GT, s, 1, line);
                     }

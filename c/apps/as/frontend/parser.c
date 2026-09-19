@@ -357,7 +357,12 @@ static AtNode *statement(AtParser *r)
             annotation = at_parse_type(r);
         }
         int op = at_parse_current(r).type;
-        if (op == T_ASSIGN || (op >= T_PLUSEQ && op <= T_PERCENTEQ)) {
+        /* A4-F3: the compound-assignment range grew to T_SHREQ. It works as a
+         * contiguous range because all eleven op= tokens sit adjacent in
+         * lexer.h's enum; if a future token breaks contiguity this must become
+         * a predicate, or a non-compound token in the gap would parse as a
+         * plausible assignment (absent beats present-and-wrong). */
+        if (op == T_ASSIGN || (op >= T_PLUSEQ && op <= T_SHREQ)) {
             at_parse_advance(r);
             n = at_parse_node(r, AN_ASSIGN, t);
             if (n) {

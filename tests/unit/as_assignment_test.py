@@ -46,6 +46,11 @@ def exercise(compiler):
             assert result.returncode == 1 and any(
                 error["code"] == code for error in report["diagnostics"]), report
         invalid_targets = {
+            # A4-F3 parse-accept proof: all six new operators must build an
+            # AN_ASSIGN (they fail only later, in sema, with the SAME numeric
+            # diagnostic the old five produce). A lexer that split `**=` into
+            # `**` `=`, or a parser range that stopped at T_PERCENTEQ, would
+            # surface here as AS3100 instead -- absent beats present-and-wrong.
             "temporary-struct": ("""
                 struct Item:
                     value: i64
@@ -95,6 +100,33 @@ def exercise(compiler):
         for optimization in ("-O0", "-O2"):
             result = sanitized(ir, RUNTIME, work / "compound", optimization)
             assert result.returncode == 0 and result.stdout == COMPOUND_OUTPUT, result
+    # A4-F3 parse-accept proof: each new operator must build an AN_ASSIGN and
+    # pass checking -- the binary forms `** << >> & | ^` already exist
+    # (numeric.c lowers T_POW via checked_power and shifts via at_ir_shift),
+    # so as_compound_operator routes the compound forms onto the same
+    # lowering. A lexer that split `**=` into `**` `=`, or a parser range that
+    # stopped at T_PERCENTEQ, would surface here as AS3100 instead -- absent
+    # beats present-and-wrong. The F3-semantics task owns the edge rules
+    # (negative exponent, shift-count range, narrow-width round trips).
+    parse_accept = {
+        "poweq": "count **= 2\n",
+        "ampeq": "count &= 2\n",
+        "pipeeq": "count |= 2\n",
+        "careteq": "count ^= 2\n",
+        "shleq": "count <<= 2\n",
+        "shreq": "count >>= 2\n",
+    }
+    with tempfile.TemporaryDirectory(prefix="as-compound-accept-") as temporary:
+        work = Path(temporary)
+        for name, statement in parse_accept.items():
+            source = work / (name + ".as")
+            source.write_text("# aether: 3.0\ndef main() -> None:\n    count: i64 = 1\n    " + statement)
+            result = invoke([compiler, "check", source, "--json"])
+            report = json.loads(result.stdout)
+            codes = [error["code"] for error in report["diagnostics"]]
+            assert result.returncode == 0 and not codes, (name, report)
+    print(f"PASS compound accept: {len(parse_accept)} operators parsed as AN_ASSIGN and checked")
+
     print(f"PASS assignment: {len(cases) + len(invalid_targets) + 2} diagnostics, locals/modules, atomic stores, O0/O2 ASan")
     print("PASS compound assignment: receiver/index order, old values, resizing, GC and failure ordering")
 

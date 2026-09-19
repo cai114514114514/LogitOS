@@ -71,6 +71,25 @@ typedef enum {
     T_STAREQ,
     T_SLASHEQ,
     T_PERCENTEQ, /* compound assignment */
+    /* A4-F3: **= &= |= ^= <<= >>= extend the enum rather than an "augmented"
+     * flag, because every consumer (sema's dispatch, backend/llvm/compound.c,
+     * cli/eval.c) switches on the TOKEN and routes the inner operator through
+     * as_compound_operator() below -- a flag would mean a second token->op
+     * table somewhere, which is the drift the jar exists to prevent. They sit
+     * HERE, adjacent to the other op= tokens, because parser.c accepts
+     * compound assignment as the contiguous range T_PLUSEQ..T_SHREQ.
+     * The cost of that placement: T_SEMI..T_ERROR all renumber, and
+     * fsroot/as/lib/aslex.as numbers every token literally (the hand-copied
+     * table the retired check-asops gate existed to catch drifting). It is
+     * updated in the SAME COMMIT, and the differential test-as-lexer-lib gate
+     * re-proves the two lexers agree -- that gate is the reason a renumber is
+     * safe to do at all. */
+    T_POWEQ,
+    T_AMPEQ,
+    T_PIPEEQ,
+    T_CARETEQ,
+    T_SHLEQ,
+    T_SHREQ,
     T_SEMI,      /* ';' statement separator */
     T_FSTR,      /* M23 f-string: raw interior, holes intact */
     /* M27 ports. `<-` wins over `<` `-`: `x <-1` now lexes as x <- 1, so a
@@ -127,7 +146,12 @@ Token *as_lex_recover(const char *source, int *count, AsLexError *error,
  * `x %= 2` rather than an error, because the backend's form ended in an
  * unguarded `: T_PERCENT`. Returns the token UNCHANGED when it is not a
  * compound assignment, so a caller can refuse by name instead of computing
- * with a fallback. */
+ * with a fallback.
+ *
+ * A4-F3 kept that appointment: `**= &= |= ^= <<= >>=` land here in the SAME
+ * COMMIT as their tokens. Any future compound token must do the same -- a
+ * token nobody maps parses as a plausible assignment and then falls to the
+ * unchanged-token fallback in EVERY consumer at once, silently. */
 static inline int as_compound_operator(int op)
 {
     switch (op) {
@@ -141,6 +165,18 @@ static inline int as_compound_operator(int op)
         return T_SLASH;
     case T_PERCENTEQ:
         return T_PERCENT;
+    case T_POWEQ:
+        return T_POW;
+    case T_AMPEQ:
+        return T_AMP;
+    case T_PIPEEQ:
+        return T_PIPE;
+    case T_CARETEQ:
+        return T_CARET;
+    case T_SHLEQ:
+        return T_SHL;
+    case T_SHREQ:
+        return T_SHR;
     default:
         return op;
     }

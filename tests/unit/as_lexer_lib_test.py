@@ -45,12 +45,38 @@ def corpus_program(work):
     # this is it -- the corpus did not lose coverage of anything A3 can express.
     # Every remaining source is `# aether: 3.0`, which was not true at 59.
     assert len(sources) >= 56, "lexer corpus unexpectedly shrank"
+    # A4-F3: longest-match and generic-close probes, compared through the SAME
+    # differential (C oracle vs native aslex.as) as the shipped corpus. These
+    # are lexed only, never parsed, so bare operator lines are legal input --
+    # the parser accept proof lives in as_assignment_test.py.
+    operators = work / "compound-operators.as"
+    operators.write_text(
+        "a **= b\n"      # T_POWEQ must beat both `**`+`=` and `*`+`*=`
+        "a <<= b\n"
+        "a >>= b\n"
+        "a &= b\n"
+        "a |= b\n"
+        "a ^= b\n"
+        "a**=b\n"        # unspaced is still one token
+        "a ** b\n"       # and the two-char operators survive beside them
+        "a << b\n"
+        "a >> b\n"
+        "a & b\n"
+        "a | b\n"
+        "a ^ b\n")
+    generic_close = work / "generic-close.as"
+    generic_close.write_text("d = Dict[str, List[i64]]\nx >> = 1\n")
+    sources += [operators, generic_close]
     program = [DUMP, "def main() -> None:"]
     expected = []
     for index, source in enumerate(sources):
         result = invoke([oracle, source])
         assert result.returncode == 0, (source, result)
-        marker = f"source {index}: {source.relative_to(ROOT)}"
+        try:
+            label = str(source.relative_to(ROOT))
+        except ValueError:
+            label = source.name  # synthetic probes live in the temp work dir
+        marker = f"source {index}: {label}"
         program.append("    print(" + json.dumps(marker) + ")")
         # A3 text literals accept UTF-8 and ordinary escaped control characters.
         program.append("    dump(" + json.dumps(source.read_text(), ensure_ascii=False) + ")")
@@ -70,6 +96,7 @@ def exercise(compiler):
             result = sanitized(ir, RUNTIME, work / "fixture", optimization)
             assert result.returncode == 0 and result.stdout == "native lexer library ok\n", result
         entry, expected, count = corpus_program(work)
+        assert count >= 58, "A4-F3 synthetic probes lost from the differential corpus"
         emit_ir(compiler, entry, ir)
         for optimization in ("-O0", "-O2"):
             result = sanitized(ir, RUNTIME, work / "corpus", optimization)
@@ -97,6 +124,24 @@ def negative_control(compiler):
         result = sanitized(ir, RUNTIME, work / "negative", "-O0")
         assert result.returncode == 1 and "AssertionError" in result.stderr, result
     print("PASS native lexer control: wrong string token observed failing")
+
+    # A4-F3: drop the `**=` longest-match step inside aslex.as's `**` branch
+    # and the fixture's compounds() battery must redden -- proof the native
+    # lexer library cannot silently split `**=` either.
+    with tempfile.TemporaryDirectory(prefix="as-lexer-poweq-") as temporary:
+        work = Path(temporary)
+        entry = work / "main.as"
+        entry.write_text(FIXTURE.read_text())
+        library = work / "aslex.as"
+        text = LIBRARY.read_text()
+        anchor = 'self.emit(T_POWEQ, "**=")'
+        assert text.count(anchor) == 1, "poweq mutation anchor changed"
+        library.write_text(text.replace(anchor, 'self.emit(T_POW, "**")'))
+        ir = work / "lexer.ll"
+        emit_ir(compiler, entry, ir)
+        result = sanitized(ir, RUNTIME, work / "poweq-negative", "-O0")
+        assert result.returncode == 1 and "AssertionError" in result.stderr, result
+    print("PASS native lexer control: dropped `**=` longest-match observed failing")
 
 
 def driver_control(compiler):

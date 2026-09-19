@@ -72,15 +72,26 @@ T_MINUSEQ = 60
 T_STAREQ = 61
 T_SLASHEQ = 62
 T_PERCENTEQ = 63
-T_SEMI = 64
-T_FSTR = 65
+# A4-F3 compound assignment: these six and the shifted T_SEMI..T_ERROR values
+# are hand-copied from c/apps/as/frontend/lexer.h -- the drift risk the retired
+# check-asops gate measured. The differential test-as-lexer-lib corpus gate
+# stands in for it: any disagreement here mismatches every corpus token after
+# the inserted point, so a renumber cannot land silently.
+T_POWEQ = 64
+T_AMPEQ = 65
+T_PIPEEQ = 66
+T_CARETEQ = 67
+T_SHLEQ = 68
+T_SHREQ = 69
+T_SEMI = 70
+T_FSTR = 71
 # M27 ports: |>  ->  <-  and the `with` keyword.
-T_PIPEOP = 66
-T_ARROW = 67
-T_LARROW = 68
-T_WITH = 69
-T_EOF = 70
-T_ERROR = 71
+T_PIPEOP = 72
+T_ARROW = 73
+T_LARROW = 74
+T_WITH = 75
+T_EOF = 76
+T_ERROR = 77
 
 KEYWORDS = {"if": T_IF, "or": T_OR, "in": T_IN, "def": T_DEF, "and": T_AND,
             "not": T_NOT, "for": T_FOR, "nil": T_NIL, "try": T_TRY,
@@ -322,7 +333,13 @@ class Lexer:
                 elif c == 42:
                     if n2 == 42:
                         self.i += 1
-                        self.emit(T_POW, "**")
+                        # Longest match, mirroring lexer.c: `**=` is one token;
+                        # the third char is tested only inside the `**` branch.
+                        if self.at(self.i) == 61:
+                            self.i += 1
+                            self.emit(T_POWEQ, "**=")
+                        else:
+                            self.emit(T_POW, "**")
                     elif n2 == 61:
                         self.i += 1
                         self.emit(T_STAREQ, "*=")
@@ -341,15 +358,26 @@ class Lexer:
                     else:
                         self.emit(T_PERCENT, "%")
                 elif c == 38:
-                    self.emit(T_AMP, "&")
+                    if n2 == 61:
+                        self.i += 1
+                        self.emit(T_AMPEQ, "&=")
+                    else:
+                        self.emit(T_AMP, "&")
                 elif c == 124:
                     if n2 == 62:
                         self.i += 1
                         self.emit(T_PIPEOP, "|>")
+                    elif n2 == 61:
+                        self.i += 1
+                        self.emit(T_PIPEEQ, "|=")
                     else:
                         self.emit(T_PIPE, "|")
                 elif c == 94:
-                    self.emit(T_CARET, "^")
+                    if n2 == 61:
+                        self.i += 1
+                        self.emit(T_CARETEQ, "^=")
+                    else:
+                        self.emit(T_CARET, "^")
                 elif c == 126:
                     self.emit(T_TILDE, "~")
                 elif c == 61:
@@ -370,7 +398,11 @@ class Lexer:
                         self.emit(T_LE, "<=")
                     elif n2 == 60:
                         self.i += 1
-                        self.emit(T_SHL, "<<")
+                        if self.at(self.i) == 61:
+                            self.i += 1
+                            self.emit(T_SHLEQ, "<<=")
+                        else:
+                            self.emit(T_SHL, "<<")
                     elif n2 == 45:
                         self.i += 1
                         self.emit(T_LARROW, "<-")
@@ -382,7 +414,14 @@ class Lexer:
                         self.emit(T_GE, ">=")
                     elif n2 == 62:
                         self.i += 1
-                        self.emit(T_SHR, ">>")
+                        # `>>=` is one token; `Dict[str, List[i64]]` never meets
+                        # a following `=` here, and the C-lexer differential gate
+                        # proves the two implementations agree on that.
+                        if self.at(self.i) == 61:
+                            self.i += 1
+                            self.emit(T_SHREQ, ">>=")
+                        else:
+                            self.emit(T_SHR, ">>")
                     else:
                         self.emit(T_GT, ">")
                 else:

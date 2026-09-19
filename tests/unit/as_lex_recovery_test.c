@@ -78,6 +78,34 @@ int main(void)
     require(reports == 3 && errors == 3 && later == 1, "errors preserve following declaration");
     free(tokens);
 
+    /* A4-F3 longest-match proof: each new compound operator must arrive as
+     * ONE token, and its two-token prefixes must NOT absorb a following '='
+     * or a bare second operator char. The generic-close probe is the C++ trap
+     * the plan names: A3 generics close with ']', so `Dict[str, List[i64]]`
+     * never presents `>>=` -- but if the lexer ever grew a `>`-closing
+     * construct, `x >>= y` and `x >> = y` diverging would be a silent
+     * misparse, so this is asserted rather than assumed. */
+    const struct {
+        const char *source;
+        int middle;     /* token type expected after the leading identifier */
+        int middle_len; /* its source length */
+    } compounds[] = {
+        {"x **= 2", T_POWEQ, 3}, {"x &= 1", T_AMPEQ, 2}, {"x |= 1", T_PIPEEQ, 2},
+        {"x ^= 1", T_CARETEQ, 2}, {"x <<= 3", T_SHLEQ, 3}, {"x >>= 3", T_SHREQ, 3},
+        {"x ** 2", T_POW, 2},   {"x & 1", T_AMP, 1},     {"x | 1", T_PIPE, 1},
+        {"x ^ 1", T_CARET, 1},  {"x << 3", T_SHL, 2},    {"x >> 3", T_SHR, 2},
+        {"d = Dict[str, List[i64]]", T_ASSIGN, 1}, /* generic close unchanged */
+        {"x >> = 3", T_SHR, 2},  /* spaced: SHR + ASSIGN, never a fake compound */
+    };
+    for (unsigned c = 0; c < sizeof compounds / sizeof *compounds; c++) {
+        int n = 0;
+        Token *t = as_lex_source(compounds[c].source, &n, &error, NULL);
+        require(t && n >= 2 && t[0].type == T_IDENT, "compound probe lexes");
+        require(t[1].type == compounds[c].middle && t[1].len == compounds[c].middle_len,
+                "compound probe longest match");
+        free(t);
+    }
+
     char large[4096];
     strcpy(large, broken);
     for (int index = 0; index < 100; index++) {

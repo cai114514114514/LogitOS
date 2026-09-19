@@ -34,6 +34,24 @@ def main():
         assert result.returncode == 1 and "FAIL recovery keeps token stream" in result.stderr, result
     print("PASS negative control: fail-fast lexer loses recovered token stream")
 
+    # A4-F3: drop the `**=` longest-match step inside the `**` branch and the
+    # compound battery above must redden -- this is the watch-it-fail half of
+    # the new probes, so the C lexer cannot silently split `**=` into `**` `=`.
+    anchor = "push(&b, T_POWEQ, s, 3, line);"
+    assert text.count(anchor) == 1, "poweq mutation anchor changed"
+    with tempfile.TemporaryDirectory(prefix="as-lex-poweq-") as temporary:
+        directory = Path(temporary)
+        mutant = directory / "lexer.c"
+        mutant.write_text(text.replace(anchor, "push(&b, T_POW, s, 2, line);"))
+        executable = directory / "test"
+        subprocess.run([os.environ.get("CC", "clang"), "-std=c11", "-O1", "-g",
+                        "-fsanitize=address,undefined", "-I" + str(ROOT / "c/apps/as"),
+                        str(ROOT / "tests/unit/as_lex_recovery_test.c"), str(mutant),
+                        "-o", str(executable)], check=True, capture_output=True)
+        result = subprocess.run([str(executable)], capture_output=True, text=True, timeout=20)
+        assert result.returncode == 1 and "FAIL compound probe longest match" in result.stderr, result
+    print("PASS negative control: `**=` without its longest-match step splits into `**` `=`")
+
 
 if __name__ == "__main__":
     main()
