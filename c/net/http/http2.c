@@ -767,7 +767,10 @@ static int on_data(struct h2_conn *c, uint8_t flags, uint32_t sid,
             int rc = s->sink(s->sink_ctx, data, dlen);
             if (rc != H2_OK) { stream_fail(c, s, H2_ERR_CANCEL, rc); return H2_OK; }
         } else {
-            if (s->body_len + dlen > s->body_max) {
+            /* Subtraction, not `body_len + dlen > body_max`: body_max is an
+             * int supplied by h2_stream_limit()'s caller, so the sum's width
+             * is not this file's to assume. */
+            if (s->body_len > s->body_max || dlen > s->body_max - s->body_len) {
                 stream_fail(c, s, H2_ERR_CANCEL, H2_E_TOOLARGE);
                 return H2_OK;
             }

@@ -706,7 +706,8 @@ static int build_ch(struct tls_sess *s, uint8_t *ch, int max,
      * two-key-share note in tls_int.h for why one scalar serving both offers
      * is sound. */
     int extra = s->group2 ? (4 + HYB_X_LEN) : 0;
-    if (n + 12 + s->publen + extra > max) return -1;
+    /* Four signed terms: summed in 64 bits so the check cannot wrap. */
+    if ((int64_t)n + 12 + (int64_t)s->publen + extra > max) return -1;
     n += put_u16(ch + n, EXT_KEY_SHARE); n += put_u16(ch + n, s->publen + 6 + extra);
     n += put_u16(ch + n, s->publen + 4 + extra);
     n += put_u16(ch + n, s->group); n += put_u16(ch + n, s->publen);

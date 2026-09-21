@@ -254,7 +254,10 @@ struct db { uint8_t *p; int n, max, err; };
 
 static void db_raw(struct db *d, const void *src, int n)
 {
-    if (d->err || d->n + n > d->max) { d->err = 1; return; }
+    /* Written as a subtraction, not `d->n + n > d->max`: the two are the same
+     * expression until the sum overflows and then they are opposites. Same
+     * idiom as modelf.c's bounds checks, for the same reason. */
+    if (d->err || n < 0 || d->n > d->max || n > d->max - d->n) { d->err = 1; return; }
     memcpy(d->p + d->n, src, (size_t)n); d->n += n;
 }
 static void db_u8(struct db *d, uint8_t b) { db_raw(d, &b, 1); }
@@ -271,7 +274,7 @@ static void db_close(struct db *d, int body)
     int len = d->n - body;
     if (len < 0x80) { d->p[body - 1] = (uint8_t)len; return; }
     int extra = (len < 0x100) ? 1 : 2;
-    if (len > 0xffff || d->n + extra > d->max) { d->err = 1; return; }
+    if (len > 0xffff || d->n > d->max || extra > d->max - d->n) { d->err = 1; return; }
     memmove(d->p + body + extra, d->p + body, (size_t)len);
     d->p[body - 1] = (uint8_t)(0x80 | extra);
     if (extra == 1) d->p[body] = (uint8_t)len;
