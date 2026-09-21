@@ -5726,6 +5726,23 @@ void app_main(void)
          * navigation) does not clear a flag some EARLIER event in the same
          * burst had already set. */
         int nev = 0, chrome_edit_only = 0, page_only_repaint = 0;
+        /* EVERY event in the burst was page-only, not just the last one.
+         *
+         * The dispatch below used to trust page_only_repaint only when
+         * nev == 1, and the reason was sound: the flag is reset per event, so
+         * after the loop it describes the LAST event and a disqualifying event
+         * does not clear what an EARLIER one set. The cost was that holding a
+         * key down, or a wheel that delivers several notches, batches into one
+         * burst and every such burst repainted the WHOLE canvas -- measured at
+         * 1.1-1.6 M composited px per frame for one keystroke into a page
+         * <input> (tests/qmp/qmp_repaint.py, b-type).
+         *
+         * An AND across the burst answers the objection instead of avoiding
+         * it: this is folded at the TOP of each iteration, so it covers events
+         * 1..n-1 including the ones that `continue` out of the body, and the
+         * dispatch ANDs it with the last event's own flag. At nev == 1 nothing
+         * has been folded yet and the condition is bit-for-bit what it was. */
+        int page_only_all = 1;
         unsigned long long burst_started = 0;
         while (!navigated &&
 #ifndef BROWSER_UNBOUNDED_EVENT_BURST
@@ -5734,6 +5751,11 @@ void app_main(void)
 #endif
                browser_poll_event(&e)) {
             if (!nev) burst_started = monotonic_ms(); /* no extra idle clock read */
+            /* Fold the PREVIOUS event's classification before it is reset. At
+             * the top, not the bottom: the body has `continue` paths (window
+             * focus, close) and a fold at the end would skip exactly the
+             * events that disqualify the narrow path. */
+            if (nev) page_only_all = page_only_all && page_only_repaint;
             nev++;
             chrome_edit_only = 0;
             page_only_repaint = 0;
@@ -6978,7 +7000,8 @@ frame_mouse_up_done:
         if (need) {
             if (nev == 1 && chrome_edit_only && !navigated) redraw_chrome(editing);
             else if (!navigated &&
-                     ((nev == 1 && page_only_repaint) || (nev == 0 && timer_page_only)) &&
+                     ((nev >= 1 && page_only_all && page_only_repaint) ||
+                      (nev == 0 && timer_page_only)) &&
                      !overlays_active())
                 redraw_page(editing);
             else redraw(editing);
