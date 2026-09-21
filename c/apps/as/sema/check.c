@@ -400,6 +400,22 @@ static int statements(Checker *c, AtNode *n)
                 !(n->op == T_PLUSEQ && n->type == AT_STR)) {
                 at_check_error(c, n, "AS3202", "Compound assignment requires numeric values");
             }
+            /* A4-F3: `**= &= |= ^= <<= >>=` take the INTEGER constraint set of
+             * LANGUAGE_3.md section 2, not Number. The generic numeric gate
+             * above does NOT cover this: `f: f64; f **= 2.0` would check clean
+             * here, and compound.c's lowering door would refuse it again, but
+             * `&=`-style operators on a float would otherwise reach
+             * at_ir_numeric's integer-only rows. Binary float ** exists since
+             * 2026-09-20 (sema admits concrete f32/f64, backend lowers
+             * llvm.pow), yet `**=` stays integer-only on purpose: section 2
+             * lists 乘方 under Integer, and the compound set follows it.
+             * eval.c's mirror: refuse these six for any non-integer type. */
+            if (n->op != T_ASSIGN && n->op != T_PLUSEQ && n->op != T_MINUSEQ &&
+                n->op != T_STAREQ && n->op != T_SLASHEQ && n->op != T_PERCENTEQ && n->type &&
+                !at_satisfies_constraint(c->p, n->type, AT_CONSTRAINT_INTEGER)) {
+                at_check_error(c, n, "AS3202",
+                               "Bitwise, shift and power compound assignment require integers");
+            }
         } else if (n->kind == AN_WITH) {
             int count = at_check_resource_binding(c, n);
             if (count) {
@@ -713,7 +729,7 @@ void at_check_functions(AsTypedProject *p)
         if (type->kind == AT_DICT &&
             !at_satisfies_constraint(p, type->key, AT_CONSTRAINT_HASHABLE)) {
             at_error(p, 0, site, "AS3601",
-                     "Dictionary keys require Hashable: integers, bool or str");
+                     "Dictionary keys require Hashable: integers, bool, str or float");
         }
         int element = p->types[i].element;
         if (element == AT_VOID) {

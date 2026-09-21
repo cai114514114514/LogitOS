@@ -11,6 +11,11 @@ typedef struct {
     int m, pos, depth;
     int implicit_main; /* -1, or the synthesized main() for top-level statements. */
     AtFunction *f;
+    /* Struct templates under declaration: their type parameters must resolve
+     * inside field annotations the way a function's parameters resolve in its
+     * body. Only one struct declares at a time (nesting is a parse error). */
+    int struct_generic_count;
+    int struct_type_parameters[AT_TYPE_PARAMETERS];
     Token *fragment; /* Optional private token stream, already rebased to module source. */
 } AtParser;
 

@@ -46,6 +46,14 @@
 #                      statements are compiled into __as_initialize_module, so
 #                      every program written without a `def` then runs its
 #                      second half against globals nothing assigned.
+#   AS_EVAL_NO_FSTR    restores the generic refusal for AN_FORMAT, which is
+#                      every f-string hole (text.c desugars to `+` chains of
+#                      literals and holes). Every f-string case must go red.
+#   AS_EVAL_NO_STRCALL restores the refusal AT_CALL_STR fell into before F1.
+#                      The two controls sit on the SAME conversion function
+#                      (ev_to_str), so deleting that one jar reddens both
+#                      batteries -- which is the drift the jar exists to
+#                      prevent, watched from the control side.
 .PHONY: test-as-eval test-as-eval-negctl test-as-eval-asan
 
 AS_EVAL_SRC := tests/unit/as_eval_test.c
@@ -57,7 +65,7 @@ $(BUILD)/as_eval_test: $(AS_EVAL_SRC) $(AS_CORE)
 
 test-as-eval-negctl: $(AS_EVAL_SRC) $(AS_CORE)
 	@mkdir -p $(BUILD)
-	@for d in AS_EVAL_NO_UNWIND AS_EVAL_NO_INIT; do \
+	@for d in AS_EVAL_NO_UNWIND AS_EVAL_NO_INIT AS_EVAL_NO_FSTR AS_EVAL_NO_STRCALL; do \
 	   $(CC) -O2 -w -D$$d -o $(BUILD)/as_eval_$$d $(AS_EVAL_SRC) $(AS_CORE) $(AS_EVAL_INC) || exit 1; \
 	   if $(BUILD)/as_eval_$$d >/dev/null 2>&1; then \
 	     echo "as-eval-negctl: FAIL -- the battery passes with $$d, so it does not measure that claim"; \

@@ -390,8 +390,39 @@ static int call(Checker *c, AtNode *n, int want)
         return at_class_constructor(c, n, constructor);
     }
     if (p->types[constructor].kind == AT_STRUCT && constructor != p->exception_type) {
-        n->symbol = AT_CALL_STRUCT_BASE - constructor;
         AtType *structure = &p->types[constructor];
+        if (structure->generic_count && structure->template_id < 0) {
+            /* Generic struct constructor: infer the type arguments from the
+             * field arguments the way a generic function call does, then
+             * materialize the instance and check against its substituted
+             * fields. Pair(1, 2) is Pair[i64]; Pair(1, 2.0) conflicts. */
+            if (n->count != structure->count) {
+                at_check_error(c, n, "AS3204",
+                               "Structure constructor must initialize every declared field");
+            }
+            int bindings[AT_TYPE_PARAMETERS] = {0};
+            int valid = 1;
+            for (int i = 0; i < n->count && i < structure->count; i++) {
+                int found = at_check_expression(c, n->args[i], 0);
+                valid &= at_bind_type(p, c->f, structure->fields[i], found, bindings, n->args[i]);
+            }
+            constructor = valid
+                              ? at_instantiate_struct(p, constructor, bindings,
+                                                      structure->generic_count, c->f->module,
+                                                      n->token)
+                              : AT_ERROR;
+            structure = &p->types[constructor];
+            n->symbol = AT_CALL_STRUCT_BASE - constructor;
+            for (int i = 0; i < n->count; i++) {
+                int expected = structure->kind == AT_STRUCT && i < structure->count
+                                   ? structure->fields[i]
+                                   : AT_ERROR;
+                at_check_mismatch(c, n->args[i], expected,
+                                  at_check_expression(c, n->args[i], expected));
+            }
+            return constructor;
+        }
+        n->symbol = AT_CALL_STRUCT_BASE - constructor;
         if (n->count != structure->count) {
             at_check_error(c, n, "AS3204",
                            "Structure constructor must initialize every declared field");
@@ -898,8 +929,17 @@ static int expression_type(Checker *c, AtNode *n, int want)
         } else if (a && !at_check_number(p, a) && !(a == AT_STR && n->op == T_PLUS)) {
             at_check_error(c, n, "AS3202", "Arithmetic requires numeric operands");
         }
-        if ((n->op == T_SHL || n->op == T_SHR || n->op == T_POW) && a && !integer_operand(p, a)) {
-            at_check_error(c, n, "AS3202", "Shift and power operators require integer operands");
+        if ((n->op == T_SHL || n->op == T_SHR) && a && !integer_operand(p, a)) {
+            at_check_error(c, n, "AS3202", "Shift operators require integer operands");
+        }
+        /* Power is Integer-only for generic parameters (LANGUAGE_3.md section 2
+         * puts 乘方 under Integer), but concrete f32/f64 have an IEEE lowering
+         * (backend at_ir_numeric's llvm.pow row), so they are admitted here.
+         * `2.0 ** 2` still refuses one line up, at_check_mismatch: the two
+         * operands must share one float type. */
+        if (n->op == T_POW && a && !integer_operand(p, a) && a != AT_F32 && a != AT_F64) {
+            at_check_error(c, n, "AS3202",
+                           "Power requires Integer operands or concrete f32/f64");
         }
         if ((n->op == T_AMP || n->op == T_PIPE || n->op == T_CARET) && a &&
             !integer_operand(p, a)) {

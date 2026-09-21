@@ -176,6 +176,71 @@ static Ev eval_string(Ex *x, AtNode *n)
     return ev_str(s, bytes, s);
 }
 
+/* ONE SPELLING OF A VALUE AS TEXT, shared by print, f-string holes and
+ * str() (A4 F0/F1). Three producers with one table each is the one-jar-two-
+ * doors drift the A4 plan names explicitly: f"{x}" and print(x) disagreeing
+ * on the same value is a wrong answer in the one engine a Studio user runs.
+ * The spelling is runtime/print.c's, byte for byte: int %lld, uint %llu,
+ * bool true/false, float %.17g, None None -- and backend emit.c lowers
+ * AN_FORMAT by "reusing precisely the str(value) conversion", so a single
+ * function here mirrors both native surfaces. The result is heap-owned; the
+ * caller clears it. A refused hole refuses the WHOLE f-string (never a
+ * partial line), so this never fabricates a spelling for a kind it does not
+ * hold: it fails, and absent beats present-and-wrong. */
+static Ev ev_to_str(Ex *x, Ev v)
+{
+    if (v.kind == EV_STR) {
+        return ev_export(x, v);
+    }
+    char buf[32];
+    int n = 0;
+    if (v.kind == EV_INT) {
+        n = snprintf(buf, sizeof buf, "%lld", (long long)v.i);
+    } else if (v.kind == EV_UINT) {
+        n = snprintf(buf, sizeof buf, "%llu", (unsigned long long)v.u);
+    } else if (v.kind == EV_BOOL) {
+        n = snprintf(buf, sizeof buf, "%s", v.i ? "true" : "false");
+    } else if (v.kind == EV_FLOAT) {
+        n = snprintf(buf, sizeof buf, "%.17g", v.f);
+    } else if (v.kind == EV_NONE) {
+        n = snprintf(buf, sizeof buf, "None");
+    } else {
+        fail(x, "RuntimeError", "guest execution cannot format this value");
+        return (Ev){0};
+    }
+    char *s = malloc((size_t)n + 1);
+    if (!s) {
+        fail(x, "MemoryError", "value to string");
+        return (Ev){0};
+    }
+    memcpy(s, buf, (size_t)n);
+    s[n] = 0;
+    return ev_str(s, n, s);
+}
+
+/* F-STRING HOLES AND str() SHARE THIS BUILD, and it exists as a function --
+ * rather than a call to eval_binary's string-concat branch -- because the
+ * tree text.c builds for an f-string IS ordinary `+` nodes around AN_FORMAT
+ * holes, so a plain eval_expr of those nodes would print each line as the
+ * concatenation finished: correct bytes, but a refused hole would leave a
+ * PARTIAL line on stdout, which the A4 plan rules out (a truncated line is a
+ * wrong answer). Building the text first and printing once the whole string
+ * exists is what makes "a refused hole refuses the whole f-string by name"
+ * true in output, not just in status. Whole-program exit status was never
+ * enough: the case print(f"{xs[0]}") must print NOTHING before it fails. */
+static Ev eval_str_of(Ex *x, AtNode *arg)
+{
+    Ev a = eval_expr(x, arg);
+    Ev s = x->r->failed ? (Ev){0} : ev_to_str(x, a);
+    ev_clear(&a);
+    return s;
+}
+
+static Ev eval_format(Ex *x, AtNode *n)
+{
+    return eval_str_of(x, n->a);
+}
+
 static void print_value(Ev v)
 {
     if (v.kind == EV_STR) {
@@ -432,6 +497,16 @@ static Ev eval_expr(Ex *x, AtNode *n)
     if (n->kind == AN_STR) {
         return eval_string(x, n);
     }
+    if (n->kind == AN_FORMAT) {
+#ifdef AS_EVAL_NO_FSTR
+        /* NEGATIVE CONTROL (tests/aseval.mk): the refusal this node got
+         * before f-strings were mirrored. Falls through to the generic
+         * "does not implement this expression" at the bottom, and every
+         * f-string case in the battery must go red against it. */
+#else
+        return eval_format(x, n);
+#endif
+    }
     if (n->kind == AN_NONE) {
         return v;
     }
@@ -510,6 +585,19 @@ static Ev eval_expr(Ex *x, AtNode *n)
     if (n->kind == AN_CALL) {
         if (n->symbol == AT_CALL_PRINT) {
             return eval_print(x, n);
+        }
+        /* str(v) is the same conversion f-string holes use, routed through
+         * the one function so the two spellings cannot drift (the A4 plan's
+         * reason for ev_to_str existing at all). Backend emit.c lowers
+         * AN_FORMAT as exactly this call, so mirroring both through
+         * eval_format is not a shortcut -- it is what the host compiles. */
+        if (n->symbol == AT_CALL_STR && n->count == 1) {
+#ifdef AS_EVAL_NO_STRCALL
+            /* NEGATIVE CONTROL (tests/aseval.mk): restore the refusal that
+             * AT_CALL_STR got before; the str() battery must go red. */
+#else
+            return eval_str_of(x, n->args[0]);
+#endif
         }
         return eval_call(x, n);
     }

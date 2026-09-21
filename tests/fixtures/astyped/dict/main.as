@@ -106,9 +106,31 @@ def check_roots() -> None:
         assert data[str(i)].numbers[0] == i
 
 
+def check_float_keys() -> None:
+    # f64/f32 keys hash the canonical bit pattern: -0.0 and 0.0 are ONE key
+    # (fcmp oeq already calls them equal), and NaN never compares equal, so a
+    # NaN key can be inserted but never looked up -- Python's observable
+    # behavior, not an invented NaN-equality. See at_ir_dict_callbacks.
+    scores: Dict[f64, str] = {1.5: "a", -0.0: "negzero"}
+    scores[0.0] = "zero"
+    assert scores[-0.0] == "zero" and scores[0.0] == "zero"
+    assert scores.has(2.5) == False
+    scores[2.5] = "b"
+    assert scores.has(2.5) and scores.get(2.5) != None and scores.get(3.5) == None
+    nan_key = (-1.0) ** 0.5
+    scores[nan_key] = "nan"
+    assert scores.has(nan_key) == False and scores.get(nan_key) == None
+    assert scores.remove(2.5) and scores.has(2.5) == False
+    wide: Dict[f32, i64] = {}
+    narrow: f32 = 1.5
+    wide[narrow] = 7
+    assert wide[1.5] == 7
+
+
 def main() -> None:
     check_scalars()
     check_roots()
+    check_float_keys()
     gc_collect()
     assert gc_live_bytes() == 0
     print("native dictionary ok")

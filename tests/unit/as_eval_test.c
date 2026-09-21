@@ -217,6 +217,68 @@ int main(void)
     refuse("array index is still refused",
            "# aether: 3.0\ndef main() -> None:\n    xs = [1, 2, 3]\n    print(xs[0])\n");
 
+    /* --- A4 F0: f-strings (task_0004). Each case pins the EXACT bytes,
+     * because this battery is the only place eval's value-to-text spelling is
+     * compared against runtime/print.c's. The spelling itself lives in one
+     * function (ev_to_str) so print, holes and str() cannot drift. */
+    ok("fstring int hole",
+       PROG("    x = 41\n    print(f\"x={x + 1}\")\n"), "x=42\n");
+    ok("fstring str bool holes",
+       PROG("    name = \"as\"\n    flag = True\n    print(f\"{name} {flag}\")\n"), "as true\n");
+    ok("fstring literal braces",
+       PROG("    v = 7\n    print(f\"{{v}} = {v}\")\n"), "{v} = 7\n");
+    ok("fstring empty",
+       PROG("    print(f\"\", 1)\n"), " 1\n");
+    ok("fstring float hole",
+       PROG("    q: f64 = 0.5\n    print(f\"q={q}\")\n"), "q=0.5\n");
+    ok("fstring escapes",
+       PROG("    print(f\"a\\tb\")\n"), "a\tb\n");
+    /* A refused hole refuses the WHOLE f-string: the program must fail, and
+     * -- the part a status check alone cannot see -- print NOTHING, because a
+     * truncated line is a wrong answer. eval_str_of exists for exactly this:
+     * the text.c desugaring is ordinary `+` concatenation, which would
+     * otherwise leave the leading literal on stdout before the refusal. */
+    refuse("fstring refused hole",
+           "# aether: 3.0\ndef main() -> None:\n    xs = [1, 2]\n    print(f\"v={xs[0]}\")\n");
+
+    /* --- A4 F1: str() through the same conversion. Backend emit.c lowers
+     * AN_FORMAT as literally a str() call, so the two going through one
+     * function here mirrors the host rather than approximating it. */
+    ok("str of int", PROG("    print(str(42))\n"), "42\n");
+    ok("str concat in expr", PROG("    print(\"n=\" + str(6 * 7))\n"), "n=42\n");
+    ok("str of bool", PROG("    print(str(True), str(False))\n"), "true false\n");
+    /* f64(2) would route through a cast CALL, which eval refuses by name;
+     * an annotated literal is the form that stays on the mirrored path. */
+    ok("str of float", PROG("    q: f64 = 2.0\n    print(str(q))\n"), "2\n");
+    ok("str returned", "# aether: 3.0\ndef label(n: i64) -> str:\n    return \"n=\" + str(n)\n\n"
+                     "def main() -> None:\n    print(label(7))\n", "n=7\n");
+
+    /* --- A4 F3-eval: the six compound ops. Routing is the ONE jar:
+     * as_compound_operator() (frontend/lexer.h, extended in 85f7ee654) maps
+     * the compound token to its binary operator and eval_binary owns the
+     * arithmetic, so the ValueError/OverflowError edges below are the binary
+     * rules of LANGUAGE_3 section 3 exercised through the compound spelling
+     * -- the test battery is the piece that was missing, not new arithmetic.
+     * Negative-shift and negative-exponent cases are REFUSALS (exit != 0),
+     * matching the host's ValueError. */
+    ok("compound pow", PROG("    n = 3\n    n **= 4\n    print(n)\n"), "81\n");
+    ok("compound pow zero zero", PROG("    n = 0\n    n **= 0\n    print(n)\n"), "1\n");
+    ok("compound bitwise", PROG("    n = 0xff\n    n &= 0x0f\n    print(n)\n    n |= 0x30\n"
+                               "    print(n)\n    n ^= 0x05\n    print(n)\n"), "15\n63\n58\n");
+    ok("compound shifts", PROG("    n = 3\n    n <<= 4\n    print(n)\n    n >>= 2\n    print(n)\n"),
+       "48\n12\n");
+    ok("compound shr negative", PROG("    n = -16\n    n >>= 2\n    print(n)\n"), "-4\n");
+    ok("compound in loop", PROG("    n = 1\n    for i in range(4):\n        n <<= 1\n    print(n)\n"),
+       "16\n");
+    refuse("compound pow negative exponent",
+           "# aether: 3.0\ndef main() -> None:\n    n = 2\n    n **= -1\n    print(n)\n");
+    refuse("compound shl negative count",
+           "# aether: 3.0\ndef main() -> None:\n    n = 1\n    n <<= -1\n    print(n)\n");
+    refuse("compound shl overflow",
+           "# aether: 3.0\ndef main() -> None:\n    n = 1 << 62\n    n <<= 2\n    print(n)\n");
+    refuse("compound shr wide count",
+           "# aether: 3.0\ndef main() -> None:\n    n = 8\n    n >>= 64\n    print(n)\n");
+
     printf("as-eval: %d checks, %d failed\n", total, fails);
     return fails ? 1 : 0;
 }

@@ -159,6 +159,25 @@ void at_ir_compound_assignment(Gen *g, AtNode *node)
      * fallback replaces the `: T_PERCENT` that used to stand here, which would
      * have turned any compound operator added later into a silent remainder. */
     int operation = as_compound_operator(node->op);
+    /* Absent beats present-and-wrong, at the lowering door: the six A4-F3
+     * operators map to T_POW/T_AMP/T_PIPE/T_CARET/T_SHL/T_SHR. Binary float **
+     * now exists (numeric.c's llvm.pow row), but the compound set stays
+     * integer-only per LANGUAGE_3.md section 2's Integer constraint, and sema
+     * (check.c) refuses these six on non-integers before lowering. This door
+     * exists so a future caller that skips sema cannot turn the remaining gap
+     * into a plausible program: T_POW here would now compute a real float
+     * power, but &=-style operators on a float would still fall onto
+     * at_ir_numeric's `%`-else branch and emit frem. The five numeric-only
+     * operators (+ - * / %) are the always-float-capable set and are
+     * deliberately NOT refused here. */
+    if (node->op != T_PLUSEQ && node->op != T_MINUSEQ && node->op != T_STAREQ &&
+        node->op != T_SLASHEQ && node->op != T_PERCENTEQ && !at_integer(g->p, node->type)) {
+        at_error(g->p, node->module, node->token, "AS3501",
+                 "Bitwise, shift and power compound assignment lower integers only");
+        g->failed = 1;
+        free(storage);
+        return;
+    }
     Val result = at_ir_numeric(g, operation, previous, right, node, 0);
     if (at_ir_references(g, result.type)) {
         /* A subsequent dictionary insertion can allocate too. */

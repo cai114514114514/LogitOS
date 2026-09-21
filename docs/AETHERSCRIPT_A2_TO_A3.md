@@ -1000,7 +1000,7 @@ def main() -> None:
 
 `mathx` 的 square/cube/quad/clamp/dist2 保持数值类型；其余实数函数边界明确使用 f64，整数调用者需要显式转换。保留原有 Newton/Taylor/atanh 近似算法及次数，不声称是完整精确舍入 libm。`numeric-lib` 工程运行每个公开函数、全部常量、种子序列和异常分支。
 
-`math` 的常用算术、容器归约按 Number 类型实例化；整数序列/素数接口使用 i64。`powi/pow` 的原有返回类型随指数取值变化，因此明确返回 Any：正指数保留原始数值类型，负指数为 f64，零指数为 i64 的 1。调用者通过 `is_type[T]` 或 `cast[T]` 处理结果；不会为了固定返回 f64 而丢失大整数精度。`**` 仍是已知整数类型的直接原生运算。
+`math` 的常用算术、容器归约按 Number 类型实例化；整数序列/素数接口使用 i64。`powi/pow` 的原有返回类型随指数取值变化，因此明确返回 Any：正指数保留原始数值类型，负指数为 f64，零指数为 i64 的 1。调用者通过 `is_type[T]` 或 `cast[T]` 处理结果；不会为了固定返回 f64 而丢失大整数精度。`**` 仍是已知整数类型及具体 f32/f64 的直接原生运算（浮点乘方 2026-09-20 补齐，语义见 LANGUAGE_3.md 第 3 节；泛型参数上的乘方仍要求 Integer，`**=` 复合赋值仍限整数）。
 
 ### 标量转换
 
@@ -1010,7 +1010,7 @@ def main() -> None:
 
 ### 原生字典和集合
 
-`Dict[K, V]` 分别存储键和值的具体原生布局。当前 Hashable 覆盖定宽整数、bool 和 str；浮点/Any 键尚未完成。支持字面量、索引、插入、原地更新、len、in、has、remove、keys、values、get(key, default)。索引缺失键抛 KeyError。keys/values 和字典循环产生独立快照；遍历时增删字典不使游标失效。顺序不作保证。单参数 get 的空值结果仍依赖 Optional，不能把当前子集写成完整字典兼容。
+`Dict[K, V]` 分别存储键和值的具体原生布局。当前 Hashable 覆盖定宽整数、bool、str 和浮点（f32/f64 于 2026-09-20 补齐）；Any 键尚未完成。浮点键哈希规范位模式：`fadd 0.0` 把 `-0.0` 并到 `0.0`（与 `fcmp oeq` 的相等判定一致），NaN 永不相等——可插入但永远查不到，与 Python 的 NaN 键可观察行为相同；`in`/remove/get 一律不命中 NaN。支持字面量、索引、插入、原地更新、len、in、has、remove、keys、values、get(key, default)。索引缺失键抛 KeyError。keys/values 和字典循环产生独立快照；遍历时增删字典不使游标失效。顺序不作保证。
 
 上述单参数 get 缺项已补齐：`get(key)` 返回 `Optional[V]`，缺键为空，有键时保留 V 的实际值。V 本身为 Optional 时，外层是否有键与内层是否为空分别保留，不能把“存在且为空”当成缺键。
 

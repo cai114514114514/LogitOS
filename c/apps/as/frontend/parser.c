@@ -24,6 +24,14 @@ int at_parse_type(AtParser *r)
     if (parameter) {
         return parameter;
     }
+    /* A struct template's parameters resolve in its field annotations exactly
+     * like a function's parameters resolve in its body. */
+    for (int i = 0; i < r->struct_generic_count; i++) {
+        AtType *candidate = &r->p->types[r->struct_type_parameters[i]];
+        if (!strcmp(s, candidate->name)) {
+            return r->struct_type_parameters[i];
+        }
+    }
     if (at_parse_word(t, "None") || at_parse_word(t, "void")) {
         return AT_VOID;
     }
@@ -110,6 +118,38 @@ int at_parse_type(AtParser *r)
     }
     int resolved = at_named_type(r->p, r->m, s);
     if (resolved) {
+        AtType *named = &r->p->types[resolved];
+        if (named->kind == AT_STRUCT && named->generic_count &&
+            named->template_id < 0 && at_parse_has(r, T_LBRACKET)) {
+            /* Generic struct instantiation in type position: Pair[i64]. The
+             * arguments parse through the full type grammar, so nested forms
+             * (Dict[str, Pair[T]], Pair[Pair[i64]]) spell naturally. */
+            at_parse_advance(r);
+            if (++r->depth > 64) {
+                at_parse_error(r, t, "AS3100", "Type nesting limit reached");
+                r->depth--;
+                return AT_ERROR;
+            }
+            int arguments[AT_TYPE_PARAMETERS], count = 0;
+            while (!at_parse_has(r, T_RBRACKET) && !at_parse_has(r, T_EOF)) {
+                if (count == AT_TYPE_PARAMETERS) {
+                    at_parse_error(r, t, "AS3600",
+                                   "Generic struct accepts at most 8 type arguments");
+                    break;
+                }
+                arguments[count++] = at_parse_type(r);
+                if (!at_parse_accept(r, T_COMMA)) {
+                    break;
+                }
+            }
+            r->depth--;
+            at_parse_expect(r, T_RBRACKET, "expected ']' after generic struct arguments");
+            return at_instantiate_struct(r->p, resolved, arguments, count, r->m, t);
+        }
+        if (named->kind == AT_STRUCT && named->generic_count && named->template_id < 0) {
+            at_parse_error(r, t, "AS3601",
+                           "Generic struct needs its type arguments, e.g. Pair[i64]");
+        }
         return resolved;
     }
     at_parse_error(r, t, "AS3200", "Unknown or not yet supported static type");
@@ -587,7 +627,8 @@ static void module_import(AtParser *r, int from)
     newline(r);
 }
 
-static int type_parameters(AtParser *parser, AtFunction *function)
+static int type_parameters(AtParser *parser, AtFunction *function, int *generic_count,
+                         int *type_parameters)
 {
     if (!at_parse_accept(parser, T_LBRACKET)) {
         return 1;
@@ -595,14 +636,14 @@ static int type_parameters(AtParser *parser, AtFunction *function)
     AsTypedProject *project = parser->p;
     while (!at_parse_has(parser, T_RBRACKET) && !at_parse_has(parser, T_EOF)) {
         Token parameter = at_parse_expect(parser, T_IDENT, "expected generic type parameter");
-        if (parameter.type != T_IDENT || function->generic_count == AT_TYPE_PARAMETERS) {
+        if (parameter.type != T_IDENT || *generic_count == AT_TYPE_PARAMETERS) {
             at_parse_error(parser, parameter, "AS3600",
                            "Invalid or excessive generic type parameters");
             return 0;
         }
         char spelling[64];
         at_parse_name(parameter, spelling, sizeof spelling);
-        if (at_function_type(project, function, parameter) ||
+        if ((function && at_function_type(project, function, parameter)) ||
             at_named_type(project, parser->m, spelling) || at_parse_word(parameter, "int") ||
             at_parse_word(parameter, "float") || at_parse_word(parameter, "isize") ||
             at_parse_word(parameter, "usize") || at_parse_word(parameter, "Array") ||
@@ -620,7 +661,7 @@ static int type_parameters(AtParser *parser, AtFunction *function)
         type->kind = AT_PARAMETER;
         type->module = parser->m;
         at_parse_name(parameter, type->name, sizeof type->name);
-        function->type_parameters[function->generic_count++] = id;
+        type_parameters[(*generic_count)++] = id;
         if (at_parse_accept(parser, T_COLON)) {
             Token constraint = at_parse_expect(parser, T_IDENT, "expected protocol constraint");
             if (at_parse_word(constraint, "Number")) {
@@ -649,7 +690,7 @@ static int type_parameters(AtParser *parser, AtFunction *function)
         }
     }
     at_parse_expect(parser, T_RBRACKET, "expected ']' after generic parameters");
-    if (!function->generic_count) {
+    if (!*generic_count) {
         at_parse_error(parser, at_parse_current(parser), "AS3600",
                        "A generic declaration needs at least one type parameter");
     }
@@ -680,7 +721,7 @@ static void function(AtParser *r, int owner)
     /* Type parameters are scoped to this declaration, including annotations
      * in its body. The module type lookup must never expose a neighbor's T. */
     r->f = f;
-    if (!type_parameters(r, f)) {
+    if (!type_parameters(r, f, &f->generic_count, f->type_parameters)) {
         r->f = parent;
         recover_declaration(r);
         return;
@@ -773,6 +814,31 @@ static void structure(AtParser *r, int kind)
             at_parse_error(r, t, "AS3200", "Type is already declared in this module");
         }
     }
+    if (kind == AT_CLASS && at_parse_has(r, T_LBRACKET)) {
+        /* Generic classes have no approved design (methods + inheritance +
+         * instantiation interact three ways); admitting the syntax now would
+         * promise a semantics nobody has pinned down. Generic STRUCTS are
+         * supported -- the refusal names the boundary. */
+        at_parse_error(r, at_parse_current(r), "AS3900",
+                       "Generic classes are not supported; generic structs are");
+        at_parse_advance(r);
+    }
+    if (kind == AT_STRUCT && at_parse_has(r, T_LBRACKET)) {
+        if (!type_parameters(r, NULL, &s->generic_count, s->type_parameters)) {
+            recover_declaration(r);
+            return;
+        }
+        s->template_id = -1;
+        for (int i = 0; i < s->generic_count; i++) {
+            for (int j = i + 1; j < s->generic_count; j++) {
+                if (!strcmp(p->types[s->type_parameters[i]].name,
+                            p->types[s->type_parameters[j]].name)) {
+                    at_parse_error(r, t, "AS3600",
+                                   "Generic parameter duplicates or shadows an existing type");
+                }
+            }
+        }
+    }
     if (at_parse_accept(r, T_LPAREN)) {
         Token base_site = at_parse_current(r);
         int base = at_parse_type(r);
@@ -793,6 +859,11 @@ static void structure(AtParser *r, int kind)
     at_parse_expect(r, T_COLON, "expected ':' after structure");
     at_parse_expect(r, T_NEWLINE, "expected newline after structure");
     at_parse_expect(r, T_INDENT, "expected structure fields");
+    int parent_generic_count = r->struct_generic_count;
+    int parent_type_parameters[AT_TYPE_PARAMETERS];
+    memcpy(parent_type_parameters, r->struct_type_parameters, sizeof parent_type_parameters);
+    r->struct_generic_count = s->generic_count;
+    memcpy(r->struct_type_parameters, s->type_parameters, sizeof r->struct_type_parameters);
     while (!at_parse_has(r, T_DEDENT) && !at_parse_has(r, T_EOF)) {
         int before = r->pos;
         if (at_parse_accept(r, T_ERROR)) {
@@ -832,6 +903,8 @@ static void structure(AtParser *r, int kind)
         }
     }
     at_parse_expect(r, T_DEDENT, "expected end of structure");
+    r->struct_generic_count = parent_generic_count;
+    memcpy(r->struct_type_parameters, parent_type_parameters, sizeof r->struct_type_parameters);
 }
 
 /* Each module owns one ordinary native function for its initialization. This

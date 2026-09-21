@@ -119,8 +119,17 @@ int at_has_parameter(AsTypedProject *project, int type)
         value->kind == AT_OPTIONAL || value->kind == AT_POINTER) {
         return at_has_parameter(project, value->element);
     }
-    /* Source structs cannot declare generic fields yet; their nominal layout
-     * is already closed when a function signature refers to them. */
+    /* Instantiated structs carry their arguments in the type table: Pair[T]
+     * still has a parameter inside even though its fields are substituted.
+     * Templates themselves are never well-formed in a signature and would
+     * loop here (their fields name AT_PARAMETERs), so only instances count. */
+    if (value->kind == AT_STRUCT && value->template_id >= 0) {
+        for (int i = 0; i < AT_TYPE_PARAMETERS; i++) {
+            if (value->type_arguments[i] && at_has_parameter(project, value->type_arguments[i])) {
+                return 1;
+            }
+        }
+    }
     return 0;
 }
 
@@ -167,7 +176,14 @@ int at_satisfies_constraint(AsTypedProject *project, int type, int constraint)
             return value->constraint == AT_CONSTRAINT_HASHABLE ||
                    value->constraint == AT_CONSTRAINT_INTEGER;
         }
-        return at_integer(project, type) || type == AT_BOOL || type == AT_STR;
+        /* Float keys hash their canonical bit pattern (see
+         * at_ir_dict_callbacks): -0.0 and 0.0 share a key the way fcmp oeq
+         * says they must, and NaN simply never compares equal, so a NaN key
+         * can be inserted but never looked up -- the same observable behavior
+         * Python gives NaN dict keys. Any keys stay unfinished: hashing a
+         * dynamic payload needs the full Any type switch, not a bitcast. */
+        return at_integer(project, type) || type == AT_BOOL || type == AT_STR ||
+               type == AT_F32 || type == AT_F64;
     }
     if (value->kind == AT_PARAMETER) {
         return value->constraint == AT_CONSTRAINT_INTEGER ||
@@ -289,6 +305,19 @@ int at_bind_type(AsTypedProject *project, AtFunction *function, int pattern, int
             at_bind_type(project, function, expected->element, found->element, bindings, site);
         return key && value;
     }
+    /* Instantiated struct against a pattern instance: bind argument by
+     * argument so Pair[T] accepts Pair[i64] and rejects Pair[str] with the
+     * ordinary conflict diagnostic. */
+    if (expected->kind == AT_STRUCT && found->kind == AT_STRUCT &&
+        expected->template_id >= 0 && expected->template_id == found->template_id &&
+        project->types[expected->template_id].generic_count) {
+        int valid = 1, count = project->types[expected->template_id].generic_count;
+        for (int i = 0; i < count; i++) {
+            valid &= at_bind_type(project, function, expected->type_arguments[i],
+                                  found->type_arguments[i], bindings, site);
+        }
+        return valid;
+    }
     if ((expected->kind == AT_OPTIONAL && found->kind == AT_OPTIONAL) ||
         (expected->kind == AT_MUT_SLICE && found->kind == AT_MUT_SLICE) ||
         (expected->kind == AT_POINTER && found->kind == AT_POINTER) ||
@@ -327,6 +356,26 @@ int at_substitute_type(AsTypedProject *project, AtFunction *function, int type,
         int key = at_substitute_type(project, function, original->key, bindings);
         int value = at_substitute_type(project, function, original->element, bindings);
         return at_dict_type(project, key, value, function->module, function->token);
+    }
+    if (original->kind == AT_STRUCT && original->template_id >= 0) {
+        /* An instantiated struct whose arguments still name the enclosing
+         * template's parameters: Pair[T] inside Pair[T]'s own declaration, or
+         * in a generic function's signature. Materialize the substituted
+         * instance; dedup makes repeat visits free. Templates (template_id
+         * < 0) return unchanged -- an unspecialized Pair is not a type. */
+        int arguments[AT_TYPE_PARAMETERS] = {0};
+        int any = 0;
+        for (int i = 0; i < AT_TYPE_PARAMETERS && original->type_arguments[i]; i++) {
+            arguments[i] = at_substitute_type(project, function, original->type_arguments[i],
+                                              bindings);
+            any |= arguments[i] != original->type_arguments[i];
+        }
+        if (!any) {
+            return type;
+        }
+        return at_instantiate_struct(project, original->template_id, arguments,
+                                     project->types[original->template_id].generic_count,
+                                     function->module, function->token);
     }
     if (original->kind != AT_ARRAY && !at_slice_kind(original->kind) && original->kind != AT_LIST &&
         original->kind != AT_OPTIONAL && original->kind != AT_POINTER) {

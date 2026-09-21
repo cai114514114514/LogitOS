@@ -800,6 +800,11 @@ int as_typed_llvm(AsTypedProject *p, FILE *out, int tests)
                "@at_print_i64(i64)\ndeclare void @at_print_u64(i64)\ndeclare void "
                "@at_print_f64(double)\ndeclare void @at_print_str(ptr, i64)\ndeclare void "
                "@at_print_bool(i32)\ndeclare void @at_print_sep(i32)\n");
+    /* Float power (numeric.c's llvm.pow row). Declared unconditionally: an
+     * unused declaration is free, and emitting the call site only for
+     * programs that power keeps the text difference visible in --emit-llvm
+     * output. f32 pow widens to f64 before the call, so no llvm.pow.f32. */
+    at_ir_emit(&g, "declare double @llvm.pow.f64(double, double)\n");
     at_ir_emit(&g, "declare ptr @at_range_new(i64, i64, i64)\n"
                    "declare i64 @at_range_bound(ptr, i32)\n"
                    "declare i64 @at_range_len(ptr)\n"

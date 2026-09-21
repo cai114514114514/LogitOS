@@ -181,6 +181,39 @@ Val at_ir_numeric(Gen *g, int op, Val a, Val b, AtNode *n, int wrap)
         return at_ir_shift(g, op, a, b, n, wrap);
     }
     if (op == T_POW) {
+        if (a.type == AT_F32 || a.type == AT_F64) {
+            /* IEEE power through llvm.pow, deliberately NOT the integer path:
+             * no OverflowError (a float that exceeds f64 range is inf, a
+             * representable value), negative exponents are allowed (2.0 ** -2
+             * is 0.25, where the integer rule raises ValueError), and domain
+             * errors are NaN, not exceptions -- (-1.0) ** 0.5 has no real
+             * answer and the language has no complex type to return instead.
+             * No fast-math flags, so O0 and O2 keep identical results.
+             *
+             * f32 widens to f64 first: the x86-elf runtime has musl's pow but
+             * NO powf (third_party/libm has powf_data.c yet no powf.c), and
+             * llvm.pow.f32 lowers to a powf libcall -- the guest link would
+             * fail on an undefined symbol. Double-rounded f32 pow can differ
+             * from a native powf by a fraction of an ulp at the rounding
+             * boundary; llvm.pow promises no more than libm semantics, and the
+             * alternative (shipping musl powf) is an engine change for < 1 ulp. */
+            Val base = a, raised = b;
+            if (a.type == AT_F32) {
+                base = at_ir_temp(g, AT_F64);
+                raised = at_ir_temp(g, AT_F64);
+                at_ir_emit(g, "  %s = fpext float %s to double\n", base.text, a.text);
+                at_ir_emit(g, "  %s = fpext float %s to double\n", raised.text, b.text);
+            }
+            Val result = at_ir_temp(g, AT_F64);
+            at_ir_emit(g, "  %s = call double @llvm.pow.f64(double %s, double %s)\n", result.text,
+                       base.text, raised.text);
+            if (a.type == AT_F32) {
+                Val narrow = at_ir_temp(g, AT_F32);
+                at_ir_emit(g, "  %s = fptrunc double %s to float\n", narrow.text, result.text);
+                return narrow;
+            }
+            return result;
+        }
         return checked_power(g, a, b, n);
     }
     Val v = at_ir_temp(g, a.type);

@@ -174,6 +174,10 @@ typedef struct {
     int count;      /* Array length or number of struct fields. */
     int constraint; /* Operations guaranteed for a generic type parameter. */
     int base;       /* Single class base; its declared fields form our prefix. */
+    int generic_count;                  /* Templates only; zero on instantiations. */
+    int type_parameters[AT_TYPE_PARAMETERS]; /* Template params (AT_PARAMETER ids). */
+    int template_id; /* -1 for source declarations; otherwise the template. */
+    int type_arguments[AT_TYPE_PARAMETERS];  /* Instantiation args; else zero. */
     char name[96];
     int fields[AT_ARGS];
     char names[AT_ARGS][64];
@@ -428,6 +432,12 @@ int at_bind_type(AsTypedProject *project, AtFunction *function, int pattern, int
                  int bindings[AT_TYPE_PARAMETERS], AtNode *site);
 int at_specialize(AsTypedProject *project, int template_id, const int bindings[AT_TYPE_PARAMETERS],
                   AtNode *site, int *result_type);
+/* Generic struct instantiation: materializes (or dedups) Pair[i64] as a real
+ * AtType with substituted fields. The template's fields may name its own
+ * parameters, so substitution re-enters this function for nested uses; an
+ * instance under construction answers its own id (count == -1 sentinel). */
+int at_instantiate_struct(AsTypedProject *project, int template, const int *arguments, int count,
+                          int module, Token site);
 void at_check_functions(AsTypedProject *p);
 int at_exception_code(Token name);
 void at_initialize_exceptions(AsTypedProject *project);

@@ -105,8 +105,12 @@ def total[T: Number](values: Slice[T]) -> T:
 | 整数 `**` | 指数必须非负，检查乘法溢出，`0 ** 0 == 1` |
 | 非法移位数、负整数指数 | 产生 `ValueError` |
 | 显式数值转换 | 转换前检查目标范围，非法转换产生 `ConversionError` |
+| 浮点 `+ - * / %` | IEEE 运算；`/` 与 `%` 的零除数产生 `ZeroDivisionError`，`%` 为 `frem` |
+| 浮点 `**` | IEEE `llvm.pow`：无溢出陷阱（超范围为 ±inf），允许负指数，定义域错误为 NaN |
 
 整数乘方采用平方求幂。不会计算最后一次已经不需要的平方，例如 `i8` 中 `100 ** 1` 必须成功。调试与发布模式使用相同检查，不启用 fast-math。浮点乘方尚未实现。
+
+后续修正（2026-09-20）：浮点乘方已补齐，上表浮点两行是本项执行验证的规则。`f64` 的 `**` 直接发出 `llvm.pow.f64`；`f32` 先 `fpext` 到 f64 再 `fptrunc` 回来——来宾裸机归档只有 musl 的 `pow`、没有 `powf`（`third_party/libm` 有 `powf_data.c` 却无 `powf.c`），双舍入与原生 `powf` 的差不到 1 ulp，而 `llvm.pow` 本来就不承诺超过 libm 语义。语义与整数乘方刻意不同：超范围结果是 ±inf 而非 `OverflowError`；负指数是值（`2.0 ** -2.0 == 0.25`）而非 `ValueError`；定义域错误（如 `(-1.0) ** 0.5`）为 NaN 而非异常——语言没有复数类型，NaN 是诚实的答案；`0.0 ** 0.0 == 1.0` 与整数规则一致。非恒定指数在 x86 目标上产生 `pow` libcall，`aether-toolchain/libc.a` 同日并入 musl libm 归档满足它（归档语义：不乘方的程序不拉入）。两个操作数必须同为 f32 或同为 f64（沿用不隐式转换规则）；泛型参数上的乘方仍要求 `Integer` 约束，`x **= y` 复合赋值仍限整数。宿主门禁 `test-as-float` 覆盖：三个拒绝门（混合类型、浮点 `**=`、Number 泛型用乘方）+ O0/O2 下含浮点乘方断言的 `tests/fixtures/astyped/numeric` 夹具 + 来宾 x86 链接证明；负对照把编译器乘方 lowering 变异为乘法，必须被夹具断言拦下。
 
 `range(stop)`、`range(start, stop)`、`range(start, stop, step)` 在 `for` 中使用，停止值不包含在结果内。正负步长均可，步长为零产生 `ValueError`。内部宽计数器允许最后一步越过停止值，不能因此发生回绕或把有效范围变成无限循环。
 

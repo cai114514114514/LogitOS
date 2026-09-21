@@ -44,6 +44,7 @@ $(BUILD)/aether-toolchain/lib/%.as: fsroot/as/lib/%.as
 .PHONY: test-as-globals test-as-globals-negctl
 .PHONY: test-as-any test-as-any-negctl
 .PHONY: test-as-conversions test-as-conversions-negctl
+.PHONY: test-as-float test-as-float-negctl
 .PHONY: test-as-dict test-as-dict-negctl
 .PHONY: test-as-callable test-as-callable-negctl
 .PHONY: test-as-stats test-as-stats-negctl
@@ -348,6 +349,10 @@ test-as-conversions-negctl: $(BUILD)/asc
 	python3 tests/unit/as_conversion_test.py $(BUILD)/asc --negative-control
 test-as-conversions: test-as-conversions-negctl
 	python3 tests/unit/as_conversion_test.py $(BUILD)/asc
+test-as-float-negctl: $(BUILD)/asc
+	python3 tests/unit/as_float_test.py $(BUILD)/asc --negative-control
+test-as-float: test-as-float-negctl
+	python3 tests/unit/as_float_test.py $(BUILD)/asc
 test-as-any-negctl: $(BUILD)/asc
 	python3 tests/unit/as_any_test.py $(BUILD)/asc --negative-control
 test-as-any: test-as-any-negctl
@@ -436,7 +441,7 @@ test-as-generic-negctl:
 	python3 tests/unit/as_generic_negative.py
 test-as-generic: test-as-generic-negctl $(BUILD)/asc
 	python3 tests/unit/as_generic_test.py $(BUILD)/asc
-test-as-typed: test-as-typed-negctl test-as-generic test-as-native-parity test-as-managed test-as-native-link test-as-globals test-as-any test-as-conversions test-as-dict test-as-callable test-as-stats test-as-collections test-as-format test-as-optional test-as-class test-as-lexer-lib test-as-fstring test-as-range test-as-comprehension test-as-assignment test-as-examples test-as-process test-as-closure test-as-inheritance test-as-buffer test-as-bytes test-as-files test-as-binary test-as-constants test-as-capability test-as-memory $(BUILD)/asc
+test-as-typed: test-as-typed-negctl test-as-generic test-as-native-parity test-as-managed test-as-native-link test-as-globals test-as-any test-as-conversions test-as-float test-as-dict test-as-callable test-as-stats test-as-collections test-as-format test-as-optional test-as-class test-as-lexer-lib test-as-fstring test-as-range test-as-comprehension test-as-assignment test-as-examples test-as-process test-as-closure test-as-inheritance test-as-buffer test-as-bytes test-as-files test-as-binary test-as-constants test-as-capability test-as-memory $(BUILD)/asc
 	python3 tests/unit/as_typed_test.py $(BUILD)/asc
 as-toolchain: $(AS_NATIVE_COPY) $(BUILD)/aether-toolchain/native.a $(BUILD)/aether-toolchain/crt0.o $(BUILD)/aether-toolchain/libc.a $(BUILD)/aether-toolchain/mkaex.py
 $(AS_NATIVE_COPY): $(BUILD)/aether-toolchain/%: c/apps/as/runtime/%
@@ -454,6 +459,12 @@ $(BUILD)/aether-toolchain/obj/%.o: c/apps/as/runtime/%.c $(AS_NATIVE_HEADERS)
 $(BUILD)/aether-toolchain/crt0.o: c/apps/crt0_cli.asm
 	@mkdir -p $(dir $@)
 	$(ASM) -f elf64 $< -o $@
-$(BUILD)/aether-toolchain/libc.a: $(LIBC_OBJS)
+# Float `**` lowers to an llvm.pow.f64 libcall; the freestanding guest has no
+# libSystem, so musl's pow (and its data tables) ride in this archive. Archive
+# semantics pull pow.o only into programs that actually power -- AetherScript
+# emitted no libm libcall before float **, which is why this held no libm.
+# powf deliberately stays absent: third_party/libm ships powf_data.c but no
+# powf.c, so f32 power widens to f64 in the backend instead (numeric.c).
+$(BUILD)/aether-toolchain/libc.a: $(LIBC_OBJS) $(LIBM_OBJ)
 	@mkdir -p $(dir $@)
-	$(AGENT_AR) rcs $@ $(LIBC_OBJS)
+	$(AGENT_AR) rcs $@ $(LIBC_OBJS) $(LIBM_OBJ)

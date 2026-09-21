@@ -97,9 +97,23 @@ Val at_ir_dict_call(Gen *g, AtNode *node, Val result)
 void at_ir_dict_callbacks(Gen *g, int type)
 {
     const char *layout = at_ir_type(g, type);
+    int fp = type == AT_F32 || type == AT_F64;
     at_ir_emit(g, "define internal i64 @hash%d(ptr %%slot) {\nentry:\n", type);
     at_ir_emit(g, "  %%value = load %s, ptr %%slot\n", layout);
-    if (type == AT_STR) {
+    if (fp) {
+        /* Canonicalize before hashing so the hash agrees with fcmp oeq:
+         * adding 0.0 maps -0.0 onto +0.0 (which oeq already calls equal),
+         * while NaN payloads pass through -- NaN never satisfies oeq, so
+         * its hash only decides bucket placement, never equality. Bitcast,
+         * not sitofp: the bits ARE the identity here. f32 widens first so
+         * one canonicalization path serves both widths. */
+        if (type == AT_F32) {
+            at_ir_emit(g, "  %%wide = fpext float %%value to double\n");
+        }
+        at_ir_emit(g, "  %%canon = fadd double %s, 0.0\n", type == AT_F32 ? "%wide" : "%value");
+        at_ir_emit(g, "  %%bits = bitcast double %%canon to i64\n");
+        at_ir_emit(g, "  %%hash = call i64 @at_hash_u64(i64 %%bits)\n");
+    } else if (type == AT_STR) {
         at_ir_emit(g, "  %%text = extractvalue %s %%value, 0\n", layout);
         at_ir_emit(g, "  %%size = extractvalue %s %%value, 1\n", layout);
         at_ir_emit(g, "  %%hash = call i64 @at_hash_text(ptr %%text, i64 %%size)\n");
@@ -125,6 +139,11 @@ void at_ir_dict_callbacks(Gen *g, int type)
             g,
             "  %%comparison = call i32 @at_text_compare(ptr %%a, i64 %%an, ptr %%b, i64 %%bn)\n");
         at_ir_emit(g, "  %%same = icmp eq i32 %%comparison, 0\n");
+    } else if (fp) {
+        /* Ordered equality keeps NaN out of every match: a NaN key can be
+         * inserted (has/of/remove/get all miss it afterwards), matching the
+         * observable Python behavior instead of inventing a NaN-equality. */
+        at_ir_emit(g, "  %%same = fcmp oeq %s %%left, %%right\n", layout);
     } else {
         at_ir_emit(g, "  %%same = icmp eq %s %%left, %%right\n", layout);
     }
