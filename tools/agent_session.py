@@ -10,6 +10,8 @@ guard. The provider key never crosses into the guest or command line.
 import argparse
 import os
 from pathlib import Path
+
+import agent_exit
 import signal
 import struct
 import subprocess
@@ -86,13 +88,35 @@ def main():
     if args.limit < 1: parser.error('limit must be positive')
     # Ordinary `make run` used to skip this launcher entirely, leaving a
     # working task UI with no model transport. Auto-enable the same session
-    # when .env exists; a checkout without credentials can still boot. An
-    # existing but invalid configuration must fail visibly, not silently turn
-    # an intended online session into an offline desktop.
-    if args.optional_env and not args.env.exists() and not args.env.is_symlink():
-        print('MODEL_SESSION_OFFLINE: '+str(args.env)+' is absent; model requests are unavailable.', flush=True)
+    # when .env exists; a checkout without credentials can still boot.
+    #
+    # THE DESKTOP ALWAYS COMES UP. This used to read "an existing but invalid
+    # configuration must fail visibly, not silently turn an intended online
+    # session into an offline desktop", and it made `make run` a hard failure
+    # for anyone whose .env held something else -- .env is a generic name and
+    # this gateway does not own it. The half of that sentence worth keeping is
+    # "not silently": missing credentials now boot offline and SAY SO, with
+    # the gateway's own diagnostic on the terminal. What still fails hard is a
+    # gateway that breaks for any OTHER reason, which is the case the old
+    # sentence was really defending -- see the exit code in agent_exit.py.
+    def boot_offline(reason):
+        print('MODEL_SESSION_OFFLINE: '+reason, flush=True)
         os.execv(sys.executable, [sys.executable, str(ROOT/'tools/disk_guard.py'),
                                  str(args.disk.absolute()), '--', *command])
+
+    if args.optional_env and not args.env.exists() and not args.env.is_symlink():
+        boot_offline(str(args.env)+' is absent; model requests are unavailable.')
+    if args.optional_env:
+        # Asked BEFORE the disk lock, because the offline path execs away and
+        # disk_guard.py takes that same flock. The gateway is the only thing
+        # that parses the env file -- one jar, one door -- so this asks it
+        # rather than re-implementing the parse here.
+        probe = subprocess.run([sys.executable, str(ROOT/'tools/agent_gateway.py'),
+                                '--env', str(args.env.resolve()), '--check'],
+                               capture_output=True, text=True)
+        if probe.returncode == agent_exit.NO_CREDENTIALS:
+            boot_offline('no model credentials; the desktop boots without one.\n'
+                         + probe.stdout.strip())
     # Do not resolve disk symlinks before the shared guard can reject them.
     disk = args.disk.absolute()
     if not disk.is_file(): raise RuntimeError('build the initial disk before starting an agent session')
@@ -122,7 +146,14 @@ def main():
                 stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
             for _ in range(100):
                 if (state/'ready.json').exists(): break
-                if gateway.poll() is not None: raise RuntimeError('model gateway did not start; see '+str(state/'gateway.log'))
+                if gateway.poll() is not None:
+                    # The child's own message is the answer; printing a path to
+                    # it instead makes a one-line configuration problem cost a
+                    # second command. Keep the path for the rest of the log.
+                    detail = (state/'gateway.log').read_text(errors='replace').strip()
+                    detail = '\n'.join(detail.splitlines()[-20:]) or '(no output)'
+                    raise RuntimeError('model gateway did not start (exit %d):\n%s\n(full log: %s)'
+                                       % (gateway.returncode, detail, state/'gateway.log'))
                 time.sleep(.1)
             else: raise RuntimeError('model gateway readiness deadline')
             replacements = {

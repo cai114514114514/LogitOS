@@ -7,7 +7,9 @@ Neither request bodies nor authentication headers are logged. This is also
 useful when testing LogitOS without making provider TLS a prerequisite.
 """
 import argparse,http.server,json,pathlib,secrets,threading,urllib.request,urllib.error,os,time
-p=argparse.ArgumentParser();p.add_argument('--env',type=pathlib.Path,required=True);p.add_argument('--state',type=pathlib.Path,required=True);p.add_argument('--port',type=int,default=0);p.add_argument('--limit',type=int,default=32);a=p.parse_args()
+import agent_exit
+p=argparse.ArgumentParser();p.add_argument('--env',type=pathlib.Path,required=True);p.add_argument('--state',type=pathlib.Path)
+p.add_argument('--check',action='store_true',help='report whether credentials exist, then exit; start nothing');p.add_argument('--port',type=int,default=0);p.add_argument('--limit',type=int,default=32);a=p.parse_args()
 values={}
 for line in a.env.read_text().splitlines():
  line=line.strip()
@@ -15,7 +17,19 @@ for line in a.env.read_text().splitlines():
  k,sep,v=line.removeprefix('export ').partition('=')
  if sep:values[k.strip().lower()]=v.strip().strip('\"\'')
 key=values.get('deepseek_api') or values.get('deepseek_api_key')
-if not key:raise SystemExit('No DeepSeek API key field found')
+if not key:
+ # Name the file, what it actually holds, the accepted fields and the fix.
+ # This process's stdout is a log file inside a session directory, so the old
+ # bare sentence was addressed to a reader who had to go find it first; the
+ # session surfaces this text itself now. Field NAMES are printed, never values.
+ found=', '.join(sorted(values)) or '(no NAME=VALUE lines at all)'
+ print('No DeepSeek API key in '+str(a.env)+'\n'
+  '  it holds:  '+found+'\n'
+  '  wanted:    deepseek_api=   (or deepseek_api_key=)\n'
+  "  fix:       echo 'deepseek_api=sk-...' >> "+str(a.env))
+ raise SystemExit(agent_exit.NO_CREDENTIALS)
+if a.check:raise SystemExit(0)
+if a.state is None:p.error('--state is required unless --check')
 a.state.mkdir(parents=True,exist_ok=True);os.chmod(a.state,0o700)
 token=secrets.token_urlsafe(32);lock=threading.Lock();calls=0;active=0;results=[]
 def private(name,text):
