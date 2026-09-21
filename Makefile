@@ -386,6 +386,13 @@ ifeq ($(PAINTDIRTYCTL),1)
 UCFLAGS += -DPAINT_DIRTY_NEGCTL_SHRINK
 endif
 
+# A hook for one-off diagnostic builds: `make build/disk.img UEXTRA=-DFOO`.
+# Without it the only way to add a define to a ring-3 build is to override
+# UCFLAGS on the command line, which replaces the ~20 flags above rather than
+# adding to them -- so the build silently changes in ways the diagnostic had
+# nothing to do with. Empty in every ordinary build.
+UCFLAGS += $(UEXTRA)
+
 # Kernel sources. The browser render pipeline lives in c/apps/browser, not here.
 # inflate.c + png.c are excluded: ported to Rust (rust/src/{inflate,png}.rs provide
 # inflate_raw/zlib_decompress + png_register/png_detect/png_decode) -- the hybrid
