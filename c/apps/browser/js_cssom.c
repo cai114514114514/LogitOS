@@ -43,6 +43,13 @@
  * here as a KNOWN WRONG ANSWER for a class of elements, not as a rounding
  * error.
  *
+ * CORRECTION (the cost above is paid now, for another reason). Since
+ * 758a261c5 (2026-09-15) layout.c's box_open_hit() emits an IT_RECT for every
+ * NON-inked element, so a transparent box can receive a click -- which is
+ * exactly the per-node display-list entry this paragraph declined to spend,
+ * bought by the hit-testing line rather than by this one. The trade-off
+ * sentence above is therefore history, not a live decision.
+ *
  * And the numbers are only as good as the last layout. A real browser flushes
  * a pending reflow on any of these reads; so does this (see flush_layout) --
  * but only when layout.c is linked. The host WPT runner links neither layout.c
@@ -110,8 +117,9 @@ LOGIT_WEAK_STUB(layout_height);
 /* THE BOX TABLE -- a side table keyed by node, one record per element that
  * GENERATED a box, whether or not it painted. Everything below used to derive
  * geometry from the flat paint display list, which cannot answer for an element
- * with no background, no border and no text: it has no IT_RECT and never had
- * one. Measured over 14,997 border_box() calls across css-align/sizing/flexbox/
+ * with no background, no border and no text: when this was written such an
+ * element had no IT_RECT at all. (No longer true -- see the correction below.)
+ * Measured over 14,997 border_box() calls across css-align/sizing/flexbox/
  * grid/cssom-view, that was 17.2% NOBOX (every accessor answering 0) and a
  * further 11.3% answered from the subtree ink union -- which this file's own
  * header calls "a known wrong answer rather than an approximation".
@@ -119,6 +127,23 @@ LOGIT_WEAK_STUB(layout_height);
  * Ink is what painted. Overflow is what was laid out. They are different
  * questions and only layout can answer the second one, which is why
  * layout_node_scroll exists separately rather than being derived here.
+ *
+ * CORRECTION (2026-09-15, 758a261c5): "no IT_RECT and never had one" stopped
+ * being true when box_open_hit() started emitting a hit rectangle for every
+ * non-inked element (gated by tests/transparent_box_hit.mk, whose negative
+ * control is -DLAYOUT_HIT_INK_ONLY). The display list now holds a rect for
+ * essentially every element, so the paragraph above describes the world this
+ * table was built for and not this one.
+ *
+ * What the table still buys is NOT settled here. Measured on the 8-div page in
+ * tests/unit/layout_box_test.c: 8 elements own an IT_RECT against 10 box
+ * records, so the table does still hold strictly more -- but far less more
+ * than when it was added, and that gate's `inked <= 3` assertion has been RED
+ * since that commit (building it with -DLAYOUT_HIT_INK_ONLY takes it to
+ * 51 checks, 0 failures, which is how the cause was pinned). Whether the hit
+ * rectangles stay, and how this table's property should then be expressed, is
+ * the browser line's call; this note exists so the next reader does not take
+ * the paragraph above as current.
  *
  * Weak like the four above, and gated the same way: without layout.c linked
  * (the DOM unit tests) the old paths still run. */
