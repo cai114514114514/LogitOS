@@ -26,10 +26,40 @@ NN_SRC = c/lib/nn/tensor.c c/lib/nn/matmul.c c/lib/nn/ops.c c/lib/nn/quant4.c
 # recipe below already shares, so it is the one place to add it.
 NN_CF  = -Ic/lib/nn -Ic/apps/coreutils -O2 -w
 
-test-nn: test-nn-negctl
+# ---- HOST CAPABILITY: can this compiler build the SSE2 kernels? ------------
+#
+# c/lib/nn/matmul.c is SSE2 throughout -- three matvec kernels and NO scalar
+# path, deliberately: the lane-then-reduce summation ORDER is part of the
+# result, so a scalar twin would be a second implementation disagreeing in the
+# last ulp. On a host whose compiler has no <emmintrin.h> -- every arm64 Mac,
+# which is the host this repo documents -- nothing in this fragment can be
+# BUILT, and SIX targets went red for a reason that has nothing to do with the
+# code under test. That is the noise that trains people to ignore red.
+#
+# One probe, asked once, shared by all of them: a capability question spelled
+# nine times is nine chances to disagree. Skipping names what is missing and
+# the command that would settle it, and exits 0 -- never passes silently.
+# test-qwen-logits already skipped correctly; the rest now match it.
+NN_SIMD_OK := $(shell printf '\#include <emmintrin.h>\nint main(void){return 0;}\n' \
+                 | $(CC) -x c - -o /dev/null >/dev/null 2>&1 && echo yes)
+NN_SKIP_TEXT = $@ SKIPPED: this compiler has no working <emmintrin.h>.\n\
+  c/lib/nn is SSE2-only by design -- matmul.c has no scalar path because its\n\
+  lane-then-reduce summation order is part of the result -- so these kernels\n\
+  are UNMEASURED on this host, not passing.\n\
+  Settle it on an x86_64 host:  make $@\n
+# Prerequisites vanish when skipping: test-gguf used to die building
+# $(BUILD)/lmshape, a PREREQUISITE, so a guard inside its own recipe would
+# never have run.
+NN_DEP = $(if $(NN_SIMD_OK),$(1))
+
+test-nn: $(call NN_DEP,test-nn-negctl)
+ifeq ($(NN_SIMD_OK),yes)
 	@mkdir -p $(BUILD)
 	@$(CC) $(NN_CF) -o $(BUILD)/nn_test tests/unit/nn_test.c $(NN_SRC) -lm
 	@$(BUILD)/nn_test
+else
+	@printf '$(NN_SKIP_TEXT)'
+endif
 
 # THREE NEGATIVE CONTROLS, one per kernel whose plausible wrong version is a
 # DIFFERENT CORRECT-LOOKING ALGORITHM rather than a mistake. Each is built
@@ -47,6 +77,7 @@ test-nn: test-nn-negctl
 #                          which is the point: it is wrong in a way no
 #                          invariant catches.
 test-nn-negctl:
+ifeq ($(NN_SIMD_OK),yes)
 	@mkdir -p $(BUILD)
 	@fail=0; \
 	 for d in NN_RMS_SUBTRACT_MEAN NN_NO_SOFTMAX_SHIFT NN_ROPE_SPLIT_HALF; do \
@@ -61,6 +92,9 @@ test-nn-negctl:
 	   fi; \
 	 done; \
 	 exit $$fail
+else
+	@printf '$(NN_SKIP_TEXT)'
+endif
 
 # --- LOGITLM format + inference: c/lib/nn/model.c and c/lib/nn/infer.c -------
 #
@@ -72,16 +106,24 @@ test-nn-negctl:
 # run inference against) and both call into the NN_SRC kernels, so
 # test-lm-infer's link line carries all four.
 test-lm-format:
+ifeq ($(NN_SIMD_OK),yes)
 	@mkdir -p $(BUILD)
 	@$(CC) $(NN_CF) -o $(BUILD)/lm_format_test tests/unit/lm_format_test.c \
 	    c/lib/nn/model.c $(NN_SRC) -lm
 	@$(BUILD)/lm_format_test
+else
+	@printf '$(NN_SKIP_TEXT)'
+endif
 
-test-lm-infer: test-lm-infer-negctl test-lm-ropebase-negctl
+test-lm-infer: $(call NN_DEP,test-lm-infer-negctl test-lm-ropebase-negctl)
+ifeq ($(NN_SIMD_OK),yes)
 	@mkdir -p $(BUILD)
 	@$(CC) $(NN_CF) -o $(BUILD)/lm_infer_test tests/unit/lm_infer_test.c \
 	    c/lib/nn/infer.c c/lib/nn/model.c $(NN_SRC) -lm
 	@$(BUILD)/lm_infer_test
+else
+	@printf '$(NN_SKIP_TEXT)'
+endif
 
 # THE NEGATIVE CONTROL FOR THE DECOUPLED head_dim.
 #
@@ -135,6 +177,7 @@ LM_NEG_N = 17
 
 .PHONY: test-lm-infer-negctl
 test-lm-infer-negctl:
+ifeq ($(NN_SIMD_OK),yes)
 	@mkdir -p $(BUILD)
 	@$(CC) $(NN_CF) -DLM_DERIVE_HEAD_DIM -o $(BUILD)/lm_infer_neg \
 	    tests/unit/lm_infer_test.c c/lib/nn/infer.c c/lib/nn/model.c $(NN_SRC) -lm
@@ -162,6 +205,9 @@ test-lm-infer-negctl:
 	 echo "test-lm-infer-negctl: ok -- -DLM_DERIVE_HEAD_DIM reddens $$n check(s),"; \
 	 echo "  every one of them a [head_dim] check:"; \
 	 grep '^FAIL:' $(BUILD)/lm_infer_neg.log | sed 's/^/    /'
+else
+	@printf '$(NN_SKIP_TEXT)'
+endif
 
 # --- tools/lmtrain.c: the HOST-ONLY trainer -----------------------------
 #
@@ -320,7 +366,8 @@ PY ?= python3
 #
 # q4 rather than q8 for the written file, because 355.5 MiB is the figure the
 # 512 MiB machine's budget was written against and q8's 570.5 MiB is not.
-test-gguf: test-lm-ropebase-negctl test-gguf-negctl $(BUILD)/lmshape
+test-gguf: $(call NN_DEP,test-lm-ropebase-negctl test-gguf-negctl $(BUILD)/lmshape)
+ifeq ($(NN_SIMD_OK),yes)
 	@if [ ! -f "$(GGUF)" ]; then \
 	   echo "test-gguf: SKIP -- no $(GGUF), so there are no real weights to"; \
 	   echo "  convert. It is a 610 MB download and not a repo artifact:"; \
@@ -354,6 +401,9 @@ test-gguf: test-lm-ropebase-negctl test-gguf-negctl $(BUILD)/lmshape
 	 $(PY) tools/gguf_check.py --matvec $(GGUF) --tensor blk.0.attn_k.weight \
 	     --xy $(BUILD)/gguf_xy.bin; \
 	 echo "test-gguf: ok -- 4 of 4"
+else
+	@printf '$(NN_SKIP_TEXT)'
+endif
 
 # NAMED ON THE SUITE, and the two controls come with it as prerequisites --
 # the same two lines test-lm-infer/test-lm-infer-negctl use above, for the
@@ -425,7 +475,8 @@ LM_TRANSPOSE_VERIFY_N = 0
 # "did the converter READ the right element", --verify asks "did it WRITE it
 # where the loader will look".
 LM_PROBES = 13
-test-gguf-negctl: test-lm-ropebase-negctl $(BUILD)/lmshape
+test-gguf-negctl: $(call NN_DEP,test-lm-ropebase-negctl $(BUILD)/lmshape)
+ifeq ($(NN_SIMD_OK),yes)
 	@if [ ! -f "$(GGUF)" ]; then \
 	   echo "test-gguf-negctl: SKIP -- no $(GGUF) (see test-gguf)"; exit 0; \
 	 fi; \
@@ -494,6 +545,9 @@ test-gguf-negctl: test-lm-ropebase-negctl $(BUILD)/lmshape
 	   echo "test-gguf-negctl: ok -- the matvec reddens under the transposition"; \
 	 fi; \
 	 exit $$fail
+else
+	@printf '$(NN_SKIP_TEXT)'
+endif
 
 # --- test-lm-ropebase-negctl ------------------------------------------------
 #
@@ -523,6 +577,7 @@ test-gguf-negctl: test-lm-ropebase-negctl $(BUILD)/lmshape
 # and every pairing, so reddening those would be the control reporting that it
 # broke the model rather than that it broke the position encoding.
 test-lm-ropebase-negctl:
+ifeq ($(NN_SIMD_OK),yes)
 	@mkdir -p $(BUILD)
 	@$(CC) $(NN_CF) -DLM_IGNORE_HEADER_ARCH -o $(BUILD)/lm_ropebase_negctl \
 	    tests/unit/lm_infer_test.c c/lib/nn/infer.c c/lib/nn/model.c $(NN_SRC) -lm
@@ -540,6 +595,9 @@ test-lm-ropebase-negctl:
 	 echo "  pairing flag reddens exactly the two pos>0 checks (2) and leaves"; \
 	 echo "  both pos-0 checks passing (2)"; \
 	 grep -E '      (rope base 10000|interleaved vs NEOX)' $(BUILD)/lm_ropebase_negctl.log || true
+else
+	@printf '$(NN_SKIP_TEXT)'
+endif
 
 # --- test-qwen-logits: is the model this machine runs REALLY Qwen3? ---------
 #
@@ -670,6 +728,7 @@ test-qwen-logits-negctl:
 # failure mode CLAUDE.md names: it satisfies the audit and still runs nothing.
 .PHONY: test-lm-units
 test-lm-units:
+ifeq ($(NN_SIMD_OK),yes)
 	@mkdir -p $(BUILD); rc=0; \
 	 for t in lmshape kvbudget quant4; do \
 	   $(CC) $(NN_CF) -o $(BUILD)/lm_$${t}_test tests/unit/$${t}_test.c \
@@ -677,4 +736,7 @@ test-lm-units:
        || { echo "test-lm-units: $${t}_test FAILED TO BUILD"; rc=1; continue; }; \
 	   $(BUILD)/lm_$${t}_test || rc=1; \
 	 done; exit $$rc
+else
+	@printf '$(NN_SKIP_TEXT)'
+endif
 
