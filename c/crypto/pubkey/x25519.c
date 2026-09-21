@@ -151,7 +151,13 @@ void x25519(uint8_t out[32], const uint8_t scalar[32], const uint8_t point[32])
      * secret-derived state; both are secret-derived key material left on the
      * stack after return (2026-09-16 audit). Same discipline as mlkem. */
     memset(e, 0, sizeof e);
-    for (int i=0;i<10;i++) { x2[i]=0; z2[i]=0; x3[i]=0; z3[i]=0; tmp0[i]=0; tmp1[i]=0; }
+    /* sizeof, not a literal count: `fe` is uint64_t[5] and this loop was
+     * written `i<10` -- 40 bytes past the end of each of the six, on every
+     * X25519 operation. UBSan in test-tls-server is what caught it. The
+     * length now has ONE spelling, the typedef's. */
+    memset(x2, 0, sizeof x2); memset(z2, 0, sizeof z2);
+    memset(x3, 0, sizeof x3); memset(z3, 0, sizeof z3);
+    memset(tmp0, 0, sizeof tmp0); memset(tmp1, 0, sizeof tmp1);
 }
 
 void x25519_base(uint8_t out[32], const uint8_t scalar[32])
