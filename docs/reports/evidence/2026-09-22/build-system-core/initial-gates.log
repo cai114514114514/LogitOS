@@ -1,0 +1,24 @@
+clang -O1 -g -Wall -Wextra -fsanitize=address,undefined -pthread -o build-system-core/poll_test tests/unit/poll_test.c tests/unit/pollhost/hostsched.c c/kernel/sync/wait.c c/kernel/exec/fd/kpoll.c -iquote c -iquote c/kernel/core -iquote c/kernel/init -iquote c/kernel/diag -iquote c/kernel/sync -iquote c/kernel/cpu -iquote c/kernel/cpu/acpi -iquote c/kernel/cpu/irq -iquote c/kernel/cpu/smp -iquote c/kernel/sched -iquote c/kernel/exec -iquote c/kernel/exec/load -iquote c/kernel/exec/signal -iquote c/kernel/exec/fd -iquote c/drivers/timer -iquote include/abi
+clang -O1 -g -Wall -Wextra -fsanitize=address,undefined -pthread -DPOLL_NO_PREREGISTER -o build-system-core/poll_test_negctl tests/unit/poll_test.c tests/unit/pollhost/hostsched.c c/kernel/sync/wait.c c/kernel/exec/fd/kpoll.c -iquote c -iquote c/kernel/core -iquote c/kernel/init -iquote c/kernel/diag -iquote c/kernel/sync -iquote c/kernel/cpu -iquote c/kernel/cpu/acpi -iquote c/kernel/cpu/irq -iquote c/kernel/cpu/smp -iquote c/kernel/sched -iquote c/kernel/exec -iquote c/kernel/exec/load -iquote c/kernel/exec/signal -iquote c/kernel/exec/fd -iquote c/drivers/timer -iquote include/abi
+clang -O1 -g -Wall -Wextra -fsanitize=address,undefined -fno-sanitize-recover=undefined -iquote c/fs -iquote c/fs/vfs -iquote c/fs/logitfs -iquote c/fs/cache -iquote c/fs/ramfs -iquote c/fs/ctl -iquote c/fs/procfs -iquote include/abi -o build-system-core/procfs_test tests/unit/procfs_test.c c/fs/procfs/procfs.c
+clang -O1 -g -Wall -Wextra -fsanitize=address,undefined -fno-sanitize-recover=undefined -DPROCFS_SNAPSHOT_AT_OPEN -iquote c/fs -iquote c/fs/vfs -iquote c/fs/logitfs -iquote c/fs/cache -iquote c/fs/ramfs -iquote c/fs/ctl -iquote c/fs/procfs -iquote include/abi -o build-system-core/procfs_test_negctl tests/unit/procfs_test.c c/fs/procfs/procfs.c
+--- poll negative control: readiness read BEFORE registration ---
+TIME-SWITCH-NEGCTL-OK: publishing source before seqlock reddened exactly one check
+negctl ok: 5 assertion(s) redden, 5 of them liveness checks
+FAIL LIVE: the read reflects the change, not the open
+FAIL LIVE: two reads at offset 0 are two instants
+FAIL LIVE: meminfo re-reads the allocator
+FAIL LIVE: reading a gone process is ENOENT, not the bytes taken at open
+FAIL LIVE: a rewind to 0 re-takes the instant
+time_test: timer heap, ns arithmetic, wrap, clamp, cross-check
+time_test: 208 checks, 0 failures
+73 checks, 0 failures
+poll host gate
+  FAIL LOST WAKEUP: an INFINITE poll returned on its own -- the watchdog was not needed
+  FAIL LOST WAKEUP: it returned promptly rather than hanging
+poll host gate: 24 passed, 2 failed
+POLL-HOST FAIL
+negctl reddened as required (see the two LOST WAKEUP lines above)
+poll host gate
+poll host gate: 26 passed, 0 failed
+POLL-HOST OK 26 checks

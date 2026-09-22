@@ -1,0 +1,89 @@
+{
+  "passed": true,
+  "expect_error": false,
+  "checks": [
+    "packed compiler matches selected artifact",
+    "packed Studio matches selected artifact",
+    "packed native fixture matches selected artifact",
+    "LLVM native fixture passes in guest",
+    "guest type check accepts mixed arithmetic",
+    "guest /bin/as prints exactly 3",
+    "actual Code Studio geometry reported",
+    "unscaled Code Studio window",
+    "demo opened through picker",
+    "Studio Check shows expected diagnostics",
+    "reference opened through picker",
+    "wrong opened through picker",
+    "GUI output control changes actual scanout",
+    "Studio mixed output equals pure-float 3",
+    "source remains exact screenshot program",
+    "input artifacts remain unchanged"
+  ],
+  "compiler_sha256": "1a8118aa5469a16254b3dfac1917e7da08450864cd01d0eb52e98ae57ff9942f",
+  "studio_sha256": "5d980884ecc9011b5060a15ea937fb5cfd7848220a22ea6700d3baa5d7565fc1",
+  "kernel_sha256": "b51a174f659e18e1071ab10cce7c7fa6e55ab0d0f3c97e22d971fe3957607ee2",
+  "source": "# aether: 3.0\ny = 2\nx = 1.0\nprint(x + y)\n",
+  "native_sha256": "433b7133f6871f8dd22ef9c74492f876f3b6f4dd1cf222f62c852b561950806c",
+  "packed_compiler_sha256": "1a8118aa5469a16254b3dfac1917e7da08450864cd01d0eb52e98ae57ff9942f",
+  "packed_studio_sha256": "5d980884ecc9011b5060a15ea937fb5cfd7848220a22ea6700d3baa5d7565fc1",
+  "packed_native_sha256": "433b7133f6871f8dd22ef9c74492f876f3b6f4dd1cf222f62c852b561950806c",
+  "native_output": "mixed numeric ok\n",
+  "native_exit": 0,
+  "diagnostic": {
+    "version": 1,
+    "language": 3,
+    "ok": true,
+    "file": "/docs/demo.as",
+    "source_bytes": 41,
+    "source_checksum": 4251925508,
+    "diagnostics": [],
+    "truncated": false,
+    "sources": [
+      {
+        "path": "/docs/demo.as",
+        "bytes": 41,
+        "checksum": 4251925508
+      }
+    ],
+    "symbols": [
+      {
+        "kind": "function",
+        "name": "main",
+        "path": "/docs/demo.as",
+        "start": 28,
+        "end": 33,
+        "line": 4,
+        "type": "None",
+        "type_parameters": []
+      },
+      {
+        "kind": "variable",
+        "name": "y",
+        "path": "/docs/demo.as",
+        "start": 14,
+        "end": 15,
+        "line": 2,
+        "type": "i64"
+      },
+      {
+        "kind": "variable",
+        "name": "x",
+        "path": "/docs/demo.as",
+        "start": 20,
+        "end": 21,
+        "line": 3,
+        "type": "f64"
+      }
+    ]
+  },
+  "check_exit": 0,
+  "output": "3\n",
+  "run_exit": 0,
+  "geometry": [
+    110,
+    96,
+    1120,
+    700
+  ],
+  "guest_stopped": true
+}

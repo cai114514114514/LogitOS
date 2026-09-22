@@ -1,0 +1,13 @@
+  FAIL: overwrite cut@3: /bys2 must be entirely the old content or entirely the new
+PASS: crash control caught 31 overwrite atomicity failures
+laying down bystanders
+repeated clean boots (the CLAUDE.md corruption regression)
+fsync semantics
+exhaustive crash injection
+  write            29 device writes -> 29 cut point(s) x 3 loss pattern(s)
+  mkdir            9 device writes -> 9 cut point(s) x 3 loss pattern(s)
+  delete           9 device writes -> 9 cut point(s) x 3 loss pattern(s)
+  rename           12 device writes -> 12 cut point(s) x 3 loss pattern(s)
+  overwrite        17 device writes -> 17 cut point(s) x 3 loss pattern(s)
+fs_crash_test: 1744 checks, 0 failure(s)
+PASS

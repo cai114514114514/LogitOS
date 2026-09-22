@@ -1,0 +1,106 @@
+clang -O1 -g -Wall -Wextra -DGLASS_NO_DISPERSION -Ic/kernel/gui -Ic/kernel/gui/fb -Ic/kernel/gui/ime -Ic/kernel/gui/input -Ic/lib/gfx/adapters/ -Ic/lib/gfx/effects/ -Ic/lib/gfx/include/ -Ic/lib/gfx/internal/ \
+	    -o build-quality-glass/glass_lut_negctl tests/unit/glass_lut_test.c c/lib/gfx/effects/openlogit_glass.c -lm
+clang -O1 -g -Wall -Wextra -Ic/lib/gfx/adapters/ -Ic/lib/gfx/effects/ -Ic/lib/gfx/include/ -Ic/lib/gfx/internal/ -DGLASS_STATIC_TINT tests/unit/glass_material_test.c c/lib/gfx/adapters/openlogit_bitmap.c c/lib/gfx/adapters/openlogit_compat.c c/lib/gfx/adapters/openlogit_display.c c/lib/gfx/adapters/openlogit_draw.c c/lib/gfx/animation/openlogit_anim.c c/lib/gfx/canvas/sprites.c c/lib/gfx/canvas/state.c c/lib/gfx/core/openlogit.c c/lib/gfx/effects/glass_blur.c c/lib/gfx/effects/glass_render.c c/lib/gfx/effects/openlogit_effects.c c/lib/gfx/effects/openlogit_glass.c c/lib/gfx/effects/openlogit_material.c c/lib/gfx/geometry/gfx_math.c c/lib/gfx/geometry/gfx_path.c c/lib/gfx/geometry/gfx_stroke.c c/lib/gfx/raster/gfx_mask.c c/lib/gfx/raster/gfx_paint.c c/lib/gfx/raster/gfx_raster.c c/lib/gfx/scene/scene2d.c c/lib/gfx/ui/controls.c c/lib/gfx/ui/interaction.c -lm -o build-quality-glass/glass_material_static
+clang -O1 -g -Wall -Wextra -Ic/lib/gfx/adapters/ -Ic/lib/gfx/effects/ -Ic/lib/gfx/include/ -Ic/lib/gfx/internal/ tests/unit/glass_material_test.c c/lib/gfx/adapters/openlogit_bitmap.c c/lib/gfx/adapters/openlogit_compat.c c/lib/gfx/adapters/openlogit_display.c c/lib/gfx/adapters/openlogit_draw.c c/lib/gfx/animation/openlogit_anim.c c/lib/gfx/canvas/sprites.c c/lib/gfx/canvas/state.c c/lib/gfx/core/openlogit.c c/lib/gfx/effects/glass_blur.c c/lib/gfx/effects/glass_render.c c/lib/gfx/effects/openlogit_effects.c c/lib/gfx/effects/openlogit_glass.c c/lib/gfx/effects/openlogit_material.c c/lib/gfx/geometry/gfx_math.c c/lib/gfx/geometry/gfx_path.c c/lib/gfx/geometry/gfx_stroke.c c/lib/gfx/raster/gfx_mask.c c/lib/gfx/raster/gfx_paint.c c/lib/gfx/raster/gfx_raster.c c/lib/gfx/scene/scene2d.c c/lib/gfx/ui/controls.c c/lib/gfx/ui/interaction.c -lm -o build-quality-glass/glass_material_test
+clang -O1 -g -Wall -Wextra -Ic/lib/gfx/adapters/ -Ic/lib/gfx/effects/ -Ic/lib/gfx/include/ -Ic/lib/gfx/internal/ -DGLASS_FIELD_SLOW tests/unit/glass_material_test.c c/lib/gfx/adapters/openlogit_bitmap.c c/lib/gfx/adapters/openlogit_compat.c c/lib/gfx/adapters/openlogit_display.c c/lib/gfx/adapters/openlogit_draw.c c/lib/gfx/animation/openlogit_anim.c c/lib/gfx/canvas/sprites.c c/lib/gfx/canvas/state.c c/lib/gfx/core/openlogit.c c/lib/gfx/effects/glass_blur.c c/lib/gfx/effects/glass_render.c c/lib/gfx/effects/openlogit_effects.c c/lib/gfx/effects/openlogit_glass.c c/lib/gfx/effects/openlogit_material.c c/lib/gfx/geometry/gfx_math.c c/lib/gfx/geometry/gfx_path.c c/lib/gfx/geometry/gfx_stroke.c c/lib/gfx/raster/gfx_mask.c c/lib/gfx/raster/gfx_paint.c c/lib/gfx/raster/gfx_raster.c c/lib/gfx/scene/scene2d.c c/lib/gfx/ui/controls.c c/lib/gfx/ui/interaction.c -lm -o build-quality-glass/glass_material_slow
+clang -O1 -g -Wall -Wextra -Ic/lib/gfx/adapters/ -Ic/lib/gfx/effects/ -Ic/lib/gfx/include/ -Ic/lib/gfx/internal/ -fsanitize=address,undefined -fno-omit-frame-pointer tests/unit/glass_material_test.c c/lib/gfx/adapters/openlogit_bitmap.c c/lib/gfx/adapters/openlogit_compat.c c/lib/gfx/adapters/openlogit_display.c c/lib/gfx/adapters/openlogit_draw.c c/lib/gfx/animation/openlogit_anim.c c/lib/gfx/canvas/sprites.c c/lib/gfx/canvas/state.c c/lib/gfx/core/openlogit.c c/lib/gfx/effects/glass_blur.c c/lib/gfx/effects/glass_render.c c/lib/gfx/effects/openlogit_effects.c c/lib/gfx/effects/openlogit_glass.c c/lib/gfx/effects/openlogit_material.c c/lib/gfx/geometry/gfx_math.c c/lib/gfx/geometry/gfx_path.c c/lib/gfx/geometry/gfx_stroke.c c/lib/gfx/raster/gfx_mask.c c/lib/gfx/raster/gfx_paint.c c/lib/gfx/raster/gfx_raster.c c/lib/gfx/scene/scene2d.c c/lib/gfx/ui/controls.c c/lib/gfx/ui/interaction.c -lm -o build-quality-glass/glass_material_sanitize
+clang -O1 -g -Wall -Wextra -Ic/lib/gfx/adapters/ -Ic/lib/gfx/effects/ -Ic/lib/gfx/include/ -Ic/lib/gfx/internal/ -DGLASS_ROOT_NARROW -o build-quality-glass/glass_geometry_root_neg tests/unit/glass_geometry_test.c c/lib/gfx/adapters/openlogit_bitmap.c c/lib/gfx/adapters/openlogit_compat.c c/lib/gfx/adapters/openlogit_display.c c/lib/gfx/adapters/openlogit_draw.c c/lib/gfx/animation/openlogit_anim.c c/lib/gfx/canvas/sprites.c c/lib/gfx/canvas/state.c c/lib/gfx/core/openlogit.c c/lib/gfx/effects/glass_blur.c c/lib/gfx/effects/glass_render.c c/lib/gfx/effects/openlogit_effects.c c/lib/gfx/effects/openlogit_glass.c c/lib/gfx/effects/openlogit_material.c c/lib/gfx/geometry/gfx_math.c c/lib/gfx/geometry/gfx_path.c c/lib/gfx/geometry/gfx_stroke.c c/lib/gfx/raster/gfx_mask.c c/lib/gfx/raster/gfx_paint.c c/lib/gfx/raster/gfx_raster.c c/lib/gfx/scene/scene2d.c c/lib/gfx/ui/controls.c c/lib/gfx/ui/interaction.c -lm
+clang -O1 -g -Wall -Wextra -Ic/lib/gfx/adapters/ -Ic/lib/gfx/effects/ -Ic/lib/gfx/include/ -Ic/lib/gfx/internal/ -DGLASS_CROP_REBASE -o build-quality-glass/glass_geometry_crop_neg tests/unit/glass_geometry_test.c c/lib/gfx/adapters/openlogit_bitmap.c c/lib/gfx/adapters/openlogit_compat.c c/lib/gfx/adapters/openlogit_display.c c/lib/gfx/adapters/openlogit_draw.c c/lib/gfx/animation/openlogit_anim.c c/lib/gfx/canvas/sprites.c c/lib/gfx/canvas/state.c c/lib/gfx/core/openlogit.c c/lib/gfx/effects/glass_blur.c c/lib/gfx/effects/glass_render.c c/lib/gfx/effects/openlogit_effects.c c/lib/gfx/effects/openlogit_glass.c c/lib/gfx/effects/openlogit_material.c c/lib/gfx/geometry/gfx_math.c c/lib/gfx/geometry/gfx_path.c c/lib/gfx/geometry/gfx_stroke.c c/lib/gfx/raster/gfx_mask.c c/lib/gfx/raster/gfx_paint.c c/lib/gfx/raster/gfx_raster.c c/lib/gfx/scene/scene2d.c c/lib/gfx/ui/controls.c c/lib/gfx/ui/interaction.c -lm
+negative control ok -- without dispersion the test fails:
+  failing assertions: 1633
+clang -O1 -g -Wall -Wextra -Ic/lib/gfx/adapters/ -Ic/lib/gfx/effects/ -Ic/lib/gfx/include/ -Ic/lib/gfx/internal/ -DGLASS_FALLBACK_BLUR -o build-quality-glass/glass_geometry_allocation_neg tests/unit/glass_geometry_test.c c/lib/gfx/adapters/openlogit_bitmap.c c/lib/gfx/adapters/openlogit_compat.c c/lib/gfx/adapters/openlogit_display.c c/lib/gfx/adapters/openlogit_draw.c c/lib/gfx/animation/openlogit_anim.c c/lib/gfx/canvas/sprites.c c/lib/gfx/canvas/state.c c/lib/gfx/core/openlogit.c c/lib/gfx/effects/glass_blur.c c/lib/gfx/effects/glass_render.c c/lib/gfx/effects/openlogit_effects.c c/lib/gfx/effects/openlogit_glass.c c/lib/gfx/effects/openlogit_material.c c/lib/gfx/geometry/gfx_math.c c/lib/gfx/geometry/gfx_path.c c/lib/gfx/geometry/gfx_stroke.c c/lib/gfx/raster/gfx_mask.c c/lib/gfx/raster/gfx_paint.c c/lib/gfx/raster/gfx_raster.c c/lib/gfx/scene/scene2d.c c/lib/gfx/ui/controls.c c/lib/gfx/ui/interaction.c -lm
+clang -O1 -g -Wall -Wextra -Ic/lib/gfx/adapters/ -Ic/lib/gfx/effects/ -Ic/lib/gfx/include/ -Ic/lib/gfx/internal/ -o build-quality-glass/glass_geometry_test tests/unit/glass_geometry_test.c c/lib/gfx/adapters/openlogit_bitmap.c c/lib/gfx/adapters/openlogit_compat.c c/lib/gfx/adapters/openlogit_display.c c/lib/gfx/adapters/openlogit_draw.c c/lib/gfx/animation/openlogit_anim.c c/lib/gfx/canvas/sprites.c c/lib/gfx/canvas/state.c c/lib/gfx/core/openlogit.c c/lib/gfx/effects/glass_blur.c c/lib/gfx/effects/glass_render.c c/lib/gfx/effects/openlogit_effects.c c/lib/gfx/effects/openlogit_glass.c c/lib/gfx/effects/openlogit_material.c c/lib/gfx/geometry/gfx_math.c c/lib/gfx/geometry/gfx_path.c c/lib/gfx/geometry/gfx_stroke.c c/lib/gfx/raster/gfx_mask.c c/lib/gfx/raster/gfx_paint.c c/lib/gfx/raster/gfx_raster.c c/lib/gfx/scene/scene2d.c c/lib/gfx/ui/controls.c c/lib/gfx/ui/interaction.c -lm
+clang -O1 -g -Wall -Wextra -Ic/lib/gfx/adapters/ -Ic/lib/gfx/effects/ -Ic/lib/gfx/include/ -Ic/lib/gfx/internal/ -DGLASS_FIELD_SLOW -o build-quality-glass/glass_geometry_slow tests/unit/glass_geometry_test.c c/lib/gfx/adapters/openlogit_bitmap.c c/lib/gfx/adapters/openlogit_compat.c c/lib/gfx/adapters/openlogit_display.c c/lib/gfx/adapters/openlogit_draw.c c/lib/gfx/animation/openlogit_anim.c c/lib/gfx/canvas/sprites.c c/lib/gfx/canvas/state.c c/lib/gfx/core/openlogit.c c/lib/gfx/effects/glass_blur.c c/lib/gfx/effects/glass_render.c c/lib/gfx/effects/openlogit_effects.c c/lib/gfx/effects/openlogit_glass.c c/lib/gfx/effects/openlogit_material.c c/lib/gfx/geometry/gfx_math.c c/lib/gfx/geometry/gfx_path.c c/lib/gfx/geometry/gfx_stroke.c c/lib/gfx/raster/gfx_mask.c c/lib/gfx/raster/gfx_paint.c c/lib/gfx/raster/gfx_raster.c c/lib/gfx/scene/scene2d.c c/lib/gfx/ui/controls.c c/lib/gfx/ui/interaction.c -lm
+clang -O1 -g -Wall -Wextra -Ic/lib/gfx/adapters/ -Ic/lib/gfx/effects/ -Ic/lib/gfx/include/ -Ic/lib/gfx/internal/ -fsanitize=address,undefined -fno-omit-frame-pointer \
+	    -o build-quality-glass/glass_geometry_sanitize tests/unit/glass_geometry_test.c c/lib/gfx/adapters/openlogit_bitmap.c c/lib/gfx/adapters/openlogit_compat.c c/lib/gfx/adapters/openlogit_display.c c/lib/gfx/adapters/openlogit_draw.c c/lib/gfx/animation/openlogit_anim.c c/lib/gfx/canvas/sprites.c c/lib/gfx/canvas/state.c c/lib/gfx/core/openlogit.c c/lib/gfx/effects/glass_blur.c c/lib/gfx/effects/glass_render.c c/lib/gfx/effects/openlogit_effects.c c/lib/gfx/effects/openlogit_glass.c c/lib/gfx/effects/openlogit_material.c c/lib/gfx/geometry/gfx_math.c c/lib/gfx/geometry/gfx_path.c c/lib/gfx/geometry/gfx_stroke.c c/lib/gfx/raster/gfx_mask.c c/lib/gfx/raster/gfx_paint.c c/lib/gfx/raster/gfx_raster.c c/lib/gfx/scene/scene2d.c c/lib/gfx/ui/controls.c c/lib/gfx/ui/interaction.c -lm
+clang -O1 -g -Wall -Wextra -Ic/kernel/gui -Ic/kernel/gui/fb -Ic/kernel/gui/ime -Ic/kernel/gui/input -Ic/kernel/mm -Ic/kernel/mm/phys -Ic/kernel/mm/virt -Ic/kernel/mm/cache -Ic/kernel/mm/reclaim -Ic/drivers/virtio -Ic/lib/text -Ic/lib/gfx/adapters/ -Ic/lib/gfx/effects/ -Ic/lib/gfx/include/ -Ic/lib/gfx/internal/ -DDISPLAY_PATH_LIMIT tests/unit/fb_display_test.c c/kernel/gui/fb/fb.c c/kernel/gui/fb/glass.c c/lib/gfx/adapters/openlogit_bitmap.c c/lib/gfx/adapters/openlogit_compat.c c/lib/gfx/adapters/openlogit_display.c c/lib/gfx/adapters/openlogit_draw.c c/lib/gfx/animation/openlogit_anim.c c/lib/gfx/canvas/sprites.c c/lib/gfx/canvas/state.c c/lib/gfx/core/openlogit.c c/lib/gfx/effects/glass_blur.c c/lib/gfx/effects/glass_render.c c/lib/gfx/effects/openlogit_effects.c c/lib/gfx/effects/openlogit_glass.c c/lib/gfx/effects/openlogit_material.c c/lib/gfx/geometry/gfx_math.c c/lib/gfx/geometry/gfx_path.c c/lib/gfx/geometry/gfx_stroke.c c/lib/gfx/raster/gfx_mask.c c/lib/gfx/raster/gfx_paint.c c/lib/gfx/raster/gfx_raster.c c/lib/gfx/scene/scene2d.c c/lib/gfx/ui/controls.c c/lib/gfx/ui/interaction.c -lm -o build-quality-glass/fb_display_small
+FAIL GPU success preserves callback pixels without CPU overwrite
+FB_NATIVE_PRESENT_NEGCTL: CPU overwrite detected (exactly one failure)
+clang -O1 -g -Wall -Wextra -Ic/kernel/gui -Ic/kernel/gui/fb -Ic/kernel/gui/ime -Ic/kernel/gui/input -Ic/kernel/mm -Ic/kernel/mm/phys -Ic/kernel/mm/virt -Ic/kernel/mm/cache -Ic/kernel/mm/reclaim -Ic/drivers/virtio -Ic/lib/text -Ic/lib/gfx/adapters/ -Ic/lib/gfx/effects/ -Ic/lib/gfx/include/ -Ic/lib/gfx/internal/ -DFB_BIND_UNCHECKED tests/unit/fb_display_test.c c/kernel/gui/fb/fb.c c/kernel/gui/fb/glass.c c/lib/gfx/adapters/openlogit_bitmap.c c/lib/gfx/adapters/openlogit_compat.c c/lib/gfx/adapters/openlogit_display.c c/lib/gfx/adapters/openlogit_draw.c c/lib/gfx/animation/openlogit_anim.c c/lib/gfx/canvas/sprites.c c/lib/gfx/canvas/state.c c/lib/gfx/core/openlogit.c c/lib/gfx/effects/glass_blur.c c/lib/gfx/effects/glass_render.c c/lib/gfx/effects/openlogit_effects.c c/lib/gfx/effects/openlogit_glass.c c/lib/gfx/effects/openlogit_material.c c/lib/gfx/geometry/gfx_math.c c/lib/gfx/geometry/gfx_path.c c/lib/gfx/geometry/gfx_stroke.c c/lib/gfx/raster/gfx_mask.c c/lib/gfx/raster/gfx_paint.c c/lib/gfx/raster/gfx_raster.c c/lib/gfx/scene/scene2d.c c/lib/gfx/ui/controls.c c/lib/gfx/ui/interaction.c -lm -o build-quality-glass/fb_display_unchecked
+=== fb clip equality: 200x140 target, clip (37,29 84x61) ===
+ok   fb_fill_rect           clipped == unclipped inside the clip (0 wrong), and nothing written outside it (0 written)
+ok   fb_fill_rect off-screen clipped == unclipped inside the clip (0 wrong), and nothing written outside it (0 written)
+ok   fb_round_rect          clipped == unclipped inside the clip (0 wrong), and nothing written outside it (0 written)
+ok   fb_fill_circle         clipped == unclipped inside the clip (0 wrong), and nothing written outside it (0 written)
+ok   fb_fill_vgrad          clipped == unclipped inside the clip (0 wrong), and nothing written outside it (0 written)
+ok   fb_round_rect_vgrad    clipped == unclipped inside the clip (0 wrong), and nothing written outside it (0 written)
+ok   fb_blend_rect          clipped == unclipped inside the clip (0 wrong), and nothing written outside it (0 written)
+ok   fb_blend_round_rect    clipped == unclipped inside the clip (0 wrong), and nothing written outside it (0 written)
+ok   fb_shadow              clipped == unclipped inside the clip (0 wrong), and nothing written outside it (0 written)
+ok   fb_blit_surface        clipped == unclipped inside the clip (0 wrong), and nothing written outside it (0 written)
+ok   fb_blit_surface neg    clipped == unclipped inside the clip (0 wrong), and nothing written outside it (0 written)
+ok   fb_blit_surface_scaled clipped == unclipped inside the clip (0 wrong), and nothing written outside it (0 written)
+ok   fb_blit_glyph          clipped == unclipped inside the clip (0 wrong), and nothing written outside it (0 written)
+ok   fb_blit_rgba           clipped == unclipped inside the clip (0 wrong), and nothing written outside it (0 written)
+ok   fb_blur_rect           clipped == unclipped inside the clip (0 wrong), and nothing written outside it (0 written)
+ok   fb_liquid_glass        clipped == unclipped inside the clip (0 wrong), and nothing written outside it (0 written)
+ok   fb_clear               clipped == unclipped inside the clip (0 wrong), and nothing written outside it (0 written)
+ok   fb_present_px counts the CLAMPED rectangle (20x20 of a 30x30 ask at -10,-10)
+ok   ...and clamps at the far edge too
+ok   ...and an empty rectangle costs nothing
+
+fb_clip_test: all checks passed
+clang -O1 -g -Wall -Wextra -Ic/kernel/gui -Ic/kernel/gui/fb -Ic/kernel/gui/ime -Ic/kernel/gui/input -Ic/kernel/mm -Ic/kernel/mm/phys -Ic/kernel/mm/virt -Ic/kernel/mm/cache -Ic/kernel/mm/reclaim -Ic/drivers/virtio -Ic/lib/text -Ic/lib/gfx/adapters/ -Ic/lib/gfx/effects/ -Ic/lib/gfx/include/ -Ic/lib/gfx/internal/ tests/unit/fb_display_test.c c/kernel/gui/fb/fb.c c/kernel/gui/fb/glass.c c/lib/gfx/adapters/openlogit_bitmap.c c/lib/gfx/adapters/openlogit_compat.c c/lib/gfx/adapters/openlogit_display.c c/lib/gfx/adapters/openlogit_draw.c c/lib/gfx/animation/openlogit_anim.c c/lib/gfx/canvas/sprites.c c/lib/gfx/canvas/state.c c/lib/gfx/core/openlogit.c c/lib/gfx/effects/glass_blur.c c/lib/gfx/effects/glass_render.c c/lib/gfx/effects/openlogit_effects.c c/lib/gfx/effects/openlogit_glass.c c/lib/gfx/effects/openlogit_material.c c/lib/gfx/geometry/gfx_math.c c/lib/gfx/geometry/gfx_path.c c/lib/gfx/geometry/gfx_stroke.c c/lib/gfx/raster/gfx_mask.c c/lib/gfx/raster/gfx_paint.c c/lib/gfx/raster/gfx_raster.c c/lib/gfx/scene/scene2d.c c/lib/gfx/ui/controls.c c/lib/gfx/ui/interaction.c -lm -o build-quality-glass/fb_display_test
+clang -O1 -g -Wall -Wextra -Ic/kernel/gui -Ic/kernel/gui/fb -Ic/kernel/gui/ime -Ic/kernel/gui/input -Ic/kernel/mm -Ic/kernel/mm/phys -Ic/kernel/mm/virt -Ic/kernel/mm/cache -Ic/kernel/mm/reclaim -Ic/drivers/virtio -Ic/lib/text -Ic/lib/gfx/adapters/ -Ic/lib/gfx/effects/ -Ic/lib/gfx/include/ -Ic/lib/gfx/internal/ -fsanitize=address,undefined -fno-omit-frame-pointer tests/unit/fb_display_test.c c/kernel/gui/fb/fb.c c/kernel/gui/fb/glass.c c/lib/gfx/adapters/openlogit_bitmap.c c/lib/gfx/adapters/openlogit_compat.c c/lib/gfx/adapters/openlogit_display.c c/lib/gfx/adapters/openlogit_draw.c c/lib/gfx/animation/openlogit_anim.c c/lib/gfx/canvas/sprites.c c/lib/gfx/canvas/state.c c/lib/gfx/core/openlogit.c c/lib/gfx/effects/glass_blur.c c/lib/gfx/effects/glass_render.c c/lib/gfx/effects/openlogit_effects.c c/lib/gfx/effects/openlogit_glass.c c/lib/gfx/effects/openlogit_material.c c/lib/gfx/geometry/gfx_math.c c/lib/gfx/geometry/gfx_path.c c/lib/gfx/geometry/gfx_stroke.c c/lib/gfx/raster/gfx_mask.c c/lib/gfx/raster/gfx_paint.c c/lib/gfx/raster/gfx_raster.c c/lib/gfx/scene/scene2d.c c/lib/gfx/ui/controls.c c/lib/gfx/ui/interaction.c -lm -o build-quality-glass/fb_display_sanitize
+test_ci_and_control_inventories (__main__.NestedMakeTests.test_ci_and_control_inventories) ... ok
+test_comment_recipe_and_partial_filename_are_not_edges (__main__.NestedMakeTests.test_comment_recipe_and_partial_filename_are_not_edges) ... clang -O1 -g -Wall -Wextra -Ic/kernel/gui -Ic/kernel/gui/fb -Ic/kernel/gui/ime -Ic/kernel/gui/input -Ic/lib/gfx/adapters/ -Ic/lib/gfx/effects/ -Ic/lib/gfx/include/ -Ic/lib/gfx/internal/ \
+	    -o build-quality-glass/glass_lut_test tests/unit/glass_lut_test.c c/lib/gfx/effects/openlogit_glass.c -lm
+ok
+test_continuations_multiple_paths_comments_and_cycle (__main__.NestedMakeTests.test_continuations_multiple_paths_comments_and_cycle) ... ok
+test_declared_exception_is_path_specific (__main__.NestedMakeTests.test_declared_exception_is_path_specific) ... ok
+test_missing_then_restored_edge (__main__.NestedMakeTests.test_missing_then_restored_edge) ... ok
+test_nested_link_prerequisites_are_checked (__main__.NestedMakeTests.test_nested_link_prerequisites_are_checked) ... ok
+test_same_leaf_is_not_same_fragment (__main__.NestedMakeTests.test_same_leaf_is_not_same_fragment) ... ok
+
+----------------------------------------------------------------------
+Ran 7 tests in 0.054s
+
+OK
+negative control: nested fragment without include is UNREACHABLE
+build-quality-glass/glass_lut_test
+FAIL light neutral body keeps content contrast: gray=0 alpha=8 range=13..13
+FAIL light neutral body keeps content contrast: gray=0 alpha=64 range=66..66
+FAIL light neutral body keeps content contrast: gray=0 alpha=128 range=127..127
+FAIL dark neutral body keeps content contrast: gray=255 alpha=8 range=246..246
+FAIL dark neutral body keeps content contrast: gray=255 alpha=64 range=199..199
+FAIL dark neutral body keeps content contrast: gray=255 alpha=128 range=143..143
+Glass material control: fixed tint observed failing both light and dark content contrast.
+build-quality-glass/glass_material_test > build-quality-glass/glass-material-fast.log
+build-quality-glass/glass_material_slow > build-quality-glass/glass-material-slow.log
+neutral body observed: light minimum=176, dark maximum=93
+glass patterned hash: 14544d285d307f91
+glass material: 206 checks, 0 failed
+Glass material parity: complete patterned scenes match between fast and general rendering.
+glass refraction LUT: integer vs double
+  fresnel at E=22: 190 52 27 18 14 ... interior 10
+  dispersion at E=22 refract=18: R 17, G 18, B 19 px; separated at 14 of 23 depths
+  at u=0.50 of a 1000px bend: physical 166, old ramp 250 (51% too strong)
+worst fixed-point error: 0.5001 px (E=18 refract=16 G s=5)
+PASS: 39652 checks, 0 failures
+FAIL fresh 5K bind initializes RGB channels
+FB_NATIVE_PRESENT: 21 checks, 0 failures
+FAIL failed bind never writes the unvalidated target
+FAIL failed bind never writes the unvalidated target
+Framebuffer controls: 4096 cap and unvalidated-target writes were both observed failing.
+ASAN_OPTIONS=detect_leaks=0 UBSAN_OPTIONS=halt_on_error=1 build-quality-glass/glass_material_sanitize
+mk-wired: ok (383 fragments, 382 reachable from the Makefile, 1 declared)
+  declared: tests/schedneg.mk -- a `make -f` wrapper that includes the Makefile itself; including it back would recurse (see its own header)
+build-quality-glass/fb_display_test
+fresh 5K pixels: first=ff8040 last=0c2238
+fb display: 51 checks, 0 failed
+ASAN_OPTIONS=detect_leaks=0 UBSAN_OPTIONS=halt_on_error=1 build-quality-glass/fb_display_sanitize
+neutral body observed: light minimum=176, dark maximum=93
+glass patterned hash: 14544d285d307f91
+glass material: 206 checks, 0 failed
+glass-geometry: 1067 checks, 0 failed (sqrt=0 crop=0 clip=0)
+glass-raster: f9bcf9b07d1c93ef
+glass-geometry-negctl: root red as required
+fresh 5K pixels: first=ff8040 last=0c2238
+fb display: 51 checks, 0 failed
+glass-geometry-negctl: crop red as required
+glass-geometry-negctl: allocation red as required
+glass-geometry: 1067 checks, 0 failed (sqrt=0 crop=0 clip=0)
+glass-raster: f9bcf9b07d1c93ef
+glass-geometry: 1067 checks, 0 failed (sqrt=0 crop=0 clip=0)
+glass-raster: f9bcf9b07d1c93ef
+glass-geometry: fast/slow raster identical (f9bcf9b07d1c93ef)

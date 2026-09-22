@@ -1,0 +1,11 @@
+python3 tests/unit/libc_inet_contract_test.py --build build-quality-inet/inet-contract --cc "clang" --controls
+trailing-colon: inet contract: 369 checks, 6 failed
+observed control: FAIL pton reject [::1:]
+empty-compression: inet contract: 369 checks, 10 failed
+observed control: FAIL pton reject [::1:2:3:4:5:6:7:8]
+decimal-zero: inet contract: 369 checks, 10 failed
+observed control: FAIL pton reject [1.2.3.04]
+python3 tests/unit/libc_inet_contract_test.py --build build-quality-inet/inet-contract --cc "clang"
+optimized: inet contract: 369 checks, 0 failed
+sanitize: inet contract: 369 checks, 0 failed
+PASS: inet matches Darwin host libc (      37 cases)

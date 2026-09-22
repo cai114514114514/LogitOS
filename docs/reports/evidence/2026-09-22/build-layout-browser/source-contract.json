@@ -1,0 +1,62 @@
+{
+  "C_SRC": {
+    "before": 320,
+    "after": 320,
+    "same": true
+  },
+  "BROWSER_PIPE": {
+    "before": 40,
+    "after": 40,
+    "same": true
+  },
+  "BROWSER_JS_SRC": {
+    "before": 34,
+    "after": 34,
+    "same": true
+  },
+  "BROWSER_OBJ": {
+    "before": 92,
+    "after": 92,
+    "same": true
+  },
+  "BROWSER_JS_OBJ": {
+    "before": 34,
+    "after": 34,
+    "same": true
+  },
+  "CSS_OBJ": {
+    "before": 326,
+    "after": 326,
+    "same": true
+  },
+  "WPT_TEST_SRC": {
+    "before": 118,
+    "after": 118,
+    "same": true
+  },
+  "WPT_JS_SRC": {
+    "before": 33,
+    "after": 33,
+    "same": true
+  },
+  "CLI": {
+    "before": 45,
+    "after": 45,
+    "same": true
+  },
+  "CLI_AEX": {
+    "before": 37,
+    "after": 37,
+    "same": true
+  },
+  "APPS": {
+    "before": 7,
+    "after": 7,
+    "same": true
+  },
+  "FS_SPECS": {
+    "before": 8,
+    "after": 8,
+    "same": true
+  }
+}

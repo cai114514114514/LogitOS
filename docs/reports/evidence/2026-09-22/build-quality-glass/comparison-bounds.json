@@ -1,0 +1,125 @@
+{
+  "timings": {
+    "light": {
+      "before": {
+        "glass_pixels": [
+          131764
+        ],
+        "samples": 10,
+        "warmup_pairs": 2,
+        "glass_ms": 11.4805235,
+        "total_ms": 17.265784,
+        "p95_glass_ms": 14.135413,
+        "p95_total_ms": 21.914091
+      },
+      "after": {
+        "glass_pixels": [
+          131764
+        ],
+        "samples": 10,
+        "warmup_pairs": 2,
+        "glass_ms": 11.757083,
+        "total_ms": 17.377647,
+        "p95_glass_ms": 12.002066,
+        "p95_total_ms": 18.85953
+      },
+      "same_glass_rectangle_pixels": true,
+      "same_sample_counts_and_warmup": true,
+      "glass_change_percent": 2.4089450276374436,
+      "total_change_percent": 0.6478883322066364
+    },
+    "dark": {
+      "before": {
+        "glass_pixels": [
+          131764
+        ],
+        "samples": 10,
+        "warmup_pairs": 2,
+        "glass_ms": 11.4150265,
+        "total_ms": 17.1382895,
+        "p95_glass_ms": 12.020503,
+        "p95_total_ms": 19.172205
+      },
+      "after": {
+        "glass_pixels": [
+          131764
+        ],
+        "samples": 10,
+        "warmup_pairs": 2,
+        "glass_ms": 11.329618,
+        "total_ms": 16.815191,
+        "p95_glass_ms": 11.910073,
+        "p95_total_ms": 18.244579
+      },
+      "same_glass_rectangle_pixels": true,
+      "same_sample_counts_and_warmup": true,
+      "glass_change_percent": -0.748211140815136,
+      "total_change_percent": -1.8852435652927935
+    }
+  },
+  "screenshots": [
+    {
+      "name": "light-normal",
+      "dimensions": [
+        1280,
+        800
+      ],
+      "changed_bounds": [
+        1232,
+        10,
+        1269,
+        23
+      ],
+      "before": "/Users/wangzhe/LogitOS/build-quality-glass/baseline-steady/light-normal.png",
+      "after": "/Users/wangzhe/LogitOS/build-quality-glass/candidate-bounds/light-normal.png"
+    },
+    {
+      "name": "dark-normal",
+      "dimensions": [
+        1280,
+        800
+      ],
+      "changed_bounds": [
+        1232,
+        10,
+        1269,
+        23
+      ],
+      "before": "/Users/wangzhe/LogitOS/build-quality-glass/baseline-steady/dark-normal.png",
+      "after": "/Users/wangzhe/LogitOS/build-quality-glass/candidate-bounds/dark-normal.png"
+    },
+    {
+      "name": "light-highcontrast",
+      "dimensions": [
+        1280,
+        800
+      ],
+      "changed_bounds": [
+        1232,
+        10,
+        1269,
+        23
+      ],
+      "before": "/Users/wangzhe/LogitOS/build-quality-glass/baseline-steady/light-highcontrast.png",
+      "after": "/Users/wangzhe/LogitOS/build-quality-glass/candidate-bounds/light-highcontrast.png"
+    },
+    {
+      "name": "dark-highcontrast-0",
+      "dimensions": [
+        1280,
+        800
+      ],
+      "changed_bounds": [
+        1232,
+        10,
+        1269,
+        23
+      ],
+      "before": "/Users/wangzhe/LogitOS/build-quality-glass/baseline-steady/dark-highcontrast-0.png",
+      "after": "/Users/wangzhe/LogitOS/build-quality-glass/candidate-bounds/dark-highcontrast-0.png"
+    }
+  ],
+  "comparable": true,
+  "selection": "high-contrast pairs after warmup; normal and stress phases excluded",
+  "p95_definition": "nearest rank"
+}

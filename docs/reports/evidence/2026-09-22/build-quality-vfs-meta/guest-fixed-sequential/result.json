@@ -1,0 +1,255 @@
+{
+  "passed": true,
+  "checks": [
+    {
+      "name": "create private mount point",
+      "command": "/bin/mkdir /vmeta",
+      "exit": 0,
+      "output": "",
+      "passed": true
+    },
+    {
+      "name": "request independent RAMFS",
+      "command": "/bin/echo mount ramfs rename-meta /vmeta > /dev/vfsctl",
+      "exit": 0,
+      "output": "",
+      "passed": true
+    },
+    {
+      "name": "mount independent RAMFS",
+      "command": "/bin/cat /dev/vfsctl",
+      "exit": 0,
+      "output": "ok mounted ramfs rename-meta at /vmeta\n",
+      "passed": true
+    },
+    {
+      "name": "mount table confirms RAMFS",
+      "command": "/bin/cat /dev/vfsmounts",
+      "exit": 0,
+      "output": "logitfs /\nprocfs /proc\nrename-meta /vmeta\n",
+      "passed": true
+    },
+    {
+      "name": "seed: /bin/mkdir /vmeta/tree",
+      "command": "/bin/mkdir /vmeta/tree",
+      "exit": 0,
+      "output": "",
+      "passed": true
+    },
+    {
+      "name": "seed: /bin/echo PRIVATE_VFS_RENAME > /vmeta/tree/private",
+      "command": "/bin/echo PRIVATE_VFS_RENAME > /vmeta/tree/private",
+      "exit": 0,
+      "output": "",
+      "passed": true
+    },
+    {
+      "name": "seed: /bin/echo PUBLIC_VFS_RENAME > /vmeta/tree/public",
+      "command": "/bin/echo PUBLIC_VFS_RENAME > /vmeta/tree/public",
+      "exit": 0,
+      "output": "",
+      "passed": true
+    },
+    {
+      "name": "seed: /bin/stat -c 600 /vmeta/tree/private",
+      "command": "/bin/stat -c 600 /vmeta/tree/private",
+      "exit": 0,
+      "output": "STAT-CHMOD-OK /vmeta/tree/private\n",
+      "passed": true
+    },
+    {
+      "name": "seed: /bin/stat -o 1000:2000 /vmeta/tree/private",
+      "command": "/bin/stat -o 1000:2000 /vmeta/tree/private",
+      "exit": 0,
+      "output": "STAT-CHOWN-OK /vmeta/tree/private\n",
+      "passed": true
+    },
+    {
+      "name": "seed: /bin/stat -h /vmeta/tree/private /vmeta/outside",
+      "command": "/bin/stat -h /vmeta/tree/private /vmeta/outside",
+      "exit": 0,
+      "output": "STAT-LINK-OK /vmeta/outside\n",
+      "passed": true
+    },
+    {
+      "name": "seed: /bin/stat -h /vmeta/tree/private /vmeta/tree/alias",
+      "command": "/bin/stat -h /vmeta/tree/private /vmeta/tree/alias",
+      "exit": 0,
+      "output": "STAT-LINK-OK /vmeta/tree/alias\n",
+      "passed": true
+    },
+    {
+      "name": "seed: /bin/stat -s private /vmeta/tree/relative",
+      "command": "/bin/stat -s private /vmeta/tree/relative",
+      "exit": 0,
+      "output": "STAT-SYMLINK-OK /vmeta/tree/relative\n",
+      "passed": true
+    },
+    {
+      "name": "seed: /bin/stat -s /vmeta/tree/private /vmeta/tree/absolute",
+      "command": "/bin/stat -s /vmeta/tree/private /vmeta/tree/absolute",
+      "exit": 0,
+      "output": "STAT-SYMLINK-OK /vmeta/tree/absolute\n",
+      "passed": true
+    },
+    {
+      "name": "seed: /bin/mv /vmeta/tree /vmeta/moved",
+      "command": "/bin/mv /vmeta/tree /vmeta/moved",
+      "exit": 0,
+      "output": "",
+      "passed": true
+    },
+    {
+      "name": "mode owner and hard-link count moved",
+      "command": "/bin/stat /vmeta/moved/private",
+      "exit": 0,
+      "output": "STAT /vmeta/moved/private mode=600 type=reg uid=1000 gid=2000 nlink=3 ino=0 dev=3 size=19 blocks=1 mtime=0 ctime=0 atime=0 attr=0x11\n",
+      "passed": true
+    },
+    {
+      "name": "hard links still resolve",
+      "command": "/bin/cat /vmeta/outside /vmeta/moved/alias",
+      "exit": 0,
+      "output": "PRIVATE_VFS_RENAME\nPRIVATE_VFS_RENAME\n",
+      "passed": true
+    },
+    {
+      "name": "relative symlink resolves",
+      "command": "/bin/cat /vmeta/moved/relative",
+      "exit": 0,
+      "output": "PRIVATE_VFS_RENAME\n",
+      "passed": true
+    },
+    {
+      "name": "absolute symlink text remains literal",
+      "command": "/bin/stat -P /vmeta/moved/absolute",
+      "exit": 0,
+      "output": "STAT /vmeta/moved/absolute mode=777 type=lnk uid=0 gid=0 nlink=1 ino=0 dev=3 size=19 blocks=0 mtime=0 ctime=0 atime=0 attr=0x1\nSTAT /vmeta/moved/absolute target=/vmeta/tree/private\n",
+      "passed": true
+    },
+    {
+      "name": "absolute symlink is now dangling",
+      "command": "/bin/cat /vmeta/moved/absolute",
+      "exit": 1,
+      "output": "",
+      "passed": true
+    },
+    {
+      "name": "owner can still read private bytes",
+      "command": "/bin/sh < /state/owner.sh",
+      "exit": 0,
+      "output": "LogitOS shell -- type 'help'\n/ $ / $ ok pid 98 uid 1000 gid 2000\n/ $ PRIVATE_VFS_RENAME\n/ $ ",
+      "passed": true
+    },
+    {
+      "name": "other uid reads public but cannot read private bytes",
+      "command": "/bin/sh < /state/outsider.sh",
+      "exit": 1,
+      "output": "LogitOS shell -- type 'help'\n/ $ / $ ok pid 106 uid 3000 gid 3000\n/ $ PUBLIC_VFS_RENAME\n/ $ / $ ",
+      "passed": true
+    },
+    {
+      "name": "unlink canonical name",
+      "command": "/bin/rm /vmeta/moved/private",
+      "exit": 0,
+      "output": "",
+      "passed": true
+    },
+    {
+      "name": "canonical unlink preserves both remaining names",
+      "command": "/bin/cat /vmeta/outside /vmeta/moved/alias",
+      "exit": 0,
+      "output": "PRIVATE_VFS_RENAME\nPRIVATE_VFS_RENAME\n",
+      "passed": true
+    },
+    {
+      "name": "long-path seed: /bin/mkdir /vmeta/a",
+      "command": "/bin/mkdir /vmeta/a",
+      "exit": 0,
+      "output": "",
+      "passed": true
+    },
+    {
+      "name": "long-path seed: /bin/echo KEPT_VFS_RENAME > /vmeta/a/file",
+      "command": "/bin/echo KEPT_VFS_RENAME > /vmeta/a/file",
+      "exit": 0,
+      "output": "",
+      "passed": true
+    },
+    {
+      "name": "long-path seed: /bin/stat -c 600 /vmeta/a/file",
+      "command": "/bin/stat -c 600 /vmeta/a/file",
+      "exit": 0,
+      "output": "STAT-CHMOD-OK /vmeta/a/file\n",
+      "passed": true
+    },
+    {
+      "name": "long-path seed: /bin/stat -s file /vmeta/a/ssssssssssssssssssssssssssssssssssssssssssssssssssssssss",
+      "command": "/bin/stat -s file /vmeta/a/ssssssssssssssssssssssssssssssssssssssssssssssssssssssss",
+      "exit": 0,
+      "output": "STAT-SYMLINK-OK /vmeta/a/ssssssssssssssssssssssssssssssssssssssssssssssssssssssss\n",
+      "passed": true
+    },
+    {
+      "name": "overflow refuses before moving backend bytes",
+      "command": "/bin/mv /vmeta/a /vmeta/dddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "exit": 1,
+      "output": "",
+      "passed": true
+    },
+    {
+      "name": "refusal retains bytes and symlink",
+      "command": "/bin/cat /vmeta/a/file /vmeta/a/ssssssssssssssssssssssssssssssssssssssssssssssssssssssss",
+      "exit": 0,
+      "output": "KEPT_VFS_RENAME\nKEPT_VFS_RENAME\n",
+      "passed": true
+    },
+    {
+      "name": "refusal retains stored mode",
+      "command": "/bin/stat /vmeta/a/file",
+      "exit": 0,
+      "output": "STAT /vmeta/a/file mode=600 type=reg uid=0 gid=0 nlink=1 ino=0 dev=3 size=16 blocks=1 mtime=0 ctime=0 atime=0 attr=0x1\n",
+      "passed": true
+    },
+    {
+      "name": "refusal leaves destination absent",
+      "command": "/bin/stat /vmeta/dddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "exit": 1,
+      "output": "",
+      "passed": true
+    },
+    {
+      "name": "exact metadata capacity still moves",
+      "command": "/bin/mv /vmeta/a /vmeta/ddddddddddddddddddddddddddddddddddddddddddddddd",
+      "exit": 0,
+      "output": "",
+      "passed": true
+    },
+    {
+      "name": "exact capacity retains symlink bytes",
+      "command": "/bin/cat /vmeta/ddddddddddddddddddddddddddddddddddddddddddddddd/ssssssssssssssssssssssssssssssssssssssssssssssssssssssss",
+      "exit": 0,
+      "output": "KEPT_VFS_RENAME\n",
+      "passed": true
+    }
+  ],
+  "kernel_sha256": "c391f9831d57f860212cb62004036ffdcff55ab79ad32a9953d5e69dfaccd940",
+  "programs": {
+    "login": "b7e308aa57f1cff6b9bf94b8c37417be076a033fc1a67c2c9190df5ada06406b",
+    "sh": "8115346e0f9ebd46d1fbbb7bd85d97f6cc670d5b2a91a5e63ab5c19acefc75ff",
+    "echo": "57d6b0601c515de4fd4aa2a69b72a6bbec4509a5ba437c4f6eecddfd517af4ea",
+    "cat": "dcf0a36cc8a2124f8b7157c2eb970ad6eb2518cfab264d6548b6b85a17b7f71e",
+    "mkdir": "92d70a04c6e30fa6ae1bb10362a04e225a030957b77367b56d906509ade9e7f3",
+    "mv": "ddfd07686a4f8db8b8dfe5db6f2c1aa8ab4917c9b6d5821ee704d30bb93a0a22",
+    "rm": "85de9de6e54973413395dd6d2e18146c2946c0c251f1876377110ad362c0b37e",
+    "stat": "cf074e39748f612b4ffc4c6e54199a954d36d90e63eecfc277d87d6413c16038"
+  },
+  "sources": {
+    "c/fs/vfs/vfs.c": "831f59fc133ca45bc6795017301481eca0fb18d0ccda9034fc5162ca0ca1f295",
+    "c/fs/vfs/vfs_meta.c": "017646eca44c434ec5f05d8ddafc08182fd24844ed7998415f4aa41a433d38cc",
+    "c/fs/vfs/vfs_meta.h": "ed99d6153f95b41c18c12e5afe48f0033b80e4fdda4340a89f80ff9ce54153cb",
+    "c/fs/ramfs/ramfs.c": "27502ccde68c193eed47d16c66f468d7ebacef99ac99706ed38177dd3bc145b4",
+    "tests/boot/run-vfs-rename-meta.py": "4bb014af3a761538234cce63144d7f91edb13ca2d590929bf50e821739a16db4"
+  },
+  "initial_disk_sha256": "f1adf5367c16cd640ad26d05e3627e0fdd961689ee8509853c66c3569d41233b"
+}

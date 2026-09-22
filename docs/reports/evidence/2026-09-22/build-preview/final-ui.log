@@ -1,0 +1,29 @@
+ok   Preview opened and listed /media  [43 entries]
+     list: aac.m4a, clip-audio.mka, clip-bframes.mp4, clip-frag.mp4, clip-h265.mp4, clip-laced.mkv, clip.mkv, clip.mp4, clip.webm, dot.png, img/PROVENANCE.md, img/anim.apng, img/anim.gif, img/icon.ico, img/rot.jpg, img/still.bmp, img/still.webp, mse/audio-1.m4s, mse/audio-2.m4s, mse/audio-3.m4s, mse/audio-4.m4s, mse/audio-5.m4s, mse/init-audio.mp4, mse/video-1.m4s, mse/video-2.m4s, mse/video-3.m4s, mse/video-4.m4s, pcm.mov, sample.aac, sample.flac, sample.h264, sample.h265, sample.mp3, sample.ogg, sample.wav, vidbench/h264-1280x720.h264, vidbench/h264-1920x1080.h264, vidbench/h264-320x240.h264, vidbench/h264-640x360.h264, vidbench/h265-1280x720.h265, vidbench/h265-1920x1080.h265, vidbench/h265-320x240.h265, vidbench/h265-640x360.h265
+ok   found Preview's content origin  [(138, 129)]
+ok   Images category filters the collection
+ok   category selection changes the visible library
+ok   the library follows the desktop dark theme
+ok   dot.png (PNG): opened  [preview: open dot.png]
+ok   dot.png (PNG): pixels match the decoder's own output  [36/36 pixels matched]
+ok   100% button paints actual image dimensions  [36/36 pixels matched]
+ok   0 shortcut restores aspect-fit pixels  [36/36 pixels matched]
+ok   dot.png (PNG): pixels match PIL's decode too  [36/36 pixels matched]
+ok   Library toolbar button returns to the live collection
+ok   an image can reopen after using the toolbar
+ok   img/anim.apng (APNG): opened  [preview: open anim.apng]
+ok   img/anim.apng: the fixture declares 600 ms of delays  [decoder says [100, 150, 100, 250]]
+ok   img/anim.apng (APNG): every sampled frame is a real composited frame  [7/7 matched, frames seen [2, 3]]
+ok   img/anim.apng: the picture actually changes between frames  [distinct frames seen: [2, 3]]
+ok   img/anim.apng: declares 600 ms per loop  [4 frames, declared 600 ms]
+ok   img/anim.apng: one loop takes its declared 600 ms  [elapsed 607 ms, of which 66 ms painting (allowed 600..726)]
+ok   sample.wav (WAV/PCM): opened  [preview: open sample.wav]
+ok   sample.wav (WAV/PCM): the window is not blank  [85 distinct colours]
+ok   sample.wav (WAV/PCM): decoded as wav  [wav 22050 Hz 1 ch, sound=yes]
+ok   sample.wav: states a usable format  [22050 Hz 1 ch]
+ok   sample.wav: opened the sound card  [yes]
+
+wrote screenshots to build-preview/final-screenshots
+kept /var/folders/5n/cg5_2k414dj_mt1q9__6mx_r0000gn/T/logit-preview-s8l77sln (serial log, wav capture)
+
+PASS: every selected format opened and matched

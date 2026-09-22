@@ -1,0 +1,12 @@
+kept /var/folders/5n/cg5_2k414dj_mt1q9__6mx_r0000gn/T/logit-preview-gxerrjyu (serial log, wav capture)
+Traceback (most recent call last):
+  File "/Users/wangzhe/LogitOS/tests/qmp/qmp_preview.py", line 913, in <module>
+    sys.exit(main(sys.argv))
+             ^^^^^^^^^^^^^^
+  File "/Users/wangzhe/LogitOS/tests/qmp/qmp_preview.py", line 572, in main
+    ui.launch_app("preview", probe=probe)
+  File "/Users/wangzhe/LogitOS/tests/qmp/qmp_ui.py", line 621, in launch_app
+    self.click_at_confirmed(probe, x, y)
+  File "/Users/wangzhe/LogitOS/tests/qmp/qmp_ui.py", line 695, in click_at_confirmed
+    raise AssertionError("pointer would not settle at (%d,%d); it is at %r"
+AssertionError: pointer would not settle at (672,753); it is at None

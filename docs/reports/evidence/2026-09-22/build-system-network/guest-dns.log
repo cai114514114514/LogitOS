@@ -1,0 +1,9 @@
+Traceback (most recent call last):
+  File "/Users/wangzhe/LogitOS/build-system-network/dns_guest.py", line 200, in <module>
+    main()
+  File "/Users/wangzhe/LogitOS/build-system-network/dns_guest.py", line 156, in main
+    responder = Responder(out)
+                ^^^^^^^^^^^^^^
+  File "/Users/wangzhe/LogitOS/build-system-network/dns_responder.py", line 105, in __init__
+    self.socket.bind(("127.0.0.1", 53))
+PermissionError: [Errno 13] Permission denied

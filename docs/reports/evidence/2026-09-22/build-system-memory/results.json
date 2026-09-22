@@ -1,0 +1,90 @@
+{
+  "build": "build-system-memory",
+  "production_files_changed": [],
+  "vm_started": false,
+  "gates": [
+    {
+      "command": "make BUILD=build-system-memory test-pmm-metadata",
+      "exit": 0,
+      "positive_checks": 15,
+      "positive_failures": 0,
+      "controls": 2,
+      "log": "build-system-memory/pmm-gate.log",
+      "covers": [
+        "Production pmm_init metadata placement across reversed adjacent firmware descriptors",
+        "Reserved firmware hole and live boot-information exclusion",
+        "High physical page allocation and PMM accounting"
+      ],
+      "limits": [
+        "MM_HOSTTEST maps simulated physical RAM; no real firmware or page-table hardware"
+      ]
+    },
+    {
+      "command": "make BUILD=build-system-memory test-bkl-mm-host",
+      "exit": 0,
+      "positive_checks": {
+        "kernel_map": 168,
+        "concurrent_mm": 50
+      },
+      "positive_failures": 0,
+      "controls": 6,
+      "log": "build-system-memory/mm-gate.log",
+      "covers": [
+        "Real PMM/VMM and address-space locks under pthread concurrency",
+        "Shared supervisor-root publication, partial-allocation failure and concurrent address-space create/free",
+        "Eight separate 8 GiB sparse virtual reservations with actual faults",
+        "Pinned usercopy ownership and page-cache invalidate/refill races"
+      ],
+      "limits": [
+        "Only 128 MiB simulated RAM backs sparse virtual reservations",
+        "TLB flushes are counted fixture calls; no remote hardware invalidation",
+        "Reclaim is disabled by the fixture; this gate does not validate its policy"
+      ]
+    },
+    {
+      "command": "python3 tests/unit/bkl_proc_run.py --build build-system-memory/sched-sync",
+      "exit": 0,
+      "positive_checks": {
+        "fd": 38,
+        "last_thread_exit": 10,
+        "signal": 6,
+        "futex": 9,
+        "argv": 7,
+        "wake_latch": 10,
+        "reap": 8
+      },
+      "positive_failures": 0,
+      "controls": 7,
+      "log": "build-system-memory/sched-sync-gate.log",
+      "covers": [
+        "Production sched.c wake lookup/latch functions extracted from current source; wake-before-park and duplicate coalescing",
+        "Production uthread futex comparison uses a pinned physical alias and releases pin before parking; 64-waiter broadcast",
+        "Production final-thread teardown election and descriptor reclamation",
+        "Companion real FD ownership, synchronous fault owner, argv copy bounds, and stale zombie address-space revalidation"
+      ],
+      "limits": [
+        "Fixture models CPU/context switching, locks, timers and MM lifecycle seams",
+        "Not a full scheduler build or a fairness/preemption/interrupt-latency result"
+      ]
+    }
+  ],
+  "sanitizer_or_skip_markers": [],
+  "input_sha256": {
+    "tests/unit/pmm_metadata_run.py": "b0f6f5d2e8fe5f66565d60e7dcd7738aa072a65ed08b14f26a2fcb1a97b7662c",
+    "tests/unit/pmm_metadata_test.c": "7aee5361818ca910c0cb8578c9e32c7fd73f3b5497cf270cee1ed24e21c29d95",
+    "tests/unit/physmap_test.c": "fa6fcfcd4444b1e6436202d004e48b5441a42256e5c17a615628501157e38929",
+    "tests/unit/bkl_mm_run.py": "151fead1db31e2dca46c592822d7e2e88f70cbf60eabf1e2419f4ea4739c3658",
+    "tests/unit/bkl_kernel_map_run.py": "105a4e6e32a487f39a36402aa68c81f5e7347dd35d16fa5d168e27e1cc142da6",
+    "tests/unit/bkl_proc_run.py": "9d786c0120222897412e2bfff00bca0145446cde5a796f8948a64e31500e3510",
+    "tests/unit/bkl_mm_test.c": "e90faf72db182ef47261ba03353320b050902bb0dd920c6cdafc2c05aa51c110",
+    "tests/unit/bkl_kernel_map_test.c": "235bf8c96c212bde9fb90f0004c21a57ac8bc60a0a7738767fe6204c0c1583e4",
+    "tests/unit/bkl_wake_test.c": "7129fe6227bbf3296e5c71de992df82c0e321cd5655d533e7067176f476e3168",
+    "tests/unit/bkl_exit_test.c": "b8fe23ba101805f83568bf0cd10873ced542c19fd96bbd2438c2aba1cb4c54b4",
+    "tests/unit/bkl_futex_test.c": "11c1303e12af4cbf88e3a0def3c68f90eec54b7985ceabda2d4d937dbed5a6b7",
+    "c/kernel/mm/phys/pmm.c": "a9442302b3da19f789908efeb19268dad37666ca7c4e0cffe65cf21367f1ab26",
+    "c/kernel/mm/virt/vmm.c": "420a44642bed17412e018858c038d2627c31dc290f16433703a3778d3cf17d5a",
+    "c/kernel/sched/sched.c": "b345264de05dd6bfebaff81c73b0c2244c5dd006a375ea6608e32e4f94a9d07c",
+    "c/kernel/sched/uthread.c": "c1f43b404f57ed9386c90bdb2bfc5689d4c88d6bcc17099e08dcd8af54fc65e8",
+    "c/kernel/sync/wait.c": "41b74fc2dc1ef08d4581c252151bc2da6ad63e82bae0216616d6ef12dd17526f"
+  }
+}

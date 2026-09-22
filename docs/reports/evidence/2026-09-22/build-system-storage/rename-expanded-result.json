@@ -1,0 +1,15 @@
+{
+  "positive": "3514 checks, 0 failures",
+  "negative": "3514 checks, 300 failures; exit 1",
+  "source_unchanged": true,
+  "fixture_sha256": "8ea8665a1ccfceb32fb3dad701d5594110d60025bab2c56546089d7395b3fa5d",
+  "v5_initializer": "LOGITFS_SIM_IDENTITIES from existing fs_sim.h",
+  "coverage": [
+    "v4 original boundaries",
+    "v5 identity/revision/ctime and reference path restored after refusal",
+    "v5 same/cross-parent directories spanning two data blocks",
+    "five allocation failure sites",
+    "v5 journal exhaustion before/after deferred frees",
+    "all padding entries and bystander bytes before/after later commits and remount"
+  ]
+}

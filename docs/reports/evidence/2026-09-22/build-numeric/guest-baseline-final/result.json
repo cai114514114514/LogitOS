@@ -1,0 +1,93 @@
+{
+  "passed": true,
+  "expect_error": true,
+  "checks": [
+    "packed compiler matches selected artifact",
+    "packed Studio matches selected artifact",
+    "baseline guest reports AS3202",
+    "actual Code Studio geometry reported",
+    "unscaled Code Studio window",
+    "demo opened through picker",
+    "Studio Check shows expected diagnostics",
+    "source remains exact screenshot program",
+    "input artifacts remain unchanged"
+  ],
+  "compiler_sha256": "c8d8a2953834515d670db280fc78cb48ff4efc1b64eac41bb5aa04719dbc95c7",
+  "studio_sha256": "5d980884ecc9011b5060a15ea937fb5cfd7848220a22ea6700d3baa5d7565fc1",
+  "kernel_sha256": "b51a174f659e18e1071ab10cce7c7fa6e55ab0d0f3c97e22d971fe3957607ee2",
+  "source": "# aether: 3.0\ny = 2\nx = 1.0\nprint(x + y)\n",
+  "packed_compiler_sha256": "c8d8a2953834515d670db280fc78cb48ff4efc1b64eac41bb5aa04719dbc95c7",
+  "packed_studio_sha256": "5d980884ecc9011b5060a15ea937fb5cfd7848220a22ea6700d3baa5d7565fc1",
+  "diagnostic": {
+    "version": 1,
+    "language": 3,
+    "ok": false,
+    "file": "/docs/demo.as",
+    "source_bytes": 41,
+    "source_checksum": 4251925508,
+    "diagnostics": [
+      {
+        "severity": "error",
+        "path": "/docs/demo.as",
+        "code": "AS3202",
+        "message": "Expected f64, found i64; implicit numeric/dynamic conversion is not allowed",
+        "help": "",
+        "start": 36,
+        "end": 37,
+        "line": 4,
+        "column": 9,
+        "end_line": 4,
+        "end_column": 10,
+        "source_checksum": 4251925508,
+        "related": []
+      }
+    ],
+    "truncated": false,
+    "sources": [
+      {
+        "path": "/docs/demo.as",
+        "bytes": 41,
+        "checksum": 4251925508
+      }
+    ],
+    "symbols": [
+      {
+        "kind": "function",
+        "name": "main",
+        "path": "/docs/demo.as",
+        "start": 28,
+        "end": 33,
+        "line": 4,
+        "type": "None",
+        "type_parameters": []
+      },
+      {
+        "kind": "variable",
+        "name": "y",
+        "path": "/docs/demo.as",
+        "start": 14,
+        "end": 15,
+        "line": 2,
+        "type": "i64"
+      },
+      {
+        "kind": "variable",
+        "name": "x",
+        "path": "/docs/demo.as",
+        "start": 20,
+        "end": 21,
+        "line": 3,
+        "type": "f64"
+      }
+    ]
+  },
+  "check_exit": 1,
+  "geometry": [
+    110,
+    96,
+    1120,
+    700
+  ],
+  "observed_refusal": true,
+  "guest_stopped": true
+}

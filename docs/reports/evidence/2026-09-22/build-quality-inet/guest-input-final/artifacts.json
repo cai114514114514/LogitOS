@@ -1,0 +1,11 @@
+{
+  "source": "/Users/wangzhe/LogitOS/build-quality-glass/disk.img",
+  "source_sha256": "ebc82bd24582f92ac8e99d3ab33fd4dda1a7265825bc4e2d896261df27d334c2",
+  "source_unchanged": true,
+  "disk_sha256": "7a974742cee1a63ca78a20c71dcda951198228a5c44573b9c5086cb8635dd068",
+  "packed_matches": {
+    "/bin/inet-contract": "21cf0f088a344dcabd7cc255b29f527e3c4965c4e235b9667788242e0649b13f",
+    "/bin/libctest": "3394923a5697727039d7b9bdbc72cd758958bd929cd9f83b7acd2ffef12f7b7a",
+    "/browser.aex": "357624ebd33140318d7a24eeb6d3afc54378adbb0ed954d3a8991f54880b14f1"
+  }
+}

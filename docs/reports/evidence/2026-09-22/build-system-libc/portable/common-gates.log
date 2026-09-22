@@ -1,0 +1,13 @@
+python3 tests/unit/libc_portable_control.py --build build-system-libc/libchost --family search --cc "clang"
+CONTROL search/find: observed tree lookup: FAIL
+CONTROL search/destroy: observed FAIL search contract: tdestroy calls callback for each key
+SKIP GNU search reference: Darwin lacks tdestroy/hcreate_r/hsearch_r/hdestroy_r and has different hash capacity, errno and key ownership; run make test-libc-search on a glibc host for the original full differential.
+search project contracts: 10 checks, 0 failures
+PASS: search matches Darwin host libc (      62 output rows)
+clang -std=c11 -O1 -Wall -Wextra -c tests/unit/libc_uio_host.c -o build-system-libc/libchost/uio_host.o
+python3 tests/unit/libc_portable_control.py --build build-system-libc/libchost --family uio --cc "clang"
+CONTROL uio/position: observed preadv preserves cursor: FAIL
+CONTROL uio/progress: observed FAIL uio contract: read error after progress returns count
+SKIP Linux-specific uio reference cases in common mode: zero-vector, partial EFAULT, ioctl policy and F_SETPIPE_SZ setup differ on Darwin; run make test-libc-uio on a Linux glibc host for the original full differential. preadv/pwritev are exercised against the real host APIs.
+uio project contracts: 9 checks, 0 failures
+PASS: uio matches Darwin host libc (      38 output rows)

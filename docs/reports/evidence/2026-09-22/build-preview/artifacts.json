@@ -1,0 +1,22 @@
+{
+  "preview.aex": {
+    "bytes": 2768048,
+    "sha256": "e8f0967f4d7acef169b6e8635fd1313f336801d7ea8e6808ccb39410ac3bf558",
+    "packed_matches": true
+  },
+  "c/apps/gui/preview/preview.c": {
+    "sha256": "14512131b94438435556277c7caa58730af752e4e4bdcd7243c4a85df334ff67"
+  },
+  "c/apps/gui/preview/view.inc": {
+    "sha256": "72dddc3cceffcbad2b225d03e0bf377c9fd86c92a52d5714053778381c37d38f"
+  },
+  "c/apps/gui/preview/picker.inc": {
+    "sha256": "783122c24190dbc138375bcc678aeb9809a0f3390effa47359988ba05d41603c"
+  },
+  "c/apps/gui/preview/audio_view.inc": {
+    "sha256": "8683bdb09b89518ed1761c11b46b4b8b473e946455c35fead1c87de3e0ef12d5"
+  },
+  "build-preview/logit.iso": {
+    "sha256": "b6f80aa0aac4020312e99918971c8916ea0e9141aa9f43a44f7184a6bd08a88e"
+  }
+}

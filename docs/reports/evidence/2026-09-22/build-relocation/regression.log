@@ -1,0 +1,2 @@
+build-relocation negative control: legacy Clock object rejects removed main.c
+build-relocation: 35 moved objects compile at current paths; header tracking retained

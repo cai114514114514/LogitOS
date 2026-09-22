@@ -1,0 +1,169 @@
+PASS: fnmatch matches Darwin host libc (      52 cases)
+python3 tests/unit/libc_inet_contract_test.py --build build-system-libc/inet-contract --cc "clang" --controls
+trailing-colon: inet contract: 369 checks, 6 failed
+observed control: FAIL pton reject [::1:]
+empty-compression: inet contract: 369 checks, 10 failed
+observed control: FAIL pton reject [::1:2:3:4:5:6:7:8]
+decimal-zero: inet contract: 369 checks, 10 failed
+observed control: FAIL pton reject [1.2.3.04]
+python3 tests/unit/libc_inet_contract_test.py --build build-system-libc/inet-contract --cc "clang"
+optimized: inet contract: 369 checks, 0 failed
+sanitize: inet contract: 369 checks, 0 failed
+PASS: inet matches Darwin host libc (      37 cases)
+PASS: regex matches Darwin host libc (      34 cases)
+python3 tests/unit/libc_libgen_test.py --build build-system-libc/libchost --cc "clang" --controls
+c/apps/libc/src/string.c:112:75: warning: while loop has empty body [-Wempty-body]
+  112 | char *strcpy(char *d, const char *s) { char *r = d; while ((*d++ = *s++)) ; return r; }
+      |                                                                           ^
+c/apps/libc/src/string.c:112:75: note: put the semicolon on a separate line to silence this warning
+c/apps/libc/src/string.c:124:91: warning: while loop has empty body [-Wempty-body]
+  124 | char *strcat(char *d, const char *s) { char *r = d; while (*d) d++; while ((*d++ = *s++)) ; return r; }
+      |                                                                                           ^
+c/apps/libc/src/string.c:124:91: note: put the semicolon on a separate line to silence this warning
+2 warnings generated.
+CONTROL PASS: root-control: 10 expected failures; double-slash root contract
+CONTROL PASS: trailing-control: 46 expected failures; row 6: dirname differs
+python3 tests/unit/libc_libgen_test.py --build build-system-libc/libchost --cc "clang"
+c/apps/libc/src/string.c:112:75: warning: while loop has empty body [-Wempty-body]
+  112 | char *strcpy(char *d, const char *s) { char *r = d; while ((*d++ = *s++)) ; return r; }
+      |                                                                           ^
+c/apps/libc/src/string.c:112:75: note: put the semicolon on a separate line to silence this warning
+c/apps/libc/src/string.c:124:91: warning: while loop has empty body [-Wempty-body]
+  124 | char *strcat(char *d, const char *s) { char *r = d; while (*d) d++; while ((*d++ = *s++)) ; return r; }
+      |                                                                                           ^
+c/apps/libc/src/string.c:124:91: note: put the semicolon on a separate line to silence this warning
+2 warnings generated.
+PASS: libgen 108 cases; host comparison and explicit double-slash contract
+tests/unit/libc_search_test.c:222:5: error: call to undeclared function 'tdestroy'; ISO C99 and later do not support implicit function declarations [-Wimplicit-function-declaration]
+  222 |     tdestroy(root, tdestroy_noop);
+      |     ^
+tests/unit/libc_search_test.c:222:5: note: did you mean 'hdestroy'?
+/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk/usr/include/search.h:49:7: note: 'hdestroy' declared here
+   49 | void     hdestroy(void);
+      |          ^
+tests/unit/libc_search_test.c:246:5: error: call to undeclared function 'tdestroy'; ISO C99 and later do not support implicit function declarations [-Wimplicit-function-declaration]
+  246 |     tdestroy(root, tdestroy_noop);
+      |     ^
+tests/unit/libc_search_test.c:292:5: error: call to undeclared function 'tdestroy'; ISO C99 and later do not support implicit function declarations [-Wimplicit-function-declaration]
+  292 |     tdestroy(NULL, tdestroy_noop);
+      |     ^
+tests/unit/libc_search_test.c:308:5: error: call to undeclared function 'tdestroy'; ISO C99 and later do not support implicit function declarations [-Wimplicit-function-declaration]
+  308 |     tdestroy(root, tdestroy_noop);
+      |     ^
+tests/unit/libc_search_test.c:525:25: error: variable has incomplete type 'struct hsearch_data'
+  525 |     struct hsearch_data h = {0};
+      |                         ^
+tests/unit/libc_search_test.c:525:12: note: forward declaration of 'struct hsearch_data'
+  525 |     struct hsearch_data h = {0};
+      |            ^
+tests/unit/libc_search_test.c:529:18: error: call to undeclared function 'hcreate_r'; ISO C99 and later do not support implicit function declarations [-Wimplicit-function-declaration]
+  529 |         int ok = hcreate_r(nel, &h);
+      |                  ^
+tests/unit/libc_search_test.c:529:18: note: did you mean 'hcreate'?
+/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk/usr/include/search.h:48:6: note: 'hcreate' declared here
+   48 | int      hcreate(size_t);
+      |          ^
+tests/unit/libc_search_test.c:536:9: error: call to undeclared function 'hsearch_r'; ISO C99 and later do not support implicit function declarations [-Wimplicit-function-declaration]
+  536 |         hsearch_r(e, ENTER, &r1, &h);
+      |         ^
+tests/unit/libc_search_test.c:549:9: error: call to undeclared function 'hdestroy_r'; ISO C99 and later do not support implicit function declarations [-Wimplicit-function-declaration]
+  549 |         hdestroy_r(&h);
+      |         ^
+tests/unit/libc_search_test.c:549:9: note: did you mean 'hdestroy'?
+/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk/usr/include/search.h:49:7: note: 'hdestroy' declared here
+   49 | void     hdestroy(void);
+      |          ^
+tests/unit/libc_search_test.c:562:25: error: variable has incomplete type 'struct hsearch_data'
+  562 |     struct hsearch_data t1 = {0}, t2 = {0};
+      |                         ^
+tests/unit/libc_search_test.c:562:12: note: forward declaration of 'struct hsearch_data'
+  562 |     struct hsearch_data t1 = {0}, t2 = {0};
+      |            ^
+tests/unit/libc_search_test.c:562:35: error: variable has incomplete type 'struct hsearch_data'
+  562 |     struct hsearch_data t1 = {0}, t2 = {0};
+      |                                   ^
+tests/unit/libc_search_test.c:562:12: note: forward declaration of 'struct hsearch_data'
+  562 |     struct hsearch_data t1 = {0}, t2 = {0};
+      |            ^
+tests/unit/libc_search_test.c:563:5: error: call to undeclared function 'hcreate_r'; ISO C99 and later do not support implicit function declarations [-Wimplicit-function-declaration]
+  563 |     hcreate_r(10, &t1);
+      |     ^
+tests/unit/libc_search_test.c:569:5: error: call to undeclared function 'hsearch_r'; ISO C99 and later do not support implicit function declarations [-Wimplicit-function-declaration]
+  569 |     hsearch_r(e1, ENTER, &r1, &t1);
+      |     ^
+tests/unit/libc_search_test.c:580:5: error: call to undeclared function 'hdestroy_r'; ISO C99 and later do not support implicit function declarations [-Wimplicit-function-declaration]
+  580 |     hdestroy_r(&t1);
+      |     ^
+13 errors generated.
+make: *** [test-libc-search] Error 1
+Undefined symbols for architecture arm64:
+  "_stderr", referenced from:
+      _main in libc_strptime_test-631e3b.o
+ld: symbol(s) not found for architecture arm64
+clang: error: linker command failed with exit code 1 (use -v to see invocation)
+make: *** [test-libc-strptime] Error 1
+/bin/sh: line 1: 60569 Segmentation fault: 11  build-system-libc/libchost/memstream_reference > build-system-libc/libchost/memstream.reference.out
+make: *** [test-libc-memstream] Error 139
+tests/unit/libc_uio_test.c:366:13: error: call to undeclared function 'preadv'; ISO C99 and later do not support implicit function declarations [-Wimplicit-function-declaration]
+  366 |         chk(preadv(fd, rv, 1, 0));                            /* expect 3, read from offset 0 */
+      |             ^
+tests/unit/libc_uio_test.c:388:13: error: call to undeclared function 'pwritev'; ISO C99 and later do not support implicit function declarations [-Wimplicit-function-declaration]
+  388 |         chk(pwritev(fd, wv, 1, 5));                           /* expect 2, written at offset 5 */
+      |             ^
+tests/unit/libc_uio_test.c:415:13: error: call to undeclared function 'preadv'; ISO C99 and later do not support implicit function declarations [-Wimplicit-function-declaration]
+  415 |         chk(preadv(fd[0], rv, 1, 0));    /* expect -1 */
+      |             ^
+tests/unit/libc_uio_test.c:417:13: error: call to undeclared function 'pwritev'; ISO C99 and later do not support implicit function declarations [-Wimplicit-function-declaration]
+  417 |         chk(pwritev(fd[1], wv, 1, 0));   /* expect -1 */
+      |             ^
+tests/unit/libc_uio_test.c:430:13: error: call to undeclared function 'preadv'; ISO C99 and later do not support implicit function declarations [-Wimplicit-function-declaration]
+  430 |         chk(preadv(fd, v, IOV_MAX + 1, 0));                   /* expect -1 */
+      |             ^
+tests/unit/libc_uio_test.c:476:13: error: call to undeclared function 'preadv'; ISO C99 and later do not support implicit function declarations [-Wimplicit-function-declaration]
+  476 |         chk(preadv(fd, rv, 1, -1));                           /* expect -1 */
+      |             ^
+tests/unit/libc_uio_test.c:480:13: error: call to undeclared function 'pwritev'; ISO C99 and later do not support implicit function declarations [-Wimplicit-function-declaration]
+  480 |         chk(pwritev(fd, wv, 1, -1));                          /* expect -1 */
+      |             ^
+tests/unit/libc_uio_test.c:494:13: error: call to undeclared function 'preadv'; ISO C99 and later do not support implicit function declarations [-Wimplicit-function-declaration]
+  494 |         chk(preadv(fd, NULL, 0, 5));                          /* expect 0: read probe, fd IS open for reading */
+      |             ^
+tests/unit/libc_uio_test.c:499:13: error: call to undeclared function 'pwritev'; ISO C99 and later do not support implicit function declarations [-Wimplicit-function-declaration]
+  499 |         chk(pwritev(wfd, NULL, 0, 5));                        /* expect 0: write probe, fd IS open for writing */
+      |             ^
+tests/unit/libc_uio_test.c:513:13: error: call to undeclared function 'preadv'; ISO C99 and later do not support implicit function declarations [-Wimplicit-function-declaration]
+  513 |         chk(preadv(-1, rv, 1, 0));                            /* expect -1 */
+      |             ^
+tests/unit/libc_uio_test.c:515:13: error: call to undeclared function 'pwritev'; ISO C99 and later do not support implicit function declarations [-Wimplicit-function-declaration]
+  515 |         chk(pwritev(-1, wv, 1, 0));                           /* expect -1 */
+      |             ^
+11 errors generated.
+make: *** [test-libc-uio] Error 1
+Undefined symbols for architecture arm64:
+  "___errno_location", referenced from:
+      _stat in libc_pathx_test-03db4d.o
+      _lstat in libc_pathx_test-03db4d.o
+      _readlink in libc_pathx_test-03db4d.o
+      _main in libc_pathx_test-03db4d.o
+  "_stderr", referenced from:
+      _OUTLINED_FUNCTION_2 in libc_pathx_test-03db4d.o
+ld: symbol(s) not found for architecture arm64
+clang: error: linker command failed with exit code 1 (use -v to see invocation)
+make: *** [test-libc-pathx] Error 1
+Undefined symbols for architecture arm64:
+  "_stderr", referenced from:
+      _getopt_engine.cold.1 in getopt-bce80b.o
+      _err.cold.1 in getopt-bce80b.o
+      _OUTLINED_FUNCTION_3 in getopt-bce80b.o
+ld: symbol(s) not found for architecture arm64
+clang: error: linker command failed with exit code 1 (use -v to see invocation)
+make: *** [test-libc-getopt] Error 1
+c/apps/libc/src/stdlib.c:18:43: error: invalid output constraint '=a' in asm
+   18 | { long r; __asm__ volatile ("int $0x80" : "=a"(r) : "a"(n), "D"(a), "S"(b), "d"(c) : "memory"); return r; }
+      |                                           ^
+1 error generated.
+make: *** [test-libc-iconv] Error 1
+PASS: err/warn family matches Darwin host libc (8 cases, stdout+stderr+exit)
+control ok: host gate rejected the sabotaged second argz replacement
+LIBC_EXPAND_HOST_OK 57/57
+make: Target `test-libc-host' not remade because of errors.

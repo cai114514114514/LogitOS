@@ -1,0 +1,12 @@
+{
+  "before": {
+    "exit_code": 1,
+    "summary": "dns TTL: 135 passed, 36 failed",
+    "production_sha256": "e2adf188c2410f4a26e517aed9c80da127670a10b1d63ccfadf4777a6749e38d"
+  },
+  "fixed": {
+    "exit_code": 0,
+    "summary": "dns TTL: 171 passed, 0 failed",
+    "production_sha256": "0049406ccd136ca21451ddaa8e1b7ad963e7602b4159c37031e19080c97e4a3e"
+  }
+}

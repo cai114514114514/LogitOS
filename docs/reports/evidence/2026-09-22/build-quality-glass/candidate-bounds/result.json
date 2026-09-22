@@ -1,0 +1,730 @@
+{
+  "phases": [
+    {
+      "name": "light-normal",
+      "theme": 0,
+      "actual_dark": false,
+      "warmup": false,
+      "menu_pixel": [
+        190,
+        195,
+        221
+      ],
+      "frames": []
+    },
+    {
+      "name": "dark-normal",
+      "theme": 1,
+      "actual_dark": true,
+      "warmup": false,
+      "menu_pixel": [
+        77,
+        79,
+        103
+      ],
+      "frames": [
+        {
+          "seq": 3,
+          "reasons": 256,
+          "total_ns": 20005441,
+          "ordinary_px": 1024000,
+          "ordinary_ns": 8798313,
+          "glass_px": 131764,
+          "glass_ns": 10627173,
+          "present_px": 1024000,
+          "present_ns": 579955
+        }
+      ]
+    },
+    {
+      "name": "light-normal-repeat",
+      "theme": 0,
+      "actual_dark": false,
+      "warmup": false,
+      "menu_pixel": [
+        190,
+        195,
+        221
+      ],
+      "frames": [
+        {
+          "seq": 4,
+          "reasons": 256,
+          "total_ns": 20000000,
+          "ordinary_px": 1024000,
+          "ordinary_ns": 10000000,
+          "glass_px": 131764,
+          "glass_ns": 10000000,
+          "present_px": 1024000,
+          "present_ns": 0
+        }
+      ]
+    },
+    {
+      "name": "dark-highcontrast-0",
+      "theme": 1,
+      "actual_dark": true,
+      "warmup": true,
+      "menu_pixel": [
+        77,
+        79,
+        103
+      ],
+      "frames": [
+        {
+          "seq": 5,
+          "reasons": 256,
+          "total_ns": 25371023,
+          "ordinary_px": 1024000,
+          "ordinary_ns": 8780316,
+          "glass_px": 131764,
+          "glass_ns": 15888761,
+          "present_px": 1024000,
+          "present_ns": 701946
+        }
+      ]
+    },
+    {
+      "name": "light-highcontrast-0",
+      "theme": 0,
+      "actual_dark": false,
+      "warmup": true,
+      "menu_pixel": [
+        190,
+        195,
+        221
+      ],
+      "frames": [
+        {
+          "seq": 6,
+          "reasons": 256,
+          "total_ns": 18398567,
+          "ordinary_px": 1024000,
+          "ordinary_ns": 6389501,
+          "glass_px": 131764,
+          "glass_ns": 11253125,
+          "present_px": 1024000,
+          "present_ns": 755941
+        }
+      ]
+    },
+    {
+      "name": "dark-highcontrast-1",
+      "theme": 1,
+      "actual_dark": true,
+      "warmup": true,
+      "menu_pixel": [
+        77,
+        79,
+        103
+      ],
+      "frames": [
+        {
+          "seq": 7,
+          "reasons": 256,
+          "total_ns": 17340650,
+          "ordinary_px": 1024000,
+          "ordinary_ns": 4933615,
+          "glass_px": 131764,
+          "glass_ns": 11819081,
+          "present_px": 1024000,
+          "present_ns": 587954
+        }
+      ]
+    },
+    {
+      "name": "light-highcontrast-1",
+      "theme": 0,
+      "actual_dark": false,
+      "warmup": true,
+      "menu_pixel": [
+        190,
+        195,
+        221
+      ],
+      "frames": [
+        {
+          "seq": 8,
+          "reasons": 256,
+          "total_ns": 18045595,
+          "ordinary_px": 1024000,
+          "ordinary_ns": 6022530,
+          "glass_px": 131764,
+          "glass_ns": 11476108,
+          "present_px": 1024000,
+          "present_ns": 546957
+        }
+      ]
+    },
+    {
+      "name": "dark-highcontrast-2",
+      "theme": 1,
+      "actual_dark": true,
+      "warmup": false,
+      "menu_pixel": [
+        77,
+        79,
+        103
+      ],
+      "frames": [
+        {
+          "seq": 9,
+          "reasons": 256,
+          "total_ns": 17967600,
+          "ordinary_px": 1024000,
+          "ordinary_ns": 6264512,
+          "glass_px": 131764,
+          "glass_ns": 11140132,
+          "present_px": 1024000,
+          "present_ns": 562956
+        }
+      ]
+    },
+    {
+      "name": "light-highcontrast-2",
+      "theme": 0,
+      "actual_dark": false,
+      "warmup": false,
+      "menu_pixel": [
+        190,
+        195,
+        221
+      ],
+      "frames": [
+        {
+          "seq": 10,
+          "reasons": 256,
+          "total_ns": 16424720,
+          "ordinary_px": 1024000,
+          "ordinary_ns": 5402580,
+          "glass_px": 131764,
+          "glass_ns": 10406188,
+          "present_px": 1024000,
+          "present_ns": 615952
+        }
+      ]
+    },
+    {
+      "name": "dark-highcontrast-3",
+      "theme": 1,
+      "actual_dark": true,
+      "warmup": false,
+      "menu_pixel": [
+        77,
+        79,
+        103
+      ],
+      "frames": [
+        {
+          "seq": 11,
+          "reasons": 256,
+          "total_ns": 17303652,
+          "ordinary_px": 1024000,
+          "ordinary_ns": 4843622,
+          "glass_px": 131764,
+          "glass_ns": 11910073,
+          "present_px": 1024000,
+          "present_ns": 549957
+        }
+      ]
+    },
+    {
+      "name": "light-highcontrast-3",
+      "theme": 0,
+      "actual_dark": false,
+      "warmup": false,
+      "menu_pixel": [
+        190,
+        195,
+        221
+      ],
+      "frames": [
+        {
+          "seq": 12,
+          "reasons": 256,
+          "total_ns": 17446642,
+          "ordinary_px": 1024000,
+          "ordinary_ns": 5056607,
+          "glass_px": 131764,
+          "glass_ns": 11815080,
+          "present_px": 1024000,
+          "present_ns": 574955
+        }
+      ]
+    },
+    {
+      "name": "dark-highcontrast-4",
+      "theme": 1,
+      "actual_dark": true,
+      "warmup": false,
+      "menu_pixel": [
+        77,
+        79,
+        103
+      ],
+      "frames": [
+        {
+          "seq": 13,
+          "reasons": 256,
+          "total_ns": 16659703,
+          "ordinary_px": 1024000,
+          "ordinary_ns": 4768629,
+          "glass_px": 131764,
+          "glass_ns": 11362116,
+          "present_px": 1024000,
+          "present_ns": 528958
+        }
+      ]
+    },
+    {
+      "name": "light-highcontrast-4",
+      "theme": 0,
+      "actual_dark": false,
+      "warmup": false,
+      "menu_pixel": [
+        190,
+        195,
+        221
+      ],
+      "frames": [
+        {
+          "seq": 14,
+          "reasons": 256,
+          "total_ns": 17502637,
+          "ordinary_px": 1024000,
+          "ordinary_ns": 4936615,
+          "glass_px": 131764,
+          "glass_ns": 12002066,
+          "present_px": 1024000,
+          "present_ns": 563956
+        }
+      ]
+    },
+    {
+      "name": "dark-highcontrast-5",
+      "theme": 1,
+      "actual_dark": true,
+      "warmup": false,
+      "menu_pixel": [
+        77,
+        79,
+        103
+      ],
+      "frames": [
+        {
+          "seq": 15,
+          "reasons": 256,
+          "total_ns": 14924837,
+          "ordinary_px": 1024000,
+          "ordinary_ns": 4196673,
+          "glass_px": 131764,
+          "glass_ns": 10224204,
+          "present_px": 1024000,
+          "present_ns": 503960
+        }
+      ]
+    },
+    {
+      "name": "light-highcontrast-5",
+      "theme": 0,
+      "actual_dark": false,
+      "warmup": false,
+      "menu_pixel": [
+        190,
+        195,
+        221
+      ],
+      "frames": [
+        {
+          "seq": 16,
+          "reasons": 256,
+          "total_ns": 17408645,
+          "ordinary_px": 1024000,
+          "ordinary_ns": 4850624,
+          "glass_px": 131764,
+          "glass_ns": 11940069,
+          "present_px": 1024000,
+          "present_ns": 617952
+        }
+      ]
+    },
+    {
+      "name": "dark-highcontrast-6",
+      "theme": 1,
+      "actual_dark": true,
+      "warmup": false,
+      "menu_pixel": [
+        77,
+        79,
+        103
+      ],
+      "frames": [
+        {
+          "seq": 17,
+          "reasons": 256,
+          "total_ns": 17200660,
+          "ordinary_px": 1024000,
+          "ordinary_ns": 4741631,
+          "glass_px": 131764,
+          "glass_ns": 11899074,
+          "present_px": 1024000,
+          "present_ns": 559955
+        }
+      ]
+    },
+    {
+      "name": "light-highcontrast-6",
+      "theme": 0,
+      "actual_dark": false,
+      "warmup": false,
+      "menu_pixel": [
+        190,
+        195,
+        221
+      ],
+      "frames": [
+        {
+          "seq": 18,
+          "reasons": 256,
+          "total_ns": 16707698,
+          "ordinary_px": 1024000,
+          "ordinary_ns": 4791626,
+          "glass_px": 131764,
+          "glass_ns": 11362115,
+          "present_px": 1024000,
+          "present_ns": 553957
+        }
+      ]
+    },
+    {
+      "name": "dark-highcontrast-7",
+      "theme": 1,
+      "actual_dark": true,
+      "warmup": false,
+      "menu_pixel": [
+        77,
+        79,
+        103
+      ],
+      "frames": [
+        {
+          "seq": 19,
+          "reasons": 256,
+          "total_ns": 18244579,
+          "ordinary_px": 1024000,
+          "ordinary_ns": 6089525,
+          "glass_px": 131764,
+          "glass_ns": 11426110,
+          "present_px": 1024000,
+          "present_ns": 728944
+        }
+      ]
+    },
+    {
+      "name": "light-highcontrast-7",
+      "theme": 0,
+      "actual_dark": false,
+      "warmup": false,
+      "menu_pixel": [
+        190,
+        195,
+        221
+      ],
+      "frames": [
+        {
+          "seq": 20,
+          "reasons": 256,
+          "total_ns": 17346649,
+          "ordinary_px": 1024000,
+          "ordinary_ns": 4966615,
+          "glass_px": 131764,
+          "glass_ns": 11762082,
+          "present_px": 1024000,
+          "present_ns": 617952
+        }
+      ]
+    },
+    {
+      "name": "dark-highcontrast-8",
+      "theme": 1,
+      "actual_dark": true,
+      "warmup": false,
+      "menu_pixel": [
+        77,
+        79,
+        103
+      ],
+      "frames": [
+        {
+          "seq": 21,
+          "reasons": 256,
+          "total_ns": 16389724,
+          "ordinary_px": 1024000,
+          "ordinary_ns": 4469652,
+          "glass_px": 131764,
+          "glass_ns": 10185208,
+          "present_px": 1024000,
+          "present_ns": 1734864
+        }
+      ]
+    },
+    {
+      "name": "light-highcontrast-8",
+      "theme": 0,
+      "actual_dark": false,
+      "warmup": false,
+      "menu_pixel": [
+        190,
+        195,
+        221
+      ],
+      "frames": [
+        {
+          "seq": 22,
+          "reasons": 256,
+          "total_ns": 18859530,
+          "ordinary_px": 1024000,
+          "ordinary_ns": 6557489,
+          "glass_px": 131764,
+          "glass_ns": 11752084,
+          "present_px": 1024000,
+          "present_ns": 549957
+        }
+      ]
+    },
+    {
+      "name": "dark-highcontrast-9",
+      "theme": 1,
+      "actual_dark": true,
+      "warmup": false,
+      "menu_pixel": [
+        77,
+        79,
+        103
+      ],
+      "frames": [
+        {
+          "seq": 23,
+          "reasons": 256,
+          "total_ns": 16512714,
+          "ordinary_px": 1024000,
+          "ordinary_ns": 4669636,
+          "glass_px": 131764,
+          "glass_ns": 11297120,
+          "present_px": 1024000,
+          "present_ns": 545958
+        }
+      ]
+    },
+    {
+      "name": "light-highcontrast-9",
+      "theme": 0,
+      "actual_dark": false,
+      "warmup": false,
+      "menu_pixel": [
+        190,
+        195,
+        221
+      ],
+      "frames": [
+        {
+          "seq": 24,
+          "reasons": 256,
+          "total_ns": 15677779,
+          "ordinary_px": 1024000,
+          "ordinary_ns": 4460654,
+          "glass_px": 131764,
+          "glass_ns": 10670168,
+          "present_px": 1024000,
+          "present_ns": 546957
+        }
+      ]
+    },
+    {
+      "name": "dark-highcontrast-10",
+      "theme": 1,
+      "actual_dark": true,
+      "warmup": false,
+      "menu_pixel": [
+        77,
+        79,
+        103
+      ],
+      "frames": [
+        {
+          "seq": 25,
+          "reasons": 256,
+          "total_ns": 15071826,
+          "ordinary_px": 1024000,
+          "ordinary_ns": 4259668,
+          "glass_px": 131764,
+          "glass_ns": 10221204,
+          "present_px": 1024000,
+          "present_ns": 590954
+        }
+      ]
+    },
+    {
+      "name": "light-highcontrast-10",
+      "theme": 0,
+      "actual_dark": false,
+      "warmup": false,
+      "menu_pixel": [
+        190,
+        195,
+        221
+      ],
+      "frames": [
+        {
+          "seq": 26,
+          "reasons": 256,
+          "total_ns": 17672624,
+          "ordinary_px": 1024000,
+          "ordinary_ns": 5052607,
+          "glass_px": 131764,
+          "glass_ns": 11983067,
+          "present_px": 1024000,
+          "present_ns": 636950
+        }
+      ]
+    },
+    {
+      "name": "dark-highcontrast-11",
+      "theme": 1,
+      "actual_dark": true,
+      "warmup": false,
+      "menu_pixel": [
+        77,
+        79,
+        103
+      ],
+      "frames": [
+        {
+          "seq": 27,
+          "reasons": 256,
+          "total_ns": 16970679,
+          "ordinary_px": 1024000,
+          "ordinary_ns": 4878621,
+          "glass_px": 131764,
+          "glass_ns": 11503104,
+          "present_px": 1024000,
+          "present_ns": 588954
+        }
+      ]
+    },
+    {
+      "name": "light-highcontrast-11",
+      "theme": 0,
+      "actual_dark": false,
+      "warmup": false,
+      "menu_pixel": [
+        190,
+        195,
+        221
+      ],
+      "frames": [
+        {
+          "seq": 28,
+          "reasons": 256,
+          "total_ns": 16676701,
+          "ordinary_px": 1024000,
+          "ordinary_ns": 5833546,
+          "glass_px": 131764,
+          "glass_ns": 10316196,
+          "present_px": 1024000,
+          "present_ns": 526959
+        }
+      ]
+    }
+  ],
+  "input_sha256": {
+    "logit.iso": "ac184490c8016655fe8d0e1ef0a8c670ca7750dfb01983fef5abf94a0b2c46aa",
+    "disk.img": "7a974742cee1a63ca78a20c71dcda951198228a5c44573b9c5086cb8635dd068"
+  },
+  "complete": true,
+  "input_paths": {
+    "logit.iso": "/Users/wangzhe/LogitOS/build-quality-glass/logit.iso",
+    "disk.img": "/Users/wangzhe/LogitOS/build-quality-inet/guest-input-final/disk.img"
+  },
+  "workload": {
+    "resolution": [
+      1280,
+      800
+    ],
+    "ram": "512M",
+    "highcontrast_pairs": 12,
+    "warmup_pairs": 2,
+    "measured_pairs": 10,
+    "theme_control": "real menu-bar switch plus scanout pixel verification",
+    "timing_source": "guest wm fullframe counters; WM glass only"
+  },
+  "finder_frame": [
+    110,
+    70,
+    1120,
+    690
+  ],
+  "rim_precondition": {
+    "before_bright_share": 0.32392857142857145,
+    "after_bright_share": 0.6036607142857143,
+    "passed": true
+  },
+  "timing": {
+    "frame_count": 20,
+    "glass_pixels": [
+      131764
+    ],
+    "median_glass_ms": 11.394113,
+    "p95_glass_ms": 11.983067,
+    "median_total_ms": 17.0856695,
+    "p95_total_ms": 18.244579,
+    "p95_definition": "nearest rank",
+    "median_glass_ns_per_pixel": 86.47364226951217,
+    "selection": "high-contrast pairs after warmup; normal phases excluded",
+    "raw_frame_count": 26,
+    "warmup_frame_count": 4,
+    "normal_frame_count": 2,
+    "by_theme": {
+      "light": {
+        "frame_count": 10,
+        "glass_pixels": [
+          131764
+        ],
+        "median_glass_ms": 11.757083,
+        "p95_glass_ms": 12.002066,
+        "median_total_ms": 17.377647,
+        "p95_total_ms": 18.85953,
+        "p95_definition": "nearest rank",
+        "median_glass_ns_per_pixel": 89.22834006253605
+      },
+      "dark": {
+        "frame_count": 10,
+        "glass_pixels": [
+          131764
+        ],
+        "median_glass_ms": 11.329618,
+        "p95_glass_ms": 11.910073,
+        "median_total_ms": 16.815191,
+        "p95_total_ms": 18.244579,
+        "p95_definition": "nearest rank",
+        "median_glass_ns_per_pixel": 85.98416866518929
+      }
+    }
+  },
+  "libc": [
+    {
+      "program": "/bin/inet-contract",
+      "exit": 0,
+      "output": "inet contract: 369 checks, 0 failed\n",
+      "passed": true
+    },
+    {
+      "program": "/bin/libctest",
+      "exit": 0,
+      "output": "LIBC_OK 578/578\n",
+      "passed": true
+    }
+  ],
+  "source_artifacts_unchanged": true,
+  "guest_stopped": true
+}

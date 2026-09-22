@@ -1,0 +1,23 @@
+{
+  "/settings.aex": {
+    "bytes": 352336,
+    "sha256": "47affdf6c4e8b284dddef30c36e801795252e2a077493ec639bddcfd8c290b4b",
+    "matches_local": true
+  },
+  "/icons/settings.png": {
+    "bytes": 1855636,
+    "sha256": "44bcb6c53d973cbd905660c233d5df62efdf01fecc377bf31c31c1277c3fc6e2",
+    "matches_local": true
+  },
+  "/files.aex": {
+    "bytes": 353048,
+    "sha256": "f3ed5accb59186662e74fb3bb0d34942e10f9dcb95555bd3fb3f779bfa350f19",
+    "matches_local": true
+  },
+  "kernel.elf": {
+    "sha256": "e508cfc228b8b2a8cce383d3bd36106ba2ccb06272692a476e23d12643591993"
+  },
+  "logit.iso": {
+    "sha256": "185e6d5f25aefdf919ad0df8f825199527d8fda6d3523c7b2d15fb23d32cf41f"
+  }
+}

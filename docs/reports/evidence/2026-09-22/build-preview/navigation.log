@@ -1,0 +1,17 @@
+ok   Preview opened and listed /media  [44 entries]
+ok   found Preview's content origin  [(138, 129)]
+ok   dot.png opened from the list  [preview: open dot.png]
+ok   Esc from a still image (Esc test A) returns to the list (app still running)  [saw a fresh picker listing]
+ok   the list is genuinely back on screen after Esc (not just the log)  [(138, 129, 143, 133)]
+ok   clip-frag.mp4 opened from the list  [preview: open clip-frag.mp4]
+ok   the fragmented MP4 was recognised as a real container, not refused  [preview: container clip-frag.mp4 kind=mp4 video=h264]
+ok   the screen left the list (a picture is being drawn)  [anchor gone]
+ok   Esc from a playing fragmented MP4 (Esc test B) returns to the list (app still running)  [saw a fresh picker listing]
+ok   clip-segment.m4s opened (i.e. was READ)  [preview: open video-1.m4s]
+ok   the bare segment produced a named refusal  [preview: error video-1.m4s: cannot open this container (a media fragment with no init segment -- it needs its ftyp+moov segment appended first)]
+ok   the refusal names the REAL reason (no init segment), not a generic 'corrupt'  [video-1.m4s: cannot open this container (a media fragment with no init segment -- it needs its ftyp+moov segment appended first)]
+ok   the top-level message is not the misleading word 'corrupt'  [video-1.m4s: cannot open this container (a media fragment with no init segment -- it needs its ftyp+moov segment appended first)]
+ok   Esc from the m4s refusal screen (Esc test C) returns to the list (app still running)  [saw a fresh picker listing]
+
+PASS: Esc unwinds a mode instead of quitting, a self-contained fragmented MP4 decodes, and a bare segment is refused by name.
+kept /var/folders/5n/cg5_2k414dj_mt1q9__6mx_r0000gn/T/logit-preview-nav-7im_26x7 (serial log, screenshots)

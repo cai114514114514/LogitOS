@@ -1,0 +1,69 @@
+{
+  "command": [
+    "make",
+    "BUILD=build-system-core",
+    "-o",
+    "build-system-core/boot-contract/logit_boot_bad_offset.h",
+    "-o",
+    "build-system-core/boot-contract/loader_bad_offset.asm",
+    "-o",
+    "build-system-core/boot-contract/bootinfo_bad_version.c",
+    "test-boot-contract"
+  ],
+  "exit": 0,
+  "passed": true,
+  "source_unchanged": true,
+  "mutations": [
+    {
+      "source": "include/abi/logit_boot.h",
+      "source_sha256": "f30a969b8b8ae8f39e84a59f094961c72fc07e87b69e29e4dd1b92024a55886c",
+      "mutant": "build-system-core/boot-contract/logit_boot_bad_offset.h",
+      "mutant_sha256": "bee537149199f466a2b104be5f0091fcf7e53f43b0bf1f1f97f297fc56b2fe2f",
+      "anchors": [
+        {
+          "text": "uint16_t version;",
+          "count": 1
+        },
+        {
+          "text": "uint16_t header_size;",
+          "count": 1
+        },
+        {
+          "text": "uint16_t boot_contract_swap;",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "source": "c/boot/bios/loader.asm",
+      "source_sha256": "c3d868401ed0b750854e1f76d1a9fe1a8562287f936401c33817b09a11479639",
+      "mutant": "build-system-core/boot-contract/loader_bad_offset.asm",
+      "mutant_sha256": "588efaeea27206a439f7dd3c130d3e7ec7b74d510d37aa13a78ee2f41513500b",
+      "anchors": [
+        {
+          "text": "LOGIT_BOOT_HEADER_VERSION_OFFSET], LOGIT_BOOT_VERSION",
+          "count": 2
+        }
+      ]
+    },
+    {
+      "source": "c/kernel/init/bootinfo.c",
+      "source_sha256": "6dd9a2f502ea2e184c4e0b9af3037852ad7bb0c688d19540494863bf37a54f10",
+      "mutant": "build-system-core/boot-contract/bootinfo_bad_version.c",
+      "mutant_sha256": "af7070ae8b66bb1c94158b88a8f00ab3c0a7197c0f373bf93c7a3dde4c13dd54",
+      "anchors": [
+        {
+          "text": "header->version != LOGIT_BOOT_VERSION",
+          "count": 1
+        }
+      ]
+    }
+  ],
+  "required_results": [
+    "PASS: moved-header-field control was watched failing",
+    "PASS: BIOS-offset control was watched failing",
+    "PASS: protocol-version control was watched failing",
+    "PASS: native boot contract -- 28 field offsets, BIOS/UEFI writers, kernel framing, version 0x0001"
+  ],
+  "scope": "Existing source contract parser; not a firmware or live boot acceptance result."
+}

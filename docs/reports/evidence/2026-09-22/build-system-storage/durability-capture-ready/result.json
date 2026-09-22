@@ -1,0 +1,183 @@
+{
+  "passed": false,
+  "boots": [
+    {
+      "boot": 1,
+      "checks": [
+        {
+          "command": "/bin/stat /state",
+          "output": "STAT /state mode=755 type=dir uid=0 gid=0 nlink=1 ino=497 dev=1 size=0 blocks=0 mtime=1790081336 ctime=1790081336 atime=1790081336 attr=0xc\n",
+          "exit": 0,
+          "passed": true
+        },
+        {
+          "command": "/bin/mkdir /audit-durability",
+          "output": "",
+          "exit": 0,
+          "passed": true
+        },
+        {
+          "command": "/usr/as/bin/durcheck.aex write /audit-durability/tiny.bin tiny",
+          "output": "durcheck write /audit-durability/tiny.bin 100 -> 100\n",
+          "exit": 0,
+          "passed": true
+        },
+        {
+          "command": "/usr/as/bin/durcheck.aex write /audit-durability/small.bin small",
+          "output": "durcheck write /audit-durability/small.bin 30000 -> 30000\n",
+          "exit": 0,
+          "passed": true
+        },
+        {
+          "command": "/usr/as/bin/durcheck.aex write /audit-durability/mid.bin mid",
+          "output": "durcheck write /audit-durability/mid.bin 120000 -> 120000\n",
+          "exit": 0,
+          "passed": true
+        },
+        {
+          "command": "/bin/echo xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx > /audit-durability/tiny.bin",
+          "output": "",
+          "exit": 0,
+          "passed": true
+        },
+        {
+          "command": "/usr/as/bin/durcheck.aex verify /audit-durability/tiny.bin tiny",
+          "output": "DURCHECK-FAIL /audit-durability/tiny.bin first bad byte 0 got 120 want 0\n",
+          "exit": 1,
+          "passed": true
+        },
+        {
+          "command": "/usr/as/bin/durcheck.aex write /audit-durability/tiny.bin tiny",
+          "output": "durcheck write /audit-durability/tiny.bin 100 -> 100\n",
+          "exit": 0,
+          "passed": true
+        },
+        {
+          "command": "/usr/as/bin/durcheck.aex verify /audit-durability/tiny.bin tiny",
+          "output": "DURCHECK-OK /audit-durability/tiny.bin 100\n",
+          "exit": 0,
+          "passed": true
+        },
+        {
+          "command": "/usr/as/bin/durcheck.aex verify /audit-durability/small.bin small",
+          "output": "DURCHECK-OK /audit-durability/small.bin 30000\n",
+          "exit": 0,
+          "passed": true
+        },
+        {
+          "command": "/usr/as/bin/durcheck.aex verify /audit-durability/mid.bin mid",
+          "output": "DURCHECK-OK /audit-durability/mid.bin 120000\n",
+          "exit": 0,
+          "passed": true
+        }
+      ],
+      "passed": true,
+      "stopped": true
+    },
+    {
+      "boot": 2,
+      "checks": [
+        {
+          "command": "/usr/as/bin/durcheck.aex verify /audit-durability/tiny.bin tiny",
+          "output": "DURCHECK-OK /audit-durability/tiny.bin 100\n",
+          "exit": 0,
+          "passed": true
+        },
+        {
+          "command": "/usr/as/bin/durcheck.aex verify /audit-durability/small.bin small",
+          "output": "DURCHECK-OK /audit-durability/small.bin 30000\n",
+          "exit": 0,
+          "passed": true
+        },
+        {
+          "command": "/usr/as/bin/durcheck.aex verify /audit-durability/mid.bin mid",
+          "output": "DURCHECK-OK /audit-durability/mid.bin 120000\n",
+          "exit": 0,
+          "passed": true
+        },
+        {
+          "command": "/usr/as/bin/durcheck.aex churn /audit-durability",
+          "output": "DURCHECK-CHURN-DONE\n",
+          "exit": 0,
+          "passed": true
+        }
+      ],
+      "passed": true,
+      "stopped": true
+    },
+    {
+      "boot": 3,
+      "checks": [
+        {
+          "command": "/usr/as/bin/durcheck.aex verify /audit-durability/tiny.bin tiny",
+          "output": "DURCHECK-OK /audit-durability/tiny.bin 100\n",
+          "exit": 0,
+          "passed": true
+        },
+        {
+          "command": "/usr/as/bin/durcheck.aex verify /audit-durability/small.bin small",
+          "output": "DURCHECK-OK /audit-durability/small.bin 30000\n",
+          "exit": 0,
+          "passed": true
+        },
+        {
+          "command": "/usr/as/bin/durcheck.aex verify /audit-durability/mid.bin mid",
+          "output": "DURCHECK-OK /audit-durability/mid.bin 120000\n",
+          "exit": 0,
+          "passed": true
+        },
+        {
+          "command": "/usr/as/bin/durcheck.aex churn /audit-durability",
+          "output": "DURCHECK-CHURN-DONE\n",
+          "exit": 0,
+          "passed": true
+        }
+      ],
+      "passed": true,
+      "stopped": true
+    },
+    {
+      "boot": 4,
+      "checks": [
+        {
+          "command": "/usr/as/bin/durcheck.aex verify /audit-durability/tiny.bin tiny",
+          "output": "DURCHECK-OK /audit-durability/tiny.bin 100\n",
+          "exit": 0,
+          "passed": true
+        },
+        {
+          "command": "/usr/as/bin/durcheck.aex verify /audit-durability/small.bin small",
+          "output": "DURCHECK-OK /audit-durability/small.bin 30000\n",
+          "exit": 0,
+          "passed": true
+        },
+        {
+          "command": "/usr/as/bin/durcheck.aex verify /audit-durability/mid.bin mid",
+          "output": "DURCHECK-OK /audit-durability/mid.bin 120000\n",
+          "exit": 0,
+          "passed": true
+        }
+      ],
+      "passed": true,
+      "stopped": true
+    },
+    {
+      "boot": 5,
+      "checks": [
+        {
+          "command": "/usr/as/bin/durcheck.aex verify /audit-durability/tiny.bin tiny",
+          "output": "DURCHECK-OK /audit-durability/tiny.bin 100\n",
+          "exit": 0,
+          "passed": true
+        }
+      ],
+      "stopped": true
+    }
+  ],
+  "source_disk_sha256": "6f63820d2653ee59c0fe53ff2decc998212c43591ee415745ddbcb5e06fa9bc4",
+  "source_iso_sha256": "f2db553a01f783a163d10151b5fa3bcb0544b93521cff01dc857284ee7448dc5",
+  "packed_program_sha256": "308cc7b9fc22931cb17de77d57ffd452b07ba3f38dd5fe49b6d6fb8025507f56",
+  "byte_control_observed": true,
+  "error": "guest did not produce b'AG_COMMAND_DONE_2'",
+  "source_unchanged": true
+}

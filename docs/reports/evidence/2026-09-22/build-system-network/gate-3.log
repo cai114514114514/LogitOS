@@ -1,0 +1,29 @@
+[pci] 00:01.0 BAR0 probe refused: decode stayed enabled
+[pci] 00:01.0 BAR0 probe refused: decode stayed enabled
+[pci] 00:01.0 BAR0 restore failed; decode left off
+[pci] 00:01.0 BAR0 high restore failed; decode left off
+[pci] 00:01.0 BAR0 Command restore failed; decode=off
+
+PCI BAR safety: 5 checks, 0 failed
+FAIL: ignored decode-disable write is refused before BAR sizing
+
+PCI BAR safety: 1 checks, 1 failed
+negative control OK: neg-decode-readback
+[pci] 00:01.0 BAR0 probe refused: decode stayed enabled
+FAIL: partial decode-disable refusal restores complete PCI Command
+
+PCI BAR safety: 1 checks, 1 failed
+negative control OK: neg-partial-decode-recovery
+FAIL: failed BAR restore leaves decode off and publishes no resource
+
+PCI BAR safety: 1 checks, 1 failed
+negative control OK: neg-bar-restore-readback
+FAIL: failed 64-bit BAR high restore leaves decode off and publishes no resource
+
+PCI BAR safety: 1 checks, 1 failed
+negative control OK: neg-bar-high-restore-readback
+FAIL: failed Command restore leaves valid BAR decoded off and unpublished
+
+PCI BAR safety: 1 checks, 1 failed
+negative control OK: neg-command-restore-readback
+PCI BAR safety: positive plus 5 observed negative controls PASS

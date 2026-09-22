@@ -1,0 +1,9 @@
+negative control ok: exactly 1 check fails (the unrelated-name case) without owner-name matching
+DNS class negative control: 34 expected failures
+dns class: 111 passed, 0 failed
+dns class: 111 passed, 0 failed
+dns: 29 passed, 0 failed
+ip6 dns: 51 passed, 0 failed
+negative control ok: 7 checks fail when AAAA is unconditional
+
+IPv4/UDP/ICMP protocol tests: 55 passed, 0 failed

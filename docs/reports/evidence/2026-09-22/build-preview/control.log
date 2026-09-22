@@ -1,0 +1,5 @@
+PASS negative control: the guest observed an animation finishing before its deadline
+FAIL img/anim.gif: one loop takes its declared 1490 ms  [elapsed 67 ms, of which 67 ms painting (allowed 1490..1617)]
+FAIL img/anim.apng: one loop takes its declared 600 ms  [elapsed 66 ms, of which 66 ms painting (allowed 600..726)]
+  img/anim.gif: one loop takes its declared 1490 ms
+  img/anim.apng: one loop takes its declared 600 ms

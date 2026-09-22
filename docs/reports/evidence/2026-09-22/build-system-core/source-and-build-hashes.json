@@ -1,0 +1,18 @@
+{
+  "c/fs/vfs/vfs.c": "831f59fc133ca45bc6795017301481eca0fb18d0ccda9034fc5162ca0ca1f295",
+  "c/fs/vfs/vfs_meta.c": "017646eca44c434ec5f05d8ddafc08182fd24844ed7998415f4aa41a433d38cc",
+  "c/fs/vfs/vfs_meta.h": "ed99d6153f95b41c18c12e5afe48f0033b80e4fdda4340a89f80ff9ce54153cb",
+  "c/net/dns/dns.c": "e2adf188c2410f4a26e517aed9c80da127670a10b1d63ccfadf4777a6749e38d",
+  "tests/unit/libc_libgen_test.py": "53a2cd9523802e0660831c488220cfa5e1e2b9d4de66d58660256b64c9fd76f6",
+  "tests/unit/libc_string_host.c": "30e771fbd52a0b1a8ecc843d30806e63e297a95f2f5d3bed294e296d7dd05723",
+  "tests/unit/libc_libgen_test.c": "43a129510745bacf2d624b7c3b0b57238b83236c5d34a4532e078a67c8094b2f",
+  "tests/libc.mk": "96053d2c2f212226ff72fd26f125739e9277ab04ad427ddc820908e7d2cc46c2",
+  "Makefile": "125d06214cc0ad63fe6e4a0209ef35bdde187860e251adc1e4db014c3c2ddb56",
+  "build-quality-glass/logit.iso": "c391f9831d57f860212cb62004036ffdcff55ab79ad32a9953d5e69dfaccd940",
+  "build-quality-glass/disk.img": "e8ff5f6831eeaa22f9986b1855e22a51bcbdb2a22e500e9615dac1d29e5e4993",
+  "tests/vfs_rename_meta.mk": "fe3ab330f8a5c091b937bc3c0ecd5fe7efaaede1783cd2da652b73d7b5aaad54",
+  "tests/boot/run-vfs-rename-meta.py": "4bb014af3a761538234cce63144d7f91edb13ca2d590929bf50e821739a16db4",
+  "tests/dns_class.mk": "7d97037095de805f7fd4a359210fea4aac0ebc6a8a29e627ce49b67b59301e1f",
+  "tests/unit/dns_class_test.c": "a3923e941bf36f4887aaa61fa5c5f840595a6cb6888574c37eeda3134f4ddebe",
+  "tests/unit/vfs_rename_meta_test.c": "a22f73fdf11bf4c34f150c228217370b4f6fce97c66edc95b3b0c1b1d2558080"
+}

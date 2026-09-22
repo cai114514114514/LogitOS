@@ -1,0 +1,17 @@
+{
+  "files": {
+    "c/fs/vfs/vfs.c": "831f59fc133ca45bc6795017301481eca0fb18d0ccda9034fc5162ca0ca1f295",
+    "c/fs/vfs/vfs_meta.c": "017646eca44c434ec5f05d8ddafc08182fd24844ed7998415f4aa41a433d38cc",
+    "c/fs/vfs/vfs_meta.h": "ed99d6153f95b41c18c12e5afe48f0033b80e4fdda4340a89f80ff9ce54153cb",
+    "tests/unit/vfs_rename_meta_test.c": "a22f73fdf11bf4c34f150c228217370b4f6fce97c66edc95b3b0c1b1d2558080",
+    "tests/vfs_rename_meta.mk": "5d482f42553717bc66a6598491fbf32469735344164779d44810d1b7673bf2f4",
+    "tests/boot/run-vfs-rename-meta.py": "8f813058912cb7d8f4307e0d34d9cea22bb5237c97431546ca806113e3d60ef8"
+  },
+  "baseline": "98 checks, 30 failures; exit 1",
+  "negative_control": "98 checks, 29 failures; exit 1 (nested mount guard remains active)",
+  "positive": "98 checks, 0 failures; normal and ASan/UBSan",
+  "existing_vfs": "156 checks, 0 failures; normal and ASan/UBSan",
+  "wiring": "385 fragments, 384 reachable, 1 declared",
+  "guest": "runner prepared and syntax checked; not run by this agent",
+  "bounds": "directory subtree rename; no persistent metadata format changes and no direct symlink/hardlink-alias rename expansion"
+}

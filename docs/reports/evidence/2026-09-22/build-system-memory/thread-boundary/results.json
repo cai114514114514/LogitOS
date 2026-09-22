@@ -1,0 +1,31 @@
+{
+  "source": "/Users/wangzhe/LogitOS/c/kernel/sched/uthread.c",
+  "sha256": "c1f43b404f57ed9386c90bdb2bfc5689d4c88d6bcc17099e08dcd8af54fc65e8",
+  "variants": [
+    {
+      "variant": "no-reservation-cleanup",
+      "exit": 1,
+      "accepted": true,
+      "required_failure": "FAIL failed scheduler allocation releases every reservation"
+    },
+    {
+      "variant": "off-by-one-process-limit",
+      "exit": 1,
+      "accepted": true,
+      "required_failure": "FAIL unjoined exits count toward process descriptor limit"
+    },
+    {
+      "variant": "no-join-reap",
+      "exit": 1,
+      "accepted": true,
+      "required_failure": "FAIL second join refuses an already-reaped thread"
+    },
+    {
+      "variant": "positive",
+      "exit": 0,
+      "accepted": true,
+      "required_failure": null
+    }
+  ],
+  "scope": "Descriptor table only; allocator failure and usercopy are fixtures; no context switch is executed."
+}

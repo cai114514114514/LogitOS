@@ -1,0 +1,139 @@
+{
+  "passed": true,
+  "boots": [
+    {
+      "boot": 1,
+      "passed": true,
+      "checks": [
+        {
+          "command": "/usr/as/bin/durcheck.aex verify /audit-durability/tiny.bin tiny",
+          "passed": true,
+          "output": "DURCHECK-OK /audit-durability/tiny.bin 100\n",
+          "exit": 0
+        },
+        {
+          "command": "/usr/as/bin/durcheck.aex verify /audit-durability/small.bin small",
+          "passed": true,
+          "output": "DURCHECK-OK /audit-durability/small.bin 30000\n",
+          "exit": 0
+        },
+        {
+          "command": "/usr/as/bin/durcheck.aex verify /audit-durability/mid.bin mid",
+          "passed": true,
+          "output": "DURCHECK-OK /audit-durability/mid.bin 120000\n",
+          "exit": 0
+        }
+      ],
+      "stopped": true
+    },
+    {
+      "boot": 2,
+      "passed": true,
+      "checks": [
+        {
+          "command": "/usr/as/bin/durcheck.aex verify /audit-durability/tiny.bin tiny",
+          "passed": true,
+          "output": "DURCHECK-OK /audit-durability/tiny.bin 100\n",
+          "exit": 0
+        },
+        {
+          "command": "/usr/as/bin/durcheck.aex verify /audit-durability/small.bin small",
+          "passed": true,
+          "output": "DURCHECK-OK /audit-durability/small.bin 30000\n",
+          "exit": 0
+        },
+        {
+          "command": "/usr/as/bin/durcheck.aex verify /audit-durability/mid.bin mid",
+          "passed": true,
+          "output": "DURCHECK-OK /audit-durability/mid.bin 120000\n",
+          "exit": 0
+        }
+      ],
+      "stopped": true
+    },
+    {
+      "boot": 3,
+      "passed": true,
+      "checks": [
+        {
+          "command": "/usr/as/bin/durcheck.aex verify /audit-durability/tiny.bin tiny",
+          "passed": true,
+          "output": "DURCHECK-OK /audit-durability/tiny.bin 100\n",
+          "exit": 0
+        },
+        {
+          "command": "/usr/as/bin/durcheck.aex verify /audit-durability/small.bin small",
+          "passed": true,
+          "output": "DURCHECK-OK /audit-durability/small.bin 30000\n",
+          "exit": 0
+        },
+        {
+          "command": "/usr/as/bin/durcheck.aex verify /audit-durability/mid.bin mid",
+          "passed": true,
+          "output": "DURCHECK-OK /audit-durability/mid.bin 120000\n",
+          "exit": 0
+        }
+      ],
+      "stopped": true
+    },
+    {
+      "boot": 4,
+      "passed": true,
+      "checks": [
+        {
+          "command": "/usr/as/bin/durcheck.aex verify /audit-durability/tiny.bin tiny",
+          "passed": true,
+          "output": "DURCHECK-OK /audit-durability/tiny.bin 100\n",
+          "exit": 0
+        },
+        {
+          "command": "/usr/as/bin/durcheck.aex verify /audit-durability/small.bin small",
+          "passed": true,
+          "output": "DURCHECK-OK /audit-durability/small.bin 30000\n",
+          "exit": 0
+        },
+        {
+          "command": "/usr/as/bin/durcheck.aex verify /audit-durability/mid.bin mid",
+          "passed": true,
+          "output": "DURCHECK-OK /audit-durability/mid.bin 120000\n",
+          "exit": 0
+        }
+      ],
+      "stopped": true
+    },
+    {
+      "boot": 5,
+      "passed": true,
+      "checks": [
+        {
+          "command": "/usr/as/bin/durcheck.aex verify /audit-durability/tiny.bin tiny",
+          "passed": true,
+          "output": "DURCHECK-OK /audit-durability/tiny.bin 100\n",
+          "exit": 0
+        },
+        {
+          "command": "/usr/as/bin/durcheck.aex verify /audit-durability/small.bin small",
+          "passed": true,
+          "output": "DURCHECK-OK /audit-durability/small.bin 30000\n",
+          "exit": 0
+        },
+        {
+          "command": "/usr/as/bin/durcheck.aex verify /audit-durability/mid.bin mid",
+          "passed": true,
+          "output": "DURCHECK-OK /audit-durability/mid.bin 120000\n",
+          "exit": 0
+        }
+      ],
+      "stopped": true
+    }
+  ],
+  "commands_repeated_on_timeout": false,
+  "transport_sha256": "1395671e105b13d89a547316bce6b24f474562bfd163fa33afa62b86007ebce0",
+  "source_iso_sha256": "f2db553a01f783a163d10151b5fa3bcb0544b93521cff01dc857284ee7448dc5",
+  "source_disk_sha256": "2df76d87ff9841760b156b48615a77f53c1dbdc4c18b0635169f9c3d1a4c300d",
+  "initial_private_disk_sha256": "2df76d87ff9841760b156b48615a77f53c1dbdc4c18b0635169f9c3d1a4c300d",
+  "packed_program_sha256": "308cc7b9fc22931cb17de77d57ffd452b07ba3f38dd5fe49b6d6fb8025507f56",
+  "source_disk_unchanged": true,
+  "source_iso_unchanged": true,
+  "frozen_iso_unchanged": true
+}

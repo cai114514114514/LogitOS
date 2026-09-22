@@ -1,0 +1,54 @@
+{
+  "build/logit.iso": {
+    "size": 9392128,
+    "sha256": "9cf53421f9c8a093efc0fa185ec4ab7def00fd4f3a74f2040e96106c5bc2783c"
+  },
+  "build/disk.img": {
+    "size": 536870912,
+    "sha256": "d7990aef57bc1b0d18a05ef39f7e544d49ebea348f8b701be7aef95b146a4e5e"
+  },
+  "build/clock.aex": {
+    "size": 327784,
+    "sha256": "bc5cb8b17d636f9f2055090fcfb5c6ba14bfe53ab2baeabecea5c2055214e52d"
+  },
+  "build/studio.aex": {
+    "size": 413352,
+    "sha256": "19ba62a4ec837a5f916f5d934cbca57d7e2ba1975b3c58616e4ed35345c3b2d9"
+  },
+  "build/httpd.aex": {
+    "size": 175296,
+    "sha256": "59c983838e3cfeffb8a71b98655923b6956b93c4cba4b02726b2bc43ab97f7f5"
+  },
+  "build/syslogd.aex": {
+    "size": 158112,
+    "sha256": "a5a5149b51224ab54b0a4b1d1b7a65402f935bf4de299a0f331724b37fc8fcf0"
+  },
+  "build/sftpd.aex": {
+    "size": 172120,
+    "sha256": "5ece1b416d7f046c1e7d38fb94ecf0c91b8856f77e938b67afda8042113ebd62"
+  },
+  "build/smptest.aex": {
+    "size": 160952,
+    "sha256": "bc592b2246d66a24173d1c33c30c42d4fe84b3b13d7ada17c190a798bae326b8"
+  },
+  "build/socktest.aex": {
+    "size": 169504,
+    "sha256": "16f349aec76336c3b23a15e516d7c308c51062e0f2bd927acf7ab7e51ca29446"
+  },
+  "build/sndtest.aex": {
+    "size": 166488,
+    "sha256": "2cf68f4bd691c346b905181afbd08da3b5404ac0833d4c62c78cb33cc4620c9b"
+  },
+  "build/polltest.aex": {
+    "size": 278392,
+    "sha256": "71cb23c9216a193e63125d114bae10769f75edb841c87e2399d4fb413f01b252"
+  },
+  "build/schedtest.aex": {
+    "size": 276696,
+    "sha256": "efecab377133d6a1e71f0a8d25e52f854b18d8d7ab5dc4f9e4c1c85e96a164e8"
+  },
+  "build/thrtest.aex": {
+    "size": 285776,
+    "sha256": "ab676542a20ec6ce4e7e38afbf627ba48be17a840078bb0dcf697cb42736783d"
+  }
+}

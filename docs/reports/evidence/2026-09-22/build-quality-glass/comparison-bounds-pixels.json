@@ -1,0 +1,281 @@
+{
+  "clock_exclusion": [
+    1232,
+    10,
+    1269,
+    23
+  ],
+  "all_nonclock_pixels_equal": true,
+  "screenshots": [
+    {
+      "phase": "light-normal",
+      "raw_changed_bounds": [
+        1232,
+        10,
+        1269,
+        23
+      ],
+      "nonclock_changed_bounds": null
+    },
+    {
+      "phase": "dark-normal",
+      "raw_changed_bounds": [
+        1232,
+        10,
+        1269,
+        23
+      ],
+      "nonclock_changed_bounds": null
+    },
+    {
+      "phase": "light-normal-repeat",
+      "raw_changed_bounds": [
+        1232,
+        10,
+        1269,
+        23
+      ],
+      "nonclock_changed_bounds": null
+    },
+    {
+      "phase": "dark-highcontrast-0",
+      "raw_changed_bounds": [
+        1232,
+        10,
+        1269,
+        23
+      ],
+      "nonclock_changed_bounds": null
+    },
+    {
+      "phase": "light-highcontrast-0",
+      "raw_changed_bounds": [
+        1232,
+        10,
+        1269,
+        23
+      ],
+      "nonclock_changed_bounds": null
+    },
+    {
+      "phase": "dark-highcontrast-1",
+      "raw_changed_bounds": [
+        1232,
+        10,
+        1269,
+        23
+      ],
+      "nonclock_changed_bounds": null
+    },
+    {
+      "phase": "light-highcontrast-1",
+      "raw_changed_bounds": [
+        1232,
+        10,
+        1269,
+        23
+      ],
+      "nonclock_changed_bounds": null
+    },
+    {
+      "phase": "dark-highcontrast-2",
+      "raw_changed_bounds": [
+        1232,
+        10,
+        1269,
+        23
+      ],
+      "nonclock_changed_bounds": null
+    },
+    {
+      "phase": "light-highcontrast-2",
+      "raw_changed_bounds": [
+        1232,
+        10,
+        1269,
+        23
+      ],
+      "nonclock_changed_bounds": null
+    },
+    {
+      "phase": "dark-highcontrast-3",
+      "raw_changed_bounds": [
+        1232,
+        10,
+        1269,
+        23
+      ],
+      "nonclock_changed_bounds": null
+    },
+    {
+      "phase": "light-highcontrast-3",
+      "raw_changed_bounds": [
+        1232,
+        10,
+        1269,
+        23
+      ],
+      "nonclock_changed_bounds": null
+    },
+    {
+      "phase": "dark-highcontrast-4",
+      "raw_changed_bounds": [
+        1232,
+        10,
+        1269,
+        23
+      ],
+      "nonclock_changed_bounds": null
+    },
+    {
+      "phase": "light-highcontrast-4",
+      "raw_changed_bounds": [
+        1232,
+        10,
+        1269,
+        23
+      ],
+      "nonclock_changed_bounds": null
+    },
+    {
+      "phase": "dark-highcontrast-5",
+      "raw_changed_bounds": [
+        1232,
+        10,
+        1269,
+        23
+      ],
+      "nonclock_changed_bounds": null
+    },
+    {
+      "phase": "light-highcontrast-5",
+      "raw_changed_bounds": [
+        1232,
+        10,
+        1269,
+        23
+      ],
+      "nonclock_changed_bounds": null
+    },
+    {
+      "phase": "dark-highcontrast-6",
+      "raw_changed_bounds": [
+        1232,
+        10,
+        1269,
+        23
+      ],
+      "nonclock_changed_bounds": null
+    },
+    {
+      "phase": "light-highcontrast-6",
+      "raw_changed_bounds": [
+        1232,
+        10,
+        1269,
+        23
+      ],
+      "nonclock_changed_bounds": null
+    },
+    {
+      "phase": "dark-highcontrast-7",
+      "raw_changed_bounds": [
+        1232,
+        10,
+        1269,
+        23
+      ],
+      "nonclock_changed_bounds": null
+    },
+    {
+      "phase": "light-highcontrast-7",
+      "raw_changed_bounds": [
+        1232,
+        10,
+        1269,
+        23
+      ],
+      "nonclock_changed_bounds": null
+    },
+    {
+      "phase": "dark-highcontrast-8",
+      "raw_changed_bounds": [
+        1232,
+        10,
+        1269,
+        23
+      ],
+      "nonclock_changed_bounds": null
+    },
+    {
+      "phase": "light-highcontrast-8",
+      "raw_changed_bounds": [
+        1232,
+        10,
+        1269,
+        23
+      ],
+      "nonclock_changed_bounds": null
+    },
+    {
+      "phase": "dark-highcontrast-9",
+      "raw_changed_bounds": [
+        1232,
+        10,
+        1269,
+        23
+      ],
+      "nonclock_changed_bounds": null
+    },
+    {
+      "phase": "light-highcontrast-9",
+      "raw_changed_bounds": [
+        1232,
+        10,
+        1269,
+        23
+      ],
+      "nonclock_changed_bounds": null
+    },
+    {
+      "phase": "dark-highcontrast-10",
+      "raw_changed_bounds": [
+        1232,
+        10,
+        1269,
+        23
+      ],
+      "nonclock_changed_bounds": null
+    },
+    {
+      "phase": "light-highcontrast-10",
+      "raw_changed_bounds": [
+        1232,
+        10,
+        1249,
+        23
+      ],
+      "nonclock_changed_bounds": null
+    },
+    {
+      "phase": "dark-highcontrast-11",
+      "raw_changed_bounds": [
+        1232,
+        10,
+        1269,
+        23
+      ],
+      "nonclock_changed_bounds": null
+    },
+    {
+      "phase": "light-highcontrast-11",
+      "raw_changed_bounds": [
+        1232,
+        10,
+        1269,
+        23
+      ],
+      "nonclock_changed_bounds": null
+    }
+  ]
+}

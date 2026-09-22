@@ -1,0 +1,34 @@
+python3 tests/unit/as_conversion_test.py build-numeric/asc --negative-control
+PASS negative control: unchecked float input observed failing the conversion oracle
+python3 tests/unit/as_conversion_test.py build-numeric/asc
+PASS native conversions: 6 diagnostics, O0/O2 boundaries, GC and declaration precedence
+python3 tests/unit/as_assignment_test.py build-numeric/asc --negative-control
+PASS assignment control: missing earlier RHS roots fail under ASan
+PASS compound control: right-first observed failing
+PASS compound control: stale-slot observed failing
+PASS compound control: unrooted-old-text observed failing
+python3 tests/unit/as_assignment_test.py build-numeric/asc
+PASS compound accept: 6 operators parsed as AN_ASSIGN and checked
+PASS assignment: 23 diagnostics, locals/modules, atomic stores, O0/O2 ASan
+PASS compound assignment: receiver/index order, old values, resizing, GC and failure ordering
+PASS compound-ops: **= &= |= ^= <<= >>= edge rules (round-trip, unsigned count, no final square)
+PASS jar control: a dropped **= line reddens the backend gate (AssertionError)
+python3 tests/unit/as_generic_negative.py
+PASS negative control: unconstrained-body observed failing
+python3 tests/unit/as_generic_test.py build-numeric/asc
+PASS 36 generic/native host checks
+test_ci_and_control_inventories (__main__.NestedMakeTests.test_ci_and_control_inventories) ... ok
+test_comment_recipe_and_partial_filename_are_not_edges (__main__.NestedMakeTests.test_comment_recipe_and_partial_filename_are_not_edges) ... ok
+test_continuations_multiple_paths_comments_and_cycle (__main__.NestedMakeTests.test_continuations_multiple_paths_comments_and_cycle) ... ok
+test_declared_exception_is_path_specific (__main__.NestedMakeTests.test_declared_exception_is_path_specific) ... ok
+test_missing_then_restored_edge (__main__.NestedMakeTests.test_missing_then_restored_edge) ... ok
+test_nested_link_prerequisites_are_checked (__main__.NestedMakeTests.test_nested_link_prerequisites_are_checked) ... ok
+test_same_leaf_is_not_same_fragment (__main__.NestedMakeTests.test_same_leaf_is_not_same_fragment) ... ok
+
+----------------------------------------------------------------------
+Ran 7 tests in 0.061s
+
+OK
+negative control: nested fragment without include is UNREACHABLE
+mk-wired: ok (378 fragments, 377 reachable from the Makefile, 1 declared)
+  declared: tests/schedneg.mk -- a `make -f` wrapper that includes the Makefile itself; including it back would recurse (see its own header)

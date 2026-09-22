@@ -1,0 +1,45 @@
+laying down bystanders
+repeated clean boots (the CLAUDE.md corruption regression)
+fsync semantics
+exhaustive crash injection
+  write            29 device writes -> 29 cut point(s) x 3 loss pattern(s)
+  mkdir            9 device writes -> 9 cut point(s) x 3 loss pattern(s)
+  delete           9 device writes -> 9 cut point(s) x 3 loss pattern(s)
+  rename           11 device writes -> 11 cut point(s) x 3 loss pattern(s)
+  overwrite        17 device writes -> 17 cut point(s) x 3 loss pattern(s)
+  FAIL: overwrite cut@3: /bys2 must be entirely the old content or entirely the new
+  FAIL: overwrite cut@3: /bys2 must be entirely the old content or entirely the new
+  FAIL: overwrite cut@3: /bys2 must be entirely the old content or entirely the new
+  FAIL: overwrite cut@4: /bys2 must be entirely the old content or entirely the new
+  FAIL: overwrite cut@4: /bys2 must be entirely the old content or entirely the new
+  FAIL: overwrite cut@4: /bys2 must be entirely the old content or entirely the new
+  FAIL: overwrite cut@5: /bys2 must be entirely the old content or entirely the new
+  FAIL: overwrite cut@5: /bys2 must be entirely the old content or entirely the new
+  FAIL: overwrite cut@6: /bys2 must be entirely the old content or entirely the new
+  FAIL: overwrite cut@6: /bys2 must be entirely the old content or entirely the new
+  FAIL: overwrite cut@7: /bys2 must be entirely the old content or entirely the new
+  FAIL: overwrite cut@7: /bys2 must be entirely the old content or entirely the new
+  FAIL: overwrite cut@7: /bys2 must be entirely the old content or entirely the new
+  FAIL: overwrite cut@8: /bys2 must be entirely the old content or entirely the new
+  FAIL: overwrite cut@8: /bys2 must be entirely the old content or entirely the new
+  FAIL: overwrite cut@8: /bys2 must be entirely the old content or entirely the new
+  FAIL: overwrite cut@9: /bys2 must be entirely the old content or entirely the new
+  FAIL: overwrite cut@9: /bys2 must be entirely the old content or entirely the new
+  FAIL: overwrite cut@9: /bys2 must be entirely the old content or entirely the new
+  FAIL: overwrite cut@10: /bys2 must be entirely the old content or entirely the new
+  FAIL: overwrite cut@10: /bys2 must be entirely the old content or entirely the new
+  FAIL: overwrite cut@10: /bys2 must be entirely the old content or entirely the new
+  FAIL: overwrite cut@11: /bys2 must be entirely the old content or entirely the new
+  FAIL: overwrite cut@11: /bys2 must be entirely the old content or entirely the new
+  FAIL: overwrite cut@11: /bys2 must be entirely the old content or entirely the new
+  FAIL: overwrite cut@12: /bys2 must be entirely the old content or entirely the new
+  FAIL: overwrite cut@12: /bys2 must be entirely the old content or entirely the new
+  FAIL: overwrite cut@12: /bys2 must be entirely the old content or entirely the new
+  FAIL: overwrite cut@13: /bys2 must be entirely the old content or entirely the new
+  FAIL: overwrite cut@13: fsck found 5 problem(s) (dup-block 0, bitmap missing/leaked 0/3, dirent 0, loop 0, orphan 0, bad-size 1, bad-ptr 1)
+  FAIL: overwrite cut@13: /bys2 must be entirely the old content or entirely the new
+  FAIL: overwrite cut@13: fsck found 5 problem(s) (dup-block 0, bitmap missing/leaked 0/3, dirent 0, loop 0, orphan 0, bad-size 1, bad-ptr 1)
+  FAIL: overwrite cut@13: /bys2 must be entirely the old content or entirely the new
+  FAIL: overwrite cut@13: fsck found 5 problem(s) (dup-block 0, bitmap missing/leaked 0/3, dirent 0, loop 0, orphan 0, bad-size 1, bad-ptr 1)
+fs_crash_test: 1720 checks, 34 failure(s)
+FAIL

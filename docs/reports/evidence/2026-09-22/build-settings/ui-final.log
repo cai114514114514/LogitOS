@@ -1,0 +1,31 @@
+ok   the settings store reported ready at boot
+ok   the on-boot truncate-at-every-offset sweep was clean  [['SETTINGS_SELFTEST offsets=1005 failures=0']]
+ok   Settings opened on the Appearance tab  [page='appearance']
+     window content origin at device (138,128)
+ok   the running desktop decoded the Settings PNG asset
+ok   the Dock paints the blue and metallic raster icon  [blue=639 metal=502]
+ok   the light theme has a light window background  [bg=(239, 240, 243) luma=240]
+     wrote build-settings/settings-light.png
+ok   the kernel-drawn menu bar is light too  [luma=196]
+ok   the All settings table lists rows of text  [378 distinct colours in the table body]
+ok   every arrow press left a recognisable page  [seen=['appearance', 'desktop', 'network', 'dock', 'input', 'time', 'all', 'system', 'system']]
+ok   all eight pages were reached  [seen=['appearance', 'desktop', 'network', 'dock', 'input', 'time', 'all', 'system', 'system']]
+ok   each arrow advances the sidebar one tab, and clamps at the last  [seen=['appearance', 'desktop', 'network', 'dock', 'input', 'time', 'all', 'system', 'system']]
+ok   up arrows walk back to Appearance  [page='appearance']
+ok   still on Appearance after the toggle  [page='appearance']
+ok   the window went dark  [light luma=240 dark luma=32]
+ok   the kernel-drawn menu bar followed the app's toggle  [light=196 dark=80]
+     wrote build-settings/settings-dark.png
+ok   no settings commit failed while the window was open
+ok   Apply rejects an invalid address in the running app
+ok   Revert discards the invalid local draft
+ok   an edited preference reaches the save path
+ok   search removes rows and clearing it restores the table pixels
+ok   clock preferences remove date and seconds from the kernel menu bar  [ink 383 -> 106]
+ok   Escape cancels closing an edited Settings window
+ok   the unsaved-changes dialog dismisses on Escape
+kept: /var/folders/5n/cg5_2k414dj_mt1q9__6mx_r0000gn/T/logit-settings-gtv8fnkh
+
+PASS: the Settings window opens, all eight pages render, and a toggle in it
+      repaints the kernel-drawn desktop. Screenshots in both themes at
+      build-settings/settings-{light,dark,desktop,network,all}.png

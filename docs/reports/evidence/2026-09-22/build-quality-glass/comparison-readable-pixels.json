@@ -1,0 +1,224 @@
+{
+  "left": "/Users/wangzhe/LogitOS/build-quality-glass/candidate-inline-ui",
+  "right": "/Users/wangzhe/LogitOS/build-quality-glass/candidate-readable-ui",
+  "clock_exclusion": [
+    1232,
+    10,
+    1269,
+    23
+  ],
+  "full_screenshots": 21,
+  "identical_except_clock": true,
+  "screenshots": [
+    {
+      "name": "dark-highcontrast-0-before.png",
+      "full_changed_bounds": [
+        1232,
+        10,
+        1269,
+        23
+      ],
+      "changed_pixels_excluding_clock": 0
+    },
+    {
+      "name": "dark-highcontrast-0.png",
+      "full_changed_bounds": [
+        1232,
+        10,
+        1269,
+        23
+      ],
+      "changed_pixels_excluding_clock": 0
+    },
+    {
+      "name": "dark-highcontrast-1-before.png",
+      "full_changed_bounds": [
+        1232,
+        10,
+        1269,
+        23
+      ],
+      "changed_pixels_excluding_clock": 0
+    },
+    {
+      "name": "dark-highcontrast-1.png",
+      "full_changed_bounds": [
+        1232,
+        10,
+        1269,
+        23
+      ],
+      "changed_pixels_excluding_clock": 0
+    },
+    {
+      "name": "dark-highcontrast-2-before.png",
+      "full_changed_bounds": [
+        1232,
+        10,
+        1269,
+        23
+      ],
+      "changed_pixels_excluding_clock": 0
+    },
+    {
+      "name": "dark-highcontrast-2.png",
+      "full_changed_bounds": [
+        1232,
+        10,
+        1269,
+        23
+      ],
+      "changed_pixels_excluding_clock": 0
+    },
+    {
+      "name": "dark-normal-before.png",
+      "full_changed_bounds": [
+        1232,
+        10,
+        1269,
+        23
+      ],
+      "changed_pixels_excluding_clock": 0
+    },
+    {
+      "name": "dark-normal.png",
+      "full_changed_bounds": [
+        1232,
+        10,
+        1269,
+        23
+      ],
+      "changed_pixels_excluding_clock": 0
+    },
+    {
+      "name": "light-highcontrast-0-before.png",
+      "full_changed_bounds": [
+        1232,
+        10,
+        1269,
+        23
+      ],
+      "changed_pixels_excluding_clock": 0
+    },
+    {
+      "name": "light-highcontrast-0.png",
+      "full_changed_bounds": [
+        1232,
+        10,
+        1269,
+        23
+      ],
+      "changed_pixels_excluding_clock": 0
+    },
+    {
+      "name": "light-highcontrast-1-before.png",
+      "full_changed_bounds": [
+        1232,
+        10,
+        1269,
+        23
+      ],
+      "changed_pixels_excluding_clock": 0
+    },
+    {
+      "name": "light-highcontrast-1.png",
+      "full_changed_bounds": [
+        1232,
+        10,
+        1269,
+        23
+      ],
+      "changed_pixels_excluding_clock": 0
+    },
+    {
+      "name": "light-highcontrast-2-before.png",
+      "full_changed_bounds": [
+        1232,
+        10,
+        1269,
+        23
+      ],
+      "changed_pixels_excluding_clock": 0
+    },
+    {
+      "name": "light-highcontrast-2.png",
+      "full_changed_bounds": [
+        1232,
+        10,
+        1269,
+        23
+      ],
+      "changed_pixels_excluding_clock": 0
+    },
+    {
+      "name": "light-highcontrast.png",
+      "full_changed_bounds": [
+        1232,
+        10,
+        1269,
+        23
+      ],
+      "changed_pixels_excluding_clock": 0
+    },
+    {
+      "name": "light-normal-before.png",
+      "full_changed_bounds": [
+        1232,
+        10,
+        1269,
+        23
+      ],
+      "changed_pixels_excluding_clock": 0
+    },
+    {
+      "name": "light-normal-repeat-before.png",
+      "full_changed_bounds": [
+        1232,
+        10,
+        1269,
+        23
+      ],
+      "changed_pixels_excluding_clock": 0
+    },
+    {
+      "name": "light-normal-repeat.png",
+      "full_changed_bounds": [
+        1232,
+        10,
+        1269,
+        23
+      ],
+      "changed_pixels_excluding_clock": 0
+    },
+    {
+      "name": "light-normal.png",
+      "full_changed_bounds": [
+        1232,
+        10,
+        1269,
+        23
+      ],
+      "changed_pixels_excluding_clock": 0
+    },
+    {
+      "name": "stress-dark-white-page.png",
+      "full_changed_bounds": [
+        1232,
+        10,
+        1269,
+        23
+      ],
+      "changed_pixels_excluding_clock": 0
+    },
+    {
+      "name": "stress-light-black-editor.png",
+      "full_changed_bounds": [
+        1232,
+        10,
+        1269,
+        23
+      ],
+      "changed_pixels_excluding_clock": 0
+    }
+  ]
+}

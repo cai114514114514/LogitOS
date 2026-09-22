@@ -1,0 +1,105 @@
+{
+  "timings": {
+    "light": {
+      "before": {
+        "glass_pixels": [
+          131764
+        ],
+        "glass_ms": 14.118387,
+        "total_ms": 19.461775
+      },
+      "after": {
+        "glass_pixels": [
+          131764
+        ],
+        "glass_ms": 11.581677,
+        "total_ms": 17.66798
+      },
+      "same_glass_rectangle_pixels": true,
+      "glass_change_percent": -17.96742078255823,
+      "total_change_percent": -9.217016433495917
+    },
+    "dark": {
+      "before": {
+        "glass_pixels": [
+          131764
+        ],
+        "glass_ms": 12.925523,
+        "total_ms": 19.046822
+      },
+      "after": {
+        "glass_pixels": [
+          131764
+        ],
+        "glass_ms": 10.432808,
+        "total_ms": 15.22626
+      },
+      "same_glass_rectangle_pixels": true,
+      "glass_change_percent": -19.28521577037927,
+      "total_change_percent": -20.058789860061687
+    }
+  },
+  "screenshots": [
+    {
+      "name": "light-normal",
+      "dimensions": [
+        1280,
+        800
+      ],
+      "changed_bounds": [
+        1232,
+        10,
+        1269,
+        23
+      ],
+      "before": "/Users/wangzhe/LogitOS/build-quality-glass/candidate-inline-ui/light-normal.png",
+      "after": "/Users/wangzhe/LogitOS/build-quality-glass/candidate-readable-ui/light-normal.png"
+    },
+    {
+      "name": "dark-normal",
+      "dimensions": [
+        1280,
+        800
+      ],
+      "changed_bounds": [
+        1232,
+        10,
+        1269,
+        23
+      ],
+      "before": "/Users/wangzhe/LogitOS/build-quality-glass/candidate-inline-ui/dark-normal.png",
+      "after": "/Users/wangzhe/LogitOS/build-quality-glass/candidate-readable-ui/dark-normal.png"
+    },
+    {
+      "name": "light-highcontrast",
+      "dimensions": [
+        1280,
+        800
+      ],
+      "changed_bounds": [
+        1232,
+        10,
+        1269,
+        23
+      ],
+      "before": "/Users/wangzhe/LogitOS/build-quality-glass/candidate-inline-ui/light-highcontrast.png",
+      "after": "/Users/wangzhe/LogitOS/build-quality-glass/candidate-readable-ui/light-highcontrast.png"
+    },
+    {
+      "name": "dark-highcontrast-0",
+      "dimensions": [
+        1280,
+        800
+      ],
+      "changed_bounds": [
+        1232,
+        10,
+        1269,
+        23
+      ],
+      "before": "/Users/wangzhe/LogitOS/build-quality-glass/candidate-inline-ui/dark-highcontrast-0.png",
+      "after": "/Users/wangzhe/LogitOS/build-quality-glass/candidate-readable-ui/dark-highcontrast-0.png"
+    }
+  ],
+  "comparable": true
+}

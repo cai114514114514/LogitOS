@@ -1,0 +1,547 @@
+{
+  "passed": true,
+  "checks": [
+    {
+      "command": "/usr/as/bin/durcheck.aex verify /audit-durability/tiny.bin tiny",
+      "output": "DURCHECK-OK /audit-durability/tiny.bin 100\n",
+      "exit": 0,
+      "passed": true
+    },
+    {
+      "command": "/usr/as/bin/durcheck.aex verify /audit-durability/small.bin small",
+      "output": "DURCHECK-OK /audit-durability/small.bin 30000\n",
+      "exit": 0,
+      "passed": true
+    },
+    {
+      "command": "/usr/as/bin/durcheck.aex verify /audit-durability/mid.bin mid",
+      "output": "DURCHECK-OK /audit-durability/mid.bin 120000\n",
+      "exit": 0,
+      "passed": true
+    },
+    {
+      "command": "/usr/as/bin/durcheck.aex verify /audit-durability/tiny.bin tiny",
+      "output": "DURCHECK-OK /audit-durability/tiny.bin 100\n",
+      "exit": 0,
+      "passed": true
+    },
+    {
+      "command": "/usr/as/bin/durcheck.aex verify /audit-durability/small.bin small",
+      "output": "DURCHECK-OK /audit-durability/small.bin 30000\n",
+      "exit": 0,
+      "passed": true
+    },
+    {
+      "command": "/usr/as/bin/durcheck.aex verify /audit-durability/mid.bin mid",
+      "output": "DURCHECK-OK /audit-durability/mid.bin 120000\n",
+      "exit": 0,
+      "passed": true
+    },
+    {
+      "command": "/usr/as/bin/durcheck.aex verify /audit-durability/tiny.bin tiny",
+      "output": "DURCHECK-OK /audit-durability/tiny.bin 100\n",
+      "exit": 0,
+      "passed": true
+    },
+    {
+      "command": "/usr/as/bin/durcheck.aex verify /audit-durability/small.bin small",
+      "output": "DURCHECK-OK /audit-durability/small.bin 30000\n",
+      "exit": 0,
+      "passed": true
+    },
+    {
+      "command": "/usr/as/bin/durcheck.aex verify /audit-durability/mid.bin mid",
+      "output": "DURCHECK-OK /audit-durability/mid.bin 120000\n",
+      "exit": 0,
+      "passed": true
+    },
+    {
+      "command": "/usr/as/bin/durcheck.aex verify /audit-durability/tiny.bin tiny",
+      "output": "DURCHECK-OK /audit-durability/tiny.bin 100\n",
+      "exit": 0,
+      "passed": true
+    },
+    {
+      "command": "/usr/as/bin/durcheck.aex verify /audit-durability/small.bin small",
+      "output": "DURCHECK-OK /audit-durability/small.bin 30000\n",
+      "exit": 0,
+      "passed": true
+    },
+    {
+      "command": "/usr/as/bin/durcheck.aex verify /audit-durability/mid.bin mid",
+      "output": "DURCHECK-OK /audit-durability/mid.bin 120000\n",
+      "exit": 0,
+      "passed": true
+    },
+    {
+      "command": "/usr/as/bin/durcheck.aex verify /audit-durability/tiny.bin tiny",
+      "output": "DURCHECK-OK /audit-durability/tiny.bin 100\n",
+      "exit": 0,
+      "passed": true
+    },
+    {
+      "command": "/usr/as/bin/durcheck.aex verify /audit-durability/small.bin small",
+      "output": "DURCHECK-OK /audit-durability/small.bin 30000\n",
+      "exit": 0,
+      "passed": true
+    },
+    {
+      "command": "/usr/as/bin/durcheck.aex verify /audit-durability/mid.bin mid",
+      "output": "DURCHECK-OK /audit-durability/mid.bin 120000\n",
+      "exit": 0,
+      "passed": true
+    },
+    {
+      "command": "/usr/as/bin/durcheck.aex verify /audit-durability/tiny.bin tiny",
+      "output": "DURCHECK-OK /audit-durability/tiny.bin 100\n",
+      "exit": 0,
+      "passed": true
+    },
+    {
+      "command": "/usr/as/bin/durcheck.aex verify /audit-durability/small.bin small",
+      "output": "DURCHECK-OK /audit-durability/small.bin 30000\n",
+      "exit": 0,
+      "passed": true
+    },
+    {
+      "command": "/usr/as/bin/durcheck.aex verify /audit-durability/mid.bin mid",
+      "output": "DURCHECK-OK /audit-durability/mid.bin 120000\n",
+      "exit": 0,
+      "passed": true
+    },
+    {
+      "command": "/usr/as/bin/durcheck.aex verify /audit-durability/tiny.bin tiny",
+      "output": "DURCHECK-OK /audit-durability/tiny.bin 100\n",
+      "exit": 0,
+      "passed": true
+    },
+    {
+      "command": "/usr/as/bin/durcheck.aex verify /audit-durability/small.bin small",
+      "output": "DURCHECK-OK /audit-durability/small.bin 30000\n",
+      "exit": 0,
+      "passed": true
+    },
+    {
+      "command": "/usr/as/bin/durcheck.aex verify /audit-durability/mid.bin mid",
+      "output": "DURCHECK-OK /audit-durability/mid.bin 120000\n",
+      "exit": 0,
+      "passed": true
+    },
+    {
+      "command": "/usr/as/bin/durcheck.aex verify /audit-durability/tiny.bin tiny",
+      "output": "DURCHECK-OK /audit-durability/tiny.bin 100\n",
+      "exit": 0,
+      "passed": true
+    },
+    {
+      "command": "/usr/as/bin/durcheck.aex verify /audit-durability/small.bin small",
+      "output": "DURCHECK-OK /audit-durability/small.bin 30000\n",
+      "exit": 0,
+      "passed": true
+    },
+    {
+      "command": "/usr/as/bin/durcheck.aex verify /audit-durability/mid.bin mid",
+      "output": "DURCHECK-OK /audit-durability/mid.bin 120000\n",
+      "exit": 0,
+      "passed": true
+    },
+    {
+      "command": "/usr/as/bin/durcheck.aex verify /audit-durability/tiny.bin tiny",
+      "output": "DURCHECK-OK /audit-durability/tiny.bin 100\n",
+      "exit": 0,
+      "passed": true
+    },
+    {
+      "command": "/usr/as/bin/durcheck.aex verify /audit-durability/small.bin small",
+      "output": "DURCHECK-OK /audit-durability/small.bin 30000\n",
+      "exit": 0,
+      "passed": true
+    },
+    {
+      "command": "/usr/as/bin/durcheck.aex verify /audit-durability/mid.bin mid",
+      "output": "DURCHECK-OK /audit-durability/mid.bin 120000\n",
+      "exit": 0,
+      "passed": true
+    },
+    {
+      "command": "/usr/as/bin/durcheck.aex verify /audit-durability/tiny.bin tiny",
+      "output": "DURCHECK-OK /audit-durability/tiny.bin 100\n",
+      "exit": 0,
+      "passed": true
+    },
+    {
+      "command": "/usr/as/bin/durcheck.aex verify /audit-durability/small.bin small",
+      "output": "DURCHECK-OK /audit-durability/small.bin 30000\n",
+      "exit": 0,
+      "passed": true
+    },
+    {
+      "command": "/usr/as/bin/durcheck.aex verify /audit-durability/mid.bin mid",
+      "output": "DURCHECK-OK /audit-durability/mid.bin 120000\n",
+      "exit": 0,
+      "passed": true
+    },
+    {
+      "command": "/usr/as/bin/durcheck.aex verify /audit-durability/tiny.bin tiny",
+      "output": "DURCHECK-OK /audit-durability/tiny.bin 100\n",
+      "exit": 0,
+      "passed": true
+    },
+    {
+      "command": "/usr/as/bin/durcheck.aex verify /audit-durability/small.bin small",
+      "output": "DURCHECK-OK /audit-durability/small.bin 30000\n",
+      "exit": 0,
+      "passed": true
+    },
+    {
+      "command": "/usr/as/bin/durcheck.aex verify /audit-durability/mid.bin mid",
+      "output": "DURCHECK-OK /audit-durability/mid.bin 120000\n",
+      "exit": 0,
+      "passed": true
+    },
+    {
+      "command": "/usr/as/bin/durcheck.aex verify /audit-durability/tiny.bin tiny",
+      "output": "DURCHECK-OK /audit-durability/tiny.bin 100\n",
+      "exit": 0,
+      "passed": true
+    },
+    {
+      "command": "/usr/as/bin/durcheck.aex verify /audit-durability/small.bin small",
+      "output": "DURCHECK-OK /audit-durability/small.bin 30000\n",
+      "exit": 0,
+      "passed": true
+    },
+    {
+      "command": "/usr/as/bin/durcheck.aex verify /audit-durability/mid.bin mid",
+      "output": "DURCHECK-OK /audit-durability/mid.bin 120000\n",
+      "exit": 0,
+      "passed": true
+    },
+    {
+      "command": "/usr/as/bin/durcheck.aex verify /audit-durability/tiny.bin tiny",
+      "output": "DURCHECK-OK /audit-durability/tiny.bin 100\n",
+      "exit": 0,
+      "passed": true
+    },
+    {
+      "command": "/usr/as/bin/durcheck.aex verify /audit-durability/small.bin small",
+      "output": "DURCHECK-OK /audit-durability/small.bin 30000\n",
+      "exit": 0,
+      "passed": true
+    },
+    {
+      "command": "/usr/as/bin/durcheck.aex verify /audit-durability/mid.bin mid",
+      "output": "DURCHECK-OK /audit-durability/mid.bin 120000\n",
+      "exit": 0,
+      "passed": true
+    },
+    {
+      "command": "/usr/as/bin/durcheck.aex verify /audit-durability/tiny.bin tiny",
+      "output": "DURCHECK-OK /audit-durability/tiny.bin 100\n",
+      "exit": 0,
+      "passed": true
+    },
+    {
+      "command": "/usr/as/bin/durcheck.aex verify /audit-durability/small.bin small",
+      "output": "DURCHECK-OK /audit-durability/small.bin 30000\n",
+      "exit": 0,
+      "passed": true
+    },
+    {
+      "command": "/usr/as/bin/durcheck.aex verify /audit-durability/mid.bin mid",
+      "output": "DURCHECK-OK /audit-durability/mid.bin 120000\n",
+      "exit": 0,
+      "passed": true
+    },
+    {
+      "command": "/usr/as/bin/durcheck.aex verify /audit-durability/tiny.bin tiny",
+      "output": "DURCHECK-OK /audit-durability/tiny.bin 100\n",
+      "exit": 0,
+      "passed": true
+    },
+    {
+      "command": "/usr/as/bin/durcheck.aex verify /audit-durability/small.bin small",
+      "output": "DURCHECK-OK /audit-durability/small.bin 30000\n",
+      "exit": 0,
+      "passed": true
+    },
+    {
+      "command": "/usr/as/bin/durcheck.aex verify /audit-durability/mid.bin mid",
+      "output": "DURCHECK-OK /audit-durability/mid.bin 120000\n",
+      "exit": 0,
+      "passed": true
+    },
+    {
+      "command": "/usr/as/bin/durcheck.aex verify /audit-durability/tiny.bin tiny",
+      "output": "DURCHECK-OK /audit-durability/tiny.bin 100\n",
+      "exit": 0,
+      "passed": true
+    },
+    {
+      "command": "/usr/as/bin/durcheck.aex verify /audit-durability/small.bin small",
+      "output": "DURCHECK-OK /audit-durability/small.bin 30000\n",
+      "exit": 0,
+      "passed": true
+    },
+    {
+      "command": "/usr/as/bin/durcheck.aex verify /audit-durability/mid.bin mid",
+      "output": "DURCHECK-OK /audit-durability/mid.bin 120000\n",
+      "exit": 0,
+      "passed": true
+    },
+    {
+      "command": "/usr/as/bin/durcheck.aex verify /audit-durability/tiny.bin tiny",
+      "output": "DURCHECK-OK /audit-durability/tiny.bin 100\n",
+      "exit": 0,
+      "passed": true
+    },
+    {
+      "command": "/usr/as/bin/durcheck.aex verify /audit-durability/small.bin small",
+      "output": "DURCHECK-OK /audit-durability/small.bin 30000\n",
+      "exit": 0,
+      "passed": true
+    },
+    {
+      "command": "/usr/as/bin/durcheck.aex verify /audit-durability/mid.bin mid",
+      "output": "DURCHECK-OK /audit-durability/mid.bin 120000\n",
+      "exit": 0,
+      "passed": true
+    },
+    {
+      "command": "/usr/as/bin/durcheck.aex verify /audit-durability/tiny.bin tiny",
+      "output": "DURCHECK-OK /audit-durability/tiny.bin 100\n",
+      "exit": 0,
+      "passed": true
+    },
+    {
+      "command": "/usr/as/bin/durcheck.aex verify /audit-durability/small.bin small",
+      "output": "DURCHECK-OK /audit-durability/small.bin 30000\n",
+      "exit": 0,
+      "passed": true
+    },
+    {
+      "command": "/usr/as/bin/durcheck.aex verify /audit-durability/mid.bin mid",
+      "output": "DURCHECK-OK /audit-durability/mid.bin 120000\n",
+      "exit": 0,
+      "passed": true
+    },
+    {
+      "command": "/usr/as/bin/durcheck.aex verify /audit-durability/tiny.bin tiny",
+      "output": "DURCHECK-OK /audit-durability/tiny.bin 100\n",
+      "exit": 0,
+      "passed": true
+    },
+    {
+      "command": "/usr/as/bin/durcheck.aex verify /audit-durability/small.bin small",
+      "output": "DURCHECK-OK /audit-durability/small.bin 30000\n",
+      "exit": 0,
+      "passed": true
+    },
+    {
+      "command": "/usr/as/bin/durcheck.aex verify /audit-durability/mid.bin mid",
+      "output": "DURCHECK-OK /audit-durability/mid.bin 120000\n",
+      "exit": 0,
+      "passed": true
+    },
+    {
+      "command": "/usr/as/bin/durcheck.aex verify /audit-durability/tiny.bin tiny",
+      "output": "DURCHECK-OK /audit-durability/tiny.bin 100\n",
+      "exit": 0,
+      "passed": true
+    },
+    {
+      "command": "/usr/as/bin/durcheck.aex verify /audit-durability/small.bin small",
+      "output": "DURCHECK-OK /audit-durability/small.bin 30000\n",
+      "exit": 0,
+      "passed": true
+    },
+    {
+      "command": "/usr/as/bin/durcheck.aex verify /audit-durability/mid.bin mid",
+      "output": "DURCHECK-OK /audit-durability/mid.bin 120000\n",
+      "exit": 0,
+      "passed": true
+    },
+    {
+      "command": "/usr/as/bin/durcheck.aex verify /audit-durability/tiny.bin tiny",
+      "output": "DURCHECK-OK /audit-durability/tiny.bin 100\n",
+      "exit": 0,
+      "passed": true
+    },
+    {
+      "command": "/usr/as/bin/durcheck.aex verify /audit-durability/small.bin small",
+      "output": "DURCHECK-OK /audit-durability/small.bin 30000\n",
+      "exit": 0,
+      "passed": true
+    },
+    {
+      "command": "/usr/as/bin/durcheck.aex verify /audit-durability/mid.bin mid",
+      "output": "DURCHECK-OK /audit-durability/mid.bin 120000\n",
+      "exit": 0,
+      "passed": true
+    },
+    {
+      "command": "/usr/as/bin/durcheck.aex verify /audit-durability/tiny.bin tiny",
+      "output": "DURCHECK-OK /audit-durability/tiny.bin 100\n",
+      "exit": 0,
+      "passed": true
+    },
+    {
+      "command": "/usr/as/bin/durcheck.aex verify /audit-durability/small.bin small",
+      "output": "DURCHECK-OK /audit-durability/small.bin 30000\n",
+      "exit": 0,
+      "passed": true
+    },
+    {
+      "command": "/usr/as/bin/durcheck.aex verify /audit-durability/mid.bin mid",
+      "output": "DURCHECK-OK /audit-durability/mid.bin 120000\n",
+      "exit": 0,
+      "passed": true
+    },
+    {
+      "command": "/usr/as/bin/durcheck.aex verify /audit-durability/tiny.bin tiny",
+      "output": "DURCHECK-OK /audit-durability/tiny.bin 100\n",
+      "exit": 0,
+      "passed": true
+    },
+    {
+      "command": "/usr/as/bin/durcheck.aex verify /audit-durability/small.bin small",
+      "output": "DURCHECK-OK /audit-durability/small.bin 30000\n",
+      "exit": 0,
+      "passed": true
+    },
+    {
+      "command": "/usr/as/bin/durcheck.aex verify /audit-durability/mid.bin mid",
+      "output": "DURCHECK-OK /audit-durability/mid.bin 120000\n",
+      "exit": 0,
+      "passed": true
+    },
+    {
+      "command": "/usr/as/bin/durcheck.aex verify /audit-durability/tiny.bin tiny",
+      "output": "DURCHECK-OK /audit-durability/tiny.bin 100\n",
+      "exit": 0,
+      "passed": true
+    },
+    {
+      "command": "/usr/as/bin/durcheck.aex verify /audit-durability/small.bin small",
+      "output": "DURCHECK-OK /audit-durability/small.bin 30000\n",
+      "exit": 0,
+      "passed": true
+    },
+    {
+      "command": "/usr/as/bin/durcheck.aex verify /audit-durability/mid.bin mid",
+      "output": "DURCHECK-OK /audit-durability/mid.bin 120000\n",
+      "exit": 0,
+      "passed": true
+    },
+    {
+      "command": "/usr/as/bin/durcheck.aex verify /audit-durability/tiny.bin tiny",
+      "output": "DURCHECK-OK /audit-durability/tiny.bin 100\n",
+      "exit": 0,
+      "passed": true
+    },
+    {
+      "command": "/usr/as/bin/durcheck.aex verify /audit-durability/small.bin small",
+      "output": "DURCHECK-OK /audit-durability/small.bin 30000\n",
+      "exit": 0,
+      "passed": true
+    },
+    {
+      "command": "/usr/as/bin/durcheck.aex verify /audit-durability/mid.bin mid",
+      "output": "DURCHECK-OK /audit-durability/mid.bin 120000\n",
+      "exit": 0,
+      "passed": true
+    },
+    {
+      "command": "/usr/as/bin/durcheck.aex verify /audit-durability/tiny.bin tiny",
+      "output": "DURCHECK-OK /audit-durability/tiny.bin 100\n",
+      "exit": 0,
+      "passed": true
+    },
+    {
+      "command": "/usr/as/bin/durcheck.aex verify /audit-durability/small.bin small",
+      "output": "DURCHECK-OK /audit-durability/small.bin 30000\n",
+      "exit": 0,
+      "passed": true
+    },
+    {
+      "command": "/usr/as/bin/durcheck.aex verify /audit-durability/mid.bin mid",
+      "output": "DURCHECK-OK /audit-durability/mid.bin 120000\n",
+      "exit": 0,
+      "passed": true
+    },
+    {
+      "command": "/usr/as/bin/durcheck.aex verify /audit-durability/tiny.bin tiny",
+      "output": "DURCHECK-OK /audit-durability/tiny.bin 100\n",
+      "exit": 0,
+      "passed": true
+    },
+    {
+      "command": "/usr/as/bin/durcheck.aex verify /audit-durability/small.bin small",
+      "output": "DURCHECK-OK /audit-durability/small.bin 30000\n",
+      "exit": 0,
+      "passed": true
+    },
+    {
+      "command": "/usr/as/bin/durcheck.aex verify /audit-durability/mid.bin mid",
+      "output": "DURCHECK-OK /audit-durability/mid.bin 120000\n",
+      "exit": 0,
+      "passed": true
+    },
+    {
+      "command": "/usr/as/bin/durcheck.aex verify /audit-durability/tiny.bin tiny",
+      "output": "DURCHECK-OK /audit-durability/tiny.bin 100\n",
+      "exit": 0,
+      "passed": true
+    },
+    {
+      "command": "/usr/as/bin/durcheck.aex verify /audit-durability/small.bin small",
+      "output": "DURCHECK-OK /audit-durability/small.bin 30000\n",
+      "exit": 0,
+      "passed": true
+    },
+    {
+      "command": "/usr/as/bin/durcheck.aex verify /audit-durability/mid.bin mid",
+      "output": "DURCHECK-OK /audit-durability/mid.bin 120000\n",
+      "exit": 0,
+      "passed": true
+    },
+    {
+      "command": "/usr/as/bin/durcheck.aex verify /audit-durability/tiny.bin tiny",
+      "output": "DURCHECK-OK /audit-durability/tiny.bin 100\n",
+      "exit": 0,
+      "passed": true
+    },
+    {
+      "command": "/usr/as/bin/durcheck.aex verify /audit-durability/small.bin small",
+      "output": "DURCHECK-OK /audit-durability/small.bin 30000\n",
+      "exit": 0,
+      "passed": true
+    },
+    {
+      "command": "/usr/as/bin/durcheck.aex verify /audit-durability/mid.bin mid",
+      "output": "DURCHECK-OK /audit-durability/mid.bin 120000\n",
+      "exit": 0,
+      "passed": true
+    },
+    {
+      "command": "/usr/as/bin/durcheck.aex verify /audit-durability/tiny.bin tiny",
+      "output": "DURCHECK-OK /audit-durability/tiny.bin 100\n",
+      "exit": 0,
+      "passed": true
+    },
+    {
+      "command": "/usr/as/bin/durcheck.aex verify /audit-durability/small.bin small",
+      "output": "DURCHECK-OK /audit-durability/small.bin 30000\n",
+      "exit": 0,
+      "passed": true
+    },
+    {
+      "command": "/usr/as/bin/durcheck.aex verify /audit-durability/mid.bin mid",
+      "output": "DURCHECK-OK /audit-durability/mid.bin 120000\n",
+      "exit": 0,
+      "passed": true
+    }
+  ],
+  "source_sha256": "2df76d87ff9841760b156b48615a77f53c1dbdc4c18b0635169f9c3d1a4c300d",
+  "source_unchanged": true
+}

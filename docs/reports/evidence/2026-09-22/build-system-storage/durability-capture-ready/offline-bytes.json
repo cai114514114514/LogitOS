@@ -1,0 +1,24 @@
+{
+  "fixtures": [
+    {
+      "path": "/audit-durability/tiny.bin",
+      "bytes": 100,
+      "passed": true,
+      "sha256": "c2be0dd51fdaee4b134dbc54b383121a25f5e0472bbab03928e46b56392103d2"
+    },
+    {
+      "path": "/audit-durability/small.bin",
+      "bytes": 30000,
+      "passed": true,
+      "sha256": "b4e9c8635ba77cb33466b8cc527a3378ae91a501f7d17f197f5ea0386ebee526"
+    },
+    {
+      "path": "/audit-durability/mid.bin",
+      "bytes": 120000,
+      "passed": true,
+      "sha256": "577d22870ea4f265f0ab45c836ba8c2b00569198cde06e363383f41f78b56b3d"
+    }
+  ],
+  "/state/agent-test-output.txt": "DURCHECK-OK /audit-durability/small.bin 30000\n",
+  "/state/agent-test-exit.txt": "0\n"
+}

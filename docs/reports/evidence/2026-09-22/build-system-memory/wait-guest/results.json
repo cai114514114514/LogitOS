@@ -1,0 +1,106 @@
+{
+  "inputs": {
+    "iso": {
+      "path": "/Users/wangzhe/LogitOS/build-quality-glass/logit.iso",
+      "sha256": "1e2ae10b3ab024be97caafd4c16d46e8b603978469c3fbf50e990675b0284857"
+    },
+    "disk": {
+      "path": "/Users/wangzhe/LogitOS/build-quality-glass/disk.img",
+      "sha256": "7ceb4ddfe9a584a4dad4ea9f4798d33802ac67845694cecd668de9c1c47d4f89"
+    }
+  },
+  "runs": [
+    {
+      "checks": {
+        "complete": true,
+        "no_failure": true,
+        "actual_cpu_count": true,
+        "sleep_dispatch_zero": true,
+        "spin_control_retested": true,
+        "measurement_200ms": true,
+        "semaphore_and_mutex_totals": true,
+        "deferred_work_ran": true
+      },
+      "passed": true,
+      "measurement": [
+        200,
+        6,
+        6,
+        0
+      ],
+      "totals": [
+        192,
+        1000,
+        1000,
+        466,
+        2,
+        4
+      ],
+      "cores": 1,
+      "qemu_returncode": 0,
+      "stopped": true
+    },
+    {
+      "checks": {
+        "complete": true,
+        "no_failure": true,
+        "actual_cpu_count": true,
+        "sleep_dispatch_zero": true,
+        "spin_control_retested": true,
+        "measurement_200ms": true,
+        "semaphore_and_mutex_totals": true,
+        "deferred_work_ran": true
+      },
+      "passed": true,
+      "measurement": [
+        200,
+        45,
+        26,
+        0
+      ],
+      "totals": [
+        192,
+        1000,
+        1000,
+        394,
+        2,
+        4
+      ],
+      "cores": 2,
+      "qemu_returncode": 0,
+      "stopped": true
+    },
+    {
+      "checks": {
+        "complete": true,
+        "no_failure": true,
+        "actual_cpu_count": true,
+        "sleep_dispatch_zero": true,
+        "spin_control_retested": true,
+        "measurement_200ms": true,
+        "semaphore_and_mutex_totals": true,
+        "deferred_work_ran": true
+      },
+      "passed": true,
+      "measurement": [
+        200,
+        105,
+        0,
+        0
+      ],
+      "totals": [
+        192,
+        1000,
+        1000,
+        402,
+        2,
+        4
+      ],
+      "cores": 4,
+      "qemu_returncode": 0,
+      "stopped": true
+    }
+  ],
+  "source_unchanged": true,
+  "passed": true
+}

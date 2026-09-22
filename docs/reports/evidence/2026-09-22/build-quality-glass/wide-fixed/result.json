@@ -1,0 +1,800 @@
+{
+  "complete": true,
+  "inputs": {
+    "logit.iso": {
+      "path": "/Users/wangzhe/LogitOS/build-quality-glass/logit.iso",
+      "sha256": "1e2ae10b3ab024be97caafd4c16d46e8b603978469c3fbf50e990675b0284857"
+    },
+    "disk.img": {
+      "path": "/Users/wangzhe/LogitOS/build-quality-glass/disk.img",
+      "sha256": "7ceb4ddfe9a584a4dad4ea9f4798d33802ac67845694cecd668de9c1c47d4f89"
+    }
+  },
+  "resolution": [
+    5120,
+    2880
+  ],
+  "ram": "1G",
+  "timing_claim": null,
+  "scanout_size": [
+    5120,
+    2880
+  ],
+  "ramfs": {
+    "mount": "/state/rename-mount",
+    "commands": [
+      {
+        "command": "/bin/mkdir /state/rename-mount",
+        "transport_command": "/bin/sh -c '/bin/mkdir /state/rename-mount'",
+        "exit": 0,
+        "output": ""
+      },
+      {
+        "command": "/bin/echo mount ramfs rename /state/rename-mount > /dev/vfsctl",
+        "transport_command": "/bin/sh -c '/bin/echo mount ramfs rename /state/rename-mount > /dev/vfsctl'",
+        "exit": 0,
+        "output": ""
+      },
+      {
+        "command": "/bin/cat /dev/vfsctl",
+        "transport_command": "/bin/sh -c '/bin/cat /dev/vfsctl'",
+        "exit": 0,
+        "output": "ok mounted ramfs rename at /state/rename-mount\n"
+      },
+      {
+        "command": "/bin/cat /dev/vfsmounts",
+        "transport_command": "/bin/sh -c '/bin/cat /dev/vfsmounts'",
+        "exit": 0,
+        "output": "logitfs /\nprocfs /proc\nrename /state/rename-mount\n"
+      },
+      {
+        "command": "/bin/ls /state/rename-mount",
+        "transport_command": "/bin/sh -c '/bin/ls /state/rename-mount'",
+        "exit": 0,
+        "output": ""
+      },
+      {
+        "command": "/bin/mkdir /state/rename-mount/tree",
+        "transport_command": "/bin/sh -c '/bin/mkdir /state/rename-mount/tree'",
+        "exit": 0,
+        "output": ""
+      },
+      {
+        "command": "/bin/mkdir /state/rename-mount/tree/branch",
+        "transport_command": "/bin/sh -c '/bin/mkdir /state/rename-mount/tree/branch'",
+        "exit": 0,
+        "output": ""
+      },
+      {
+        "command": "/bin/mkdir /state/rename-mount/tree/empty",
+        "transport_command": "/bin/sh -c '/bin/mkdir /state/rename-mount/tree/empty'",
+        "exit": 0,
+        "output": ""
+      },
+      {
+        "command": "/bin/mkdir /state/rename-mount/treeish",
+        "transport_command": "/bin/sh -c '/bin/mkdir /state/rename-mount/treeish'",
+        "exit": 0,
+        "output": ""
+      },
+      {
+        "command": "/bin/mkdir /state/rename-mount/destination",
+        "transport_command": "/bin/sh -c '/bin/mkdir /state/rename-mount/destination'",
+        "exit": 0,
+        "output": ""
+      },
+      {
+        "command": "/bin/echo direct-bytes > /state/rename-mount/tree/direct",
+        "transport_command": "/bin/sh -c '/bin/echo direct-bytes > /state/rename-mount/tree/direct'",
+        "exit": 0,
+        "output": ""
+      },
+      {
+        "command": "/bin/cat /state/rename-mount/tree/direct",
+        "transport_command": "/bin/sh -c '/bin/cat /state/rename-mount/tree/direct'",
+        "exit": 0,
+        "output": "direct-bytes\n"
+      },
+      {
+        "command": "/bin/echo nested-bytes > /state/rename-mount/tree/branch/leaf",
+        "transport_command": "/bin/sh -c '/bin/echo nested-bytes > /state/rename-mount/tree/branch/leaf'",
+        "exit": 0,
+        "output": ""
+      },
+      {
+        "command": "/bin/cat /state/rename-mount/tree/branch/leaf",
+        "transport_command": "/bin/sh -c '/bin/cat /state/rename-mount/tree/branch/leaf'",
+        "exit": 0,
+        "output": "nested-bytes\n"
+      },
+      {
+        "command": "/bin/echo bystander-bytes > /state/rename-mount/treeish/leaf",
+        "transport_command": "/bin/sh -c '/bin/echo bystander-bytes > /state/rename-mount/treeish/leaf'",
+        "exit": 0,
+        "output": ""
+      },
+      {
+        "command": "/bin/cat /state/rename-mount/treeish/leaf",
+        "transport_command": "/bin/sh -c '/bin/cat /state/rename-mount/treeish/leaf'",
+        "exit": 0,
+        "output": "bystander-bytes\n"
+      },
+      {
+        "command": "/bin/mv /state/rename-mount/tree /state/rename-mount/destination/longer",
+        "transport_command": "/bin/sh -c '/bin/mv /state/rename-mount/tree /state/rename-mount/destination/longer'",
+        "exit": 0,
+        "output": ""
+      },
+      {
+        "command": "/bin/ls /state/rename-mount/destination/longer",
+        "transport_command": "/bin/sh -c '/bin/ls /state/rename-mount/destination/longer'",
+        "exit": 0,
+        "output": "branch/\nempty/\ndirect\n"
+      },
+      {
+        "command": "/bin/ls /state/rename-mount/destination/longer/branch",
+        "transport_command": "/bin/sh -c '/bin/ls /state/rename-mount/destination/longer/branch'",
+        "exit": 0,
+        "output": "leaf\n"
+      },
+      {
+        "command": "/bin/ls /state/rename-mount/destination/longer/empty",
+        "transport_command": "/bin/sh -c '/bin/ls /state/rename-mount/destination/longer/empty'",
+        "exit": 0,
+        "output": ""
+      },
+      {
+        "command": "/bin/cat /state/rename-mount/destination/longer/direct",
+        "transport_command": "/bin/sh -c '/bin/cat /state/rename-mount/destination/longer/direct'",
+        "exit": 0,
+        "output": "direct-bytes\n"
+      },
+      {
+        "command": "/bin/cat /state/rename-mount/destination/longer/branch/leaf",
+        "transport_command": "/bin/sh -c '/bin/cat /state/rename-mount/destination/longer/branch/leaf'",
+        "exit": 0,
+        "output": "nested-bytes\n"
+      },
+      {
+        "command": "/bin/ls /state/rename-mount/tree",
+        "transport_command": "/bin/sh -c '/bin/ls /state/rename-mount/tree'",
+        "exit": 1,
+        "output": ""
+      },
+      {
+        "command": "/bin/cat /state/rename-mount/tree/direct",
+        "transport_command": "/bin/sh -c '/bin/cat /state/rename-mount/tree/direct'",
+        "exit": 1,
+        "output": ""
+      },
+      {
+        "command": "/bin/cat /state/rename-mount/tree/branch/leaf",
+        "transport_command": "/bin/sh -c '/bin/cat /state/rename-mount/tree/branch/leaf'",
+        "exit": 1,
+        "output": ""
+      },
+      {
+        "command": "/bin/cat /state/rename-mount/treeish/leaf",
+        "transport_command": "/bin/sh -c '/bin/cat /state/rename-mount/treeish/leaf'",
+        "exit": 0,
+        "output": "bystander-bytes\n"
+      },
+      {
+        "command": "/bin/mv /state/rename-mount/destination/longer /state/rename-mount/short",
+        "transport_command": "/bin/sh -c '/bin/mv /state/rename-mount/destination/longer /state/rename-mount/short'",
+        "exit": 0,
+        "output": ""
+      },
+      {
+        "command": "/bin/cat /state/rename-mount/short/branch/leaf",
+        "transport_command": "/bin/sh -c '/bin/cat /state/rename-mount/short/branch/leaf'",
+        "exit": 0,
+        "output": "nested-bytes\n"
+      },
+      {
+        "command": "/bin/ls /state/rename-mount/short",
+        "transport_command": "/bin/sh -c '/bin/ls /state/rename-mount/short'",
+        "exit": 0,
+        "output": "branch/\nempty/\ndirect\n"
+      },
+      {
+        "command": "/bin/mkdir /state/rename-mount/cycle",
+        "transport_command": "/bin/sh -c '/bin/mkdir /state/rename-mount/cycle'",
+        "exit": 0,
+        "output": ""
+      },
+      {
+        "command": "/bin/mkdir /state/rename-mount/cycle/branch",
+        "transport_command": "/bin/sh -c '/bin/mkdir /state/rename-mount/cycle/branch'",
+        "exit": 0,
+        "output": ""
+      },
+      {
+        "command": "/bin/echo cycle-kept > /state/rename-mount/cycle/branch/leaf",
+        "transport_command": "/bin/sh -c '/bin/echo cycle-kept > /state/rename-mount/cycle/branch/leaf'",
+        "exit": 0,
+        "output": ""
+      },
+      {
+        "command": "/bin/cat /state/rename-mount/cycle/branch/leaf",
+        "transport_command": "/bin/sh -c '/bin/cat /state/rename-mount/cycle/branch/leaf'",
+        "exit": 0,
+        "output": "cycle-kept\n"
+      },
+      {
+        "command": "/bin/mv /state/rename-mount/cycle /state/rename-mount/cycle/branch/moved",
+        "transport_command": "/bin/sh -c '/bin/mv /state/rename-mount/cycle /state/rename-mount/cycle/branch/moved'",
+        "exit": 1,
+        "output": ""
+      },
+      {
+        "command": "/bin/cat /state/rename-mount/cycle/branch/leaf",
+        "transport_command": "/bin/sh -c '/bin/cat /state/rename-mount/cycle/branch/leaf'",
+        "exit": 0,
+        "output": "cycle-kept\n"
+      },
+      {
+        "command": "/bin/ls /state/rename-mount/cycle",
+        "transport_command": "/bin/sh -c '/bin/ls /state/rename-mount/cycle'",
+        "exit": 0,
+        "output": "branch/\n"
+      },
+      {
+        "command": "/bin/ls /state/rename-mount/cycle/branch",
+        "transport_command": "/bin/sh -c '/bin/ls /state/rename-mount/cycle/branch'",
+        "exit": 0,
+        "output": "leaf\n"
+      },
+      {
+        "command": "/bin/mkdir /state/rename-mount/length",
+        "transport_command": "/bin/sh -c '/bin/mkdir /state/rename-mount/length'",
+        "exit": 0,
+        "output": ""
+      },
+      {
+        "command": "/bin/mkdir /state/rename-mount/length/branch",
+        "transport_command": "/bin/sh -c '/bin/mkdir /state/rename-mount/length/branch'",
+        "exit": 0,
+        "output": ""
+      },
+      {
+        "command": "/bin/echo first-child > /state/rename-mount/length/short",
+        "transport_command": "/bin/sh -c '/bin/echo first-child > /state/rename-mount/length/short'",
+        "exit": 0,
+        "output": ""
+      },
+      {
+        "command": "/bin/cat /state/rename-mount/length/short",
+        "transport_command": "/bin/sh -c '/bin/cat /state/rename-mount/length/short'",
+        "exit": 0,
+        "output": "first-child\n"
+      },
+      {
+        "command": "/bin/echo last-child > /state/rename-mount/length/branch/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "transport_command": "/bin/sh -c '/bin/echo last-child > /state/rename-mount/length/branch/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'",
+        "exit": 0,
+        "output": ""
+      },
+      {
+        "command": "/bin/cat /state/rename-mount/length/branch/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "transport_command": "/bin/sh -c '/bin/cat /state/rename-mount/length/branch/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'",
+        "exit": 0,
+        "output": "last-child\n"
+      },
+      {
+        "command": "/bin/mv /state/rename-mount/length /state/rename-mount/destination/long-directory-name",
+        "transport_command": "/bin/sh -c '/bin/mv /state/rename-mount/length /state/rename-mount/destination/long-directory-name'",
+        "exit": 1,
+        "output": ""
+      },
+      {
+        "command": "/bin/ls /state/rename-mount/length",
+        "transport_command": "/bin/sh -c '/bin/ls /state/rename-mount/length'",
+        "exit": 0,
+        "output": "branch/\nshort\n"
+      },
+      {
+        "command": "/bin/cat /state/rename-mount/length/short",
+        "transport_command": "/bin/sh -c '/bin/cat /state/rename-mount/length/short'",
+        "exit": 0,
+        "output": "first-child\n"
+      },
+      {
+        "command": "/bin/cat /state/rename-mount/length/branch/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "transport_command": "/bin/sh -c '/bin/cat /state/rename-mount/length/branch/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'",
+        "exit": 0,
+        "output": "last-child\n"
+      },
+      {
+        "command": "/bin/ls /state/rename-mount/destination",
+        "transport_command": "/bin/sh -c '/bin/ls /state/rename-mount/destination'",
+        "exit": 0,
+        "output": ""
+      },
+      {
+        "command": "/bin/mv /state/rename-mount/length /state/rename-mount/destination/short",
+        "transport_command": "/bin/sh -c '/bin/mv /state/rename-mount/length /state/rename-mount/destination/short'",
+        "exit": 0,
+        "output": ""
+      },
+      {
+        "command": "/bin/cat /state/rename-mount/destination/short/branch/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "transport_command": "/bin/sh -c '/bin/cat /state/rename-mount/destination/short/branch/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'",
+        "exit": 0,
+        "output": "last-child\n"
+      },
+      {
+        "command": "/bin/cat /state/rename-mount/destination/short/short",
+        "transport_command": "/bin/sh -c '/bin/cat /state/rename-mount/destination/short/short'",
+        "exit": 0,
+        "output": "first-child\n"
+      }
+    ],
+    "checks": [
+      {
+        "name": "create private mount point",
+        "passed": true,
+        "command_index": 0,
+        "expected": {
+          "exit": "zero"
+        }
+      },
+      {
+        "name": "write RAMFS mount request",
+        "passed": true,
+        "command_index": 1,
+        "expected": {
+          "exit": "zero"
+        }
+      },
+      {
+        "name": "control node confirms RAMFS mount",
+        "passed": true,
+        "command_index": 2,
+        "expected": {
+          "exit": "zero",
+          "output": "ok mounted ramfs rename at /state/rename-mount\n"
+        }
+      },
+      {
+        "name": "mount table is readable",
+        "passed": true,
+        "command_index": 3,
+        "expected": {
+          "exit": "zero"
+        }
+      },
+      {
+        "name": "mount table contains this RAMFS instance",
+        "passed": true,
+        "command_index": 3,
+        "expected": {
+          "line": "rename /state/rename-mount"
+        }
+      },
+      {
+        "name": "new RAMFS root is empty",
+        "passed": true,
+        "command_index": 4,
+        "expected": {
+          "exit": "zero",
+          "entries": []
+        }
+      },
+      {
+        "name": "create fixture directory /tree",
+        "passed": true,
+        "command_index": 5,
+        "expected": {
+          "exit": "zero"
+        }
+      },
+      {
+        "name": "create fixture directory /tree/branch",
+        "passed": true,
+        "command_index": 6,
+        "expected": {
+          "exit": "zero"
+        }
+      },
+      {
+        "name": "create fixture directory /tree/empty",
+        "passed": true,
+        "command_index": 7,
+        "expected": {
+          "exit": "zero"
+        }
+      },
+      {
+        "name": "create fixture directory /treeish",
+        "passed": true,
+        "command_index": 8,
+        "expected": {
+          "exit": "zero"
+        }
+      },
+      {
+        "name": "create fixture directory /destination",
+        "passed": true,
+        "command_index": 9,
+        "expected": {
+          "exit": "zero"
+        }
+      },
+      {
+        "name": "write fixture file /tree/direct",
+        "passed": true,
+        "command_index": 10,
+        "expected": {
+          "exit": "zero"
+        }
+      },
+      {
+        "name": "verify fixture bytes /tree/direct",
+        "passed": true,
+        "command_index": 11,
+        "expected": {
+          "exit": "zero",
+          "output": "direct-bytes\n"
+        }
+      },
+      {
+        "name": "write fixture file /tree/branch/leaf",
+        "passed": true,
+        "command_index": 12,
+        "expected": {
+          "exit": "zero"
+        }
+      },
+      {
+        "name": "verify fixture bytes /tree/branch/leaf",
+        "passed": true,
+        "command_index": 13,
+        "expected": {
+          "exit": "zero",
+          "output": "nested-bytes\n"
+        }
+      },
+      {
+        "name": "write fixture file /treeish/leaf",
+        "passed": true,
+        "command_index": 14,
+        "expected": {
+          "exit": "zero"
+        }
+      },
+      {
+        "name": "verify fixture bytes /treeish/leaf",
+        "passed": true,
+        "command_index": 15,
+        "expected": {
+          "exit": "zero",
+          "output": "bystander-bytes\n"
+        }
+      },
+      {
+        "name": "populated directory rename succeeds",
+        "passed": true,
+        "command_index": 16,
+        "expected": {
+          "exit": "zero"
+        }
+      },
+      {
+        "name": "new directory enumerates every child",
+        "passed": true,
+        "command_index": 17,
+        "expected": {
+          "exit": "zero",
+          "entries": [
+            "branch/",
+            "empty/",
+            "direct"
+          ]
+        }
+      },
+      {
+        "name": "nested directory remains enumerable",
+        "passed": true,
+        "command_index": 18,
+        "expected": {
+          "exit": "zero",
+          "entries": [
+            "leaf"
+          ]
+        }
+      },
+      {
+        "name": "empty descendant remains a directory",
+        "passed": true,
+        "command_index": 19,
+        "expected": {
+          "exit": "zero",
+          "entries": []
+        }
+      },
+      {
+        "name": "direct child bytes survive rename",
+        "passed": true,
+        "command_index": 20,
+        "expected": {
+          "exit": "zero",
+          "output": "direct-bytes\n"
+        }
+      },
+      {
+        "name": "nested child bytes survive rename",
+        "passed": true,
+        "command_index": 21,
+        "expected": {
+          "exit": "zero",
+          "output": "nested-bytes\n"
+        }
+      },
+      {
+        "name": "old directory is absent",
+        "passed": true,
+        "command_index": 22,
+        "expected": {
+          "exit": "nonzero"
+        }
+      },
+      {
+        "name": "old direct file is absent",
+        "passed": true,
+        "command_index": 23,
+        "expected": {
+          "exit": "nonzero"
+        }
+      },
+      {
+        "name": "old nested file is absent",
+        "passed": true,
+        "command_index": 24,
+        "expected": {
+          "exit": "nonzero"
+        }
+      },
+      {
+        "name": "prefix sibling stays unchanged",
+        "passed": true,
+        "command_index": 25,
+        "expected": {
+          "exit": "zero",
+          "output": "bystander-bytes\n"
+        }
+      },
+      {
+        "name": "shorter-prefix rename succeeds",
+        "passed": true,
+        "command_index": 26,
+        "expected": {
+          "exit": "zero"
+        }
+      },
+      {
+        "name": "shorter-prefix rename keeps nested bytes",
+        "passed": true,
+        "command_index": 27,
+        "expected": {
+          "exit": "zero",
+          "output": "nested-bytes\n"
+        }
+      },
+      {
+        "name": "shorter-prefix rename keeps children",
+        "passed": true,
+        "command_index": 28,
+        "expected": {
+          "exit": "zero",
+          "entries": [
+            "branch/",
+            "empty/",
+            "direct"
+          ]
+        }
+      },
+      {
+        "name": "create fixture directory /cycle",
+        "passed": true,
+        "command_index": 29,
+        "expected": {
+          "exit": "zero"
+        }
+      },
+      {
+        "name": "create fixture directory /cycle/branch",
+        "passed": true,
+        "command_index": 30,
+        "expected": {
+          "exit": "zero"
+        }
+      },
+      {
+        "name": "write fixture file /cycle/branch/leaf",
+        "passed": true,
+        "command_index": 31,
+        "expected": {
+          "exit": "zero"
+        }
+      },
+      {
+        "name": "verify fixture bytes /cycle/branch/leaf",
+        "passed": true,
+        "command_index": 32,
+        "expected": {
+          "exit": "zero",
+          "output": "cycle-kept\n"
+        }
+      },
+      {
+        "name": "move into own descendant is refused",
+        "passed": true,
+        "command_index": 33,
+        "expected": {
+          "exit": "nonzero"
+        }
+      },
+      {
+        "name": "cycle refusal preserves bytes",
+        "passed": true,
+        "command_index": 34,
+        "expected": {
+          "exit": "zero",
+          "output": "cycle-kept\n"
+        }
+      },
+      {
+        "name": "cycle refusal preserves source directory",
+        "passed": true,
+        "command_index": 35,
+        "expected": {
+          "exit": "zero",
+          "entries": [
+            "branch/"
+          ]
+        }
+      },
+      {
+        "name": "cycle refusal creates no new child",
+        "passed": true,
+        "command_index": 36,
+        "expected": {
+          "exit": "zero",
+          "entries": [
+            "leaf"
+          ]
+        }
+      },
+      {
+        "name": "create fixture directory /length",
+        "passed": true,
+        "command_index": 37,
+        "expected": {
+          "exit": "zero"
+        }
+      },
+      {
+        "name": "create fixture directory /length/branch",
+        "passed": true,
+        "command_index": 38,
+        "expected": {
+          "exit": "zero"
+        }
+      },
+      {
+        "name": "write fixture file /length/short",
+        "passed": true,
+        "command_index": 39,
+        "expected": {
+          "exit": "zero"
+        }
+      },
+      {
+        "name": "verify fixture bytes /length/short",
+        "passed": true,
+        "command_index": 40,
+        "expected": {
+          "exit": "zero",
+          "output": "first-child\n"
+        }
+      },
+      {
+        "name": "write fixture file /length/branch/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "passed": true,
+        "command_index": 41,
+        "expected": {
+          "exit": "zero"
+        }
+      },
+      {
+        "name": "verify fixture bytes /length/branch/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "passed": true,
+        "command_index": 42,
+        "expected": {
+          "exit": "zero",
+          "output": "last-child\n"
+        }
+      },
+      {
+        "name": "overlong descendant refuses the whole rename",
+        "passed": true,
+        "command_index": 43,
+        "expected": {
+          "exit": "nonzero"
+        }
+      },
+      {
+        "name": "length refusal preserves original enumeration",
+        "passed": true,
+        "command_index": 44,
+        "expected": {
+          "exit": "zero",
+          "entries": [
+            "branch/",
+            "short"
+          ]
+        }
+      },
+      {
+        "name": "length refusal keeps earlier child",
+        "passed": true,
+        "command_index": 45,
+        "expected": {
+          "exit": "zero",
+          "output": "first-child\n"
+        }
+      },
+      {
+        "name": "length refusal keeps longest child",
+        "passed": true,
+        "command_index": 46,
+        "expected": {
+          "exit": "zero",
+          "output": "last-child\n"
+        }
+      },
+      {
+        "name": "length refusal leaves target parent empty",
+        "passed": true,
+        "command_index": 47,
+        "expected": {
+          "exit": "zero",
+          "entries": []
+        }
+      },
+      {
+        "name": "shorter destination fits every child",
+        "passed": true,
+        "command_index": 48,
+        "expected": {
+          "exit": "zero"
+        }
+      },
+      {
+        "name": "fitting rename preserves longest child",
+        "passed": true,
+        "command_index": 49,
+        "expected": {
+          "exit": "zero",
+          "output": "last-child\n"
+        }
+      },
+      {
+        "name": "fitting rename preserves earlier child",
+        "passed": true,
+        "command_index": 50,
+        "expected": {
+          "exit": "zero",
+          "output": "first-child\n"
+        }
+      }
+    ],
+    "environment_ok": true,
+    "complete": true,
+    "passed": true,
+    "failed_checks": []
+  },
+  "source_artifacts_unchanged": true,
+  "guest_stopped": true
+}
