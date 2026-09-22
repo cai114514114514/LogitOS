@@ -24,7 +24,7 @@
 #                         or coming up blank.
 
 CH_SRC   := c/apps/gui/ch/ch.c c/apps/gui/ch/ch_sse.c
-CH_HDR   := c/apps/gui/ch/ch_sse.h
+CH_OBJ   := $(patsubst c/apps/gui/ch/%.c,$(BUILD)/apps/%.o,$(CH_SRC))
 CH_AEX   := $(BUILD)/ch.aex
 CH_H1OBJ := $(BUILD)/r3netobj/c/net/http/http1.o
 
@@ -54,15 +54,20 @@ CH_PACK := $(CH_AEX):/bin/ch.aex c/apps/gui/ch/ai.conf.example:/etc/ai.conf.exam
 # 0x44000000 is the link base. Every GUI app gets a distinct one inside the
 # private user region 0x40000000-0x7FFFFFFF; 0x44 was the one gap left between
 # terminal (0x43) and browser (0x45).
-$(BUILD)/ch.elf: $(CH_SRC) $(CH_HDR) $(APPDIR)/crt0.asm $(APPDIR)/logit.h \
-                 $(GUIDIR)/aui.h c/net/http/http1.h \
+# These objects used to be side effects of ch.elf's link recipe: updating an
+# HTTP or graphics object therefore compiled both Chat sources again. Real
+# targets let the compiler's .d files own header edges; the product missing-.d
+# guard recovers old objects that predate that dependency information.
+$(CH_OBJ): $(BUILD)/apps/%.o: c/apps/gui/ch/%.c
+	@mkdir -p $(dir $@)
+	$(COMPILE) $(UCFLAGS) -c $< -o $@
+
+$(BUILD)/ch.elf: $(CH_OBJ) $(APPDIR)/crt0.asm \
                  $(BUILD)/apps/aui.o $(GFX_OBJ) $(CH_H1OBJ) $(LIBC_OBJS)
 	@mkdir -p $(BUILD)/apps
 	$(ASM) -f elf64 $(APPDIR)/crt0.asm -o $(BUILD)/apps/ch.crt0.o
-	$(CC) $(UCFLAGS) -c c/apps/gui/ch/ch.c     -o $(BUILD)/apps/ch.o
-	$(CC) $(UCFLAGS) -c c/apps/gui/ch/ch_sse.c -o $(BUILD)/apps/ch_sse.o
 	$(LD) -nostdlib -e _start -Ttext=0x44000000 -o $@ --start-group \
-	    $(BUILD)/apps/ch.crt0.o $(BUILD)/apps/ch.o $(BUILD)/apps/ch_sse.o \
+	    $(BUILD)/apps/ch.crt0.o $(CH_OBJ) \
 	    $(BUILD)/apps/aui.o $(GFX_OBJ) $(CH_H1OBJ) $(LIBC_OBJS) --end-group
 
 $(CH_AEX): $(BUILD)/ch.elf tools/mkaex.py

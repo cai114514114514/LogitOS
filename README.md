@@ -297,6 +297,10 @@ make debug           # boot frozen with a gdb stub on localhost:1234
 make clean
 ```
 
+For parallel builds, persistent compiler caching, and incremental-build checks,
+see [Building LogitOS](docs/BUILDING.md). GNU Make 4.4+ automatically parallelizes
+ordinary product builds; older Make versions support an explicit `-j12`.
+
 Tests (headless, asserted over serial unless noted):
 
 ```sh

@@ -53,15 +53,10 @@ test-image-intrinsic-asan: test-image-intrinsic-negctl test-image-self-negctl
 ci-host: test-image-intrinsic
 
 # Guest integration control: keep decoded sizing but remove its frame/CSSOM
-# invalidation consumer. Track the switch as an object prerequisite so returning
-# to an ordinary disk build cannot silently retain the disabled consumer.
-.PHONY: image-geometry-flags-force
-$(BUILD)/image-geometry.flags: image-geometry-flags-force
-	@mkdir -p $(dir $@)
-	@echo '$(if $(filter 1,$(BROWSER_IMAGE_GEOMETRY_NEGCTL)),off,on)' > $@.tmp
-	@cmp -s $@.tmp $@ || cp $@.tmp $@
-	@rm -f $@.tmp
-$(BUILD)/jsobj/c/apps/gui/browser/app/main.o: $(BUILD)/image-geometry.flags
+# invalidation consumer. The old phony/cmp flags file tracked this switch but
+# made dry runs assume a rebuild on every invocation. The image-geometry domain
+# in tools/build/variants.mk now preserves the same on/off provenance, including
+# interrupted and same-second rebuilds, without touching files during make -n.
 $(BUILD)/jsobj/c/apps/gui/browser/app/main.o: JS_CF += $(if $(filter 1,$(BROWSER_IMAGE_GEOMETRY_NEGCTL)),-DBROWSER_IMAGE_GEOMETRY_NO_FLUSH,)
 
 # Native integration needs immutable positive/control disks supplied explicitly;

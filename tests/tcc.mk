@@ -81,7 +81,7 @@ $(TCC_OUT)/config.h:
 # 2017 GNU C and its warnings are upstream's to fix.
 $(TCC_OUT)/obj/%.o: $(TCC_SRCDIR)/%.c $(TCC_HDRS) $(TCC_OUT)/config.h
 	@mkdir -p $(dir $@)
-	$(CC) -I$(TCC_SRCDIR) -I$(TCC_OUT) $(UCFLAGS) -std=gnu11 -w -DONE_SOURCE=0 \
+	$(COMPILE) -I$(TCC_SRCDIR) -I$(TCC_OUT) $(UCFLAGS) -std=gnu11 -w -DONE_SOURCE=0 \
 	    $(TCC_LOGIT_DEFS) -c $< -o $@
 
 $(TCC_OUT)/crt0_cli.o: $(APPDIR)/crt0_cli.asm

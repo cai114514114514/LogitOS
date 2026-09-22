@@ -25,6 +25,8 @@ compile_commands.json
 # conv.pl, make-aliases.pl, Aliases) -- exempt them from the global build/ rule.
 !third_party/css/libcss/build/
 !third_party/css/libparserutils/build/
+# Build-system source, not generated output.
+!tools/build/
 
 # Wallpaper (Apple Desktop Picture; regenerate via tools/mkwallpaper.sh)
 fsroot/wallpaper.png

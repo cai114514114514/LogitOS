@@ -5,9 +5,9 @@
 # when a moved source retains an older mtime than the previous object.
 CLOCK_UI_OBJ := $(addprefix $(BUILD)/apps/gui/clock/,main.o model.o dial.o view.o layout.o motion.o)
 CLOCK_UI_HEADERS := $(wildcard c/apps/gui/clock/*.h) c/apps/gui/aui.h c/apps/gui/openlogit_window.h
-$(BUILD)/apps/gui/clock/%.o: c/apps/gui/clock/%.c $(CLOCK_UI_HEADERS) $(GFX_HEADERS)
+$(BUILD)/apps/gui/clock/%.o: c/apps/gui/clock/%.c
 	@mkdir -p $(dir $@)
-	$(CC) $(UCFLAGS) -c $< -o $@
+	$(COMPILE) $(UCFLAGS) -c $< -o $@
 $(BUILD)/clock.elf: $(CLOCK_UI_OBJ) $(BUILD)/apps/aui.o $(GFX_OBJ) c/apps/crt0.asm tests/clock_ui.mk
 	$(ASM) -f elf64 c/apps/crt0.asm -o $(BUILD)/apps/clock.crt0.o
 	$(LD) -nostdlib -e _start -Ttext=0x40000000 -o $@ $(BUILD)/apps/clock.crt0.o $(CLOCK_UI_OBJ) $(BUILD)/apps/aui.o $(GFX_OBJ)

@@ -1,0 +1,80 @@
+build-incremental: compiled 13 real objects and depfiles
+build-incremental negative control: browser-wide headers: c/apps/gui/browser/html/entities.inc: compile set differs; extra=['browserobj/c/apps/gui/browser/html/tree.o', 'browserobj/c/apps/gui/browser/layout/block.o', 'jsobj/c/apps/gui/browser/js/style/cssom.o']; missing=[]
+build-incremental negative control: AS headers on libc: c/apps/as/common/numeric.h: compile set differs; extra=['asobj/c/apps/libc/src/string.o']; missing=[]
+build-incremental negative control: GFX-wide headers: c/lib/gfx/adapters/display_pixels.h: compile set differs; extra=['apps/gfx_geometry/gfx_math.o']; missing=[]
+build-incremental negative control: Studio-wide headers: c/apps/gui/studio/core/runner.h: compile set differs; extra=['apps/gui/studio/core/document.o']; missing=[]
+build-incremental negative control: inline application compile: library-only update: compile set differs; extra=['apps/preview.o', 'apps/studio.o', 'apps/terminal.o']; missing=[]
+build-incremental: compiled 13 real objects and depfiles
+build-incremental: c/apps/gui/browser/html/entities.inc: 1 sampled consumers
+build-incremental: c/apps/gui/browser/layout/block.h: 2 sampled consumers
+build-incremental: c/apps/as/common/numeric.h: 1 sampled consumers
+build-incremental: c/lib/gfx/adapters/display_pixels.h: 1 sampled consumers
+build-incremental: c/apps/gui/studio/core/runner.h: 2 sampled consumers
+build-incremental: PASS: selective headers; three library-only links; source/header edits compile and link; missing depfile recovered
+config control (GNU Make 3.81): FAIL: kernel flag change kept stale object
+config control (GNU Make 4.4.1): FAIL: kernel flag change kept stale object
+config (GNU Make 3.81): flags, compiler, quoting, idle, partial builds and failure recovery pass
+config (GNU Make 4.4.1): flags, compiler, quoting, idle, partial builds and failure recovery pass
+config: shared outputs survive Make switching; independent empty slots remain distinct
+python3 tests/tools/make/jobs.py --negative
+NEGATIVE CONTROL observed failure: broken default: expected peak 3, got {'active': 0, 'peak': 1}
+python3 tests/tools/make/jobs.py
+PASS gmake: product default (peak 12)
+PASS gmake: product all (peak 12)
+PASS gmake: product run (peak 12)
+PASS gmake: product product.iso (peak 12)
+PASS gmake: product disk.img (peak 12)
+PASS gmake: product all run (peak 12)
+PASS gmake: JOBS override (peak 3)
+PASS gmake: environment JOBS (peak 4)
+PASS gmake: explicit -j1 JOBS=5 (peak 1)
+PASS gmake: explicit -j2 (peak 2)
+PASS gmake: explicit -j (peak 16)
+PASS gmake: explicit --jobs=3 (peak 3)
+PASS gmake: explicit -sj2 (peak 2)
+PASS gmake: MAKEFLAGS=-j1 (peak 1)
+PASS gmake: MAKEFLAGS=-j 3 (peak 3)
+PASS gmake: MAKEFLAGS=--jobs=2 (peak 2)
+PASS gmake: command-line MAKEFLAGS (peak 1)
+PASS gmake: non-job MAKEFLAGS retained (peak 12)
+PASS gmake: test stays serial (peak 1)
+PASS gmake: mixed goals stay serial (peak 1)
+PASS gmake: recursive serial parent (peak 1)
+PASS gmake: recursive shared pool (peak 3)
+PASS make: product default (peak 1)
+PASS make: product all (peak 1)
+PASS make: product run (peak 1)
+PASS make: product product.iso (peak 1)
+PASS make: product disk.img (peak 1)
+PASS make: product all run (peak 1)
+PASS make: JOBS override (peak 1)
+PASS make: environment JOBS (peak 1)
+PASS make: explicit -j1 JOBS=5 (peak 1)
+PASS make: explicit -j2 (peak 2)
+PASS make: explicit -j (peak 16)
+PASS make: explicit --jobs=3 (peak 3)
+PASS make: explicit -sj2 (peak 2)
+PASS make: MAKEFLAGS=-j1 (peak 1)
+PASS make: MAKEFLAGS=-j 3 (peak 3)
+PASS make: MAKEFLAGS=--jobs=2 (peak 2)
+PASS make: command-line MAKEFLAGS (peak 1)
+PASS make: non-job MAKEFLAGS retained (peak 1)
+PASS make: test stays serial (peak 1)
+PASS make: mixed goals stay serial (peak 1)
+PASS make: recursive serial parent (peak 1)
+PASS make: recursive shared pool (peak 3)
+test_ci_and_control_inventories (__main__.NestedMakeTests.test_ci_and_control_inventories) ... ok
+test_comment_recipe_and_partial_filename_are_not_edges (__main__.NestedMakeTests.test_comment_recipe_and_partial_filename_are_not_edges) ... ok
+test_continuations_multiple_paths_comments_and_cycle (__main__.NestedMakeTests.test_continuations_multiple_paths_comments_and_cycle) ... ok
+test_declared_exception_is_path_specific (__main__.NestedMakeTests.test_declared_exception_is_path_specific) ... ok
+test_missing_then_restored_edge (__main__.NestedMakeTests.test_missing_then_restored_edge) ... ok
+test_nested_link_prerequisites_are_checked (__main__.NestedMakeTests.test_nested_link_prerequisites_are_checked) ... ok
+test_same_leaf_is_not_same_fragment (__main__.NestedMakeTests.test_same_leaf_is_not_same_fragment) ... ok
+
+----------------------------------------------------------------------
+Ran 7 tests in 0.050s
+
+OK
+negative control: nested fragment without include is UNREACHABLE
+mk-wired: ok (390 fragments, 389 reachable from the Makefile, 1 declared)
+  declared: tests/schedneg.mk -- a `make -f` wrapper that includes the Makefile itself; including it back would recurse (see its own header)

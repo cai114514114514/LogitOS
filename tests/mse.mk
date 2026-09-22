@@ -243,7 +243,7 @@ test-mse-nocard-negctl: $(MSE_DEPS) $(MSE_IMG_SRC) $(BUILD)/mse_kshim.c \
 # arena allocator, -ffreestanding -msse2, a 32 KiB stack, and a real sound card.
 $(BUILD)/mseobj/%.o: %.c $(MSE_HDRS)
 	@mkdir -p $(dir $@)
-	$(CC) $(UCFLAGS) -c $< -o $@
+	$(COMPILE) $(UCFLAGS) -c $< -o $@
 
 MSECHK_OBJ := $(BUILD)/mseobj/c/apps/gui/browser/js/media/media_src.o \
               $(BUILD)/mseobj/tests/guest/media/msecheck.o

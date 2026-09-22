@@ -1,0 +1,54 @@
+{
+  "JS_INSTALL_PROFILE": {
+    "objects": 35,
+    "outputs": [
+      "build-fast/browserobj/c/apps/gui/browser/frame/passive.o",
+      "build-fast/jsobj/c/apps/gui/browser/app/main.o",
+      "build-fast/jsobj/c/apps/gui/browser/js/crypto/subtle.o",
+      "build-fast/jsobj/c/apps/gui/browser/js/dom/characterdata.o",
+      "build-fast/jsobj/c/apps/gui/browser/js/dom/dom.o",
+      "build-fast/jsobj/c/apps/gui/browser/js/dom/domparser.o",
+      "build-fast/jsobj/c/apps/gui/browser/js/dom/events.o",
+      "build-fast/jsobj/c/apps/gui/browser/js/dom/forms.o",
+      "build-fast/jsobj/c/apps/gui/browser/js/dom/frame.o",
+      "build-fast/jsobj/c/apps/gui/browser/js/dom/reflect.o",
+      "build-fast/jsobj/c/apps/gui/browser/js/dom/select.o",
+      "build-fast/jsobj/c/apps/gui/browser/js/dom/semantics.o",
+      "build-fast/jsobj/c/apps/gui/browser/js/dom/tokenlist.o",
+      "build-fast/jsobj/c/apps/gui/browser/js/graphics/canvas.o",
+      "build-fast/jsobj/c/apps/gui/browser/js/media/media.o",
+      "build-fast/jsobj/c/apps/gui/browser/js/media/media_src.o",
+      "build-fast/jsobj/c/apps/gui/browser/js/net/download.o",
+      "build-fast/jsobj/c/apps/gui/browser/js/net/url.o",
+      "build-fast/jsobj/c/apps/gui/browser/js/net/urlbind.o",
+      "build-fast/jsobj/c/apps/gui/browser/js/net/websocket.o",
+      "build-fast/jsobj/c/apps/gui/browser/js/runtime/devtools.o",
+      "build-fast/jsobj/c/apps/gui/browser/js/runtime/module.o",
+      "build-fast/jsobj/c/apps/gui/browser/js/runtime/page.o",
+      "build-fast/jsobj/c/apps/gui/browser/js/runtime/platform.o",
+      "build-fast/jsobj/c/apps/gui/browser/js/runtime/stall.o",
+      "build-fast/jsobj/c/apps/gui/browser/js/runtime/webapi.o",
+      "build-fast/jsobj/c/apps/gui/browser/js/storage/cache.o",
+      "build-fast/jsobj/c/apps/gui/browser/js/storage/idb.o",
+      "build-fast/jsobj/c/apps/gui/browser/js/storage/swreg.o",
+      "build-fast/jsobj/c/apps/gui/browser/js/style/anim.o",
+      "build-fast/jsobj/c/apps/gui/browser/js/style/cssom.o",
+      "build-fast/jsobj/c/apps/gui/browser/js/text/intl.o",
+      "build-fast/jsobj/c/apps/gui/browser/js/wasm/wasm.o",
+      "build-fast/jsobj/c/apps/gui/browser/js/workers/ports.o",
+      "build-fast/jsobj/c/apps/gui/browser/js/workers/worker.o"
+    ]
+  },
+  "BROWSER_TRACE_VISIBILITY": {
+    "objects": 1,
+    "outputs": [
+      "build-fast/jsobj/c/apps/gui/browser/js/dom/dom.o"
+    ]
+  },
+  "BROWSER_IMAGE_GEOMETRY_NEGCTL": {
+    "objects": 1,
+    "outputs": [
+      "build-fast/jsobj/c/apps/gui/browser/app/main.o"
+    ]
+  }
+}

@@ -15,6 +15,7 @@
 
 ARCH        := x86_64
 BUILD       := build
+.DEFAULT_GOAL := all
 
 # The CommandLineTools 27.0 upgrade ships a libSystem.tbd whose format the
 # ld.lld in the same toolchain cannot parse ("unknown architecture
@@ -30,6 +31,7 @@ ISO_DIR     := $(BUILD)/iso
 KERNEL      := $(BUILD)/kernel.elf
 ISO         := $(BUILD)/logit.iso
 DISK        := $(BUILD)/disk.img
+include tools/build/jobs.mk
 # EVERY fsroot ENTRY NAMES ITS DESTINATION. This was
 #     FS_FILES := $(filter-out fsroot/fonts fsroot/as,$(wildcard fsroot/*))
 # and the wildcard is what made the device root untidy, not the files in it:
@@ -134,6 +136,8 @@ LD          := ld.lld
 ASM         := nasm
 GRUB_RESCUE := i686-elf-grub-mkrescue
 QEMU        := qemu-system-x86_64
+
+include tools/build/cache.mk
 
 # Colocated headers resolve via -I across every source dir. That works only
 # while header basenames are unique, and it needs the -I ORDER to be a function
@@ -253,8 +257,9 @@ CFLAGS  := --target=$(ARCH)-elf -ffreestanding -nostdlib \
            -mno-red-zone -mno-mmx -msse -msse2 \
            -std=c11 -Wall -Wextra -O2 -g -MMD -MP $(INCDIRS)
 
-# Debug knobs (objects are NOT flag-tracked: touch the affected sources or
-# `make clean` when toggling these):
+# These knobs used to require touching sources or cleaning: objects did not
+# track flags. tools/build/product.mk now tracks each product compiler domain.
+# Debug knobs:
 #   make CHURN=1   app open/close churn stress in the WM loop (freeze repro)
 #   make GROWFI=1  kheap grow() fault injection (exercise pmm-contig failure)
 ifeq ($(CHURN),1)
@@ -408,7 +413,11 @@ endif
 # UCFLAGS on the command line, which replaces the ~20 flags above rather than
 # adding to them -- so the build silently changes in ways the diagnostic had
 # nothing to do with. Empty in every ordinary build.
+# Make 3.81 appends a space for an empty +=; Make 4.4 does not. An empty
+# override must not change the configuration stamp when switching make tools.
+ifneq ($(strip $(UEXTRA)),)
 UCFLAGS += $(UEXTRA)
+endif
 
 # Kernel sources. The browser render pipeline lives in c/apps/gui/browser, not here.
 # inflate.c + png.c are excluded: ported to Rust (rust/src/{inflate,png}.rs provide
@@ -567,7 +576,7 @@ all: $(ISO)
 
 $(BUILD)/%.o: %.c
 	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -c $< -o $@
+	$(COMPILE) $(CFLAGS) -c $< -o $@
 
 # Rust no_std staticlib (kept after `all:` so it never becomes the default goal).
 $(RUST_LIB): $(RUST_SRC)
@@ -675,14 +684,14 @@ GFX_MATERIAL_SRC := c/lib/gfx/effects/openlogit_material.c \
 GFX_HEADERS := $(sort $(shell find c/lib/gfx -name '*.h'))
 GFX_INC := $(addprefix -I,$(sort $(dir $(GFX_HEADERS))))
 GFX_OBJ := $(patsubst c/lib/gfx/%.c,$(BUILD)/apps/gfx_%.o,$(GFX_SRC))
-$(BUILD)/apps/gfx_%.o: c/lib/gfx/%.c $(GFX_HEADERS)
+$(BUILD)/apps/gfx_%.o: c/lib/gfx/%.c
 	@mkdir -p $(dir $@)
-	$(CC) $(UCFLAGS) -c $< -o $@
+	$(COMPILE) $(UCFLAGS) -c $< -o $@
 
 # the aui widget toolkit (immediate-mode), compiled once + linked into every GUI app
 $(BUILD)/apps/aui.o: $(GUIDIR)/aui.c $(GUIDIR)/aui.h $(APPDIR)/logit.h c/lib/gfx/include/gfx.h
 	@mkdir -p $(BUILD)/apps
-	$(CC) $(UCFLAGS) -c $(GUIDIR)/aui.c -o $@
+	$(COMPILE) $(UCFLAGS) -c $(GUIDIR)/aui.c -o $@
 
 # The .o has its own target, and that is the whole point of the next three
 # lines. It used to be compiled as a SIDE EFFECT inside the .elf recipe, with
@@ -702,9 +711,10 @@ $(BUILD)/apps/aui.o: $(GUIDIR)/aui.c $(GUIDIR)/aui.h $(APPDIR)/logit.h c/lib/gfx
 # .d yet. Do not grow it: anything else a source includes arrives through the
 # fragment.
 define APP_RULE
+APP_OBJECTS += $(BUILD)/apps/$(1).o
 $(BUILD)/apps/$(1).o: $(GUIDIR)/$(1)/$(1).c $(APPDIR)/logit.h $(GUIDIR)/aui.h
 	@mkdir -p $(BUILD)/apps
-	$(CC) $(UCFLAGS) -c $(GUIDIR)/$(1)/$(1).c -o $(BUILD)/apps/$(1).o
+	$$(COMPILE) $$(UCFLAGS) -c $(GUIDIR)/$(1)/$(1).c -o $(BUILD)/apps/$(1).o
 $(BUILD)/$(1).elf: $(BUILD)/apps/$(1).o $(APPDIR)/crt0.asm $(BUILD)/apps/aui.o $(GFX_OBJ)
 	@mkdir -p $(BUILD)/apps
 	$(ASM) -f elf64 $(APPDIR)/crt0.asm -o $(BUILD)/apps/$(1).crt0.o
@@ -781,9 +791,9 @@ STUDIO_SRC := $(wildcard c/apps/gui/studio/core/*.c)
 # The source move must also move its object: an existing apps/studio/*.d still
 # names c/apps/studio/*.c. -MP handles removed headers, not a moved primary .c.
 STUDIO_OBJ := $(patsubst c/%.c,$(BUILD)/%.o,$(STUDIO_SRC))
-$(BUILD)/apps/gui/studio/core/%.o: c/apps/gui/studio/core/%.c $(wildcard c/apps/gui/studio/core/*.h) c/apps/as/editor/completion.h
+$(BUILD)/apps/gui/studio/core/%.o: c/apps/gui/studio/core/%.c
 	@mkdir -p $(dir $@)
-	$(CC) $(UCFLAGS) -c $< -o $@
+	$(COMPILE) $(UCFLAGS) -c $< -o $@
 $(BUILD)/apps/studio-engine.a: $(STUDIO_OBJ)
 	$(AGENT_AR) rcs $@ $(STUDIO_OBJ)
 # Keep the object path aligned with the moved source. Reusing apps/complete.o
@@ -791,16 +801,19 @@ $(BUILD)/apps/studio-engine.a: $(STUDIO_OBJ)
 # removed headers, so existing build trees would fail before recompilation.
 $(BUILD)/apps/as/editor/completion.o: c/apps/as/editor/completion.c c/apps/as/editor/completion.h
 	@mkdir -p $(dir $@)
-	$(CC) $(UCFLAGS) -c c/apps/as/editor/completion.c -o $@
+	$(COMPILE) $(UCFLAGS) -c c/apps/as/editor/completion.c -o $@
 $(BUILD)/apps/as/common/version.o: c/apps/as/common/version.c c/apps/as/common/numeric.h
 	@mkdir -p $(dir $@)
-	$(CC) $(UCFLAGS) -c $< -o $@
+	$(COMPILE) $(UCFLAGS) -c $< -o $@
 $(BUILD)/studio.elf: $(BUILD)/apps/as/common/version.o
-$(BUILD)/studio.elf: $(GUIDIR)/studio/studio.c $(APPDIR)/crt0.asm $(APPDIR)/logit.h $(GUIDIR)/aui.h $(BUILD)/apps/aui.o $(GFX_OBJ) $(BUILD)/apps/studio-engine.a $(BUILD)/apps/as/editor/completion.o c/apps/gui/studio/core/engine.h $(wildcard c/apps/gui/studio/core/studio_*.inc)
+# Compiling inside the link recipe used to rebuild studio.c whenever a shared
+# library changed, and left studio.d attached to an object with no recipe.
+# Separate targets let make schedule compilation early and use its real .d.
+$(BUILD)/apps/studio.o: $(GUIDIR)/studio/studio.c
 	@mkdir -p $(BUILD)/apps
-	$(ASM) -f elf64 $(APPDIR)/crt0.asm -o $(BUILD)/apps/studio.crt0.o
-	$(CC) $(UCFLAGS) -c $(GUIDIR)/studio/studio.c -o $(BUILD)/apps/studio.o -Ic/apps/as
-	$(LD) -nostdlib -e _start -Ttext=0x49000000 -o $@ $(BUILD)/apps/studio.crt0.o $(BUILD)/apps/studio.o $(BUILD)/apps/aui.o $(GFX_OBJ) $(BUILD)/apps/studio-engine.a $(BUILD)/apps/as/editor/completion.o $(BUILD)/apps/as/common/version.o
+	$(COMPILE) $(UCFLAGS) -c $< -o $@ -Ic/apps/as
+$(BUILD)/studio.elf: $(BUILD)/apps/studio.o $(BUILD)/apps/crt0.o $(BUILD)/apps/aui.o $(GFX_OBJ) $(BUILD)/apps/studio-engine.a $(BUILD)/apps/as/editor/completion.o
+	$(LD) -nostdlib -e _start -Ttext=0x49000000 -o $@ $(BUILD)/apps/crt0.o $(BUILD)/apps/studio.o $(BUILD)/apps/aui.o $(GFX_OBJ) $(BUILD)/apps/studio-engine.a $(BUILD)/apps/as/editor/completion.o $(BUILD)/apps/as/common/version.o
 $(BUILD)/studio.aex: $(BUILD)/studio.elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/studio.elf $@ 'Code Studio' as '{' 200 160 250
 
@@ -904,7 +917,7 @@ CLI_EXTRA_net := $(NET_CLI_OBJ)
 CLI_LINK_net := --gc-sections
 $(BUILD)/netcliobj/%.o: %.c
 	@mkdir -p $(dir $@)
-	$(CC) $(UCFLAGS) -ffunction-sections -fdata-sections -c $< -o $@
+	$(COMPILE) $(UCFLAGS) -ffunction-sections -fdata-sections -c $< -o $@
 
 # Same split as APP_RULE above and for the same reason -- the .o is a target
 # rather than a side effect, so build/apps/$(1).cli.d is attached to something
@@ -929,9 +942,10 @@ cli_source = $(or $(CLI_SOURCE_$(1)),$(CLIDIR)/$(1).c)
 cli_object = $(if $(CLI_SOURCE_$(1)),$(patsubst %.c,$(BUILD)/cliobj/%.o,$(call cli_source,$(1))),$(BUILD)/apps/$(1).cli.o)
 
 define CLI_RULE
+CLI_OBJECTS += $(call cli_object,$(1))
 $(call cli_object,$(1)): $(call cli_source,$(1)) $(APPDIR)/clib.h
 	@mkdir -p $$(dir $$@)
-	$(CC) $(UCFLAGS) -c $(call cli_source,$(1)) -o $$@
+	$$(COMPILE) $$(UCFLAGS) -c $(call cli_source,$(1)) -o $$@
 $(BUILD)/$(1).elf: $(call cli_object,$(1)) $(APPDIR)/crt0_cli.asm $(CLI_EXTRA_$(1))
 	@mkdir -p $(BUILD)/apps
 	$(ASM) -f elf64 $(APPDIR)/crt0_cli.asm -o $(BUILD)/apps/$(1).crt0c.o
@@ -959,7 +973,7 @@ PKGV_OBJ  := $(patsubst %.c,$(BUILD)/pkgvobj/%.o,$(PKGV_CSRC))
 
 $(BUILD)/pkgvobj/%.o: %.c
 	@mkdir -p $(dir $@)
-	$(CC) $(UCFLAGS) -c $< -o $@
+	$(COMPILE) $(UCFLAGS) -c $< -o $@
 
 # The generated trust set. Same gotcha as roots_bundle.inc, same fix: without
 # this dependency, regenerating the signer keys leaves the OLD ones compiled in
@@ -1028,7 +1042,7 @@ $(LOGIN_STAMP):
 
 $(BUILD)/loginobj/%.o: %.c c/apps/coreutils/accounts.h $(LOGIN_STAMP)
 	@mkdir -p $(dir $@)
-	$(CC) $(LOGIN_CFLAGS) -c $< -o $@
+	$(COMPILE) $(LOGIN_CFLAGS) -c $< -o $@
 
 $(BUILD)/login.elf: $(LOGIN_OBJ) $(APPDIR)/crt0_cli.asm
 	@mkdir -p $(BUILD)/apps
@@ -1065,7 +1079,7 @@ GREETER_AEX  := $(BUILD)/greeter.aex
 
 $(BUILD)/greeterobj/%.o: %.c c/apps/coreutils/accounts.h c/apps/gui/aui.h $(LOGIN_STAMP)
 	@mkdir -p $(dir $@)
-	$(CC) $(LOGIN_CFLAGS) -c $< -o $@
+	$(COMPILE) $(LOGIN_CFLAGS) -c $< -o $@
 
 $(BUILD)/greeter.elf: $(GREETER_OBJ) $(APPDIR)/crt0.asm $(BUILD)/apps/aui.o $(GFX_OBJ)
 	@mkdir -p $(BUILD)/apps
@@ -1245,7 +1259,7 @@ ENGINE_OBJ  += $(patsubst %.asm,$(BUILD)/jsobj/%.o,$(LIBC_ASM))
 
 $(BUILD)/jsobj/%.o: %.c
 	@mkdir -p $(dir $@)
-	$(CC) $(JS_CF) -c $< -o $@
+	$(COMPILE) $(JS_CF) -c $< -o $@
 
 $(BUILD)/jsobj/%.o: %.asm
 	@mkdir -p $(dir $@)
@@ -1307,7 +1321,7 @@ $(BUILD)/browserobj/c/apps/gui/browser/frame/policy.o: UCFLAGS += $(JS_INC)
 
 $(BUILD)/browserobj/%.o: %.c
 	@mkdir -p $(dir $@)
-	$(CC) $(UCFLAGS) $(CSS_INC) -c $< -o $@
+	$(COMPILE) $(UCFLAGS) $(CSS_INC) -c $< -o $@
 
 # NetSurf LibCSS (+ libparserutils + libwapcaplet) + our css_engine.c adapter.
 CSS_DIR := third_party/css
@@ -1332,7 +1346,7 @@ CSS_OBJ := $(patsubst %.c,$(BUILD)/cssobj/%.o,$(CSS_SRC)) $(BUILD)/cssobj/c/apps
 
 $(BUILD)/cssobj/%.o: %.c
 	@mkdir -p $(dir $@)
-	$(CC) $(UCFLAGS) -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER $(CSS_INC) -c $< -o $@
+	$(COMPILE) $(UCFLAGS) -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER $(CSS_INC) -c $< -o $@
 
 # The app's own TUs that touch QuickJS headers, so they build with JS_CF (and
 # not with the plain browser flags, which lack -Ithird_party/quickjs).
@@ -1388,16 +1402,10 @@ BROWSER_JS_CF := $(filter-out -include features.h,$(JS_CF))
 ifeq ($(JS_INSTALL_PROFILE),1)
 BROWSER_JS_CF += -DJS_PAGE_INSTALL_PROFILE
 endif
-# Changing a diagnostic flag must rebuild its consumer even when source mtimes
-# are unchanged. Otherwise a normal release can retain the profiled object and
-# a requested profile can silently omit the measurements.
-.PHONY: browser-install-profile-force
-$(BUILD)/js-install-profile.flags: browser-install-profile-force
-	@mkdir -p $(dir $@)
-	@echo '$(if $(filter 1,$(JS_INSTALL_PROFILE)),on,off)' > $@.tmp
-	@cmp -s $@.tmp $@ || cp $@.tmp $@
-	@rm -f $@.tmp
-$(BUILD)/jsobj/c/apps/gui/browser/js/runtime/page.o: $(BUILD)/js-install-profile.flags
+# The old per-feature flags file prevented stale diagnostics, but its phony
+# prerequisite made make -n promise a rebuild even when cmp kept it unchanged.
+# The browser-js configuration domain now tracks BROWSER_JS_CF, including this
+# option, with a read-only check that also handles same-second flag changes.
 $(BROWSER_JS_OBJ): JS_CF := $(BROWSER_JS_CF)
 # The embedding loader now owns JS values, but stays a pipeline consumer:
 # platform-only host source lists derive from BROWSER_JS_SRC and deliberately
@@ -1405,23 +1413,16 @@ $(BROWSER_JS_OBJ): JS_CF := $(BROWSER_JS_CF)
 # ABI/headers without pulling the loader into those unrelated host programs.
 $(BUILD)/browserobj/c/apps/gui/browser/frame/passive.o: UCFLAGS := $(BROWSER_JS_CF)
 
-# Diagnostic provenance must not silently survive a release rebuild, nor be
-# omitted because the object was already current. Only this producer needs it.
-.PHONY: browser-visibility-trace-force
-$(BUILD)/browser-visibility-trace.flags: browser-visibility-trace-force
-	@mkdir -p $(dir $@)
-	@echo '$(if $(filter 1,$(BROWSER_TRACE_VISIBILITY)),on,off)' > $@.tmp
-	@cmp -s $@.tmp $@ || cp $@.tmp $@
-	@rm -f $@.tmp
-$(BUILD)/jsobj/c/apps/gui/browser/js/dom/dom.o: $(BUILD)/browser-visibility-trace.flags
+# The browser-visibility configuration domain tracks both on and off states;
+# only this producer uses the diagnostic define.
 $(BUILD)/jsobj/c/apps/gui/browser/js/dom/dom.o: JS_CF += $(if $(filter 1,$(BROWSER_TRACE_VISIBILITY)),-DBROWSER_TRACE_VISIBILITY,)
 
-# Browser modules share DOM/display-list layouts and textually included native
-# backends. The old .c-only prerequisites could ship stale consumers after an
-# include edit (especially a changed struct item). Keep that seam authoritative
-# for the product too; host gates already name their corresponding includes.
+# The old .c-only rules could ship stale consumers after a layout/include edit.
+# An all-headers fallback fixed that, but made each of 114 headers/fragments
+# rebuild 75 product objects (2026-09-22 source inventory). Product compiles now
+# use their compiler-emitted .d, with missing-depfile recovery below. Keep the
+# broad list for host probes which compile multiple sources in one command.
 BROWSER_INTERFACE_DEPS := $(wildcard $(BROWSER_HEADERS) $(BROWSER_INCLUDES))
-$(BROWSER_OBJ) $(BROWSER_JS_OBJ) $(BUILD)/cssobj/c/apps/gui/browser/css/engine.o: $(BROWSER_INTERFACE_DEPS)
 
 $(BUILD)/browser.elf: $(ENGINE_OBJ) $(BROWSER_JS_OBJ) $(BROWSER_OBJ) $(CSS_OBJ) $(GFX_OBJ) $(RUST_LIB) $(BUILD)/apps/crt0.o $(BUILD)/browserobj/malloc_big.o
 	$(LD) -nostdlib -e _start -Ttext=0x45000000 -o $@ --start-group $(BUILD)/apps/crt0.o $(ENGINE_OBJ) $(BROWSER_JS_OBJ) $(BROWSER_OBJ) $(CSS_OBJ) $(GFX_OBJ) $(RUST_LIB) $(BUILD)/browserobj/malloc_big.o --end-group
@@ -1448,7 +1449,7 @@ $(BUILD)/browser.elf: $(ENGINE_OBJ) $(BROWSER_JS_OBJ) $(BROWSER_OBJ) $(CSS_OBJ) 
 # address space rather than 24 MiB of resident RAM.
 $(BUILD)/browserobj/malloc_big.o: c/apps/libc/src/malloc.c
 	@mkdir -p $(dir $@)
-	$(CC) $(UCFLAGS) -DARENA_SIZE=402653184u -DARENA_COMMIT=335544320u -c $< -o $@
+	$(COMPILE) $(UCFLAGS) -DARENA_SIZE=402653184u -DARENA_COMMIT=335544320u -c $< -o $@
 
 $(BUILD)/browser.aex: $(BUILD)/browser.elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/browser.elf $@ Browser - 'B' 120 130 240 --stack-pages 2048
@@ -1462,15 +1463,14 @@ AS_LASM := $(wildcard c/apps/libc/src/*.asm)
 AS_OBJ  := $(patsubst %.c,$(BUILD)/asobj/%.o,$(AS_C)) \
             $(patsubst %.c,$(BUILD)/asobj/%.o,$(AS_LIBC)) \
             $(patsubst %.asm,$(BUILD)/asobj/%.o,$(AS_LASM))
-# as.h carries AS_BC_VERSION + the opcode enum; depend on it so a version bump
-# rebuilds EVERY asobj (esp. as_bc.o, whose .c rarely changes) -- otherwise a
-# stale as_bc.o in /bin/as rejects the freshly-bumped .la files on Logit.
-# Header and source groups now come from sources.mk. In particular, runtime/
-# belongs to generated native programs and is not part of AS_C.
+# The old bytecode rule depended on every AS header so a version bump could
+# not leave a stale opcode consumer. A3 consumers now follow their real .d;
+# retaining that broad fallback also rebuilt all 57 libc sources for an editor
+# header change. AS_HDRS remains the dependency set for multi-source host tools.
 
-$(BUILD)/asobj/%.o: %.c $(AS_HDRS)
+$(BUILD)/asobj/%.o: %.c
 	@mkdir -p $(dir $@)
-	$(CC) $(UCFLAGS) -c $< -o $@
+	$(COMPILE) $(UCFLAGS) -c $< -o $@
 $(BUILD)/asobj/%.o: %.asm
 	@mkdir -p $(dir $@)
 	$(ASM) -f elf64 $< -o $@
@@ -1502,7 +1502,7 @@ $(BUILD)/as.aex: $(BUILD)/as.elf tools/mkaex.py
 LIBC_OBJS := $(patsubst %.c,$(BUILD)/asobj/%.o,$(AS_LIBC)) $(patsubst %.asm,$(BUILD)/asobj/%.o,$(AS_LASM))
 $(BUILD)/asobj/tests/unit/libctest_main.o: tests/unit/libctest_main.c tests/unit/libctest_more.h
 	@mkdir -p $(dir $@)
-	$(CC) $(UCFLAGS) -c $< -o $@
+	$(COMPILE) $(UCFLAGS) -c $< -o $@
 $(BUILD)/libctest.elf: $(BUILD)/asobj/tests/unit/libctest_main.o $(LIBC_OBJS) $(APPDIR)/crt0_cli.asm
 	@mkdir -p $(BUILD)/apps
 	$(ASM) -f elf64 $(APPDIR)/crt0_cli.asm -o $(BUILD)/apps/libctest.crt0c.o
@@ -1516,7 +1516,7 @@ $(BUILD)/libctest.aex: $(BUILD)/libctest.elf tools/mkaex.py
 # reimplementation of open/write/close.
 $(BUILD)/asobj/tests/unit/closefull_main.o: tests/unit/closefull_main.c
 	@mkdir -p $(dir $@)
-	$(CC) $(UCFLAGS) -c $< -o $@
+	$(COMPILE) $(UCFLAGS) -c $< -o $@
 $(BUILD)/closefull.elf: $(BUILD)/asobj/tests/unit/closefull_main.o $(LIBC_OBJS) $(APPDIR)/crt0_cli.asm
 	@mkdir -p $(BUILD)/apps
 	$(ASM) -f elf64 $(APPDIR)/crt0_cli.asm -o $(BUILD)/apps/closefull.crt0c.o
@@ -1550,7 +1550,7 @@ $(BROWSER_IMG_CODEC_OBJ): UCFLAGS += $(CODEC_OPT)
 
 $(BUILD)/vidobj/%.o: %.c $(VID_HDRS)
 	@mkdir -p $(dir $@)
-	$(CC) $(UCFLAGS) $(CODEC_OPT) -c $< -o $@
+	$(COMPILE) $(UCFLAGS) $(CODEC_OPT) -c $< -o $@
 
 # --- ring-3 HTTP client, built for the target -----------------------------
 # Same shape and same reasoning as VID_OBJ above: RING3_NET is filtered out of
@@ -1587,7 +1587,7 @@ R3NET_OBJ  := $(patsubst %.c,$(BUILD)/r3netobj/%.o,$(R3NET_SRC))
 
 $(BUILD)/r3netobj/%.o: %.c $(R3NET_HDRS)
 	@mkdir -p $(dir $@)
-	$(CC) $(UCFLAGS) -c $< -o $@
+	$(COMPILE) $(UCFLAGS) -c $< -o $@
 
 check-ring3-net: $(R3NET_OBJ)
 	@echo "check-ring3-net: http1/cookies/hpool/hpack/http2 build freestanding"
@@ -1599,7 +1599,7 @@ check-ring3-net: $(R3NET_OBJ)
 # than one real one and a strawman. Driven by tests/boot/run-h2-smoke.sh.
 $(BUILD)/r3netobj/tests/guest/net/h2check.o: tests/guest/net/h2check.c $(R3NET_HDRS) $(APPDIR)/logit.h
 	@mkdir -p $(dir $@)
-	$(CC) $(UCFLAGS) -c $< -o $@
+	$(COMPILE) $(UCFLAGS) -c $< -o $@
 
 $(BUILD)/h2check.elf: $(BUILD)/r3netobj/tests/guest/net/h2check.o $(R3NET_OBJ) $(LIBC_OBJS) $(APPDIR)/crt0_cli.asm
 	@mkdir -p $(BUILD)/apps
@@ -1637,11 +1637,11 @@ IMGCHK_OBJ := $(patsubst %.c,$(BUILD)/imgobj/%.o,$(IMGCHK_SRC))
 
 $(BUILD)/imgobj/%.o: %.c c/lib/image/img.h
 	@mkdir -p $(dir $@)
-	$(CC) $(UCFLAGS) $(CODEC_OPT) -c $< -o $@
+	$(COMPILE) $(UCFLAGS) $(CODEC_OPT) -c $< -o $@
 
 $(BUILD)/imgobj/imgcheck.o: tests/unit/imgcheck.c c/lib/image/img.h
 	@mkdir -p $(dir $@)
-	$(CC) $(UCFLAGS) -c $< -o $@
+	$(COMPILE) $(UCFLAGS) -c $< -o $@
 
 $(BUILD)/imgcheck.elf: $(BUILD)/imgobj/imgcheck.o $(IMGCHK_OBJ) $(GFX_OBJ) $(RUST_LIB) $(LIBC_OBJS) $(APPDIR)/crt0_cli.asm
 	@mkdir -p $(BUILD)/apps
@@ -1677,7 +1677,7 @@ $(AS_EVAL_MATH): $(LIBM_OBJ)
 
 $(BUILD)/libmobj/%.o: %.c
 	@mkdir -p $(dir $@)
-	$(CC) $(UCFLAGS) -w -include features.h -Ithird_party/libm -c $< -o $@
+	$(COMPILE) $(UCFLAGS) -w -include features.h -Ithird_party/libm -c $< -o $@
 
 AUD_SRC  := $(wildcard c/lib/audio/*.c)
 AUD_HDRS := $(wildcard c/lib/audio/*.h)
@@ -1685,7 +1685,7 @@ AUD_OBJ  := $(patsubst %.c,$(BUILD)/audobj/%.o,$(AUD_SRC))
 
 $(BUILD)/audobj/%.o: %.c $(AUD_HDRS)
 	@mkdir -p $(dir $@)
-	$(CC) $(UCFLAGS) $(CODEC_OPT) -c $< -o $@
+	$(COMPILE) $(UCFLAGS) $(CODEC_OPT) -c $< -o $@
 
 # musl's libm, given its own objects so an ordinary CLI program can link it:
 # `make test-libm-cli` asserts the freestanding cross-build is BIT-IDENTICAL to
@@ -1737,13 +1737,12 @@ $(BUILD)/audiocheck.aex: $(BUILD)/audiocheck.elf tools/mkaex.py
 # THE EXTENSION IT CLAIMS IS NOT HOW IT GETS FILES ANY MORE. `h264` is kept so
 # nothing that relied on the registry match regresses, but the association now
 # runs on content -- see opens_in_preview() in c/kernel/gui/wm.c.
-$(BUILD)/preview.elf: $(GUIDIR)/preview/preview.c $(APPDIR)/logit.h $(VID_HDRS) \
-                      c/lib/image/img.h c/apps/coreutils/logit_sniff.h \
-                      $(BUILD)/apps/crt0.o $(VID_OBJ) $(MED_OBJ) $(AUD_OBJ) \
-                      $(IMGCHK_OBJ) $(GFX_OBJ) $(RUST_LIB) $(LIBM_OBJ) \
-                      $(LIBC_OBJS)
+$(BUILD)/apps/preview.o: $(GUIDIR)/preview/preview.c
 	@mkdir -p $(BUILD)/apps
-	$(CC) $(UCFLAGS) $(PREVIEW_CF) -c $(GUIDIR)/preview/preview.c -o $(BUILD)/apps/preview.o
+	$(COMPILE) $(UCFLAGS) $(PREVIEW_CF) -c $< -o $@
+$(BUILD)/preview.elf: $(BUILD)/apps/preview.o $(BUILD)/apps/crt0.o $(VID_OBJ) $(MED_OBJ) $(AUD_OBJ) \
+  $(IMGCHK_OBJ) $(GFX_OBJ) $(RUST_LIB) $(LIBM_OBJ) \
+  $(LIBC_OBJS)
 	$(LD) -nostdlib -e _start -Ttext=0x48000000 -o $@ --start-group \
 	    $(BUILD)/apps/crt0.o $(BUILD)/apps/preview.o $(VID_OBJ) $(MED_OBJ) \
 	    $(AUD_OBJ) $(IMGCHK_OBJ) $(GFX_OBJ) $(RUST_LIB) $(LIBM_OBJ) $(LIBC_OBJS) --end-group
@@ -1764,15 +1763,14 @@ $(BUILD)/preview.aex: $(BUILD)/preview.elf tools/mkaex.py
 # audiocheck.elf rule above). Naming both here, at the moment the source that
 # calls adec_open() is added, is how this terminal avoids being the SECOND
 # time that link line does not follow the dependency.
-$(BUILD)/terminal.elf: $(GUIDIR)/terminal/terminal.c $(APPDIR)/logit.h $(CLIDIR)/logit_rich.h \
-                       $(CLIDIR)/logit_sniff.h $(VID_HDRS) $(AUD_HDRS) $(APPDIR)/crt0.asm \
-                       $(BUILD)/apps/aui.o $(GFX_OBJ) $(VID_OBJ) $(AUD_OBJ) $(IMGCHK_OBJ) \
-                       $(RUST_LIB) $(LIBM_OBJ) $(LIBC_OBJS)
+$(BUILD)/apps/terminal.o: $(GUIDIR)/terminal/terminal.c
 	@mkdir -p $(BUILD)/apps
-	$(ASM) -f elf64 $(APPDIR)/crt0.asm -o $(BUILD)/apps/terminal.crt0.o
-	$(CC) $(UCFLAGS) -c $(GUIDIR)/terminal/terminal.c -o $(BUILD)/apps/terminal.o
+	$(COMPILE) $(UCFLAGS) -c $< -o $@
+$(BUILD)/terminal.elf: $(BUILD)/apps/terminal.o $(BUILD)/apps/crt0.o \
+  $(BUILD)/apps/aui.o $(GFX_OBJ) $(VID_OBJ) $(AUD_OBJ) $(IMGCHK_OBJ) \
+  $(RUST_LIB) $(LIBM_OBJ) $(LIBC_OBJS)
 	$(LD) -nostdlib -e _start -Ttext=0x43000000 -o $@ --start-group \
-	    $(BUILD)/apps/terminal.crt0.o $(BUILD)/apps/terminal.o $(BUILD)/apps/aui.o $(GFX_OBJ) \
+	    $(BUILD)/apps/crt0.o $(BUILD)/apps/terminal.o $(BUILD)/apps/aui.o $(GFX_OBJ) \
 	    $(VID_OBJ) $(AUD_OBJ) $(IMGCHK_OBJ) $(RUST_LIB) $(LIBM_OBJ) $(LIBC_OBJS) --end-group
 $(BUILD)/terminal.aex: $(BUILD)/terminal.elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/terminal.elf $@ Terminal - '>' 70 80 100
@@ -5502,7 +5500,7 @@ LM_NN_OBJ  := $(patsubst %.c,$(BUILD)/lmnnobj/%.o,$(LM_NN_SRC))
 
 $(BUILD)/lmnnobj/%.o: %.c $(LM_NN_HDRS)
 	@mkdir -p $(dir $@)
-	$(CC) $(UCFLAGS) -c $< -o $@
+	$(COMPILE) $(UCFLAGS) -c $< -o $@
 
 # /bin/lm -- the one consumer, same link shape as /bin/vidcheck: mini-libc +
 # crt0_cli at the common CLI base (c/apps/lm/lm.c's own header comment says
@@ -5512,7 +5510,7 @@ $(BUILD)/lmnnobj/%.o: %.c $(LM_NN_HDRS)
 # colocated header resolves in this tree.
 $(BUILD)/lmobj/c/apps/lm/lm.o: c/apps/lm/lm.c $(LM_NN_HDRS)
 	@mkdir -p $(dir $@)
-	$(CC) $(UCFLAGS) -c $< -o $@
+	$(COMPILE) $(UCFLAGS) -c $< -o $@
 
 $(BUILD)/lm.elf: $(BUILD)/lmobj/c/apps/lm/lm.o $(LM_NN_OBJ) $(LIBM_OBJ) $(LIBC_OBJS) $(APPDIR)/crt0_cli.asm
 	@mkdir -p $(BUILD)/apps
@@ -5757,8 +5755,14 @@ include tests/aseval.mk
 -include tests/astyped.mk
 
 include tests/ramfs_rename.mk
+
+# Build mechanics stay separate from subsystem source lists and test recipes.
+include tests/build_incremental.mk
+include tests/build_config.mk
+include tests/build_jobs.mk
 -include tests/vfs_rename_meta.mk
 -include tests/fs_rename_space.mk
 -include tests/dns_class.mk
 -include tests/dns_ttl.mk
 -include tests/fb_display.mk
+include tools/build/product.mk

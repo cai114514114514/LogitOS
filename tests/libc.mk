@@ -283,7 +283,7 @@ LIBC2_SRC := tests/unit/libc2_test.c
 ifneq ($(wildcard $(LIBC2_SRC)),)
 $(BUILD)/asobj/tests/unit/libc2_test.o: $(LIBC2_SRC)
 	@mkdir -p $(dir $@)
-	$(CC) $(UCFLAGS) -c $< -o $@
+	$(COMPILE) $(UCFLAGS) -c $< -o $@
 $(BUILD)/libctest2.elf: $(BUILD)/asobj/tests/unit/libc2_test.o $(LIBC_OBJS) $(APPDIR)/crt0_cli.asm
 	@mkdir -p $(BUILD)/apps
 	$(ASM) -f elf64 $(APPDIR)/crt0_cli.asm -o $(BUILD)/apps/libctest2.crt0c.o

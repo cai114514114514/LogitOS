@@ -63,7 +63,7 @@ HTTPS_SRC := c/apps/services/http/httpd.c c/apps/services/http/https_platform.c 
 HTTPS_OBJ := $(patsubst %.c,$(BUILD)/httpsobj/%.o,$(HTTPS_SRC))
 $(BUILD)/httpsobj/%.o: %.c c/apps/services/http/https_transport.h c/net/tls/tls_domain.h
 	@mkdir -p $(dir $@)
-	$(CC) $(UCFLAGS) $(INCDIRS) -DHTTPD_TLS -DLOGIT_TLS_SINGLE_PROCESS -DKPROF_DISABLE -ffunction-sections -fdata-sections -c $< -o $@
+	$(COMPILE) $(UCFLAGS) $(INCDIRS) -DHTTPD_TLS -DLOGIT_TLS_SINGLE_PROCESS -DKPROF_DISABLE -ffunction-sections -fdata-sections -c $< -o $@
 $(BUILD)/httpsd.elf: $(HTTPS_OBJ) c/apps/crt0_cli.asm
 	@mkdir -p $(BUILD)/apps
 	$(ASM) -f elf64 c/apps/crt0_cli.asm -o $(BUILD)/apps/httpsd.crt.o
@@ -76,13 +76,13 @@ ROOT_AEX_PACK += $(BUILD)/httpsd.aex:/bin/httpsd
 $(BUILD)/pty_probe.elf: tests/boot/pty_probe.c $(LIBC_OBJS) c/apps/libc/src/pty_ctl.h include/abi/pty.h
 	@mkdir -p $(BUILD)/apps
 	$(ASM) -f elf64 c/apps/crt0_cli.asm -o $(BUILD)/apps/pty_probe.crt.o
-	$(CC) $(UCFLAGS) -c $< -o $(BUILD)/apps/pty_probe.o
+	$(COMPILE) $(UCFLAGS) -c $< -o $(BUILD)/apps/pty_probe.o
 	$(LD) -nostdlib -e _start -Ttext=0x50000000 -o $@ $(BUILD)/apps/pty_probe.crt.o $(BUILD)/apps/pty_probe.o $(LIBC_OBJS)
 test-servers-os: $(BUILD)/pty_probe.elf
 $(BUILD)/inet_probe.elf: tests/boot/inet_probe.c $(LIBC_OBJS)
 	@mkdir -p $(BUILD)/apps
 	$(ASM) -f elf64 c/apps/crt0_cli.asm -o $(BUILD)/apps/inet_probe.crt.o
-	$(CC) $(UCFLAGS) -c $< -o $(BUILD)/apps/inet_probe.o
+	$(COMPILE) $(UCFLAGS) -c $< -o $(BUILD)/apps/inet_probe.o
 	$(LD) -nostdlib -e _start -Ttext=0x50000000 -o $@ $(BUILD)/apps/inet_probe.crt.o $(BUILD)/apps/inet_probe.o $(LIBC_OBJS)
 test-servers-os: $(BUILD)/inet_probe.elf
 $(BUILD)/sshdobj/c/apps/services/ssh/sshd.o: include/abi/pty.h
@@ -94,7 +94,7 @@ $(BUILD)/login.elf: c/apps/coreutils/boot_services.h
 $(BUILD)/server_probe.elf: tests/boot/server_probe.c c/apps/logit.h c/apps/clib.h
 	@mkdir -p $(BUILD)/apps
 	$(ASM) -f elf64 c/apps/crt0_cli.asm -o $(BUILD)/apps/server_probe.crt.o
-	$(CC) $(UCFLAGS) -c $< -o $(BUILD)/apps/server_probe.o
+	$(COMPILE) $(UCFLAGS) -c $< -o $(BUILD)/apps/server_probe.o
 	$(LD) -nostdlib -e _start -Ttext=0x50000000 -o $@ $(BUILD)/apps/server_probe.crt.o $(BUILD)/apps/server_probe.o
 
 test-servers-os: $(BUILD)/server_probe.elf
@@ -102,13 +102,13 @@ test-servers-os: $(BUILD)/server_probe.elf
 $(BUILD)/ssh_hold.elf: tests/boot/ssh_hold.c c/apps/clib.h c/apps/logit.h
 	@mkdir -p $(BUILD)/apps
 	$(ASM) -f elf64 c/apps/crt0_cli.asm -o $(BUILD)/apps/ssh_hold.crt.o
-	$(CC) $(UCFLAGS) -c $< -o $(BUILD)/apps/ssh_hold.o
+	$(COMPILE) $(UCFLAGS) -c $< -o $(BUILD)/apps/ssh_hold.o
 	$(LD) -nostdlib -e _start -Ttext=0x50000000 -o $@ $(BUILD)/apps/ssh_hold.crt.o $(BUILD)/apps/ssh_hold.o
 test-servers-os: $(BUILD)/ssh_hold.elf
 $(BUILD)/ssh_service.elf: tests/boot/ssh_service.c c/apps/clib.h c/apps/logit.h
 	@mkdir -p $(BUILD)/apps
 	$(ASM) -f elf64 c/apps/crt0_cli.asm -o $(BUILD)/apps/ssh_service.crt.o
-	$(CC) $(UCFLAGS) -c $< -o $(BUILD)/apps/ssh_service.o
+	$(COMPILE) $(UCFLAGS) -c $< -o $(BUILD)/apps/ssh_service.o
 	$(LD) -nostdlib -e _start -Ttext=0x50000000 -o $@ $(BUILD)/apps/ssh_service.crt.o $(BUILD)/apps/ssh_service.o
 test-servers-os test-ssh-multiplex-neg: $(BUILD)/ssh_service.elf
 
@@ -133,7 +133,7 @@ ci-host: test-server-profile
 # Keep the single-channel policy only in a private control binary. The same
 # ordinary OpenSSH multiplex check must reject it before the product test runs.
 $(BUILD)/sshd-one-channel.o: c/apps/services/ssh/sshd.c c/apps/services/ssh/sshd_channels.h c/apps/services/ssh/sshd_channel_state.h $(BUILD)/sshd.elf
-	$(CC) $(UCFLAGS) -DSSHD_CHANNELS=1 -Ic/apps/libc/include/uonly $(INCDIRS) -c $< -o $@
+	$(COMPILE) $(UCFLAGS) -DSSHD_CHANNELS=1 -Ic/apps/libc/include/uonly $(INCDIRS) -c $< -o $@
 $(BUILD)/sshd-one-channel.elf: $(BUILD)/sshd-one-channel.o $(BUILD)/sshd.elf
 	$(LD) -nostdlib -e _start -Ttext=0x50000000 -o $@ $(BUILD)/apps/sshd.crt0c.o $< $(filter-out $(BUILD)/sshdobj/c/apps/services/ssh/sshd.o,$(SSHD_OBJS)) $(BUILD)/sshdobj/sshd_thread.o
 test-ssh-multiplex-neg: $(ISO) $(DISK) $(BUILD)/sshd-one-channel.elf $(BUILD)/ssh_hold.elf $(BUILD)/server_probe.elf $(BUILD)/inet_probe.elf $(BUILD)/pty_probe.elf

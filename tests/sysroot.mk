@@ -165,10 +165,10 @@ $(SYSROOT_TCC1_OBJ): $(SYSROOT_TCC_STAMP)
 $(SYSROOT_TCC1_SRC): $(SYSROOT_TCC_STAMP) ;
 $(SYSROOT_WORK)/tcc1/%.o: $(SYSROOT_TCCSRC)/lib/%.c
 	@mkdir -p $(dir $@)
-	$(CC) $(SYSROOT_UCFLAGS) -w -c $< -o $@
+	$(COMPILE) $(SYSROOT_UCFLAGS) -w -c $< -o $@
 $(SYSROOT_WORK)/tcc1/%.o: $(SYSROOT_TCCSRC)/lib/%.S
 	@mkdir -p $(dir $@)
-	$(CC) $(filter-out -std=c11,$(SYSROOT_UCFLAGS)) -c $< -o $@
+	$(COMPILE) $(filter-out -std=c11,$(SYSROOT_UCFLAGS)) -c $< -o $@
 
 # --- crt: crt0_cli.o under the name tcc asks for, and two empty objects --------
 $(SYSROOT_WORK)/crt1.o: $(APPDIR)/crt0_cli.asm

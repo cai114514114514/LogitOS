@@ -13,7 +13,7 @@ $(AGENT_DIR)/agent_catalog.inc: tools/agent_catalog.py c/apps/agent/catalog.json
 	@python3 tools/agent_catalog.py --header $@
 $(AGENT_DIR)/%.o: %.c $(AGENT_DIR)/agent_catalog.inc
 	@mkdir -p $(dir $@)
-	$(CC) $(UCFLAGS) -I$(AGENT_DIR) -ffunction-sections -fdata-sections -c $< -o $@
+	$(COMPILE) $(UCFLAGS) -I$(AGENT_DIR) -ffunction-sections -fdata-sections -c $< -o $@
 $(AGENT_DIR)/%.o: %.asm
 	@mkdir -p $(dir $@)
 	$(ASM) -f elf64 $< -o $@

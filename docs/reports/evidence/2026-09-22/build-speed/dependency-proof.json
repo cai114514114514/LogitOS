@@ -1,0 +1,103 @@
+{
+  "measured_at_utc": "2026-09-22T14:30:56.440750+00:00",
+  "evidence_kind": "GNU Make dry-run scheduling; no compilation or linking executed",
+  "workspace": "/Users/wangzhe/LogitOS",
+  "build": "build-fast",
+  "makefile_sha256": "43173385e69208590e688d7b3e54c09b699ff0adbe6bc308a973ec6d1a9d0e42",
+  "changed_input": "c/apps/gui/browser/html/entities.inc",
+  "goal": "build-fast/browser.elf",
+  "counts": {
+    "baseline": {
+      "c_compilations": 0,
+      "links": 0
+    },
+    "new": {
+      "c_compilations": 1,
+      "links": 1
+    },
+    "original": {
+      "c_compilations": 75,
+      "links": 1
+    },
+    "tail": {
+      "c_compilations": 127,
+      "links": 1
+    }
+  },
+  "new_compilation": {
+    "build-fast/browserobj/c/apps/gui/browser/html/tokenizer.o": "c/apps/gui/browser/html/tokenizer.c"
+  },
+  "tail_only_extra_count": 52,
+  "tail_only_source_groups": {
+    "c/lib/audio": 14,
+    "c/lib/media": 10,
+    "c/lib/video": 28
+  },
+  "tail_only_objects": [
+    "build-fast/audobj/c/lib/audio/aac.o",
+    "build-fast/audobj/c/lib/audio/aac_sbr.o",
+    "build-fast/audobj/c/lib/audio/afft.o",
+    "build-fast/audobj/c/lib/audio/amath.o",
+    "build-fast/audobj/c/lib/audio/amd5.o",
+    "build-fast/audobj/c/lib/audio/audio.o",
+    "build-fast/audobj/c/lib/audio/flac.o",
+    "build-fast/audobj/c/lib/audio/mp3.o",
+    "build-fast/audobj/c/lib/audio/ogg.o",
+    "build-fast/audobj/c/lib/audio/opus.o",
+    "build-fast/audobj/c/lib/audio/opus_celt.o",
+    "build-fast/audobj/c/lib/audio/opus_range.o",
+    "build-fast/audobj/c/lib/audio/vorbis.o",
+    "build-fast/audobj/c/lib/audio/wav.o",
+    "build-fast/medobj/c/lib/media/avclock.o",
+    "build-fast/medobj/c/lib/media/avi.o",
+    "build-fast/medobj/c/lib/media/demux.o",
+    "build-fast/medobj/c/lib/media/flv.o",
+    "build-fast/medobj/c/lib/media/mkv.o",
+    "build-fast/medobj/c/lib/media/mp4.o",
+    "build-fast/medobj/c/lib/media/pes.o",
+    "build-fast/medobj/c/lib/media/ps.o",
+    "build-fast/medobj/c/lib/media/subs.o",
+    "build-fast/medobj/c/lib/media/ts.o",
+    "build-fast/vidobj/c/lib/video/h264.o",
+    "build-fast/vidobj/c/lib/video/h264_cabac.o",
+    "build-fast/vidobj/c/lib/video/h264_cavlc.o",
+    "build-fast/vidobj/c/lib/video/h264_deblock.o",
+    "build-fast/vidobj/c/lib/video/h264_dpb.o",
+    "build-fast/vidobj/c/lib/video/h264_mb.o",
+    "build-fast/vidobj/c/lib/video/h264_mc.o",
+    "build-fast/vidobj/c/lib/video/h264_nal.o",
+    "build-fast/vidobj/c/lib/video/h264_pred.o",
+    "build-fast/vidobj/c/lib/video/h265.o",
+    "build-fast/vidobj/c/lib/video/h265_cabac.o",
+    "build-fast/vidobj/c/lib/video/h265_deblock.o",
+    "build-fast/vidobj/c/lib/video/h265_mc.o",
+    "build-fast/vidobj/c/lib/video/h265_nal.o",
+    "build-fast/vidobj/c/lib/video/h265_pred.o",
+    "build-fast/vidobj/c/lib/video/legacy_cinepak.o",
+    "build-fast/vidobj/c/lib/video/legacy_msvideo1.o",
+    "build-fast/vidobj/c/lib/video/legacy_qtrle.o",
+    "build-fast/vidobj/c/lib/video/legacy_rpza.o",
+    "build-fast/vidobj/c/lib/video/mjpeg.o",
+    "build-fast/vidobj/c/lib/video/mpeg12.o",
+    "build-fast/vidobj/c/lib/video/mpeg12_idct.o",
+    "build-fast/vidobj/c/lib/video/mpeg12_mc.o",
+    "build-fast/vidobj/c/lib/video/mpeg12_slice.o",
+    "build-fast/vidobj/c/lib/video/mpeg12_tables.o",
+    "build-fast/vidobj/c/lib/video/mpeg4_hdr.o",
+    "build-fast/vidobj/c/lib/video/mpeg4_idct.o",
+    "build-fast/vidobj/c/lib/video/mpeg4_mc.o"
+  ],
+  "read_only_verification": {
+    "product_makefile_bytes_unchanged": true,
+    "all_build_file_sizes_and_mtimes_unchanged": true,
+    "build_files_checked": 3787
+  },
+  "explanation": "The original dependency rule expands BROWSER_OBJ at its original location, immediately after BROWSER_INTERFACE_DEPS is defined and before tests/mse.mk is included. tests/mse.mk later defines MSE_LINK_OBJ as MED_OBJ VID_OBJ AUD_OBJ and appends that list to BROWSER_OBJ. Appending the old rule in a final overlay therefore changes the expansion point and incorrectly covers 52 additional objects: 14 audio, 10 media, and 28 video. Restore the line in a temporary complete Makefile copy at its original location to reproduce the real old 75-object rule. The correct change is 75 planned C compilations to 1, not 127 to 1.",
+  "expansion_evidence": [
+    "Makefile: BROWSER_INTERFACE_DEPS definition precedes browser.elf and the tests/mse.mk include",
+    "tests/mse.mk:104: MSE_LINK_OBJ := $(MED_OBJ) $(VID_OBJ) $(AUD_OBJ)",
+    "tests/mse.mk:114: BROWSER_OBJ += $(MSE_LINK_OBJ)"
+  ],
+  "reproduction_python": "from collections import Counter\nfrom datetime import datetime, timezone\nfrom pathlib import Path\nimport hashlib, json, os, re, shlex, subprocess, tempfile\n\nroot = Path('/Users/wangzhe/LogitOS')\nbuild = root / 'build-fast'\nsource = root / 'Makefile'\noriginal = source.read_bytes()\ntext = original.decode()\nanchor = 'BROWSER_INTERFACE_DEPS := $(wildcard $(BROWSER_HEADERS) $(BROWSER_INCLUDES))\\n'\nlegacy = '$(BROWSER_OBJ) $(BROWSER_JS_OBJ) $(BUILD)/cssobj/c/apps/gui/browser/css/engine.o: $(BROWSER_INTERFACE_DEPS)\\n'\nassert text.count(anchor) == 1 and legacy not in text\n\ndef snapshot():\n    return {str(p.relative_to(build)): (p.stat().st_mtime_ns, p.stat().st_size)\n            for p in build.rglob('*') if p.is_file()}\n\nbefore = snapshot()\nenv = {k: v for k, v in os.environ.items()\n       if k not in ('MAKEFLAGS', 'MFLAGS', 'MAKEOVERRIDES')}\n\ndef plan(files, changed):\n    command = ['gmake', '--no-print-directory', '-n']\n    for file in files:\n        command += ['-f', str(file)]\n    command += ['BUILD=build-fast']\n    if changed:\n        command += ['-W', 'c/apps/gui/browser/html/entities.inc']\n    command += ['build-fast/browser.elf']\n    result = subprocess.run(command, cwd=root, env=env, capture_output=True,\n                            text=True, timeout=90)\n    assert result.returncode == 0, result.stderr\n    compiles, links = {}, set()\n    for line in re.sub(r'\\\\\\r?\\n[ \\t]*', ' ', result.stdout).splitlines():\n        if ' -o ' not in line:\n            continue\n        words = shlex.split(line)\n        if '-o' not in words:\n            continue\n        output = words[words.index('-o') + 1]\n        if '-c' in words:\n            compiles[output] = words[words.index('-c') + 1]\n        elif '-nostdlib' in words:\n            links.add(output)\n    return compiles, links\n\nwith tempfile.TemporaryDirectory(prefix='logitos-browser-old-rule-') as directory:\n    restored = Path(directory) / 'Makefile'\n    restored.write_text(text.replace(anchor, anchor + legacy))\n    tail = Path(directory) / 'tail.mk'\n    tail.write_text(legacy)\n    variants = {\n        'baseline': plan([source], False),\n        'new': plan([source], True),\n        'original': plan([restored], True),\n        'tail': plan([source, tail], True),\n    }\n\ncounts = {name: {'c_compilations': len(compiles), 'links': len(links)}\n          for name, (compiles, links) in variants.items()}\nassert {name: data['c_compilations'] for name, data in counts.items()} == {\n    'baseline': 0, 'new': 1, 'original': 75, 'tail': 127}\nextras = set(variants['tail'][0]) - set(variants['original'][0])\ngroups = Counter('/'.join(variants['tail'][0][obj].split('/')[:3]) for obj in extras)\nassert before == snapshot(), 'build-fast sizes or mtimes changed during dry-runs'\nassert source.read_bytes() == original, 'product Makefile changed during dry-runs'\nproof = {\n    'measured_at_utc': datetime.now(timezone.utc).isoformat(),\n    'evidence_kind': 'GNU Make dry-run scheduling; no compilation or linking executed',\n    'workspace': str(root),\n    'build': 'build-fast',\n    'makefile_sha256': hashlib.sha256(original).hexdigest(),\n    'changed_input': 'c/apps/gui/browser/html/entities.inc',\n    'goal': 'build-fast/browser.elf',\n    'counts': counts,\n    'new_compilation': variants['new'][0],\n    'tail_only_extra_count': len(extras),\n    'tail_only_source_groups': dict(sorted(groups.items())),\n    'tail_only_objects': sorted(extras),\n    'read_only_verification': {\n        'product_makefile_bytes_unchanged': True,\n        'all_build_file_sizes_and_mtimes_unchanged': True,\n        'build_files_checked': len(before),\n    },\n}\nprint(json.dumps(proof, ensure_ascii=False, indent=2))\n",
+  "reproduction_shell_wrapper": "python3 - <<'PY'\nfrom collections import Counter\nfrom datetime import datetime, timezone\nfrom pathlib import Path\nimport hashlib, json, os, re, shlex, subprocess, tempfile\n\nroot = Path('/Users/wangzhe/LogitOS')\nbuild = root / 'build-fast'\nsource = root / 'Makefile'\noriginal = source.read_bytes()\ntext = original.decode()\nanchor = 'BROWSER_INTERFACE_DEPS := $(wildcard $(BROWSER_HEADERS) $(BROWSER_INCLUDES))\\n'\nlegacy = '$(BROWSER_OBJ) $(BROWSER_JS_OBJ) $(BUILD)/cssobj/c/apps/gui/browser/css/engine.o: $(BROWSER_INTERFACE_DEPS)\\n'\nassert text.count(anchor) == 1 and legacy not in text\n\ndef snapshot():\n    return {str(p.relative_to(build)): (p.stat().st_mtime_ns, p.stat().st_size)\n            for p in build.rglob('*') if p.is_file()}\n\nbefore = snapshot()\nenv = {k: v for k, v in os.environ.items()\n       if k not in ('MAKEFLAGS', 'MFLAGS', 'MAKEOVERRIDES')}\n\ndef plan(files, changed):\n    command = ['gmake', '--no-print-directory', '-n']\n    for file in files:\n        command += ['-f', str(file)]\n    command += ['BUILD=build-fast']\n    if changed:\n        command += ['-W', 'c/apps/gui/browser/html/entities.inc']\n    command += ['build-fast/browser.elf']\n    result = subprocess.run(command, cwd=root, env=env, capture_output=True,\n                            text=True, timeout=90)\n    assert result.returncode == 0, result.stderr\n    compiles, links = {}, set()\n    for line in re.sub(r'\\\\\\r?\\n[ \\t]*', ' ', result.stdout).splitlines():\n        if ' -o ' not in line:\n            continue\n        words = shlex.split(line)\n        if '-o' not in words:\n            continue\n        output = words[words.index('-o') + 1]\n        if '-c' in words:\n            compiles[output] = words[words.index('-c') + 1]\n        elif '-nostdlib' in words:\n            links.add(output)\n    return compiles, links\n\nwith tempfile.TemporaryDirectory(prefix='logitos-browser-old-rule-') as directory:\n    restored = Path(directory) / 'Makefile'\n    restored.write_text(text.replace(anchor, anchor + legacy))\n    tail = Path(directory) / 'tail.mk'\n    tail.write_text(legacy)\n    variants = {\n        'baseline': plan([source], False),\n        'new': plan([source], True),\n        'original': plan([restored], True),\n        'tail': plan([source, tail], True),\n    }\n\ncounts = {name: {'c_compilations': len(compiles), 'links': len(links)}\n          for name, (compiles, links) in variants.items()}\nassert {name: data['c_compilations'] for name, data in counts.items()} == {\n    'baseline': 0, 'new': 1, 'original': 75, 'tail': 127}\nextras = set(variants['tail'][0]) - set(variants['original'][0])\ngroups = Counter('/'.join(variants['tail'][0][obj].split('/')[:3]) for obj in extras)\nassert before == snapshot(), 'build-fast sizes or mtimes changed during dry-runs'\nassert source.read_bytes() == original, 'product Makefile changed during dry-runs'\nproof = {\n    'measured_at_utc': datetime.now(timezone.utc).isoformat(),\n    'evidence_kind': 'GNU Make dry-run scheduling; no compilation or linking executed',\n    'workspace': str(root),\n    'build': 'build-fast',\n    'makefile_sha256': hashlib.sha256(original).hexdigest(),\n    'changed_input': 'c/apps/gui/browser/html/entities.inc',\n    'goal': 'build-fast/browser.elf',\n    'counts': counts,\n    'new_compilation': variants['new'][0],\n    'tail_only_extra_count': len(extras),\n    'tail_only_source_groups': dict(sorted(groups.items())),\n    'tail_only_objects': sorted(extras),\n    'read_only_verification': {\n        'product_makefile_bytes_unchanged': True,\n        'all_build_file_sizes_and_mtimes_unchanged': True,\n        'build_files_checked': len(before),\n    },\n}\nprint(json.dumps(proof, ensure_ascii=False, indent=2))\nPY\n"
+}

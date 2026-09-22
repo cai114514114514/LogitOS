@@ -113,12 +113,12 @@ AS_REGION_TRACKED_SRCS := $(filter %/region.c %/region_borrow.c,$(AS_NATIVE_SRCS
 AS_REGION_TRACKED_OBJS := $(patsubst c/apps/as/runtime/%.c,$(BUILD)/region-tracked/%.o,$(AS_REGION_TRACKED_SRCS))
 $(BUILD)/region-tracked/%.o: c/apps/as/runtime/%.c $(AS_NATIVE_HEADERS)
 	@mkdir -p $(dir $@)
-	$(CC) $(UCFLAGS) -Dcalloc=test_region_allocate -Dfree=test_region_free -c $< -o $@
+	$(COMPILE) $(UCFLAGS) -Dcalloc=test_region_allocate -Dfree=test_region_free -c $< -o $@
 # native.h also exists elsewhere in the OS-wide include search. Put the
 # runtime first so this standalone probe sees the exact headers under test.
 $(BUILD)/as-region-runtime.o: tests/unit/as_region_runtime_test.c $(AS_NATIVE_HEADERS)
 	@mkdir -p $(dir $@)
-	$(CC) -Ic/apps/as/runtime $(UCFLAGS) -c $< -o $@
+	$(COMPILE) -Ic/apps/as/runtime $(UCFLAGS) -c $< -o $@
 $(BUILD)/as-region-runtime.elf: $(BUILD)/as-region-runtime.o $(BUILD)/aether-toolchain/native.a $(BUILD)/aether-toolchain/crt0.o $(BUILD)/aether-toolchain/libc.a
 	$(LD) -nostdlib -e _start -Ttext=0x50000000 $(BUILD)/aether-toolchain/crt0.o $< $(BUILD)/aether-toolchain/native.a $(BUILD)/aether-toolchain/libc.a -o $@
 $(BUILD)/as-region-tracked.elf: $(BUILD)/as-region-runtime.o $(AS_REGION_TRACKED_OBJS) $(BUILD)/aether-toolchain/native.a $(BUILD)/aether-toolchain/crt0.o $(BUILD)/aether-toolchain/libc.a
@@ -439,7 +439,7 @@ test-as-native-cli-guest: test-as-native-cli $(BUILD)/as.aex $(BUILD)/as-typed-c
 test-as-a3-only: test-as-native-cli-guest
 $(BUILD)/as-typed-capture.o: tests/unit/as_typed_guest_capture.c
 	@mkdir -p $(dir $@)
-	$(CC) $(UCFLAGS) -c $< -o $@
+	$(COMPILE) $(UCFLAGS) -c $< -o $@
 $(BUILD)/as-typed-capture.elf: $(BUILD)/as-typed-capture.o $(BUILD)/aether-toolchain/crt0.o $(BUILD)/aether-toolchain/libc.a
 	$(LD) -nostdlib -e _start -Ttext=0x50000000 $(BUILD)/aether-toolchain/crt0.o $< $(BUILD)/aether-toolchain/libc.a -o $@
 $(BUILD)/as-typed-capture.aex: $(BUILD)/as-typed-capture.elf tools/mkaex.py
@@ -466,7 +466,7 @@ $(BUILD)/aether-toolchain/native.a: $(AS_NATIVE_OBJS) $(AS_NATIVE_MANIFEST)
 	$(AGENT_AR) rcs $@ $(AS_NATIVE_OBJS)
 $(BUILD)/aether-toolchain/obj/%.o: c/apps/as/runtime/%.c $(AS_NATIVE_HEADERS)
 	@mkdir -p $(dir $@)
-	$(CC) $(UCFLAGS) -c $< -o $@
+	$(COMPILE) $(UCFLAGS) -c $< -o $@
 $(BUILD)/aether-toolchain/crt0.o: c/apps/crt0_cli.asm
 	@mkdir -p $(dir $@)
 	$(ASM) -f elf64 $< -o $@

@@ -1,9 +1,12 @@
 # Preview test targets (test-preview, test-preview-timing, test-preview-negctl)
-# All four entrypoints compile the same private view includes. Omitting one
-# here silently leaves the timing/control binary on the previous UI.
-$(BUILD)/preview.elf $(BUILD)/previewplay.elf $(BUILD)/previewnegctl.elf $(BUILD)/previewneg.elf: $(wildcard c/apps/gui/preview/*.inc)
-# and the fixtures + measurement binaries Preview needs that nothing else puts
-# on the disk.
+# All four entrypoints compile private view includes. These were previously
+# attached to the .elf targets because each main .o was a recipe side effect.
+# The main objects now have real targets, so their compiler-emitted .d files
+# track the includes they actually consume; the product missing-.d guard forces
+# old objects through one recovery compile. Do not restore the blanket .elf
+# list: it obscures the compile edge and needlessly schedules links.
+# This fragment also supplies Preview's fixtures and measurement binaries,
+# which ordinary application targets do not put on the disk.
 #
 # Own fragment for the same reason as tests/demux.mk and tests/h265.mk: this
 # tree is worked on by several lines at once and the root Makefile -- and in
@@ -103,15 +106,20 @@ test-preview: $(ISO) $(DISK) $(BUILD)/previewref/.stamp
 # so a decoder-level test of the delays still passes, which is the point. If
 # the timing assertion can still pass against that build, it is not measuring
 # the player and the 1490 ms it reports is a number nobody checked.
-PREVIEW_CLI_DEPS := $(GUIDIR)/preview/preview.c $(APPDIR)/logit.h $(VID_HDRS) \
-                    c/lib/image/img.h c/apps/coreutils/logit_sniff.h \
-                    $(VID_OBJ) $(MED_OBJ) $(AUD_OBJ) $(IMGCHK_OBJ) $(GFX_OBJ) \
+PREVIEW_CLI_DEPS := $(VID_OBJ) $(MED_OBJ) $(AUD_OBJ) $(IMGCHK_OBJ) $(GFX_OBJ) \
                     $(RUST_LIB) $(LIBC_OBJS) $(APPDIR)/crt0_cli.asm
 
-$(BUILD)/previewplay.elf: $(PREVIEW_CLI_DEPS)
+# Distinct objects are essential: these entrypoints and the timing sabotage
+# use the same source with different defines. Sharing preview.o would silently
+# depend on which target happened to compile first. Keep the existing variant
+# flags here: PREVIEW_CF belongs to the normal GUI build, not these controls.
+$(BUILD)/apps/previewplay.o: $(GUIDIR)/preview/preview.c
+	@mkdir -p $(dir $@)
+	$(COMPILE) $(UCFLAGS) -DPREVIEW_CLI -c $< -o $@
+
+$(BUILD)/previewplay.elf: $(BUILD)/apps/previewplay.o $(PREVIEW_CLI_DEPS)
 	@mkdir -p $(BUILD)/apps
 	$(ASM) -f elf64 $(APPDIR)/crt0_cli.asm -o $(BUILD)/apps/previewplay.crt0c.o
-	$(CC) $(UCFLAGS) -DPREVIEW_CLI -c $(GUIDIR)/preview/preview.c -o $(BUILD)/apps/previewplay.o
 	$(LD) -nostdlib -e _start -Ttext=0x50000000 -o $@ --start-group \
 	    $(BUILD)/apps/previewplay.crt0c.o $(BUILD)/apps/previewplay.o \
 	    $(VID_OBJ) $(MED_OBJ) $(AUD_OBJ) $(IMGCHK_OBJ) $(GFX_OBJ) $(RUST_LIB) \
@@ -119,11 +127,13 @@ $(BUILD)/previewplay.elf: $(PREVIEW_CLI_DEPS)
 $(BUILD)/previewplay.aex: $(BUILD)/previewplay.elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/previewplay.elf $@ previewplay - 'P' 200 150 110
 
-$(BUILD)/previewnegctl.elf: $(PREVIEW_CLI_DEPS)
+$(BUILD)/apps/previewnegctl.o: $(GUIDIR)/preview/preview.c
+	@mkdir -p $(dir $@)
+	$(COMPILE) $(UCFLAGS) -DPREVIEW_CLI -DPREVIEW_NO_ANIM_TIMING -c $< -o $@
+
+$(BUILD)/previewnegctl.elf: $(BUILD)/apps/previewnegctl.o $(PREVIEW_CLI_DEPS)
 	@mkdir -p $(BUILD)/apps
 	$(ASM) -f elf64 $(APPDIR)/crt0_cli.asm -o $(BUILD)/apps/previewnegctl.crt0c.o
-	$(CC) $(UCFLAGS) -DPREVIEW_CLI -DPREVIEW_NO_ANIM_TIMING -c $(GUIDIR)/preview/preview.c \
-	    -o $(BUILD)/apps/previewnegctl.o
 	$(LD) -nostdlib -e _start -Ttext=0x50000000 -o $@ --start-group \
 	    $(BUILD)/apps/previewnegctl.crt0c.o $(BUILD)/apps/previewnegctl.o \
 	    $(VID_OBJ) $(MED_OBJ) $(AUD_OBJ) $(IMGCHK_OBJ) $(GFX_OBJ) $(RUST_LIB) \
@@ -144,13 +154,14 @@ $(BUILD)/previewnegctl.aex: $(BUILD)/previewnegctl.elf tools/mkaex.py
 # a second copy of the $(DISK) recipe -- which would rot the first time another
 # line added a file -- the recipe is asked for itself with `make -n` and one
 # argument is substituted. It cannot drift.
-$(BUILD)/previewneg.elf: $(GUIDIR)/preview/preview.c $(APPDIR)/logit.h $(VID_HDRS) \
-                         c/lib/image/img.h c/apps/coreutils/logit_sniff.h \
+$(BUILD)/apps/previewneg.o: $(GUIDIR)/preview/preview.c
+	@mkdir -p $(dir $@)
+	$(COMPILE) $(UCFLAGS) -DPREVIEW_NO_ANIM_TIMING -c $< -o $@
+
+$(BUILD)/previewneg.elf: $(BUILD)/apps/previewneg.o \
                          $(BUILD)/apps/crt0.o $(VID_OBJ) $(MED_OBJ) $(AUD_OBJ) \
                          $(IMGCHK_OBJ) $(GFX_OBJ) $(RUST_LIB) $(LIBC_OBJS)
 	@mkdir -p $(BUILD)/apps
-	$(CC) $(UCFLAGS) -DPREVIEW_NO_ANIM_TIMING -c $(GUIDIR)/preview/preview.c \
-	    -o $(BUILD)/apps/previewneg.o
 	$(LD) -nostdlib -e _start -Ttext=0x48000000 -o $@ --start-group \
 	    $(BUILD)/apps/crt0.o $(BUILD)/apps/previewneg.o $(VID_OBJ) $(MED_OBJ) \
 	    $(AUD_OBJ) $(IMGCHK_OBJ) $(GFX_OBJ) $(RUST_LIB) $(LIBC_OBJS) --end-group

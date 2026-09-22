@@ -95,7 +95,7 @@ $(BUILD)/pollobj/tests/guest/exec/$(1).o: tests/guest/exec/polltest.c c/apps/lib
                          c/apps/libc/include/sys/eventfd.h \
                          c/apps/libc/include/sys/timerfd.h
 	@mkdir -p $$(dir $$@)
-	$(CC) $(UCFLAGS) $(2) -c $$< -o $$@
+	$(COMPILE) $(UCFLAGS) $(2) -c $$< -o $$@
 # Delay LD until the target runs: the AEX v3 activation wrapper is target-local.
 # Expanding it during eval silently produced a v2 app with the original entry.
 $(BUILD)/$(1).elf: $(BUILD)/pollobj/tests/guest/exec/$(1).o $(LIBC_OBJS) $(APPDIR)/crt0_cli.asm c/apps/libc/logit_tls.ld tests/poll.mk

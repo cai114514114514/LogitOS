@@ -51,7 +51,7 @@ $(DISK): $(JSCALLEE_FIXTURE)
 # atoms does not fit in it.
 $(BUILD)/jsbenchobj/malloc_big.o: c/apps/libc/src/malloc.c
 	@mkdir -p $(dir $@)
-	$(CC) $(UCFLAGS) -DARENA_SIZE=100663296u -c $< -o $@
+	$(COMPILE) $(UCFLAGS) -DARENA_SIZE=100663296u -c $< -o $@
 
 $(BUILD)/jsbench.elf: $(ENGINE_OBJ) $(BUILD)/jsobj/tests/unit/js_bench.o \
                       $(BUILD)/jsbenchobj/malloc_big.o $(APPDIR)/crt0_cli.asm

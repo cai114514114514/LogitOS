@@ -60,7 +60,7 @@ $(DISK): $(BUILD)/jssem.aex $(JSSEM_CASES)
 
 $(BUILD)/jssemobj/malloc_big.o: c/apps/libc/src/malloc.c
 	@mkdir -p $(dir $@)
-	$(CC) $(UCFLAGS) -DARENA_SIZE=67108864u -c $< -o $@
+	$(COMPILE) $(UCFLAGS) -DARENA_SIZE=67108864u -c $< -o $@
 
 $(BUILD)/jssem.elf: $(ENGINE_OBJ) $(BUILD)/jsobj/tests/unit/js_sem_probe.o \
                     $(BUILD)/jssemobj/malloc_big.o $(APPDIR)/crt0_cli.asm

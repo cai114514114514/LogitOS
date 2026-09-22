@@ -7,7 +7,7 @@ OPENLOGIT_EXAMPLES := $(shell find examples/openlogit -type f)
 include tests/openlogit_2d_perf.mk
 $(BUILD)/sdk/%.o: c/lib/gfx3d/%.c $(OL3D_HEADERS)
 	@mkdir -p $(dir $@)
-	$(CC) $(UCFLAGS) -c $< -o $@
+	$(COMPILE) $(UCFLAGS) -c $< -o $@
 $(BUILD)/sdk/libopenlogit.a: $(GFX_OBJ) $(OPENLOGIT_3D_OBJ) tests/openlogit_sdk.mk
 	@mkdir -p $(dir $@)
 	@# Recreate the archive: ar replacement alone retains removed/renamed members,
@@ -17,25 +17,25 @@ $(BUILD)/sdk/libopenlogit.a: $(GFX_OBJ) $(OPENLOGIT_3D_OBJ) tests/openlogit_sdk.
 	@mv $@.tmp $@
 $(BUILD)/sdk/island.o: examples/openlogit/island.c $(OPENLOGIT_EXAMPLES) $(OPENLOGIT_PUBLIC)
 	@mkdir -p $(dir $@)
-	$(CC) $(UCFLAGS) -Iexamples/openlogit -c $< -o $@
+	$(COMPILE) $(UCFLAGS) -Iexamples/openlogit -c $< -o $@
 $(BUILD)/sdk/effects.o: examples/openlogit/effects.c examples/openlogit/example_log.h $(OPENLOGIT_PUBLIC)
 	@mkdir -p $(dir $@)
-	$(CC) $(UCFLAGS) -c $< -o $@
+	$(COMPILE) $(UCFLAGS) -c $< -o $@
 $(BUILD)/sdk/materials.o: examples/openlogit/materials.c examples/openlogit/ui_shaders.h examples/openlogit/example_log.h $(OPENLOGIT_PUBLIC)
 	@mkdir -p $(dir $@)
-	$(CC) $(UCFLAGS) -c $< -o $@
+	$(COMPILE) $(UCFLAGS) -c $< -o $@
 $(BUILD)/sdk/olscc.o: c/apps/coreutils/olscc.c $(OL3D_HEADERS)
 	@mkdir -p $(dir $@)
-	$(CC) $(UCFLAGS) -c $< -o $@
+	$(COMPILE) $(UCFLAGS) -c $< -o $@
 $(BUILD)/sdk/lslcc.o: c/apps/coreutils/lslcc.c $(OL3D_HEADERS)
 	@mkdir -p $(dir $@)
-	$(CC) $(UCFLAGS) -c $< -o $@
+	$(COMPILE) $(UCFLAGS) -c $< -o $@
 $(BUILD)/sdk/studio/%.o: examples/openlogit/studio/%.c $(OPENLOGIT_EXAMPLES) $(OPENLOGIT_PUBLIC)
 	@mkdir -p $(dir $@)
-	$(CC) $(UCFLAGS) -c $< -o $@
+	$(COMPILE) $(UCFLAGS) -c $< -o $@
 $(BUILD)/sdk/vector/%.o: examples/openlogit/vector/%.c $(OPENLOGIT_EXAMPLES) $(OPENLOGIT_PUBLIC)
 	@mkdir -p $(dir $@)
-	$(CC) $(UCFLAGS) -c $< -o $@
+	$(COMPILE) $(UCFLAGS) -c $< -o $@
 $(BUILD)/sdk/vector-studio.elf: $(addprefix $(BUILD)/sdk/vector/,main.o artwork.o ui.o) $(BUILD)/sdk/libopenlogit.a $(SYSROOT_WORK)/crt1.o $(LIBC_OBJS) $(LIBM_OBJ)
 	$(LD) -nostdlib -e _start -Ttext=0x68000000 -o $@ $(SYSROOT_WORK)/crt1.o $(addprefix $(BUILD)/sdk/vector/,main.o artwork.o ui.o) --start-group $(BUILD)/sdk/libopenlogit.a $(LIBC_OBJS) $(LIBM_OBJ) --end-group
 $(BUILD)/sdk/scene-studio.elf: $(addprefix $(BUILD)/sdk/studio/,main.o scene.o ui.o) $(BUILD)/sdk/libopenlogit.a $(SYSROOT_WORK)/crt1.o $(LIBC_OBJS) $(LIBM_OBJ)

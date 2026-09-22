@@ -30,10 +30,12 @@ SECPROBE_SRC := $(wildcard tests/boot/secprobe.c)
 ifneq ($(SECPROBE_SRC),)
 CLI += secprobe
 
-$(BUILD)/secprobe.elf: tests/boot/secprobe.c $(APPDIR)/crt0_cli.asm $(APPDIR)/clib.h $(APPDIR)/logit.h
+$(BUILD)/apps/secprobe.cli.o: tests/boot/secprobe.c $(APPDIR)/clib.h $(APPDIR)/logit.h
+	@mkdir -p $(BUILD)/apps
+	$(COMPILE) $(UCFLAGS) -c $< -o $@
+$(BUILD)/secprobe.elf: $(BUILD)/apps/secprobe.cli.o $(APPDIR)/crt0_cli.asm
 	@mkdir -p $(BUILD)/apps
 	$(ASM) -f elf64 $(APPDIR)/crt0_cli.asm -o $(BUILD)/apps/secprobe.crt0c.o
-	$(CC) $(UCFLAGS) -c tests/boot/secprobe.c -o $(BUILD)/apps/secprobe.cli.o
 	$(LD) -nostdlib -e _start -Ttext=0x50000000 -o $@ \
 	    $(BUILD)/apps/secprobe.crt0c.o $(BUILD)/apps/secprobe.cli.o
 

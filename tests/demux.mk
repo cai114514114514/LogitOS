@@ -26,7 +26,7 @@ MED_OBJ := $(patsubst %.c,$(BUILD)/medobj/%.o,$(MED_SRC))
 
 $(BUILD)/medobj/%.o: %.c $(MED_HDRS)
 	@mkdir -p $(dir $@)
-	$(CC) $(UCFLAGS) -c $< -o $@
+	$(COMPILE) $(UCFLAGS) -c $< -o $@
 
 # Preview links the demuxers, both video decoders and the audio decoders. The
 # root Makefile's recipe names $(MED_OBJ) -- a recipe expands when it runs, by
@@ -40,7 +40,7 @@ $(BUILD)/preview.elf: $(MED_OBJ) $(AUD_OBJ) $(MED_HDRS)
 # comparison rather than a claim. ONE source file, built twice; see its header.
 $(BUILD)/medobj/tests/guest/media/demuxcheck.o: tests/guest/media/demuxcheck.c $(MED_HDRS)
 	@mkdir -p $(dir $@)
-	$(CC) $(UCFLAGS) -c $< -o $@
+	$(COMPILE) $(UCFLAGS) -c $< -o $@
 
 $(BUILD)/demuxcheck.elf: $(BUILD)/medobj/tests/guest/media/demuxcheck.o $(MED_OBJ) \
                          $(VID_OBJ) $(AUD_OBJ) $(IMGCHK_OBJ) $(GFX_OBJ) \

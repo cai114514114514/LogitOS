@@ -1,0 +1,18 @@
+[
+  {
+    "run": "idle-gmake",
+    "C_compiles": 0,
+    "disk_packs": 0,
+    "output": [
+      "gmake: Nothing to be done for 'all'."
+    ]
+  },
+  {
+    "run": "idle-apple",
+    "C_compiles": 0,
+    "disk_packs": 0,
+    "output": [
+      "make: Nothing to be done for `all'."
+    ]
+  }
+]

@@ -125,7 +125,7 @@ SSHD_OBJS := $(patsubst %.c,$(BUILD)/sshdobj/%.o,$(SSHD_SRC))
 
 $(BUILD)/sshdobj/%.o: %.c
 	@mkdir -p $(dir $@)
-	$(CC) $(UCFLAGS) -Ic/apps/libc/include/uonly $(INCDIRS) -c $< -o $@
+	$(COMPILE) $(UCFLAGS) -Ic/apps/libc/include/uonly $(INCDIRS) -c $< -o $@
 
 $(BUILD)/sshdobj/sshd_thread.o: c/apps/services/ssh/sshd_thread.asm
 	@mkdir -p $(dir $@)

@@ -52,7 +52,7 @@ ifneq ($(wildcard $(LIBMCHK_SRC)),)
 
 $(BUILD)/libmobj/libmcheck.o: $(LIBMCHK_SRC)
 	@mkdir -p $(dir $@)
-	$(CC) $(UCFLAGS) -c $< -o $@
+	$(COMPILE) $(UCFLAGS) -c $< -o $@
 
 $(BUILD)/libmcheck.elf: $(BUILD)/libmobj/libmcheck.o $(LIBM_OBJ) $(LIBC_OBJS) $(APPDIR)/crt0_cli.asm
 	@mkdir -p $(BUILD)/apps

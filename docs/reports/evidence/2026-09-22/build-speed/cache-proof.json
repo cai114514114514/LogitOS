@@ -1,0 +1,25 @@
+{
+  "runs": [
+    {
+      "mode": "disabled",
+      "objects": 3,
+      "cache_hits": 0,
+      "bytes_identical": true
+    },
+    {
+      "mode": "enabled",
+      "objects": 3,
+      "cache_hits": 3,
+      "bytes_identical": true
+    }
+  ],
+  "idle_compiles": 0,
+  "sha256": {
+    "build-fast/browserobj/c/apps/gui/browser/html/tokenizer.o": "54bf9ba15d9ce5397d1f5acd354d4a35f1fa36c2a826ee96ccf21baa455c66ca",
+    "build-fast/browserobj/c/apps/gui/browser/html/tokenizer.d": "24c5b148cc5b854c37167e75a4b78776e0fb0f44d219e7e74a3228334037aeae",
+    "build-fast/apps/gfx_effects/glass_render.o": "3280ada2e1bcd1625a7558d7250481bdf5e22c2a3ecff37651f71200e668fb67",
+    "build-fast/apps/gfx_effects/glass_render.d": "519cb482b404883a66b38113741e1b1ca837118e315b225e88cc698151fd6510",
+    "build-fast/c/crypto/hash/sha256.o": "47fe5d78dfcc4246177fb61d6d0ee8edc027b1ffff759aacddfa3e8543675703",
+    "build-fast/c/crypto/hash/sha256.d": "21732b72f12ce113c5f55930917779a61d2f89eb73b329dc69e3c02d23cecaa2"
+  }
+}

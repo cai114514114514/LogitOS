@@ -1,0 +1,4 @@
+PASS: kernel reached 64-bit C (found 'LOGIT_BOOT_OK' on serial)
+PASS: trust store enumerated at boot (trust store: 130 roots, 0 skipped)
+PASS: roots named on serial (found 'isrg_x1')
+qemu-system-x86_64: terminating on signal 15 from pid 72926 (<unknown process>)

@@ -33,7 +33,7 @@ ifneq ($(THRTEST_SRC),)
 define THRTEST_RULE
 $(BUILD)/throbj/tests/guest/sched/$(1).o: tests/guest/sched/thrtest.c c/apps/libc/include/pthread.h c/apps/libc/include/threads.h
 	@mkdir -p $$(dir $$@)
-	$(CC) $(UCFLAGS) $(2) -c $$< -o $$@
+	$(COMPILE) $(UCFLAGS) $(2) -c $$< -o $$@
 # Defer the target-local AEX activation linker through eval. Otherwise this
 # app builds successfully but keeps the old entry and is packaged as v2.
 $(BUILD)/$(1).elf: $(BUILD)/throbj/tests/guest/sched/$(1).o $(LIBC_OBJS) $(APPDIR)/crt0_cli.asm c/apps/libc/logit_tls.ld tests/thread.mk

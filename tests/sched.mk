@@ -46,7 +46,7 @@ ifneq ($(SCHED_SRC),)
 define SCHEDTEST_RULE
 $(BUILD)/schedobj/tests/guest/sched/$(1).o: tests/guest/sched/schedtest.c c/apps/libc/include/sys/resource.h
 	@mkdir -p $$(dir $$@)
-	$(CC) $(UCFLAGS) $(2) -c $$< -o $$@
+	$(COMPILE) $(UCFLAGS) $(2) -c $$< -o $$@
 # Keep the target-local AEX activation linker until recipe execution; eval's
 # early LD expansion used to leave this catalogued application at v2.
 $(BUILD)/$(1).elf: $(BUILD)/schedobj/tests/guest/sched/$(1).o $(LIBC_OBJS) $(APPDIR)/crt0_cli.asm tests/sched.mk
