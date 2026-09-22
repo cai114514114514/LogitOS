@@ -9,6 +9,9 @@
 /* --- stubs for everything http.c pulls in but we never execute --- */
 void *kmalloc(unsigned long n) { return malloc(n); }
 #include "net.h"
+/* Both header orders must coexist: net.h must not introduce static byte-order
+ * names that collide when a hosted consumer later includes this header. */
+#include <arpa/inet.h>
 struct net_config net_cfg;
 #include "tcp.h"
 #include "tls.h"
@@ -31,7 +34,17 @@ void net_idle(void) { }
 uint64_t timer_ticks(void) { return 0; }
 void rtc_now(struct rtc_time *t) { (void)t; }
 
+#ifdef HTTP_DECHUNK_PASSTHROUGH
+#define dechunk original_dechunk
+#endif
 #include "../c/net/http/http.c"
+#ifdef HTTP_DECHUNK_PASSTHROUGH
+#undef dechunk
+/* Negative control: a fetch path that returns the wire bytes without decoding
+ * must fail the byte assertions, even though its return status is successful.
+ * Rename only the included decoder so the production parser still compiles. */
+static int dechunk(char *buf, int len) { (void)buf; return len; }
+#endif
 
 static int fails;
 #define OK(cond) do { if (cond) printf("ok   %s\n", #cond); \
@@ -50,6 +63,16 @@ static int dc(const char *wire, char *out)
 int main(void)
 {
     static char b[4096];
+
+    uint16_t port = htons(0x1234);
+    uint32_t address = htonl(0x12345678);
+    const unsigned char *port_bytes = (const unsigned char *)&port;
+    const unsigned char *address_bytes = (const unsigned char *)&address;
+    OK(port_bytes[0] == 0x12 && port_bytes[1] == 0x34);
+    OK(address_bytes[0] == 0x12 && address_bytes[1] == 0x34 &&
+       address_bytes[2] == 0x56 && address_bytes[3] == 0x78);
+    OK(ntohs(port) == 0x1234);
+    OK(ntohl(address) == 0x12345678);
 
     OK(dc("4\r\nWiki\r\n5\r\npedia\r\n0\r\n\r\n", b) == 9 && !strcmp(b, "Wikipedia"));
     OK(dc("A\r\n0123456789\r\n0\r\n\r\n", b) == 10 && !strcmp(b, "0123456789"));   /* uppercase hex */

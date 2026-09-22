@@ -45,9 +45,9 @@ static struct io_domain dns_owner = IO_DOMAIN_INIT;
  *     being accepted as-is -- a truncated UDP response is not a partial
  *     answer, it is an UNRELIABLE one, and taking it at face value is how a
  *     resolver silently drops the very records truncation warns are missing.
- *   - the TTL is read off the record (clamped to [DNS_TTL_FLOOR,
- *     DNS_TTL_CEIL]) instead of a fixed 120 s. See those two constants for
- *     what each bound is for.
+ *   - the TTL is read off each accepted record and followed alias. The old
+ *     parser cached for 120 s; its replacement's lower clamp also extended
+ *     short TTLs. Only the upper cache limit remains (DNS_TTL_CEIL).
  *
  * IPv6 changes the SHAPE of a lookup, not just the record type. A name has an
  * A set and a AAAA set, they arrive in separate transactions that finish at
@@ -82,6 +82,7 @@ static struct io_domain dns_owner = IO_DOMAIN_INIT;
 #define DNS_PORT    53
 #define DNS_T_A     1
 #define DNS_T_AAAA  28
+#define DNS_C_IN    1
 #define DNS_T_CNAME 5
 
 /* Longest answer set kept per name. Eight covers every real round-robin set
@@ -136,7 +137,10 @@ static struct io_domain dns_owner = IO_DOMAIN_INIT;
  *   value was 120 s for the same reason (recover within a session); 3600 s
  *   is generous by comparison -- most CDNs advertise 60-3600 s anyway -- and
  *   still recovers well inside a single desktop session. */
-#define DNS_TTL_FLOOR 5
+/* Correction (2026-09-22) to the floor rationale above: a resolver must not
+ * extend an authority's maximum cache lifetime (RFC 1035 3.2.1 / RFC 2181 8).
+ * A zero TTL is usable only in the current transaction. A cache floor is not
+ * a substitute for checking the actual destination at connection time. */
 #define DNS_TTL_CEIL  3600
 
 /* ---- names: build, skip, decode, compare ---------------------------------- */
@@ -299,7 +303,8 @@ static int build_query_type(uint8_t *q, const char *name, int qtype,
     if (n < 0) return -1;
     o += n;
     q[o++] = (uint8_t)(qtype >> 8); q[o++] = (uint8_t)qtype;
-    q[o++] = 0; q[o++] = 1;                         /* QCLASS IN */
+    q[o++] = (uint8_t)(DNS_C_IN >> 8);
+    q[o++] = (uint8_t)DNS_C_IN;                     /* QCLASS IN */
     /* EDNS0 OPT: NAME=root, TYPE=41, CLASS=advertised UDP size, TTL carries
      * the extended-rcode/version/flags (0: no DNSSEC OK, no extended rcode),
      * RDLENGTH=0 (no options). */
@@ -334,18 +339,33 @@ static struct dns_cent *dns_cache_find(const char *name)
     return NULL;
 }
 
-/* Store the full answer set, expiring after `ttl_secs` clamped to
- * [DNS_TTL_FLOOR, DNS_TTL_CEIL]. */
-static void dns_cache_put_set(const char *name, const ip6_addr *a, int n, uint32_t ttl_secs)
+static uint64_t dns_deadline(uint32_t ttl)
+{
+#ifdef DNS_EXTEND_TTL
+    /* Negative control: restore the former five-second minimum. */
+    if (ttl < 5) ttl = 5;
+#endif
+    if (ttl > DNS_TTL_CEIL) ttl = DNS_TTL_CEIL;
+    return timer_ticks() + (uint64_t)ttl * TIMER_HZ;
+}
+
+/* Store a deadline measured when the answer arrived. Starting the TTL again
+ * here would extend it by the wait for the other address family. Expired and
+ * zero-TTL answers remain usable by their query, but cannot refresh a cache. */
+static void dns_cache_put_set(const char *name, const ip6_addr *a, int n, uint64_t expiry)
 {
     if (n <= 0) return;
     if (n > DNS_MAXA) n = DNS_MAXA;
-    if (ttl_secs < DNS_TTL_FLOOR) ttl_secs = DNS_TTL_FLOOR;
-    if (ttl_secs > DNS_TTL_CEIL)  ttl_secs = DNS_TTL_CEIL;
-    uint64_t now = timer_ticks();
     struct dns_cent *e = NULL;
     for (int i = 0; i < DNS_NCACHE; i++)          /* refresh an existing entry */
         if (dcache[i].naddr && name_eq(dcache[i].name, name)) { e = &dcache[i]; break; }
+    if (expiry <= timer_ticks()) {
+        /* A concurrent query can have populated this name since we started.
+         * Do not leave its older answer reachable after this fresh refusal
+         * to cache the name, nor evict an unrelated round-robin entry. */
+        if (e) e->naddr = 0;
+        return;
+    }
     if (!e) {
         e = &dcache[dcache_w++ % DNS_NCACHE];
         name_copy(e->name, name);
@@ -356,7 +376,7 @@ static void dns_cache_put_set(const char *name, const ip6_addr *a, int n, uint32
         e->addrs[i] = a[i];
         if (!e->ip && ip6_is_v4mapped(&a[i])) e->ip = ip6_to_v4(&a[i]);
     }
-    e->exp = now + (uint64_t)ttl_secs * TIMER_HZ;
+    e->exp = expiry;
 }
 
 /* ---- parsing one response -------------------------------------------------- */
@@ -370,7 +390,8 @@ static void dns_cache_put_set(const char *name, const ip6_addr *a, int n, uint32
  * empty": a NODATA answer for AAAA is a definitive "this name has no IPv6
  * address" and must end that half of the lookup rather than sit there
  * retransmitting. `*ttl_out` receives the smallest TTL among the records
- * accepted THIS CALL (0 if none were).
+ * accepted THIS CALL, including the aliases needed to reach them (0 if no
+ * address was accepted). Zero is also a valid TTL, not an unset sentinel.
  *
  * Before this function compared owner names, ANY A/AAAA record anywhere in
  * the answer section -- for whatever name -- was accepted as the answer to
@@ -424,6 +445,19 @@ static int collect_answers(const uint8_t *msg, int rlen, uint16_t want,
         int rdata = off + 10;
         if (rdata + rdlen > rlen) break;            /* truncated record */
 
+#ifndef DNS_NO_CLASS_MATCH
+        /* Owner matching alone used to admit A/AAAA and CNAME records from
+         * other classes into an IN lookup and its cache. Reject them before
+         * a CNAME can change the target, but keep scanning: mixed responses
+         * may contain a legitimate IN record later. The control restores the
+         * old behavior only for `make test-dns-class-negctl`. */
+        int record_class = (msg[off + 2] << 8) | msg[off + 3];
+        if (record_class != DNS_C_IN) {
+            off = rdata + rdlen;
+            continue;
+        }
+#endif
+
 #ifdef DNS_NO_NAME_MATCH
         /* NEGATIVE CONTROL ONLY (`make test-dns-negctl`), never in the kernel
          * build: accept a record regardless of whose name it is for -- the
@@ -439,6 +473,12 @@ static int collect_answers(const uint8_t *msg, int rlen, uint16_t want,
             int coff = read_name(msg, rdata, rlen, cn, sizeof cn);
             if (coff >= 0 && cnames_followed < DNS_MAX_CNAME) {
                 cnames_followed++;
+#ifndef DNS_NO_ALIAS_TTL
+                /* Caching qname -> address depends on every alias in between.
+                 * The old parser kept only the terminal address TTL, so a
+                 * changed short-lived alias kept resolving to its old target. */
+                if (!have_ttl || ttl < min_ttl) { min_ttl = ttl; have_ttl = 1; }
+#endif
                 int j = 0;
                 while (cn[j] && j < DNS_NAME_MAX - 1) { target[j] = cn[j]; j++; }
                 target[j] = 0;
@@ -468,7 +508,7 @@ static int collect_answers(const uint8_t *msg, int rlen, uint16_t want,
         }
         off = rdata + rdlen;
     }
-    if (ttl_out) *ttl_out = have_ttl ? min_ttl : 0;
+    if (ttl_out) *ttl_out = added && have_ttl ? min_ttl : 0;
     return added;
 }
 
@@ -507,7 +547,8 @@ struct dns_query {
     uint32_t ip;                    /* first A record, for the legacy uint32 API */
     ip6_addr addrs[DNS_MAXA];
     uint8_t  naddr;
-    uint32_t ttl;                   /* smallest clamped TTL seen so far, 0 = none yet */
+    uint32_t ttl;                   /* smallest accepted TTL, including a real zero */
+    uint64_t expiry;                /* earliest deadline, measured at reception */
     uint64_t t0, last, t_first;     /* t_first: when the first family answered */
     char     name[DNS_NAME_MAX];
 };
@@ -545,6 +586,7 @@ static void dq_send(struct dns_query *q)
 static void dq_accept(struct dns_query *q, const uint8_t *msg, int rlen, int for6, uint16_t want)
 {
     int n = q->naddr;
+    int first = (n == 0);
     uint32_t ttl = 0;
     int got = collect_answers(msg, rlen, want, q->name, q->addrs, DNS_MAXA, &n, &ttl);
     if (got < 0) return;                    /* not ours / malformed: ignore */
@@ -555,9 +597,27 @@ static void dq_accept(struct dns_query *q, const uint8_t *msg, int rlen, int for
             for (int k = 0; k < n; k++)
                 if (ip6_is_v4mapped(&q->addrs[k])) { q->ip = ip6_to_v4(&q->addrs[k]); break; }
     }
-    if (got > 0 && (!q->ttl || ttl < q->ttl))
-        q->ttl = ttl;
+    if (got > 0) {
+#ifdef DNS_ZERO_TTL_UNSET
+        /* Negative control: the former zero-as-unset family merge. */
+        first = !q->ttl;
+#endif
+        uint64_t expiry = dns_deadline(ttl);
+        if (first || ttl < q->ttl) q->ttl = ttl;
+        if (first || expiry < q->expiry) q->expiry = expiry;
+    }
     if (!q->t_first) q->t_first = timer_ticks();
+}
+
+static void dq_cache(const struct dns_query *q)
+{
+#ifdef DNS_RESET_CACHE_AGE
+    /* Negative control: ignore the time spent awaiting the other family. */
+    uint64_t expiry = dns_deadline(q->ttl);
+#else
+    uint64_t expiry = q->expiry;
+#endif
+    if (q->naddr) dns_cache_put_set(q->name, q->addrs, q->naddr, expiry);
 }
 
 /* ---- DNS-over-TCP fallback --------------------------------------------------
@@ -782,7 +842,7 @@ static void dq_advance(struct dns_query *q)
                         q->failed ? " FAILED" : "");
             }
         }
-        if (q->naddr) dns_cache_put_set(q->name, q->addrs, q->naddr, q->ttl ? q->ttl : DNS_TTL_FLOOR);
+        dq_cache(q);
         return;
     }
     if (now - q->t0 >= DNS_GIVEUP) {
@@ -790,7 +850,7 @@ static void dq_advance(struct dns_query *q)
          * an A record and never heard about AAAA has an answer. */
         q->done = 1;
         q->failed = (q->naddr == 0);
-        if (q->naddr) dns_cache_put_set(q->name, q->addrs, q->naddr, q->ttl ? q->ttl : DNS_TTL_FLOOR);
+        dq_cache(q);
         return;
     }
     if (now - q->last >= DNS_RETX) dq_send(q);

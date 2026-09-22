@@ -4,7 +4,15 @@
 
 #include <stdint.h>
 
-/* Host byte order helpers (x86 is little-endian; network is big-endian). */
+/* Host byte order helpers (x86 is little-endian; network is big-endian).
+ * Correction: these were also declared in hosted tests, where Darwin expands
+ * the names as macros and other libcs declare external functions. Use the
+ * host's definitions there; undefining macros alone still conflicts with the
+ * external declarations when a test later includes <arpa/inet.h>. The kernel
+ * remains freestanding and keeps its existing x86 swaps. */
+#if __STDC_HOSTED__
+#include <arpa/inet.h>
+#else
 static inline uint16_t htons(uint16_t x) { return (uint16_t)((x << 8) | (x >> 8)); }
 static inline uint16_t ntohs(uint16_t x) { return htons(x); }
 static inline uint32_t htonl(uint32_t x)
@@ -13,6 +21,7 @@ static inline uint32_t htonl(uint32_t x)
            ((x >> 8) & 0xFF00) | ((x >> 24) & 0xFF);
 }
 static inline uint32_t ntohl(uint32_t x) { return htonl(x); }
+#endif
 
 /* Build an IPv4 address (a.b.c.d) in host order. */
 #define IPV4(a, b, c, d) (((uint32_t)(a) << 24) | ((uint32_t)(b) << 16) | \

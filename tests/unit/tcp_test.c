@@ -905,6 +905,18 @@ int main(void)
         CHECK(ol == 18 && rd32_(v + 8) == P + 200,
               "sack-rx: older block second (%u)", ol >= 18 ? rd32_(v + 8) : 0);
         CHECK(c->n_ooo == 2, "sack-rx: two intervals held (%d)", c->n_ooo);
+        /* The ACK that reports those holes can also carry a full data
+         * segment. ip_send drops anything over 1480 bytes of TCP (20-byte IP
+         * header, 1500-byte buffer) and send_seg ignores the error, so the
+         * payload has to shrink by the SACK bytes, not only the timestamp. */
+        g_ncap = 0;
+        tcp_send_nb(id, sendbuf, 8000);
+        for (int i = 0; i < g_ncap; i++) {
+            if (g_cap[i].dlen <= 0) continue;
+            CHECK(g_cap[i].hlen + g_cap[i].dlen <= 1480,
+                  "sack-rx: data+options %d+%d exceeds the 1480-byte IP payload",
+                  g_cap[i].hlen, g_cap[i].dlen);
+        }
     }
 
     /* 14) SACK refused: holes produce plain duplicate ACKs, no SACK option. */
@@ -1355,6 +1367,28 @@ int main(void)
         g_ncap = 0;
         inject_full(B, B, conns[0].snd_una, 4096, 0, ACK, NULL, 0);
         CHECK(!conns[0].persist_running, "zero window: persist stops when it reopens");
+    }
+    /* 28b) The probe is one byte at snd_nxt, recorded in snd_max and not in
+     * snd_nxt. The peer's ACK of that byte is snd_nxt+1. That ACK also
+     * carries the reopened window; dropping it as "never sent" leaves the
+     * window at 0 forever. */
+    setup(B);
+    conns[0].snd_wnd = 0;
+    {
+        uint32_t seq0 = conns[0].snd_nxt;
+        int ns = tcp_send_nb(0, sendbuf, 1);
+        CHECK(ns == 1, "probe-ack: byte queued (%d)", ns);
+        g_ncap = 0;
+        for (int i = 0; i < 12; i++) { tcp_poll(); g_ticks += 2000; }
+        CHECK(g_ncap >= 1 && last()->dlen == 1 && last()->seq == seq0,
+              "probe-ack: probed the queued byte (segs=%d seq off=%d)",
+              g_ncap, g_ncap ? (int)(last()->seq - seq0) : -1);
+        inject_full(B, B, seq0 + 1, 4096, 0, ACK, NULL, 0);
+        CHECK(conns[0].snd_wnd == 4096,
+              "probe-ack: window reopened (%u)", conns[0].snd_wnd);
+        CHECK(conns[0].snd_una == seq0 + 1,
+              "probe-ack: the probed byte is acknowledged (una off=%d)",
+              (int)(conns[0].snd_una - seq0));
     }
 
     /* 29) close: the FIN takes a sequence AFTER everything queued, so it can

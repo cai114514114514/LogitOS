@@ -17,7 +17,13 @@ void http_unlock(void) { io_domain_leave(&http_owner); }
 #include "pit.h"
 #include "rtc.h"
 
+/* The host decoder test includes this translation unit after <string.h>.
+ * Darwin's fortified memcpy is a function-like macro; redeclaring that name
+ * expands its implementation in a prototype. Keep the kernel declaration
+ * only when the includer has not already supplied that macro. */
+#ifndef memcpy
 void *memcpy(void *, const void *, size_t);
+#endif
 void *kmalloc(unsigned long);
 
 #define RAW_MAX  (1024*1024)  /* big enough for large pages + stylesheets (github's

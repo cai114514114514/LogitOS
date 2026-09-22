@@ -500,7 +500,20 @@ static int parse_options(const uint8_t *opt, int len, struct tcp_opts *o)
  * MSS so a full-sized segment still fits the path MTU (RFC 6691). */
 static uint32_t data_optlen(struct tcp_conn *c)
 {
-    return c->ts_ok ? 12u : 0u;     /* NOP NOP TSopt */
+    uint32_t n = c->ts_ok ? 12u : 0u;     /* NOP NOP TSopt */
+    /* SACK blocks are appended by build_options on the same data ACK.
+     * Subtracting only the timestamp left a full MSS payload plus those
+     * blocks over ip_send's 1500-byte buffer (20 IP + 20 TCP + options +
+     * payload). The segment was dropped and send_seg ignored the error.
+     * The room arithmetic is build_options' own, not a second estimate:
+     * (MAXOPT - n - 4) / 8 blocks, capped at 4 and at n_ooo. */
+    if (c->sack_ok && c->n_ooo > 0) {
+        uint32_t room = (MAXOPT - n - 4u) / 8u;
+        if (room > 4u) room = 4u;
+        if (room > (uint32_t)c->n_ooo) room = (uint32_t)c->n_ooo;
+        if (room > 0) n += 4u + 8u * room;    /* NOP NOP kind len + blocks */
+    }
+    return n;
 }
 
 static void wr32(uint8_t *p, uint32_t v)
@@ -1029,7 +1042,11 @@ static void cc_on_rto(struct tcp_conn *c)
 static void update_send_window(struct tcp_conn *c, uint32_t seg_seq,
                                uint32_t seg_ack, uint16_t seg_wnd)
 {
-    if (!seq_le(c->snd_una, seg_ack) || !seq_le(seg_ack, c->snd_nxt)) return;
+    /* snd_max, not snd_nxt. A zero-window probe transmits one byte and
+     * records it in snd_max without moving snd_nxt, so the peer's ACK of
+     * that byte is above snd_nxt. Treating snd_nxt as the ceiling drops the
+     * window update the ACK was carrying (tcp_test probe-ack). */
+    if (!seq_le(c->snd_una, seg_ack) || !seq_le(seg_ack, c->snd_max)) return;
     if (seq_lt(c->snd_wl1, seg_seq) ||
         (c->snd_wl1 == seg_seq && seq_le(c->snd_wl2, seg_ack))) {
         uint32_t w = (uint32_t)seg_wnd << c->snd_scale;
@@ -1507,7 +1524,10 @@ void tcp_input_af(const struct tcp_addr *src, const struct tcp_addr *dst,
 
     c->rx_tick = timer_ticks();
 
-    if (seq_lt(c->snd_nxt, seg_ack)) {         /* acknowledges bytes never sent */
+    /* snd_max, not snd_nxt: the probe byte was transmitted (see
+     * update_send_window). An ACK of it is not an ACK of something we
+     * never sent. */
+    if (seq_lt(c->snd_max, seg_ack)) {
         send_ack(c);
         return;
     }
@@ -1519,7 +1539,7 @@ void tcp_input_af(const struct tcp_addr *src, const struct tcp_addr *dst,
     int new_sack = (c->n_sacked != had_sack);
 
     uint32_t acked = 0;
-    if (seq_lt(c->snd_una, seg_ack) && seq_le(seg_ack, c->snd_nxt)) {
+    if (seq_lt(c->snd_una, seg_ack) && seq_le(seg_ack, c->snd_max)) {
         acked = seg_ack - c->snd_una;
         c->snd_una = seg_ack;
         c->n_sacked = iv_trim(c->sacked, c->n_sacked, c->snd_una);

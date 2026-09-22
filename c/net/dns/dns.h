@@ -28,9 +28,9 @@ uint32_t dns_result(void);
  * dns_query_start() returns a query id, dns_query_result() reports 0 pending /
  * 0xFFFFFFFF failed / the address, dns_query_free() releases the slot, and
  * dns_poll() (pumped from net_poll) is what advances all of them. Answers are
- * kept in a small name cache, expiring per the record's own TTL (clamped --
- * see DNS_TTL_FLOOR/DNS_TTL_CEIL in dns.c), so a page's many sub-resource
- * hosts cost one lookup each rather than one per connection. */
+ * kept in a small name cache until the earliest address/alias TTL expires,
+ * capped by DNS_TTL_CEIL in dns.c. Zero-TTL answers serve the current query
+ * only; awaiting another address family does not restart their lifetime. */
 int      dns_query_start(const char *name);
 uint32_t dns_query_result(int id);
 void     dns_query_free(int id);

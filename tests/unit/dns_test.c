@@ -64,8 +64,10 @@ int arp_resolve(uint32_t ip, uint8_t mac[ETH_ALEN])
 int arp_warm(uint32_t ip, int t) { (void)ip; (void)t; return 0; }
 void arp_input(const uint8_t *f, uint16_t l) { (void)f; (void)l; }
 
-/* IPv4-only throughout: see the file header for why. */
-int ip6_up(void) { return 0; }
+/* This suite stays IPv4-only. The TTL suite reuses the transport with a
+ * routable IPv6 interface so dual-family replies use the real query branch. */
+static int fixture_ip6_state;
+int ip6_up(void) { return fixture_ip6_state; }
 int ip6_dual_candidates(struct ip6_src_cand *cand, int max)
 {
     int n = 0;
@@ -319,6 +321,7 @@ static void reset_dns(void)
     nsent = 0;
     next_id = 0x2000;
     ticks = 1000;
+    fixture_ip6_state = 0;
 }
 
 static void tick_to(int n) { for (int i = 0; i < n; i++) { ticks++; dns_poll(); } }
@@ -546,9 +549,11 @@ static void test_ttl_is_read_from_the_record(void)
     dns_query_free(id);
 }
 
-static void test_ttl_floor_and_ceiling(void)
+static void test_ttl_lifetime_and_ceiling(void)
 {
-    /* Below the floor: DNS_TTL_FLOOR governs the cache entry's expiry. */
+    /* This used to assert that DNS_TTL_FLOOR extended a 1 s answer. A TTL
+     * is a maximum cache lifetime (RFC 2181 section 8), so even that small
+     * extension served an answer after its owner said it had expired. */
     reset_dns();
     int id = dns_query_start("low.test");
     static const uint8_t a1[4] = { 1, 1, 1, 1 };
@@ -560,10 +565,10 @@ static void test_ttl_floor_and_ceiling(void)
     dns_poll();
     struct dns_cent *e = dns_cache_find("low.test");
     CHECK(e != NULL, "cached");
-    if (e) CHECK(e->exp == before + (uint64_t)DNS_TTL_FLOOR * TIMER_HZ,
-                 "a 1 s TTL is floored to DNS_TTL_FLOOR (%u) in the cache (exp %llu vs %llu)",
-                 DNS_TTL_FLOOR, (unsigned long long)e->exp,
-                 (unsigned long long)(before + (uint64_t)DNS_TTL_FLOOR * TIMER_HZ));
+    if (e) CHECK(e->exp == before + TIMER_HZ,
+                 "a 1 s TTL expires after exactly 1 s (exp %llu vs %llu)",
+                 (unsigned long long)e->exp,
+                 (unsigned long long)(before + TIMER_HZ));
     dns_query_free(id);
 
     /* Above the ceiling: DNS_TTL_CEIL governs it instead. */
@@ -637,7 +642,7 @@ int main(void)
     test_truncated_falls_back_to_tcp();
     test_compression_pointer_loop();
     test_ttl_is_read_from_the_record();
-    test_ttl_floor_and_ceiling();
+    test_ttl_lifetime_and_ceiling();
     test_edns0_advertised();
     test_spoofed_txid_ignored();
     printf("dns: %d passed, %d failed\n", passed, failed);
