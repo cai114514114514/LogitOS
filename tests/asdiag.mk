@@ -22,9 +22,9 @@ test-as-diag: check-abi $(BUILD)/asc
 
 # The host exercises the same engine objects without any GUI/Logit syscalls.
 $(BUILD)/asc: c/apps/as/common/diagnostic.h
-STUDIO_HOST_SRC := $(wildcard c/apps/studio/*.c) c/apps/as/editor/completion.c c/apps/as/common/version.c c/lib/agent/json.c c/lib/agent/task.c c/drivers/block/crc32.c
+STUDIO_HOST_SRC := $(wildcard c/apps/gui/studio/core/*.c) c/apps/as/editor/completion.c c/apps/as/common/version.c c/lib/agent/json.c c/lib/agent/task.c c/drivers/block/crc32.c
 .PHONY: test-studio-core test-studio-core-negctl test-as-check
-$(BUILD)/studio-core-test: tests/unit/studio_core_test.c $(STUDIO_HOST_SRC) $(wildcard c/apps/studio/*.h)
+$(BUILD)/studio-core-test: tests/unit/studio_core_test.c $(STUDIO_HOST_SRC) $(wildcard c/apps/gui/studio/core/*.h)
 	@mkdir -p $(BUILD)
 	$(CC) -std=c11 -D_DEFAULT_SOURCE -Wall -Wextra -Wno-unused-function -Wno-misleading-indentation -O1 -g -fsanitize=address,undefined tests/unit/studio_core_test.c $(STUDIO_HOST_SRC) -o $@
 test-studio-core-negctl: $(BUILD)/studio-core-test $(BUILD)/asc as-toolchain
@@ -62,7 +62,7 @@ test-as-typed test-as-completion: test-as-recovery
 $(BUILD)/asc: c/apps/as/common/numeric.h
 $(BUILD)/asc-numeric-debug: $(AS_CORE) c/apps/as/cli/main.c c/apps/as/common/numeric.h c/apps/as/common/diagnostic.h c/apps/as/sema/abi_layout.inc
 	@mkdir -p $(BUILD)
-	$(CC) -O0 -g -fsanitize=address,undefined -o $@ c/apps/as/cli/main.c $(AS_CORE) -Ic/apps/as -Iinclude/abi
+	$(CC) -O0 -g -fsanitize=address,undefined -o $@ c/apps/as/cli/main.c $(AS_CORE) -Ic/apps/as -Iinclude/abi -lm
 $(BUILD)/asc-numeric-debug: $(AS_HDRS)
 test-as-numeric-negctl: check-abi
 	@python3 tests/unit/as_numeric_negative.py
@@ -138,7 +138,7 @@ test-as-diag-negctl-line: check-abi $(BUILD)/asc
 
 # Recording primitives execute the actual Studio renderer, not a copied model.
 .PHONY: test-studio-render test-studio-render-negctl
-$(BUILD)/studio-render-test: tests/unit/studio_render_test.c c/apps/studio/studio_render.inc c/apps/studio/studio_code.inc c/apps/studio/studio_completion.inc $(STUDIO_HOST_SRC) $(wildcard c/apps/studio/*.h)
+$(BUILD)/studio-render-test: tests/unit/studio_render_test.c c/apps/gui/studio/core/studio_render.inc c/apps/gui/studio/core/studio_code.inc c/apps/gui/studio/core/studio_completion.inc $(STUDIO_HOST_SRC) $(wildcard c/apps/gui/studio/core/*.h)
 	$(CC) -std=c11 -D_DEFAULT_SOURCE -O1 -g -fsanitize=address,undefined -Wno-unused-function tests/unit/studio_render_test.c $(STUDIO_HOST_SRC) -o $@
 test-studio-render-negctl: $(BUILD)/studio-render-test
 	@python3 tests/unit/studio_render_gate.py --negative

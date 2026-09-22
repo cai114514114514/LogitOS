@@ -2,7 +2,7 @@
 # storprobe -- the Step-0 capability matrix for the storage-kernel wave
 # (2026-08-30). Driven by tests/boot/run-storage-test.sh.
 #
-# WHAT THIS MEASURES AND WHY A SCRIPT. c/apps/browser/js_idb.c and js_cache.c
+# WHAT THIS MEASURES AND WHY A SCRIPT. c/apps/gui/browser/js/storage/idb.c and js_cache.c
 # both refuse durability with the same sentence: "there is no VFS positional
 # write to build real durability on (CLAUDE.md structural gap #3)". That
 # sentence was written before SYS_CLOSE could report a failed flush, before

@@ -117,7 +117,7 @@ def negative_control():
         subprocess.run([os.environ.get("CC", "clang"), "-O1", "-g",
                         "-fsanitize=address,undefined", "-I" + str(original.parent),
                         "-I" + str(ROOT / "c/apps/as"), "-I" + str(ROOT / "include/abi"),
-                        *map(str, sources), "-o", str(compiler)], cwd=ROOT, check=True,
+                        *map(str, sources), "-o", str(compiler), "-lm"], cwd=ROOT, check=True,
                        capture_output=True)
         try:
             exercise(compiler)

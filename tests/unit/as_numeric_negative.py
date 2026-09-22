@@ -45,7 +45,7 @@ def main():
                 "-I" + str(ROOT / "c/apps/as"),
                 "-I" + str(ROOT / "include/abi"),
                 *[str(mutant if path == original else path) for path in sources],
-                "-o", str(executable),
+                "-o", str(executable), "-lm",
             ]
             subprocess.run(command, cwd=ROOT, check=True, capture_output=True, text=True)
 

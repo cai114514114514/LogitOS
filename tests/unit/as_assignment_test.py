@@ -193,7 +193,7 @@ def jar_control():
                    "-I" + str(work),
                    "-I" + str(ROOT / "c/apps/as"), "-I" + str(ROOT / "include/abi"),
                    *sources,
-                   "-o", compiler]
+                   "-o", compiler, "-lm"]
         result = invoke(command)
         assert result.returncode == 0, result.stderr
         ir = work / "compound-ops.ll"
@@ -228,7 +228,7 @@ def compound_controls():
             command = [os.environ.get("CC", "clang"), "-O1",
                        "-I" + str(ROOT / "c/apps/as"), "-I" + str(ROOT / "include/abi"),
                        *[mutant if path == original else path for path in sources],
-                       "-o", compiler]
+                       "-o", compiler, "-lm"]
             result = invoke(command)
             assert result.returncode == 0, result.stderr
             ir = work / "compound.ll"

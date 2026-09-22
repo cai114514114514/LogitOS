@@ -45,6 +45,17 @@ $(BUILD)/aether-toolchain/lib/%.as: fsroot/as/lib/%.as
 .PHONY: test-as-any test-as-any-negctl
 .PHONY: test-as-conversions test-as-conversions-negctl
 .PHONY: test-as-float test-as-float-negctl
+.PHONY: test-as-promotion test-as-promotion-negctl test-as-promotion-guest
+test-as-promotion-negctl: $(BUILD)/asc as-toolchain
+	python3 tests/unit/as_promotion_test.py $(BUILD)/asc --negative-control
+test-as-promotion: test-as-promotion-negctl
+	python3 tests/unit/as_promotion_test.py $(BUILD)/asc
+test-as-typed: test-as-promotion
+$(BUILD)/mixed.aex: tests/fixtures/astyped/mixed_numeric/main.as $(BUILD)/asc $(AS_NATIVE_SRCS) $(AS_NATIVE_HEADERS) | as-toolchain
+	$(BUILD)/asc build $< --target logitos-x86_64 --toolchain $(BUILD)/aether-toolchain -o $@
+test-as-promotion-guest: test-as-promotion test-as-eval $(BUILD)/as.aex $(BUILD)/studio.aex $(BUILD)/mixed.aex
+	python3 tests/boot/run-as-numeric.py --build $(BUILD) --base $(AS_TYPED_GUEST_BASE) --native $(BUILD)/mixed.aex --out $(BUILD)/numeric-guest-$$$$
+ci-boot: test-as-promotion-guest
 .PHONY: test-as-dict test-as-dict-negctl
 .PHONY: test-as-callable test-as-callable-negctl
 .PHONY: test-as-stats test-as-stats-negctl
@@ -364,7 +375,7 @@ test-as-globals: test-as-globals-negctl
 # AS_NATIVE_FRONTEND shares the compiler directory inventory in sources.mk.
 $(BUILD)/as-native-link-test: tests/unit/as_native_link_test.c $(AS_NATIVE_FRONTEND) $(AS_HDRS) $(AS_NATIVE_MANIFEST) c/apps/as/sources.mk
 	@mkdir -p $(dir $@)
-	$(CC) -O2 -Wall -Wextra -Ic/apps/as $< $(AS_NATIVE_FRONTEND) -o $@
+	$(CC) -O2 -Wall -Wextra -Ic/apps/as $< $(AS_NATIVE_FRONTEND) -o $@ -lm
 test-as-native-link: $(BUILD)/as-native-link-test
 	$< run tests/fixtures/astyped/managed/main.as --stdlib fsroot/as/lib --toolchain c/apps/as/runtime
 # This is the final hard gate, not a claim that today's migration is complete.

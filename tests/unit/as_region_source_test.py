@@ -185,7 +185,7 @@ def controls(compiler, work):
     result = invoke([os.environ.get("CC", "clang"), "-O1",
                      "-I" + str(ROOT / "c/apps/as"), "-I" + str(ROOT / "include/abi"),
                      *[changed if path == original else path for path in compiler_sources()],
-                     "-o", mutant])
+                     "-o", mutant, "-lm"])
     assert result.returncode == 0, result.stderr
     for source in cases.values():
         result = invoke([mutant, "check", source, "--json"])

@@ -30,6 +30,7 @@ int at_scope_name_equal(Token token, const char *name);
 int at_check_byte_storage(AsTypedProject *project, int type, int writable);
 void at_check_error(Checker *checker, AtNode *node, const char *code, const char *message);
 void at_check_mismatch(Checker *checker, AtNode *node, int expected, int actual);
+void at_check_assignment_type(Checker *checker, AtNode *assignment, int expected, int actual);
 int at_scope_local(AtFunction *function, Token token);
 int at_scope_resolve_local(Checker *checker, Token token);
 int at_closure_capture(Checker *checker, Token name);

@@ -4,31 +4,6 @@
 #include <stdlib.h>
 #include <stdio.h>
 
-int at_integer(AsTypedProject *p, int t)
-{
-    return t >= 0 && t < p->ntypes && p->types[t].kind >= AT_I8 && p->types[t].kind <= AT_U64;
-}
-
-int at_signed(AsTypedProject *p, int t)
-{
-    return at_integer(p, t) && p->types[t].kind <= AT_I64;
-}
-
-int at_bits(AsTypedProject *p, int t)
-{
-    int k = p->types[t].kind;
-    return k == AT_BOOL       ? 1
-           : k == AT_F32      ? 32
-           : k == AT_F64      ? 64
-           : at_integer(p, t) ? 8 << ((k - AT_I8) % 4)
-                              : 0;
-}
-
-int at_check_number(AsTypedProject *p, int t)
-{
-    return at_satisfies_constraint(p, t, AT_CONSTRAINT_NUMBER);
-}
-
 static int integer_operand(AsTypedProject *project, int type)
 {
     return at_satisfies_constraint(project, type, AT_CONSTRAINT_INTEGER);
@@ -910,7 +885,15 @@ static int expression_type(Checker *c, AtNode *n, int want)
             ty = AT_STR;
             break;
         }
-        at_check_mismatch(c, n, a, b);
+        int numeric_op = comparison || n->op == T_PLUS || n->op == T_MINUS ||
+                         n->op == T_STAR || n->op == T_SLASH || n->op == T_PERCENT ||
+                         n->op == T_POW;
+        int common = numeric_op ? at_numeric_type(p, a, b) : AT_ERROR;
+        if (common) {
+            a = common;
+        } else {
+            at_check_mismatch(c, n, a, b);
+        }
         ty = a;
         if (n->op == T_AND || n->op == T_OR) {
             at_check_mismatch(c, n, AT_BOOL, a);
@@ -935,8 +918,8 @@ static int expression_type(Checker *c, AtNode *n, int want)
         /* Power is Integer-only for generic parameters (LANGUAGE_3.md section 2
          * puts 乘方 under Integer), but concrete f32/f64 have an IEEE lowering
          * (backend at_ir_numeric's llvm.pow row), so they are admitted here.
-         * `2.0 ** 2` still refuses one line up, at_check_mismatch: the two
-         * operands must share one float type. */
+         * Previously `2.0 ** 2` was refused by at_check_mismatch. The 2026-09-22
+         * numeric promotion rule now converts its integer operand to f64. */
         if (n->op == T_POW && a && !integer_operand(p, a) && a != AT_F32 && a != AT_F64) {
             at_check_error(c, n, "AS3202",
                            "Power requires Integer operands or concrete f32/f64");

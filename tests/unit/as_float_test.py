@@ -23,11 +23,11 @@ def gate(compiler, work):
         if not condition:
             raise AssertionError(name + ": " + details)
 
-    # Doors that must stay shut after float ** opened: mixed-type operands,
-    # compound **= on floats (Integer constraint set), power on a bare Number
-    # generic parameter (section 2 of LANGUAGE_3.md puts 乘方 under Integer).
+    # This previously refused mixed-type operands too. Correction 2026-09-22:
+    # integer/float power now promotes like the other arithmetic expressions;
+    # as_promotion_test covers it. Compound **= on floats and power on a bare
+    # Number generic parameter retain their separate Integer constraint.
     cases = {
-        "power-mixed": 'x = 2.0 ** 2',
         "power-compound": 'x = 2.0\n    x **= 2.0',
         "power-number-generic": None,
     }
@@ -77,7 +77,7 @@ def gate(compiler, work):
 
 def exercise(compiler):
     count = gate(compiler, Path(tempfile.mkdtemp(prefix="as-float-run-")))
-    print(f"PASS float power: {count} checks, 3 refusal doors, O0/O2 fixture")
+    print(f"PASS float power: {count} checks, 2 refusal doors, O0/O2 fixture")
 
 
 def negative_control(compiler):
@@ -100,7 +100,7 @@ def negative_control(compiler):
             "-I" + str(ROOT / "c/apps/as"),
             "-I" + str(ROOT / "include/abi"),
             *[str(mutant if path == original else path) for path in sources],
-            "-o", str(executable),
+            "-o", str(executable), "-lm",
         ]
         invoke(command, cwd=ROOT)
 

@@ -204,6 +204,67 @@ int main(void)
        "14\n");
     ok("integer division", PROG("    print(7 / 2, 7 % 2, -7 / 2)\n"), "3 1 -3\n");
 
+    /* The reported Studio program is top-level, so checking only a native
+     * executable or only a function body misses the actual execution path.
+     * Operand order, unsigned values, and f32 rounding catch plausible wrong
+     * answers that the original `1.0 + 2` example alone cannot distinguish. */
+    ok("top-level mixed numbers", "# aether: 3.0\ny = 2\nx = 1.0\nprint(x + y)\n", "3\n");
+    ok("mixed arithmetic both orders",
+       PROG("    i = 2\n    f = 8.0\n    print(f + i, i + f, f - i, i - f, f * i, i * f)\n"
+            "    print(f / i, i / f, f % i, i % f)\n"),
+       "10 10 6 -6 16 16\n4 0.25 0 2\n");
+    ok("float remainder sign", PROG("    print(5.5 % 2, -5.5 % 2, 5 % -2.0)\n"),
+       "1.5 -1.5 1\n");
+    ok("mixed power", PROG("    print(2.0 ** -2, 2 ** 3.0, 0.0 ** 0)\n"), "0.25 8 1\n");
+    ok("mixed comparisons",
+       PROG("    i = 2\n    f = 2.5\n    print(i == f, i != f, i < f, i <= f, i > f, i >= f)\n"
+            "    print(f == i, f != i, f < i, f <= i, f > i, f >= i)\n"
+            "    print(2.0 == i, i <= 2.0, 2.0 >= i)\n"),
+       "false true true true false false\nfalse true false false true true\ntrue true true\n");
+    ok("float NaN comparisons",
+       PROG("    n = (-1.0) ** 0.5\n    print(n != 0, n == 0, n < 0, n <= 0, n > 0, n >= 0)\n"),
+       "true false false false false false\n");
+    ok("f32 operands and result",
+       PROG("    f: f32 = 16777216.0\n    i = 16777217\n    one = 1\n"
+            "    print(i - f, f + one, one + f)\n    literal: f32 = 16777217.0\n"
+            "    print(literal)\n"),
+       "0 16777216 16777216\n16777216\n");
+    ok("f64 widens f32",
+       PROG("    f: f32 = 16777216.0\n    d: f64 = 1.0\n    print(f + d, d + f)\n"),
+       "16777217 16777217\n");
+    ok("unsigned float conversion",
+       PROG("    u: u64 = 18446744073709551615\n    zero = 0.0\n"
+            "    print(u, u + zero > 0, zero + u == 18446744073709551616.0)\n"),
+       "18446744073709551615 true true\n");
+    ok("signed minimum promotion",
+       PROG("    i = -9223372036854775808\n    zero = 0.0\n"
+            "    print(i, i + zero == -9223372036854775808.0, zero + i < 0)\n"),
+       "-9223372036854775808 true true\n");
+    ok("unary plus before promotion",
+       PROG("    f: f32 = 16777217.0\n    print(+f + 1, +1.5 + 2)\n"),
+       "16777216 3.5\n");
+    /* 2^63 + 2^39 + 1 is just above an f32 midpoint, but double rounds it
+     * back to the midpoint. A u64 -> double -> float detour chooses the wrong
+     * neighbor; the direct cast required by uitofp chooses 2^63 + 2^40. */
+    ok("unsigned direct f32 rounding",
+       PROG("    u: u64 = 9223372586610589697\n    zero: f32 = 0.0\n"
+            "    upper: f32 = 9223373136366403584.0\n    print(u + zero == upper)\n"),
+       "true\n");
+    ok("float compound integers",
+       PROG("    f = 8.0\n    i = 2\n    f += i\n    print(f)\n    f -= i\n    print(f)\n"
+            "    f *= i\n    print(f)\n    f /= i\n    print(f)\n    f %= 3\n    print(f)\n"),
+       "10\n8\n16\n8\n2\n");
+    ok("f32 compound rounds",
+       PROG("    f: f32 = 16777216.0\n    i = 1\n    f += i\n    f -= 16777216\n    print(f)\n"),
+       "0\n");
+    ok("mixed calls once in order",
+       "# aether: 3.0\ndef left() -> f64:\n    print(\"left\")\n    return 1.0\n"
+       "def right() -> i64:\n    print(\"right\")\n    return 2\n"
+       "def main() -> None:\n    print(left() + right())\n",
+       "left\nright\n3\n");
+    refuse("mixed divide by zero", PROG("    print(1.0 / 0)\n"));
+    refuse("mixed remainder by zero", PROG("    print(1 % -0.0)\n"));
+
     /* --- the demo itself, byte for byte (fsroot/docs/demo.as) ------------- */
     ok("demo.as",
        "# aether: 3.0\ndef sq(n: i64) -> i64:\n    return n * n\n\n\n"

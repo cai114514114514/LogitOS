@@ -58,15 +58,20 @@
 
 AS_EVAL_SRC := tests/unit/as_eval_test.c
 AS_EVAL_INC := -Ic/apps/as -Iinclude/abi
+# Float arithmetic in the Studio execution path uses the platform libm on
+# hosts, and the existing freestanding musl archive in /bin/as.
+AS_EVAL_LIBS := -lm
+# Restoring the old float refusal must reject the same screenshot program that
+# Studio now runs; a native-LLVM-only test would never exercise this branch.
 
 $(BUILD)/as_eval_test: $(AS_EVAL_SRC) $(AS_CORE)
 	@mkdir -p $(BUILD)
-	@$(CC) -O2 -w -o $@ $(AS_EVAL_SRC) $(AS_CORE) $(AS_EVAL_INC)
+	@$(CC) -O2 -w -o $@ $(AS_EVAL_SRC) $(AS_CORE) $(AS_EVAL_INC) $(AS_EVAL_LIBS)
 
 test-as-eval-negctl: $(AS_EVAL_SRC) $(AS_CORE)
 	@mkdir -p $(BUILD)
-	@for d in AS_EVAL_NO_UNWIND AS_EVAL_NO_INIT AS_EVAL_NO_FSTR AS_EVAL_NO_STRCALL; do \
-	   $(CC) -O2 -w -D$$d -o $(BUILD)/as_eval_$$d $(AS_EVAL_SRC) $(AS_CORE) $(AS_EVAL_INC) || exit 1; \
+	@for d in AS_EVAL_NO_UNWIND AS_EVAL_NO_INIT AS_EVAL_NO_FSTR AS_EVAL_NO_STRCALL AS_EVAL_NO_NUMERIC; do \
+	   $(CC) -O2 -w -D$$d -o $(BUILD)/as_eval_$$d $(AS_EVAL_SRC) $(AS_CORE) $(AS_EVAL_INC) $(AS_EVAL_LIBS) || exit 1; \
 	   if $(BUILD)/as_eval_$$d >/dev/null 2>&1; then \
 	     echo "as-eval-negctl: FAIL -- the battery passes with $$d, so it does not measure that claim"; \
 	     exit 1; \
@@ -87,7 +92,7 @@ test-as-eval: test-as-eval-negctl $(BUILD)/as_eval_test
 test-as-eval-asan: $(AS_EVAL_SRC) $(AS_CORE)
 	@mkdir -p $(BUILD)
 	@$(CC) -O1 -g -w -fsanitize=address,undefined -fno-omit-frame-pointer \
-	   -o $(BUILD)/as_eval_asan $(AS_EVAL_SRC) $(AS_CORE) $(AS_EVAL_INC)
+	   -o $(BUILD)/as_eval_asan $(AS_EVAL_SRC) $(AS_CORE) $(AS_EVAL_INC) $(AS_EVAL_LIBS)
 	@ASAN_OPTIONS=detect_leaks=0 $(BUILD)/as_eval_asan
 
 ci-host: test-as-eval test-as-eval-asan

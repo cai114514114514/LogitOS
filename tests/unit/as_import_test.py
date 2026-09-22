@@ -106,7 +106,7 @@ def negative_control(compiler, work):
         binary = work / f"compiler{index}"
         sources = [mutant if path == original else path for path in compiler_sources()]
         result = invoke([os.environ.get("CC", "clang"), "-O1", "-I" + str(ROOT / "c/apps/as"),
-                         "-I" + str(ROOT / "include/abi"), *sources, "-o", binary])
+                         "-I" + str(ROOT / "include/abi"), *sources, "-o", binary, "-lm"])
         assert result.returncode == 0, result.stderr
         try:
             exercise(binary, work)

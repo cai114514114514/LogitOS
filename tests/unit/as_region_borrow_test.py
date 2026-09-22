@@ -155,7 +155,7 @@ def compiler_mutant(work, original, anchor, replacement, name):
     result = invoke([os.environ.get("CC", "clang"), "-O1",
                      "-I" + str(ROOT / "c/apps/as"), "-I" + str(ROOT / "include/abi"),
                      *[changed if path == original else path for path in compiler_sources()],
-                     "-o", binary])
+                     "-o", binary, "-lm"])
     assert result.returncode == 0, result.stderr
     return binary
 

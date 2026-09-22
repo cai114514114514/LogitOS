@@ -413,6 +413,8 @@ void at_quote_bytes(FILE *f, const char *text, size_t bytes);
 int at_integer(AsTypedProject *p, int type);
 int at_signed(AsTypedProject *p, int type);
 int at_bits(AsTypedProject *p, int type);
+/* Common concrete float type for numeric operations, or AT_ERROR if inapplicable. */
+int at_numeric_type(AsTypedProject *project, int left, int right);
 int at_global_lookup(AsTypedProject *project, int module, Token name, int imports);
 int at_dict_type(AsTypedProject *project, int key, int value, int module, Token site);
 int at_named_type(AsTypedProject *project, int module, const char *name);

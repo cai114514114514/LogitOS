@@ -20,7 +20,10 @@ def exercise(compiler):
         "tail": ('f"{1 2}"', "AS3100"),
         "closing": ('f"{1) + 2}"', "AS3100"),
         "unknown": ('f"中文 {missing}"', "AS3205"),
-        "mismatch": ('f"中文 {1 + 2.5}"', "AS3202"),
+        # This used to reject 1 + 2.5. Since numeric promotion opened on
+        # 2026-09-22, use a bool to retain the interpolation type-error door;
+        # as_promotion_test executes mixed numeric holes as a positive case.
+        "mismatch": ('f"中文 {true + 2.5}"', "AS3202"),
         "void": ('f"{print(1)}"', "AS3202"),
         "lexical": ('f"{!}"', "AS3100"),
         "pieces": ('f"' + '{1}x' * 40 + '"', "AS3100"),

@@ -1,4 +1,8 @@
-"""Use the build's compiler inventory when compiling private test mutations."""
+"""Use the build's compiler inventory when compiling private test mutations.
+
+Link callers with -lm as the ordinary host compiler does: the diagnostic
+evaluator uses pow/fmod, which libc does not provide on every supported host.
+"""
 
 from pathlib import Path
 import subprocess

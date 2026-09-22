@@ -277,7 +277,7 @@ static int statements(Checker *c, AtNode *n)
                     if (got == AT_VOID) {
                         at_check_error(c, n->b, "AS3202", "Module variables require a value");
                     }
-                    at_check_mismatch(c, n->b, ty, got);
+                    at_check_assignment_type(c, n, ty, got);
                     if (!ty) {
                         ty = got;
                     }
@@ -323,7 +323,7 @@ static int statements(Checker *c, AtNode *n)
                                        "A function with no result cannot initialize a variable");
                     }
                     if (ty) {
-                        at_check_mismatch(c, n->b, ty, got);
+                        at_check_assignment_type(c, n, ty, got);
                     } else {
                         ty = got;
                     }
@@ -345,7 +345,7 @@ static int statements(Checker *c, AtNode *n)
                     at_check_error(c, lhs, "AS3400",
                                    "Imported module bindings cannot be reassigned");
                 }
-                at_check_mismatch(c, n->b, ty, at_check_expression(c, n->b, ty));
+                at_check_assignment_type(c, n, ty, at_check_expression(c, n->b, ty));
                 if (lhs->kind == AN_METHOD) {
                     at_check_error(c, lhs, "AS3202", "Methods cannot be replaced by assignment");
                 }

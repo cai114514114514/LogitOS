@@ -30,7 +30,7 @@ def main():
             os.environ.get("CC", "clang"), "-O1",
             "-I" + str(ROOT / "c/apps/as"),
             "-I" + str(ROOT / "include/abi"),
-            *map(str, sources), "-o", str(executable),
+            *map(str, sources), "-o", str(executable), "-lm",
         ]
         subprocess.run(command, check=True, capture_output=True, text=True, timeout=120)
         try:

@@ -59,7 +59,7 @@ void at_check_mismatch(Checker *c, AtNode *n, int want, int got)
     if (want && got && want != got) {
         char s[256];
         snprintf(s, sizeof s,
-                 "Expected %s, found %s; implicit numeric/dynamic conversion is not allowed",
+                 "Expected %s, found %s; this context requires an explicit conversion",
                  c->p->types[want].name, c->p->types[got].name);
         at_check_error(c, n, "AS3202", s);
     }

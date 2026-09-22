@@ -47,10 +47,10 @@ AS_CAP_SRC := tests/unit/as_cap_test.c
 test-as-cap: check-abi
 	@mkdir -p $(BUILD)
 	@$(CC) -O2 -Wall -Wextra -o $(BUILD)/as_cap_test $(AS_CAP_SRC) $(AS_CORE) \
-	    -Ic/apps/as -Iinclude/abi
+	    -Ic/apps/as -Iinclude/abi -lm
 	@$(BUILD)/as_cap_test
 	@$(CC) -O2 -w -DAS_GC_STRESS -o $(BUILD)/as_cap_gc $(AS_CAP_SRC) $(AS_CORE) \
-	    -Ic/apps/as -Iinclude/abi
+	    -Ic/apps/as -Iinclude/abi -lm
 	@$(BUILD)/as_cap_gc
 	@echo "  (and again under -DAS_GC_STRESS -- a slice holds its parent alive)"
 
@@ -62,7 +62,7 @@ define AS_M28_NEGCTL
 test-as-$(1)-negctl: check-abi
 	@mkdir -p $$(BUILD)
 	@$$(CC) -O2 -w -D$(2) -o $$(BUILD)/as_cap_$(1)_negctl $$(AS_CAP_SRC) $$(AS_CORE) \
-	    -Ic/apps/as -Iinclude/abi
+	    -Ic/apps/as -Iinclude/abi -lm
 	@if $$(BUILD)/as_cap_$(1)_negctl > $$(BUILD)/as_cap_$(1).log 2>&1; then \
 	    echo "FAIL: the M28 battery passed with -D$(2) -- $(3) is not load-bearing"; \
 	    exit 1; \

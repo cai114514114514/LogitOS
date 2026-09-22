@@ -67,7 +67,7 @@ def negative_control(compiler, work):
     sources = [changed if path == original else path for path in compiler_sources()]
     broken = work / "asc"
     result = invoke([os.environ.get("CC", "clang"), "-O1", *sources,
-                     "-I", ROOT / "c/apps/as", "-I", ROOT / "include/abi", "-o", broken])
+                     "-I", ROOT / "c/apps/as", "-I", ROOT / "include/abi", "-o", broken, "-lm"])
     assert result.returncode == 0, result
     result = invoke([broken, source_file(work), "proof"])
     assert result.returncode != 7 and "argument 1 proof" not in result.stdout, result

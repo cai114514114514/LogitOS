@@ -122,6 +122,14 @@ Val at_ir_text_operation(Gen *g, Val left, Val right, int find)
 
 Val at_ir_numeric(Gen *g, int op, Val a, Val b, AtNode *n, int wrap)
 {
+    int common = at_numeric_type(g->p, a.type, b.type);
+    if (common) {
+        /* Convert the already evaluated values, preserving each variable's
+         * load type and left-to-right evaluation. Comparisons use the same
+         * operand promotion even though their result type is bool. */
+        a = at_ir_convert(g, a, common, n);
+        b = at_ir_convert(g, b, common, n);
+    }
     if (a.type == AT_BYTES) {
         Val equal = at_ir_temp(g, AT_I32);
         Val result = at_ir_temp(g, AT_BOOL);

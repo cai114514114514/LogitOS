@@ -1,11 +1,13 @@
 /* SPDX-License-Identifier: MIT */
 #include "include/project.h"
+#include "common/numeric.h"
 #include "ir/model.h"
 #include "frontend/lexer.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <math.h>
 
 /* Guest Studio has no LLVM. After the A2 VM left, Run died with AS3501 on
  * every program, including `print("hello world")`. This evaluates the already
@@ -277,6 +279,70 @@ static Ev eval_print(Ex *x, AtNode *n)
     return (Ev){0};
 }
 
+/* Keep the integer's signedness until the conversion itself. Routing u64
+ * through i64 makes values above INT64_MAX negative; routing an integer
+ * through double before f32 can round twice instead of LLVM's direct cast. */
+static double ev_float(Ev value, int type)
+{
+    if (type == AT_F32) {
+        return value.kind == EV_UINT ? (double)(float)value.u
+               : value.kind == EV_INT ? (double)(float)value.i
+                                      : (double)(float)value.f;
+    }
+    return value.kind == EV_UINT ? (double)value.u
+           : value.kind == EV_INT ? (double)value.i
+                                  : value.f;
+}
+
+static Ev eval_float(Ex *x, AtNode *n, Ev left, Ev right, int type)
+{
+    double a = ev_float(left, type), b = ev_float(right, type);
+    Ev out = {.kind = EV_FLOAT};
+    /* The operand type comes from the children: a comparison's own type is
+     * bool. f32 rounds BOTH operands and each result, including compound
+     * assignment, rather than carrying hidden f64 precision in Ev.f. */
+    if (n->op >= T_EQ && n->op <= T_GE) {
+        out.kind = EV_BOOL;
+        out.i = n->op == T_EQ ? a == b : n->op == T_NE ? a != b
+                : n->op == T_LT ? a < b : n->op == T_LE ? a <= b
+                : n->op == T_GT ? a > b : a >= b;
+        return out;
+    }
+    if ((n->op == T_SLASH || n->op == T_PERCENT) && b == 0.0) {
+        fail(x, "ZeroDivisionError", "float division or remainder");
+        return out;
+    }
+    switch (n->op) {
+    case T_PLUS:
+        out.f = type == AT_F32 ? (double)((float)a + (float)b) : a + b;
+        break;
+    case T_MINUS:
+        out.f = type == AT_F32 ? (double)((float)a - (float)b) : a - b;
+        break;
+    case T_STAR:
+        out.f = type == AT_F32 ? (double)((float)a * (float)b) : a * b;
+        break;
+    case T_SLASH:
+        out.f = type == AT_F32 ? (double)((float)a / (float)b) : a / b;
+        break;
+    case T_PERCENT:
+        out.f = fmod(a, b);
+        break;
+    case T_POW:
+        /* The native f32 path also widens to f64 pow then narrows: the guest
+         * libc ships pow, not powf. IEEE NaN/inf remain values, not errors. */
+        out.f = pow(a, b);
+        break;
+    default:
+        fail(x, "RuntimeError", "guest execution refuses this float operator");
+        return out;
+    }
+    if (type == AT_F32) {
+        out.f = (double)(float)out.f;
+    }
+    return out;
+}
+
 static Ev eval_binary(Ex *x, AtNode *n)
 {
     Ev left = eval_expr(x, n->a);
@@ -298,6 +364,18 @@ static Ev eval_binary(Ex *x, AtNode *n)
             s[nlen] = 0;
             out = ev_str(s, nlen, s);
         }
+        ev_clear(&left);
+        ev_clear(&right);
+        return out;
+    }
+    int numeric = at_numeric_type(x->r->p, n->a->type, n->b->type);
+#ifdef AS_EVAL_NO_NUMERIC
+    /* Restore the old float refusal so the printed-output gate can prove it
+     * watches Studio's evaluator as well as the native compiler. */
+    numeric = 0;
+#endif
+    if (numeric) {
+        out = eval_float(x, n, left, right, numeric);
         ev_clear(&left);
         ev_clear(&right);
         return out;
@@ -482,6 +560,11 @@ static Ev eval_expr(Ex *x, AtNode *n)
         return v;
     }
     if (n->kind == AN_INT) {
+        if (at_integer(x->r->p, n->type) && !at_signed(x->r->p, n->type)) {
+            v.kind = EV_UINT;
+            v.u = n->integer;
+            return v;
+        }
         return ev_int((int64_t)n->integer);
     }
     if (n->kind == AN_BOOL) {
@@ -492,6 +575,9 @@ static Ev eval_expr(Ex *x, AtNode *n)
     if (n->kind == AN_FLOAT) {
         v.kind = EV_FLOAT;
         v.f = strtod(n->token.start, NULL);
+        if (n->type == AT_F32) {
+            v.f = (double)(float)v.f;
+        }
         return v;
     }
     if (n->kind == AN_STR) {
@@ -542,8 +628,17 @@ static Ev eval_expr(Ex *x, AtNode *n)
         return v;
     }
     if (n->kind == AN_UNARY) {
+        if (n->op == T_MINUS && n->a->kind == AN_INT) {
+            /* The checker admits magnitude 2^63 only under literal minus.
+             * Negating an already signed INT64_MIN would falsely overflow;
+             * mirror native emit.c's bit-pattern construction instead. */
+            return ev_int(as_i64_bits(0 - n->a->integer));
+        }
         Ev a = eval_expr(x, n->a);
-        if (n->op == T_MINUS && a.kind == EV_INT) {
+        if (n->op == T_PLUS &&
+            (a.kind == EV_INT || a.kind == EV_UINT || a.kind == EV_FLOAT)) {
+            return a;
+        } else if (n->op == T_MINUS && a.kind == EV_INT) {
             if (a.i == INT64_MIN) {
                 fail(x, "OverflowError", "integer negate");
             } else {
