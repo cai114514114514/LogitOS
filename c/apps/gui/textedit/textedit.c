@@ -229,6 +229,10 @@ static int te_apply_key(int a,int mods,int *wrote)
         if(caret==anchor)return 0;return replace_selection("",0);
     }
     if(a=='\r')a='\n';
+    /* KEY_UP..KEY_F12 are not code points. te_is_nav_key already consumed
+     * the eight navigation keys; F1..F12 used to fall through and be
+     * encoded as Latin Extended-A. Same predicate as aui.c and terminal.c. */
+    if(logit_key_is_command((unsigned)a))return 0;
     if(a=='\n'||a=='\t'||(a>=32&&a<=0x10ffff&&!(a>=0xd800&&a<=0xdfff))){
         char b[4];int n=te_utf8_encode((unsigned)a,b);return replace_selection(b,n);}
     return 0;

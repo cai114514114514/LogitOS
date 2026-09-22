@@ -360,7 +360,7 @@ static int imax(int a, int b) { return a > b ? a : b; }
  * paint() (further down) is a full top-to-bottom redraw: it always clears the
  * whole window and always walks every visible scrollback row, unconditionally
  * -- that part is UNCHANGED by this section, on purpose (see
- * c/apps/browser/browser_paint.c's own header comment for the same choice:
+ * c/apps/gui/browser/paint/renderer.c's own header comment for the same choice:
  * "browser_paint() itself is NOT repeated ... only the FLUSH is narrowed").
  * What follows is the SAME positional diff c/apps/gui/aui.c's own section
  * 5a-flush uses (that file's header is the fuller argument for the method;
@@ -2552,6 +2552,10 @@ static void on_key(struct logit_event *e)
      * window's only job on the way in is to not corrupt them before they
      * arrive, which byte-by-byte type_char() calls do not, since nothing here
      * interprets the bytes as characters. */
+    else if (logit_key_is_command((unsigned)a)) {
+        /* F1..F12. The eight navigation keys already returned above.
+         * Encoding these as UTF-8 writes U+0109..U+0114 into the shell. */
+    }
     else if (a > 0x7F) {
         char enc[4]; int el = key_utf8_encode((unsigned)a, enc);
         for (int i = 0; i < el; i++) type_char(enc[i]);

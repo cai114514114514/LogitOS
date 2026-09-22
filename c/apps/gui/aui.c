@@ -137,7 +137,7 @@ static int win_w = 640, win_h = 480;
  * canvas". CLAUDE.md's own measurement of that: a keystroke into TextEdit,
  * 93.9 ms/composite, 1.57M px (68% of a 1920x1200 screen) for one character.
  *
- * THE METHOD IS THE SAME ONE c/apps/browser/browser_paint.c's pd_finish()
+ * THE METHOD IS THE SAME ONE c/apps/gui/browser/paint/renderer.c's pd_finish()
  * uses (that file's header comment is the fuller argument; this is the same
  * idea moved one layer down): a POSITIONAL diff against last frame, not a
  * second render or a retained tree. The browser diffs LAYOUT ITEMS, one per
@@ -2345,7 +2345,7 @@ static int tf_apply_key(char *buf, int cap, int *np, int k, int shift)
             buf[tf_caret++] = (char)k; n++; buf[n] = 0; tf_anchor = tf_caret;
         }
     }
-    else if (k > 0x7F && !tf_is_nav_key(k)) {
+    else if (k > 0x7F && !logit_key_is_command((unsigned)k)) {
         /* A code point above ASCII -- UTF-8 encode it and splice in all of its
          * bytes as one atomic unit, same shape as the ASCII branch above. */
         char enc[4]; int el = tf_utf8_encode((unsigned)k, enc);

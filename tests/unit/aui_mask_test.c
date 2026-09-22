@@ -14,6 +14,7 @@
  */
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <math.h>
 
 #include "aui.c"
@@ -232,6 +233,27 @@ int main(void)
             ck(empty_rows == 0,
                "...and the ring it hands back is CONTINUOUS -- corners not missing, not pinched", d);
         }
+    }
+
+    /* F1..F12 sit at 0x109..0x114, which is also Latin Extended-A. The ABI
+     * says that block is a key, not a character. U+4F60 (你) is what the
+     * pinyin IME actually commits, and it must still be inserted -- rejecting
+     * every value above KEY_UP would swallow CJK. */
+    {
+        char buf[32];
+        int n = 0;
+        memset(buf, 0, sizeof buf);
+        tf_caret = tf_anchor = 0;
+        int rc = tf_apply_key(buf, (int)sizeof buf, &n, KEY_F1, 0);
+        ck(rc < 0 && n == 0 && buf[0] == 0,
+           "F1 is not inserted as U+0109", buf);
+        n = 0;
+        memset(buf, 0, sizeof buf);
+        tf_caret = tf_anchor = 0;
+        rc = tf_apply_key(buf, (int)sizeof buf, &n, 0x4F60, 0);
+        ck(rc == 0 && n == 3 && (unsigned char)buf[0] == 0xE4 &&
+           (unsigned char)buf[1] == 0xBD && (unsigned char)buf[2] == 0xA0,
+           "U+4F60 is still inserted as UTF-8", buf);
     }
 
     printf(fails ? "\n%d check(s) FAILED\n" : "\nall checks passed\n", fails);

@@ -277,6 +277,19 @@
 #define KEY_F11   0x113
 #define KEY_F12   0x114
 
+/* EV_KEY `a` in [KEY_UP, KEY_F12] is a key, not a code point. The block is
+ * contiguous (0x101..0x114). Han commits are U+4E00 and above, so they stay
+ * text. A KEY_* placed above KEY_F12 and below that Han range would be typed;
+ * the ABI comment above says the real fix for that is renumbering, which is
+ * not this predicate. Three text entry sites (aui, textedit, terminal) must
+ * call this rather than each keeping its own list of eight navigation keys:
+ * F1..F12 were added to the block and every list missed them, so F1 was
+ * inserted as U+0109. */
+static inline int logit_key_is_command(unsigned a)
+{
+    return a >= KEY_UP && a <= KEY_F12;
+}
+
 #define EV_MOUSE  2   /* a = x, b = y (window-local), mouse-button down */
 #define EV_CLOSE  3   /* the window's close button was pressed */
 #define EV_MOUSE_R 4  /* a = x, b = y (window-local), right-button down */
@@ -393,8 +406,8 @@ struct logit_netinfo {
  * `bold` is a FLAG, not a CSS weight.  This machine ships two weights per
  * family (fsroot/fonts/{ui,mono}{,-bold}.ttf) and nothing else, so an `int
  * weight` here would advertise a resolution the font inventory cannot honour.
- * c/apps/browser/css_engine.c already collapses `font-weight` to a bit
- * (`>= 700` is bold) and c/apps/browser/layout.h's display item has carried
+ * c/apps/gui/browser/css/engine.c already collapses `font-weight` to a bit
+ * (`>= 700` is bold) and c/apps/gui/browser/layout/block.h's display item has carried
  * that bit all along; this is the field that finally lets it leave ring 3.
  *
  * `bold` sits AFTER `len` deliberately: it lands in the four bytes of tail
@@ -1249,7 +1262,7 @@ struct logit_setting {
  * ARBITRATED FOR THE CRYPTO LINE, not needed by threads. The kernel has had a
  * real SHA-256 Hash_DRBG in c/kernel/core/rng.c, seeded from RDSEED/RDRAND
  * where the CPU has it, since the TLS work -- and ring 3 could not reach it, so
- * c/apps/browser/js_platform.c says in capital letters that
+ * c/apps/gui/browser/js/runtime/platform.c says in capital letters that
  * crypto.getRandomValues is a lie. This is the door; the back end is
  * rng_syscall() in that file, which owns the semantics.
  *
@@ -2457,7 +2470,7 @@ struct logit_ptrace_word {
 /* ---- SYS_FTRUNCATE: set a file's length through an fd (storage wave, 2026-08-30)
  *
  * WHY THIS NUMBER EXISTS -- the measured gap, not the quoted one.
- * c/apps/browser/js_idb.c and js_cache.c both refuse durable storage with
+ * c/apps/gui/browser/js/storage/idb.c and js_cache.c both refuse durable storage with
  * "there is no VFS positional write to build real durability on (CLAUDE.md
  * structural gap #3)". Before building on that sentence, ring 3's ACTUAL
  * capabilities on the disk filesystem were measured on the machine
