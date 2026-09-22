@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
 """Build the sysroot TEST image: the Makefile's disk plus build/sysroot/ packed
 at / with mkfs.py's add_tree, plus any extra host:/guest pairs.
 
 The file list is TAKEN FROM `make -n`, not retyped (the same reason
 tests/unit/bigexec_img.py and build/scr/bigdisk.py give: a second list goes
-stale silently), and the continuations are JOINED FIRST -- make echoes the
-recipe with its backslash-newlines intact, so the mkfs line is 54 tokens on
-its first physical line and 300-odd in total.
+stale silently). The shared disk-recipe reader joins continuations and skips
+leading preservation options. Taking argv[3:] instead silently treated
+--preserve and its paths as files when the product recipe gained those options.
 
 tools/mkfs.py is imported and its own add_spec() does every file and the
 tree, so there is one definition of the format and one of the spec syntax.
@@ -18,21 +19,17 @@ usage: sysroot_img.py <repo> <make-n-file> <out.img> <spec ...>
 """
 import importlib.util
 import os
-import re
 import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "boot"))
+from make_disk_recipe import disk_recipe
 
 repo, mkn, out = sys.argv[1], sys.argv[2], sys.argv[3]
 extras = sys.argv[4:]
 
 text = open(mkn, encoding="utf-8", errors="replace").read()
-text = re.sub(r"\\\n[ \t]*", " ", text)          # join continuations FIRST
-lines = [l for l in text.split("\n") if "tools/mkfs.py" in l]
-if len(lines) != 1:
-    sys.exit("sysroot_img: expected exactly one mkfs.py line in `make -n`, got %d" % len(lines))
-argv = lines[0].split()
-specs = argv[3:]                                   # python3 tools/mkfs.py <img> ...
-if any(a.endswith("\\") for a in specs):
-    sys.exit("sysroot_img: a spec still ends in a backslash -- the join failed")
+_, specs = disk_recipe(text)
 
 spec = importlib.util.spec_from_file_location("mkfs", os.path.join(repo, "tools", "mkfs.py"))
 mkfs = importlib.util.module_from_spec(spec)
