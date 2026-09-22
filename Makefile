@@ -173,7 +173,24 @@ QEMU        := qemu-system-x86_64
 # sorts before c/kernel/exec/fd, so kmain.c's bare `#include "file.h"` silently
 # gets the AS one and file_init() becomes an undeclared function -- in a file
 # nobody edited. `c/apps/as` itself stays: only the subdirectories are removed.
-INCDIRS := $(addprefix -I,$(filter-out %/include/sys %/include/uonly c/apps/as/%,$(sort $(shell find c include -type d))))
+# Browser headers now use subsystem-qualified names such as "dom/tree.h" and
+# "js/dom/dom.h". Do not flatten these directories into -I: otherwise js/storage/cache.h
+# can shadow a different subsystem's cache.h solely because of sort order.
+BROWSER_DIR := c/apps/gui/browser
+BROWSER_INC := -I$(BROWSER_DIR)
+BROWSER_IQ := -iquote $(BROWSER_DIR)
+# Discover recursively once: a flat js/*.c wildcard silently stopped linking
+# bindings when JS gained subsystem directories. Header and fragment consumers
+# derive from the same inventory, so a deeper module also gets rebuild tracking.
+BROWSER_FILES := $(sort $(shell find $(BROWSER_DIR) -type f))
+BROWSER_SOURCES := $(filter %.c,$(BROWSER_FILES))
+BROWSER_HEADERS := $(filter %.h,$(BROWSER_FILES))
+BROWSER_INCLUDES := $(filter %.inc,$(BROWSER_FILES))
+BROWSER_JS_FILES := $(filter $(BROWSER_DIR)/js/%,$(BROWSER_FILES))
+BROWSER_JS_C := $(filter %.c,$(BROWSER_JS_FILES))
+BROWSER_JS_INCLUDES := $(filter %.inc,$(BROWSER_JS_FILES))
+BROWSER_JS_PRELUDES := $(filter %prelude.inc,$(BROWSER_JS_FILES))
+INCDIRS := $(addprefix -I,$(filter-out %/include/sys %/include/uonly c/apps/as/% $(BROWSER_DIR)/%,$(sort $(shell find c include -type d))))
 # Host-built unit tests compile kernel sources against the host libc: the
 # mini-libc headers (c/apps/libc/include) would shadow glibc's <features.h>
 # and break <stdint.h>, so host tests use INCDIRS without that dir.
@@ -393,7 +410,7 @@ endif
 # nothing to do with. Empty in every ordinary build.
 UCFLAGS += $(UEXTRA)
 
-# Kernel sources. The browser render pipeline lives in c/apps/browser, not here.
+# Kernel sources. The browser render pipeline lives in c/apps/gui/browser, not here.
 # inflate.c + png.c are excluded: ported to Rust (rust/src/{inflate,png}.rs provide
 # inflate_raw/zlib_decompress + png_register/png_detect/png_decode) -- the hybrid
 # C+Rust modules. The .c files are deleted, so the filter-out is a defensive guard.
@@ -652,6 +669,9 @@ CLIDIR := c/apps/coreutils
 # It links no libc -- clock.aex is crt0 + aui + this and nothing else -- so it
 # has to stay that way; a stray memset would break six apps at link time.
 GFX_SRC := $(sort $(shell find c/lib/gfx -name '*.c'))
+# Display transport tests stub optical tables, but link every real raster stage.
+GFX_MATERIAL_SRC := c/lib/gfx/effects/openlogit_material.c \
+                    $(sort $(wildcard c/lib/gfx/effects/glass_*.c))
 GFX_HEADERS := $(sort $(shell find c/lib/gfx -name '*.h'))
 GFX_INC := $(addprefix -I,$(sort $(dir $(GFX_HEADERS))))
 GFX_OBJ := $(patsubst c/lib/gfx/%.c,$(BUILD)/apps/gfx_%.o,$(GFX_SRC))
@@ -757,9 +777,11 @@ $(eval $(call APP_RULE,settings,0x4B000000,Settings,-,S,140,150,165))
 # so its rule lives with the VID_OBJ definitions further down.
 # Code Studio owns a separately compiled application engine. The GUI links
 # that archive and never includes its implementation or owns compiler state.
-STUDIO_SRC := $(wildcard c/apps/studio/*.c)
-STUDIO_OBJ := $(patsubst c/apps/studio/%.c,$(BUILD)/apps/studio/%.o,$(STUDIO_SRC))
-$(BUILD)/apps/studio/%.o: c/apps/studio/%.c $(wildcard c/apps/studio/*.h) c/apps/as/editor/completion.h
+STUDIO_SRC := $(wildcard c/apps/gui/studio/core/*.c)
+# The source move must also move its object: an existing apps/studio/*.d still
+# names c/apps/studio/*.c. -MP handles removed headers, not a moved primary .c.
+STUDIO_OBJ := $(patsubst c/%.c,$(BUILD)/%.o,$(STUDIO_SRC))
+$(BUILD)/apps/gui/studio/core/%.o: c/apps/gui/studio/core/%.c $(wildcard c/apps/gui/studio/core/*.h) c/apps/as/editor/completion.h
 	@mkdir -p $(dir $@)
 	$(CC) $(UCFLAGS) -c $< -o $@
 $(BUILD)/apps/studio-engine.a: $(STUDIO_OBJ)
@@ -774,7 +796,7 @@ $(BUILD)/apps/as/common/version.o: c/apps/as/common/version.c c/apps/as/common/n
 	@mkdir -p $(dir $@)
 	$(CC) $(UCFLAGS) -c $< -o $@
 $(BUILD)/studio.elf: $(BUILD)/apps/as/common/version.o
-$(BUILD)/studio.elf: $(GUIDIR)/studio/studio.c $(APPDIR)/crt0.asm $(APPDIR)/logit.h $(GUIDIR)/aui.h $(BUILD)/apps/aui.o $(GFX_OBJ) $(BUILD)/apps/studio-engine.a $(BUILD)/apps/as/editor/completion.o c/apps/studio/engine.h $(wildcard c/apps/studio/studio_*.inc)
+$(BUILD)/studio.elf: $(GUIDIR)/studio/studio.c $(APPDIR)/crt0.asm $(APPDIR)/logit.h $(GUIDIR)/aui.h $(BUILD)/apps/aui.o $(GFX_OBJ) $(BUILD)/apps/studio-engine.a $(BUILD)/apps/as/editor/completion.o c/apps/gui/studio/core/engine.h $(wildcard c/apps/gui/studio/core/studio_*.inc)
 	@mkdir -p $(BUILD)/apps
 	$(ASM) -f elf64 $(APPDIR)/crt0.asm -o $(BUILD)/apps/studio.crt0.o
 	$(CC) $(UCFLAGS) -c $(GUIDIR)/studio/studio.c -o $(BUILD)/apps/studio.o -Ic/apps/as
@@ -888,14 +910,32 @@ $(BUILD)/netcliobj/%.o: %.c
 # rather than a side effect, so build/apps/$(1).cli.d is attached to something
 # make visits. The four headers below were the hand-written list; `ls.c` had
 # grown a fifth (hidden.h) and editing it rebuilt nothing.
+# A /bin name is an installation contract, not a source directory. Services
+# and guest probes formerly lived in coreutils solely because this rule assumed
+# that path. Keep their explicit overrides here so moving source cannot silently
+# drop a shipped executable or change a negative-control variant's link flags.
+CLI_SOURCE_httpd := c/apps/services/http/httpd.c
+CLI_SOURCE_syslogd := c/apps/services/syslog/syslogd.c
+CLI_SOURCE_sftpd := c/apps/services/ssh/sftpd.c
+CLI_SOURCE_smptest := tests/guest/sched/smptest.c
+CLI_SOURCE_socktest := tests/guest/net/socktest.c
+CLI_SOURCE_sndtest := tests/guest/audio/sndtest.c
+CLI_SOURCE_crash := tests/guest/exec/crash.c
+cli_source = $(or $(CLI_SOURCE_$(1)),$(CLIDIR)/$(1).c)
+# Relocated programs need a new object identity too: their old apps/*.cli.d
+# adds the removed coreutils source even after the rule above points elsewhere.
+# Derive the replacement from its source so future moves cannot reuse that .d.
+# Keep ordinary coreutils outputs for the existing per-program control recipes.
+cli_object = $(if $(CLI_SOURCE_$(1)),$(patsubst %.c,$(BUILD)/cliobj/%.o,$(call cli_source,$(1))),$(BUILD)/apps/$(1).cli.o)
+
 define CLI_RULE
-$(BUILD)/apps/$(1).cli.o: $(CLIDIR)/$(1).c $(APPDIR)/clib.h
-	@mkdir -p $(BUILD)/apps
-	$(CC) $(UCFLAGS) -c $(CLIDIR)/$(1).c -o $(BUILD)/apps/$(1).cli.o
-$(BUILD)/$(1).elf: $(BUILD)/apps/$(1).cli.o $(APPDIR)/crt0_cli.asm $(CLI_EXTRA_$(1))
+$(call cli_object,$(1)): $(call cli_source,$(1)) $(APPDIR)/clib.h
+	@mkdir -p $$(dir $$@)
+	$(CC) $(UCFLAGS) -c $(call cli_source,$(1)) -o $$@
+$(BUILD)/$(1).elf: $(call cli_object,$(1)) $(APPDIR)/crt0_cli.asm $(CLI_EXTRA_$(1))
 	@mkdir -p $(BUILD)/apps
 	$(ASM) -f elf64 $(APPDIR)/crt0_cli.asm -o $(BUILD)/apps/$(1).crt0c.o
-	$$(LD) $(CLI_LINK_$(1)) -nostdlib -e _start -Ttext=0x50000000 -o $$@ $(BUILD)/apps/$(1).crt0c.o $(BUILD)/apps/$(1).cli.o $(CLI_EXTRA_$(1))
+	$$(LD) $(CLI_LINK_$(1)) -nostdlib -e _start -Ttext=0x50000000 -o $$@ $(BUILD)/apps/$(1).crt0c.o $(call cli_object,$(1)) $(CLI_EXTRA_$(1))
 $(BUILD)/$(1).aex: $(BUILD)/$(1).elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/$(1).elf $$@ $(1) - '*' 150 150 150
 endef
@@ -1222,22 +1262,22 @@ $(BUILD)/apps/crt0.o: $(APPDIR)/crt0.asm
 BROWSER_DIGEST_SRC := c/crypto/hash/sha1.c c/crypto/hash/sha256.c c/crypto/hash/sha384.c
 BROWSER_CRYPTO_OPS_SRC := c/crypto/hash/hmac_hkdf.c c/crypto/aead/aesgcm.c c/crypto/aead/aes_dispatch.c c/crypto/aead/aes_ni.c c/kernel/cpu/cpufeat.c \
                           c/crypto/pubkey/ed25519.c c/crypto/pubkey/x25519.c c/crypto/pubkey/ecdsa.c
-BROWSER_PIPE := c/apps/browser/dom.c c/apps/browser/html_tokenizer.c \
-                c/apps/browser/html_tree.c c/apps/browser/dom_serialize.c \
-                c/apps/browser/layout.c c/apps/browser/layout_text.c \
-                c/apps/browser/forms.c c/apps/browser/focus.c \
-                c/apps/browser/browser_rt.c c/apps/browser/browser_paint.c \
-                c/apps/browser/passive_frame.c c/apps/browser/iframe_policy.c \
-                c/apps/browser/tabs.c \
-                c/apps/browser/css_vars.c c/apps/browser/css_extra.c \
-                c/apps/browser/css_interp.c c/net/http/url.c \
+BROWSER_PIPE := c/apps/gui/browser/dom/tree.c c/apps/gui/browser/html/tokenizer.c \
+                c/apps/gui/browser/html/tree.c c/apps/gui/browser/dom/serialize.c \
+                c/apps/gui/browser/layout/block.c c/apps/gui/browser/layout/text.c \
+                c/apps/gui/browser/dom/forms.c c/apps/gui/browser/dom/focus.c \
+                c/apps/gui/browser/app/runtime.c c/apps/gui/browser/paint/renderer.c \
+                c/apps/gui/browser/frame/passive.c c/apps/gui/browser/frame/policy.c \
+                c/apps/gui/browser/app/tabs.c \
+                c/apps/gui/browser/css/vars.c c/apps/gui/browser/css/extra.c \
+                c/apps/gui/browser/css/interp.c c/net/http/url.c \
                 c/net/http/http1.c c/net/http/hpool.c c/net/http/cookies.c \
                 c/net/http/http2.c c/net/http/hpack.c \
                 c/net/http/ws.c c/net/ssh/base64.c $(BROWSER_DIGEST_SRC) $(BROWSER_CRYPTO_OPS_SRC) \
                 c/lib/image/gif.c c/lib/image/jpeg.c c/lib/image/svg.c \
                 c/lib/image/exif.c c/lib/image/img.c
 # c/lib/wasm (the WebAssembly decoder, validator and interpreter) is
-# deliberately NOT here.  It rides inside c/apps/browser/js_wasm.c, which
+# deliberately NOT here.  It rides inside c/apps/gui/browser/js/wasm/wasm.c, which
 # #includes the three .c files textually -- see that file's own comment for the
 # argument.  The short version: js_*.c is a WILDCARD that nine test fragments
 # subtract from, each with its own narrow -I list, and putting the library in
@@ -1245,7 +1285,7 @@ BROWSER_PIPE := c/apps/browser/dom.c c/apps/browser/html_tokenizer.c \
 # browser itself linked fine.
 #
 # c/net/http/ws.c is WebSocket's transport-free frame codec (RFC 6455); the
-# JS surface is c/apps/browser/js_websocket.c, picked up automatically below
+# JS surface is c/apps/gui/browser/js/net/websocket.c, picked up automatically below
 # by the js_*.c wildcard.  c/net/ssh/base64.c and c/crypto/hash/sha1.c ride
 # along because the handshake's Sec-WebSocket-Accept is base64(SHA-1(key +
 # GUID)) -- RFC 6455 1.3 states plainly that hash is not a security
@@ -1263,7 +1303,7 @@ BROWSER_OBJ  := $(patsubst %.c,$(BUILD)/browserobj/%.o,$(BROWSER_PIPE))
 # actually does: dom.h forward-declares lwc_string, so every other consumer of
 # the DOM still compiles without the include path.
 # iframe_policy uses the URL API header, whose public declarations include JSValue.
-$(BUILD)/browserobj/c/apps/browser/iframe_policy.o: UCFLAGS += $(JS_INC)
+$(BUILD)/browserobj/c/apps/gui/browser/frame/policy.o: UCFLAGS += $(JS_INC)
 
 $(BUILD)/browserobj/%.o: %.c
 	@mkdir -p $(dir $@)
@@ -1272,7 +1312,7 @@ $(BUILD)/browserobj/%.o: %.c
 # NetSurf LibCSS (+ libparserutils + libwapcaplet) + our css_engine.c adapter.
 CSS_DIR := third_party/css
 # -Iinclude is here ONLY for language.c's `#include "weaksym.h"` (the
-# @supports-honesty hooks into c/apps/browser/css_engine.c and css_extra.c --
+# @supports-honesty hooks into c/apps/gui/browser/css/engine.c and css_extra.c --
 # see the block comment above supports_decl() in
 # third_party/css/libcss/src/parse/language.c). A relative "../../../../../
 # include/weaksym.h" path broke test-css-web-negctl, which sed-copies
@@ -1287,8 +1327,8 @@ CSS_INC := -I$(CSS_DIR)/libwapcaplet/include -I$(CSS_DIR)/libparserutils/include
            -I$(CSS_DIR)/libcss/include -I$(CSS_DIR)/libcss/src -I$(CSS_DIR)/libparserutils/src \
            -Iinclude
 CSS_SRC := $(shell find $(CSS_DIR) -name '*.c' ! -name css_property_parser_gen.c)
-CSS_OBJ := $(patsubst %.c,$(BUILD)/cssobj/%.o,$(CSS_SRC)) $(BUILD)/cssobj/c/apps/browser/css_engine.o \
-           $(BUILD)/cssobj/c/apps/browser/css_report.o
+CSS_OBJ := $(patsubst %.c,$(BUILD)/cssobj/%.o,$(CSS_SRC)) $(BUILD)/cssobj/c/apps/gui/browser/css/engine.o \
+           $(BUILD)/cssobj/c/apps/gui/browser/css/report.o
 
 $(BUILD)/cssobj/%.o: %.c
 	@mkdir -p $(dir $@)
@@ -1299,7 +1339,7 @@ $(BUILD)/cssobj/%.o: %.c
 # Globbed, not listed: the JS/DOM side is being extended by several parallel
 # lines at once (module loader, DOM bindings, web APIs) and a hand-kept list
 # makes this one line the thing they all have to edit.
-BROWSER_JS_SRC := c/apps/browser/browser.c $(sort $(wildcard c/apps/browser/js_*.c))
+BROWSER_JS_SRC := c/apps/gui/browser/app/main.c $(sort $(BROWSER_JS_C))
 BROWSER_JS_OBJ := $(patsubst %.c,$(BUILD)/jsobj/%.o,$(BROWSER_JS_SRC))
 
 # ...but WITHOUT `-include features.h`. That header is musl's INTERNAL one: it
@@ -1340,7 +1380,7 @@ BROWSER_JS_OBJ := $(patsubst %.c,$(BUILD)/jsobj/%.o,$(BROWSER_JS_SRC))
 #     fixed it. Fixed to use $(BROWSER_JS_CF);
 #   * tests/url.mk builds with its own URLJS_CF, which never had features.h.
 #
-# So: a rule anywhere that compiles c/apps/browser/*.c must use
+# So: a rule anywhere that compiles $(BROWSER_SOURCES) must use
 # $(BROWSER_JS_CF), not $(JS_CF). tools/negctl_drift.py cannot see this class --
 # it compares recipes of paired targets, and this is one rule against another
 # rule's target-specific variable.
@@ -1357,13 +1397,13 @@ $(BUILD)/js-install-profile.flags: browser-install-profile-force
 	@echo '$(if $(filter 1,$(JS_INSTALL_PROFILE)),on,off)' > $@.tmp
 	@cmp -s $@.tmp $@ || cp $@.tmp $@
 	@rm -f $@.tmp
-$(BUILD)/jsobj/c/apps/browser/js_page.o: $(BUILD)/js-install-profile.flags
+$(BUILD)/jsobj/c/apps/gui/browser/js/runtime/page.o: $(BUILD)/js-install-profile.flags
 $(BROWSER_JS_OBJ): JS_CF := $(BROWSER_JS_CF)
 # The embedding loader now owns JS values, but stays a pipeline consumer:
 # platform-only host source lists derive from BROWSER_JS_SRC and deliberately
 # have no network/display implementation. Give just this object the engine
 # ABI/headers without pulling the loader into those unrelated host programs.
-$(BUILD)/browserobj/c/apps/browser/passive_frame.o: UCFLAGS := $(BROWSER_JS_CF)
+$(BUILD)/browserobj/c/apps/gui/browser/frame/passive.o: UCFLAGS := $(BROWSER_JS_CF)
 
 # Diagnostic provenance must not silently survive a release rebuild, nor be
 # omitted because the object was already current. Only this producer needs it.
@@ -1373,15 +1413,15 @@ $(BUILD)/browser-visibility-trace.flags: browser-visibility-trace-force
 	@echo '$(if $(filter 1,$(BROWSER_TRACE_VISIBILITY)),on,off)' > $@.tmp
 	@cmp -s $@.tmp $@ || cp $@.tmp $@
 	@rm -f $@.tmp
-$(BUILD)/jsobj/c/apps/browser/js_dom.o: $(BUILD)/browser-visibility-trace.flags
-$(BUILD)/jsobj/c/apps/browser/js_dom.o: JS_CF += $(if $(filter 1,$(BROWSER_TRACE_VISIBILITY)),-DBROWSER_TRACE_VISIBILITY,)
+$(BUILD)/jsobj/c/apps/gui/browser/js/dom/dom.o: $(BUILD)/browser-visibility-trace.flags
+$(BUILD)/jsobj/c/apps/gui/browser/js/dom/dom.o: JS_CF += $(if $(filter 1,$(BROWSER_TRACE_VISIBILITY)),-DBROWSER_TRACE_VISIBILITY,)
 
 # Browser modules share DOM/display-list layouts and textually included native
 # backends. The old .c-only prerequisites could ship stale consumers after an
 # include edit (especially a changed struct item). Keep that seam authoritative
 # for the product too; host gates already name their corresponding includes.
-BROWSER_INTERFACE_DEPS := $(wildcard c/apps/browser/*.h c/apps/browser/*.inc)
-$(BROWSER_OBJ) $(BROWSER_JS_OBJ) $(BUILD)/cssobj/c/apps/browser/css_engine.o: $(BROWSER_INTERFACE_DEPS)
+BROWSER_INTERFACE_DEPS := $(wildcard $(BROWSER_HEADERS) $(BROWSER_INCLUDES))
+$(BROWSER_OBJ) $(BROWSER_JS_OBJ) $(BUILD)/cssobj/c/apps/gui/browser/css/engine.o: $(BROWSER_INTERFACE_DEPS)
 
 $(BUILD)/browser.elf: $(ENGINE_OBJ) $(BROWSER_JS_OBJ) $(BROWSER_OBJ) $(CSS_OBJ) $(GFX_OBJ) $(RUST_LIB) $(BUILD)/apps/crt0.o $(BUILD)/browserobj/malloc_big.o
 	$(LD) -nostdlib -e _start -Ttext=0x45000000 -o $@ --start-group $(BUILD)/apps/crt0.o $(ENGINE_OBJ) $(BROWSER_JS_OBJ) $(BROWSER_OBJ) $(CSS_OBJ) $(GFX_OBJ) $(RUST_LIB) $(BUILD)/browserobj/malloc_big.o --end-group
@@ -1446,11 +1486,12 @@ $(BUILD)/asobj/%.o: %.asm
 # now ship for local checks. Legacy source -> bytecode still uses asc.la;
 # compiler.c remains excluded and the old self-hosting gate checks that path.
 AS_OBJ_SHIPPED := $(AS_OBJ)
+AS_EVAL_MATH := $(BUILD)/as-math.a
 
-$(BUILD)/as.elf: $(AS_OBJ_SHIPPED) $(APPDIR)/crt0_cli.asm
+$(BUILD)/as.elf: $(AS_OBJ_SHIPPED) $(APPDIR)/crt0_cli.asm $(AS_EVAL_MATH)
 	@mkdir -p $(BUILD)/apps
 	$(ASM) -f elf64 $(APPDIR)/crt0_cli.asm -o $(BUILD)/apps/as.crt0c.o
-	$(LD) -nostdlib -e _start -Ttext=0x50000000 -o $@ $(BUILD)/apps/as.crt0c.o $(AS_OBJ_SHIPPED)
+	$(LD) -nostdlib -e _start -Ttext=0x50000000 -o $@ $(BUILD)/apps/as.crt0c.o $(AS_OBJ_SHIPPED) $(AS_EVAL_MATH)
 $(BUILD)/as.aex: $(BUILD)/as.elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/as.elf $@ as - '*' 150 150 150
 
@@ -1556,15 +1597,15 @@ check-ring3-net: $(R3NET_OBJ)
 # hpack.c and http1.c + hpool.c) against mini-libc, exactly the way the browser
 # will, so the comparison it prints is between two real implementations rather
 # than one real one and a strawman. Driven by tests/boot/run-h2-smoke.sh.
-$(BUILD)/r3netobj/c/apps/net/h2check.o: c/apps/net/h2check.c $(R3NET_HDRS) $(APPDIR)/logit.h
+$(BUILD)/r3netobj/tests/guest/net/h2check.o: tests/guest/net/h2check.c $(R3NET_HDRS) $(APPDIR)/logit.h
 	@mkdir -p $(dir $@)
 	$(CC) $(UCFLAGS) -c $< -o $@
 
-$(BUILD)/h2check.elf: $(BUILD)/r3netobj/c/apps/net/h2check.o $(R3NET_OBJ) $(LIBC_OBJS) $(APPDIR)/crt0_cli.asm
+$(BUILD)/h2check.elf: $(BUILD)/r3netobj/tests/guest/net/h2check.o $(R3NET_OBJ) $(LIBC_OBJS) $(APPDIR)/crt0_cli.asm
 	@mkdir -p $(BUILD)/apps
 	$(ASM) -f elf64 $(APPDIR)/crt0_cli.asm -o $(BUILD)/apps/h2check.crt0c.o
 	$(LD) -nostdlib -e _start -Ttext=0x50000000 -o $@ --start-group \
-	    $(BUILD)/apps/h2check.crt0c.o $(BUILD)/r3netobj/c/apps/net/h2check.o \
+	    $(BUILD)/apps/h2check.crt0c.o $(BUILD)/r3netobj/tests/guest/net/h2check.o \
 	    $(R3NET_OBJ) $(LIBC_OBJS) --end-group
 $(BUILD)/h2check.aex: $(BUILD)/h2check.elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/h2check.elf $@ h2check - 'H' 90 140 200
@@ -1572,12 +1613,12 @@ $(BUILD)/h2check.aex: $(BUILD)/h2check.elf tools/mkaex.py
 # /bin/vidcheck -- decodes a stream on-device and prints the same CRC32 the
 # host driver prints, which is what turns "it also works on LogitOS" into a
 # comparison rather than a claim. Driven by tests/boot/run-video-test.sh.
-$(BUILD)/vidcheck.elf: $(BUILD)/vidobj/c/apps/video/vidcheck.o $(VID_OBJ) $(IMGCHK_OBJ) \
+$(BUILD)/vidcheck.elf: $(BUILD)/vidobj/tests/guest/video/vidcheck.o $(VID_OBJ) $(IMGCHK_OBJ) \
                        $(GFX_OBJ) $(RUST_LIB) $(LIBC_OBJS) $(APPDIR)/crt0_cli.asm
 	@mkdir -p $(BUILD)/apps
 	$(ASM) -f elf64 $(APPDIR)/crt0_cli.asm -o $(BUILD)/apps/vidcheck.crt0c.o
 	$(LD) -nostdlib -e _start -Ttext=0x50000000 -o $@ $(BUILD)/apps/vidcheck.crt0c.o \
-	    $(BUILD)/vidobj/c/apps/video/vidcheck.o $(VID_OBJ) $(IMGCHK_OBJ) \
+	    $(BUILD)/vidobj/tests/guest/video/vidcheck.o $(VID_OBJ) $(IMGCHK_OBJ) \
 	    $(GFX_OBJ) $(RUST_LIB) $(LIBC_OBJS)
 $(BUILD)/vidcheck.aex: $(BUILD)/vidcheck.elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/vidcheck.elf $@ vidcheck - 'V' 150 150 150
@@ -1627,6 +1668,13 @@ $(BUILD)/imgcheck.aex: $(BUILD)/imgcheck.elf tools/mkaex.py
 LIBM_SRC := $(sort $(wildcard third_party/libm/*.c))
 LIBM_OBJ := $(patsubst %.c,$(BUILD)/libmobj/%.o,$(LIBM_SRC))
 
+# Studio's checked-tree execution now shares float remainder/power semantics
+# with LLVM. An archive pulls only pow/fmod and their helpers; linking every
+# libm object directly would collide with mini-libc's existing basic routines.
+# This prerequisite must follow LIBM_OBJ's definition, unlike its recipe use.
+$(AS_EVAL_MATH): $(LIBM_OBJ)
+	$(AGENT_AR) rcs $@ $(LIBM_OBJ)
+
 $(BUILD)/libmobj/%.o: %.c
 	@mkdir -p $(dir $@)
 	$(CC) $(UCFLAGS) -w -include features.h -Ithird_party/libm -c $< -o $@
@@ -1664,12 +1712,12 @@ $(BUILD)/audobj/%.o: %.c $(AUD_HDRS)
 # same shape as mjpeg.c dragging c/lib/image into every VID_OBJ consumer, and
 # invisible for the same reason: the stale .elf on disk was newer than the new
 # .o files, so make reported it up to date and relinked nothing.
-$(BUILD)/audiocheck.elf: $(BUILD)/audobj/c/apps/audio/audiocheck.o $(AUD_OBJ) $(LIBM_OBJ) \
+$(BUILD)/audiocheck.elf: $(BUILD)/audobj/tests/guest/audio/audiocheck.o $(AUD_OBJ) $(LIBM_OBJ) \
                          $(LIBC_OBJS) $(APPDIR)/crt0_cli.asm
 	@mkdir -p $(BUILD)/apps
 	$(ASM) -f elf64 $(APPDIR)/crt0_cli.asm -o $(BUILD)/apps/audiocheck.crt0c.o
 	$(LD) -nostdlib -e _start -Ttext=0x50000000 -o $@ $(BUILD)/apps/audiocheck.crt0c.o \
-	    $(BUILD)/audobj/c/apps/audio/audiocheck.o $(AUD_OBJ) $(LIBM_OBJ) $(LIBC_OBJS)
+	    $(BUILD)/audobj/tests/guest/audio/audiocheck.o $(AUD_OBJ) $(LIBM_OBJ) $(LIBC_OBJS)
 $(BUILD)/audiocheck.aex: $(BUILD)/audiocheck.elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/audiocheck.elf $@ audiocheck - 'A' 150 150 150
 
@@ -2609,19 +2657,19 @@ $(BUILD)/html5lib_tok_cases.inc: tools/gen_html5lib_tok.py \
 
 test-html5lib-tok: $(BUILD)/html5lib_tok_cases.inc
 	@$(CC) -O2 -w $(BTEST_INC) -I$(BUILD) -o $(BUILD)/html_tok_test \
-	    tests/unit/html_tok_test.c c/apps/browser/html_tokenizer.c
+	    tests/unit/html_tok_test.c c/apps/gui/browser/html/tokenizer.c
 	@$(BUILD)/html_tok_test $(if $(V),-v $(V),)
 
 # roots.o carries an explicit dep on roots_bundle.inc because regenerating a
 # bundle without one silently keeps the old data in the binary. Same trap here.
-$(BUILD)/browserobj/c/apps/browser/html_tokenizer.o: \
-    c/apps/browser/html_entities.inc c/apps/browser/html_tags.inc
+$(BUILD)/browserobj/c/apps/gui/browser/html/tokenizer.o: \
+    c/apps/gui/browser/html/entities.inc c/apps/gui/browser/html/tags.inc
 
 # The DOM and its parser are one unit now: dom_parse() IS html_parse(), so
 # every host test that links dom.c links the tree builder and tokenizer with
 # it. dom_serialize.c rides along because js_dom.c's innerHTML calls it.
-HTML_PARSER_SRC := c/apps/browser/dom.c c/apps/browser/html_tree.c \
-                   c/apps/browser/html_tokenizer.c c/apps/browser/dom_serialize.c
+HTML_PARSER_SRC := c/apps/gui/browser/dom/tree.c c/apps/gui/browser/html/tree.c \
+                   c/apps/gui/browser/html/tokenizer.c c/apps/gui/browser/dom/serialize.c
 
 test-html5lib: $(BUILD)/libcss_host.a
 	@mkdir -p $(BUILD)
@@ -3505,7 +3553,7 @@ ASC := $(BUILD)/asc
 # as_load then rejects (cf. the roots_bundle.inc dep gotcha).
 $(ASC): $(AS_CORE) c/apps/as/cli/main.c
 	@mkdir -p $(BUILD)
-	$(CC) -O2 -o $@ c/apps/as/cli/main.c $(AS_CORE) -Ic/apps/as -Iinclude/abi
+	$(CC) -O2 -o $@ c/apps/as/cli/main.c $(AS_CORE) -Ic/apps/as -Iinclude/abi -lm
 
 # The rule that precompiled fsroot/as/lib/*.as to .la bytecode stood here. Its
 # output was packed to /usr/as/lib/ and preferred over the source by the VM's
@@ -3646,7 +3694,7 @@ test-malloc:
 # logit_exec.h, logit_pack.h, sockerr.h) are unique across c/, include/, tests/
 # and third_party/ -- checked, because CLAUDE.md's flat-include-list trap is
 # exactly a new -I shadowing a header somebody else was including by basename.
-BTEST_INC := -Ic/apps/browser -Ic/lib/image -Ic/net/http -Ic/lib/text $(GFX_INC) \
+BTEST_INC := $(BROWSER_INC) -Ic/lib/image -Ic/net/http -Ic/lib/text $(GFX_INC) \
              -Iinclude/abi
 # The painter draws through logit.h's `int 0x80` wrappers, which a host process
 # cannot execute. tests/unit/painthost/logit.h shadows them with recorders, so
@@ -3659,7 +3707,7 @@ PAINT_INC := -Itests/unit/painthost
 # on it, so a gate that never calls css_report_* does not pull it in and its
 # link line is byte-for-byte what it was.
 CSSHOST_OBJ := $(patsubst %.c,$(BUILD)/csshost/%.o,$(CSS_SRC)) \
-               $(BUILD)/csshost/c/apps/browser/css_report.o
+               $(BUILD)/csshost/c/apps/gui/browser/css/report.o
 
 # -MMD -MP so a change to a vendored LibCSS HEADER rebuilds the objects that
 # include it. Without them this rule tracked .c files only, and LibCSS keeps
@@ -3669,18 +3717,18 @@ CSSHOST_OBJ := $(patsubst %.c,$(BUILD)/csshost/%.o,$(CSS_SRC)) \
 # roots_bundle.inc gotcha in CLAUDE.md, one directory over.
 $(BUILD)/csshost/%.o: %.c
 	@mkdir -p $(dir $@)
-	$(CC) -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP $(CSS_INC) -c $< -o $@
+	$(CC) -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP $(CSS_INC) $(BROWSER_INC) -c $< -o $@
 
 $(BUILD)/libcss_host.a: $(CSSHOST_OBJ)
 	@ar rcs $@ $^
 
-test-browser: $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
+test-browser: $(BUILD)/libcss_host.a $(RUST_LIB_HOST) test-http-dechunk
 	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) -o $(BUILD)/dom_test tests/unit/dom_test.c $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a -lm
 	@$(BUILD)/dom_test
 	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) -o $(BUILD)/dom_api_test tests/unit/dom_api_test.c $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a -lm
 	@$(BUILD)/dom_api_test
 	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) -o $(BUILD)/var_test tests/unit/var_test.c \
-	    tests/unit/css_hostmm.c c/apps/browser/css_vars.c c/apps/browser/css_engine.c \
+	    tests/unit/css_hostmm.c c/apps/gui/browser/css/vars.c c/apps/gui/browser/css/engine.c \
 	    $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a -lm
 	@$(BUILD)/var_test
 # css_vars_test: the cascade half of the same file -- WHICH declaration wins,
@@ -3688,55 +3736,53 @@ test-browser: $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
 # @media verdict is now LibCSS's own (css_select_ctx_media_matches), which is
 # the entire point: there is one evaluator, not one per caller.
 	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) -o $(BUILD)/css_vars_test tests/unit/css_vars_test.c \
-	    tests/unit/css_hostmm.c c/apps/browser/css_vars.c c/apps/browser/css_engine.c \
+	    tests/unit/css_hostmm.c c/apps/gui/browser/css/vars.c c/apps/gui/browser/css/engine.c \
 	    $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a -lm
 	@$(BUILD)/css_vars_test
 	@$(CC) -O2 -w $(BTEST_INC) -o $(BUILD)/parse_fuzz tests/unit/parse_fuzz.c c/net/http/url.c c/lib/text/utf8.c
 	@$(BUILD)/parse_fuzz
-	@$(CC) -O2 -w $(HOST_INCDIRS) -o $(BUILD)/http_dechunk_test tests/unit/http_dechunk_test.c c/net/http/url.c
-	@$(BUILD)/http_dechunk_test
 	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) -o $(BUILD)/css_engine_test tests/unit/css_engine_test.c \
-	    c/apps/browser/css_engine.c c/apps/browser/css_vars.c $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a -lm
+	    c/apps/gui/browser/css/engine.c c/apps/gui/browser/css/vars.c $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a -lm
 	@$(BUILD)/css_engine_test
 	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) -o $(BUILD)/css_extra_test tests/unit/css_extra_test.c \
-	    c/apps/browser/css_engine.c c/apps/browser/css_vars.c c/apps/browser/css_extra.c $(HTML_PARSER_SRC) \
+	    c/apps/gui/browser/css/engine.c c/apps/gui/browser/css/vars.c c/apps/gui/browser/css/extra.c $(HTML_PARSER_SRC) \
 	    $(BUILD)/libcss_host.a -lm
 	@$(BUILD)/css_extra_test
 # css_perf_test: that the author sheet is parsed once per SHEET and not once
 # per mutation -- asserted with counters rather than times, and paired with the
 # stale-stylesheet checks that are the real risk of caching it.
 	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) -o $(BUILD)/css_perf_test tests/unit/css_perf_test.c \
-	    c/apps/browser/css_engine.c c/apps/browser/css_vars.c c/apps/browser/css_extra.c \
-	    c/apps/browser/layout.c c/apps/browser/layout_text.c $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a -lm
+	    c/apps/gui/browser/css/engine.c c/apps/gui/browser/css/vars.c c/apps/gui/browser/css/extra.c \
+	    c/apps/gui/browser/layout/block.c c/apps/gui/browser/layout/text.c $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a -lm
 	@$(BUILD)/css_perf_test
 	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) -o $(BUILD)/layout_test tests/unit/layout_test.c \
-	    c/apps/browser/layout.c c/apps/browser/layout_text.c $(HTML_PARSER_SRC) c/apps/browser/css_engine.c c/apps/browser/css_vars.c \
+	    c/apps/gui/browser/layout/block.c c/apps/gui/browser/layout/text.c $(HTML_PARSER_SRC) c/apps/gui/browser/css/engine.c c/apps/gui/browser/css/vars.c \
 	    $(BUILD)/libcss_host.a -lm
 	@$(BUILD)/layout_test
 	@$(CC) -O2 -w $(PAINT_INC) $(BTEST_INC) $(CSS_INC) -o $(BUILD)/paint_test tests/unit/paint_test.c \
-	    c/apps/browser/layout.c c/apps/browser/layout_text.c c/apps/browser/browser_paint.c $(GFX_SRC) $(HTML_PARSER_SRC) \
-	    c/apps/browser/css_engine.c c/apps/browser/css_vars.c $(BUILD)/libcss_host.a -lm
+	    c/apps/gui/browser/layout/block.c c/apps/gui/browser/layout/text.c c/apps/gui/browser/paint/renderer.c $(GFX_SRC) $(HTML_PARSER_SRC) \
+	    c/apps/gui/browser/css/engine.c c/apps/gui/browser/css/vars.c $(BUILD)/libcss_host.a -lm
 	@$(BUILD)/paint_test
 	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) -o $(BUILD)/page_test tests/unit/page_test.c \
-	    c/apps/browser/layout.c c/apps/browser/layout_text.c $(HTML_PARSER_SRC) c/apps/browser/css_engine.c c/apps/browser/css_vars.c \
+	    c/apps/gui/browser/layout/block.c c/apps/gui/browser/layout/text.c $(HTML_PARSER_SRC) c/apps/gui/browser/css/engine.c c/apps/gui/browser/css/vars.c \
 	    $(BUILD)/libcss_host.a -lm
 	@$(BUILD)/page_test
 	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) -o $(BUILD)/table_list_test tests/unit/table_list_test.c \
-	    c/apps/browser/layout.c c/apps/browser/layout_text.c $(HTML_PARSER_SRC) c/apps/browser/css_engine.c c/apps/browser/css_vars.c \
+	    c/apps/gui/browser/layout/block.c c/apps/gui/browser/layout/text.c $(HTML_PARSER_SRC) c/apps/gui/browser/css/engine.c c/apps/gui/browser/css/vars.c \
 	    $(BUILD)/libcss_host.a -lm
 	@$(BUILD)/table_list_test
 	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) -o $(BUILD)/pipeline_stress tests/unit/pipeline_stress.c \
-	    c/apps/browser/layout.c c/apps/browser/layout_text.c $(HTML_PARSER_SRC) c/apps/browser/css_engine.c c/apps/browser/css_vars.c \
+	    c/apps/gui/browser/layout/block.c c/apps/gui/browser/layout/text.c $(HTML_PARSER_SRC) c/apps/gui/browser/css/engine.c c/apps/gui/browser/css/vars.c \
 	    $(BUILD)/libcss_host.a -lm
 	@$(BUILD)/pipeline_stress
 	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) -o $(BUILD)/layout_svg_test tests/unit/layout_svg_test.c \
-	    c/apps/browser/layout.c c/apps/browser/layout_text.c $(HTML_PARSER_SRC) c/apps/browser/css_engine.c c/apps/browser/css_vars.c \
+	    c/apps/gui/browser/layout/block.c c/apps/gui/browser/layout/text.c $(HTML_PARSER_SRC) c/apps/gui/browser/css/engine.c c/apps/gui/browser/css/vars.c \
 	    $(IMG_HOST_SRC) \
 	    $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm $(KMM_INC)
 	@$(BUILD)/layout_svg_test
 	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) $(JS_INC) -DCONFIG_VERSION='"host"' -o $(BUILD)/js_dom_test \
-	    tests/unit/js_dom_test.c c/apps/browser/js_dom.c c/apps/browser/js_page.c \
-	    c/apps/browser/css_engine.c c/apps/browser/css_vars.c \
+	    tests/unit/js_dom_test.c c/apps/gui/browser/js/dom/dom.c c/apps/gui/browser/js/runtime/page.c \
+	    c/apps/gui/browser/css/engine.c c/apps/gui/browser/css/vars.c \
 	    $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a -lm
 	@$(BUILD)/js_dom_test
 	@$(CC) -O2 -w $(BTEST_INC) -o $(BUILD)/http1_test tests/unit/http1_test.c \
@@ -3755,7 +3801,7 @@ test-browser: $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
 # request/response state machine (short writes, 7-byte reads, redirects,
 # chunked bodies, concurrent requests) is exercised without QEMU.
 # -DWEBAPI_HOST keeps logit.h's `int 0x80` wrappers out of the host binary.
-WEBAPI_TEST_SRC := tests/unit/webapi_test.c c/apps/browser/js_webapi.c \
+WEBAPI_TEST_SRC := tests/unit/webapi_test.c c/apps/gui/browser/js/runtime/webapi.c \
                    c/net/http/http1.c c/net/http/url.c c/net/http/cookies.c \
                    tests/unit/rust_host_shim.c
 test-webapi: $(RUST_LIB_HOST)
@@ -3848,7 +3894,7 @@ test-webapi-page: $(ISO) $(DISK)
 # come up with no fetch at all). It asserts the positive run's assertions all
 # fail. If this ever passes the positive checks, test-webapi-page is measuring
 # something other than this change.
-NOFETCH_JS_OBJ := $(filter-out $(BUILD)/jsobj/c/apps/browser/js_webapi.o,$(BROWSER_JS_OBJ))
+NOFETCH_JS_OBJ := $(filter-out $(BUILD)/jsobj/c/apps/gui/browser/js/runtime/webapi.o,$(BROWSER_JS_OBJ))
 $(BUILD)/browser-nofetch.elf: $(ENGINE_OBJ) $(NOFETCH_JS_OBJ) $(BROWSER_OBJ) $(CSS_OBJ) $(GFX_OBJ) $(RUST_LIB) $(BUILD)/apps/crt0.o $(BUILD)/browserobj/malloc_big.o
 	$(LD) -nostdlib -e _start -Ttext=0x45000000 -o $@ --start-group $(BUILD)/apps/crt0.o $(ENGINE_OBJ) $(NOFETCH_JS_OBJ) $(BROWSER_OBJ) $(CSS_OBJ) $(GFX_OBJ) $(RUST_LIB) $(BUILD)/browserobj/malloc_big.o --end-group
 $(BUILD)/browser-nofetch.aex: $(BUILD)/browser-nofetch.elf tools/mkaex.py
@@ -3871,7 +3917,7 @@ test-fetch-ui: $(ISO) $(DISK)
 # point: the fake server can RELEASE a response in pieces, so a test can assert
 # the page held the first tokens while the response was still open. See the
 # header of tests/unit/stream_net.h.
-STREAM_TEST_SRC := c/apps/browser/js_webapi.c c/net/http/http1.c c/net/http/url.c \
+STREAM_TEST_SRC := c/apps/gui/browser/js/runtime/webapi.c c/net/http/http1.c c/net/http/url.c \
                    c/net/http/cookies.c tests/unit/rust_host_shim.c
 test-stream: $(RUST_LIB_HOST)
 	@mkdir -p $(BUILD)
@@ -3931,10 +3977,10 @@ test-sse-page: $(ISO) $(DISK)
 # The device negative control: the same harness against a browser.aex whose
 # js_webapi.c was built with -DWEBAPI_NO_STREAM.
 NOSTREAM_OBJ := $(BUILD)/nostream/js_webapi.o
-$(NOSTREAM_OBJ): c/apps/browser/js_webapi.c
+$(NOSTREAM_OBJ): c/apps/gui/browser/js/runtime/webapi.c
 	@mkdir -p $(dir $@)
 	$(CC) $(UCFLAGS) $(JS_INC) -DWEBAPI_NO_STREAM -c $< -o $@
-NOSTREAM_JS_OBJ := $(filter-out $(BUILD)/jsobj/c/apps/browser/js_webapi.o,$(BROWSER_JS_OBJ)) $(NOSTREAM_OBJ)
+NOSTREAM_JS_OBJ := $(filter-out $(BUILD)/jsobj/c/apps/gui/browser/js/runtime/webapi.o,$(BROWSER_JS_OBJ)) $(NOSTREAM_OBJ)
 $(BUILD)/browser-nostream.elf: $(ENGINE_OBJ) $(NOSTREAM_JS_OBJ) $(BROWSER_OBJ) $(CSS_OBJ) $(GFX_OBJ) $(RUST_LIB) $(BUILD)/apps/crt0.o $(BUILD)/browserobj/malloc_big.o
 	$(LD) -nostdlib -e _start -Ttext=0x45000000 -o $@ --start-group $(BUILD)/apps/crt0.o $(ENGINE_OBJ) $(NOSTREAM_JS_OBJ) $(BROWSER_OBJ) $(CSS_OBJ) $(GFX_OBJ) $(RUST_LIB) $(BUILD)/browserobj/malloc_big.o --end-group
 $(BUILD)/browser-nostream.aex: $(BUILD)/browser-nostream.elf tools/mkaex.py
@@ -4020,8 +4066,8 @@ test-h2-os: $(ISO) $(DISK)
 # runtime and a listener can outlive its node, and neither of those shows up as a
 # wrong answer -- only as corrupted memory some events later. So it gets its own
 # instrumented run rather than riding on the -O2 build's silence.
-JSDOM_HOST_SRC = c/apps/browser/js_dom.c c/apps/browser/js_page.c \
-                 c/apps/browser/css_engine.c c/apps/browser/css_vars.c \
+JSDOM_HOST_SRC = c/apps/gui/browser/js/dom/dom.c c/apps/gui/browser/js/runtime/page.c \
+                 c/apps/gui/browser/css/engine.c c/apps/gui/browser/css/vars.c \
                  $(HTML_PARSER_SRC) $(QJS_SRC)
 # js_dom.c's host clock must not include the guest's syscall header on arm64.
 # Share this link/flag set with the timer regression rather than copying it.
@@ -4049,7 +4095,7 @@ test-js-dom-asan: $(BUILD)/libcss_host.a
 test-css-asan: $(BUILD)/libcss_host.a
 	@$(CC) -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -w \
 	    $(BTEST_INC) $(CSS_INC) -o $(BUILD)/css_engine_asan tests/unit/css_engine_test.c \
-	    c/apps/browser/css_engine.c c/apps/browser/css_vars.c $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a -lm
+	    c/apps/gui/browser/css/engine.c c/apps/gui/browser/css/vars.c $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a -lm
 	@ASAN_OPTIONS=detect_leaks=1 $(BUILD)/css_engine_asan >/dev/null
 	@echo "css_engine_test: ASan + UBSan + LeakSanitizer clean"
 # The custom-property scanner walks attacker-controlled stylesheet bytes with
@@ -4059,34 +4105,34 @@ test-css-asan: $(BUILD)/libcss_host.a
 # is what these two measure.
 	@$(CC) -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -w \
 	    $(BTEST_INC) $(CSS_INC) -o $(BUILD)/css_vars_asan tests/unit/css_vars_test.c \
-	    tests/unit/css_hostmm.c c/apps/browser/css_vars.c c/apps/browser/css_engine.c \
+	    tests/unit/css_hostmm.c c/apps/gui/browser/css/vars.c c/apps/gui/browser/css/engine.c \
 	    $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a -lm
 	@ASAN_OPTIONS=detect_leaks=0 $(BUILD)/css_vars_asan >/dev/null
 	@$(CC) -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -w \
 	    $(BTEST_INC) $(CSS_INC) -o $(BUILD)/css_vars_fuzz tests/unit/css_vars_fuzz.c \
-	    tests/unit/css_hostmm.c c/apps/browser/css_vars.c c/apps/browser/css_engine.c \
+	    tests/unit/css_hostmm.c c/apps/gui/browser/css/vars.c c/apps/gui/browser/css/engine.c \
 	    $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a -lm
 	@ASAN_OPTIONS=detect_leaks=0 $(BUILD)/css_vars_fuzz $(FUZZ_N)
 	@echo "css_vars: ASan + UBSan clean over the unit cases and the fuzz corpus"
 	@$(CC) -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -w \
 	    $(BTEST_INC) $(CSS_INC) -o $(BUILD)/layout_asan tests/unit/layout_test.c \
-	    c/apps/browser/layout.c c/apps/browser/layout_text.c $(HTML_PARSER_SRC) c/apps/browser/css_engine.c \
-	    c/apps/browser/css_vars.c $(BUILD)/libcss_host.a -lm
+	    c/apps/gui/browser/layout/block.c c/apps/gui/browser/layout/text.c $(HTML_PARSER_SRC) c/apps/gui/browser/css/engine.c \
+	    c/apps/gui/browser/css/vars.c $(BUILD)/libcss_host.a -lm
 	@ASAN_OPTIONS=detect_leaks=0 $(BUILD)/layout_asan >/dev/null
 	@$(CC) -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -w \
 	    $(PAINT_INC) $(BTEST_INC) $(CSS_INC) -o $(BUILD)/paint_asan tests/unit/paint_test.c \
-	    c/apps/browser/layout.c c/apps/browser/layout_text.c c/apps/browser/browser_paint.c $(GFX_SRC) $(HTML_PARSER_SRC) \
-	    c/apps/browser/css_engine.c c/apps/browser/css_vars.c $(BUILD)/libcss_host.a -lm
+	    c/apps/gui/browser/layout/block.c c/apps/gui/browser/layout/text.c c/apps/gui/browser/paint/renderer.c $(GFX_SRC) $(HTML_PARSER_SRC) \
+	    c/apps/gui/browser/css/engine.c c/apps/gui/browser/css/vars.c $(BUILD)/libcss_host.a -lm
 	@ASAN_OPTIONS=detect_leaks=0 $(BUILD)/paint_asan >/dev/null
 	@$(CC) -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -w \
 	    $(BTEST_INC) $(CSS_INC) -o $(BUILD)/table_list_asan tests/unit/table_list_test.c \
-	    c/apps/browser/layout.c c/apps/browser/layout_text.c $(HTML_PARSER_SRC) c/apps/browser/css_engine.c \
-	    c/apps/browser/css_vars.c $(BUILD)/libcss_host.a -lm
+	    c/apps/gui/browser/layout/block.c c/apps/gui/browser/layout/text.c $(HTML_PARSER_SRC) c/apps/gui/browser/css/engine.c \
+	    c/apps/gui/browser/css/vars.c $(BUILD)/libcss_host.a -lm
 	@ASAN_OPTIONS=detect_leaks=0 $(BUILD)/table_list_asan >/dev/null
 	@$(CC) -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -w \
 	    $(BTEST_INC) $(CSS_INC) -o $(BUILD)/page_asan tests/unit/page_test.c \
-	    c/apps/browser/layout.c c/apps/browser/layout_text.c $(HTML_PARSER_SRC) c/apps/browser/css_engine.c \
-	    c/apps/browser/css_vars.c $(BUILD)/libcss_host.a -lm
+	    c/apps/gui/browser/layout/block.c c/apps/gui/browser/layout/text.c $(HTML_PARSER_SRC) c/apps/gui/browser/css/engine.c \
+	    c/apps/gui/browser/css/vars.c $(BUILD)/libcss_host.a -lm
 	@ASAN_OPTIONS=detect_leaks=0 $(BUILD)/page_asan >/dev/null
 	@echo "test-css-asan: ALL PASS"
 
@@ -4154,8 +4200,8 @@ test-dom-device: $(ISO) $(DISK)
 test-dom-bindings: $(BUILD)/libcss_host.a
 	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) $(JS_INC) -DCONFIG_VERSION='"host"' \
 	    -o $(BUILD)/dom_bindings_test tests/unit/dom_bindings_test.c \
-	    c/apps/browser/js_dom.c c/apps/browser/layout.c c/apps/browser/layout_text.c \
-	    c/apps/browser/css_engine.c c/apps/browser/css_vars.c \
+	    c/apps/gui/browser/js/dom/dom.c c/apps/gui/browser/layout/block.c c/apps/gui/browser/layout/text.c \
+	    c/apps/gui/browser/css/engine.c c/apps/gui/browser/css/vars.c \
 	    $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a -lm
 	@$(BUILD)/dom_bindings_test
 
@@ -4166,8 +4212,8 @@ test-dom-bindings-asan: $(BUILD)/libcss_host.a
 	@$(CC) -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -w \
 	    $(BTEST_INC) $(CSS_INC) $(JS_INC) -DCONFIG_VERSION='"host"' \
 	    -o $(BUILD)/dom_bindings_asan tests/unit/dom_bindings_test.c \
-	    c/apps/browser/js_dom.c c/apps/browser/layout.c c/apps/browser/layout_text.c \
-	    c/apps/browser/css_engine.c c/apps/browser/css_vars.c \
+	    c/apps/gui/browser/js/dom/dom.c c/apps/gui/browser/layout/block.c c/apps/gui/browser/layout/text.c \
+	    c/apps/gui/browser/css/engine.c c/apps/gui/browser/css/vars.c \
 	    $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a -lm
 	@ASAN_OPTIONS=detect_leaks=0 $(BUILD)/dom_bindings_asan
 
@@ -4185,12 +4231,12 @@ BENCH_PAGE  ?= tests/fixtures/cssperf/deepseek.html
 BENCH_CSS   ?= $(wildcard tests/fixtures/cssperf/ds-*.css)
 BENCH_ITERS ?= 9
 $(BUILD)/css_bench: tests/unit/css_bench.c $(BUILD)/libcss_host.a \
-                    c/apps/browser/css_engine.c c/apps/browser/css_vars.c \
-                    c/apps/browser/css_extra.c c/apps/browser/layout.c c/apps/browser/layout_text.c \
-                    c/apps/browser/browser_paint.c $(HTML_PARSER_SRC)
+                    c/apps/gui/browser/css/engine.c c/apps/gui/browser/css/vars.c \
+                    c/apps/gui/browser/css/extra.c c/apps/gui/browser/layout/block.c c/apps/gui/browser/layout/text.c \
+                    c/apps/gui/browser/paint/renderer.c $(HTML_PARSER_SRC)
 	@$(CC) -O2 -w $(PAINT_INC) $(BTEST_INC) $(CSS_INC) -o $@ tests/unit/css_bench.c \
-	    c/apps/browser/css_engine.c c/apps/browser/css_vars.c c/apps/browser/css_extra.c \
-	    c/apps/browser/layout.c c/apps/browser/layout_text.c c/apps/browser/browser_paint.c $(GFX_SRC) \
+	    c/apps/gui/browser/css/engine.c c/apps/gui/browser/css/vars.c c/apps/gui/browser/css/extra.c \
+	    c/apps/gui/browser/layout/block.c c/apps/gui/browser/layout/text.c c/apps/gui/browser/paint/renderer.c $(GFX_SRC) \
 	    $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a -lm
 
 bench-css: $(BUILD)/css_bench
@@ -5056,21 +5102,21 @@ test-aui-mask:
 # for all three channels. Everything still refracts and still looks like glass;
 # what dies is the R/B separation, and exactly the assertions about it fail.
 # The target succeeds when the test fails.
-test-glass:
+test-glass: test-glass-negctl
 	@mkdir -p $(BUILD)
-	$(CC) -O1 -g -Wall -Wextra $(KGUI_INC) \
+	$(CC) -O1 -g -Wall -Wextra $(KGUI_INC) $(GFX_INC) \
 	    -o $(BUILD)/glass_lut_test tests/unit/glass_lut_test.c c/lib/gfx/effects/openlogit_glass.c -lm
 	$(BUILD)/glass_lut_test
 
 test-glass-negctl:
 	@mkdir -p $(BUILD)
-	$(CC) -O1 -g -Wall -Wextra -DGLASS_NO_DISPERSION $(KGUI_INC) \
+	$(CC) -O1 -g -Wall -Wextra -DGLASS_NO_DISPERSION $(KGUI_INC) $(GFX_INC) \
 	    -o $(BUILD)/glass_lut_negctl tests/unit/glass_lut_test.c c/lib/gfx/effects/openlogit_glass.c -lm
 	@if $(BUILD)/glass_lut_negctl > $(BUILD)/glass_negctl.log 2>&1; then \
 	    echo "NEGATIVE CONTROL FAILED: the test passes without dispersion"; exit 1; \
 	else \
 	    echo "negative control ok -- without dispersion the test fails:"; \
-	    grep -c FAIL $(BUILD)/glass_negctl.log | sed 's/^/  failing assertions: /'; \
+	    awk '/FAIL/ {n++} END {print "  failing assertions: " n}' $(BUILD)/glass_negctl.log; \
 	fi
 
 # --- the aui gallery is the toolkit's visual regression test -----------------
@@ -5216,6 +5262,9 @@ bench-aui: $(ISO) $(BUILD)/gallery.aex
 -include tests/frameworks.mk
 
 -include tests/http2.mk
+-include tests/http_dechunk.mk
+-include tests/glass_geometry.mk
+-include tests/glass_material.mk
 -include tests/fetch_header_order.mk
 
 # WebSocket (RFC 6455): the frame codec + the browser's `WebSocket`, host-
@@ -5307,7 +5356,7 @@ bench-aui: $(ISO) $(BUILD)/gallery.aex
 # from tests/wpt.mk, but does NOT assume it was read first -- see its header.
 -include tests/events.mk
 
-# IndexedDB (c/apps/browser/js_idb.c): the coherent-subset suite plus the
+# IndexedDB (c/apps/gui/browser/js/storage/idb.c): the coherent-subset suite plus the
 # termination-bar quiescence check and its negative control. Independent of
 # tests/events.mk's own source list -- see tests/idb.mk's header.
 -include tests/idb.mk
@@ -5345,16 +5394,16 @@ bench-aui: $(ISO) $(BUILD)/gallery.aex
 -include tests/selectors.mk
 
 # CSS Flexbox: `make test-flex` / `test-flex-negctl`. The flex sizing algorithm
-# (c/apps/browser/layout_flex.c) checked against the numbers CSS Flexbox § 9
+# (c/apps/gui/browser/layout/flex.c) checked against the numbers CSS Flexbox § 9
 # names, with no renderer involved. Not yet wired into layout.c -- see the
 # fragment header for why that is a separate change.
 -include tests/flex.mk
 
 # The BOX TABLE: `make test-layout-box` / `test-layout-box-negctl` /
-# `layout-box-survey`. c/apps/browser/layout.c keeps one record per element
+# `layout-box-survey`. c/apps/gui/browser/layout/block.c keeps one record per element
 # that GENERATED a box, whether or not it painted, and answers
 # layout_node_box() / layout_node_scroll() off it -- the two functions
-# c/apps/browser/js_cssom.h asks for, because reading geometry out of the
+# c/apps/gui/browser/js/style/cssom.h asks for, because reading geometry out of the
 # display list answers 0 for every element with no background, no border and
 # no text of its own. The two placement fixes that came with it (body's padding
 # taking no space, position:absolute anchored at its parent rather than at its
@@ -5380,14 +5429,14 @@ bench-aui: $(ISO) $(BUILD)/gallery.aex
 -include tests/csstext.mk
 
 # The WHATWG URL Standard: `make test-url` / `test-url-js` / `test-url-negctl`.
-# c/apps/browser/js_url.c -- the basic URL parser as the spec's state machine,
+# c/apps/gui/browser/js/net/url.c -- the basic URL parser as the spec's state machine,
 # host parsing, all eleven setters, URLSearchParams and the two globals.
 # Measured against the corpus's OWN data (urltestdata.json, setters_tests.json)
 # rather than through the WPT runner. See the fragment header.
 -include tests/url.mk
 
 # <a>/<area> URL decomposition: `make test-urlelem` / `test-urlelem-negctl`.
-# c/apps/browser/js_urlbind.c -- the document base URL, the eleven
+# c/apps/gui/browser/js/net/urlbind.c -- the document base URL, the eleven
 # HTMLHyperlinkElementUtils members on <a> and <area>, and the entry points
 # that must refuse a URL they cannot parse. url.mk above measures the ALGORITHM
 # at 100%; this measures the surface built on it, which was wrong in three
@@ -5437,6 +5486,8 @@ bench-aui: $(ISO) $(BUILD)/gallery.aex
 # note that expf/sqrtf/etc DO NOT EXIST in this tree's libm), and mini-libc's
 # own math_basic.c is float-suffixed bit-twiddling ONLY -- no libm dependency
 # on purpose, so /bin/as's link stays libm-free. So /bin/lm needs $(LIBM_OBJ),
+# Correction 2026-09-22: Studio's float evaluator now makes /bin/as link a
+# selective libm archive for pow/fmod; math_basic.c itself still needs none.
 # and that variable is a prerequisite-list reference: GNU make expands a
 # rule's prerequisites when it READS that rule, not at build time, so placing
 # this above tests/libm.mk's -include would silently expand $(LIBM_OBJ) to
@@ -5549,6 +5600,7 @@ $(BUILD)/lm.aex: $(BUILD)/lm.elf tools/mkaex.py
 .PHONY: test-mk-wired
 test-mk-wired:
 	@python3 tools/mk_wired.py
+-include tests/tools/make/relocation.mk
 -include tests/vp8.mk
 -include tests/jsfb.mk
 -include tests/coldcode.mk
@@ -5556,7 +5608,7 @@ test-mk-wired:
 # WebAssembly MVP decoder + validator (c/lib/wasm).  See tests/wasm.mk.
 -include tests/wasm.mk
 
-# A same-origin second browsing context (c/apps/browser/js_frame.c) + the
+# A same-origin second browsing context (c/apps/gui/browser/js/dom/frame.c) + the
 # js_domparser.c mutation surface it needed. See tests/frame.mk.
 -include tests/frame.mk
 -include tests/filesize.mk
@@ -5703,3 +5755,10 @@ include tests/svg_stylesheet.mk
 include tests/aseval.mk
 
 -include tests/astyped.mk
+
+include tests/ramfs_rename.mk
+-include tests/vfs_rename_meta.mk
+-include tests/fs_rename_space.mk
+-include tests/dns_class.mk
+-include tests/dns_ttl.mk
+-include tests/fb_display.mk
