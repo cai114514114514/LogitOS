@@ -450,6 +450,9 @@ historical where they imply ordinary `kmalloc` returns identity pointers.
   4 GiB that was never touched costs nothing and freeing it frees nothing". Its
   negative control, `OOM_KILL_NEWEST`, is a policy somebody could genuinely
   propose.
+- **Correction 2026-09-23:** `test-mm` now runs `mm_protect_test.c` and first
+  requires its `VMM_PROTECT_KEEP_COW` negative control. The previous sentence
+  is retained below because this was a real 113-check gap in the ordinary gate.
 - **`mm_protect_test.c` is a 474-line suite nothing runs.** Its own header says
   "every interesting bug in it is SILENT", and it names two: `mm_fault_classify()`
   answers `MM_FAULT_COW` on the PTE's COW bit alone and never consults the VMA,
@@ -457,6 +460,12 @@ historical where they imply ordinary `kmalloc` returns identity pointers.
   write the caller just forbade**; and a resident page made `PROT_NONE` is not
   present, frame retained, still referenced — invisible to every loop that walks
   present PTEs.
+
+**Correction 2026-09-23:** the following 2026-08-28 claim is historical.
+`vmm_unmap_range_in()` now drains held frames only after cross-core shootdown;
+`SYS_MUNMAP` pairs late acknowledgements with `sched_tlb_gen_bump()`.
+`docs/bugs/01-kernel-mm-cpu-sched.md` records the remaining fail-stop/liveness
+question separately. Do not reopen the old no-shootdown report from this text.
 
 **OPEN BUG, verified 2026-08-28: `munmap` does no cross-core TLB shootdown.**
 `vmm_unmap_range_in()` clears the PTE, calls `pmm_free()`, does
@@ -1730,7 +1739,7 @@ nowhere to put them.
 **5. There is no clock running the gates.** See the top of this file.
 
 Ranked below those, with the same evidence standard: the **munmap TLB hole**
-(small change, XL consequence, documented in-tree as open); the browser being a
+(the 2026-08-28 claim was fixed by the 2026-09-23 correction above); the browser being a
 single process holding every capability while it is the only thing that runs
 adversary code, with no ASLR and no stack canaries; **no bold and no italic**;
 **no iframe, Worker, ServiceWorker, WebSocket or IndexedDB**, and `localStorage`
@@ -1770,6 +1779,10 @@ there are zero tags, and the build embeds absolute host paths.
   `test-mse-os` (playback stalls), `test-vidbench-guest` (h265 @ 720p), `test-vp9`
   (no decoder), `check-abi` (one generator refusal holding **17** targets down),
   and `test-audit`'s own 76 findings.
+
+**Correction 2026-09-23:** the munmap no-shootdown step in the older priority
+list below is complete; its remaining fail-stop/liveness concern is a different
+problem. Re-evaluate the other priorities against the live tree before acting.
 
 **What to do first, by leverage:** get (c) green, close the munmap hole, then write
 the pty. While the gates are red nothing downstream can be *proved*, and this batch

@@ -2491,11 +2491,15 @@ test-part:
 # scripts drive the REAL pmm.c/vmm.c/fault.c/vma.c compiled for the host
 # (-DMM_HOSTTEST, with mmhost.h as the only seam), under ASan+UBSan.
 #
-# The line that wrote these could not add its own targets -- the Makefile was
-# being edited by a dozen other lines at the time -- so it left both scripts
-# runnable directly and said so. They have been runnable and unrun since.
-test-mm:
-	@sh tests/unit/mm_run.sh $(BUILD)
+# mm_protect_test existed but this target never ran it: the standalone suite's
+# 113 protection checks could pass while the ordinary gate missed all of them.
+# Run the controls first so a dead or misdirected oracle cannot bless the suite.
+.PHONY: test-mm test-mm-negctl
+test-mm: test-mm-negctl
+	@sh tests/unit/mm_run.sh $(BUILD) positive
+test-mm-negctl:
+	@sh tests/unit/mm_run.sh $(BUILD) negative
+ci-host: test-mm
 
 test-mm-os: $(ISO) $(DISK)
 	@bash tests/boot/run-mm-test.sh $(ISO) $(DISK)

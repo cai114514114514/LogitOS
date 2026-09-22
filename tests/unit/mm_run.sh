@@ -11,13 +11,18 @@
 # with one load-bearing check removed, and REQUIRED to fail. A guardrail nobody
 # has watched fail is not a known-working guardrail.
 #
-# Usage:  sh tests/unit/mm_run.sh [build-dir]
+# Usage:  sh tests/unit/mm_run.sh [build-dir] [all|negative|positive]
 # Makefile:  test-mm
 set -eu
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 OUT="${1:-$ROOT/build}"
+MODE="${2:-all}"
 CC="${CC:-cc}"
+case "$MODE" in
+    all|negative|positive) ;;
+    *) echo "usage: $0 [build-dir] [all|negative|positive]" >&2; exit 2 ;;
+esac
 mkdir -p "$OUT"
 
 INC="-I$ROOT/tests/unit -I$ROOT/tests/unit/mmstub -I$ROOT/c/kernel/mm -I$ROOT/c/kernel/mm/phys -I$ROOT/c/kernel/mm/virt -I$ROOT/c/kernel/mm/cache -I$ROOT/c/kernel/mm/reclaim -I$ROOT/c/kernel/mm/phys -I$ROOT/c/kernel/mm/virt -I$ROOT/c/kernel/mm/cache -I$ROOT/c/kernel/mm/reclaim"
@@ -69,7 +74,7 @@ STUB="$ROOT/tests/unit/mmstub/mm_hoststub.c"
 fail=0
 run_one() {
     name="$1"; shift
-    [ -f "$ROOT/tests/unit/$name.c" ] || { echo "=== $name: not present, skipped ==="; return; }
+    [ -f "$ROOT/tests/unit/$name.c" ] || { echo "FAIL: missing $name.c"; fail=1; return; }
     echo "=== $name ==="
     # shellcheck disable=SC2086
     $CC $FLAGS "$@" -o "$OUT/$name" "$ROOT/tests/unit/$name.c" "$COMMON" $MMSRC "$STUB"
@@ -81,7 +86,7 @@ run_one() {
 # the -D that breaks it, and `why` what it proves when it fails.
 run_negative() {
     name="$1"; tag="$2"; why="$3"
-    [ -f "$ROOT/tests/unit/$name.c" ] || return
+    [ -f "$ROOT/tests/unit/$name.c" ] || { echo "FAIL: missing $name.c control"; fail=1; return; }
     echo "=== NEGATIVE CONTROL: $name with -D$tag ==="
     echo "    proves: $why"
     # A control that does not COMPILE proves nothing at all, and would otherwise
@@ -96,23 +101,41 @@ run_negative() {
     if "$OUT/${name}_$tag" >"$OUT/${name}_$tag.log" 2>&1; then
         echo "    FAIL: the build with -D$tag PASSED. The check it removes is not"
         echo "          load-bearing, or the test does not actually reach it."
-        tail -20 "$OUT/${name}_$tag.log" | sed 's/^/          /'
+        tail -20 "$OUT/${name}_$tag.log" | while IFS= read -r line; do
+            printf '          %s\n' "$line"
+        done
+        fail=1
+    elif ! grep -aq "FAIL:" "$OUT/${name}_$tag.log"; then
+        # An ASan startup failure also exits nonzero. It proves nothing about
+        # the intended fault, so require the suite's own failed assertion.
+        echo "    FAIL: control exited without reaching a failed assertion"
+        tail -20 "$OUT/${name}_$tag.log" | while IFS= read -r line; do
+            printf '          %s\n' "$line"
+        done
         fail=1
     else
         echo "    OK: it failed, as required:"
-        grep -a "FAIL:" "$OUT/${name}_$tag.log" | head -4 | sed 's/^/          /'
+        grep -a "FAIL:" "$OUT/${name}_$tag.log" | head -4 | while IFS= read -r line; do
+            printf '          %s\n' "$line"
+        done
     fi
     echo
 }
 
-run_one mm_pmm_test
-run_one mm_vmm_test
-run_one mm_rmap_test
-run_one mm_reclaim_test
-run_one mm_pcache_test
-run_one mm_forkfile_test
-run_one mm_shm_test
+if [ "$MODE" != negative ]; then
+    run_one mm_pmm_test
+    run_one mm_vmm_test
+    run_one mm_protect_test
+    run_one mm_rmap_test
+    run_one mm_reclaim_test
+    run_one mm_pcache_test
+    run_one mm_forkfile_test
+    run_one mm_shm_test
+fi
 
+if [ "$MODE" != positive ]; then
+run_negative mm_protect_test VMM_PROTECT_KEEP_COW \
+    "mprotect removes the copy-on-write marker before a write to a read-only area can copy and mutate it"
 run_negative mm_reclaim_test RECLAIM_NO_PIN_CHECK \
     "a pinned frame IS evicted without the pin check -- so the check is what protects a page the kernel holds a pointer into"
 run_negative mm_reclaim_test RECLAIM_NO_ZERO_CHECK \
@@ -129,6 +152,7 @@ run_negative mm_pcache_test PCACHE_RA_ALWAYS \
 
 run_negative mm_pcache_test PCACHE_PER_OPEN \
     "keyed per-open instead of per-inode, two opens of the same file stop sharing a page and a page dropped by reclaim comes back in a DIFFERENT frame than a second handle still expects -- the exact bug the (dev,ino) key exists to prevent"
+fi
 
 if [ "$fail" -ne 0 ]; then
     echo "FAIL: mm host tests"
