@@ -8,7 +8,15 @@ static int prepare_panel(struct glass_panel *panel, struct ol_display *display,
                          unsigned cut)
 {
     const struct ol_pixel_target *target = &display->target;
-    if (!target->px || width <= 0 || height <= 0 || radius < 1) return 0;
+    if (!target->px || width <= 0 || height <= 0 || radius < 0) return 0;
+#ifdef GLASS_SQUARE_NOOP
+    /* Negative control: the old radius-zero guard hid Browser DevTools. */
+    if (radius == 0) return 0;
+#endif
+#ifdef GLASS_SQUARE_ROUND
+    /* Negative control: 1px rounding paints, but does not fill a square. */
+    if (radius == 0) radius = 1;
+#endif
 
     int shape_width = width;
     int shape_height = height;
@@ -46,6 +54,12 @@ static int prepare_panel(struct glass_panel *panel, struct ol_display *display,
         .height = height,
         .clip_right = width,
         .clip_bottom = height,
+        /* A square panel needs all four ORIGINAL edges even when cropped.
+         * Reusing the visible rectangle would draw a new rim at the screen. */
+        .shape_left = origin_x - x,
+        .shape_top = origin_y - y,
+        .shape_right = origin_x - x + shape_width,
+        .shape_bottom = origin_y - y + shape_height,
         .center_x = shape_width / 2 - (x - origin_x),
         .center_y = shape_height / 2 - (y - origin_y),
         .inner_x = shape_width / 2 - radius,

@@ -19,6 +19,14 @@ $(BUILD)/glass_geometry_allocation_neg: $(GLASS_GEOMETRY_DEPS)
 	@mkdir -p $(BUILD)
 	$(CC) $(GLASS_GEOMETRY_FLAGS) -DGLASS_FALLBACK_BLUR -o $@ $(GLASS_GEOMETRY_SRC) -lm
 
+$(BUILD)/glass_geometry_square_neg: $(GLASS_GEOMETRY_DEPS)
+	@mkdir -p $(BUILD)
+	$(CC) $(GLASS_GEOMETRY_FLAGS) -DGLASS_SQUARE_NOOP -o $@ $(GLASS_GEOMETRY_SRC) -lm
+
+$(BUILD)/glass_geometry_round_neg: $(GLASS_GEOMETRY_DEPS)
+	@mkdir -p $(BUILD)
+	$(CC) $(GLASS_GEOMETRY_FLAGS) -DGLASS_SQUARE_ROUND -o $@ $(GLASS_GEOMETRY_SRC) -lm
+
 $(BUILD)/glass_geometry_sanitize: $(GLASS_GEOMETRY_DEPS)
 	@mkdir -p $(BUILD)
 	$(CC) $(GLASS_GEOMETRY_FLAGS) -fsanitize=address,undefined -fno-omit-frame-pointer \
@@ -33,8 +41,8 @@ $(BUILD)/glass_geometry_slow: $(GLASS_GEOMETRY_DEPS)
 # Each control has to fail its own oracle: a crop failure cannot stand in for
 # a working root test, and a crash is not evidence. The allocation control must
 # specifically corrupt pixels, not merely report the injected failure.
-test-glass-geometry-negctl: $(BUILD)/glass_geometry_root_neg $(BUILD)/glass_geometry_crop_neg $(BUILD)/glass_geometry_allocation_neg
-	@for pair in 'root sqrt' 'crop crop' 'allocation allocation-write'; do \
+test-glass-geometry-negctl: $(BUILD)/glass_geometry_root_neg $(BUILD)/glass_geometry_crop_neg $(BUILD)/glass_geometry_allocation_neg $(BUILD)/glass_geometry_square_neg $(BUILD)/glass_geometry_round_neg
+	@for pair in 'root sqrt' 'crop crop' 'allocation allocation-write' 'square square' 'round square'; do \
 	  set -- $$pair; binary=$(BUILD)/glass_geometry_$$1_neg; log=$(BUILD)/glass_geometry_$$1_neg.log; \
 	  $$binary >$$log 2>&1; status=$$?; \
 	  if [ $$status -ne 1 ] || ! grep -q "^FAIL $$2 " $$log; then \

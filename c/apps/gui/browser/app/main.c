@@ -4729,6 +4729,9 @@ static void draw_ce_overlay(void)
         int x1 = q.x - scroll_x + browser_text_run_advance(&it[i],r1);
         int sy = VIEW_Y + q.y - scroll;
         if (sy + it[i].h < VIEW_Y || sy > VIEW_Y + VIEW_H) continue;
+        /* Correction 2026-09-23: radius 0 now draws a true square in OpenLogit.
+         * Keep this 1px radius to preserve the established selection shape.
+         * The old failure and its guest measurement are retained below. */
         /* radius 1, not 0: fb_liquid_glass_cut() (c/kernel/gui/fb/fb.c) reads
          * "radius < 1" as "nothing to draw" and returns before touching a
          * single pixel -- a guard written for a genuinely empty w<=0/h<=0
@@ -5002,6 +5005,8 @@ static void draw_doc_selection(void)
         int x1 = q.x - scroll_x + browser_text_run_advance(&it[i],r1);
         int sy = VIEW_Y + q.y - scroll;
         if (sy + it[i].h < VIEW_Y || sy > VIEW_Y + VIEW_H) continue;
+        /* Correction 2026-09-23: radius 0 now draws a true square in OpenLogit.
+         * Keep the existing 1px selection shape; the failure below is historical. */
         /* radius must be >= 1: fb_liquid_glass_cut (c/kernel/gui/fb/fb.c) has
          * `if (w <= 0 || h <= 0 || radius < 1) return` -- a radius of 0 is
          * silently a NO-OP, not a square-cornered glass panel. Measured: the

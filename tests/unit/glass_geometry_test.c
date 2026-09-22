@@ -205,6 +205,45 @@ static void crop_case(int w, int h, int radius, unsigned cut, int side)
     image_destroy(&clipped, name);
 }
 
+static void square_case(void)
+{
+    enum { X = 8, Y = 9, W = 31, H = 21 };
+    struct image image = image_create(55, 43);
+    size_t count = (size_t)image.w * image.h;
+    for (size_t i = 0; i < count; i++) image.pixels[i] = 0;
+
+    /* The Browser DevTools requests radius 0 for a square dark panel. The
+     * former material guard silently drew nothing. Checking only that some
+     * pixels changed would also bless radius 1, whose half-covered corners
+     * are not a square; opaque white on black exposes that difference. */
+    ol_display_liquid_glass(&image.display, X, Y, W, H, 0, 255, 255, 255, 255);
+    int changed = 0, outside = 0, corners = 0;
+    for (int row = 0; row < image.h; row++) {
+        for (int col = 0; col < image.w; col++) {
+            uint32_t pixel = image.pixels[(size_t)row * image.w + col];
+            int inside = col >= X && col < X + W && row >= Y && row < Y + H;
+            if (inside) changed += pixel != 0;
+            else outside += pixel != 0;
+        }
+    }
+    const int cx[] = {X, X + W - 1, X, X + W - 1};
+    const int cy[] = {Y, Y, Y + H - 1, Y + H - 1};
+    int corner_red[4];
+    for (int i = 0; i < 4; i++) {
+        uint32_t pixel = image.pixels[(size_t)cy[i] * image.w + cx[i]];
+        corner_red[i] = (pixel >> 16) & 255;
+        corners += corner_red[i] > 96;
+    }
+    if (changed != W * H || corners != 4 || outside) {
+        printf("square pixels: changed=%d/%d outside=%d corners=%d,%d,%d,%d\n",
+               changed, W * H, outside, corner_red[0], corner_red[1],
+               corner_red[2], corner_red[3]);
+    }
+    check(changed == W * H && corners == 4 && outside == 0,
+          "square", "radius zero paints every pixel and all four full corners");
+    image_destroy(&image, "square");
+}
+
 static uint32_t pattern_pixel(size_t index)
 {
     return ((uint32_t)index * 1103515245u + 12345u) & 0xffffffu;
@@ -272,6 +311,7 @@ static void allocation_case(int side, int failure, int clipped)
 int main(void)
 {
     roots();
+    square_case();
     static const unsigned cuts[] = {
         0, OL_GLASS_CUT_TOP, OL_GLASS_CUT_BOTTOM, OL_GLASS_CUT_LEFT, OL_GLASS_CUT_RIGHT,
         OL_GLASS_CUT_TOP | OL_GLASS_CUT_LEFT,
@@ -282,6 +322,7 @@ int main(void)
         for (int side = 0; side < 7; side++) crop_case(160, 104, 28, cuts[i], side);
     }
     for (int side = 0; side < 7; side++) {
+        crop_case(160, 104, 0, 0, side);
         crop_case(160, 24, 12, 0, side);
         crop_case(512, 512, 256, 0, side);
         crop_case(1024, 1024, 512, 0, side);

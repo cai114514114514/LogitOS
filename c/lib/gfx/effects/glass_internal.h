@@ -13,6 +13,7 @@ struct glass_panel {
     int x, y;
     int width, height;
     int clip_left, clip_top, clip_right, clip_bottom;
+    int shape_left, shape_top, shape_right, shape_bottom;
     int center_x, center_y;
     int inner_x, inner_y;
     int radius;

@@ -57,6 +57,8 @@ uint32_t ol_display_shade(struct ol_display *ctx, uint32_t c, int delta);
 void ol_display_fill_vgrad(struct ol_display *ctx, int x, int y, int w, int h, uint32_t top, uint32_t bottom);
 void ol_display_round_rect_vgrad(struct ol_display *ctx, int x, int y, int w, int h, int radius, uint32_t top, uint32_t bottom);
 void ol_display_blur_rect(struct ol_display *ctx, int x, int y, int w, int h, int radius, int corner);
+/* Glass radius 0 has square coverage; blur_rect's radius is a different input
+ * (its blur kernel), so these two zero values must not be conflated. */
 void ol_display_liquid_glass(struct ol_display *ctx, int x, int y, int w, int h, int radius,
                      uint8_t tr, uint8_t tg, uint8_t tb, uint8_t ta);
 void ol_display_liquid_glass_cut(struct ol_display *ctx, int x, int y, int w, int h, int radius,

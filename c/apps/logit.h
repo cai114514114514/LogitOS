@@ -258,7 +258,8 @@ enum { GICON_FOLDER, GICON_DOC, GICON_TERMINAL, GICON_GRID, GICON_GLOBE,
 static inline void gui_icon(int id, int x, int y, int px, unsigned color)
 { ol_window_icon(id, x, y, px, color); }
 /* Liquid-glass a region of THIS window over the content already drawn there
- * (frost + rim refraction + specular highlight + body tint). */
+ * (frost + rim refraction + specular highlight + body tint). Radius 0 draws a
+ * square panel; a negative radius is invalid in the shared renderer. */
 static inline void gui_glass(int x, int y, int w, int h, int radius,
                              unsigned char tr, unsigned char tg, unsigned char tb, unsigned char ta)
 { ol_window_glass(x, y, w, h, radius, tr, tg, tb, ta); }

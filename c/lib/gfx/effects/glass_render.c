@@ -96,12 +96,54 @@ static void draw_edge(const struct glass_panel *panel, const struct glass_style 
     }
 }
 
+static void draw_square_edge(const struct glass_panel *panel,
+                             const struct glass_style *style,
+                             int row, int first, int last)
+{
+    struct ol_display *display = panel->display;
+    uint32_t *destination = display->target.px +
+                            (long)(panel->y + row) * display->target.w + panel->x;
+    for (int column = first; column < last; column++) {
+        struct glass_field field = square_field(panel, column, row);
+        struct glass_color color = sample_color(panel, column, row, field);
+        color = shade_color(color, style, lighting(style, field));
+        store_pixel(display, &destination[column], color, 255);
+    }
+}
+
+static void render_square(struct glass_panel *panel, const struct glass_style *style)
+{
+    for (int row = panel->clip_top; row < panel->clip_bottom; row++) {
+        struct glass_field field = square_row_field(panel, row);
+        /* The middle has one row normal. Only the narrow vertical rims need
+         * per-pixel work. Equality stays on the rim so fast and slow geometry
+         * make exactly the same choice at all four corners. */
+        int boundary = field.depth < panel->edge_width
+            ? field.depth + 1 : panel->edge_width;
+        int start = panel->cut & OL_GLASS_CUT_LEFT ? panel->clip_left
+            : glass_clamp(panel->shape_left + boundary,
+                          panel->clip_left, panel->clip_right);
+        int end = panel->cut & OL_GLASS_CUT_RIGHT ? panel->clip_right
+            : glass_clamp(panel->shape_right - boundary,
+                          panel->clip_left, panel->clip_right);
+        if (end < start) end = start;
+        draw_square_edge(panel, style, row, panel->clip_left, start);
+        draw_span(panel, style, row, (struct glass_span){start, end}, field);
+        draw_square_edge(panel, style, row, end, panel->clip_right);
+    }
+}
+
 void glass_render(struct glass_panel *panel, struct glass_color tint, int opacity)
 {
     int refraction = panel->edge_width < 18 ? panel->edge_width : 18;
     glass_build_lut(panel->edge_width, refraction);
     struct glass_style style;
     prepare_style(&style, panel, tint, opacity);
+
+    if (panel->radius == 0) {
+        render_square(panel, &style);
+        return;
+    }
 
     int *columns = panel->display->glass_line;
     for (int column = 0; column < panel->width; column++) {

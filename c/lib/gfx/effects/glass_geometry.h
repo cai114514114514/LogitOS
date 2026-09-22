@@ -63,6 +63,51 @@ static inline struct glass_field pixel_field(const struct glass_panel *panel,
     return field;
 }
 
+/* Radius zero is a full-coverage rectangle, not the degenerate case of the
+ * rounded signed-distance field. The latter gives its left/top outer pixels
+ * half coverage but its right/bottom pixels full coverage on even dimensions.
+ * Limit distance at the bevel width: beyond it, shading and displacement are
+ * flat, so no edge normal is needed. Cut sides have no rim. */
+static inline struct glass_field square_row_field(const struct glass_panel *panel,
+                                                  int row)
+{
+    int edge = panel->edge_width;
+    int top = (panel->cut & OL_GLASS_CUT_TOP) ? edge : row - panel->shape_top;
+    int bottom = (panel->cut & OL_GLASS_CUT_BOTTOM)
+        ? edge : panel->shape_bottom - row - 1;
+    struct glass_field field = {.coverage = 255};
+    if (top < bottom && top < edge) {
+        field.depth = top;
+        field.normal_y = -256;
+    } else if (bottom < edge) {
+        field.depth = bottom;
+        field.normal_y = 256;
+    } else {
+        field.depth = edge;
+    }
+    return field;
+}
+
+static inline struct glass_field square_field(const struct glass_panel *panel,
+                                              int column, int row)
+{
+    struct glass_field field = square_row_field(panel, row);
+    int edge = panel->edge_width;
+    int left = column - panel->shape_left;
+    int right = panel->shape_right - column - 1;
+    if (!(panel->cut & OL_GLASS_CUT_LEFT) && left <= field.depth && left < edge) {
+        field.depth = left;
+        field.normal_x = -256;
+        field.normal_y = 0;
+    }
+    if (!(panel->cut & OL_GLASS_CUT_RIGHT) && right < field.depth && right < edge) {
+        field.depth = right;
+        field.normal_x = 256;
+        field.normal_y = 0;
+    }
+    return field;
+}
+
 static inline struct glass_span row_span(const struct glass_panel *panel, int distance_y)
 {
     struct glass_span span = {panel->clip_right, panel->clip_right};
