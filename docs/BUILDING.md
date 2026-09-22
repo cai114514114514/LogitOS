@@ -65,10 +65,16 @@ Studio, Preview and Terminal compile their main source as separate object
 targets. Changing a linked library therefore requires another link, without
 also compiling an unchanged main source.
 
+The sysroot's `SYSROOT_MKFLAGS` is tracked the same way. `make -q all
+build/disk.img` now returns success for an idle product; changing that option
+returns "out of date" without writing files during the query. The dry-run no
+longer predicts TCC object compiles or a disk repack on an unchanged tree.
+
 ## Build-system checks
 
 ```sh
-make test-build-incremental test-build-config test-build-jobs test-mk-wired
+make test-build-incremental test-build-config test-build-jobs \
+     test-build-sysroot-idle test-mk-wired
 ```
 
 Each build-mechanics gate runs its negative control first. The checks exercise

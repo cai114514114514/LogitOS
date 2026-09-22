@@ -111,15 +111,16 @@ SYSROOT_HOSTTCC := $(SYSROOT_WORK)/hosttcc/tcc
 # sysroot_hdr_test.py. Both gates keep that measurement as a check.
 SYSROOT_MKFLAGS ?= --libtcc1-in-libc
 
-# The flags are part of what the tree is a function of; a command-line
-# override must rebuild it. Written through cmp so the file's mtime moves
-# only when the content does.
-.PHONY: sysroot-mkflags
-sysroot-mkflags:
+# The flag value is registered with the product configuration domains in
+# tools/build/product.mk. A permanent phony prerequisite made `make -q` report
+# work on an unchanged disk and made `make -n` predict a full repack, although
+# cmp left this file untouched in a real build. When the stamp changes, replace
+# this file even if its old contents happen to match (for example when upgrading
+# an older build tree): otherwise its older mtime keeps the sysroot dirty.
+$(SYSROOT_WORK)/mkflags.txt:
 	@mkdir -p $(SYSROOT_WORK)
-	@echo '$(SYSROOT_MKFLAGS)' | cmp -s - $(SYSROOT_WORK)/mkflags.txt 2>/dev/null \
-	    || echo '$(SYSROOT_MKFLAGS)' > $(SYSROOT_WORK)/mkflags.txt
-$(SYSROOT_WORK)/mkflags.txt: sysroot-mkflags
+	@printf '%s\n' $(call build_quote,$(SYSROOT_MKFLAGS)) > $@.tmp
+	@mv $@.tmp $@
 
 # --- the host tcc, from a snapshot of the live tree that compiles ---------------
 # Re-attempted whenever a live source changes; on failure the last good
@@ -154,7 +155,11 @@ $(SYSROOT_TCC1_OBJ): $(SYSROOT_TCC_STAMP)
 # later on three "objects do not exist" it was itself told to expect. This
 # empty-recipe rule is what makes the existence check succeed on the FIRST
 # build, not just a second one where the snapshot happens to already be on
-# disk from a prior failed attempt (that is how this went unnoticed).
+# disk from a prior failed attempt (that is how this went unnoticed). The
+# snapshot script copies sources before touching its stamp, so their mtimes
+# are normally older than that stamp. Keep this edge order-only: the normal
+# object-to-stamp edge above still rebuilds all three objects when the snapshot
+# changes, while an idle dry-run no longer invents three source rebuilds.
 #
 # Deliberately the exact THREE paths in $(SYSROOT_TCC1_SRC), not a %.c/%.S
 # pattern over the whole directory: a blanket pattern makes every stem's .c
@@ -162,7 +167,7 @@ $(SYSROOT_TCC1_OBJ): $(SYSROOT_TCC_STAMP)
 # first) wins the implicit-rule search even for alloca86_64, which only has a
 # .S -- silently compiling a nonexistent alloca86_64.c instead. Naming only
 # the files that are really there keeps the .c-vs-.S disambiguation exact.
-$(SYSROOT_TCC1_SRC): $(SYSROOT_TCC_STAMP) ;
+$(SYSROOT_TCC1_SRC): | $(SYSROOT_TCC_STAMP) ;
 $(SYSROOT_WORK)/tcc1/%.o: $(SYSROOT_TCCSRC)/lib/%.c
 	@mkdir -p $(dir $@)
 	$(COMPILE) $(SYSROOT_UCFLAGS) -w -c $< -o $@

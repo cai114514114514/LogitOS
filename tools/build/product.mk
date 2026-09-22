@@ -69,6 +69,16 @@ $(eval $(call product_c,model,$(LM_NN_OBJ) $(BUILD)/lmobj/c/apps/lm/lm.o,UCFLAGS
 include tools/build/variants.mk
 include tools/build/extras.mk
 
+# The sysroot layout depends on this option even when no compiler flags move.
+# A content stamp replaces sysroot.mk's always-phony compare rule so an idle
+# `make -q` is truthful. The writer is a shell builtin, so it has no external
+# tool identity to track. Track both outputs: Make 3.81 loses subsecond mtimes,
+# and an interrupted update can leave the flags file current but the staged
+# sysroot old.
+SYSROOT_LAYOUT_WRITER :=
+$(eval $(call build_config,sysroot-layout,SYSROOT_LAYOUT_WRITER,SYSROOT_MKFLAGS,$(SYSROOT_WORK)/mkflags.txt $(SYSROOT_WORK)/sysroot.stamp))
+$(SYSROOT_WORK)/mkflags.txt $(SYSROOT_WORK)/sysroot.stamp: $(call config_stamp,sysroot-layout)
+
 # Kernel assembly and its final link use different tools and options from C.
 # Do not send assembly objects through the C-only missing-depfile recovery.
 KERNEL_ASM_OBJECTS := $(patsubst %.asm,$(BUILD)/%.o,$(ASM_SRC))

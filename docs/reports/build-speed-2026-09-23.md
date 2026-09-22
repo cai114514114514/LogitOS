@@ -31,6 +31,19 @@ for a 33,554,432-byte logical image; the positive mkfs output occupied 180,224
 bytes. Smaller 8 and 16 MiB fixtures are not useful physical-allocation
 oracles on this APFS host: truncation eagerly allocated their holes.
 
+The 2026-09-22 report correctly observed zero compiles and zero disk packs on
+an unchanged real build. A later `make -q` check exposed a different defect:
+the always-phony sysroot flag check, plus an ordinary dependency from copied
+TCC sources to a newer snapshot stamp, made the query report "out of date"
+and made `make -n` predict a rebuild. The flag now uses a content-tracked
+configuration domain, and the copied-source edge is order-only; the TCC
+objects still depend normally on the snapshot stamp. On the completed
+`build-sysroot-idle` product, both GNU Make 4.4.1 and Apple Make 3.81 returned
+0 for idle `-q` and 1 when `SYSROOT_MKFLAGS` changed. The latter was read-only.
+Idle dry-runs printed only two up-to-date lines, with no compile or pack
+commands. This fixes rebuild decisions and diagnostics; it does not establish
+a measurable wall-clock improvement for an ordinary no-op invocation.
+
 `gmake BUILD=build-goal-glass all build-goal-glass/disk.img test-fs-format
 test-disk-sparse test-snapshot-sparse test-disk-profile test-mk-wired` passed.
 `test-fs-format` reported 28 checks, and the preservation suite reported 15.
