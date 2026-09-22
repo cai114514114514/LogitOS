@@ -1696,26 +1696,62 @@ static int logitfs_rename_locked(const char *old_path, const char *new_path)
     if (op == NOINO) return -1;
     uint32_t np = resolve_parent(new_path, new_leaf);
     if (np == NOINO) return -1;
+    struct dinode *opd = iget(op);
     struct dinode *npd = iget(np);
-    if (!npd || npd->type != T_DIR) return -1;
+    if (!opd || !npd || npd->type != T_DIR) return -1;
 
     /* Cycle guard: can't move a directory into itself or a descendant. */
     struct dinode *si = iget(src);
-    if (si && si->type == T_DIR && path_under(old_path, new_path)) return -1;
+    if (!si || (si->type == T_DIR && path_under(old_path, new_path))) return -1;
+
+    /* The old undo called dir_remove again, which also needs free blocks. With
+     * one block left, rename returned -1 but another root entry disappeared
+     * until remount. Save the pre-transaction state instead of allocating while
+     * undoing: directory data, pointer blocks and metadata are only staged by
+     * log_add before commit, so dropping that log leaves the cache unchanged.
+     * There is no separate bitmap dirty flag to restore.
+     *
+     * Cost: one bitmap allocation/copy, sb.bitmap_blocks * 4096 bytes (16 KiB
+     * for the default 131072-block image), plus three 128-byte inode copies.
+     * Snapshot allocation failure occurs before any filesystem change. */
+    size_t bitmap_bytes = (size_t)sb.bitmap_blocks * BS;
+    uint8_t *saved_bitmap = kmalloc(bitmap_bytes);
+    if (!saved_bitmap) return -1;
+    memcpy(saved_bitmap, bitmap, bitmap_bytes);
+#ifndef LFS_RENAME_ABORT_NEGCTL
+    struct dinode saved_src = *si;
+    struct dinode saved_op = *opd;
+    struct dinode saved_np = *npd;
+#endif
 
     tx_begin();
-    if (dir_add(np, new_leaf, src) < 0) { log_abort(); return -1; }
+    if (dir_add(np, new_leaf, src) < 0) goto abort;
     if (dir_remove(op, old_leaf) < 0) {
-        /* Nothing committed yet: discard the transaction and unwind the add in
-         * RAM so the in-memory inode/bitmap agree with the untouched disk. */
+#ifdef LFS_RENAME_ABORT_NEGCTL
+        /* The former compensating operation fails when its allocation does. */
         dir_remove(np, new_leaf);
-        log_abort();
-        return -1;
+#endif
+        goto abort;
     }
     itouch(si, TS_C);                       /* the inode's name changed, not its content */
     if (flush_inode(src) || flush_inode(op) || flush_inode(np) || flush_bitmap())
-        { log_abort(); return -1; }
+        goto abort;
+    kfree(saved_bitmap);
+    /* Once commit starts its record may already be durable; an I/O error here
+     * retains the existing recovery semantics rather than rolling RAM back. */
     return log_commit() ? -1 : 0;
+
+abort:
+    log_abort();
+#ifndef LFS_RENAME_ABORT_NEGCTL
+    *si = saved_src;
+    *opd = saved_op;
+    if (np != op) *npd = saved_np;           /* same-directory snapshots coincide */
+    memcpy(bitmap, saved_bitmap, bitmap_bytes);
+    alloc_hint_reset();                    /* the restored bitmap invalidates the hint */
+#endif
+    kfree(saved_bitmap);
+    return -1;
 }
 
 

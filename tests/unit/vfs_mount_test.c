@@ -326,6 +326,96 @@ static void t_symlink_permission(void)
     as_root();
 }
 
+/* RAMFS stores each entry's complete path. Moving just the directory entry
+ * therefore reports success while leaving the bytes under unreachable old
+ * parents. Exercise both enumeration and reads through the public VFS path. */
+static void t_directory_rename(void)
+{
+    printf("RAMFS directory rename\n");
+    fixture();
+    eqi(vfs_mkdir("/tree"), 0, "rename fixture root");
+    eqi(vfs_mkdir("/tree/branch"), 0, "rename fixture nested directory");
+    eqi(vfs_mkdir("/tree/empty"), 0, "rename fixture empty descendant");
+    eqi(vfs_write("/tree/direct", "direct bytes", 12), 12, "rename fixture direct file");
+    eqi(vfs_write("/tree/branch/leaf", "nested bytes", 12), 12, "rename fixture nested file");
+    eqi(vfs_mkdir("/treeish"), 0, "rename fixture prefix sibling");
+    mkfile("/treeish/leaf", "bystander");
+    eqi(vfs_mkdir("/destination"), 0, "rename fixture target parent");
+
+    eqi(vfs_rename("/tree", "/destination/longer"), 0, "rename a populated directory");
+    eqi(vfs_count("/destination/longer"), 3, "renamed directory lists every direct child");
+    eqi(vfs_count("/destination/longer/branch"), 1, "renamed nested directory remains enumerable");
+    eqi(vfs_count("/destination/longer/empty"), 0, "renamed empty descendant remains a directory");
+    eqs(slurp("/destination/longer/direct"), "direct bytes", "renamed direct file preserves content");
+    eqs(slurp("/destination/longer/branch/leaf"), "nested bytes", "renamed nested file preserves content");
+    ok(vfs_size("/tree/direct") < 0, "old direct file path is absent");
+    ok(vfs_size("/tree/branch/leaf") < 0, "old nested file path is absent");
+    eqs(slurp("/treeish/leaf"), "bystander", "rename respects the path component boundary");
+
+    eqi(vfs_rename("/destination/longer", "/short"), 0, "rename subtree to a shorter prefix");
+    eqs(slurp("/short/branch/leaf"), "nested bytes", "shorter rename preserves the nested suffix");
+    eqi(vfs_count("/short"), 3, "shorter rename preserves child enumeration");
+    eqi(vfs_count("/destination"), 0, "former parent no longer lists the moved directory");
+    eqi(vfs_rename("/short/direct", "/file"), 0, "ordinary file rename still works");
+    eqs(slurp("/file"), "direct bytes", "ordinary file rename preserves content");
+}
+
+static void t_directory_rename_refusals(void)
+{
+    printf("RAMFS rename refusals leave the subtree intact\n");
+    fixture();
+    eqi(vfs_mkdir("/tree"), 0, "refusal fixture root");
+    eqi(vfs_mkdir("/tree/branch"), 0, "refusal fixture descendant");
+    mkfile("/tree/branch/leaf", "kept");
+    eqi(vfs_mkdir("/occupied"), 0, "refusal fixture existing directory");
+    mkfile("/occupied/file", "untouched");
+
+    ok(vfs_rename("/tree", "/tree/branch/moved") < 0, "cannot move a directory into its descendant");
+    eqs(slurp("/tree/branch/leaf"), "kept", "descendant refusal preserves original content");
+    eqi(vfs_count("/tree"), 1, "descendant refusal preserves original enumeration");
+    ok(vfs_count("/tree/branch/moved") < 0, "descendant refusal creates no destination");
+    ok(vfs_rename("/tree", "/tree/new") < 0, "cannot move a directory directly into itself");
+    ok(vfs_rename("/tree", "/occupied") < 0, "directory rename keeps the no-clobber contract");
+    ok(vfs_rename("/tree", "/occupied/file") < 0, "directory rename cannot clobber a file");
+    ok(vfs_rename("/tree", "/missing/new") < 0, "rename still requires the target parent");
+    eqs(slurp("/tree/branch/leaf"), "kept", "all rename refusals preserve the source bytes");
+    eqs(slurp("/occupied/file"), "untouched", "all rename refusals preserve the destination bytes");
+
+    /* A shared text prefix is not ancestry: /tree -> /treeish must work. */
+    eqi(vfs_rename("/tree", "/treeish"), 0, "a prefix-sharing target is not a descendant");
+    eqs(slurp("/treeish/branch/leaf"), "kept", "prefix-sharing rename preserves nested content");
+}
+
+static void t_directory_rename_length(void)
+{
+    printf("RAMFS rename preflights descendant path lengths\n");
+    fixture();
+    eqi(vfs_mkdir("/tree"), 0, "length fixture root");
+    eqi(vfs_mkdir("/tree/branch"), 0, "length fixture descendant");
+    mkfile("/tree/short", "first child");
+    char leaf[VFS_NAME_MAX + 1];
+    memset(leaf, 'x', VFS_NAME_MAX);
+    leaf[VFS_NAME_MAX] = 0;
+    char source[VFS_PATH_MAX], target[VFS_PATH_MAX];
+    snprintf(source, sizeof source, "/tree/branch/%s", leaf);
+    eqi(vfs_write(source, "last child", 10), 10, "length fixture longest legal component");
+    eqi(vfs_mkdir("/destination"), 0, "length fixture target parent");
+
+    /* The destination directory itself fits. Only its final descendant exceeds
+     * RAMFS's 96-byte path storage; earlier entries must not be moved first. */
+    const char *too_long = "/destination/long-directory-name";
+    ok(vfs_rename("/tree", too_long) < 0, "overlong descendant aborts the entire rename");
+    eqi(vfs_count("/tree"), 2, "length refusal preserves source directory enumeration");
+    eqs(slurp("/tree/short"), "first child", "length refusal preserves the earlier child");
+    eqs(slurp(source), "last child", "length refusal preserves the longest child");
+    eqi(vfs_count("/destination"), 0, "length refusal creates no destination directory");
+
+    eqi(vfs_rename("/tree", "/destination/short"), 0, "shorter destination fits every descendant");
+    snprintf(target, sizeof target, "/destination/short/branch/%s", leaf);
+    eqs(slurp(target), "last child", "fitting rename preserves the longest child bytes");
+    eqs(slurp("/destination/short/short"), "first child", "fitting rename preserves the earlier child");
+}
+
 int main(void)
 {
     t_mount_table();
@@ -333,6 +423,9 @@ int main(void)
     t_hard_links();
     t_sym_links();
     t_symlink_permission();
+    t_directory_rename();
+    t_directory_rename_refusals();
+    t_directory_rename_length();
     printf("\n%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

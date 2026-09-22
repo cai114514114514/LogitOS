@@ -261,13 +261,64 @@ int vmeta_unlink(const char *path, char *promote, int max)
     return 1;                                    /* caller must move the data */
 }
 
+int vmeta_rename_check(const char *from, const char *to)
+{
+#ifdef VFS_RENAME_META_ROOT_ONLY
+    (void)from;
+    (void)to;
+    return 0;
+#else
+    IO_DOMAIN_GUARD(&meta_owner);
+    int old_length = m_len(from);
+    int new_length = m_len(to);
+    for (int i = 0; i < VMETA_N; i++) {
+        const char *path = recs[i].path;
+        if (!path[0]) continue;
+        if (vfs_path_is_prefix(from, path)) {
+            if (new_length + m_len(path) - old_length >= VMETA_PATH)
+                return VFS_ENAMETOOLONG;
+        } else if (vfs_path_is_prefix(to, path)) {
+            /* Symlinks and hard-link aliases have no backend directory entry.
+             * They still occupy names under the backends' no-clobber contract;
+             * merging a moved tree with those records would inherit somebody
+             * else's permissions or link identity. */
+            return VFS_EEXIST;
+        }
+    }
+    return 0;
+#endif
+}
+
 void vmeta_renamed(const char *from, const char *to)
 {
     IO_DOMAIN_GUARD(&meta_owner);
+#ifdef VFS_RENAME_META_ROOT_ONLY
     struct vrec *r = find(from);
     if (!r) return;
     if (m_len(to) + 1 > VMETA_PATH) { r->path[0] = 0; return; }
     m_cpy(r->path, to, VMETA_PATH);
+#else
+    int old_length = m_len(from);
+    int new_length = m_len(to);
+    char moved[VMETA_PATH];
+    /* The former find(from) updated only the directory's own record. A moved
+     * 0600 child then fell back to 0644: the public RAMFS/VFS regression read
+     * its six private bytes as another uid. Move every component-boundary
+     * descendant, including when the directory itself has no record.
+     *
+     * Only names move. A symlink target is literal text, while a hard link's
+     * group/canon fields identify the same data through the renamed record.
+     * Preflight already checked every new length; no allocation or failure is
+     * allowed here after the backend has committed. The temporary path also
+     * keeps a longer prefix from overwriting its own suffix. */
+    for (int i = 0; i < VMETA_N; i++) {
+        struct vrec *record = &recs[i];
+        if (!record->path[0] || !vfs_path_is_prefix(from, record->path)) continue;
+        m_cpy(moved, to, VMETA_PATH);
+        m_cpy(moved + new_length, record->path + old_length, VMETA_PATH - new_length);
+        m_cpy(record->path, moved, VMETA_PATH);
+    }
+#endif
 }
 
 void vmeta_forget_subtree(const char *prefix)

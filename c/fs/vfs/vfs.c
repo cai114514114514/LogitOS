@@ -231,6 +231,16 @@ static int is_mount_point(const char *abs)
     return 0;
 }
 
+static int contains_mount(const char *path)
+{
+    IO_GUARD(&mount_table_lock);
+    for (int i = 0; i < VFS_NMOUNT; i++) {
+        if (mounts[i].state && mounts[i].fs &&
+            vfs_path_is_prefix(path, mounts[i].at)) return 1;
+    }
+    return 0;
+}
+
 void vfs_register(struct filesystem *fs) { __atomic_store_n(&pending_root, fs, __ATOMIC_RELEASE); }
 
 int vfs_mount(void)
@@ -1106,6 +1116,13 @@ int vfs_rename(const char *old_path, const char *new_path)
      * no single directory to operate in, so it is EXDEV -- the same answer
      * Linux gives, and the reason `mv` falls back to copy+delete. */
     if (mo != mn) return VFS_EXDEV;
+
+    /* The per-mount owner keeps its metadata stable between preflight and
+     * commit. A nested mount has a different owner and a fixed mountpoint:
+     * moving its ancestor cannot also move that mount's names or records. */
+    if (contains_mount(ao) || contains_mount(an)) return VFS_EBUSY;
+    rc = vmeta_rename_check(ao, an);
+    if (rc < 0) return rc;
 
     char so[VFS_PATH_MAX], sn[VFS_PATH_MAX];
     rc = fs_rename(mo->fs, sub_path(mo, ao, so, (int)sizeof so),

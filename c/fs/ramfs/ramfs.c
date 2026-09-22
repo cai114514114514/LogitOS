@@ -226,18 +226,60 @@ static int rf_del(struct filesystem *f, const char *path)
     return 0;
 }
 
-static int rf_rename(struct filesystem *f, const char *o, const char *n)
+#ifndef RAMFS_RENAME_ROOT_ONLY
+/* The caller checks the complete new length before either pass copies a path.
+ * Use a separate buffer: a longer prefix would overwrite its own suffix if
+ * the entry were rewritten in place. */
+static void renamed_path(char *result, const char *entry_path, int old_len,
+                         const char *new_path, int new_len)
 {
-    struct rinst *R = self(f);
-    struct rent *e = ent_find(R, o);
-    if (!e) return -1;
-    if (ent_find(R, n)) return -1;
-    if (r_len(n) + 1 > RAMFS_PATH) return -1;
-    char dir[RAMFS_PATH];
-    if (vfs_path_split(n, dir, (int)sizeof dir, NULL, 0) < 0) return -1;
-    struct rent *p = ent_find(R, dir);
-    if (!p || !p->is_dir) return -1;
-    r_cpy(e->path, n, RAMFS_PATH);
+    r_mov(result, new_path, new_len);
+    r_cpy(result + new_len, entry_path + old_len, RAMFS_PATH - new_len);
+}
+#endif
+
+static int rf_rename(struct filesystem *fs, const char *old_path, const char *new_path)
+{
+    struct rinst *store = self(fs);
+    struct rent *source = ent_find(store, old_path);
+    if (!source) return -1;
+    if (ent_find(store, new_path)) return -1;
+    if (r_len(new_path) + 1 > RAMFS_PATH) return -1;
+    char parent_path[RAMFS_PATH];
+    if (vfs_path_split(new_path, parent_path, (int)sizeof parent_path, NULL, 0) < 0) return -1;
+    struct rent *parent = ent_find(store, parent_path);
+    if (!parent || !parent->is_dir) return -1;
+
+#ifndef RAMFS_RENAME_ROOT_ONLY
+    if (source->is_dir) {
+        if (vfs_path_is_prefix(old_path, new_path)) return -1;
+        int old_len = r_len(old_path);
+        int new_len = r_len(new_path);
+        char path[RAMFS_PATH];
+
+        /* The old code changed only the directory's own path: rename succeeded
+         * but its children kept their full paths under the original name.
+         * Preflight the whole subtree before moving anything. A short root
+         * destination can still make a deep child's path exceed the limit. */
+        for (int i = 0; i < RAMFS_NENT; i++) {
+            struct rent *child = &store->e[i];
+            if (child == source || !child->path[0] ||
+                !vfs_path_is_prefix(old_path, child->path)) continue;
+            if (new_len + r_len(child->path) - old_len >= RAMFS_PATH) return -1;
+            renamed_path(path, child->path, old_len, new_path, new_len);
+            if (ent_find(store, path)) return -1; /* Preserve no-clobber for every entry. */
+        }
+
+        for (int i = 0; i < RAMFS_NENT; i++) {
+            struct rent *child = &store->e[i];
+            if (child == source || !child->path[0] ||
+                !vfs_path_is_prefix(old_path, child->path)) continue;
+            renamed_path(path, child->path, old_len, new_path, new_len);
+            r_cpy(child->path, path, RAMFS_PATH);
+        }
+    }
+#endif
+    r_cpy(source->path, new_path, RAMFS_PATH);
     return 0;
 }
 

@@ -145,8 +145,14 @@ void vmeta_canon_copy(const char *path, char *out, int cap);
 int  vmeta_nlink(const char *path);
 int  vmeta_unlink(const char *path, char *promote, int max);
 
-/* Keep the store consistent when names move or vanish underneath it. */
+/* Rename is a two-phase update under the caller's mount operation owner:
+ * preflight before the backend mutation, then apply only after it succeeds.
+ * Records move in place, so even a full store needs no additional capacity.
+ * The metadata owner is never held across a filesystem callback. */
+int  vmeta_rename_check(const char *from, const char *to);
 void vmeta_renamed(const char *from, const char *to);
+
+/* Keep the store consistent when a mounted subtree disappears. */
 void vmeta_forget_subtree(const char *prefix);
 
 /* --- the check ---------------------------------------------------------- */
