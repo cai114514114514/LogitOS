@@ -10,7 +10,7 @@
 # reports exceptions. All of them are blind to the failure a modern application
 # page actually has here: NOTHING GOES WRONG. No exception, no failed request,
 # no missing subresource; the shell renders and the content never arrives. This
-# is the instrument for that class. See c/apps/browser/js_stall.h.
+# is the instrument for that class. See c/apps/gui/browser/js/runtime/stall.h.
 #
 # It rides on $(BUILD)/webapi_probe rather than a binary of its own, and that is
 # a decision rather than laziness: that binary already loads the committed
@@ -60,7 +60,7 @@ probe-stall-frameworks: webapi-link-check $(BUILD)/webapi_probe
 # runtime in some way nobody accounted for, the diff below prints it.
 #
 # To watch it go red: add a `.then(function(){})` to any promise in
-# c/apps/browser/js_stall.c's prelude that is not already tracked, rebuild, and
+# c/apps/gui/browser/js/runtime/stall.c's prelude that is not already tracked, rebuild, and
 # `pending_awaited` moves in the armed run only. That is the whole failure mode
 # this exists to catch, and it is one line away at all times.
 test-stall-control: webapi-link-check $(BUILD)/webapi_probe

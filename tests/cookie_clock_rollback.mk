@@ -1,7 +1,7 @@
 # A real format decoder/core, with only the former clock-corruption rule
 # restored in the negative. Every malformed-record assertion stays enabled.
 COOKIE_CLOCK_DIR = $(BUILD)/cookie-clock
-COOKIE_CLOCK_SRC = tests/unit/cookie_clock_rollback_test.c c/apps/browser/cookie_persistence.c c/net/http/cookies.c
+COOKIE_CLOCK_SRC = tests/unit/cookie_clock_rollback_test.c c/apps/gui/browser/storage/cookies.c c/net/http/cookies.c
 COOKIE_CLOCK_DEPS = $(COOKIE_CLOCK_SRC) $(COOKIE_PERSIST_DEPS) tests/cookie_clock_rollback.mk
 $(COOKIE_CLOCK_DIR)/current: $(COOKIE_CLOCK_DEPS)
 	@mkdir -p $(COOKIE_CLOCK_DIR)

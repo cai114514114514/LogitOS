@@ -1,5 +1,5 @@
 /* tests/unit/html_tok_test.c -- run the shared html5lib TOKENIZER suite
- * against c/apps/browser/html_tokenizer.c and report a pass count.
+ * against c/apps/gui/browser/html/tokenizer.c and report a pass count.
  *
  * Companion to tests/unit/html5lib_test.c, which does the same for tree
  * construction.  Same reasoning: the point is to have a NUMBER for how
@@ -31,7 +31,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "html_tokenizer.h"
+#include "html/tokenizer.h"
 #include "html5lib_tok_cases.inc"
 
 /* --------------------------------------------------------------------------

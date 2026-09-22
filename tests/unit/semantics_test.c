@@ -1,4 +1,4 @@
-/* semantics_test.c -- the HTML element interfaces (c/apps/browser/js_semantics.c).
+/* semantics_test.c -- the HTML element interfaces (c/apps/gui/browser/js/dom/semantics.c).
  *
  * WHAT IT MEASURES, and why it is not a duplicate of test-wpt. The corpus
  * measures "does html/semantics pass"; it is minutes long and every one of its
@@ -27,10 +27,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include "quickjs.h"
-#include "dom.h"
-#include "css.h"
-#include "js_dom.h"
-#include "js_page.h"
+#include "dom/tree.h"
+#include "css/style.h"
+#include "js/dom/dom.h"
+#include "js/runtime/page.h"
 
 void *kmalloc(unsigned long n) { return malloc(n); }
 void  kfree(void *p) { free(p); }

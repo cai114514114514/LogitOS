@@ -1,6 +1,6 @@
 BUTTON_CONTENT_BOX_DIR = $(BUILD)/button-content-box
 BUTTON_CONTENT_BOX_SRC = $(filter-out tests/unit/layout_box_test.c,$(LBOX_SRC)) tests/unit/button_content_box_test.c
-BUTTON_CONTENT_BOX_DEPS = $(BUTTON_CONTENT_BOX_SRC) tests/unit/intrinsic_test.c $(HTML_PARSER_SRC) c/apps/browser/forms.h $(wildcard c/apps/browser/layout*.c c/apps/browser/layout*.h c/apps/browser/layout*.inc) $(BUILD)/libcss_host.a
+BUTTON_CONTENT_BOX_DEPS = $(BUTTON_CONTENT_BOX_SRC) tests/unit/intrinsic_test.c $(HTML_PARSER_SRC) c/apps/gui/browser/dom/forms.h $(wildcard c/apps/gui/browser/layout/*.c c/apps/gui/browser/layout/*.h c/apps/gui/browser/layout/*.inc) $(BUILD)/libcss_host.a
 .PHONY: test-button-content-box test-button-content-box-negctl
 $(BUTTON_CONTENT_BOX_DIR)/test: $(BUTTON_CONTENT_BOX_DEPS)
 	@mkdir -p $(BUTTON_CONTENT_BOX_DIR)

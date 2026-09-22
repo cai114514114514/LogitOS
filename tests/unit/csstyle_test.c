@@ -1,5 +1,5 @@
 /* Host test for the computed-style flush -- css_ensure_styled() in
- * c/apps/browser/css_engine.c.
+ * c/apps/gui/browser/css/engine.c.
  *
  * WHAT IT MEASURES, AND WHY IT IS NOT tests/unit/cssom_test.c.
  *
@@ -51,13 +51,13 @@
 #include <stdint.h>
 
 #include "quickjs.h"
-#include "dom.h"
-#include "css.h"
-#include "layout.h"
-#include "js_dom.h"
-#include "js_page.h"
-#include "js_cssom.h"
-#include "html_tree.h"
+#include "dom/tree.h"
+#include "css/style.h"
+#include "layout/block.h"
+#include "js/dom/dom.h"
+#include "js/runtime/page.h"
+#include "js/style/cssom.h"
+#include "html/tree.h"
 
 /* --- the kernel-only deps layout.c and the DOM reach for --- */
 void *kmalloc(unsigned long n) { return malloc(n); }

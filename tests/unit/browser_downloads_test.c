@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: MIT */
-#include "tabs.h"
+#include "app/tabs.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

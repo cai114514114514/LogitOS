@@ -25,7 +25,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "js_url.h"
+#include "js/net/url.h"
 
 /* ===================================================================== *
  *  a small JSON reader -- enough for these three files

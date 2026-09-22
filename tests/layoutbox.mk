@@ -1,4 +1,4 @@
-# tests/layoutbox.mk -- the box table in c/apps/browser/layout.c, measured.
+# tests/layoutbox.mk -- the box table in c/apps/gui/browser/layout/block.c, measured.
 #
 #   make test-layout-box          the gate: host unit tests, seconds
 #   make test-layout-box-negctl   the four sabotages, each of which the suite
@@ -24,13 +24,13 @@
 .PHONY: test-layout-box test-layout-box-negctl layout-box-survey
 
 LBOX_DIR := $(BUILD)/layoutbox
-LBOX_SRC := tests/unit/layout_box_test.c c/apps/browser/layout.c c/apps/browser/layout_text.c \
-            c/apps/browser/css_engine.c c/apps/browser/css_vars.c \
-            c/apps/browser/css_extra.c
+LBOX_SRC := tests/unit/layout_box_test.c c/apps/gui/browser/layout/block.c c/apps/gui/browser/layout/text.c \
+            c/apps/gui/browser/css/engine.c c/apps/gui/browser/css/vars.c \
+            c/apps/gui/browser/css/extra.c
 include tests/layout_capacity.mk
 
 $(LBOX_DIR)/layout_box_test: $(LBOX_SRC) $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a \
-                             c/apps/browser/layout.h
+                             c/apps/gui/browser/layout/block.h
 	@mkdir -p $(LBOX_DIR)
 	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) -o $@ $(LBOX_SRC) \
 	    $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a -lm
@@ -93,9 +93,9 @@ LBOX_DIRS ?= css/css-align css/css-sizing css/css-flexbox css/css-grid css/cssom
 layout-box-survey: $(LBOX_DIR)/layout_box_survey
 	@$(LBOX_DIR)/layout_box_survey $(LBOX_WPT) $(LBOX_DIRS)
 
-LBOX_SURVEY_SRC := tests/unit/layout_box_survey.c c/apps/browser/layout.c c/apps/browser/layout_text.c \
-                   c/apps/browser/css_engine.c c/apps/browser/css_vars.c \
-                   c/apps/browser/css_extra.c
+LBOX_SURVEY_SRC := tests/unit/layout_box_survey.c c/apps/gui/browser/layout/block.c c/apps/gui/browser/layout/text.c \
+                   c/apps/gui/browser/css/engine.c c/apps/gui/browser/css/vars.c \
+                   c/apps/gui/browser/css/extra.c
 
 $(LBOX_DIR)/layout_box_survey: $(LBOX_SURVEY_SRC) $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a
 	@mkdir -p $(LBOX_DIR)

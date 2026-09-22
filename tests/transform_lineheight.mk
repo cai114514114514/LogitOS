@@ -2,7 +2,7 @@
 TRANSFORM_LINE_DIR = $(BUILD)/transform-lineheight
 TRANSFORM_LINE_FIXTURE ?= tests/unit/transform_lineheight_test.c
 TRANSFORM_LINE_SRC = $(filter-out tests/unit/modal_paint_test.c,$(MODAL_PAINT_SRC)) $(TRANSFORM_LINE_FIXTURE)
-TRANSFORM_LINE_DEPS = $(TRANSFORM_LINE_SRC) tests/unit/modal_paint_test.c tests/unit/backface_test.c $(wildcard c/apps/browser/css*.h c/apps/browser/css*.inc c/apps/browser/layout*.h c/apps/browser/layout*.inc) c/apps/browser/browser_backface.inc $(BUILD)/libcss_host.a
+TRANSFORM_LINE_DEPS = $(TRANSFORM_LINE_SRC) tests/unit/modal_paint_test.c tests/unit/backface_test.c $(wildcard c/apps/gui/browser/css/*.h c/apps/gui/browser/css/*.inc c/apps/gui/browser/layout/*.h c/apps/gui/browser/layout/*.inc) c/apps/gui/browser/paint/backface.inc $(BUILD)/libcss_host.a
 $(TRANSFORM_LINE_DIR)/current: $(TRANSFORM_LINE_DEPS)
 	@mkdir -p $(TRANSFORM_LINE_DIR)
 	$(CC) -O2 -w $(PAINT_INC) $(BTEST_INC) $(CSS_INC) -o $@ $(TRANSFORM_LINE_SRC) $(BUILD)/libcss_host.a -lm
@@ -21,8 +21,8 @@ test-transform-lineheight-san: test-transform-lineheight $(TRANSFORM_LINE_DIR)/s
 	@ASAN_OPTIONS=detect_leaks=0:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1 python3 tests/unit/transform_lineheight_check.py $(TRANSFORM_LINE_DIR)/san $(TRANSFORM_LINE_DIR)/san.log current
 ci-host: test-transform-lineheight
 
-TRANSFORM_LINE_CSSOM_SRC = $(filter-out tests/unit/cssom_test.c,$(CSSOM_TEST_SRC)) c/apps/browser/css_interp.c tests/unit/transform_lineheight_cssom_test.c
-TRANSFORM_LINE_CSSOM_DEPS = $(TRANSFORM_LINE_CSSOM_SRC) c/apps/browser/js_matrix.inc c/apps/browser/css_transform_context.h tests/unit/cssom_test.c $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a
+TRANSFORM_LINE_CSSOM_SRC = $(filter-out tests/unit/cssom_test.c,$(CSSOM_TEST_SRC)) c/apps/gui/browser/css/interp.c tests/unit/transform_lineheight_cssom_test.c
+TRANSFORM_LINE_CSSOM_DEPS = $(TRANSFORM_LINE_CSSOM_SRC) c/apps/gui/browser/js/graphics/matrix.inc c/apps/gui/browser/css/transform_context.h tests/unit/cssom_test.c $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a
 $(TRANSFORM_LINE_DIR)/cssom: $(TRANSFORM_LINE_CSSOM_DEPS)
 	@mkdir -p $(TRANSFORM_LINE_DIR)
 	$(CC) $(DOM_MATRIX_CF) -o $@ $(TRANSFORM_LINE_CSSOM_SRC) $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a -lm

@@ -1,7 +1,7 @@
 # Share the actual transparent-box consumer pipeline; focus remains independent.
 POINTER_EVENTS_DIR := $(BUILD)/site-general/layout/pointer-events
-POINTER_EVENTS_SRC = $(filter-out tests/unit/transparent_box_hit_test.c,$(TRANSPARENT_BOX_HIT_SRC)) tests/unit/pointer_events_test.c c/apps/browser/focus.c
-POINTER_EVENTS_DEPS = $(POINTER_EVENTS_SRC) tests/unit/transparent_box_hit_test.c tests/unit/cssom_test.c c/apps/browser/css.h c/apps/browser/element_scroll_wiring.inc c/apps/browser/text_paint_wiring.inc $(QJS_SRC) $(BUILD)/libcss_host.a
+POINTER_EVENTS_SRC = $(filter-out tests/unit/transparent_box_hit_test.c,$(TRANSPARENT_BOX_HIT_SRC)) tests/unit/pointer_events_test.c c/apps/gui/browser/dom/focus.c
+POINTER_EVENTS_DEPS = $(POINTER_EVENTS_SRC) tests/unit/transparent_box_hit_test.c tests/unit/cssom_test.c c/apps/gui/browser/css/style.h c/apps/gui/browser/paint/element_scroll.inc c/apps/gui/browser/paint/text.inc $(QJS_SRC) $(BUILD)/libcss_host.a
 $(POINTER_EVENTS_DIR)/test: $(POINTER_EVENTS_DEPS)
 	@mkdir -p $(dir $@)
 	@$(CC) $(ELEMENT_SCROLL_FLAGS) -o $@ $(POINTER_EVENTS_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a -lm

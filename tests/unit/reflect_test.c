@@ -2,7 +2,7 @@
  *
  * WHAT THIS TEST IS FOR, and it is not "does el.title work".
  *
- * The whole risk in c/apps/browser/js_reflect.c is that reflection looks right
+ * The whole risk in c/apps/gui/browser/js/dom/reflect.c is that reflection looks right
  * while being a plain string pass-through. `el.title = "x"` round-trips either
  * way. Ordinary pages behave either way. What separates a correct
  * implementation from a convincing one is the TYPE: an enumerated attribute
@@ -25,9 +25,9 @@
 #include <string.h>
 
 #include "quickjs.h"
-#include "dom.h"
-#include "css.h"
-#include "js_dom.h"
+#include "dom/tree.h"
+#include "css/style.h"
+#include "js/dom/dom.h"
 
 void *kmalloc(unsigned long n) { return malloc(n); }
 void  kfree(void *p) { free(p); }

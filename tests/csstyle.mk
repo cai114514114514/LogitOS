@@ -42,14 +42,14 @@ CSSTYLE_DIR := $(BUILD)/csstyle
 # guarded by exactly this define; a fresh link without it dies at js_dom.c:46.
 # The guard is the designed host seam (see that file's own comment).
 CSSTYLE_SRC := tests/unit/csstyle_test.c \
-               c/apps/browser/js_page.c c/apps/browser/js_dom.c \
-               c/apps/browser/js_cssom.c \
-               c/apps/browser/css_engine.c c/apps/browser/css_vars.c \
-               c/apps/browser/css_extra.c \
-               c/apps/browser/layout.c c/apps/browser/layout_text.c \
-               c/apps/browser/js_select.c \
-               c/apps/browser/js_tokenlist.c \
-               c/apps/browser/js_characterdata.c
+               c/apps/gui/browser/js/runtime/page.c c/apps/gui/browser/js/dom/dom.c \
+               c/apps/gui/browser/js/style/cssom.c \
+               c/apps/gui/browser/css/engine.c c/apps/gui/browser/css/vars.c \
+               c/apps/gui/browser/css/extra.c \
+               c/apps/gui/browser/layout/block.c c/apps/gui/browser/layout/text.c \
+               c/apps/gui/browser/js/dom/select.c \
+               c/apps/gui/browser/js/dom/tokenlist.c \
+               c/apps/gui/browser/js/dom/characterdata.c
 
 # $1 = output binary, $2 = extra -D flags
 define CSSTYLE_BUILD

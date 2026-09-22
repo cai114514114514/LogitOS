@@ -8,7 +8,7 @@
 #include "h2mux_test.c"
 #undef hstub_send
 #undef main
-#include "http_cache.h"
+#include "net/cache.h"
 
 static int version, get_requests, mutation_requests, reply_status = 200;
 

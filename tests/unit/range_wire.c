@@ -6,7 +6,7 @@
  * whether Apache's Content-Range says what we expect, whether the keep-alive
  * connection survives three exchanges, whether the slice really is the slice.
  *
- * So: the SAME c/apps/browser/browser_rt.c and the SAME c/net/http/http1.c,
+ * So: the SAME c/apps/gui/browser/app/runtime.c and the SAME c/net/http/http1.c,
  * with the six socket syscalls under them wired to real BSD sockets instead of
  * a pipe. Plain HTTP only -- an https origin would need the OS's own TLS stack,
  * which does not exist on the host, and that is the stated limit of this file.
@@ -36,7 +36,7 @@
 
 #include "logit_abi.h"
 #include "http1.h"
-#include "bfetch.h"
+#include "net/fetch.h"
 
 int zlib_decompress(const uint8_t *in, int inlen, uint8_t *out, int outcap, int *outlen)
 { (void)in; (void)inlen; (void)out; (void)outcap; if (outlen) *outlen = 0; return -1; }

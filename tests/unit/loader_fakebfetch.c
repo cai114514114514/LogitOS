@@ -1,6 +1,6 @@
 /* A bfetch that serves an in-memory site, for tests/unit/loader_test.c.
  *
- * c/apps/browser/browser_rt.c is the real one: sockets, TLS, an HTTP/1.1 state
+ * c/apps/gui/browser/app/runtime.c is the real one: sockets, TLS, an HTTP/1.1 state
  * machine and a connection pool. None of that is under test here -- what is
  * under test is what the LOADER does with the documents it gets back. So this
  * implements bfetch.h against a table of {url, body} and records every URL
@@ -15,7 +15,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "bfetch.h"
+#include "net/fetch.h"
 #include "loader_fakebfetch.h"
 
 /* The image-decoder registration callbacks, WEAK.
@@ -101,7 +101,7 @@ int fake_site_fetched(const char *frag)
 }
 
 /* Use the production URL algorithm; only transport is simulated here. */
-#include "bfetch_url.inc"
+#include "../../c/apps/gui/browser/net/url.inc"
 static void resolve(const char *base, const char *ref, char *out, int max)
 { if (browser_url_resolve(base, ref, out, max) != 0) out[0] = 0; }
 

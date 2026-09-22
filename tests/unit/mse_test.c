@@ -1,4 +1,4 @@
-/* Host gate for Media Source Extensions (c/apps/browser/js_media_src.c).
+/* Host gate for Media Source Extensions (c/apps/gui/browser/js/media/media_src.c).
  *
  * WHAT THIS TEST IS FOR. Two claims, and they fail in opposite directions:
  *
@@ -36,7 +36,7 @@
 #include <string.h>
 #include <stdint.h>
 
-#include "js_media.h"
+#include "js/media/media.h"
 #include "media.h"
 
 /* mel_for_node() keys elements by POINTER and never dereferences the node, so a

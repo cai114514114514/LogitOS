@@ -189,10 +189,10 @@ test-audio-codecs: test-wav test-flac test-mp3 test-aac test-vorbis \
 # is the audio counterpart of test-video, and the only test that exercises the
 # decoders against mini-libc's allocator, the 24 MiB arena, and SSE enabled by
 # boot code rather than by the host ABI.
-$(BUILD)/audiocheck_host: c/apps/audio/audiocheck.c $(AUDIO_CODEC_SRC) \
+$(BUILD)/audiocheck_host: tests/guest/audio/audiocheck.c $(AUDIO_CODEC_SRC) \
                           $(wildcard c/lib/audio/*.h)
 	@mkdir -p $(BUILD)
-	@$(CC) -O2 -Wall -Wextra -Ic/lib/audio -o $@ c/apps/audio/audiocheck.c \
+	@$(CC) -O2 -Wall -Wextra -Ic/lib/audio -o $@ tests/guest/audio/audiocheck.c \
 	    $(AUDIO_CODEC_SRC)
 
 test-audio-codec-os: $(ISO) $(DISK) $(BUILD)/audiocheck_host

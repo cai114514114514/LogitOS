@@ -1,9 +1,9 @@
 # Paint gate links actual parser/CSS/layout/painter/native focus. Runtime gate
 # adds the actual JS APIs and IDL reflection (the inherited select harness
 # omits js_reflect.c; without it dialog.open is undefined despite native open); neither substitutes a second modal implementation.
-MODAL_PAINT_SRC = $(filter-out tests/unit/inline_hit_test.c,$(INLINE_HIT_SRC)) tests/unit/modal_paint_test.c c/apps/browser/focus.c
-MODAL_RUNTIME_SRC = $(filter-out tests/unit/select_state_test.c,$(SELECT_STATE_SRC)) tests/unit/modal_runtime_test.c c/apps/browser/js_reflect.c
-MODAL_DEPS = c/apps/browser/top_layer.h c/apps/browser/top_layer.inc c/apps/browser/focus.h c/apps/browser/css.h c/apps/browser/layout.h c/apps/browser/browser_paint.h
+MODAL_PAINT_SRC = $(filter-out tests/unit/inline_hit_test.c,$(INLINE_HIT_SRC)) tests/unit/modal_paint_test.c c/apps/gui/browser/dom/focus.c
+MODAL_RUNTIME_SRC = $(filter-out tests/unit/select_state_test.c,$(SELECT_STATE_SRC)) tests/unit/modal_runtime_test.c c/apps/gui/browser/js/dom/reflect.c
+MODAL_DEPS = c/apps/gui/browser/dom/top_layer.h c/apps/gui/browser/dom/top_layer.inc c/apps/gui/browser/dom/focus.h c/apps/gui/browser/css/style.h c/apps/gui/browser/layout/block.h c/apps/gui/browser/paint/renderer.h
 .PHONY: test-modal-top-layer test-modal-top-layer-negctl test-modal-runtime
 $(BUILD)/modal_paint_test: $(MODAL_PAINT_SRC) $(MODAL_DEPS) $(BUILD)/libcss_host.a
 	@$(CC) -O2 -w $(PAINT_INC) $(BTEST_INC) $(CSS_INC) -o $@ $(MODAL_PAINT_SRC) $(BUILD)/libcss_host.a -lm

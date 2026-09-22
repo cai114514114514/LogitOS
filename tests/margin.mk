@@ -2,7 +2,7 @@
 # the previous lossy conversion and MUST fail before the positive can run.
 MARGIN_DIR := $(BUILD)/margin
 MARGIN_SRC = $(filter-out tests/unit/layout_box_test.c,$(LBOX_SRC)) tests/unit/margin_test.c
-MARGIN_DEPS = $(MARGIN_SRC) $(HTML_PARSER_SRC) c/apps/browser/css.h c/apps/browser/layout_grid.h c/apps/browser/layout_flex.c c/apps/browser/layout_grid.c $(BUILD)/libcss_host.a
+MARGIN_DEPS = $(MARGIN_SRC) $(HTML_PARSER_SRC) c/apps/gui/browser/css/style.h c/apps/gui/browser/layout/grid.h c/apps/gui/browser/layout/flex.c c/apps/gui/browser/layout/grid.c $(BUILD)/libcss_host.a
 .PHONY: test-margin test-margin-negctl
 $(MARGIN_DIR)/test: $(MARGIN_DEPS)
 	@mkdir -p $(MARGIN_DIR)

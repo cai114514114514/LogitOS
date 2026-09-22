@@ -1,8 +1,8 @@
 # Actual CSSOM installer, cascade, layout and matrix math. Each missing door is
 # independently compiled and must visibly fail before the positive is run.
 DOM_MATRIX_OUT = $(BUILD)/site-general/runtime
-DOM_MATRIX_SRC = $(filter-out tests/unit/cssom_test.c,$(CSSOM_TEST_SRC)) c/apps/browser/css_interp.c tests/unit/dom_matrix_test.c
-DOM_MATRIX_DEPS = $(DOM_MATRIX_SRC) c/apps/browser/js_matrix.inc tests/unit/cssom_test.c $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a
+DOM_MATRIX_SRC = $(filter-out tests/unit/cssom_test.c,$(CSSOM_TEST_SRC)) c/apps/gui/browser/css/interp.c tests/unit/dom_matrix_test.c
+DOM_MATRIX_DEPS = $(DOM_MATRIX_SRC) c/apps/gui/browser/js/graphics/matrix.inc tests/unit/cssom_test.c $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a
 DOM_MATRIX_CF = -O2 -w $(BTEST_INC) $(CSS_INC) $(JS_INC) -DCONFIG_VERSION='"host"' -DWEBAPI_HOST
 .PHONY: test-dom-matrix test-dom-matrix-negctl
 $(DOM_MATRIX_OUT)/dom_matrix_test: $(DOM_MATRIX_DEPS)

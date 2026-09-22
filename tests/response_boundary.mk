@@ -3,7 +3,7 @@
 # fixture/compile error cannot satisfy either old-behavior negative control.
 RESPONSE_BOUNDARY_DIR = $(BUILD)/response-boundary
 RESPONSE_BOUNDARY_SRC = tests/unit/response_boundary_test.c $(STREAM_TEST_SRC) $(QJS_SRC)
-RESPONSE_BOUNDARY_DEPS = $(RESPONSE_BOUNDARY_SRC) tests/unit/stream_net.h tests/fixtures/browser/response-boundary.js $(RUST_LIB_HOST) $(wildcard c/apps/browser/*.inc c/apps/browser/*.h)
+RESPONSE_BOUNDARY_DEPS = $(RESPONSE_BOUNDARY_SRC) tests/unit/stream_net.h tests/fixtures/browser/response-boundary.js $(RUST_LIB_HOST) $(wildcard $(BROWSER_INCLUDES) $(BROWSER_HEADERS))
 RESPONSE_BOUNDARY_CF = -O2 -w $(BTEST_INC) -Iinclude/abi $(JS_INC) -DCONFIG_VERSION='"host"' -DWEBAPI_HOST
 # cookiegate.mk is included BEFORE STREAM_TEST_SRC is declared. Expanding the
 # dependency list there silently loses js_webapi.c and leaves an old executable

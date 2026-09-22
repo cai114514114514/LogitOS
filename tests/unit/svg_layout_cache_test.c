@@ -5,9 +5,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "layout.h"
-#include "dom.h"
-#include "css.h"
+#include "layout/block.h"
+#include "dom/tree.h"
+#include "css/style.h"
 void *kmalloc(unsigned long n){return malloc(n);}
 void kfree(void *p){free(p);}
 int text_measure(const char *s,int n,int px,int face){(void)s;(void)face;return n*px/2;}

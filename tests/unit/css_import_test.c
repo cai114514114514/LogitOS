@@ -6,10 +6,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
-#include "layout.h"
-#include "css.h"
-#include "dom.h"
-#include "css_import.h"
+#include "layout/block.h"
+#include "css/style.h"
+#include "dom/tree.h"
+#include "css/import.h"
 #include "url.h"
 
 void *kmalloc(unsigned long n){ return malloc(n); }

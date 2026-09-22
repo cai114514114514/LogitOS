@@ -1,6 +1,6 @@
 BUTTON_INNER_DIR = $(BUILD)/button-inner-flex
 BUTTON_INNER_SRC = $(filter-out tests/unit/layout_box_test.c,$(LBOX_SRC)) $(IMG_HOST_SRC) tests/unit/button_inner_flex_test.c
-BUTTON_INNER_DEPS = $(BUTTON_INNER_SRC) $(HTML_PARSER_SRC) tests/unit/intrinsic_test.c $(wildcard c/apps/browser/css*.h c/apps/browser/css*.inc c/apps/browser/layout*.h c/apps/browser/layout*.c c/apps/browser/layout*.inc c/apps/browser/svg*.inc c/apps/browser/svg*.h) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) tests/button_inner_flex.mk
+BUTTON_INNER_DEPS = $(BUTTON_INNER_SRC) $(HTML_PARSER_SRC) tests/unit/intrinsic_test.c $(wildcard c/apps/gui/browser/css/*.h c/apps/gui/browser/css/*.inc c/apps/gui/browser/layout/*.h c/apps/gui/browser/layout/*.c c/apps/gui/browser/layout/*.inc c/apps/gui/browser/paint/svg*.inc c/apps/gui/browser/paint/svg*.h) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) tests/button_inner_flex.mk
 $(BUTTON_INNER_DIR)/test: $(BUTTON_INNER_DEPS)
 	@mkdir -p $(BUTTON_INNER_DIR)
 	$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) $(KMM_INC) -o $@ $(sort $(BUTTON_INNER_SRC) $(HTML_PARSER_SRC)) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm

@@ -5,7 +5,7 @@ WORKER_GLOBALS_DIR = $(BUILD)/worker-globals
 # removing noFetch assertions would silently change what its old control tests.
 WORKER_GLOBALS_CF = $(WORKER_CF) -DWORKER_NO_FETCH
 WORKER_GLOBALS_SRC = tests/unit/worker_globals_test.c $(filter-out tests/unit/worker_test.c,$(WORKER_TEST_SRC))
-WORKER_GLOBALS_DEP = $(WORKER_GLOBALS_SRC) tests/unit/worker_test.c $(wildcard c/apps/browser/js_*prelude.inc) c/apps/browser/js_encoding.inc c/apps/browser/js_url.h c/apps/browser/js_webapi.h $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
+WORKER_GLOBALS_DEP = $(WORKER_GLOBALS_SRC) tests/unit/worker_test.c $(BROWSER_JS_PRELUDES) c/apps/gui/browser/js/text/encoding.inc c/apps/gui/browser/js/net/url.h c/apps/gui/browser/js/runtime/webapi.h $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
 $(WORKER_GLOBALS_DIR)/current: $(WORKER_GLOBALS_DEP)
 	@mkdir -p $(WORKER_GLOBALS_DIR)
 	$(CC) -O2 -w $(WORKER_GLOBALS_CF) -o $@ $(WORKER_GLOBALS_SRC) $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm

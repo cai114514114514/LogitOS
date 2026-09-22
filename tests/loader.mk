@@ -16,7 +16,7 @@ PROGRESS_PAINT_DIR = $(BUILD)/site-general/progress-paint
 # runtime_scroll.mk is parsed later: its deferred source variable works in a
 # recipe, NOT in a prerequisite expanded now. Use concrete browser/header
 # dependencies here or editing browser.c silently keeps yesterday's binary.
-PROGRESS_PAINT_DEPS = tests/unit/progress_paint_test.c tests/unit/progress_paint_fake.c tests/unit/loader_test.c tests/unit/loader_fakebfetch.c $(wildcard c/apps/browser/*.c c/apps/browser/*.h c/apps/browser/*.inc) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
+PROGRESS_PAINT_DEPS = tests/unit/progress_paint_test.c tests/unit/progress_paint_fake.c tests/unit/loader_test.c tests/unit/loader_fakebfetch.c $(wildcard $(BROWSER_SOURCES) $(BROWSER_HEADERS) $(BROWSER_INCLUDES)) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
 $(PROGRESS_PAINT_DIR)/current: $(PROGRESS_PAINT_DEPS)
 	@mkdir -p $(PROGRESS_PAINT_DIR)
 	$(CC) $(RUNTIME_SCROLL_CF) -o $@ $(PROGRESS_PAINT_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
@@ -36,7 +36,7 @@ ci-host: test-progress-paint
 
 # --- test-loader: the REAL browser.c load path, host-side ------------------
 # Every other host test in test-browser links a piece of the pipeline. This one
-# links the LOADER -- c/apps/browser/browser.c itself -- because the bug it
+# links the LOADER -- c/apps/gui/browser/app/main.c itself -- because the bug it
 # exists for lives between the pieces: https://www.baidu.com/ serves our
 # User-Agent a 227-byte stub whose only content is location.replace(), and the
 # loader used to ignore it and render the stub for ever (blank page, zero
@@ -53,13 +53,13 @@ ci-host: test-progress-paint
 # include/abi for the real event ABI + tests/unit for the fixture-site header.
 LOADER_INC := -Itests/unit/loaderhost -Itests/unit -Iinclude/abi
 LOADER_SRC := tests/unit/loader_test.c tests/unit/loader_fakebfetch.c \
-              c/apps/browser/browser.c c/apps/browser/browser_paint.c \
-              c/apps/browser/layout.c c/apps/browser/layout_text.c c/apps/browser/forms.c c/apps/browser/focus.c \
-              c/apps/browser/css_engine.c \
-              c/apps/browser/css_vars.c c/apps/browser/css_extra.c \
-              c/apps/browser/js_dom.c c/apps/browser/js_page.c \
-              c/apps/browser/js_webapi.c c/apps/browser/js_module.c \
-              c/apps/browser/tabs.c \
+              c/apps/gui/browser/app/main.c c/apps/gui/browser/paint/renderer.c \
+              c/apps/gui/browser/layout/block.c c/apps/gui/browser/layout/text.c c/apps/gui/browser/dom/forms.c c/apps/gui/browser/dom/focus.c \
+              c/apps/gui/browser/css/engine.c \
+              c/apps/gui/browser/css/vars.c c/apps/gui/browser/css/extra.c \
+              c/apps/gui/browser/js/dom/dom.c c/apps/gui/browser/js/runtime/page.c \
+              c/apps/gui/browser/js/runtime/webapi.c c/apps/gui/browser/js/runtime/module.c \
+              c/apps/gui/browser/app/tabs.c \
               c/net/http/url.c c/net/http/http1.c c/net/http/cookies.c \
               tests/unit/rust_host_shim.c $(GFX_SRC) $(HTML_PARSER_SRC)
 test-loader: $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
@@ -109,6 +109,12 @@ test-loader-negctl: $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
 # sheets already outrank it on source order alone. That check is not asserted
 # to fail here for exactly that reason -- asserting it would be asserting
 # something this control does not isolate.)
+# Correction 2026-09-22, retained beside that old ordering claim: the loader
+# now preserves DOM order. The fixture's narrow inline style is LAST, so when
+# MEDIA_ATTR_IGNORE removes both guards it wins over screen AND print. The
+# unchanged pre-move source already has this behavior. Require screen to lose
+# and the narrow style to win; expecting print to win rejected the correct
+# control. This combined mutant does not separately isolate the print link.
 test-media-negctl: $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
 	@$(CC) -O2 -w $(LOADER_INC) $(BTEST_INC) $(CSS_INC) $(JS_INC) \
 	    -DCONFIG_VERSION='"host"' -DWEBAPI_HOST -DMEDIA_ATTR_IGNORE \
@@ -119,8 +125,8 @@ test-media-negctl: $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
 	    exit 1; fi
 	@grep -q 'FAIL: the UNCONDITIONAL screen sheet' $(BUILD)/media_negctl.log || \
 	    { echo "FAIL: the control failed, but not on which sheet won"; exit 1; }
-	@grep -q 'FAIL: the media=print <link> did NOT win' $(BUILD)/media_negctl.log || \
-	    { echo "FAIL: the control failed, but print still lost like it should"; exit 1; }
+	@grep -Fq 'FAIL: the (max-width: 1px) inline <style> did NOT win' $(BUILD)/media_negctl.log || \
+	    { echo "FAIL: the control failed, but the last narrow style did not win"; exit 1; }
 	@grep -q 'ok: both list items produced boxes' $(BUILD)/media_negctl.log || \
 	    { echo "FAIL: the control broke box generation itself, not just cascade order"; exit 1; }
 	@grep -q 'loader_test: FAIL' $(BUILD)/media_negctl.log || \

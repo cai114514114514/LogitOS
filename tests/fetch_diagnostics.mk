@@ -3,7 +3,7 @@
 # removal control a prerequisite: HTTP behavior passing alone is insufficient.
 FETCH_DIAG_DIR = $(BUILD)/fetch-diagnostics
 FETCH_DIAG_SRC = tests/unit/fetch_diagnostics_test.c $(STREAM_TEST_SRC) $(QJS_SRC)
-FETCH_DIAG_DEPS = $(FETCH_DIAG_SRC) tests/unit/stream_net.h $(wildcard c/apps/browser/*.inc c/apps/browser/*.h c/net/http/*.inc c/net/http/*.h) $(RUST_LIB_HOST)
+FETCH_DIAG_DEPS = $(FETCH_DIAG_SRC) tests/unit/stream_net.h $(wildcard $(BROWSER_INCLUDES) $(BROWSER_HEADERS) c/net/http/*.inc c/net/http/*.h) $(RUST_LIB_HOST)
 FETCH_DIAG_CF = -O2 -w $(BTEST_INC) -Iinclude/abi $(JS_INC) -DCONFIG_VERSION='"host"' -DWEBAPI_HOST
 .SECONDEXPANSION:
 $(FETCH_DIAG_DIR)/current: $$(FETCH_DIAG_DEPS)

@@ -7,8 +7,8 @@
 #include "loader_test.c"
 #undef main
 #undef res_fetch
-#include "js_module.h"
-#include "bfetch.h"
+#include "js/runtime/module.h"
+#include "net/fetch.h"
 int res_fetch(const char *u, uint8_t **b, int *n) { return bfetch_sync(u, b, n); }
 static int number(const char *s)
 {

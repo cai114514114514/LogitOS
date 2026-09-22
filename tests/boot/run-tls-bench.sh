@@ -3,7 +3,7 @@
 #
 # WHY THIS EXISTS
 # ---------------
-# c/apps/browser/browser_rt.c schedules the whole fetch layer around one
+# c/apps/gui/browser/app/runtime.c schedules the whole fetch layer around one
 # sentence -- that a handshake on an emulated CPU "costs SECONDS" -- and until
 # this harness there was no number behind it, let alone a number per phase. A
 # handshake is a round trip, an ECDH, a DER parse, one to five signature

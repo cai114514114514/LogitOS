@@ -1,4 +1,4 @@
-/* devtools_test.c -- host gate for c/apps/browser/js_devtools.c
+/* devtools_test.c -- host gate for c/apps/gui/browser/js/runtime/devtools.c
  *
  * WHY THIS EXISTS, and why it is not "wait for QEMU to prove it": the data
  * model half of DevTools (dt_reset/dt_script_add/dt_script_mark/dt_net_*) is
@@ -34,11 +34,11 @@
  * Build (host, no wiring into any .mk on purpose -- see the deferred-work
  * note this ships beside):
  *   clang -Wall -Wextra -o /tmp/devtools_test \
- *       tests/unit/devtools_test.c c/apps/browser/js_devtools.c \
- *       -Ic/apps/browser && /tmp/devtools_test
+ *       tests/unit/devtools_test.c c/apps/gui/browser/js/runtime/devtools.c \
+ *       -Ic/apps/gui/browser && /tmp/devtools_test
  */
 
-#include "../../c/apps/browser/js_devtools.h"
+#include "js/runtime/devtools.h"
 
 #include <stdio.h>
 #include <string.h>

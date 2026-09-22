@@ -4,7 +4,7 @@
 #define main loader_existing_main
 #include "loader_test.c"
 #undef main
-#include "js_dom.h"
+#include "js/dom/dom.h"
 void app_main(void);
 
 static int stage, steps, cooldown, slow, handled, base_flushes, interim;

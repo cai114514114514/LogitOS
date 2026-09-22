@@ -74,16 +74,16 @@ test-fragmk-guest: $(ISO) $(DISK)
 
 # $(BROWSER_JS_CF), not $(JS_CF): the root Makefile's one target-specific
 # variable override strips `-include features.h` from the browser's own TUs,
-# and a rule here that compiled a c/apps/browser source with raw $(JS_CF) would
+# and a rule here that compiled a c/apps/gui/browser source with raw $(JS_CF) would
 # revive the `hidden` macro that made sizeof(struct item) disagree by 8 bytes
 # across the display list. The root Makefile says so at $(BROWSER_JS_OBJ);
 # this is the third rule in the tree that has to obey it (currentscript.mk's is
 # the second and explains the history).
-$(BUILD)/negmod/js_module.o: c/apps/browser/js_module.c
+$(BUILD)/negmod/js_module.o: c/apps/gui/browser/js/runtime/module.c
 	@mkdir -p $(dir $@)
 	$(CC) $(BROWSER_JS_CF) -DFRMW_NEGCTL_NOMODULE -c $< -o $@
 
-FRMW_NEG_OBJ := $(filter-out $(BUILD)/jsobj/c/apps/browser/js_module.o,$(BROWSER_JS_OBJ)) \
+FRMW_NEG_OBJ := $(filter-out $(BUILD)/jsobj/c/apps/gui/browser/js/runtime/module.o,$(BROWSER_JS_OBJ)) \
                 $(BUILD)/negmod/js_module.o
 
 $(BUILD)/browser-negmod.elf: $(ENGINE_OBJ) $(FRMW_NEG_OBJ) $(BROWSER_OBJ) $(CSS_OBJ) $(GFX_OBJ) $(RUST_LIB) $(BUILD)/apps/crt0.o $(BUILD)/browserobj/malloc_big.o

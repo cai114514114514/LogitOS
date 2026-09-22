@@ -29,8 +29,8 @@
 
 UCD ?= /usr/share/unicode
 
-CSSTEXT_SRC := tests/unit/csstext_test.c c/apps/browser/layout_text.c
-CSSTEXT_INC := -Ic/apps/browser
+CSSTEXT_SRC := tests/unit/csstext_test.c c/apps/gui/browser/layout/text.c
+CSSTEXT_INC := $(BROWSER_INC)
 
 .PHONY: test-csstext test-csstext-negctl test-csstext-asan test-csstext-all
 .PHONY: test-cjkwrap test-cjkwrap-negctl test-cjkwrap-ws-negctl test-csstext-wired
@@ -68,12 +68,12 @@ test-csstext-wired:
 	@python3 tests/unit/csstext_wired.py .
 
 # --- does the BROWSER take the breaks? ------------------------------------
-CJKW_SRC := tests/unit/cjkwrap_test.c c/apps/browser/layout.c \
-            c/apps/browser/layout_text.c c/apps/browser/css_engine.c \
-            c/apps/browser/css_vars.c c/apps/browser/css_extra.c
+CJKW_SRC := tests/unit/cjkwrap_test.c c/apps/gui/browser/layout/block.c \
+            c/apps/gui/browser/layout/text.c c/apps/gui/browser/css/engine.c \
+            c/apps/gui/browser/css/vars.c c/apps/gui/browser/css/extra.c
 
 $(BUILD)/cjkwrap_test: $(CJKW_SRC) $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a \
-                       c/apps/browser/layout.h c/apps/browser/layout_text.h
+                       c/apps/gui/browser/layout/block.h c/apps/gui/browser/layout/text.h
 	@mkdir -p $(BUILD)
 	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) -o $@ $(CJKW_SRC) \
 	    $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a -lm
@@ -155,7 +155,7 @@ test-csstext:
 # What it substitutes instead is the PLAUSIBLE WRONG ANSWER: break after
 # U+0020, honour the hard line-break characters, never break inside a
 # multi-byte character. That is a competent implementation. It is what
-# c/apps/browser/layout.c does today, and it is what almost every hand-rolled
+# c/apps/gui/browser/layout/block.c does today, and it is what almost every hand-rolled
 # inline layout does, because on English prose it is indistinguishable from
 # correct -- an English-only test suite passes it outright.
 #
@@ -180,7 +180,7 @@ test-csstext-negctl:
 # the table and the corpus must come from the SAME UCD or the disagreements are
 # the version gap rather than the code.
 regen-linebreak-tables:
-	@python3 tools/linebreak_gen.py --ucd $(UCD) --out c/apps/browser
+	@python3 tools/linebreak_gen.py --ucd $(UCD) --out c/apps/gui/browser/layout
 
 # Both new gates are host-only, need no corpus and no QEMU, and run in about a
 # second each. test-csstext itself is deliberately NOT here: it refuses without

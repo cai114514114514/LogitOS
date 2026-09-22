@@ -3,7 +3,7 @@
 #include <string.h>
 #include <errno.h>
 #include "logit_abi.h"
-#include "cookie_persistence.h"
+#include "storage/cookies.h"
 static struct logit_stat entries[4];
 static int present[4], current_mask, mode_failure, durable_failure, read_failure;
 static int writes, reads, write_result, checks, failures;
@@ -41,7 +41,7 @@ static int write_file(const char *path, const void *bytes, int n)
     if (!present[i]) create(i, LST_IFREG, 0666 & ~current_mask);
     entries[i].size = n; return write_result ? write_result : n;
 }
-#include "cookie_store_guest.inc"
+#include "../../c/apps/gui/browser/storage/cookie_guest.inc"
 static void ck(int ok, const char *label)
 { checks++; if (!ok) failures++; printf("%s: %s\n", ok ? "ok" : "FAIL", label); }
 static void fresh(void)

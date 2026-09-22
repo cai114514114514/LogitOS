@@ -6,7 +6,7 @@
 #define main worker_existing_suite_main
 #include "worker_test.c"
 #undef main
-#include "js_webapi.h"
+#include "js/runtime/webapi.h"
 #include "worker_fetch_net.h"
 #ifndef WFT_BASELINE
 extern int js_webapi_fetch_test_handle(JSContext *ctx);

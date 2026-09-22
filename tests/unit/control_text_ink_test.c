@@ -3,8 +3,8 @@
 #define main unused_modal_main
 #include "modal_paint_test.c"
 #undef main
-#include "forms.h"
-#include "control_text_metrics.h"
+#include "dom/forms.h"
+#include "paint/text_metrics.h"
 static int checks,failures,scale=100,queries,status=1,last_run_limit=0,query_contract_bad=0;
 static const char *name;
 #define EXPECT(c,m) do{checks++;if(!(c)){failures++;printf("FAIL: %s: %s\n",name,m);}}while(0)

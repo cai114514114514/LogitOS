@@ -1,4 +1,4 @@
-/* Host test for the PAINTER (c/apps/browser/browser_paint.c).
+/* Host test for the PAINTER (c/apps/gui/browser/paint/renderer.c).
  *
  * layout_test asserts on `struct item`, which stops one step short of the
  * claim that matters: a box can carry the right geometry, the right colour and
@@ -16,10 +16,10 @@
 #include <string.h>
 #include <stdint.h>
 #include "logit.h"                 /* the recorder, via -Itests/unit/painthost */
-#include "layout.h"
-#include "css.h"
-#include "dom.h"
-#include "browser_paint.h"
+#include "layout/block.h"
+#include "css/style.h"
+#include "dom/tree.h"
+#include "paint/renderer.h"
 
 struct paintop paint_ops[PAINT_MAXOPS];
 int paint_nops;

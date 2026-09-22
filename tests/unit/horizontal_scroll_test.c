@@ -6,10 +6,10 @@
 #include <string.h>
 #include <stdint.h>
 #include "logit.h"
-#include "layout.h"
-#include "css.h"
-#include "dom.h"
-#include "browser_paint.h"
+#include "layout/block.h"
+#include "css/style.h"
+#include "dom/tree.h"
+#include "paint/renderer.h"
 struct paintop paint_ops[PAINT_MAXOPS]; int paint_nops;
 void *kmalloc(unsigned long n){return malloc(n);} void kfree(void *p){free(p);}
 int text_measure(const char *s,int n,int px,int face){(void)s;(void)face;return n*(px/2);}

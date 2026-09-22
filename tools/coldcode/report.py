@@ -204,7 +204,7 @@ def main():
     ap.add_argument("--top", type=int, default=60)
     a = ap.parse_args()
 
-    prefixes = a.prefix or ["c/apps/browser/", "c/lib/", "c/net/", "tests/unit/cold_control.c"]
+    prefixes = a.prefix or ["c/apps/gui/browser/", "c/lib/", "c/net/", "tests/unit/cold_control.c"]
 
     covtool = find_llvm_tool("llvm-cov")
     if not covtool:
@@ -235,7 +235,7 @@ def main():
     # things break that, and telling them apart is the whole value:
     #
     #   DRIFT   the file was EDITED after the binary was built. Three workflows
-    #           are live in c/apps/browser and third_party/css; this instrument
+    #           are live in c/apps/gui/browser and third_party/css; this instrument
     #           found css_extra.c edited nine minutes after its own link. The
     #           MEASUREMENT is still sound -- it measured the code that was
     #           compiled -- but the line numbers no longer address the file on

@@ -3,8 +3,8 @@
 #define main select_original_main
 #include "select_state_test.c"
 #undef main
-#include "js_cssom.h"
-#include "js_webapi.h"
+#include "js/style/cssom.h"
+#include "js/runtime/webapi.h"
 struct image;
 void layout_page(struct node *, int);
 void layout_free(void);

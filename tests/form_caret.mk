@@ -1,9 +1,9 @@
 # Actual forms + parser/layout/painter. The host metric records unequal glyph
 # advances and faithfully refuses >1024 bytes, just as SYS_TEXT_MEASURE does;
 # this is a geometry/ABI gate, not evidence about guest font pixels or IME.
-FORM_CARET_SRC = $(filter-out tests/unit/modal_paint_test.c,$(MODAL_PAINT_SRC)) tests/unit/form_caret_test.c c/apps/browser/forms.c
+FORM_CARET_SRC = $(filter-out tests/unit/modal_paint_test.c,$(MODAL_PAINT_SRC)) tests/unit/form_caret_test.c c/apps/gui/browser/dom/forms.c
 FORM_CARET_DIR = $(BUILD)/site-general/caret
-FORM_CARET_DEPS = $(MODAL_DEPS) c/apps/browser/forms.h tests/unit/modal_paint_test.c tests/unit/painthost/logit.h
+FORM_CARET_DEPS = $(MODAL_DEPS) c/apps/gui/browser/dom/forms.h tests/unit/modal_paint_test.c tests/unit/painthost/logit.h
 .PHONY: test-form-caret test-form-caret-negctl
 $(FORM_CARET_DIR)/form_caret_test: $(FORM_CARET_SRC) $(FORM_CARET_DEPS) $(BUILD)/libcss_host.a
 	@mkdir -p $(FORM_CARET_DIR)

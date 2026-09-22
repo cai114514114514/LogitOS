@@ -1,4 +1,4 @@
-/* dom_iface_test.c -- the DOM interface hierarchy (c/apps/browser/js_dom_iface.inc).
+/* dom_iface_test.c -- the DOM interface hierarchy (c/apps/gui/browser/js/dom/dom_iface.inc).
  *
  * WHAT THIS IS FOR. js_dom.c used to publish one wrapper class with one flat
  * prototype, and js_platform.c layered a JS facade on top: the interface NAMES
@@ -27,10 +27,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include "quickjs.h"
-#include "dom.h"
-#include "css.h"
-#include "js_dom.h"
-#include "js_page.h"
+#include "dom/tree.h"
+#include "css/style.h"
+#include "js/dom/dom.h"
+#include "js/runtime/page.h"
 
 void *kmalloc(unsigned long n) { return malloc(n); }
 void  kfree(void *p) { free(p); }

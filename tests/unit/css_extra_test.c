@@ -3,8 +3,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
-#include "css.h"
-#include "dom.h"
+#include "css/style.h"
+#include "dom/tree.h"
 
 void *kmalloc(unsigned long n){ return malloc(n); }
 void  kfree(void *p){ free(p); }

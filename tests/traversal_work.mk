@@ -1,7 +1,7 @@
 # Native operation counts settle the scaling claim; guest profiling settles
 # elapsed speed. Derive the real runtime composition from the selector gate.
 TRAVERSAL_WORK_SRC = $(filter-out tests/unit/selectors_test.c,$(SELECTORS_SRC)) tests/unit/traversal_work_test.c
-TRAVERSAL_WORK_DEP = $(TRAVERSAL_WORK_SRC) tests/unit/dom_iface_test.c $(HTML_PARSER_SRC) $(QJS_SRC) $(wildcard c/apps/browser/js_*.inc) $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
+TRAVERSAL_WORK_DEP = $(TRAVERSAL_WORK_SRC) tests/unit/dom_iface_test.c $(HTML_PARSER_SRC) $(QJS_SRC) $(BROWSER_JS_INCLUDES) $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
 TRAVERSAL_WORK_CF = -O2 -w $(SELECTORS_CF) -DJSDOM_TRAVERSAL_PROFILE
 $(BUILD)/wiring/traversal_work_test: $(TRAVERSAL_WORK_DEP)
 	@mkdir -p $(BUILD)/wiring

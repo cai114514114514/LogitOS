@@ -5,7 +5,7 @@
 # has silently deleted other people's targets more than once. The only token
 # this feature needs in the shared Makefile is its `-include`.
 #
-#   make test-flex          the gate. c/apps/browser/layout_flex.c against the
+#   make test-flex          the gate. c/apps/gui/browser/layout/flex.c against the
 #                           numbers CSS Flexbox § 9 names, plus fifteen values
 #                           transcribed from web-platform-tests.
 #   make test-flex-negctl   THE NEGATIVE CONTROLS. Three sabotages, each of
@@ -21,23 +21,23 @@
 # different one. Both are needed. Only one of them exists today.
 #
 # NOT WIRED INTO THE BROWSER YET. layout_flex.c is not in any app's source list
-# -- integration into c/apps/browser/layout.c is a separate coordinated change,
+# -- integration into c/apps/gui/browser/layout/block.c is a separate coordinated change,
 # because layout.c belongs to another line. Nothing here depends on that
 # landing, which is the point of the module having no dependency on layout.c.
 
 .PHONY: test-flex test-flex-negctl
 
 FLEX_DIR  := $(BUILD)/flex
-FLEX_SRC  := c/apps/browser/layout_flex.c
+FLEX_SRC  := c/apps/gui/browser/layout/flex.c
 FLEX_TEST := tests/unit/flex_test.c
 # Self-sufficient rather than borrowing BTEST_INC: the module includes exactly
 # one header of ours (css.h, for `struct cstyle`), and a test that needs no
 # image/text/net include path should not silently acquire one.
-FLEX_INC  := -Ic/apps/browser
+FLEX_INC  := $(BROWSER_INC)
 FLEX_CF   := -O1 -g -std=c11 -Wall -Wextra -Wno-unused-parameter
 
-$(FLEX_DIR)/flex_test: $(FLEX_TEST) $(FLEX_SRC) c/apps/browser/layout_flex.h \
-                       c/apps/browser/css.h
+$(FLEX_DIR)/flex_test: $(FLEX_TEST) $(FLEX_SRC) c/apps/gui/browser/layout/flex.h \
+                       c/apps/gui/browser/css/style.h
 	@mkdir -p $(FLEX_DIR)
 	@$(CC) $(FLEX_CF) $(FLEX_INC) -o $@ $(FLEX_TEST) $(FLEX_SRC)
 
@@ -71,7 +71,7 @@ test-flex: test-flex-negctl $(FLEX_DIR)/flex_test
 #                          instead of freezing the items that violated their
 #                          min/max and redistributing what they gave back.
 #                          Not a straw man: this is exactly the approximation
-#                          c/apps/browser/layout.c's own flex_resolve() makes
+#                          c/apps/gui/browser/layout/block.c's own flex_resolve() makes
 #                          today, by its own admission. It also breaks a
 #                          browser-verified WPT value, which is the useful part
 #                          -- it says the shipped approximation would fail a

@@ -54,8 +54,8 @@
 #include <stdlib.h>
 #include <stddef.h>
 
-#include "dom.h"
-#include "css.h"
+#include "dom/tree.h"
+#include "css/style.h"
 
 /* ---- the LibCSS drop hook (parse/language.h) ---- */
 enum { DROP_UNKNOWN = 0, DROP_BADVALUE = 1, DROP_TRAILING = 2, DROP_ACCEPTED = 3 };

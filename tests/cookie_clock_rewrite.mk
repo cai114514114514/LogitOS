@@ -1,5 +1,5 @@
 COOKIE_REWRITE_DIR = $(BUILD)/cookie-clock-rewrite
-COOKIE_REWRITE_SRC = tests/unit/cookie_clock_rewrite_test.c c/apps/browser/cookie_persistence.c c/net/http/cookies.c
+COOKIE_REWRITE_SRC = tests/unit/cookie_clock_rewrite_test.c c/apps/gui/browser/storage/cookies.c c/net/http/cookies.c
 COOKIE_REWRITE_DEP = $(COOKIE_REWRITE_SRC) $(COOKIE_PERSIST_DEPS) tests/cookie_clock_rewrite.mk
 $(COOKIE_REWRITE_DIR)/current: $(COOKIE_REWRITE_DEP)
 	@mkdir -p $(COOKIE_REWRITE_DIR)

@@ -6,10 +6,10 @@
 #include <string.h>
 #include <stdint.h>
 #include "logit.h"                 /* the recorder, via -Itests/unit/painthost */
-#include "layout.h"
-#include "css.h"
-#include "dom.h"
-#include "browser_paint.h"
+#include "layout/block.h"
+#include "css/style.h"
+#include "dom/tree.h"
+#include "paint/renderer.h"
 
 struct paintop paint_ops[PAINT_MAXOPS];
 int paint_nops;
@@ -28,8 +28,8 @@ void img_register(img_detect_fn d, img_decode_fn c){ (void)d; (void)c; }
 static int fail;
 #define CHECK(c,msg) do{ if(!(c)){ printf("FAIL: %s\n", msg); fail=1; } else printf("ok: %s\n", msg); }while(0)
 
-#include "focus.h"
-#include "top_layer.h"
+#include "dom/focus.h"
+#include "dom/top_layer.h"
 static int text_index(const char *word,int *count) {
     int at=-1;*count=0;for(int i=0;i<paint_nops;i++)if(paint_ops[i].kind==OP_TEXT&&paint_ops[i].len==(int)strlen(word)&&!memcmp(paint_ops[i].text,word,strlen(word))){at=i;(*count)++;}return at;
 }

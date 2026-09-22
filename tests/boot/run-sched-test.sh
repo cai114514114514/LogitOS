@@ -2,7 +2,7 @@
 # Weighted-scheduler gate. Boot, drive the serial shell to run /bin/schedtest,
 # and require SCHED-RESULT to be a clean sweep.
 #
-# WHAT THE PROGRAM ACTUALLY MEASURES is in c/apps/coreutils/schedtest.c: two
+# WHAT THE PROGRAM ACTUALLY MEASURES is in tests/guest/sched/schedtest.c: two
 # forked CPU-bound children at chosen nice values, and the ratio of the work
 # each COMPLETED (an iteration count kept in ring 3) against the ratio of the
 # weights the kernel says its pick loop is using. Three cases -- 1:1, 2:1, 4:1

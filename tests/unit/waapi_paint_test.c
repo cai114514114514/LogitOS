@@ -4,9 +4,9 @@
 #define main old_layout_main
 #include "layout_box_test.c"
 #undef main
-#include "js_page.h"
-#include "js_anim.h"
-#include "css_interp.h"
+#include "js/runtime/page.h"
+#include "js/style/anim.h"
+#include "css/interp.h"
 static unsigned long long wa_now=1000;
 static unsigned long long wa_clock(void){return wa_now;}
 static void run_js(const char *s){CHECK(js_page_eval(s,(int)strlen(s),"<waapi-paint-test>",0),"script evaluates");}

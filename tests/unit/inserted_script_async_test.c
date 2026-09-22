@@ -5,7 +5,7 @@
 #define main loader_existing_main
 #include "loader_test.c"
 #undef main
-#include "js_dom.h"
+#include "js/dom/dom.h"
 void app_main(void);
 extern int held_id,held_started,held_active,held_pumps,held_fallback;
 extern int held_allow,held_cancelled,held_taken,held_released,held_auto;

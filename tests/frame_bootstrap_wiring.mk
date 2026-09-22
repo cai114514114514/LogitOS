@@ -1,7 +1,7 @@
 # Extend the already source-derived real app_main fixture, not the bare
 # __frameAdopt unit test that cannot detect installer-order omissions.
-FRAME_BOOTSTRAP_SRC = $(sort $(filter-out tests/unit/popover_browser_test.c,$(POPOVER_BROWSER_SRC)) c/apps/browser/js_frame.c c/apps/browser/js_domparser.c) tests/unit/frame_bootstrap_wiring_test.c
-FRAME_BOOTSTRAP_DEP = $(FRAME_BOOTSTRAP_SRC) $(POPOVER_BROWSER_DEP) $(wildcard c/apps/browser/*.inc)
+FRAME_BOOTSTRAP_SRC = $(sort $(filter-out tests/unit/popover_browser_test.c,$(POPOVER_BROWSER_SRC)) c/apps/gui/browser/js/dom/frame.c c/apps/gui/browser/js/dom/domparser.c) tests/unit/frame_bootstrap_wiring_test.c
+FRAME_BOOTSTRAP_DEP = $(FRAME_BOOTSTRAP_SRC) $(POPOVER_BROWSER_DEP) $(BROWSER_INCLUDES)
 $(BUILD)/wiring-next/frame_bootstrap_test: $(FRAME_BOOTSTRAP_DEP)
 	@mkdir -p $(BUILD)/wiring-next
 	@$(CC) $(RUNTIME_SCROLL_CF) -o $@ $(FRAME_BOOTSTRAP_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm

@@ -2,7 +2,7 @@
 -include tests/module_retry.mk
 # stubs advance an injected clock, never host wall time or a public server.
 MODULE_BUDGET_SRC = $(filter-out tests/unit/dom_iface_test.c,$(DOMIFACE_SRC)) tests/unit/module_budget_test.c
-MODULE_BUDGET_DEPS = $(MODULE_BUDGET_SRC) c/apps/browser/js_page.h $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
+MODULE_BUDGET_DEPS = $(MODULE_BUDGET_SRC) c/apps/gui/browser/js/runtime/page.h $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
 MODULE_BUDGET_OUT = $(BUILD)/site-general/runtime
 .PHONY: test-module-budget test-module-budget-negctl
 $(MODULE_BUDGET_OUT)/module_budget_test: $(MODULE_BUDGET_DEPS)
@@ -17,7 +17,7 @@ test-module-budget: test-module-budget-negctl $(MODULE_BUDGET_OUT)/module_budget
 	@$(MODULE_BUDGET_OUT)/module_budget_test
 
 MODULE_PROFILE_SRC = $(filter-out tests/unit/module_budget_test.c,$(MODULE_BUDGET_SRC)) tests/unit/module_profile_test.c
-MODULE_PROFILE_DEPS = $(MODULE_PROFILE_SRC) $(MODULE_BUDGET_DEPS) c/apps/browser/js_module.h tests/module_budget.mk
+MODULE_PROFILE_DEPS = $(MODULE_PROFILE_SRC) $(MODULE_BUDGET_DEPS) c/apps/gui/browser/js/runtime/module.h tests/module_budget.mk
 $(MODULE_BUDGET_OUT)/module_profile_test: $(MODULE_PROFILE_DEPS)
 	@mkdir -p $(MODULE_BUDGET_OUT)
 	$(CC) -O2 -w $(DOMIFACE_CF) -o $@ $(MODULE_PROFILE_SRC) $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm

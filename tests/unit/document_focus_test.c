@@ -5,13 +5,13 @@
 #include <stdlib.h>
 #include <string.h>
 #include "quickjs.h"
-#include "dom.h"
-#include "js_page.h"
-#include "js_webapi.h"
-#include "js_dom.h"
-#include "css.h"
-#include "focus.h"
-#include "forms.h"
+#include "dom/tree.h"
+#include "js/runtime/page.h"
+#include "js/runtime/webapi.h"
+#include "js/dom/dom.h"
+#include "css/style.h"
+#include "dom/focus.h"
+#include "dom/forms.h"
 
 void *kmalloc(unsigned long n) { return malloc(n); }
 void kfree(void *p) { free(p); }

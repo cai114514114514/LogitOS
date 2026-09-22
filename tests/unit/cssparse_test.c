@@ -6,7 +6,7 @@
  *
  * It does not, yet, and that is the point. The corpus reaches this grammar
  * only through `el.style.foo = x`, which in this browser is still a verbatim
- * text store in c/apps/browser/js_dom.c -- so every number test-wpt prints
+ * text store in c/apps/gui/browser/js/dom/dom.c -- so every number test-wpt prints
  * about css/*-parse-valid.html today is a number about a store, not about a
  * parser. This suite asks the parser directly. It is therefore the thing that
  * can go red on a parser bug on the day the bug lands, rather than on the day

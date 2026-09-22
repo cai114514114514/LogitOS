@@ -1,4 +1,4 @@
-# tests/iframe.mk -- the nested browsing context (c/apps/browser/js_platform.c's
+# tests/iframe.mk -- the nested browsing context (c/apps/gui/browser/js/runtime/platform.c's
 # installIframes()).
 #
 #   make test-iframe          run tests/fixtures/iframe/iframe-probe.html, a

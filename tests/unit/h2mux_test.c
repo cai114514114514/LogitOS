@@ -33,7 +33,7 @@
 #include "http1.h"
 #include "http2.h"
 #include "hpack.h"
-#include "bfetch.h"
+#include "net/fetch.h"
 
 /* http1.c's content-decoding path, stubbed. Never reached: every request here
  * asks for `identity` and every response is served as such, which is also what

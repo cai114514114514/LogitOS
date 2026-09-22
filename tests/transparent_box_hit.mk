@@ -4,7 +4,7 @@
 # not merely an unrelated pointer-events assertion.
 TRANSPARENT_BOX_HIT_SRC = $(filter-out tests/unit/element_scroll_test.c,$(ELEMENT_SCROLL_SRC)) tests/unit/transparent_box_hit_test.c
 TRANSPARENT_BOX_HIT_DIR = $(BUILD)/site-general/transparent-box-hit
-TRANSPARENT_BOX_HIT_DEPS = $(TRANSPARENT_BOX_HIT_SRC) tests/unit/cssom_test.c c/apps/browser/layout.h c/apps/browser/css.h c/apps/browser/browser_paint.h c/apps/browser/element_scroll_wiring.inc c/apps/browser/text_paint_wiring.inc $(QJS_SRC) $(BUILD)/libcss_host.a
+TRANSPARENT_BOX_HIT_DEPS = $(TRANSPARENT_BOX_HIT_SRC) tests/unit/cssom_test.c c/apps/gui/browser/layout/block.h c/apps/gui/browser/css/style.h c/apps/gui/browser/paint/renderer.h c/apps/gui/browser/paint/element_scroll.inc c/apps/gui/browser/paint/text.inc $(QJS_SRC) $(BUILD)/libcss_host.a
 .PHONY: test-transparent-box-hit test-transparent-box-hit-negctl
 $(TRANSPARENT_BOX_HIT_DIR)/current: $(TRANSPARENT_BOX_HIT_DEPS)
 	@mkdir -p $(dir $@)

@@ -1,7 +1,7 @@
 # Finite reflow cache acceptance: real raster pixels, not third-party input.
 SVG_REFLOW_DIR = $(BUILD)/svg-reflow-cache
 SVG_REFLOW_SRC = $(filter-out tests/unit/svg_dom_paint_test.c c/lib/image/img.c,$(SVG_DOM_SRC)) tests/unit/svg_reflow_cache_test.c
-SVG_REFLOW_DEP = $(SVG_REFLOW_SRC) $(HTML_PARSER_SRC) c/lib/image/img.c c/apps/browser/svg_reflow_cache.inc c/apps/browser/svg_dom_paint.inc $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
+SVG_REFLOW_DEP = $(SVG_REFLOW_SRC) $(HTML_PARSER_SRC) c/lib/image/img.c c/apps/gui/browser/paint/svg_reflow_cache.inc c/apps/gui/browser/paint/svg_dom_paint.inc $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
 $(SVG_REFLOW_DIR)/current: $(SVG_REFLOW_DEP)
 	@mkdir -p $(SVG_REFLOW_DIR)
 	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) $(KMM_INC) -o $@ $(sort $(SVG_REFLOW_SRC) $(HTML_PARSER_SRC)) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm

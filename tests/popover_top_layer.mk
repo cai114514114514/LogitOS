@@ -2,7 +2,7 @@
 # prerequisite control removes native admission while preserving the JS API.
 POPOVER_RUNTIME_SRC = $(filter-out tests/unit/modal_runtime_test.c,$(MODAL_RUNTIME_SRC)) tests/unit/popover_runtime_test.c
 POPOVER_PAINT_SRC = $(filter-out tests/unit/modal_paint_test.c,$(MODAL_PAINT_SRC)) tests/unit/popover_paint_test.c
-POPOVER_DEPS = $(MODAL_DEPS) tests/unit/select_state_test.c tests/unit/modal_paint_test.c tests/unit/painthost/logit.h $(wildcard c/apps/browser/*.inc)
+POPOVER_DEPS = $(MODAL_DEPS) tests/unit/select_state_test.c tests/unit/modal_paint_test.c tests/unit/painthost/logit.h $(BROWSER_INCLUDES)
 $(BUILD)/wiring-next/popover_runtime_test: $(POPOVER_RUNTIME_SRC) $(POPOVER_DEPS) $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
 	@mkdir -p $(BUILD)/wiring-next
 	@$(CC) -O2 -w $(DOMIFACE_CF) -o $@ $(POPOVER_RUNTIME_SRC) $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm

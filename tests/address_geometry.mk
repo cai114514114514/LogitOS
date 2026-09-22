@@ -1,6 +1,6 @@
 ADDRESS_DIR := $(BUILD)/site-general/caret
 ADDRESS_SRC := tests/unit/address_geometry_test.c
-ADDRESS_DEPS := $(ADDRESS_SRC) c/apps/browser/address_geometry.inc tests/unit/painthost/logit.h
+ADDRESS_DEPS := $(ADDRESS_SRC) c/apps/gui/browser/app/address.inc tests/unit/painthost/logit.h
 $(ADDRESS_DIR)/address: $(ADDRESS_DEPS)
 	@mkdir -p $(ADDRESS_DIR)
 	$(CC) -O2 -Itests/unit/painthost -Iinclude/abi $< -o $@

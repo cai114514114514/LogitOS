@@ -1,7 +1,7 @@
 # Keep output private while sharing only the established host CSS archive.
 ABSOLUTE_AUTO_HEIGHT_DIR := $(BUILD)/site-general/layout/absolute-auto-height
 ABSOLUTE_AUTO_HEIGHT_SRC = $(filter-out tests/unit/layout_box_test.c,$(LBOX_SRC)) tests/unit/absolute_auto_height_test.c
-ABSOLUTE_AUTO_HEIGHT_DEPS = $(ABSOLUTE_AUTO_HEIGHT_SRC) tests/unit/intrinsic_test.c $(HTML_PARSER_SRC) c/apps/browser/layout.h c/apps/browser/css.h c/apps/browser/layout_flex.c c/apps/browser/layout_grid.c $(BUILD)/libcss_host.a tests/absolute_auto_height.mk
+ABSOLUTE_AUTO_HEIGHT_DEPS = $(ABSOLUTE_AUTO_HEIGHT_SRC) tests/unit/intrinsic_test.c $(HTML_PARSER_SRC) c/apps/gui/browser/layout/block.h c/apps/gui/browser/css/style.h c/apps/gui/browser/layout/flex.c c/apps/gui/browser/layout/grid.c $(BUILD)/libcss_host.a tests/absolute_auto_height.mk
 .PHONY: test-absolute-auto-height test-absolute-auto-height-negctl
 $(ABSOLUTE_AUTO_HEIGHT_DIR)/test: $(ABSOLUTE_AUTO_HEIGHT_DEPS)
 	@mkdir -p $(ABSOLUTE_AUTO_HEIGHT_DIR)
@@ -61,8 +61,8 @@ $(BUILD)/image-geometry.flags: image-geometry-flags-force
 	@echo '$(if $(filter 1,$(BROWSER_IMAGE_GEOMETRY_NEGCTL)),off,on)' > $@.tmp
 	@cmp -s $@.tmp $@ || cp $@.tmp $@
 	@rm -f $@.tmp
-$(BUILD)/jsobj/c/apps/browser/browser.o: $(BUILD)/image-geometry.flags
-$(BUILD)/jsobj/c/apps/browser/browser.o: JS_CF += $(if $(filter 1,$(BROWSER_IMAGE_GEOMETRY_NEGCTL)),-DBROWSER_IMAGE_GEOMETRY_NO_FLUSH,)
+$(BUILD)/jsobj/c/apps/gui/browser/app/main.o: $(BUILD)/image-geometry.flags
+$(BUILD)/jsobj/c/apps/gui/browser/app/main.o: JS_CF += $(if $(filter 1,$(BROWSER_IMAGE_GEOMETRY_NEGCTL)),-DBROWSER_IMAGE_GEOMETRY_NO_FLUSH,)
 
 # Native integration needs immutable positive/control disks supplied explicitly;
 # never boot the mutable disk while another build replaces it. The negative is

@@ -33,7 +33,7 @@
 #include "quickjs.h"
 #include "ws.h"
 #include "http1.h"
-#include "js_websocket.h"
+#include "js/net/websocket.h"
 #include "logit_abi.h"     /* SOCK_P_* */
 #include <stdio.h>
 #include <stdlib.h>

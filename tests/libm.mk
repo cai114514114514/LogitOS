@@ -42,7 +42,7 @@
 # cross-build of the SAME sources produces the same bits as a native build of
 # them, which is the thing that can actually break: a different long double
 # path, a missing __rem_pio2_large, an SSE mode set by boot code instead of by
-# the ABI. Same separation c/apps/audio/audiocheck.c:8-20 draws for the codecs.
+# the ABI. Same separation tests/guest/audio/audiocheck.c:8-20 draws for the codecs.
 #
 # The host reference links the same third_party/libm objects. They are OBJECTS,
 # not an archive, so ld takes ours and never reaches glibc's libm for anything

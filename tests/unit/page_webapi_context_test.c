@@ -4,8 +4,8 @@
 #define main dom_iface_original_main
 #include "dom_iface_test.c"
 #undef main
-#include "js_webapi.h"
-#include "js_platform.h"
+#include "js/runtime/webapi.h"
+#include "js/runtime/platform.h"
 #include "logit_abi.h"
 
 static void check(int ok,const char *label)

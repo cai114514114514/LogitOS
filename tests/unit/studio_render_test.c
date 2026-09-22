@@ -4,8 +4,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "../../c/apps/studio/engine.h"
-#include "../../c/apps/studio/highlight.h"
+#include "../../c/apps/gui/studio/core/engine.h"
+#include "../../c/apps/gui/studio/core/highlight.h"
 #define rgb(r,g,b) (((r)<<16)|((g)<<8)|(b))
 static struct {unsigned bg,surface,surface_2,face,face_hover,face_active,border,hi,text,muted,selection,accent,focus;} aui_t;
 #define AUI_BG aui_t.bg
@@ -28,17 +28,17 @@ static void aui_text_ellipsis(int x,int y,int w,const char *s,unsigned c,int px)
 static void gui_clip(int x,int y,int w,int h){(void)x;(void)w;clip_y=y;clip_h=h;}
 static void gui_rect(int x,int y,int w,int h,unsigned c)
 {(void)y;(void)h;if(c==AUI_ACCENT)caret_x=x;if(c==AUI_SELECTION)selection_width+=w;}
-#include "../../c/apps/studio/studio_render.inc"
+#include "../../c/apps/gui/studio/core/studio_render.inc"
 static void gui_text_run(int x,int y,int px,int mono,unsigned c,const char *s,int n)
 {(void)x;(void)px;(void)mono;calls++;if(clip_y!=y-2||clip_h!=ST_ROW)bad_row_clip++;if(!st_utf8(s,n))bad_utf8++;for(int i=0;i<7;i++)if(c==(i==ST_INK_KEYWORD?rgb(198,120,221):ink_color(i)))colours[i]++;}
-#include "../../c/apps/studio/studio_code.inc"
+#include "../../c/apps/gui/studio/core/studio_code.inc"
 static StEngine *engine;
 static int dialog, context_open, completion_selected, work_x = 896;
 static uint64_t completion_due;
 static uint64_t popup_test_now(void *context) { (void)context; return 0; }
 static const StDocument *document(void) { return st_engine_document(engine); }
 static void reveal(const StDocument *d) { (void)d; }
-#include "../../c/apps/studio/studio_completion.inc"
+#include "../../c/apps/gui/studio/core/studio_completion.inc"
 static int checks;
 #define CHECK(label,cond) do {checks++;if(!(cond)){fprintf(stderr,"FAIL %s at %d\n",label,__LINE__);exit(1);}}while(0)
 static void sample(const char *s)

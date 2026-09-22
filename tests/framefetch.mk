@@ -2,7 +2,7 @@
 # browsing context (js_frame.c, not yet built as of 2026-08-30).
 #
 # WHAT THIS GATES, and what it does not. js_worker.c:16-24 raised, and the
-# scope pass on adding a second context settled: bfetch (c/apps/browser/
+# scope pass on adding a second context settled: bfetch (c/apps/gui/browser/
 # bfetch.h, implemented in browser_rt.c) is ALREADY safe for a same-runtime,
 # single-threaded second context -- there is no second thread, so there is no
 # race to lock against, and bfetch_resolve()/bfetch_start_from() already take
@@ -32,7 +32,7 @@
 #                                       to name before js_frame.c can reuse
 #                                       the mistake.
 #   test-framefetch-discipline         the STATIC half: greps any
-#                                       c/apps/browser/js_frame*.c for a
+#                                       c/apps/gui/browser/js/dom/frame*.c for a
 #                                       bfetch_set_base() call. SKIPS (by
 #                                       name, not silently) until that file
 #                                       exists. Its own selftest --
@@ -51,7 +51,7 @@
 # SKIPPED message, which is the honest state of that half.
 
 FRAMEFETCH_TEST_SRC := tests/unit/frame_fetch_test.c tests/unit/loader_fakebfetch.c
-FRAMEFETCH_CF := -Ic/apps/browser -Itests/unit
+FRAMEFETCH_CF := $(BROWSER_INC) -Itests/unit
 
 .PHONY: test-framefetch test-framefetch-negctl-discipline \
         test-framefetch-discipline test-framefetch-discipline-selftest

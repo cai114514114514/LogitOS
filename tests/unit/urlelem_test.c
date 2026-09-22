@@ -38,10 +38,10 @@
 #include <string.h>
 
 #include "quickjs.h"
-#include "dom.h"
-#include "css.h"
-#include "js_dom.h"
-#include "js_page.h"
+#include "dom/tree.h"
+#include "css/style.h"
+#include "js/dom/dom.h"
+#include "js/runtime/page.h"
 
 void *kmalloc(unsigned long n) { return malloc(n); }
 void  kfree(void *p) { free(p); }

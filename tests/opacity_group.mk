@@ -1,6 +1,6 @@
 OPACITY_GROUP_DIR := $(BUILD)/site-general/layout/opacity-group
 OPACITY_GROUP_SRC = $(filter-out tests/unit/element_scroll_test.c,$(ELEMENT_SCROLL_SRC)) tests/unit/opacity_group_test.c
-OPACITY_GROUP_DEPS = $(OPACITY_GROUP_SRC) tests/unit/max_height_test.c tests/unit/cssom_test.c c/apps/browser/layout.h c/apps/browser/text_paint_wiring.inc $(QJS_SRC) $(BUILD)/libcss_host.a tests/opacity_group.mk
+OPACITY_GROUP_DEPS = $(OPACITY_GROUP_SRC) tests/unit/max_height_test.c tests/unit/cssom_test.c c/apps/gui/browser/layout/block.h c/apps/gui/browser/paint/text.inc $(QJS_SRC) $(BUILD)/libcss_host.a tests/opacity_group.mk
 .PHONY: test-opacity-group test-opacity-group-negctl
 $(OPACITY_GROUP_DIR)/test: $(OPACITY_GROUP_DEPS)
 	@mkdir -p $(OPACITY_GROUP_DIR)

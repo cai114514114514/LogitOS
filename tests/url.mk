@@ -1,4 +1,4 @@
-# tests/url.mk -- the WHATWG URL Standard (c/apps/browser/js_url.c).
+# tests/url.mk -- the WHATWG URL Standard (c/apps/gui/browser/js/net/url.c).
 #
 #   make test-url            the parser against the corpus's OWN data, seconds
 #   make test-url V=40       ... plus the first 40 unexpected failures
@@ -28,14 +28,14 @@
 
 .PHONY: test-url test-url-js test-url-negctl test-url-all url-baseline
 
-URL_SRC     := tests/unit/url_test.c c/apps/browser/js_url.c
-URL_CF      := -Ic/apps/browser -DURL_CORE_ONLY
+URL_SRC     := tests/unit/url_test.c c/apps/gui/browser/js/net/url.c
+URL_CF      := $(BROWSER_INC) -DURL_CORE_ONLY
 URL_BASE    := tests/unit/url_expected_fail.txt
 
 # -DURL_CORE_ONLY compiles js_url.c with the algorithm and no QuickJS at all,
 # which is why this builds and runs in a second. The bindings at the bottom of
 # that file are covered by test-url-js below and by the corpus run.
-$(BUILD)/url_test: $(URL_SRC) c/apps/browser/js_url.h $(URL_BASE)
+$(BUILD)/url_test: $(URL_SRC) c/apps/gui/browser/js/net/url.h $(URL_BASE)
 	@mkdir -p $(BUILD)
 	@$(CC) -O2 -w $(URL_CF) -o $@ $(URL_SRC)
 
@@ -53,12 +53,12 @@ url-baseline: $(BUILD)/url_test
 # Links the SHIPPING file with its bindings compiled in, plus QuickJS. No DOM,
 # no network: js_url.c installs onto a bare context, which is also the property
 # this asserts -- the URL globals must not need the rest of the browser.
-URLJS_SRC := tests/unit/url_js_test.c c/apps/browser/js_url.c
+URLJS_SRC := tests/unit/url_js_test.c c/apps/gui/browser/js/net/url.c
 # -DCONFIG_BIGNUM for libbf's decimal symbols -- the same note CLAUDE.md
 # records for the host LibCSS tests; without it libbf links short.
-URLJS_CF  := -Ic/apps/browser $(JS_INC) -DCONFIG_VERSION='"host"' -DCONFIG_BIGNUM
+URLJS_CF  := $(BROWSER_INC) $(JS_INC) -DCONFIG_VERSION='"host"' -DCONFIG_BIGNUM
 
-$(BUILD)/url_js_test: $(URLJS_SRC) c/apps/browser/js_url.h
+$(BUILD)/url_js_test: $(URLJS_SRC) c/apps/gui/browser/js/net/url.h
 	@mkdir -p $(BUILD)
 	@$(CC) -O2 -w $(URLJS_CF) -o $@ $(URLJS_SRC) $(QJS_SRC) -lm
 

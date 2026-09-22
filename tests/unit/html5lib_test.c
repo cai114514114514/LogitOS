@@ -60,9 +60,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <dirent.h>
-#include "dom.h"
-#include "html_tree.h"
-#include "dom_serialize.h"
+#include "dom/tree.h"
+#include "html/tree.h"
+#include "dom/serialize.h"
 
 /* dom.c allocates through the browser's arena shims; on the host they are
  * plain malloc/free, the same stubs every other browser test uses. */

@@ -3,7 +3,7 @@
 #define main select_existing_main
 #include "select_state_test.c"
 #undef main
-#include "focus.h"
+#include "dom/focus.h"
 
 static void native_check(int ok, const char *name)
 { checks++; if (!ok) { failures++; printf("FAIL %s\n", name); } }

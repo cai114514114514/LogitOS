@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""ONE JAR, ONE DOOR, applied to c/apps/browser/bfetch.h's g_base.
+"""ONE JAR, ONE DOOR, applied to c/apps/gui/browser/net/fetch.h's g_base.
 
 The property (proved by tests/unit/frame_fetch_test.c against the fake
 fetcher): a second browsing context (js_frame.c, not yet built) must resolve
@@ -37,7 +37,7 @@ import glob, os, re, sys, tempfile
 # js_frame.c does not exist yet (2026-08-30) -- this glob is what makes the
 # check apply the day it lands with NO edit to this file. "frame" not
 # "frames": js_worker.c's sibling is meant to be one file, per the brief.
-FRAME_GLOB = "c/apps/browser/js_frame*.c"
+FRAME_GLOB = "c/apps/gui/browser/js/dom/frame*.c"
 
 CALL_RE = re.compile(r"\bbfetch_set_base\s*\(")
 
@@ -57,7 +57,7 @@ def scan(path):
 def check_real():
     files = sorted(glob.glob(FRAME_GLOB))
     if not files:
-        print("check-frame-base-discipline: SKIPPED -- no c/apps/browser/js_frame*.c "
+        print("check-frame-base-discipline: SKIPPED -- no c/apps/gui/browser/js/dom/frame*.c "
               "yet. This line goes red the day that file exists and calls "
               "bfetch_set_base(); until then there is nothing to check, and "
               "this message (not a silent pass) is the record of that.")

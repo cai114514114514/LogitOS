@@ -6,7 +6,7 @@
  * (`make audit-css`: 26 declarations on the bing fixture alone, plus its four
  * corner longhands). LibCSS's property table did not have the name, so every
  * one of those declarations was refused by the parser -- and the page still
- * came out rounded, because c/apps/browser/css_extra.c carried a SECOND
+ * came out rounded, because c/apps/gui/browser/css/extra.c carried a SECOND
  * producer: a raw-text scan over the sheet, applied after the cascade.
  *
  * That second producer is now deleted and the five names are in LibCSS. So the
@@ -46,8 +46,8 @@
 #include <string.h>
 #include <stdlib.h>
 
-#include "dom.h"
-#include "css.h"
+#include "dom/tree.h"
+#include "css/style.h"
 
 static int fails, checks;
 

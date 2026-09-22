@@ -2,7 +2,7 @@
 #include "cssom_test.c"
 #undef main
 #include "logit.h"
-#include "browser_paint.h"
+#include "paint/renderer.h"
 struct paintop paint_ops[PAINT_MAXOPS];int paint_nops;
 void img_register(img_detect_fn d,img_decode_fn c){(void)d;(void)c;}
 static void settle(void){css_apply(g_root,0,0);css_extra_apply(g_root,0,0);layout_page(g_root,400);js_dom_clear_dirty();}

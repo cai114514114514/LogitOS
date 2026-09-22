@@ -1,6 +1,6 @@
 /* tests/unit/img_late_test.c -- images that arrive LATE.
  *
- * WHAT WAS WRONG, measured before this file existed. c/apps/browser/layout.c's
+ * WHAT WAS WRONG, measured before this file existed. c/apps/gui/browser/layout/block.c's
  * layout_page() opens with layout_free(), and layout_free() frees every
  * decoded bitmap the display list owns. The embedder called
  * layout_load_images() exactly ONCE per navigation, right after the first
@@ -40,9 +40,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
-#include "layout.h"
-#include "css.h"
-#include "dom.h"
+#include "layout/block.h"
+#include "css/style.h"
+#include "dom/tree.h"
 
 int layout_img_cached(const char *url);
 int layout_images_pending(void);

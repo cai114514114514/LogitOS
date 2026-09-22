@@ -5,7 +5,7 @@
 #define main caret_geometry_unused_main
 #include "modal_paint_test.c"
 #undef main
-#include "forms.h"
+#include "dom/forms.h"
 static void container(const char *display,int stretch) {
  char html[2048],css[1024];
  snprintf(html,sizeof html,"<!doctype html><div id=row><input id=f><textarea id=t></textarea><select id=s><option>Chosen</option><option>Unchosen</option></select><button id=b><span>Button</span></button></div>");

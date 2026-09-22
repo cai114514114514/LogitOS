@@ -4,7 +4,7 @@
 #define main selection_existing_main
 #include "select_state_test.c"
 #undef main
-#include "focus.h"
+#include "dom/focus.h"
 
 static void native_selection(struct node *n, int start, int end, const char *label)
 {

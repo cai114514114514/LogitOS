@@ -326,7 +326,7 @@ enum {
  * outside the kernel: tests/unit/ime_test.c links pinyin.c on the host with
  * no kernel headers at all). tests/unit/ime_test.c statically asserts the
  * two headers agree. Backspace/escape/space are already-standard ASCII
- * control codes (see c/apps/browser/browser.c's own '\b'/'\n' handling for
+ * control codes (see c/apps/gui/browser/app/main.c's own '\b'/'\n' handling for
  * the existing convention this file matches) and need no constant of their
  * own. */
 #define IME_KEY_PGUP 0x103

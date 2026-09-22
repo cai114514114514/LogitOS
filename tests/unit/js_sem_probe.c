@@ -10,7 +10,7 @@
  *
  * It installs exactly one global, `print`, and nothing else. In particular it
  * does NOT install queueMicrotask or structuredClone: those come from
- * c/apps/browser/js_platform.c, so a row about them here is a fact about the
+ * c/apps/gui/browser/js/runtime/platform.c, so a row about them here is a fact about the
  * bare engine and has to be confirmed in the browser before it is a fact about
  * the browser.
  *

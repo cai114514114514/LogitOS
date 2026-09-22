@@ -1,7 +1,7 @@
 # Keep output private while sharing only the established host CSS archive.
 POSITIONED_INSETS_DIR := $(BUILD)/site-general/layout/positioned-insets
 POSITIONED_INSETS_SRC = $(filter-out tests/unit/layout_box_test.c,$(LBOX_SRC)) tests/unit/positioned_insets_test.c
-POSITIONED_INSETS_DEPS = $(POSITIONED_INSETS_SRC) tests/unit/intrinsic_test.c $(HTML_PARSER_SRC) c/apps/browser/layout.h c/apps/browser/css.h c/apps/browser/css_inset_math.inc c/apps/browser/layout_flex.c c/apps/browser/layout_grid.c $(BUILD)/libcss_host.a tests/positioned_insets.mk
+POSITIONED_INSETS_DEPS = $(POSITIONED_INSETS_SRC) tests/unit/intrinsic_test.c $(HTML_PARSER_SRC) c/apps/gui/browser/layout/block.h c/apps/gui/browser/css/style.h c/apps/gui/browser/css/inset_math.inc c/apps/gui/browser/layout/flex.c c/apps/gui/browser/layout/grid.c $(BUILD)/libcss_host.a tests/positioned_insets.mk
 .PHONY: test-positioned-insets test-positioned-insets-negctl
 $(POSITIONED_INSETS_DIR)/test: $(POSITIONED_INSETS_DEPS)
 	@mkdir -p $(POSITIONED_INSETS_DIR)
@@ -21,8 +21,8 @@ $(POSITIONED_INSETS_DIR)/margin-negctl: $(POSITIONED_INSETS_DEPS)
 test-positioned-insets-margin-negctl: $(POSITIONED_INSETS_DIR)/margin-negctl
 	@$(POSITIONED_INSETS_DIR)/margin-negctl > $(POSITIONED_INSETS_DIR)/margin-negctl.log 2>&1; rc=$$?; cat $(POSITIONED_INSETS_DIR)/margin-negctl.log; test $$rc -eq 1 && grep -q 'FAIL: opposing fixed insets distribute horizontal auto margins' $(POSITIONED_INSETS_DIR)/margin-negctl.log
 
-POSITIONED_PROJECTION_SRC = $(filter-out tests/unit/element_scroll_test.c,$(ELEMENT_SCROLL_SRC)) tests/unit/positioned_projection_test.c c/apps/browser/focus.c
-POSITIONED_PROJECTION_DEPS = $(POSITIONED_PROJECTION_SRC) tests/unit/cssom_test.c c/apps/browser/css.h c/apps/browser/layout.h c/apps/browser/text_paint_wiring.inc c/apps/browser/element_scroll_wiring.inc $(QJS_SRC) $(BUILD)/libcss_host.a tests/positioned_insets.mk
+POSITIONED_PROJECTION_SRC = $(filter-out tests/unit/element_scroll_test.c,$(ELEMENT_SCROLL_SRC)) tests/unit/positioned_projection_test.c c/apps/gui/browser/dom/focus.c
+POSITIONED_PROJECTION_DEPS = $(POSITIONED_PROJECTION_SRC) tests/unit/cssom_test.c c/apps/gui/browser/css/style.h c/apps/gui/browser/layout/block.h c/apps/gui/browser/paint/text.inc c/apps/gui/browser/paint/element_scroll.inc $(QJS_SRC) $(BUILD)/libcss_host.a tests/positioned_insets.mk
 $(POSITIONED_INSETS_DIR)/projection: $(POSITIONED_PROJECTION_DEPS)
 	@mkdir -p $(POSITIONED_INSETS_DIR)
 	@$(CC) $(ELEMENT_SCROLL_FLAGS) -o $@ $(POSITIONED_PROJECTION_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a -lm
@@ -37,7 +37,7 @@ test-positioned-projection: test-positioned-projection-negctl $(POSITIONED_INSET
 test-positioned-insets: test-positioned-projection
 
 INSET_MATH_SRC = $(filter-out tests/unit/positioned_insets_test.c,$(POSITIONED_INSETS_SRC)) tests/unit/inset_math_test.c
-INSET_MATH_DEPS = $(POSITIONED_INSETS_DEPS) tests/unit/inset_math_test.c c/apps/browser/css_extra_cascade.inc c/apps/browser/css_inset_math.inc
+INSET_MATH_DEPS = $(POSITIONED_INSETS_DEPS) tests/unit/inset_math_test.c c/apps/gui/browser/css/extra_cascade.inc c/apps/gui/browser/css/inset_math.inc
 $(POSITIONED_INSETS_DIR)/math: $(INSET_MATH_DEPS)
 	@mkdir -p $(POSITIONED_INSETS_DIR)
 	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) -o $@ $(INSET_MATH_SRC) $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a -lm
@@ -59,7 +59,7 @@ test-inset-math-asan: test-inset-math-negctl
 	@ASAN_OPTIONS=detect_leaks=0 $(POSITIONED_INSETS_DIR)/math-asan
 
 LOGICAL_MARGIN_SRC = $(filter-out tests/unit/positioned_insets_test.c,$(POSITIONED_INSETS_SRC)) tests/unit/logical_margin_test.c
-LOGICAL_MARGIN_DEPS = $(POSITIONED_INSETS_DEPS) tests/unit/logical_margin_test.c c/apps/browser/css_extra_cascade.inc c/apps/browser/css_inset_math.inc c/apps/browser/css_logical_margin.inc
+LOGICAL_MARGIN_DEPS = $(POSITIONED_INSETS_DEPS) tests/unit/logical_margin_test.c c/apps/gui/browser/css/extra_cascade.inc c/apps/gui/browser/css/inset_math.inc c/apps/gui/browser/css/logical_margin.inc
 $(POSITIONED_INSETS_DIR)/logical-margin: $(LOGICAL_MARGIN_DEPS)
 	@mkdir -p $(POSITIONED_INSETS_DIR)
 	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) -o $@ $(LOGICAL_MARGIN_SRC) $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a -lm

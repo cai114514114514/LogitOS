@@ -24,7 +24,7 @@ CompileFlags:
     - -Ic
     - -Ic/apps
     - -Ic/apps/as
-    - -Ic/apps/browser
+    - -Ic/apps/gui/browser
     - -Ic/apps/libc
     - -Ic/apps/libc/include
     - -Ic/apps/libc/include/sys

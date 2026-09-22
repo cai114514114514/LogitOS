@@ -14,7 +14,7 @@
  * There were already two copies of this polynomial in the tree when this was
  * written, but neither is linkable from the kernel: c/net/http/http1.c's is a
  * file-static in a ring-3-only translation unit (RING3_NET is filtered out of
- * C_SRC), and c/apps/video/vidcheck.c's is inside a userland program. This is
+ * C_SRC), and tests/guest/video/vidcheck.c's is inside a userland program. This is
  * the kernel's copy, and it is the one a future consolidation should keep --
  * it is the only one with a streaming API and a test. */
 

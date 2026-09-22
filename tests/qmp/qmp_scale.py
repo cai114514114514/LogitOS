@@ -266,7 +266,7 @@ def main(argv):
                "a click computed at %d%% toggles the checkbox it was aimed at" % scale)
 
             # 4. The BROWSER still gets a window. It is the largest window in the
-            #    system (1180x620 points, hardcoded in c/apps/browser/browser.c,
+            #    system (1180x620 points, hardcoded in c/apps/gui/browser/app/main.c,
             #    which this work deliberately did not touch) and therefore the
             #    one that SYS_GUI_CREATE would refuse first if points were being
             #    scaled past the framebuffer. Nothing else in the tree would

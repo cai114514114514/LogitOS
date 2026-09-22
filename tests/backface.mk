@@ -1,6 +1,6 @@
 BACKFACE_DIR = $(BUILD)/backface
 BACKFACE_SRC = $(filter-out tests/unit/modal_paint_test.c,$(MODAL_PAINT_SRC)) tests/unit/backface_test.c
-BACKFACE_DEPS = $(BACKFACE_SRC) tests/unit/modal_paint_test.c c/apps/browser/css.h c/apps/browser/browser_backface.inc c/apps/browser/css_extra_cascade.inc $(BUILD)/libcss_host.a
+BACKFACE_DEPS = $(BACKFACE_SRC) tests/unit/modal_paint_test.c c/apps/gui/browser/css/style.h c/apps/gui/browser/paint/backface.inc c/apps/gui/browser/css/extra_cascade.inc $(BUILD)/libcss_host.a
 $(BACKFACE_DIR)/current: $(BACKFACE_DEPS)
 	@mkdir -p $(BACKFACE_DIR)
 	$(CC) -O2 -w $(PAINT_INC) $(BTEST_INC) $(CSS_INC) -o $@ $(BACKFACE_SRC) $(BUILD)/libcss_host.a -lm

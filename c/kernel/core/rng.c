@@ -178,7 +178,7 @@ void kernel_random_bytes(uint8_t *out, int len)
  * could reach it. There is no /dev/urandom here, no RDRAND wrapper in libc and
  * no pool syscall, so `crypto.getRandomValues` in the browser was xorshift128+
  * seeded from clocks and heap addresses -- and said so, in capitals, in
- * c/apps/browser/js_platform.c. Every CSRF token, UUID and WebCrypto shim on
+ * c/apps/gui/browser/js/runtime/platform.c. Every CSRF token, UUID and WebCrypto shim on
  * every page was predictable from a few observations. This is the syscall that
  * makes that excuse unnecessary.
  *

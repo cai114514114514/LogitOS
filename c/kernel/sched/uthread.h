@@ -35,7 +35,7 @@
  * THE BIG KERNEL LOCK, said out loud. Two ring-3 threads of one process, both
  * entering the kernel, is exactly the case the BKL serialises -- so two threads
  * making syscalls do NOT run in parallel, and the concurrency proof for this
- * work (c/apps/coreutils/thrtest.c) measures RING-3 work, which does run in
+ * work (tests/guest/sched/thrtest.c) measures RING-3 work, which does run in
  * parallel, not syscall throughput, which does not. That is a property of the
  * BKL and not of threads; it is the same wall SYS_KHEAP_STRESS was made
  * BKL-free to get past, and the same fix would work here.

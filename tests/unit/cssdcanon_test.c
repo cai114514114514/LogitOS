@@ -51,9 +51,9 @@
 #include <string.h>
 
 #include "quickjs.h"
-#include "dom.h"
-#include "css.h"
-#include "js_dom.h"
+#include "dom/tree.h"
+#include "css/style.h"
+#include "js/dom/dom.h"
 
 void *kmalloc(unsigned long n) { return malloc(n); }
 void  kfree(void *p) { free(p); }

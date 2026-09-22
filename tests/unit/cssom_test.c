@@ -1,4 +1,4 @@
-/* Host test for the CSSOM (c/apps/browser/js_cssom.c + css_engine.c's
+/* Host test for the CSSOM (c/apps/gui/browser/js/style/cssom.c + css_engine.c's
  * serialisation and CSS.supports).
  *
  * WHY IT LINKS layout.c, when js_dom_test.c deliberately does not: every
@@ -30,12 +30,12 @@
 #include <stdint.h>
 
 #include "quickjs.h"
-#include "dom.h"
-#include "css.h"
-#include "layout.h"
-#include "js_dom.h"
-#include "js_page.h"
-#include "js_cssom.h"
+#include "dom/tree.h"
+#include "css/style.h"
+#include "layout/block.h"
+#include "js/dom/dom.h"
+#include "js/runtime/page.h"
+#include "js/style/cssom.h"
 
 /* --- the kernel-only deps layout.c and the DOM reach for --- */
 void *kmalloc(unsigned long n) { return malloc(n); }

@@ -1,7 +1,7 @@
 # Normal CSS geometry; the exact producer-off control is required by the gate.
 PHYSICAL_SPACING_DIR = $(BUILD)/physical-spacing-calc
 PHYSICAL_SPACING_SRC = $(filter-out tests/unit/layout_box_test.c,$(LBOX_SRC)) tests/unit/physical_spacing_calc_test.c
-PHYSICAL_SPACING_DEPS = $(PHYSICAL_SPACING_SRC) $(HTML_PARSER_SRC) tests/unit/intrinsic_test.c $(wildcard c/apps/browser/css*.h c/apps/browser/css*.inc c/apps/browser/layout*.h c/apps/browser/layout*.c c/apps/browser/layout*.inc) $(BUILD)/libcss_host.a tests/physical_spacing_calc.mk
+PHYSICAL_SPACING_DEPS = $(PHYSICAL_SPACING_SRC) $(HTML_PARSER_SRC) tests/unit/intrinsic_test.c $(wildcard c/apps/gui/browser/css/*.h c/apps/gui/browser/css/*.inc c/apps/gui/browser/layout/*.h c/apps/gui/browser/layout/*.c c/apps/gui/browser/layout/*.inc) $(BUILD)/libcss_host.a tests/physical_spacing_calc.mk
 $(PHYSICAL_SPACING_DIR)/test: $(PHYSICAL_SPACING_DEPS)
 	@mkdir -p $(PHYSICAL_SPACING_DIR)
 	$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) -o $@ $(PHYSICAL_SPACING_SRC) $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a -lm

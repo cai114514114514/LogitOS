@@ -1,6 +1,6 @@
 STACKING_DIR = $(BUILD)/layout-stacking
 STACKING_SRC = $(filter-out tests/unit/modal_paint_test.c,$(MODAL_PAINT_SRC)) tests/unit/layout_stacking_test.c
-STACKING_DEPS = $(STACKING_SRC) tests/unit/modal_paint_test.c $(MODAL_DEPS) c/apps/browser/layout_stacking.inc tests/layout_stacking.mk $(BUILD)/libcss_host.a
+STACKING_DEPS = $(STACKING_SRC) tests/unit/modal_paint_test.c $(MODAL_DEPS) c/apps/gui/browser/layout/stacking.inc tests/layout_stacking.mk $(BUILD)/libcss_host.a
 $(STACKING_DIR)/current: $(STACKING_DEPS)
 	@mkdir -p $(STACKING_DIR)
 	$(CC) -O2 -w $(PAINT_INC) $(BTEST_INC) $(CSS_INC) -o $@ $(STACKING_SRC) $(BUILD)/libcss_host.a -lm
@@ -21,11 +21,11 @@ ci-host: test-layout-stacking
 
 # Shipping-device control changes only the completed display-list ordering.
 # All parser, CSS, pixel painter and native input paths are otherwise shared.
-$(STACKING_DIR)/guest-layout-old.o: c/apps/browser/layout.c c/apps/browser/layout_stacking.inc $(BROWSER_INTERFACE_DEPS)
+$(STACKING_DIR)/guest-layout-old.o: c/apps/gui/browser/layout/block.c c/apps/gui/browser/layout/stacking.inc $(BROWSER_INTERFACE_DEPS)
 	@mkdir -p $(STACKING_DIR)
 	$(CC) $(UCFLAGS) $(CSS_INC) -DLAYOUT_STACKING_FLAT -c $< -o $@
 $(STACKING_DIR)/guest-old.elf: $(ENGINE_OBJ) $(BROWSER_JS_OBJ) $(BROWSER_OBJ) $(CSS_OBJ) $(GFX_OBJ) $(RUST_LIB) $(BUILD)/apps/crt0.o $(BUILD)/browserobj/malloc_big.o $(STACKING_DIR)/guest-layout-old.o
-	$(LD) -nostdlib -e _start -Ttext=0x45000000 -o $@ --start-group $(BUILD)/apps/crt0.o $(ENGINE_OBJ) $(BROWSER_JS_OBJ) $(filter-out $(BUILD)/browserobj/c/apps/browser/layout.o,$(BROWSER_OBJ)) $(STACKING_DIR)/guest-layout-old.o $(CSS_OBJ) $(GFX_OBJ) $(RUST_LIB) $(BUILD)/browserobj/malloc_big.o --end-group
+	$(LD) -nostdlib -e _start -Ttext=0x45000000 -o $@ --start-group $(BUILD)/apps/crt0.o $(ENGINE_OBJ) $(BROWSER_JS_OBJ) $(filter-out $(BUILD)/browserobj/c/apps/gui/browser/layout/block.o,$(BROWSER_OBJ)) $(STACKING_DIR)/guest-layout-old.o $(CSS_OBJ) $(GFX_OBJ) $(RUST_LIB) $(BUILD)/browserobj/malloc_big.o --end-group
 $(STACKING_DIR)/guest-old.aex: $(STACKING_DIR)/guest-old.elf tools/mkaex.py
 	python3 tools/mkaex.py $< $@ Browser - 'B' 120 130 240 --stack-pages 2048
 # Explicit private images only. This gate never builds or launches build/disk.img.

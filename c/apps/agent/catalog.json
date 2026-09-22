@@ -78,7 +78,7 @@
     "name": "audiocheck",
     "id": "os.logit.audiocheck",
     "path": "/bin/audiocheck",
-    "source": "c/apps/audio/audiocheck.c",
+    "source": "tests/guest/audio/audiocheck.c",
     "kind": "cli",
     "domain": "audiocheck: analyze explicitly supplied input in this application domain and draft a textual result. Access to files, devices, the network and command execution is not granted.",
     "actions": [
@@ -150,7 +150,7 @@
     "name": "clock",
     "id": "os.logit.clock",
     "path": "/clock.aex",
-    "source": "c/apps/clock/main.c",
+    "source": "c/apps/gui/clock/main.c",
     "kind": "gui",
     "domain": "Clock: explain the supplied current clock and plan schedules. Scheduling a reminder is not yet an executable action.",
     "actions": [
@@ -174,7 +174,7 @@
     "name": "crash",
     "id": "os.logit.crash",
     "path": "/bin/crash",
-    "source": "c/apps/coreutils/crash.c",
+    "source": "tests/guest/exec/crash.c",
     "kind": "cli",
     "domain": "crash: analyze explicitly supplied input in this application domain and draft a textual result. Access to files, devices, the network and command execution is not granted.",
     "actions": [
@@ -186,7 +186,7 @@
     "name": "demuxcheck",
     "id": "os.logit.demuxcheck",
     "path": "/bin/demuxcheck",
-    "source": "c/apps/media/demuxcheck.c",
+    "source": "tests/guest/media/demuxcheck.c",
     "kind": "cli",
     "domain": "demuxcheck: analyze explicitly supplied input in this application domain and draft a textual result. Access to files, devices, the network and command execution is not granted.",
     "actions": [
@@ -294,7 +294,7 @@
     "name": "h2check",
     "id": "os.logit.h2check",
     "path": "/bin/h2check",
-    "source": "c/apps/net/h2check.c",
+    "source": "tests/guest/net/h2check.c",
     "kind": "cli",
     "domain": "h2check: analyze explicitly supplied input in this application domain and draft a textual result. Access to files, devices, the network and command execution is not granted.",
     "actions": [
@@ -318,7 +318,7 @@
     "name": "httpd",
     "id": "os.logit.httpd",
     "path": "/bin/httpd",
-    "source": "c/apps/coreutils/httpd.c",
+    "source": "c/apps/services/http/httpd.c",
     "kind": "cli",
     "domain": "httpd: analyze explicitly supplied input in this application domain and draft a textual result. Access to files, devices, the network and command execution is not granted.",
     "actions": [
@@ -390,7 +390,7 @@
     "name": "msecheck",
     "id": "os.logit.msecheck",
     "path": "/bin/msecheck",
-    "source": "c/apps/media/msecheck.c",
+    "source": "tests/guest/media/msecheck.c",
     "kind": "cli",
     "domain": "msecheck: analyze explicitly supplied input in this application domain and draft a textual result. Access to files, devices, the network and command execution is not granted.",
     "actions": [
@@ -474,7 +474,7 @@
     "name": "polltest",
     "id": "os.logit.polltest",
     "path": "/bin/polltest",
-    "source": "c/apps/coreutils/polltest.c",
+    "source": "tests/guest/exec/polltest.c",
     "kind": "cli",
     "domain": "polltest: analyze explicitly supplied input in this application domain and draft a textual result. Access to files, devices, the network and command execution is not granted.",
     "actions": [
@@ -618,7 +618,7 @@
     "name": "schedtest",
     "id": "os.logit.schedtest",
     "path": "/bin/schedtest",
-    "source": "c/apps/coreutils/schedtest.c",
+    "source": "tests/guest/sched/schedtest.c",
     "kind": "cli",
     "domain": "schedtest: analyze explicitly supplied input in this application domain and draft a textual result. Access to files, devices, the network and command execution is not granted.",
     "actions": [
@@ -642,7 +642,7 @@
     "name": "sftpd",
     "id": "os.logit.sftpd",
     "path": "/bin/sftpd",
-    "source": "c/apps/coreutils/sftpd.c",
+    "source": "c/apps/services/ssh/sftpd.c",
     "kind": "cli",
     "domain": "SFTP file transfer: explain explicitly supplied transfer requests, file metadata and permission errors. Draft a transfer plan; this agent does not open connections or move files.",
     "actions": [
@@ -690,7 +690,7 @@
     "name": "smptest",
     "id": "os.logit.smptest",
     "path": "/bin/smptest",
-    "source": "c/apps/coreutils/smptest.c",
+    "source": "tests/guest/sched/smptest.c",
     "kind": "cli",
     "domain": "smptest: analyze explicitly supplied input in this application domain and draft a textual result. Access to files, devices, the network and command execution is not granted.",
     "actions": [
@@ -702,7 +702,7 @@
     "name": "sndtest",
     "id": "os.logit.sndtest",
     "path": "/bin/sndtest",
-    "source": "c/apps/coreutils/sndtest.c",
+    "source": "tests/guest/audio/sndtest.c",
     "kind": "cli",
     "domain": "sndtest: analyze explicitly supplied input in this application domain and draft a textual result. Access to files, devices, the network and command execution is not granted.",
     "actions": [
@@ -714,7 +714,7 @@
     "name": "socktest",
     "id": "os.logit.socktest",
     "path": "/bin/socktest",
-    "source": "c/apps/coreutils/socktest.c",
+    "source": "tests/guest/net/socktest.c",
     "kind": "cli",
     "domain": "socktest: analyze explicitly supplied input in this application domain and draft a textual result. Access to files, devices, the network and command execution is not granted.",
     "actions": [
@@ -726,7 +726,7 @@
     "name": "sshd",
     "id": "os.logit.sshd",
     "path": "/bin/sshd",
-    "source": "c/apps/coreutils/sshd.c",
+    "source": "c/apps/services/ssh/sshd.c",
     "kind": "cli",
     "domain": "sshd: analyze explicitly supplied input in this application domain and draft a textual result. Access to files, devices, the network and command execution is not granted.",
     "actions": [
@@ -762,7 +762,7 @@
     "name": "syslogd",
     "id": "os.logit.syslogd",
     "path": "/bin/syslogd",
-    "source": "c/apps/coreutils/syslogd.c",
+    "source": "c/apps/services/syslog/syslogd.c",
     "kind": "cli",
     "domain": "syslogd: analyze explicitly supplied input in this application domain and draft a textual result. Access to files, devices, the network and command execution is not granted.",
     "actions": [
@@ -786,7 +786,7 @@
     "name": "thrtest",
     "id": "os.logit.thrtest",
     "path": "/bin/thrtest",
-    "source": "c/apps/coreutils/thrtest.c",
+    "source": "tests/guest/sched/thrtest.c",
     "kind": "cli",
     "domain": "thrtest: analyze explicitly supplied input in this application domain and draft a textual result. Access to files, devices, the network and command execution is not granted.",
     "actions": [
@@ -846,7 +846,7 @@
     "name": "vidbench",
     "id": "os.logit.vidbench",
     "path": "/bin/vidbench",
-    "source": "c/apps/video/vidbench.c",
+    "source": "tests/guest/video/vidbench.c",
     "kind": "cli",
     "domain": "vidbench: analyze explicitly supplied input in this application domain and draft a textual result. Access to files, devices, the network and command execution is not granted.",
     "actions": [
@@ -858,7 +858,7 @@
     "name": "vidcheck",
     "id": "os.logit.vidcheck",
     "path": "/bin/vidcheck",
-    "source": "c/apps/video/vidcheck.c",
+    "source": "tests/guest/video/vidcheck.c",
     "kind": "cli",
     "domain": "vidcheck: analyze explicitly supplied input in this application domain and draft a textual result. Access to files, devices, the network and command execution is not granted.",
     "actions": [
@@ -870,7 +870,7 @@
     "name": "vidcheck265",
     "id": "os.logit.vidcheck265",
     "path": "/bin/vidcheck265",
-    "source": "c/apps/video/vidcheck265.c",
+    "source": "tests/guest/video/vidcheck265.c",
     "kind": "cli",
     "domain": "vidcheck265: analyze explicitly supplied input in this application domain and draft a textual result. Access to files, devices, the network and command execution is not granted.",
     "actions": [

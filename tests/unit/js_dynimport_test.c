@@ -98,7 +98,7 @@ static int resolve(const char *base, const char *spec, char *out, int max)
 static char *norm(JSContext *ctx, const char *base, const char *name, void *o)
 {
     (void)o;
-    /* BARE SPECIFIERS ARE REFUSED HERE, exactly as c/apps/browser/js_module.c's
+    /* BARE SPECIFIERS ARE REFUSED HERE, exactly as c/apps/gui/browser/js/runtime/module.c's
      * mod_normalize() refuses them -- same place in the sequence (normalize,
      * not load) and the same way (JS_Throw + NULL). Cases 1-8 all use `./x` or
      * an absolute URL, so this changes none of them; case 9 needs it, and

@@ -2,7 +2,7 @@
 # serviced idle connection must remain different. No real clock waiting.
 FETCH_INITIAL_DIR = $(BUILD)/fetch-initial-deadline
 FETCH_INITIAL_SRC = tests/unit/fetch_initial_deadline_test.c $(STREAM_TEST_SRC) $(QJS_SRC)
-FETCH_INITIAL_DEP = $(FETCH_INITIAL_SRC) tests/unit/stream_net.h $(wildcard c/apps/browser/*.inc c/apps/browser/*.h c/net/http/*.inc c/net/http/*.h) $(RUST_LIB_HOST) tests/fetch_initial_deadline.mk
+FETCH_INITIAL_DEP = $(FETCH_INITIAL_SRC) tests/unit/stream_net.h $(wildcard $(BROWSER_INCLUDES) $(BROWSER_HEADERS) c/net/http/*.inc c/net/http/*.h) $(RUST_LIB_HOST) tests/fetch_initial_deadline.mk
 FETCH_INITIAL_CF = -O2 -w $(BTEST_INC) -Iinclude/abi $(JS_INC) -DCONFIG_VERSION='"host"' -DWEBAPI_HOST
 .SECONDEXPANSION:
 $(FETCH_INITIAL_DIR)/current: $$(FETCH_INITIAL_DEP)

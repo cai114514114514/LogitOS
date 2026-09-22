@@ -4,8 +4,8 @@ PORT_SRC = tests/unit/message_port_test.c $(filter-out tests/unit/semantics_test
 # links js_ports.c; the old JS-only mutations cannot break that implementation.
 # Run the identical page assertions against BOTH paths, with native ownership
 # controls required separately, rather than quietly losing the legacy gate.
-PORT_LEGACY_SRC = $(filter-out c/apps/browser/js_ports.c,$(PORT_SRC))
-PORT_DEPS = tests/message_port.mk c/apps/browser/js_message_port.inc $(PORT_SRC) $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
+PORT_LEGACY_SRC = $(filter-out c/apps/gui/browser/js/workers/ports.c,$(PORT_SRC))
+PORT_DEPS = tests/message_port.mk c/apps/gui/browser/js/workers/message_port.inc $(PORT_SRC) $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
 .PHONY: test-message-port test-message-port-negctl
 $(PORT_DIR)/test: $(PORT_DEPS)
 	@mkdir -p $(PORT_DIR)
@@ -32,7 +32,7 @@ $(PORT_DIR)/address: $(PORT_DEPS)
 .PHONY: test-message-port-asan
 test-message-port-asan: test-message-port $(PORT_DIR)/address
 	@ASAN_OPTIONS=detect_leaks=0 $(PORT_DIR)/address
-$(PORT_DIR)/platform-regression: $(PLATFORM_TEST_SRC) $(PLATFORM_MOD) $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) c/apps/browser/js_message_port.inc
+$(PORT_DIR)/platform-regression: $(PLATFORM_TEST_SRC) $(PLATFORM_MOD) $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) c/apps/gui/browser/js/workers/message_port.inc
 	@mkdir -p $(PORT_DIR)
 	$(CC) -O1 -g -w $(SEM_CF) -o $@ $(PLATFORM_TEST_SRC) $(PLATFORM_MOD) $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
 .PHONY: test-message-port-platform

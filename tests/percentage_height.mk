@@ -1,7 +1,7 @@
 # Keep output private while sharing only the established host CSS archive.
 PERCENT_HEIGHT_DIR := $(BUILD)/site-general/layout/percentage-height
 PERCENT_HEIGHT_SRC = $(filter-out tests/unit/layout_box_test.c,$(LBOX_SRC)) tests/unit/percentage_height_test.c
-PERCENT_HEIGHT_DEPS = $(PERCENT_HEIGHT_SRC) tests/unit/intrinsic_test.c $(HTML_PARSER_SRC) c/apps/browser/layout.h c/apps/browser/css.h c/apps/browser/layout_flex.c c/apps/browser/layout_grid.c $(BUILD)/libcss_host.a tests/percentage_height.mk
+PERCENT_HEIGHT_DEPS = $(PERCENT_HEIGHT_SRC) tests/unit/intrinsic_test.c $(HTML_PARSER_SRC) c/apps/gui/browser/layout/block.h c/apps/gui/browser/css/style.h c/apps/gui/browser/layout/flex.c c/apps/gui/browser/layout/grid.c $(BUILD)/libcss_host.a tests/percentage_height.mk
 .PHONY: test-percentage-height test-percentage-height-negctl
 $(PERCENT_HEIGHT_DIR)/test: $(PERCENT_HEIGHT_DEPS)
 	@mkdir -p $(PERCENT_HEIGHT_DIR)

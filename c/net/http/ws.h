@@ -9,7 +9,7 @@
  * Same shape as http1.c and for the same reason: this file opens no socket,
  * blocks nowhere, and allocates only what a bounded, already-validated frame
  * header says it needs -- so it is host-testable with an in-memory transport
- * and shares nothing with the JS surface in c/apps/browser/js_websocket.c,
+ * and shares nothing with the JS surface in c/apps/gui/browser/js/net/websocket.c,
  * which owns the socket, the handshake exchange (over c/net/http/http1.c's
  * h1_conn -- a WebSocket Upgrade IS an HTTP/1.1 exchange until the 101), the
  * message-assembly across fragments, and the JS event dispatch.

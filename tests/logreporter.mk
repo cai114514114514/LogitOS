@@ -32,9 +32,9 @@ ci-host: test-logreporter test-logreporter-asan
 test-logreporter: test-logreporter-negctl
 
 LOGREP_FIXTURE := tests/fixtures/webapi/logreporter
-LOGREP_SRC := tests/unit/logreporter_test.c c/apps/browser/js_page.c \
-              c/apps/browser/js_dom.c c/apps/browser/css_engine.c c/apps/browser/css_vars.c \
-              c/apps/browser/js_webapi.c c/net/http/http1.c c/net/http/url.c \
+LOGREP_SRC := tests/unit/logreporter_test.c c/apps/gui/browser/js/runtime/page.c \
+              c/apps/gui/browser/js/dom/dom.c c/apps/gui/browser/css/engine.c c/apps/gui/browser/css/vars.c \
+              c/apps/gui/browser/js/runtime/webapi.c c/net/http/http1.c c/net/http/url.c \
               c/net/http/cookies.c tests/unit/rust_host_shim.c
 LOGREP_CF  := $(BTEST_INC) $(CSS_INC) $(JS_INC) -Iinclude/abi -DCONFIG_VERSION='"host"' -DWEBAPI_HOST
 

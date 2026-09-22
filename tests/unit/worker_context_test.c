@@ -6,8 +6,8 @@
 #define main legacy_worker_main
 #include "worker_test.c"
 #undef main
-#include "js_webapi.h"
-#include "bfetch.h"
+#include "js/runtime/webapi.h"
+#include "net/fetch.h"
 #include "worker_fetch_net.h"
 
 struct policy_state { int deny_create, loads, denied_connect, entries, releases, response_loads, allow_eval; };

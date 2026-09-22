@@ -1,7 +1,7 @@
 # Actual browser layout and painter, derived from the production-shaped hit
 # harness; controls disable the formatter consumer and glyph-spacing consumer.
 TEXT_WIRING_SRC = $(filter-out tests/unit/inline_hit_test.c,$(INLINE_HIT_SRC)) tests/unit/text_wiring_test.c
-TEXT_WIRING_DEPS = tests/unit/painthost/logit.h c/apps/browser/layout.h c/apps/browser/layout_text.h c/apps/browser/text_paint_wiring.inc
+TEXT_WIRING_DEPS = tests/unit/painthost/logit.h c/apps/gui/browser/layout/block.h c/apps/gui/browser/layout/text.h c/apps/gui/browser/paint/text.inc
 .PHONY: test-text-wiring test-text-wiring-negctl
 $(BUILD)/wiring-next/text_wiring_test: $(TEXT_WIRING_SRC) $(TEXT_WIRING_DEPS) $(BUILD)/libcss_host.a
 	@mkdir -p $(BUILD)/wiring-next

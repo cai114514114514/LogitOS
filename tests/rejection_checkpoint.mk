@@ -1,5 +1,5 @@
 REJECTION_CHECK_SRC = $(filter-out tests/unit/dom_iface_test.c,$(DOMIFACE_SRC)) tests/unit/rejection_checkpoint_test.c
-REJECTION_CHECK_DEPS = $(REJECTION_CHECK_SRC) tests/unit/dom_iface_test.c $(wildcard c/apps/browser/*.h c/apps/browser/*.inc) $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
+REJECTION_CHECK_DEPS = $(REJECTION_CHECK_SRC) tests/unit/dom_iface_test.c $(wildcard $(BROWSER_HEADERS) $(BROWSER_INCLUDES)) $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
 .PHONY: test-rejection-checkpoint test-rejection-checkpoint-negctl
 $(BUILD)/rejection_checkpoint_test: $(REJECTION_CHECK_DEPS)
 	$(CC) -O2 -w $(DOMIFACE_CF) -o $@ $(REJECTION_CHECK_SRC) $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm

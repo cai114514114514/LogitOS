@@ -30,7 +30,7 @@
  * They exist because the opcode table below is 23 rows of operand and result
  * types and reads as arithmetic with them and as noise without.  They are
  * contained because a one-letter macro that escapes its file is a landmine:
- * c/apps/browser/js_wasm.c #includes this .c textually (see its header for the
+ * c/apps/gui/browser/js/wasm/wasm.c #includes this .c textually (see its header for the
  * argument), and `I` promptly ate a local variable called `I` in a function
  * three hundred lines away -- reported as "expected identifier or '('", with
  * the macro expansion as the only clue.  Anything added here gets an #undef
@@ -660,7 +660,7 @@ int wasm_validate(struct wasm_module *m, struct wasm_arena *a)
 }
 
 /* See the note beside the definitions: these are file-local by intent, and
- * this file is textually included by c/apps/browser/js_wasm.c. */
+ * this file is textually included by c/apps/gui/browser/js/wasm/wasm.c. */
 #undef I
 #undef J
 #undef F

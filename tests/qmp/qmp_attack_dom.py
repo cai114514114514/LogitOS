@@ -32,8 +32,8 @@ scoreboard row does not have:
      OF THAT CLOCK after `load done`, whatever the host is doing.
   2. THE DISPLAY LIST (about:boxes) beside the painted text (about:text): the
      nearest thing this browser has to a node count, because it has NO DOM
-     count diagnostic at all -- grep 'printf' c/apps/browser/dom.c
-     c/apps/browser/html_tree.c returns nothing. That absence is itself a
+     count diagnostic at all -- grep 'printf' c/apps/gui/browser/dom/tree.c
+     c/apps/gui/browser/html/tree.c returns nothing. That absence is itself a
      finding of this census (see the report), and the proposed one line is
      stated there rather than added here, because this round adds files and
      edits none.

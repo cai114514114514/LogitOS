@@ -1,4 +1,4 @@
-# tests/worker.mk -- dedicated Worker (c/apps/browser/js_worker.c).
+# tests/worker.mk -- dedicated Worker (c/apps/gui/browser/js/workers/worker.c).
 #
 #   make test-worker                    the coherent-subset suite, PLUS the
 #                                        termination-bar quiescence check:
@@ -38,12 +38,12 @@
 # excludes what Worker does not need (media/forms/module/canvas/semantics/
 # reflect/urlbind/websocket) and, unlike IDB_JS_OUT, does NOT exclude
 # js_worker.c itself -- that file is what this fragment measures.
-WORKER_JS_OUT := c/apps/browser/browser.c \
-                 c/apps/browser/js_media.c c/apps/browser/js_media_src.c \
-                 c/apps/browser/js_forms.c c/apps/browser/js_module.c \
-                 c/apps/browser/js_canvas.c c/apps/browser/js_semantics.c \
-                 c/apps/browser/js_reflect.c c/apps/browser/js_urlbind.c \
-                 c/apps/browser/js_websocket.c
+WORKER_JS_OUT := c/apps/gui/browser/app/main.c \
+                 c/apps/gui/browser/js/media/media.c c/apps/gui/browser/js/media/media_src.c \
+                 c/apps/gui/browser/js/dom/forms.c c/apps/gui/browser/js/runtime/module.c \
+                 c/apps/gui/browser/js/graphics/canvas.c c/apps/gui/browser/js/dom/semantics.c \
+                 c/apps/gui/browser/js/dom/reflect.c c/apps/gui/browser/js/net/urlbind.c \
+                 c/apps/gui/browser/js/net/websocket.c
 
 # tests/unit/loader_fakebfetch.c is bfetch.h implemented against an in-memory
 # site -- js_worker.c's own startup fetch (bfetch_sync) and importScripts
@@ -52,7 +52,7 @@ WORKER_JS_OUT := c/apps/browser/browser.c \
 # scenarios without a socket.
 WORKER_TEST_SRC := tests/unit/worker_test.c tests/unit/loader_fakebfetch.c \
                     $(filter-out $(WORKER_JS_OUT),$(BROWSER_JS_SRC))
-WORKER_TEST_SRC += c/apps/browser/css_engine.c c/apps/browser/css_vars.c c/apps/browser/css_interp.c
+WORKER_TEST_SRC += c/apps/gui/browser/css/engine.c c/apps/gui/browser/css/vars.c c/apps/gui/browser/css/interp.c
 WORKER_TEST_SRC += c/net/http/http1.c c/net/http/url.c c/net/http/cookies.c
 WORKER_TEST_SRC += tests/unit/rust_host_shim.c
 WORKER_CF := $(BTEST_INC) $(CSS_INC) $(JS_INC) -Itests/unit -Iinclude/abi -DCONFIG_VERSION='"host"' -DWEBAPI_HOST
@@ -114,7 +114,7 @@ test-worker-negctl-silent: $(BUILD)/worker_test_negctl_silent
 	 fi
 
 # --- test-wpt-worker: the WPT subset, js_worker.c linked (it rides
-# WPT_TEST_SRC's own $(wildcard c/apps/browser/js_*.c) automatically -- no
+# WPT_TEST_SRC's own $(BROWSER_JS_C) automatically -- no
 # source list to keep in sync). A REAL RATCHET, not a raw-count measurement:
 # workers/ is not one of the 6 directories tests/unit/wpt_expected_fail.txt
 # covers (that baseline was taken over build/wpt, not build/wpt-full), so
@@ -147,31 +147,31 @@ wpt-worker-baseline: $(BUILD)/wpt_test
 ci-host: test-worker test-wpt-worker
 
 WORKER_CONTEXT_SRC = $(filter-out tests/unit/worker_test.c,$(WORKER_TEST_SRC)) tests/unit/worker_context_test.c tests/unit/worker_fetch_net.c
-WORKER_CONTEXT_DEPS = $(WORKER_CONTEXT_SRC) tests/unit/worker_test.c tests/unit/worker_fetch_net.h tests/unit/stream_net.h tests/worker.mk $(wildcard c/apps/browser/*.h c/apps/browser/*.inc) $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
+WORKER_CONTEXT_DEPS = $(WORKER_CONTEXT_SRC) tests/unit/worker_test.c tests/unit/worker_fetch_net.h tests/unit/stream_net.h tests/worker.mk $(wildcard $(BROWSER_HEADERS) $(BROWSER_INCLUDES)) $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
 $(BUILD)/worker-context/current: $(WORKER_CONTEXT_DEPS)
 	@mkdir -p $(dir $@)
 	@$(CC) -O2 -w $(WORKER_CF) -o $@ $(WORKER_CONTEXT_SRC) $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
 $(BUILD)/worker-context/shared: $(WORKER_CONTEXT_DEPS)
 	@mkdir -p $(dir $@)
-	@sed 's/worker_owner=s?s:\&worker_default;/worker_owner=\&worker_default;/' c/apps/browser/js_worker.c > $@.c
-	@! cmp -s c/apps/browser/js_worker.c $@.c
-	@$(CC) -O2 -w $(WORKER_CF) -o $@ $(filter-out c/apps/browser/js_worker.c,$(WORKER_CONTEXT_SRC)) $@.c $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
+	@sed 's/worker_owner=s?s:\&worker_default;/worker_owner=\&worker_default;/' c/apps/gui/browser/js/workers/worker.c > $@.c
+	@! cmp -s c/apps/gui/browser/js/workers/worker.c $@.c
+	@$(CC) -O2 -w $(WORKER_CF) -o $@ $(filter-out c/apps/gui/browser/js/workers/worker.c,$(WORKER_CONTEXT_SRC)) $@.c $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
 .PHONY: test-worker-context-negctl test-worker-context test-worker-context-san
 $(BUILD)/worker-context/unbalanced: $(WORKER_CONTEXT_DEPS)
 	@mkdir -p $(dir $@)
-	@sed 's/if(LOGIT_HAVE(js_page_slice_end))js_page_slice_end();/(void)0;/' c/apps/browser/js_worker.c > $@.c
-	@! cmp -s c/apps/browser/js_worker.c $@.c
-	@$(CC) -O2 -w $(WORKER_CF) -o $@ $(filter-out c/apps/browser/js_worker.c,$(WORKER_CONTEXT_SRC)) $@.c $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
+	@sed 's/if(LOGIT_HAVE(js_page_slice_end))js_page_slice_end();/(void)0;/' c/apps/gui/browser/js/workers/worker.c > $@.c
+	@! cmp -s c/apps/gui/browser/js/workers/worker.c $@.c
+	@$(CC) -O2 -w $(WORKER_CF) -o $@ $(filter-out c/apps/gui/browser/js/workers/worker.c,$(WORKER_CONTEXT_SRC)) $@.c $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
 $(BUILD)/worker-context/wrong-site: $(WORKER_CONTEXT_DEPS)
 	@mkdir -p $(dir $@)
-	@sed 's/worker_owner->policy.site_url:w->creator_origin/w->creator_origin:w->creator_origin/' c/apps/browser/js_worker.c > $@.c
-	@! cmp -s c/apps/browser/js_worker.c $@.c
-	@$(CC) -O2 -w $(WORKER_CF) -o $@ $(filter-out c/apps/browser/js_worker.c,$(WORKER_CONTEXT_SRC)) $@.c $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
+	@sed 's/worker_owner->policy.site_url:w->creator_origin/w->creator_origin:w->creator_origin/' c/apps/gui/browser/js/workers/worker.c > $@.c
+	@! cmp -s c/apps/gui/browser/js/workers/worker.c $@.c
+	@$(CC) -O2 -w $(WORKER_CF) -o $@ $(filter-out c/apps/gui/browser/js/workers/worker.c,$(WORKER_CONTEXT_SRC)) $@.c $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
 $(BUILD)/worker-context/creator-policy: $(WORKER_CONTEXT_DEPS)
 	@mkdir -p $(dir $@)
-	@sed 's/return !w->policy.allow||w->policy.allow(w->policy.opaque,op,url);/return worker_allowed(op,url);/' c/apps/browser/js_worker.c > $@.c
-	@! cmp -s c/apps/browser/js_worker.c $@.c
-	@$(CC) -O2 -w $(WORKER_CF) -o $@ $(filter-out c/apps/browser/js_worker.c,$(WORKER_CONTEXT_SRC)) $@.c $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
+	@sed 's/return !w->policy.allow||w->policy.allow(w->policy.opaque,op,url);/return worker_allowed(op,url);/' c/apps/gui/browser/js/workers/worker.c > $@.c
+	@! cmp -s c/apps/gui/browser/js/workers/worker.c $@.c
+	@$(CC) -O2 -w $(WORKER_CF) -o $@ $(filter-out c/apps/gui/browser/js/workers/worker.c,$(WORKER_CONTEXT_SRC)) $@.c $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
 test-worker-context-negctl: $(BUILD)/worker-context/shared $(BUILD)/worker-context/unbalanced $(BUILD)/worker-context/wrong-site $(BUILD)/worker-context/creator-policy
 	@rc=0; $(BUILD)/worker-context/shared > $(BUILD)/worker-context/shared.log 2>&1 || rc=$$?; test $$rc -eq 1 && grep -q 'FAIL.*child pump does not advance parent Worker queue' $(BUILD)/worker-context/shared.log
 	@rc=0; $(BUILD)/worker-context/unbalanced > $(BUILD)/worker-context/unbalanced.log 2>&1 || rc=$$?; test $$rc -eq 1 && grep -q 'FAIL.*context switch after worker callbacks succeeds' $(BUILD)/worker-context/unbalanced.log
@@ -186,8 +186,8 @@ ci-host: test-worker-context
 
 # Standalone native port ownership needs no page fixture: two actual runtimes
 # and the production serializer are sufficient to exercise transfer fences.
-NATIVE_PORTS_SRC = tests/unit/native_ports_test.c c/apps/browser/js_ports.c
-NATIVE_PORTS_DEP = $(NATIVE_PORTS_SRC) c/apps/browser/js_ports.h $(QJS_SRC) tests/worker.mk
+NATIVE_PORTS_SRC = tests/unit/native_ports_test.c c/apps/gui/browser/js/workers/ports.c
+NATIVE_PORTS_DEP = $(NATIVE_PORTS_SRC) c/apps/gui/browser/js/workers/ports.h $(QJS_SRC) tests/worker.mk
 $(BUILD)/native-ports/current: $(NATIVE_PORTS_DEP)
 	@mkdir -p $(dir $@)
 	@$(CC) -O1 -g -w $(WORKER_CF) -o $@ $(NATIVE_PORTS_SRC) $(QJS_SRC) -lm
@@ -196,14 +196,14 @@ $(BUILD)/native-ports/not-detached: $(NATIVE_PORTS_DEP)
 	@$(CC) -O1 -g -w $(WORKER_CF) -DPORT_TEST_NO_DETACH -o $@ $(NATIVE_PORTS_SRC) $(QJS_SRC) -lm
 $(BUILD)/native-ports/not-closed: $(NATIVE_PORTS_DEP)
 	@mkdir -p $(dir $@)
-	@sed 's/if(op==2){close_endpoint(e);return JS_UNDEFINED;}/if(op==2){return JS_UNDEFINED;}/' c/apps/browser/js_ports.c > $@.c
-	@! cmp -s c/apps/browser/js_ports.c $@.c
+	@sed 's/if(op==2){close_endpoint(e);return JS_UNDEFINED;}/if(op==2){return JS_UNDEFINED;}/' c/apps/gui/browser/js/workers/ports.c > $@.c
+	@! cmp -s c/apps/gui/browser/js/workers/ports.c $@.c
 	@$(CC) -O1 -g -w $(WORKER_CF) -o $@ tests/unit/native_ports_test.c $@.c $(QJS_SRC) -lm
 .PHONY: test-native-ports test-native-ports-negctl test-native-ports-san
 $(BUILD)/native-ports/small-budget: $(NATIVE_PORTS_DEP)
 	@mkdir -p $(dir $@)
-	@sed 's/#define PORT_BYTES (1024\*1024)/#define PORT_BYTES (64*1024)/' c/apps/browser/js_ports.c > $@.c
-	@! cmp -s c/apps/browser/js_ports.c $@.c
+	@sed 's/#define PORT_BYTES (1024\*1024)/#define PORT_BYTES (64*1024)/' c/apps/gui/browser/js/workers/ports.c > $@.c
+	@! cmp -s c/apps/gui/browser/js/workers/ports.c $@.c
 	@$(CC) -O1 -g -w $(WORKER_CF) -o $@ tests/unit/native_ports_test.c $@.c $(QJS_SRC) -lm
 test-native-ports-negctl: $(BUILD)/native-ports/not-detached $(BUILD)/native-ports/not-closed $(BUILD)/native-ports/small-budget
 	@rc=0; $(BUILD)/native-ports/not-detached > $(BUILD)/native-ports/not-detached.log 2>&1 || rc=$$?; test $$rc -eq 1 && grep -q 'FAIL.*transferred endpoint attaches only in destination runtime' $(BUILD)/native-ports/not-detached.log
@@ -219,7 +219,7 @@ ci-host: test-native-ports
 # Outbound Worker transfer uses the same real page/Worker runtime apparatus.
 # Keep both former silent transfer loss and cancellation leaks observable.
 WORKER_PORTS_SRC = $(filter-out tests/unit/worker_test.c,$(WORKER_TEST_SRC)) tests/unit/worker_ports_test.c
-WORKER_PORTS_DEP = $(WORKER_PORTS_SRC) tests/unit/worker_test.c tests/worker.mk $(wildcard c/apps/browser/*.h c/apps/browser/*.inc) $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
+WORKER_PORTS_DEP = $(WORKER_PORTS_SRC) tests/unit/worker_test.c tests/worker.mk $(wildcard $(BROWSER_HEADERS) $(BROWSER_INCLUDES)) $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
 $(BUILD)/worker-ports/current: $(WORKER_PORTS_DEP)
 	@mkdir -p $(dir $@)
 	@$(CC) -O1 -g -w $(WORKER_CF) -o $@ $(WORKER_PORTS_SRC) $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm

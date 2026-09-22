@@ -57,8 +57,8 @@
 #include <stdlib.h>
 #include <stddef.h>
 
-#include "dom.h"
-#include "css.h"
+#include "dom/tree.h"
+#include "css/style.h"
 
 /* css_engine.c's OWN window onto LibCSS's stringmap[] -- the accessor
  * js_cssom.c's prop_is_known() already uses. Deliberately NOT a second one:

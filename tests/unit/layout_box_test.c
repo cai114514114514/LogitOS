@@ -1,6 +1,6 @@
 /* tests/unit/layout_box_test.c -- the box table and the two placement fixes.
  *
- * WHAT THIS MEASURES. c/apps/browser/layout.c now keeps one record per element
+ * WHAT THIS MEASURES. c/apps/gui/browser/layout/block.c now keeps one record per element
  * that GENERATED a box, whether or not it painted, and answers two queries off
  * it: layout_node_box() (the border box in document coordinates) and
  * layout_node_scroll() (the scrollable overflow area). The consumer is
@@ -23,9 +23,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
-#include "layout.h"
-#include "css.h"
-#include "dom.h"
+#include "layout/block.h"
+#include "css/style.h"
+#include "dom/tree.h"
 
 void *kmalloc(unsigned long n){ return malloc(n); }
 void  kfree(void *p){ free(p); }

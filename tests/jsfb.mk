@@ -117,7 +117,7 @@ probe-jsfb: $(BUILD)/webapi_probe
 # apparatus was innocent -- eleven runs in isolation were 8/8 and the difference
 # was that `make` had relinked the probe against a js_dom.c edited four minutes
 # earlier. If a row moves and you cannot account for it, check that first:
-#     stat -f '%Sm %N' build/webapi_probe; git status --short c/apps/browser
+#     stat -f '%Sm %N' build/webapi_probe; git status --short c/apps/gui/browser
 # A baseline taken during an edit storm records a browser that existed for four
 # minutes, which is worse than no baseline because it reads like one.
 test-jsfb: $(BUILD)/webapi_probe jsfb-verify

@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: MIT
 # Link the actual IDL reflection installer: without it link.rel is an expando
 # in this host subset, while the shipped browser writes the rel attribute.
-DYNAMIC_SHEETS_SRC = $(filter-out tests/unit/parser_script_events_test.c,$(PARSER_SCRIPT_SRC)) tests/unit/dynamic_stylesheets_test.c c/apps/browser/js_reflect.c
-DYNAMIC_SHEETS_DEPS = tests/dynamic_stylesheets.mk $(DYNAMIC_SHEETS_SRC) $(RUNTIME_SCROLL_DEPS) c/apps/browser/browser_stylesheets.inc tests/fixtures/browser/dynamic-styles.html
+DYNAMIC_SHEETS_SRC = $(filter-out tests/unit/parser_script_events_test.c,$(PARSER_SCRIPT_SRC)) tests/unit/dynamic_stylesheets_test.c c/apps/gui/browser/js/dom/reflect.c
+DYNAMIC_SHEETS_DEPS = tests/dynamic_stylesheets.mk $(DYNAMIC_SHEETS_SRC) $(RUNTIME_SCROLL_DEPS) c/apps/gui/browser/app/stylesheets.inc tests/fixtures/browser/dynamic-styles.html
 DYNAMIC_SHEETS_DIR = $(BUILD)/dynamic-styles
 $(DYNAMIC_SHEETS_DIR)/current: $(DYNAMIC_SHEETS_DEPS)
 	@mkdir -p $(DYNAMIC_SHEETS_DIR)

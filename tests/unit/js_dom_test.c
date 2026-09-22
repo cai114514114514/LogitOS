@@ -1,4 +1,4 @@
-/* Host test for the JS<->DOM bindings (c/apps/browser/js_dom.c) and the page
+/* Host test for the JS<->DOM bindings (c/apps/gui/browser/js/dom/dom.c) and the page
  * runtime that keeps them alive (js_page.c).
  *
  * Part 1 parses HTML, runs a script that reads/writes the DOM via
@@ -14,10 +14,10 @@
 #include <string.h>
 #include <time.h>
 #include "quickjs.h"
-#include "dom.h"
-#include "css.h"
-#include "js_dom.h"
-#include "js_page.h"
+#include "dom/tree.h"
+#include "css/style.h"
+#include "js/dom/dom.h"
+#include "js/runtime/page.h"
 
 void *kmalloc(unsigned long n) { return malloc(n); }
 void  kfree(void *p) { free(p); }

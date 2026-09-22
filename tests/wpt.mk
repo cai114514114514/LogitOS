@@ -127,7 +127,7 @@ WPT_BASELINE := tests/unit/wpt_expected_fail.txt
 # replaces it with a hand-written list this fragment does not follow it down.
 #
 # NOTHING ELSE IS WILDCARDED, and the third drift is the reason. The obvious
-# reflex on hitting it was `$(wildcard c/apps/browser/layout_*.c)` -- take the
+# reflex on hitting it was `$(wildcard c/apps/gui/browser/layout/*.c)` -- take the
 # whole layout family so the runner is never behind. That is WRONG here and
 # fails loudly: layout.c integrates layout_flex.c with `#include
 # "layout_flex.c"` (line 22), so the wildcard produces duplicate definitions of
@@ -148,17 +148,17 @@ endif
 #       checkout -- linking both would be two definitions of the fetch.
 #   http2.c hpack.c hpool.c   transport. The host build answers requests out of
 #       WEBAPI_FILE_ROOT through h1_conn, so no socket and no h2 is reached.
-WPT_BROWSER_OUT := c/apps/browser/browser.c c/apps/browser/browser_rt.c \
-                   c/apps/browser/browser_paint.c c/apps/browser/tabs.c \
+WPT_BROWSER_OUT := c/apps/gui/browser/app/main.c c/apps/gui/browser/app/runtime.c \
+                   c/apps/gui/browser/paint/renderer.c c/apps/gui/browser/app/tabs.c \
                    c/net/http/http2.c c/net/http/hpack.c c/net/http/hpool.c
 
 # $(HTML_PARSER_SRC) is subtracted only because the link line passes it
 # separately (it is shared with test-html5lib and the dom tests); it is IN the
 # runner, twice would be duplicate symbols.
 WPT_FROM_BROWSER := $(filter-out $(WPT_BROWSER_OUT) $(HTML_PARSER_SRC),\
-    $(sort $(BROWSER_PIPE) $(BROWSER_JS_SRC) c/apps/browser/css_engine.c \
-           $(wildcard c/apps/browser/js_*.c)))
-WPT_JS_SRC := $(filter c/apps/browser/js_%,$(WPT_FROM_BROWSER))
+    $(sort $(BROWSER_PIPE) $(BROWSER_JS_SRC) c/apps/gui/browser/css/engine.c \
+           $(BROWSER_JS_C)))
+WPT_JS_SRC := $(filter c/apps/gui/browser/js/%,$(WPT_FROM_BROWSER))
 
 # LINKING layout.c IS A DELIBERATE CHOICE AND THE ALTERNATIVE WAS REAL, and it
 # was re-put and re-decided the same way. Without it every box is 0x0, so
@@ -197,7 +197,7 @@ WPT_TEST_SRC += tests/unit/rust_host_shim.c
 .PHONY: test-wpt-link
 test-wpt-link:
 	@if [ -n "$(WPT_LINK_ERR)" ]; then echo "$(WPT_LINK_ERR)"; exit 1; fi
-	@miss=""; for f in $(sort $(BROWSER_PIPE) $(BROWSER_JS_SRC) $(wildcard c/apps/browser/js_*.c)); do \
+	@miss=""; for f in $(sort $(BROWSER_PIPE) $(BROWSER_JS_SRC) $(BROWSER_JS_C)); do \
 	    case " $(WPT_TEST_SRC) $(HTML_PARSER_SRC) $(WPT_BROWSER_OUT) " in *" $$f "*) ;; \
 	    *) miss="$$miss $$f";; esac; done; \
 	if [ -n "$$miss" ]; then \
@@ -350,7 +350,7 @@ test-wpt-fire-negctl: $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
 # the bound EXACTLY rather than "it threw": with the guard removed the depth
 # reached is 450 (where QuickJS's own 2 MiB limit trips on the cheapest
 # dispatch path), so the first assertion is its own negative control. See the
-# comment above MAX_DISPATCH_DEPTH in c/apps/browser/js_events.c for why 64.
+# comment above MAX_DISPATCH_DEPTH in c/apps/gui/browser/js/dom/events.c for why 64.
 .PHONY: test-wpt-depth
 test-wpt-depth: $(BUILD)/wpt_test
 	@if [ ! -d "$(WPT_ROOT)/resources" ]; then \

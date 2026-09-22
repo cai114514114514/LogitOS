@@ -1,4 +1,4 @@
-/* Host unit test for the CSS custom-property pre-pass (c/apps/browser/css_vars.c)
+/* Host unit test for the CSS custom-property pre-pass (c/apps/gui/browser/css/vars.c)
  * and for the single media-query evaluator it now shares with LibCSS
  * (css_media_matches -> css_select_ctx_media_matches).
  *
@@ -21,8 +21,8 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "dom.h"
-#include "css.h"
+#include "dom/tree.h"
+#include "css/style.h"
 
 static int fails, checks;
 

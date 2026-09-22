@@ -6,7 +6,7 @@ BROWSER_CLOSE_LOAD_SRC := $(filter-out tests/unit/loader_test.c tests/unit/loade
                           tests/unit/browser_close_during_load_test.c
 BROWSER_CLOSE_LOAD_DEP := $(BROWSER_CLOSE_LOAD_SRC) tests/unit/loader_test.c \
                           tests/unit/loader_fakebfetch.c tests/unit/loaderhost/logit.h \
-                          c/apps/browser/js_page.h
+                          c/apps/gui/browser/js/runtime/page.h
 BROWSER_CLOSE_LOAD_CF := -O2 -w $(LOADER_INC) $(BTEST_INC) $(CSS_INC) $(JS_INC) \
                          -DCONFIG_VERSION='"host"' -DWEBAPI_HOST \
                          -DLOADER_CLOCK_HOOK -DLOADER_POLL_HOOK

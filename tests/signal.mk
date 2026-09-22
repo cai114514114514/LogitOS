@@ -70,7 +70,7 @@ $(BUILD)/sigtest.aex: $(BUILD)/sigtest.elf tools/mkaex.py
 #      that caused it is still in front of you.
 #   2. IT DOES NOT SHARE A FAILURE MODE WITH THE REST OF THE TREE. As of this
 #      writing `make build/disk.img` does not build at all --
-#      c/apps/browser/js_dom.c writes __attribute__((weak)) and the JS build
+#      c/apps/gui/browser/js/dom/dom.c writes __attribute__((weak)) and the JS build
 #      passes -include features.h, whose `#define weak __attribute__((__weak__))`
 #      expands inside it. That is somebody else's line to fix, and a signal test
 #      that cannot run until they do is a signal test nobody runs.

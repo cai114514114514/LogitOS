@@ -2,8 +2,8 @@
 """tests/unit/csstext_wired.py -- every source list that names layout.c must
 also name layout_text.c.
 
-WHY THIS EXISTS.  c/apps/browser/layout.c calls ltx_break_utf8(), which lives
-in c/apps/browser/layout_text.c.  layout_flex.c and layout_grid.c dodged this
+WHY THIS EXISTS.  c/apps/gui/browser/layout/block.c calls ltx_break_utf8(), which lives
+in c/apps/gui/browser/layout/text.c.  layout_flex.c and layout_grid.c dodged this
 problem by being textually #included; layout_text.c cannot, because it is
 measured on its own against the Unicode conformance corpus and folding it into
 layout.c's translation unit would put the file under test inside the engine it
@@ -31,8 +31,8 @@ import sys
 import glob
 import os
 
-NEEDS = "c/apps/browser/layout.c"
-WANTS = "c/apps/browser/layout_text.c"
+NEEDS = "c/apps/gui/browser/layout/block.c"
+WANTS = "c/apps/gui/browser/layout/text.c"
 
 
 def logical_lines(path):

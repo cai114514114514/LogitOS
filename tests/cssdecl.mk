@@ -33,8 +33,8 @@
 CSSDECL_DIR := $(BUILD)/cssdecl
 
 CSSDECL_SRC := tests/unit/css_paintdecl_test.c \
-               c/apps/browser/css_engine.c c/apps/browser/css_vars.c \
-               c/apps/browser/css_extra.c c/apps/browser/css_interp.c
+               c/apps/gui/browser/css/engine.c c/apps/gui/browser/css/vars.c \
+               c/apps/gui/browser/css/extra.c c/apps/gui/browser/css/interp.c
 
 # $1 = output binary, $2 = extra -D flags
 define CSSDECL_BUILD

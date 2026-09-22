@@ -1,4 +1,4 @@
-/* Host test for c/apps/browser/js_worker.c -- dedicated Worker.
+/* Host test for c/apps/gui/browser/js/workers/worker.c -- dedicated Worker.
  *
  *     make test-worker                    the coherent-subset suite AND the
  *                                          termination bar's own quiescence
@@ -38,10 +38,10 @@
 #include <string.h>
 
 #include "quickjs.h"
-#include "dom.h"
-#include "js_dom.h"
-#include "js_page.h"
-#include "js_worker.h"
+#include "dom/tree.h"
+#include "js/dom/dom.h"
+#include "js/runtime/page.h"
+#include "js/workers/worker.h"
 #include "loader_fakebfetch.h"
 
 void *kmalloc(unsigned long n) { return malloc(n); }

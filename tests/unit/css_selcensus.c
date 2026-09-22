@@ -65,8 +65,8 @@
 #include <string.h>
 #include <stddef.h>
 
-#include "dom.h"
-#include "css.h"
+#include "dom/tree.h"
+#include "css/style.h"
 
 #include <libcss/libcss.h>
 #include "stylesheet.h"
@@ -74,7 +74,7 @@
 extern void (*css__select_match_report)(const css_selector *sel, int matched);
 extern void (*css__stylesheet_rule_decl_report)(const css_rule *rule);
 
-/* c/apps/browser/css_extra.c -- the approximation accounting. Declared here
+/* c/apps/gui/browser/css/extra.c -- the approximation accounting. Declared here
  * rather than in css.h because it is a measurement seam, not part of the
  * engine's contract with the browser. */
 extern void css_extra_approx_stats(long *re, long *ra, long *ae, long *aa,
@@ -181,7 +181,7 @@ static const char *matchable_pc[] = {
     "nth-child", "nth-last-child", "nth-of-type", "nth-last-of-type",
     NULL
 };
-/* Of the above, the four whose select handler in c/apps/browser/css_engine.c
+/* Of the above, the four whose select handler in c/apps/gui/browser/css/engine.c
  * is h_false: they are *correctly* false on a freshly loaded document (no
  * pointer is over anything, nothing is focused, no history), so a rule that
  * needs one is not an engine gap in the same sense. Kept in its own bucket
@@ -194,7 +194,7 @@ static const char *matchable_pe[] = {
 };
 /* ...and of those four, the two that cascade into a pseudo-element computed
  * style NOTHING IN THIS BROWSER EVER READS. `grep -c CSS_PSEUDO_ELEMENT_BEFORE
- * c/apps/browser/*.c` is 0: layout.c and browser_paint.c only ever look at
+ * c/apps/gui/browser/*/*.c` is 0: layout.c and browser_paint.c only ever look at
  * styles[CSS_PSEUDO_ELEMENT_NONE] (css_engine.c:2507). So these rules match,
  * cascade, and render nothing -- the "parsed and never read" shape, one layer
  * up from the property table where audit-css already finds it. */

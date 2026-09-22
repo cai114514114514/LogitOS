@@ -90,7 +90,7 @@ def prepare(sha, args):
     # userland -- and, worse, would score commits that cannot produce a
     # userland at all as if they were merely slow. (Real: 23 of today's
     # commits build an ISO and fail on the disk image, because the Makefile
-    # referenced c/apps/audio/audiocheck.c 66 minutes before that file was
+    # referenced tests/guest/audio/audiocheck.c 66 minutes before that file was
     # committed.)
     with open(log, "w") as lf:
         r1 = subprocess.run("make -j%d" % args.jobs, cwd=src, shell=True,

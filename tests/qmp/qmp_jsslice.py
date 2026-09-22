@@ -25,7 +25,7 @@ never re-arms, and its first click after 45 s is killed having run at most
     [js] watchdog: fuel=13 (=130000 branches+calls) since_begin_ms=55070
 
 fuel=13 of a 2,000,000 budget -- 0.00065%.  The 45 s were not spent running
-script.  THE FIX (c/apps/browser/js_dom.c, js_dom_dispatch): bracket every
+script.  THE FIX (c/apps/gui/browser/js/dom/dom.c, js_dom_dispatch): bracket every
 OUTERMOST dispatch with js_page_slice_begin()/js_page_slice_end(), gated by a
 nesting-depth counter so a handler that triggers a synchronous nested dispatch
 (window.scrollTo() inside a click handler, the concrete case in the wild) still

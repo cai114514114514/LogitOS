@@ -1,5 +1,5 @@
 # ============================================================================
-# CSS Grid Layout -- c/apps/browser/layout_grid.{c,h}. Host tests, seconds.
+# CSS Grid Layout -- c/apps/gui/browser/layout_grid.{c,h}. Host tests, seconds.
 #
 # THE ORACLE IS THE SPEC, NOT A SCREENSHOT. CSS Grid is specified as an
 # algorithm with exact numeric outcomes: the track sizing algorithm's steps
@@ -25,24 +25,24 @@
 .PHONY: test-grid test-grid-parse test-grid-place test-grid-size test-grid-align
 .PHONY: test-grid-asan test-grid-negctl
 
-GRID_SRC  := c/apps/browser/layout_grid.c
-GRID_CF   := -O1 -g -Wall -Wextra -Ic/apps/browser
+GRID_SRC  := c/apps/gui/browser/layout/grid.c
+GRID_CF   := -O1 -g -Wall -Wextra $(BROWSER_INC)
 
-$(BUILD)/grid_parse_test: tests/unit/grid_parse_test.c $(GRID_SRC) c/apps/browser/layout_grid.h
+$(BUILD)/grid_parse_test: tests/unit/grid_parse_test.c $(GRID_SRC) c/apps/gui/browser/layout/grid.h
 	@mkdir -p $(BUILD)
 	$(CC) $(GRID_CF) -o $@ tests/unit/grid_parse_test.c $(GRID_SRC)
 
 test-grid-parse: $(BUILD)/grid_parse_test
 	$(BUILD)/grid_parse_test
 
-$(BUILD)/grid_place_test: tests/unit/grid_place_test.c $(GRID_SRC) c/apps/browser/layout_grid.h
+$(BUILD)/grid_place_test: tests/unit/grid_place_test.c $(GRID_SRC) c/apps/gui/browser/layout/grid.h
 	@mkdir -p $(BUILD)
 	$(CC) $(GRID_CF) -o $@ tests/unit/grid_place_test.c $(GRID_SRC)
 
 test-grid-place: $(BUILD)/grid_place_test
 	$(BUILD)/grid_place_test
 
-$(BUILD)/grid_size_test: tests/unit/grid_size_test.c $(GRID_SRC) c/apps/browser/layout_grid.h
+$(BUILD)/grid_size_test: tests/unit/grid_size_test.c $(GRID_SRC) c/apps/gui/browser/layout/grid.h
 	@mkdir -p $(BUILD)
 	$(CC) $(GRID_CF) -o $@ tests/unit/grid_size_test.c $(GRID_SRC)
 
@@ -79,7 +79,7 @@ test-grid-negctl:
 	        awk '{ if ($$1 < 1) { print "but none of them were spanning cases"; exit 1 } }'; \
 	fi
 
-$(BUILD)/grid_align_test: tests/unit/grid_align_test.c $(GRID_SRC) c/apps/browser/layout_grid.h
+$(BUILD)/grid_align_test: tests/unit/grid_align_test.c $(GRID_SRC) c/apps/gui/browser/layout/grid.h
 	@mkdir -p $(BUILD)
 	$(CC) $(GRID_CF) -o $@ tests/unit/grid_align_test.c $(GRID_SRC)
 

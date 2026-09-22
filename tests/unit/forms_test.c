@@ -22,11 +22,11 @@
 #include <string.h>
 #include <stdint.h>
 
-#include "layout.h"
-#include "css.h"
-#include "dom.h"
-#include "forms.h"
-#include "focus.h"
+#include "layout/block.h"
+#include "css/style.h"
+#include "dom/tree.h"
+#include "dom/forms.h"
+#include "dom/focus.h"
 
 /* ---- stubs: the same set layout_test.c uses ---- */
 void *kmalloc(unsigned long n) { return malloc(n); }

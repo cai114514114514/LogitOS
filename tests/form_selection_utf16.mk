@@ -2,7 +2,7 @@
 # The raw-byte control preserves the old JS/native encoding mismatch only.
 FORM_SELECTION_UTF16_SRC = $(filter-out tests/unit/select_state_test.c,$(SELECT_STATE_SRC)) tests/unit/form_selection_utf16_test.c
 FORM_SELECTION_UTF16_DIR = $(BUILD)/site-general/caret
-FORM_SELECTION_UTF16_DEPS = tests/unit/select_state_test.c c/apps/browser/forms.h c/apps/browser/js_forms.c
+FORM_SELECTION_UTF16_DEPS = tests/unit/select_state_test.c c/apps/gui/browser/dom/forms.h c/apps/gui/browser/js/dom/forms.c
 .PHONY: test-form-selection-utf16 test-form-selection-utf16-negctl
 $(FORM_SELECTION_UTF16_DIR)/selection_utf16: $(FORM_SELECTION_UTF16_SRC) $(FORM_SELECTION_UTF16_DEPS) $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
 	@mkdir -p $(FORM_SELECTION_UTF16_DIR)

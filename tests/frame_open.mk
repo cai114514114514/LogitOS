@@ -1,6 +1,6 @@
 # Derive the full native browser harness; the minimal loader deliberately lacks
 # the URL Standard parser, and cannot demonstrate this user action.
-FRAME_OPEN_SRC = $(sort $(filter-out tests/unit/navigation_base_test.c,$(NAVIGATION_BASE_SRC)) c/apps/browser/js_url.c) tests/unit/frame_open_test.c
+FRAME_OPEN_SRC = $(sort $(filter-out tests/unit/navigation_base_test.c,$(NAVIGATION_BASE_SRC)) c/apps/gui/browser/js/net/url.c) tests/unit/frame_open_test.c
 FRAME_OPEN_DIR = $(BUILD)/frame-open
 FRAME_OPEN_DEPS = $(FRAME_OPEN_SRC) $(RUNTIME_SCROLL_DEPS)
 $(FRAME_OPEN_DIR)/current: $(FRAME_OPEN_DEPS)

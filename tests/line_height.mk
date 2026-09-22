@@ -1,7 +1,7 @@
 # Computed dimension inheritance and actual line advance, with the real engine.
 LHEIGHT_DIR := $(BUILD)/line-height
 LHEIGHT_SRC = $(filter-out tests/unit/layout_box_test.c,$(LBOX_SRC)) tests/unit/line_height_test.c
-LHEIGHT_DEPS = $(LHEIGHT_SRC) $(HTML_PARSER_SRC) c/apps/browser/css.h $(BUILD)/libcss_host.a
+LHEIGHT_DEPS = $(LHEIGHT_SRC) $(HTML_PARSER_SRC) c/apps/gui/browser/css/style.h $(BUILD)/libcss_host.a
 .PHONY: test-line-height test-line-height-negctl
 $(LHEIGHT_DIR)/test: $(LHEIGHT_DEPS)
 	@mkdir -p $(LHEIGHT_DIR)

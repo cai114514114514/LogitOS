@@ -4,9 +4,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "dom.h"
-#include "js_page.h"
-#include "js_module.h"
+#include "dom/tree.h"
+#include "js/runtime/page.h"
+#include "js/runtime/module.h"
 void *kmalloc(unsigned long n){return malloc(n);} void kfree(void*p){free(p);}
 void img_register(void*p){(void)p;}
 static unsigned long long now=1000;

@@ -200,7 +200,7 @@ UNIX_INC := -Itests/unit/unixstub -Ic/net/core -Iinclude/abi $(FS_INC)
 #
 #   c/net/core/unix.c:10:7: error: conflicting types for '__builtin___memset_chk'
 #
-# This is the fourth instance of the shape already fixed in c/apps/browser/
+# This is the fourth instance of the shape already fixed in c/apps/gui/browser/
 # layout.c, c/net/core/sock.c and c/net/ip/ip.c with `#ifndef memset` guards.
 # The guard in the source is the better fix and belongs to whoever owns that
 # file; this flag is the half that can live in the test recipe, it is portable
@@ -284,7 +284,7 @@ test-unix-negctl:
 	@echo "unix: 3/3 negative controls fire"
 
 # --- THE CONSUMER NEEDS ONE MAKEFILE LINE -----------------------------------
-# /bin/syslogd (c/apps/coreutils/syslogd.c) is the daemon on the other end of
+# /bin/syslogd (c/apps/services/syslog/syslogd.c) is the daemon on the other end of
 # every mini-libc syslog() call. It builds under the existing CLI_RULE with no
 # new rule of its own -- it includes only "clib.h", not mini-libc -- so packing
 # it is one word appended to the CLI list (Makefile ~line 462):

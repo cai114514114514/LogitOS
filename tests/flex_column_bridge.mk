@@ -1,6 +1,6 @@
 FLEX_COLUMN_BRIDGE_DIR := $(BUILD)/site-general/continue/flex-column
 FLEX_COLUMN_BRIDGE_SRC = $(filter-out tests/unit/layout_box_test.c,$(LBOX_SRC)) tests/unit/flex_column_bridge_test.c
-FLEX_COLUMN_BRIDGE_DEPS = $(FLEX_COLUMN_BRIDGE_SRC) tests/unit/intrinsic_test.c $(HTML_PARSER_SRC) c/apps/browser/layout.h c/apps/browser/css.h c/apps/browser/layout_flex.c c/apps/browser/layout_grid.c $(BUILD)/libcss_host.a tests/flex_column_bridge.mk
+FLEX_COLUMN_BRIDGE_DEPS = $(FLEX_COLUMN_BRIDGE_SRC) tests/unit/intrinsic_test.c $(HTML_PARSER_SRC) c/apps/gui/browser/layout/block.h c/apps/gui/browser/css/style.h c/apps/gui/browser/layout/flex.c c/apps/gui/browser/layout/grid.c $(BUILD)/libcss_host.a tests/flex_column_bridge.mk
 .PHONY: test-flex-column-bridge test-flex-column-bridge-negctl
 $(FLEX_COLUMN_BRIDGE_DIR)/test: $(FLEX_COLUMN_BRIDGE_DEPS)
 	@mkdir -p $(FLEX_COLUMN_BRIDGE_DIR)

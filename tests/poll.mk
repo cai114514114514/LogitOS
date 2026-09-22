@@ -80,7 +80,7 @@ test-poll: test-poll-negctl
 # is to test the POSIX surface -- poll(), select(), eventfd(), timerfd() and
 # pthreads -- so it links $(LIBC_OBJS) at the common CLI base like /bin/as and
 # /bin/thrtest do. It also needs logit_tls.ld, because it creates threads.
-POLLTEST_SRC := $(wildcard $(CLIDIR)/polltest.c)
+POLLTEST_SRC := $(wildcard tests/guest/exec/polltest.c)
 ifneq ($(POLLTEST_SRC),)
 
 # Guarded by the wildcard above for the reason tests/audio.mk documents: a
@@ -88,19 +88,21 @@ ifneq ($(POLLTEST_SRC),)
 # and the rule that assumed it was there broke `make build/disk.img` for every
 # line in the tree. A test fragment must not be able to break the build of the
 # thing it tests.
+# Keep the guest source directory in the object path. Reusing the pre-move
+# object imports its old .d primary source; -MP only covers removed headers.
 define POLLTEST_RULE
-$(BUILD)/pollobj/$(1).o: $(CLIDIR)/polltest.c c/apps/libc/include/poll.h \
+$(BUILD)/pollobj/tests/guest/exec/$(1).o: tests/guest/exec/polltest.c c/apps/libc/include/poll.h \
                          c/apps/libc/include/sys/eventfd.h \
                          c/apps/libc/include/sys/timerfd.h
 	@mkdir -p $$(dir $$@)
 	$(CC) $(UCFLAGS) $(2) -c $$< -o $$@
 # Delay LD until the target runs: the AEX v3 activation wrapper is target-local.
 # Expanding it during eval silently produced a v2 app with the original entry.
-$(BUILD)/$(1).elf: $(BUILD)/pollobj/$(1).o $(LIBC_OBJS) $(APPDIR)/crt0_cli.asm c/apps/libc/logit_tls.ld tests/poll.mk
+$(BUILD)/$(1).elf: $(BUILD)/pollobj/tests/guest/exec/$(1).o $(LIBC_OBJS) $(APPDIR)/crt0_cli.asm c/apps/libc/logit_tls.ld tests/poll.mk
 	@mkdir -p $(BUILD)/apps
 	$(ASM) -f elf64 $(APPDIR)/crt0_cli.asm -o $(BUILD)/apps/$(1).crt0c.o
 	$$(LD) -nostdlib -e _start -Ttext=0x50000000 -T c/apps/libc/logit_tls.ld -o $$@ \
-	    $(BUILD)/apps/$(1).crt0c.o $(BUILD)/pollobj/$(1).o $(LIBC_OBJS)
+	    $(BUILD)/apps/$(1).crt0c.o $(BUILD)/pollobj/tests/guest/exec/$(1).o $(LIBC_OBJS)
 $(BUILD)/$(1).aex: $(BUILD)/$(1).elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/$(1).elf $$@ $(1) - '*' 150 150 150
 endef
@@ -123,7 +125,7 @@ $(DISK): $(BUILD)/polltest-nopoll.aex
 endif
 
 else
-$(warning tests/poll.mk: $(CLIDIR)/polltest.c is missing -- /bin/polltest will not be built, and test-poll-os cannot run)
+$(warning tests/poll.mk: tests/guest/exec/polltest.c is missing -- /bin/polltest will not be built, and test-poll-os cannot run)
 endif
 
 test-poll-os: $(ISO) $(DISK)

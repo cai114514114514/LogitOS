@@ -24,8 +24,8 @@
 .PHONY: test-videosrc test-videosrc-negctl test-videosrc-os
 
 VSRC_FX := tests/fixtures/video
-VSRC_SRC := c/apps/browser/js_media_src.c
-VSRC_HDR := c/apps/browser/js_media.h
+VSRC_SRC := c/apps/gui/browser/js/media/media_src.c
+VSRC_HDR := c/apps/gui/browser/js/media/media.h
 
 # The link set is the one tests/mse.mk spent its whole header comment
 # justifying (the wildcard caught mjpeg.c, which grew a c/lib/image dependency;
@@ -36,7 +36,7 @@ VSRC_HDR := c/apps/browser/js_media.h
 # copy here would be the hand-copied-source drift AGENTS.md warns about, one
 # directory over.
 VSRC_IMG   = $(IMG_HOST_SRC) $(RUST_LIB_HOST)
-VSRC_INC   = -Ic/apps/browser -Ic/lib/media -Ic/lib/video -Ic/lib/audio \
+VSRC_INC   = $(BROWSER_INC) -Ic/lib/media -Ic/lib/video -Ic/lib/audio \
              $(IMG_HOST_INC)
 VSRC_KSHIM = $(BUILD)/mse_kshim.c
 

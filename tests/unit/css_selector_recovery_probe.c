@@ -17,7 +17,7 @@
  *      sheet, which false-positived every namespaced selector the first
  *      version of this probe tried that shortcut on) is parsed ONCE through
  *      css_stylesheet_create/append_data/data_done -- the exact API
- *      c/apps/browser/css_engine.c's make_sheet() uses -- with
+ *      c/apps/gui/browser/css/engine.c's make_sheet() uses -- with
  *      css__parse_selector_drop_report installed, collecting the REPORTED
  *      TEXT of every rule it refuses. This is authoritative for "was this
  *      selector list accepted": it is the real grammar, not a

@@ -1,6 +1,6 @@
 # Compatibility boundaries for the same physical edge producer.
 PHYSICAL_BOUNDARY_SRC = $(filter-out tests/unit/layout_box_test.c,$(LBOX_SRC)) tests/unit/physical_spacing_boundary_test.c
-PHYSICAL_BOUNDARY_DEPS = $(PHYSICAL_BOUNDARY_SRC) $(HTML_PARSER_SRC) tests/unit/intrinsic_test.c $(wildcard c/apps/browser/css*.h c/apps/browser/css*.inc) $(BUILD)/libcss_host.a
+PHYSICAL_BOUNDARY_DEPS = $(PHYSICAL_BOUNDARY_SRC) $(HTML_PARSER_SRC) tests/unit/intrinsic_test.c $(wildcard c/apps/gui/browser/css/*.h c/apps/gui/browser/css/*.inc) $(BUILD)/libcss_host.a
 $(PHYSICAL_SPACING_DIR)/boundary: $(PHYSICAL_BOUNDARY_DEPS)
 	@mkdir -p $(PHYSICAL_SPACING_DIR)
 	$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) -o $@ $(PHYSICAL_BOUNDARY_SRC) $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a -lm

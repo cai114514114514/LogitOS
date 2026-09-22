@@ -5,9 +5,9 @@
 #include "cssom_test.c"
 #undef main
 #include "logit.h"
-#include "browser_paint.h"
-#include "focus.h"
-#include "top_layer.h"
+#include "paint/renderer.h"
+#include "dom/focus.h"
+#include "dom/top_layer.h"
 struct paintop paint_ops[PAINT_MAXOPS];int paint_nops;
 void img_register(img_detect_fn d,img_decode_fn c){(void)d;(void)c;}
 static int color_y(unsigned color){for(int i=0;i<paint_nops;i++)if((paint_ops[i].kind==OP_RECT||(paint_ops[i].kind==OP_BLIT&&paint_ops[i].solid))&&paint_ops[i].color==color)return paint_ops[i].y;return -999;}

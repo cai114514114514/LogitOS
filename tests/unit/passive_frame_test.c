@@ -10,10 +10,10 @@
 #undef img_decode
 #undef img_free
 #undef img_init
-#include "passive_frame.h"
-#include "js_dom.h"
-#include "bfetch.h"
-#include "focus.h"
+#include "frame/passive.h"
+#include "js/dom/dom.h"
+#include "net/fetch.h"
+#include "dom/focus.h"
 void app_main(void);
 static int stage,polls,finished,embed_requests,resource_requests,mutated;
 static const char *mode;

@@ -1,6 +1,6 @@
 FOREIGN_ATTR_DIR = $(BUILD)/foreign-attributes
 FOREIGN_ATTR_SRC = $(filter-out tests/unit/dom_iface_test.c,$(DOMIFACE_SRC)) tests/unit/foreign_attribute_test.c
-FOREIGN_ATTR_DEPS = $(FOREIGN_ATTR_SRC) $(HTML_PARSER_SRC) tests/unit/dom_id_test.c c/apps/browser/dom.h c/apps/browser/js_dom_iface.inc $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
+FOREIGN_ATTR_DEPS = $(FOREIGN_ATTR_SRC) $(HTML_PARSER_SRC) tests/unit/dom_id_test.c c/apps/gui/browser/dom/tree.h c/apps/gui/browser/js/dom/dom_iface.inc $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
 .PHONY: test-foreign-attributes test-foreign-attributes-negctl
 $(FOREIGN_ATTR_DIR)/current: $(FOREIGN_ATTR_DEPS)
 	@mkdir -p $(FOREIGN_ATTR_DIR)

@@ -17,7 +17,7 @@
 # THE TWO SOURCE LISTS IN THIS FILE WERE HAND COPIES OF THE BROWSER'S, AND
 # BOTH DRIFTED. Measured 2026-08-28.
 # ===========================================================================
-# Fourteen js_*.c translation units landed in c/apps/browser after PROBE_SRC
+# Fourteen js_*.c translation units landed in c/apps/gui/browser after PROBE_SRC
 # and PLATFORM_TEST_SRC were written; neither list followed. Both links died
 # with fifteen undefined symbols (js_anim_install, js_canvas_install,
 # js_cssom_install/_close, js_domparser_install, js_events_install,
@@ -44,7 +44,7 @@
 #
 # So both lists are now SUBTRACTIONS from the Makefile's own
 # $(BROWSER_JS_SRC) (Makefile:828 -- `browser.c` plus
-# `$(wildcard c/apps/browser/js_*.c)`, the variable $(BUILD)/browser.elf is
+# `$(BROWSER_JS_C)`, the variable $(BUILD)/browser.elf is
 # built from). A file added to the browser is on these link lines the same
 # minute; a file that must NOT be on one is named below with its reason.
 ifeq ($(strip $(BROWSER_JS_SRC)),)
@@ -66,9 +66,9 @@ endif
 #                    tests/unit/webapi_platform_test.c does (forms_test.c,
 #                    layout_test.c and wpt_test.c each do), so forms.c cannot
 #                    be linked and js_forms.c cannot be linked without it.
-WEBAPI_JS_OUT := c/apps/browser/browser.c \
-                 c/apps/browser/js_media.c c/apps/browser/js_media_src.c \
-                 c/apps/browser/js_forms.c
+WEBAPI_JS_OUT := c/apps/gui/browser/app/main.c \
+                 c/apps/gui/browser/js/media/media.c c/apps/gui/browser/js/media/media_src.c \
+                 c/apps/gui/browser/js/dom/forms.c
 
 # --- test-webapi-slots-negctl ----------------------------------------------
 # The negative control for admitting fetches against the REAL free-slot count.
@@ -165,11 +165,11 @@ webapi-link-check:
 # platform harnesses have no bfetch, which is why they name it OUT.
 PROBE_SRC := tests/unit/webapi_probe.c \
              $(filter-out $(WEBAPI_JS_OUT),$(BROWSER_JS_SRC))
-PROBE_SRC += c/apps/browser/css_engine.c c/apps/browser/css_vars.c
+PROBE_SRC += c/apps/gui/browser/css/engine.c c/apps/gui/browser/css/vars.c
 # css_interp.c is the `ci_transform_parse` in the drift above: css_engine.c
 # grew a call to it (css_supports_decl, for `@supports (transform: ...)`) and
 # this list did not follow.
-PROBE_SRC += c/apps/browser/css_interp.c
+PROBE_SRC += c/apps/gui/browser/css/interp.c
 # js_canvas.c's cost, paid on purpose. It reaches gfx_fill/gfx_paint_* and
 # img_css_color(), so the engine and svg.c come with it -- and NOT img.c,
 # which would then want gif_register/jpeg_register/exif_apply for a probe that
@@ -268,19 +268,19 @@ probe-webapi: webapi-link-check $(BUILD)/webapi_probe
 # for the identical reason -- webapi_platform_test.c has no bfetch either.
 # js_websocket.c stays IN: it needs only c/net/http/ws.c, which
 # PLATFORM_TEST_SRC now supplies below, same as PROBE_SRC does.
-PLATFORM_JS_OUT := $(WEBAPI_JS_OUT) c/apps/browser/js_module.c \
-                   c/apps/browser/js_worker.c \
-                   c/apps/browser/js_canvas.c c/apps/browser/js_semantics.c \
-                   c/apps/browser/js_events.c c/apps/browser/js_reflect.c \
-                   c/apps/browser/js_urlbind.c
+PLATFORM_JS_OUT := $(WEBAPI_JS_OUT) c/apps/gui/browser/js/runtime/module.c \
+                   c/apps/gui/browser/js/workers/worker.c \
+                   c/apps/gui/browser/js/graphics/canvas.c c/apps/gui/browser/js/dom/semantics.c \
+                   c/apps/gui/browser/js/dom/events.c c/apps/gui/browser/js/dom/reflect.c \
+                   c/apps/gui/browser/js/net/urlbind.c
 # PLATFORM_MOD is the three the control drops, so they are subtracted here and
 # re-added on the positive link line -- one file cannot be on both.
-PLATFORM_MOD := c/apps/browser/js_platform.c c/apps/browser/js_select.c c/apps/browser/js_intl.c
+PLATFORM_MOD := c/apps/gui/browser/js/runtime/platform.c c/apps/gui/browser/js/dom/select.c c/apps/gui/browser/js/text/intl.c
 PLATFORM_TEST_SRC := tests/unit/webapi_platform_test.c \
                      $(filter-out $(PLATFORM_JS_OUT) $(PLATFORM_MOD),$(BROWSER_JS_SRC))
-PLATFORM_TEST_SRC += c/apps/browser/css_engine.c c/apps/browser/css_vars.c
+PLATFORM_TEST_SRC += c/apps/gui/browser/css/engine.c c/apps/gui/browser/css/vars.c
 # css_interp.c: css_engine.c's ci_transform_parse, the one non-js drift.
-PLATFORM_TEST_SRC += c/apps/browser/css_interp.c
+PLATFORM_TEST_SRC += c/apps/gui/browser/css/interp.c
 # js_webapi.c comes along (through the subtraction now) because half of what
 # this file fills in is a GAP in what that file publishes -- localStorage's
 # named properties, URL.createObjectURL -- and a test that stubbed those would
@@ -346,7 +346,7 @@ test-platform-page: $(ISO) $(DISK)
 #     wrong reason is worse than no control, because it is counted as evidence.
 #
 # Anything added to the browser's link or packaging has to be added here too.
-NOPLAT_JS_OBJ := $(filter-out $(BUILD)/jsobj/c/apps/browser/js_platform.o $(BUILD)/jsobj/c/apps/browser/js_select.o $(BUILD)/jsobj/c/apps/browser/js_intl.o,$(BROWSER_JS_OBJ))
+NOPLAT_JS_OBJ := $(filter-out $(BUILD)/jsobj/c/apps/gui/browser/js/runtime/platform.o $(BUILD)/jsobj/c/apps/gui/browser/js/dom/select.o $(BUILD)/jsobj/c/apps/gui/browser/js/text/intl.o,$(BROWSER_JS_OBJ))
 $(BUILD)/browser-noplat.elf: $(ENGINE_OBJ) $(NOPLAT_JS_OBJ) $(BROWSER_OBJ) $(CSS_OBJ) $(GFX_OBJ) $(RUST_LIB) $(BUILD)/apps/crt0.o $(BUILD)/browserobj/malloc_big.o
 	$(LD) -nostdlib -e _start -Ttext=0x45000000 -o $@ --start-group $(BUILD)/apps/crt0.o $(ENGINE_OBJ) $(NOPLAT_JS_OBJ) $(BROWSER_OBJ) $(CSS_OBJ) $(GFX_OBJ) $(RUST_LIB) $(BUILD)/browserobj/malloc_big.o --end-group
 $(BUILD)/browser-noplat.aex: $(BUILD)/browser-noplat.elf tools/mkaex.py
@@ -459,7 +459,7 @@ test-platform-livecollection-negctl: $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
 # MATCHED BY DESCRIPTION, not a blind FAIL count, for the reason
 # test-platform-livecollection-negctl above gives verbatim: this file's source
 # lists (PLATFORM_TEST_SRC) are mid-drift from other workflows landing in
-# c/apps/browser at the same time, and at the moment this target was written
+# c/apps/gui/browser at the same time, and at the moment this target was written
 # that collateral noise was three UNRELATED failures (indexedDB, crypto.subtle,
 # Element.attachShadow) that have nothing to do with this change and must not
 # make this control flap. A blind count would go red the next time that drift

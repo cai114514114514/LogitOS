@@ -5,7 +5,7 @@
 #include "webapi_test.c"
 #undef main
 #include <zlib.h>
-#include "bfetch.h"
+#include "net/fetch.h"
 
 static unsigned char *compressed;
 static int compressed_len;

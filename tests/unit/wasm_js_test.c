@@ -1,4 +1,4 @@
-/* The gate for the WebAssembly JavaScript API (c/apps/browser/js_wasm.c).
+/* The gate for the WebAssembly JavaScript API (c/apps/gui/browser/js/wasm/wasm.c).
  *
  * IT RUNS THE API, IT DOES NOT LINK IT.  That distinction is the most
  * expensive lesson in this repository: `make test-wpt ONLY=css/css-grid` read
@@ -30,7 +30,7 @@
 #include <string.h>
 
 #include "quickjs.h"
-#include "js_wasm.h"
+#include "js/wasm/wasm.h"
 #include "wasm_exec.h"
 
 #include "wasm_js_modules.inc"

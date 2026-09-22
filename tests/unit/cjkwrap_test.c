@@ -1,5 +1,5 @@
 /* tests/unit/cjkwrap_test.c -- does the BROWSER take the line breaks that
- * c/apps/browser/layout_text.c computes?
+ * c/apps/gui/browser/layout/text.c computes?
  *
  * WHY THIS IS A SECOND GATE AND NOT MORE CASES IN csstext_test.c.  That suite
  * measures layout_text.c against the Unicode Consortium's own corpus and it
@@ -37,9 +37,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
-#include "layout.h"
-#include "css.h"
-#include "dom.h"
+#include "layout/block.h"
+#include "css/style.h"
+#include "dom/tree.h"
 
 void *kmalloc(unsigned long n){ return malloc(n); }
 void  kfree(void *p){ free(p); }

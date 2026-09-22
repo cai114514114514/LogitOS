@@ -1,6 +1,6 @@
 /* Two genuine runtimes; no page globals, DOM or network fixture can conceal
  * foreign-context ownership. The only transport is the shipping port broker. */
-#include "js_ports.h"
+#include "js/workers/ports.h"
 #include <stdio.h>
 #include <string.h>
 static int checks,failures;

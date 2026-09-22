@@ -26,7 +26,7 @@ commas). It is not a JS engine and does not need to be: any construct outside
 that subset is a hard error rather than a silent skip, because a silently
 dropped attribute would look exactly like a passing implementation of it.
 
-WHAT IT WRITES. c/apps/browser/js_reflect.inc -- a flat table of
+WHAT IT WRITES. c/apps/gui/browser/js/dom/reflect.inc -- a flat table of
 (element, IDL name, content name, type, per-type parameters), plus the string
 pools it points into. js_reflect.c installs an accessor pair per row.
 
@@ -469,7 +469,7 @@ def emit(rows, out, sources):
 
 def main():
     args = [a for a in sys.argv[1:]]
-    out = os.path.join(ROOT, "c", "apps", "browser", "js_reflect.inc")
+    out = os.path.join(ROOT, "c", "apps", "gui", "browser", "js", "dom", "reflect.inc")
     if "-o" in args:
         k = args.index("-o")
         out = args[k + 1]

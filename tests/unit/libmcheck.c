@@ -8,7 +8,7 @@
  * PORT: that `clang --target=x86_64-elf -ffreestanding` against mini-libc, with
  * SSE turned on by boot code rather than by the ABI, produces the same bits as
  * the same third_party/libm/*.c compiled natively. That is the thing that can
- * break here, and it is exactly the separation c/apps/audio/audiocheck.c:8-20
+ * break here, and it is exactly the separation tests/guest/audio/audiocheck.c:8-20
  * draws for the decoders.
  *
  * OUTPUT IS RAW IEEE BITS, NOT %a, and that is deliberate too. mini-libc has

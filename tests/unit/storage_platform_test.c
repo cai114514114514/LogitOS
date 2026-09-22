@@ -2,7 +2,7 @@
 #define main platform_existing_main
 #include "webapi_platform_test.c"
 #undef main
-#include "js_webapi.h"
+#include "js/runtime/webapi.h"
 
 int main(void)
 {

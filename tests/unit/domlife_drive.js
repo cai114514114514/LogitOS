@@ -27,7 +27,7 @@
  * one of them; it asserts the platform contract they all assume.
  *
  * WHY IT FAILS ON THIS ENGINE, TRACED TO SOURCE:
- *   c/apps/browser/js_dom.c's wrap() (~line 309) caches one wrapper per node
+ *   c/apps/gui/browser/js/dom/dom.c's wrap() (~line 309) caches one wrapper per node
  *   in the node's `jsw` slot -- but the comment at its own definition (~line
  *   304) says the slot "takes no reference: the finalizer clears it". A
  *   wrapper is a normal refcounted QuickJS object; when the only JS
@@ -52,7 +52,7 @@
  *   -- and that is the platform gap, not a defect in 24 independent apps.
  *
  * THE FIX THIS CONTROL IS WAITING FOR, not applied here because
- * c/apps/browser/js_dom.c, dom.c and dom.h were all under active edit by a
+ * c/apps/gui/browser/js/dom/dom.c, dom.c and dom.h were all under active edit by a
  * sibling line of work at the time this was written (git status + mtimes
  * checked first, per CLAUDE.md's ownership rule) and elem_finalizer/wrap()/
  * recycle_tree were the exact area at risk of a collision: give each node a

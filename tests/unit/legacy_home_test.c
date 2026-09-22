@@ -9,7 +9,7 @@
 #undef main
 #undef img_free
 #undef img_decode
-#include "forms.h"
+#include "dom/forms.h"
 
 int img_decode(const uint8_t *p,int n,struct image *im)
 {

@@ -3,7 +3,7 @@
 # binary must retain every functional result and fail only observability.
 FETCH_JSON_DIAG_DIR = $(BUILD)/fetch-json-diagnostics
 FETCH_JSON_DIAG_SRC = tests/unit/fetch_json_diagnostics_test.c $(STREAM_TEST_SRC) $(QJS_SRC)
-FETCH_JSON_DIAG_DEP = $(FETCH_JSON_DIAG_SRC) tests/unit/stream_net.h $(wildcard c/apps/browser/js_fetch_*prelude.inc) c/apps/browser/js_runtime_diagnostics.inc tests/unit/fetch_json_diagnostics_check.py tests/fetch_json_diagnostics.mk $(RUST_LIB_HOST)
+FETCH_JSON_DIAG_DEP = $(FETCH_JSON_DIAG_SRC) tests/unit/stream_net.h $(wildcard c/apps/gui/browser/js/net/fetch_*prelude.inc) c/apps/gui/browser/js/runtime/runtime_diagnostics.inc tests/unit/fetch_json_diagnostics_check.py tests/fetch_json_diagnostics.mk $(RUST_LIB_HOST)
 $(FETCH_JSON_DIAG_DIR)/on: $(FETCH_JSON_DIAG_DEP)
 	@mkdir -p $(FETCH_JSON_DIAG_DIR)
 	@$(CC) $(XHR_PROGRESS_CF) -DJS_RUNTIME_DIAGNOSTICS -o $@ $(FETCH_JSON_DIAG_SRC) $(RUST_LIB_HOST) -lm

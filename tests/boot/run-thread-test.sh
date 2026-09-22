@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # M30 threads gate. Boot -smp 4, drive the serial shell to run /bin/thrtest, and
 # assert THREAD_TEST_OK -- which only prints if every one of the checks in
-# c/apps/coreutils/thrtest.c held: wall-clock parallelism between two ring-3
+# tests/guest/sched/thrtest.c held: wall-clock parallelism between two ring-3
 # threads of ONE process, per-thread `__thread` storage, a mutex that actually
 # excludes under contention on 4 cores, join delivering the exit value, detach
 # freeing without a join, and 2000 create/join cycles that leave the kernel's

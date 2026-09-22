@@ -180,7 +180,7 @@ def locate(ui, ppm_path=None, timeout=12.0):
         "rgb(90,150,240)) is not on screen at any of the %d client origins "
         "wm.c's cascade can produce after %.0fs -- either the Browser is not "
         "up, is not booted into editing mode, or the chrome geometry in this "
-        "file has drifted from c/apps/browser/browser.c. Screendump kept at "
+        "file has drifted from c/apps/gui/browser/app/main.c. Screendump kept at "
         "%s. Typing now would go to the page, not the bar."
         % (len(client_candidates()), timeout, ppm_path))
 

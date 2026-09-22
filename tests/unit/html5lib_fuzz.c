@@ -30,9 +30,9 @@
 #include <string.h>
 #include <dirent.h>
 
-#include "dom.h"
-#include "html_tree.h"
-#include "dom_serialize.h"
+#include "dom/tree.h"
+#include "html/tree.h"
+#include "dom/serialize.h"
 
 void *kmalloc(unsigned long n) { return malloc(n); }
 void  kfree(void *p) { free(p); }

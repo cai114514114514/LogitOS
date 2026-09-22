@@ -1,6 +1,6 @@
 # tests/reflect.mk -- IDL attribute reflection: the coercions, and the table.
 #
-# What the code under test is: c/apps/browser/js_reflect.c turns `el.title` into
+# What the code under test is: c/apps/gui/browser/js/dom/reflect.c turns `el.title` into
 # a view of the `title` content attribute, and does that for the ~380
 # (element, IDL name, content name, type) triples in js_reflect.inc, which
 # tools/gen_reflect.py generates from the WPT corpus's own reflection tables.
@@ -32,9 +32,9 @@
 # The link is js_dom_test's plus js_reflect.c. Deliberately NOT the whole
 # browser: this test wants the reflection layer over the real DOM and nothing
 # else, so a failure here names the coercion rather than the page runtime.
-REFLECT_SRC := tests/unit/reflect_test.c c/apps/browser/js_dom.c \
-               c/apps/browser/js_reflect.c c/apps/browser/css_engine.c \
-               c/apps/browser/css_vars.c
+REFLECT_SRC := tests/unit/reflect_test.c c/apps/gui/browser/js/dom/dom.c \
+               c/apps/gui/browser/js/dom/reflect.c c/apps/gui/browser/css/engine.c \
+               c/apps/gui/browser/css/vars.c
 
 # -DWEBAPI_HOST (2026-08-30, testdebt): js_dom.c's logit.h include -- its
 # transient-activation clock -- is kernel-only and guarded by exactly this
@@ -102,7 +102,7 @@ test-reflect-table:
 	 else \
 	    mkdir -p $(BUILD); \
 	    python3 tools/gen_reflect.py -o $(BUILD)/js_reflect.inc.new || exit 1; \
-	    if diff -u c/apps/browser/js_reflect.inc $(BUILD)/js_reflect.inc.new \
+	    if diff -u c/apps/gui/browser/js/dom/reflect.inc $(BUILD)/js_reflect.inc.new \
 	           > $(BUILD)/js_reflect.inc.diff 2>&1; then \
 	        echo "test-reflect-table: ok -- the table matches the corpus it came from"; \
 	    else \
@@ -133,7 +133,7 @@ reflect-table:
 # the source of the list rather than a broken accessor.
 .PHONY: test-cssprops test-cssprops-negctl
 
-CSSPROPS_SRC := tests/unit/cssprops_test.c c/apps/browser/js_dom.c                 c/apps/browser/js_reflect.c c/apps/browser/css_engine.c                 c/apps/browser/css_vars.c
+CSSPROPS_SRC := tests/unit/cssprops_test.c c/apps/gui/browser/js/dom/dom.c                 c/apps/gui/browser/js/dom/reflect.c c/apps/gui/browser/css/engine.c                 c/apps/gui/browser/css/vars.c
 
 $(BUILD)/cssprops_test: $(CSSPROPS_SRC) $(BUILD)/libcss_host.a
 	@mkdir -p $(BUILD)

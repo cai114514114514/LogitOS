@@ -7,7 +7,7 @@
 # nothing else.
 #
 # THIS FILE IS NOT A CORRECTNESS GATE. test-h264/test-h265 already own bit-
-# exactness against ffmpeg; nothing here re-checks a pixel. c/apps/video/
+# exactness against ffmpeg; nothing here re-checks a pixel. tests/guest/video/
 # vidbench.c decodes real streams and times the wall clock, nothing more --
 # and it says so loudly (VIDBENCH-ERR) rather than silently skipping a stream
 # it cannot decode, because a benchmark that quietly drops the hard case
@@ -49,9 +49,9 @@ $(VIDBENCH_STREAMS): $(VIDBENCH_DIR)/.stamp
 # Plain $(CC): no --target/-ffreestanding, so this is a NATIVE host binary
 # (same trick tests/h264.mk's h264_test and tests/h265.mk's h265_test already
 # use) linking the identical decoder sources the guest build links.
-$(BUILD)/vidbench_host: c/apps/video/vidbench.c $(VIDBENCH_SRC)
+$(BUILD)/vidbench_host: tests/guest/video/vidbench.c $(VIDBENCH_SRC)
 	@mkdir -p $(BUILD)
-	@$(CC) -O2 -Wall -Wextra -o $@ c/apps/video/vidbench.c $(VIDBENCH_SRC) $(VIDBENCH_INC)
+	@$(CC) -O2 -Wall -Wextra -o $@ tests/guest/video/vidbench.c $(VIDBENCH_SRC) $(VIDBENCH_INC)
 
 test-vidbench-host: $(BUILD)/vidbench_host $(VIDBENCH_STREAMS)
 	@echo "--- vidbench: host, run 1 ---"
@@ -61,7 +61,7 @@ test-vidbench-host: $(BUILD)/vidbench_host $(VIDBENCH_STREAMS)
 
 # --- guest build ---------------------------------------------------------
 # Same shape as vidcheck.aex/vidcheck265.aex (root Makefile / tests/h265.mk):
-# $(BUILD)/vidobj/c/apps/video/vidbench.o comes from the Makefile's existing
+# $(BUILD)/vidobj/tests/guest/video/vidbench.o comes from the Makefile's existing
 # generic `$(BUILD)/vidobj/%.o: %.c $(VID_HDRS)` pattern rule, no new rule
 # needed for it. Links VID_OBJ (both decoders -- c/lib/video/*.c is a
 # wildcard) + the default-arena LIBC_OBJS, exactly like vidcheck.aex; nothing
@@ -69,12 +69,12 @@ test-vidbench-host: $(BUILD)/vidbench_host $(VIDBENCH_STREAMS)
 # for the H.265 feature set it deliberately stays inside), so it does not ask
 # for one -- a special arena here would be measuring a machine no real app on
 # this OS is built with.
-$(BUILD)/vidbench.elf: $(BUILD)/vidobj/c/apps/video/vidbench.o $(VID_OBJ) $(IMGCHK_OBJ) \
+$(BUILD)/vidbench.elf: $(BUILD)/vidobj/tests/guest/video/vidbench.o $(VID_OBJ) $(IMGCHK_OBJ) \
                        $(GFX_OBJ) $(RUST_LIB) $(LIBC_OBJS) $(APPDIR)/crt0_cli.asm
 	@mkdir -p $(BUILD)/apps
 	$(ASM) -f elf64 $(APPDIR)/crt0_cli.asm -o $(BUILD)/apps/vidbench.crt0c.o
 	$(LD) -nostdlib -e _start -Ttext=0x50000000 -o $@ $(BUILD)/apps/vidbench.crt0c.o \
-	    $(BUILD)/vidobj/c/apps/video/vidbench.o $(VID_OBJ) $(IMGCHK_OBJ) \
+	    $(BUILD)/vidobj/tests/guest/video/vidbench.o $(VID_OBJ) $(IMGCHK_OBJ) \
 	    $(GFX_OBJ) $(RUST_LIB) $(LIBC_OBJS)
 $(BUILD)/vidbench.aex: $(BUILD)/vidbench.elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/vidbench.elf $@ vidbench - 'V' 150 150 150

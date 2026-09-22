@@ -16,7 +16,7 @@ p.add_argument('--elf', default='build/browser.elf')
 p.add_argument('--out', default='build/wiring')
 a = p.parse_args()
 root = Path(__file__).resolve().parents[2]
-relative = 'c/apps/browser/browser.c'
+relative = 'c/apps/gui/browser/app/main.c'
 source = (root/relative).read_text()
 broken, count = re.subn(r'js_cssom_set_reflow\s*\(browser_cssom_reflow\)\s*;',
                         '(void)0;', source)

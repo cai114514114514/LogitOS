@@ -4,7 +4,7 @@
 # is far too slow"; the deliverable is (1) a guest-side open-time timeline
 # (tests/qmp/qmp_webaccel.py + the [wa] stamps in browser_rt.c), and (2) the
 # biggest lever that timeline exposed: a cross-navigation HTTP cache
-# (c/apps/browser/http_cache.{h,c}, #included by browser_rt.c), which is what
+# (c/apps/gui/browser/http_cache.{h,c}, #included by browser_rt.c), which is what
 # these gates are about.
 #
 # FIVE TARGETS, THREE HOST AND TWO GUEST -- SIX total counting the cookie-key
@@ -96,14 +96,14 @@ test-webaccel-os: test-webaccel-os-negctl test-webaccel-cookie-negctl $(ISO) $(D
 # as its own browser-waoff.aex on its own disk. The driver's --expect-off mode
 # inverts the gate: on this disk the cache assertions MUST redden; a green run
 # means the positive gate is measuring something else.
-$(BUILD)/waoff/c/apps/browser/browser_rt.o: c/apps/browser/browser_rt.c \
-        c/apps/browser/http_cache.c c/apps/browser/http_cache.h \
-        c/apps/browser/bfetch.h
+$(BUILD)/waoff/c/apps/gui/browser/app/runtime.o: c/apps/gui/browser/app/runtime.c \
+        c/apps/gui/browser/net/cache.c c/apps/gui/browser/net/cache.h \
+        c/apps/gui/browser/net/fetch.h
 	@mkdir -p $(dir $@)
 	$(CC) $(UCFLAGS) $(CSS_INC) -DWACACHE_OFF -c $< -o $@
 
-WAOFF_OBJ := $(filter-out $(BUILD)/browserobj/c/apps/browser/browser_rt.o,$(BROWSER_OBJ)) \
-             $(BUILD)/waoff/c/apps/browser/browser_rt.o
+WAOFF_OBJ := $(filter-out $(BUILD)/browserobj/c/apps/gui/browser/app/runtime.o,$(BROWSER_OBJ)) \
+             $(BUILD)/waoff/c/apps/gui/browser/app/runtime.o
 
 $(BUILD)/browser-waoff.elf: $(ENGINE_OBJ) $(BROWSER_JS_OBJ) $(WAOFF_OBJ) $(CSS_OBJ) $(GFX_OBJ) $(RUST_LIB) $(BUILD)/apps/crt0.o $(BUILD)/browserobj/malloc_big.o
 	$(LD) -nostdlib -e _start -Ttext=0x45000000 -o $@ --start-group $(BUILD)/apps/crt0.o $(ENGINE_OBJ) $(BROWSER_JS_OBJ) $(WAOFF_OBJ) $(CSS_OBJ) $(GFX_OBJ) $(RUST_LIB) $(BUILD)/browserobj/malloc_big.o --end-group
@@ -147,14 +147,14 @@ test-webaccel-os-negctl: $(ISO) $(BUILD)/browser-waoff.aex
 # has enough of the request in it" specifically) and needs its own binary
 # because there is no runtime switch for it -- ck_hash's collapse is `#ifdef`,
 # same discipline as WACACHE_OFF itself.
-$(BUILD)/nck/c/apps/browser/browser_rt.o: c/apps/browser/browser_rt.c \
-        c/apps/browser/http_cache.c c/apps/browser/http_cache.h \
-        c/apps/browser/bfetch.h
+$(BUILD)/nck/c/apps/gui/browser/app/runtime.o: c/apps/gui/browser/app/runtime.c \
+        c/apps/gui/browser/net/cache.c c/apps/gui/browser/net/cache.h \
+        c/apps/gui/browser/net/fetch.h
 	@mkdir -p $(dir $@)
 	$(CC) $(UCFLAGS) $(CSS_INC) -DWACACHE_NO_COOKIE_KEY -c $< -o $@
 
-NCK_OBJ := $(filter-out $(BUILD)/browserobj/c/apps/browser/browser_rt.o,$(BROWSER_OBJ)) \
-           $(BUILD)/nck/c/apps/browser/browser_rt.o
+NCK_OBJ := $(filter-out $(BUILD)/browserobj/c/apps/gui/browser/app/runtime.o,$(BROWSER_OBJ)) \
+           $(BUILD)/nck/c/apps/gui/browser/app/runtime.o
 
 $(BUILD)/browser-nck.elf: $(ENGINE_OBJ) $(BROWSER_JS_OBJ) $(NCK_OBJ) $(CSS_OBJ) $(GFX_OBJ) $(RUST_LIB) $(BUILD)/apps/crt0.o $(BUILD)/browserobj/malloc_big.o
 	$(LD) -nostdlib -e _start -Ttext=0x45000000 -o $@ --start-group $(BUILD)/apps/crt0.o $(ENGINE_OBJ) $(BROWSER_JS_OBJ) $(NCK_OBJ) $(CSS_OBJ) $(GFX_OBJ) $(RUST_LIB) $(BUILD)/browserobj/malloc_big.o --end-group

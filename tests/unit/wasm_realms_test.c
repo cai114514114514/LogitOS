@@ -12,7 +12,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 #include "quickjs.h"
-#include "js_wasm.h"
+#include "js/wasm/wasm.h"
 #include "wasm_js_modules.inc"
 
 struct realm { JSRuntime *rt; JSContext *ctx; int owns_rt; };

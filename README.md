@@ -358,9 +358,14 @@ file in Code Studio, or open the Browser and load `https://en.wikipedia.org`.
 
 ## Source layout
 
-All source lives under `c/`, with headers colocated next to their `.c` (header
-names are unique, so every `#include "foo.h"` resolves via the Makefile's `INCDIRS`).
-`include/` holds only the cross-cutting kernel↔user ABI.
+Production C source lives under `c/`, with headers next to its implementations;
+guest diagnostic programs live under `tests/guest/`. Browser headers use
+subsystem-qualified includes so short names remain unambiguous. `include/`
+holds shared contracts. See [the current source map](docs/SOURCE_LAYOUT.md).
+
+Correction (2026-09-22): this paragraph formerly said all source was under
+`c/` and header basenames were unique. Neither is a valid build assumption;
+the Makefile excludes private header namespaces from its flat include scan.
 
 ```text
 c/boot/bios/                                  our BIOS bootloader: El Torito preload + loader (nasm)
@@ -377,14 +382,18 @@ c/apps/                                        ring-3 apps + shared logit.h / cl
 c/apps/gui/                                    windowed apps: Finder, Terminal, TextEdit, Clock, Monitor, Preview, Gallery,
                                                  Network, Code Studio + the aui widget toolkit
 c/apps/coreutils/                              /bin/sh + coreutils
+c/apps/services/{http,ssh,syslog}/              HTTP/HTTPS, SSH/SFTP and logging daemons
 c/apps/as/                                     AetherScript: /bin/as (lexer, compiler, VM)
-c/apps/browser/                                browser + render engine (dom, layout, css_engine, paint, js_dom) + QuickJS
+c/apps/gui/browser/                            app, dom, html, css, layout, paint, net, storage, frame + JS bindings
+c/apps/gui/browser/js/                         runtime, dom, style, net, storage, workers, media, graphics, crypto, text, wasm
+c/apps/gui/studio/core/                        host-testable Studio application engine
 c/apps/libc/                                   project freestanding mini-libc
 third_party/                                     ported, not from-scratch: QuickJS, NetSurf LibCSS, musl libm
 include/abi/logit_abi.h                         the app/syscall ABI (kernel ↔ userland)
 tools/                                           mkfs.py, mkaex.py, mkfont.py, genroots.py, QMP screenshot/CI drivers
 fsroot/                                          files packed into the disk image (incl. /usr/as LibLogit stdlib + examples)
 docs/superpowers/specs/                          design specs (spec → plan → implement)
+tests/guest/{audio,media,video,net,sched,exec}/    diagnostics executed inside LogitOS
 ```
 
 ## Toolchain notes

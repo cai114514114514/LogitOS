@@ -1,6 +1,6 @@
 # Installation-order and feature-query regressions use shipping parsers/layout.
 CONTENT_WIRING_SRC = $(filter-out tests/unit/generated_content_test.c,$(GENERATED_SRC)) tests/unit/content_supports_wiring_test.c
-CSS_LIVE_SRC = $(sort $(filter-out tests/unit/select_state_test.c,$(SELECT_STATE_SRC)) c/apps/browser/js_cssom.c c/apps/browser/css_extra.c c/apps/browser/layout.c c/apps/browser/layout_text.c) tests/unit/css_live_wiring_test.c
+CSS_LIVE_SRC = $(sort $(filter-out tests/unit/select_state_test.c,$(SELECT_STATE_SRC)) c/apps/gui/browser/js/style/cssom.c c/apps/gui/browser/css/extra.c c/apps/gui/browser/layout/block.c c/apps/gui/browser/layout/text.c) tests/unit/css_live_wiring_test.c
 .PHONY: test-content-supports-wiring test-content-supports-wiring-negctl test-css-live-wiring test-css-live-wiring-negctl
 $(BUILD)/content_supports_wiring_test: $(CONTENT_WIRING_SRC) tests/unit/generated_content_test.c $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a
 	$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) -o $@ $(CONTENT_WIRING_SRC) $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a -lm

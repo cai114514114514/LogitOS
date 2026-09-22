@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate the UAX #29 segmentation tables used by c/apps/browser/js_intl.c
+"""Generate the UAX #29 segmentation tables used by c/apps/gui/browser/js/text/intl.c
 (Intl.Segmenter).
 
 WHY A SECOND GENERATED TABLE FILE BESIDE linebreak_data.inc.  That one is
@@ -24,7 +24,7 @@ Both must be the SAME Unicode revision as these fixtures, or the .inc and
 the committed test vectors (GraphemeBreakTest.txt / WordBreakTest.txt, also
 under that fixture directory) stop describing the same standard.
 
-The output is c/apps/browser/segbreak_data.inc: two deduplicated two-stage
+The output is c/apps/gui/browser/js/text/segbreak_data.inc: two deduplicated two-stage
 tries (one per property) plus one for Extended_Pictographic, and the class
 enums -- emitted here, not written by hand in js_intl.c, so the enum order
 and the table cannot drift apart (same discipline as linebreak_data.inc).
@@ -34,7 +34,7 @@ resolution step: Other (the default) is the only implicit class, and every
 rule's exceptions are stated over the raw classes, so the raw classes are
 what the engine in js_intl.c wants.
 
-Usage: gen_segbreak.py [--ucd tests/fixtures/intlseg/ucd16] [--out c/apps/browser]
+Usage: gen_segbreak.py [--ucd tests/fixtures/intlseg/ucd16] [--out c/apps/gui/browser]
 """
 import argparse
 import os
@@ -151,7 +151,7 @@ def emit_trie(fh, name, stage1, stage2):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--ucd", default="tests/fixtures/intlseg/ucd16")
-    ap.add_argument("--out", default="c/apps/browser")
+    ap.add_argument("--out", default="c/apps/gui/browser/js/text")
     a = ap.parse_args()
     if not os.path.isdir(a.ucd):
         sys.exit("no UCD at %s" % a.ucd)

@@ -1,7 +1,7 @@
 # Finite ordinary empty-field, padding, caret and selection geometry.
 FORM_CONTENT_DIR = $(BUILD)/form-content-box
 FORM_CONTENT_SRC = $(filter-out tests/unit/form_caret_test.c,$(FORM_CARET_SRC)) tests/unit/form_content_box_test.c
-FORM_CONTENT_DEPS = $(FORM_CONTENT_SRC) $(FORM_CARET_DEPS) c/apps/browser/forms.h c/apps/browser/css.h tests/form_content_box.mk
+FORM_CONTENT_DEPS = $(FORM_CONTENT_SRC) $(FORM_CARET_DEPS) c/apps/gui/browser/dom/forms.h c/apps/gui/browser/css/style.h tests/form_content_box.mk
 $(FORM_CONTENT_DIR)/current: $(FORM_CONTENT_DEPS) $(BUILD)/libcss_host.a
 	@mkdir -p $(FORM_CONTENT_DIR)
 	$(CC) -O2 -w $(PAINT_INC) $(BTEST_INC) $(CSS_INC) -o $@ $(FORM_CONTENT_SRC) $(BUILD)/libcss_host.a -lm

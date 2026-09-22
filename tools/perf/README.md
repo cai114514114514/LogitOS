@@ -108,7 +108,7 @@ failed and the last error line, and is never given a number. `bisect.sh` exits
 
 This is not hypothetical. **23 of 2026-08-07's commits — 22:39 to 23:45 — build
 an ISO and fail to build the disk image**, because the Makefile referenced
-`c/apps/audio/audiocheck.c` 66 minutes before that file was committed. Since
+`tests/guest/audio/audiocheck.c` 66 minutes before that file was committed. Since
 every ring-3 program lives on the disk image, a harness that stopped at `make`
 would have benchmarked one commit's kernel against a stale userland and never
 noticed.

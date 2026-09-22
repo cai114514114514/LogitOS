@@ -2,7 +2,7 @@
 # sockets. Only worker STARTUP scripts use loader_fakebfetch; fetch does not.
 WORKER_FETCH_DIR = $(BUILD)/worker-fetch
 WORKER_FETCH_SRC = tests/unit/worker_fetch_test.c tests/unit/worker_fetch_net.c $(filter-out tests/unit/worker_test.c,$(WORKER_TEST_SRC))
-WORKER_FETCH_DEP = $(WORKER_FETCH_SRC) tests/unit/worker_test.c tests/unit/stream_net.h tests/unit/worker_fetch_net.h c/apps/browser/js_webapi.h $(wildcard c/apps/browser/js_*prelude.inc) c/apps/browser/js_worker_promise_diagnostics.inc $(BUILD)/libcss_host.a $(RUST_LIB_HOST) tests/worker_fetch.mk
+WORKER_FETCH_DEP = $(WORKER_FETCH_SRC) tests/unit/worker_test.c tests/unit/stream_net.h tests/unit/worker_fetch_net.h c/apps/gui/browser/js/runtime/webapi.h $(BROWSER_JS_PRELUDES) c/apps/gui/browser/js/workers/worker_promise_diagnostics.inc $(BUILD)/libcss_host.a $(RUST_LIB_HOST) tests/worker_fetch.mk
 WORKER_FETCH_CF = $(WORKER_CF) -DWEBAPI_FETCH_TEST_HOOKS
 $(WORKER_FETCH_DIR)/current: $(WORKER_FETCH_DEP)
 	@mkdir -p $(WORKER_FETCH_DIR)

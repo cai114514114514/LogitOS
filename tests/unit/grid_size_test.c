@@ -18,7 +18,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
-#include "layout_grid.h"
+#include "layout/grid.h"
 
 static int checks, fails;
 

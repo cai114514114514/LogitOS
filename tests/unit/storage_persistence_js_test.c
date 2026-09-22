@@ -1,8 +1,8 @@
 #define main webapi_existing_main
 #include "webapi_test.c"
 #undef main
-#include "storage_backend.h"
-#include "tabs.h"
+#include "storage/backend.h"
+#include "app/tabs.h"
 static unsigned char saved[2][8192];static int saved_len[2],write_error;
 static int read_store(const char *path,void *buf,int max){int slot=path[strlen(path)-1]=='1';if(!saved_len[slot])return -1;int n=saved_len[slot];if(n>max)return -1;memcpy(buf,saved[slot],n);return n;}
 static int write_store(const char *path,const void *buf,int n){int slot=path[strlen(path)-1]=='1';if(write_error || n>(int)sizeof saved[slot])return -1;memcpy(saved[slot],buf,n);saved_len[slot]=n;return n;}

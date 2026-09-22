@@ -1,7 +1,7 @@
 /* HTTP byte ranges, end to end, over the REAL fetch path.
  *
  * WHAT IS REAL HERE AND WHAT IS NOT.  The thing under test is
- * c/apps/browser/browser_rt.c -- the Range header it builds, and the verdict it
+ * c/apps/gui/browser/app/runtime.c -- the Range header it builds, and the verdict it
  * reaches about the response -- sitting on top of the REAL HTTP/1.1 parser in
  * c/net/http/http1.c and the REAL connection pool in c/net/http/hpool.c.  The
  * only things replaced are the six socket syscalls underneath, through
@@ -31,7 +31,7 @@
 
 #include "logit_abi.h"
 #include "http1.h"
-#include "bfetch.h"
+#include "net/fetch.h"
 
 /* Defined by browser_rt.c; layout.c's name for a sub-resource fetch. Part 10
  * uses it to prove the whole-resource path through the prefetch cache is

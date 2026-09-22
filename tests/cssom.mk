@@ -22,7 +22,7 @@
 .PHONY: cssom-compare
 
 CSSOM_DIR  := $(BUILD)/cssom
-CSSOM_SRC  := c/apps/browser/js_cssom.c
+CSSOM_SRC  := c/apps/gui/browser/js/style/cssom.c
 
 # --- the host unit tests ----------------------------------------------------
 # Links layout.c so the GEOMETRY is real: a CSSOM-View test against a build
@@ -33,14 +33,14 @@ CSSOM_SRC  := c/apps/browser/js_cssom.c
 # list is what the geometry reads, and PAINTING it would additionally need the
 # recorder in tests/unit/painthost and a canvas this test has no use for.
 CSSOM_TEST_SRC := tests/unit/cssom_test.c \
-                  c/apps/browser/js_page.c c/apps/browser/js_dom.c \
-                  c/apps/browser/js_cssom.c \
-                  c/apps/browser/css_engine.c c/apps/browser/css_vars.c \
-                  c/apps/browser/css_extra.c \
-                  c/apps/browser/layout.c c/apps/browser/layout_text.c \
-                  c/apps/browser/js_select.c \
-                  c/apps/browser/js_tokenlist.c \
-                  c/apps/browser/js_characterdata.c
+                  c/apps/gui/browser/js/runtime/page.c c/apps/gui/browser/js/dom/dom.c \
+                  c/apps/gui/browser/js/style/cssom.c \
+                  c/apps/gui/browser/css/engine.c c/apps/gui/browser/css/vars.c \
+                  c/apps/gui/browser/css/extra.c \
+                  c/apps/gui/browser/layout/block.c c/apps/gui/browser/layout/text.c \
+                  c/apps/gui/browser/js/dom/select.c \
+                  c/apps/gui/browser/js/dom/tokenlist.c \
+                  c/apps/gui/browser/js/dom/characterdata.c
 include tests/style_forward.mk
 
 # -DWEBAPI_HOST on the host lines below (2026-08-30, testdebt): js_dom.c's
@@ -78,7 +78,7 @@ ci-host: test-stylesheet-interface
 # Slot getters are native DOM contracts; reuse the same real parser/runtime
 # instead of installing a JS stand-in into a QuickJS-only fixture.
 SLOT_ASSIGNMENT_SRC = tests/unit/slot_assignment_test.c $(filter-out tests/unit/cssom_test.c,$(CSSOM_TEST_SRC))
-SLOT_ASSIGNMENT_DEPS = $(SLOT_ASSIGNMENT_SRC) tests/unit/cssom_test.c c/apps/browser/dom.h c/apps/browser/js_dom_iface.inc $(wildcard c/apps/browser/js_slot*.inc) $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a
+SLOT_ASSIGNMENT_DEPS = $(SLOT_ASSIGNMENT_SRC) tests/unit/cssom_test.c c/apps/gui/browser/dom/tree.h c/apps/gui/browser/js/dom/dom_iface.inc $(wildcard c/apps/gui/browser/js/dom/slot*.inc) $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a
 $(CSSOM_DIR)/slot_assignment_test: $(SLOT_ASSIGNMENT_DEPS)
 	@mkdir -p $(CSSOM_DIR)
 	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) $(JS_INC) -DCONFIG_VERSION='"host"' -DWEBAPI_HOST -o $@ $(SLOT_ASSIGNMENT_SRC) $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a -lm
@@ -186,7 +186,7 @@ test-cssom-negctl: $(BUILD)/libcss_host.a
 # reads as a missing header rather than as a missing variable.
 #
 # DEDUPED, and the `filter-out` is not defensive tidying. tests/wpt.mk globs
-# c/apps/browser/js_*.c into WPT_TEST_SRC, so js_cssom.c is in it now and
+# $(BROWSER_JS_C) into WPT_TEST_SRC, so js_cssom.c is in it now and
 # listing it again put the same TU on the link line twice: five "multiple
 # definition of js_cssom_install" errors and no runner. The `after` column and
 # `make test-wpt` are therefore now the SAME binary's numbers -- which is the
@@ -288,7 +288,7 @@ endef
 
 test-cssom-abi:
 	@mkdir -p $(CSSOM_ABI_DIR)
-	@{ echo '#include "layout.h"'; \
+	@{ echo '#include "layout/block.h"'; \
 	   for s in $(CSSOM_ABI_STRUCTS); do echo "char abi_$$s[sizeof(struct $$s)];"; done; \
 	 } > $(CSSOM_ABI_DIR)/probe.c
 	@$(CC) $(CSSOM_ABI_WRITER) -w -S -o - $(CSSOM_ABI_DIR)/probe.c 2>$(CSSOM_ABI_DIR)/cc.log \
@@ -345,9 +345,9 @@ test-cssom-abi:
 # LibCSS has never heard of.
 .PHONY: test-cssd-canon test-cssd-canon-negctl
 
-CSSDCANON_SRC := tests/unit/cssdcanon_test.c c/apps/browser/js_dom.c \
-                 c/apps/browser/js_reflect.c c/apps/browser/css_engine.c \
-                 c/apps/browser/css_vars.c c/apps/browser/css_interp.c
+CSSDCANON_SRC := tests/unit/cssdcanon_test.c c/apps/gui/browser/js/dom/dom.c \
+                 c/apps/gui/browser/js/dom/reflect.c c/apps/gui/browser/css/engine.c \
+                 c/apps/gui/browser/css/vars.c c/apps/gui/browser/css/interp.c
 CSSDCANON_CF   = -O2 -w $(BTEST_INC) $(CSS_INC) $(JS_INC) -DCONFIG_VERSION='"host"' -DWEBAPI_HOST
 
 $(CSSOM_DIR)/cssdcanon_test: $(CSSDCANON_SRC) $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a

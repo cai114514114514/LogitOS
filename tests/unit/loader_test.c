@@ -40,13 +40,13 @@
 #include <stdint.h>
 #include <setjmp.h>
 #include "logit.h"                 /* the recorders, via -Itests/unit/loaderhost */
-#include "dom.h"
-#include "css.h"
-#include "layout.h"
-#include "browser_paint.h"
+#include "dom/tree.h"
+#include "css/style.h"
+#include "layout/block.h"
+#include "paint/renderer.h"
 #include "loader_fakebfetch.h"
 #include "quickjs.h"
-#include "js_page.h"               /* part 2.5 reads the live page runtime */
+#include "js/runtime/page.h"               /* part 2.5 reads the live page runtime */
 
 /* ---- the recorders' storage (declared extern by the two shadow headers) ---- */
 struct paintop paint_ops[PAINT_MAXOPS];
@@ -334,7 +334,7 @@ static void part2_navigation(void)
  * pooling? Both are measurements here rather than claims, over the SAME real
  * 697 KB document part 1 uses.
  *
- * The design being tested is in c/apps/browser/tabs.h: the render engine is a
+ * The design being tested is in c/apps/gui/browser/app/tabs.h: the render engine is a
  * singleton (one display list, one LibCSS context, one JSRuntime), so exactly
  * one tab is live and the others keep the BYTES they were built from. The two
  * things that has to buy are asserted separately:
@@ -343,8 +343,8 @@ static void part2_navigation(void)
  *   - and costs ZERO network requests, so N tabs do not multiply handshakes.
  */
 
-#include "tabs.h"
-#include "js_page.h"                /* js_page_eval: the mutation goes through
+#include "app/tabs.h"
+#include "js/runtime/page.h"                /* js_page_eval: the mutation goes through
                                      * the real bindings, not a shortcut */
 
 void browser_tab_switch(int i);

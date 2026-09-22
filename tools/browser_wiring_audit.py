@@ -16,79 +16,81 @@ import shutil
 import subprocess
 import tempfile
 
-B = 'c/apps/browser/'
+B = 'c/apps/gui/browser/'
 VARIABLES = ('BROWSER_PIPE', 'BROWSER_OBJ', 'BROWSER_JS_SRC', 'BROWSER_JS_OBJ', 'CSS_OBJ')
 # A small reviewed manifest, not a claim to infer a complete C/JS call graph.
 # Full call expressions distinguish calls from extern declarations/weak stubs.
 FEATURES = [
     ('digest', ['js_subtle_install', 'sha256', 'sha384', 'sha512'], [
-        ('js_page.c', r'js_subtle_install\s*\(g_ctx\)'),
-        ('js_subtle.c', r'JS_NewCFunction\s*\(ctx,\s*subtle_digest_native,')]),
+        ('js/runtime/page.c', r'js_subtle_install\s*\(g_ctx\)'),
+        ('js/crypto/subtle.c', r'JS_NewCFunction\s*\(ctx,\s*subtle_digest_native,')]),
     ('crypto_ops', ['hmac', 'aes128_gcm_seal_iv', 'aes128_gcm_open_iv'], [
-        ('js_subtle.c', r'JS_NewCFunction\s*\(ctx,\s*subtle_gcm_native,')]),
+        ('js/crypto/subtle.c', r'JS_NewCFunction\s*\(ctx,\s*subtle_gcm_native,')]),
     ('live_range', ['dom_range_init', 'dom_range_set'], [
-        ('js_page.c', r'js_forms_install\s*\(g_ctx\)'),
-        ('js_forms.c', r'range_native_install\s*\(ctx\)'),
-        ('js_live_range_native.inc', r'dom_range_init\s*\(r,'),
-        ('dom_mutation.inc', r'dom_subscribe\s*\(d,\s*&r->sub,\s*dom_range_mutate,')]),
+        ('js/runtime/page.c', r'js_forms_install\s*\(g_ctx\)'),
+        ('js/dom/forms.c', r'range_native_install\s*\(ctx\)'),
+        ('js/dom/live_range_native.inc', r'dom_range_init\s*\(r,'),
+        ('dom/mutation.inc', r'dom_subscribe\s*\(d,\s*&r->sub,\s*dom_range_mutate,')]),
     ('native_mutation_observer', ['dom_subscribe', 'js_platform_mutations_flush'], [
-        ('js_page.c', r'js_platform_install\s*\(g_ctx\)'),
-        ('js_platform.c', r'dom_subscribe\s*\(mo_root->doc,\s*&mo_subscription,\s*native_mo_notify,')]),
+        ('js/runtime/page.c', r'js_platform_install\s*\(g_ctx\)'),
+        # Former pattern required &mo_subscription. Page-local state now holds
+        # a pointer; the old pattern rejected the unchanged pre-move source too.
+        ('js/runtime/platform.c', r'dom_subscribe\s*\(mo_root->doc,\s*mo_subscription,\s*native_mo_notify,')]),
     ('generated_content', ['css_apply', 'layout_page', 'browser_paint'], [
-        ('css_engine.c', r'generated_text\s*\(pseudo\[pi\],\s*n,\s*g->text.text\)'),
-        ('css_engine.c', r'o->generated\[pi\]\s*=\s*&g->box'),
-        ('layout.c', r's->generated\[0\]'),
-        ('layout.c', r'it->generated_style\s*=\s*os'),
-        ('browser_paint.c', r'return\s+e->generated_style')]),
+        ('css/engine.c', r'generated_text\s*\(pseudo\[pi\],\s*n,\s*g->text.text\)'),
+        ('css/engine.c', r'o->generated\[pi\]\s*=\s*&g->box'),
+        ('layout/block.c', r's->generated\[0\]'),
+        ('layout/block.c', r'it->generated_style\s*=\s*os'),
+        ('paint/renderer.c', r'return\s+e->generated_style')]),
     ('modal', ['top_layer_push', 'top_layer_escape', 'top_layer_reset'], [
-        ('js_page.c', r'js_semantics_install\s*\(g_ctx\)'),
-        ('js_semantics.c', r'top_layer_push\s*\(n\)'),
-        ('layout.c', r'top_layer_at\s*\(ti\)'),
-        ('browser_paint.c', r'if\s*\(owner\s*!=\s*modal\)\s*continue'),
-        ('browser.c', r'top_layer_escape\s*\(\)'),
-        ('browser.c', r'top_layer_reset\s*\(\)')]),
+        ('js/runtime/page.c', r'js_semantics_install\s*\(g_ctx\)'),
+        ('js/dom/semantics.c', r'top_layer_push\s*\(n\)'),
+        ('layout/block.c', r'top_layer_at\s*\(ti\)'),
+        ('paint/renderer.c', r'if\s*\(owner\s*!=\s*modal\)\s*continue'),
+        ('app/main.c', r'top_layer_escape\s*\(\)'),
+        ('app/main.c', r'top_layer_reset\s*\(\)')]),
     ('native_focus_inert', ['focus_is_inert', 'focus_set', 'css_ensure_styled', 'js_dom_mutation_generation'], [
-        ('css_engine.c', r'js_dom_mutation_generation\s*\(\)'),
-        ('js_forms.c', r'css_ensure_styled\s*\(n\)'),
-        ('focus.c', r'top_layer_allows_input\s*\(n\)'),
-        ('browser.c', r'focus_is_inert\s*\(n\)'),
-        ('browser_paint.c', r'focus_is_inert\s*\(e->node\)')]),
+        ('css/engine.c', r'js_dom_mutation_generation\s*\(\)'),
+        ('js/dom/forms.c', r'css_ensure_styled\s*\(n\)'),
+        ('dom/focus.c', r'top_layer_allows_input\s*\(n\)'),
+        ('app/main.c', r'focus_is_inert\s*\(n\)'),
+        ('paint/renderer.c', r'focus_is_inert\s*\(e->node\)')]),
     ('content_supports', ['logit_css_generated_supports'], [
-        ('css_engine.c', r'logit_css_generated_supports\s*\(st->bytecode,\s*st->used\)'),
-        ('../../../third_party/css/libcss/src/parse/language.c', r'logit_css_generated_supports\s*\(style->bytecode,\s*style->used\)')]),
+        ('css/engine.c', r'logit_css_generated_supports\s*\(st->bytecode,\s*st->used\)'),
+        ('../../../../third_party/css/libcss/src/parse/language.c', r'logit_css_generated_supports\s*\(style->bytecode,\s*style->used\)')]),
     ('live_matchmedia', ['css_media_matches', 'js_webapi_set_viewport'], [
-        ('js_webapi.c', r'css_media_matches\s*\(q,\s*-1\)'),
-        ('js_cssom.c', r'if\s*\(!JS_IsFunction\s*\(ctx,\s*media_fn\)\)'),
-        ('browser.c', r'js_webapi_set_viewport\s*\(win_w,\s*VIEW_H\)')]),
+        ('js/runtime/webapi.c', r'css_media_matches\s*\(q,\s*-1\)'),
+        ('js/style/cssom.c', r'if\s*\(!JS_IsFunction\s*\(ctx,\s*media_fn\)\)'),
+        ('app/main.c', r'js_webapi_set_viewport\s*\(win_w,\s*VIEW_H\)')]),
     ('cssom_reflow', ['js_cssom_set_reflow'], [
-        ('browser.c', r'js_cssom_set_reflow\s*\(browser_cssom_reflow\)'),
-        ('js_cssom.c', r'g_reflow\s*\(\)'),
-        ('js_cssom.c', r'g_saw_dirty\s*=\s*js_dom_dirty\s*\(\)')]),
+        ('app/main.c', r'js_cssom_set_reflow\s*\(browser_cssom_reflow\)'),
+        ('js/style/cssom.c', r'g_reflow\s*\(\)'),
+        ('js/style/cssom.c', r'g_saw_dirty\s*=\s*js_dom_dirty\s*\(\)')]),
 ]
 # Correction to the initial five-orphan audit: four now have native consumers.
 # Behavioral gates and guest pages establish the supported subsets separately.
 FEATURES += [
     ('text_formatter', ['ltx_layout_runs', 'ltx_measure_run'], [
-        ('layout.c', r'ltx_layout_runs\s*\(b->runs,'),
-        ('browser_paint.c', r'paint_text_run_spaced\s*\(e,')]),
+        ('layout/block.c', r'ltx_layout_runs\s*\(b->runs,'),
+        ('paint/renderer.c', r'paint_text_run_spaced\s*\(e,')]),
     ('element_scroll', ['js_cssom_project_item', 'js_cssom_dispatch_element_scroll'], [
-        ('browser_paint.c', r'js_cssom_project_item\s*\(&scrolled\)'),
-        ('js_cssom.c', r'js_cssom_project_item\s*\(&projected\)'),
-        ('browser.c', r'js_cssom_dispatch_element_scroll\s*\(\)'),
-        ('browser.c', r'js_cssom_scroll_element_by\s*\(wheel_target,')]),
+        ('paint/renderer.c', r'js_cssom_project_item\s*\(&scrolled\)'),
+        ('js/style/cssom.c', r'js_cssom_project_item\s*\(&projected\)'),
+        ('app/main.c', r'js_cssom_dispatch_element_scroll\s*\(\)'),
+        ('app/main.c', r'js_cssom_scroll_element_by\s*\(wheel_target,')]),
     ('popover', ['top_layer_push_popover', 'top_layer_is_hidden_popover'], [
-        ('js_semantics.c', r'top_layer_push_popover\s*\('),
-        ('js_semantics.c', r'js_dom_top_layer_changed\s*\(n\)'),
-        ('browser.c', r'js_semantics_activate_invoker\s*\(n\)'),
-        ('layout.c', r'top_layer_is_hidden_popover\s*\('),
-        ('browser_paint.c', r'top_layer_is_modal\s*\(modal\)'),
-        ('browser.c', r'top_layer_pointer_up\s*\(n\)')]),
+        ('js/dom/semantics.c', r'top_layer_push_popover\s*\('),
+        ('js/dom/semantics.c', r'js_dom_top_layer_changed\s*\(n\)'),
+        ('app/main.c', r'js_semantics_activate_invoker\s*\(n\)'),
+        ('layout/block.c', r'top_layer_is_hidden_popover\s*\('),
+        ('paint/renderer.c', r'top_layer_is_modal\s*\(modal\)'),
+        ('app/main.c', r'top_layer_pointer_up\s*\(n\)')]),
     ('waapi', ['js_anim_install', 'js_anim_close', 'css_anim_tick'], [
-        ('js_anim.c', r'wa_render\s*\(\)'),
-        ('js_page.c', r'js_anim_close\s*\(g_ctx\)')]),
+        ('js/style/anim.c', r'wa_render\s*\(\)'),
+        ('js/runtime/page.c', r'js_anim_close\s*\(g_ctx\)')]),
 ]
 ORPHANS = [
-    ('vertical_writing', 'css_engine.c', r'o->writing_mode\s*=',
+    ('vertical_writing', 'css/engine.c', r'o->writing_mode\s*=',
      'writing_mode is converted, but vertical line layout/font metrics/glyph orientation remain absent. Horizontal text wiring does not establish vertical support.'),
 ]
 
@@ -151,7 +153,7 @@ def main(argv=None):
     # .inc ownership is recursive and associated with linked translation units,
     # not a fake requirement that every implementation owns a standalone .c TU.
     source_files = set(expanded.get('BROWSER_PIPE', []) + expanded.get('BROWSER_JS_SRC', []))
-    source_files.add(B+'css_engine.c')
+    source_files.add(B+'css/engine.c')
     includes = {}
     def visit(path, owner, seen):
         if path in seen: return
@@ -196,11 +198,11 @@ def main(argv=None):
     newer = sorted(path for path in source_files | set(includes)
                    if elf.exists() and (root/path).stat().st_mtime_ns > elf.stat().st_mtime_ns)
     installer_inventory = []
-    page_code = scrub(read(B+'js_page.c'))
+    page_code = scrub(read(B+'js/runtime/page.c'))
     for m in re.finditer(r'\b(js_\w+_install)\s*\(g_ctx\b', page_code):
         symbol = m[1]
         installer_inventory.append({'symbol': symbol, 'linked_symbol_type': symbols.get(symbol),
-            'path': B+'js_page.c', 'line': page_code.count('\n', 0, m.start())+1,
+            'path': B+'js/runtime/page.c', 'line': page_code.count('\n', 0, m.start())+1,
             'evidence': 'installer call written; runtime execution unmeasured'})
     report = {'schema_version': 1, 'scope': 'Reviewed browser expansion seams; lexical source edges plus actual ELF symbols, not execution coverage.',
               'make_continuations_joined_before_inspection': True,

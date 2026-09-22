@@ -3,7 +3,7 @@
 # fail the named ancestor and pseudo-target assertions with ordinary exit 1.
 XSELECT_DIR := $(BUILD)/css-extra-selector
 XSELECT_SRC = $(filter-out tests/unit/layout_box_test.c,$(LBOX_SRC)) tests/unit/css_extra_selector_test.c
-XSELECT_DEPS = $(XSELECT_SRC) $(HTML_PARSER_SRC) c/apps/browser/css.h $(BUILD)/libcss_host.a
+XSELECT_DEPS = $(XSELECT_SRC) $(HTML_PARSER_SRC) c/apps/gui/browser/css/style.h $(BUILD)/libcss_host.a
 .PHONY: test-css-extra-selector test-css-extra-selector-negctl
 $(XSELECT_DIR)/test: $(XSELECT_DEPS)
 	@mkdir -p $(XSELECT_DIR)

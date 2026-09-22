@@ -3,7 +3,7 @@
 # rejection which JavaScript cannot request after its old context is released.
 .PHONY: test-page-runtime test-page-runtime-negctl
 PAGE_RUNTIME_SRC = tests/unit/page_runtime_test.c $(JSDOM_HOST_SRC)
-PAGE_RUNTIME_DEPS = $(PAGE_RUNTIME_SRC) c/apps/browser/page_runtime.c c/apps/browser/page_runtime.h c/apps/browser/js_page.h
+PAGE_RUNTIME_DEPS = $(PAGE_RUNTIME_SRC) c/apps/gui/browser/app/page.c c/apps/gui/browser/app/page.h c/apps/gui/browser/js/runtime/page.h
 PAGE_RUNTIME_CF = -O1 -g -w $(JSDOM_HOST_CF)
 $(BUILD)/page_runtime_test: $(PAGE_RUNTIME_DEPS) $(BUILD)/libcss_host.a
 	$(CC) $(PAGE_RUNTIME_CF) -o $@ $(PAGE_RUNTIME_SRC) $(BUILD)/libcss_host.a -lm

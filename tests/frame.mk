@@ -1,5 +1,5 @@
 # tests/frame.mk -- a same-origin second browsing context
-# (c/apps/browser/js_frame.c) and the mutation surface it needed from
+# (c/apps/gui/browser/js/dom/frame.c) and the mutation surface it needed from
 # js_domparser.c (createElement/createTextNode/createComment/appendChild/
 # insertBefore/removeChild/setAttribute/removeAttribute/innerHTML=/
 # getElementsByTagName).
@@ -36,9 +36,9 @@
 # to be tested -- see the file's own header for why that is a deliberate
 # choice, not an oversight.
 FRAME_TEST_BASE_SRC := tests/unit/frame_test.c \
-                  c/apps/browser/js_domparser.c \
+                  c/apps/gui/browser/js/dom/domparser.c \
                   $(HTML_PARSER_SRC)
-FRAME_TEST_SRC := $(FRAME_TEST_BASE_SRC) c/apps/browser/js_frame.c
+FRAME_TEST_SRC := $(FRAME_TEST_BASE_SRC) c/apps/gui/browser/js/dom/frame.c
 FRAME_CF := $(BTEST_INC) $(CSS_INC) $(JS_INC) -Iinclude/abi -DCONFIG_VERSION='"host"' -DWEBAPI_HOST
 
 .PHONY: test-frame test-frame-negctl test-frame-lifecycle-negctl
@@ -79,8 +79,8 @@ test-frame-negctl: $(BUILD)/frame_test_negctl
 $(BUILD)/frame_test_lifecycle_negctl: $(FRAME_TEST_SRC) $(BUILD)/libcss_host.a
 	@mkdir -p $(BUILD)/frame-negctl
 	@sed 's/if (doc) (void)frame_release_doc(doc);/(void)doc;/' \
-	    c/apps/browser/js_frame.c > $(BUILD)/frame-negctl/js_frame_no_release.c
-	@cmp -s c/apps/browser/js_frame.c $(BUILD)/frame-negctl/js_frame_no_release.c && \
+	    c/apps/gui/browser/js/dom/frame.c > $(BUILD)/frame-negctl/js_frame_no_release.c
+	@cmp -s c/apps/gui/browser/js/dom/frame.c $(BUILD)/frame-negctl/js_frame_no_release.c && \
 	    { echo "test-frame-lifecycle-negctl: FAILED -- sed patched nothing"; exit 1; } || true
 	@$(CC) -O2 -w $(FRAME_CF) -o $@ $(FRAME_TEST_BASE_SRC) \
 	    $(BUILD)/frame-negctl/js_frame_no_release.c $(QJS_SRC) $(BUILD)/libcss_host.a -lm
@@ -170,12 +170,12 @@ test-frame-wired: test-frame-wired-negctl test-frame-wired-lifecycle-negctl $(BU
 # cannot distinguish a live context from a blank terminating frame. The twelve
 # console markers are the control. With the former behaviour only the free
 # slots run and the rest print "too many live frames (8)".
-FRAME_WIRED_LIFECYCLE_SRC := $(filter-out c/apps/browser/js_platform.c,$(WPT_TEST_SRC))
+FRAME_WIRED_LIFECYCLE_SRC := $(filter-out c/apps/gui/browser/js/runtime/platform.c,$(WPT_TEST_SRC))
 $(BUILD)/wpt_test_frame_lifecycle_negctl: $(WPT_TEST_SRC) $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
 	@mkdir -p $(BUILD)/frame-negctl
 	@sed 's/^"      releaseDoc(r);/"      r.doc = r.doc;/' \
-	    c/apps/browser/js_platform.c > $(BUILD)/frame-negctl/js_platform_no_frame_release.c
-	@cmp -s c/apps/browser/js_platform.c $(BUILD)/frame-negctl/js_platform_no_frame_release.c && \
+	    c/apps/gui/browser/js/runtime/platform.c > $(BUILD)/frame-negctl/js_platform_no_frame_release.c
+	@cmp -s c/apps/gui/browser/js/runtime/platform.c $(BUILD)/frame-negctl/js_platform_no_frame_release.c && \
 	    { echo "test-frame-wired-lifecycle-negctl: FAILED -- sed patched nothing"; exit 1; } || true
 	@if [ -n "$(WPT_LINK_ERR)" ]; then echo "$(WPT_LINK_ERR)"; exit 1; fi
 	@$(CC) -O2 -w $(WPT_CF) -o $@ $(FRAME_WIRED_LIFECYCLE_SRC) \

@@ -29,9 +29,9 @@
 #include <string.h>
 #include <stdint.h>
 #include <math.h>
-#include "css.h"
-#include "dom.h"
-#include "css_interp.h"
+#include "css/style.h"
+#include "dom/tree.h"
+#include "css/interp.h"
 
 void *kmalloc(unsigned long n) { return malloc(n); }
 void  kfree(void *p) { free(p); }

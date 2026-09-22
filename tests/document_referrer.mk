@@ -3,9 +3,9 @@
 # This includes shipping WebAPI history; network-only dependencies are stubs.
 DOCUMENT_REFERRER_SRC := tests/unit/document_referrer_test.c \
     $(filter-out tests/unit/dom_iface_test.c,$(DOMIFACE_SRC)) \
-    c/apps/browser/js_domparser.c
+    c/apps/gui/browser/js/dom/domparser.c
 DOCUMENT_REFERRER_DEP := $(DOCUMENT_REFERRER_SRC) $(HTML_PARSER_SRC) \
-    c/apps/browser/js_dom_iface.inc $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
+    c/apps/gui/browser/js/dom/dom_iface.inc $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
 DOCUMENT_REFERRER_CF := $(DOMIFACE_CF)
 
 .PHONY: test-document-referrer test-document-referrer-negctl
@@ -47,9 +47,9 @@ test-document-referrer-guest: test-document-referrer-guest-negctl
 # The two Document wrapper families share this existing wired fragment. Focus
 # additionally links the native forms owner; no frame scripts or network run.
 DOCUMENT_FOCUS_SRC = $(filter-out tests/unit/select_state_test.c,$(SELECT_STATE_SRC)) \
-    tests/unit/document_focus_test.c c/apps/browser/js_domparser.c
+    tests/unit/document_focus_test.c c/apps/gui/browser/js/dom/domparser.c
 DOCUMENT_FOCUS_DEP = $(DOCUMENT_FOCUS_SRC) $(HTML_PARSER_SRC) \
-    c/apps/browser/js_dom_iface.inc $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
+    c/apps/gui/browser/js/dom/dom_iface.inc $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
 .PHONY: test-document-focus test-document-focus-negctl
 $(BUILD)/document_focus_test: $(DOCUMENT_FOCUS_DEP)
 	@mkdir -p $(BUILD)

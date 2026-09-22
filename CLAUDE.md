@@ -259,6 +259,22 @@ Because it reads like one. Live examples in the tree right now:
 
 ## Source layout
 
+**Correction 2026-09-22:** the older layout below is retained beside this
+correction for readers holding its paths. Guest diagnostics moved from
+`c/apps/{audio,media,net,video}` and seven coreutils into `tests/guest/`.
+HTTP/HTTPS, SSH/SFTP and syslog daemons now live in `c/apps/services/`.
+Clock is together in `c/apps/gui/clock/`; Studio's application engine is in
+`c/apps/gui/studio/core/`. The executable names and guest install paths stay
+the same. See [SOURCE_LAYOUT.md](docs/SOURCE_LAYOUT.md) for the current map
+and old-to-new paths. The earlier "named rather than moved" paragraph below
+describes the pre-migration state; its build references have now been updated.
+
+Browser was also moved to `c/apps/gui/browser/` and its 173 files were grouped
+by subsystem and renamed (for example `browser.c` → `app/main.c`,
+`css_engine.c` → `css/engine.c`, `js_dom.c` → `js/dom/dom.c`). Its README maps
+every former basename. Browser headers now use subsystem-qualified includes;
+its internal directories must stay out of the flat global `INCDIRS` scan.
+
 All **C** source lives under `c/`, headers **colocated** with their `.c`. PNG,
 BMP, ICO, WebP and inflate are **Rust** (`rust/src/*.rs`, linked as
 `$(RUST_LIB)`); QuickJS, musl libm, NetSurf LibCSS and TinyCC are under

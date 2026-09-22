@@ -4,7 +4,7 @@ POSITIONED_REPLACED_DIR := $(BUILD)/positioned-replaced
 POSITIONED_REPLACED_SRC := tests/unit/positioned_replaced_test.c \
     $(filter-out tests/unit/layout_box_test.c,$(LBOX_SRC))
 POSITIONED_REPLACED_DEPS := $(POSITIONED_REPLACED_SRC) $(HTML_PARSER_SRC) \
-    c/apps/browser/layout.h $(BUILD)/libcss_host.a
+    c/apps/gui/browser/layout/block.h $(BUILD)/libcss_host.a
 
 .PHONY: test-positioned-replaced test-positioned-replaced-negctl
 

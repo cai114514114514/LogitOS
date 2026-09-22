@@ -8,10 +8,10 @@
 #include "refhost.h"
 #include "refrender.h"
 #include "refmanifest.h"      /* rm_resolve */
-#include "dom.h"
-#include "css.h"
-#include "layout.h"
-#include "browser_paint.h"
+#include "dom/tree.h"
+#include "css/style.h"
+#include "layout/block.h"
+#include "paint/renderer.h"
 
 /* ------------------------------------------------------------ resources -- */
 /* The page being rendered, so res_fetch can resolve a relative URL. layout.c

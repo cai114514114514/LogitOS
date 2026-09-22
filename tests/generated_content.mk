@@ -1,7 +1,7 @@
 # Actual CSS -> layout text/background geometry; the root includes this fragment.
 GENERATED_DIR := $(BUILD)/generated-content
 GENERATED_SRC = $(filter-out tests/unit/layout_box_test.c,$(LBOX_SRC)) tests/unit/generated_content_test.c
-GENERATED_DEPS = $(GENERATED_SRC) $(HTML_PARSER_SRC) c/apps/browser/css.h c/apps/browser/layout.h $(BUILD)/libcss_host.a
+GENERATED_DEPS = $(GENERATED_SRC) $(HTML_PARSER_SRC) c/apps/gui/browser/css/style.h c/apps/gui/browser/layout/block.h $(BUILD)/libcss_host.a
 .PHONY: test-generated-content test-generated-content-negctl test-generated-content-blockify-negctl
 $(GENERATED_DIR)/test: $(GENERATED_DEPS)
 	@mkdir -p $(GENERATED_DIR)

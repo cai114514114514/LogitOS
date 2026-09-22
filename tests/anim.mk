@@ -61,7 +61,7 @@ CFLAGS += -DLOGIT_ANIM_NO_CLOCK
 # "no-clock" control browser is secretly the clocked one: measured, not
 # guessed -- the first control run crashed INSIDE ca_adopt, a function
 # that cannot exist in the no-clock world.
-$(BUILD)/jsobj/c/apps/browser/js_anim.o: JS_CF += -DLOGIT_ANIM_NO_CLOCK
+$(BUILD)/jsobj/c/apps/gui/browser/js/style/anim.o: JS_CF += -DLOGIT_ANIM_NO_CLOCK
 endif
 
 .PHONY: test-anim-clock test-anim-clock-negctl \
@@ -72,9 +72,9 @@ endif
 # prelude's include paths too. -DCONFIG_BIGNUM is load-bearing, not
 # cargo-cult (libbf's decimal path is compiled out without it while
 # quickjs.c references it anyway).
-ANIMCLK_CF   := -O1 -g -w $(GFX_INC) -Ic/apps/browser -Ithird_party/quickjs \
+ANIMCLK_CF   := -O1 -g -w $(GFX_INC) $(BROWSER_INC) -Ithird_party/quickjs \
                 -Ithird_party/libm -DCONFIG_VERSION='"host"' -DCONFIG_BIGNUM
-ANIMCLK_SRC  := c/apps/browser/css_interp.c c/apps/browser/js_anim.c $(QJS_SRC) c/lib/gfx/animation/openlogit_anim.c c/lib/gfx/geometry/gfx_math.c
+ANIMCLK_SRC  := c/apps/gui/browser/css/interp.c c/apps/gui/browser/js/style/anim.c $(QJS_SRC) c/lib/gfx/animation/openlogit_anim.c c/lib/gfx/geometry/gfx_math.c
 
 # --- host: the timing functions and the shorthand parsers -------------------
 test-anim-clock: test-anim-clock-negctl

@@ -30,13 +30,13 @@
 .PHONY: test-img-late test-img-late-negctl
 
 IMGL_DIR := $(BUILD)/imglate
-IMGL_SRC := tests/unit/img_late_test.c c/apps/browser/layout.c c/apps/browser/layout_text.c \
-            c/apps/browser/css_engine.c c/apps/browser/css_vars.c \
-            c/apps/browser/css_extra.c
+IMGL_SRC := tests/unit/img_late_test.c c/apps/gui/browser/layout/block.c c/apps/gui/browser/layout/text.c \
+            c/apps/gui/browser/css/engine.c c/apps/gui/browser/css/vars.c \
+            c/apps/gui/browser/css/extra.c
 IMGL_DEF := -DIMGCACHE_BYTES=1048576L
 
 $(IMGL_DIR)/img_late_test: $(IMGL_SRC) $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a \
-                           c/apps/browser/layout.h
+                           c/apps/gui/browser/layout/block.h
 	@mkdir -p $(IMGL_DIR)
 	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) $(IMGL_DEF) -o $@ $(IMGL_SRC) \
 	    $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a -lm

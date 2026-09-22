@@ -1,14 +1,14 @@
 # Normal SSH/HTTP interoperability, using the shipped daemons and temporary
 # accounts on a private disk. No fixture-only daemon or global known_hosts.
-$(BUILD)/server_semantics_test: tests/unit/server_semantics_test.c c/apps/coreutils/httpd_protocol.h c/net/ssh/ssh_conn.c c/net/ssh/ssh_wire.c
+$(BUILD)/server_semantics_test: tests/unit/server_semantics_test.c c/apps/services/http/httpd_protocol.h c/net/ssh/ssh_conn.c c/net/ssh/ssh_wire.c
 	@mkdir -p $(BUILD)
-	$(CC) -O2 -Wall -Wextra -Wno-sign-compare -Ic/apps/coreutils -Ic/net/ssh $< c/net/ssh/ssh_conn.c c/net/ssh/ssh_wire.c -o $@
+	$(CC) -O2 -Wall -Wextra -Wno-sign-compare -Ic/apps/services/http -Ic/net/ssh $< c/net/ssh/ssh_conn.c c/net/ssh/ssh_wire.c -o $@
 
 # The control removes Range support from a PRIVATE copy of the same header;
 # the ordinary bounded-range check must visibly fail. Product source stays put.
-$(BUILD)/server_semantics_neg: tests/unit/server_semantics_test.c c/apps/coreutils/httpd_protocol.h c/net/ssh/ssh_conn.c c/net/ssh/ssh_wire.c
+$(BUILD)/server_semantics_neg: tests/unit/server_semantics_test.c c/apps/services/http/httpd_protocol.h c/net/ssh/ssh_conn.c c/net/ssh/ssh_wire.c
 	@mkdir -p $(BUILD)/server-neg
-	python3 -c 'from pathlib import Path; p=Path("c/apps/coreutils/httpd_protocol.h"); s=p.read_text().replace("*first = 0; *count = size;", "*first = 0; *count = size; return 0;"); Path("$(BUILD)/server-neg/httpd_protocol.h").write_text(s)'
+	python3 -c 'from pathlib import Path; p=Path("c/apps/services/http/httpd_protocol.h"); s=p.read_text().replace("*first = 0; *count = size;", "*first = 0; *count = size; return 0;"); Path("$(BUILD)/server-neg/httpd_protocol.h").write_text(s)'
 	$(CC) -O2 -Wall -Wextra -Wno-sign-compare -I$(BUILD)/server-neg -Ic/net/ssh $< c/net/ssh/ssh_conn.c c/net/ssh/ssh_wire.c -o $@
 
 test-server-semantics-neg: $(BUILD)/server_semantics_neg
@@ -31,10 +31,10 @@ $(eval $(call CLI_RULE,sftpd))
 $(DISK): $(BUILD)/sftpd.aex
 ROOT_AEX_PACK += $(BUILD)/sftpd.aex:/bin/sftpd
 
-$(BUILD)/sftpd_host: c/apps/coreutils/sftpd.c tests/unit/sftpd_host.h
+$(BUILD)/sftpd_host: c/apps/services/ssh/sftpd.c tests/unit/sftpd_host.h
 	@mkdir -p $(BUILD)
 	$(CC) -O2 -Wall -Wextra -DSFTPD_HOST -Itests/unit -Iinclude/abi $< -o $@
-$(BUILD)/sftpd_host_neg: c/apps/coreutils/sftpd.c tests/unit/sftpd_host.h
+$(BUILD)/sftpd_host_neg: c/apps/services/ssh/sftpd.c tests/unit/sftpd_host.h
 	@mkdir -p $(BUILD)
 	$(CC) -O2 -DSFTPD_HOST -DSFTPD_DISABLE_WRITE -Itests/unit -Iinclude/abi $< -o $@
 test-sftpd-neg: $(BUILD)/sftpd_host_neg
@@ -44,7 +44,7 @@ test-sftpd: test-sftpd-neg $(BUILD)/sftpd_host
 ci-host: test-sftpd
 .PHONY: test-sftpd test-sftpd-neg
 
-$(BUILD)/sftpd_links_neg: c/apps/coreutils/sftpd.c tests/unit/sftpd_host.h
+$(BUILD)/sftpd_links_neg: c/apps/services/ssh/sftpd.c tests/unit/sftpd_host.h
 	@mkdir -p $(BUILD)
 	$(CC) -O2 -DSFTPD_HOST -DSFTPD_DISABLE_LINKS -Itests/unit -Iinclude/abi $< -o $@
 test-sftpd-links-neg: $(BUILD)/sftpd_links_neg
@@ -55,13 +55,13 @@ test-servers-os: test-sftpd
 
 # The existing TLS engine is a real userspace consumer here. Only its
 # nonblocking record/crypto code is linked; TCP adapters use process fds.
-HTTPS_SRC := c/apps/coreutils/httpd.c c/apps/coreutils/https_platform.c \
+HTTPS_SRC := c/apps/services/http/httpd.c c/apps/services/http/https_platform.c \
              c/net/tls/tls.c c/net/tls/tls_server.c c/net/tls/x509.c \
              $(filter-out c/crypto/aead/aes_ni.c,$(wildcard c/crypto/aead/*.c)) \
              $(wildcard c/crypto/hash/*.c c/crypto/pubkey/*.c c/crypto/kdf/*.c c/crypto/pq/*.c) \
              c/apps/libc/src/string.c
 HTTPS_OBJ := $(patsubst %.c,$(BUILD)/httpsobj/%.o,$(HTTPS_SRC))
-$(BUILD)/httpsobj/%.o: %.c c/apps/coreutils/https_transport.h c/net/tls/tls_domain.h
+$(BUILD)/httpsobj/%.o: %.c c/apps/services/http/https_transport.h c/net/tls/tls_domain.h
 	@mkdir -p $(dir $@)
 	$(CC) $(UCFLAGS) $(INCDIRS) -DHTTPD_TLS -DLOGIT_TLS_SINGLE_PROCESS -DKPROF_DISABLE -ffunction-sections -fdata-sections -c $< -o $@
 $(BUILD)/httpsd.elf: $(HTTPS_OBJ) c/apps/crt0_cli.asm
@@ -85,8 +85,8 @@ $(BUILD)/inet_probe.elf: tests/boot/inet_probe.c $(LIBC_OBJS)
 	$(CC) $(UCFLAGS) -c $< -o $(BUILD)/apps/inet_probe.o
 	$(LD) -nostdlib -e _start -Ttext=0x50000000 -o $@ $(BUILD)/apps/inet_probe.crt.o $(BUILD)/apps/inet_probe.o $(LIBC_OBJS)
 test-servers-os: $(BUILD)/inet_probe.elf
-$(BUILD)/sshdobj/c/apps/coreutils/sshd.o: include/abi/pty.h
-$(BUILD)/sshdobj/c/apps/coreutils/sshd.o: c/apps/coreutils/sshd_channels.h c/apps/coreutils/sshd_channel_state.h
+$(BUILD)/sshdobj/c/apps/services/ssh/sshd.o: include/abi/pty.h
+$(BUILD)/sshdobj/c/apps/services/ssh/sshd.o: c/apps/services/ssh/sshd_channels.h c/apps/services/ssh/sshd_channel_state.h
 $(BUILD)/asobj/c/apps/libc/src/termios.o $(BUILD)/asobj/c/apps/libc/src/uio.o: c/apps/libc/src/pty_ctl.h include/abi/pty.h
 
 $(BUILD)/login.elf: c/apps/coreutils/boot_services.h
@@ -132,10 +132,10 @@ ci-host: test-server-profile
 
 # Keep the single-channel policy only in a private control binary. The same
 # ordinary OpenSSH multiplex check must reject it before the product test runs.
-$(BUILD)/sshd-one-channel.o: c/apps/coreutils/sshd.c c/apps/coreutils/sshd_channels.h c/apps/coreutils/sshd_channel_state.h $(BUILD)/sshd.elf
+$(BUILD)/sshd-one-channel.o: c/apps/services/ssh/sshd.c c/apps/services/ssh/sshd_channels.h c/apps/services/ssh/sshd_channel_state.h $(BUILD)/sshd.elf
 	$(CC) $(UCFLAGS) -DSSHD_CHANNELS=1 -Ic/apps/libc/include/uonly $(INCDIRS) -c $< -o $@
 $(BUILD)/sshd-one-channel.elf: $(BUILD)/sshd-one-channel.o $(BUILD)/sshd.elf
-	$(LD) -nostdlib -e _start -Ttext=0x50000000 -o $@ $(BUILD)/apps/sshd.crt0c.o $< $(filter-out $(BUILD)/sshdobj/c/apps/coreutils/sshd.o,$(SSHD_OBJS)) $(BUILD)/sshdobj/sshd_thread.o
+	$(LD) -nostdlib -e _start -Ttext=0x50000000 -o $@ $(BUILD)/apps/sshd.crt0c.o $< $(filter-out $(BUILD)/sshdobj/c/apps/services/ssh/sshd.o,$(SSHD_OBJS)) $(BUILD)/sshdobj/sshd_thread.o
 test-ssh-multiplex-neg: $(ISO) $(DISK) $(BUILD)/sshd-one-channel.elf $(BUILD)/ssh_hold.elf $(BUILD)/server_probe.elf $(BUILD)/inet_probe.elf $(BUILD)/pty_probe.elf
 	@python3 tests/boot/run-servers.py --build $(BUILD) --one-channel-control $(BUILD)/sshd-one-channel.elf > $(BUILD)/multiplex-neg.log 2>&1; rc=$$?; tail -8 $(BUILD)/multiplex-neg.log; test $$rc -ne 0 && rg -q '^FAIL multiple commands share one SSH connection while one stdin is paused' $(BUILD)/multiplex-neg.log
 test-servers-os: test-ssh-multiplex-neg test-tcp-half-window

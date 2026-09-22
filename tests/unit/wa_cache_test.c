@@ -41,7 +41,7 @@
 
 static long long fake_ms;
 #define WAC_NOW_MS() fake_ms
-#include "../../c/apps/browser/http_cache.c"
+#include "../../c/apps/gui/browser/net/cache.c"
 
 static int fails;
 #define CHECK(cond, msg) do { \

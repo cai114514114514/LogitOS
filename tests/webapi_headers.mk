@@ -5,7 +5,7 @@
 # Four Headers checks and the two existing XHR serialization consumers fail;
 # get() still preserves every value and network Set-Cookie remains hidden.
 WEBAPI_HEADERS_DIR = $(BUILD)/site-general/continue/headers
-WEBAPI_HEADERS_DEPS = $(WEBAPI_TEST_SRC) $(QJS_SRC) $(RUST_LIB_HOST) $(wildcard c/apps/browser/*.h c/apps/browser/*.inc)
+WEBAPI_HEADERS_DEPS = $(WEBAPI_TEST_SRC) $(QJS_SRC) $(RUST_LIB_HOST) $(wildcard $(BROWSER_HEADERS) $(BROWSER_INCLUDES))
 $(WEBAPI_HEADERS_DIR)/current: $(WEBAPI_HEADERS_DEPS)
 	@mkdir -p $(WEBAPI_HEADERS_DIR)
 	$(CC) -O2 -w $(BTEST_INC) -Iinclude/abi $(JS_INC) -DCONFIG_VERSION='"host"' -DWEBAPI_HOST -o $@ $(WEBAPI_TEST_SRC) $(QJS_SRC) $(RUST_LIB_HOST) -lm

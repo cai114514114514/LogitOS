@@ -29,7 +29,7 @@
 # Prints one "VIDBENCH ..." line per stream and a final summary; exits
 # nonzero only if EVERY stream failed to produce a line (total failure, as
 # opposed to one slow/refused stream, which is reported and does not fail the
-# script -- see c/apps/video/vidbench.c's own comment on refusing loudly).
+# script -- see tests/guest/video/vidbench.c's own comment on refusing loudly).
 
 set -u
 

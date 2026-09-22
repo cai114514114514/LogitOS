@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # tools/genvidbench.sh -- stream matrix for the decode-throughput benchmark
-# (tests/video.mk, c/apps/video/vidbench.c). NOT the correctness matrix
+# (tests/video.mk, tests/guest/video/vidbench.c). NOT the correctness matrix
 # (tools/genvideo.sh / genvideo265.sh) -- this one produces no reference YUV,
 # because vidbench measures TIME, not bytes; a stream vidbench decodes wrongly
 # would still time a real decode of real bitstream syntax, and the correctness

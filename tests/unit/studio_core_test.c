@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: MIT */
 /* No window system, no GUI implementation, and no replacement engine. This
  * links the same app modules as studio.aex and drives their public commands. */
-#include "../../c/apps/studio/engine.h"
+#include "../../c/apps/gui/studio/core/engine.h"
 #include <stdio.h>
 #include <sys/stat.h>
 #include <time.h>

@@ -3,7 +3,7 @@
 #define main previous_modal_main
 #include "modal_paint_test.c"
 #undef main
-#include "forms.h"
+#include "dom/forms.h"
 static int checks,failures;static const char *scene;
 #define EXPECT(c,m) do{checks++;if(!(c)){failures++;printf("FAIL: %s: %s\n",scene,m);}}while(0)
 static int desc(struct node *n,struct node *p){for(;n;n=n->parent)if(n==p)return 1;return 0;}

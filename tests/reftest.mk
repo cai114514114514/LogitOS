@@ -113,9 +113,9 @@ REFT_CTLN     ?= 200
 # What is NOT shared is stated in full at the top of tests/unit/refhost/logit.h:
 # wm.c's six-line syscall cases (transcribed, each quoted above the function
 # that mirrors it), the window chrome, and which font file the loader opens.
-REFT_PIPELINE := c/apps/browser/layout.c c/apps/browser/layout_text.c c/apps/browser/browser_paint.c \
-                 c/apps/browser/css_engine.c c/apps/browser/css_vars.c \
-                 c/apps/browser/css_extra.c $(HTML_PARSER_SRC)
+REFT_PIPELINE := c/apps/gui/browser/layout/block.c c/apps/gui/browser/layout/text.c c/apps/gui/browser/paint/renderer.c \
+                 c/apps/gui/browser/css/engine.c c/apps/gui/browser/css/vars.c \
+                 c/apps/gui/browser/css/extra.c $(HTML_PARSER_SRC)
 # c/lib/text/glyphras.c is where c/kernel/gui/raster.c used to be in this list:
 # the glyph rasterizer is now a converter onto Open Logit, and $(GFX_SRC) below
 # was already here for the painter, so the reference renderer picks up the

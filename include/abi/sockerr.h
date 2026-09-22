@@ -9,7 +9,7 @@
  * ABI defines needs exactly one English rendering, or two programs on the same
  * machine describe the same failure differently and the difference is not a
  * fact about the failure.  That had already started: c/apps/gui/ch.c carried a
- * private `sock_why`, while c/apps/browser/browser_rt.c carried a SECOND,
+ * private `sock_why`, while c/apps/gui/browser/app/runtime.c carried a SECOND,
  * shorter decode inline in one printf ("dns start failed", "net not up",
  * "socket table full") and then threw the code away entirely at the poll site.
  *

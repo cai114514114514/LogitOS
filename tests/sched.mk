@@ -12,7 +12,7 @@
 # this line was told not to touch. One line in an already-included fragment
 # costs the same and conflicts with nobody.
 
-SCHED_SRC := $(wildcard $(CLIDIR)/schedtest.c)
+SCHED_SRC := $(wildcard tests/guest/sched/schedtest.c)
 
 # nice/renice are ordinary clib.h CLI programs, so CLI_RULE builds them. They
 # are guarded the same way schedtest is below: a test fragment must not be able
@@ -41,17 +41,19 @@ ifneq ($(SCHED_SRC),)
 # thrtest's header explains why that linker script is deliberately opt-in.
 #
 # $(1) = program name, $(2) = extra -D flags.
+# Keep the guest source directory in the object path. Reusing the pre-move
+# object imports its old .d primary source; -MP only covers removed headers.
 define SCHEDTEST_RULE
-$(BUILD)/schedobj/$(1).o: $(CLIDIR)/schedtest.c c/apps/libc/include/sys/resource.h
+$(BUILD)/schedobj/tests/guest/sched/$(1).o: tests/guest/sched/schedtest.c c/apps/libc/include/sys/resource.h
 	@mkdir -p $$(dir $$@)
 	$(CC) $(UCFLAGS) $(2) -c $$< -o $$@
 # Keep the target-local AEX activation linker until recipe execution; eval's
 # early LD expansion used to leave this catalogued application at v2.
-$(BUILD)/$(1).elf: $(BUILD)/schedobj/$(1).o $(LIBC_OBJS) $(APPDIR)/crt0_cli.asm tests/sched.mk
+$(BUILD)/$(1).elf: $(BUILD)/schedobj/tests/guest/sched/$(1).o $(LIBC_OBJS) $(APPDIR)/crt0_cli.asm tests/sched.mk
 	@mkdir -p $(BUILD)/apps
 	$(ASM) -f elf64 $(APPDIR)/crt0_cli.asm -o $(BUILD)/apps/$(1).crt0c.o
 	$$(LD) -nostdlib -e _start -Ttext=0x50000000 -o $$@ \
-	    $(BUILD)/apps/$(1).crt0c.o $(BUILD)/schedobj/$(1).o $(LIBC_OBJS)
+	    $(BUILD)/apps/$(1).crt0c.o $(BUILD)/schedobj/tests/guest/sched/$(1).o $(LIBC_OBJS)
 $(BUILD)/$(1).aex: $(BUILD)/$(1).elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/$(1).elf $$@ $(1) - '*' 150 150 150
 endef
@@ -60,7 +62,7 @@ $(eval $(call SCHEDTEST_RULE,schedtest,))
 CLI += schedtest
 $(DISK): $(BUILD)/schedtest.aex
 else
-$(warning tests/sched.mk: $(CLIDIR)/schedtest.c is missing -- /bin/schedtest will not be built, and test-sched cannot run)
+$(warning tests/sched.mk: tests/guest/sched/schedtest.c is missing -- /bin/schedtest will not be built, and test-sched cannot run)
 endif
 
 .PHONY: test-sched test-sched-negctl

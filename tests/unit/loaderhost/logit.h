@@ -2,7 +2,7 @@
  *
  * tests/unit/painthost/logit.h already shadows the five drawing syscalls so
  * that the REAL browser_paint.c links on the host. This shadows the rest of
- * the surface c/apps/browser/browser.c uses -- window creation, the event
+ * the surface c/apps/gui/browser/app/main.c uses -- window creation, the event
  * queue, the clock, exit -- so that the REAL LOADER links too.
  *
  * That is the point: browser.c's load() is where a page's own navigation is

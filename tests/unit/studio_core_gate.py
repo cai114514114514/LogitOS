@@ -14,7 +14,7 @@ def run(executable):
         return subprocess.run([str(executable),str(compiler),tmp],cwd=ROOT,text=True,capture_output=True,timeout=45)
 if not a.negative:
     r=run(binary);print(r.stdout,end='');print(r.stderr,end='');raise SystemExit(r.returncode)
-sources=sorted((ROOT/'c/apps/studio').glob('*.c'))+[ROOT/s for s in ['c/apps/as/editor/completion.c','c/apps/as/common/version.c','c/lib/agent/json.c','c/lib/agent/task.c','c/drivers/block/crc32.c']]
+sources=sorted((ROOT/'c/apps/gui/studio/core').glob('*.c'))+[ROOT/s for s in ['c/apps/as/editor/completion.c','c/apps/as/common/version.c','c/lib/agent/json.c','c/lib/agent/task.c','c/drivers/block/crc32.c']]
 mutations=[('edit.c','!st_boundary(d->text,d->length,caret)||!st_boundary(d->text,d->length,anchor)','0','utf8-boundary'),
            ('completion_job.c','if (request == engine->completion_generation) {','if (1) {','late-completion-dismissed'),
            ('jobs.c','if (!check) {\n        st_engine_dismiss_completion(e);','if (1) {\n        st_engine_dismiss_completion(e);','completion-survives-check-start'),
@@ -26,10 +26,10 @@ mutations=[('edit.c','!st_boundary(d->text,d->length,caret)||!st_boundary(d->tex
            ('engine.c','if (st_checkpoint(d) < 0 && st_dirty(d)) {\n        st_engine_notice','if (st_checkpoint(d) < 0) {\n        st_engine_notice','clean-missing-parent-close')]
 with tempfile.TemporaryDirectory(prefix='studio-mutants-') as tmp:
     for filename,old,new,expected in mutations:
-        original=ROOT/'c/apps/studio'/filename;text=original.read_text()
+        original=ROOT/'c/apps/gui/studio/core'/filename;text=original.read_text()
         if text.count(old)!=1:raise RuntimeError('mutation setup drift: '+filename)
         mutant=Path(tmp)/filename;mutant.write_text(text.replace(old,new));exe=Path(tmp)/('test-'+filename)
-        command=[os.environ.get('CC','clang'),'-std=c11','-D_DEFAULT_SOURCE','-Wno-misleading-indentation','-g','-O1','-fsanitize=address,undefined','-I'+str(ROOT/'c/apps/studio'),str(ROOT/'tests/unit/studio_core_test.c')]
+        command=[os.environ.get('CC','clang'),'-std=c11','-D_DEFAULT_SOURCE','-Wno-misleading-indentation','-g','-O1','-fsanitize=address,undefined','-I'+str(ROOT/'c/apps/gui/studio/core'),str(ROOT/'tests/unit/studio_core_test.c')]
         command += [str(mutant if s==original else s) for s in sources]+['-o',str(exe)]
         subprocess.run(command,cwd=ROOT,check=True,capture_output=True,text=True)
         result=run(exe)

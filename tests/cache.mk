@@ -1,5 +1,5 @@
-# tests/cache.mk -- CacheStorage (c/apps/browser/js_cache.c) and
-# navigator.serviceWorker (c/apps/browser/js_swreg.c), the two parts of the
+# tests/cache.mk -- CacheStorage (c/apps/gui/browser/js/storage/cache.c) and
+# navigator.serviceWorker (c/apps/gui/browser/js/storage/swreg.c), the two parts of the
 # ServiceWorker workflow item that ship. Part C -- executing a service
 # worker script and intercepting fetch -- is refused by name in both files'
 # own headers, not built here or anywhere.
@@ -49,18 +49,18 @@
 # site) does not have to match, and js_module.c/js_canvas.c/js_semantics.c/
 # js_reflect.c/js_urlbind.c are other lines' work this feature has no
 # dependency on. If this gate ever fails to LINK on a symbol you do not
-# recognise, the answer is almost certainly a new c/apps/browser/js_*.c that
+# recognise, the answer is almost certainly a new $(BROWSER_JS_C) that
 # belongs on this exclusion list, not a bug in js_cache.c/js_swreg.c.
-CACHE_JS_OUT := c/apps/browser/browser.c \
-                c/apps/browser/js_media.c c/apps/browser/js_media_src.c \
-                c/apps/browser/js_forms.c c/apps/browser/js_module.c \
-                c/apps/browser/js_canvas.c c/apps/browser/js_semantics.c \
-                c/apps/browser/js_reflect.c c/apps/browser/js_urlbind.c \
-                c/apps/browser/js_websocket.c c/apps/browser/js_worker.c
+CACHE_JS_OUT := c/apps/gui/browser/app/main.c \
+                c/apps/gui/browser/js/media/media.c c/apps/gui/browser/js/media/media_src.c \
+                c/apps/gui/browser/js/dom/forms.c c/apps/gui/browser/js/runtime/module.c \
+                c/apps/gui/browser/js/graphics/canvas.c c/apps/gui/browser/js/dom/semantics.c \
+                c/apps/gui/browser/js/dom/reflect.c c/apps/gui/browser/js/net/urlbind.c \
+                c/apps/gui/browser/js/net/websocket.c c/apps/gui/browser/js/workers/worker.c
 
 CACHE_TEST_SRC := tests/unit/cache_test.c tests/unit/loader_fakebfetch.c \
                    $(filter-out $(CACHE_JS_OUT),$(BROWSER_JS_SRC))
-CACHE_TEST_SRC += c/apps/browser/css_engine.c c/apps/browser/css_vars.c c/apps/browser/css_interp.c
+CACHE_TEST_SRC += c/apps/gui/browser/css/engine.c c/apps/gui/browser/css/vars.c c/apps/gui/browser/css/interp.c
 CACHE_TEST_SRC += c/net/http/http1.c c/net/http/url.c c/net/http/cookies.c
 CACHE_TEST_SRC += tests/unit/rust_host_shim.c
 CACHE_CF := $(BTEST_INC) $(CSS_INC) $(JS_INC) -Itests/unit -Iinclude/abi -DCONFIG_VERSION='"host"' -DWEBAPI_HOST
@@ -141,7 +141,7 @@ test-cache-quota: $(BUILD)/cache_test_quota
 
 # --- test-wpt-cachestorage: the WPT service-workers/ subset, js_cache.c and
 # js_swreg.c linked (they ride WPT_TEST_SRC's own $(wildcard
-# c/apps/browser/js_*.c) automatically -- no source list to keep in sync).
+# $(BROWSER_JS_C)) automatically -- no source list to keep in sync).
 # WEBAPI_FILE_ROOT is set explicitly, matching tests/worker.mk: omitting it
 # changed a measurement 17x during this workflow (407/497 without vs
 # 6636/8587 with, same 32 files) -- see the workflow's own scope note.

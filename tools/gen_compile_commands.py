@@ -33,7 +33,11 @@ def find_files(*bases, suffix):
                     out.append(_rel(os.path.join(dirpath, f)))
     return out
 
-incdirs = find_dirs("c", "include")
+# Match the browser's qualified-header namespace in Makefile. Flattening the
+# new subdirectories would make js/media/media.h shadow the shared demuxer API
+# in the editor even though the real compiler selects the correct header.
+incdirs = sorted(d for d in find_dirs("c", "include")
+                 if not d.startswith("c/apps/gui/browser/"))
 INC = [f"-I{d}" for d in incdirs]
 
 JS_INC  = ["-Ithird_party/libm", "-Ithird_party/quickjs"]
@@ -56,12 +60,12 @@ def flags_for(path):
     if path.startswith("third_party/css/"):
         return BASE + ["-fcommon", "-D_ALIGNED=", "-DWITHOUT_ICONV_FILTER"] + CSS_INC + INC
     if (path.startswith("third_party/quickjs/") or path.startswith("third_party/libm/")
-            or path.startswith("c/apps/libc/") or path.startswith("c/apps/browser/")
+            or path.startswith("c/apps/libc/") or path.startswith("c/apps/gui/browser/")
             or path.startswith("c/apps/js")):
         return BASE + ENGINE + INC
     return BASE + INC
 
-files = find_files("c", "third_party", suffix=".c")
+files = find_files("c", "tests/guest", "third_party", suffix=".c")
 db = [{"directory": ROOT, "file": f, "arguments": flags_for(f) + ["-c", f]} for f in files]
 
 with open(os.path.join(ROOT, "compile_commands.json"), "w") as fh:

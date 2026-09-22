@@ -29,13 +29,13 @@
 # twenty lines with "No rule to make target". A TEST fragment must not be able
 # to break the build of the thing it tests. Missing source -> no /bin/sndtest,
 # a warning saying so, and everything else still builds.
-SNDTEST_SRC := $(wildcard $(CLIDIR)/sndtest.c)
+SNDTEST_SRC := $(wildcard tests/guest/audio/sndtest.c)
 ifneq ($(SNDTEST_SRC),)
 CLI += sndtest
 $(eval $(call CLI_RULE,sndtest))
 $(DISK): $(BUILD)/sndtest.aex
 else
-$(warning tests/audio.mk: $(CLIDIR)/sndtest.c is missing -- /bin/sndtest will not be built, and the on-device audio targets cannot run)
+$(warning tests/audio.mk: tests/guest/audio/sndtest.c is missing -- /bin/sndtest will not be built, and the on-device audio targets cannot run)
 endif
 
 # --- /bin/rec: the capture-side instrument, same self-contained wiring ------

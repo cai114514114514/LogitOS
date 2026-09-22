@@ -28,7 +28,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "layout_flex.h"
+#include "layout/flex.h"
 
 void *kmalloc(unsigned long n) { return malloc(n); }
 void  kfree(void *p) { free(p); }

@@ -1,6 +1,6 @@
 WORKER_BLOB_DIR = $(BUILD)/worker-blob
 WORKER_BLOB_SRC = $(filter-out tests/unit/worker_test.c,$(WORKER_TEST_SRC)) tests/unit/worker_blob_test.c
-WORKER_BLOB_DEPS = $(WORKER_BLOB_SRC) tests/unit/worker_test.c $(HTML_PARSER_SRC) c/apps/browser/js_webapi.h c/apps/browser/js_worker.h $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
+WORKER_BLOB_DEPS = $(WORKER_BLOB_SRC) tests/unit/worker_test.c $(HTML_PARSER_SRC) c/apps/gui/browser/js/runtime/webapi.h c/apps/gui/browser/js/workers/worker.h $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
 WORKER_BLOB_CF = $(WORKER_CF) -DJS_WORKER_BLOB_ALLOC_AUDIT
 .PHONY: test-worker-blob test-worker-blob-negctl test-worker-blob-asan
 $(WORKER_BLOB_DIR)/current: $(WORKER_BLOB_DEPS)

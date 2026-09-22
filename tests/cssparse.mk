@@ -12,7 +12,7 @@
 # WHY THIS IS NOT JUST test-wpt.
 #
 # The corpus reaches this grammar only through `el.style.foo = x`, and that is
-# still a verbatim text store in c/apps/browser/js_dom.c -- so every number
+# still a verbatim text store in c/apps/gui/browser/js/dom/dom.c -- so every number
 # test-wpt prints about the css/*-parse-valid files today is a number about a
 # STORE, not about a parser. This suite asks the parser directly, which is what
 # makes it able to go red on a parser bug on the day the bug lands rather than

@@ -17,7 +17,7 @@ static JSContext *fairness_context(JSRuntime *rt)
 }
 #define JS_NewContext fairness_context
 #ifndef WORKER_FAIRNESS_IMPL
-#define WORKER_FAIRNESS_IMPL "../../c/apps/browser/js_worker.c"
+#define WORKER_FAIRNESS_IMPL "../../c/apps/gui/browser/js/workers/worker.c"
 #endif
 #include WORKER_FAIRNESS_IMPL
 #undef JS_NewContext

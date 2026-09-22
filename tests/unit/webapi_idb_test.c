@@ -1,4 +1,4 @@
-/* Host test for c/apps/browser/js_idb.c -- IndexedDB.
+/* Host test for c/apps/gui/browser/js/storage/idb.c -- IndexedDB.
  *
  *     make test-idb          the coherent-subset suite AND the termination
  *                             bar's own quiescence check in one binary
@@ -32,9 +32,9 @@
 #include <string.h>
 
 #include "quickjs.h"
-#include "dom.h"
-#include "js_dom.h"
-#include "js_page.h"
+#include "dom/tree.h"
+#include "js/dom/dom.h"
+#include "js/runtime/page.h"
 
 void *kmalloc(unsigned long n) { return malloc(n); }
 void  kfree(void *p) { free(p); }

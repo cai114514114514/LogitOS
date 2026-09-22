@@ -69,7 +69,7 @@
 # falling into exactly that trap).  The pattern-rule append below is the one
 # door that actually reaches the TU.
 ifeq ($(FTNOSTREAM),1)
-$(BUILD)/jsobj/c/apps/browser/js_webapi.o: JS_CF += -DWEBAPI_NO_STREAM
+$(BUILD)/jsobj/c/apps/gui/browser/js/runtime/webapi.o: JS_CF += -DWEBAPI_NO_STREAM
 endif
 
 .PHONY: test-firsttoken-page test-firsttoken-page-negctl test-firsttoken-live

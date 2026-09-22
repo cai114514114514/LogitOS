@@ -1073,7 +1073,7 @@ def main():
         # No exception, no failed request, nothing in the record.
         #
         # Ctrl+Alt+D makes the browser print the text runs its last paint
-        # emitted (c/apps/browser/browser_paint.h). Sent AFTER the screenshot,
+        # emitted (c/apps/gui/browser/paint/renderer.h). Sent AFTER the screenshot,
         # so the dump cannot disturb the pixels that were just measured, and
         # after the page has settled, so what it reports is the finished page.
         # THE ADDRESS BAR, not a chord. Ctrl+Alt+D is wired in the browser and

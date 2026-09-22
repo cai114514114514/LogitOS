@@ -1,10 +1,10 @@
 # Uses the actual js_page lifecycle plus real Wasm; the older Wasm API suite
 # manually resets its runtime and therefore cannot measure this wiring seam.
 WASM_LIFECYCLE_SRC := tests/unit/wasm_lifecycle_test.c \
-    $(filter-out tests/unit/dom_iface_test.c,$(DOMIFACE_SRC)) c/apps/browser/js_wasm.c
+    $(filter-out tests/unit/dom_iface_test.c,$(DOMIFACE_SRC)) c/apps/gui/browser/js/wasm/wasm.c
 WASM_LIFECYCLE_DEP := $(WASM_LIFECYCLE_SRC) tests/unit/dom_iface_test.c \
-    tests/unit/wasm_js_modules.inc $(WASM_EXEC_SRC) c/apps/browser/js_wasm_prelude.inc \
-    c/apps/browser/js_wasm.h c/apps/browser/js_page.h $(HTML_PARSER_SRC) $(QJS_SRC)
+    tests/unit/wasm_js_modules.inc $(WASM_EXEC_SRC) c/apps/gui/browser/js/wasm/wasm_prelude.inc \
+    c/apps/gui/browser/js/wasm/wasm.h c/apps/gui/browser/js/runtime/page.h $(HTML_PARSER_SRC) $(QJS_SRC)
 
 $(BUILD)/wiring/wasm_lifecycle_test: $(WASM_LIFECYCLE_DEP) $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
 	@mkdir -p $(BUILD)/wiring

@@ -27,7 +27,7 @@
 #undef bfetch_start
 #undef img_register
 #undef img_register_anim
-#include "js_dom.h"
+#include "js/dom/dom.h"
 void app_main(void);
 __attribute__((weak)) void img_register(img_detect_fn a, img_decode_fn b) { (void)a; (void)b; }
 __attribute__((weak)) void img_register_anim(img_detect_fn a, img_decode_fn b, img_anim_fn c)

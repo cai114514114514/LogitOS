@@ -3,7 +3,7 @@
 #define main worker_existing_main
 #include "worker_test.c"
 #undef main
-#include "js_webapi.h"
+#include "js/runtime/webapi.h"
 #ifdef JS_WORKER_BLOB_ALLOC_AUDIT
 static void *pinned[64];static int pin_count;
 void worker_blob_test_allocated(void *p){for(int i=0;i<64;i++)if(!pinned[i]){pinned[i]=p;pin_count++;return;}abort();}

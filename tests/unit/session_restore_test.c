@@ -3,7 +3,7 @@
  * preserving pending positions if the tab is left before its first load. */
 #include <stdio.h>
 #include <string.h>
-#include "tabs.h"
+#include "app/tabs.h"
 static char disk[16384];
 static int disklen, checks, fails;
 static int rd(const char *p,void *b,int cap) { if(strcmp(p,SESSION_PATH))return -1; int n=disklen<cap?disklen:cap;memcpy(b,disk,n);return n; }

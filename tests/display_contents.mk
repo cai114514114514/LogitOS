@@ -1,7 +1,7 @@
 # Keep output private while sharing only the established host CSS archive.
 DISPLAY_CONTENTS_DIR := $(BUILD)/site-general/layout/display-contents
 DISPLAY_CONTENTS_SRC = $(filter-out tests/unit/layout_box_test.c,$(LBOX_SRC)) tests/unit/display_contents_test.c
-DISPLAY_CONTENTS_DEPS = $(DISPLAY_CONTENTS_SRC) tests/unit/intrinsic_test.c $(HTML_PARSER_SRC) c/apps/browser/layout.h c/apps/browser/css.h c/apps/browser/layout_flex.c c/apps/browser/layout_grid.c $(BUILD)/libcss_host.a tests/display_contents.mk
+DISPLAY_CONTENTS_DEPS = $(DISPLAY_CONTENTS_SRC) tests/unit/intrinsic_test.c $(HTML_PARSER_SRC) c/apps/gui/browser/layout/block.h c/apps/gui/browser/css/style.h c/apps/gui/browser/layout/flex.c c/apps/gui/browser/layout/grid.c $(BUILD)/libcss_host.a tests/display_contents.mk
 .PHONY: test-display-contents test-display-contents-negctl
 $(DISPLAY_CONTENTS_DIR)/test: $(DISPLAY_CONTENTS_DEPS)
 	@mkdir -p $(DISPLAY_CONTENTS_DIR)

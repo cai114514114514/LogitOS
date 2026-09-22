@@ -5,7 +5,7 @@
 #include <stdint.h>
 #include <unistd.h>
 #include <sys/stat.h>
-#include "cookie_persistence.h"
+#include "storage/cookies.h"
 
 static int checks, failures, writes, write_mode, read_mode, fail_call;
 static unsigned char *files[2];

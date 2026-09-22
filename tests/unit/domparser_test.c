@@ -32,9 +32,9 @@
 #include <string.h>
 #include <stdint.h>
 #include "quickjs.h"
-#include "dom.h"
-#include "js_dom.h"
-#include "js_page.h"
+#include "dom/tree.h"
+#include "js/dom/dom.h"
+#include "js/runtime/page.h"
 
 /* --- stubs: the kernel-only deps dom.c reaches for --- */
 void *kmalloc(unsigned long n) { return malloc(n); }

@@ -174,7 +174,7 @@ def wait_req(frag, secs):
 # modifiers this test needs are built here out of raw input events.
 #
 # WHICH MODIFIER FOR WHAT is not arbitrary -- see the shortcut table above
-# app_main in c/apps/browser/browser.c. Cmd is the system modifier and the
+# app_main in c/apps/gui/browser/app/main.c. Cmd is the system modifier and the
 # window manager claims a closed list of it (Cmd+W/Q/M/Tab/`), so the browser
 # takes Cmd+T for a new tab and CANNOT take Cmd+W or Cmd+Tab. Closing a tab is
 # Ctrl+W and cycling tabs is Ctrl+Tab. Cmd+W in this file therefore closes the

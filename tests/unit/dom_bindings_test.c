@@ -1,4 +1,4 @@
-/* Host test for the NODE half of the JS<->DOM bindings (c/apps/browser/js_dom.c):
+/* Host test for the NODE half of the JS<->DOM bindings (c/apps/gui/browser/js/dom/dom.c):
  * the surface react-dom's host config calls and that js_dom_test.c does not
  * cover -- createTextNode / createComment / createDocumentFragment /
  * createElementNS, insertBefore / replaceChild, the whole navigation family,
@@ -22,10 +22,10 @@
 #include <string.h>
 #include <stdint.h>
 #include "quickjs.h"
-#include "dom.h"
-#include "css.h"
-#include "layout.h"
-#include "js_dom.h"
+#include "dom/tree.h"
+#include "css/style.h"
+#include "layout/block.h"
+#include "js/dom/dom.h"
 
 /* --- stubs: the kernel-only deps layout.c and the DOM reach for --- */
 void *kmalloc(unsigned long n) { return malloc(n); }

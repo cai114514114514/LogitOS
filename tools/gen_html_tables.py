@@ -4,9 +4,9 @@
 Emits two committed .inc files next to the tokenizer, the same convention as
 tools/genroots.py -> c/crypto/trust/roots_bundle.inc:
 
-  c/apps/browser/html_entities.inc   the full WHATWG named character reference
+  c/apps/gui/browser/html/entities.inc   the full WHATWG named character reference
                                      table (2231 entries), name-sorted
-  c/apps/browser/html_tags.inc       a uint16_t id for every tag name the tree
+  c/apps/gui/browser/html/tags.inc       a uint16_t id for every tag name the tree
                                      builder has to special-case
 
 WHY GENERATE THE ENTITY TABLE INSTEAD OF VENDORING ONE
@@ -28,7 +28,7 @@ answers it in one narrowing scan (see html_ref_lookup in html_tokenizer.c),
 needs no construction at startup, and lands in .rodata, which matters because
 this runs in a ring-3 app with a 24 MiB arena.
 
-Usage:  python3 tools/gen_html_tables.py [outdir]      (default c/apps/browser)
+Usage:  python3 tools/gen_html_tables.py [outdir]      (default c/apps/gui/browser)
 """
 
 import html.entities
@@ -181,9 +181,9 @@ def gen_tags(path):
 
 
 def main():
-    outdir = sys.argv[1] if len(sys.argv) > 1 else os.path.join("c", "apps", "browser")
-    n, m = gen_entities(os.path.join(outdir, "html_entities.inc"))
-    t = gen_tags(os.path.join(outdir, "html_tags.inc"))
+    outdir = sys.argv[1] if len(sys.argv) > 1 else os.path.join("c", "apps", "gui", "browser", "html")
+    n, m = gen_entities(os.path.join(outdir, "entities.inc"))
+    t = gen_tags(os.path.join(outdir, "tags.inc"))
     print("gen_html_tables: %d named entities (max name %d bytes), %d tag ids"
           % (n, m, t))
 

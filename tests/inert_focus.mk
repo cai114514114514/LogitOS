@@ -1,7 +1,7 @@
 # Derive the complete form/DOM binding link from its existing gate. Including
 # the old test with renamed main reuses its host boundary, not its assertions.
 INERT_FOCUS_SRC = $(filter-out tests/unit/select_state_test.c,$(SELECT_STATE_SRC)) tests/unit/inert_focus_test.c
-INERT_FOCUS_DEPS = $(INERT_FOCUS_SRC) tests/unit/select_state_test.c c/apps/browser/focus.h c/apps/browser/forms.h c/apps/browser/js_dom.h $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
+INERT_FOCUS_DEPS = $(INERT_FOCUS_SRC) tests/unit/select_state_test.c c/apps/gui/browser/dom/focus.h c/apps/gui/browser/dom/forms.h c/apps/gui/browser/js/dom/dom.h $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
 .PHONY: test-inert-focus test-inert-focus-negctl
 $(BUILD)/inert_focus_test: $(INERT_FOCUS_DEPS)
 	@mkdir -p $(BUILD)

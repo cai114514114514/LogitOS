@@ -1,7 +1,7 @@
 # The guest specimen is the authority for the workload. Disable ONLY its clock
 # reads on the host; never publish host timings as browser performance.
 SIMPLE_SELECTOR_SRC = $(filter-out tests/unit/selectors_test.c,$(SELECTORS_SRC)) tests/unit/simple_selector_test.c
-SIMPLE_SELECTOR_DEP = $(SIMPLE_SELECTOR_SRC) tests/unit/dom_iface_test.c tests/simple_selector.mk c/apps/browser/js_dom.h $(HTML_PARSER_SRC) $(QJS_SRC) $(wildcard c/apps/browser/js_*.inc) $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
+SIMPLE_SELECTOR_DEP = $(SIMPLE_SELECTOR_SRC) tests/unit/dom_iface_test.c tests/simple_selector.mk c/apps/gui/browser/js/dom/dom.h $(HTML_PARSER_SRC) $(QJS_SRC) $(BROWSER_JS_INCLUDES) $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
 SIMPLE_SELECTOR_FIXTURES = $(BUILD)/wiring/simple_selector_fixture.html $(BUILD)/wiring/selector_candidate_fixture.html
 $(BUILD)/wiring/simple_selector_fixture.html: tools/perf/browser_load.py
 	@mkdir -p $(BUILD)/wiring
@@ -37,7 +37,7 @@ test-simple-selector-asan: test-simple-selector-negctl test-selector-candidate-n
 ci-host: test-simple-selector
 
 SELECTOR_TOKENS_SRC = $(filter-out tests/unit/selectors_test.c,$(SELECTORS_SRC)) tests/unit/selector_tokens_test.c
-SELECTOR_TOKENS_DEP = $(SELECTOR_TOKENS_SRC) tests/unit/dom_iface_test.c $(HTML_PARSER_SRC) $(QJS_SRC) $(wildcard c/apps/browser/js_*.inc) $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
+SELECTOR_TOKENS_DEP = $(SELECTOR_TOKENS_SRC) tests/unit/dom_iface_test.c $(HTML_PARSER_SRC) $(QJS_SRC) $(BROWSER_JS_INCLUDES) $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
 $(BUILD)/wiring/selector_tokens_test: $(SELECTOR_TOKENS_DEP)
 	@mkdir -p $(BUILD)/wiring
 	$(CC) -O2 -w $(SELECTORS_CF) -o $@ $(SELECTOR_TOKENS_SRC) $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
@@ -54,7 +54,7 @@ test-selector-tokens: test-selector-tokens-negctl $(BUILD)/wiring/selector_token
 ci-host: test-selector-tokens
 
 SELECTOR_BATCH_SRC = $(filter-out tests/unit/selectors_test.c,$(SELECTORS_SRC)) tests/unit/selector_batch_test.c
-SELECTOR_BATCH_DEP = $(SELECTOR_BATCH_SRC) tests/unit/dom_iface_test.c $(HTML_PARSER_SRC) $(QJS_SRC) $(wildcard c/apps/browser/js_*.inc) $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
+SELECTOR_BATCH_DEP = $(SELECTOR_BATCH_SRC) tests/unit/dom_iface_test.c $(HTML_PARSER_SRC) $(QJS_SRC) $(BROWSER_JS_INCLUDES) $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
 $(BUILD)/wiring/selector_batch_test: $(SELECTOR_BATCH_DEP)
 	@mkdir -p $(BUILD)/wiring
 	$(CC) -O2 -w $(SELECTORS_CF) -DJSDOM_TRAVERSAL_PROFILE -o $@ $(SELECTOR_BATCH_SRC) $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm

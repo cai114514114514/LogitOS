@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
-COOKIE_PERSIST_SRC = tests/unit/cookie_persistence_test.c c/apps/browser/cookie_persistence.c c/net/http/cookies.c
-COOKIE_PERSIST_DEPS = $(COOKIE_PERSIST_SRC) c/apps/browser/cookie_persistence.h c/apps/browser/tabs.h c/net/http/cookies.h
-COOKIE_PERSIST_INC = -Ic/apps/browser -Ic/net/http
+COOKIE_PERSIST_SRC = tests/unit/cookie_persistence_test.c c/apps/gui/browser/storage/cookies.c c/net/http/cookies.c
+COOKIE_PERSIST_DEPS = $(COOKIE_PERSIST_SRC) c/apps/gui/browser/storage/cookies.h c/apps/gui/browser/app/tabs.h c/net/http/cookies.h
+COOKIE_PERSIST_INC = $(BROWSER_INC) -Ic/net/http
 .PHONY: test-cookie-persistence test-cookie-persistence-negctl test-cookie-persistence-prefix-negctl
 $(BUILD)/cookie_persistence_test: $(COOKIE_PERSIST_DEPS)
 	@mkdir -p $(BUILD)
@@ -20,7 +20,7 @@ test-cookie-persistence: test-cookie-persistence-negctl test-cookie-persistence-
 	@$(BUILD)/cookie_persistence_test
 	@d=$$(mktemp -d); rc=0; $(BUILD)/cookie_persistence_test write "$$d" && $(BUILD)/cookie_persistence_test read "$$d" || rc=$$?; rm -rf "$$d"; exit $$rc
 
-$(BUILD)/cookie_store_guest_test: tests/unit/cookie_store_guest_test.c c/apps/browser/cookie_store_guest.inc c/apps/browser/cookie_persistence.h include/abi/logit_abi.h
+$(BUILD)/cookie_store_guest_test: tests/unit/cookie_store_guest_test.c c/apps/gui/browser/storage/cookie_guest.inc c/apps/gui/browser/storage/cookies.h include/abi/logit_abi.h
 	@mkdir -p $(BUILD)
 	$(CC) -O2 -Wall -Wextra $(COOKIE_PERSIST_INC) -Iinclude/abi -o $@ $<
 .PHONY: test-cookie-store-guest-adapter

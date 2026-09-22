@@ -60,7 +60,7 @@ COLD_REV    ?= HEAD
 # cold -- this instrument's own failure mode wearing the answer's clothes.
 #
 # THE BUILD IS SEPARATED FROM THE GATE BECAUSE THREE WORKFLOWS ARE LIVE IN
-# c/apps/browser AND third_party/.  This target compiles whatever is in the
+# c/apps/gui/browser AND third_party/.  This target compiles whatever is in the
 # tree at the moment it runs, and while it was being written it twice caught
 # somebody else's half-saved edit -- a libcss archive missing four
 # border-radius accessors, and a quickjs.c with two call sites updated and
@@ -74,7 +74,7 @@ cold-probe:
 	      echo "cold-probe: the TREE did not compile. This is not a cold-code"; \
 	      echo "  finding and says nothing about the control -- the probe is an"; \
 	      echo "  ordinary host build of the browser, so it fails whenever the"; \
-	      echo "  host build fails. Three workflows are live in c/apps/browser"; \
+	      echo "  host build fails. Three workflows are live in c/apps/gui/browser"; \
 	      echo "  and third_party/; a half-saved edit looks exactly like this."; \
 	      echo "  Check with:  make BUILD=$(COLD_BUILD) $(COLD_BUILD)/webapi_probe"; \
 	      exit 1; }

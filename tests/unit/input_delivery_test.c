@@ -4,8 +4,8 @@
 #define main loader_existing_main
 #include "loader_test.c"
 #undef main
-#include "focus.h"
-#include "js_dom.h"
+#include "dom/focus.h"
+#include "js/dom/dom.h"
 void app_main(void);
 
 static int stage,steps,cooldown,x,y,last_flushes;

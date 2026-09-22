@@ -7,7 +7,7 @@
  * once the ops have become pixels. So this header is the same include-shadowing
  * trick with a different sink: `#include "logit.h"` resolves here (via
  * -Itests/unit/refhost, which MUST come first on the include path) and the real
- * c/apps/browser/browser_paint.c is linked and run unmodified.
+ * c/apps/gui/browser/paint/renderer.c is linked and run unmodified.
  *
  * ============================================================================
  * WHAT IS SHARED WITH browser.aex AND WHAT IS NOT.  Read this before believing

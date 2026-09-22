@@ -1,4 +1,4 @@
-/* Host test for c/apps/browser/js_frame.c -- a same-origin second browsing
+/* Host test for c/apps/gui/browser/js/dom/frame.c -- a same-origin second browsing
  * context -- and the mutation surface js_domparser.c grew for it
  * (createElement/createTextNode/createComment/appendChild/insertBefore/
  * removeChild/setAttribute/removeAttribute/innerHTML=/getElementsByTagName).

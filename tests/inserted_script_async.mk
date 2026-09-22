@@ -1,7 +1,7 @@
 # The real loader/painter/DOM source set, replacing only the existing driver's
 # transport fixture. Forms exposes native edit values through the real IDL.
-INSERTED_ASYNC_SRC = $(sort $(filter-out tests/unit/script_resource_events_test.c tests/unit/loader_fakebfetch.c,$(SCRIPT_RESOURCE_SRC)) c/apps/browser/js_forms.c) tests/unit/inserted_script_async_test.c tests/unit/inserted_script_held_fake.c
-INSERTED_ASYNC_DEPS = $(INSERTED_ASYNC_SRC) $(RUNTIME_SCROLL_DEPS) $(wildcard c/apps/browser/*.inc)
+INSERTED_ASYNC_SRC = $(sort $(filter-out tests/unit/script_resource_events_test.c tests/unit/loader_fakebfetch.c,$(SCRIPT_RESOURCE_SRC)) c/apps/gui/browser/js/dom/forms.c) tests/unit/inserted_script_async_test.c tests/unit/inserted_script_held_fake.c
+INSERTED_ASYNC_DEPS = $(INSERTED_ASYNC_SRC) $(RUNTIME_SCROLL_DEPS) $(BROWSER_INCLUDES)
 INSERTED_ASYNC_DIR = $(BUILD)/site-general/inserted-script-async
 $(INSERTED_ASYNC_DIR)/current: $(INSERTED_ASYNC_DEPS)
 	@mkdir -p $(INSERTED_ASYNC_DIR)

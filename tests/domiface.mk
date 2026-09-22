@@ -1,4 +1,4 @@
-# tests/domiface.mk -- the DOM interface hierarchy (c/apps/browser/js_dom_iface.inc).
+# tests/domiface.mk -- the DOM interface hierarchy (c/apps/gui/browser/js/dom/dom_iface.inc).
 #
 #   make test-dom-iface          the hierarchy, host-side, seconds
 #   make test-dom-iface-negctl   the negative control: the SAME binary built
@@ -19,11 +19,11 @@
 .PHONY: test-dom-iface test-dom-iface-negctl
 
 DOMIFACE_SRC := tests/unit/dom_iface_test.c \
-                c/apps/browser/js_page.c c/apps/browser/js_dom.c \
-                c/apps/browser/css_engine.c c/apps/browser/css_vars.c \
-                c/apps/browser/js_webapi.c c/apps/browser/js_platform.c \
-                c/apps/browser/js_select.c c/apps/browser/js_intl.c \
-                c/apps/browser/js_module.c \
+                c/apps/gui/browser/js/runtime/page.c c/apps/gui/browser/js/dom/dom.c \
+                c/apps/gui/browser/css/engine.c c/apps/gui/browser/css/vars.c \
+                c/apps/gui/browser/js/runtime/webapi.c c/apps/gui/browser/js/runtime/platform.c \
+                c/apps/gui/browser/js/dom/select.c c/apps/gui/browser/js/text/intl.c \
+                c/apps/gui/browser/js/runtime/module.c \
                 c/net/http/http1.c c/net/http/url.c c/net/http/cookies.c \
                 tests/unit/rust_host_shim.c
 # -Ic/apps because js_platform.c includes "logit.h" unconditionally; see the

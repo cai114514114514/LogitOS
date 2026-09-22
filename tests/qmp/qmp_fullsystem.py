@@ -616,7 +616,7 @@ BROWSER_CHECKS = (
 
 browser_live = "Browser" in launched_names()
 
-# c/apps/browser/browser.c: the window is 1180x620 POINTS and its address bar is
+# c/apps/gui/browser/app/main.c: the window is 1180x620 POINTS and its address bar is
 # the top BARH=30 points of the CONTENT area -- a click there is what sets
 # `editing`, and without it every keystroke goes to the page instead of the URL.
 BROWSER_WIN = (1180, 620)

@@ -6,7 +6,7 @@
  * is no syslogd on LogitOS -- no log daemon, no /dev/log socket -- so this is
  * not a client for one", and described writing to fd 1 instead. Both halves
  * have changed: AF_UNIX landed (c/net/core/unix.c) and /bin/syslogd binds
- * /dev/log (c/apps/coreutils/syslogd.c), so syslog() connects a SOCK_DGRAM
+ * /dev/log (c/apps/services/syslog/syslogd.c), so syslog() connects a SOCK_DGRAM
  * socket to that path and sends each message as one record.
  *
  * The old sink was actively wrong, not merely limited: fd 1 is the program's

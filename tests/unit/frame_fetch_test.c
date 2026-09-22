@@ -1,5 +1,5 @@
 /* Host test for the ONE fetcher-safety property a second browsing context
- * needs before js_frame.c can exist: bfetch (c/apps/browser/bfetch.h) is
+ * needs before js_frame.c can exist: bfetch (c/apps/gui/browser/net/fetch.h) is
  * already safe for a same-runtime, single-threaded second context PROVIDED
  * every frame-side call passes its base EXPLICITLY and never touches
  * bfetch_set_base(). That is not a new mechanism -- js_worker.c already
@@ -32,7 +32,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "bfetch.h"
+#include "net/fetch.h"
 #include "loader_fakebfetch.h"
 
 static int g_fail;

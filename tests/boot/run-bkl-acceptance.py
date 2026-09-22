@@ -16,7 +16,7 @@ def sources():
  paths=[]
  for directory in ['c/kernel','c/boot','c/drivers','c/fs','c/net','c/crypto','c/lib','include']:
   paths += [p for p in (ROOT/directory).rglob('*') if p.is_file() and p.suffix in ['.c','.h','.inc','.asm']]
- paths += [ROOT/'c/apps/coreutils/smptest.c',ROOT/'tests/bkl.mk']
+ paths += [ROOT/'tests/guest/sched/smptest.c',ROOT/'tests/bkl.mk']
  paths += list((ROOT/'tests/unit').glob('bkl_*.c'))+list((ROOT/'tests/unit').glob('bkl_*.py'))
  paths += [ROOT/'tests/boot'/name for name in ['run-bkl.py','run-bkl-acceptance.py','mk-bkl-disk.py','serial-guest.py','run-smp-test.sh','run-thread-test.sh','run-smp-fork-storm.sh']]
  return {str(p.relative_to(ROOT)):digest(p) for p in sorted(paths)}

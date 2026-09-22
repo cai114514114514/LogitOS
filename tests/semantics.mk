@@ -1,4 +1,4 @@
-# tests/semantics.mk -- the HTML element interfaces (c/apps/browser/js_semantics.c).
+# tests/semantics.mk -- the HTML element interfaces (c/apps/gui/browser/js/dom/semantics.c).
 #
 #   make test-semantics          the interfaces, host-side, seconds
 #   make test-semantics-negctl   the negative control: the SAME binary built
@@ -59,7 +59,7 @@
 TEMPLATE_CONTENT_SRC = $(filter-out tests/unit/document_focus_test.c,$(DOCUMENT_FOCUS_SRC)) \
     tests/unit/template_content_test.c
 TEMPLATE_CONTENT_DEP = $(TEMPLATE_CONTENT_SRC) $(HTML_PARSER_SRC) \
-    c/apps/browser/js_dom_iface.inc c/apps/browser/js_semantics.h \
+    c/apps/gui/browser/js/dom/dom_iface.inc c/apps/gui/browser/js/dom/semantics.h \
     tests/fixtures/template-content/checks.js $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
 .PHONY: test-template-content test-template-content-negctl
 $(BUILD)/template_content_test: $(TEMPLATE_CONTENT_DEP)
@@ -87,14 +87,14 @@ ci-host: test-template-content
 # ci_value_interp and ci_transform_parse STRONGLY -- Element.prototype.animate
 # is the interpolation engine's only consumer. Named rather than globbed wider:
 # the glob's whole point is that a new js_*.c joins without an edit, and
-# widening it to c/apps/browser/*.c would drag in layout, paint and the app
+# widening it to $(BROWSER_SOURCES) would drag in layout, paint and the app
 # shell. If a second non-js file becomes a hard dependency, add it here too.
-SEM_JS_SRC := $(filter-out c/apps/browser/browser.c,$(sort $(wildcard c/apps/browser/js_*.c))) \
-              c/apps/browser/css_interp.c
+SEM_JS_SRC := $(filter-out c/apps/gui/browser/app/main.c,$(sort $(BROWSER_JS_C))) \
+              c/apps/gui/browser/css/interp.c
 SEM_SRC := tests/unit/semantics_test.c $(SEM_JS_SRC) \
-           c/apps/browser/css_engine.c c/apps/browser/css_vars.c \
-           c/apps/browser/css_extra.c c/apps/browser/layout.c c/apps/browser/layout_text.c \
-           c/apps/browser/forms.c c/apps/browser/focus.c \
+           c/apps/gui/browser/css/engine.c c/apps/gui/browser/css/vars.c \
+           c/apps/gui/browser/css/extra.c c/apps/gui/browser/layout/block.c c/apps/gui/browser/layout/text.c \
+           c/apps/gui/browser/dom/forms.c c/apps/gui/browser/dom/focus.c \
            c/net/http/http1.c c/net/http/url.c c/net/http/cookies.c \
            c/net/http/ws.c c/net/ssh/base64.c c/crypto/hash/sha1.c \
            c/lib/image/img.c c/lib/image/gif.c c/lib/image/jpeg.c \

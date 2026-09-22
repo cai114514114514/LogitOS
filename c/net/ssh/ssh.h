@@ -10,7 +10,7 @@
  * rather than calling the DRBG itself, for the same reason: it is what lets
  * the kernel, ring 3 AND a host unit test link the identical object file).
  * The socket, the thread, the fork+execve and the account-store file reads
- * are c/apps/coreutils/sshd.c's job, not this directory's.
+ * are c/apps/services/ssh/sshd.c's job, not this directory's.
  *
  * Algorithm set, and why, argued against a REAL OpenSSH_10.2p1 client's
  * default KEXINIT (captured off the wire, not guessed from `-Q`; the raw

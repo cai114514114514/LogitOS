@@ -1,5 +1,5 @@
 # WebSocket (RFC 6455) -- the frame codec (c/net/http/ws.c) and the browser's
-# `WebSocket` (c/apps/browser/js_websocket.c), host-tested together against
+# `WebSocket` (c/apps/gui/browser/js/net/websocket.c), host-tested together against
 # an in-memory server. See tests/unit/ws_test.c's own header for exactly what
 # is and is not graded here, and js_websocket.c's file header for the
 # termination argument every state transition is held to.
@@ -12,9 +12,9 @@ ifeq ($(strip $(BROWSER_PIPE)),)
 WS_LINK_ERR := tests/ws.mk: BROWSER_PIPE is empty -- this fragment must be -included from the Makefile, AFTER it. Refusing to link a WebSocket test from a partial source list.
 endif
 
-WS_INC := -Ic/net/http -Ic/net/ssh -Ic/crypto -Ic/apps/browser -Iinclude/abi \
+WS_INC := -Ic/net/http -Ic/net/ssh -Ic/crypto $(BROWSER_INC) -Iinclude/abi \
           -Ithird_party/quickjs -Ithird_party/libm -DWEBAPI_HOST -DCONFIG_VERSION='"host"'
-WS_SRC := tests/unit/ws_test.c c/apps/browser/js_websocket.c c/net/http/ws.c \
+WS_SRC := tests/unit/ws_test.c c/apps/gui/browser/js/net/websocket.c c/net/http/ws.c \
           c/net/http/http1.c c/net/ssh/base64.c c/crypto/hash/sha1.c $(QJS_SRC)
 
 .PHONY: test-ws test-ws-mask-negctl test-ws-accept-negctl test-ws-settle-negctl ws-link-check test-wpt-ws wpt-ws-baseline
@@ -103,7 +103,7 @@ test-ws-settle-negctl: ws-link-check
 	  fi
 
 # --- test-wpt-ws: the WPT subset, js_websocket.c linked (it rides
-# WPT_TEST_SRC's own $(wildcard c/apps/browser/js_*.c) automatically -- no
+# WPT_TEST_SRC's own $(BROWSER_JS_C) automatically -- no
 # source list to keep in sync, same as test-wpt-idb / test-wpt-worker).
 #
 # BEFORE THIS TARGET EXISTED, NOTHING IN THIS TREE WOULD GO RED ON A

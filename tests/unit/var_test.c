@@ -1,5 +1,5 @@
-/* Host unit test for the CSS var() preprocessor (src/apps/browser/css_vars.c).
- * Build: cc -o /tmp/var_test tools/t/var_test.c src/apps/browser/css_vars.c */
+/* Host unit test for the CSS var() preprocessor (src/apps/gui/browser/css/vars.c).
+ * Build: cc -o /tmp/var_test tools/t/var_test.c src/apps/gui/browser/css/vars.c */
 #include <stdio.h>
 #include <string.h>
 

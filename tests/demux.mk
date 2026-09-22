@@ -38,17 +38,17 @@ $(BUILD)/preview.elf: $(MED_OBJ) $(AUD_OBJ) $(MED_HDRS)
 # /bin/demuxcheck -- opens a container on the device and prints the same digest
 # the host build prints, which is what turns "it also works on LogitOS" into a
 # comparison rather than a claim. ONE source file, built twice; see its header.
-$(BUILD)/medobj/c/apps/media/demuxcheck.o: c/apps/media/demuxcheck.c $(MED_HDRS)
+$(BUILD)/medobj/tests/guest/media/demuxcheck.o: tests/guest/media/demuxcheck.c $(MED_HDRS)
 	@mkdir -p $(dir $@)
 	$(CC) $(UCFLAGS) -c $< -o $@
 
-$(BUILD)/demuxcheck.elf: $(BUILD)/medobj/c/apps/media/demuxcheck.o $(MED_OBJ) \
+$(BUILD)/demuxcheck.elf: $(BUILD)/medobj/tests/guest/media/demuxcheck.o $(MED_OBJ) \
                          $(VID_OBJ) $(AUD_OBJ) $(IMGCHK_OBJ) $(GFX_OBJ) \
                          $(RUST_LIB) $(LIBM_OBJ) $(LIBC_OBJS) $(APPDIR)/crt0_cli.asm
 	@mkdir -p $(BUILD)/apps
 	$(ASM) -f elf64 $(APPDIR)/crt0_cli.asm -o $(BUILD)/apps/demuxcheck.crt0c.o
 	$(LD) -nostdlib -e _start -Ttext=0x50000000 -o $@ --start-group \
-	    $(BUILD)/apps/demuxcheck.crt0c.o $(BUILD)/medobj/c/apps/media/demuxcheck.o \
+	    $(BUILD)/apps/demuxcheck.crt0c.o $(BUILD)/medobj/tests/guest/media/demuxcheck.o \
 	    $(MED_OBJ) $(VID_OBJ) $(AUD_OBJ) $(IMGCHK_OBJ) $(GFX_OBJ) \
 	    $(RUST_LIB) $(LIBM_OBJ) $(LIBC_OBJS) --end-group
 $(BUILD)/demuxcheck.aex: $(BUILD)/demuxcheck.elf tools/mkaex.py
@@ -121,7 +121,7 @@ $(BUILD)/avsync_test: tests/unit/avsync_test.c c/lib/media/avclock.c $(MED_HDRS)
 # -included at :3905. That is the right side of them today; := would capture
 # the EMPTY value the day either line moves, and the error would name forty
 # image symbols with nothing in it about ordering.
-DEMUXCHECK_DEPS = c/apps/media/demuxcheck.c $(MED_SRC) $(wildcard c/lib/video/*.c) \
+DEMUXCHECK_DEPS = tests/guest/media/demuxcheck.c $(MED_SRC) $(wildcard c/lib/video/*.c) \
                   $(wildcard c/lib/audio/*.c) $(IMG_HOST_SRC)
 $(BUILD)/demuxcheck_host: $(DEMUXCHECK_DEPS) $(MED_HDRS) $(RUST_LIB_HOST)
 	@mkdir -p $(BUILD)

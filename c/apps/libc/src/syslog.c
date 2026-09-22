@@ -11,7 +11,7 @@
  * BSD /dev/log, which vfsctl.c synthesises and which cannot hold a binding
  * on this machine; see LOGIT_PATH_LOG in include/abi/logit_abi.h), with
  * /bin/syslogd on the other end
- * (c/apps/coreutils/syslogd.c). This is the WRITER side of the AF_UNIX
+ * (c/apps/services/syslog/syslogd.c). This is the WRITER side of the AF_UNIX
  * consumer -- the family's user is not one daemon but every program in this
  * tree that calls syslog().
  *
@@ -35,7 +35,7 @@
 #include <sys/un.h>
 
 /* NOT a literal, and NOT /dev/log. include/abi/logit_abi.h is the one header
- * this file and c/apps/coreutils/syslogd.c both see, so the name is defined
+ * this file and c/apps/services/syslog/syslogd.c both see, so the name is defined
  * once there; /dev on this machine is synthesised by vfsctl.c and cannot hold
  * a binding, which is what made the daemon fail to start when both sides
  * agreed on the BSD name. The full account is on LOGIT_PATH_LOG. */

@@ -3,7 +3,7 @@
 #include "aui.h"
 #include "openlogit_canvas.h"
 #include "openlogit_window.h"
-#include "../../clock/model.h"
+#include "model.h"
 #include "layout.h"
 #include "motion.h"
 struct clock_ui {

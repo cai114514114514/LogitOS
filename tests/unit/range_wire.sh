@@ -11,9 +11,9 @@ CC=${CC:-cc}
 mkdir -p "$BUILD"
 
 "$CC" -O1 -g -w \
-    -Itests/unit/h2stub -Iinclude/abi -Ic/apps/browser -Ic/net/http -Ic/lib/image \
+    -Itests/unit/h2stub -Iinclude/abi -Ic/apps/gui/browser -Ic/net/http -Ic/lib/image \
     -o "$BUILD/range_wire" \
-    tests/unit/range_wire.c c/apps/browser/browser_rt.c \
+    tests/unit/range_wire.c c/apps/gui/browser/app/runtime.c \
     c/net/http/http1.c c/net/http/http2.c c/net/http/hpack.c \
     c/net/http/hpool.c c/net/http/url.c
 

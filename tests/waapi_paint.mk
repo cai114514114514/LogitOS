@@ -1,8 +1,8 @@
 # Production DOM + deadline + layout, with the computed-style-only world as
 # the negative control. Its JS timing still runs; only native commit is absent.
 WAAPI_DIR := $(BUILD)/wiring-next/waapi
-WAAPI_SRC = tests/unit/waapi_paint_test.c $(sort $(JSDOM_HOST_SRC) $(filter-out tests/unit/layout_box_test.c,$(LBOX_SRC)) c/apps/browser/js_anim.c c/apps/browser/css_interp.c)
-WAAPI_DEPS = $(WAAPI_SRC) c/apps/browser/js_waapi_native.inc c/apps/browser/js_anim.h tests/unit/layout_box_test.c $(BUILD)/libcss_host.a
+WAAPI_SRC = tests/unit/waapi_paint_test.c $(sort $(JSDOM_HOST_SRC) $(filter-out tests/unit/layout_box_test.c,$(LBOX_SRC)) c/apps/gui/browser/js/style/anim.c c/apps/gui/browser/css/interp.c)
+WAAPI_DEPS = $(WAAPI_SRC) c/apps/gui/browser/js/style/waapi_native.inc c/apps/gui/browser/js/style/anim.h tests/unit/layout_box_test.c $(BUILD)/libcss_host.a
 .PHONY: test-waapi-paint test-waapi-paint-negctl
 $(WAAPI_DIR)/test: $(WAAPI_DEPS)
 	@mkdir -p $(WAAPI_DIR)

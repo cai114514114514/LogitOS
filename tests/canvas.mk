@@ -16,7 +16,7 @@
 # THE SOURCE LIST, AS A SUBTRACTION -- it was a hand copy and it drifted
 # ---------------------------------------------------------------------------
 # Measured 2026-08-28. Fourteen js_*.c translation units landed in
-# c/apps/browser after this list was written and not one of them reached it,
+# c/apps/gui/browser after this list was written and not one of them reached it,
 # so `make test-canvas` died at the link with fifteen undefined symbols:
 # js_anim_install, js_cssom_install, js_cssom_close, js_domparser_install,
 # js_events_install, js_forms_install, js_media_install, js_media_close,
@@ -45,7 +45,7 @@
 # nothing here.
 #
 # So the js side is a SUBTRACTION from the Makefile's own $(BROWSER_JS_SRC)
-# (Makefile:828 -- `browser.c` plus `$(wildcard c/apps/browser/js_*.c)`, the
+# (Makefile:828 -- `browser.c` plus `$(BROWSER_JS_C)`, the
 # same variable $(BUILD)/browser.elf is built from). A file added to the
 # browser is on this link line the same minute; a file that must NOT be here
 # is named below, once, with its reason. canvas-link-check then only has to
@@ -87,10 +87,10 @@ endif
 #                    so the right answer there was to supply the dependency
 #                    rather than drop the file. A name only goes on this list
 #                    when supplying what it needs would drag ring 3 in.
-CANVAS_JS_OUT = c/apps/browser/browser.c \
-                c/apps/browser/js_media.c c/apps/browser/js_media_src.c \
-                c/apps/browser/js_forms.c c/apps/browser/js_module.c \
-                c/apps/browser/js_worker.c
+CANVAS_JS_OUT = c/apps/gui/browser/app/main.c \
+                c/apps/gui/browser/js/media/media.c c/apps/gui/browser/js/media/media_src.c \
+                c/apps/gui/browser/js/dom/forms.c c/apps/gui/browser/js/runtime/module.c \
+                c/apps/gui/browser/js/workers/worker.c
 CANVAS_JS_SRC = $(filter-out $(CANVAS_JS_OUT),$(BROWSER_JS_SRC))
 
 # DEFERRED (=) not immediate (:=) on purpose: this fragment is -included at
@@ -106,8 +106,8 @@ CANVAS_JS_SRC = $(filter-out $(CANVAS_JS_OUT),$(BROWSER_JS_SRC))
 # ci_transform_parse in the list above: css_engine.c grew a call to it and
 # this line did not follow.
 CANVAS_SRC = tests/unit/canvas_test.c $(CANVAS_JS_SRC) \
-              c/apps/browser/css_engine.c c/apps/browser/css_vars.c \
-              c/apps/browser/css_interp.c \
+              c/apps/gui/browser/css/engine.c c/apps/gui/browser/css/vars.c \
+              c/apps/gui/browser/css/interp.c \
               c/net/http/http1.c c/net/http/url.c \
               c/net/http/cookies.c $(CANVAS_WS_SRC) $(IMG_HOST_SRC) \
               $(HTML_PARSER_SRC)

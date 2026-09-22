@@ -1,6 +1,6 @@
 #include <stdio.h>
 #include <string.h>
-#include "iframe_policy.h"
+#include "frame/policy.h"
 static int checks,failed;
 static void ck(int value,int want,const char *name)
 { checks++;if(value!=want){failed++;printf("FAIL: %s\n",name);} }

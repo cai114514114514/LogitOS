@@ -34,7 +34,7 @@ test-jsprof: $(JSPROF_PROBE)
 # NESTED DISPATCH section), and requires the FIXED-BUILD shape: all three
 # handlers run, none watchdog-bitten -- including click 2, 52+ s after load,
 # which is the case that was bitten before js_dom_dispatch() started bracketing
-# every outermost dispatch with js_page_slice_begin()/_end() (c/apps/browser/
+# every outermost dispatch with js_page_slice_begin()/_end() (c/apps/gui/browser/
 # js_dom.c). BEFORE THAT FIX, on a device boot with the bracket removed
 # (test-jsslice-negctl's browser-noslice.aex), the field-measured shape was
 # click 2 killed on the wall-time rail at fuel=13 of a 2,000,000 budget
@@ -67,14 +67,14 @@ test-jsslice: $(ISO) $(DISK)
 #
 # $(BROWSER_JS_CF), not $(JS_CF): the root Makefile's ONE target-specific
 # variable override strips `-include features.h` from the browser's own TUs;
-# a rule here that compiled a c/apps/browser source with raw $(JS_CF) would
+# a rule here that compiled a c/apps/gui/browser source with raw $(JS_CF) would
 # revive the `hidden` macro mismatch tests/currentscript.mk's comment
 # explains in full. This is another rule in the tree that has to obey it.
-$(BUILD)/noslice/js_dom.o: c/apps/browser/js_dom.c
+$(BUILD)/noslice/js_dom.o: c/apps/gui/browser/js/dom/dom.c
 	@mkdir -p $(dir $@)
 	$(CC) $(BROWSER_JS_CF) -DJS_DOM_NO_SLICE_BRACKET -c $< -o $@
 
-NOSLICE_JS_OBJ := $(filter-out $(BUILD)/jsobj/c/apps/browser/js_dom.o,$(BROWSER_JS_OBJ)) \
+NOSLICE_JS_OBJ := $(filter-out $(BUILD)/jsobj/c/apps/gui/browser/js/dom/dom.o,$(BROWSER_JS_OBJ)) \
                   $(BUILD)/noslice/js_dom.o
 
 $(BUILD)/browser-noslice.elf: $(ENGINE_OBJ) $(NOSLICE_JS_OBJ) $(BROWSER_OBJ) $(CSS_OBJ) $(GFX_OBJ) $(RUST_LIB) $(BUILD)/apps/crt0.o $(BUILD)/browserobj/malloc_big.o

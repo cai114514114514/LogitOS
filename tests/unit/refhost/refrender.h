@@ -2,7 +2,7 @@
  * browser pipeline. See refhost/logit.h for the shared/not-shared statement.
  *
  * The whole harness rests on this being the SAME call sequence browser.c makes.
- * c/apps/browser/browser.c:982 does, in order:
+ * c/apps/gui/browser/app/main.c:982 does, in order:
  *     collect <style> text  ->  css_expand_vars  ->  css_apply
  *     ->  layout_page(root, win_w)  ->  browser_paint(...)
  * and then, once external stylesheets arrive, css_apply + layout_page + paint

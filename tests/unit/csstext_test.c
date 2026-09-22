@@ -26,7 +26,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "layout_text.h"
+#include "layout/text.h"
 
 static int checks, failures;
 

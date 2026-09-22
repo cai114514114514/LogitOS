@@ -1,6 +1,6 @@
 # Union the actual CSSOM and painter pipelines; never copy their growing lists.
 ELEMENT_SCROLL_SRC = $(sort $(filter-out tests/unit/cssom_test.c tests/unit/inline_hit_test.c,$(CSSOM_TEST_SRC) $(INLINE_HIT_SRC))) tests/unit/element_scroll_test.c
-ELEMENT_SCROLL_DEPS = $(ELEMENT_SCROLL_SRC) tests/unit/cssom_test.c c/apps/browser/element_scroll_wiring.inc c/apps/browser/text_paint_wiring.inc $(QJS_SRC) $(BUILD)/libcss_host.a
+ELEMENT_SCROLL_DEPS = $(ELEMENT_SCROLL_SRC) tests/unit/cssom_test.c c/apps/gui/browser/paint/element_scroll.inc c/apps/gui/browser/paint/text.inc $(QJS_SRC) $(BUILD)/libcss_host.a
 ELEMENT_SCROLL_FLAGS = -O2 -w $(PAINT_INC) $(BTEST_INC) $(CSS_INC) $(JS_INC) -DCONFIG_VERSION='"host"' -DWEBAPI_HOST
 .PHONY: test-element-scroll test-element-scroll-negctl
 $(BUILD)/wiring-next/element_scroll_test: $(ELEMENT_SCROLL_DEPS)

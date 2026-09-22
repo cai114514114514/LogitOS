@@ -4,9 +4,9 @@
 # html5lib token/tree suites.
 
 HTML_RAWTEXT_PERF_DIR := $(BUILD)/html-rawtext-perf
-HTML_RAWTEXT_PERF_SRC := tests/unit/html_rawtext_perf_test.c c/apps/browser/html_tokenizer.c
-HTML_RAWTEXT_PERF_DEP := $(HTML_RAWTEXT_PERF_SRC) c/apps/browser/html_tokenizer.h \
-                         c/apps/browser/html_entities.inc c/apps/browser/html_tags.inc \
+HTML_RAWTEXT_PERF_SRC := tests/unit/html_rawtext_perf_test.c c/apps/gui/browser/html/tokenizer.c
+HTML_RAWTEXT_PERF_DEP := $(HTML_RAWTEXT_PERF_SRC) c/apps/gui/browser/html/tokenizer.h \
+                         c/apps/gui/browser/html/entities.inc c/apps/gui/browser/html/tags.inc \
                          tests/html_rawtext_perf.mk
 
 $(HTML_RAWTEXT_PERF_DIR)/current: $(HTML_RAWTEXT_PERF_DEP)

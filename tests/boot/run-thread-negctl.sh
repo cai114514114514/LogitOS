@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The negative controls for the M30 threads gate.
 #
-# Six builds of c/apps/coreutils/thrtest.c, each with exactly ONE guard removed
+# Six builds of tests/guest/sched/thrtest.c, each with exactly ONE guard removed
 # (tests/thread.mk builds them; the -D names are documented there and in the
 # header of thrtest.c). Every one MUST print THREAD_TEST_FAIL. If any of them
 # passes, the corresponding assertion in the real thrtest is not testing what it

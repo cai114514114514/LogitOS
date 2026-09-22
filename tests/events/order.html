@@ -4,7 +4,7 @@
 <!--
   This file exists to be FAILED by build/wpt_events_negctl, which stubs
   dispatch to call the target's own listeners directly with no propagation
-  walk (see JS_EVENTS_NEGCTL in c/apps/browser/js_events.c).
+  walk (see JS_EVENTS_NEGCTL in c/apps/gui/browser/js/dom/events.c).
 
   Every assertion here is about ORDER or PHASE, never about "did the listener
   run". A flat dispatcher runs the listener too -- that is exactly why a

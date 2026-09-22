@@ -1,6 +1,6 @@
 /* tests/unit/layout_box_survey.c -- the corpus survey behind tests/layoutbox.mk.
  *
- * c/apps/browser/js_cssom.h states its ask as a measurement: over
+ * c/apps/gui/browser/js/style/cssom.h states its ask as a measurement: over
  * css/css-align, css/css-sizing, css/css-flexbox, css/css-grid and
  * css/cssom-view, 2,583 of 14,997 border-box reads found NO BOX AT ALL and
  * every geometry accessor on those elements answered 0. This answers the other
@@ -33,9 +33,9 @@
 #include <stdint.h>
 #include <dirent.h>
 #include <sys/stat.h>
-#include "layout.h"
-#include "css.h"
-#include "dom.h"
+#include "layout/block.h"
+#include "css/style.h"
+#include "dom/tree.h"
 
 void *kmalloc(unsigned long n){ return malloc(n); }
 void  kfree(void *p){ free(p); }

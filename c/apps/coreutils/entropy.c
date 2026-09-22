@@ -24,7 +24,7 @@
  * itself.
  *
  * ENTROPY_CONTROL_XORSHIFT builds the SAME program against the generator that
- * c/apps/browser/js_platform.c used to ship -- same seeding, same algorithm --
+ * c/apps/gui/browser/js/runtime/platform.c used to ship -- same seeding, same algorithm --
  * so the control is the code that was really there, not a strawman. */
 #include "clib.h"
 

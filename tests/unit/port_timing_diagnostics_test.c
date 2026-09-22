@@ -1,7 +1,7 @@
 /* Queue delay and callback duration deliberately differ. The synthetic clock
  * tests field provenance; it is not a performance benchmark or a page clock
  * override in the product. The callback closes its endpoint before returning. */
-#include "js_ports.h"
+#include "js/workers/ports.h"
 #include <stdio.h>
 #include <string.h>
 static unsigned long long now=100;

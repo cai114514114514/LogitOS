@@ -1,7 +1,7 @@
 # Caret and selection consume the same advances as the actual spaced painter.
 # The control restores only raw prefix metrics; painting keeps its spacing.
 CARET_ADVANCE_SRC = $(filter-out tests/unit/text_wiring_test.c,$(TEXT_WIRING_SRC)) tests/unit/caret_advance_test.c
-CARET_ADVANCE_DEPS = $(TEXT_WIRING_DEPS) tests/unit/text_wiring_test.c c/apps/browser/browser_paint.h
+CARET_ADVANCE_DEPS = $(TEXT_WIRING_DEPS) tests/unit/text_wiring_test.c c/apps/gui/browser/paint/renderer.h
 CARET_ADVANCE_DIR = $(BUILD)/site-general/caret
 .PHONY: test-caret-advance test-caret-advance-negctl test-caret-long-negctl
 $(CARET_ADVANCE_DIR)/caret_advance_test: $(CARET_ADVANCE_SRC) $(CARET_ADVANCE_DEPS) $(BUILD)/libcss_host.a

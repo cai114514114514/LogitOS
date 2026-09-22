@@ -28,7 +28,7 @@ def sources():
         files += list((ROOT/'tests/boot').glob(pattern))
     for name in ['bkl.mk','dma.mk','dma_drivers.mk','wide_memory.mk','pie.mk','thread.mk','smpstorm.mk']:
         files += [ROOT/'tests'/name]
-    files += [ROOT/name for name in ['tools/mkaex.py','tools/mkfs.py','tools/license_audit.py','tools/ksymbolize.py','c/apps/clib.h','c/apps/crt0_cli.asm','c/apps/coreutils/smptest.c','c/apps/coreutils/sigtest.c']]
+    files += [ROOT/name for name in ['tools/mkaex.py','tools/mkfs.py','tools/license_audit.py','tools/ksymbolize.py','c/apps/clib.h','c/apps/crt0_cli.asm','tests/guest/sched/smptest.c','c/apps/coreutils/sigtest.c']]
     files += list((ROOT/'rust/src').rglob('*.rs'))
     return {str(f.relative_to(ROOT)):digest(f) for f in sorted(files) if f.is_file()}
 report=dict(started=time.time(),steps=[],source_sha256=sources(),scope='QEMU real kernel/device paths plus actual-source host tests; no physical hardware claim')

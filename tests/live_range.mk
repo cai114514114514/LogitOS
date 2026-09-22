@@ -2,8 +2,8 @@
 # Include dependencies matter: timestamp checks must rebuild when an included
 # boundary implementation changes, not report yesterday's binary up-to-date.
 .PHONY: test-live-range test-live-range-negctl
-LIVE_RANGE_SRC = $(filter-out tests/unit/select_state_test.c,$(SELECT_STATE_SRC)) tests/unit/live_range_test.c c/apps/browser/js_characterdata.c
-LIVE_RANGE_INC = c/apps/browser/dom_mutation.inc c/apps/browser/dom_text_mutation.inc c/apps/browser/js_live_range_native.inc c/apps/browser/js_live_range_shim.inc
+LIVE_RANGE_SRC = $(filter-out tests/unit/select_state_test.c,$(SELECT_STATE_SRC)) tests/unit/live_range_test.c c/apps/gui/browser/js/dom/characterdata.c
+LIVE_RANGE_INC = c/apps/gui/browser/dom/mutation.inc c/apps/gui/browser/dom/text_mutation.inc c/apps/gui/browser/js/dom/live_range_native.inc c/apps/gui/browser/js/dom/live_range_shim.inc
 $(BUILD)/live_range_test: $(LIVE_RANGE_SRC) $(LIVE_RANGE_INC) $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
 	@mkdir -p $(BUILD)
 	$(CC) -O2 -w $(DOMIFACE_CF) -o $@ $(LIVE_RANGE_SRC) $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm

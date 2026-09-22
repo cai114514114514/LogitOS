@@ -5,9 +5,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include "quickjs.h"
-#include "dom.h"
-#include "js_page.h"
-#include "js_webapi.h"
+#include "dom/tree.h"
+#include "js/runtime/page.h"
+#include "js/runtime/webapi.h"
 
 void *kmalloc(unsigned long n) { return malloc(n); }
 void kfree(void *p) { free(p); }

@@ -1,7 +1,7 @@
 # Author extension cascade through real LibCSS matched specificity.
 XCASCADE_DIR := $(BUILD)/css-extra-cascade
 XCASCADE_SRC = $(filter-out tests/unit/layout_box_test.c,$(LBOX_SRC)) tests/unit/css_extra_cascade_test.c
-XCASCADE_DEPS = c/apps/browser/css_extra_cascade.inc c/apps/browser/css_inset_math.inc $(XCASCADE_SRC) $(HTML_PARSER_SRC) c/apps/browser/css.h $(BUILD)/libcss_host.a
+XCASCADE_DEPS = c/apps/gui/browser/css/extra_cascade.inc c/apps/gui/browser/css/inset_math.inc $(XCASCADE_SRC) $(HTML_PARSER_SRC) c/apps/gui/browser/css/style.h $(BUILD)/libcss_host.a
 .PHONY: test-css-extra-cascade test-css-extra-cascade-negctl
 $(XCASCADE_DIR)/test: $(XCASCADE_DEPS)
 	@mkdir -p $(XCASCADE_DIR)

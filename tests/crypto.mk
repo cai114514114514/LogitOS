@@ -59,7 +59,7 @@ test-entropy: $(ISO) $(DISK)
 	@bash tests/boot/run-entropy-test.sh $(ISO) $(DISK)
 
 # The control. /bin/entropy is rebuilt against the xorshift128+ generator that
-# c/apps/browser/js_platform.c really shipped (same seeding: whole-second wall
+# c/apps/gui/browser/js/runtime/platform.c really shipped (same seeding: whole-second wall
 # clock + addresses), the disk is repacked with it, and the harness INVERTS its
 # verdict -- so this target passes only when the FORK assertion goes red, which
 # it does exactly: ENT_CHILD == ENT_PARENT, byte for byte.

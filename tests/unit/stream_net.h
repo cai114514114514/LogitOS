@@ -22,7 +22,7 @@
 #include <string.h>
 
 #include "quickjs.h"
-#include "js_webapi.h"
+#include "js/runtime/webapi.h"
 #include "logit_abi.h"
 
 /* The Rust staticlib (linked for its inflater) calls the kernel allocator and

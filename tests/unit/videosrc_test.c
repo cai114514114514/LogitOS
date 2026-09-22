@@ -28,7 +28,7 @@
 #include <string.h>
 #include <stdint.h>
 
-#include "js_media.h"
+#include "js/media/media.h"
 #include "media.h"
 
 static int g_fail, g_checks;

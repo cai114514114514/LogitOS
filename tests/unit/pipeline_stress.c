@@ -4,17 +4,17 @@
  * redzones so any heap overflow/use-after-free is caught at its exact source.
  *
  * Build: clang -O1 -g -fsanitize=address,undefined -DWITHOUT_ICONV_FILTER \
- *   -Isrc/apps/browser -Isrc/lib/image -I<libcss includes> \
- *   tools/t/pipeline_stress.c src/apps/browser/{css_engine,dom,layout}.c \
+ *   -Isrc/apps/gui/browser -Isrc/lib/image -I<libcss includes> \
+ *   tools/t/pipeline_stress.c src/apps/gui/browser/{css_engine,dom,layout}.c \
  *   $(find third_party/css -name '*.c' ! -name css_property_parser_gen.c) -o /tmp/pstress
  */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
-#include "dom.h"
-#include "css.h"
-#include "layout.h"
+#include "dom/tree.h"
+#include "css/style.h"
+#include "layout/block.h"
 
 void *kmalloc(unsigned long n) { return malloc(n); }
 void  kfree(void *p) { free(p); }

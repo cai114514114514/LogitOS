@@ -4,7 +4,7 @@
  * WHY THIS MATTERS, stated in CLAUDE.md and worth repeating here: when author
  * CSS is dropped, missing, or has not arrived (which -- measured on the Bing
  * search results page, tests/fixtures/webapi/bing -- is common), what a person
- * sees IS the UA default stylesheet in c/apps/browser/css_engine.c's UA_CSS.
+ * sees IS the UA default stylesheet in c/apps/gui/browser/css/engine.c's UA_CSS.
  * A thin or wrong UA sheet makes every such page worse than it has to be.
  *
  * WHAT THIS CHECKS, against https://html.spec.whatwg.org/multipage/rendering.html:
@@ -33,9 +33,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
-#include "layout.h"
-#include "css.h"
-#include "dom.h"
+#include "layout/block.h"
+#include "css/style.h"
+#include "dom/tree.h"
 
 void *kmalloc(unsigned long n){ return malloc(n); }
 void  kfree(void *p){ free(p); }

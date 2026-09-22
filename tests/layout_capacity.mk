@@ -1,6 +1,6 @@
 LAYOUT_CAP_DIR = $(BUILD)/layout-capacity
 LAYOUT_CAP_SRC = tests/unit/layout_capacity_test.c $(filter-out tests/unit/layout_box_test.c,$(LBOX_SRC))
-LAYOUT_CAP_DEP = $(LAYOUT_CAP_SRC) tests/unit/layout_box_test.c c/apps/browser/layout.h $(wildcard c/apps/browser/layout*.inc) $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a
+LAYOUT_CAP_DEP = $(LAYOUT_CAP_SRC) tests/unit/layout_box_test.c c/apps/gui/browser/layout/block.h $(wildcard c/apps/gui/browser/layout/*.inc) $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a
 $(LAYOUT_CAP_DIR)/current: $(LAYOUT_CAP_DEP)
 	@mkdir -p $(LAYOUT_CAP_DIR)
 	$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) -o $@ $(LAYOUT_CAP_SRC) $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a -lm

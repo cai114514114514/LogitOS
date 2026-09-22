@@ -1,5 +1,5 @@
 /* selectors_test.c -- the query-side selector engine and DOMTokenList
- * (c/apps/browser/js_select.c + c/apps/browser/js_tokenlist.c).
+ * (c/apps/gui/browser/js/dom/select.c + c/apps/gui/browser/js/dom/tokenlist.c).
  *
  * WHAT THIS MEASURES THAT NOTHING ELSE DOES. WPT measures these files far more
  * thoroughly than this ever will, and takes minutes to do it. This exists for
@@ -33,10 +33,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include "quickjs.h"
-#include "dom.h"
-#include "css.h"
-#include "js_dom.h"
-#include "js_page.h"
+#include "dom/tree.h"
+#include "css/style.h"
+#include "js/dom/dom.h"
+#include "js/runtime/page.h"
 
 void *kmalloc(unsigned long n) { return malloc(n); }
 void  kfree(void *p) { free(p); }

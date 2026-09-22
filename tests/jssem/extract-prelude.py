@@ -3,7 +3,7 @@
 
 WHY THIS EXISTS. /bin/jssem links $(ENGINE_OBJ) -- the browser's ENGINE -- but
 not the browser's GLOBALS. Intl, structuredClone and queueMicrotask are JS
-preludes in c/apps/browser/{js_intl,js_platform}.c, so a bare-engine transcript
+preludes in c/apps/gui/browser/{js_intl,js_platform}.c, so a bare-engine transcript
 that says "Intl is not defined" is a true fact about the engine and a FALSE
 fact about the browser. This lifts the prelude out of the C source verbatim so
 the same bytes the browser evaluates can be evaluated by the probe and by node.

@@ -4,7 +4,7 @@
 # tree and a stale whole-file Makefile snapshot has silently deleted other
 # people's targets more than once. A separate file cannot be clobbered that way.
 #
-# WHAT IS GATED. c/apps/browser/css_report.c is the one record of what happened
+# WHAT IS GATED. c/apps/gui/browser/css/report.c is the one record of what happened
 # to a page's CSS -- linked, fetched, concatenated, parsed, and above all
 # DROPPED. It exists because the browser printed twelve lines about scripts and
 # zero about stylesheets, which made five different bugs (never requested /
@@ -29,7 +29,7 @@
 # page rendering correctly the moment they did.
 
 CSSREPORT_SRC := tests/unit/css_report_test.c \
-                 c/apps/browser/css_engine.c c/apps/browser/css_vars.c \
+                 c/apps/gui/browser/css/engine.c c/apps/gui/browser/css/vars.c \
                  $(HTML_PARSER_SRC)
 
 test-cssreport: $(BUILD)/libcss_host.a

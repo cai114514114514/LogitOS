@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate c/apps/browser/encoding_tables.inc from the WHATWG Encoding data.
+"""Generate c/apps/gui/browser/js/text/encoding_tables.inc from the WHATWG Encoding data.
 
 WHERE THE DATA COMES FROM, because it decides whether the encoding tests are
 measuring anything.  Two files, both of which say in their own first line that
@@ -39,7 +39,7 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 RES = os.path.join(ROOT, "third_party", "wpt", "encoding", "resources")
-OUT = os.path.join(ROOT, "c", "apps", "browser", "encoding_tables.inc")
+OUT = os.path.join(ROOT, "c", "apps", "gui", "browser", "js", "text", "encoding_tables.inc")
 
 
 def js_array_literal(text, start_marker):

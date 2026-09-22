@@ -10,7 +10,7 @@
 #include "modal_paint_test.c"
 #undef text_measure
 #undef main
-#include "forms.h"
+#include "dom/forms.h"
 static int calls, oversized;
 int text_measure(const char *s,int len,int px,int face){
  (void)px;(void)face;calls++;

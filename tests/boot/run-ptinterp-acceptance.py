@@ -25,7 +25,7 @@ def sources():
     # set, not a claim to snapshot the unrelated browser or all repository files.
     files += list((ROOT/'tests/boot').glob('*.py'))+list((ROOT/'tests/boot').glob('*.sh'))
     files += list((ROOT/'tests').glob('*.mk'))
-    files += [ROOT/n for n in ['Makefile','linker.ld','tools/mkaex.py','tools/mkfs.py','tools/ksymbolize.py','c/apps/logit.h','c/apps/clib.h','c/apps/crt0_cli.asm','c/apps/coreutils/smptest.c','c/apps/coreutils/sigtest.c']]
+    files += [ROOT/n for n in ['Makefile','linker.ld','tools/mkaex.py','tools/mkfs.py','tools/ksymbolize.py','c/apps/logit.h','c/apps/clib.h','c/apps/crt0_cli.asm','tests/guest/sched/smptest.c','c/apps/coreutils/sigtest.c']]
     return {str(f.relative_to(ROOT)):digest(f) for f in sorted(set(files)) if f.is_file()}
 report_path=base/'ptinterp-acceptance.json'
 report=dict(started=time.time(),steps=[],source_sha256=sources(),scope='LogitOS kernel PT_INTERP; QEMU device paths and actual-source host tests; no full shared-library linker or physical-hardware claim')

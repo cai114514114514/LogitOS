@@ -1,4 +1,4 @@
-# tests/idb.mk -- IndexedDB (c/apps/browser/js_idb.c).
+# tests/idb.mk -- IndexedDB (c/apps/gui/browser/js/storage/idb.c).
 #
 #   make test-idb              a coherent-subset suite: open/upgrade/put/get/
 #                               cursor/index/abort-rollback, PLUS the
@@ -18,7 +18,7 @@
 #                               strictly better -- read files-revived, not %).
 #
 # WHY A SEPARATE FRAGMENT. Same reason tests/events.mk gives for itself:
-# several lines edit c/apps/browser/*.mk-adjacent fragments at once, and this
+# several lines edit c/apps/gui/browser/*/*.mk-adjacent fragments at once, and this
 # line's own gate (a bounded pump asserting every request terminates) is not
 # something any existing fragment measures.
 #
@@ -29,7 +29,7 @@
 # ANOTHER line's control asserts its absence -- js_idb.c needs the real,
 # constructible EventTarget it publishes and cannot use the placeholder), and
 # js_idb.c rides in automatically because BROWSER_JS_SRC is
-# `$(wildcard c/apps/browser/js_*.c)`. js_canvas.c/js_semantics.c/js_module.c/
+# `$(BROWSER_JS_C)`. js_canvas.c/js_semantics.c/js_module.c/
 # js_reflect.c/js_urlbind.c/js_websocket.c/js_worker.c stay OUT, matching
 # tests/webapi_platform.mk's own reasoning for each (js_module.c and
 # js_worker.c both need bfetch_resolve/bfetch_sync this runner does not
@@ -45,19 +45,19 @@
 # list would drift the OTHER way, silently dropping a TU IndexedDB needs and
 # testing less than it claims), so the rule for the next person is: if this
 # gate fails to LINK on a symbol you do not recognise, the answer is almost
-# certainly a new c/apps/browser/js_*.c that belongs on this line, not a bug
+# certainly a new $(BROWSER_JS_C) that belongs on this line, not a bug
 # in js_idb.c.
 
 .PHONY: test-idb test-idb-negctl test-wpt-idb wpt-idb-baseline
 
-IDB_JS_OUT := c/apps/browser/browser.c \
-              c/apps/browser/js_media.c c/apps/browser/js_media_src.c \
-              c/apps/browser/js_forms.c c/apps/browser/js_module.c \
-              c/apps/browser/js_canvas.c c/apps/browser/js_semantics.c \
-              c/apps/browser/js_reflect.c c/apps/browser/js_urlbind.c \
-              c/apps/browser/js_websocket.c c/apps/browser/js_worker.c
+IDB_JS_OUT := c/apps/gui/browser/app/main.c \
+              c/apps/gui/browser/js/media/media.c c/apps/gui/browser/js/media/media_src.c \
+              c/apps/gui/browser/js/dom/forms.c c/apps/gui/browser/js/runtime/module.c \
+              c/apps/gui/browser/js/graphics/canvas.c c/apps/gui/browser/js/dom/semantics.c \
+              c/apps/gui/browser/js/dom/reflect.c c/apps/gui/browser/js/net/urlbind.c \
+              c/apps/gui/browser/js/net/websocket.c c/apps/gui/browser/js/workers/worker.c
 IDB_TEST_SRC := tests/unit/webapi_idb_test.c $(filter-out $(IDB_JS_OUT),$(BROWSER_JS_SRC))
-IDB_TEST_SRC += c/apps/browser/css_engine.c c/apps/browser/css_vars.c c/apps/browser/css_interp.c
+IDB_TEST_SRC += c/apps/gui/browser/css/engine.c c/apps/gui/browser/css/vars.c c/apps/gui/browser/css/interp.c
 IDB_TEST_SRC += c/net/http/http1.c c/net/http/url.c c/net/http/cookies.c
 IDB_TEST_SRC += tests/unit/rust_host_shim.c
 IDB_CF := $(BTEST_INC) $(CSS_INC) $(JS_INC) -Iinclude/abi -DCONFIG_VERSION='"host"' -DWEBAPI_HOST
@@ -96,7 +96,7 @@ test-idb-negctl: $(BUILD)/idb_test_negctl
 	 fi
 
 # --- test-wpt-idb: the WPT subset, js_idb.c linked (it rides WPT_TEST_SRC's
-# own $(wildcard c/apps/browser/js_*.c) automatically -- no source list to
+# own $(BROWSER_JS_C) automatically -- no source list to
 # keep in sync). A REAL RATCHET now, not the raw-count measurement it started
 # as -- IndexedDB/ is not one of the 6 directories tests/unit/wpt_expected_fail.txt
 # covers (that baseline was taken over build/wpt, not build/wpt-full; see the

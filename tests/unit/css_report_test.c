@@ -1,6 +1,6 @@
 /* css_report_test -- the control for the stylesheet accounting record.
  *
- * WHAT THIS GATE IS FOR. c/apps/browser/css_report.c is an INSTRUMENT, and an
+ * WHAT THIS GATE IS FOR. c/apps/gui/browser/css/report.c is an INSTRUMENT, and an
  * instrument whose counter never moves is not an instrument -- it is a
  * decoration that reads like evidence. The tree has paid for that shape
  * repeatedly (test-bidi-negctl printing "negative control ok" because a corpus
@@ -32,9 +32,9 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "dom.h"
-#include "css.h"
-#include "css_report.h"
+#include "dom/tree.h"
+#include "css/style.h"
+#include "css/report.h"
 
 void *kmalloc(unsigned long n) { return malloc(n); }
 void  kfree(void *p) { free(p); }

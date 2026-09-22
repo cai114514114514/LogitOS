@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 DETACHED_IMAGES_BASE = $(filter-out tests/unit/dynamic_stylesheets_test.c,$(DYNAMIC_SHEETS_SRC)) tests/unit/detached_images_test.c
 DETACHED_IMAGES_SRC = $(DETACHED_IMAGES_BASE) $(filter-out $(DETACHED_IMAGES_BASE),$(IMGCHK_SRC))
-DETACHED_IMAGES_DEPS = tests/detached_images.mk $(DETACHED_IMAGES_SRC) $(DYNAMIC_SHEETS_DEPS) c/apps/browser/browser_images.inc tests/fixtures/browser/detached-images.html
+DETACHED_IMAGES_DEPS = tests/detached_images.mk $(DETACHED_IMAGES_SRC) $(DYNAMIC_SHEETS_DEPS) c/apps/gui/browser/app/images.inc tests/fixtures/browser/detached-images.html
 DETACHED_IMAGES_DIR = $(BUILD)/detached-images
 $(DETACHED_IMAGES_DIR)/current: $(DETACHED_IMAGES_DEPS)
 	@mkdir -p $(DETACHED_IMAGES_DIR)

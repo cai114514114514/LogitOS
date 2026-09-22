@@ -28,8 +28,8 @@
 # IMPLEMENTS bfetch.h in memory, so a range test built on it would assert that
 # a fake honours a contract, and the `Range:` request line -- half of what a
 # byte range is -- would never be produced at all.
-RANGE_INC := -Itests/unit/h2stub -Iinclude/abi -Ic/apps/browser -Ic/net/http -Ic/lib/image
-RANGE_SRC := tests/unit/range_test.c c/apps/browser/browser_rt.c \
+RANGE_INC := -Itests/unit/h2stub -Iinclude/abi $(BROWSER_INC) -Ic/net/http -Ic/lib/image
+RANGE_SRC := tests/unit/range_test.c c/apps/gui/browser/app/runtime.c \
              c/net/http/http1.c c/net/http/http2.c c/net/http/hpack.c \
              c/net/http/hpool.c c/net/http/url.c
 

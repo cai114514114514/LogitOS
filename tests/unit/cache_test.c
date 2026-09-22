@@ -1,5 +1,5 @@
-/* Host test for c/apps/browser/js_cache.c (CacheStorage/Cache) and
- * c/apps/browser/js_swreg.c (navigator.serviceWorker) -- the two parts of
+/* Host test for c/apps/gui/browser/js/storage/cache.c (CacheStorage/Cache) and
+ * c/apps/gui/browser/js/storage/swreg.c (navigator.serviceWorker) -- the two parts of
  * the ServiceWorker workflow item that ship (part C, executing a service
  * worker script and intercepting fetch, is refused by name -- see both
  * files' headers).
@@ -46,9 +46,9 @@
 #include <unistd.h>
 
 #include "quickjs.h"
-#include "dom.h"
-#include "js_dom.h"
-#include "js_page.h"
+#include "dom/tree.h"
+#include "js/dom/dom.h"
+#include "js/runtime/page.h"
 #include "loader_fakebfetch.h"
 
 /* cache.add()/addAll() call the WINDOW's `fetch()`, which is a DIFFERENT

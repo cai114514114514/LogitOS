@@ -4,9 +4,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "dom.h"
-#include "js_page.h"
-#include "page_runtime.h"
+#include "dom/tree.h"
+#include "js/runtime/page.h"
+#include "app/page.h"
 
 void *kmalloc(unsigned long n) { return malloc(n); }
 void kfree(void *p) { free(p); }

@@ -83,16 +83,16 @@ ci-boot: test-docwrite
 
 # $(BROWSER_JS_CF), not $(JS_CF): the root Makefile's ONE target-specific
 # variable override strips `-include features.h` from the browser's own TUs,
-# and a rule here that compiled a c/apps/browser source with raw $(JS_CF)
+# and a rule here that compiled a c/apps/gui/browser source with raw $(JS_CF)
 # would revive the `hidden` macro that made sizeof(struct item) disagree by 8
 # bytes across the display list. tests/currentscript.mk states this for
 # js_page.o; this rule obeys it for js_platform.o.
-$(BUILD)/ndw/c/apps/browser/js_platform.o: c/apps/browser/js_platform.c
+$(BUILD)/ndw/c/apps/gui/browser/js/runtime/platform.o: c/apps/gui/browser/js/runtime/platform.c
 	@mkdir -p $(dir $@)
 	$(CC) $(BROWSER_JS_CF) -DJS_DOCWRITE_NO_INSTALL -c $< -o $@
 
-NDW_JS_OBJ := $(filter-out $(BUILD)/jsobj/c/apps/browser/js_platform.o,$(BROWSER_JS_OBJ)) \
-              $(BUILD)/ndw/c/apps/browser/js_platform.o
+NDW_JS_OBJ := $(filter-out $(BUILD)/jsobj/c/apps/gui/browser/js/runtime/platform.o,$(BROWSER_JS_OBJ)) \
+              $(BUILD)/ndw/c/apps/gui/browser/js/runtime/platform.o
 
 $(BUILD)/browser-ndw.elf: $(ENGINE_OBJ) $(NDW_JS_OBJ) $(BROWSER_OBJ) $(CSS_OBJ) $(GFX_OBJ) $(RUST_LIB) $(BUILD)/apps/crt0.o $(BUILD)/browserobj/malloc_big.o
 	$(LD) -nostdlib -e _start -Ttext=0x45000000 -o $@ --start-group $(BUILD)/apps/crt0.o $(ENGINE_OBJ) $(NDW_JS_OBJ) $(BROWSER_OBJ) $(CSS_OBJ) $(GFX_OBJ) $(RUST_LIB) $(BUILD)/browserobj/malloc_big.o --end-group
@@ -110,12 +110,12 @@ test-docwrite-negctl: $(ISO) $(BUILD)/browser-ndw.aex
 # the gate's DW-DOM-ORDER2/no-orange assertions exist to catch. Run it once
 # across a change to the refusal, watch it go red, record it; it is not on
 # ci-boot (two boots per run for already-recorded evidence).
-$(BUILD)/adw/c/apps/browser/js_platform.o: c/apps/browser/js_platform.c
+$(BUILD)/adw/c/apps/gui/browser/js/runtime/platform.o: c/apps/gui/browser/js/runtime/platform.c
 	@mkdir -p $(dir $@)
 	$(CC) $(BROWSER_JS_CF) -DJS_DOCWRITE_AFTERLOAD -c $< -o $@
 
-ADW_JS_OBJ := $(filter-out $(BUILD)/jsobj/c/apps/browser/js_platform.o,$(BROWSER_JS_OBJ)) \
-              $(BUILD)/adw/c/apps/browser/js_platform.o
+ADW_JS_OBJ := $(filter-out $(BUILD)/jsobj/c/apps/gui/browser/js/runtime/platform.o,$(BROWSER_JS_OBJ)) \
+              $(BUILD)/adw/c/apps/gui/browser/js/runtime/platform.o
 
 $(BUILD)/browser-adw.elf: $(ENGINE_OBJ) $(ADW_JS_OBJ) $(BROWSER_OBJ) $(CSS_OBJ) $(GFX_OBJ) $(RUST_LIB) $(BUILD)/apps/crt0.o $(BUILD)/browserobj/malloc_big.o
 	$(LD) -nostdlib -e _start -Ttext=0x45000000 -o $@ --start-group $(BUILD)/apps/crt0.o $(ENGINE_OBJ) $(ADW_JS_OBJ) $(BROWSER_OBJ) $(CSS_OBJ) $(GFX_OBJ) $(RUST_LIB) $(BUILD)/browserobj/malloc_big.o --end-group

@@ -13,7 +13,7 @@
 #
 # ENTROPY_BREAK=1 INVERTS the verdict: it is the negative control, run against a
 # disk packed with /bin/entropy built -DENTROPY_CONTROL_XORSHIFT -- the
-# generator c/apps/browser/js_platform.c really used to ship, same algorithm and
+# generator c/apps/gui/browser/js/runtime/platform.c really used to ship, same algorithm and
 # same seeding. **Assertion 2 is the discriminator** and it must go RED there.
 #
 # WHY 2 AND NOT 3, because this was measured rather than assumed. The first

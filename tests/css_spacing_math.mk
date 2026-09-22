@@ -1,7 +1,7 @@
 # Computed spacing values consumed by the shipping flex/grid and box layout.
 SPACING_MATH_DIR = $(BUILD)/css-spacing-math
 SPACING_MATH_SRC = $(filter-out tests/unit/layout_box_test.c,$(LBOX_SRC)) tests/unit/css_spacing_math_test.c
-SPACING_MATH_DEPS = $(SPACING_MATH_SRC) $(HTML_PARSER_SRC) tests/unit/intrinsic_test.c $(wildcard c/apps/browser/css*.h c/apps/browser/css*.inc c/apps/browser/layout*.h c/apps/browser/layout*.c c/apps/browser/layout*.inc) $(BUILD)/libcss_host.a tests/css_spacing_math.mk
+SPACING_MATH_DEPS = $(SPACING_MATH_SRC) $(HTML_PARSER_SRC) tests/unit/intrinsic_test.c $(wildcard c/apps/gui/browser/css/*.h c/apps/gui/browser/css/*.inc c/apps/gui/browser/layout/*.h c/apps/gui/browser/layout/*.c c/apps/gui/browser/layout/*.inc) $(BUILD)/libcss_host.a tests/css_spacing_math.mk
 $(SPACING_MATH_DIR)/test: $(SPACING_MATH_DEPS)
 	@mkdir -p $(SPACING_MATH_DIR)
 	$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) -o $@ $(SPACING_MATH_SRC) $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a -lm

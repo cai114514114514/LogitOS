@@ -24,8 +24,8 @@
 .PHONY: test-mse test-mse-asan test-mse-negctl test-mse-nocard-negctl test-mse-os mse-fixtures
 
 MSE_FX   := tests/fixtures/mse
-MSE_SRC  := c/apps/browser/js_media_src.c
-MSE_HDRS := c/apps/browser/js_media.h
+MSE_SRC  := c/apps/gui/browser/js/media/media_src.c
+MSE_HDRS := c/apps/gui/browser/js/media/media.h
 MSE_DEPS = $(MSE_SRC) $(MSE_HDRS) $(wildcard c/lib/media/*.c) \
            $(wildcard c/lib/video/*.c) $(wildcard c/lib/audio/*.c)
 
@@ -61,13 +61,13 @@ MSE_DEPS = $(MSE_SRC) $(MSE_HDRS) $(wildcard c/lib/media/*.c) \
 # EMPTY value the day either line moves, and the error would name forty image
 # symbols with nothing in it about ordering.
 MSE_IMG_SRC = $(IMG_HOST_SRC) $(RUST_LIB_HOST)
-MSE_INC     = -Ic/apps/browser -Ic/lib/media -Ic/lib/video -Ic/lib/audio \
+MSE_INC     = $(BROWSER_INC) -Ic/lib/media -Ic/lib/video -Ic/lib/audio \
               $(IMG_HOST_INC)
 
 # THE TWO-LINE RING-3 ALLOCATOR SHIM, generated rather than committed.
 # c/lib/image and c/lib/video declare `void *kmalloc(unsigned long)` as a bare
 # extern and rely on the PROGRAM to define it -- preview.c:64, browser_rt.c:44,
-# vidcheck.c, demuxcheck.c:38 and c/apps/media/msecheck.c:33 each carry the same
+# vidcheck.c, demuxcheck.c:38 and tests/guest/media/msecheck.c:33 each carry the same
 # two lines, and msecheck.c's copy is what makes the .elf below link. Of every
 # consumer of these sources, tests/unit/mse_test.c is the one that does not
 # carry them, so the host link fails on _kmalloc/_kfree.
@@ -99,7 +99,7 @@ $(BUILD)/mse_kshim.c: tests/mse.mk
 # a second build of anything.
 #
 # js_media.c and js_media_src.c need no rule at all: BROWSER_JS_SRC is
-# $(wildcard c/apps/browser/js_*.c), so they are picked up with the QuickJS
+# $(BROWSER_JS_C), so they are picked up with the QuickJS
 # flags automatically. That wildcard is why they are named js_*.
 MSE_LINK_OBJ := $(MED_OBJ) $(VID_OBJ) $(AUD_OBJ)
 
@@ -245,8 +245,8 @@ $(BUILD)/mseobj/%.o: %.c $(MSE_HDRS)
 	@mkdir -p $(dir $@)
 	$(CC) $(UCFLAGS) -c $< -o $@
 
-MSECHK_OBJ := $(BUILD)/mseobj/c/apps/browser/js_media_src.o \
-              $(BUILD)/mseobj/c/apps/media/msecheck.o
+MSECHK_OBJ := $(BUILD)/mseobj/c/apps/gui/browser/js/media/media_src.o \
+              $(BUILD)/mseobj/tests/guest/media/msecheck.o
 
 $(BUILD)/msecheck.elf: $(MSECHK_OBJ) $(MED_OBJ) $(VID_OBJ) $(AUD_OBJ) \
                        $(IMGCHK_OBJ) $(GFX_OBJ) $(RUST_LIB) $(LIBM_OBJ) \

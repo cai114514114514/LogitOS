@@ -1,7 +1,7 @@
 # Actual DOM/CSS/layout with two independently owned passive documents.
 PASSIVE_CONTEXT_DIR := $(BUILD)/passive-layout-context
 PASSIVE_CONTEXT_SRC = $(filter-out tests/unit/layout_box_test.c,$(LBOX_SRC)) tests/unit/passive_layout_context_test.c
-PASSIVE_CONTEXT_DEPS = $(PASSIVE_CONTEXT_SRC) $(HTML_PARSER_SRC) c/apps/browser/css.h c/apps/browser/layout.h $(BUILD)/libcss_host.a
+PASSIVE_CONTEXT_DEPS = $(PASSIVE_CONTEXT_SRC) $(HTML_PARSER_SRC) c/apps/gui/browser/css/style.h c/apps/gui/browser/layout/block.h $(BUILD)/libcss_host.a
 .PHONY: test-passive-layout-context test-passive-layout-context-negctl test-passive-layout-context-sanitize
 $(PASSIVE_CONTEXT_DIR)/test: $(PASSIVE_CONTEXT_DEPS)
 	@mkdir -p $(PASSIVE_CONTEXT_DIR)

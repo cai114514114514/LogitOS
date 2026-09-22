@@ -1,6 +1,6 @@
 STYLE_FORWARD_DIR = $(BUILD)/style-forward
 STYLE_FORWARD_SRC = tests/unit/style_forward_test.c $(filter-out tests/unit/cssom_test.c,$(CSSOM_TEST_SRC))
-STYLE_FORWARD_DEPS = $(STYLE_FORWARD_SRC) tests/unit/cssom_test.c $(HTML_PARSER_SRC) $(QJS_SRC) $(wildcard c/apps/browser/js_dom*.inc) $(BUILD)/libcss_host.a
+STYLE_FORWARD_DEPS = $(STYLE_FORWARD_SRC) tests/unit/cssom_test.c $(HTML_PARSER_SRC) $(QJS_SRC) $(wildcard c/apps/gui/browser/js/dom/dom*.inc) $(BUILD)/libcss_host.a
 STYLE_FORWARD_CF = -O2 -w $(BTEST_INC) $(CSS_INC) $(JS_INC) -DCONFIG_VERSION='"host"' -DWEBAPI_HOST
 $(STYLE_FORWARD_DIR)/current: $(STYLE_FORWARD_DEPS)
 	@mkdir -p $(STYLE_FORWARD_DIR)

@@ -1,8 +1,8 @@
 #define main select_state_original_main
 #include "select_state_test.c"
 #undef main
-#include "focus.h"
-#include "top_layer.h"
+#include "dom/focus.h"
+#include "dom/top_layer.h"
 int main(void) {
     const char *html="<!doctype html><button id=o>OPEN</button><dialog id=d><input id=i autofocus><button id=b>CLOSE</button></dialog><dialog id=e><button id=q>NESTED</button></dialog>";
     struct node *root=dom_parse(html,strlen(html));js_page_set_location("http://example.com/");if(!js_page_open(root))return 2;

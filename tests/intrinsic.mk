@@ -2,7 +2,7 @@
 # Restore the old max(child)/empty-control measurement in a prerequisite build.
 INTRINSIC_DIR := $(BUILD)/intrinsic
 INTRINSIC_SRC = $(filter-out tests/unit/layout_box_test.c,$(LBOX_SRC)) tests/unit/intrinsic_test.c
-INTRINSIC_DEPS = $(INTRINSIC_SRC) $(HTML_PARSER_SRC) c/apps/browser/layout.h c/apps/browser/css.h c/apps/browser/layout_flex.c c/apps/browser/layout_grid.c $(BUILD)/libcss_host.a
+INTRINSIC_DEPS = $(INTRINSIC_SRC) $(HTML_PARSER_SRC) c/apps/gui/browser/layout/block.h c/apps/gui/browser/css/style.h c/apps/gui/browser/layout/flex.c c/apps/gui/browser/layout/grid.c $(BUILD)/libcss_host.a
 .PHONY: test-intrinsic test-intrinsic-negctl
 $(INTRINSIC_DIR)/test: $(INTRINSIC_DEPS)
 	@mkdir -p $(INTRINSIC_DIR)

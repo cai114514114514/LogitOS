@@ -14,7 +14,7 @@
 #include <string.h>
 #include <time.h>
 
-#include "html_tokenizer.h"
+#include "html/tokenizer.h"
 
 static int checks, failures;
 

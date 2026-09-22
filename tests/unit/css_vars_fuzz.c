@@ -1,4 +1,4 @@
-/* Fuzz the custom-property scanner in c/apps/browser/css_vars.c.
+/* Fuzz the custom-property scanner in c/apps/gui/browser/css/vars.c.
  *
  * The scanner walks attacker-controlled stylesheet bytes with raw index
  * arithmetic -- it looks backwards from a declaration start (s[i-1]), trims
@@ -17,7 +17,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "css.h"
+#include "css/style.h"
 
 static const char *const SEEDS[] = {
     ":root{--a:1px}",

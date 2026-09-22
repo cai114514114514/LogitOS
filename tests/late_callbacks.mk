@@ -1,6 +1,6 @@
 LATE_SITE_DIR := $(BUILD)/site-general/late-callback
 LATE_SITE_SRC = $(filter-out tests/unit/runtime_scroll_test.c,$(RUNTIME_SCROLL_SRC)) tests/unit/late_callbacks_test.c
-LATE_SITE_DEPS = $(LATE_SITE_SRC) $(RUNTIME_SCROLL_DEPS) $(wildcard c/apps/browser/*.inc)
+LATE_SITE_DEPS = $(LATE_SITE_SRC) $(RUNTIME_SCROLL_DEPS) $(BROWSER_INCLUDES)
 $(LATE_SITE_DIR)/test: $(LATE_SITE_DEPS)
 	@mkdir -p $(LATE_SITE_DIR)
 	$(CC) $(RUNTIME_SCROLL_CF) -DBROWSER_IDLE_OBSERVER -o $@ $(LATE_SITE_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm

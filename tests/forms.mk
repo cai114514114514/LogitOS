@@ -29,7 +29,7 @@
 # THERE IS NO test-wpt-forms, AND THERE MUST NOT BE. This fragment used to
 # build a second WPT runner with forms.c/focus.c/js_forms.c added, on the
 # premise that tests/wpt.mk's runner did not link them. It does: WPT_JS_SRC is
-# a wildcard over c/apps/browser/js_*.c and WPT_TEST_SRC names forms.c and
+# a wildcard over $(BROWSER_JS_C) and WPT_TEST_SRC names forms.c and
 # focus.c outright. So the second runner measured the same browser twice and
 # could not even link -- tests/unit/wpt_test.c already defines text_measure,
 # which is the one symbol the deleted shim supplied.
@@ -46,7 +46,7 @@
 # that have nothing to do with what is being measured. Pin it to the committed
 # set when that happens:
 #
-#     make wpt ONLY=... WPT_JS_SRC="$(git ls-files c/apps/browser/js_*.c)"
+#     make wpt ONLY=... WPT_JS_SRC="$(git ls-files $(BROWSER_JS_C))"
 
 # THE FOURTH TARGET, added with contenteditable editing:
 #
@@ -93,9 +93,9 @@
 test-forms: test-forms-ce-negctl
 
 FORMS_SRC := tests/unit/forms_test.c \
-             c/apps/browser/forms.c c/apps/browser/focus.c \
-             c/apps/browser/layout.c c/apps/browser/layout_text.c c/apps/browser/css_engine.c \
-             c/apps/browser/css_vars.c $(HTML_PARSER_SRC)
+             c/apps/gui/browser/dom/forms.c c/apps/gui/browser/dom/focus.c \
+             c/apps/gui/browser/layout/block.c c/apps/gui/browser/layout/text.c c/apps/gui/browser/css/engine.c \
+             c/apps/gui/browser/css/vars.c $(HTML_PARSER_SRC)
 
 test-forms: $(BUILD)/libcss_host.a
 	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) -o $(BUILD)/forms_test \
@@ -159,8 +159,8 @@ test-forms-ce-device: $(ISO) $(DISK)
 # reused. browser.o is compiled with -DBROWSER_NO_FOCUS (the routing compiled
 # out, keys back to <body>) and js_forms.o is dropped, so the control is exactly
 # "the tree as it was" and not an approximation of it.
-NOFOCUS_JS_OBJ := $(filter-out $(BUILD)/jsobj/c/apps/browser/browser.o \
-                               $(BUILD)/jsobj/c/apps/browser/js_forms.o, \
+NOFOCUS_JS_OBJ := $(filter-out $(BUILD)/jsobj/c/apps/gui/browser/app/main.o \
+                               $(BUILD)/jsobj/c/apps/gui/browser/js/dom/forms.o, \
                                $(BROWSER_JS_OBJ)) \
                   $(BUILD)/nofocus/browser.o
 
@@ -175,7 +175,7 @@ NOFOCUS_JS_OBJ := $(filter-out $(BUILD)/jsobj/c/apps/browser/browser.o \
 #
 # This object is not in $(BROWSER_JS_OBJ) -- it is a separate path with its own
 # rule -- so the override never reached it, and `it[i].hidden` expanded to
-# __attribute__((visibility("hidden"))) at c/apps/browser/browser.c:2314.
+# __attribute__((visibility("hidden"))) at c/apps/gui/browser/app/main.c:2314.
 #
 # The failure named -DBROWSER_NO_FOCUS by association and had nothing to do with
 # it: the identical command without that flag fails identically. The real build
@@ -184,7 +184,7 @@ NOFOCUS_JS_OBJ := $(filter-out $(BUILD)/jsobj/c/apps/browser/browser.o \
 # Sixth instance in one sweep of a control drifting from the thing it controls.
 # Any future compile flag that the browser's objects need has to be added here
 # too, which is what using the shared variable rather than $(JS_CF) buys.
-$(BUILD)/nofocus/browser.o: c/apps/browser/browser.c
+$(BUILD)/nofocus/browser.o: c/apps/gui/browser/app/main.c
 	@mkdir -p $(dir $@)
 	$(CC) $(BROWSER_JS_CF) -DBROWSER_NO_FOCUS -c $< -o $@
 

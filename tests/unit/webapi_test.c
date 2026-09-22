@@ -1,4 +1,4 @@
-/* Host unit tests for c/apps/browser/js_webapi.c -- fetch, XHR, Storage,
+/* Host unit tests for c/apps/gui/browser/js/runtime/webapi.c -- fetch, XHR, Storage,
  * history, location, URL, URLSearchParams, matchMedia.
  *
  * The point of this file is that NONE of it needs QEMU. js_webapi.c takes its
@@ -21,7 +21,7 @@
 #include <time.h>
 
 #include "quickjs.h"
-#include "js_webapi.h"
+#include "js/runtime/webapi.h"
 #include "logit_abi.h"
 
 /* The Rust staticlib (linked for its inflater, which http1.c uses to undo

@@ -46,8 +46,8 @@
 #include <string.h>
 #include <stdlib.h>
 
-#include "dom.h"
-#include "css.h"
+#include "dom/tree.h"
+#include "css/style.h"
 
 static int g_fail, g_checks;
 

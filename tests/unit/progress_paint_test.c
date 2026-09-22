@@ -1,7 +1,7 @@
 #define main loader_original_main
 #include "loader_test.c"
 #undef main
-#include "js_dom.h"
+#include "js/dom/dom.h"
 void progress_paint_tick(void);
 int browser_settle(void);
 void loader_poll_hook(void) { }

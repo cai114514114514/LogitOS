@@ -20,12 +20,12 @@ AUDIT_DIRS ?= $(sort $(dir $(wildcard tests/fixtures/cssweb/*/index.html)))
 AUDIT_TOP  ?= 30
 NEGDIR := $(BUILD)/cssnegctl
 $(BUILD)/css_audit: tests/unit/css_audit.c $(BUILD)/libcss_host.a \
-                    c/apps/browser/css_engine.c c/apps/browser/css_vars.c \
-                    c/apps/browser/css_extra.c c/apps/browser/layout.c c/apps/browser/layout_text.c \
-                    c/apps/browser/browser_paint.c $(HTML_PARSER_SRC)
+                    c/apps/gui/browser/css/engine.c c/apps/gui/browser/css/vars.c \
+                    c/apps/gui/browser/css/extra.c c/apps/gui/browser/layout/block.c c/apps/gui/browser/layout/text.c \
+                    c/apps/gui/browser/paint/renderer.c $(HTML_PARSER_SRC)
 	@$(CC) -O2 -w $(PAINT_INC) $(BTEST_INC) $(CSS_INC) -o $@ tests/unit/css_audit.c \
-	    c/apps/browser/css_engine.c c/apps/browser/css_vars.c c/apps/browser/css_extra.c \
-	    c/apps/browser/layout.c c/apps/browser/layout_text.c c/apps/browser/browser_paint.c $(GFX_SRC) \
+	    c/apps/gui/browser/css/engine.c c/apps/gui/browser/css/vars.c c/apps/gui/browser/css/extra.c \
+	    c/apps/gui/browser/layout/block.c c/apps/gui/browser/layout/text.c c/apps/gui/browser/paint/renderer.c $(GFX_SRC) \
 	    $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a
 
 audit-css: $(BUILD)/css_audit
@@ -41,7 +41,7 @@ audit-css: $(BUILD)/css_audit
 audit-css-before: $(BUILD)/libcss_host.a $(NEGDIR)/css_audit_before
 	@$(NEGDIR)/css_audit_before --top=$(AUDIT_TOP) $(AUDIT_DIRS)
 
-$(NEGDIR)/css_audit_before: tests/unit/css_audit.c c/apps/browser/css_vars.c \
+$(NEGDIR)/css_audit_before: tests/unit/css_audit.c c/apps/gui/browser/css/vars.c \
                             third_party/css/libcss/src/parse/language.c \
                             third_party/css/libcss/src/parse/parse.c \
                             $(BUILD)/libcss_host.a
@@ -49,13 +49,13 @@ $(NEGDIR)/css_audit_before: tests/unit/css_audit.c c/apps/browser/css_vars.c \
 	@sed -e 's/#define VVAL_MAX 8192/#define VVAL_MAX 192/' \
 	     -e 's|char \*dst = (vlen < VVAL_MAX \&\& text_balanced(val, vlen))|if (vlen >= VVAL_MAX) vlen = VVAL_MAX - 1;\n    char *dst = (1)|' \
 	     -e 's/^static int text_balanced(const char \*s, int n)$$/static int text_balanced(const char *s, int n) { (void) s; (void) n; return 1; }\nstatic int text_balanced_disabled(const char *s, int n)/' \
-	     c/apps/browser/css_vars.c > $(NEGDIR)/css_vars.c
+	     c/apps/gui/browser/css/vars.c > $(NEGDIR)/css_vars.c
 	@sed -e 's/^static bool at_rule_is_group(const css_token \*kw)$$/static bool at_rule_is_group(const css_token *kw) { (void) kw; return false; }\nstatic bool at_rule_is_group_disabled(const css_token *kw)/' \
 	     third_party/css/libcss/src/parse/language.c > $(NEGDIR)/libcss/parse/language.c
 	@sed -e 's/^static const bool css__nested_atrules = true;$$/static const bool css__nested_atrules = false;/' \
 	     third_party/css/libcss/src/parse/parse.c > $(NEGDIR)/libcss/parse/parse.c
 	@for f in css_vars.c libcss/parse/language.c libcss/parse/parse.c; do \
-	    case $$f in css_vars.c) o=c/apps/browser/css_vars.c;; \
+	    case $$f in css_vars.c) o=c/apps/gui/browser/css/vars.c;; \
 	                *) o=third_party/css/libcss/src/parse/$${f##*/};; esac; \
 	    cmp -s $$o $(NEGDIR)/$$f && \
 	      { echo "FAIL: audit-css-before patched nothing in $$o"; exit 1; } || true; \
@@ -68,16 +68,16 @@ $(NEGDIR)/css_audit_before: tests/unit/css_audit.c c/apps/browser/css_vars.c \
 	@ar d $(NEGDIR)/libcss_before.a language.o parse.o
 	@ar r $(NEGDIR)/libcss_before.a $(NEGDIR)/language_before.o $(NEGDIR)/parse_before.o
 	@$(CC) -O2 -w $(PAINT_INC) $(BTEST_INC) $(CSS_INC) -o $@ tests/unit/css_audit.c \
-	    c/apps/browser/css_engine.c $(NEGDIR)/css_vars.c c/apps/browser/css_extra.c \
-	    c/apps/browser/layout.c c/apps/browser/layout_text.c c/apps/browser/browser_paint.c $(GFX_SRC) \
+	    c/apps/gui/browser/css/engine.c $(NEGDIR)/css_vars.c c/apps/gui/browser/css/extra.c \
+	    c/apps/gui/browser/layout/block.c c/apps/gui/browser/layout/text.c c/apps/gui/browser/paint/renderer.c $(GFX_SRC) \
 	    $(HTML_PARSER_SRC) $(NEGDIR)/libcss_before.a
 
 # --- test-css-modern: the constructs a 2020s stylesheet is written in -------
 # @layer / @supports / @container (each of which used to take its whole block
 # with it) and the CSS logical properties. See the header of
 # tests/unit/css_modern_test.c for the measured reason each one is here.
-CSSMODERN_SRC := tests/unit/css_modern_test.c tests/unit/css_hostmm.c c/apps/browser/css_engine.c \
-                 c/apps/browser/css_vars.c c/apps/browser/css_extra.c
+CSSMODERN_SRC := tests/unit/css_modern_test.c tests/unit/css_hostmm.c c/apps/gui/browser/css/engine.c \
+                 c/apps/gui/browser/css/vars.c c/apps/gui/browser/css/extra.c
 # test-css-web-negctl runs BOTH halves (VVAL_MAX truncation restored; the
 # libcss group-rule branch disabled); anchoring it on this gate covers the
 # css_modern half AND runs the css_vars half beside it. The css_vars half's
@@ -111,8 +111,8 @@ test-css-modern: test-css-web-negctl $(BUILD)/libcss_host.a
 # Its control is a PREREQUISITE of the target, not a line on ci-host:. 61
 # controls in this tree are stranded exactly that way.
 CSSINERT_SRC := tests/unit/css_selector_inert_test.c tests/unit/css_hostmm.c \
-                c/apps/browser/css_engine.c c/apps/browser/css_vars.c \
-                c/apps/browser/css_extra.c
+                c/apps/gui/browser/css/engine.c c/apps/gui/browser/css/vars.c \
+                c/apps/gui/browser/css/extra.c
 test-css-selector-inert: test-css-selector-inert-negctl test-css-selector-all-inert-negctl $(BUILD)/libcss_host.a
 	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) -o $(BUILD)/css_selector_inert_test \
 	    $(CSSINERT_SRC) $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a -lm
@@ -195,8 +195,8 @@ test-css-selector-all-inert-negctl: $(BUILD)/libcss_host.a
 # which is what actually runs them; 61 controls in this tree are stranded the
 # other way.
 CSSSELSTATIC_SRC := tests/unit/css_selstatic_test.c tests/unit/css_hostmm.c \
-                    c/apps/browser/css_engine.c c/apps/browser/css_vars.c \
-                    c/apps/browser/css_extra.c
+                    c/apps/gui/browser/css/engine.c c/apps/gui/browser/css/vars.c \
+                    c/apps/gui/browser/css/extra.c
 test-css-selstatic: test-css-selstatic-negctl test-css-selstatic-supports-negctl \
                     $(BUILD)/libcss_host.a
 	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) -o $(BUILD)/css_selstatic_test \
@@ -217,15 +217,15 @@ test-css-selstatic-negctl: $(BUILD)/libcss_host.a
 	@mkdir -p $(NEGDIR)
 	@sed -e 's|    h_node_is_enabled, h_node_is_disabled, h_node_is_checked,|    h_false /*enabled*/, h_false /*disabled*/, h_false /*checked*/,|' \
 	     -e 's|    h_node_is_target, h_node_is_lang,|    h_false /*target*/, h_node_is_lang,|' \
-	     c/apps/browser/css_engine.c > $(NEGDIR)/css_engine_hfalse.c
-	@cmp -s c/apps/browser/css_engine.c $(NEGDIR)/css_engine_hfalse.c && \
+	     c/apps/gui/browser/css/engine.c > $(NEGDIR)/css_engine_hfalse.c
+	@cmp -s c/apps/gui/browser/css/engine.c $(NEGDIR)/css_engine_hfalse.c && \
 	    { echo "FAIL: the static-pseudo negative control patched nothing --"; \
 	      echo "      the four handlers are no longer where the sed expects them."; exit 1; } || true
 	@grep -q "h_false /\*checked\*/" $(NEGDIR)/css_engine_hfalse.c || \
 	    { echo "FAIL: the control did not restore h_false for :checked"; exit 1; }
 	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) -o $(NEGDIR)/css_selstatic_neg \
 	    tests/unit/css_selstatic_test.c tests/unit/css_hostmm.c \
-	    $(NEGDIR)/css_engine_hfalse.c c/apps/browser/css_vars.c c/apps/browser/css_extra.c \
+	    $(NEGDIR)/css_engine_hfalse.c c/apps/gui/browser/css/vars.c c/apps/gui/browser/css/extra.c \
 	    $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a -lm
 	@if $(NEGDIR)/css_selstatic_neg > $(NEGDIR)/selstatic.txt 2>&1; then \
 	    echo "FAIL: with the four handlers back on h_false the gate still PASSED --"; \
@@ -282,13 +282,13 @@ test-css-selstatic-supports-negctl: $(BUILD)/libcss_host.a
 #   make css-selstatic-census
 #   make css-selstatic-census CENSUS_FRAG=main   # :target with a fragment
 CENSUS_SRC  := tests/unit/css_selstatic_census.c \
-               c/apps/browser/css_vars.c c/apps/browser/css_extra.c \
-               c/apps/browser/layout.c c/apps/browser/layout_text.c \
-               c/apps/browser/browser_paint.c
+               c/apps/gui/browser/css/vars.c c/apps/gui/browser/css/extra.c \
+               c/apps/gui/browser/layout/block.c c/apps/gui/browser/layout/text.c \
+               c/apps/gui/browser/paint/renderer.c
 CENSUS_FRAG ?=
 css-selstatic-census: test-css-selstatic-negctl $(BUILD)/libcss_host.a
 	@$(CC) -O2 -w $(PAINT_INC) $(BTEST_INC) $(CSS_INC) -o $(BUILD)/css_census_after \
-	    $(CENSUS_SRC) c/apps/browser/css_engine.c $(GFX_SRC) \
+	    $(CENSUS_SRC) c/apps/gui/browser/css/engine.c $(GFX_SRC) \
 	    $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a -lm
 	@$(CC) -O2 -w $(PAINT_INC) $(BTEST_INC) $(CSS_INC) -o $(NEGDIR)/css_census_before \
 	    $(CENSUS_SRC) $(NEGDIR)/css_engine_hfalse.c $(GFX_SRC) \
@@ -338,8 +338,8 @@ test-css-selstatic-os: $(ISO) $(DISK)
 #
 # Its control is a PREREQUISITE of the target, not a line on ci-host:.
 CSSRADIUS_SRC := tests/unit/css_border_radius_test.c tests/unit/css_hostmm.c \
-                 c/apps/browser/css_engine.c c/apps/browser/css_vars.c \
-                 c/apps/browser/css_extra.c
+                 c/apps/gui/browser/css/engine.c c/apps/gui/browser/css/vars.c \
+                 c/apps/gui/browser/css/extra.c
 test-css-border-radius: test-css-border-radius-negctl $(BUILD)/libcss_host.a
 	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) -o $(BUILD)/css_border_radius_test \
 	    $(CSSRADIUS_SRC) $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a -lm
@@ -393,8 +393,8 @@ test-css-border-radius-negctl: $(BUILD)/libcss_host.a
 # right name -- which ACCEPTS, so it is a success in every drop counter.
 # See the header of tests/unit/css_proptable_test.c.
 CSSPROPTAB_SRC := tests/unit/css_proptable_test.c tests/unit/css_hostmm.c \
-                  c/apps/browser/css_engine.c c/apps/browser/css_vars.c \
-                  c/apps/browser/css_extra.c
+                  c/apps/gui/browser/css/engine.c c/apps/gui/browser/css/vars.c \
+                  c/apps/gui/browser/css/extra.c
 test-css-proptables: test-css-proptables-negctl $(BUILD)/libcss_host.a
 	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) -o $(BUILD)/css_proptable_test \
 	    $(CSSPROPTAB_SRC) $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a -lm
@@ -476,9 +476,9 @@ check-cssgen:
 #   make audit-css              AUDIT_TOP=8 > /tmp/after
 audit-css-radius-before: test-css-border-radius-negctl
 	@$(CC) -O2 -w $(PAINT_INC) $(BTEST_INC) $(CSS_INC) -o $(NEGDIR)/css_audit_norad \
-	    tests/unit/css_audit.c c/apps/browser/css_engine.c c/apps/browser/css_vars.c \
-	    c/apps/browser/css_extra.c c/apps/browser/layout.c c/apps/browser/layout_text.c \
-	    c/apps/browser/browser_paint.c $(GFX_SRC) $(HTML_PARSER_SRC) $(NEGDIR)/libcss_norad.a
+	    tests/unit/css_audit.c c/apps/gui/browser/css/engine.c c/apps/gui/browser/css/vars.c \
+	    c/apps/gui/browser/css/extra.c c/apps/gui/browser/layout/block.c c/apps/gui/browser/layout/text.c \
+	    c/apps/gui/browser/paint/renderer.c $(GFX_SRC) $(HTML_PARSER_SRC) $(NEGDIR)/libcss_norad.a
 	@$(NEGDIR)/css_audit_norad --top=$(AUDIT_TOP) $(AUDIT_DIRS)
 
 .PHONY: audit-css-radius-before
@@ -503,13 +503,13 @@ test-css-web-negctl: $(BUILD)/libcss_host.a
 	@mkdir -p $(NEGDIR)
 	@sed -e 's/#define VVAL_MAX 8192/#define VVAL_MAX 192/' \
 	     -e 's|char \*dst = (vlen < VVAL_MAX \&\& text_balanced(val, vlen))|if (vlen >= VVAL_MAX) vlen = VVAL_MAX - 1;\n    char *dst = (1)|' \
-	     c/apps/browser/css_vars.c > $(NEGDIR)/css_vars.c
-	@cmp -s c/apps/browser/css_vars.c $(NEGDIR)/css_vars.c && \
+	     c/apps/gui/browser/css/vars.c > $(NEGDIR)/css_vars.c
+	@cmp -s c/apps/gui/browser/css/vars.c $(NEGDIR)/css_vars.c && \
 	    { echo "FAIL: the css_vars negative control patched nothing --"; \
 	      echo "      the sed no longer matches the source, so it proves nothing."; exit 1; } || true
 	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) -o $(NEGDIR)/css_vars_neg \
 	    tests/unit/css_vars_test.c tests/unit/css_hostmm.c $(NEGDIR)/css_vars.c \
-	    c/apps/browser/css_engine.c $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a -lm
+	    c/apps/gui/browser/css/engine.c $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a -lm
 	@if $(NEGDIR)/css_vars_neg > $(NEGDIR)/vars.txt 2>&1; then \
 	    echo "FAIL: with value truncation restored css_vars_test still PASSED --"; \
 	    echo "      the balance assertions cannot fail, so they prove nothing."; \
@@ -556,8 +556,8 @@ test-css-web-negctl: $(BUILD)/libcss_host.a
 #   make css-drop-probe
 # See the header of tests/unit/css_drop_probe.c.
 CSSDROP_SRC := tests/unit/css_drop_probe.c tests/unit/css_hostmm.c \
-               c/apps/browser/css_engine.c c/apps/browser/css_vars.c \
-               c/apps/browser/css_extra.c
+               c/apps/gui/browser/css/engine.c c/apps/gui/browser/css/vars.c \
+               c/apps/gui/browser/css/extra.c
 css-drop-probe: $(BUILD)/libcss_host.a
 	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) -o $(BUILD)/css_drop_probe \
 	    $(CSSDROP_SRC) $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a -lm
@@ -619,9 +619,9 @@ css-drop-probe-before: test-css-selector-inert-negctl
 # for this change rather than two that can drift apart.
 audit-css-inert-before: test-css-selector-inert-negctl
 	@$(CC) -O2 -w $(PAINT_INC) $(BTEST_INC) $(CSS_INC) -o $(NEGDIR)/css_audit_inert \
-	    tests/unit/css_audit.c c/apps/browser/css_engine.c c/apps/browser/css_vars.c \
-	    c/apps/browser/css_extra.c c/apps/browser/layout.c c/apps/browser/layout_text.c \
-	    c/apps/browser/browser_paint.c $(GFX_SRC) $(HTML_PARSER_SRC) $(NEGDIR)/libcss_inert.a
+	    tests/unit/css_audit.c c/apps/gui/browser/css/engine.c c/apps/gui/browser/css/vars.c \
+	    c/apps/gui/browser/css/extra.c c/apps/gui/browser/layout/block.c c/apps/gui/browser/layout/text.c \
+	    c/apps/gui/browser/paint/renderer.c $(GFX_SRC) $(HTML_PARSER_SRC) $(NEGDIR)/libcss_inert.a
 	@$(NEGDIR)/css_audit_inert --top=$(AUDIT_TOP) $(AUDIT_DIRS)
 
 .PHONY: audit-css-inert-before
@@ -664,8 +664,8 @@ ci-boot: test-css-selstatic-os test-css-modern-os
 #   make css-selector-census CENSUS_TOP=40
 CENSUS_TOP ?= 24
 CSSCENSUS_SRC := tests/unit/css_selcensus.c tests/unit/css_hostmm.c \
-                 c/apps/browser/css_engine.c c/apps/browser/css_vars.c \
-                 c/apps/browser/css_extra.c
+                 c/apps/gui/browser/css/engine.c c/apps/gui/browser/css/vars.c \
+                 c/apps/gui/browser/css/extra.c
 css-selector-census: $(BUILD)/libcss_host.a
 	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) -o $(BUILD)/css_selcensus \
 	    $(CSSCENSUS_SRC) $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a -lm

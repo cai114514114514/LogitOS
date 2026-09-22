@@ -10,7 +10,7 @@
  * so a link that omits the provider resolves the symbol to NULL and the caller
  * takes its other branch. c/kernel/core/settings.c:9-22 states the argument in
  * full: "adding a dependency here cannot break a consumer that has not been
- * told about it". Fifty-one host source lists name c/apps/browser/css_engine.c
+ * told about it". Fifty-one host source lists name c/apps/gui/browser/css/engine.c
  * and do not name css_interp.c (counted at css_engine.c:9, with the Makefile
  * continuations joined), so the idiom is load-bearing, not decorative.
  *

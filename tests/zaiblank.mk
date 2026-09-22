@@ -75,7 +75,7 @@ ZAIBLANK_CF := $(PLATFORM_CF)
 test-zaiblank-host: $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
 	@mkdir -p $(BUILD)
 	@$(CC) -O2 -w $(ZAIBLANK_CF) -o $(BUILD)/zaiblank_test $(ZAIBLANK_TEST_SRC) \
-	    c/apps/browser/js_platform.c c/apps/browser/js_select.c c/apps/browser/js_intl.c \
+	    c/apps/gui/browser/js/runtime/platform.c c/apps/gui/browser/js/dom/select.c c/apps/gui/browser/js/text/intl.c \
 	    $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
 	@$(BUILD)/zaiblank_test
 
@@ -84,14 +84,14 @@ test-zaiblank-host: $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
 # not $(JS_CF), for the reason fragmk.mk states at its own negmod rule: the
 # browser's own TUs must compile with the target-specific flags the root
 # Makefile pins for them.
-$(BUILD)/nbc/js_platform.o: c/apps/browser/js_platform.c
+$(BUILD)/nbc/js_platform.o: c/apps/gui/browser/js/runtime/platform.c
 	@mkdir -p $(dir $@)
 	$(CC) $(BROWSER_JS_CF) -DZAIBLANK_BC_ABSENT -c $< -o $@
 
 test-zaiblank-bc-negctl: $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
 	@mkdir -p $(BUILD)
 	@$(CC) -O2 -w $(ZAIBLANK_CF) -o $(BUILD)/zaiblank_bc_control $(ZAIBLANK_TEST_SRC) \
-	    $(BUILD)/nbc/js_platform.o c/apps/browser/js_select.c c/apps/browser/js_intl.c \
+	    $(BUILD)/nbc/js_platform.o c/apps/gui/browser/js/dom/select.c c/apps/gui/browser/js/text/intl.c \
 	    $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
 	@out=`$(BUILD)/zaiblank_bc_control --control 2>&1`; rc=$$?; \
 	 echo "$$out"; \
@@ -105,19 +105,19 @@ test-zaiblank-bc-negctl: $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
 # Control 2: the fetch-deadline compensation compiled out. Check 2a (blocked
 # time forgiven) must FAIL; check 2b (honest timeout kept) must PASS -- a
 # control that reddens everything is measuring nothing.
-$(BUILD)/nfd/js_webapi.o: c/apps/browser/js_webapi.c
+$(BUILD)/nfd/js_webapi.o: c/apps/gui/browser/js/runtime/webapi.c
 	@mkdir -p $(dir $@)
 	$(CC) $(ZAIBLANK_CF) -DZAIBLANK_FETCH_DEADLINE_OLD -c $< -o $@
 
 # js_webapi.c is normally reached through the subtraction list; take it out
 # and put the old-behaviour object in its place (one file, stated).
-ZAIBLANK_FETCH_SRC := $(filter-out c/apps/browser/js_webapi.c,$(ZAIBLANK_TEST_SRC)) \
+ZAIBLANK_FETCH_SRC := $(filter-out c/apps/gui/browser/js/runtime/webapi.c,$(ZAIBLANK_TEST_SRC)) \
                       $(BUILD)/nfd/js_webapi.o
 
 test-zaiblank-fetch-negctl: $(BUILD)/nfd/js_webapi.o $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
 	@mkdir -p $(BUILD)
 	@$(CC) -O2 -w $(ZAIBLANK_CF) -o $(BUILD)/zaiblank_fetch_control $(ZAIBLANK_FETCH_SRC) \
-	    c/apps/browser/js_platform.c c/apps/browser/js_select.c c/apps/browser/js_intl.c \
+	    c/apps/gui/browser/js/runtime/platform.c c/apps/gui/browser/js/dom/select.c c/apps/gui/browser/js/text/intl.c \
 	    $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
 	@$(BUILD)/zaiblank_fetch_control --fetch-only > $(BUILD)/zaiblank_fetch_negctl.log 2>&1 || true
 	@cat $(BUILD)/zaiblank_fetch_negctl.log
@@ -153,7 +153,7 @@ test-zaiblank-guest: $(ISO) $(DISK)
 # that is what proves the guest gate measures this feature and not some other
 # reason a replay happens to boot. (The fetch fix stays in this build; the
 # control isolates one variable, the same discipline as fragmk's negmod.)
-NBC_JS_OBJ := $(filter-out $(BUILD)/jsobj/c/apps/browser/js_platform.o,$(BROWSER_JS_OBJ)) \
+NBC_JS_OBJ := $(filter-out $(BUILD)/jsobj/c/apps/gui/browser/js/runtime/platform.o,$(BROWSER_JS_OBJ)) \
               $(BUILD)/nbc/js_platform.o
 
 $(BUILD)/browser-nbc.elf: $(ENGINE_OBJ) $(NBC_JS_OBJ) $(BROWSER_OBJ) $(CSS_OBJ) $(GFX_OBJ) $(RUST_LIB) $(BUILD)/apps/crt0.o $(BUILD)/browserobj/malloc_big.o

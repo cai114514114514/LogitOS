@@ -1,8 +1,8 @@
 # Finite normal callbacks with an injected monotonic clock. No busy loop,
 # watchdog, native interruption or memory-failure scenario is involved.
 WORKER_FAIR_DIR = $(BUILD)/worker-fairness
-WORKER_FAIR_SRC = tests/unit/worker_fairness_test.c tests/unit/worker_fairness_runtime.c tests/unit/worker_fetch_net.c $(filter-out tests/unit/worker_test.c c/apps/browser/js_worker.c,$(WORKER_TEST_SRC))
-WORKER_FAIR_DEP = $(WORKER_FAIR_SRC) c/apps/browser/js_worker.c c/apps/browser/js_worker.h c/apps/browser/js_task_budget.h tests/unit/worker_test.c tests/unit/worker_fetch_net.h tests/unit/stream_net.h $(BUILD)/libcss_host.a $(RUST_LIB_HOST) tests/worker_fairness.mk
+WORKER_FAIR_SRC = tests/unit/worker_fairness_test.c tests/unit/worker_fairness_runtime.c tests/unit/worker_fetch_net.c $(filter-out tests/unit/worker_test.c c/apps/gui/browser/js/workers/worker.c,$(WORKER_TEST_SRC))
+WORKER_FAIR_DEP = $(WORKER_FAIR_SRC) c/apps/gui/browser/js/workers/worker.c c/apps/gui/browser/js/workers/worker.h c/apps/gui/browser/js/runtime/task_budget.h tests/unit/worker_test.c tests/unit/worker_fetch_net.h tests/unit/stream_net.h $(BUILD)/libcss_host.a $(RUST_LIB_HOST) tests/worker_fairness.mk
 $(WORKER_FAIR_DIR)/current: $(WORKER_FAIR_DEP)
 	@mkdir -p $(WORKER_FAIR_DIR)
 	$(CC) -O2 -w $(WORKER_CF) -o $@ $(WORKER_FAIR_SRC) $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm

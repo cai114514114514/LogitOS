@@ -1,7 +1,7 @@
 # Extend the real loader pipeline with CSSOM's required bindings, without
 # importing every optional browser JS subsystem or copying a second source list.
 RUNTIME_SCROLL_SRC = $(filter-out tests/unit/loader_test.c,$(LOADER_SRC)) $(filter-out tests/unit/cssom_test.c $(LOADER_SRC),$(CSSOM_TEST_SRC)) tests/unit/runtime_scroll_test.c
-RUNTIME_SCROLL_DEPS = $(RUNTIME_SCROLL_SRC) tests/unit/loader_test.c tests/unit/loaderhost/logit.h tests/unit/painthost/logit.h $(wildcard c/apps/browser/*.h c/apps/browser/*.inc) tests/unit/loader_fakebfetch.h c/apps/browser/layout_flex.c c/apps/browser/layout_grid.c $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
+RUNTIME_SCROLL_DEPS = $(RUNTIME_SCROLL_SRC) tests/unit/loader_test.c tests/unit/loaderhost/logit.h tests/unit/painthost/logit.h $(wildcard $(BROWSER_HEADERS) $(BROWSER_INCLUDES)) tests/unit/loader_fakebfetch.h c/apps/gui/browser/layout/flex.c c/apps/gui/browser/layout/grid.c $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
 RUNTIME_SCROLL_CF = -O2 -w -DLOADER_POLL_HOOK $(LOADER_INC) $(BTEST_INC) $(CSS_INC) $(JS_INC) -DCONFIG_VERSION='"host"' -DWEBAPI_HOST
 .PHONY: test-runtime-scroll test-runtime-scroll-negctl
 $(BUILD)/runtime_scroll_test: $(RUNTIME_SCROLL_DEPS)

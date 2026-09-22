@@ -1,11 +1,11 @@
 # Inline SVG must rasterise at the used CSS box, rather than allocating the
 # source width/height (often a multi-megapixel icon) and shrinking it in paint.
 SVG_RASTER_DIR := $(BUILD)/svg-raster-size
-SVG_RASTER_SRC := tests/unit/layout_svg_test.c c/apps/browser/layout.c \
-                  c/apps/browser/layout_text.c c/apps/browser/css_engine.c \
-                  c/apps/browser/css_vars.c $(HTML_PARSER_SRC) $(IMG_HOST_SRC)
-SVG_RASTER_DEP := $(SVG_RASTER_SRC) c/apps/browser/svg_dom_paint.inc \
-                  c/apps/browser/svg_reflow_cache.inc $(BUILD)/libcss_host.a \
+SVG_RASTER_SRC := tests/unit/layout_svg_test.c c/apps/gui/browser/layout/block.c \
+                  c/apps/gui/browser/layout/text.c c/apps/gui/browser/css/engine.c \
+                  c/apps/gui/browser/css/vars.c $(HTML_PARSER_SRC) $(IMG_HOST_SRC)
+SVG_RASTER_DEP := $(SVG_RASTER_SRC) c/apps/gui/browser/paint/svg_dom_paint.inc \
+                  c/apps/gui/browser/paint/svg_reflow_cache.inc $(BUILD)/libcss_host.a \
                   $(RUST_LIB_HOST)
 SVG_RASTER_INC := $(BTEST_INC) $(CSS_INC) $(KMM_INC)
 

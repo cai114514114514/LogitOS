@@ -232,9 +232,9 @@ $(BUILD)/gallery_cost.aex: $(BUILD)/gallery_cost.elf tools/mkaex.py
 
 PAINTGFX_DIR := $(BUILD)/paintgfx
 PAINTGFX_SRC := tests/unit/paint_gfx_test.c \
-                c/apps/browser/layout.c c/apps/browser/layout_text.c c/apps/browser/browser_paint.c \
-                c/apps/browser/css_engine.c c/apps/browser/css_vars.c \
-                c/apps/browser/css_extra.c c/apps/browser/css_interp.c \
+                c/apps/gui/browser/layout/block.c c/apps/gui/browser/layout/text.c c/apps/gui/browser/paint/renderer.c \
+                c/apps/gui/browser/css/engine.c c/apps/gui/browser/css/vars.c \
+                c/apps/gui/browser/css/extra.c c/apps/gui/browser/css/interp.c \
                 c/lib/image/svg.c
 
 # $1 = output binary, $2 = extra -D flags

@@ -1,4 +1,4 @@
-/* url_js_test.c -- the JS surface of c/apps/browser/js_url.c.
+/* url_js_test.c -- the JS surface of c/apps/gui/browser/js/net/url.c.
  *
  * url_test.c drives the C algorithm against the corpus's data and is where the
  * 1,169 corpus cases live. This file asserts the things that data CANNOT see,
@@ -23,7 +23,7 @@
 #include <stdlib.h>
 
 #include "quickjs.h"
-#include "js_url.h"
+#include "js/net/url.h"
 
 static int g_pass, g_fail;
 

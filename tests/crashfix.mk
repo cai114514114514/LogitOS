@@ -69,11 +69,11 @@ test-crashfix: $(ISO) $(DISK)
 # not raw $(JS_CF), for the reason currentscript.mk states: the root Makefile's
 # one target-specific variable override exists so a fragment rule cannot
 # revive the `hidden` macro disagreement that cost this tree a day.
-$(BUILD)/notold/js_dom.o: c/apps/browser/js_dom.c
+$(BUILD)/notold/js_dom.o: c/apps/gui/browser/js/dom/dom.c
 	@mkdir -p $(dir $@)
 	$(CC) $(BROWSER_JS_CF) -DCRASHFIX_DATABLOCK_NOTOLD -c $< -o $@
 
-NOTOLD_JS_OBJ := $(filter-out $(BUILD)/jsobj/c/apps/browser/js_dom.o,$(BROWSER_JS_OBJ)) \
+NOTOLD_JS_OBJ := $(filter-out $(BUILD)/jsobj/c/apps/gui/browser/js/dom/dom.o,$(BROWSER_JS_OBJ)) \
                  $(BUILD)/notold/js_dom.o
 
 $(BUILD)/browser-notold.elf: $(ENGINE_OBJ) $(NOTOLD_JS_OBJ) $(BROWSER_OBJ) $(CSS_OBJ) $(GFX_OBJ) $(RUST_LIB) $(BUILD)/apps/crt0.o $(BUILD)/browserobj/malloc_big.o

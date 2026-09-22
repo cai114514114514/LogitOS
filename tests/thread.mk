@@ -19,7 +19,7 @@
 # "__thread is per-thread" is proved and why adding it to the browser, /bin/as
 # and the JS app is a separate, deliberate step.
 
-THRTEST_SRC := $(wildcard $(CLIDIR)/thrtest.c)
+THRTEST_SRC := $(wildcard tests/guest/sched/thrtest.c)
 ifneq ($(THRTEST_SRC),)
 
 # $(1) = program name, $(2) = extra -D flags.
@@ -28,17 +28,19 @@ ifneq ($(THRTEST_SRC),)
 # and the rule that assumed it was there made `make build/disk.img` fail for
 # every line in the tree. A test fragment must not be able to break the build of
 # the thing it tests.
+# Keep the guest source directory in the object path. Reusing the pre-move
+# object imports its old .d primary source; -MP only covers removed headers.
 define THRTEST_RULE
-$(BUILD)/throbj/$(1).o: $(CLIDIR)/thrtest.c c/apps/libc/include/pthread.h c/apps/libc/include/threads.h
+$(BUILD)/throbj/tests/guest/sched/$(1).o: tests/guest/sched/thrtest.c c/apps/libc/include/pthread.h c/apps/libc/include/threads.h
 	@mkdir -p $$(dir $$@)
 	$(CC) $(UCFLAGS) $(2) -c $$< -o $$@
 # Defer the target-local AEX activation linker through eval. Otherwise this
 # app builds successfully but keeps the old entry and is packaged as v2.
-$(BUILD)/$(1).elf: $(BUILD)/throbj/$(1).o $(LIBC_OBJS) $(APPDIR)/crt0_cli.asm c/apps/libc/logit_tls.ld tests/thread.mk
+$(BUILD)/$(1).elf: $(BUILD)/throbj/tests/guest/sched/$(1).o $(LIBC_OBJS) $(APPDIR)/crt0_cli.asm c/apps/libc/logit_tls.ld tests/thread.mk
 	@mkdir -p $(BUILD)/apps
 	$(ASM) -f elf64 $(APPDIR)/crt0_cli.asm -o $(BUILD)/apps/$(1).crt0c.o
 	$$(LD) -nostdlib -e _start -Ttext=0x50000000 -T c/apps/libc/logit_tls.ld -o $$@ \
-	    $(BUILD)/apps/$(1).crt0c.o $(BUILD)/throbj/$(1).o $(LIBC_OBJS)
+	    $(BUILD)/apps/$(1).crt0c.o $(BUILD)/throbj/tests/guest/sched/$(1).o $(LIBC_OBJS)
 $(BUILD)/$(1).aex: $(BUILD)/$(1).elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/$(1).elf $$@ $(1) - '*' 150 150 150
 endef
@@ -105,7 +107,7 @@ $(DISK): $(BUILD)/thrtest-noguard.aex
 endif
 
 else
-$(warning tests/thread.mk: $(CLIDIR)/thrtest.c is missing -- /bin/thrtest will not be built, and test-thread cannot run)
+$(warning tests/thread.mk: tests/guest/sched/thrtest.c is missing -- /bin/thrtest will not be built, and test-thread cannot run)
 endif
 
 .PHONY: test-thread test-thread-negctl

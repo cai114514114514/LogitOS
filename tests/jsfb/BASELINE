@@ -50,7 +50,7 @@
 #
 # WHAT MOVED SINCE THE PREVIOUS BASELINE, AND THE CAUSE, WHICH IS ONE CAUSE:
 #   removeChild/replaceChild became DETACH-ONLY instead of calling
-#   dom_destroy_subtree() (c/apps/browser/js_dom.c, another line's change:
+#   dom_destroy_subtree() (c/apps/gui/browser/js/dom/dom.c, another line's change:
 #   "Until 2026-08-28 this called dom_destroy_subtree(), which recycles the
 #   ... wrapper"). A removed node now survives as a detached, usable node.
 #   SIX independent implementations moved on that one change and nothing else
@@ -70,7 +70,7 @@
 #
 # WHAT MOVED THIS TIME, AND THE CAUSE:
 #   children/childNodes became LIVE (an exotic object over live_list_cid,
-#   c/apps/browser/js_dom.c) instead of an Array snapshot taken at
+#   c/apps/gui/browser/js/dom/dom.c) instead of an Array snapshot taken at
 #   property-access time, PLUS a per-parent generation counter (dom.h's
 #   child_gen) so a live collection's repeated index reads between mutations
 #   are O(1), not O(index) -- the naive live walk was measured at 253x the

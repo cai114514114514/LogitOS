@@ -1,7 +1,7 @@
 # Preserve flex's inside layout while keeping inline-flex atomic in its parent's line.
 IFLEX_DIR := $(BUILD)/inline-flex
 IFLEX_SRC = $(filter-out tests/unit/layout_box_test.c,$(LBOX_SRC)) tests/unit/inline_flex_test.c
-IFLEX_DEPS = $(IFLEX_SRC) $(HTML_PARSER_SRC) c/apps/browser/css.h c/apps/browser/layout_flex.c c/apps/browser/layout_flex.h $(BUILD)/libcss_host.a
+IFLEX_DEPS = $(IFLEX_SRC) $(HTML_PARSER_SRC) c/apps/gui/browser/css/style.h c/apps/gui/browser/layout/flex.c c/apps/gui/browser/layout/flex.h $(BUILD)/libcss_host.a
 .PHONY: test-inline-flex test-inline-flex-negctl
 $(IFLEX_DIR)/test: $(IFLEX_DEPS)
 	@mkdir -p $(IFLEX_DIR)

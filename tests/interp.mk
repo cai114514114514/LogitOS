@@ -1,7 +1,7 @@
 # ============================================================================
 # CSS value interpolation, `transform` as a value, and Element.prototype.animate
-#   c/apps/browser/css_interp.{c,h}   the value math
-#   c/apps/browser/js_anim.c          the binding that makes it observable
+#   c/apps/gui/browser/css_interp.{c,h}   the value math
+#   c/apps/gui/browser/js/style/anim.c          the binding that makes it observable
 #
 # THE ORACLE IS WPT, TRANSCRIBED. Every expected value in these two suites is
 # copied out of a WPT file rather than worked out here: the matrices from
@@ -64,8 +64,8 @@
 .PHONY: test-css-interp-accum-negctl
 .PHONY: test-css-anim test-css-anim-negctl
 
-INTERP_SRC := c/apps/browser/css_interp.c
-INTERP_CF  := -O1 -g -Wall -Wextra -Ic/apps/browser
+INTERP_SRC := c/apps/gui/browser/css/interp.c
+INTERP_CF  := -O1 -g -Wall -Wextra $(BROWSER_INC)
 
 # -DCI_NEGCTL_NO_DECOMPOSE and -DCI_NEGCTL_ACCUM_IS_ADD each sabotage THIS
 # same interp suite (componentwise-always; accumulate-as-add), so wiring both
@@ -78,7 +78,7 @@ INTERP_CF  := -O1 -g -Wall -Wextra -Ic/apps/browser
 test-css-interp: test-css-interp-negctl test-css-interp-accum-negctl $(BUILD)/interp_test
 	@$(BUILD)/interp_test
 
-$(BUILD)/interp_test: tests/unit/interp_test.c $(INTERP_SRC) c/apps/browser/css_interp.h
+$(BUILD)/interp_test: tests/unit/interp_test.c $(INTERP_SRC) c/apps/gui/browser/css/interp.h
 	@mkdir -p $(BUILD)
 	@$(CC) $(INTERP_CF) -o $@ tests/unit/interp_test.c $(INTERP_SRC) -lm
 
@@ -131,9 +131,9 @@ test-css-interp-accum-negctl:
 # references it anyway, so the link fails on an undefined symbol that has
 # nothing to do with this test. CLAUDE.md carries the same note for the host
 # LibCSS tests, which hit it first.
-ANIM_CF  := -O1 -g -w -Ic/apps/browser -Ithird_party/quickjs -Ithird_party/libm \
+ANIM_CF  := -O1 -g -w $(BROWSER_INC) -Ithird_party/quickjs -Ithird_party/libm \
             -DCONFIG_VERSION='"host"' -DCONFIG_BIGNUM
-ANIM_SRC := c/apps/browser/js_anim.c c/apps/browser/css_interp.c $(QJS_SRC)
+ANIM_SRC := c/apps/gui/browser/js/style/anim.c c/apps/gui/browser/css/interp.c $(QJS_SRC)
 
 # -DJS_ANIM_NEGCTL_CLAMP clamps the animation clock; anim_test must catch it.
 # tools/audit_tests.py's NOT_CI drops every test-*-negctl from what CI
@@ -144,7 +144,7 @@ ANIM_SRC := c/apps/browser/js_anim.c c/apps/browser/css_interp.c $(QJS_SRC)
 test-css-anim: test-css-anim-negctl $(BUILD)/anim_test
 	@$(BUILD)/anim_test
 
-$(BUILD)/anim_test: tests/unit/anim_test.c c/apps/browser/js_anim.c $(INTERP_SRC)
+$(BUILD)/anim_test: tests/unit/anim_test.c c/apps/gui/browser/js/style/anim.c $(INTERP_SRC)
 	@mkdir -p $(BUILD)
 	@$(CC) $(ANIM_CF) -o $@ tests/unit/anim_test.c $(ANIM_SRC) -lm -lpthread
 

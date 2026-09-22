@@ -1,7 +1,7 @@
 #define main unused_modal_main
 #include "modal_paint_test.c"
 #undef main
-#include "forms.h"
+#include "dom/forms.h"
 static int checks, failures;
 #define EXPECT(c,m) do{checks++;if(!(c)){failures++;printf("FAIL: %s: %s\n",name,m);}}while(0)
 static void sample(const char *name,const char *rule,int want_l,int want_t,int want_r,int want_b,int focused)

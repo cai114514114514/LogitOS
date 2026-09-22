@@ -1,4 +1,4 @@
-/* Host unit tests for c/apps/browser/js_platform.c and js_select.c -- the web
+/* Host unit tests for c/apps/gui/browser/js/runtime/platform.c and js_select.c -- the web
  * platform outside the DOM tree and outside the network.
  *
  *     make test-platform          the tests
@@ -22,7 +22,7 @@
  * is missing... except the three that MUST stay missing (ActiveXObject,
  * documentMode, crypto.subtle). Those have their own checks, because they are
  * the ones a well-meaning future change would add. `window.indexedDB` used to
- * be a fourth; it is real now (c/apps/browser/js_idb.c). This build still
+ * be a fourth; it is real now (c/apps/gui/browser/js/storage/idb.c). This build still
  * links js_idb.c (PLATFORM_TEST_SRC does not exclude it) but not js_events.c
  * -- and js_idb.c's own install guard checks `typeof G.EventTarget ===
  * 'function'` before doing anything, so `window.indexedDB` stays absent HERE
@@ -37,9 +37,9 @@
 #include <string.h>
 
 #include "quickjs.h"
-#include "dom.h"
-#include "js_dom.h"
-#include "js_page.h"
+#include "dom/tree.h"
+#include "js/dom/dom.h"
+#include "js/runtime/page.h"
 
 void *kmalloc(unsigned long n) { return malloc(n); }
 void  kfree(void *p) { free(p); }
@@ -1135,7 +1135,7 @@ int main(int argc, char **argv)
     ckjs("typeof document.documentMode === 'undefined'", "document.documentMode stays absent (IE detection)");
     ckjs("typeof window.MSApp === 'undefined'", "window.MSApp stays absent");
     /* NOT a "must stay absent" check -- indexedDB is real in this tree now
-     * (c/apps/browser/js_idb.c). This assertion is the OTHER door of the
+     * (c/apps/gui/browser/js/storage/idb.c). This assertion is the OTHER door of the
      * "one jar, two doors" pair for js_idb.c's own install guard: this build
      * links js_idb.c (PLATFORM_TEST_SRC does not exclude it, unlike
      * js_events.c/js_canvas.c/js_semantics.c) but not js_events.c, so

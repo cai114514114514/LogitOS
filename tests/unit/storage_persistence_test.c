@@ -1,8 +1,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "storage_backend.h"
-#include "tabs.h"
+#include "storage/backend.h"
+#include "app/tabs.h"
 static int checks,fails;
 static void ck(int ok,const char *s){checks++;printf("%s: %s\n",ok?"ok":"FAIL",s);if(!ok)fails++;}
 static unsigned char *files[2];static int sizes[2],writes,write_mode,read_mode;

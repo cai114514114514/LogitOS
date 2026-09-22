@@ -2,7 +2,7 @@
 # Derive the shared installers from the existing interface gate; add the actual
 # form state and semantics owners, which that narrower gate does not link.
 .PHONY: test-select-state test-select-state-negctl test-select-state-reset-negctl
-SELECT_STATE_SRC = $(filter-out tests/unit/dom_iface_test.c,$(DOMIFACE_SRC)) tests/unit/select_state_test.c c/apps/browser/js_forms.c c/apps/browser/js_semantics.c c/apps/browser/forms.c c/apps/browser/focus.c
+SELECT_STATE_SRC = $(filter-out tests/unit/dom_iface_test.c,$(DOMIFACE_SRC)) tests/unit/select_state_test.c c/apps/gui/browser/js/dom/forms.c c/apps/gui/browser/js/dom/semantics.c c/apps/gui/browser/dom/forms.c c/apps/gui/browser/dom/focus.c
 
 $(BUILD)/select_state_test: $(SELECT_STATE_SRC) $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
 	@mkdir -p $(BUILD)

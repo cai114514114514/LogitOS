@@ -8,7 +8,7 @@
 #
 # So: rebuild the parser with ONE thing replaced -- the adoption agency
 # algorithm, swapped for the naive "close the most recent matching tag" (see
-# HTML_AAA_NAIVE in c/apps/browser/html_tree.c) -- and REQUIRE the suite to go
+# HTML_AAA_NAIVE in c/apps/gui/browser/html/tree.c) -- and REQUIRE the suite to go
 # red. If it stays green, test-html5lib is not measuring tree construction and
 # the rate it prints means less than it appears to.
 #
@@ -27,13 +27,13 @@
 
 .PHONY: test-html5lib-negctl
 
-H5NEG_SRC := build/negctl/html_tree.c c/apps/browser/dom.c \
-             c/apps/browser/html_tokenizer.c c/apps/browser/dom_serialize.c
+H5NEG_SRC := build/negctl/html_tree.c c/apps/gui/browser/dom/tree.c \
+             c/apps/gui/browser/html/tokenizer.c c/apps/gui/browser/dom/serialize.c
 
 # The stub is compiled from a COPY, not by adding a define to the normal build,
 # so a stale object from the real build can never be linked in by accident --
 # the control failing open is exactly the outcome it exists to rule out.
-build/negctl/html_tree.c: c/apps/browser/html_tree.c
+build/negctl/html_tree.c: c/apps/gui/browser/html/tree.c
 	@mkdir -p build/negctl
 	@cp $< $@
 

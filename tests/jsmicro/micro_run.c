@@ -51,7 +51,7 @@ static JSValue js_print(JSContext *ctx, JSValueConst t, int argc, JSValueConst *
     return JS_UNDEFINED;
 }
 
-/* Verbatim from c/apps/browser/js_platform.c:542.  Do not "improve" it: the
+/* Verbatim from c/apps/gui/browser/js/runtime/platform.c:542.  Do not "improve" it: the
  * point is that the guest's queueMicrotask is a Promise reaction, and if that
  * costs a turn a real queueMicrotask does not, this harness must show it. */
 static const char *PRELUDE =

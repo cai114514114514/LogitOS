@@ -1,8 +1,8 @@
 #define main select_state_original_main
 #include "select_state_test.c"
 #undef main
-#include "focus.h"
-#include "top_layer.h"
+#include "dom/focus.h"
+#include "dom/top_layer.h"
 static void native_ck(int ok,const char *name){checks++;if(!ok){failures++;printf("FAIL %s\n",name);}}
 int main(void) {
  const char *html="<!doctype html><button id=o popovertarget=p>OPEN</button><div id=p popover><button id=i>IN</button></div><div id=m popover=manual>MANUAL</div><div id=h popover=hint>HINT</div><button id=b>BACK</button><dialog id=d><button>MODAL</button></dialog>";

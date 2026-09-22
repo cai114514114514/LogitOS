@@ -1,8 +1,8 @@
 # Complete parent callback/checkpoint, then service its ready fetch before
 # starting another worker's finite native call. All sockets are local vtables.
 WORKER_PARENT_FETCH_DIR = $(BUILD)/worker-parent-fetch
-WORKER_PARENT_FETCH_SRC = tests/unit/worker_parent_fetch_test.c tests/unit/worker_parent_fetch_net.c tests/unit/worker_fairness_runtime.c $(filter-out tests/unit/worker_test.c c/apps/browser/js_worker.c,$(WORKER_TEST_SRC))
-WORKER_PARENT_FETCH_DEP = $(WORKER_PARENT_FETCH_SRC) c/apps/browser/js_worker.c c/apps/browser/js_worker.h c/apps/browser/js_webapi.h c/apps/browser/js_task_budget.h $(wildcard c/apps/browser/js_*prelude.inc) tests/unit/worker_test.c tests/unit/stream_net.h $(BUILD)/libcss_host.a $(RUST_LIB_HOST) tests/worker_parent_fetch.mk
+WORKER_PARENT_FETCH_SRC = tests/unit/worker_parent_fetch_test.c tests/unit/worker_parent_fetch_net.c tests/unit/worker_fairness_runtime.c $(filter-out tests/unit/worker_test.c c/apps/gui/browser/js/workers/worker.c,$(WORKER_TEST_SRC))
+WORKER_PARENT_FETCH_DEP = $(WORKER_PARENT_FETCH_SRC) c/apps/gui/browser/js/workers/worker.c c/apps/gui/browser/js/workers/worker.h c/apps/gui/browser/js/runtime/webapi.h c/apps/gui/browser/js/runtime/task_budget.h $(BROWSER_JS_PRELUDES) tests/unit/worker_test.c tests/unit/stream_net.h $(BUILD)/libcss_host.a $(RUST_LIB_HOST) tests/worker_parent_fetch.mk
 $(WORKER_PARENT_FETCH_DIR)/current: $(WORKER_PARENT_FETCH_DEP)
 	@mkdir -p $(WORKER_PARENT_FETCH_DIR)
 	$(CC) -O2 -w $(WORKER_CF) -o $@ $(WORKER_PARENT_FETCH_SRC) $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm

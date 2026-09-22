@@ -3,8 +3,8 @@
 # Native C form activation did not need the JS adapter. Script-initiated submit
 # must link its real installer or form.submit is absent and this gate tests an
 # incomplete harness instead of the active JS-frame lifetime defect.
-NAVIGATION_BASE_SRC = $(sort $(filter-out tests/unit/script_resource_events_test.c,$(SCRIPT_RESOURCE_SRC)) c/apps/browser/js_forms.c) tests/unit/navigation_base_test.c
-NAVIGATION_BASE_DEPS = $(NAVIGATION_BASE_SRC) $(RUNTIME_SCROLL_DEPS) $(wildcard c/apps/browser/*.inc)
+NAVIGATION_BASE_SRC = $(sort $(filter-out tests/unit/script_resource_events_test.c,$(SCRIPT_RESOURCE_SRC)) c/apps/gui/browser/js/dom/forms.c) tests/unit/navigation_base_test.c
+NAVIGATION_BASE_DEPS = $(NAVIGATION_BASE_SRC) $(RUNTIME_SCROLL_DEPS) $(BROWSER_INCLUDES)
 NAVIGATION_BASE_DIR = $(BUILD)/site-general/navigation-base
 $(NAVIGATION_BASE_DIR)/current: $(NAVIGATION_BASE_DEPS)
 	@mkdir -p $(NAVIGATION_BASE_DIR)

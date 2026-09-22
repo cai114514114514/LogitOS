@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # poll() on the machine. Boot, drive the serial shell to run /bin/polltest, and
 # assert POLL_TEST_OK -- which prints only if every check in
-# c/apps/coreutils/polltest.c held against the real backends: a pipe whose
+# tests/guest/exec/polltest.c held against the real backends: a pipe whose
 # readiness comes from the same wait queue a blocking read() parks on, POLLHUP
 # on the writer closing, POLLNVAL on a closed fd with an INFINITE timeout (the
 # case that hangs forever if it is wrong), select() over the same pipe, an

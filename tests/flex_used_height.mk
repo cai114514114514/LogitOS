@@ -1,6 +1,6 @@
 FLEX_USED_HEIGHT_DIR = $(BUILD)/flex-used-height
 FLEX_USED_HEIGHT_SRC = $(filter-out tests/unit/modal_paint_test.c,$(MODAL_PAINT_SRC)) tests/unit/flex_used_height_test.c
-FLEX_USED_HEIGHT_DEPS = $(FLEX_USED_HEIGHT_SRC) tests/unit/modal_paint_test.c c/apps/browser/forms.h $(wildcard c/apps/browser/layout*.h c/apps/browser/layout*.c c/apps/browser/layout*.inc) $(BUILD)/libcss_host.a
+FLEX_USED_HEIGHT_DEPS = $(FLEX_USED_HEIGHT_SRC) tests/unit/modal_paint_test.c c/apps/gui/browser/dom/forms.h $(wildcard c/apps/gui/browser/layout/*.h c/apps/gui/browser/layout/*.c c/apps/gui/browser/layout/*.inc) $(BUILD)/libcss_host.a
 .PHONY: test-flex-used-height test-flex-used-height-negctl
 $(FLEX_USED_HEIGHT_DIR)/test: $(FLEX_USED_HEIGHT_DEPS)
 	@mkdir -p $(FLEX_USED_HEIGHT_DIR)

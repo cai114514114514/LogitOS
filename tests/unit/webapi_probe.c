@@ -24,7 +24,7 @@
  *   script, because the first one ends it.
  *
  *   Channel 2 (the ground truth) runs the same scripts UNWRAPPED, exactly as
- *   c/apps/browser/browser.c does, and records the error each one actually dies
+ *   c/apps/gui/browser/app/main.c does, and records the error each one actually dies
  *   on. This is what the user sees. It is also the acceptance check: when a
  *   name from channel 1 is implemented, the channel-2 error for that page must
  *   change (or go away), and if it does not, the implementation did not matter.
@@ -43,13 +43,13 @@
 #include <stdarg.h>
 #include <string.h>
 #include "quickjs.h"
-#include "dom.h"
-#include "js_dom.h"
-#include "js_page.h"
-#include "js_webapi.h"
-#include "js_module.h"
-#include "js_stall.h"
-#include "bfetch.h"
+#include "dom/tree.h"
+#include "js/dom/dom.h"
+#include "js/runtime/page.h"
+#include "js/runtime/webapi.h"
+#include "js/runtime/module.h"
+#include "js/runtime/stall.h"
+#include "net/fetch.h"
 
 void *kmalloc(unsigned long n) { return malloc(n); }
 void  kfree(void *p) { free(p); }

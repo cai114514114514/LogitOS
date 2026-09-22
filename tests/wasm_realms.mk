@@ -1,9 +1,9 @@
 # Production binding, two real runtimes; no page or network fixture needed.
 WASM_REALMS_DIR = $(BUILD)/wasm-realms
-WASM_REALMS_SRC = tests/unit/wasm_realms_test.c c/apps/browser/js_wasm.c
-WASM_REALMS_DEP = $(WASM_REALMS_SRC) c/apps/browser/js_wasm.h c/apps/browser/js_wasm_prelude.inc tests/unit/wasm_js_modules.inc $(WASM_EXEC_SRC) $(QJS_SRC)
+WASM_REALMS_SRC = tests/unit/wasm_realms_test.c c/apps/gui/browser/js/wasm/wasm.c
+WASM_REALMS_DEP = $(WASM_REALMS_SRC) c/apps/gui/browser/js/wasm/wasm.h c/apps/gui/browser/js/wasm/wasm_prelude.inc tests/unit/wasm_js_modules.inc $(WASM_EXEC_SRC) $(QJS_SRC)
 WASM_REALMS_TEST_FLAGS = -DWASM_REALM_TEST_COUNTS
-WASM_REALMS_CF = -O1 -g -w -Ic/apps/browser $(JS_INC) -DCONFIG_VERSION='"host"' $(WASM_REALMS_TEST_FLAGS)
+WASM_REALMS_CF = -O1 -g -w $(BROWSER_INC) $(JS_INC) -DCONFIG_VERSION='"host"' $(WASM_REALMS_TEST_FLAGS)
 $(WASM_REALMS_DIR)/current: $(WASM_REALMS_DEP)
 	@mkdir -p $(WASM_REALMS_DIR)
 	$(CC) $(WASM_REALMS_CF) -o $@ $(WASM_REALMS_SRC) $(QJS_SRC) -lm

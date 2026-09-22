@@ -31,7 +31,7 @@
 # tests/unit/h2stub/logit.h shadows the ring-3 c/apps/logit.h, which is what
 # lets the real browser_rt.c be compiled on the host. c/apps is deliberately
 # NOT on the path -- if it were, the real syscall wrappers would win.
-H2MUX_INC := -Itests/unit/h2stub -Iinclude/abi -Ic/apps/browser -Ic/net/http -Ic/lib/image
+H2MUX_INC := -Itests/unit/h2stub -Iinclude/abi $(BROWSER_INC) -Ic/net/http -Ic/lib/image
 
 # --- H2MUX_SRC WAS SUSPECTED OF THE DRIFT tests/canvas.mk AND
 # --- tests/webapi_platform.mk BOTH HAD. IT WAS MEASURED, AND IT DOES NOT.
@@ -80,11 +80,11 @@ endif
 # has nothing to do with HTTP/2. Same shape as cookies.c: a file the browser
 # links that this harness's two doors cannot reach.
 H2MUX_HTTP_OUT := c/net/http/cookies.c c/net/http/ws.c
-H2MUX_SRC := tests/unit/h2mux_test.c c/apps/browser/browser_rt.c \
+H2MUX_SRC := tests/unit/h2mux_test.c c/apps/gui/browser/app/runtime.c \
              $(filter-out $(H2MUX_HTTP_OUT),$(filter c/net/http/%,$(BROWSER_PIPE)))
 
 PREFETCH_QUEUE_SRC = $(filter-out tests/unit/h2mux_test.c,$(H2MUX_SRC)) tests/unit/prefetch_queue_test.c
-PREFETCH_QUEUE_DEPS = $(PREFETCH_QUEUE_SRC) tests/unit/h2mux_test.c c/apps/browser/bfetch.h
+PREFETCH_QUEUE_DEPS = $(PREFETCH_QUEUE_SRC) tests/unit/h2mux_test.c c/apps/gui/browser/net/fetch.h
 $(BUILD)/prefetch_queue: $(PREFETCH_QUEUE_DEPS)
 	@mkdir -p $(BUILD)
 	$(CC) -O1 -g -w $(H2MUX_INC) -o $@ $(PREFETCH_QUEUE_SRC)
@@ -109,7 +109,7 @@ test-prefetch-queue-asan: test-prefetch-queue-negctl
 # Only finite ordinary pending-owner/resource scheduling cases run here;
 # including the in-memory peer does not invoke the separate h2mux suite.
 BFETCH_PENDING_SRC = $(filter-out tests/unit/h2mux_test.c,$(H2MUX_SRC)) tests/unit/bfetch_pending_owner_test.c
-BFETCH_PENDING_DEPS = $(BFETCH_PENDING_SRC) tests/unit/h2mux_test.c c/apps/browser/bfetch.h
+BFETCH_PENDING_DEPS = $(BFETCH_PENDING_SRC) tests/unit/h2mux_test.c c/apps/gui/browser/net/fetch.h
 $(BUILD)/bfetch_pending_owner: $(BFETCH_PENDING_DEPS)
 	@mkdir -p $(BUILD)
 	$(CC) -O1 -g -w $(H2MUX_INC) -o $@ $(BFETCH_PENDING_SRC)

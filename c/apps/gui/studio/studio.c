@@ -2,8 +2,8 @@
 /* Native presentation adapter. The application engine owns documents,
  * projects, persistence, language results and child processes. */
 #include "../../../lib/agent/gui.h"
-#include "../../studio/engine.h"
-#include "../../studio/highlight.h"
+#include "core/engine.h"
+#include "core/highlight.h"
 #include "aui.h"
 #include <stdio.h>
 
@@ -13,7 +13,7 @@ static int work_open, focus, dragging, tree_top, output_top, dialog, completion_
 static char query[160], replacement[160];
 static int edit_x, edit_y, edit_w, edit_h, out_y, work_x;
 static uint64_t completion_due;
-#include "../../studio/studio_render.inc"
+#include "core/studio_render.inc"
 
 static const StDocument *document(void)
 {
@@ -125,11 +125,11 @@ static void host_commit(void *ctx)
     setting_commit();
 }
 
-#include "../../studio/studio_project.inc"
-#include "../../studio/studio_editor.inc"
-#include "../../studio/studio_completion.inc"
-#include "../../studio/studio_code.inc"
-#include "../../studio/studio_view.inc"
+#include "core/studio_project.inc"
+#include "core/studio_editor.inc"
+#include "core/studio_completion.inc"
+#include "core/studio_code.inc"
+#include "core/studio_view.inc"
 
 void app_main(void)
 {

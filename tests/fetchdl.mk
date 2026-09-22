@@ -72,14 +72,14 @@ test-fetch-firstbyte: test-fetch-firstbyte-negctl $(ISO) $(DISK)
 # Same shape as tests/webaccel.mk's browser-waoff.elf: rebuild ONLY
 # browser_rt.o with the guard macro defined, relink browser.aex against every
 # other object unchanged, pack it onto its own disk image.
-$(BUILD)/nofirstbyte/c/apps/browser/browser_rt.o: c/apps/browser/browser_rt.c \
-        c/apps/browser/http_cache.c c/apps/browser/http_cache.h \
-        c/apps/browser/bfetch.h
+$(BUILD)/nofirstbyte/c/apps/gui/browser/app/runtime.o: c/apps/gui/browser/app/runtime.c \
+        c/apps/gui/browser/net/cache.c c/apps/gui/browser/net/cache.h \
+        c/apps/gui/browser/net/fetch.h
 	@mkdir -p $(dir $@)
 	$(CC) $(UCFLAGS) $(CSS_INC) -DBFETCH_NO_FIRSTBYTE_DEADLINE -c $< -o $@
 
-NOFIRSTBYTE_OBJ := $(filter-out $(BUILD)/browserobj/c/apps/browser/browser_rt.o,$(BROWSER_OBJ)) \
-                   $(BUILD)/nofirstbyte/c/apps/browser/browser_rt.o
+NOFIRSTBYTE_OBJ := $(filter-out $(BUILD)/browserobj/c/apps/gui/browser/app/runtime.o,$(BROWSER_OBJ)) \
+                   $(BUILD)/nofirstbyte/c/apps/gui/browser/app/runtime.o
 
 $(BUILD)/browser-nofirstbyte.elf: $(ENGINE_OBJ) $(BROWSER_JS_OBJ) $(NOFIRSTBYTE_OBJ) $(CSS_OBJ) $(GFX_OBJ) $(RUST_LIB) $(BUILD)/apps/crt0.o $(BUILD)/browserobj/malloc_big.o
 	$(LD) -nostdlib -e _start -Ttext=0x45000000 -o $@ --start-group $(BUILD)/apps/crt0.o $(ENGINE_OBJ) $(BROWSER_JS_OBJ) $(NOFIRSTBYTE_OBJ) $(CSS_OBJ) $(GFX_OBJ) $(RUST_LIB) $(BUILD)/browserobj/malloc_big.o --end-group

@@ -1,5 +1,5 @@
 # tests/selectors.mk -- the query-side selector engine and DOMTokenList
-# (c/apps/browser/js_select.c + c/apps/browser/js_tokenlist.c).
+# (c/apps/gui/browser/js/dom/select.c + c/apps/gui/browser/js/dom/tokenlist.c).
 #
 #   make test-selectors          the suite, host-side, seconds
 #   make test-selectors-negctl   THE NEGATIVE CONTROL: the same binary built
@@ -52,12 +52,12 @@
 # real install order in js_page.c, and half of that property belongs to the
 # files around it. A runner over stubbed DOM files would measure the stubs.
 SELECTORS_SRC := tests/unit/selectors_test.c \
-                 c/apps/browser/js_page.c c/apps/browser/js_dom.c \
-                 c/apps/browser/css_engine.c c/apps/browser/css_vars.c \
-                 c/apps/browser/js_webapi.c c/apps/browser/js_platform.c \
-                 c/apps/browser/js_select.c c/apps/browser/js_tokenlist.c \
-                 c/apps/browser/js_characterdata.c \
-                 c/apps/browser/js_intl.c c/apps/browser/js_module.c \
+                 c/apps/gui/browser/js/runtime/page.c c/apps/gui/browser/js/dom/dom.c \
+                 c/apps/gui/browser/css/engine.c c/apps/gui/browser/css/vars.c \
+                 c/apps/gui/browser/js/runtime/webapi.c c/apps/gui/browser/js/runtime/platform.c \
+                 c/apps/gui/browser/js/dom/select.c c/apps/gui/browser/js/dom/tokenlist.c \
+                 c/apps/gui/browser/js/dom/characterdata.c \
+                 c/apps/gui/browser/js/text/intl.c c/apps/gui/browser/js/runtime/module.c \
                  c/net/http/http1.c c/net/http/url.c c/net/http/cookies.c \
                  tests/unit/rust_host_shim.c
 # -Ic/apps because js_platform.c includes "logit.h" unconditionally; see the

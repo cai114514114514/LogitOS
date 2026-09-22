@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: MIT
 # Preserve the existing H2 protocol/source authority; swap only its main and
 # compile the real adapter through a one-call allocation-injection wrapper.
-H2_HEADER_COPY_SRC := tests/unit/h2_header_copy_test.c tests/unit/h2_header_copy_runtime.c $(filter-out tests/unit/h2mux_test.c c/apps/browser/browser_rt.c,$(H2MUX_SRC))
-H2_HEADER_COPY_DEPS := $(H2_HEADER_COPY_SRC) tests/unit/h2mux_test.c c/apps/browser/browser_rt.c c/apps/browser/bfetch.h c/net/http/http1.h c/net/http/http2.h tests/h2_header_copy.mk
+H2_HEADER_COPY_SRC := tests/unit/h2_header_copy_test.c tests/unit/h2_header_copy_runtime.c $(filter-out tests/unit/h2mux_test.c c/apps/gui/browser/app/runtime.c,$(H2MUX_SRC))
+H2_HEADER_COPY_DEPS := $(H2_HEADER_COPY_SRC) tests/unit/h2mux_test.c c/apps/gui/browser/app/runtime.c c/apps/gui/browser/net/fetch.h c/net/http/http1.h c/net/http/http2.h tests/h2_header_copy.mk
 H2_HEADER_COPY_DIR := $(BUILD)/h2-header-copy
 $(H2_HEADER_COPY_DIR)/current: $(H2_HEADER_COPY_DEPS)
 	@mkdir -p $(H2_HEADER_COPY_DIR)

@@ -5,7 +5,7 @@
 #define main loader_existing_main
 #include "loader_test.c"
 #undef main
-#include "js_dom.h"
+#include "js/dom/dom.h"
 void app_main(void);
 static int done,polls,observed,frames,lo=255,hi,geometry_ok=1;
 static unsigned long long builds;

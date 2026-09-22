@@ -4,7 +4,7 @@
 #include "cssom_test.c"
 #undef main
 #include "logit.h"
-#include "browser_paint.h"
+#include "paint/renderer.h"
 struct paintop paint_ops[PAINT_MAXOPS]; int paint_nops;
 void img_register(img_detect_fn d,img_decode_fn c){(void)d;(void)c;}
 static void settle(void){css_apply(g_root,g_sheet,g_sheetlen);css_extra_apply(g_root,g_sheet,g_sheetlen);layout_page(g_root,400);js_dom_clear_dirty();}
@@ -31,7 +31,7 @@ static void point(int x,int y,const char *id,const char *href,const char *label)
  else snprintf(src,sizeof src,"(function(){var n=document.elementFromPoint(%d,%d);while(n){if(n.tagName==='A'&&n.getAttribute('href'))return false;n=n.parentNode}return true})()",x,y);
  snprintf(msg,sizeof msg,"%s CSSOM target",label);CK(eq(src,"true"),msg);
 }
-#include "focus.h"
+#include "dom/focus.h"
 static int painted(unsigned col){for(int i=0;i<paint_nops;i++)if((paint_ops[i].kind==OP_RECT||(paint_ops[i].kind==OP_BLIT&&paint_ops[i].solid))&&paint_ops[i].color==col)return 1;return 0;}
 int main(void){css_init();
  open_page("<a id=under href=/target style='display:block;width:180px;height:80px'>Under</a><div id=cover><a id=child href=/child>Child</a><button id=key>Key</button></div>","#cover{position:absolute;left:0;top:0;width:180px;height:80px;background:#ee2244;z-index:5;pointer-events:none}#child{display:block;width:80px;height:30px}#key{width:70px;height:25px}");

@@ -40,7 +40,7 @@ A="-f lavfi -i sine=frequency=440:sample_rate=44100:duration=4"
 
 # HIGH profile: CABAC, B frames, 8x8 transform. -bf 2 makes decode order differ
 # from display order, which is exactly the case a decode-order PTS FIFO gets
-# wrong -- see the note about h264_decode_pts in c/apps/browser/js_media.h.
+# wrong -- see the note about h264_decode_pts in c/apps/gui/browser/js/media/media.h.
 HIGH="-c:v libx264 -profile:v high -level 4.0 -preset veryslow -bf 2 \
       -pix_fmt yuv420p -g 15 -keyint_min 15 -sc_threshold 0"
 AAC="-c:a aac -b:a 64k -ar 44100 -ac 2"

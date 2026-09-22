@@ -19,7 +19,7 @@
  * last digit -- it has to produce the same MATRIX, and the tolerance is
  * WPT's own 1e-5 relative.
  */
-#include "css_interp.h"
+#include "css/interp.h"
 
 #include <stdio.h>
 #include <string.h>

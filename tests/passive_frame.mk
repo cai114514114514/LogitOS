@@ -1,6 +1,6 @@
-PASSIVE_FRAME_BASE = $(sort $(filter-out tests/unit/navigation_base_test.c,$(NAVIGATION_BASE_SRC)) c/apps/browser/js_url.c c/apps/browser/passive_frame.c c/apps/browser/iframe_policy.c) tests/unit/passive_frame_test.c
+PASSIVE_FRAME_BASE = $(sort $(filter-out tests/unit/navigation_base_test.c,$(NAVIGATION_BASE_SRC)) c/apps/gui/browser/js/net/url.c c/apps/gui/browser/frame/passive.c c/apps/gui/browser/frame/policy.c) tests/unit/passive_frame_test.c
 PASSIVE_FRAME_SRC = $(PASSIVE_FRAME_BASE) $(filter-out $(PASSIVE_FRAME_BASE),$(IMGCHK_SRC))
-PASSIVE_FRAME_DEPS = $(PASSIVE_FRAME_SRC) $(RUNTIME_SCROLL_DEPS) c/apps/browser/embedded_window.inc c/apps/browser/embedded_focus.inc tests/passive_frame.mk
+PASSIVE_FRAME_DEPS = $(PASSIVE_FRAME_SRC) $(RUNTIME_SCROLL_DEPS) c/apps/gui/browser/frame/window.inc c/apps/gui/browser/frame/focus.inc tests/passive_frame.mk
 PASSIVE_FRAME_DIR = $(BUILD)/passive-frame
 $(PASSIVE_FRAME_DIR)/current: $(PASSIVE_FRAME_DEPS)
 	@mkdir -p $(PASSIVE_FRAME_DIR)
@@ -33,8 +33,8 @@ ci-host: test-active-frame
 
 # Keep the old no-native-module fixture usable, and explicitly exercise the
 # shipping Window packet path with a transferred port and actual child paint.
-FRAME_PORT_SRC = $(PASSIVE_FRAME_SRC) c/apps/browser/js_ports.c
-FRAME_PORT_DEP = $(PASSIVE_FRAME_DEPS) c/apps/browser/js_ports.c c/apps/browser/js_ports.h
+FRAME_PORT_SRC = $(PASSIVE_FRAME_SRC) c/apps/gui/browser/js/workers/ports.c
+FRAME_PORT_DEP = $(PASSIVE_FRAME_DEPS) c/apps/gui/browser/js/workers/ports.c c/apps/gui/browser/js/workers/ports.h
 $(PASSIVE_FRAME_DIR)/ports: $(FRAME_PORT_DEP)
 	@mkdir -p $(PASSIVE_FRAME_DIR)
 	@$(CC) $(RUNTIME_SCROLL_CF) $(IMG_HOST_INC) -o $@ $(FRAME_PORT_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
@@ -84,11 +84,11 @@ ci-host: test-frame-focus
 
 # Full parent/child consumer: neither a bare fresh Context nor a JSON alias
 # can satisfy the real contentWindow path, CSP, navigation and teardown checks.
-FRAME_REALM_SRC = $(FRAME_PORT_SRC) $(filter-out $(FRAME_PORT_SRC),c/apps/browser/js_frame.c c/apps/browser/js_domparser.c)
+FRAME_REALM_SRC = $(FRAME_PORT_SRC) $(filter-out $(FRAME_PORT_SRC),c/apps/gui/browser/js/dom/frame.c c/apps/gui/browser/js/dom/domparser.c)
 # Later make fragments append platform sources to shared recursive lists.
 # Recipe expansion sees them, prerequisite expansion here does not. Name the
 # modified translation unit explicitly or a platform-only edit runs OLD code.
-FRAME_REALM_DEP = $(FRAME_PORT_DEP) c/apps/browser/js_frame.c c/apps/browser/js_frame.h c/apps/browser/js_domparser.c c/apps/browser/js_platform.c
+FRAME_REALM_DEP = $(FRAME_PORT_DEP) c/apps/gui/browser/js/dom/frame.c c/apps/gui/browser/js/dom/frame.h c/apps/gui/browser/js/dom/domparser.c c/apps/gui/browser/js/runtime/platform.c
 $(PASSIVE_FRAME_DIR)/realm: $(FRAME_REALM_DEP)
 	@mkdir -p $(PASSIVE_FRAME_DIR)
 	@$(CC) $(RUNTIME_SCROLL_CF) $(IMG_HOST_INC) -o $@ $(FRAME_REALM_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
@@ -141,11 +141,11 @@ test-passive-frame-san: test-passive-frame test-active-frame $(PASSIVE_FRAME_DIR
 # Device negative: same linked browser, replacing only the nested paint call.
 # The loader and child network requests remain live so a blank result cannot
 # be explained by a fixture that failed to load its child document.
-$(PASSIVE_FRAME_DIR)/guest-paint-old.o: c/apps/browser/browser_paint.c $(BROWSER_INTERFACE_DEPS)
+$(PASSIVE_FRAME_DIR)/guest-paint-old.o: c/apps/gui/browser/paint/renderer.c $(BROWSER_INTERFACE_DEPS)
 	@mkdir -p $(PASSIVE_FRAME_DIR)
 	$(CC) $(UCFLAGS) $(CSS_INC) -DBROWSER_PASSIVE_NO_PAINT -c $< -o $@
 $(PASSIVE_FRAME_DIR)/guest-old.elf: $(ENGINE_OBJ) $(BROWSER_JS_OBJ) $(BROWSER_OBJ) $(CSS_OBJ) $(GFX_OBJ) $(RUST_LIB) $(BUILD)/apps/crt0.o $(BUILD)/browserobj/malloc_big.o $(PASSIVE_FRAME_DIR)/guest-paint-old.o
-	$(LD) -nostdlib -e _start -Ttext=0x45000000 -o $@ --start-group $(BUILD)/apps/crt0.o $(ENGINE_OBJ) $(BROWSER_JS_OBJ) $(filter-out $(BUILD)/browserobj/c/apps/browser/browser_paint.o,$(BROWSER_OBJ)) $(PASSIVE_FRAME_DIR)/guest-paint-old.o $(CSS_OBJ) $(GFX_OBJ) $(RUST_LIB) $(BUILD)/browserobj/malloc_big.o --end-group
+	$(LD) -nostdlib -e _start -Ttext=0x45000000 -o $@ --start-group $(BUILD)/apps/crt0.o $(ENGINE_OBJ) $(BROWSER_JS_OBJ) $(filter-out $(BUILD)/browserobj/c/apps/gui/browser/paint/renderer.o,$(BROWSER_OBJ)) $(PASSIVE_FRAME_DIR)/guest-paint-old.o $(CSS_OBJ) $(GFX_OBJ) $(RUST_LIB) $(BUILD)/browserobj/malloc_big.o --end-group
 $(PASSIVE_FRAME_DIR)/guest-old.aex: $(PASSIVE_FRAME_DIR)/guest-old.elf tools/mkaex.py
 	python3 tools/mkaex.py $< $@ Browser - 'B' 120 130 240 --stack-pages 2048
 # Disk paths must be explicit private images prepared by the caller; these

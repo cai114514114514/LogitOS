@@ -6,7 +6,7 @@
 #include "webapi_test.c"
 #undef main
 #ifndef STORAGE_BEFORE
-#include "storage_backend.h"
+#include "storage/backend.h"
 #endif
 
 static void storage_page(unsigned long long id, const char *url)

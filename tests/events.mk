@@ -1,4 +1,4 @@
-# tests/events.mk -- the DOM event layer (c/apps/browser/js_events.c).
+# tests/events.mk -- the DOM event layer (c/apps/gui/browser/js/dom/events.c).
 #
 #   make test-events            the ordering suite: must pass          (the gate)
 #   make test-events-negctl     the same suite against a stubbed
@@ -34,7 +34,7 @@
 .PHONY: test-events test-events-negctl test-wpt-events test-wpt-events-all
 .PHONY: wpt-events-baseline events-root
 
-EVENTS_SRC      := c/apps/browser/js_events.c
+EVENTS_SRC      := c/apps/gui/browser/js/dom/events.c
 EVENTS_BASELINE := tests/unit/wpt_events_fail.txt
 EVENTS_ROOT     := $(BUILD)/events_root
 

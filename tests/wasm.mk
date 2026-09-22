@@ -338,10 +338,10 @@ test-wasm-exec-negctl: $(BUILD)/wasm_exec_negimm
 # nine fragments' narrow -I lists), so naming them here too is a duplicate
 # symbol, not a belt-and-braces.  They are still listed as PREREQUISITES below
 # so a change to the interpreter rebuilds this gate.
-WASM_JS_SRC := tests/unit/wasm_js_test.c c/apps/browser/js_wasm.c
-WASM_JS_DEP := $(WASM_JS_SRC) $(WASM_EXEC_SRC) c/apps/browser/js_wasm.h \
-               c/apps/browser/js_wasm_prelude.inc tests/unit/wasm_js_modules.inc
-WASM_JS_CF  := -O1 -g -w -Ic/apps/browser -Ic/lib/wasm -Itests/unit $(JS_INC) \
+WASM_JS_SRC := tests/unit/wasm_js_test.c c/apps/gui/browser/js/wasm/wasm.c
+WASM_JS_DEP := $(WASM_JS_SRC) $(WASM_EXEC_SRC) c/apps/gui/browser/js/wasm/wasm.h \
+               c/apps/gui/browser/js/wasm/wasm_prelude.inc tests/unit/wasm_js_modules.inc
+WASM_JS_CF  := -O1 -g -w $(BROWSER_INC) -Ic/lib/wasm -Itests/unit $(JS_INC) \
                -DCONFIG_VERSION='"host"' -fno-math-errno
 
 $(BUILD)/wasm_js_test: $(WASM_JS_DEP) $(QJS_SRC)

@@ -1,6 +1,6 @@
 XHR_PROGRESS_DIR = $(BUILD)/xhr-progress
 XHR_PROGRESS_SRC = tests/unit/xhr_progress_test.c $(STREAM_TEST_SRC) $(QJS_SRC)
-XHR_PROGRESS_DEP = $(XHR_PROGRESS_SRC) tests/unit/stream_net.h $(wildcard c/apps/browser/js_*prelude.inc) c/apps/browser/cookie_persistence.c c/apps/browser/cookie_persistence.h tests/xhr_progress.mk $(RUST_LIB_HOST)
+XHR_PROGRESS_DEP = $(XHR_PROGRESS_SRC) tests/unit/stream_net.h $(BROWSER_JS_PRELUDES) c/apps/gui/browser/storage/cookies.c c/apps/gui/browser/storage/cookies.h tests/xhr_progress.mk $(RUST_LIB_HOST)
 XHR_PROGRESS_CF = -O2 -w $(BTEST_INC) -Iinclude/abi $(JS_INC) -DCONFIG_VERSION='"host"' -DWEBAPI_HOST
 $(XHR_PROGRESS_DIR)/current: $(XHR_PROGRESS_DEP)
 	@mkdir -p $(XHR_PROGRESS_DIR)

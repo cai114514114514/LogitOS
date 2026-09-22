@@ -16,7 +16,7 @@ int text_measure(const char *s,int n,int px,int face)
 static void gui_glass(int x,int y,int w,int h,int radius,int r,int g,int b,int a){(void)radius;(void)a;gui_rect(x,y,w,h,(r<<16)|(g<<8)|b);}
 static void gui_text(int x,int y,unsigned c,const char*s){gui_text_run(x,y,16,0,c,s,strlen(s));}
 static unsigned rgb(int r,int g,int b){return (r<<16)|(g<<8)|b;}
-#include "../../c/apps/browser/address_geometry.inc"
+#include "../../c/apps/gui/browser/app/address.inc"
 static int failures,checks;
 #define CHECK(x,msg) do{checks++;if(!(x)){printf("FAIL: %s\n",msg);failures++;}}while(0)
 static int caret_x(void){for(int i=paint_nops-1;i>=0;i--)if(paint_ops[i].kind==OP_RECT&&paint_ops[i].color==rgb(90,150,240))return paint_ops[i].x;return -1;}

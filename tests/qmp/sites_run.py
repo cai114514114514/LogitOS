@@ -245,7 +245,7 @@ def _row(r):
     cell = "-" if asked is None or got is None else (
         "%d/%d%s" % (asked, got, " !" if gap else ""))
     # `text`: runs/bytes of DOCUMENT text the browser's last paint actually
-    # emitted (Ctrl+Alt+D -> c/apps/browser/browser_paint.h). It is the column
+    # emitted (Ctrl+Alt+D -> c/apps/gui/browser/paint/renderer.h). It is the column
     # `changed px` could never be: pixels cannot tell a rendered page from a
     # dark block, and this says which WORDS are among them. It judges no
     # layout -- 0 runs on a page with text is a finding; a number is not a

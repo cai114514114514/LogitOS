@@ -1,5 +1,5 @@
 MAX_HEIGHT_SRC = $(filter-out tests/unit/element_scroll_test.c,$(ELEMENT_SCROLL_SRC)) tests/unit/max_height_test.c
-MAX_HEIGHT_DEPS = $(MAX_HEIGHT_SRC) tests/unit/cssom_test.c c/apps/browser/layout.h c/apps/browser/element_scroll_wiring.inc c/apps/browser/text_paint_wiring.inc tests/unit/painthost/logit.h $(QJS_SRC) $(BUILD)/libcss_host.a
+MAX_HEIGHT_DEPS = $(MAX_HEIGHT_SRC) tests/unit/cssom_test.c c/apps/gui/browser/layout/block.h c/apps/gui/browser/paint/element_scroll.inc c/apps/gui/browser/paint/text.inc tests/unit/painthost/logit.h $(QJS_SRC) $(BUILD)/libcss_host.a
 .PHONY: test-max-height test-max-height-negctl
 $(BUILD)/wiring-next/max_height_test: $(MAX_HEIGHT_DEPS)
 	@mkdir -p $(dir $@)

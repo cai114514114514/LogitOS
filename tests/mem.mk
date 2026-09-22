@@ -108,14 +108,14 @@ ci-host: test-malloc-small
 ARENA_PAGES ?= $(sort $(dir $(wildcard tests/fixtures/cssweb/*/index.html)))
 
 $(BUILD)/arena_page_mem: tests/unit/arena_page_mem.c $(BUILD)/libcss_host.a \
-                    c/apps/browser/css_engine.c c/apps/browser/css_vars.c \
-                    c/apps/browser/css_extra.c c/apps/browser/layout.c c/apps/browser/layout_text.c \
-                    c/apps/browser/browser_paint.c c/apps/libc/src/malloc.c \
+                    c/apps/gui/browser/css/engine.c c/apps/gui/browser/css/vars.c \
+                    c/apps/gui/browser/css/extra.c c/apps/gui/browser/layout/block.c c/apps/gui/browser/layout/text.c \
+                    c/apps/gui/browser/paint/renderer.c c/apps/libc/src/malloc.c \
                     $(HTML_PARSER_SRC)
 	@$(CC) -O2 -w $(PAINT_INC) $(BTEST_INC) $(CSS_INC) -DARENA_SIZE=402653184u \
 	    -o $@ tests/unit/arena_page_mem.c \
-	    c/apps/browser/css_engine.c c/apps/browser/css_vars.c c/apps/browser/css_extra.c \
-	    c/apps/browser/layout.c c/apps/browser/layout_text.c c/apps/browser/browser_paint.c $(GFX_SRC) \
+	    c/apps/gui/browser/css/engine.c c/apps/gui/browser/css/vars.c c/apps/gui/browser/css/extra.c \
+	    c/apps/gui/browser/layout/block.c c/apps/gui/browser/layout/text.c c/apps/gui/browser/paint/renderer.c $(GFX_SRC) \
 	    $(HTML_PARSER_SRC) c/apps/libc/src/malloc.c $(BUILD)/libcss_host.a -lm
 
 bench-arena: $(BUILD)/arena_page_mem

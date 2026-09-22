@@ -31,10 +31,10 @@
 #include <unistd.h>
 #include <sys/wait.h>
 #include "logit.h"                 /* the paint recorder, via -Itests/unit/painthost */
-#include "layout.h"
-#include "css.h"
-#include "dom.h"
-#include "browser_paint.h"
+#include "layout/block.h"
+#include "css/style.h"
+#include "dom/tree.h"
+#include "paint/renderer.h"
 
 struct paintop paint_ops[PAINT_MAXOPS];
 int paint_nops;

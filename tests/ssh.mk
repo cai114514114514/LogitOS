@@ -120,14 +120,14 @@ SSHD_CRYPTO_SRC := c/crypto/hash/sha256.c c/crypto/hash/sha384.c c/crypto/hash/h
                     c/crypto/pubkey/ed25519.c c/crypto/pubkey/x25519.c c/crypto/pubkey/ecdsa.c c/crypto/pubkey/rsa.c \
                     c/crypto/aead/aes_modes.c c/crypto/aead/aes_dispatch.c c/crypto/aead/aesgcm.c \
                     c/crypto/kdf/pbkdf2.c
-SSHD_SRC := c/apps/coreutils/sshd.c $(SSH_SRC) $(SSHD_CRYPTO_SRC)
+SSHD_SRC := c/apps/services/ssh/sshd.c $(SSH_SRC) $(SSHD_CRYPTO_SRC)
 SSHD_OBJS := $(patsubst %.c,$(BUILD)/sshdobj/%.o,$(SSHD_SRC))
 
 $(BUILD)/sshdobj/%.o: %.c
 	@mkdir -p $(dir $@)
 	$(CC) $(UCFLAGS) -Ic/apps/libc/include/uonly $(INCDIRS) -c $< -o $@
 
-$(BUILD)/sshdobj/sshd_thread.o: c/apps/coreutils/sshd_thread.asm
+$(BUILD)/sshdobj/sshd_thread.o: c/apps/services/ssh/sshd_thread.asm
 	@mkdir -p $(dir $@)
 	$(ASM) -f elf64 $< -o $@
 
@@ -157,7 +157,7 @@ test-ssh-os: test-servers-os
 $(DISK): $(BUILD)/sshd.aex
 $(SSHD_OBJS): c/apps/logit.h c/apps/logit_stat.h include/abi/logit_abi.h $(wildcard c/net/ssh/*.h)
 
-$(BUILD)/httpd.elf: c/apps/coreutils/httpd_protocol.h c/apps/logit_stat.h
+$(BUILD)/httpd.elf: c/apps/services/http/httpd_protocol.h c/apps/logit_stat.h
 
 # The signature oracle is Python cryptography; the product parser/verifier
 # is loaded unchanged. The control disables only the additional key families

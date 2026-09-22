@@ -6,7 +6,7 @@
 #define main unused_modal_main
 #include "modal_paint_test.c"
 #undef main
-#include "forms.h"
+#include "dom/forms.h"
 static void specimen(const char *name,const char *style,int disabled,int focused,int expected_fills,unsigned expected_bg){
  char html[512],css[1024];snprintf(html,sizeof html,"<!doctype html><div class=row><button id=b %s><span>Button</span></button></div>",disabled?"disabled":"");
  snprintf(css,sizeof css,"body{margin:20px;background:#446644}.row{display:flex;align-items:center}button{width:120px;height:36px}%s",style);
