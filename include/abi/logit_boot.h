@@ -1,6 +1,7 @@
 #ifndef LOGIT_BOOT_H
 #define LOGIT_BOOT_H
 
+#include <stddef.h>
 #include <stdint.h>
 
 /* Logit native boot protocol, version 1.
@@ -139,6 +140,18 @@ struct logit_boot_framebuffer_tag {
     uint8_t blue_position, blue_mask_size;
 } __attribute__((packed));
 
+/* The guest TCC (0.9.27) does not implement C11 _Static_assert. Keep every
+ * wire-layout check active for it: a negative array bound is still a compile
+ * error, whereas skipping these checks would let a loader/consumer ABI drift
+ * appear only at boot. Undo the local spelling below so includers do not
+ * inherit an assertion macro from this protocol header. */
+#ifdef __TINYC__
+#define LOGIT_BOOT_JOIN_(left, right) left##right
+#define LOGIT_BOOT_JOIN(left, right) LOGIT_BOOT_JOIN_(left, right)
+#define _Static_assert(condition, message) \
+    typedef char LOGIT_BOOT_JOIN(logit_boot_assert_, __LINE__)[(condition) ? 1 : -1]
+#endif
+
 _Static_assert(sizeof(struct logit_boot_header) == LOGIT_BOOT_HEADER_SIZE,
                "native boot header layout drifted");
 _Static_assert(sizeof(struct logit_boot_tag) == LOGIT_BOOT_TAG_SIZE,
@@ -151,7 +164,7 @@ _Static_assert(sizeof(struct logit_boot_framebuffer_tag) == LOGIT_BOOT_FRAMEBUFF
                "native framebuffer tag layout drifted");
 
 #define LOGIT_BOOT_ASSERT_OFFSET(type, field, expected) \
-    _Static_assert(__builtin_offsetof(type, field) == (expected), \
+    _Static_assert(offsetof(type, field) == (expected), \
                    "native boot " #type "." #field " offset drifted")
 LOGIT_BOOT_ASSERT_OFFSET(struct logit_boot_header, magic,
                          LOGIT_BOOT_HEADER_MAGIC_OFFSET);
@@ -210,6 +223,11 @@ LOGIT_BOOT_ASSERT_OFFSET(struct logit_boot_framebuffer_tag, blue_position,
 LOGIT_BOOT_ASSERT_OFFSET(struct logit_boot_framebuffer_tag, blue_mask_size,
                          LOGIT_BOOT_FRAMEBUFFER_TAG_BLUE_SIZE_OFFSET);
 #undef LOGIT_BOOT_ASSERT_OFFSET
+#ifdef __TINYC__
+#undef _Static_assert
+#undef LOGIT_BOOT_JOIN
+#undef LOGIT_BOOT_JOIN_
+#endif
 
 uint64_t logit_boot_normalize(uint64_t info_addr, uint64_t entry_magic);
 

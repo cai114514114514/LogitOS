@@ -9,11 +9,22 @@
 
 #ifndef __LIBC_CHAR16_T_DEFINED
 #define __LIBC_CHAR16_T_DEFINED
+#ifdef __CHAR16_TYPE__
 typedef __CHAR16_TYPE__ char16_t;
+#else
+/* TCC 0.9.27 has no __CHAR16_TYPE__. On this x86-64 ABI, clang's type is
+ * unsigned short; keep the public type identical across both compilers. */
+typedef unsigned short char16_t;
+#endif
 #endif
 #ifndef __LIBC_CHAR32_T_DEFINED
 #define __LIBC_CHAR32_T_DEFINED
+#ifdef __CHAR32_TYPE__
 typedef __CHAR32_TYPE__ char32_t;
+#else
+/* As above, clang uses unsigned int for the 32-bit code-unit type. */
+typedef unsigned int char32_t;
+#endif
 #endif
 
 size_t mbrtoc16(char16_t *restrict pc16, const char *restrict s, size_t n,

@@ -134,16 +134,43 @@ dev_bad = [h for h in headers if not results[(h, "device")][0]]
 lit_bad = [h for h in headers if not results[(h, "literal")][0]]
 stock_bad = [h for h in headers if not results[(h, "stock")][0]]
 # The gate: every header parses under the device order and under the literal
-# form (they are the same order, so they must agree); upstream's order is
-# allowed to lose exactly limits.h -- the libc's #include_next has nothing
-# after it when the compiler's dir comes first (tools/mksysroot.py LIMITS_H)
-# -- and nothing else.
+# form (they are the same order, so they must agree). In the upstream order,
+# the libc's limits.h has no successor for #include_next (mksysroot.py's
+# generated LIMITS_H is before it). Three headers include that same limits.h,
+# so they fail for the same reason. Every unrelated header must still parse.
+expected_stock_bad = ["limits.h", "stdbit.h", "sys/limits.h", "sys/param.h"]
+
+
+def stock_contract(observed):
+    return observed == expected_stock_bad
+
+
 check(not dev_bad, "every header parses under the device order (libc first)")
 check(dev_bad == lit_bad, "the literal -nostdinc -I form agrees with the device order")
-check(stock_bad == ["limits.h"],
-      "under upstream's order (compiler dir first) the only casualty is limits.h (got %s)" % stock_bad)
-check("limits.h" in stock_bad and "include" in results[("limits.h", "stock")][1],
-      "and it fails at the libc's #include_next, by name: %s" % results[("limits.h", "stock")][1])
+
+# Break one otherwise-good header in a private overlay. The exact stock-order
+# predicate used below must reject this additional failure, or a future broad
+# expectation could silently hide a new incompatible header.
+control_dir = os.path.join(work, "stock-extra-control")
+os.makedirs(control_dir, exist_ok=True)
+with open(os.path.join(control_dir, "assert.h"), "w", newline="\n") as f:
+    f.write("#error SYSROOT_STOCK_EXTRA_CONTROL\n")
+control_src = os.path.join(work, "stock-extra-control.c")
+with open(control_src, "w", newline="\n") as f:
+    f.write("#include <assert.h>\nint sysroot_probe_dummy;\n")
+control = subprocess.run([tcc, "-nostdinc", "-I" + control_dir, "-I" + TINC,
+                          "-I" + INC, "-c", control_src, "-o",
+                          os.path.join(work, "stock-extra-control.o")],
+                         capture_output=True, text=True)
+control_error = first_error(control.stderr + control.stdout)
+check(control.returncode != 0 and "SYSROOT_STOCK_EXTRA_CONTROL" in control_error
+      and not stock_contract(sorted(stock_bad + ["assert.h"])),
+      "stock-order control rejects an additional broken assert.h: %s" % control_error)
+check(stock_contract(stock_bad),
+      "upstream order fails only through limits.h's include chain (got %s)" % stock_bad)
+check(all("include file 'limits.h' not found" in results[(h, "stock")][1]
+          for h in expected_stock_bad),
+      "each expected stock-order failure names the missing limits.h successor")
 
 # ---- 2. use-site probes ----------------------------------------------------
 # (name, source, expected-to-compile?, why)
