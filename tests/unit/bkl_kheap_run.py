@@ -7,7 +7,13 @@ root=Path(__file__).resolve().parents[2]
 p=argparse.ArgumentParser();p.add_argument('--build',default='/tmp/logitos-bkl-20260910/proc/kheap');p.add_argument('--iterations',type=int,default=10000);p.add_argument('--benchmark',action='store_true');p.add_argument('--baseline-tar');p.add_argument('--samples',type=int,default=3);a=p.parse_args()
 if not 0<a.iterations<=10000000:raise SystemExit('iterations must be 1..10000000')
 out=Path(a.build).resolve();out.mkdir(parents=True,exist_ok=True)
-flags=['clang','-std=c11','-O2' if a.benchmark else '-O1','-g','-Wall','-Wextra','-Werror','-pthread','-DMM_HOSTTEST','-DMM_CONCURRENT','-DLOGIT_LOCK_HOST','-Itests/unit/mmstub','-Ic/kernel/mm -Ic/kernel/mm/phys -Ic/kernel/mm/virt -Ic/kernel/mm/cache -Ic/kernel/mm/reclaim']
+# The old joined -I string was one nonexistent directory in subprocess argv.
+includes = ['-Itests/unit', '-Itests/unit/mmstub', '-Ic/kernel/mm',
+            '-Ic/kernel/mm/phys', '-Ic/kernel/mm/virt', '-Ic/kernel/mm/cache',
+            '-Ic/kernel/mm/reclaim']
+flags = ['clang', '-std=c11', '-O2' if a.benchmark else '-O1', '-g', '-Wall',
+         '-Wextra', '-Werror', '-pthread', '-DMM_HOSTTEST', '-DMM_CONCURRENT',
+         '-DLOGIT_LOCK_HOST', *includes]
 if not a.benchmark:flags+=['-fsanitize=address,undefined','-fno-sanitize-recover=all']
 sources=['tests/unit/bkl_kheap_test.c','c/kernel/mm/phys/kheap.c','c/kernel/cpu/spinlock.c'];report=[]
 for control in [True,False]:
@@ -33,7 +39,9 @@ if a.baseline_tar:
  with tarfile.open(a.baseline_tar,'r:gz') as archive:
   old.write_bytes(archive.extractfile('c/kernel/mm/phys/kheap.c').read())
  weak.write_bytes((root/'include/weaksym.h').read_bytes())
- measure_flags=['clang','-std=c11','-O2','-g','-Wall','-Wextra','-Werror','-pthread','-DMM_HOSTTEST','-DMM_CONCURRENT','-DLOGIT_LOCK_HOST','-DKHEAP_MEASURE_ONLY','-Itests/unit/mmstub','-Ic/kernel/mm -Ic/kernel/mm/phys -Ic/kernel/mm/virt -Ic/kernel/mm/cache -Ic/kernel/mm/reclaim']
+ measure_flags = ['clang', '-std=c11', '-O2', '-g', '-Wall', '-Wextra', '-Werror',
+                  '-pthread', '-DMM_HOSTTEST', '-DMM_CONCURRENT',
+                  '-DLOGIT_LOCK_HOST', '-DKHEAP_MEASURE_ONLY', *includes]
  bins={}
  for name,allocator in [('before',old),('after',root/'c/kernel/mm/phys/kheap.c')]:
   exe=out/('measure-'+name);bins[name]=exe

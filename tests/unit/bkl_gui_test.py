@@ -8,10 +8,12 @@ gui=root/"c/kernel/gui"
 base=[os.environ.get("CC","clang"),"-std=c11","-O1","-g","-pthread","-fsanitize=address,undefined","-DIME_LEARN_HOST"]
 for d in ("c/kernel/gui","c/kernel/core","c/kernel/init","c/kernel/diag","c/kernel/sync","c/kernel/init","c/kernel/diag","c/kernel/sync","c/kernel/exec","c/kernel/exec/load","c/kernel/exec/signal","c/kernel/exec/fd","c/kernel/exec/load","c/kernel/exec/signal","c/kernel/exec/fd","c/kernel/mm","c/kernel/mm/phys","c/kernel/mm/virt","c/kernel/mm/cache","c/kernel/mm/reclaim","c/kernel/mm/phys","c/kernel/mm/virt","c/kernel/mm/cache","c/kernel/mm/reclaim","c/kernel/cpu","c/kernel/cpu/acpi","c/kernel/cpu/irq","c/kernel/cpu/smp","c/kernel/cpu/acpi","c/kernel/cpu/irq","c/kernel/cpu/smp","c/lib/ime","include","include/abi"):
     base+=["-I"+str(root/d)]
+# The old flat GUI paths no longer find the event queue and IME providers.
+base += ["-I" + str(gui / "input"), "-I" + str(gui / "ime")]
 fixture=root/"tests/unit/bkl_gui_test.c"
 def run(name,defs=(),ev=None,learn=None,expect=None):
     binary=build/name
-    cmd=base+list(defs)+[str(fixture),str(gui/"clipboard.c"),str(ev or gui/"evq.c"),str(learn or gui/"ime_learn.c"),"-o",str(binary)]
+    cmd=base+list(defs)+[str(fixture),str(gui/"clipboard.c"),str(ev or gui/"input/evq.c"),str(learn or gui/"ime/ime_learn.c"),"-o",str(binary)]
     subprocess.run(cmd,check=True,cwd=root)
     r=subprocess.run([str(binary)],cwd=root,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,timeout=30)
     (build/(name+".log")).write_text(r.stdout)
@@ -21,13 +23,13 @@ def run(name,defs=(),ev=None,learn=None,expect=None):
     elif r.returncode:raise SystemExit(r.stdout)
     else:print(r.stdout,end="")
 run("clip-no-pin",["-DGUI_CTL_CLIP_NO_PIN"],expect="heap-use-after-free")
-ev=(gui/"evq.c").read_text()
+ev=(gui/"input/evq.c").read_text()
 ev=ev.replace('#include "evq.h"','#include "evq.h"\nvoid bkl_evq_pause(void);')
 ev=ev.replace("    int nt = (q->tail + 1) % EVQ_N;","    int nt = (q->tail + 1) % EVQ_N;\n    bkl_evq_pause();")
 ev="\n".join(line for line in ev.splitlines() if "gui_spin_lock(" not in line and "gui_spin_unlock(" not in line)+"\n"
 ep=build/"evq-no-lock.c";ep.write_text(ev)
 run("event-no-lock",ev=ep,expect="FAIL: event producers retain both unique events")
-learn=(gui/"ime_learn.c").read_text()
+learn=(gui/"ime/ime_learn.c").read_text()
 learn=learn.replace('#include "ime_learn.h"','#include "ime_learn.h"\nvoid bkl_learn_pause(void);')
 learn=learn.replace("\tg_commits += add;","\tuint32_t old_commits = g_commits;\n\tbkl_learn_pause();\n\tg_commits = old_commits + add;")
 learn="\n".join(line for line in learn.splitlines() if "gui_spin_lock(" not in line and "gui_spin_unlock(" not in line)+"\n"
@@ -91,7 +93,10 @@ for mutant in (True,False):
         code=code.replace("gui_mutex_lock(&settings_lock);","(void)settings_lock;").replace("gui_mutex_unlock(&settings_lock);","(void)settings_lock;")
     source.write_text(code)
     exe=build/("settings-no-lock" if mutant else "settings-positive")
-    cmd=base+["-Ic/fs -Ic/fs/vfs -Ic/fs/logitfs -Ic/fs/cache -Ic/fs/ramfs -Ic/fs/ctl -Ic/fs/procfs","-Ic/drivers/block","-Wno-deprecated-declarations"]
+    # A list-form subprocess does not split the old shell-style include string.
+    cmd = base + ["-Ic/fs", "-Ic/fs/vfs", "-Ic/fs/logitfs", "-Ic/fs/cache",
+                  "-Ic/fs/ramfs", "-Ic/fs/ctl", "-Ic/fs/procfs",
+                  "-Ic/drivers/block", "-Wno-deprecated-declarations"]
     if mutant:cmd+=["-DBKL_SETTINGS_RACE"]
     subprocess.run(cmd+[str(fixture_settings),str(source),"c/drivers/block/crc32.c","-o",str(exe)],check=True,cwd=root)
     proc=subprocess.run([str(exe)],cwd=root,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True,timeout=30)

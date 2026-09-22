@@ -124,6 +124,30 @@ int main(void)
            toobig ? "ptr" : "NULL", c ? "ptr" : "NULL", d ? "ptr" : "NULL");
     pmm_fail = 0;
 
+    /* Phase 1b: a second kfree of a magazine-class block must not park the
+     * same pointer twice. 32 bytes is an exact magazine class, so the first
+     * free takes the fast path. Before the magazine refused a duplicate, the
+     * second free pushed the same header again and the next two allocs of
+     * that class were the same address -- two owners, no crash. */
+    while (nlive) free_live(0);
+    {
+        uint8_t *a = kmalloc(32);
+        if (!a) { printf("FAIL phase1b setup alloc\n"); return 1; }
+        kfree(a);
+        kfree(a);
+        uint8_t *b = kmalloc(32);
+        uint8_t *c2 = kmalloc(32);
+        if (!b || !c2 || b == c2) {
+            printf("FAIL phase1b double free handed %p and %p -- one block, two owners\n",
+                   (void *)b, (void *)c2);
+            fails++;
+        } else {
+            printf("phase1b: double free refused, next two allocs differ\n");
+        }
+        if (b) kfree(b);
+        if (c2 && c2 != b) kfree(c2);
+    }
+
     /* === Phase 2: randomized alloc/free fuzz with a 30% arena-failure rate,
      * continuing on the same heap state. Sizes span every bin incl. the
      * oversized bin-8 class (pipes 8224, kstacks 32768, surfaces ~1 MiB). */

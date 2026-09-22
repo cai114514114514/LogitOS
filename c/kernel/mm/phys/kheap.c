@@ -450,15 +450,32 @@ static struct header *mag_pop(int cls)
     return b;
 }
 
+/* 1 = parked. 0 = this magazine is full, and the caller may bin_push.
+ * -1 = this pointer is already parked here.
+ *
+ * -1 must not fall through to bin_push. A block in a magazine is still
+ * allocated as far as the heap is concerned, so the slow path's F_FREE check
+ * does not see it, and bin_push would put it on a free list while the
+ * magazine still hands it out. Two kfrees then two kmallocs of the same
+ * class returned the same address (kheap_test phase 1b, before this scan).
+ * Scanning this core's magazine is enough for that case: a free on another
+ * core parks in THAT core's magazine, and a cross-core double free is a
+ * different bug this scan does not claim to close. */
 static int mag_push(int cls, struct header *b)
 {
     struct magazine *m = &g_mag[mag_cpu() & (MAG_MAXCPU - 1)];
-    int took = 0;
+    int rc = 0;
     uint64_t f = spin_lock_irqsave(&m->lock);
-    if (m->n[cls] < MAG_DEPTH) { m->blk[cls][m->n[cls]++] = b; took = 1; }
-    if (took) { m->puts++; m->bytes += blk_size(b); }
+    for (int i = 0; i < m->n[cls]; i++)
+        if (m->blk[cls][i] == b) { rc = -1; break; }
+    if (rc == 0 && m->n[cls] < MAG_DEPTH) {
+        m->blk[cls][m->n[cls]++] = b;
+        m->puts++;
+        m->bytes += blk_size(b);
+        rc = 1;
+    }
     spin_unlock_irqrestore(&m->lock, f);
-    return took;
+    return rc;
 }
 
 /* Return every parked block to the heap. Caller holds kheap_lock; the per-core
@@ -595,16 +612,24 @@ void kfree(void *ptr)
         return;
     struct header *h = (struct header *)ptr - 1;
 
-    /* The fast path, and note what it does NOT do: it does not clear F_FREE,
-     * because a block parked in a magazine is still allocated as far as the
-     * heap is concerned. That keeps the double-free check below meaningful
-     * (a second kfree of the same pointer still finds an allocated block and
-     * takes the slow path, where it is caught) and keeps kheap_audit's arena
-     * walk consistent -- every block it sees is either free in a bin or
-     * allocated, with no third state to teach it about. */
+    /* The fast path does not clear F_FREE: a block parked in a magazine is
+     * still allocated as far as the heap is concerned, so kheap_audit's arena
+     * walk stays two-state (free in a bin, or allocated). A second kfree of a
+     * parked block does NOT reach the slow path below -- mag_push would take
+     * it again, and the F_FREE check never runs. mag_push reports that
+     * duplicate itself. Returning 0 from it (magazine full) is the only case
+     * that falls through, and that block was not parked, so bin_push is safe. */
     if (!blk_low(h) && !blk_free(h)) {
         int cls = mag_class(blk_size(h));
-        if (cls >= 0 && mag_push(cls, h)) return;
+        if (cls >= 0) {
+            int parked = mag_push(cls, h);
+            if (parked > 0) return;
+            if (parked < 0) {
+                kprintf("[kheap] double free of %p (%d bytes) -- refused\n",
+                        ptr, (int)blk_size(h));
+                return;
+            }
+        }
     }
 
     uint64_t f = spin_lock_irqsave(&kheap_lock);

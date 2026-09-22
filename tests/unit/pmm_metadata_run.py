@@ -11,7 +11,12 @@ for macro, marker in variants:
     binary = a.build / (macro.lower() or 'positive')
     cmd = [os.environ.get('CC', 'cc'), '-std=c11', '-O1', '-g', '-Wall', '-Wextra', '-Werror',
            '-fsanitize=address,undefined', '-fno-sanitize-recover=all', '-DMM_HOSTTEST',
-           '-Ic/kernel/mm -Ic/kernel/mm/phys -Ic/kernel/mm/virt -Ic/kernel/mm/cache -Ic/kernel/mm/reclaim', '-Itests/unit/mmstub', 'tests/unit/pmm_metadata_test.c',
+           # These formerly occupied one argv entry as shell-style text. This
+           # subprocess has no shell, so clang treated the spaces and remaining
+           # -I flags as part of the first directory and found no PMM headers.
+           '-Ic/kernel/mm', '-Ic/kernel/mm/phys', '-Ic/kernel/mm/virt',
+           '-Ic/kernel/mm/cache', '-Ic/kernel/mm/reclaim', '-Itests/unit/mmstub',
+           'tests/unit/pmm_metadata_test.c',
            'c/kernel/mm/phys/pmm.c', '-o', str(binary)]
     if macro: cmd.insert(1, '-D' + macro)
     subprocess.run(cmd, check=True)

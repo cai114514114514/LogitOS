@@ -13,12 +13,15 @@
  *
  * So this harness does not simulate a page table. It uses the real one:
  *   pmm_alloc()   -> mmap() one anonymous page, return its address as a frame
- *   vmm_map_page()-> mremap(MREMAP_FIXED) that page to the virtual address, then
- *                    mprotect() it to what the flags ask for
+ *   vmm_map_page()-> move that page to the virtual address (Linux mremap;
+ *                    Darwin mmap/copy/unmap), then mprotect() its flags
  *   vmm_pte()     -> a real entry out of a hash table this file keeps
  *
- * The user region (0x40000000..0x80000000) is free in a host process, so the
- * loader writes to exactly the addresses it would write to in the kernel and
+ * The old harness assumed the user region was free on every host. run.py now
+ * probes fixed mappings and 4 KiB protection granularity before running it;
+ * Darwin requires an executable x86_64 process, not native 16 KiB arm64 pages.
+ * When the host permits these mappings, the loader writes into the user region
+ * (0x40000000..0x80000000) at the same addresses it would use in the kernel and
  * the test can read them back and diff against the file. It also means the
  * PERMISSIONS are enforced by the same hardware: space_writable() asks the
  * kernel's own /proc-free way -- a write through a probe with the fault caught

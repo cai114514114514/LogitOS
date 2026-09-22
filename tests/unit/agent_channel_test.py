@@ -73,7 +73,10 @@ def unix_gate(build, name, control=None):
             source = replace_once(source, '            if (!owner_valid(s)) return sent > 0 ? sent : LSK_E_PERM;', '')
         (directory / 'unix.c').write_text(relocated(source, original))
         flags += ['-I' + str(directory)]
-    flags += ['-Itests/unit/unixstub', '-Ic/net/core', '-Iinclude/abi', '-Ic/fs -Ic/fs/vfs -Ic/fs/logitfs -Ic/fs/cache -Ic/fs/ramfs -Ic/fs/ctl -Ic/fs/procfs']
+    # The previous shell-style string was one argv entry, hiding VFS headers.
+    flags += ['-Itests/unit/unixstub', '-Ic/net/core', '-Iinclude/abi', '-Ic/fs',
+              '-Ic/fs/vfs', '-Ic/fs/logitfs', '-Ic/fs/cache', '-Ic/fs/ramfs',
+              '-Ic/fs/ctl', '-Ic/fs/procfs']
     exe = directory / name
     command(flags + ['tests/unit/agent_unix_test.c', '-o', exe])
     labels = {'peer': 'identity: changed peer uid refused',

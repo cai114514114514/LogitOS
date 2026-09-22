@@ -20,7 +20,9 @@ for name,flags in variants:
     (out/'core.c').write_text(core)
     cmd=[os.environ.get('CC','clang'),'-std=c11','-O1','-g','-Wall','-Wextra','-pthread',
          '-fsanitize=address,undefined',*flags,
-         '-Ic/drivers/usb','-Ic/drivers/core','-Ic/kernel/pci','-Ic/kernel/core -Ic/kernel/init -Ic/kernel/diag -Ic/kernel/sync','-Ic/drivers/timer',
+         # subprocess does not split the former shell-style include argument.
+         '-Ic/drivers/usb', '-Ic/drivers/core', '-Ic/kernel/pci', '-Ic/kernel/core',
+         '-Ic/kernel/init', '-Ic/kernel/diag', '-Ic/kernel/sync', '-Ic/drivers/timer',
          'tests/unit/usb_hotplug_test.c',str(out/'core.c'),'c/drivers/usb/usb_bind.c',
          'c/drivers/usb/usb_desc.c','-o',str(out/'test')]
     subprocess.run(cmd,cwd=root,check=True)

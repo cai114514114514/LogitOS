@@ -5,8 +5,14 @@ import argparse,json,subprocess
 from pathlib import Path
 ROOT=Path(__file__).resolve().parents[2]
 p=argparse.ArgumentParser();p.add_argument('--build',type=Path,required=True);a=p.parse_args();out=a.build.resolve();out.mkdir(parents=True,exist_ok=True)
-base=['cc','-O1','-g','-Wall','-Wextra','-Wno-unused-function','-Wno-type-limits','-fsanitize=address,undefined','-Itests/unit/fsstub','-Ic/fs -Ic/fs/vfs -Ic/fs/logitfs -Ic/fs/cache -Ic/fs/ramfs -Ic/fs/ctl -Ic/fs/procfs','-Ic/drivers/block']
-core=['c/fs/logitfs.c','c/fs/bcache.c','c/fs/fsck.c','c/drivers/block/crc32.c']
+# The old shell-style include string was one argv entry; the source list also
+# retained flat paths after the filesystem was split into these subsystems.
+base = ['cc', '-O1', '-g', '-Wall', '-Wextra', '-Wno-unused-function',
+        '-Wno-type-limits', '-fsanitize=address,undefined', '-Itests/unit/fsstub',
+        '-Ic/fs', '-Ic/fs/vfs', '-Ic/fs/logitfs', '-Ic/fs/cache', '-Ic/fs/ramfs',
+        '-Ic/fs/ctl', '-Ic/fs/procfs', '-Ic/drivers/block']
+core = ['c/fs/logitfs/logitfs.c', 'c/fs/cache/bcache.c', 'c/fs/logitfs/fsck.c',
+        'c/drivers/block/crc32.c']
 results=[]
 for name,defs in [('reuse-negative',['-DLOGITFS_ID_REUSE_NEGCTL']),('identity',[])]:
  binary=out/name

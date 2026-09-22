@@ -7,7 +7,13 @@ p=argparse.ArgumentParser();p.add_argument('--build',type=Path,required=True);p.
 r=Path(__file__).resolve().parents[2];b=a.build.resolve();b.mkdir(parents=True,exist_ok=True)
 def run(cmd):subprocess.run(list(map(str,cmd)),cwd=r,check=True)
 cc=os.environ.get('CC','clang');ld=os.environ.get('LD','ld.lld');nasm=os.environ.get('ASM','nasm')
-flags=['--target=x86_64-elf','-ffreestanding','-nostdlib','-fPIE','-ftls-model=local-exec','-fno-stack-protector','-mno-red-zone','-O2','-Ic/apps','-Iinclude/abi','-Ic/kernel/exec -Ic/kernel/exec/load -Ic/kernel/exec/signal -Ic/kernel/exec/fd']
+# Each include must be its own argv entry; the old shell-style string was
+# interpreted as one directory. logit.h also imports the public graphics ABI.
+exec_includes = ['-Ic/kernel/exec', '-Ic/kernel/exec/load',
+                 '-Ic/kernel/exec/signal', '-Ic/kernel/exec/fd']
+flags = ['--target=x86_64-elf', '-ffreestanding', '-nostdlib', '-fPIE',
+         '-ftls-model=local-exec', '-fno-stack-protector', '-mno-red-zone', '-O2',
+         '-Ic/apps', '-Iinclude/abi', '-Ic/lib/gfx/include', *exec_includes]
 for src,name in [('ptinterp_program.c','program'),('ptinterp_runtime.c','runtime'),('ptinterp_driver.c','driver'),('ptinterp_gui.c','gui')]:run([cc,*flags,'-c','tests/unit/'+src,'-o',b/(name+'.o')])
 for src,name in [('c/apps/crt0_cli.asm','crt'),('tests/unit/pie_thread.asm','thread'),('tests/unit/ptinterp_start.asm','start')]:run([nasm,'-f','elf64',src,'-o',b/(name+'.o')])
 fork_nr=re.search(r'^#define SYS_FORK\s+(\d+)',(r/'include/abi/logit_abi.h').read_text(),re.M).group(1)
@@ -27,7 +33,12 @@ for name,path in [('missing','none'),('denied','deny'),('nested','loop'),('junk'
 (b/'junk.so').write_bytes(b'unsupported interpreter format'.ljust(128,b'!'))
 if a.fixtures_only:raise SystemExit(0)
 arch=['-arch','x86_64'] if platform.system()=='Darwin' else []
-host=[cc,*arch,'-O1','-g','-Wall','-Wextra','-Wno-unused-parameter','-DLOGIT_HOSTTEST','-Ic/kernel/exec -Ic/kernel/exec/load -Ic/kernel/exec/signal -Ic/kernel/exec/fd','-Itests/unit/exechost','-Ic/fs -Ic/fs/vfs -Ic/fs/logitfs -Ic/fs/cache -Ic/fs/ramfs -Ic/fs/ctl -Ic/fs/procfs','-Ic/kernel/mm -Ic/kernel/mm/phys -Ic/kernel/mm/virt -Ic/kernel/mm/cache -Ic/kernel/mm/reclaim','-Ic/crypto','-Ic/crypto/trust','-Ic/drivers/block']
+host = [cc, *arch, '-O1', '-g', '-Wall', '-Wextra', '-Wno-unused-parameter',
+        '-DLOGIT_HOSTTEST', *exec_includes, '-Itests/unit/exechost',
+        '-Ic/fs', '-Ic/fs/vfs', '-Ic/fs/logitfs', '-Ic/fs/cache', '-Ic/fs/ramfs',
+        '-Ic/fs/ctl', '-Ic/fs/procfs', '-Ic/kernel/mm', '-Ic/kernel/mm/phys',
+        '-Ic/kernel/mm/virt', '-Ic/kernel/mm/cache', '-Ic/kernel/mm/reclaim',
+        '-Ic/crypto', '-Ic/crypto/trust', '-Ic/drivers/block']
 sources=['tests/unit/ptinterp_host.c','tests/unit/pie_space.c','c/kernel/exec/load/interp.c','c/drivers/block/crc32.c','c/crypto/hash/sha256.c']
 original=(r/'c/kernel/exec/load/elf.c').read_text()
 controls={
@@ -47,7 +58,16 @@ for name,change in list(controls.items())+[('positive',None),('asan',None)]:
   (tree/'include/abi').mkdir(exist_ok=True);shutil.copy2(r/'include/abi/aex_agent.h',tree/'include/abi/aex_agent.h')
  exe=b/('host-'+name);more=['-fsanitize=address,undefined','-fno-omit-frame-pointer','-DELF_PIE_BASE=0x200000000000ull'] if name=='asan' else []
  run([*host,*more,*sources,source,'-o',exe])
- z=subprocess.run([exe,b/'program.elf',b/'ld-logit-test.so'],cwd=r,capture_output=True,text=True,env={**os.environ,'ASAN_OPTIONS':'detect_leaks=0'})
+ try:
+  z=subprocess.run([exe,b/'program.elf',b/'ld-logit-test.so'],cwd=r,capture_output=True,text=True,env={**os.environ,'ASAN_OPTIONS':'detect_leaks=0'})
+ except OSError as error:
+  # The old Darwin branch assumed Rosetta was installed. Successful x86_64
+  # linking proves nothing about the host's ability to execute the fixture.
+  if platform.system() == 'Darwin' and error.errno == 86:
+   raise SystemExit('SKIP: Darwin cannot execute the x86_64 PT_INTERP fixture '
+                    '(Rosetta unavailable); run make test-ptinterp-host on '
+                    'x86_64 Linux or Darwin with Rosetta') from error
+  raise
  (b/(name+'.log')).write_text(z.stdout+z.stderr)
  ok=(z.returncode==1 and 'FAIL '+assertion in z.stderr) if change else z.returncode==0
  results.append(dict(name=name,passed=ok,exit=z.returncode));print(('PASS' if ok else 'FAIL'),name,z.stdout.strip(),flush=True)

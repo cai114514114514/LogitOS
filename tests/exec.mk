@@ -31,7 +31,7 @@
 .PHONY: test-exec test-exec-fuzz test-exec-negctl test-exec-asan test-exec-os \
         test-exec-bases
 
-# c/crypto/{trust/aexsig.c,trust/pkgsig.c,pubkey/ed25519.c,hash/sha256.c} are
+# c/crypto/{trust/aexsig.c,trust/pkgsig.c,pubkey/ed25519.c,hash/sha*.c} are
 # here because aex.c calls aex_sig_verify() unconditionally now (the OPTIONAL
 # AEX_T_SIG record -- see aex.c's comment above the CRC check) -- not weak,
 # because unlike vfs_pread this is not "absent on a host with no filesystem",
@@ -41,10 +41,24 @@
 # smaller aex.c than the one the kernel ships.
 EXEC_SRC  := tests/unit/exechost/space.c c/kernel/exec/load/elf.c c/kernel/exec/load/aex.c \
              c/drivers/block/crc32.c c/crypto/trust/aexsig.c c/crypto/trust/pkgsig.c \
-             c/crypto/pubkey/ed25519.c c/crypto/hash/sha256.c
+             c/crypto/pubkey/ed25519.c c/crypto/hash/sha256.c c/crypto/hash/sha384.c
 EXEC_INC  := -Itests/unit/exechost $(KEXEC_INC) -Ic/drivers/block -Ic/crypto \
              -Ic/crypto/trust -DLOGIT_HOSTTEST
 EXEC_WARN := -Wall -Wextra -Wno-unused-parameter -Wno-unused-function
+# A 16 KiB arm64 host cannot protect adjacent 4 KiB guest pages independently.
+# Darwin uses the same x86_64 approach as test-pie, but run.py checks that this
+# runtime actually exists. Compile FIRST even when execution will be skipped:
+# the missing kheap shim and Ed25519 SHA-512 dependency must not hide behind it.
+EXEC_HOST_FLAGS :=
+ifeq ($(shell uname -s),Darwin)
+EXEC_HOST_FLAGS := -arch x86_64 -Wl,-pagezero_size,0x1000
+endif
+EXEC_CF := -O1 -g $(EXEC_WARN) $(EXEC_HOST_FLAGS) $(EXEC_INC)
+EXEC_SAN := -fsanitize=address,undefined -fno-omit-frame-pointer
+EXEC_DEPS := $(EXEC_SRC) $(wildcard tests/unit/exechost/*.h) \
+             c/kernel/exec/load/elf.h c/kernel/exec/load/aex.h \
+             c/crypto/trust/pkgroots.inc tests/exec.mk
+EXEC_RUN := python3 tests/unit/exechost/run.py --build "$(BUILD)"
 # Every .aex the build produces, including the deliberately crippled variants a
 # test packs instead of the real app -- those are built by the same rules and
 # are just as much "a binary that has to load".
@@ -84,18 +98,41 @@ EXEC_FIXTURES := $(BUILD)/exec_v1.aex $(BUILD)/asnative.aex
 EXEC_ENV = EXEC_V1=$(BUILD)/exec_v1.aex EXEC_V2=$(BUILD)/echo.aex \
            EXEC_EMIT=$(BUILD)/asnative.aex
 
-# Same gotcha as roots_bundle.inc / pkgroots.inc everywhere else it is linked:
-# without this, regenerating the signer keys leaves the OLD ones compiled into
-# these two host binaries and nothing says so.
-$(BUILD)/exec_test $(BUILD)/exec_fuzz: c/crypto/trust/pkgroots.inc
+$(BUILD)/exec_test: tests/unit/exec_test.c $(EXEC_DEPS)
+	@mkdir -p $(BUILD)
+	@$(CC) $(EXEC_CF) -o $@ tests/unit/exec_test.c $(EXEC_SRC)
 
-$(BUILD)/exec_test: tests/unit/exec_test.c $(EXEC_SRC) tests/unit/exechost/space.h \
-                    c/kernel/exec/load/elf.h c/kernel/exec/load/aex.h
-	@$(CC) -O1 -g $(EXEC_WARN) $(EXEC_INC) -o $@ tests/unit/exec_test.c $(EXEC_SRC)
+$(BUILD)/exec_fuzz: tests/unit/exec_fuzz.c $(EXEC_DEPS)
+	@mkdir -p $(BUILD)
+	@$(CC) $(EXEC_CF) -o $@ tests/unit/exec_fuzz.c $(EXEC_SRC)
 
-$(BUILD)/exec_fuzz: tests/unit/exec_fuzz.c $(EXEC_SRC) tests/unit/exechost/space.h \
-                    c/kernel/exec/load/elf.h c/kernel/exec/load/aex.h
-	@$(CC) -O1 -g $(EXEC_WARN) $(EXEC_INC) -o $@ tests/unit/exec_fuzz.c $(EXEC_SRC)
+$(BUILD)/exec_test_ovf: tests/unit/exec_test.c $(EXEC_DEPS)
+	@mkdir -p $(BUILD)
+	@$(CC) $(EXEC_CF) -DELF_NEGCTL_OVERFLOW -o $@ tests/unit/exec_test.c $(EXEC_SRC)
+
+$(BUILD)/exec_fuzz_ovf: tests/unit/exec_fuzz.c $(EXEC_DEPS)
+	@mkdir -p $(BUILD)
+	@$(CC) $(EXEC_CF) -DELF_NEGCTL_OVERFLOW -o $@ tests/unit/exec_fuzz.c $(EXEC_SRC)
+
+$(BUILD)/exec_test_nowx: tests/unit/exec_test.c $(EXEC_DEPS)
+	@mkdir -p $(BUILD)
+	@$(CC) $(EXEC_CF) -DELF_NEGCTL_NOWX -o $@ tests/unit/exec_test.c $(EXEC_SRC)
+
+$(BUILD)/exec_test_asan: tests/unit/exec_test.c $(EXEC_DEPS)
+	@mkdir -p $(BUILD)
+	@$(CC) $(EXEC_CF) $(EXEC_SAN) -o $@ tests/unit/exec_test.c $(EXEC_SRC)
+
+$(BUILD)/exec_fuzz_asan: tests/unit/exec_fuzz.c $(EXEC_DEPS)
+	@mkdir -p $(BUILD)
+	@$(CC) $(EXEC_CF) $(EXEC_SAN) -o $@ tests/unit/exec_fuzz.c $(EXEC_SRC)
+
+$(BUILD)/exec_probe: tests/unit/exechost/probe.c tests/exec.mk
+	@mkdir -p $(BUILD)
+	@$(CC) $(EXEC_CF) -o $@ $<
+
+$(BUILD)/exec_probe_asan: tests/unit/exechost/probe.c tests/exec.mk
+	@mkdir -p $(BUILD)
+	@$(CC) $(EXEC_CF) $(EXEC_SAN) -o $@ $<
 
 # --- test-exec -------------------------------------------------------------
 # $(AEX) is a prerequisite so the binaries exist; the test then globs the build
@@ -109,17 +146,16 @@ $(BUILD)/exec_fuzz: tests/unit/exec_fuzz.c $(EXEC_SRC) tests/unit/exechost/space
 # tests/loader.mk gives: a recipe line can be lost to a whole-file overwrite of
 # the Makefile, and a hook that can be lost is a hook that will be.
 test-exec: test-exec-negctl
-test-exec: $(BUILD)/exec_test $(AEX) $(EXEC_FIXTURES)
-	@$(EXEC_ENV) $(BUILD)/exec_test $(EXEC_BINS)
+test-exec-fuzz test-exec-asan: test-exec-negctl
+test-exec: $(BUILD)/exec_test $(BUILD)/exec_probe $(AEX) $(EXEC_FIXTURES)
+	@$(EXEC_ENV) $(EXEC_RUN) --mode test $(EXEC_BINS)
 
 # --- test-exec-fuzz --------------------------------------------------------
 # Three fixed seeds rather than a random one: a fuzz target whose corpus changes
 # every run cannot be bisected, and a failure that cannot be reproduced is a
 # rumour. 40k iterations each is a few seconds.
-test-exec-fuzz: $(BUILD)/exec_fuzz $(AEX)
-	@for s in 1 2 3; do \
-	    $(BUILD)/exec_fuzz 40000 $$s $(EXEC_SEEDS) || exit 1; \
-	done
+test-exec-fuzz: $(BUILD)/exec_fuzz $(BUILD)/exec_probe $(AEX)
+	@$(EXEC_RUN) --mode fuzz $(EXEC_SEEDS)
 
 # --- test-exec-negctl ------------------------------------------------------
 # CONTROL 1: the overflow check as it was written before the fuzzer got to it
@@ -136,49 +172,24 @@ test-exec-fuzz: $(BUILD)/exec_fuzz $(AEX)
 #
 # The FUZZER must also not finish cleanly. A fuzz target that passes against the
 # bug it found is a fuzz target that is not running.
+# Correction: it prints no seed/case progress before completion. Its expected
+# fault is therefore only an additional observation, not a passing control;
+# run.py relies on the named unit case and rejects unrelated exit/signal codes.
 #
 # CONTROL 2: p_flags ignored, every page mapped writable, i.e. the loader before
 # 37a0849. The unit test must fail on the per-segment permission checks.
-test-exec-negctl: $(AEX)
-	@$(CC) -O1 -g -w $(EXEC_INC) -DELF_NEGCTL_OVERFLOW -o $(BUILD)/exec_test_ovf \
-	    tests/unit/exec_test.c $(EXEC_SRC)
-	@if $(BUILD)/exec_test_ovf $(BUILD)/echo.aex > $(BUILD)/exec_negctl_ovf.log 2>&1; then \
-	    echo "FAIL: the overflow negative control PASSED -- the unit test does not measure the fix"; \
-	    exit 1; fi
-	@grep -q 'ok: p_vaddr + p_memsz overflowing' $(BUILD)/exec_negctl_ovf.log || \
-	    { echo "FAIL: the control never reached the overflow case"; exit 1; }
-	@if grep -q 'ok: p_memsz = -0x1000' $(BUILD)/exec_negctl_ovf.log; then \
-	    echo "FAIL: the control survived the very case it is supposed to fail on"; exit 1; fi
-	@grep -q 'ok: the reference image loads' $(BUILD)/exec_negctl_ovf.log || \
-	    { echo "FAIL: the control broke the loader outright, not just the overflow check"; exit 1; }
-	@$(CC) -O1 -g -w $(EXEC_INC) -DELF_NEGCTL_OVERFLOW -o $(BUILD)/exec_fuzz_ovf \
-	    tests/unit/exec_fuzz.c $(EXEC_SRC)
-	@if $(BUILD)/exec_fuzz_ovf 40000 1 $(EXEC_SEEDS) > $(BUILD)/exec_negctl_fuzz.log 2>&1; then \
-	    echo "FAIL: the fuzzer PASSED against the overflow bug it found"; exit 1; fi
-	@echo "ok: the overflow control fails the unit test on the right case, and the fuzzer does not survive it"
-	@$(CC) -O1 -g -w $(EXEC_INC) -DELF_NEGCTL_NOWX -o $(BUILD)/exec_test_nowx \
-	    tests/unit/exec_test.c $(EXEC_SRC)
-	@if $(BUILD)/exec_test_nowx $(BUILD)/sh.aex > $(BUILD)/exec_negctl_nowx.log 2>&1; then \
-	    echo "FAIL: the W^X negative control PASSED -- the test does not measure W^X"; \
-	    exit 1; fi
-	@grep -q 'writable=1, p_flags says 0' $(BUILD)/exec_negctl_nowx.log || \
-	    { echo "FAIL: the W^X control failed, but not on a segment permission"; exit 1; }
-	@grep -q 'ok: the reference image loads' $(BUILD)/exec_negctl_nowx.log || \
-	    { echo "FAIL: the W^X control broke loading itself"; exit 1; }
-	@echo "ok: the W^X control fails on the segment permissions, and only on those"
+test-exec-negctl: $(BUILD)/exec_test_ovf $(BUILD)/exec_fuzz_ovf \
+                  $(BUILD)/exec_test_nowx $(BUILD)/exec_probe $(AEX)
+	@$(EXEC_RUN) --mode control $(EXEC_SEEDS)
 
 # --- test-exec-asan --------------------------------------------------------
 # The loader writes to addresses it computed from the file. UBSan catches the
 # arithmetic that produced them and ASan catches the reads out of the image
 # buffer -- neither of which the MMU-backed harness can see, because a read
 # past the end of a malloc'd image is still a valid host address.
-test-exec-asan: $(AEX)
-	@$(CC) -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -w \
-	    $(EXEC_INC) -o $(BUILD)/exec_test_asan tests/unit/exec_test.c $(EXEC_SRC)
-	@ASAN_OPTIONS=detect_leaks=0 $(BUILD)/exec_test_asan $(EXEC_SEEDS)
-	@$(CC) -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -w \
-	    $(EXEC_INC) -o $(BUILD)/exec_fuzz_asan tests/unit/exec_fuzz.c $(EXEC_SRC)
-	@ASAN_OPTIONS=detect_leaks=0 $(BUILD)/exec_fuzz_asan 8000 7 $(EXEC_SEEDS)
+test-exec-asan: $(BUILD)/exec_test_asan $(BUILD)/exec_fuzz_asan \
+               $(BUILD)/exec_probe_asan $(AEX)
+	@$(EXEC_RUN) --mode asan $(EXEC_SEEDS)
 
 # --- test-exec-bases -------------------------------------------------------
 # The link-base map, checked instead of remembered. Every GUI app links at a

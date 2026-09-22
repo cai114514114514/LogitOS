@@ -24,12 +24,22 @@ r, b = a.root.resolve(), a.build.resolve()
 b.mkdir(parents=True, exist_ok=True)
 def run(cmd, **kw):
     print('+', ' '.join(map(str, cmd)), flush=True)
-    return subprocess.run(list(map(str, cmd)), cwd=r, check=True, **kw)
+    try:
+        return subprocess.run(list(map(str, cmd)), cwd=r, check=True, **kw)
+    except OSError as error:
+        # Darwin was previously assumed to provide Rosetta. A cross-compiled
+        # x86_64 fixture can link successfully even when no translator exists.
+        if platform.system() == 'Darwin' and error.errno == 86:
+            raise SystemExit('SKIP: Darwin cannot execute the x86_64 PIE fixture '
+                             '(Rosetta unavailable); run make test-pie on '
+                             'x86_64 Linux or Darwin with Rosetta') from error
+        raise
 cc, ld, nasm = os.environ.get('CC', 'clang'), os.environ.get('LD', 'ld.lld'), os.environ.get('ASM', 'nasm')
 for tool in [cc, ld, nasm]:
     if not shutil.which(tool):
         raise SystemExit('SKIP: required tool unavailable: '+tool)
-run([cc, '--target=x86_64-elf', '-ffreestanding', '-nostdlib', '-fPIE', '-ftls-model=local-exec', '-fno-stack-protector', '-mno-red-zone', '-O2', '-Ic/apps', '-Iinclude/abi', '-c', 'tests/unit/pie_program.c', '-o', b/'program.o'])
+# logit.h now imports openlogit_wire.h from the public graphics ABI directory.
+run([cc, '--target=x86_64-elf', '-ffreestanding', '-nostdlib', '-fPIE', '-ftls-model=local-exec', '-fno-stack-protector', '-mno-red-zone', '-O2', '-Ic/apps', '-Iinclude/abi', '-Ic/lib/gfx/include', '-c', 'tests/unit/pie_program.c', '-o', b/'program.o'])
 run([nasm, '-f', 'elf64', 'c/apps/crt0_cli.asm', '-o', b/'crt.o'])
 run([nasm, '-f', 'elf64', 'tests/unit/pie_thread.asm', '-o', b/'thread.o'])
 run([ld, '-pie', '--no-dynamic-linker', '-nostdlib', '-z', 'text', '-z', 'relro', '-z', 'now', '-e', '_start', '-o', b/'program.elf', b/'crt.o', b/'program.o', b/'thread.o'])
@@ -41,7 +51,11 @@ if a.fixtures_only:
 if platform.system() != 'Darwin' and platform.machine() not in ('x86_64', 'AMD64'):
     raise SystemExit('SKIP: mapped x86 execution requires an x86_64 host; run test-pie on x86_64 or Darwin/Rosetta')
 flags = ['-arch', 'x86_64'] if platform.system() == 'Darwin' else []
-base = [cc, *flags, '-O1', '-g', '-Wall', '-Wextra', '-Werror', '-Wno-unused-parameter', '-DLOGIT_HOSTTEST', '-Ic/kernel/exec -Ic/kernel/exec/load -Ic/kernel/exec/signal -Ic/kernel/exec/fd', '-Itests/unit/exechost', '-Ic/crypto', '-Ic/crypto/trust', '-Ic/drivers/block']
+# The former shell-style include string was one argv entry, hiding elf.h.
+base = [cc, *flags, '-O1', '-g', '-Wall', '-Wextra', '-Werror',
+        '-Wno-unused-parameter', '-DLOGIT_HOSTTEST', '-Ic/kernel/exec',
+        '-Ic/kernel/exec/load', '-Ic/kernel/exec/signal', '-Ic/kernel/exec/fd',
+        '-Itests/unit/exechost', '-Ic/crypto', '-Ic/crypto/trust', '-Ic/drivers/block']
 src = ['tests/unit/pie_host.c', 'tests/unit/pie_space.c', 'c/kernel/exec/load/elf.c', 'c/drivers/block/crc32.c', 'c/crypto/hash/sha256.c']
 for name, more in ([] if a.negative_only else [('host', []), ('asan', ['-fsanitize=address,undefined', '-fno-omit-frame-pointer', '-DELF_PIE_BASE=0x200000000000ull'])]):
     exe=b/('pie_'+name)

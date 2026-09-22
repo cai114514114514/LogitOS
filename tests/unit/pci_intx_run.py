@@ -50,7 +50,10 @@ for macro, expected in variants:
     (build / 'test.c').write_text(fixture)
     cmd = [os.environ.get('CC', 'clang'), '-std=gnu11', '-O1', '-g', '-Wall', '-Wextra',
            '-pthread', '-fsanitize=address,undefined', '-DLOGIT_HOST_TEST',
-           '-Itests/unit/pcistub', '-Ic/drivers/core', '-Ic/kernel/pci', '-Ic/kernel/cpu -Ic/kernel/cpu/acpi -Ic/kernel/cpu/irq -Ic/kernel/cpu/smp',
+           # The old joined string was one directory, not four include flags.
+           '-Itests/unit/pcistub', '-Ic/drivers/core', '-Ic/kernel/pci',
+           '-Ic/kernel/cpu', '-Ic/kernel/cpu/acpi', '-Ic/kernel/cpu/irq',
+           '-Ic/kernel/cpu/smp',
            str(build / 'test.c'), 'c/kernel/pci/pci_msi.c',
            'c/kernel/cpu/irq/apic_model.c', '-o', str(build / 'test')]
     if macro.startswith('PCI_') or macro.startswith('LOGIT_'):

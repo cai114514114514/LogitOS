@@ -7,6 +7,8 @@
 #include <signal.h>
 #include <setjmp.h>
 #include <sys/mman.h>
+#include <unistd.h>
+#include <errno.h>
 #include "space.h"
 #include "vmm.h"
 #include "prot.h"
@@ -110,6 +112,34 @@ static int host_prot(uint64_t flags)
     return p;
 }
 
+static void *move_frame(void *source, void *target)
+{
+#if defined(__APPLE__) && !defined(mremap)
+    /* Darwin has no mremap. These frames have exactly one owner: the first
+     * mapping moves them, and later protection changes use phys == virt.
+     * Copying is therefore equivalent here, but would NOT model shared frames.
+     * Native arm64 pages are 16 KiB; refuse rather than accidentally merge four
+     * independent guest permission domains. run.py probes this before tests. */
+    if (getpagesize() != 4096) {
+        errno = ENOTSUP;
+        return MAP_FAILED;
+    }
+    void *mapped = mmap(target, 4096, PROT_READ | PROT_WRITE,
+                        MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
+    if (mapped == MAP_FAILED) return mapped;
+    memcpy(mapped, source, 4096);
+    if (munmap(source, 4096) != 0) {
+        munmap(mapped, 4096);
+        return MAP_FAILED;
+    }
+    return mapped;
+#else
+    /* pie_space.c predates this adapter and supplies its own Darwin move.
+     * Keep that inclusion contract until its separate fixture is migrated. */
+    return mremap(source, 4096, 4096, MREMAP_MAYMOVE | MREMAP_FIXED, target);
+#endif
+}
+
 void vmm_map_page(uint64_t virt, uint64_t phys, uint64_t flags)
 {
     virt &= ~0xFFFull;
@@ -119,11 +149,11 @@ void vmm_map_page(uint64_t virt, uint64_t phys, uint64_t flags)
         /* A move, i.e. a first mapping: relocate the frame onto the virtual
          * address the loader chose. Anything already there is replaced, exactly
          * as writing a PTE would. */
-        void *r = mremap((void *)phys, 4096, 4096,
-                         MREMAP_MAYMOVE | MREMAP_FIXED, (void *)virt);
+        void *r = move_frame((void *)phys, (void *)virt);
         if (r == MAP_FAILED) {
-            fprintf(stderr, "space: mremap %llx -> %llx failed\n",
-                    (unsigned long long)phys, (unsigned long long)virt);
+            fprintf(stderr, "space: frame move %llx -> %llx failed: %s\n",
+                    (unsigned long long)phys, (unsigned long long)virt,
+                    strerror(errno));
             exit(2);
         }
     }
