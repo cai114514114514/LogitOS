@@ -67,9 +67,10 @@
 void *kmalloc(unsigned long n) { return malloc((size_t)n); }
 void  kfree(void *p) { free(p); }
 
-#define WINW 760
-#define WINH 560
-#define CONTH (WINH - 30)    /* picture area; the status line owns the rest */
+static int view_width = 760, view_height = 560;
+#define WINW view_width
+#define WINH view_height
+#define CONTH (WINH - 140)    /* toolbar and readable footer stay outside the image */
 #define MAXW 1280            /* up to screen resolution */
 #define MAXH 800
 static unsigned char rgba[MAXW * MAXH * 4];
@@ -153,78 +154,7 @@ static void yuv420_to_rgba(const unsigned char *yp, const unsigned char *up,
     }
 }
 
-/* ------------------------------------------------------------- layout --- */
-/* Aspect-fit w x h into the picture area, centred; gui_blit scales
- * nearest-neighbour, so the source colours survive exactly. */
-static void blit_fit_src(const unsigned char *src, int iw, int ih)
-{
-    if (iw <= 0 || ih <= 0) return;
-    int dw = WINW, dh = (int)((long)WINW * ih / iw);
-    if (dh > CONTH) { dh = CONTH; dw = (int)((long)CONTH * iw / ih); }
-    gui_blit((WINW - dw) / 2, (CONTH - dh) / 2, dw, dh, src, iw, ih);
-}
-static void blit_fit(int iw, int ih) { blit_fit_src(rgba, iw, ih); }
-
-/* Returns PUMP_*. Called between frames so a playing clip still answers the
- * close button.
- *
- * ESCAPE UNWINDS ONE MODE, IT DOES NOT DESTROY THE APP. When there is a list
- * to go back to (g_from_picker), viewing a file IS a mode nested under that
- * list -- exactly like Backspace already treats it, one line below -- so Esc
- * backs out to the list instead of quitting outright. Only when there is
- * nothing left to back out to (launched directly on one file, no list) does
- * Esc close the app, because at that point it is the innermost mode. The
- * owner's own sentence is the spec: "I wanted to keep looking." The close
- * button (EV_CLOSE) is a harder signal than either key and always quits --
- * it is the window disappearing, not a request to browse. */
-static int pump_events(void)
-{
-    struct logit_event e;
-    int r = PUMP_NONE;
-    while (poll_event(&e)) {
-            if(ag_gui_event(&e))continue;
-        if (e.type == EV_CLOSE) return PUMP_QUIT;
-        if (e.type == EV_KEY) {
-            if (e.a == 27) r = g_from_picker ? PUMP_BACK : PUMP_QUIT;
-            if ((e.a == 8 || e.a == 127) && g_from_picker) r = PUMP_BACK;
-        }
-    }
-    return r;
-}
-
-static void status(const char *s)
-{
-    gui_text(12, WINH - 8, rgb(150, 150, 158), s);
-}
-
-static const char *hint(void)
-{
-    return g_from_picker ? "Esc or Backspace for the list"
-                         : "Esc or the close button to quit";
-}
-
-/* Put a message up and stay there until the user dismisses it. Returns PUMP_*
- * so the caller can go back to the list rather than dying on a bad file --
- * "cannot decode this" is a reason to pick another one, not to quit. */
-static int show_message(const char *msg)
-{
-    gui_clear(rgb(28, 28, 32));
-    gui_text(16, 30, rgb(230, 230, 236), msg);
-    status(hint());
-    gui_flush();
-    if (g_one_loop) return PUMP_QUIT;      /* the measurement build never waits */
-    for (;;) {
-        int p = pump_events();
-        if (p) return p;
-        sys_sleep_ms(20);
-    }
-}
-
-static int fail_with(const char *msg)
-{
-    plog("preview: error %s\n", msg);
-    return show_message(msg);
-}
+#include "view.inc"
 
 /* --------------------------------------------------------------- file --- */
 static unsigned char *read_all(const char *path, long *out_len)
@@ -534,7 +464,18 @@ static void aplay_start(aplay *a)
         a->why = "the audio header does not state a rate";
         adec_close(a->dec); a->dec = 0; return;
     }
-    if (a->ch > 2) a->ch = 2;
+    /* The play buffer is ABUF_FRAMES * 2 and adec_read writes the decoder's
+     * own channel count, up to 8, interleaved. Clamping a->ch only changes
+     * what we tell the sound card and what the meter indexes; the decoder
+     * still writes past buf. Refuse rather than play a truncated layout.
+     * A downmix would be a second playback path. */
+    if (a->ch < 1 || a->ch > 2) {
+        snprintf(a->whybuf, sizeof a->whybuf,
+                 "audio is %d channels -- only mono and stereo play here", a->ch);
+        a->why = a->whybuf;
+        adec_close(a->dec); a->dec = 0;
+        return;
+    }
     a->total_frames = adec_duration_frames(a->dec);
 
     struct logit_sndinfo si;
@@ -633,63 +574,7 @@ static long long aplay_played_ns(aplay *a)
     return (long long)st.frames_played * 1000000000LL / a->rate;
 }
 
-/* ---------------------------------------------------------- audio UI ---- */
-/* An audio-only file still has to put something on the screen, and "nothing"
- * is not it. Format, position against duration, and a level meter reading the
- * samples the card is actually being handed. */
-/* Three segments, not a per-pixel loop: every gui_rect is an int 0x80, and a
- * 700-pixel bar drawn a column at a time would cost 700 syscalls per redraw. */
-static void meter_bar(int x, int y, int w, int h, int peak)
-{
-    gui_rect(x, y, w, h, rgb(38, 38, 46));
-    int fill = peak > 0 ? (int)((long)w * peak / 32767) : 0;
-    if (fill > w) fill = w;
-    int g = w * 70 / 100, amb = w * 90 / 100;
-    if (fill > 0)   gui_rect(x, y, fill < g ? fill : g, h, rgb(70, 210, 120));
-    if (fill > g)   gui_rect(x + g, y, (fill < amb ? fill : amb) - g, h, rgb(240, 200, 80));
-    if (fill > amb) gui_rect(x + amb, y, fill - amb, h, rgb(240, 90, 80));
-}
-
-static void draw_audio_ui(aplay *a, const char *name, const char *what,
-                          long long pos_ns, long long total_ns)
-{
-    char line[192];
-    gui_clear(rgb(18, 18, 22));
-    gui_text(24, 60, rgb(235, 235, 240), name);
-    snprintf(line, sizeof line, "%s  %d Hz  %d ch", what, a->rate, a->ch);
-    gui_text(24, 92, rgb(170, 172, 182), line);
-
-    /* position */
-    long long p = pos_ns < 0 ? 0 : pos_ns;
-    if (total_ns > 0) {
-        snprintf(line, sizeof line, "%lld:%02lld / %lld:%02lld",
-                 p / 60000000000LL, (p / 1000000000LL) % 60,
-                 total_ns / 60000000000LL, (total_ns / 1000000000LL) % 60);
-    } else {
-        snprintf(line, sizeof line, "%lld:%02lld", p / 60000000000LL,
-                 (p / 1000000000LL) % 60);
-    }
-    gui_text(24, 150, rgb(220, 222, 230), line);
-
-    int bx = 24, bw = WINW - 48;
-    gui_rect(bx, 170, bw, 8, rgb(40, 40, 48));
-    if (total_ns > 0) {
-        long long f = p > total_ns ? total_ns : p;
-        gui_rect(bx, 170, (int)((long long)bw * f / total_ns), 8, rgb(110, 160, 250));
-    }
-
-    /* gui_text's y is the TOP of the line box, not the baseline -- glyphs land
-     * at roughly y+5..y+20 -- so the meter has to start below that or it
-     * covers its own label, which is what the first screenshot showed. */
-    gui_text(24, 228, rgb(150, 152, 162), "level");
-    meter_bar(bx, 252, bw, 16, a->peak[0]);
-    if (a->ch > 1) meter_bar(bx, 276, bw, 16, a->peak[1]);
-    /* Decay so the bar falls back when the track goes quiet; the peak is
-     * re-raised by every pump. */
-    for (int c = 0; c < 2; c++) a->peak[c] = a->peak[c] * 3 / 4;
-
-    if (a->why) gui_text(24, 320, rgb(240, 170, 120), a->why);
-}
+#include "audio_view.inc"
 
 /* Keeping the final frame up with the final numbers is part of the loop's
  * contract, not a separate screen -- hence the forward declaration. */
@@ -731,9 +616,12 @@ static int play_audio_loop(aplay *a, const char *name, const char *what,
 }
 
 static int hold_audio_ui(aplay *a, const char *name, const char *what,
-                         long long total_ns)
+                          long long total_ns)
 {
     char line[192];
+    /* Playback has drained. A frozen nonzero meter would imply samples are
+     * still being output while this screen waits for navigation. */
+    a->peak[0] = a->peak[1] = 0;
     draw_audio_ui(a, name, what, total_ns, total_ns);
     snprintf(line, sizeof line, "finished -- %s", hint());
     status(line);
@@ -742,7 +630,11 @@ static int hold_audio_ui(aplay *a, const char *name, const char *what,
     for (;;) {
         int p = pump_events();
         if (p) return p;
-        sys_sleep_ms(30);
+        if (view_redraw) {
+            draw_audio_ui(a, name, what, total_ns, total_ns);
+            status(line); gui_flush(); view_redraw = 0;
+        }
+        wait_idle(30);
     }
 }
 
@@ -916,7 +808,7 @@ static int play_container(unsigned char *data, long len, const char *name)
         }
         yuv420_to_rgba(v.y, v.u, v.v, v.sy, v.sc, v.w, v.h, rgba);
         shown++;
-        gui_clear(rgb(18, 18, 20));
+        view_clear();
         blit_fit(v.w, v.h);
         snprintf(line, sizeof line,
                  "%s  %s %dx%d %d-bit  %s  %lld/%llds  shown %ld  dropped %lld  drift %+lldms",
@@ -1013,7 +905,7 @@ static int play_annexb(const unsigned char *data, long len, const char *name)
             }
             yuv420_to_rgba(v.y, v.u, v.v, v.sy, v.sc, v.w, v.h, rgba);
             frames++;
-            gui_clear(rgb(18, 18, 20));
+            view_clear();
             blit_fit(v.w, v.h);
             snprintf(line, sizeof line, "%s  %s %dx%d %d-bit  frame %d   %s",
                      name, is265 ? "hevc" : "h264", v.w, v.h, v.depth, frames, hint());
@@ -1058,9 +950,10 @@ static int play_image(const unsigned char *data, long len, const char *name)
     plog("preview: image %s %dx%d frames=%d loops=%d declared_ms=%lld\n",
          name, a.w, a.h, a.nframes, a.loops, declared);
 
-    /* A still: draw once and wait on events instead of spinning. */
+    view_image = 1;
+    /* A still repaints only for resize, theme or an explicit zoom change. */
     if (a.nframes == 1) {
-        gui_clear(rgb(28, 28, 32));
+        view_clear();
         blit_fit_src(a.frames[0].rgba, a.w, a.h);
         snprintf(line, sizeof line, "%s  %dx%d   %s", name, a.w, a.h, hint());
         status(line);
@@ -1069,7 +962,11 @@ static int play_image(const unsigned char *data, long len, const char *name)
         for (;;) {
             int p = pump_events();
             if (p) { img_anim_free(&a); return p; }
-            sys_sleep_ms(30);
+            if (view_redraw) {
+                view_clear(); blit_fit_src(a.frames[0].rgba, a.w, a.h);
+                status(line); gui_flush(); view_redraw = 0;
+            }
+            wait_idle(30);
         }
     }
 
@@ -1086,7 +983,7 @@ static int play_image(const unsigned char *data, long len, const char *name)
              * honours the delays" and "the machine can keep up" separate
              * claims instead of one excuse. */
             unsigned long long p0 = monotonic_ns();
-            gui_clear(rgb(28, 28, 32));
+            view_clear();
             blit_fit_src(a.frames[k].rgba, a.w, a.h);
             snprintf(line, sizeof line, "%s  %dx%d  frame %d/%d  %d ms   %s",
                      name, a.w, a.h, k + 1, a.nframes, a.frames[k].delay_ms, hint());
@@ -1139,14 +1036,18 @@ static int play_image(const unsigned char *data, long len, const char *name)
     }
     snprintf(line, sizeof line, "%s  %dx%d  %d frames, %lld ms   %s",
              name, a.w, a.h, a.nframes, declared, hint());
-    gui_clear(rgb(28, 28, 32));
+    view_clear();
     blit_fit_src(a.frames[a.nframes - 1].rgba, a.w, a.h);
     status(line);
     gui_flush();
     while (!g_one_loop) {
         rc = pump_events();
         if (rc) break;
-        sys_sleep_ms(30);
+        if (view_redraw) {
+            view_clear(); blit_fit_src(a.frames[a.nframes - 1].rgba, a.w, a.h);
+            status(line); gui_flush(); view_redraw = 0;
+        }
+        wait_idle(30);
     }
 out:
     img_anim_free(&a);
@@ -1174,6 +1075,9 @@ static int play_audio_file(unsigned char *data, long len, const char *name)
  * see the header note for why that is the order and not another one. */
 static int open_path(const char *path, const char *name)
 {
+    snprintf(view_name, sizeof view_name, "%s", name);
+    view_image = view_actual = 0;
+    view_redraw = 1;
     char line[224];
     long len = 0;
     plog("preview: reading %s\n", path);
@@ -1211,158 +1115,7 @@ static const char *basename_of(const char *p)
 }
 
 #ifndef PREVIEW_CLI
-/* Launched from the Dock there is no file to open, so offer what is there:
- * /media is where the shipped clips live. One level of subdirectory too,
- * because the image fixtures ride in /media/img.
- *
- * The list is also PRINTED, with its indices. A keyboard-driven list is the
- * only part of this app a test can steer, and a test that counts Down presses
- * against a directory order it guessed is a test that breaks the day a file is
- * added. So the app says what it is showing. */
-#define PICK_MAX  48
-#define PICK_Y0   70     /* window-local y of the first row's box */
-#define PICK_DY   20     /* row pitch */
-#define PICK_ROWS ((CONTH - PICK_Y0) / PICK_DY)
-static char pick_names[PICK_MAX][80];
-static int  pick_n;
-
-static void pick_scan(const char *dir, const char *prefix, int depth)
-{
-    int cnt = dir_count(dir);
-    for (int i = 0; i < cnt && pick_n < PICK_MAX; i++) {
-        char b[64];
-        int rc = dir_name(dir, i, b);
-        if (rc == -1) continue;
-        if (rc == -2) {
-            if (depth <= 0) continue;
-            char sub[160], sp[64];
-            snprintf(sub, sizeof sub, "%s/%s", dir, b);
-            snprintf(sp, sizeof sp, "%s%s/", prefix, b);
-            pick_scan(sub, sp, depth - 1);
-            continue;
-        }
-        char nm[80];
-        snprintf(nm, sizeof nm, "%s%s", prefix, b);
-        int dup = 0;
-        for (int k = 0; k < pick_n; k++) if (!strcmp(pick_names[k], nm)) { dup = 1; break; }
-        if (!dup) snprintf(pick_names[pick_n++], sizeof pick_names[0], "%s", nm);
-    }
-}
-
-/* THE SCAN IS RUN SEVERAL TIMES AND THE RESULTS MERGED -- entries are added,
- * never dropped -- and that is a workaround for a bug one layer down rather
- * than defensive habit.
- *
- * logitfs's dir_count_live() and dir_nth() walk a directory's blocks and
- * `break` out of the loop when bread() fails, so a block read that loses a
- * race does not surface as an error: it surfaces as a SHORTER DIRECTORY. A
- * /media of fifteen entries spans two 4 KiB blocks at ten dirents each, and
- * when the second one is lost the app is told there are ten files and has no
- * way to know otherwise. Preview meets this and `ls` does not, because Preview
- * enumerates in the first second after being launched -- exactly when the
- * compositor is busiest -- while `ls` runs at an idle prompt. Measured on
- * commit 13756e78: `ls /media` lists 15, Preview's dir_count answers 10 or 15
- * depending on the run.
- *
- * Handed to the filesystem line. Merging repeated reads is not a fix; it just
- * stops the file list being silently wrong. The list is also rebuilt every
- * time it is shown, so returning to it is another chance. */
-static void pick_build(void)
-{
-    for (int t = 0; t < 6; t++) {
-        int before = pick_n;
-        pick_scan("/media", "", 1);
-        if (t && pick_n == before) break;      /* two reads agreed */
-    }
-}
-
-static int pick_from_media(char *out, int outmax)
-{
-    pick_build();
-    if (pick_n == 0) { show_message("nothing in /media to open"); return 1; }
-
-    static int sel;
-    for (int i = 0; i < pick_n; i++)
-        plog("preview: pick %d %s\n", i, pick_names[i]);
-
-    /* Row geometry, named once because three places need it: the highlight,
-     * the text, and the hit test. */
-    for (;;) {
-        int top = sel - PICK_ROWS + 1 > 0 ? sel - PICK_ROWS + 1 : 0;
-        gui_clear(rgb(28, 28, 32));
-        /* A 6x6 anchor in a colour nothing else on the desktop uses, at
-         * content (0,0). tests/qmp/qmp_preview.py finds the window's content
-         * origin from it and then works in window-local coordinates -- the
-         * same trick c/apps/gui/gallery/gallery.c uses and for the same reason: the
-         * compositor cascades windows, so the position is not knowable from
-         * outside, and hunting for a background colour finds the wallpaper
-         * about one run in three. It is on the LIST only; no picture ever has
-         * a mark painted on it. */
-        gui_rect(0, 0, 6, 6, rgb(255, 0, 128));
-        gui_text(16, 40, rgb(230, 230, 236), "Open from /media");
-        for (int i = top; i < pick_n && i - top < PICK_ROWS; i++) {
-            int row = i - top;
-            unsigned c = (i == sel) ? rgb(255, 210, 120) : rgb(190, 190, 198);
-            /* +2 on the text's y, for the same reason as the level meter: the
-             * highlight used to be drawn a whole row above the name it was
-             * meant to be highlighting. */
-            if (i == sel) gui_rect(12, PICK_Y0 + row * PICK_DY, WINW - 24,
-                                   PICK_DY, rgb(48, 48, 56));
-            gui_text(24, PICK_Y0 - 2 + row * PICK_DY, c, pick_names[i]);
-        }
-        status("click a name, or up/down and Enter; Esc to quit");
-        gui_flush();
-
-        struct logit_event e;
-        for (;;) {
-            if (poll_event(&e)) {
-                if(ag_gui_event(&e))continue;
-                if (e.type == EV_CLOSE) return 1;
-                /* A LIST YOU CANNOT CLICK IS NOT A LIST. It was keyboard-only,
-                 * which is also why the harness had to send one Down per row
-                 * -- and the emulated PS/2 controller buffers a single byte, so
-                 * eighteen of them in a row arrived as two. One click is one
-                 * event. */
-                if (e.type == EV_MOUSE) {
-                    /* Printed because a click that lands on the wrong row and
-                     * a click that never arrives look identical from outside,
-                     * and the harness had to tell them apart. */
-                    plog("preview: click %d %d\n", e.a, e.b);
-                }
-                if (e.type == EV_MOUSE && e.b >= PICK_Y0) {
-                    int row = (e.b - PICK_Y0) / PICK_DY;
-                    if (row < PICK_ROWS && top + row < pick_n) {
-                        sel = top + row;
-                        snprintf(out, outmax, "/media/%s", pick_names[sel]);
-                        return 0;
-                    }
-                }
-                if (e.type == EV_KEY) {
-                    if (e.a == 27) return 1;
-                    if (e.a == KEY_UP && sel > 0) sel--;
-                    if (e.a == KEY_DOWN && sel < pick_n - 1) sel++;
-                    if (e.a == KEY_HOME) sel = 0;
-                    if (e.a == KEY_END) sel = pick_n - 1;
-                    if (e.a == '\n' || e.a == '\r') {
-                        snprintf(out, outmax, "/media/%s", pick_names[sel]);
-                        return 0;
-                    }
-                }
-                break;
-            }
-            /* YIELD, NOT SLEEP, and it is a workaround rather than a choice.
-             * This kernel intermittently stops servicing input when the only
-             * runnable thread parks: the app sleeps 10 ms, the compositor
-             * idles, and the next click is never delivered -- the serial log
-             * ends on the pointer report and nothing follows it. Yielding
-             * keeps a runnable thread and the machine awake. Handed to the
-             * scheduler line; a list that polls is the wrong shape and should
-             * go back to sleeping once that is safe. */
-            sys_yield();
-        }
-    }
-}
-
+#include "picker.inc"
 #endif  /* !PREVIEW_CLI: the measurement build takes its file from argv */
 #ifdef PREVIEW_CLI
 /* One file, one loop, then out -- see the note by g_one_loop. */
@@ -1370,6 +1123,7 @@ int main(int argc, char **argv)
 {
     if (argc < 2) { plog("usage: previewplay <file>\n"); return 2; }
     gui_create("Preview", WINW, WINH);
+    _sys(SYS_GUI_WIN_MIN, ((long)640 << 16) | 480, 0, 0);
     open_path(argv[1], basename_of(argv[1]));
     return 0;
 }
@@ -1377,6 +1131,7 @@ int main(int argc, char **argv)
 void app_main(void)
 {
     gui_create("Preview", WINW, WINH);
+    _sys(SYS_GUI_WIN_MIN, ((long)640 << 16) | 480, 0, 0);
 
     char path[192];
     if (get_arg(path, sizeof path) > 0 && path[0]) {

@@ -162,21 +162,8 @@ def main(argv):
         ppm_to_png(shot, os.path.join(outdir, "00-list.png"))
 
         def click_row(idx):
-            """Same geometry qmp_preview.py's click_row uses: aim at the row,
-            not the pixel, and re-aim off the guest's own pointer report."""
-            tx = origin[0] + pt(200)
-            ty = origin[1] + pt(70 + idx * 20 + 10)
-            for _ in range(6):
-                ui.goto(tx, ty, 0.35)
-                got = ui.guest_pointer()
-                if got is None:
-                    break
-                ui.cur = [got[0], got[1]]
-                if (got[1] - origin[1] - pt(70)) // pt(20) == idx:
-                    break
-                ty += (origin[1] + pt(70 + idx * 20 + 10)) - got[1]
-            ui.click()
-            time.sleep(0.4)
+            from preview_helpers import click_preview_row
+            click_preview_row(ui, serial, origin, shot, idx)
 
         def open_entry(name):
             """Click `name` in the CURRENT list. Returns (mark, matched open line)."""

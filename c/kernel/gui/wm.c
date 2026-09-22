@@ -7,6 +7,14 @@
 #include "fb.h"
 #include "text.h"
 #include "icons.h"
+#include "logit_desktop_prefs.h"
+#include "logit_app_icon.h"
+
+/* Defaults come from the same list as the settings schema. Refreshed on the
+ * existing half-second desktop wake; no new timer or IRQ-side store lookup. */
+#define PREF_DEFAULT(field, key, label, low, high, value) .field = value,
+static struct desktop_preferences desktop_prefs = {LOGIT_DESKTOP_PREFS(PREF_DEFAULT)};
+#undef PREF_DEFAULT
 #include "pmm.h"
 #include "vmm.h"
 #include "kheap.h"
@@ -2705,6 +2713,14 @@ static long wm_gui_dispatch(long num, long a, long b, long c)
         int x = S(LOGIT_GUI_ICON_A_X(a)), y = S(LOGIT_GUI_ICON_A_Y(a));
         int id = LOGIT_GUI_ICON_B_ID(b), px = S(LOGIT_GUI_ICON_B_PX(b));
         if (px < 1 || px > 512) return -1;   /* icon_draw allocates px*px before rasterizing */
+        if (id == LOGIT_ICON_APP) {
+            char name[LOGIT_ICON_NAME_MAX];
+            if (user_copy_string(name, sizeof name, (const char *)c) < 0) return -1;
+            fb_target(&w->surf);
+            int drawn = app_icon_draw(name, x, y, px);
+            fb_target(NULL);
+            return drawn ? 0 : -1;
+        }
         /* Icons are vector paths in a 0..100 box, so a scaled px is a genuinely
          * re-rasterized icon: the one place where "retina" costs nothing at all. */
         fb_target(&w->surf); icon_draw(id, x, y, px, (uint32_t)c); fb_target(NULL);
@@ -3665,6 +3681,9 @@ static void dirty_dock(void) { dirty_dock_hov(dock_hover_at(mx, my)); }
 static void dock_tile(int i, int cx, int cy, int sz)
 {
     int x = cx - sz / 2, y = cy - sz / 2, rad = sz * 12 / 50;
+    /* Raster icons contain their own tile and alpha corners; painting the old
+     * coloured square underneath would put a second, mismatched frame on them. */
+    if (app_icon_draw(reg[i].file, x, y, sz)) return;
     fb_round_rect_vgrad(x, y, sz, sz, rad, fb_shade(reg[i].color, 38), fb_shade(reg[i].color, -26));
     fb_blend_round_rect(x, y, sz, sz / 2, rad, 255, 255, 255, 32);
     int ic = icon_for_app(reg[i].file, reg[i].ext);
@@ -3679,7 +3698,7 @@ static int dock_bounce_off(int i)
     uint64_t t0 = reg_bounce[i];
     if (!t0) return 0;
     uint64_t e = anim_elapsed(t0), DUR = 550, half = DUR / 2;
-    if (wm_reduce_motion || e >= DUR) { reg_bounce[i] = 0; return 0; }
+    if (wm_reduce_motion || !desktop_prefs.dock_bounce || e >= DUR) { reg_bounce[i] = 0; return 0; }
     int hop = (e < half) ? 0 : 1, H = S(hop ? 7 : 14);
     int u = (int)(e - (uint64_t)hop * half), d = (int)half;   /* 0..d within the arc */
     return H * 4 * u * (d - u) / (d * d);                      /* parabola, peak mid-arc */
@@ -3764,14 +3783,14 @@ static void draw_dock(void)
      * every icon size, and matches what the eye expects: the icon in front,
      * the indicator behind it. */
     for (int i = 0; i < nreg; i++) {
-        if (!find_live_app(reg[i].name)) continue;   /* a hidden app is never running, by construction */
+        if (!desktop_prefs.dock_dots || !find_live_app(reg[i].name)) continue;
         int ccx = dock_x0 + dock_gap + i * (dock_isz + dock_gap) + dock_isz / 2;
         fb_fill_circle(ccx, dock_y0 + dh - S(8), S(2), g_ui_dark ? rgb(235, 236, 240) : rgb(58, 58, 64));
     }
     if (hov >= 0) {
         int b = dock_bounce_off(hov); if (b) animating = 1;
         int ccx = dock_x0 + dock_gap + hov * (dock_isz + dock_gap) + dock_isz / 2;
-        dock_tile(hov, ccx, ccy - b, dock_isz * 130 / 100);  /* 1.3x pop */
+        dock_tile(hov, ccx, ccy - b, dock_isz * (desktop_prefs.dock_magnify ? 130 : 100) / 100);
         const char *nm = reg[hov].name;                    /* tooltip above the dock */
         int tw = fb_text_width(nm), tx = ccx - tw / 2;     /* already device px (scaled font) */
         fb_blend_round_rect(tx - S(9), dock_y0 - S(28), tw + S(18), S(23), S(7), 28, 28, 34, 225);
@@ -3785,14 +3804,25 @@ static void draw_clock(void)
 {
     static const char *wd[7] = { "Sun","Mon","Tue","Wed","Thu","Fri","Sat" };
     struct rtc_time t; rtc_now(&t);
-    char b[32]; int p = 0;
+    char b[48]; int p = 0;
     const char *w = wd[t.weekday % 7];
-    b[p++]=w[0]; b[p++]=w[1]; b[p++]=w[2]; b[p++]=' ';
-    b[p++]='0'+(t.year/1000)%10; b[p++]='0'+(t.year/100)%10; b[p++]='0'+(t.year/10)%10; b[p++]='0'+t.year%10;
-    b[p++]='-'; p+=fmt2(b+p,t.month); b[p++]='-'; p+=fmt2(b+p,t.day);
-    b[p++]=' '; b[p++]=' ';
-    p+=fmt2(b+p,t.hour); b[p++]=':'; p+=fmt2(b+p,t.minute); b[p++]=':'; p+=fmt2(b+p,t.second);
-    b[p]=0;
+    if (desktop_prefs.clock_weekday) {
+        b[p++] = w[0]; b[p++] = w[1]; b[p++] = w[2]; b[p++] = ' ';
+    }
+    if (desktop_prefs.clock_date) {
+        b[p++] = '0' + (t.year / 1000) % 10;
+        b[p++] = '0' + (t.year / 100) % 10;
+        b[p++] = '0' + (t.year / 10) % 10;
+        b[p++] = '0' + t.year % 10;
+        b[p++] = '-'; p += fmt2(b + p, t.month);
+        b[p++] = '-'; p += fmt2(b + p, t.day);
+        b[p++] = ' '; b[p++] = ' ';
+    }
+    int hour = desktop_prefs.clock_24h ? t.hour : (t.hour % 12 ? t.hour % 12 : 12);
+    p += fmt2(b + p, hour); b[p++] = ':'; p += fmt2(b + p, t.minute);
+    if (desktop_prefs.clock_seconds) { b[p++] = ':'; p += fmt2(b + p, t.second); }
+    if (!desktop_prefs.clock_24h) { b[p++] = ' '; b[p++] = t.hour < 12 ? 'A' : 'P'; b[p++] = 'M'; }
+    b[p] = 0;
     fb_text(W - fb_text_width(b) - S(12), S(4), b, g_ui_dark ? rgb(228, 229, 235) : rgb(40, 40, 46));
 }
 
@@ -5117,7 +5147,7 @@ static void wm_anim_tick(void)
  * ex_corner_t0 for why this corner and why a dwell. */
 static void wm_hotcorner_tick(void)
 {
-    if (g_locked || ex_state()) { ex_corner_t0 = 0; return; }
+    if (!desktop_prefs.hot_corner || g_locked || ex_state()) { ex_corner_t0 = 0; return; }
     int inside = (mx >= W - S(EX_CORNER_PT)) && (my < S(EX_CORNER_PT));
     if (!inside) { ex_corner_t0 = 0; ex_corner_armed = 1; return; }
     if (!ex_corner_armed) return;              /* fired already; leave to re-arm */
@@ -5548,7 +5578,7 @@ static int titlebar_double_click(int wi, int x, int y)
     static uint64_t last_ms;
     uint64_t now = time_mono_ms();
     int slop = S(6);
-    int hit = (last_wi == wi && now - last_ms <= 400 &&
+    int hit = (last_wi == wi && now - last_ms <= (unsigned)desktop_prefs.double_click &&
                x - last_x <= slop && last_x - x <= slop &&
                y - last_y <= slop && last_y - y <= slop);
     last_wi = hit ? -1 : wi;
@@ -6014,7 +6044,8 @@ static void wm_process_mouse(const struct inputq_event *in)
         int wi = mouse_capture >= 0 ? mouse_capture : win_content_at(x, y);
         if (wi >= 0 && wins[wi].used && wins[wi].kind == WK_APP) {
             struct win *w = &wins[wi];
-            enqueue_input(w, EV_WHEEL, PT(x - w->x), PT(y - w->y - TBH), mods, EV_BTN_NONE, in->wheel);
+            enqueue_input(w, EV_WHEEL, PT(x - w->x), PT(y - w->y - TBH), mods, EV_BTN_NONE,
+                          desktop_prefs.natural_scroll ? -in->wheel : in->wheel);
             /* Same as the middle press: the scroll is the app's to draw. */
         }
     }
@@ -6632,6 +6663,13 @@ void wm_run(void)
          * cover for a caller that under-reported its damage. */
         if (now - last >= 50) {
             last = now; dirty_menubar();
+            static unsigned preferences_gen = (unsigned)-1;
+            unsigned current_gen = settings_gen();
+            if (current_gen != preferences_gen) {
+                desktop_prefs = desktop_preferences_read(settings_get_int);
+                preferences_gen = current_gen;
+                dirty_dock();
+            }
             /* Reuse the existing menu-clock wake. A preference change settles
              * active transitions via their ordinary terminal damage path, and
              * wakes sleeping apps once so controls and media queries update. */

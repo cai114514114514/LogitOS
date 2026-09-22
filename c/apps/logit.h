@@ -249,6 +249,10 @@ static inline void gui_clip(int x, int y, int w, int h)
 { _sys(SYS_GUI_CLIP, ((long)(x & 0xFFFF) << 16) | (y & 0xFFFF),
        ((long)(w & 0xFFFF) << 16) | (h & 0xFFFF), 0); }
 /* Procedural vector icons (ids match src/kernel/gui/icons.h), painted in `color`. */
+#include "logit_app_icon.h"
+static inline int gui_app_icon(const char *name, int x, int y, int px)
+{ return (int)_sys(SYS_GUI_ICON, ((long)(x & 65535) << 16) | (y & 65535),
+                   ((long)LOGIT_ICON_APP << 16) | (px & 65535), (long)name); }
 enum { GICON_FOLDER, GICON_DOC, GICON_TERMINAL, GICON_GRID, GICON_GLOBE,
        GICON_CODE, GICON_CHART, GICON_CLOCK, GICON_IMAGE };
 static inline void gui_icon(int id, int x, int y, int px, unsigned color)

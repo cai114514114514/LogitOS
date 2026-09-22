@@ -16,5 +16,7 @@ void icon_draw(int id, int x, int y, int px, uint32_t color);
 
 /* Map an app (.aex file name) to an icon id, or -1 if none. */
 int  icon_for_app(const char *name, const char *ext);
+/* Full-colour disk artwork; 1 drawn, 0 absent (caller keeps its fallback). */
+int app_icon_draw(const char *name, int x, int y, int px);
 
 #endif /* LOGIT_ICONS_H */

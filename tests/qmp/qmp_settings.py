@@ -21,6 +21,7 @@ Gallery does. Its position in the screendump gives the content origin.
 Usage: qmp_settings.py [--xres N] [--yres N] [--out shot.png] [--keep]
 """
 import os
+import re
 import struct
 import subprocess
 import sys
@@ -38,7 +39,11 @@ PROBES = {
     "appearance": (0xFF, 0x00, 0x80),
     "desktop":    (0x00, 0xFF, 0x80),
     "network":    (0xFF, 0xC8, 0x00),
+    "dock":       (0xB0, 0x00, 0xFF),
+    "input":      (0x00, 0xD0, 0xD0),
+    "time":       (0xFF, 0x60, 0x00),
     "all":        (0x00, 0xA0, 0xFF),
+    "system":     (0xA0, 0xFF, 0x20),
 }
 
 
@@ -185,6 +190,8 @@ def main(argv):
             except AssertionError as e:
                 if attempt == 3:
                     print("FAIL the pointer never settled over the Dock: %s" % e)
+                    ui.screendump(probe)
+                    ppm_to_png(probe, base_out + "-startup-failed.png")
                     return 1
                 print("     (pointer not settled, retry %d)" % (attempt + 1))
                 time.sleep(3 * slow)
@@ -205,6 +212,16 @@ def main(argv):
 
         f = Frame(shot, "appearance")
         print("     window content origin at device (%d,%d)" % (f.ox, f.oy))
+        ck("[icons] raster settings.aex" in open(serial).read(),
+           "the running desktop decoded the Settings PNG asset")
+        ix, iy = ui.dock_icon_of("settings")
+        icon_pixels = [f.p.at(x, y) for y in range(iy - pt(20), iy + pt(20))
+                       for x in range(ix - pt(20), ix + pt(20))]
+        blue = sum(r < 100 and g < 180 and b > 120 for r, g, b in icon_pixels)
+        light = sum(min(r, g, b) > 110 and max(r, g, b) - min(r, g, b) < 40
+                    for r, g, b in icon_pixels)
+        ck(blue > pt(10) ** 2 and light > pt(8) ** 2,
+           "the Dock paints the blue tile and light gear", "blue=%d light=%d" % (blue, light))
 
         # ---- LIGHT THEME ----------------------------------------------------
         light_bg = f.mean(300, 40, 60, 12)      # header strip, no widget on it
@@ -228,7 +245,7 @@ def main(argv):
 
         # ---- the tabs work --------------------------------------------------
         # Driven by ARROW KEYS, not by clicking each tab. Clicking would need
-        # this driver to re-derive aui_tabs' internal geometry from the outside
+        # this driver to re-derive aui_list' internal geometry from the outside
         # -- which it got wrong on the first attempt, landing on Network while
         # asking for Desktop -- and a test that reimplements the layout it is
         # testing fails whenever the toolkit's padding changes. One click on the
@@ -238,13 +255,17 @@ def main(argv):
             ui.goto(xres - pt(40), yres - pt(200))
             time.sleep(0.8 * slow)
 
-        ORDER = ["appearance", "desktop", "network", "all"]
+        ORDER = list(PROBES)
 
-        ui.click_at_confirmed(probe, f.ox + pt(50), f.oy + pt(63))
+        aims = re.findall(r"\[settings\] aim navigation (\d+) (\d+)", open(serial).read())
+        if not aims:
+            raise AssertionError("Settings did not publish its navigation geometry")
+        nx, ny = map(int, aims[-1])
+        ui.click_at_confirmed(probe, f.ox + pt(nx), f.oy + pt(ny))
         time.sleep(1.0 * slow)
         park()
 
-        # The property asserted is "each arrow advances the strip by exactly one
+        # The property asserted is "each arrow advances the sidebar by exactly one
         # tab", NOT "the Nth arrow shows the Nth tab". The click that focuses the
         # strip also makes the focus ring visible, and the first key press after
         # it is consumed doing that -- so an absolute index would be off by one
@@ -259,7 +280,7 @@ def main(argv):
         seen = ["appearance"]
         checked_table = False
         for _ in range(len(ORDER)):
-            ui.key("right")
+            ui.key("down")
             time.sleep(1.6 * slow)
             ui.screendump(shot, settle=1.0 * slow)
             got = which_page(shot)
@@ -271,40 +292,40 @@ def main(argv):
                 # screen that proves unknown keys are preserved AND readable.
                 checked_table = True
                 fr = Frame(shot, "all")
-                cells = fr.box(20, 120, 400, 80)
+                cells = fr.box(210, 158, 400, 80)
                 distinct = len(set(cells))
                 ck(distinct > 12, "the All settings table lists rows of text",
                    "%d distinct colours in the table body" % distinct)
 
         ck(all(p is not None for p in seen), "every arrow press left a recognisable page",
            "seen=%r" % (seen,))
-        ck(len(set(seen)) == len(ORDER), "all four tabs were reached", "seen=%r" % (seen,))
-        # aui_tabs CLAMPS at the ends -- it does not wrap. So the legal step is
+        ck(len(set(seen)) == len(ORDER), "all eight pages were reached", "seen=%r" % (seen,))
+        # aui_list CLAMPS at the ends -- it does not wrap. So the legal step is
         # +1, or 0 once the selection is already on the last tab. Written this
         # way rather than as "always +1" because the measurement said so: the
         # observed sequence ends [..., 'all', 'all'].
         idx = [ORDER.index(p) for p in seen if p in ORDER]
         steps = list(zip(idx, idx[1:]))
         ck(steps and all(b - a == 1 or (b == a and a == len(ORDER) - 1) for a, b in steps),
-           "each arrow advances the strip one tab, and clamps at the last",
+           "each arrow advances the sidebar one tab, and clamps at the last",
            "seen=%r" % (seen,))
 
         # ---- back to Appearance and flip the theme --------------------------
-        # Left, not right: it clamps, so right would sit on `all` forever.
+        # Up walks the sidebar back to Appearance.
         for _ in range(len(ORDER) + 1):
             if which_page(shot) == "appearance":
                 break
-            ui.key("left")
+            ui.key("up")
             time.sleep(1.2 * slow)
             ui.screendump(shot, settle=1.0 * slow)
-        ck(which_page(shot) == "appearance", "left arrows walk back to Appearance",
+        ck(which_page(shot) == "appearance", "up arrows walk back to Appearance",
            "page=%r" % which_page(shot))
         if which_page(shot) != "appearance":
             return 1
 
         f = Frame(shot, "appearance")
         # The dark switch, reached by FOCUS rather than by coordinate. Focus
-        # order in aui IS draw order, and settings.c draws the tab strip and
+        # order in aui IS draw order, and settings.c draws the sidebar and
         # then the switch, so one Tab from the focused strip lands on it and
         # Enter activates it. This is the toolkit's documented keyboard
         # contract, so it stays correct when the card's padding changes.
@@ -343,6 +364,102 @@ def main(argv):
         ck("[set] commit FAILED" not in log2,
            "no settings commit failed while the window was open")
 
+        def click_control(name):
+            matches = re.findall(r"\[settings\] aim " + re.escape(name) + r" (\d+) (\d+)",
+                                 open(serial).read())
+            if not matches:
+                raise AssertionError("missing control geometry: " + name)
+            x, y = map(int, matches[-1])
+            ui.click_at_confirmed(probe, f.ox + pt(x), f.oy + pt(y))
+            time.sleep(0.8 * slow)
+
+        def navigate(index):
+            click_control("navigation")
+            ui.key("home")
+            for _ in range(index):
+                ui.key("down", settle=0.3 * slow)
+            time.sleep(0.8 * slow)
+
+        # Observe validation in the real application before any successful
+        # commit; a model-only test cannot catch a disconnected Apply button.
+        navigate(2)
+        click_control("dhcp")
+        click_control("ip")
+        ui.key_mods(("ctrl",), "a")
+        ui.typ("999.2.3.4")
+        click_control("apply")
+        ck("status error=1 Enter a valid IPv4 address." in open(serial).read(),
+           "Apply rejects an invalid address in the running app")
+        ui.screendump(shot)
+        ppm_to_png(shot, base_out + "-validation.png")
+        click_control("revert")
+        ck("status error=0 Draft discarded" in open(serial).read(),
+           "Revert discards the invalid local draft")
+
+        navigate(0)
+        click_control("motion")
+        click_control("apply")
+        ck("status error=0 Changes saved" in open(serial).read(),
+           "an edited preference reaches the save path")
+
+        navigate(6)
+        click_control("search")
+        ui.typ("no-such-setting-xyz")
+        ui.screendump(shot)
+        ppm_to_png(shot, base_out + "-search.png")
+        empty = Frame(shot, "all").box(210, 210, 400, 120)
+        ui.key_mods(("ctrl",), "a")
+        ui.key("backspace")
+        # screendump's settle parameter sleeps AFTER capturing. Wait for the
+        # guest to consume the key before comparing the restored table.
+        time.sleep(0.8 * slow)
+        ui.screendump(shot)
+        ppm_to_png(shot, base_out + "-search-cleared.png")
+        full = Frame(shot, "all").box(210, 210, 400, 120)
+        ck(empty != full, "search removes rows and clearing it restores the table pixels")
+
+        navigate(5)
+        ui.screendump(shot)
+        before_clock = PPM(shot)
+        def clock_ink(ppm):
+            return sum(luma(ppm.at(x, y)) > 155 for y in range(pt(3), pt(20))
+                       for x in range(xres - pt(160), xres - pt(12)))
+        before_ink = clock_ink(before_clock)
+        for name in ("clock-seconds", "clock-date", "clock-weekday"):
+            click_control(name)
+        click_control("apply")
+        time.sleep(1.0 * slow)
+        park()
+        ui.screendump(shot)
+        after_ink = clock_ink(PPM(shot))
+        ck(after_ink < before_ink * 0.8,
+           "clock preferences remove date and seconds from the kernel menu bar",
+           "ink %d -> %d" % (before_ink, after_ink))
+        ppm_to_png(shot, base_out + "-clock-applied.png")
+
+        navigate(0)
+        click_control("motion")
+        ui.key_mods(("meta_l",), "w")
+        time.sleep(0.8 * slow)
+        ui.screendump(shot)
+        # The modal scrim dims the page probe too. Reuse the already observed
+        # content origin instead of treating the obscured probe as a missing app.
+        modal = PPM(shot)
+        modal_pixels = [modal.at(x, y) for y in range(f.oy + pt(140), f.oy + pt(320))
+                        for x in range(f.ox + pt(220), f.ox + pt(600))]
+        ppm_to_png(shot, base_out + "-unsaved.png")
+        ui.key("esc")
+        time.sleep(0.8 * slow)
+        ui.screendump(shot)
+        ck(which_page(shot) == "appearance", "Escape cancels closing an edited Settings window")
+        dismissed = PPM(shot)
+        dismissed_pixels = [dismissed.at(x, y) for y in range(f.oy + pt(140), f.oy + pt(320))
+                            for x in range(f.ox + pt(220), f.ox + pt(600))]
+        ppm_to_png(shot, base_out + "-unsaved-cancelled.png")
+        ck(modal_pixels != dismissed_pixels,
+           "the unsaved-changes dialog dismisses on Escape")
+        click_control("revert")
+
     finally:
         try:
             qemu.terminate(); qemu.wait(timeout=10)
@@ -357,7 +474,7 @@ def main(argv):
         for f_ in fails:
             print("  - %s" % f_)
         return 1
-    print("PASS: the Settings window opens, all four tabs render, and a toggle in it")
+    print("PASS: the Settings window opens, all eight pages render, and a toggle in it")
     print("      repaints the kernel-drawn desktop. Screenshots in both themes at")
     print("      %s-{light,dark,desktop,network,all}.png" % base_out)
     return 0

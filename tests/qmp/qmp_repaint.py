@@ -28,7 +28,7 @@ table, per EVENT CLASS, at three display modes:
 The `b-*` classes exist because the five above measure the OS repainting an
 OS-owned window, and CLAUDE.md's actual complaint -- a keystroke, a scroll --
 is the BROWSER repainting its own canvas through a separate call path
-(redraw() at c/apps/browser/browser.c:2974, not anything in c/kernel/gui).
+(redraw() at c/apps/gui/browser/app/main.c:2974, not anything in c/kernel/gui).
 They fetch one real page over a host HTTP server reached at 10.0.2.2 (same
 SLIRP mechanism as qmp_css_repaint.py) so the guest's real parser, layout and
 paint run -- a DOM built by this driver directly would not be measuring what
@@ -112,8 +112,7 @@ SETTINGS_PROBE = {(0xFF, 0x00, 0x80): 0,    # Appearance  (the default tab)
                   (0xFF, 0xC8, 0x00): 2,    # Network
                   (0x00, 0xA0, 0xFF): 3}    # All settings
 PROBE_PT = (4, 4)
-SETTINGS_TAB_Y_PT = 52 + 17          # aui_tabs strip: cut at AUI_SP(13), h=34
-SETTINGS_WINH_PT = 480               # settings.c:37 WINH -- see anim_push_to_dock
+SETTINGS_WINH_PT = 560               # Settings minimum/default height; anim_push_to_dock
 # How many times the `anim` class flips the toggle. ONE number: w_anim's
 # default and the floor assert_anim() multiplies. Spelled twice it would be a
 # gate whose expectation and whose workload disagree, which passes.
@@ -450,19 +449,21 @@ def anim_setup(ui, tmp, serial):
         return None
     ox, oy, tab = got
 
-    # Hop 1: the Desktop tab. aui_tabs sizes each tab by its MEASURED TEXT
-    # WIDTH, so there is no arithmetic that gives its centre without
-    # reimplementing text measurement in Python. Walk the strip instead and let
-    # the probe say when we have arrived -- eight bounded clicks, and the exit
-    # condition is the guest's own report rather than our model of it.
-    for wx in range(20, 600, 40):
-        if tab == 1:
-            break
-        ui.click_at(ox + pt(wx), oy + pt(SETTINGS_TAB_Y_PT))
-        time.sleep(0.4)
-        got = settings_probe(ui, tmp)
-        if got is None:
-            continue
+    # The old horizontal-strip sweep cannot find the new sidebar. Settings
+    # publishes its navigation hit point; Home/Down use the toolkit's own row
+    # geometry and the page probe still independently verifies arrival.
+    aims = re.findall(r"\[settings\] aim navigation (\d+) (\d+)",
+                      open(serial, errors="replace").read())
+    if not aims:
+        print("     anim: Settings did not publish navigation geometry")
+        return None
+    nx, ny = map(int, aims[-1])
+    ui.click_at(ox + pt(nx), oy + pt(ny))
+    ui.key("home")
+    ui.key("down")
+    time.sleep(0.8)
+    got = settings_probe(ui, tmp)
+    if got is not None:
         ox, oy, tab = got
     if tab != 1:
         print("     anim: could not reach the Settings Desktop tab (probe says "
@@ -582,7 +583,7 @@ WORKLOADS = [
 # that mutates one element. These are the rows CLAUDE.md asks for and the
 # five WORKLOADS above cannot produce them: every one of them is the OS
 # repainting an OS-owned window, and the browser's redraw() path
-# (c/apps/browser/browser.c:2974, called from the EV_* switch) is a separate
+# (c/apps/gui/browser/app/main.c:2974, called from the EV_* switch) is a separate
 # call site from anything above.
 #
 # CORRECTED, KEPT BESIDE THE OLD CLAIM (AGENTS.md section 1: "where that

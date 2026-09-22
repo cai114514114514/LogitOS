@@ -753,14 +753,16 @@ static void draw_items(void)
 
         if (view_mode) {
             if (selected) gui_rect(rx, ry, rw, rh, selbg);
-            gui_icon(icon, rx + 6, ry + 2, 20, col);
+            if (icon != GICON_GRID || gui_app_icon(en->name, rx + 6, ry + 2, 20) < 0)
+                gui_icon(icon, rx + 6, ry + 2, 20, col);
             char lab[48]; fit_label(en->name, CWID - 150, lab, sizeof lab);
             gui_text_run(rx + 34, ry + 6, 14, 0, AUI_TEXT, lab, slen(lab));
             if (en->is_dir) gui_text_run(CONTENT_RIGHT - 96, ry + 6, 13, 0, AUI_MUTED, "--", 2);
             else { char num[24]; itoa_(en->size, num); gui_text_run(CONTENT_RIGHT - 96, ry + 6, 13, 0, AUI_MUTED, num, slen(num)); }
         } else {
             if (selected) gui_rect(rx + 6, ry + 4, rw - 12, rh - 8, selbg);
-            gui_icon(icon, rx + (GW - GICON) / 2, ry + 12, GICON, col);
+            if (icon != GICON_GRID || gui_app_icon(en->name, rx + (GW - GICON) / 2, ry + 12, GICON) < 0)
+                gui_icon(icon, rx + (GW - GICON) / 2, ry + 12, GICON, col);
             char lab[40]; fit_label(en->name, GW - 14, lab, sizeof lab);
             int lw = text_measure_px(lab, slen(lab), 13, 0);
             gui_text_run(rx + (GW - lw) / 2, ry + GICON + 20, 13, 0, AUI_TEXT, lab, slen(lab));

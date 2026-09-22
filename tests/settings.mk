@@ -107,6 +107,6 @@ test-settings-os: $(ISO) $(DISK)
 
 # The Settings window itself, driven over QMP, screenshotted in both themes.
 test-settings-ui: $(ISO) $(DISK)
-	@python3 tests/qmp/qmp_settings.py
+	@python3 tests/qmp/qmp_settings.py --iso $(ISO) --disk $(DISK) --out $(BUILD)/settings.png
 
 test-settings: test-settings-host test-settings-os test-settings-ui

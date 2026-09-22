@@ -1,4 +1,7 @@
 # Preview test targets (test-preview, test-preview-timing, test-preview-negctl)
+# All four entrypoints compile the same private view includes. Omitting one
+# here silently leaves the timing/control binary on the previous UI.
+$(BUILD)/preview.elf $(BUILD)/previewplay.elf $(BUILD)/previewnegctl.elf $(BUILD)/previewneg.elf: $(wildcard c/apps/gui/preview/*.inc)
 # and the fixtures + measurement binaries Preview needs that nothing else puts
 # on the disk.
 #
@@ -154,34 +157,17 @@ $(BUILD)/previewneg.elf: $(GUIDIR)/preview/preview.c $(APPDIR)/logit.h $(VID_HDR
 $(BUILD)/previewneg.aex: $(BUILD)/previewneg.elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/previewneg.elf $@ Preview h264 'P' 200 150 110
 
-$(BUILD)/disk-prevneg.img: $(DISK) $(BUILD)/previewneg.aex
-	@$(MAKE) --no-print-directory -n -W tools/mkfs.py $(DISK) \
-	    | sed -n '/tools\/mkfs.py/,$$p' \
-	    | sed -e '1s|tools/mkfs.py $(DISK)|tools/mkfs.py $@|' \
-	          -e 's|$(BUILD)/preview.aex:preview.aex|$(BUILD)/previewneg.aex:preview.aex|' \
-	    > $(BUILD)/mkfs-prevneg.sh
-	@grep -q 'previewneg.aex:preview.aex' $(BUILD)/mkfs-prevneg.sh || \
-	    { echo "FAIL: the disk recipe no longer packs preview.aex the same way"; exit 1; }
-	@sh $(BUILD)/mkfs-prevneg.sh
+$(BUILD)/disk-prevneg.img: $(DISK) $(BUILD)/previewneg.aex tests/boot/preview_control.py
+	@python3 tests/boot/preview_control.py --build $(BUILD) --pack
 
+# The control is a prerequisite, so running the positive cannot silently skip it.
+test-preview test-preview-timing: test-preview-negctl
 test-preview-timing: $(ISO) $(DISK) $(BUILD)/previewref/.stamp
 	@python3 tests/qmp/qmp_preview.py --iso $(ISO) --disk $(DISK) \
 	    --ref $(BUILD)/previewref --timing-only
 
 test-preview-negctl: $(ISO) $(BUILD)/disk-prevneg.img $(BUILD)/previewref/.stamp
-	@echo "negative control: the frame-delay wait is compiled out"
-	@if python3 tests/qmp/qmp_preview.py --iso $(ISO) \
-	        --disk $(BUILD)/disk-prevneg.img --ref $(BUILD)/previewref \
-	        --timing-only --out $(BUILD)/preview-shots-negctl \
-	        >$(BUILD)/preview-negctl.log 2>&1; then \
-	    echo "FAIL: with the frame-delay wait removed, test-preview-timing still"; \
-	    echo "      PASSED -- it is not measuring the player."; \
-	    sed 's/^/       /' $(BUILD)/preview-negctl.log; \
-	    exit 1; \
-	 else \
-	    echo "PASS (negative control): the wait is gone -> the loop finishes early"; \
-	    grep -aE 'declared|elapsed|^FAIL' $(BUILD)/preview-negctl.log | sed 's/^/       /'; \
-	 fi
+	@python3 tests/boot/preview_control.py --build $(BUILD)
 
 # THE ASSOCIATION, from the other end. test-preview drives Preview's own list;
 # this drives the route a user takes -- SYS_OPEN_PATH, which is all a Finder

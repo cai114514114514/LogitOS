@@ -83,7 +83,12 @@ LOGIT_WEAK_STUB(user_copy_string);
  * row, because it looks like it worked.  What was considered and deliberately
  * left out is listed at the bottom of this file.
  * ======================================================================== */
+#include "logit_desktop_prefs.h"
+#define PREF_STRING(value) #value
+#define PREF_SCHEMA(field, key, label, low, high, value) \
+    {key, label, high == 1 ? SET_T_BOOL : SET_T_INT, SET_G_DESKTOP, low, high, PREF_STRING(value), NULL},
 static const struct setting_def schema[] = {
+  LOGIT_DESKTOP_PREFS(PREF_SCHEMA)
  /* key                       label                       type         group             lo  hi          default            choices */
   { "ui.dark",               "Dark appearance",           SET_T_BOOL,  SET_G_APPEARANCE,  0, 1,          "0",               NULL },
   /* Shared SDK motion preference: AUI, WM and browser media queries. */
@@ -97,6 +102,8 @@ static const struct setting_def schema[] = {
   { "net.gw",                "Router",                    SET_T_IP,    SET_G_NETWORK,     0, 0,          "10.0.2.2",        NULL },
   { "net.dns",               "DNS server",                SET_T_IP,    SET_G_NETWORK,     0, 0,          "10.0.2.3",        NULL },
 };
+#undef PREF_SCHEMA
+#undef PREF_STRING
 #define NSCHEMA ((int)(sizeof schema / sizeof schema[0]))
 
 /* ===========================================================================

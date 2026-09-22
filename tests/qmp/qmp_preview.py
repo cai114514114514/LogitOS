@@ -91,7 +91,7 @@ FIX = os.path.join(ROOT, "tests", "fixtures")
 
 # c/apps/gui/preview/preview.c
 WINW, WINH = 760, 560
-CONTH = WINH - 30
+CONTH = WINH - 140
 IMG_BG = (28, 28, 32)          # gui_clear() behind a still or an animation
 # The 6x6 anchor Preview paints at content (0,0) on its LIST screen, in a
 # colour nothing else on the desktop uses. Everything below works in
@@ -199,10 +199,10 @@ def load_ref(refdir, fixture):
 # ------------------------------------------------------------------ pixels --
 def blit_fit(iw, ih):
     """The dest rect blit_fit_src() picks, in window-local POINTS."""
-    dw, dh = WINW, WINW * ih // iw
+    dw, dh = WINW - 32, (WINW - 32) * ih // iw
     if dh > CONTH:
         dh, dw = CONTH, CONTH * iw // ih
-    return ((WINW - dw) // 2, (CONTH - dh) // 2, dw, dh)
+    return ((WINW - dw) // 2, 76 + (CONTH - dh) // 2, dw, dh)
 
 
 def over(px, bg):
@@ -226,11 +226,13 @@ def sample_points(iw, ih, n=6):
     return out or [(iw // 2, ih // 2)]
 
 
-def compare_image(ppm, origin, img, tol=0):
+def compare_image(ppm, origin, img, tol=0, actual=False):
     """Compare the guest's picture against a PIL image. -> (ok, detail)."""
     iw, ih = img.size
     rgba = img.convert("RGBA")
     x, y, dw, dh = blit_fit(iw, ih)
+    if actual:
+        x, y, dw, dh = (WINW - iw) // 2, 76 + (CONTH - ih) // 2, iw, ih
     ox, oy = origin
     bad = checked = 0
     first = None
@@ -270,6 +272,9 @@ def content_origin(ppm):
     content canvas -- which is how this avoids hard-coding the compositor's
     window cascade, and it survives the cascade moving when another app opens
     first."""
+    anchor = ppm.find_color((253, 1, 129))
+    if anchor is not None:
+        return anchor[0], anchor[1]
     row = ppm.w * 3
     best = None
     for bg in BACKGROUNDS:
@@ -329,6 +334,7 @@ def main(argv):
     outdir = os.path.join(ROOT, "build", "preview-shots")
     refdir = os.path.join(ROOT, "build", "previewref")
     only, keep, timing_only, assoc_only = None, False, False, False
+    library_only = False
     i = 1
     while i < len(argv):
         a = argv[i]
@@ -339,6 +345,7 @@ def main(argv):
         elif a == "--only":         only = set(argv[i + 1].split(",")); i += 2
         elif a == "--timing-only":  timing_only = True; i += 1
         elif a == "--assoc":        assoc_only = True; i += 1
+        elif a == "--library-only": library_only = True; i += 1
         # --napps N / --slot N are GONE. They existed to steer a dock click
         # whose geometry lived in Python constants here -- a caller could
         # correct a stale count from the make line instead of the file, which
@@ -589,36 +596,38 @@ def main(argv):
             ppm_to_png(shot, os.path.join(outdir, "no-origin.png"))
             return 1
         ppm_to_png(shot, os.path.join(outdir, "00-list.png"))
+        if library_only:
+            return 0
+
+        before_filter = PPM(shot).px
+        mark = len(read(serial))
+        ui.click_at_confirmed(shot, origin[0] + pt(80), origin[1] + pt(160))
+        filtered = wait_for(r"preview: library filter=1 .*count=(\d+)", mark, 20)
+        ck(filtered is not None and 0 < int(filtered.group(1)) < len(picks),
+           "Images category filters the collection")
+        time.sleep(0.8)
+        ui.screendump(shot)
+        ck(PPM(shot).px != before_filter, "category selection changes the visible library")
+        ppm_to_png(shot, os.path.join(outdir, "00-images.png"))
+        ui.click_at_confirmed(shot, origin[0] + pt(80), origin[1] + pt(118))
+        time.sleep(0.8)
+        # The desktop switch is drawn at W-210, width 38 (wm.c). Verify the
+        # app's own surface follows its theme event, not just the menu bar.
+        ui.screendump(shot)
+        light = PPM(shot).at(origin[0] + pt(174), origin[1] + pt(80))
+        ui.click_at_confirmed(shot, 1280 - 191, 12)
+        time.sleep(1.0)
+        ui.screendump(shot)
+        dark = PPM(shot).at(origin[0] + pt(174), origin[1] + pt(80))
+        ck(sum(dark) < sum(light) / 2, "the library follows the desktop dark theme")
+        ppm_to_png(shot, os.path.join(outdir, "00-dark.png"))
+        ui.click_at_confirmed(shot, 1280 - 191, 12)
+        time.sleep(1.0)
 
 
         def click_row(idx):
-            """Click list row `idx`, aiming at the ROW rather than the pixel.
-
-            The pointer arrives a few pixels off: QEMU's `rel` events go through
-            an emulated PS/2 mouse whose packets are dropped when the guest is
-            busy, so a move to y=568 settles at 579. Insisting on the exact
-            pixel (click_at_confirmed) then never converges, and dead reckoning
-            silently picks the next row down -- which is how a click meant for
-            dot.png opened sample.mp3.
-
-            A row is 20 px tall, so exactness is not needed and is not the
-            question: what matters is which row the pointer is IN. Ask the
-            guest where it ended up (`[wm] ptr`), work out the row from that,
-            and re-aim until it is the right one."""
-            tx = origin[0] + pt(200)
-            ty = origin[1] + pt(70 + idx * 20 + 10)
-            for _ in range(6):
-                ui.goto(tx, ty, 0.35)
-                got = ui.guest_pointer()
-                if got is None:
-                    break                    # no report: trust the reckoning
-                ui.cur = [got[0], got[1]]
-                if (got[1] - origin[1] - pt(70)) // pt(20) == idx:
-                    break
-                # aim at the row's centre from where we actually are
-                ty += (origin[1] + pt(70 + idx * 20 + 10)) - got[1]
-            ui.click()
-            time.sleep(0.4)
+            from preview_helpers import click_preview_row
+            click_preview_row(ui, serial, origin, shot, idx)
 
         def open_entry(name):
             """Click `name` in the list. Returns (log mark, the console line).
@@ -636,8 +645,6 @@ def main(argv):
             idx = picks[name]
             for _ in range(3):
                 mark = len(read(serial))
-                # PICK_Y0 + row*PICK_DY + half a row, in c/apps/gui/preview/preview.c.
-                # The list never scrolls here: it fits PICK_ROWS entries.
                 click_row(idx)
                 got = wait_for(r"preview: open (\S+) ", mark, 40)
                 if got is not None and got.group(1) == base:
@@ -721,6 +728,19 @@ def main(argv):
                     ok, det = compare_image(ppm, origin, ref[0][1])
                     ck(ok, "%s (%s): pixels match the decoder's own output"
                        % (name, label), det)
+                    if name == "dot.png":
+                        fitted = ppm.px
+                        ui.click_at_confirmed(shot, origin[0] + pt(WINW - 50), origin[1] + pt(30))
+                        time.sleep(1.0)
+                        ui.screendump(shot)
+                        actual = PPM(shot)
+                        ok, det = compare_image(actual, origin, ref[0][1], actual=True)
+                        ck(ok and actual.px != fitted, "100% button paints actual image dimensions", det)
+                        ppm_to_png(shot, os.path.join(outdir, "image-actual.png"))
+                        ui.key("0", settle=1.0)
+                        ui.screendump(shot)
+                        ok, det = compare_image(PPM(shot), origin, ref[0][1])
+                        ck(ok, "0 shortcut restores aspect-fit pixels", det)
 
             if kind == "image" and Image is not None:
                 # The independent half: PIL is the reference test-png /
@@ -728,6 +748,17 @@ def main(argv):
                 # valid for stills.
                 ok, det = compare_image(ppm, origin, Image.open(FIXTURE_FOR[name]))
                 ck(ok, "%s (%s): pixels match PIL's decode too" % (name, label), det)
+
+            if name == "dot.png":
+                back_mark = len(read(serial))
+                ui.click_at_confirmed(shot, origin[0] + pt(54), origin[1] + pt(30))
+                returned = wait_for(r"preview: pick 0 ", back_mark, 20)
+                time.sleep(0.8)
+                ui.screendump(shot)
+                ck(returned is not None and PPM(shot).find_color(PICK_PROBE) is not None,
+                   "Library toolbar button returns to the live collection")
+                mark, reopened = open_entry(name)
+                ck(reopened is not None, "an image can reopen after using the toolbar")
 
             # ---- EXIF orientation --------------------------------------
             if kind == "exif" and Image is not None:

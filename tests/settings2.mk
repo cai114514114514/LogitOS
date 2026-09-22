@@ -80,3 +80,26 @@
 test-pref: $(ISO) $(DISK)
 	@bash tests/boot/run-pref-test.sh $(ISO) $(DISK)
 .PHONY: test-pref
+
+# Settings is split into private includes so the shared APP_RULE and its link
+# recipe stay authoritative; each include must still invalidate its object.
+$(BUILD)/apps/settings.o: $(wildcard c/apps/gui/settings/*.inc) c/apps/gui/settings/model.h
+
+.PHONY: test-settings-draft test-settings-draft-negctl
+test-settings-draft: test-settings-draft-negctl
+	@python3 tests/unit/settings_model_test.py
+test-settings-draft-negctl:
+	@python3 tests/unit/settings_model_test.py --negative
+
+# Runtime artwork is packaged with the OS, never loaded from a host-only path.
+APP_ICON_FILES := $(wildcard fsroot/icons/*.png)
+FS_FILES += $(foreach icon,$(APP_ICON_FILES),$(icon):/icons/$(notdir $(icon)))
+$(DISK): $(APP_ICON_FILES)
+
+.PHONY: test-app-icons test-app-icons-negctl
+test-app-icons: test-app-icons-negctl
+	@python3 tests/unit/app_icon_test.py
+test-app-icons-negctl:
+	@python3 tests/unit/app_icon_test.py --negative
+
+test-settings-ui: test-settings-draft test-app-icons
