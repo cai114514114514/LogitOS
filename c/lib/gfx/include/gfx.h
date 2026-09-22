@@ -6,7 +6,7 @@
  * WHY IT EXISTS. Before this file there were three coverage/paint paths in the
  * tree: the kernel's M14 glyph rasterizer (c/kernel/gui/raster.c, glyphs only),
  * a second coverage rasterizer inside the widget toolkit (c/apps/gui/aui.c) and
- * a third hand-rolled paint path in the browser (c/apps/browser/browser_paint.c)
+ * a third hand-rolled paint path in the browser (c/apps/gui/browser/paint/renderer.c)
  * -- plus every new app starting from gui_rect. Open Logit is the one engine
  * those are built on. ALL THREE ARE NOW DELETED: aui's and browser_paint's went
  * on the way in, and raster.c went when type moved onto this engine --
@@ -140,6 +140,10 @@
  * GFX_MAX_W is untouched at 4096: it bounds gfx_row's width, which is desktop
  * pixels wide (today's largest bench case is 2560), not glyph- or path-segment
  * related, and 4096 already clears every real display width with margin.
+ * Correction (2026-09-22): 5K exceeds that old display-width claim. Keep this
+ * coverage-row cap for a single vector fill; packed display targets instead
+ * use OL_DISPLAY_MAX_SIZE and dynamic effect scratch. Enlarging a framebuffer
+ * no longer silently enlarges these static raster arrays or truncates a fill.
  *
  * COST: this is kernel .bss (see the note at the top of this file). The five
  * rasterizer statics (g_edge/g_order/g_act/g_cross/g_row in gfx_raster.c) were

@@ -255,18 +255,38 @@ int fb_init(uint64_t mb_info_addr)
 static struct ol_display sdk_display = {.allocate=kmalloc,.release=kfree};
 static struct ol_display *fb_sdk(void)
 {
-    const struct surface *s=T?T:&screen;
+    const struct surface *surface = T ? T : &screen;
     sdk_draw_calls++;
     /* The old adapter revalidated/copy-bound the same target for EVERY pixel
      * of the fallback wallpaper (1,024,000 binds at 1280x800). Target/clip
      * changes are explicit owner operations; cache their binding so a thin
      * compatibility call does not repeat frame setup inside the pixel loop. */
-    if(sdk_target_dirty || sdk_display.target.px!=s->px ||
-       sdk_display.target.w!=s->w || sdk_display.target.h!=s->h) {
-        struct ol_pixel_target t={s->px,s->w,s->h,s->clip_on,s->clx0,s->cly0,s->clx1,s->cly1};
-        sdk_display.target=t; /* failed early binds must not retain an old target */
-        ol_display_bind(&sdk_display,&t,rpos,gpos,bpos);
-        sdk_target_dirty=0;
+    if (sdk_target_dirty || sdk_display.target.px != surface->px ||
+        sdk_display.target.w != surface->w || sdk_display.target.h != surface->h) {
+        struct ol_pixel_target target = {
+            .px = surface->px,
+            .w = surface->w,
+            .h = surface->h,
+            .clip_on = surface->clip_on,
+            .clx0 = surface->clx0,
+            .cly0 = surface->cly0,
+            .clx1 = surface->clx1,
+            .cly1 = surface->cly1,
+        };
+#ifdef FB_BIND_UNCHECKED
+        sdk_display.target = target;
+        ol_display_bind(&sdk_display, &target, rpos, gpos, bpos);
+#else
+        if (ol_display_bind(&sdk_display, &target, rpos, gpos, bpos) != OL_OK) {
+            /* The former pre-assignment tried to avoid keeping an old target,
+             * but published an unvalidated one with stale channel positions.
+             * On a fresh 5K bind, ff8040 became 0000ff. Disable drawing on a
+             * rejected surface; a later valid bind restores the whole batch. */
+            sdk_display.target = (struct ol_pixel_target){0};
+            sdk_display.error = OL_ARGUMENT;
+        }
+#endif
+        sdk_target_dirty = 0;
     }
     return &sdk_display;
 }

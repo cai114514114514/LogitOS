@@ -1,7 +1,8 @@
 # Real framebuffer transport integration. The deliberate CPU-after-GPU mutation
 # must visibly overwrite the callback oracle; this catches fake acceleration
 # that merely calls a hook and then follows the old CPU present unconditionally.
-FB_NATIVE_PRESENT_SRC := tests/unit/fb_native_present_test.c c/kernel/gui/fb/fb.c c/lib/gfx/adapters/openlogit_display.c
+FB_NATIVE_PRESENT_SRC := tests/unit/fb_native_present_test.c c/kernel/gui/fb/fb.c \
+                         c/lib/gfx/adapters/openlogit_display.c $(GFX_MATERIAL_SRC)
 FB_NATIVE_PRESENT_INC := $(KGUI_INC) -Ic/drivers/virtio $(KMM_INC) -Ic/lib/text $(GFX_INC)
 .PHONY: test-fb-native-present-negctl test-fb-native-present-host
 

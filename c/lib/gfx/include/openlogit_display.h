@@ -10,6 +10,13 @@
  * (0,8,16). Use RGBA resources/ol_surface for straight-alpha offscreen work.
  * Source surfaces of a surface-to-surface blit share this channel layout.
  * Borrowed target writes are batched by the owner and presented once/frame. */
+/* Packed display targets use dynamic effect scratch, not gfx_raster's fixed
+ * coverage row. The former GFX_MAX_W (4096) cap rejected a 5120px framebuffer.
+ * Keep a separate 8192px bound: even a square target's pixel and RGBA-byte
+ * offsets fit signed int; this does not enlarge path-raster scratch or promise
+ * that a single vector fill can exceed the rasterizer's own span limit. */
+#define OL_DISPLAY_MAX_SIZE 8192
+
 struct ol_pixel_target {
     uint32_t *px;int w,h;
     int clip_on,clx0,cly0,clx1,cly1;

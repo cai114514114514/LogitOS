@@ -69,12 +69,28 @@ unsigned char glass_fres[GLASS_E_MAX + 1];
 static int glass_lut_e = -1;                       /* the E these were built for */
 static int glass_lut_r = -1;                       /* ...and the REFRACT */
 
-unsigned gl_isqrt(unsigned long v)
+unsigned gl_isqrt(unsigned long remainder)
 {
-    unsigned long r = 0, b = 1UL << 30;
-    while (b > v) b >>= 2;
-    while (b) { if (v >= r + b) { v -= r + b; r = (r >> 1) + b; } else r >>= 1; b >>= 2; }
-    return (unsigned)r;
+    /* The original 1<<30 start silently saturated every input >= 2^32
+     * at 65535. A radius-256 circle already reaches that limit after the
+     * rasterizer's 8.8 scaling, painting its outside corner half opaque.
+     * Keep the short path for normal UI sizes, extend it only for wide input. */
+    unsigned long root = 0;
+    unsigned long bit = 1UL << 30;
+#if !defined(GLASS_ROOT_NARROW) && __SIZEOF_LONG__ > 4
+    if (remainder >> 32) bit = 1UL << 62;
+#endif
+    while (bit > remainder) bit >>= 2;
+    while (bit) {
+        if (remainder >= root + bit) {
+            remainder -= root + bit;
+            root = (root >> 1) + bit;
+        } else {
+            root >>= 1;
+        }
+        bit >>= 2;
+    }
+    return (unsigned)root;
 }
 
 /* sqrt of a 16.16 value, as 16.16. */
