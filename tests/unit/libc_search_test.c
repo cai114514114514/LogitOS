@@ -37,6 +37,13 @@
 #include <errno.h>
 #include <stdlib.h>
 
+#ifdef LIBC_COMMON_TEST
+/* Darwin has no tdestroy or reentrant hash API, and its hdestroy owns keys.
+ * Keep the original GNU contract below intact; this branch compares only
+ * shared behavior and checks our additional APIs without inventing a host. */
+#include "libc_search_common.h"
+#else
+
 /* ---- deterministic shuffle -------------------------------------------- */
 static unsigned long lcg_state;
 static unsigned long lcg_next(void)
@@ -842,3 +849,4 @@ int main(void)
     remque_single_node_ring_section();
     return 0;
 }
+#endif /* LIBC_COMMON_TEST */

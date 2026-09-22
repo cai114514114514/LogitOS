@@ -10,6 +10,14 @@
                               * POSIX Issue 8 standardisation and are a glibc/BSD extension
                               * under plain -std=c11); the two macros above alone are not
                               * enough to see their prototypes. */
+#define _DARWIN_C_SOURCE 1  /* Darwin has preadv/pwritev; POSIX macros above hide them. */
+
+#ifdef LIBC_COMMON_TEST
+/* Linux open flags, pipe sizing, zero-vector and ioctl policies below are
+ * deliberately retained for the original GNU gate. The portable branch uses
+ * real host setup and compares only shared transfer/position behavior. */
+#include "libc_uio_common.h"
+#else
 
 /* readv/writev/preadv/pwritev case list, compiled twice by tests/libc.mk (see
  * the header comment in tests/unit/libc_fnmatch_test.c for the two-build diff
@@ -684,3 +692,4 @@ int main(void)
     unlink(SCRATCH);
     return 0;
 }
+#endif /* LIBC_COMMON_TEST */

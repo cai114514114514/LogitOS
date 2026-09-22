@@ -3,7 +3,11 @@
  * which is what tests/unit/libc_inet_test.c checks byte-for-byte against the
  * host's inet_ntop/inet_pton over a large case set (dotted-quad, all-zeros,
  * loopback, IPv4-mapped IPv6, every legal placement of "::", and the ones
- * that must be REJECTED: extra octets, out-of-range decimal, double "::"). */
+ * that must be REJECTED: extra octets, out-of-range decimal, double "::").
+ * Correction (2026-09-22): that gate called every host "glibc", including
+ * Darwin, whose pton accepts leading decimal zeroes. The host differential
+ * now covers shared behavior; libc_inet_contract_test.c separately checks
+ * our strict pton policy, BSD aton forms, and failure-without-writing dst. */
 #include <arpa/inet.h>
 #include <string.h>
 #include <errno.h>
@@ -208,71 +212,84 @@ static int hexval(char c)
     return -1;
 }
 
+static const char *parse_hex_group(const char *src, uint16_t *group)
+{
+    unsigned value = 0;
+    int digits = 0;
+    while (hexval(*src) >= 0) {
+        if (digits == 4) return NULL;
+        value = value * 16 + (unsigned)hexval(*src);
+        digits++;
+        src++;
+    }
+    if (!digits) return NULL;
+    *group = (uint16_t)value;
+    return src;
+}
+
 static int pton6(const char *src, unsigned char *dst)
 {
-    uint16_t head[8]; int nhead = 0;
-    uint16_t tail[8]; int ntail = 0;
-    const char *p = src;
-    int has_dcolon = 0;
-    uint16_t *cur = head; int *ncur = &nhead;
+    uint16_t groups[8] = {0};
+    int count = 0;
+    int compression = -1;
+    const char *cursor = src;
 
-    if (p[0] == ':') {
-        if (p[1] != ':') return 0;
-        has_dcolon = 1; p += 2;
-        cur = tail; ncur = &ntail;
-        if (*p == 0) { memset(dst, 0, 16); return 1; }   /* "::" */
+    if (*cursor == ':') {
+        if (cursor[1] != ':') return 0;
+        compression = 0;
+        cursor += 2;
     }
 
-    while (*p) {
-        /* embedded IPv4 tail: a run of digits/dots that pton4 accepts, only
-         * legal as the LAST component. */
-        const char *dotcheck = p;
-        int has_dot = 0;
-        while (*dotcheck && *dotcheck != ':') { if (*dotcheck == '.') has_dot = 1; dotcheck++; }
-        if (has_dot) {
+    while (*cursor) {
+        if (count == 8) return 0;
+        const char *end = cursor;
+        int dotted = 0;
+        while (*end && *end != ':') {
+            if (*end == '.') dotted = 1;
+            end++;
+        }
+        if (dotted) {
             unsigned char v4[4];
-            char part[64];
-            size_t len = (size_t)(dotcheck - p);
-            if (len >= sizeof part) return 0;
-            memcpy(part, p, len); part[len] = 0;
-            if (!pton4(part, v4)) return 0;
-            if (*ncur >= 7) return 0;
-            cur[(*ncur)++] = (uint16_t)((v4[0] << 8) | v4[1]);
-            cur[(*ncur)++] = (uint16_t)((v4[2] << 8) | v4[3]);
-            p = dotcheck;
-            if (*p != 0) return 0;   /* must be the last component */
+            /* Parsing the whole remaining string enforces a final IPv4
+             * tail. Reusing aton here would admit shorthand and octal. */
+            if (count > 6 || !pton4(cursor, v4)) return 0;
+            groups[count++] = (uint16_t)((v4[0] << 8) | v4[1]);
+            groups[count++] = (uint16_t)((v4[2] << 8) | v4[3]);
             break;
         }
-        int v = 0, n = 0;
-        while (hexval(*p) >= 0) {
-            if (n == 4) return 0;
-            v = v * 16 + hexval(*p);
-            p++; n++;
-        }
-        if (n == 0) return 0;
-        if (*ncur >= 8) return 0;
-        cur[(*ncur)++] = (uint16_t)v;
-        if (*p == 0) break;
-        if (*p != ':') return 0;
-        p++;
-        if (*p == ':') {
-            if (has_dcolon) return 0;
-            has_dcolon = 1;
-            cur = tail; ncur = &ntail;
-            p++;
-            if (*p == 0) break;
+
+        cursor = parse_hex_group(cursor, &groups[count]);
+        if (!cursor) return 0;
+        count++;
+        if (!*cursor) break;
+        if (*cursor != ':') return 0;
+        cursor++;
+        if (*cursor == ':') {
+            if (compression >= 0) return 0;
+            compression = count;
+            cursor++;
+        } else if (!*cursor) {
+            /* Previously the loop ended here and accepted "::1:". A lone
+             * separator requires another group; only "::" can end input. */
+            return 0;
         }
     }
 
-    if (!has_dcolon) {
-        if (nhead != 8) return 0;
-        for (int i = 0; i < 8; i++) { dst[i * 2] = (unsigned char)(head[i] >> 8); dst[i * 2 + 1] = (unsigned char)head[i]; }
-        return 1;
+    if (compression < 0) {
+        if (count != 8) return 0;
+    } else {
+        /* Previously <=8 groups was accepted with "::", silently allowing
+         * it to compress zero groups. It must stand for at least one zero. */
+        if (count == 8) return 0;
+        int tail = count - compression;
+        for (int i = 0; i < tail; i++) groups[7 - i] = groups[count - 1 - i];
+        for (int i = compression; i < 8 - tail; i++) groups[i] = 0;
     }
-    if (nhead + ntail > 8) return 0;
-    uint16_t full[8] = {0};
-    for (int i = 0; i < nhead; i++) full[i] = head[i];
-    for (int i = 0; i < ntail; i++) full[8 - ntail + i] = tail[i];
-    for (int i = 0; i < 8; i++) { dst[i * 2] = (unsigned char)(full[i] >> 8); dst[i * 2 + 1] = (unsigned char)full[i]; }
+
+    /* Commit only after every component and delimiter has been validated. */
+    for (int i = 0; i < 8; i++) {
+        dst[i * 2] = (unsigned char)(groups[i] >> 8);
+        dst[i * 2 + 1] = (unsigned char)groups[i];
+    }
     return 1;
 }

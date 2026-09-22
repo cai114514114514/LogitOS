@@ -9,6 +9,9 @@
  *     program against glibc's -- and stdout is diffed byte for byte. Model:
  *     tests/unit/libc_fnmatch_test.c. This is the REQUIRED gate and it runs
  *     with no arguments (or "libgen").
+ *     Correction (2026-09-22): on Darwin, dirname's permitted "//" root
+ *     policy differs. libc_libgen_test.py keeps every row, checks Logit's
+ *     documented "//" result explicitly, and compares all other fields.
  *
  *   - err()/warn() CANNOT be gated that way, for a reason specific to this
  *     pair: their output embeds the program's OWN NAME, and the two
@@ -85,6 +88,7 @@
 #include <errno.h>
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 /* ------------------------------------------------------------------ *
