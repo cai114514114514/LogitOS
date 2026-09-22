@@ -540,7 +540,10 @@ def main():
             nfiles += add_spec(b, spec)[0]
         kept = preserve(b, out, args.preserve, args.snapshot_helper, args.preserve_merge)
         img, used = b.serialize()
-        atomic_write(out, img)
+        # serialize() places every allocated block before nextb. Extend the
+        # file to its full geometry with a zero hole instead of writing the
+        # unused tail; the bitmap and every logical byte stay unchanged.
+        atomic_write(out, img, used_bytes=used * BS)
     if args.preserve or args.preserve_merge:
         print(f"mkfs: retained {kept} user-state inode(s)")
     print(f"mkfs: {out} -> LogitFS v4, {TOTAL_BLOCKS} blocks "

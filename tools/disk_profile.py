@@ -136,14 +136,23 @@ def preserve(builder, image, roots, helper, merge_roots=()):
         return count
 
 
-def atomic_write(path, data):
+def atomic_write(path, data, *, used_bytes=None):
     from disk_guard import assert_unused
     path = Path(path).absolute()
+    if used_bytes is None:
+        used_bytes = len(data)
+    if not 0 <= used_bytes <= len(data):
+        raise ValueError("written image prefix is out of range")
     fd, tmp = tempfile.mkstemp(prefix="." + path.name + ".", dir=path.parent)
     try:
         with os.fdopen(fd, "wb") as out:
-            if out.write(data) != len(data):
+            # mkfs allocates data blocks from the start of the image. Its
+            # unwritten tail is zero, so a sparse hole has identical guest
+            # bytes without writing hundreds of MiB of zeros on every pack.
+            # Other callers still write their entire opaque payload.
+            if out.write(memoryview(data)[:used_bytes]) != used_bytes:
                 raise OSError("incomplete disk image write")
+            out.truncate(len(data))
             out.flush()
             os.fsync(out.fileno())
         # The shared lock covers cooperative launches. Check again for a

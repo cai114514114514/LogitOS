@@ -79,3 +79,13 @@ concurrency; they do not claim a fixed wall-clock speedup or guest runtime gain.
 Disk packing still preserves user directories, validates a private snapshot,
 rejects images held by QEMU, and replaces the image atomically. Compilation
 parallelism does not make it safe to write a disk used by a running VM.
+
+The packer and its checked snapshot now leave unused zero blocks as holes in
+the host file. The raw disk remains 512 MiB to the guest, with the same bytes
+at every offset. On the 2026-09-23 image, 19,285 blocks were used and the host
+allocated about 75 MiB instead of 512 MiB. Both write paths retain `fsync`;
+the snapshot still runs journal recovery and filesystem validation before any
+new image is accepted. Run `make test-disk-sparse test-snapshot-sparse
+test-disk-profile test-fs-format` to check byte identity, disk allocation,
+preserved state and the on-disk format. See the
+[measurement](reports/build-speed-2026-09-23.md) for the timing boundary.
