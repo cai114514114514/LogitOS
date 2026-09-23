@@ -197,7 +197,15 @@ static void barrett_make(const uint32_t *m){
     }
     for(int i=0;i<NL+2;i++) B->mu[i]=q[i];
 }
-/* o = prod mod m, prod = 2*NL limbs (< m^2). 1 if m is registered, else 0. */
+/* o = prod mod m. 1 if m is registered, else 0.
+ *
+ * Correction 2026-09-23: the old comment required prod < m^2. That is
+ * stronger than this Barrett reduction needs: for a k-limb modulus, its
+ * actual bound is prod < 2^(64k). Under that bound q3 can underestimate
+ * floor(prod/m) by at most two. The provisional remainder is then < 3m,
+ * which fits the k+1-limb window because m < 2^(32k); three subtractions
+ * suffice. This matters in ECDSA verification: a digest e may exceed n, so
+ * e*w may exceed n^2 even though both operands fit k limbs. */
 static int barrett_reduce(bn o, const uint32_t *prod, const uint32_t *m){
     int bi=-1;
     for(int i=0;i<nbar;i++){ int eq=1; for(int j=0;j<NL;j++) if(btab[i].m[j]!=m[j]){eq=0;break;} if(eq){bi=i;break;} }
@@ -219,13 +227,15 @@ static int barrett_reduce(bn o, const uint32_t *prod, const uint32_t *m){
 
 /* o = a*b mod m.
  *
- * THE PRODUCT LOOP IS SIZED BY THE MODULUS, NOT BY NL. bn is a fixed 13 limbs
- * so that one type covers both curves plus carry headroom, but P-256's modulus
- * is 8 limbs and every operand here is reduced -- a[i] and b[j] are identically
- * zero for i,j >= words(m). Running the schoolbook loop to NL anyway did 169
- * word multiplies where 64 carry all the information, and mod_mul is called
- * about 8000 times per ECDSA verify, so those five zero limbs were 62% of the
- * arithmetic in the hottest primitive the TLS stack has. Restricting the loop
+ * THE PRODUCT LOOP IS SIZED BY THE MODULUS, NOT BY NL. The old measurement
+ * below used NL=13 for P-256/P-384; P-521 has since widened NL to 18. P-256's
+ * modulus remains 8 limbs. Correction 2026-09-23: the old claim that every
+ * operand was reduced was false for a verification digest e >= n. The loop needs
+ * each operand to FIT k limbs; the hash is at most nbytes long, so a[i] and
+ * b[j] are identically zero for i,j >= words(m). At NL=13, running to NL did
+ * 169 word multiplies where 64 carry all the information; at NL=18 it would
+ * do 324. mod_mul is called about 8000 times per ECDSA verify, so the five
+ * zero limbs wasted 62% of the old inner loop. Restricting the loop
  * to k = words(m) omits only terms that are exactly zero, so every output bit
  * is unchanged -- which is what makes this checkable by the differential suite
  * rather than merely plausible.

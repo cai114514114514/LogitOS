@@ -66,7 +66,7 @@ void x25519(uint8_t out[32], const uint8_t scalar[32], const uint8_t point[32])
 - 触发与后果：无即时功能后果；后人若据注释"416 位足够"缩回 NL 即引入真实溢出。
 - 修复建议：注释改写为对三条曲线分别成立的界（P-521：kb < 2^553 ≤ 2^576 = NL*32），或直接写 `rho*n < 2^(521+31)`。
 
-### [low] [SUSPECTED] ecdsa_verify 未把摘要整数 e 先对 n 约减，可突破 Barrett 前提（fail-closed 误拒）
+### [low] [REFUTED; formerly SUSPECTED] ecdsa_verify 未把摘要整数 e 先对 n 约减，可突破 Barrett 前提（fail-closed 误拒）
 
 - 位置：`c/crypto/pubkey/ecdsa.c:434-439`（对照同树 `secp256k1.c:395-397` 做了约减）
 
@@ -83,7 +83,9 @@ void x25519(uint8_t out[32], const uint8_t scalar[32], const uint8_t point[32])
 - 触发与后果：仅 DoS/fail-closed（错验证无法被利用为错误接受：u1 错值仍需满足椭圆曲线方程，等价于解 ECDLP）。诚实流量随机触发概率 ~2^-32/次。
 - 修复建议：对齐 `ecdsa_sign`/`secp256k1.c`：`if (bn_cmp(e, c->n) >= 0) { bn_sub(...); }` 一行（bits2int 结果 < 2^qlen < 2n，一次条件减精确）。标注 SUSPECTED 是因为错误需要 `e*w ≥ n^2` 且 3 次校正不够的窄窗口，静态推演无法 100% 排除 3 次校正恰好兜住的情形。
 
-### [low] [SUSPECTED] kernel rng：RDSEED/RDRAND 在位但持续失败时静默退化为 rdtsc 重播种
+**2026-09-23 证伪（保留上方原审计供追溯）：** `prod < m²` 是旧注释给出的过窄充分条件，不是这段 Barrett 约减的实际输入界。P-256/P-384 均构造了 `e=n+2`、`w=n−1`、因此 `e*w=n²+n−2` 的有效签名；Python cryptography/OpenSSL 与本树 `ecdsa_verify` 都接受，改动摘要后都拒绝。另有每条曲线 10,000 个 `e≥n` 且 `e*w≥n²` 的输入，本树结果 20,000/20,000 与 Python `% n` 一致。两条曲线的乘积仍在 2k-limb 界内，现有最多三次校正足够；此条不应再作为待修功能缺陷，也不应为了它改动验签算法。代码注释的界需要同步纠正。
+
+### [low] [FIXED; formerly SUSPECTED] kernel rng：RDSEED/RDRAND 在位但持续失败时静默退化为 rdtsc 重播种
 
 - 位置：`c/kernel/core/rng.c:102-119`（对照 134-140 行的告警只覆盖"CPU 根本没有"的情形）
 
@@ -101,6 +103,8 @@ void x25519(uint8_t out[32], const uint8_t scalar[32], const uint8_t point[32])
 - `rng_reseed()` 对 `rng_gather()` 返回的 n 个字一概照收：硬件标志在、但 RDSEED 因持续 CF=0 全部失败（16 次重试均无退避间隔）时，本次 epoch 的种子实际只有 rdtsc+tick，且无任何日志——`rng_strong()` 仍返回 1，TLS 的弱熵闸门被绕过。CODE_AUDIT 记录的修复只解决了"无硬件时照常握手"与"静默退化无告警"的**CPUID 缺失**分支。
 - 触发与后果：需 RDSEED 反复失败的硬件/虚拟机（早期 KVM 型号、部分云嵌套虚拟化）才会命中；命中后该 epoch 的会话密钥可预测性回到修复前的水平。
 - 修复建议：`rng_reseed` 统计本次硬件字成功数，为 0（或 < 2）时 `kprintf` 告警并考虑把 `rng_strong` 语义降级，或在重试循环加短延时/交叉 rdtsc 搅拌。
+
+2026-09-23 修正：上述审计指出的 CPUID 误判已修复。`rng_strong()` 现在在首次查询时完成播种，仅在至少两个硬件字实际进入 DRBG 后返回 1；RDSEED 失败时再尝试 RDRAND。测试用受控 CF 结果覆盖 0、1、2 个成功字，旧 CPUID-only 判定在负控中准确失败。后续重播种若临时失败，先前已混入的硬件熵仍保留，因此不把已建立的强状态倒退为弱状态。此处只证明判定与输入路径；虚拟机硬件源的真实质量仍取决于底层平台。
 
 ### [low] [SUSPECTED] AES-GCM-SIV `build_blocks` 有符号长度加法可回绕绕过容量检查
 
