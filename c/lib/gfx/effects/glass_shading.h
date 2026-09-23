@@ -81,20 +81,22 @@ static inline struct glass_light lighting(const struct glass_style *style,
     int shadow = opposite * band / 256;
     shadow = shadow * shadow / 256;
 
+    environment = glass_clamp(environment, 96, 250);
     return (struct glass_light){
-        .environment = glass_clamp(environment, 96, 250),
+        .environment = {environment, environment, environment},
         .reflection = glass_fres[depth],
         .highlight = highlight * 64 / 256,
         .shadow = shadow * 46 / 256,
     };
 }
 
-static inline int shade_channel(int value, int tint, int opacity, struct glass_light light)
+static inline int shade_channel(int value, int tint, int opacity,
+                                int environment, struct glass_light light)
 {
     /* Each layer blends against the previous result. Reordering these integer
      * operations changes both the material and its rounding. */
     value += (tint - value) * opacity / 255;
-    value += (light.environment - value) * light.reflection / 255;
+    value += (environment - value) * light.reflection / 255;
     value += (255 - value) * light.highlight / 256;
     value -= value * light.shadow / 256;
     return glass_clamp(value, 0, 255);
@@ -107,9 +109,9 @@ static inline struct glass_color shade_color(struct glass_color color,
     int opacity = style->opacity;
     if (style->adaptive) opacity = style->opacity_by_luma[color_luma(color)];
     return (struct glass_color){
-        shade_channel(color.red, style->tint.red, opacity, light),
-        shade_channel(color.green, style->tint.green, opacity, light),
-        shade_channel(color.blue, style->tint.blue, opacity, light),
+        shade_channel(color.red, style->tint.red, opacity, light.environment.red, light),
+        shade_channel(color.green, style->tint.green, opacity, light.environment.green, light),
+        shade_channel(color.blue, style->tint.blue, opacity, light.environment.blue, light),
     };
 }
 

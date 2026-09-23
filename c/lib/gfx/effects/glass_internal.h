@@ -4,14 +4,18 @@
 #include "../adapters/display_pixels.h"
 #include "openlogit_glass.h"
 
-enum { GLASS_BLUR_RADIUS = 6 };
+enum { GLASS_BLUR_RADIUS = 6, GLASS_REFLECT_OFFSET = 6,
+       GLASS_REFLECT_BAND = 4 };
 
-/* Samples use the visible rectangle; geometry keeps the original center.
- * Clip bounds are half-open local indices, even for an offscreen lens. */
+/* Shape coordinates remain relative to the visible panel. The sample box is
+ * separate: blur and refraction need neighbouring backdrop pixels, while only
+ * the panel and its write clip may change. Both boxes are target-clipped. */
 struct glass_panel {
     struct ol_display *display;
     int x, y;
     int width, height;
+    int sample_x, sample_y;
+    int sample_width, sample_height;
     int clip_left, clip_top, clip_right, clip_bottom;
     int shape_left, shape_top, shape_right, shape_bottom;
     int center_x, center_y;
@@ -41,7 +45,7 @@ struct glass_style {
 };
 
 struct glass_light {
-    int environment;
+    struct glass_color environment;
     int reflection;
     int highlight;
     int shadow;

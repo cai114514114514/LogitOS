@@ -17,12 +17,12 @@ static void blur_rows(struct glass_panel *panel)
     struct ol_display *display = panel->display;
     const struct ol_pixel_target *target = &display->target;
     uint32_t *pixels = display->glass_buf;
-    int width = panel->width;
+    int width = panel->sample_width;
 
     /* Read the live backdrop and write separate scratch storage. No source
      * pixel changes before it leaves the horizontal moving window. */
-    for (int row = 0; row < panel->height; row++) {
-        long start = (long)(panel->y + row) * target->w + panel->x;
+    for (int row = 0; row < panel->sample_height; row++) {
+        long start = (long)(panel->sample_y + row) * target->w + panel->sample_x;
         const uint32_t *source = target->px + start;
         uint32_t *destination = pixels + (long)row * width;
         int sum_red = 0;
@@ -68,8 +68,8 @@ static void blur_columns(struct glass_panel *panel)
 {
     struct ol_display *display = panel->display;
     uint32_t *pixels = display->glass_buf;
-    int width = panel->width;
-    int height = panel->height;
+    int width = panel->sample_width;
+    int height = panel->sample_height;
 
     for (int column = 0; column < width; column++) {
         int sum_red = 0;

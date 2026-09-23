@@ -3412,6 +3412,16 @@ static void draw_background(void)
 /* Frosted menu bar, composited per-frame on top of the windows: real-time blur
  * of whatever is behind it (wallpaper or a window slid up under it). */
 static void draw_clock(void);
+/* These radii are used by both the painter and damage's sample reach. A
+ * separately guessed damage radius would leave an invisible stale-glass ring
+ * when UI scale changes. Values are logical points, converted at each call. */
+enum {
+    MENU_GLASS_PT = 2,
+    DOCK_GLASS_PT = 28,
+    DROPDOWN_GLASS_PT = 10,
+    OVERLAY_GLASS_PT = 14,
+    TITLE_GLASS_PT = 10,
+};
 /* The menu bar is a GLASS PANEL: it frosts whatever is behind it, so it is one
  * of the two things a damage rectangle may not cut in half (see dmg_expand). */
 static void menubar_box(struct drect *r) { r->x0 = 0; r->y0 = 0; r->x1 = W; r->y1 = MBH; }
@@ -3518,8 +3528,8 @@ static void draw_menubar(void)
      * The bottom edge keeps its rim: that hairline is the menu bar's only
      * separation from the wallpaper below it. */
     unsigned mbcut = GLASS_CUT_TOP | GLASS_CUT_LEFT | GLASS_CUT_RIGHT;
-    if (g_ui_dark) profiled_glass_cut(0, 0, W, MBH, S(2), 24, 24, 32, 150, mbcut);
-    else           profiled_glass_cut(0, 0, W, MBH, S(2), 255, 255, 255, 110, mbcut);
+    if (g_ui_dark) profiled_glass_cut(0, 0, W, MBH, S(MENU_GLASS_PT), 24, 24, 32, 150, mbcut);
+    else           profiled_glass_cut(0, 0, W, MBH, S(MENU_GLASS_PT), 255, 255, 255, 110, mbcut);
     fb_blend_rect(0, MBH - S(1), W, S(1), 0, 0, 0, g_ui_dark ? 70 : 28);  /* hairline */
     uint32_t ink = g_ui_dark ? rgb(232, 233, 238) : rgb(40, 40, 48);
     fb_fill_circle(S(16), MBH / 2, S(6), ink);
@@ -3739,8 +3749,8 @@ static void draw_dock(void)
      * edge all the way round, under a panel translucent enough to show it. */
     fb_shadow(dock_x0, dock_y0, dw, dh, S(28), DOCKSH_DY, DOCKSH_BLUR, 56);
     /* Liquid Glass: frost + rim refraction + specular highlight + body tint */
-    if (g_ui_dark) profiled_glass(dock_x0, dock_y0, dw, dh, S(28), 26, 26, 34, 104);
-    else           profiled_glass(dock_x0, dock_y0, dw, dh, S(28), 255, 255, 255, 44);
+    if (g_ui_dark) profiled_glass(dock_x0, dock_y0, dw, dh, S(DOCK_GLASS_PT), 26, 26, 34, 104);
+    else           profiled_glass(dock_x0, dock_y0, dw, dh, S(DOCK_GLASS_PT), 255, 255, 255, 44);
 
     /* Live hover magnification: the icon under the cursor grows in place (kept
      * inside the panel + gap so it never overlaps a neighbour) and shows its name
@@ -4052,8 +4062,8 @@ static void draw_menu_dropdown(void)
     struct drect p; menu_dropdown_box(&p);
     int w = p.x1 - p.x0, h = p.y1 - p.y0;
     fb_shadow(p.x0, p.y0, w, h, S(10), S(6), S(16), g_ui_dark ? 150 : 70);
-    if (g_ui_dark) profiled_glass(p.x0, p.y0, w, h, S(10), 30, 30, 38, 165);
-    else           profiled_glass(p.x0, p.y0, w, h, S(10), 250, 250, 255, 190);
+    if (g_ui_dark) profiled_glass(p.x0, p.y0, w, h, S(DROPDOWN_GLASS_PT), 30, 30, 38, 165);
+    else           profiled_glass(p.x0, p.y0, w, h, S(DROPDOWN_GLASS_PT), 250, 250, 255, 190);
 
     unsigned ac = settings_get_color("ui.accent", 0x5E96FF);
     uint8_t ar = (uint8_t)(ac >> 16), ag = (uint8_t)(ac >> 8), ab = (uint8_t)ac;
@@ -4098,8 +4108,8 @@ static void draw_overlay_panel(void)
     struct drect p; overlay_box(&p);
     int w = p.x1 - p.x0, h = p.y1 - p.y0;
     fb_shadow(p.x0, p.y0, w, h, S(14), S(10), S(28), g_ui_dark ? 170 : 90);
-    if (g_ui_dark) profiled_glass(p.x0, p.y0, w, h, S(14), 28, 28, 36, 195);
-    else           profiled_glass(p.x0, p.y0, w, h, S(14), 250, 250, 255, 210);
+    if (g_ui_dark) profiled_glass(p.x0, p.y0, w, h, S(OVERLAY_GLASS_PT), 28, 28, 36, 195);
+    else           profiled_glass(p.x0, p.y0, w, h, S(OVERLAY_GLASS_PT), 250, 250, 255, 210);
     uint32_t ink = g_ui_dark ? rgb(232, 233, 238) : rgb(40, 40, 48);
     uint32_t dim = g_ui_dark ? rgb(172, 173, 182) : rgb(96, 96, 104);
 
@@ -4204,8 +4214,8 @@ static void draw_frame(struct win *w, int focused)
     int x = w->x, y = w->y, ww = w->w, wh = w->h;
     fb_shadow(x, y, ww, wh, S(10), WSH_DY(focused), WSH_BLUR(focused), WSH_ALPHA(focused));
     uint8_t a = focused ? (g_ui_dark ? 150 : 104) : (g_ui_dark ? 180 : 140);
-    if (g_ui_dark) profiled_glass(x, y, ww, TBH + S(10), S(10), 30, 30, 40, a);
-    else           profiled_glass(x, y, ww, TBH + S(10), S(10), 250, 250, 255, a);
+    if (g_ui_dark) profiled_glass(x, y, ww, TBH + S(10), S(TITLE_GLASS_PT), 30, 30, 40, a);
+    else           profiled_glass(x, y, ww, TBH + S(10), S(TITLE_GLASS_PT), 250, 250, 255, a);
     /* NOT the separator -- see draw_titlebar_sep above; the caller draws it
      * after blit_content, or it is covered before it is ever seen. */
     uint32_t off = g_ui_dark ? rgb(80, 80, 90) : rgb(205, 205, 210);
@@ -4675,7 +4685,7 @@ static struct surface *win_chrome_strip(struct win *w, int focused)
  *
  * This is the price of frosted chrome, and it is not optional. fb_liquid_glass
  * blurs and refracts the live backdrop UNDER the panel: to compute one output
- * pixel it samples up to ~24 px around it. Inside a damage rectangle that
+ * pixel it samples a halo around the panel. Inside a damage rectangle that
  * backdrop was just re-laid from the wallpaper; outside it, `back` holds last
  * frame's finished composite -- which already has the glass in it. Frosting a
  * frosted pixel is visibly different from frosting the backdrop, so a panel cut
@@ -4723,6 +4733,24 @@ static void rect_or_onscreen(struct drect *r, struct drect p, int *grew)
     if (rect_hit(r, &p) && !rect_in(&p, r)) { rect_or(r, &p); *grew = 1; }
 }
 
+static void rect_or_glass_input(struct drect *r, struct drect panel,
+                                int radius, int *grew)
+{
+    if (!wm_reduce_transparency) {
+        int halo = ol_display_glass_sample_halo(panel.x1 - panel.x0,
+                                                 panel.y1 - panel.y0, radius);
+        panel.x0 -= halo;
+        panel.y0 -= halo;
+        panel.x1 += halo;
+        panel.y1 += halo;
+    }
+    /* An edit just OUTSIDE the visible panel changes its rim. Relaying the
+     * entire input box also prevents a partial frame from reading last frame's
+     * already-frosted pixels. The renderer owns the halo size; keep damage on
+     * that same authority rather than duplicating its blur/refraction math. */
+    rect_or_onscreen(r, panel, grew);
+}
+
 static int dmg_expand(struct drect *r, int n)
 {
     int grew = 1;
@@ -4731,16 +4759,16 @@ static int dmg_expand(struct drect *r, int n)
         for (int i = 0; i < n; i++) {
             struct drect p;
             menubar_box(&p);
-            rect_or_onscreen(&r[i], p, &grew);
+            rect_or_glass_input(&r[i], p, S(MENU_GLASS_PT), &grew);
             dock_panel_box(&p);          /* the SLAB, not the whole footprint */
-            rect_or_onscreen(&r[i], p, &grew);
+            rect_or_glass_input(&r[i], p, S(DOCK_GLASS_PT), &grew);
             if (g_menu_open >= 0) {                       /* the open dropdown -- also glass */
                 menu_dropdown_box(&p);
-                rect_or_onscreen(&r[i], p, &grew);
+                rect_or_glass_input(&r[i], p, S(DROPDOWN_GLASS_PT), &grew);
             }
             if (g_overlay != OV_NONE) {                   /* About / Shut Down / Restart panel */
                 overlay_box(&p);
-                rect_or_onscreen(&r[i], p, &grew);
+                rect_or_glass_input(&r[i], p, S(OVERLAY_GLASS_PT), &grew);
             }
             for (int k = 0; k < norder; k++) {           /* each window's glass titlebar */
                 /* Asked of win_glass_box, not of w->x/w->w: a window being
@@ -4749,7 +4777,7 @@ static int dmg_expand(struct drect *r, int n)
                  * not being drawn would grow this rectangle to a frame the
                  * window is not occupying. See win_drawn_direct. */
                 if (!win_glass_box(&wins[order[k]], &p)) continue;
-                rect_or_onscreen(&r[i], p, &grew);
+                rect_or_glass_input(&r[i], p, S(TITLE_GLASS_PT), &grew);
             }
         }
         for (int i = 0; i < n; i++)

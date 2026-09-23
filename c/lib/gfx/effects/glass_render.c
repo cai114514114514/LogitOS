@@ -12,11 +12,13 @@ static inline int sample_channel(const struct glass_panel *panel,
                                  int column, int row, struct glass_field field,
                                  int displacement, unsigned shift)
 {
-    int sample_x = column - field.normal_x * displacement / 256;
-    int sample_y = row - field.normal_y * displacement / 256;
-    sample_x = glass_clamp(sample_x, 0, panel->width - 1);
-    sample_y = glass_clamp(sample_y, 0, panel->height - 1);
-    uint32_t pixel = panel->display->glass_buf[(long)sample_y * panel->width + sample_x];
+    int sample_x = panel->x + column - field.normal_x * displacement / 256
+                   - panel->sample_x;
+    int sample_y = panel->y + row - field.normal_y * displacement / 256
+                   - panel->sample_y;
+    sample_x = glass_clamp(sample_x, 0, panel->sample_width - 1);
+    sample_y = glass_clamp(sample_y, 0, panel->sample_height - 1);
+    uint32_t pixel = panel->display->glass_buf[(long)sample_y * panel->sample_width + sample_x];
     return (pixel >> shift) & 255;
 }
 
@@ -36,8 +38,40 @@ static inline struct glass_color sample_color(const struct glass_panel *panel,
 static const uint32_t *sample_row(const struct glass_panel *panel,
                                  int row, int direction, int displacement)
 {
-    int sample_y = glass_clamp(row - direction * displacement, 0, panel->height - 1);
-    return panel->display->glass_buf + (long)sample_y * panel->width;
+    int sample_y = panel->y + row - direction * displacement - panel->sample_y;
+    sample_y = glass_clamp(sample_y, 0, panel->sample_height - 1);
+    return panel->display->glass_buf + (long)sample_y * panel->sample_width
+           + panel->x - panel->sample_x;
+}
+
+static inline void reflect_neighbour(const struct glass_panel *panel,
+                                     int column, int row, struct glass_field field,
+                                     struct glass_light *light)
+{
+    if (field.depth >= GLASS_REFLECT_BAND || !light->reflection) return;
+    int x = panel->x + column + field.normal_x * GLASS_REFLECT_OFFSET / 256
+            - panel->sample_x;
+    int y = panel->y + row + field.normal_y * GLASS_REFLECT_OFFSET / 256
+            - panel->sample_y;
+    x = glass_clamp(x, 0, panel->sample_width - 1);
+    y = glass_clamp(y, 0, panel->sample_height - 1);
+    struct glass_color nearby = read_color(panel->display,
+        panel->display->glass_buf[(long)y * panel->sample_width + x]);
+    int weight = GLASS_REFLECT_BAND - field.depth;
+
+    /* The old uniform-gray environment could not reflect content just beyond
+     * the rim: black and white outside an identical panel produced the same
+     * 12,288 panel pixels. Let the outer four pixels borrow a restrained tint
+     * from a blurred sample six pixels along the surface normal. Refraction
+     * still bends the interior inward; the reflection is the separate view of
+     * nearby content. Keep this contribution bounded to 32 levels so it does
+     * not turn a bright icon beside the dock into an opaque colored stripe. */
+    light->environment.red = glass_clamp(light->environment.red +
+        (nearby.red - 128) * weight / (GLASS_REFLECT_BAND * 4), 0, 255);
+    light->environment.green = glass_clamp(light->environment.green +
+        (nearby.green - 128) * weight / (GLASS_REFLECT_BAND * 4), 0, 255);
+    light->environment.blue = glass_clamp(light->environment.blue +
+        (nearby.blue - 128) * weight / (GLASS_REFLECT_BAND * 4), 0, 255);
 }
 
 static void draw_span(const struct glass_panel *panel, const struct glass_style *style,
@@ -59,7 +93,9 @@ static void draw_span(const struct glass_panel *panel, const struct glass_style 
     if (red_row == green_row && green_row == blue_row) {
         for (int column = span.start; column < span.end; column++) {
             struct glass_color color = read_color(display, red_row[column]);
-            color = shade_color(color, style, light);
+            struct glass_light lit = light;
+            reflect_neighbour(panel, column, row, field, &lit);
+            color = shade_color(color, style, lit);
             store_pixel(display, &destination[column], color, field.coverage);
         }
     } else {
@@ -69,7 +105,9 @@ static void draw_span(const struct glass_panel *panel, const struct glass_style 
                 (green_row[column] >> display->gpos) & 255,
                 (blue_row[column] >> display->bpos) & 255,
             };
-            color = shade_color(color, style, light);
+            struct glass_light lit = light;
+            reflect_neighbour(panel, column, row, field, &lit);
+            color = shade_color(color, style, lit);
             store_pixel(display, &destination[column], color, field.coverage);
         }
     }
@@ -91,6 +129,7 @@ static void draw_edge(const struct glass_panel *panel, const struct glass_style 
 
         struct glass_color color = sample_color(panel, column, row, field);
         struct glass_light light = lighting(style, field);
+        reflect_neighbour(panel, column, row, field, &light);
         color = shade_color(color, style, light);
         store_pixel(display, &destination[column], color, field.coverage);
     }
@@ -106,7 +145,9 @@ static void draw_square_edge(const struct glass_panel *panel,
     for (int column = first; column < last; column++) {
         struct glass_field field = square_field(panel, column, row);
         struct glass_color color = sample_color(panel, column, row, field);
-        color = shade_color(color, style, lighting(style, field));
+        struct glass_light light = lighting(style, field);
+        reflect_neighbour(panel, column, row, field, &light);
+        color = shade_color(color, style, light);
         store_pixel(display, &destination[column], color, 255);
     }
 }

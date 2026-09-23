@@ -286,7 +286,10 @@ def main(argv):
         def i_dock():
             # Named tiles, not indices: a sweep over the dock band should cross
             # icons, and an index past the app count silently hovers wallpaper.
-            for name in ("clock", "widgets", "browser", "terminal", "preview",
+            # Widgets is no longer in the default dock. Asking for it aborted
+            # this guest gate after its first pixel comparison, so sweep the
+            # installed TextEdit tile instead of claiming later checks ran.
+            for name in ("clock", "textedit", "browser", "terminal", "preview",
                          "clock"):
                 ui.goto(*ui.dock_icon_of(name), settle=0.12)
             time.sleep(0.4 * slow)

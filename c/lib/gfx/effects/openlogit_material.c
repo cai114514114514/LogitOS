@@ -3,6 +3,35 @@
  * The optical lookup tables remain in openlogit_glass.c. */
 #include "glass_internal.h"
 
+static int panel_edge_width(int width, int height, int radius)
+{
+    int short_side = width < height ? width : height;
+    if (radius > short_side / 2) radius = short_side / 2;
+    int edge = radius < 22 ? radius : 22;
+    if (edge > short_side / 2) edge = short_side / 2;
+    return edge < 4 ? 4 : edge;
+}
+
+int ol_display_glass_sample_halo(int width, int height, int radius)
+{
+    if (width <= 0 || height <= 0 || radius < 0) return 0;
+#ifdef GLASS_PANEL_ONLY_SAMPLE
+    /* Negative control: a panel-local blur ignores its neighbouring scene. */
+    return 0;
+#else
+    int edge = panel_edge_width(width, height, radius);
+    int refract = edge < 18 ? edge : 18;
+    /* The blue channel's ±4% fan can round one pixel beyond refract (19 when
+     * refract is 18). The LUT test checks every reachable edge geometry against
+     * this bound. Querying a halo during damage expansion must NOT rebuild the
+     * shared LUT: a frame can ask about many panels before any is rendered. */
+    int displacement = refract + 1;
+    if (displacement < GLASS_REFLECT_OFFSET)
+        displacement = GLASS_REFLECT_OFFSET;
+    return GLASS_BLUR_RADIUS + displacement;
+#endif
+}
+
 static int prepare_panel(struct glass_panel *panel, struct ol_display *display,
                          int x, int y, int width, int height, int radius,
                          unsigned cut)
@@ -79,17 +108,32 @@ static int prepare_panel(struct glass_panel *panel, struct ol_display *display,
 
     /* A fixed 22px bevel overwhelmed 1px sidebars and 10px buttons. Bound
      * optical thickness by the corner; the dock keeps its wider lens. */
-    int edge_width = radius < 22 ? radius : 22;
-    if (edge_width > short_side / 2) edge_width = short_side / 2;
-    panel->edge_width = edge_width < 4 ? 4 : edge_width;
+    panel->edge_width = panel_edge_width(shape_width, shape_height, radius);
     return 1;
+}
+
+static void prepare_samples(struct glass_panel *panel)
+{
+    const struct ol_pixel_target *target = &panel->display->target;
+    int halo = ol_display_glass_sample_halo(panel->shape_right - panel->shape_left,
+                                            panel->shape_bottom - panel->shape_top,
+                                            panel->radius);
+    int right = panel->x + panel->width + halo;
+    int bottom = panel->y + panel->height + halo;
+    panel->sample_x = panel->x > halo ? panel->x - halo : 0;
+    panel->sample_y = panel->y > halo ? panel->y - halo : 0;
+    if (right > target->w) right = target->w;
+    if (bottom > target->h) bottom = target->h;
+    panel->sample_width = right - panel->sample_x;
+    panel->sample_height = bottom - panel->sample_y;
 }
 
 static int reserve_scratch(struct glass_panel *panel)
 {
     struct ol_display *display = panel->display;
-    int pixels = panel->width * panel->height;
-    int columns = panel->width > panel->height ? panel->width : panel->height;
+    int pixels = panel->sample_width * panel->sample_height;
+    int columns = panel->sample_width > panel->sample_height
+        ? panel->sample_width : panel->sample_height;
 
     if (pixels > display->glass_buf_n) {
         display_free(display, display->glass_buf);
@@ -123,6 +167,7 @@ void ol_display_liquid_glass_cut(struct ol_display *display,
     }
 #endif
 
+    prepare_samples(&panel);
     if (!reserve_scratch(&panel)) {
         /* The former frost-only fallback re-rounded the cropped rectangle:
          * at x=100 on a 128px target it painted 227 pixels outside the lens.

@@ -68,6 +68,10 @@ void ol_display_liquid_glass(struct ol_display *ctx, int x, int y, int w, int h,
 void ol_display_liquid_glass_cut(struct ol_display *ctx, int x, int y, int w, int h, int radius,
                          uint8_t tr, uint8_t tg, uint8_t tb, uint8_t ta,
                          unsigned cut);
+/* Maximum backdrop reach beyond the panel, including blur and refraction.
+ * Compositors with damage tracking must redraw this input region whenever a
+ * panel is affected; drawing only the panel can sample last frame's glass. */
+int ol_display_glass_sample_halo(int w, int h, int radius);
 void ol_display_blit_rgba(struct ol_display *ctx, int dx, int dy, int dw, int dh, const uint8_t *rgba, int sw, int sh);
 /* Native 32-bit color with alpha in the high byte (RGB channels <= bit 16).
  * Used for cursor planes; RGBA resources retain their independent byte order. */

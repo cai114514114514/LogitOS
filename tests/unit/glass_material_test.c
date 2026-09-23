@@ -4,6 +4,7 @@
  * The original fixed tint fails the dark-on-white and light-on-black cases.
  */
 #include "openlogit_display.h"
+#include "glass_internal.h"
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -85,6 +86,74 @@ static struct color sample(struct color background, struct color tint, unsigned 
     fill(pixels, background);
     draw(pixels, tint, alpha, 0, 0);
     return color_at(pixels[64 * WIDTH + 80]);
+}
+
+/* The mask has the same pixels in both scenes. If the edge never responds to
+ * the ring outside it, the renderer sampled its own rectangle rather than the
+ * neighbouring content that a floating material is meant to reveal. The
+ * inner-change control ensures the comparison actually reached glass. */
+static void neighbouring_backdrop(void)
+{
+    uint32_t black_ring[PIXELS], white_ring[PIXELS], darker_body[PIXELS];
+    fill(black_ring, (struct color){0, 0, 0});
+    fill(white_ring, (struct color){255, 255, 255});
+    fill(darker_body, (struct color){0, 0, 0});
+    for (int y = 16; y < 112; y++) {
+        for (int x = 16; x < 144; x++) {
+            black_ring[y * WIDTH + x] = white_ring[y * WIDTH + x] =
+                rgb((struct color){128, 128, 128});
+            darker_body[y * WIDTH + x] = rgb((struct color){64, 64, 64});
+        }
+    }
+    struct color tint = {255, 255, 255};
+    draw(black_ring, tint, 0, 0, 0);
+    draw(white_ring, tint, 0, 0, 0);
+    draw(darker_body, tint, 0, 0, 0);
+
+    int ring_changes = 0, body_changes = 0;
+    for (int y = 16; y < 112; y++) {
+        for (int x = 16; x < 144; x++) {
+            int index = y * WIDTH + x;
+            ring_changes += black_ring[index] != white_ring[index];
+            body_changes += black_ring[index] != darker_body[index];
+        }
+    }
+    printf("neighbouring backdrop: ring=%d body=%d\n", ring_changes, body_changes);
+    check(body_changes > 1000, "control changes glass when its own backdrop changes");
+    check(ring_changes > 0, "glass rim samples the neighbouring backdrop");
+}
+
+static void sample_region_cost(void)
+{
+    uint32_t pixels[PIXELS];
+    fill(pixels, (struct color){100, 120, 140});
+    struct ol_display display = {.allocate = malloc, .release = free};
+    struct ol_pixel_target target = {.px = pixels, .w = WIDTH, .h = HEIGHT};
+    if (ol_display_bind(&display, &target, 16, 8, 0) != OL_OK) exit(2);
+    ol_display_liquid_glass(&display, 72, 56, 16, 16, 8,
+                            250, 250, 255, 80);
+    int scratch = display.glass_buf_n;
+    check(!display.error, "small glass panel can reserve its sample region");
+    check(scratch >= 16 * 16 && scratch < PIXELS / 4,
+          "small glass panel keeps scratch local to its neighbourhood");
+    ol_display_destroy(&display);
+}
+
+static void sample_reach_bound(void)
+{
+    for (int edge = 4; edge <= 22; edge++) {
+        int refract = edge < 18 ? edge : 18;
+        int halo = ol_display_glass_sample_halo(edge * 2 + 4,
+                                                  edge * 2 + 4, edge);
+        glass_build_lut(edge, refract);
+        int displacement = GLASS_REFLECT_OFFSET;
+        for (int channel = 0; channel < 3; channel++)
+            for (int depth = 0; depth <= edge; depth++)
+                if (glass_disp[channel][depth] > displacement)
+                    displacement = glass_disp[channel][depth];
+        check(halo >= GLASS_BLUR_RADIUS + displacement,
+              "damage halo covers every blurred and refracted sample");
+    }
 }
 
 /* These averages concern nearly neutral colors, not a color-space oracle.
@@ -323,6 +392,9 @@ static void reduced_transparency(void)
 
 int main(void)
 {
+    neighbouring_backdrop();
+    sample_region_cost();
+    sample_reach_bound();
     neutral_contrast();
     transparency_and_color();
     endpoints();
