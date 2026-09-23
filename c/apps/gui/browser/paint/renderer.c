@@ -2594,6 +2594,17 @@ int browser_content_width(struct node *root, int viewport_width)
     for (int i = 0; i < layout_count(); i++) {
         const struct item *e = &it[i];
         if (e->hidden || e->w <= 0) continue;
+        /* A hit-only rectangle carries NO ink: layout's box_open_hit() has
+         * emitted one for every non-inked element since 758a261c5 (2026-09-15)
+         * so a transparent box can take a click. Before that an empty box
+         * emitted no item at all -- which is this control's entire premise.
+         * Counting it here turned "the original ink-only range" into "every
+         * display item", the control stopped missing empty boxes, and
+         * test-horizontal-scroll went red on the control rather than on the
+         * code. No background and no border is exactly the hit rectangle. */
+        if (e->type == IT_RECT && !e->has_bg &&
+            !(e->border_w[0] | e->border_w[1] | e->border_w[2] | e->border_w[3]))
+            continue;
         long long right = (long long)e->x + e->w;
         if (e->has_clip && right > (long long)e->clip_x + e->clip_w)
             right = (long long)e->clip_x + e->clip_w;
