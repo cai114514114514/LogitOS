@@ -25,6 +25,8 @@ static uint32_t dir_lookup(struct lro *L, const struct lfs_dinode *dino, const c
 
 ### [medium] [CONFIRMED] logitfs 后端变更成功但 flush 失败时，RAM 与盘静默分叉（delete/mkdir/write 建新/rename 四条路径）
 
+> 2026-09-23 复核与修正：此条审计基线之后，rename 已有独立快照回滚，旧条目的“rename 未修”判断已过时。新测试 `test-fs-abort` 在当前源码上稳定复现其余四种情况（含 overwrite）：v4/v5 共 136 项检查中 35 项失败。现已为 overwrite、create、mkdir、delete 保存位图与受影响 inode 的事务前状态；日志暂存失败后恢复，测试 136/136，原缺陷负控仍能打印同次挂载的旧文件字节错误。`log_commit()` 已开始后的设备 I/O 错误仍有不确定提交点，本次不把它当作“可安全回滚”的同一种失败。
+
 - 位置：`c/fs/logitfs/logitfs.c:1424-1425`（write 建新）、`:1447-1448`（mkdir）、`:1463-1466`（delete）、`:1711-1712`（rename）；对照失败即回滚的范本 `:1634-1644`（setattr）
 
 ```c

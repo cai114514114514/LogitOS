@@ -277,10 +277,10 @@ static int log_add(uint32_t blk, const void *buf)
 static void bfree_discard(void);                /* deferred block frees, below */
 
 static void tx_begin(void)  { tx_count = 0; bfree_discard(); }
-/* Nothing staged ever reached disk -- and the frees this transaction intended
- * are dropped with it, so the in-RAM bitmap goes on agreeing with the untouched
- * on-disk one. (Before frees were deferred, an aborted operation left the two
- * disagreeing about every block the failed truncate had released.) */
+/* Nothing staged ever reached disk, and deferred frees are dropped. The old
+ * claim that this ALONE kept the in-RAM bitmap equal to disk missed new block
+ * allocations and bfree_apply() inside flush_bitmap: callers that changed
+ * inode/bitmap state must also run undo_abort() before returning. */
 static void log_abort(void) { tx_count = 0; bfree_discard(); }
 
 /* ===========================================================================
@@ -623,12 +623,64 @@ static struct dinode *iget(uint32_t ino)
     return (ino < sb.inode_count) ? &inodes[ino] : NULL;
 }
 
-static int ialloc(uint16_t type)
+/* log_abort discards staged blocks, but inode_write and bfree_apply have also
+ * changed the mounted inode table and bitmap. Save only the affected inodes,
+ * plus the bitmap, before changing either. Restoring from the disk here would
+ * turn a local log-space refusal into device I/O and could itself fail. The
+ * bitmap copy costs sb.bitmap_blocks * BS (16 KiB on the standard image), not
+ * the whole inode table; callers hold lfs_lock throughout the transaction. */
+struct tx_undo {
+    uint8_t *bits;
+    uint32_t ino[3];
+    struct dinode saved[3];
+    int count;
+};
+
+static int undo_save(struct tx_undo *u, uint32_t ino)
+{
+    if (ino == NOINO) return 0;
+    for (int i = 0; i < u->count; i++) if (u->ino[i] == ino) return 0;
+    struct dinode *in = iget(ino);
+    if (!in || u->count == 3) return -1;
+    u->ino[u->count] = ino;
+    u->saved[u->count++] = *in;
+    return 0;
+}
+
+static int undo_begin(struct tx_undo *u, uint32_t first, uint32_t second)
+{
+    u->count = 0;
+    size_t bytes = (size_t)sb.bitmap_blocks * BS;
+    u->bits = kmalloc(bytes);
+    if (!u->bits) return -1;
+    memcpy(u->bits, bitmap, bytes);
+    if (undo_save(u, first) || undo_save(u, second)) {
+        kfree(u->bits);
+        return -1;
+    }
+    return 0;
+}
+
+static void undo_finish(struct tx_undo *u) { kfree(u->bits); }
+
+static void undo_abort(struct tx_undo *u)
+{
+    log_abort();
+#ifndef LFS_ABORT_NEGCTL
+    for (int i = 0; i < u->count; i++) *iget(u->ino[i]) = u->saved[i];
+    memcpy(bitmap, u->bits, (size_t)sb.bitmap_blocks * BS);
+    alloc_hint_reset(); /* the old bitmap no longer vouches for the old hint */
+#endif
+    undo_finish(u);
+}
+
+static int ialloc(uint16_t type, struct tx_undo *undo)
 {
     if (sb.version == LFS_ID_VERSION &&
         inodes[sb.root_ino].next_id == UINT64_MAX) return -1;
     for (uint32_t i = 0; i < sb.inode_count; i++)
         if (inodes[i].type == T_FREE) {
+            if (undo_save(undo, i)) return -1;
             memset(&inodes[i], 0, sizeof(struct dinode));
             inodes[i].type = type;
             if (sb.version == LFS_ID_VERSION) {
@@ -890,7 +942,6 @@ static void inode_trunc_ex(struct dinode *in, void (*rel)(uint32_t))
 }
 
 static void inode_trunc(struct dinode *in)     { inode_trunc_ex(in, bfree); }
-static void inode_trunc_now(struct dinode *in) { inode_trunc_ex(in, bfree_now); }
 
 /* logged=1: data blocks are staged into the transaction too (directories --
  * a dirent can point at an inode created in the same op, so the whole thing
@@ -1407,9 +1458,15 @@ static int logitfs_write_locked(const char *path, const void *buf, int size)
     if (ino != NOINO) {                          /* overwrite existing file */
         struct dinode *in = iget(ino);
         if (!in || in->type != T_FILE) return -1;
+        struct tx_undo undo;
+        if (undo_begin(&undo, ino, NOINO)) return -1;
         tx_begin();
-        if (inode_write(in, buf, size, 0) < 0) { log_abort(); return -1; }
-        if (flush_inode(ino) || flush_bitmap()) { log_abort(); return -1; }
+        if (inode_write(in, buf, size, 0) < 0 ||
+            flush_inode(ino) || flush_bitmap()) {
+            undo_abort(&undo);
+            return -1;
+        }
+        undo_finish(&undo);
         return log_commit() ? -1 : size;
     }
     char leaf[NAME_MAX];                          /* else create */
@@ -1417,17 +1474,19 @@ static int logitfs_write_locked(const char *path, const void *buf, int size)
     if (parent == NOINO) return -1;
     struct dinode *pd = iget(parent);
     if (!pd || pd->type != T_DIR) return -1;
-    int ni = ialloc(T_FILE);
-    if (ni < 0) return -1;
+    struct tx_undo undo;
+    if (undo_begin(&undo, parent, sb.root_ino)) return -1;
+    int ni = ialloc(T_FILE, &undo);
+    if (ni < 0) { undo_finish(&undo); return -1; }
     struct dinode *in = iget((uint32_t)ni);
     tx_begin();
-    if (inode_write(in, buf, size, 0) < 0) { log_abort(); in->type = T_FREE; return -1; }
-    /* The inode and its blocks were created inside this transaction, so they go
-     * back immediately (inode_trunc_now); log_abort discards the deferred frees
-     * that dir_add's own failed rewrite may have queued for the DIRECTORY,
-     * whose old blocks are still live. */
-    if (dir_add(parent, leaf, (uint32_t)ni) < 0) { log_abort(); inode_trunc_now(in); in->type = T_FREE; return -1; }
-    if (flush_inode((uint32_t)ni) || flush_inode(parent) || flush_bitmap()) { log_abort(); return -1; }
+    if (inode_write(in, buf, size, 0) < 0 ||
+        dir_add(parent, leaf, (uint32_t)ni) < 0 ||
+        flush_inode((uint32_t)ni) || flush_inode(parent) || flush_bitmap()) {
+        undo_abort(&undo);
+        return -1;
+    }
+    undo_finish(&undo);
     return log_commit() ? -1 : size;
 }
 
@@ -1439,18 +1498,23 @@ static int logitfs_mkdir_locked(const char *path)
     if (parent == NOINO) return -1;
     struct dinode *pd = iget(parent);
     if (!pd || pd->type != T_DIR) return -1;
-    int ni = ialloc(T_DIR);          /* ialloc zeroes the inode (size 0, no blocks) */
-    if (ni < 0) return -1;
-    struct dinode *nd = iget((uint32_t)ni);
+    struct tx_undo undo;
+    if (undo_begin(&undo, parent, sb.root_ino)) return -1;
+    int ni = ialloc(T_DIR, &undo);   /* ialloc zeroes the inode (size 0, no blocks) */
+    if (ni < 0) { undo_finish(&undo); return -1; }
     /* Create an EMPTY directory: "." and ".." are NOT stored on disk -- path
      * resolution (resolve()/proc_resolve) handles . and .. itself, and the Finder
      * draws ".." on its own. Storing them made `ls` list them, made an empty dir
      * look non-empty (couldn't rmdir), and was inconsistent with mkfs-built dirs.
      * The whole op is one transaction: the dirent and the fresh inode commit
-     * together or not at all, so no intermediate flush ordering is needed. */
+    * together or not at all, so no intermediate flush ordering is needed. */
     tx_begin();
-    if (dir_add(parent, leaf, (uint32_t)ni) < 0) { log_abort(); nd->type = T_FREE; return -1; }
-    if (flush_inode((uint32_t)ni) || flush_inode(parent) || flush_bitmap()) { log_abort(); return -1; }
+    if (dir_add(parent, leaf, (uint32_t)ni) < 0 ||
+        flush_inode((uint32_t)ni) || flush_inode(parent) || flush_bitmap()) {
+        undo_abort(&undo);
+        return -1;
+    }
+    undo_finish(&undo);
     return log_commit() ? -1 : 0;
 }
 
@@ -1464,11 +1528,20 @@ static int logitfs_delete_locked(const char *path)
     char leaf[NAME_MAX];
     uint32_t parent = resolve_parent(path, leaf);
     if (parent == NOINO) return -1;
+    struct tx_undo undo;
+    if (undo_begin(&undo, ino, parent)) return -1;
     tx_begin();
-    if (dir_remove(parent, leaf) < 0) { log_abort(); return -1; }
+    if (dir_remove(parent, leaf) < 0) {
+        undo_abort(&undo);
+        return -1;
+    }
     inode_trunc(in);
     in->type = T_FREE;
-    if (flush_inode(ino) || flush_inode(parent) || flush_bitmap()) { log_abort(); return -1; }
+    if (flush_inode(ino) || flush_inode(parent) || flush_bitmap()) {
+        undo_abort(&undo);
+        return -1;
+    }
+    undo_finish(&undo);
     return log_commit() ? -1 : 0;
 }
 
