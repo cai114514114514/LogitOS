@@ -28,7 +28,8 @@
 MOD_KO   := $(BUILD)/edu.ko
 MOD_PACK := $(MOD_KO):/lib/modules/edu.ko
 
-.PHONY: test-modreloc test-modreloc-negctl test-module test-module-negctl
+.PHONY: test-modreloc test-modreloc-negctl test-modreloc-format-negctl \
+        test-module test-module-negctl
 
 # ci-host: these are seconds, no QEMU. The control is a PREREQUISITE of the
 # positive rather than a sibling on the ci-host line, for the reason
@@ -38,7 +39,7 @@ MOD_PACK := $(MOD_KO):/lib/modules/edu.ko
 # exclude it and then invoke it from nowhere, which is the "stranded control"
 # category CLAUDE.md counts 55 of.
 ci-host: test-modreloc
-test-modreloc: test-modreloc-negctl
+test-modreloc: test-modreloc-negctl test-modreloc-format-negctl
 
 # --- the two objects the host gate loads --------------------------------------
 # Built with $(CFLAGS) -- the KERNEL's own flags, unmodified. That is the whole
@@ -77,7 +78,7 @@ $(MOD_KO): $(BUILD)/edu_mod.o
 #      CPU is not a portability bug, it is asking a CPU to decode an
 #      instruction set it does not implement. That block is additionally
 #      guarded by `#if defined(__x86_64__) ...` in the test source.
-# Tests 1-10 and 15-20 (the arithmetic in mod_reloc_apply, the census, and the
+# Tests 1-10 and 15 onward (the arithmetic in mod_reloc_apply, the census, and the
 # malformed-image refusals) touch no address space at all and run and are
 # asserted on every host. `ci-host: test-modreloc` is therefore still green on
 # macOS/arm64 -- narrower coverage, loudly stated, never a silent pass.
@@ -118,6 +119,23 @@ test-modreloc: $(BUILD)/modmod.o $(BUILD)/edu_mod.o tests/unit/modreloc_test.c \
 	    $(HOST_INCDIRS) -o $(BUILD)/modreloc_test \
 	    tests/unit/modreloc_test.c c/kernel/module/modelf.c
 	@$(BUILD)/modreloc_test $(BUILD)/modmod.o $(BUILD)/edu_mod.o
+
+# The old floor-division parser silently discarded a short final RELA or
+# SYMTAB record. This control leaves that one check out of production modelf.c
+# and requires the two malformed-image assertions to fail specifically.
+test-modreloc-format-negctl: $(BUILD)/modmod.o $(BUILD)/edu_mod.o \
+                             tests/unit/modreloc_test.c c/kernel/module/modelf.c
+	@$(CC) -O1 -g -Wall -Wextra -no-pie -fsanitize=undefined \
+	    -fno-sanitize=function -fno-sanitize-recover=undefined \
+	    -DMOD_ELF_NO_RECORD_BOUNDS $(HOST_INCDIRS) \
+	    -o $(BUILD)/modreloc_format_old \
+	    tests/unit/modreloc_test.c c/kernel/module/modelf.c
+	@rc=0; $(BUILD)/modreloc_format_old $(BUILD)/modmod.o $(BUILD)/edu_mod.o \
+	      > $(BUILD)/modreloc_format_old.log 2>&1 || rc=$$?; \
+	  grep '^FAIL:' $(BUILD)/modreloc_format_old.log; \
+	  test $$rc -eq 1 && test "$$(grep -c '^FAIL:' $(BUILD)/modreloc_format_old.log)" -eq 2 && \
+	  grep -q '^FAIL: partial RELA record is refused before allocation$$' $(BUILD)/modreloc_format_old.log && \
+	  grep -q '^FAIL: partial SYMTAB record is refused before allocation$$' $(BUILD)/modreloc_format_old.log
 
 # --- host negative control ----------------------------------------------------
 # -DMODRELOC_NO_RANGE_CHECK is the PLAUSIBLE WRONG LOADER, not a mutilated one:

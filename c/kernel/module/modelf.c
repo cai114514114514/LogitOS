@@ -270,6 +270,17 @@ static int hdrs(const void *img, uint32_t imglen,
         if (sh[i].sh_type == SHT_NOBITS) continue;
         if (sh[i].sh_offset > imglen ||
             sh[i].sh_size > (uint64_t)imglen - sh[i].sh_offset) return MOD_E_FORMAT;
+#ifndef MOD_ELF_NO_RECORD_BOUNDS
+        /* The old load pass used sh_size / sh_entsize and silently ignored a
+         * final short RELA or symbol record. A half-written .ko must fail at
+         * the format check, before mod_elf_size asks the caller for memory.
+         * Do not require this of arbitrary sections: byte streams have no
+         * fixed record width, and SHT_REL is refused by the loader itself. */
+        uint64_t record = sh[i].sh_type == SHT_RELA ? sizeof(struct e64_rela)
+                        : sh[i].sh_type == SHT_SYMTAB ? sizeof(struct e64_sym) : 0;
+        if (record && (sh[i].sh_entsize != record || sh[i].sh_size % record))
+            return MOD_E_FORMAT;
+#endif
     }
 
     *shdr_out = sh; *nsec_out = eh->e_shnum;

@@ -148,6 +148,33 @@ static void census(const uint8_t *img, uint32_t len, struct census *c)
     }
 }
 
+/* Shorten one real table by one byte without moving its data. The image and
+ * section bounds stay valid; only the final ELF record becomes incomplete. */
+static int trim_record(uint8_t *img, uint32_t len, uint32_t want)
+{
+    if (len < 64) return 0;
+    uint64_t shoff;
+    uint16_t shnum, shentsize;
+    memcpy(&shoff, img + 0x28, 8);
+    memcpy(&shentsize, img + 0x3A, 2);
+    memcpy(&shnum, img + 0x3C, 2);
+    if (shentsize < 64 || shoff > len || (uint64_t)shnum * shentsize > len - shoff)
+        return 0;
+    for (uint16_t i = 0; i < shnum; i++) {
+        uint8_t *sh = img + shoff + (uint64_t)i * shentsize;
+        uint32_t type;
+        uint64_t size, entsize;
+        memcpy(&type, sh + 4, 4);
+        memcpy(&size, sh + 0x20, 8);
+        memcpy(&entsize, sh + 0x38, 8);
+        if (type != want || !size || !entsize || size % entsize) continue;
+        size--;
+        memcpy(sh + 0x20, &size, 8);
+        return 1;
+    }
+    return 0;
+}
+
 /* ------------------------------------------------------------ mmap helper --
  * MAP_FIXED_NOREPLACE so a collision is a visible error rather than this test
  * silently unmapping something of its own.
@@ -313,7 +340,7 @@ int main(int argc, char **argv)
                    "not one.\n");
             printf("      tests 11 (mapped-load half) through 14 (17 checks "
                    "total) did not run and are not counted as pass.\n");
-            goto tests_15_20;
+            goto tests_malformed;
         }
     }
     if (need > 0) {
@@ -579,8 +606,8 @@ int main(int argc, char **argv)
         }
     }
 
-tests_15_20:
-    /* ================================= 15..20: malformed images are REFUSED
+ tests_malformed:
+    /* ============================= 15 onward: malformed images are REFUSED
      * The security model says root put the file there, which bounds who can
      * attack the parser and does nothing at all about a half-written file. */
     {
@@ -612,6 +639,16 @@ tests_15_20:
         memcpy(cut, mimg, mlen);
         cut[4] = 1;
         check(mod_elf_size(cut, mlen) == MOD_E_FORMAT, "ELFCLASS32 refused");
+
+        memcpy(cut, mimg, mlen);
+        check(trim_record(cut, mlen, 4), "fixture contains a complete RELA table");
+        check(mod_elf_size(cut, mlen) == MOD_E_FORMAT,
+              "partial RELA record is refused before allocation");
+
+        memcpy(cut, mimg, mlen);
+        check(trim_record(cut, mlen, 2), "fixture contains a complete SYMTAB");
+        check(mod_elf_size(cut, mlen) == MOD_E_FORMAT,
+              "partial SYMTAB record is refused before allocation");
         free(cut);
     }
 
