@@ -6,6 +6,7 @@ only walks that validated image and imports opaque bytes into mkfs.Builder;
 no Cookie, storage, session or identity value is interpreted or logged.
 """
 import os
+import mmap
 from pathlib import Path
 import struct
 import subprocess
@@ -14,12 +15,25 @@ import mkfs
 
 
 class CheckedImage:
-    def __init__(self, path, *, allow_identity=False):
-        self.data = Path(path).read_bytes()
+    def __init__(self, path, *, allow_identity=False, mapped=False):
+        # Only map a private checked snapshot. An mmap of the live disk keeps
+        # it visible to lsof even after the file descriptor closes, and the
+        # disk lifecycle guard correctly refuses to replace an open image.
+        # The snapshot is immutable and short-lived; sparse zero blocks are
+        # faulted only when a preserved file actually reads them.
+        if mapped:
+            with open(path, "rb") as image:
+                self.data = mmap.mmap(image.fileno(), 0, access=mmap.ACCESS_READ)
+        else:
+            self.data = Path(path).read_bytes()
         self.sb = struct.unpack_from("<13I", self.data)
         if self.sb[0] != mkfs.MAGIC or self.sb[2] != mkfs.BS or self.sb[1] not in ((mkfs.VERSION, 5) if allow_identity else (mkfs.VERSION,)):
             raise ValueError("unsupported profile image")
         self.visited = set()
+
+    def close(self):
+        if isinstance(self.data, mmap.mmap):
+            self.data.close()
 
     def inode(self, number):
         if not 0 <= number < self.sb[4]:
@@ -127,32 +141,38 @@ def preserve(builder, image, roots, helper, merge_roots=()):
         result = subprocess.run([str(Path(helper).absolute()), str(Path(image).absolute()), str(copy)])
         if result.returncode:
             raise RuntimeError("filesystem snapshot refused; original disk retained")
-        source = CheckedImage(copy)
-        count = 0
-        for root, merge in [(p, False) for p in roots] + [(p, True) for p in merge_roots]:
-            number = source.resolve(root)
-            if number is not None:
-                count += source.copy_tree(builder, number, root.rstrip("/"), merge)
-        return count
+        source = CheckedImage(copy, mapped=True)
+        try:
+            count = 0
+            for root, merge in [(p, False) for p in roots] + [(p, True) for p in merge_roots]:
+                number = source.resolve(root)
+                if number is not None:
+                    count += source.copy_tree(builder, number, root.rstrip("/"), merge)
+            return count
+        finally:
+            source.close()
 
 
-def atomic_write(path, data, *, used_bytes=None):
+def atomic_write(path, data, *, used_bytes=None, logical_size=None):
     from disk_guard import assert_unused
     path = Path(path).absolute()
     if used_bytes is None:
         used_bytes = len(data)
     if not 0 <= used_bytes <= len(data):
         raise ValueError("written image prefix is out of range")
+    if logical_size is None:
+        logical_size = len(data)
+    if logical_size < len(data):
+        raise ValueError("logical image cannot be shorter than the source buffer")
     fd, tmp = tempfile.mkstemp(prefix="." + path.name + ".", dir=path.parent)
     try:
         with os.fdopen(fd, "wb") as out:
-            # mkfs allocates data blocks from the start of the image. Its
-            # unwritten tail is zero, so a sparse hole has identical guest
-            # bytes without writing hundreds of MiB of zeros on every pack.
-            # Other callers still write their entire opaque payload.
+            # mkfs allocates blocks in order. Its compact buffer ends at the
+            # last used block, and logical_size supplies the zero-filled free
+            # tail. Other callers can still pass a complete opaque image.
             if out.write(memoryview(data)[:used_bytes]) != used_bytes:
                 raise OSError("incomplete disk image write")
-            out.truncate(len(data))
+            out.truncate(logical_size)
             out.flush()
             os.fsync(out.fileno())
         # The shared lock covers cooperative launches. Check again for a

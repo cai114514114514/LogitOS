@@ -31,6 +31,29 @@ for a 33,554,432-byte logical image; the positive mkfs output occupied 180,224
 bytes. Smaller 8 and 16 MiB fixtures are not useful physical-allocation
 oracles on this APFS host: truncation eagerly allocated their holes.
 
+The first sparse change still built a full 512 MiB Python `bytearray` before
+writing its prefix, and the preservation reader loaded a full 512 MiB snapshot
+into `bytes`. The product path now allocates only through its last used block
+and extends the file to the unchanged logical geometry. Only the validated
+private snapshot uses a read-only mapping; mapping a live disk would make the
+image-use guard correctly refuse a subsequent rebuild, so that reader remains
+eager. In fresh Python processes on the same host, an empty builder's
+serialization had peak RSS 558,546,944 bytes before and 23,134,208 bytes with
+the compact path. Reading the same 512 MiB product image had peak RSS
+558,415,872 bytes with the eager reader and 21,790,720 bytes with the private
+mapping. The empty builder is a memory-allocation probe, not a full product
+pack timing or peak-RSS claim for a populated image.
+
+The 32 MiB gate compares the compact prefix with the full dense image and the
+final full-size sparse file byte for byte. Its short-output control fails when
+the writer omits the logical-size extension; its eager-read control fails the
+reader's allocation bound. The existing dense-write control still fails only
+the physical-allocation bound while retaining identical guest bytes.
+`gmake BUILD=build-goal-diskmem test-disk-sparse test-disk-profile
+test-snapshot-sparse test-fs-format test-mk-wired` passed after this change;
+the preservation suite reported 15 checks and exercised the real compact
+packer with indirect and double-indirect files.
+
 The 2026-09-22 report correctly observed zero compiles and zero disk packs on
 an unchanged real build. A later `make -q` check exposed a different defect:
 the always-phony sysroot flag check, plus an ordinary dependency from copied

@@ -389,7 +389,7 @@ class Builder:
                 sys.exit(f"mkfs: name too long ({len(comp.encode())} bytes, "
                          f"limit {NAME_MAX - 1}): {comp} in {dest}")
 
-    def serialize(self):
+    def serialize(self, *, compact=False):
         # 1) materialize directory contents now that all inos are assigned
         for ino in range(self.next_ino):
             if self.itype[ino] == T_DIR:
@@ -410,7 +410,25 @@ class Builder:
         log_start = inode_start + inode_blocks
         data_start = log_start + LOG_BLOCKS
 
-        img = bytearray(TOTAL_BLOCKS * BS)
+        # Most image blocks are free. The product packer only needs the prefix
+        # through the last allocated block; atomic_write extends it to the
+        # full disk geometry as a hole. Keep the default full-size result for
+        # callers that consume serialize() as a complete in-memory image.
+        planned = data_start
+        if compact:
+            for ino in range(self.next_ino):
+                nblk = (len(self.content[ino]) + BS - 1) // BS
+                if nblk > NDIRECT + PPB + PPB * PPB:
+                    sys.exit(f"mkfs: inode {ino} too large for double indirect")
+                planned += nblk
+                if nblk > NDIRECT:
+                    planned += 1  # single-indirect block
+                if nblk > NDIRECT + PPB:
+                    remainder = nblk - NDIRECT - PPB
+                    planned += 1 + (remainder + PPB - 1) // PPB
+            if planned > TOTAL_BLOCKS:
+                sys.exit("mkfs: out of data blocks (image too small)")
+        img = bytearray((planned if compact else TOTAL_BLOCKS) * BS)
         nextb = data_start
 
         def alloc_block():
@@ -489,6 +507,8 @@ class Builder:
                 if ino in self.metadata:
                     img[off + OFF_ATIME:off + OFF_GID + 4] = self.metadata[ino]
 
+        if compact and nextb != planned:
+            raise AssertionError("mkfs: compact block count disagrees with layout")
         return img, nextb
 
 
@@ -539,11 +559,11 @@ def main():
         for spec in args.spec:
             nfiles += add_spec(b, spec)[0]
         kept = preserve(b, out, args.preserve, args.snapshot_helper, args.preserve_merge)
-        img, used = b.serialize()
-        # serialize() places every allocated block before nextb. Extend the
-        # file to its full geometry with a zero hole instead of writing the
-        # unused tail; the bitmap and every logical byte stay unchanged.
-        atomic_write(out, img, used_bytes=used * BS)
+        img, used = b.serialize(compact=True)
+        # The compact buffer covers every allocated block. The remaining disk
+        # is free and reads as zero, so extend it as a hole rather than first
+        # allocating hundreds of MiB of zeros in Python.
+        atomic_write(out, img, logical_size=TOTAL_BLOCKS * BS)
     if args.preserve or args.preserve_merge:
         print(f"mkfs: retained {kept} user-state inode(s)")
     print(f"mkfs: {out} -> LogitFS v4, {TOTAL_BLOCKS} blocks "

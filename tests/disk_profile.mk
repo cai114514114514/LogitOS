@@ -33,12 +33,20 @@ ci-host: test-snapshot-sparse
 # The dense writer is the control: it produces the same logical image but
 # consumes the zero tail on the host. Keep it a prerequisite so the physical
 # allocation claim cannot turn into a test that only reads image contents.
-.PHONY: test-disk-sparse test-disk-sparse-negctl
+.PHONY: test-disk-sparse test-disk-sparse-negctl test-disk-compact-negctl test-disk-reader-negctl
 test-disk-sparse-negctl:
 	@mkdir -p $(BUILD)
 	@rc=0; python3 tests/unit/disk_sparse_test.py --dense-control > $(BUILD)/disk-sparse-negctl.log 2>&1 || rc=$$?; \
 	 cat $(BUILD)/disk-sparse-negctl.log; test $$rc -eq 1 && grep -q '^FAIL: sparse disk still allocated the zero tail' $(BUILD)/disk-sparse-negctl.log
-test-disk-sparse: test-disk-sparse-negctl
+test-disk-compact-negctl:
+	@mkdir -p $(BUILD)
+	@rc=0; python3 tests/unit/disk_sparse_test.py --short-control > $(BUILD)/disk-compact-negctl.log 2>&1 || rc=$$?; \
+	 cat $(BUILD)/disk-compact-negctl.log; test $$rc -eq 1 && grep -q '^FAIL: compact image lost guest-visible free blocks' $(BUILD)/disk-compact-negctl.log
+test-disk-reader-negctl:
+	@mkdir -p $(BUILD)
+	@rc=0; python3 tests/unit/disk_sparse_test.py --eager-control > $(BUILD)/disk-reader-negctl.log 2>&1 || rc=$$?; \
+	 cat $(BUILD)/disk-reader-negctl.log; test $$rc -eq 1 && grep -q '^FAIL: profile reader eagerly allocated the disk' $(BUILD)/disk-reader-negctl.log
+test-disk-sparse: test-disk-sparse-negctl test-disk-compact-negctl test-disk-reader-negctl
 	@python3 tests/unit/disk_sparse_test.py
 ci-host: test-disk-sparse
 

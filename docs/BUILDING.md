@@ -95,3 +95,10 @@ new image is accepted. Run `make test-disk-sparse test-snapshot-sparse
 test-disk-profile test-fs-format` to check byte identity, disk allocation,
 preserved state and the on-disk format. See the
 [measurement](reports/build-speed-2026-09-23.md) for the timing boundary.
+
+The normal packer also serializes only allocated blocks in memory, then extends
+the output file to its 512 MiB logical size. Its preservation reader maps only
+the validated private snapshot; readers of a live disk still use an ordinary
+copy so the lifecycle guard can detect and reject an open image. The sparse
+gate checks the compact buffer, full logical output and bounded allocation,
+including failing controls for truncated output and eager snapshot loading.
