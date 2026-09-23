@@ -52,6 +52,7 @@
 # binaries under a common argv[0] with `exec -a`; see its own recipe below.
 
 .PHONY: test-libc-host test-libc2 test-libc-expand-host test-libc-expand-control \
+        test-libc-argz-bounds test-libc-argz-bounds-control \
         $(addprefix test-libc-,$(LIBC_DIFFS))
 
 # The root rule owns the recipe; this fragment adds the expansion half's
@@ -129,6 +130,12 @@ LIBC_REF_XCF_uio := -DLIBC_COMMON_TEST
 LIBC_IMPL_uio += $(BUILD)/libchost/uio_host.o
 LIBC_REF_IMPL_uio := $(BUILD)/libchost/uio_host.o
 LIBC_DEPS_uio := tests/unit/libc_uio_common.h tests/unit/libc_uio_host.h $(BUILD)/libchost/uio_host.o
+
+# Darwin's fmemopen rejects a zero-sized buffer.  The glibc corpus dereferences
+# the resulting NULL stream, so both sides must omit those cases here.  Keep
+# the complete corpus on glibc, where zero-sized streams are a real contract.
+LIBC_XCF_memstream := -DLIBC_COMMON_TEST
+LIBC_REF_XCF_memstream := -DLIBC_COMMON_TEST
 
 # Setup uses the host's actual open flags and errno ABI. Compile it separately
 # with host headers; compiling it with LIBC_HOST_INC would recreate the ABI
@@ -268,11 +275,35 @@ test-libc-expand-host: test-libc-expand-control
 	    -o $(BUILD)/libchost/libc_expand_host $(LIBC_EXPAND_HOST_SRC)
 	@$(BUILD)/libchost/libc_expand_host
 
+# A malformed final argz element is still confined by argz_len.  Run this
+# under ASan because an unbounded string search can produce the right return
+# value while silently reading beyond the caller's allocation.
+test-libc-argz-bounds-control:
+	@mkdir -p $(BUILD)/libchost
+	@$(CC) -std=c11 -O1 -g -w -fsanitize=address,undefined \
+	    $(LIBC_HOST_INC) -DLIBC_ARGZ_UNBOUNDED_CONTROL \
+	    -o $(BUILD)/libchost/argz_bounds_control \
+	    tests/unit/libc_argz_bounds_test.c c/apps/libc/src/argz.c
+	@$(BUILD)/libchost/argz_bounds_control > $(BUILD)/libchost/argz_bounds_control.out 2>&1; rc=$$?; \
+	  if [ $$rc -eq 0 ] || ! grep -q 'AddressSanitizer: heap-buffer-overflow' \
+	       $(BUILD)/libchost/argz_bounds_control.out; then \
+	    echo 'CONTROL FAILED: unbounded argz scan escaped ASan'; \
+	    cat $(BUILD)/libchost/argz_bounds_control.out; exit 1; \
+	  fi; \
+	  echo 'control ok: ASan rejected unbounded argz scan'
+
+test-libc-argz-bounds: test-libc-argz-bounds-control
+	@mkdir -p $(BUILD)/libchost
+	@$(CC) -std=c11 -O1 -g -w -fsanitize=address,undefined \
+	    $(LIBC_HOST_INC) -o $(BUILD)/libchost/argz_bounds \
+	    tests/unit/libc_argz_bounds_test.c c/apps/libc/src/argz.c
+	@$(BUILD)/libchost/argz_bounds
+
 # Make the aggregate name reach the expansion even though an older unrelated
 # inet differential currently reddens earlier on Darwin (reported separately).
 # Correction (2026-09-22): inet now separates Darwin differences from the
 # strict contract and tests IPv6 rejection with controls; keep expansion wired.
-test-libc-host: test-libc-expand-host
+test-libc-host: test-libc-expand-host test-libc-argz-bounds
 
 # --- on-target: the syscall-backed additions (glob, pwd/grp, uname, mman,
 # sched, getrlimit, environ) that CANNOT be host-diffed because they talk to

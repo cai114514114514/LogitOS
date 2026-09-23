@@ -188,6 +188,31 @@ char *argz_next(const char *argz, size_t argz_len, const char *entry)
     return (char *)entry + n + 1;
 }
 
+/* The final argz entry may be unterminated: count/extract already tolerate
+ * that, and argz_len is still its boundary.  strstr() crosses that boundary
+ * while looking for a miss.  Search only the remaining bytes of this entry;
+ * memchr avoids comparing the full needle at every ordinary non-match. */
+static const char *find_entry(const char *p, const char *end,
+                              const char *needle, size_t len)
+{
+#ifdef LIBC_ARGZ_UNBOUNDED_CONTROL
+    /* The host control restores the old unbounded search and requires ASan
+     * to catch it before the bounded positive gate may pass. */
+    (void)end;
+    (void)len;
+    return strstr(p, needle);
+#else
+    while ((size_t)(end - p) >= len) {
+        size_t starts = (size_t)(end - p) - len + 1;
+        const char *hit = memchr(p, (unsigned char)needle[0], starts);
+        if (!hit) return NULL;
+        if (memcmp(hit, needle, len) == 0) return hit;
+        p = hit + 1;
+    }
+    return NULL;
+#endif
+}
+
 error_t argz_replace(char **argz, size_t *argz_len, const char *str,
                      const char *with, unsigned int *replace_count)
 {
@@ -199,9 +224,9 @@ error_t argz_replace(char **argz, size_t *argz_len, const char *str,
     while (at < *argz_len) {
         size_t el = strnlen(*argz + at, *argz_len - at);
         const char *p = *argz + at, *end = p + el;
-        while (p + sl <= end) {
-            const char *hit = strstr(p, str);
-            if (!hit || hit + sl > end) break;
+        while ((size_t)(end - p) >= sl) {
+            const char *hit = find_entry(p, end, str, sl);
+            if (!hit) break;
             hits++;
             if (wl >= sl) {
                 if (wl - sl > (size_t)-1 - out_len) return ENOMEM;
@@ -221,8 +246,8 @@ error_t argz_replace(char **argz, size_t *argz_len, const char *str,
         size_t el = strnlen(*argz + src, *argz_len - src);
         const char *p = *argz + src, *end = p + el;
         while (p < end) {
-            const char *hit = strstr(p, str);
-            if (!hit || hit + sl > end) {
+            const char *hit = find_entry(p, end, str, sl);
+            if (!hit) {
                 size_t n = (size_t)(end - p);
                 memcpy(out + dst, p, n); dst += n; p = end;
             } else {

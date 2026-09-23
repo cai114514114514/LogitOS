@@ -183,7 +183,9 @@ int main(void)
      * a later flush) up to, then past, an exact-capacity fill. Content is
      * checked only where there is still room for the terminator -- see the
      * file-top comment for why the exact-fill call itself (pos 3 -> 4 ==
-     * capacity) is checked by return value and ftell() only, not content. */
+     * capacity) is checked by return value and ftell() only, not content.
+     * Darwin differs at the exact-fill and overflow return boundary. */
+#ifndef LIBC_COMMON_TEST
     {
         char buf[4]; memset(buf, 'Z', sizeof buf);
         FILE *f = fmemopen(buf, sizeof buf, "w");
@@ -204,6 +206,8 @@ int main(void)
         chk_int(ftell(f));                  /* still 4: an overflow does not move the position */
         fclose(f);
     }
+
+#endif
 
     /* ==== SCENARIO 9: "r" mode -- read stops at `size`, not at an embedded
      * NUL, and the buffer is NOT NUL-terminated for the caller ==== */
@@ -232,7 +236,9 @@ int main(void)
     }
 
     /* ==== SCENARIO 11: writing to a read-only ("r") stream fails; reading
-     * from a write-only ("w") stream fails. Both set ferror, not feof. ==== */
+     * from a write-only ("w") stream fails. Both set ferror, not feof.
+     * Darwin buffers the first bad write and reports success here. ==== */
+#ifndef LIBC_COMMON_TEST
     {
         char buf[4] = { 'a', 'b', 'c', 'd' };
         FILE *f = fmemopen(buf, sizeof buf, "r");
@@ -256,6 +262,8 @@ int main(void)
         fclose(f);
     }
 
+#endif
+
     /* ==== SCENARIO 12: buf == NULL -- fmemopen allocates and OWNS it, and
      * the allocation is zero-initialised (matters for "a"/"a+"'s NUL scan) ==== */
     {
@@ -276,7 +284,9 @@ int main(void)
     }
 
     /* ==== SCENARIO 13: size == 0 (legal since glibc 2.22: an already-EOF
-     * stream, not an error) ==== */
+     * stream, not an error). Darwin returns NULL here; the common host diff
+     * omits this glibc-only contract rather than dereference a NULL FILE. ==== */
+#ifndef LIBC_COMMON_TEST
     {
         char buf[1];
         FILE *f = fmemopen(buf, 0, "r");
@@ -301,6 +311,8 @@ int main(void)
         chk_int(errno == ENOSPC);
         fclose(f);
     }
+
+#endif
 
     /* ==== SCENARIO 14: fseek/ftell edge cases ==== */
     {
@@ -394,7 +406,8 @@ int main(void)
 
     /* ==== SCENARIO 18: open_memstream -- shrink via seek-back-and-write,
      * checked only at its final (post-fclose) state (see the file-top
-     * comment for why not sooner) ==== */
+     * comment for why not sooner). Darwin retains trailing bytes even then. ==== */
+#ifndef LIBC_COMMON_TEST
     {
         char *bp; size_t sz;
         FILE *f = open_memstream(&bp, &sz);
@@ -408,6 +421,8 @@ int main(void)
         chk_buf(bp, sz + 1);                /* "HI\0" */
         free(bp);
     }
+
+#endif
 
     /* ==== SCENARIO 19: open_memstream -- multiple small writes accumulate
      * across an internal buffer boundary-sized amount of data ==== */
@@ -512,7 +527,9 @@ int main(void)
     }
 
     /* ==== SCENARIO 24: plain "rb" (no '+') still write-protected -- 'b'
-     * must not be mistaken for anything that grants F_WRITE ==== */
+     * must not be mistaken for anything that grants F_WRITE.  Darwin buffers
+     * this invalid write like the "r" case in scenario 11. ==== */
+#ifndef LIBC_COMMON_TEST
     {
         char buf[4] = { 'a', 'b', 'c', 'd' };
         FILE *f = fmemopen(buf, sizeof buf, "rb");
@@ -523,9 +540,12 @@ int main(void)
         fclose(f);
     }
 
+#endif
+
     /* ==== SCENARIO 25: buf==NULL AND size==0 together (the two "relax the
      * rules" cases stacked) -- capacity is still 0 even though a 1-byte
-     * scratch allocation backs it internally ==== */
+     * scratch allocation backs it internally. Darwin also rejects these. ==== */
+#ifndef LIBC_COMMON_TEST
     {
         FILE *f = fmemopen(NULL, 0, "r");
         chk_int(f != NULL);
@@ -546,10 +566,13 @@ int main(void)
         fclose(f);
     }
 
+#endif
+
     /* ==== SCENARIO 26: "r+" mid-buffer overwrite does not shrink mmax --
      * unlike "w+", mmax for r/r+ starts at the FULL size, not 0, so writing
      * over only the first two bytes must not truncate what a subsequent read
-     * sees ==== */
+     * sees. Darwin truncates at the first NUL after the overwrite. ==== */
+#ifndef LIBC_COMMON_TEST
     {
         char buf[6] = { 'a', 'b', 'c', 'd', 'e', 'f' };
         FILE *f = fmemopen(buf, sizeof buf, "r+");
@@ -562,6 +585,8 @@ int main(void)
         chk_buf(rb, sizeof rb);             /* "XYcdef" + 2x 'Q' padding */
         fclose(f);
     }
+
+#endif
 
     /* ==== SCENARIO 27: BUFFERED (default _IOFBF, no setbuf) write that
      * exactly fills capacity in ONE eventual flush -- scenario 8 above only
@@ -591,7 +616,9 @@ int main(void)
      * question a diff can answer that code review cannot: does glibc's
      * fwrite() report a SHORT item count (reflecting the 4 bytes that did
      * land) or 0 (all-or-nothing, this library's choice per its own
-     * documented all-or-nothing fput_raw()/fwrite() contract)? ==== */
+     * documented all-or-nothing fput_raw()/fwrite() contract)? Darwin reports
+     * a different fwrite/fflush split at this boundary. ==== */
+#ifndef LIBC_COMMON_TEST
     {
         char buf[4]; memset(buf, 'Z', sizeof buf);
         FILE *f = fmemopen(buf, sizeof buf, "w");
@@ -607,6 +634,8 @@ int main(void)
         chk_int(ferror(f));
         fclose(f);
     }
+
+#endif
 
     /* ==== SCENARIO 29: fseek() boundary arithmetic -- negative SEEK_CUR
      * past the start fails and leaves the position untouched; SEEK_END with
