@@ -183,7 +183,15 @@ static int lr_size_locked(struct filesystem *f, const char *path)
     struct lro *L = self(f);
     struct lfs_dinode ino;
     if (path_ino(L, path, &ino) == LFSRO_NOINO) return -1;
+#ifdef LRO_SIZE_NEGCTL
     return ino.type == LFS_T_FILE ? (int)ino.size : -1;
+#else
+    /* The disk field is uint32, but the VFS size ABI is signed int. A cast of
+     * 0x80000000 reports a plausible negative error instead of a size; match
+     * the writable LogitFS reader by refusing values it cannot represent. */
+    return ino.type == LFS_T_FILE && ino.size <= (uint32_t)INT32_MAX
+             ? (int)ino.size : -1;
+#endif
 }
 
 /* `max` bytes from byte `off`; short at end of file, 0 at or past it.
@@ -220,44 +228,54 @@ static int lr_read_locked(struct filesystem *f, const char *path, void *buf, int
     return lr_pread_locked(f, path, buf, max, 0);
 }
 
+/* Count or fetch the `wanted`th live entry (-1 means count). Keep the current
+ * directory block in dblk until the block index changes. A 32-entry directory
+ * previously issued 33 simulated device reads for either operation: one inode
+ * plus 32 reads of the SAME 4 KiB block. It now issues two. Caching this block
+ * only within one locked scan avoids adding a second cache with stale contents. */
+static int dir_scan(struct lro *L, const struct lfs_dinode *ino,
+                    int wanted, struct lfs_dirent *out)
+{
+    const uint32_t per_block = LFS_BS / LFS_DIRENT_SZ;
+    uint64_t cap = (uint64_t)L->sb.total_blocks * LFS_BS;
+    uint64_t size = ino->size > cap ? cap : ino->size;
+    uint32_t nent = (uint32_t)(size / LFS_DIRENT_SZ);
+    uint32_t loaded = UINT32_MAX;
+    int live = 0;
+    for (uint32_t i = 0; i < nent; i++) {
+        uint32_t block = i / per_block;
+#ifdef LRO_SCAN_NEGCTL
+        loaded = UINT32_MAX;  /* the former one-device-read-per-entry path */
+#endif
+        if (block != loaded) {
+            uint32_t phys = bmap(L, ino, block);
+            if (!phys || rd(L, phys, L->dblk) < 0) break;
+            loaded = block;
+        }
+        struct lfs_dirent *d =
+            (struct lfs_dirent *)(L->dblk + (i % per_block) * LFS_DIRENT_SZ);
+        if (!d->name[0]) continue;
+        if (wanted >= 0 && live == wanted) { *out = *d; return 0; }
+        live++;
+    }
+    return wanted < 0 ? live : -1;
+}
+
 static int lr_count_locked(struct filesystem *f, const char *dir)
 {
     struct lro *L = self(f);
     struct lfs_dinode ino;
     if (path_ino(L, dir, &ino) == LFSRO_NOINO || ino.type != LFS_T_DIR) return -1;
-    int n = 0;
-    uint64_t cap = (uint64_t)L->sb.total_blocks * LFS_BS;
-    uint64_t size = ino.size > cap ? cap : ino.size;
-    uint32_t nent = (uint32_t)(size / LFS_DIRENT_SZ);
-    for (uint32_t i = 0; i < nent; i++) {
-        uint32_t phys = bmap(L, &ino, i / (LFS_BS / LFS_DIRENT_SZ));
-        if (!phys || rd(L, phys, L->dblk) < 0) break;
-        struct lfs_dirent *de =
-            (struct lfs_dirent *)(L->dblk + (i % (LFS_BS / LFS_DIRENT_SZ)) * LFS_DIRENT_SZ);
-        if (de->name[0]) n++;
-    }
-    return n;
+    return dir_scan(L, &ino, -1, NULL);
 }
 
-/* Fetch entry `idx` of `dir` into `de`. Shared by ent_name/size/is_dir so the
- * three cannot disagree about what the n'th entry is. */
+/* Shared by ent_name/size/is_dir so the three agree on live-entry indexing. */
 static int nth_ent(struct lro *L, const char *dir, int idx, struct lfs_dirent *de)
 {
     struct lfs_dinode ino;
-    if (path_ino(L, dir, &ino) == LFSRO_NOINO || ino.type != LFS_T_DIR) return -1;
-    int n = 0;
-    uint64_t cap = (uint64_t)L->sb.total_blocks * LFS_BS;
-    uint64_t size = ino.size > cap ? cap : ino.size;
-    uint32_t nent = (uint32_t)(size / LFS_DIRENT_SZ);
-    for (uint32_t i = 0; i < nent; i++) {
-        uint32_t phys = bmap(L, &ino, i / (LFS_BS / LFS_DIRENT_SZ));
-        if (!phys || rd(L, phys, L->dblk) < 0) break;
-        struct lfs_dirent *d =
-            (struct lfs_dirent *)(L->dblk + (i % (LFS_BS / LFS_DIRENT_SZ)) * LFS_DIRENT_SZ);
-        if (!d->name[0]) continue;
-        if (n++ == idx) { *de = *d; return 0; }
-    }
-    return -1;
+    if (idx < 0 || path_ino(L, dir, &ino) == LFSRO_NOINO || ino.type != LFS_T_DIR)
+        return -1;
+    return dir_scan(L, &ino, idx, de);
 }
 
 static const char *lr_ent_name_locked(struct filesystem *f, const char *dir, int i)
@@ -277,7 +295,14 @@ static int lr_ent_size_locked(struct filesystem *f, const char *dir, int i)
     struct lfs_dirent de; struct lfs_dinode ino;
     if (nth_ent(L, dir, i, &de) < 0) return 0;
     if (read_inode(L, de.ino, &ino) < 0) return 0;
+#ifdef LRO_SIZE_NEGCTL
     return (int)ino.size;
+#else
+    /* Enumeration uses zero for an unavailable size, as logitfs_ent_size does.
+     * Returning a wrapped negative value makes a valid entry look like an
+     * error to callers that only have this signed-int interface. */
+    return ino.size <= (uint32_t)INT32_MAX ? (int)ino.size : 0;
+#endif
 }
 
 static int lr_ent_is_dir_locked(struct filesystem *f, const char *dir, int i)

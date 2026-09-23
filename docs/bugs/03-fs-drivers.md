@@ -9,6 +9,8 @@
 
 ### [medium] [CONFIRMED] lfsro 的目录遍历完全没有 size 上界，伪造/损坏镜像可让挂载锁内的设备扫描达百万次命令级
 
+> 2026-09-23 复核：这里的无界遍历已在此前修复；当前 `lfsro.c` 限制目录 size，空洞或设备读取失败即停止。此次又把 count/第 n 项扫描中同一目录块的重复读取合并：32 个条目、1 个目录块的设备模拟器实测，两条操作均由 33 次读取降为 2 次；`test-lfsro-scan-negctl` 恢复旧读取路径会重新报 33 次。
+
 - 位置：`c/fs/logitfs/lfsro.c:100-115`（`dir_lookup`）、`c/fs/logitfs/lfsro.c:147-165`（`lr_mount_locked` 的校验范围）、对照 `c/fs/logitfs/logitfs.c:619`（`size_ok`）
 
 ```c
@@ -59,6 +61,8 @@ static uint32_t dir_lookup(struct lro *L, const struct lfs_dinode *dino, const c
 - 修复建议：`resolve_parent` 里 `if (s > MAX_PATH - 1) return NOINO;`——与叶子超长的既有处理对齐；或把 `dirpath` 提到与 VFS 路径同长。
 
 ### [low] [CONFIRMED] lfsro 的 size 接口把 ≥2 GiB 的 uint32 size 截断成负 int（logitfs 已修的同类，lfsro 漏了）
+
+> 2026-09-23 修正：`lr_size_locked` 对不可表示的大小返回 -1，`lr_ent_size_locked` 返回 0，和可写 LogitFS 的接口约定一致。`test-lfsro-size-negctl` 恢复旧转换后明确报出两个失败；正常测试 13 项通过。
 
 - 位置：`c/fs/logitfs/lfsro.c:171-177`（`lr_size_locked`）、`:260-267`（`lr_ent_size_locked`）
 
@@ -188,6 +192,7 @@ static long num(const char *s)
 - `ent_name` 返回 `namebuf` 内部指针、锁释放后由调用方读取（logitfs.c 并发块 hazard 1、lfsro.c 同型、vfs.h `const char *(*ent_name)` 的 ABI 问题）——文件内已完整论证，修复在 VFS ABI（`vfs_ent_name_copy` 已存在）。
 - LogitFS lazytime：atime 只写 RAM、崩溃即失——`logitfs.c` 时间戳注释明确为设计取舍（Linux `lazytime` 同型）。
 - BUG_REVIEW 2026-09-09 的 B01（kdiag 写先于权限检查）、B02（目录 search 权限读 vmeta 而非后端）、B04（编辑器把读取失败当空文件）、B07（ramfs 改名不迁移子项）、B13（vfs_delete 元数据先行不可回滚）——本轮复核仍在，均为已报告项。
+- 2026-09-23 修正 B01：`vfs_write` 现在先用 kdiag 的 size 接口识别合成节点并核对写权限，再执行命令。直接 `SYS_WRITE_FILE` 可到达这一路径；此前主机复现实测返回 `EACCES` 时命令提供者仍调用一次。`test-vfs-synthetic-negctl` 恢复旧顺序后重新报错。
 - ramfs arena 的 bump 分配器不回收改写文件的旧空间、容量固定——`ramfs.c` 文件头明示的设计取舍（“这就是它是 /tmp 不是 /home”）。
 - procfs size() 与首读不共享快照是刻意的（negative control `PROCFS_SNAPSHOT_AT_OPEN`）；`/proc` 大文件截断带显式 marker——文件内已文档化。
 - e1000 TX 依赖“调用方必持 net_lock”的隐式约定与 TX 自旋 100 万次的上限——e1000.c:538-539 注释与 CODE_AUDIT 驱动节均记录。

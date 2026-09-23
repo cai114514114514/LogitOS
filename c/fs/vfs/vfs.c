@@ -933,13 +933,23 @@ int vfs_write(const char *path, const void *buf, int size)
 
     struct vcred c; cred_now(&c);
 
-    /* Writing to a synthetic node is a command, not a file update; the write
-     * permission on the node is what gates it. */
+    /* Writing to a synthetic node is a command: /dev/ktrigger can even panic.
+     * Classify with its size hook, then check the mode BEFORE
+     * dispatch. The former order returned EACCES after the command had run,
+     * which made a refusal look effective while changing kernel state. */
+#ifdef VFS_SYN_WRITE_EARLY_NEGCTL
     int n = k_write(abs, buf, size);
     if (n != SYN_NOT_MINE) {
         if ((rc = check_file(abs, &c, MAY_WRITE)) < 0) return rc;
         return n;
     }
+#else
+    if (k_size(abs) != SYN_NOT_MINE) {
+        if ((rc = check_file(abs, &c, MAY_WRITE)) < 0) return rc;
+        int n = k_write(abs, buf, size);
+        return n == SYN_NOT_MINE ? VFS_EACCES : n;
+    }
+#endif
     if (vfsctl_size(abs) != SYN_NOT_MINE) {
         if ((rc = check_file(abs, &c, MAY_WRITE)) < 0) return rc;
         return vfsctl_write(abs, buf, size);

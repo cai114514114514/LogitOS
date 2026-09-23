@@ -35,10 +35,19 @@ void vfs_cred_current(struct vcred *c) { *c = g_cred; }
 static void as_root(void)            { g_cred.uid = 0; g_cred.gid = 0; }
 static void as_user(unsigned u, unsigned g) { g_cred.uid = u; g_cred.gid = g; }
 
-/* kdiag and vfsctl: own nothing here. KDIAG_NOT_MINE is -2. */
-int kdiag_size(const char *p) { (void)p; return -2; }
+/* The command node models /dev/ktrigger: a denied write must never reach its
+ * provider, even if the provider eventually returns an error. */
+static int synthetic_commands;
+static int is_command(const char *p) { return strcmp(p, "/dev/ktrigger") == 0; }
+int kdiag_size(const char *p) { return is_command(p) ? 0 : -2; }
 int kdiag_read(const char *p, void *b, int m) { (void)p; (void)b; (void)m; return -2; }
-int kdiag_write(const char *p, const void *b, int n) { (void)p; (void)b; (void)n; return -2; }
+int kdiag_write(const char *p, const void *b, int n)
+{
+    (void)b;
+    if (!is_command(p)) return -2;
+    synthetic_commands++;
+    return n;
+}
 int kdiag_dir_count(const char *d) { (void)d; return -2; }
 const char *kdiag_dir_name(const char *d, int i) { (void)d; (void)i; return 0; }
 int kdiag_dir_size(const char *d, int i) { (void)d; (void)i; return -2; }
@@ -208,6 +217,25 @@ static void t_permissions(void)
     eqi(vfs_chown("/grouped", 1000, 1000), 0, "root can give it away");
     as_user(1000, 1000);
     eqi(vfs_chmod("/grouped", 0777), 0, "and then the new owner can chmod it");
+}
+
+static void t_synthetic_permission(void)
+{
+    printf("synthetic command permission\n");
+    fixture();
+    synthetic_commands = 0;
+
+    as_user(1000, 1000);
+    eqi(vfs_write("/dev/ktrigger", "warn", 4), VFS_EACCES,
+        "a user is refused a root-owned synthetic command");
+    eqi(synthetic_commands, 0,
+        "a refused synthetic command never reaches its provider");
+
+    as_root();
+    eqi(vfs_write("/dev/ktrigger", "warn", 4), 4,
+        "root can issue the synthetic command");
+    eqi(synthetic_commands, 1,
+        "the permitted command reaches its provider exactly once");
 }
 
 /* --------------------------------------------------------------------------
@@ -420,6 +448,7 @@ int main(void)
 {
     t_mount_table();
     t_permissions();
+    t_synthetic_permission();
     t_hard_links();
     t_sym_links();
     t_symlink_permission();

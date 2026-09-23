@@ -5854,6 +5854,8 @@ include tests/build_config.mk
 include tests/build_jobs.mk
 include tests/build_dir.mk
 -include tests/vfs_rename_meta.mk
+-include tests/vfs_synthetic_perm.mk
+-include tests/lfsro_host.mk
 -include tests/fs_rename_space.mk
 -include tests/dns_class.mk
 -include tests/dns_ttl.mk
