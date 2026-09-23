@@ -33,6 +33,15 @@ int main(void)
     uint8_t s0[32], s1[32], out[32];
     uint64_t c0, c1;
 
+#if !defined(__x86_64__)
+    /* The DRBG structure remains testable on arm64, but the host build uses
+     * timer_ticks in place of RDTSC and never executes RDRAND/RDSEED. A green
+     * structural test must not be mistaken for measured hardware entropy. */
+    CHECK(!rng_strong(), "non-x86 host does not advertise hardware entropy");
+    printf("SKIP RNG x86 entropy instructions on this host; run make test-entropy "
+           "for the x86 guest syscall path\n");
+#endif
+
     /* 1. consecutive blocks differ, and an output never equals the state
      *    that was in place when it was generated */
     rng_test_state(s0, &c0);

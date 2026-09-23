@@ -8,7 +8,13 @@
 #include "kprintf.h"
 #include "usercopy.h"
 
+#ifndef memcpy
 void *memcpy(void *, const void *, size_t);
+#endif
+
+#if defined(RNG_NO_AUTO_RESEED) && !defined(RNG_HOST_TEST)
+#error RNG_NO_AUTO_RESEED is only for the host negative control
+#endif
 
 /* SHA-256 Hash_DRBG-style kernel PRNG with state/output separation.
  *
@@ -40,9 +46,18 @@ static spinlock_t rng_lock = SPINLOCK_INIT;
 
 static uint64_t rdtsc(void)
 {
+#if defined(__x86_64__)
     uint32_t lo, hi;
     __asm__ volatile ("rdtsc" : "=a"(lo), "=d"(hi));
     return ((uint64_t)hi << 32) | lo;
+#elif defined(RNG_HOST_TEST)
+    /* The structural host gate needs changing seed material, not an x86
+     * instruction. timer_ticks is deterministic there; no entropy claim is
+     * inferred from that test. The shipped kernel always takes the x86 arm. */
+    return timer_ticks();
+#else
+#error rng.c requires x86-64 outside its structural host test
+#endif
 }
 
 /* RDRAND/RDSEED availability now comes from the shared CPUID decode in
@@ -65,22 +80,36 @@ int rng_strong(void)
 
 static int rdrand64(uint64_t *out)
 {
+#if defined(__x86_64__)
     uint8_t ok;
     uint64_t v;
     __asm__ volatile ("rdrand %0; setc %1" : "=r"(v), "=qm"(ok));
     if (!ok) return 0;
     *out = v;
     return 1;
+#elif defined(RNG_HOST_TEST)
+    (void)out;
+    return 0;                   /* CPUID reports no hardware source on arm64. */
+#else
+#error rng.c requires x86-64 outside its structural host test
+#endif
 }
 
 static int rdseed64(uint64_t *out)
 {
+#if defined(__x86_64__)
     uint8_t ok;
     uint64_t v;
     __asm__ volatile ("rdseed %0; setc %1" : "=r"(v), "=qm"(ok));
     if (!ok) return 0;
     *out = v;
     return 1;
+#elif defined(RNG_HOST_TEST)
+    (void)out;
+    return 0;
+#else
+#error rng.c requires x86-64 outside its structural host test
+#endif
 }
 
 /* out = H(state || tag || data). `out` may alias rng_state: the state is
@@ -151,8 +180,10 @@ void kernel_random_bytes(uint8_t *out, int len)
     if (!rng_seeded) rng_seed();
 
     /* periodic reseed: bound how much output one epoch of entropy covers */
+#ifndef RNG_NO_AUTO_RESEED
     if (rng_requests >= RNG_RESEED_REQUESTS || rng_bytes >= RNG_RESEED_BYTES)
         rng_reseed();
+#endif
     rng_requests++;
     rng_bytes += (uint64_t)len;
 

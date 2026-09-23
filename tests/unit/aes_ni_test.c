@@ -416,6 +416,17 @@ int main(void)
            cpu_has(CPU_AES), cpu_has(CPU_PCLMULQDQ), cpu_has(CPU_AVX),
            cpu_has(CPU_AVX2), cpu_has(CPU_XSAVE));
 
+#ifdef AESNI_CONTROL_NO_ACCEL
+    /* With no accelerated backend to suppress, this build cannot test the
+     * dispatch assertion. Exit distinctly so the make gate cannot mistake a
+     * normal portable-only pass (or an unrelated crash) for a red control. */
+    if (!cpu_can) {
+        printf("SKIP AES-NI negative control: this host lacks AES-NI or PCLMULQDQ.\n");
+        printf("     Run make test-aes-ni on an x86-64 host with both features.\n");
+        return 77;
+    }
+#endif
+
     /* --- the baseline exists and is named -------------------------------- */
     ok(c != NULL, "portable backend is always present");
     ok(c && !strcmp(c->name, "c"), "portable backend is named \"c\"");
@@ -506,6 +517,11 @@ int main(void)
     crypto_simd_force_baseline(0);
 
     printf("\n%d checks, %d failed\n", checks, failures);
-    printf("%s\n", failures ? "AES-NI TEST FAILED" : "AES-NI TEST PASSED");
+    if (failures)
+        printf("AES-NI TEST FAILED\n");
+    else if (cpu_can)
+        printf("AES-NI TEST PASSED\n");
+    else
+        printf("AES-NI TEST PARTIAL: portable path passed; AES-NI is unmeasured here\n");
     return failures ? 1 : 0;
 }

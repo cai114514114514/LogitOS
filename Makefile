@@ -17,6 +17,12 @@ ARCH        := x86_64
 BUILD       := build
 .DEFAULT_GOAL := all
 
+# Host gates name $(BUILD) as a real prerequisite. A fresh named build tree
+# must exist before their recipes start; relying on an earlier product build
+# made `make BUILD=build-fresh check-roots` fail before checking any roots.
+$(BUILD):
+	@mkdir -p "$@"
+
 # The CommandLineTools 27.0 upgrade ships a libSystem.tbd whose format the
 # ld.lld in the same toolchain cannot parse ("unknown architecture
 # arm64e.x1-macos"), which broke every HOST link -- kernel links are
@@ -2121,11 +2127,37 @@ test-crypto: $(BUILD)
 	@# cpufeat.h from c/kernel/cpu, and that directory also holds the REAL
 	@# spinlock.h/kprintf.h. Listed after, they shadow the stubs and the link
 	@# fails on spin_lock_irqsave.
-	$(CC) -O2 -Wall -Wextra -o $(BUILD)/rng_test tests/unit/rng_test.c c/kernel/core/rng.c c/crypto/hash/sha256.c c/kernel/cpu/cpufeat.c -Itests/unit/rngstub -Ic/crypto $(KCORE_INC) $(KCPU_INC)
-	$(BUILD)/rng_test
+	@$(MAKE) --no-print-directory test-rng
 	$(CC) -O2 -Wall -Wextra -o $(BUILD)/ecdh_test tests/unit/ecdh_test.c c/crypto/pubkey/ecdsa.c -Ic/crypto
 	$(BUILD)/ecdh_test
 	@$(MAKE) --no-print-directory check-roots
+
+# The host RNG gate checks the DRBG structure even on arm64. rng.c substitutes
+# changing test ticks for RDTSC there, while CPUID keeps RDRAND/RDSEED absent;
+# the guest entropy gate separately checks the actual x86 syscall path. Keep
+# the negative control as a prerequisite: disabling automatic reseed must make
+# the named 1 MiB assertion fail, not merely produce a nonzero exit.
+RNG_TEST_SRC := tests/unit/rng_test.c c/kernel/core/rng.c c/crypto/hash/sha256.c c/kernel/cpu/cpufeat.c
+RNG_TEST_INC := -Itests/unit/rngstub -Ic/crypto $(KCORE_INC) $(KCPU_INC)
+.PHONY: test-rng test-rng-negctl
+test-rng: test-rng-negctl
+	@mkdir -p $(BUILD)
+	$(CC) -O2 -Wall -Wextra -DRNG_HOST_TEST -o $(BUILD)/rng_test $(RNG_TEST_SRC) $(RNG_TEST_INC)
+	$(BUILD)/rng_test
+
+test-rng-negctl:
+	@mkdir -p $(BUILD)
+	$(CC) -O2 -Wall -Wextra -DRNG_HOST_TEST -DRNG_NO_AUTO_RESEED -o $(BUILD)/rng_negctl $(RNG_TEST_SRC) $(RNG_TEST_INC)
+	@$(BUILD)/rng_negctl > $(BUILD)/rng_negctl.log 2>&1; status=$$?; \
+	 if [ "$$status" -eq 1 ] && \
+	    grep -Fq 'FAIL periodic reseed fired within 1 MiB' $(BUILD)/rng_negctl.log && \
+	    grep -Fq '1 FAILED' $(BUILD)/rng_negctl.log; then \
+	     echo 'NEGCTL RED: disabling automatic reseed fails the 1 MiB assertion'; \
+	 else \
+	     cat $(BUILD)/rng_negctl.log; \
+	     echo "CONTROL FAILED: expected only the periodic-reseed assertion to fail (exit $$status)"; \
+	     exit 1; \
+	 fi
 
 # The trust store must not lie about its own size. genroots.py silently drops
 # any root whose key type the kernel cannot verify (P-521, Ed25519); until this
@@ -2260,36 +2292,45 @@ test-crypto-diff: $(BUILD)
 # x86-64 baseline against that build and fail 12 of 1622 checks, which made
 # `make test` red through test-crypto for a reason that was never about the
 # decode. The bit tuples are UNMEASURED on such a host; run this on x86-64.
-test-cpufeat: $(BUILD)
+test-cpufeat:
+	@mkdir -p $(BUILD)
 	$(CC) -O2 -Wall -Wextra -o $(BUILD)/cpufeat_test tests/unit/cpufeat_test.c \
 	    c/kernel/cpu/cpufeat.c $(KCPU_INC)
 	$(BUILD)/cpufeat_test
 
-# test-aes-ni proves the three things the accelerated crypto path needs: the
-# AES-NI and portable backends produce identical bytes on 20k primitive and 4k
+# On an AES-NI host this proves both backends agree on 20k primitive and 4k
 # full-AEAD random cases, published vectors pass under EACH backend, and the
-# dispatch really selected the accelerated one (rather than quietly testing the
-# C path twice). No timing is measured -- see the file header for why a TCG or
-# same-process number would not mean anything.
-test-aes-ni: $(BUILD)
+# dispatch selects the accelerated one. Without AES-NI it checks only the
+# portable path and says so. The required control must fail at the named
+# dispatch assertions on a capable host; otherwise a green run can mean the
+# accelerated path was never selected. No timing is measured here.
+test-aes-ni: test-aes-ni-control
 	$(CC) -O2 -Wall -Wextra -o $(BUILD)/aes_ni_test tests/unit/aes_ni_test.c \
 	    $(CRYPTO_SRC) $(CRYPTO_INC)
 	$(BUILD)/aes_ni_test
 
-# Negative control for test-aes-ni, run by hand rather than in CI because it is
-# meant to FAIL: it forces the dispatch to pick the portable backend on a CPU
-# that has AES-NI, so the "the dispatch actually dispatches" assertion must
-# fire. If this passes, that assertion is vacuous and the suite proves nothing.
-test-aes-ni-control: $(BUILD)
+# Negative control for test-aes-ni: force the portable backend on a capable
+# CPU and require BOTH dispatch assertions to fail. A non-x86 host (or an x86
+# host without AES-NI) has no accelerated path to suppress, so the binary exits
+# 77 and this target SKIPs LOUDLY. Accepting just any nonzero exit here would
+# let a compile/runtime crash masquerade as proof that the assertion works.
+test-aes-ni-control:
+	@mkdir -p $(BUILD)
 	$(CC) -O2 -Wall -Wextra -DAESNI_CONTROL_NO_ACCEL -o $(BUILD)/aes_ni_control \
 	    tests/unit/aes_ni_test.c $(CRYPTO_SRC) $(CRYPTO_INC)
-	@if $(BUILD)/aes_ni_control > $(BUILD)/aes_ni_control.log 2>&1; then \
-	    echo "CONTROL FAILED: the crippled build passed -- the dispatch assertions are vacuous"; \
-	    exit 1; \
-	else \
-	    echo "control ok: crippled build fails as intended:"; \
-	    grep '^FAIL' $(BUILD)/aes_ni_control.log | head -5; \
-	fi
+	@$(BUILD)/aes_ni_control > $(BUILD)/aes_ni_control.log 2>&1; status=$$?; \
+	 if [ "$$status" -eq 77 ]; then \
+	     grep -Fq 'SKIP AES-NI negative control: this host lacks AES-NI or PCLMULQDQ.' $(BUILD)/aes_ni_control.log || { cat $(BUILD)/aes_ni_control.log; exit 1; }; \
+	     echo 'SKIP AES-NI negative control: no accelerated path on this host; run make test-aes-ni on an x86-64 host with AES-NI and PCLMULQDQ'; \
+	 elif [ "$$status" -eq 1 ] && \
+	      grep -Fq 'FAIL on an AES-NI CPU the selected backend is aesni, not the C fallback' $(BUILD)/aes_ni_control.log && \
+	      grep -Fq 'FAIL NEGATIVE CONTROL: AES-GCM reports constant-time on an AES-NI CPU' $(BUILD)/aes_ni_control.log; then \
+	     echo 'NEGCTL RED: pinned portable backend tripped both AES-NI dispatch assertions'; \
+	 else \
+	     cat $(BUILD)/aes_ni_control.log; \
+	     echo "CONTROL FAILED: expected two named dispatch failures or an explicit capability skip (exit $$status)"; \
+	     exit 1; \
+	 fi
 
 # ASan/UBSan fuzz of the X.509 DER parser (attacker-controlled input on every
 # HTTPS handshake) against a real cert. Long-running; not part of `make test`.
@@ -5764,6 +5805,7 @@ include tests/ramfs_rename.mk
 include tests/build_incremental.mk
 include tests/build_config.mk
 include tests/build_jobs.mk
+include tests/build_dir.mk
 -include tests/vfs_rename_meta.mk
 -include tests/fs_rename_space.mk
 -include tests/dns_class.mk
