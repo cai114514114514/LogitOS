@@ -1594,6 +1594,59 @@ int main(void)
         drain_verify(80 * 1024);
     }
 
+    /* 37) Zero-window persist: the peer's ACK of the probe byte must reopen
+     *     the window.
+     *
+     *     The probe is sent at snd_nxt WITHOUT advancing it -- only snd_max
+     *     moves -- so an ACK-validity bound of snd_nxt calls the peer's
+     *     acknowledgement of that byte "an ACK of data never sent", sends a
+     *     dup ACK and returns before update_send_window(). The window update
+     *     riding on it is lost, snd_wnd stays 0 forever, every later probe's
+     *     ACK is dropped the same way, and the connection stalls with nothing
+     *     reported. Fixed in 797d574f7 (docs/bugs/04-net.md, [high]) with no
+     *     test until this one.
+     *
+     *     TCP_PROBE_ACK_NEGCTL reproduces the old bound HERE, because tcp.c
+     *     carries no test hooks: with snd_max pulled back to snd_nxt the
+     *     fixed check (seg_ack <= snd_max) is exactly the old one
+     *     (seg_ack <= snd_nxt). */
+    {
+        setup(0x37370000u);
+        struct tcp_conn *c = &conns[0];
+        uint32_t S = c->snd_nxt;
+        inject_ack(S, 0, NULL);                         /* the peer closes its window */
+        CHECK(c->snd_wnd == 0, "zwp: the peer's zero window taken (snd_wnd=%u)", c->snd_wnd);
+        static char zbuf[100];
+        memset(zbuf, 'z', sizeof zbuf);
+        CHECK(tcp_send_nb(0, zbuf, (int)sizeof zbuf) == (int)sizeof zbuf,
+              "zwp: data queued behind the closed window");
+        g_ncap = 0;
+        tcp_poll();                                     /* arms the persist timer */
+        g_ticks += RTO_MAX + 1; tcp_poll();             /* ...which then fires */
+        int probe = 0;
+        for (int i = 0; i < g_ncap; i++)
+            if (g_cap[i].dlen == 1 && g_cap[i].seq == S) probe = 1;
+        CHECK(probe, "zwp: a 1-byte probe at snd_nxt went out (%d segments)", g_ncap);
+#ifdef TCP_PROBE_ACK_NEGCTL
+        c->snd_max = c->snd_nxt;                        /* the pre-797d574f7 bound */
+#endif
+        /* Capture from BEFORE the reopening ACK: the input path may send the
+         * newly permitted data while processing it, and clearing the capture
+         * after the ACK threw exactly those segments away -- the first
+         * version of this case reported "no data resumed" for that reason. */
+        g_ncap = 0;
+        inject_ack(S + 1, 1000, NULL);                  /* the peer took the byte and reopened */
+        CHECK(c->snd_wnd == 1000,
+              "zwp: the probe's ACK reopened the window (snd_wnd=%u)", c->snd_wnd);
+        CHECK(c->snd_una == S + 1,
+              "zwp: the probe byte is acknowledged (snd_una=S+%u)", c->snd_una - S);
+        tcp_poll();
+        int resumed = 0;
+        for (int i = 0; i < g_ncap; i++)
+            if (g_cap[i].dlen > 0 && seq_le(S + 1, g_cap[i].seq)) resumed = 1;
+        CHECK(resumed, "zwp: the stalled data resumes once the window reopens");
+    }
+
     server_tests();
 
     printf("\nTCP protocol tests: %d passed, %d failed\n", passed, failed);

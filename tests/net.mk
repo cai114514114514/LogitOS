@@ -686,3 +686,25 @@ test-unix-poll-negctl:
 test-unix-poll: test-unix-poll-negctl
 	python3 tests/unit/unix_poll_test.py --build $(BUILD)/unix-poll
 test-agent: test-unix-poll
+
+# --- the zero-window persist fix, and the control that must fail it ---------
+# test-tcp-host's recipe is in the root Makefile; its prerequisites can be
+# extended from here, the way tests/servers.mk adds
+# test-tcp-accepted-lifetime-neg. TCP_PROBE_ACK_NEGCTL is a hook in the TEST
+# file (tcp.c carries no test hooks) that restores the pre-797d574f7 ACK bound,
+# and the run is REQUIRED to fail on exactly the reopening assertion -- a
+# failure anywhere else would mean the control measured something else.
+.PHONY: test-tcp-probe-ack-negctl
+test-tcp-probe-ack-negctl:
+	@mkdir -p $(BUILD)
+	@$(CC) -O2 -w -DTCP_PROBE_ACK_NEGCTL -o $(BUILD)/tcp_test_probeack tests/unit/tcp_test.c \
+		-Itests/unit/tcpstub -Ic/net/transport
+	@rc=0; ./$(BUILD)/tcp_test_probeack > $(BUILD)/tcp_probeack_negctl.log 2>&1 || rc=$$?; \
+	 if [ $$rc -eq 0 ]; then \
+	     echo "test-tcp-probe-ack-negctl: FAILED -- the suite passes with the old snd_nxt bound"; exit 1; fi; \
+	 if ! grep -q "zwp: the probe's ACK reopened the window" $(BUILD)/tcp_probeack_negctl.log; then \
+	     echo "test-tcp-probe-ack-negctl: FAILED -- the run failed, but not on the reopening check:"; \
+	     grep '^FAIL' $(BUILD)/tcp_probeack_negctl.log | head -5; exit 1; fi; \
+	 echo "test-tcp-probe-ack-negctl: ok -- the old ACK bound leaves the window shut:"; \
+	 grep 'zwp:' $(BUILD)/tcp_probeack_negctl.log | sed 's/^/    /'
+test-tcp-host: test-tcp-probe-ack-negctl
