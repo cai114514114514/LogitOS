@@ -39,13 +39,29 @@ $(BUILD)/url_test: $(URL_SRC) c/apps/gui/browser/js/net/url.h $(URL_BASE)
 	@mkdir -p $(BUILD)
 	@$(CC) -O2 -w $(URL_CF) -o $@ $(URL_SRC)
 
+# WPT_ROOT has to be PASSED: a make variable is not in a recipe's environment
+# unless exported, and url_test reads it with getenv(). Without this line the
+# program fell back to third_party/wpt -- deleted on 2026-08-21 when the corpus
+# moved to $(WPT_ROOT) -- so the gate could not reach its own corpus even after
+# `make wpt-fetch`, and reported 32/32 over the hand-written cases alone.
+# h5l-fetch in tests/wpt.mk already passed it this way; this one never did.
 test-url: $(BUILD)/url_test
-	@$(BUILD)/url_test $(if $(V),-v$(V),)
+	@WPT_ROOT=$(abspath $(WPT_ROOT)) $(BUILD)/url_test $(if $(V),-v$(V),)
 
+# A baseline cut with the corpus absent is a FALSE claim, not an empty one:
+# the list it writes is empty because nothing ran, and it would read exactly
+# like "every case passes". Refuse rather than write that.
 url-baseline: $(BUILD)/url_test
+	@for f in urltestdata.json setters_tests.json; do \
+	    if [ ! -f "$(abspath $(WPT_ROOT))/url/resources/$$f" ]; then \
+	        echo "url-baseline: REFUSED -- $(abspath $(WPT_ROOT))/url/resources/$$f is absent,"; \
+	        echo "  and a list cut without the corpus says nothing. make wpt-fetch first."; \
+	        exit 1; \
+	    fi; \
+	 done
 	@echo "# tests/unit/url_expected_fail.txt -- cases known to fail." > $(URL_BASE).new
 	@echo "# Re-cut with: make url-baseline. Everything not listed here is gated." >> $(URL_BASE).new
-	@URL_EXPECT=/dev/null $(BUILD)/url_test -n 2>&1 | sed -n 's/^  FAIL \([^:]*:[^:]*\(:[^:]*\)\?\):.*/\1/p' >> $(URL_BASE).new || true
+	@WPT_ROOT=$(abspath $(WPT_ROOT)) URL_EXPECT=/dev/null $(BUILD)/url_test -n 2>&1 | sed -n 's/^  FAIL \([^:]*:[^:]*\(:[^:]*\)\?\):.*/\1/p' >> $(URL_BASE).new || true
 	@mv $(URL_BASE).new $(URL_BASE)
 	@echo "url-baseline: wrote $(URL_BASE)"
 

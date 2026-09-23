@@ -1,6 +1,6 @@
 /* url_test.c -- the WHATWG URL parser measured against the corpus's OWN data.
  *
- * third_party/wpt/url/resources/urltestdata.json is a machine-readable table of
+ * $WPT_ROOT/url/resources/urltestdata.json is a machine-readable table of
  * (input, base) -> the eleven components, and setters_tests.json is the same
  * for the setters. url-constructor.any.js and url-setters.any.js are thin
  * loops over exactly these two files, so driving them directly measures the
@@ -302,12 +302,17 @@ static int check_components(urlrec *u, jv *e, const char *skip_origin)
     return 1;
 }
 
+/* How many of the two WPT corpora were absent. The hand-written set still
+ * runs without them, and "ok" over that alone read like the 1,169 corpus cases
+ * had passed (CLAUDE.md rule 5 named this gate for exactly that). */
+static int g_corpora_skipped;
+
 static void run_constructor(const char *root)
 {
     char path[512];
     snprintf(path, sizeof(path), "%s/url/resources/urltestdata.json", root);
     char *txt = slurp(path);
-    if (!txt) { printf("url_test: %s not found -- constructor corpus skipped\n", path); return; }
+    if (!txt) { printf("url_test: %s not found -- constructor corpus skipped\n", path); g_corpora_skipped++; return; }
     J = txt;
     jv *arr = jparse();
     int idx = 0, tot = 0, ok = 0;
@@ -372,7 +377,7 @@ static void run_setters(const char *root)
     char path[512];
     snprintf(path, sizeof(path), "%s/url/resources/setters_tests.json", root);
     char *txt = slurp(path);
-    if (!txt) { printf("url_test: %s not found -- setter corpus skipped\n", path); return; }
+    if (!txt) { printf("url_test: %s not found -- setter corpus skipped\n", path); g_corpora_skipped++; return; }
     J = txt;
     jv *obj = jparse();
     int tot = 0, ok = 0;
@@ -566,8 +571,13 @@ static void run_pct(void)
 
 int main(int argc, char **argv)
 {
+    /* The make recipe always passes WPT_ROOT; this fallback only governs a
+     * hand run. It was third_party/wpt, which has not existed since the
+     * corpus moved out of the tree on 2026-08-21 -- build/wpt is where
+     * `make wpt-fetch` puts it (tests/wpt.mk, WPT_ROOT's default). An EMPTY
+     * value is treated as unset: "/url/resources/..." is not a corpus. */
     const char *root = getenv("WPT_ROOT");
-    if (!root) root = "third_party/wpt";
+    if (!root || !*root) root = "build/wpt";
     const char *expect = getenv("URL_EXPECT");
     if (!expect) expect = "tests/unit/url_expected_fail.txt";
     for (int i = 1; i < argc; i++) {
@@ -592,6 +602,15 @@ int main(int argc, char **argv)
     if (g_unexpected) {
         printf("url_test: FAILED -- %d case(s) not in %s\n", g_unexpected, expect);
         return 1;
+    }
+    if (g_corpora_skipped) {
+        /* Exit 0: an absent corpus is a host capability, not a failure of the
+         * parser. But the last line must not say "ok" over what did not run. */
+        printf("url_test: PARTIAL -- %d of 2 WPT corpora absent at %s; only the\n"
+               "  hand-written set above ran. The corpus cases are UNMEASURED, not\n"
+               "  passing. Settle it with: make wpt-fetch && make test-url\n",
+               g_corpora_skipped, root);
+        return 0;
     }
     printf("url_test: ok\n");
     (void)g_seen_pass;
