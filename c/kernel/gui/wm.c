@@ -1091,6 +1091,7 @@ static uint64_t perf_cursor_moves, perf_cursor_ns;   /* host-plane cursor update
  * anything ON ITS OWN, separately from compositing less -- a question the
  * composite total cannot answer and which was asked directly. */
 static uint64_t perf_cpx, perf_present_ns, perf_full, perf_rects;
+static uint64_t perf_bgskip;               /* wallpaper pixels hidden by opaque app content */
 /* Exact phase attribution for the rare full frame.  Timing the compositor's
  * glass calls here avoids fb.c's app-surface calls and therefore answers the
  * question being asked: live-backdrop glass during this frame, not every use
@@ -4821,6 +4822,39 @@ static int rect_blocked(const struct drect *R, uint64_t now, int *late)
 }
 #endif
 
+/* An app canvas is copied with an opaque 32-bit blit. If it covers the whole
+ * damage rectangle, the wallpaper, dim and every lower window are overwritten
+ * before presentation. Start at the highest such canvas, so a small edit in a
+ * front window does not repaint hidden app surfaces or wallpaper.
+ *
+ * The exact-size guard matters during a resize: blit_content may stretch the
+ * old canvas, but this shortcut must never assume a partly resized surface
+ * covers a new frame. Animating windows and the locked greeter also keep their
+ * ordinary paths. Damage has already been expanded for glass before this
+ * check. That conservative expansion may prevent this shortcut even when a
+ * panel is hidden, but it cannot let a panel needing backdrop samples through. */
+static int opaque_content_start(const struct drect *R)
+{
+#ifdef WM_COVER_NEGCTL
+    (void)R;
+    return -1;
+#else
+    for (int i = norder - 1; i >= 0; i--) {
+        struct win *w = &wins[order[i]];
+        int x, y, ww, wh, alpha;
+        if (!w->used || !w->surf.px ||
+            !win_draw_rect(w, &x, &y, &ww, &wh, &alpha) ||
+            !win_drawn_direct(w, x, y, ww, wh, alpha) ||
+            w->surf.w != ww || w->surf.h != wh - TBH)
+            continue;
+        if (R->x0 >= x && R->x1 <= x + ww &&
+            R->y0 >= y + TBH && R->y1 <= y + wh)
+            return i;
+    }
+    return -1;
+#endif
+}
+
 /* Composite ONE damage rectangle: wallpaper, every window that reaches into it,
  * the frosted chrome that overlaps it, and (without a cursor plane) the arrow --
  * all clipped to it -- then push exactly that rectangle to the display.
@@ -4833,8 +4867,13 @@ static void render_region(const struct drect *R)
     int rw = R->x1 - R->x0, rh = R->y1 - R->y0;
     fb_target(NULL);
     fb_set_clip(R->x0, R->y0, rw, rh);
-    for (int y = R->y0; y < R->y1; y++)    /* wallpaper (baked in bg) */
-        blit(back + (long)y * W + R->x0, bg + (long)y * W + R->x0, rw);
+    int first = g_locked ? -1 : opaque_content_start(R);
+    if (first < 0) {
+        for (int y = R->y0; y < R->y1; y++)    /* wallpaper (baked in bg) */
+            blit(back + (long)y * W + R->x0, bg + (long)y * W + R->x0, rw);
+    } else {
+        perf_bgskip += (uint64_t)rw * (uint64_t)rh;
+    }
     /* LOCKED: exactly ONE window is composited, it fills the screen, and it is
      * drawn with no frame at all -- no titlebar, so no close button exists to
      * be hit-tested, and no dock and no menu bar. There is nothing behind it
@@ -4871,11 +4910,11 @@ static void render_region(const struct drect *R)
      * ITSELF (y < MBH), and dimming that would darken the bar rather than the
      * desktop. The dock's glass does sample dimmed pixels, and should -- it is
      * sitting on a dimmed desktop. */
-    if (ex_state()) fb_blend_rect(0, MBH, W, H - MBH, 0, 0, 0, EX_DIM_ALPHA);
+    if (first < 0 && ex_state()) fb_blend_rect(0, MBH, W, H - MBH, 0, 0, 0, EX_DIM_ALPHA);
 
     int focus_wi = top_visible();          /* NOT order[norder-1]: that may be minimised */
     int exp = ex_prog();
-    for (int i = 0; i < norder; i++) {     /* windows, back-to-front */
+    for (int i = first < 0 ? 0 : first; i < norder; i++) { /* windows, back-to-front */
         struct win *w = &wins[order[i]];
         if (!w->used) continue;
         /* WHERE IT IS, asked once, of the one function that knows -- and that
@@ -4888,6 +4927,15 @@ static void render_region(const struct drect *R)
         if (!rect_hit(&b, R)) continue;    /* nothing of this window is in the rect */
         int focused = (order[i] == focus_wi);
         int k = ex_slot(order[i]);
+
+        if (i == first) {
+            /* The proof above says this canvas overwrites every pixel in R.
+             * Its shadow and glass are under that opaque copy; the separator
+             * is on top of the first content row, so it still goes last. */
+            blit_content(w, dx, dy + TBH, dw, dh - TBH);
+            draw_titlebar_sep(dx, dy + TBH, dw);
+            continue;
+        }
 
         /* THE COMMON CASE IS UNTOUCHED. A window sitting still at its own frame
          * takes exactly the path it always took -- real liquid glass sampling
@@ -6457,7 +6505,7 @@ static void wm_perf_report(void)
     kprintf("[wm] perf t=%lu composites=%lu ns=%lu max=%lu motions=%lu curmoves=%lu "
             "curns=%lu full=%lu rects=%lu cpx=%lu fpx=%lu presns=%lu "
             "torn=%lu defer=%lu late=%lu drawmax=%lu evdrop=%lu evevict=%lu "
-            "inmerge=%lu inevict=%lu indrop=%lu/%lu inback=%lu inhwm=%lu sdk_draws=%lu\n",
+            "inmerge=%lu inevict=%lu indrop=%lu/%lu inback=%lu inhwm=%lu sdk_draws=%lu bgskip=%lu\n",
             (unsigned long)ms, (unsigned long)perf_composites,
             (unsigned long)perf_comp_ns, (unsigned long)perf_comp_ns_max,
             (unsigned long)perf_motions, (unsigned long)perf_cursor_moves,
@@ -6471,7 +6519,8 @@ static void wm_perf_report(void)
             (unsigned long)iqstats.coalesced, (unsigned long)iqstats.evicted_motion,
             (unsigned long)iqstats.dropped_motion, (unsigned long)iqstats.dropped_semantic,
             (unsigned long)iqstats.batches_with_backlog,
-            (unsigned long)iqstats.high_watermark, (unsigned long)fb_openlogit_batches());
+            (unsigned long)iqstats.high_watermark, (unsigned long)fb_openlogit_batches(),
+            (unsigned long)perf_bgskip);
     kprintf("[wm] locks calls=%lu hold_ns=%lu max_ns=%lu render_locked=%lu\n",
             wm_lock_calls, wm_lock_ns, wm_lock_max_ns, wm_lock_render_frames);
     wm_lock_report_prepare();

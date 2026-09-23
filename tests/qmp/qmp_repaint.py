@@ -68,7 +68,7 @@ neighbour's build.
 Usage:
     tests/qmp/qmp_repaint.py [--xres W] [--yres H] [--iso PATH] [--disk PATH]
                              [--reps N] [--only NAME[,NAME...]] [--json PATH]
-                             [--assert] [--expect-off N]
+                             [--assert] [--expect-off N] [--assert-cover]
 
 --disk defaults to a `disk.img` sibling of --iso (i.e. the same BUILD=
 tree) -- NOT build/disk.img unconditionally, so a run against
@@ -79,6 +79,9 @@ whatever (or nothing) happens to sit in build/.
 --expect-off carries the composite count from a -DAUI_ANIM_OFF build; without
 it the positive assertion is a thermometer rather than a control, and the gate
 says so out loud rather than passing quietly. `make test-anim` runs both sides.
+--assert-cover requires the `b-mutate` class to report wallpaper pixels skipped
+under opaque app content. `make test-wm-cover` runs a control kernel that
+restores the old path first and watches this assertion fail there.
 """
 
 import http.server
@@ -239,12 +242,13 @@ def summarize(rows):
             # "every frame was the whole screen", which is the baseline reading.
             "cpx": (d.get("cpx", 0) / comp) if comp else 0.0,
             "fpx": (d.get("fpx", 0) / comp) if comp else 0.0,
+            "bgskip": (d.get("bgskip", 0) / comp) if comp else 0.0,
             "full": d.get("full", -1),
             "rects": d.get("rects", -1),
             "secs": d["secs"],
         })
     out = {}
-    for k in ("composites", "ms", "presms", "cps", "cpx", "fpx", "secs"):
+    for k in ("composites", "ms", "presms", "cps", "cpx", "fpx", "bgskip", "secs"):
         out[k] = stats(per, k)
     out["full"] = stats(per, "full")[0]
     out["rects"] = stats(per, "rects")[0]
@@ -904,7 +908,7 @@ def boot(iso, xres, yres, tmp, disk=None):
 def main(argv):
     xres, yres, reps = 1920, 1200, 3
     iso, disk, only, jpath = None, None, None, None
-    do_assert, assert_open, expect_off = False, False, None
+    do_assert, assert_open, assert_cover, expect_off = False, False, False, None
     i = 1
     while i < len(argv):
         if argv[i] == "--xres":    xres = int(argv[i + 1]); i += 2
@@ -916,6 +920,7 @@ def main(argv):
         elif argv[i] == "--json":  jpath = argv[i + 1]; i += 2
         elif argv[i] == "--assert":     do_assert = True; i += 1
         elif argv[i] == "--assert-open": assert_open = True; i += 1
+        elif argv[i] == "--assert-cover": assert_cover = True; i += 1
         elif argv[i] == "--expect-off": expect_off = int(argv[i + 1]); i += 2
         else:
             print("unknown arg %r" % argv[i]); return 2
@@ -928,10 +933,13 @@ def main(argv):
     print("=== %dx%d device px (scale %d%%), %s ===  [all timings are TCG]"
           % (xres, yres, scale, os.path.relpath(iso, ROOT)))
 
-    # Started unconditionally and cheaply (a thread, not a process) so the
-    # `b-*` phase below never blocks main() waiting for a server that should
-    # already be up -- the same ordering qmp_css_repaint.py uses.
-    bport = start_browser_fixture()
+    # A non-browser row needs no listening socket. Starting one here made even
+    # `--only type` fail in a restricted test environment before QEMU booted;
+    # the browser phase below is the only consumer of bport. When that phase is
+    # selected, start its server before boot as before so setup never waits for
+    # a fixture that should already be listening.
+    browser_rows = not only or any(n.startswith("b-") for n in only)
+    bport = start_browser_fixture() if browser_rows else None
 
     qemu, sock, serial = boot(iso, xres, yres, tmp, disk)
     result = {}
@@ -985,6 +993,9 @@ def main(argv):
                       % (s["presms"][0],
                          100.0 * s["presms"][0] / s["ms"][0] if s["ms"][0] else 0.0,
                          s["full"], s["rects"]))
+                if s["bgskip"][0]:
+                    print("     opaque app content skipped wallpaper for %.0f px/frame"
+                          % s["bgskip"][0])
             else:
                 print("     (kernel reports no damage counters: every frame is the "
                       "whole %d x %d screen)" % (xres, yres))
@@ -1036,6 +1047,14 @@ def main(argv):
         for name, fn, what in WORKLOADS:
             if only and name not in only:
                 continue
+            # Setup opens Terminal last, so keyboard events otherwise reach it
+            # while the `type` row claims to measure TextEdit. Bring the named
+            # receiver forward before the meter starts; focus changes are not
+            # part of the repaint cost being reported for either workload.
+            if name == "type":
+                ui.launch_app("textedit", allow_focus=True)
+            elif name == "scroll":
+                ui.launch_app("terminal", allow_focus=True)
             measure(name, fn, what, geo)
 
         # PHASE 3: the toolkit's own motion. Last, because it opens another
@@ -1079,7 +1098,7 @@ def main(argv):
         # PHASE 4: the BROWSER's own repaints -- CLAUDE.md's actual complaint.
         # Last, for the same reason PHASE 3 is last: it opens a fourth window
         # and would change every geometry above it.
-        if not only or any(n.startswith("b-") for n in (only or [])):
+        if browser_rows:
             bgeo = browser_setup(ui, tmp, serial, bport)
             if bgeo is not None:
                 print("     browser fixture at 10.0.2.2:%d, probe origin %r"
@@ -1114,6 +1133,20 @@ def main(argv):
         print("     wrote %s" % jpath)
     if do_assert:
         return assert_anim(result, ANIM_FLIPS, expect_off)
+    if assert_cover:
+        sample = result.get("b-mutate")
+        if sample is None:
+            print("FAIL wm-cover: browser mutation produced no guest measurement")
+            return 1
+        skipped = sample["bgskip"][0]
+        painted = sample["cpx"][0]
+        if not 0 < skipped <= painted:
+            print("FAIL wm-cover: bgskip=%.0f painted=%.0f px/frame; "
+                  "opaque coverage did not remove any hidden wallpaper work"
+                  % (skipped, painted))
+            return 1
+        print("ok   wm-cover: skipped %.0f hidden wallpaper px/frame of %.0f painted"
+              % (skipped, painted))
     return 0
 
 

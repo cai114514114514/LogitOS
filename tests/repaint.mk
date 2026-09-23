@@ -32,7 +32,35 @@
 # through aui.c, nm finds zero browser_paint symbols in it, and two runs of the
 # same binary have read 19,871 and 12,707 microseconds.
 
-.PHONY: test-repaint test-open-anim test-anim test-anim-negctl test-fb-scale-bl test-fb-scale-bl-negctl
+.PHONY: test-repaint test-open-anim test-anim test-anim-negctl test-fb-scale-bl test-fb-scale-bl-negctl test-wm-cover test-wm-cover-negctl
+
+# A narrow browser paint inside the top window's opaque canvas must avoid
+# redrawing the hidden wallpaper. The control restores the old compositor path
+# while keeping the exact same guest counter and workload. It runs first and
+# deliberately fails --assert-cover; a control that only looks for a zero in
+# its own JSON would not demonstrate that the positive assertion can go red.
+ifeq ($(WMCOVERNEGCTL),1)
+CFLAGS += -DWM_COVER_NEGCTL
+endif
+WM_COVER_CTL_BUILD := $(BUILD)-wm-cover-negctl
+WM_COVER_DISK ?= $(DISK)
+
+test-wm-cover-negctl: $(DISK)
+	@$(MAKE) --no-print-directory BUILD=$(WM_COVER_CTL_BUILD) WMCOVERNEGCTL=1 \
+		$(WM_COVER_CTL_BUILD)/logit.iso > $(BUILD)/wm_cover_control_build.log 2>&1
+	@rc=0; python3 tests/qmp/qmp_repaint.py --xres 1280 --yres 800 \
+		--only b-mutate --reps 1 --assert-cover \
+		--iso $(WM_COVER_CTL_BUILD)/logit.iso --disk $(WM_COVER_DISK) \
+		--json $(BUILD)/wm_cover_control.json > $(BUILD)/wm_cover_control.log 2>&1 || rc=$$?; \
+		cat $(BUILD)/wm_cover_control.log; \
+		test $$rc -eq 1 && rg -q '^FAIL wm-cover: bgskip=0' $(BUILD)/wm_cover_control.log
+
+test-wm-cover: test-wm-cover-negctl $(ISO)
+	@python3 tests/qmp/qmp_repaint.py --xres 1280 --yres 800 \
+		--only b-mutate --reps 1 --assert-cover --iso $(ISO) --disk $(WM_COVER_DISK) \
+		--json $(BUILD)/wm_cover_fixed.json
+
+ci-boot: test-wm-cover
 
 # The animated-window scaler keeps the former four-weight formula in the host
 # gate as a pixel oracle. The production loop may use fewer multiplies, but it
