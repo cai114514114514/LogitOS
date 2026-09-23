@@ -57,6 +57,12 @@ $(CODEC_C_OBJECTS): $(call config_stamp,codec)
 # public object lists, retaining distinct compiler domains instead of treating
 # source-path equality as proof that two objects can be shared.
 $(eval $(call product_c,tcc,$(TCC_OBJ),UCFLAGS TCC_LOGIT_DEFS))
+# Aether's native runtime uses the same userland compiler flags and .d format.
+# Register its objects before missing-.d recovery so removing the old
+# all-runtime-headers prerequisite cannot leave an old object permanently
+# current when its depfile is absent. This also tracks UCFLAGS changes for the
+# shipped static runtime, the same way other product object families do.
+$(eval $(call product_c,as-native,$(AS_NATIVE_OBJS),UCFLAGS))
 AGENT_C_OBJECTS := $(AGENT_SDK_OBJ) \
   $(patsubst %.c,$(AGENT_DIR)/%.o,$(wildcard c/apps/libc/src/*.c)) \
   $(addprefix $(AGENT_DIR)/,c/apps/gui/assistant/assistant.o c/apps/agent/agentd.o \

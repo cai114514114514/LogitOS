@@ -464,7 +464,14 @@ $(BUILD)/aether-toolchain/mkaex.py: tools/mkaex.py
 $(BUILD)/aether-toolchain/native.a: $(AS_NATIVE_OBJS) $(AS_NATIVE_MANIFEST)
 	@mkdir -p $(dir $@)
 	$(AGENT_AR) rcs $@ $(AS_NATIVE_OBJS)
-$(BUILD)/aether-toolchain/obj/%.o: c/apps/as/runtime/%.c $(AS_NATIVE_HEADERS)
+# Every native object emits a compiler .d file. The former all-header edge
+# rebuilt all 27 objects for allocation.h even though the product depfiles
+# name only allocation.o (command.h names two). Keep these objects in
+# product.mk's missing-.d recovery inventory: simply removing the edge would
+# let an old surviving .o without its .d silently miss a future header edit.
+# The archive and static guest programs still relink when a real consumer
+# changes; this only avoids recompiling the unrelated runtime units.
+$(BUILD)/aether-toolchain/obj/%.o: c/apps/as/runtime/%.c
 	@mkdir -p $(dir $@)
 	$(COMPILE) $(UCFLAGS) -c $< -o $@
 $(BUILD)/aether-toolchain/crt0.o: c/apps/crt0_cli.asm

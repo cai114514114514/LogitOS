@@ -18,6 +18,7 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[3]
 BROWSER = 'c/apps/gui/browser/'
+AS_RUNTIME = 'c/apps/as/runtime/'
 
 
 @dataclass(frozen=True)
@@ -26,6 +27,17 @@ class Sample:
     obj: str
 
 
+def native_samples():
+    manifest = (ROOT / AS_RUNTIME / 'sources.def').read_text()
+    units = re.findall(r'^AT_RUNTIME_SOURCE\(([a-z][a-z0-9_]*)\)$',
+                       manifest, re.MULTILINE)
+    if not units or len(units) != len(set(units)):
+        raise AssertionError('Aether native source manifest is empty or repeats a unit')
+    return tuple(Sample(AS_RUNTIME + unit + '.c',
+                        'aether-toolchain/obj/' + unit + '.o') for unit in units)
+
+
+NATIVE_SAMPLES = native_samples()
 SAMPLES = (
     Sample(BROWSER + 'html/tokenizer.c', 'browserobj/' + BROWSER + 'html/tokenizer.o'),
     Sample(BROWSER + 'layout/block.c', 'browserobj/' + BROWSER + 'layout/block.o'),
@@ -46,6 +58,7 @@ SAMPLES = (
     Sample('c/apps/gui/studio/core/source_snapshot.c', 'apps/gui/studio/core/source_snapshot.o'),
     *(Sample(f'c/apps/gui/{name}/{name}.c', f'apps/{name}.o')
       for name in ('studio', 'preview', 'terminal')),
+    *NATIVE_SAMPLES,
 )
 
 
@@ -82,6 +95,7 @@ class Probe:
         self.directory = Path(directory)
         self.build = self.directory / 'build'
         self.objects = [str(self.build / sample.obj) for sample in SAMPLES]
+        self.native_objects = {str(self.build / sample.obj) for sample in NATIVE_SAMPLES}
         self.deps = {}
 
     def make(self, goals, *, changed=(), frozen=(), overlay=None, actual=False,
@@ -162,7 +176,7 @@ class Probe:
         model_deps = None
         for line in joined(output).splitlines():
             inventory = re.match(
-                r'^(?:BROWSER_OBJ|BROWSER_JS_OBJ|AS_OBJ|GFX_OBJ|STUDIO_OBJ|VID_OBJ|AUD_OBJ|LM_NN_OBJ)\s*:=\s*(.*)',
+                r'^(?:BROWSER_OBJ|BROWSER_JS_OBJ|AS_OBJ|AS_NATIVE_OBJS|GFX_OBJ|STUDIO_OBJ|VID_OBJ|AUD_OBJ|LM_NN_OBJ)\s*:=\s*(.*)',
                 line,
             )
             if inventory:
@@ -220,7 +234,8 @@ class Probe:
         # coarse prerequisite lists disappear. Recover one object per family,
         # including codec and model objects whose broad header edges are gone.
         for source in (BROWSER + 'html/tokenizer.c', 'c/lib/video/mpeg4_hdr.c',
-                       'c/lib/audio/opus.c', 'c/lib/nn/kvcache.c', 'c/apps/lm/lm.c'):
+                       'c/lib/audio/opus.c', 'c/lib/nn/kvcache.c', 'c/apps/lm/lm.c',
+                       AS_RUNTIME + 'allocation.c'):
             obj = str(self.build / next(sample.obj for sample in SAMPLES
                                         if sample.source == source))
             depfile = Path(obj).with_suffix('.d')
@@ -271,6 +286,8 @@ class Probe:
              BROWSER + 'html/entities.inc'),
             ('AS headers on libc', f'{self.build}/asobj/c/apps/libc/src/string.o: $(AS_HDRS)\n',
              'c/apps/as/common/numeric.h'),
+            ('AS native-wide headers', '$(AS_NATIVE_OBJS): $(AS_NATIVE_HEADERS)\n',
+             AS_RUNTIME + 'allocation.h'),
             ('GFX-wide headers', '$(GFX_OBJ): $(GFX_HEADERS)\n',
              'c/lib/gfx/adapters/display_pixels.h'),
             ('Studio-wide headers', '$(STUDIO_OBJ): $(wildcard c/apps/gui/studio/core/*.h)\n',
@@ -285,6 +302,15 @@ class Probe:
         )
         for name, text, header in mutations:
             overlay = self.overlay(name.replace(' ', '-'), text)
+            if name == 'AS native-wide headers':
+                # This control restores the actual old rule over every runtime
+                # object, not just the one header consumer sampled by the
+                # positive oracle. If this count changes, inspect the manifest.
+                scheduled = compiles(self.make(self.objects, changed=[header], overlay=overlay))
+                require(scheduled & self.native_objects == self.native_objects,
+                        'old Aether header edge did not schedule every native object')
+                print(f'build-incremental negative control: old Aether edge schedules '
+                      f'{len(self.native_objects)} native compiles', flush=True)
             self.reject(name, lambda: self.check_header(header, overlay))
 
         # Preserve the real link recipes and put the old inline compilation
@@ -323,7 +349,8 @@ def check(control):
             probe.controls(inputs)
             return
         for header in (BROWSER + 'html/entities.inc', BROWSER + 'layout/block.h',
-                       'c/apps/as/common/numeric.h', 'c/lib/gfx/adapters/display_pixels.h',
+                       'c/apps/as/common/numeric.h', AS_RUNTIME + 'allocation.h',
+                       AS_RUNTIME + 'command.h', 'c/lib/gfx/adapters/display_pixels.h',
                        'c/apps/gui/studio/core/runner.h', 'c/lib/video/mpeg4.h',
                        'c/lib/audio/opus.h', 'c/lib/nn/kvcache.h',
                        'c/lib/nn/infer.h'):
