@@ -77,12 +77,15 @@ static void legacy_ipv4(void)
         {"1.16777215", 0x01ffffff}, {"4294967295", 0xffffffff},
         {"037777777777", 0xffffffff}, {"0xffffffff", 0xffffffff},
         {"255.255.255.255", 0xffffffff},
+        {"1.2.3.4 ", 0x01020304},
+        {"127.1 trailing", 0x7f000001},
+        {"0x7f.0.0.1\tcomment", 0x7f000001},
     };
     const char *invalid[] = {
         "", "08.2.3.4", "1.2.3.08", "0x", "0xg", "+1", "-1",
         "4294967296", "040000000000", "0x100000000",
         "256.1", "1.16777216", "1.2.65536", "1.2.3.256",
-        "1.2.3.4.5", "1..2", "1.", ".1", "1x",
+        "1.2.3.4.5", "1..2", "1.", ".1", "1x", "1.2.3.4x",
     };
     for (unsigned i = 0; i < sizeof valid / sizeof *valid; i++) {
         struct in_addr address = {0};

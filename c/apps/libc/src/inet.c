@@ -93,7 +93,11 @@ int inet_aton(const char *cp, struct in_addr *addr)
         if (*p == '.') { p++; continue; }
         break;
     }
-    if (*p != 0) return 0;
+    /* Public inet_aton/inet_addr stop at the first ASCII whitespace after
+     * the final component, even when text follows it. Requiring end-of-string
+     * here silently rejects addresses accepted by both BSD and glibc; keep
+     * inet_pton strict because callers use it to validate complete input. */
+    if (*p != 0 && !isspace((unsigned char)*p)) return 0;
     unsigned long a;
     switch (n) {
     case 1: a = parts[0]; break;

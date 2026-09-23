@@ -62,6 +62,10 @@ def main():
                  "if (p[0] == '0' && isdigit((unsigned char)p[1])) return 0;",
                  "/* negative control: admit ambiguous leading zeroes */"),
              ["-O1"], "FAIL pton reject [1.2.3.04]"),
+            ("aton-trailer", mutate(source,
+                 "if (*p != 0 && !isspace((unsigned char)*p)) return 0;",
+                 "if (*p != 0) return 0;"),
+             ["-O1"], "FAIL aton accept [1.2.3.4 ]"),
         ]
     records = []
     for name, content, flags, marker in modes:
