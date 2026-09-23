@@ -76,3 +76,16 @@ source disk's SHA-256 remained unchanged. The snapshot still validates and
 replays via the existing fsck code, keeps the input read-only, creates a
 private 0600 output, and removes it on failure. Final replacement still uses
 the image-use guard and atomic rename.
+
+The media and model product rules formerly listed every header in their
+directory as a prerequisite of every object. Compiler `.d` files from the
+isolated product build show that `mpeg4.h` reaches 3 of 28 video objects,
+`opus.h` reaches 1 of 14 audio objects, and `kvcache.h` reaches 1 of 7 model
+objects. `make -n -W` predicted all 28, 14, and 7 compiles under the old
+rules; the narrowed rules predict 3, 1, and 1. This is a rebuild-count result,
+not a measured end-to-end time ratio. `test-build-incremental` compiles 20 real
+objects and their `.d` files, checks the exact consumer sets, and watches the
+old broad dependencies fail its negative control. It also checks recovery
+when product `.d` files disappear. Two video diagnostic objects outside that
+recovery inventory keep their broad fallback; a separate check removes each
+diagnostic `.d` and confirms a video header edit still schedules compilation.

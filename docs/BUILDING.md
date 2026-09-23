@@ -65,6 +65,11 @@ Studio, Preview and Terminal compile their main source as separate object
 targets. Changing a linked library therefore requires another link, without
 also compiling an unchanged main source.
 
+Video, audio and model product objects also use their own `.d` files. A change
+to `mpeg4.h`, for example, now schedules its three actual video consumers
+instead of all 28 video objects. Two video diagnostic programs retain a broad
+header fallback because they are outside the product depfile recovery list.
+
 The sysroot's `SYSROOT_MKFLAGS` is tracked the same way. `make -q all
 build/disk.img` now returns success for an idle product; changing that option
 returns "out of date" without writing files during the query. The dry-run no
@@ -74,7 +79,7 @@ longer predicts TCC object compiles or a disk repack on an unchanged tree.
 
 ```sh
 make test-build-incremental test-build-config test-build-jobs \
-     test-build-sysroot-idle test-mk-wired
+     test-build-sysroot-idle test-build-dir test-mk-wired
 ```
 
 Each build-mechanics gate runs its negative control first. The checks exercise
