@@ -1562,6 +1562,12 @@ $(BUILD)/vidobj/%.o: %.c
 	@mkdir -p $(dir $@)
 	$(COMPILE) $(UCFLAGS) $(CODEC_OPT) -c $< -o $@
 
+# These two diagnostic programs use the pattern above but are not registered in
+# product.mk's missing-.d recovery. Keep their old broad header fallback until
+# they gain that recovery, so an older build tree cannot run a stale test binary.
+$(BUILD)/vidobj/tests/guest/video/vidbench.o \
+$(BUILD)/vidobj/tests/guest/video/vidcheck265.o: $(wildcard c/lib/video/*.h)
+
 # --- ring-3 HTTP client, built for the target -----------------------------
 # Same shape and same reasoning as VID_OBJ above: RING3_NET is filtered out of
 # the kernel's C_SRC (see the comment at the top) and compiled here with the

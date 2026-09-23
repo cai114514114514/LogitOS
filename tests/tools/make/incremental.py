@@ -233,6 +233,21 @@ class Probe:
                     f'recovery did not restore the real depfile for {source}')
             self.expect(f'recovered depfile for {source}', self.objects, set())
 
+    def check_diagnostic_fallback(self):
+        # Two video diagnostic objects are outside product.mk's missing-.d
+        # inventory. Keep their broad header fallback until that changes, so a
+        # surviving old object cannot ignore header edits after losing its .d.
+        for name in ('vidbench', 'vidcheck265'):
+            obj = str(self.build / f'vidobj/tests/guest/video/{name}.o')
+            output = self.make([obj], actual=True)
+            require(compiles(output) == {obj}, f'{name} did not compile a real object')
+            require(Path(obj).read_bytes().startswith(b'\x7fELF'), f'{name} is not ELF')
+            depfile = Path(obj).with_suffix('.d')
+            require(depfile.is_file(), f'{name} compiler omitted its depfile')
+            depfile.unlink()
+            self.expect(f'{name} missing-depfile header fallback', [obj], {obj},
+                        changed=['c/lib/video/mpeg4.h'])
+
     def overlay(self, name, text):
         path = self.directory / (name + '.mk')
         path.write_text(text)
@@ -316,8 +331,9 @@ def check(control):
             print(f'build-incremental: {header}: {len(consumers)} sampled consumers', flush=True)
         probe.check_links(inputs)
         probe.check_missing_depfile()
+        probe.check_diagnostic_fallback()
         print('build-incremental: PASS: selective headers; three library-only links; '
-              'source/header edits compile and link; missing depfile recovered')
+              'source/header edits compile and link; missing depfiles recovered')
 
 
 if __name__ == '__main__':

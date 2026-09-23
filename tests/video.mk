@@ -61,10 +61,12 @@ test-vidbench-host: $(BUILD)/vidbench_host $(VIDBENCH_STREAMS)
 
 # --- guest build ---------------------------------------------------------
 # Same shape as vidcheck.aex/vidcheck265.aex (root Makefile / tests/h265.mk):
-# $(BUILD)/vidobj/tests/guest/video/vidbench.o comes from the Makefile's existing
-# generic `$(BUILD)/vidobj/%.o: %.c $(VID_HDRS)` pattern rule, no new rule
-# needed for it. Links VID_OBJ (both decoders -- c/lib/video/*.c is a
-# wildcard) + the default-arena LIBC_OBJS, exactly like vidcheck.aex; nothing
+# $(BUILD)/vidobj/tests/guest/video/vidbench.o comes from the Makefile's generic
+# vidobj pattern. Its old whole-directory `$(VID_HDRS)` edge moved to an explicit
+# diagnostic-object fallback when product codec objects switched to .d-only
+# headers; this test object has no missing-.d recovery yet. It links VID_OBJ
+# (both decoders, from the c/lib/video/*.c wildcard) and the default-arena
+# LIBC_OBJS, exactly like vidcheck.aex; nothing
 # in this benchmark's stream matrix needed a bigger arena (see genvidbench.sh
 # for the H.265 feature set it deliberately stays inside), so it does not ask
 # for one -- a special arena here would be measuring a machine no real app on
