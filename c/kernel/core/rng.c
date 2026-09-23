@@ -15,6 +15,9 @@ void *memcpy(void *, const void *, size_t);
 #if defined(RNG_NO_AUTO_RESEED) && !defined(RNG_HOST_TEST)
 #error RNG_NO_AUTO_RESEED is only for the host negative control
 #endif
+#if (defined(RNG_TEST_HW_WORDS) || defined(RNG_TEST_WEAK_GATE)) && !defined(RNG_HOST_TEST)
+#error simulated hardware and weak-gate controls are only for host tests
+#endif
 
 /* SHA-256 Hash_DRBG-style kernel PRNG with state/output separation.
  *
@@ -38,6 +41,7 @@ static uint64_t rng_counter;                 /* block counter within an epoch */
 static uint64_t rng_requests;                /* generate calls this epoch */
 static uint64_t rng_bytes;                   /* bytes produced this epoch */
 static int rng_seeded;
+static int rng_hw_backed;                    /* successful hardware input, not a CPUID promise */
 /* BKL-free callers can reach kernel_random_bytes concurrently: guard the state. */
 static spinlock_t rng_lock = SPINLOCK_INIT;
 
@@ -67,20 +71,48 @@ static uint64_t rdtsc(void)
  * but they are now cached, so rng_gather() no longer executes two CPUIDs (a
  * serialising instruction) per reseed, and there is one place to look when a
  * feature bit is wrong. */
+#ifdef RNG_TEST_HW_WORDS
+/* The host fixture advertises both instructions, then lets exactly this many
+ * reads succeed. A feature bit alone must not open the strong-random gate. */
+#define cpu_has_rdrand() 1
+#define cpu_has_rdseed() 1
+static int rng_test_hw_left = RNG_TEST_HW_WORDS;
+static int test_hw64(uint64_t *out)
+{
+    if (rng_test_hw_left <= 0) return 0;
+    *out = UINT64_C(0x9e3779b97f4a7c15) ^ (uint64_t)rng_test_hw_left;
+    rng_test_hw_left--;
+    return 1;
+}
+#else
 #define cpu_has_rdrand() cpu_has(CPU_RDRAND)
 #define cpu_has_rdseed() cpu_has(CPU_RDSEED)
+#endif
 
-/* 1 when a hardware entropy source (RDSEED/RDRAND) is available, 0 when the
- * DRBG would fall back to rdtsc-only seeding. TLS refuses to handshake on 0:
- * session keys from a predictable seed are worse than a clear error. */
+static void rng_seed(void);
+
+/* CPUID reports that an instruction exists, not that CF=1 ever yielded a
+ * sample. Seed before answering the TLS/key-generation query and return only
+ * after at least two 64-bit hardware words have entered the DRBG. A later
+ * failed reseed cannot remove entropy already mixed into the secret state. */
 int rng_strong(void)
 {
+#ifdef RNG_TEST_WEAK_GATE
     return cpu_has_rdseed() || cpu_has_rdrand();
+#else
+    uint64_t fl = spin_lock_irqsave(&rng_lock);
+    if (!rng_seeded) rng_seed();
+    int strong = rng_hw_backed;
+    spin_unlock_irqrestore(&rng_lock, fl);
+    return strong;
+#endif
 }
 
 static int rdrand64(uint64_t *out)
 {
-#if defined(__x86_64__)
+#if defined(RNG_TEST_HW_WORDS)
+    return test_hw64(out);
+#elif defined(__x86_64__)
     uint8_t ok;
     uint64_t v;
     __asm__ volatile ("rdrand %0; setc %1" : "=r"(v), "=qm"(ok));
@@ -97,7 +129,9 @@ static int rdrand64(uint64_t *out)
 
 static int rdseed64(uint64_t *out)
 {
-#if defined(__x86_64__)
+#if defined(RNG_TEST_HW_WORDS)
+    return test_hw64(out);
+#elif defined(__x86_64__)
     uint8_t ok;
     uint64_t v;
     __asm__ volatile ("rdseed %0; setc %1" : "=r"(v), "=qm"(ok));
@@ -128,28 +162,28 @@ static void rng_hash(uint8_t tag, const void *data, size_t len, uint8_t out[32])
 /* Collect entropy: up to 4 hardware words (RDSEED preferred, RDRAND else,
  * each retried against transient CF=0 under contention), then rdtsc + tick
  * count as a cheap always-available (but weak) supplement. */
-static int rng_gather(uint64_t *buf)
+static int rng_gather(uint64_t *buf, int *hardware_words)
 {
     int n = 0;
+    int hw = 0;
     int has_rdseed = cpu_has_rdseed();
     int has_rdrand = cpu_has_rdrand();
     for (int i = 0; i < 4; i++) {
         uint64_t v = 0;
         int got = 0;
-        for (int t = 0; t < 16 && !got; t++) {
-            if (has_rdseed)      got = rdseed64(&v);
-            else if (has_rdrand) got = rdrand64(&v);
-            else break;
-        }
-        if (got) buf[n++] = v;
-        /* The flag said hardware entropy exists but every retry failed:
-         * say so once per gather, or a silently weakened epoch is
-         * indistinguishable from a healthy one (2026-09-16 audit). */
-        if (!got && (has_rdseed || has_rdrand))
-            kprintf("[rng] WARN: hardware entropy retries exhausted\n");
+        if (has_rdseed)
+            for (int t = 0; t < 16 && !got; t++) got = rdseed64(&v);
+        /* RDSEED can be temporarily exhausted while RDRAND remains usable.
+         * Refusing the latter here silently discards available hardware input. */
+        if (!got && has_rdrand)
+            for (int t = 0; t < 16 && !got; t++) got = rdrand64(&v);
+        if (got) { buf[n++] = v; hw++; }
     }
+    if ((has_rdseed || has_rdrand) && hw < 2)
+        kprintf("[rng] WARN: fewer than two fresh hardware entropy words in this reseed\n");
     buf[n++] = rdtsc();
     buf[n++] = timer_ticks();
+    *hardware_words = hw;
     return n;
 }
 
@@ -157,8 +191,10 @@ static int rng_gather(uint64_t *buf)
 static void rng_reseed(void)
 {
     uint64_t ent[8];
-    int n = rng_gather(ent);
+    int hw = 0;
+    int n = rng_gather(ent, &hw);
     rng_hash(0x00, ent, (size_t)n * sizeof(uint64_t), rng_state);
+    if (hw >= 2) rng_hw_backed = 1;
     crypto_wipe(ent, sizeof ent);
     rng_counter = 0;
     rng_requests = 0;
@@ -222,8 +258,8 @@ void kernel_random_bytes(uint8_t *out, int len)
  *                   GRND_RANDOM are accepted and change nothing -- the DRBG is
  *                   seeded before ring 3 exists, so there is no "not ready"
  *                   state to block on.
- *     buf == NULL : returns 1 if a hardware entropy source (RDSEED/RDRAND) is
- *                   backing the DRBG, 0 if it has fallen back to rdtsc. A
+ *     buf == NULL : returns 1 after at least two hardware words successfully
+ *                   entered the DRBG, 0 if it has only weak seed inputs. A
  *                   caller about to generate a long-term key can refuse to; a
  *                   caller that wants a request id does not care.
  *

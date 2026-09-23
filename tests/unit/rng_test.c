@@ -33,7 +33,12 @@ int main(void)
     uint8_t s0[32], s1[32], out[32];
     uint64_t c0, c1;
 
-#if !defined(__x86_64__)
+#ifdef RNG_TEST_HW_WORDS
+    /* A feature bit is only a promise that the instruction exists. CF=0 on
+     * every attempt, or just one 64-bit word, keeps the key gate closed. */
+    CHECK(rng_strong() == (RNG_TEST_HW_WORDS >= 2),
+          "successful hardware entropy threshold controls strong query");
+#elif !defined(__x86_64__)
     /* The DRBG structure remains testable on arm64, but the host build uses
      * timer_ticks in place of RDTSC and never executes RDRAND/RDSEED. A green
      * structural test must not be mistaken for measured hardware entropy. */

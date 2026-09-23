@@ -1256,8 +1256,10 @@ struct logit_setting {
  * lost-wakeup argument (sched.h) is the one this depends on. */
 #define SYS_FUTEX         113
 
-/* (buf, len, flags) -> bytes written, or -1.  buf == NULL -> 1 if the DRBG has
- * a hardware entropy source behind it (RDSEED/RDRAND), 0 if it fell back.
+/* (buf, len, flags) -> bytes written, or -1.  buf == NULL -> 1 once at least
+ * two RDSEED/RDRAND words have successfully seeded the DRBG, 0 otherwise.
+ * CPUID alone cannot establish this: the instruction can repeatedly return
+ * CF=0, leaving only timing and tick inputs despite advertising support.
  *
  * ARBITRATED FOR THE CRYPTO LINE, not needed by threads. The kernel has had a
  * real SHA-256 Hash_DRBG in c/kernel/core/rng.c, seeded from RDSEED/RDRAND

@@ -5,7 +5,8 @@
 
 void kernel_random_bytes(uint8_t *out, int len);
 
-/* 1 if RDSEED/RDRAND is available (DRBG has a hardware entropy source). */
+/* 1 only after hardware entropy words actually entered the DRBG. CPUID alone
+ * says the instructions exist, but their carry flag can report no sample. */
 int rng_strong(void);
 
 /* SYS_GETRANDOM back end. (buf, len, flags) -> bytes written, or -1.
