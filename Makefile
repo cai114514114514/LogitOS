@@ -1539,7 +1539,6 @@ $(BUILD)/closefull.aex: $(BUILD)/closefull.elf tools/mkaex.py
 # reference frames, and this is exactly the direction M17 moved the browser's
 # render pipeline. Keeping a media parser out of ring 0 is the other half.
 VID_SRC  := $(wildcard c/lib/video/*.c)
-VID_HDRS := $(wildcard c/lib/video/*.h)
 VID_OBJ  := $(patsubst %.c,$(BUILD)/vidobj/%.o,$(VID_SRC))
 # Codec loops dominate Preview/Terminal playback and are independently covered
 # by byte/differential gates. Keep the rest of userland at UCFLAGS' size/speed
@@ -1554,7 +1553,12 @@ BROWSER_IMG_CODEC_OBJ := $(filter $(BUILD)/browserobj/c/lib/image/%.o,$(BROWSER_
 $(KERNEL_IMG_CODEC_OBJ): CFLAGS += $(CODEC_OPT)
 $(BROWSER_IMG_CODEC_OBJ): UCFLAGS += $(CODEC_OPT)
 
-$(BUILD)/vidobj/%.o: %.c $(VID_HDRS)
+# Product objects already emit -MMD/-MP depfiles, and product.mk rebuilds an
+# existing object if its .d goes missing. The former whole-directory header
+# prerequisite recompiled all 28 video sources after mpeg4.h changed, though
+# only three compiler depfiles name that header. Keep the wider dependency
+# lists used by multi-source host probes; this rule needs only its own source.
+$(BUILD)/vidobj/%.o: %.c
 	@mkdir -p $(dir $@)
 	$(COMPILE) $(UCFLAGS) $(CODEC_OPT) -c $< -o $@
 
@@ -1686,10 +1690,11 @@ $(BUILD)/libmobj/%.o: %.c
 	$(COMPILE) $(UCFLAGS) -w -include features.h -Ithird_party/libm -c $< -o $@
 
 AUD_SRC  := $(wildcard c/lib/audio/*.c)
-AUD_HDRS := $(wildcard c/lib/audio/*.h)
 AUD_OBJ  := $(patsubst %.c,$(BUILD)/audobj/%.o,$(AUD_SRC))
 
-$(BUILD)/audobj/%.o: %.c $(AUD_HDRS)
+# The same depfile recovery applies here: opus.h has one actual consumer among
+# 14 audio sources, while the old directory-wide edge rebuilt all 14.
+$(BUILD)/audobj/%.o: %.c
 	@mkdir -p $(dir $@)
 	$(COMPILE) $(UCFLAGS) $(CODEC_OPT) -c $< -o $@
 
@@ -5540,10 +5545,12 @@ bench-aui: $(ISO) $(BUILD)/gallery.aex
 # above its own definition for exactly that reason, and IS above it: this file
 # already relies on that distinction, unremarked, at $(BUILD)/vidcheck.elf.)
 LM_NN_SRC  := $(wildcard c/lib/nn/*.c)
-LM_NN_HDRS := $(wildcard c/lib/nn/*.h)
 LM_NN_OBJ  := $(patsubst %.c,$(BUILD)/lmnnobj/%.o,$(LM_NN_SRC))
 
-$(BUILD)/lmnnobj/%.o: %.c $(LM_NN_HDRS)
+# kvcache.h has one actual consumer among seven model sources. Both these
+# objects and lm.o have compiler depfiles with missing-file recovery in
+# product.mk, so a shared list would only add unrelated recompilation.
+$(BUILD)/lmnnobj/%.o: %.c
 	@mkdir -p $(dir $@)
 	$(COMPILE) $(UCFLAGS) -c $< -o $@
 
@@ -5553,7 +5560,7 @@ $(BUILD)/lmnnobj/%.o: %.c $(LM_NN_HDRS)
 # is a plain directory under c/, so $(INCDIRS) (folded into $(UCFLAGS)) already
 # resolves lm.c's bare #include "model.h" / "infer.h" the same way every other
 # colocated header resolves in this tree.
-$(BUILD)/lmobj/c/apps/lm/lm.o: c/apps/lm/lm.c $(LM_NN_HDRS)
+$(BUILD)/lmobj/c/apps/lm/lm.o: c/apps/lm/lm.c
 	@mkdir -p $(dir $@)
 	$(COMPILE) $(UCFLAGS) -c $< -o $@
 

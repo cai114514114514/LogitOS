@@ -35,6 +35,13 @@ SAMPLES = (
     Sample('c/apps/libc/src/string.c', 'asobj/c/apps/libc/src/string.o'),
     Sample('c/lib/gfx/adapters/openlogit_display.c', 'apps/gfx_adapters/openlogit_display.o'),
     Sample('c/lib/gfx/geometry/gfx_math.c', 'apps/gfx_geometry/gfx_math.o'),
+    Sample('c/lib/video/mpeg4_hdr.c', 'vidobj/c/lib/video/mpeg4_hdr.o'),
+    Sample('c/lib/video/h264.c', 'vidobj/c/lib/video/h264.o'),
+    Sample('c/lib/audio/opus.c', 'audobj/c/lib/audio/opus.o'),
+    Sample('c/lib/audio/aac.c', 'audobj/c/lib/audio/aac.o'),
+    Sample('c/lib/nn/kvcache.c', 'lmnnobj/c/lib/nn/kvcache.o'),
+    Sample('c/lib/nn/infer.c', 'lmnnobj/c/lib/nn/infer.o'),
+    Sample('c/apps/lm/lm.c', 'lmobj/c/apps/lm/lm.o'),
     Sample('c/apps/gui/studio/core/document.c', 'apps/gui/studio/core/document.o'),
     Sample('c/apps/gui/studio/core/source_snapshot.c', 'apps/gui/studio/core/source_snapshot.o'),
     *(Sample(f'c/apps/gui/{name}/{name}.c', f'apps/{name}.o')
@@ -150,14 +157,25 @@ class Probe:
         output = self.make(goals, database=True)
         rules = {}
         members = set()
+        model_main = str(self.build / 'lmobj/c/apps/lm/lm.o')
+        model_link = str(self.build / 'lm.elf')
+        model_deps = None
         for line in joined(output).splitlines():
-            inventory = re.match(r'^(?:BROWSER_OBJ|BROWSER_JS_OBJ|AS_OBJ|GFX_OBJ|STUDIO_OBJ)\s*:=\s*(.*)', line)
+            inventory = re.match(
+                r'^(?:BROWSER_OBJ|BROWSER_JS_OBJ|AS_OBJ|GFX_OBJ|STUDIO_OBJ|VID_OBJ|AUD_OBJ|LM_NN_OBJ)\s*:=\s*(.*)',
+                line,
+            )
             if inventory:
                 members.update(shlex.split(inventory.group(1)))
             if line.startswith(tuple(goal + ':' for goal in goals)):
                 target, prerequisites = line.split(':', 1)
                 rules[target] = set(shlex.split(prerequisites)) - {'|'}
+            if line.startswith(model_link + ':'):
+                model_deps = set(shlex.split(line.split(':', 1)[1])) - {'|'}
         require(set(rules) == set(goals), 'make database omitted an application link rule')
+        require(model_deps is not None and model_main in model_deps,
+                'make database omitted the shipped model application main object')
+        members.add(model_main)
         shared = str(self.build / 'apps/gfx_geometry/gfx_math.o')
         main = {str(self.build / f'apps/{name}.o') for name in ('studio', 'preview', 'terminal')}
         # A pattern rule can compile a path the product never links. In
@@ -199,17 +217,21 @@ class Probe:
 
     def check_missing_depfile(self):
         # An old .o with no .d must not become permanently current once the
-        # coarse prerequisite lists disappear. Delete only our tokenizer .d;
-        # demand one real recovery compile and verify it recreated the oracle.
-        obj = self.objects[0]
-        depfile = Path(obj).with_suffix('.d')
-        before = depfile.read_bytes()
-        depfile.unlink()
-        self.expect('missing depfile', self.objects, {obj})
-        output = self.make([obj], actual=True)
-        require(compiles(output) == {obj}, 'missing .d did not cause a real compile')
-        require(depfile.read_bytes() == before, 'recovery did not restore the real depfile')
-        self.expect('recovered depfile', self.objects, set())
+        # coarse prerequisite lists disappear. Recover one object per family,
+        # including codec and model objects whose broad header edges are gone.
+        for source in (BROWSER + 'html/tokenizer.c', 'c/lib/video/mpeg4_hdr.c',
+                       'c/lib/audio/opus.c', 'c/lib/nn/kvcache.c', 'c/apps/lm/lm.c'):
+            obj = str(self.build / next(sample.obj for sample in SAMPLES
+                                        if sample.source == source))
+            depfile = Path(obj).with_suffix('.d')
+            before = depfile.read_bytes()
+            depfile.unlink()
+            self.expect(f'missing depfile for {source}', self.objects, {obj})
+            output = self.make([obj], actual=True)
+            require(compiles(output) == {obj}, f'missing .d did not rebuild {source}')
+            require(depfile.read_bytes() == before,
+                    f'recovery did not restore the real depfile for {source}')
+            self.expect(f'recovered depfile for {source}', self.objects, set())
 
     def overlay(self, name, text):
         path = self.directory / (name + '.mk')
@@ -238,6 +260,13 @@ class Probe:
              'c/lib/gfx/adapters/display_pixels.h'),
             ('Studio-wide headers', '$(STUDIO_OBJ): $(wildcard c/apps/gui/studio/core/*.h)\n',
              'c/apps/gui/studio/core/runner.h'),
+            ('video-wide headers', '$(VID_OBJ): $(wildcard c/lib/video/*.h)\n',
+             'c/lib/video/mpeg4.h'),
+            ('audio-wide headers', '$(AUD_OBJ): $(wildcard c/lib/audio/*.h)\n',
+             'c/lib/audio/opus.h'),
+            ('model-wide headers',
+             '$(LM_NN_OBJ) $(BUILD)/lmobj/c/apps/lm/lm.o: $(wildcard c/lib/nn/*.h)\n',
+             'c/lib/nn/kvcache.h'),
         )
         for name, text, header in mutations:
             overlay = self.overlay(name.replace(' ', '-'), text)
@@ -280,7 +309,9 @@ def check(control):
             return
         for header in (BROWSER + 'html/entities.inc', BROWSER + 'layout/block.h',
                        'c/apps/as/common/numeric.h', 'c/lib/gfx/adapters/display_pixels.h',
-                       'c/apps/gui/studio/core/runner.h'):
+                       'c/apps/gui/studio/core/runner.h', 'c/lib/video/mpeg4.h',
+                       'c/lib/audio/opus.h', 'c/lib/nn/kvcache.h',
+                       'c/lib/nn/infer.h'):
             consumers = probe.check_header(header)
             print(f'build-incremental: {header}: {len(consumers)} sampled consumers', flush=True)
         probe.check_links(inputs)
