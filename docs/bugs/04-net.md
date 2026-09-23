@@ -21,9 +21,11 @@
 
 ## 发现
 
-### [critical] [CONFIRMED] UDP 接收队列入队无单槽长度上限 —— 分片 UDP 数据报可越界写内核 .bss
+### [critical] [FIXED 2026-09-16; formerly CONFIRMED] UDP 接收队列入队无单槽长度上限 —— 分片 UDP 数据报可越界写内核 .bss
 
-位置：`c/net/transport/udp.c:210-219`（溢出点 214），缓冲声明 `udp.c:21,33`
+**修复验证（2026-09-24）：** 已由 `24e21d54b`（2026-09-16）修复：`udp_input` 入队前 `else if (dlen > UDP_SLOT) { s->drops++; }` 拒收超过单槽的重组数据报并计入 drops，而不是 memcpy 越过队列。回归用例是已提交的 `tests/unit/net_proto_test.c` 第 14 例（oversize reassembled datagram，断言 `udp_drops == 1`），由 `tests/net.mk` 运行。本次为代码核对，未另行构造攻击分片。下方为原始发现与旧代码，保留作回归依据。
+
+原位置：`c/net/transport/udp.c:210-219`（溢出点 214），缓冲声明 `udp.c:21,33`；以下代码是修复前的历史样例，行号也是审计当日的。
 
 ```c
         } else {
@@ -55,9 +57,11 @@ reasm.c:12），重组完成后以 `l4len`（最大 65535）调用 `udp_input`�
 
 ---
 
-### [high] [CONFIRMED] TCP 零窗口探测字节的 ACK 永远被判非法 —— 窗口重开信号丢失，连接可永久停滞
+### [high] [FIXED 2026-09-22; formerly CONFIRMED] TCP 零窗口探测字节的 ACK 永远被判非法 —— 窗口重开信号丢失，连接可永久停滞
 
-位置：`c/net/transport/tcp.c:1689-1696`（探测不推进 `snd_nxt`）+ `tcp.c:1503-1506`（ACK 合法上界用 `snd_nxt`）
+**修复验证（2026-09-24）：** 已由 `797d574f7`（2026-09-22）修复，采用的是本条建议的第二种改法：ACK 合法上界改为 `seq_lt(c->snd_max, seg_ack)`；persist 探测本就把探测字节计入 `snd_max`，所以探测字节的 ACK 不再被判非法，它携带的窗口更新得以生效。**注意：此修复没有任何回归测试**——`tests/unit/tcp_test.c` 里没有零窗口 / persist 用例，把上界改回 `snd_nxt` 不会让任何门变红。本次为代码核对。
+
+原位置：`c/net/transport/tcp.c:1689-1696`（探测不推进 `snd_nxt`）+ `tcp.c:1503-1506`（ACK 合法上界用 `snd_nxt`）；以下代码是修复前的历史样例，行号也是审计当日的。
 
 ```c
                 if (now - c->persist_tick >= p) {
@@ -90,9 +94,11 @@ persist 无限期重发同一字节（该路径不受 `rtx_retries > 8` 的拆�
 
 ---
 
-### [high] [CONFIRMED] 发送侧 MSS 不为接收侧 SACK 块预留选项空间 —— 满尺寸数据段叠加 SACK 超过 MTU 被 `ip_send` 静默丢弃
+### [high] [FIXED 2026-09-22; formerly CONFIRMED] 发送侧 MSS 不为接收侧 SACK 块预留选项空间 —— 满尺寸数据段叠加 SACK 超过 MTU 被 `ip_send` 静默丢弃
 
-位置：`c/net/transport/tcp.c:821-828`（`eff_mss` 只扣时间戳选项）、`tcp.c:556-575`（数据段可附 SACK 块）、
+**修复验证（2026-09-24）：** 已由 `797d574f7`（2026-09-22）修复：`data_optlen` 在 `sack_ok && n_ooo > 0` 时按 `build_options` 自己的算式 `(MAXOPT - n - 4) / 8`（上限 4 块、不超过 `n_ooo`）计入 SACK 块字节，`eff_mss` 随之收缩 payload。回归用例在 `tests/unit/tcp_test.c` 的 sack-rx 段末尾，断言每个数据段 `hlen + dlen <= 1480`；`make test-tcp-host` 于 2026-09-24 为 245 passed, 0 failed。
+
+原位置：`c/net/transport/tcp.c:821-828`（`eff_mss` 只扣时间戳选项）、`tcp.c:556-575`（数据段可附 SACK 块）、；以下代码是修复前的历史样例，行号也是审计当日的。
 `tcp.c:746`（`af_send` 返回值被忽略）、`c/net/ip/ip.c:235-237`（1500 字节发送缓冲）
 
 ```c
