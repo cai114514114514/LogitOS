@@ -1433,6 +1433,15 @@ no longer queue for one); **a block in a magazine is still ALLOCATED**, so the
 double-free refusal still fires; and **drain before OOM**, because returning NULL
 with blocks parked in magazines is an out-of-memory that is not true.
 
+**Correction (2026-09-23):** "still ALLOCATED" did not imply that the old
+double-free refusal fired. The old check only scanned the current CPU's cache;
+the same pointer could be parked on two CPUs and handed to two owners. The
+header's `F_PARK` bit now atomically claims every free before it chooses a
+magazine or a bin; `tests/unit/kheap_crosscore_test.c` watches the old path
+return duplicate addresses and the repaired path refuse it. The claim lasts
+through a full-magazine slow free and drain into the bin, then clears when
+the block is allocated again. It does not detect stale frees after reuse.
+
 `tools/bkl_shared.py` enumerates every shared mutable static the BKL still covers,
 and it is a tool rather than a paragraph for a measured reason: *"c/fs/logitfs.c
 carries the most honest comment in the tree about this, and it names four of the
@@ -1704,6 +1713,15 @@ branch, readline/ncurses/vi/less/top, `configure`/`install-sh`, `ssh host 'cmd'`
 and the 55 `.as` scripts that would like to live in `/bin` all hit the same wall —
 which is why `ash.as`, the shell written in AetherScript, cannot be a login shell.
 
+**2026-09-23 correction beside the original audit:** `ptmx`/`openpty`, termios,
+sessions, process groups, and `sh -c` now exist in this tree. The old `sh -c`
+path still treated the entire argument as one command. The host gate covers
+semicolon and newline sequences, quoted separators, `export`, and `$?`; the
+guest checks files written by semicolon, quoted-separator, `export`, and `$?`
+commands.
+`execve` still does not honor `#!`, and this shell remains deliberately small;
+the older blanket execution-contract conclusion no longer describes every path.
+
 **2. There is no loading contract for a foreign binary.** `PT_INTERP`,
 `PT_DYNAMIC` and `ET_DYN` are refused by name; zero relocations; no `dlopen`. The
 user address space is one PDPT entry, `[0x40000000, 0x80000000)`, with a 496 MiB
@@ -1772,9 +1790,11 @@ there are zero tags, and the build embeds absolute host paths.
   `syslog()`) · ptrace (one `.as` example) · kernel modules (no `insmod`) · shm
   (only the libc wrapper) · the whole h264/h265 stack (unreachable from
   `<video src>`) · `subs.c` · VP8 inter frames · `virtio-rng` (not wired into
-  `rng.c`, and its boot self-test prints 32 bytes of the entropy stream to a serial
-  log every harness captures — harmless while nothing consumes it, a leaked seed
-  the moment something does).
+  `rng.c`, and its boot self-test printed 32 bytes of the entropy stream to a serial
+  log every harness captured — harmless while nothing consumes it, a leaked seed
+  the moment something does). **2026-09-23 correction:** the self-test now logs
+  only read lengths and zero/equality verdicts; a negative control rejects the
+  old raw-byte log shape. The driver is still not wired into `rng.c`.
 - **(c) Red gates** — the host-reality table at the top, plus `test-h265-b` (79/80),
   `test-mse-os` (playback stalls), `test-vidbench-guest` (h265 @ 720p), `test-vp9`
   (no decoder), `check-abi` (one generator refusal holding **17** targets down),
