@@ -695,7 +695,8 @@ int  css_media_width(void);
  * css_color_scheme these WERE every input an @media verdict depended on.
  * Correction 2026-09-09: css_screen_width/height are inputs too, which
  * is what lets css_extra.c cache a compiled sheet and know when to throw it
- * away. */
+ * away. Correction 2026-09-23: the two reduction preferences also change
+ * @media verdicts, so the extension-rule cache keys on both. */
 int  css_media_height(void);
 
 /* ---------------- the ONE media-query evaluator ----------------
@@ -733,7 +734,10 @@ int  css_media_matches(const char *query, int len);
  * preference reports. Set BEFORE css_apply -- it changes which rules cascade. */
 void css_set_color_scheme(int dark);
 void css_set_reduced_motion(int reduced);
+void css_set_reduced_transparency(int reduced);
 int  css_color_scheme(void);
+int  css_reduced_motion(void);
+int  css_reduced_transparency(void);
 
 /* The URL fragment `:target` is matched against -- the part after '#', with no
  * '#' and not percent-decoded here. NULL or "" means no target, so :target

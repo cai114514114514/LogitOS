@@ -31,6 +31,15 @@ test-css-media-regions-negctl: $(XCASCADE_DIR)/media_regions_negctl
 	 grep -F 'FAIL: media after 512 earlier groups does not become unconditional' $(XCASCADE_DIR)/media_regions_negctl.log
 test-css-media-regions: test-css-media-regions-negctl test-media-region-instrument $(XCASCADE_DIR)/media_regions
 	@$(XCASCADE_DIR)/media_regions
+$(XCASCADE_DIR)/media_reduction_cache_negctl: $(MEDIA_REGIONS_DEPS)
+	@mkdir -p $(XCASCADE_DIR)
+	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) -DCSS_REDUCTION_MEDIA_CACHE_NEGCTL -o $@ $(MEDIA_REGIONS_SRC) $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a -lm
+.PHONY: test-css-media-reduction-cache-negctl
+test-css-media-reduction-cache-negctl: $(XCASCADE_DIR)/media_reduction_cache_negctl
+	@rc=0; $< > $(XCASCADE_DIR)/media_reduction_cache_negctl.log 2>&1 || rc=$$?; \
+	 test $$rc -eq 1 && grep -F 'FAIL: prefers-reduced-motion live extension rule' $(XCASCADE_DIR)/media_reduction_cache_negctl.log && \
+	 grep -F 'FAIL: prefers-reduced-transparency live extension rule' $(XCASCADE_DIR)/media_reduction_cache_negctl.log
+test-css-media-regions: test-css-media-reduction-cache-negctl
 ci-host: test-css-media-regions
 .PHONY: test-css-media-regions-asan
 test-css-media-regions-asan: test-css-media-regions-negctl

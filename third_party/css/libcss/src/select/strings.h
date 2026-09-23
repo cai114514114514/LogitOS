@@ -46,10 +46,10 @@ typedef struct {
 	lwc_string *device_height;
 	lwc_string *prefers_color_scheme;
 	lwc_string *prefers_reduced_motion;
+	lwc_string *prefers_reduced_transparency;
 } css_select_strings;
 
 css_error css_select_strings_intern(css_select_strings *str);
 void css_select_strings_unref(css_select_strings *str);
 
 #endif
-

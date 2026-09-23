@@ -17,6 +17,45 @@ static void media_case(const char *sheet,const char *want,const char *label)
           !memcmp(st->xraw[XR_TRANSFORM],want,strlen(want)),label);
     dom_free(g_root);g_root=NULL;
 }
+
+static int transform_matches(struct node *n, const char *value)
+{
+    struct cstyle *st=n ? (struct cstyle *)n->style : NULL;
+    size_t len=strlen(value);
+    return st && st->xraw[XR_TRANSFORM] && st->xrawlen[XR_TRANSFORM]==len &&
+           !memcmp(st->xraw[XR_TRANSFORM],value,len);
+}
+
+static void reduction_cache_case(const char *feature, void (*set)(int))
+{
+    char sheet[256], label[128];
+    snprintf(sheet,sizeof sheet,
+             "#n{transform:translateX(1px)}@media(%s:reduce){#n{transform:translateX(7px)}}",
+             feature);
+    g_root=dom_parse("<!doctype html><div id=n>probe</div>",
+                     (int)strlen("<!doctype html><div id=n>probe</div>"));
+    struct node *n=ID("n");
+    set(0);
+    css_apply(g_root,sheet,(int)strlen(sheet));
+    css_extra_apply(g_root,sheet,(int)strlen(sheet));
+    snprintf(label,sizeof label,"%s default extension rule",feature);
+    CHECK(transform_matches(n,"translateX(1px)"),label);
+    int before=css_extra_compiles();
+    set(1);
+    css_apply(g_root,sheet,(int)strlen(sheet));
+    css_extra_apply(g_root,sheet,(int)strlen(sheet));
+    snprintf(label,sizeof label,"%s live extension rule",feature);
+    CHECK(transform_matches(n,"translateX(7px)"),label);
+    snprintf(label,sizeof label,"%s change recompiles media regions",feature);
+    CHECK(css_extra_compiles()>before,label);
+    set(0);
+    css_apply(g_root,sheet,(int)strlen(sheet));
+    css_extra_apply(g_root,sheet,(int)strlen(sheet));
+    snprintf(label,sizeof label,"%s preference removal restores extension rule",feature);
+    CHECK(transform_matches(n,"translateX(1px)"),label);
+    dom_free(g_root);g_root=NULL;
+}
+
 int main(void)
 {
     media_case("@media(max-width:10px){@media(min-width:1px){#n{transform:translateX(2px)}}}#n{transform:translateX(7px)}",
@@ -43,6 +82,8 @@ int main(void)
                "translateX(5px)","commented media prelude cannot suppress later declarations");
     media_case("#n{font-family:'} @media(max-width:1px){';transform:translateX(6px)}",
                "translateX(6px)","quoted braces cannot change extension rule boundaries");
+    reduction_cache_case("prefers-reduced-motion",css_set_reduced_motion);
+    reduction_cache_case("prefers-reduced-transparency",css_set_reduced_transparency);
     printf("css-media-regions: %d checks, %d failures\n",checks,fails);
     return fails?1:0;
 }

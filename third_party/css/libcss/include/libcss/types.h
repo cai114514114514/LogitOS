@@ -230,6 +230,7 @@ typedef struct css_media {
 
 	lwc_string *prefers_color_scheme; /* "light", "dark" */
 	bool prefers_reduced_motion; /* embedder accessibility preference */
+	bool prefers_reduced_transparency; /* embedder accessibility preference */
 
 	/* Interaction media features */
 	css_media_pointer pointer;

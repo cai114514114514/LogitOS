@@ -104,6 +104,26 @@ static inline bool mq_match_feature_eq_ident_op1(
 	}
 }
 
+/* LogitOS supplies both reduction preferences through css_media. Keep their
+ * discrete-value rule here, where LibCSS evaluates stylesheet @media and the
+ * browser's matchMedia call together; a second browser-side scanner would let
+ * a page observe two answers for the same query. Media Queries 5 makes
+ * no-preference false only in the boolean form, not in an explicit equality. */
+static inline bool mq_match_reduction(const css_mq_feature *feat, bool reduced)
+{
+	if (feat->op == CSS_MQ_FEATURE_OP_BOOL) return reduced;
+	if (feat->op != CSS_MQ_FEATURE_OP_EQ || feat->value.type != CSS_MQ_VALUE_TYPE_IDENT ||
+			feat->value.data.ident == NULL) return false;
+	const char *value = lwc_string_data(feat->value.data.ident);
+	size_t len = lwc_string_length(feat->value.data.ident);
+	const char *want = reduced ? "reduce" : "no-preference";
+	if (len != (reduced ? 6u : 13u)) return false;
+	/* CSS keywords are ASCII-insensitive, unlike custom identifiers. */
+	for (size_t j = 0; j < len; j++)
+		if (((unsigned char)value[j] | 32) != (unsigned char)want[j]) return false;
+	return true;
+}
+
 /**
  * Match media query features.
  *
@@ -149,17 +169,14 @@ static inline bool mq_match_feature(
 #ifdef OPENLOGIT_REDUCED_MOTION_DISABLED
 		return false;
 #else
-		if (feat->op == CSS_MQ_FEATURE_OP_BOOL) return media->prefers_reduced_motion;
-		if (feat->op != CSS_MQ_FEATURE_OP_EQ || feat->value.type != CSS_MQ_VALUE_TYPE_IDENT)
-			return false;
-		if (!feat->value.data.ident) return false;
-		const char *value = lwc_string_data(feat->value.data.ident);
-		size_t len = lwc_string_length(feat->value.data.ident);
-		const char *want = media->prefers_reduced_motion ? "reduce" : "no-preference";
-		if (len != (media->prefers_reduced_motion ? 6u : 13u)) return false;
-		/* CSS keyword matching is ASCII-insensitive, unlike custom identifiers. */
-		for (size_t j=0;j<len;j++) if (((unsigned char)value[j] | 32) != (unsigned char)want[j]) return false;
-		return true;
+		return mq_match_reduction(feat, media->prefers_reduced_motion);
+#endif
+	}
+	if (lwc_string_isequal(feat->name, str->prefers_reduced_transparency, &match) == lwc_error_ok && match) {
+#ifdef OPENLOGIT_REDUCED_TRANSPARENCY_DISABLED
+		return false;
+#else
+		return mq_match_reduction(feat, media->prefers_reduced_transparency);
 #endif
 	}
 

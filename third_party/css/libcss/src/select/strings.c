@@ -203,6 +203,9 @@ css_error css_select_strings_intern(css_select_strings *str)
 	error = lwc_intern_string("prefers-reduced-motion", SLEN("prefers-reduced-motion"),
 	                          &str->prefers_reduced_motion);
 	if (error != lwc_error_ok) return css_error_from_lwc_error(error);
+	error = lwc_intern_string("prefers-reduced-transparency", SLEN("prefers-reduced-transparency"),
+	                          &str->prefers_reduced_transparency);
+	if (error != lwc_error_ok) return css_error_from_lwc_error(error);
 	return CSS_OK;
 }
 
@@ -242,4 +245,5 @@ void css_select_strings_unref(css_select_strings *str)
 	lwc_string_unref(str->device_height);
 	lwc_string_unref(str->prefers_color_scheme);
 	lwc_string_unref(str->prefers_reduced_motion);
+	lwc_string_unref(str->prefers_reduced_transparency);
 }

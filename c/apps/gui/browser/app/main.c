@@ -5565,6 +5565,7 @@ void app_main(void)
     css_init();             /* build the UA default stylesheet */
 #ifndef LOADERHOST_LOGIT_H
     css_set_reduced_motion(setting_int("ui.reduce_motion", 0));
+    css_set_reduced_transparency(setting_int("ui.reduce_transparency", 0));
 #endif
 #ifndef LOADERHOST_LOGIT_H
     /* Device media queries and JS screen share actual desktop geometry.
@@ -5790,6 +5791,7 @@ void app_main(void)
             if (e.type == EV_THEME) {
 #ifndef LOADERHOST_LOGIT_H
                 css_set_reduced_motion(setting_int("ui.reduce_motion", 0));
+                css_set_reduced_transparency(setting_int("ui.reduce_transparency", 0));
 #endif
                 /* Re-evaluate cascade before the deferred MQL listeners. Using
                  * the resize notification here would manufacture resize events. */

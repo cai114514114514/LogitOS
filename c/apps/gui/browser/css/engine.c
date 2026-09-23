@@ -870,6 +870,7 @@ static lwc_string *g_scheme;
 static int g_scheme_dark;
 /* System preference, shared across document contexts. */
 static int g_reduced_motion;
+static int g_reduced_transparency;
 
 static css_error resolve_url(void *pw, const char *base, lwc_string *rel, lwc_string **abs)
 { (void)pw; (void)base; *abs = lwc_string_ref(rel); return CSS_OK; }
@@ -1306,6 +1307,7 @@ void css_init(void)
     g_media.device_height = INTTOFIX(g_screen_h);
     css_set_color_scheme(g_scheme_dark);
     g_media.prefers_reduced_motion = g_reduced_motion;
+    g_media.prefers_reduced_transparency = g_reduced_transparency;
 
     memset(&g_unit, 0, sizeof g_unit);
     g_unit.viewport_width  = INTTOFIX(vw);
@@ -1377,7 +1379,18 @@ void css_set_reduced_motion(int reduced)
     g_media.prefers_reduced_motion = g_reduced_motion;
 }
 
+void css_set_reduced_transparency(int reduced)
+{
+    g_reduced_transparency = reduced != 0;
+    /* A preference change is not a DOM mutation. Invalidate the computed
+     * cascade before a page can read getComputedStyle or matchMedia again. */
+    if (g_media.prefers_reduced_transparency != g_reduced_transparency) ui_revision++;
+    g_media.prefers_reduced_transparency = g_reduced_transparency;
+}
+
 int css_color_scheme(void) { return g_scheme_dark; }
+int css_reduced_motion(void) { return g_reduced_motion; }
+int css_reduced_transparency(void) { return g_reduced_transparency; }
 
 int css_media_matches(const char *query, int len)
 {
@@ -4621,6 +4634,7 @@ struct css_context *css_context_activate(struct css_context *c)
      * belongs to the system. Invalidate on activation before replacing the
      * saved value; updating only the media value leaves cached styles stale. */
     css_set_reduced_motion(g_reduced_motion);
+    css_set_reduced_transparency(g_reduced_transparency);
     css_active_context=c;return previous;
 }
 void css_context_destroy(struct css_context *c)

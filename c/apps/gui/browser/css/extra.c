@@ -1766,6 +1766,7 @@ static struct xrule *g_rules;
 static int          g_nrules, g_rulecap;
 static int          g_compiled;
 static int          g_key_vw, g_key_vh, g_key_dark, g_key_screen_w, g_key_screen_h;
+static int          g_key_motion, g_key_transparency;
 static int          g_compiles;            /* test seam; see css_extra_compiles() */
 
 int css_extra_compiles(void) { return g_compiles; }
@@ -1831,8 +1832,19 @@ static int compile_sheet(const char *css, int len)
 {
     int vw = css_media_width(), vh = css_media_height(), dark = css_color_scheme();
     int sw = css_screen_width(), sh = css_screen_height();
-    if (g_compiled && g_srclen == len && g_key_vw == vw && g_key_vh == vh && g_key_screen_w == sw && g_key_screen_h == sh &&
-        g_key_dark == dark && memcmp(g_src, css, (unsigned)len) == 0)
+    int motion = css_reduced_motion(), transparency = css_reduced_transparency();
+    /* The parsed extension rules store whether each @media group was active.
+     * Reusing them after an accessibility preference changes silently keeps
+     * the old transform/animation declarations even if LibCSS recascades. */
+    int same_media = g_key_vw == vw && g_key_vh == vh &&
+                     g_key_screen_w == sw && g_key_screen_h == sh &&
+                     g_key_dark == dark;
+#ifndef CSS_REDUCTION_MEDIA_CACHE_NEGCTL
+    same_media = same_media && g_key_motion == motion &&
+                 g_key_transparency == transparency;
+#endif
+    if (g_compiled && g_srclen == len && same_media &&
+        memcmp(g_src, css, (unsigned)len) == 0)
         return 1;
 
     compile_drop();
@@ -1843,6 +1855,7 @@ static int compile_sheet(const char *css, int len)
     g_src = cp; g_srclen = len;
     g_key_vw = vw; g_key_vh = vh; g_key_dark = dark;
     g_key_screen_w = sw; g_key_screen_h = sh;
+    g_key_motion = motion; g_key_transparency = transparency;
 
     if(!media_scan(g_src, len)){compile_drop();return 0;}
     if (!keyframes_scan(0, len)) { compile_drop(); return 0; }
@@ -2773,6 +2786,8 @@ int logit_css_extra_supports_name(const char *name, int len)
     X(g_key_dark) \
     X(g_key_screen_w) \
     X(g_key_screen_h) \
+    X(g_key_motion) \
+    X(g_key_transparency) \
     X(g_compiles)
 
 struct css_extra_context {

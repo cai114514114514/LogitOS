@@ -38,6 +38,28 @@ int main(void)
     ck(n && n->style && (((struct cstyle*)n->style)->color&0xffffff)==0x0000ff,"motion media query selects actual stylesheet rule");
     ckjs("!matchMedia('(prefers-reduced-motion:unknown)').matches && !matchMedia('(prefers-reduced-motion:no-preference)').matches", "motion preference rejects unknown and opposite value");
     ckjs("matchMedia('(prefers-reduced-motion: REDUCE)').matches", "motion keyword matching is ASCII case insensitive");
+    css_set_reduced_transparency(0);
+    ckjs("matchMedia('(prefers-reduced-transparency:no-preference)').matches && !matchMedia('(prefers-reduced-transparency)').matches",
+         "default transparency preference is false in a boolean query");
+    run("var transparencyChanges=[], transparency=matchMedia('(prefers-reduced-transparency:reduce)');"
+        "transparency.addEventListener('change',function(e){transparencyChanges.push(e.matches);});");
+    css_set_reduced_transparency(1); js_webapi_media_changed(); js_webapi_pump(ctx);
+    ckjs("transparency.matches && transparencyChanges.length===1 && transparencyChanges[0] && matchMedia('(prefers-reduced-transparency)').matches",
+         "transparency preference updates the existing MediaQueryList");
+    sheet="#wrap{color:#ff0000}@media(prefers-reduced-transparency:reduce){#wrap{color:#008800}}";
+    css_apply(root,sheet,(int)strlen(sheet));
+    ck(n && n->style && (((struct cstyle*)n->style)->color&0xffffff)==0x008800,
+       "transparency media query selects an actual stylesheet rule");
+    ckjs("!matchMedia('(prefers-reduced-transparency:unknown)').matches && !matchMedia('(prefers-reduced-transparency:no-preference)').matches",
+         "transparency preference rejects unknown and opposite values");
+    ckjs("matchMedia('(prefers-reduced-transparency: REDUCE)').matches",
+         "transparency keyword matching is ASCII case insensitive");
+    css_set_reduced_transparency(0); js_webapi_media_changed(); js_webapi_pump(ctx);
+    ckjs("!transparency.matches && transparencyChanges.length===2 && transparencyChanges[1]===false && !matchMedia('(prefers-reduced-transparency)').matches",
+         "turning transparency preference off reverses the live query once");
+    css_apply(root,sheet,(int)strlen(sheet));
+    ck(n && n->style && (((struct cstyle*)n->style)->color&0xffffff)==0xff0000,
+       "transparency stylesheet rule stops applying after preference changes");
     js_page_close();ctx=NULL;dom_free(root);
     printf("device media: %d checks, %d failures\n",checks,failures);return failures?1:0;
 }
