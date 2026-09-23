@@ -2150,8 +2150,8 @@ test-crypto: $(BUILD)
 # the named 1 MiB assertion fail, not merely produce a nonzero exit.
 RNG_TEST_SRC := tests/unit/rng_test.c c/kernel/core/rng.c c/crypto/hash/sha256.c c/kernel/cpu/cpufeat.c
 RNG_TEST_INC := -Itests/unit/rngstub -Ic/crypto $(KCORE_INC) $(KCPU_INC)
-.PHONY: test-rng test-rng-negctl
-test-rng: test-rng-negctl
+.PHONY: test-rng test-rng-negctl test-rng-hw test-rng-hw-negctl
+test-rng: test-rng-negctl test-rng-hw
 	@mkdir -p $(BUILD)
 	$(CC) -O2 -Wall -Wextra -DRNG_HOST_TEST -o $(BUILD)/rng_test $(RNG_TEST_SRC) $(RNG_TEST_INC)
 	$(BUILD)/rng_test
@@ -2169,6 +2169,33 @@ test-rng-negctl:
 	     echo "CONTROL FAILED: expected only the periodic-reseed assertion to fail (exit $$status)"; \
 	     exit 1; \
 	 fi
+
+# CPUID only promises that RDSEED/RDRAND can be attempted. Exercise 0, 1 and
+# 2 successful words with a host fixture whose instruction result is controlled
+# independently of its advertised feature bits. The old CPUID-only query must
+# fail the named assertion before the corrected gate is accepted.
+test-rng-hw-negctl:
+	@mkdir -p $(BUILD)
+	$(CC) -O2 -Wall -Wextra -DRNG_HOST_TEST -DRNG_TEST_HW_WORDS=0 -DRNG_TEST_WEAK_GATE -o $(BUILD)/rng_hw_negctl $(RNG_TEST_SRC) $(RNG_TEST_INC)
+	@$(BUILD)/rng_hw_negctl > $(BUILD)/rng_hw_negctl.log 2>&1; status=$$?; \
+	 if [ "$$status" -eq 1 ] && \
+	    rg -q '^FAIL successful hardware entropy threshold controls strong query$$' $(BUILD)/rng_hw_negctl.log && \
+	    rg -q '^1 FAILED$$' $(BUILD)/rng_hw_negctl.log; then \
+	     echo 'NEGCTL RED: CPUID-only strong query accepted failed hardware entropy'; \
+	 else \
+	     cat $(BUILD)/rng_hw_negctl.log; \
+	     echo "CONTROL FAILED: expected only the strong-query assertion (exit $$status)"; \
+	     exit 1; \
+	 fi
+
+test-rng-hw: test-rng-hw-negctl
+	@set -e; for words in 0 1 2; do \
+	    $(CC) -O2 -Wall -Wextra -DRNG_HOST_TEST -DRNG_TEST_HW_WORDS=$$words -o $(BUILD)/rng_hw_$$words $(RNG_TEST_SRC) $(RNG_TEST_INC); \
+	    $(BUILD)/rng_hw_$$words > $(BUILD)/rng_hw_$$words.log; \
+	    rg -q '^ok   successful hardware entropy threshold controls strong query$$' $(BUILD)/rng_hw_$$words.log; \
+	    rg -q '^ALL PASS$$' $(BUILD)/rng_hw_$$words.log; \
+	 done
+	@echo 'RNG hardware gate: 0/1 words refused; 2 words accepted'
 
 # The trust store must not lie about its own size. genroots.py silently drops
 # any root whose key type the kernel cannot verify (P-521, Ed25519); until this
@@ -3707,11 +3734,18 @@ test-klog-control:
 # headers (tests/unit/kheapstub/ shadows the kernel ones via -I order) and asserts
 # the no-two-live-allocations-overlap invariant -- including across injected
 # pmm_alloc_contig failures (the grow() double-accounting bug class).
-test-kheap:
+test-kheap: test-kheap-crosscore
 	@mkdir -p $(BUILD)
 	@$(CC) -O1 -g -DMM_HOSTTEST -fsanitize=address -o $(BUILD)/kheap_test tests/unit/kheap_test.c c/kernel/mm/phys/kheap.c \
 	    -Itests/unit/kheapstub $(KMM_INC)
 	@$(BUILD)/kheap_test
+
+# The old free path had only a local magazine scan: another core could accept
+# the same pointer. The fixture removes the new header claim for a named red
+# control before the real test.
+.PHONY: test-kheap-crosscore
+test-kheap-crosscore:
+	@python3 tests/unit/kheap_crosscore_run.py --build $(BUILD)/kheap-crosscore
 
 # mini-libc allocator host test: asserts the SCALING of c/apps/libc/src/malloc.c,
 # not a duration -- doubling the number of live blocks must roughly double the
