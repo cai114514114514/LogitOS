@@ -21,8 +21,9 @@ struct reasm_slot {
     uint64_t tick;               /* last fragment arrival */
     uint32_t total;              /* payload length, once the MF=0 fragment is seen */
     int      have_last;
-    uint32_t rcvd;               /* bytes so far; overlaps poison, so == total is
-                                  * sufficient AND necessary for full coverage */
+    uint32_t rcvd;               /* bytes so far; no overlaps within the stated
+                                  * total makes == total prove full coverage */
+    uint32_t high;               /* one past the highest received payload byte */
     uint8_t  hdr[REASM_HDR];     /* offset-0 fragment's header: its dst feeds the
                                   * UDP pseudo-header (broadcast) and it is what
                                   * an ICMP error would quote */
@@ -69,30 +70,37 @@ int reasm_input(uint32_t src, uint32_t dst, uint8_t proto, uint16_t id,
     s->tick = timer_ticks();
 
     /* Any byte beyond the buffer, any overlap with already-received bytes, or
-     * a second conflicting tail fragment poisons the whole datagram: overlaps
-     * are the teardrop-class attack surface, and silently "merging" them lets
-     * a sender smuggle a different byte stream past the validation that saw
-     * the first copy. */
-    if ((uint32_t)off + dlen > REASM_MAX ||
-        (s->have_last && (uint32_t)off + dlen > s->total) ||
-        (!more && s->have_last && (uint32_t)off + dlen != s->total)) {
+     * a conflicting tail poisons the whole datagram. The old claim above said
+     * no overlaps made rcvd == total sufficient. It missed bytes past a later
+     * tail: [64,72) plus [8,16) has rcvd == total == 16, but [0,8) is absent.
+     * Refuse that tail before the byte count can call stale slot data complete.
+     * Silently merging overlaps is the teardrop-class attack surface too. */
+    uint32_t end = (uint32_t)off + dlen;
+    if (end > REASM_MAX ||
+        (s->have_last && end > s->total) ||
+        (!more && s->have_last && end != s->total)
+#ifndef REASM_NEGCTL_SHORT_TAIL
+        || (!more && end < s->high)
+#endif
+        ) {
         s->used = 0;
         return 0;
     }
-    for (uint32_t i = off; i < (uint32_t)off + dlen; i++)
+    for (uint32_t i = off; i < end; i++)
         if (byte_rcvd(s, i)) { s->used = 0; return 0; }
 
     memcpy(s->data + off, data, dlen);
-    for (uint32_t i = off; i < (uint32_t)off + dlen; i++)
+    for (uint32_t i = off; i < end; i++)
         s->map[i >> 3] |= (uint8_t)(1u << (i & 7));
     s->rcvd += dlen;
+    if (end > s->high) s->high = end;
     if (off == 0 && ihl <= REASM_HDR) {  /* keep the first fragment's header */
         memcpy(s->hdr, iph, ihl);
         s->hdr_len = ihl;
     }
     if (!more) {
         s->have_last = 1;
-        s->total = (uint32_t)off + dlen;
+        s->total = end;
     }
 
     if (s->have_last && s->rcvd == s->total) {

@@ -433,6 +433,39 @@ int main(void)
     CHECK(trecv(s0, bigbuf, sizeof bigbuf, NULL, NULL) == -1 && used_slots() == 0,
           "reasm: >64 KiB datagram must be dropped (slots=%d)", used_slots());
 
+    /* 11a) A last fragment cannot move the datagram end behind bytes already
+     * received. The old byte-count test even reported this sparse datagram as
+     * complete: 8 bytes outside [0,16) plus 8 inside gave rcvd == total. Use
+     * reasm_input directly to inspect that return before ip_input releases it. */
+    int false_complete = 0;
+    uint8_t short_iph[20] = { 0x45 };
+    struct reasm_dgram bad_g;
+    for (int i = 0; i < REASM_SLOTS; i++) {
+        frame_id = (uint16_t)(0x1100 + i);
+        false_complete += reasm_input(REMOTE_IP, LOCAL_IP, IP_PROTO_UDP,
+                                      frame_id, short_iph, sizeof short_iph,
+                                      64, 1, datagram + 64, 8, &bad_g);
+        false_complete += reasm_input(REMOTE_IP, LOCAL_IP, IP_PROTO_UDP,
+                                      frame_id, short_iph, sizeof short_iph,
+                                      8, 0, datagram + 8, 8, &bad_g);
+    }
+    CHECK(false_complete == 0,
+          "reasm: sparse datagram must not be reported complete (%d)",
+          false_complete);
+    CHECK(used_slots() == 0,
+          "reasm: tail before received bytes must free its slot (slots=%d)",
+          used_slots());
+    frame_id = 0x1104;
+    flen = make_frame(frame, REMOTE_IP, LOCAL_IP, IP_PROTO_UDP,
+                      datagram + 64, (uint16_t)(blen - 64), 8, 64);
+    ip_input(frame, (uint16_t)flen);
+    flen = make_frame(frame, REMOTE_IP, LOCAL_IP, IP_PROTO_UDP,
+                      datagram, 64, 0x2000, 64);
+    ip_input(frame, (uint16_t)flen);
+    CHECK(trecv(s0, bigbuf, sizeof bigbuf, NULL, NULL) == (int)sizeof big &&
+          memcmp(bigbuf, big, sizeof big) == 0,
+          "reasm: contradictory tails must not block a valid datagram");
+
     /* 12) An ICMP port-unreachable quoting our DNS query fails the waiting
      *    receive socket immediately; one quoting a different port does not. */
     frame_id = 0;
