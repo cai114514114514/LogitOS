@@ -6,10 +6,10 @@
  *
  * Two personalities, chosen by the environment, from one binary:
  *
- *   NON-INTERACTIVE (the serial console, `sh < script`): byte-for-byte the old
- *   behaviour -- prompt on stdout, one line read from fd 0, no echo, no frames.
- *   Nothing that consumes this shell over a pipe can tell the rest of this file
- *   exists, which is what keeps tests/boot/run-shell-test.sh honest.
+ *   NON-INTERACTIVE (the serial console, `sh < script`): prompt on stdout,
+ *   one line read from fd 0, no echo, no frames. The old byte-for-byte claim
+ *   ceased to hold when command strings gained `;` and newline separators;
+ *   the input/output transport and its serial guest gate remain unchanged.
  *
  *   INTERACTIVE (LOGIT_TERM + LOGIT_RICH + LOGIT_CTL are set, i.e. the GUI
  *   Terminal started us): the shell owns the line. It edits, keeps history and
@@ -1234,6 +1234,51 @@ static void exec_line(char *line)
     last_status = wait_foreground(j);
 }
 
+/* A `-c` argument is a command STRING, not one argv-shaped line. Splitting it
+ * before exec_line() also lets the serial and rich shells run `a; b` without
+ * teaching the word tokenizer to mistake quoted or escaped semicolons for
+ * operators. The old path passed the whole string to exec_line():
+ * `system("export A=1; echo $A")` ran only the export (with a trailing `;` in
+ * its value) and still returned success. Each segment is parsed after the
+ * preceding command finishes, so `$?` and newly exported variables are fresh.
+ * This deliberately adds only sequential `;` and LF; `&&`, `||`, subshells,
+ * and positional parameters beyond $0 still need their own grammar. */
+static void exec_commands(const char *text)
+{
+#ifdef SH_COMMAND_LIST_NEGCTL
+    /* The test build restores the formerly silent single-line behaviour. */
+    exec_line((char *)text);
+#else
+    char line[LINE];
+    int n = 0, quote = 0;                  /* 0 none, 1 single, 2 double */
+    for (int i = 0; ; i++) {
+        char c = text[i];
+        if (!c && quote) {
+            errs("sh: unterminated quote in command string\n");
+            last_status = 2;
+            return;
+        }
+        if (!c || (!quote && (c == ';' || c == '\n'))) {
+            line[n] = 0;
+            if (n) exec_line(line);
+            n = 0;
+            if (!c) return;
+            continue;
+        }
+        if (c == '\\' && quote != 1 && text[i + 1]) {
+            if (n > LINE - 3) { refuse("command too long", LINE - 1, "bytes"); return; }
+            line[n++] = c;
+            line[n++] = text[++i];
+            continue;
+        }
+        if (n >= LINE - 1) { refuse("command too long", LINE - 1, "bytes"); return; }
+        line[n++] = c;
+        if (c == '\'' && quote != 2) quote = quote == 1 ? 0 : 1;
+        else if (c == '"' && quote != 1) quote = quote == 2 ? 0 : 2;
+    }
+#endif
+}
+
 /* Read one line from fd into buf[max] for the NON-INTERACTIVE shell. Returns
  * the length, -1 at EOF with nothing read, or READ_E_LONG when the line did
  * not fit -- in which case the REST OF THE LINE HAS BEEN CONSUMED and nothing
@@ -1297,8 +1342,8 @@ int main(int argc, char **argv)
     rt_parser_init(&cparse);
     rt_reset(&enc);
 
-    /* POSIX -c: `sh -c 'command string' [name]` runs the string as a single
-     * command line and exits with ITS status -- no prompt, no history, no
+    /* `sh -c 'command string' [name]` runs the sequential commands and exits
+     * with the last one's status -- no prompt, no history, no
      * RT_T_* framing, none of the interactive machinery above. This is the
      * entry point mini-libc's system()/popen() already build
      * (`(char*)"sh", (char*)"-c", (char*)cmd`, see popen.c and stdlib.c) and
@@ -1316,7 +1361,7 @@ int main(int argc, char **argv)
 #ifndef SH_DASHC_NEGCTL
         if (argc <= 2) { errs("sh: -c: option requires an argument\n"); app_exit(2); }
         if (argc > 3) g_arg0 = argv[3];
-        exec_line(argv[2]);
+        exec_commands(argv[2]);
         app_exit(last_status);
 #endif
         /* SH_DASHC_NEGCTL: fall through as if -c meant nothing -- the exact
@@ -1336,7 +1381,7 @@ int main(int argc, char **argv)
             if (n == READ_E_LONG) { refuse("line too long", LINE - 1, "bytes"); continue; }
             if (n < 0) break;
             if (n == 0) continue;
-            exec_line(line);
+            exec_commands(line);
         }
         return 0;
     }
@@ -1367,7 +1412,7 @@ int main(int argc, char **argv)
         rt_str(&enc, line);
         rt_send(RT_T_CMD_BEGIN, &enc);
 
-        exec_line(line);
+        exec_commands(line);
 
         rt_reset(&enc);
         rt_u32(&enc, id);

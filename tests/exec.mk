@@ -414,3 +414,7 @@ ci-boot: test-argv-limits-os
 
 # DMA shares the wide-memory boot matrix, with independent device gates.
 -include tests/dma.mk
+
+# Command-string syntax is part of the executable-loader user-facing contract:
+# libc system()/popen() and sshd all hand /bin/sh a single -c argument.
+-include tests/sh_commands.mk
