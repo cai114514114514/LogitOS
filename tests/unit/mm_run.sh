@@ -144,6 +144,10 @@ run_negative mm_forkfile_test VMM_FORK_REASSEMBLE \
     "a forked child's file PTE is taken apart and put back together (frame from the top, flags from the low twelve bits) instead of installed whole -- the child's copy of a NO-EXECUTE page comes back EXECUTABLE, and the program still runs, which is why only a bit-for-bit assertion catches it"
 run_negative mm_shm_test SHM_FORK_COPY \
     "fork privatises a MAP_SHARED page instead of handing the child the same memory -- which is exactly what adding shared memory and not touching vmm_clone_user looks like. Nothing else breaks: the child gets the right bytes, the right permissions and a balanced refcount, rmap_audit stays clean, and both address spaces are well formed. The two processes simply stop hearing from each other on the first write, with no error anywhere. Only an assertion on FRAME IDENTITY across the fork can see it"
+run_negative mm_shm_test VMA_SHM_NO_RIGHT_CEILING \
+    "a read-only SHM open becomes writable through mprotect, bypassing the checked MAP request"
+run_negative mm_shm_test VMA_SHM_NO_SPLIT_REF \
+    "mprotect splits a SHM area without taking references, so unmapping one split frees memory still named by the others"
 
 run_negative mm_pcache_test PCACHE_NO_READAHEAD \
     "the cache never prefetches -- the sequential walk of 1,000 pages goes back to 1,000 misses and 0 hits, which is the code exactly as it shipped. It is a COUNT and nothing else: every page still arrives, every byte is still right, and every other assertion in the suite still passes, so only a test that measures device round trips can see this feature at all"

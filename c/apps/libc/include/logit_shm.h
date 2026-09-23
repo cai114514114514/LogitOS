@@ -78,14 +78,16 @@
  * not a filesystem, and a name that looked like a path would invite the belief
  * that the two namespaces agree.
  *
- * Returns a handle >= 0, or -1 with errno set (ENOENT, EEXIST, EACCES, ENOMEM,
- * EINVAL). */
+ * Returns a process-local handle >= 0, or -1 with errno set (ENOENT, EEXIST,
+ * EACCES, ENOMEM, EINVAL). Fork inherits an open handle. */
 int lshm_open(const char *name, unsigned pages, unsigned mode, unsigned flags);
 
 /* Map `len` bytes of a segment starting at page `page_off`. `prot` is the
  * PROT_* set from <sys/mman.h>, and PROT_WRITE is honoured -- unlike a file
  * mapping, a segment's frames ARE the storage, so a write has nothing to be
- * flushed back to and is simply visible to everyone else mapping it.
+ * flushed back to and is simply visible to everyone else mapping it. The
+ * handle must have been opened with LSHM_WRITE to request PROT_WRITE, including
+ * if a read-only mapping is later changed with mprotect().
  *
  * Returns the base address, or MAP_FAILED. Unmap it with munmap(). */
 void *lshm_map(int handle, size_t len, unsigned page_off, int prot);
@@ -96,7 +98,7 @@ void *lshm_map(int handle, size_t len, unsigned page_off, int prot);
 int lshm_unlink(const char *name);
 
 /* Drop this handle. Does NOT unmap anything -- a mapping holds its own
- * reference -- which is what makes open/map/close/unlink complete. */
+ * reference. A handle this process does not own returns -1 with EBADF. */
 int lshm_close(int handle);
 
 #endif /* _LOGIT_SHM_H */

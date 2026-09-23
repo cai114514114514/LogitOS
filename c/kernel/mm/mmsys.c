@@ -294,6 +294,8 @@ long mm_syscall(long num, long a, long b, long c)
      * therefore testable on the host (mm_shm_test drives it with explicit uids)
      * and cannot be bypassed by a second caller. */
     case SYS_SHM_OPEN: {
+        struct proc *owner = proc_current();
+        if (!owner) return SHM_E_INVAL;
         struct vcred cr;
         vfs_cred_current(&cr);
         /* A NULL name asks for an UNNAMED segment -- nothing can look it up, so
@@ -302,8 +304,13 @@ long mm_syscall(long num, long a, long b, long c)
          * mmap(MAP_SHARED|MAP_ANONYMOUS) out of, and it rides on this number
          * rather than a fifth one because it is the same object with the same
          * lifetime: only the lookup differs. */
-        if (!a)
-            return shm_create_anon((unsigned)b, cr.uid);
+        if (!a) {
+            int segment = shm_create_anon((unsigned)b, cr.uid);
+            if (segment < 0) return segment;
+            int handle = proc_shm_install(owner, segment, 1);
+            if (handle < 0) { shm_put(segment); return SHM_E_NOMEM; }
+            return handle;
+        }
 
         char name[SHM_NAMEMAX];
         if (user_copy_string(name, (int)sizeof name, (const char *)(uint64_t)a) < 0)
@@ -315,11 +322,20 @@ long mm_syscall(long num, long a, long b, long c)
         if (flags & SHM_O_CREAT) sf |= SHM_CREAT;
         if (flags & SHM_O_EXCL)  sf |= SHM_EXCL;
         if (flags & SHM_O_WRITE) sf |= SHM_WRITE;
-        return shm_open(name, (unsigned)b, mode, sf, cr.uid);
+        int segment = shm_open(name, (unsigned)b, mode, sf, cr.uid);
+        if (segment < 0) return segment;
+        int handle = proc_shm_install(owner, segment, !!(flags & SHM_O_WRITE));
+        if (handle < 0) { shm_put(segment); return SHM_E_NOMEM; }
+        return handle;
     }
 
     case SYS_SHM_MAP: {
-        int sh = (int)a;
+        struct proc *owner = proc_current();
+        int writable = 0;
+        int sh = proc_shm_acquire(owner, (int)a,
+                                  ((int)((uint64_t)c >> 32) & MMAP_PROT_WRITE) != 0,
+                                  &writable);
+        if (sh < 0) return 0;
         uint64_t len = (uint64_t)b;
         uint64_t packed = (uint64_t)c;
         int prot = (int)(packed >> 32);
@@ -331,17 +347,12 @@ long mm_syscall(long num, long a, long b, long c)
         if (prot & MMAP_PROT_EXEC)  p |= VMA_EXEC;
         if (!p) p = VMA_READ;              /* PROT_NONE floor, same as SYS_MMAP */
 
-        /* The handle must be one this process legitimately holds -- but there is
-         * no per-process handle table here, so what stops a program guessing an
-         * integer is the mode check it already had to pass at SYS_SHM_OPEN. Said
-         * out loud because it is the weakest part of this ABI: a handle is a
-         * small integer in a GLOBAL table, so a process that never opened a
-         * segment can name it, and the only thing between it and the memory is
-         * that shm_open refused it. That is enough for a mode-0600 segment and
-         * is NOT enough to call these handles capabilities. Making them
-         * per-process is a proc.c change and belongs with whoever owns that
-         * file; c/kernel/exec/proc.h's fd table is the shape it would take. */
-        uint64_t base = vma_reserve_shm(cr3, 0, len, p, sh, off);
+        /* proc_shm_acquire verified this process's handle and open mode while
+         * taking a transient segment reference. A guessed global slot no longer
+         * bypasses shm_open's mode check, and a concurrent SHM_CLOSE cannot
+         * recycle the slot while the VMA takes its own reference. */
+        uint64_t base = vma_reserve_shm(cr3, 0, len, p, sh, off, writable);
+        shm_put(sh);
         return (long)base;
     }
 
@@ -355,12 +366,9 @@ long mm_syscall(long num, long a, long b, long c)
     }
 
     case SYS_SHM_CLOSE:
-        /* Drops the caller's handle only. Any MAPPING keeps its own reference
-         * (vma_reserve_shm took one), so this cannot pull memory out from under
-         * a running process -- which is what makes open/map/close/unlink the
-         * complete idiom rather than a leak. */
-        shm_put((int)a);
-        return 0;
+        /* The local table proves ownership before dropping its reference.
+         * A mapping has a separate VMA reference and survives this close. */
+        return proc_shm_close(proc_current(), (int)a) < 0 ? SHM_E_INVAL : 0;
 
     case SYS_MEMINFO: {
         struct logit_meminfo mi;

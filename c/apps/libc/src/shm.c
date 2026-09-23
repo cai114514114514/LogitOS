@@ -131,11 +131,8 @@ int lshm_unlink(const char *name)
 
 int lshm_close(int handle)
 {
-    if (handle < 0) { errno = EINVAL; return -1; }
-    sys(SYS_SHM_CLOSE, (long)handle, 0, 0);
-    /* SYS_SHM_CLOSE cannot fail -- it drops a handle, and a handle that was
-     * never live is a no-op in the kernel. Returning int anyway so that a
-     * per-process handle table (mmsys.c names it as the missing piece) can
-     * start reporting EBADF here without changing every caller's shape. */
+    if (handle < 0) { errno = EBADF; return -1; }
+    long r = sys(SYS_SHM_CLOSE, (long)handle, 0, 0);
+    if (r < 0) { errno = EBADF; return -1; }
     return 0;
 }

@@ -310,6 +310,10 @@ ci-boot: test-bigexec
 # and `-include` nests. See the header of tests/coredump.mk.
 -include tests/coredump.mk
 
+# SHM handles share a process lifetime with fds and are inherited on fork.
+# Keep their focused ownership control with the exec gates.
+-include tests/shmfd.mk
+
 # How big the filesystem IS -- the image geometry gate and its drift control.
 # Its own fragment, included from here rather than from the top-level Makefile,
 # for the reason tests/poll.mk, tests/procfs.mk and tests/coredump.mk all give:

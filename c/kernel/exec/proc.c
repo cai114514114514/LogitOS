@@ -221,6 +221,7 @@ static struct proc *alloc_proc(void)
         if (procs[i].state == PROC_FREE) {
             struct proc *p = &procs[i];
             for (int f = 0; f < NFD; f++) p->fd[f] = NULL;
+            proc_shm_reset(p);
             for (unsigned a = 0; a < sizeof p->agent; a++) ((uint8_t *)&p->agent)[a] = 0;
             g_killmark[i] = 0;                 /* a recycled slot never inherits a kill mark */
             p->fd_lock = (spinlock_t)SPINLOCK_INIT; p->teardown = 0; p->execing = 0; p->system_service = 0;
@@ -279,6 +280,7 @@ void proc_abort_build(struct proc *p)
     /* Caller retains the sole BUILDING reservation through cleanup. Publishing
      * FREE first lets a new allocation inherit this cleanup and lose its FDs. */
     proc_fd_close_all(p);
+    proc_shm_close_all(p);
     ksig_proc_free(p->pid);
     uint64_t fl = spin_lock_irqsave(&g_proc_lock);
     p->pid = 0; p->cr3 = 0; p->state = PROC_FREE;
@@ -537,6 +539,11 @@ long proc_fork(struct registers *r, const void *user_fxarea)
      * two processes. */
     ksig_proc_fork(child->pid, parent->pid);
     proc_fd_clone(child, parent);
+    if (proc_shm_clone(child, parent) < 0) {
+        vmm_free_space(space);
+        proc_abort_build(child);
+        return -1;
+    }
 
     /* M30, and this is POSIX's rule rather than a shortcut: ONLY THE CALLING
      * THREAD EXISTS IN THE CHILD. thread_fork() builds exactly one thread, and
@@ -725,10 +732,11 @@ void proc_exit(int code)
         if (!uthread_release_self(0)) thread_exit();
         uthread_proc_reap(p->pid);       /* free this process's descriptors + its mark */
 
-        /* Close fds BEFORE marking zombie (file_close takes g_file_lock/kheap, which
-         * must not nest under g_proc_lock). While still RUNNING with no fds, a waiter
-         * sees RUNNING and keeps waiting -- no premature reap. */
+        /* Close fds and SHM handles BEFORE marking zombie. Both backends can
+         * take their own locks, which must not nest under g_proc_lock. While
+         * still RUNNING, a waiter keeps waiting -- no premature reap. */
         proc_fd_close_all(p);
+        proc_shm_close_all(p);
         /* Sockets are a separate table from the fds, so they need their own
          * sweep. Without it a tab that dies mid-load (window closed, page
          * faulted) strands its connections until something else needs the slot

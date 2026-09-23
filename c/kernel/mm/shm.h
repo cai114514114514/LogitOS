@@ -144,11 +144,10 @@
  * lifetimes to get right instead of one.
  *
  * PERMISSIONS ARE REAL AND ARE CHECKED HERE, not at the caller. shm_open()
- * takes the asking uid and enforces `mode` against it; a caller that already
- * knows the uid cannot forget the check, and the whole rule is testable on the
- * host without c/fs on the include path (mmsys.c supplies the uid from
- * vfs_cred_current(), which is the only kernel-only part). Root (uid 0)
- * bypasses, as it does in c/fs.
+ * takes the asking uid and enforces `mode` against it. The syscall layer must
+ * keep the returned segment reference behind a process-local handle: a global
+ * slot is enumerable and would bypass this check at SHM_MAP or SHM_CLOSE.
+ * Root (uid 0) bypasses the open check, as it does in c/fs.
  *
  * WHAT IS NOT HERE: no resize (a segment's size is fixed at creation, so no
  * mapping can be outlived by a shrink), no msync (there is no backing store to
@@ -199,9 +198,8 @@ void shm_init(void);
  * (mmsys.c passes vfs_cred_current()'s). `pages` and `mode` are used only when
  * creating. Returns a handle >= 0 with ONE reference taken, or a SHM_E_*.
  *
- * The reference is the caller's to put. mmsys.c holds it across the syscall
- * and hands it to the VMA (which takes its own), exactly as it does for a
- * pcache file handle. */
+ * The reference is the caller's to put. mmsys.c transfers it to a process-local
+ * handle; SHM_MAP later takes a temporary reference while the VMA takes its own. */
 int shm_open(const char *name, unsigned pages, unsigned mode, unsigned flags,
              unsigned uid);
 

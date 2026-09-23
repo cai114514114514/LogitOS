@@ -20,12 +20,21 @@
  * measured in tens of MiB (see the M "12 MiB program" section of CLAUDE.md),
  * this is noise. */
 #define NFD   32
+/* Sixteen local SHM handles cost 16 x 8 + 4 = 132 bytes per process,
+ * 4,224 bytes for all 32 slots. The separate table keeps segment IDs private
+ * while allowing multiple opens of the same one with different write rights. */
+#define NSHM  16
 
 enum proc_state { PROC_FREE = 0, PROC_RUNNING, PROC_ZOMBIE, PROC_BUILDING };
 
 struct file;   /* file.h */
 struct aex_info;
 struct elf_image;
+
+/* SHM syscall handles are process-local. The segment table index is kernel
+ * state, never an authority a caller may guess. A handle also remembers whether
+ * this particular open requested write access. */
+struct proc_shm_handle { int segment; int writable; };
 
 struct proc {
     struct aex_agent_identity agent;
@@ -45,6 +54,8 @@ struct proc {
     int system_service; /* Kernel-created credential root, set before publication. */
     int teardown; /* tid+1 elected under g_ut_lock; 0 until final teardown. */
     struct file *fd[NFD];
+    struct proc_shm_handle shm[NSHM];
+    unsigned shm_mask; /* occupied handle slots; see proc_shm_close_all */
     char     cwd[128];
     char     name[32];
 
@@ -133,6 +144,14 @@ int proc_fd_dup2(struct proc *p, int old, int replacement);
 int proc_fd_pair(struct proc *p, struct file *a, struct file *b, int out[2]);
 void proc_fd_clone(struct proc *dst, struct proc *src);
 void proc_fd_close_all(struct proc *p);
+/* Ownership of one segment reference moves to install on success. Acquire
+ * takes a transient reference that its caller must release with shm_put(). */
+void proc_shm_reset(struct proc *p);
+int  proc_shm_install(struct proc *p, int segment, int writable);
+int  proc_shm_acquire(struct proc *p, int handle, int write, int *writable);
+int  proc_shm_close(struct proc *p, int handle);
+int  proc_shm_clone(struct proc *dst, struct proc *src);
+void proc_shm_close_all(struct proc *p);
 /* Resolve `in` to an absolute canonical path against p->cwd (collapses . and ..). */
 void          proc_resolve(struct proc *p, const char *in, char *out, int max);
 

@@ -173,13 +173,13 @@ static void t_two_spaces(int sh, uint64_t *out_a, uint64_t *out_b,
     mm_ok(a && b, "two address spaces");
 
     mm_host_cr3 = a;
-    uint64_t va = vma_reserve_shm(a, 0, SEGPAGES * 4096, VMA_READ | VMA_WRITE, sh, 0);
+    uint64_t va = vma_reserve_shm(a, 0, SEGPAGES * 4096, VMA_READ | VMA_WRITE, sh, 0, 1);
     mm_ok(va != 0, "space A reserves the whole segment");
 
     /* A hint one page further up, so B's addresses cannot coincide with A's. */
     mm_host_cr3 = b;
     uint64_t vb = vma_reserve_shm(b, va + 0x200000, SEGPAGES * 4096,
-                                  VMA_READ | VMA_WRITE, sh, 0);
+                                  VMA_READ | VMA_WRITE, sh, 0, 1);
     mm_ok(vb != 0, "space B reserves it too");
     mm_ok(vb != va, "at a DIFFERENT virtual address -- sharing is by frame, not by address");
 
@@ -243,7 +243,7 @@ static void t_offset(int sh)
 
     const uint64_t half = SEGPAGES / 2;
     uint64_t vc = vma_reserve_shm(c, 0, half * 4096, VMA_READ | VMA_WRITE,
-                                  sh, half * 4096);
+                                  sh, half * 4096, 1);
     mm_ok(vc != 0, "it maps only the upper half of the segment");
 
     for (uint64_t i = 0; i < half; i++)
@@ -257,12 +257,12 @@ static void t_offset(int sh)
     /* A range that runs off the end of the segment is refused at reservation
      * time, not left to fault forever against pages that do not exist. */
     mm_eqi((long long)vma_reserve_shm(c, 0, (SEGPAGES + 1) * 4096,
-                                      VMA_READ | VMA_WRITE, sh, 0), 0,
+                                      VMA_READ | VMA_WRITE, sh, 0, 1), 0,
            "a mapping longer than the segment is refused");
     mm_eqi((long long)vma_reserve_shm(c, 0, 4096, VMA_READ | VMA_WRITE,
-                                      sh, SEGPAGES * 4096), 0,
+                                      sh, SEGPAGES * 4096, 1), 0,
            "and so is one starting past its end");
-    mm_eqi((long long)vma_reserve_shm(c, 0, 4096, VMA_READ | VMA_WRITE, sh, 0x800), 0,
+    mm_eqi((long long)vma_reserve_shm(c, 0, 4096, VMA_READ | VMA_WRITE, sh, 0x800, 1), 0,
            "an unaligned offset is refused -- the fault path divides it by 4096");
 
     vmm_free_space(c);
@@ -347,7 +347,7 @@ static void t_fork(int sh)
     mm_ok(p != 0, "a parent address space");
     mm_host_cr3 = p;
 
-    uint64_t vs = vma_reserve_shm(p, 0, SEGPAGES * 4096, VMA_READ | VMA_WRITE, sh, 0);
+    uint64_t vs = vma_reserve_shm(p, 0, SEGPAGES * 4096, VMA_READ | VMA_WRITE, sh, 0, 1);
     mm_ok(vs != 0, "the parent maps the segment");
 
     /* A PRIVATE anonymous page in the same space, at a fixed address well away
@@ -539,7 +539,7 @@ static void t_anon_segment(void)
 
     uint64_t p = vmm_new_space();
     mm_host_cr3 = p;
-    uint64_t v = vma_reserve_shm(p, 0, 2 * 4096, VMA_READ | VMA_WRITE, sh, 0);
+    uint64_t v = vma_reserve_shm(p, 0, 2 * 4096, VMA_READ | VMA_WRITE, sh, 0, 1);
     mm_ok(v != 0, "it maps");
     mm_eqi(mm_fault_in(p, v, PF_W | PF_U), 1, "and faults in");
     fill_pattern(mm_sim_ptr(frame_at(p, v)), 3);
@@ -558,6 +558,37 @@ static void t_anon_segment(void)
     vmm_free_space(p);
     mm_eqi((long long)shm_pages(sh), 0,
            "and it is freed when the last mapping goes -- nothing else could free it");
+}
+
+/* A read-only open must stay read-only after mprotect; an authorized mapping
+ * may change its current protection. Both paths split areas, so the test also
+ * drops one split and checks that the other two still own their segment. */
+static void t_protect_segment(void)
+{
+    phase("mprotect keeps SHM open rights and split references");
+    int sh = shm_create_anon(3, 1000);
+    mm_ok(sh >= 0, "three-page segment exists");
+    uint64_t sp = vmm_new_space();
+    mm_host_cr3 = sp;
+    uint64_t ro = vma_reserve_shm(sp, 0, 3 * 4096, VMA_READ, sh, 0, 0);
+    mm_ok(ro != 0, "read-only segment mapping exists");
+    mm_eqi(vma_protect(sp, ro + 4096, 4096, VMA_READ | VMA_WRITE), VMA_E_ACCES,
+           "mprotect cannot add write to a read-only SHM open");
+    mm_eqi(vma_prot_at(sp, ro + 4096), VMA_READ,
+           "rejected SHM protection leaves the middle page unchanged");
+
+    uint64_t rw = vma_reserve_shm(sp, ro + 0x200000, 3 * 4096, VMA_READ, sh, 0, 1);
+    mm_ok(rw != 0, "writable open may initially map read-only");
+    mm_eqi(vma_protect(sp, rw + 4096, 4096, VMA_READ | VMA_WRITE), 0,
+           "writable SHM open may add write after mapping");
+    mm_eqi(vma_release(sp, ro, 3 * 4096), 0,
+           "read-only mapping is released before the split lifetime check");
+    shm_put(sh);                /* the three writable split areas now own it */
+    mm_eqi(vma_release(sp, rw + 4096, 4096), 0, "middle split is released");
+    mm_eqi((long long)shm_pages(sh), 3,
+           "remaining SHM split areas keep the segment alive");
+    vmm_free_space(sp);
+    mm_eqi((long long)shm_pages(sh), 0, "last split area releases the segment");
 }
 
 /* ===================================================================== */
@@ -583,6 +614,7 @@ int main(void)
     t_fork(sh);
     t_lifetime(sh, a, b, va, vb);
     t_anon_segment();
+    t_protect_segment();
 
     mm_eqi((long long)rmap_bugs(), 0, "the reverse map reported no bugs");
     mm_eqi((long long)pmm_bugs(), 0, "the allocator reported no bugs");

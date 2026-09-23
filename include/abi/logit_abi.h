@@ -2789,7 +2789,7 @@ struct logit_itimer {
  * semaphore that never wakes anybody. Written down rather than discovered.
  * ======================================================================== */
 
-/* (name, pages, (mode << 4) | flags) -> a handle >= 0, or SHM_E_*.
+/* (name, pages, (mode << 4) | flags) -> a process-local handle >= 0, or SHM_E_*.
  *
  * `name` is a NUL-terminated string of at most 31 bytes with no '/' in it: this
  * is a kernel table, not a filesystem, and a name that looked like a path would
@@ -2817,6 +2817,11 @@ struct logit_itimer {
 
 /* (handle, len, (prot << 32) | (page offset)) -> base address, or 0.
  *
+ * The process must hold this handle; a raw segment slot is not a handle.
+ * MMAP_PROT_WRITE also requires that this open used SHM_O_WRITE; mprotect
+ * retains this ceiling after the handle is closed or the area is split.
+ * Fork inherits handles and their access rights.
+ *
  * `prot` is the MMAP_PROT_* set, and unlike SYS_MMAP_FILE, MMAP_PROT_WRITE is
  * ACCEPTED -- a segment's frames are the storage, so there is nothing to write
  * back and a write is simply visible to everyone else mapping it. The offset is
@@ -2831,9 +2836,9 @@ struct logit_itimer {
  * everyone who has not opened it yet. */
 #define SYS_SHM_UNLINK 178
 
-/* (handle, 0, 0) -> 0. Drops the caller's handle. The MAPPING keeps its own
- * reference, so closing the handle does not unmap anything -- which is what
- * makes "open, map, close, unlink" the complete idiom. */
+/* (handle, 0, 0) -> 0, or SHM_E_INVAL for a bad handle. Drops the caller's
+ * handle. The MAPPING keeps its own reference, so closing the handle does not
+ * unmap anything -- which makes "open, map, close, unlink" the complete idiom. */
 #define SYS_SHM_CLOSE  179
 
 /* Errors, mirrored from c/kernel/mm/shm.h. Distinct rather than one "it

@@ -91,7 +91,10 @@ struct vma {
     int32_t  file;            /* pcache file handle, or -1 = not file-backed */
     int32_t  shm;             /* shm segment handle, or -1 = not segment-backed */
     uint32_t prot;            /* VMA_* */
-    uint32_t used;
+    /* These share the old 32-bit `used` word: 64 x 32 areas stay 40 B each,
+     * avoiding another 8 KiB of always-resident VMA table for one rights bit. */
+    uint16_t max_prot;        /* rights ceiling retained across mprotect splits */
+    uint16_t used;
 };
 
 /* Address-space lifetime. Mirrors vmm_new_space / vmm_free_space, which are
@@ -123,9 +126,11 @@ int vma_shm_at(uint64_t cr3, uint64_t va, int *shm, uint64_t *index, uint32_t *p
 /* Reserve `len` bytes backed by shm segment handle `sh` from byte offset
  * `off`. Takes its own reference on `sh`, so the caller still owns the one it
  * came in with -- the identical contract vma_reserve_file() states, and for the
- * identical reason. Returns the base address, or 0. */
+ * identical reason. `writable` is the open handle's right, retained even if the
+ * initial mapping is read-only so mprotect cannot grant a missing right.
+ * Returns the base address, or 0. */
 uint64_t vma_reserve_shm(uint64_t cr3, uint64_t hint, uint64_t len, uint32_t prot,
-                         int sh, uint64_t off);
+                         int sh, uint64_t off, int writable);
 
 /* Reserve `len` bytes backed by pcache file handle `fh` from byte offset
  * `foff`. Takes its own reference on `fh`, so the caller still owns the one it
