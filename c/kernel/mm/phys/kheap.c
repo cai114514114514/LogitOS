@@ -1,5 +1,6 @@
 #include <stdint.h>
 #include <stddef.h>
+#include <stdatomic.h>
 #include "kheap.h"
 #include "pmm.h"
 #include "mmhost.h"      /* mm_p2v: identity in the kernel, an offset on the host */
@@ -90,13 +91,15 @@ static spinlock_t kheap_lock = SPINLOCK_INIT;
 #define F_FREE        0x1u
 #define F_LAST        0x2u                 /* no block follows this one in its arena */
 #define F_LOW         0x4u                 /* explicit low identity allocation domain */
+#define F_PARK        0x8u                 /* claimed for free, parked, or internal reuse */
 #define SIZE_MASK     (~(size_t)0xF)
 
 struct header {                            /* 16 bytes: payload stays 16-aligned */
-    size_t size;                           /* payload bytes | F_FREE | F_LAST */
+    _Atomic size_t size;                   /* payload bytes | flags; cross-core free claim */
     size_t prev_size;                      /* payload bytes of the physically previous
                                             * block; 0 == first block in its arena */
 };
+_Static_assert(sizeof(struct header) == 16, "heap header must stay 16 bytes");
 
 /* A free block's links live in its own payload (dlmalloc's trick). That is why
  * MIN_PAYLOAD is 16 and why the header did not have to grow to 32 bytes to get
@@ -148,6 +151,43 @@ static inline int    blk_low(const struct header *h) { return (h->size & F_LOW) 
 static inline void   blk_set_size(struct header *h, size_t n)
 { h->size = n | (h->size & ~SIZE_MASK); }
 
+/* A per-core magazine lock cannot identify a pointer already parked on another
+ * core. Claim the header before choosing either the fast or the slow free path;
+ * F_PARK remains set until the block is published to a bin or handed to a new
+ * allocator. A full magazine therefore cannot race another core's successful
+ * push and later put the same block into a bin as well. The header is atomic so
+ * a rejected second free cannot race a pop, drain, or coalescing store in C. */
+static int blk_claim_free(struct header *h, size_t *state)
+{
+    size_t observed = atomic_load_explicit(&h->size, memory_order_acquire);
+#ifdef KHEAP_NO_CROSSCORE_CLAIM
+    /* Negative control: restore the old per-core-only duplicate check. */
+    *state = observed;
+    return (observed & F_FREE) == 0;
+#else
+    for (;;) {
+        if (observed & (F_FREE | F_PARK)) {
+            *state = observed;
+            return 0;
+        }
+        if (atomic_compare_exchange_weak_explicit(&h->size, &observed,
+                observed | F_PARK, memory_order_acq_rel, memory_order_acquire)) {
+            *state = observed;
+            return 1;
+        }
+    }
+#endif
+}
+
+static inline void blk_release_claim(struct header *h)
+{
+    /* The caller holds the magazine or heap lock. F_PARK makes any competing
+     * duplicate free fail until this single atomic publication; a locked RMW
+     * here would add an avoidable bus-wide operation to every cache hit. */
+    size_t state = atomic_load_explicit(&h->size, memory_order_relaxed);
+    atomic_store_explicit(&h->size, state & ~F_PARK, memory_order_release);
+}
+
 static inline struct header *blk_next(struct header *h)
 { return blk_last(h) ? NULL : (struct header *)((uint8_t *)(h + 1) + blk_size(h)); }
 
@@ -183,7 +223,10 @@ static void bin_push(struct header *h)
     n->next = list[b];
     if (list[b]) list[b]->prev = n;
     list[b] = n;
-    h->size |= F_FREE;
+    /* One state change: never expose neither F_PARK nor F_FREE to another
+     * core's duplicate kfree while a drained block enters the shared bins. */
+    size_t state = atomic_load_explicit(&h->size, memory_order_relaxed);
+    atomic_store_explicit(&h->size, (state & ~F_PARK) | F_FREE, memory_order_release);
     st_free += blk_size(h);
 }
 
@@ -195,7 +238,9 @@ static void bin_remove(struct header *h)
     if (n->prev) n->prev->next = n->next;
     else         list[b] = n->next;
     if (n->next) n->next->prev = n->prev;
-    h->size &= ~(size_t)F_FREE;
+    /* The block is off the list but not yet returned to a caller. Keep it
+     * claimed through split/coalesce; alloc_domain releases it before return. */
+    h->size = (h->size & ~(size_t)F_FREE) | F_PARK;
     st_free -= blk_size(h);
 }
 
@@ -445,29 +490,27 @@ static struct header *mag_pop(int cls)
     struct header *b = NULL;
     uint64_t f = spin_lock_irqsave(&m->lock);
     if (m->n[cls] > 0) b = m->blk[cls][--m->n[cls]];
-    if (b) { m->hits++; m->bytes -= blk_size(b); }
+    if (b) {
+        m->hits++;
+        m->bytes -= blk_size(b);
+        blk_release_claim(b);
+    }
     spin_unlock_irqrestore(&m->lock, f);
     return b;
 }
 
-/* 1 = parked. 0 = this magazine is full, and the caller may bin_push.
- * -1 = this pointer is already parked here.
- *
- * -1 must not fall through to bin_push. A block in a magazine is still
- * allocated as far as the heap is concerned, so the slow path's F_FREE check
- * does not see it, and bin_push would put it on a free list while the
- * magazine still hands it out. Two kfrees then two kmallocs of the same
- * class returned the same address (kheap_test phase 1b, before this scan).
- * Scanning this core's magazine is enough for that case: a free on another
- * core parks in THAT core's magazine, and a cross-core double free is a
- * different bug this scan does not claim to close. */
+/* 1 = parked. 0 = this magazine is full, and the claimed block must enter a
+ * bin under kheap_lock. The header claim handles duplicates on every core,
+ * without searching 32 pointers on each small free. */
 static int mag_push(int cls, struct header *b)
 {
     struct magazine *m = &g_mag[mag_cpu() & (MAG_MAXCPU - 1)];
     int rc = 0;
     uint64_t f = spin_lock_irqsave(&m->lock);
+#ifdef KHEAP_NO_CROSSCORE_CLAIM
     for (int i = 0; i < m->n[cls]; i++)
         if (m->blk[cls][i] == b) { rc = -1; break; }
+#endif
     if (rc == 0 && m->n[cls] < MAG_DEPTH) {
         m->blk[cls][m->n[cls]++] = b;
         m->puts++;
@@ -496,7 +539,6 @@ static void mag_drain_all_locked(void)
                 st_live -= bytes;
                 if (st_live_blocks) st_live_blocks--;
                 st_frees++;
-                b->size |= F_FREE;
                 bin_push(coalesce(b));
             }
         }
@@ -574,6 +616,7 @@ static void *alloc_domain(size_t size, int low)
         st_served += blk_size(b);          /* what the allocator spent on it, ever */
         st_live_blocks++;
         st_allocs++;
+        blk_release_claim(b);
     }
     spin_unlock_irqrestore(&kheap_lock, f);
     /* AFTER THE UNLOCK, and that is the whole of why this is one line here and
@@ -612,15 +655,18 @@ void kfree(void *ptr)
         return;
     struct header *h = (struct header *)ptr - 1;
 
-    /* The fast path does not clear F_FREE: a block parked in a magazine is
-     * still allocated as far as the heap is concerned, so kheap_audit's arena
-     * walk stays two-state (free in a bin, or allocated). A second kfree of a
-     * parked block does NOT reach the slow path below -- mag_push would take
-     * it again, and the F_FREE check never runs. mag_push reports that
-     * duplicate itself. Returning 0 from it (magazine full) is the only case
-     * that falls through, and that block was not parked, so bin_push is safe. */
-    if (!blk_low(h) && !blk_free(h)) {
-        int cls = mag_class(blk_size(h));
+    size_t state;
+    if (!blk_claim_free(h, &state)) {
+        kprintf("[kheap] double free of %p (%d bytes) -- refused\n",
+                ptr, (int)(state & SIZE_MASK));
+        return;
+    }
+
+    /* Parked blocks still count as allocated to the heap until a drain.
+     * F_PARK carries the missing third state: no second core may park or bin
+     * this pointer while the first kfree owns it, even if this cache is full. */
+    if (!(state & F_LOW)) {
+        int cls = mag_class(state & SIZE_MASK);
         if (cls >= 0) {
             int parked = mag_push(cls, h);
             if (parked > 0) return;
@@ -641,6 +687,7 @@ void kfree(void *ptr)
          * Refuse it, loudly, and keep running. */
         kprintf("[kheap] double free of %p (%d bytes) -- refused\n",
                 ptr, (int)blk_size(h));
+        atomic_fetch_and_explicit(&h->size, ~(size_t)F_PARK, memory_order_release);
         spin_unlock_irqrestore(&kheap_lock, f);
         return;
     }

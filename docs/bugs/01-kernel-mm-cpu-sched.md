@@ -17,7 +17,20 @@
 
 ## 发现
 
-### [high] [CONFIRMED] kheap magazine 快速路径使双重释放检测失效 —— 同一块两次 kfree 后双属主/重复入 bin，静默堆破坏
+### [high] [FIXED 2026-09-23] kheap magazine 快速路径使双重释放检测失效 —— 同一块两次 kfree 后双属主/重复入 bin，静默堆破坏
+
+**修复验证（2026-09-23）：** 下方是原始发现和旧代码路径，保留作回归依据。
+块头现用闲置的 `0x8` 位在进入任一 `kfree` 路径前原子认领；入 magazine
+后保留，drain 到 bin 的切换一次原子发布，分配给新属主时才清除。
+`tests/unit/kheap_crosscore_test.c` 的旧行为负控实测输出
+`FAIL cross-core duplicate free is refused` 和
+`FAIL cross-core double free never returns one block to two owners`；正控的顺序
+跨核、双线程同时释放和一核 magazine 已满时的 slow-path 竞态通过。原有堆、泄漏
+与生产 ticket-lock host 门禁也通过。独占的隔离 QEMU `test-smp` 报
+`T1=5529ms TN=6005ms children=4 distinct_cpus=4 corruption=0` 并通过速度门禁；
+此前与另一台 QEMU 并行时 `TN=14782ms` 的失败样本已由独占复测推翻，不用它
+评价性能。此机制无法辨别块已重新分配给新属主后的过期裸指针；这需要调用方
+所有权或代际句柄，不应把“拒绝停放期重复释放”误写为一般 use-after-free 检测。
 
 - 位置：`c/kernel/mm/phys/kheap.c:605-608`（kfree 快速路径）、`453-462`（mag_push 无去重）、`468-488`（mag_drain_all_locked 二次出队）、对照注释 `598-604`
 - 代码：
