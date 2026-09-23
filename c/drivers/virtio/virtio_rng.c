@@ -19,8 +19,9 @@
  * THE HONEST REASON THIS DRIVER EXISTS. rng.c's kernel_random_bytes() seeds
  * its Hash_DRBG from RDSEED/RDRAND when the CPU offers them and falls back to
  * rdtsc+PIT ticks -- calling that fallback "weak" out loud, in a kprintf
- * WARNING, and rng_strong() (which gates whether TLS will even attempt a
- * handshake) is defined as "RDSEED or RDRAND available", nothing else. That
+ * WARNING. The original rng_strong() gate equated a CPUID feature with
+ * successful seed input; the 2026-09-23 correction requires two actual
+ * hardware words before TLS trusts it. That
  * fallback is not a hypothetical: this project's own Makefile documents
  * hitting it --
  *
@@ -30,16 +31,16 @@
  *      QEMU_CPU="-cpu qemu64"`."      (Makefile:1182-1185)
  *
  * -- i.e. the project's own default (`-cpu max`) is a WORKAROUND for a gap
- * this driver closes properly: any machine whose CPU model doesn't carry
+ * this driver can eventually close: any machine whose CPU model doesn't carry
  * RDRAND/RDSEED (an explicit `-cpu qemu64` override, an older `-cpu` model,
  * or -- the case QEMU_CPU exists to work around in the first place -- a real
  * hypervisor that masks the instruction from guests) currently has NO
  * hardware entropy at all. virtio-rng is exactly the standard answer: entropy
  * from the host, independent of what the virtual CPU claims to support.
  *
- * WHAT THIS FILE DOES NOT DO: wire itself into rng.c. rng.c is not owned by
- * this change, so rng_gather()/rng_strong() are untouched here -- see the
- * REQUEST in the accompanying report for the exact hook. This file proves the
+ * WHAT THIS FILE DOES NOT DO: wire itself into rng.c. Its hardware-success
+ * gate was fixed separately, but that change does not consume virtio-rng.
+ * This file proves the
  * device end works (probe, bring-up, and a two-independent-reads self-test on
  * the boot serial log, since there is no syscall path into this driver yet)
  * so that hook is a small, low-risk addition once made. */
@@ -92,7 +93,7 @@ int virtio_rng_get(void *buf, int len)
     return done;
 }
 
-/* Boot self-test: pull two INDEPENDENT reads and print both, so a boot
+/* Boot self-test: pull two INDEPENDENT reads and print only their verdict, so a boot
  * harness can assert real entropy is flowing without a syscall path into
  * this driver (none exists yet -- rng.c is not wired to this file, see the
  * header comment). A stub that "succeeds" without doing the work -- the
@@ -100,18 +101,10 @@ int virtio_rng_get(void *buf, int len)
  * equal or two all-zero reads, which is exactly what the assertions below
  * check for.
  *
- * THIS PRINTS 32 BYTES OF THE ENTROPY STREAM TO THE SERIAL CONSOLE, AND THE
- * HOOK THIS FILE ASKS FOR IS WHAT MAKES THAT A LEAK. Today nothing consumes
- * virtio_rng_get(), so those bytes feed nothing and naming them costs
- * nothing. The moment rng.c calls in -- which the header requests -- the
- * first 32 bytes the DRBG would have been seeded from are sitting in a boot
- * log that every harness in tests/boot captures to a file. Whoever writes
- * that hook removes this function or puts it behind a build flag; it is not
- * a thing to leave for later, because a seed printed once is printed
- * forever. Two reads and a difference is all the assertion needs, so a fold
- * (say, a per-read XOR checksum) would carry the same proof with none of
- * this -- deliberately not done here, because it would silently change what
- * the accompanying harness greps for. */
+ * Earlier this printed both 16-byte buffers in hex. That stream may later
+ * seed the DRBG; a captured boot log would then disclose its input. A hash or
+ * checksum still discloses information and is unnecessary: lengths and the
+ * all-zero/equality verdicts are enough for this boot diagnostic. */
 static void rng_selftest(const char *devname)
 {
     uint8_t a[16], b[16];
@@ -127,15 +120,8 @@ static void rng_selftest(const char *devname)
         if (b[i]) zero_b = 0;
         if (a[i] != b[i]) same = 0;
     }
-    static const char hexd[] = "0123456789abcdef";
-    char hexa[33], hexb[33];
-    for (int i = 0; i < 16; i++) {
-        hexa[2*i] = hexd[a[i] >> 4]; hexa[2*i + 1] = hexd[a[i] & 0xF];
-        hexb[2*i] = hexd[b[i] >> 4]; hexb[2*i + 1] = hexd[b[i] & 0xF];
-    }
-    hexa[32] = 0; hexb[32] = 0;
-    kprintf("VIRTIO_RNG_SELFTEST %s a=%s b=%s zero_a=%d zero_b=%d same=%d\n",
-            devname, hexa, hexb, zero_a, zero_b, same);
+    kprintf("VIRTIO_RNG_SELFTEST %s n_a=%d n_b=%d zero_a=%d zero_b=%d same=%d\n",
+            devname, na, nb, zero_a, zero_b, same);
 }
 
 static void rng_remove(struct device *dev)

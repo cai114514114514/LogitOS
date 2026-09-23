@@ -21,7 +21,11 @@
 # have excluded it and invoked it from nowhere. The cost is honest and worth
 # saying out loud: this device is two QEMU boots in CI, not one.
 ci-boot: test-virtio-rng
-test-virtio-rng: test-virtio-rng-negctl
+test-virtio-rng: test-virtio-rng-negctl test-virtio-rng-log-negctl
+
+.PHONY: test-virtio-rng-log-negctl
+test-virtio-rng-log-negctl:
+	@python3 tests/boot/check-virtio-rng-line.py --control
 
 # The claim that matters: on a CPU model with NO RDSEED/RDRAND (-cpu qemu64,
 # per Makefile:1182-1185's own note that this is where rng.c's hardware path

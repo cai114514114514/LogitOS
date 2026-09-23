@@ -10,12 +10,12 @@
 #
 # c/drivers/virtio/virtio_rng.c has no syscall path into it yet (see its
 # header comment), so the only observable is its own boot self-test line,
-# printed once from probe(): two INDEPENDENT 16-byte reads, hex-dumped to
-# serial. This script asserts on the four properties that distinguish a
+# printed once from probe(): two INDEPENDENT 16-byte reads, reported only as
+# verdicts. This script asserts on the four properties that distinguish a
 # working device from a stub that "succeeds" without doing the work:
 #   1. the self-test ran at all (driver bound, queue came up, DRIVER_OK sent)
 #   2. neither read came back all-zero
-#   3. the two reads differ (same 32 bytes twice is not entropy)
+#   3. the two reads differ (the same 16 bytes twice would prove no freshness)
 #   4. the machine still reaches LOGIT_BOOT_OK (the driver did not wedge boot)
 #
 # ENABLE=0 is the negative control: boot the IDENTICAL kernel and command line
@@ -56,16 +56,12 @@ done
 # Give a slow self-test line (or its absence) a moment to land after boot-ok.
 sleep 1
 
-fail=0
-say() { echo "$1"; }
-need() { if [ "$2" = 0 ]; then say "ok   $1"; else say "FAIL $1"; fail=1; fi; }
-
 if ! grep -aq "LOGIT_BOOT_OK" "$LOG" 2>/dev/null; then
     echo "FAIL: kernel did not reach LOGIT_BOOT_OK"
-    fail=1
+    exit 1
 fi
 
-LINE="$(grep -a '^VIRTIO_RNG_SELFTEST' "$LOG" | sed -n 1p | tr -d '\r')"
+LINE="$(rg -a '^VIRTIO_RNG_SELFTEST' "$LOG" | head -n 1 | tr -d '\r')"
 
 if [ "$ENABLE" != 1 ]; then
     # Negative control: the positive assertion must be UNSATISFIABLE here.
@@ -73,8 +69,7 @@ if [ "$ENABLE" != 1 ]; then
         echo "PASS (control): no virtio-rng device -> no self-test line, as required."
         exit 0
     fi
-    echo "CONTROL FAILED: self-test line present with no virtio-rng-pci device:"
-    echo "  $LINE"
+    echo "CONTROL FAILED: self-test line present with no virtio-rng-pci device"
     exit 1
 fi
 
@@ -83,24 +78,12 @@ if [ -z "$LINE" ]; then
     echo "----- serial output -----"; cat "$LOG"; echo "-------------------------"
     exit 1
 fi
-echo "self-test: $LINE"
-
-A=$(echo "$LINE" | sed -n 's/.* a=\([0-9a-f]*\) .*/\1/p')
-B=$(echo "$LINE" | sed -n 's/.* b=\([0-9a-f]*\) .*/\1/p')
-ZA=$(echo "$LINE" | sed -n 's/.*zero_a=\([0-9]\) .*/\1/p')
-ZB=$(echo "$LINE" | sed -n 's/.*zero_b=\([0-9]\) .*/\1/p')
-SAME=$(echo "$LINE" | sed -n 's/.*same=\([0-9]\).*/\1/p')
-
-need "self-test line parsed (32 hex chars each read)" "$([ ${#A} -eq 32 ] && [ ${#B} -eq 32 ] && echo 0 || echo 1)"
-need "read A is not all-zero"                          "$([ "$ZA" = 0 ] && echo 0 || echo 1)"
-need "read B is not all-zero"                           "$([ "$ZB" = 0 ] && echo 0 || echo 1)"
-need "read A and read B differ"                         "$([ "$SAME" = 0 ] && echo 0 || echo 1)"
-
-if [ "$fail" = 0 ]; then
-    echo
-    echo "PASS: virtio-rng delivers real entropy on a CPU with no RDSEED/RDRAND"
+if python3 tests/boot/check-virtio-rng-line.py "$LINE"; then
+    echo "self-test: $LINE"
+    echo "PASS: virtio-rng delivers device bytes on a CPU with no RDSEED/RDRAND"
     exit 0
 fi
-echo
-echo "----- serial output -----"; cat "$LOG"; echo "-------------------------"
+# A failed format check may mean the kernel regressed to logging raw entropy.
+# Do not copy that serial line into the test report as well.
+echo "FAIL: invalid RNG self-test verdict; serial bytes withheld"
 exit 1
