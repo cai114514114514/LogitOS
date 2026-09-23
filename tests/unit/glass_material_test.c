@@ -239,6 +239,35 @@ static void transparency_and_color(void)
           "midtone tint does not opt into regular material adaptation");
 }
 
+/* Clear must leave fine backdrop detail legible where the lens is flat.
+ * The old zero-tint path still applied Regular's 13x13 box blur: an interior
+ * checkerboard then collapsed to a near-solid gray, despite the caller asking
+ * for the material that prioritizes seeing through to content. Regular is the
+ * control; both draws use the same target, geometry and live backdrop. */
+static void clear_detail(void)
+{
+    uint32_t clear[PIXELS], regular[PIXELS];
+    for (int y = 0; y < HEIGHT; y++) {
+        for (int x = 0; x < WIDTH; x++) {
+            uint32_t pixel = (x + y) & 1 ? 0xFFFFFF : 0;
+            clear[y * WIDTH + x] = pixel;
+            regular[y * WIDTH + x] = pixel;
+        }
+    }
+    struct color neutral = {250, 250, 255};
+    draw(clear, neutral, 0, 0, 0);
+    draw(regular, neutral, 64, 0, 0);
+    int at = 64 * WIDTH + 80;
+    int clear_delta = abs((int)color_at(clear[at]).r -
+                          (int)color_at(clear[at + 1]).r);
+    int regular_delta = abs((int)color_at(regular[at]).r -
+                            (int)color_at(regular[at + 1]).r);
+    printf("glass fine detail: clear=%d regular=%d\n", clear_delta, regular_delta);
+    check(regular_delta <= 8, "control regular glass frosts fine backdrop detail");
+    check(clear_delta >= 128 && clear_delta > regular_delta + 100,
+          "clear glass preserves fine backdrop detail");
+}
+
 static void endpoints(void)
 {
     const struct color tints[] = {{250, 250, 250}, {24, 24, 24}, {250, 20, 20}};
@@ -280,26 +309,29 @@ static void clip_parity(void)
     }
     const unsigned cuts[] = {0, OL_GLASS_CUT_TOP, OL_GLASS_CUT_LEFT | OL_GLASS_CUT_BOTTOM};
     const struct color tints[] = {{250, 250, 255}, {24, 28, 36}, {220, 40, 90}};
+    const unsigned char alphas[] = {0, 64};
     for (unsigned t = 0; t < sizeof tints / sizeof *tints; t++) {
         for (unsigned cut = 0; cut < sizeof cuts / sizeof *cuts; cut++) {
-            memcpy(whole, backdrop, sizeof whole);
-            memcpy(clipped, backdrop, sizeof clipped);
-            draw(whole, tints[t], 64, 0, cuts[cut]);
-            draw(clipped, tints[t], 64, 1, cuts[cut]);
-            hash_pixels(whole);
-            hash_pixels(clipped);
-            int inside = 0, outside = 0;
-            for (int y = 0; y < HEIGHT; y++) {
-                for (int x = 0; x < WIDTH; x++) {
-                    int at = y * WIDTH + x;
-                    if (x >= 31 && x < 123 && y >= 27 && y < 101)
-                        inside += clipped[at] != whole[at];
-                    else
-                        outside += clipped[at] != backdrop[at];
+            for (unsigned alpha = 0; alpha < sizeof alphas; alpha++) {
+                memcpy(whole, backdrop, sizeof whole);
+                memcpy(clipped, backdrop, sizeof clipped);
+                draw(whole, tints[t], alphas[alpha], 0, cuts[cut]);
+                draw(clipped, tints[t], alphas[alpha], 1, cuts[cut]);
+                hash_pixels(whole);
+                hash_pixels(clipped);
+                int inside = 0, outside = 0;
+                for (int y = 0; y < HEIGHT; y++) {
+                    for (int x = 0; x < WIDTH; x++) {
+                        int at = y * WIDTH + x;
+                        if (x >= 31 && x < 123 && y >= 27 && y < 101)
+                            inside += clipped[at] != whole[at];
+                        else
+                            outside += clipped[at] != backdrop[at];
+                    }
                 }
+                check(!inside, "material color is identical inside partial damage clip");
+                check(!outside, "material leaves pixels outside damage clip untouched");
             }
-            check(!inside, "material color is identical inside partial damage clip");
-            check(!outside, "material leaves pixels outside damage clip untouched");
         }
     }
 }
@@ -397,6 +429,7 @@ int main(void)
     sample_reach_bound();
     neutral_contrast();
     transparency_and_color();
+    clear_detail();
     endpoints();
     clip_parity();
     reduced_transparency();

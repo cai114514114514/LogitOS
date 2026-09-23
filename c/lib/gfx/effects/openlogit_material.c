@@ -180,9 +180,25 @@ void ol_display_liquid_glass_cut(struct ol_display *display,
         return;
     }
 
-    /* A partial write clip still needs the whole visible backdrop for blur
-     * and refraction. Only a wholly disjoint panel may skip this work. */
+    /* Zero tint strength selects Clear. Apple's Materials guidance reserves
+     * Clear for seeing rich content through the surface, unlike Regular's
+     * legibility-oriented blur:
+     * https://developer.apple.com/design/human-interface-guidelines/materials
+     * Keep live backdrop detail beneath the flat face while retaining the
+     * shared lens and reflected rim. The former path blurred Clear by the
+     * same 13x13 kernel as Regular: a one-pixel checkerboard became near-solid
+     * gray (1/255 neighbor contrast).
+     * A partial write clip still samples the whole halo; sampling only the
+     * clipped region would make local repaint differ from a full frame. This
+     * material has no foreground metadata, so it does not add Apple's
+     * optional bright-content dimming layer on behalf of the caller. */
+#ifndef GLASS_CLEAR_BLUR
+    if (opacity == 0) glass_copy_backdrop(&panel);
+    else glass_blur(&panel);
+#else
+    /* Negative control: restore the former zero-strength blur. */
     glass_blur(&panel);
+#endif
     glass_render(&panel, (struct glass_color){red, green, blue}, opacity);
 }
 

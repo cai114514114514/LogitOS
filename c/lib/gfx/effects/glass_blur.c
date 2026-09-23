@@ -127,3 +127,23 @@ void glass_blur(struct glass_panel *panel)
     blur_rows(panel);
     blur_columns(panel);
 }
+
+void glass_copy_backdrop(struct glass_panel *panel)
+{
+    const struct ol_pixel_target *target = &panel->display->target;
+    uint32_t *pixels = panel->display->glass_buf;
+    int width = panel->sample_width;
+
+    /* Clear glass still needs the whole sample halo: its rim refracts into
+     * nearby content and reflects pixels outside the shape. Copying only the
+     * panel would silently reintroduce the panel-local sampling defect.
+     * Unlike Regular, Clear preserves the backdrop's fine detail instead of
+     * putting it through the same 13x13 box blur. */
+    for (int row = 0; row < panel->sample_height; row++) {
+        const uint32_t *source = target->px +
+            (long)(panel->sample_y + row) * target->w + panel->sample_x;
+        uint32_t *destination = pixels + (long)row * width;
+        for (int column = 0; column < width; column++)
+            destination[column] = source[column];
+    }
+}

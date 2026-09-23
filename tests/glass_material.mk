@@ -27,7 +27,11 @@ $(BUILD)/glass_material_halo_neg: $(GLASS_MATERIAL_TEST) $(GFX_SRC) $(GFX_HEADER
 	@mkdir -p $(dir $@)
 	$(CC) $(GLASS_MATERIAL_FLAGS) -DGLASS_PANEL_ONLY_SAMPLE $< $(GFX_SRC) -lm -o $@
 
-test-glass-material-negctl: $(BUILD)/glass_material_static $(BUILD)/glass_material_transparency_neg $(BUILD)/glass_material_halo_neg
+$(BUILD)/glass_material_clear_neg: $(GLASS_MATERIAL_TEST) $(GFX_SRC) $(GFX_HEADERS)
+	@mkdir -p $(dir $@)
+	$(CC) $(GLASS_MATERIAL_FLAGS) -DGLASS_CLEAR_BLUR $< $(GFX_SRC) -lm -o $@
+
+test-glass-material-negctl: $(BUILD)/glass_material_static $(BUILD)/glass_material_transparency_neg $(BUILD)/glass_material_halo_neg $(BUILD)/glass_material_clear_neg
 	@rc=0; $(BUILD)/glass_material_static > $(BUILD)/glass-material-static.log 2>&1 || rc=$$?; test $$rc -eq 1
 	@rg '^FAIL light neutral body keeps content contrast: gray=0 ' $(BUILD)/glass-material-static.log
 	@rg '^FAIL dark neutral body keeps content contrast: gray=255 ' $(BUILD)/glass-material-static.log
@@ -37,7 +41,9 @@ test-glass-material-negctl: $(BUILD)/glass_material_static $(BUILD)/glass_materi
 	@rc=0; $(BUILD)/glass_material_halo_neg > $(BUILD)/glass-material-halo-neg.log 2>&1 || rc=$$?; test $$rc -eq 1
 	@rg '^neighbouring backdrop: ring=0 body=[1-9][0-9]*$$' $(BUILD)/glass-material-halo-neg.log
 	@rg '^FAIL glass rim samples the neighbouring backdrop$$' $(BUILD)/glass-material-halo-neg.log
-	@echo 'Glass material controls: fixed tint, ignored transparency, and panel-only sampling failed.'
+	@rc=0; $(BUILD)/glass_material_clear_neg > $(BUILD)/glass-material-clear-neg.log 2>&1 || rc=$$?; test $$rc -eq 1
+	@rg '^FAIL clear glass preserves fine backdrop detail$$' $(BUILD)/glass-material-clear-neg.log
+	@echo 'Glass material controls: fixed tint, ignored transparency, panel-only sampling, and blurred Clear failed.'
 
 test-glass-material-parity: $(BUILD)/glass_material_test $(BUILD)/glass_material_slow
 	$(BUILD)/glass_material_test > $(BUILD)/glass-material-fast.log
