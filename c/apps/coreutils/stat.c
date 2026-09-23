@@ -81,8 +81,29 @@ static int show(const char *path, int follow)
     return 0;
 }
 
-static int oct(const char *s)
-{ int v = 0; while (*s >= '0' && *s <= '7') v = v * 8 + (*s++ - '0'); return v; }
+/* Refuse the entire argument before making a metadata syscall.  Stopping at
+ * the first non-octal digit made "stat -u 9" set umask 000; a long prefix also
+ * overflowed int before st_chmod masked it.  Umask has only nine permission
+ * bits, while chmod may use the special permission bits too. */
+static int oct(const char *s, int limit)
+{
+#ifdef STAT_OCT_NEGCTL
+    (void)limit;
+    int v = 0;
+    while (*s >= '0' && *s <= '7') v = v * 8 + (*s++ - '0');
+    return v;
+#else
+    if (!*s) return -1;
+    int v = 0;
+    for (; *s; s++) {
+        if (*s < '0' || *s > '7') return -1;
+        int digit = *s - '0';
+        if (v > (limit - digit) / 8) return -1;
+        v = v * 8 + digit;
+    }
+    return v;
+#endif
+}
 
 int main(int argc, char **argv)
 {
@@ -90,7 +111,9 @@ int main(int argc, char **argv)
 
     if (c_streq(argv[1], "-c")) {
         if (argc < 4) { errs("stat: -c MODE PATH\n"); return 1; }
-        if (st_chmod(argv[3], oct(argv[2])) < 0) { errs("stat: chmod refused: "); errs(argv[3]); errs("\n"); return 1; }
+        int mode = oct(argv[2], 07777);
+        if (mode < 0) { errs("stat: invalid mode\n"); return 1; }
+        if (st_chmod(argv[3], mode) < 0) { errs("stat: chmod refused: "); errs(argv[3]); errs("\n"); return 1; }
         outs("STAT-CHMOD-OK "); outs(argv[3]); outc('\n');
         return 0;
     }
@@ -105,7 +128,9 @@ int main(int argc, char **argv)
         return 0;
     }
     if (c_streq(argv[1], "-u")) {
-        int prev = st_umask(argc >= 3 ? oct(argv[2]) : -1);
+        int mask = argc >= 3 ? oct(argv[2], 0777) : -1;
+        if (argc >= 3 && mask < 0) { errs("stat: invalid mask\n"); return 1; }
+        int prev = st_umask(mask);
         outs("STAT-UMASK "); put_oct((unsigned long)prev); outc('\n');
         return 0;
     }

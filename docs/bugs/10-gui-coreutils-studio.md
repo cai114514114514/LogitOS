@@ -198,7 +198,7 @@ for (int tries = 0; tries < 3; tries++) {
 触发与后果：`ls /very/long/path...`（>127 字节）被截到 127 字节后当作目录名——报"no such directory"指向一个用户没输入过的路径，或更坏：截断后的前缀恰好存在时列出错误目录。同族的 `sh run_external` 超长命令名已改为响亮拒绝（sh.c:878-881），这批工具没有跟上。
 修复建议：仿 sh.c：拷贝后 `strlen(argv[i]) >= sizeof path` 即 `errs("path too long")` 返回 1。
 
-### [low] [CONFIRMED] `stat -u` 非八进制输入不报错，`oct()` 提前停止返回部分值 —— `stat -u 9` 把 umask 置 000
+### [low] [FIXED 2026-09-23; originally CONFIRMED] `stat -u` 非八进制输入不报错，`oct()` 提前停止返回部分值 —— `stat -u 9` 把 umask 置 000
 
 位置：`c/apps/coreutils/stat.c:84-85`、`stat.c:108`。
 
@@ -211,6 +211,8 @@ int prev = st_umask(argc >= 3 ? oct(argv[2]) : -1);
 
 触发与后果：`stat -u 9`（或 `-u 8x`、`-u ""`）时 `oct()` 停在首个非法字符返回 0——把进程 umask 设为 000（创建文件最宽松），既不报错也不像查询。`stat -c/-o` 的 chmod/chown 参数同函数，`-c 9 file` 会 chmod 成 0000。与本文件其余地方"拒绝并说原因"的风格相悖。
 修复建议：`oct()` 返回 -1 表失败（或带 endptr 校验消耗了全串），main 对 -1 打印 usage 返回 1。
+
+修复记录：`stat.c` 现要求整个参数都是八进制，并按 `-u` 的 0777、`-c` 的 07777 上限检查，拒绝后不会调用元数据 syscall。旧说法中的 `-o` 实际用 `c_atoi` 解析 UID/GID，没有调用 `oct()`；这次修复只覆盖 `-u` 和 `-c`。`make BUILD=build-stat-oct test-stat-oct` 的负对照在 `-u 9` 与 `-c 9` 两条副作用检查变红，修复版 12 项检查全绿；独立 `stat.aex` 与 `disk.img` 构建通过。
 
 ### [low] [CONFIRMED] Terminal ^V 粘贴：剪贴板 4096 字节，typed[] 只有 256，超出静默丢弃
 

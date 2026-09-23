@@ -33,3 +33,7 @@ test-sh-commands-os: test-sh-commands $(ISO) $(SH_COMMANDS_BINS) $(FONTS)
 # This fragment is included by exec.mk so test-mk-wired audits the connection.
 test-sh: test-sh-commands
 ci-host: test-sh-commands
+
+# Coreutils share the shell's command-facing contract; keep this leaf gate
+# reachable without editing the Makefile while other subsystems build there.
+-include tests/stat_oct.mk
