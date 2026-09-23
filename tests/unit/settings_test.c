@@ -190,10 +190,16 @@ static void t_roundtrip(void)
     settings_load();
     ok(settings_diag() & SET_D_NOFILE, "a machine with no file says so");
     ok(settings_get_int("ui.dark", 9) == 0, "a fresh machine is light");
+    ok(settings_schema_find("ui.reduce_transparency") != NULL &&
+       settings_schema_find("ui.reduce_transparency")->type == SET_T_BOOL,
+       "Reduce Transparency is a validated appearance preference");
+    ok(settings_get_int("ui.reduce_transparency", 9) == 0,
+       "glass remains translucent by default");
     ok(strcmp(settings_get_str("ui.wallpaper", "?"), "/wallpaper.png") == 0,
        "a fresh machine has the default wallpaper");
 
     settings_set_int("ui.dark", 1, 0);
+    settings_set_int("ui.reduce_transparency", 1, 0);
     settings_set_str("ui.wallpaper", "/media/dot.png", 0);
     settings_set_int("net.dhcp", 0, 0);
     settings_set_str("net.ip", "10.0.2.99", 0);
@@ -207,6 +213,8 @@ static void t_roundtrip(void)
     settings_load();
     ok(settings_diag() == 0, "the file we just wrote loads with no findings");
     ok(settings_get_int("ui.dark", 0) == 1, "ui.dark survived");
+    ok(settings_get_int("ui.reduce_transparency", 0) == 1,
+       "Reduce Transparency survived the store reload");
     ok(strcmp(settings_get_str("ui.wallpaper", ""), "/media/dot.png") == 0, "wallpaper survived");
     ok(settings_get_int("net.dhcp", 1) == 0, "net.dhcp survived");
     ok(settings_get_ip("net.ip", 0) == ((10u << 24) | (0u << 16) | (2u << 8) | 99u),

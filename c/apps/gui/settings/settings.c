@@ -25,7 +25,7 @@ static const unsigned probe_rgb[] = {0xFF0080, 0x00FF80, 0xFFC800, 0xB000FF,
                                     0x00D0D0, 0xFF6000, 0x00A0FF, 0xA0FF20};
 static struct desktop_preferences preferences;
 static int tab, nav_scroll, last_gen, conflict, close_pending, reset_pending;
-static int v_dark, v_reduce_motion, v_restore, v_dhcp, wp_sel;
+static int v_dark, v_reduce_motion, v_reduce_transparency, v_restore, v_dhcp, wp_sel;
 static int v_accent_h, v_accent_s, v_accent_l;
 static unsigned accent_loaded, edited;
 static char v_wallpaper[LOGIT_SET_VALMAX];
@@ -63,6 +63,7 @@ static void load_all(void)
 {
     v_dark = sys_ui_dark(-1) > 0;
     v_reduce_motion = setting_int("ui.reduce_motion", 0) != 0;
+    v_reduce_transparency = setting_int("ui.reduce_transparency", 0) != 0;
     v_restore = setting_int("desktop.restore_session", 1) != 0;
     v_dhcp = setting_int("net.dhcp", 1) != 0;
     preferences = desktop_preferences_read(setting_int);
@@ -105,7 +106,8 @@ static int apply_all(void)
     char accent[16];
     snprintf(accent, sizeof accent, "0x%06X", preview_accent());
     const char *values[F_COUNT] = {
-        v_reduce_motion ? "1" : "0", accent, wp_sel < 0 ? v_wallpaper : wp_paths[wp_sel],
+        v_reduce_motion ? "1" : "0", v_reduce_transparency ? "1" : "0",
+        accent, wp_sel < 0 ? v_wallpaper : wp_paths[wp_sel],
         v_restore ? "1" : "0", v_dhcp ? "1" : "0", v_ip, v_mask, v_gw, v_dns
     };
     char extra[F_COUNT][16];

@@ -751,6 +751,7 @@ static void wm_external_damage(void)
  * then decode before subtracting. The guarded subtraction also makes the
  * progress functions safe during an early clocksource rebase. */
 static int wm_reduce_motion;
+static int wm_reduce_transparency;
 static uint64_t anim_stamp(void) { return time_mono_ms() + 1; }
 static uint64_t anim_elapsed_at(uint64_t stamp, uint64_t now)
 {
@@ -6230,6 +6231,8 @@ void wm_init(void)
      * banana` lands on 0 here and says so on the serial log. */
     g_ui_dark = settings_get_int("ui.dark", 0) ? 1 : 0;
     wm_reduce_motion = settings_get_int("ui.reduce_motion", 0) != 0;
+    wm_reduce_transparency = settings_get_int("ui.reduce_transparency", 0) != 0;
+    fb_set_reduce_transparency(wm_reduce_transparency);
     /* The one line that says what "the resolution" now means. A test that wants
      * to assert the scale reads this off the serial log; a human reading a
      * screenshot argument needs it to know whether 1920x1200 is four times the
@@ -6515,6 +6518,8 @@ static void wm_check_unlock(void)
      * first frame instead of on the next toggle. */
     g_ui_dark = settings_get_int("ui.dark", 0) ? 1 : 0;
     wm_reduce_motion = settings_get_int("ui.reduce_motion", 0) != 0;
+    wm_reduce_transparency = settings_get_int("ui.reduce_transparency", 0) != 0;
+    fb_set_reduce_transparency(wm_reduce_transparency);
     draw_background();
     { int count = W * H; blit(bg, back, count); }
 
@@ -6674,11 +6679,18 @@ void wm_run(void)
              * active transitions via their ordinary terminal damage path, and
              * wakes sleeping apps once so controls and media queries update. */
             int reduced = settings_get_int("ui.reduce_motion", 0) != 0;
-            if (reduced != wm_reduce_motion) {
+            int solid = settings_get_int("ui.reduce_transparency", 0) != 0;
+            if (reduced != wm_reduce_motion || solid != wm_reduce_transparency) {
+                int material_changed = solid != wm_reduce_transparency;
                 wm_reduce_motion = reduced;
+                wm_reduce_transparency = solid;
+                fb_set_reduce_transparency(solid);
                 for (int i = 0; i < MAXWIN; i++)
                     if (wins[i].used) enqueue(&wins[i], EV_THEME, g_ui_dark, 0);
-                dirty_dock();
+                /* App glass lives in its own surface and is redrawn on
+                 * EV_THEME; desktop chrome needs whole-panel damage now. */
+                if (material_changed) dirty_full(FULL_THEME);
+                else dirty_dock();
             }
         }
         /* Animations advance HERE, before the frame that shows them, and they

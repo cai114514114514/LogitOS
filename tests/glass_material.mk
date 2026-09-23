@@ -19,11 +19,18 @@ $(BUILD)/glass_material_slow: $(GLASS_MATERIAL_TEST) $(GFX_SRC) $(GFX_HEADERS)
 	@mkdir -p $(dir $@)
 	$(CC) $(GLASS_MATERIAL_FLAGS) -DGLASS_FIELD_SLOW $< $(GFX_SRC) -lm -o $@
 
-test-glass-material-negctl: $(BUILD)/glass_material_static
-	@rc=0; $< > $(BUILD)/glass-material-static.log 2>&1 || rc=$$?; test $$rc -eq 1
+$(BUILD)/glass_material_transparency_neg: $(GLASS_MATERIAL_TEST) $(GFX_SRC) $(GFX_HEADERS)
+	@mkdir -p $(dir $@)
+	$(CC) $(GLASS_MATERIAL_FLAGS) -DGLASS_IGNORE_REDUCE_TRANSPARENCY $< $(GFX_SRC) -lm -o $@
+
+test-glass-material-negctl: $(BUILD)/glass_material_static $(BUILD)/glass_material_transparency_neg
+	@rc=0; $(BUILD)/glass_material_static > $(BUILD)/glass-material-static.log 2>&1 || rc=$$?; test $$rc -eq 1
 	@rg '^FAIL light neutral body keeps content contrast: gray=0 ' $(BUILD)/glass-material-static.log
 	@rg '^FAIL dark neutral body keeps content contrast: gray=255 ' $(BUILD)/glass-material-static.log
-	@echo 'Glass material control: fixed tint observed failing both light and dark content contrast.'
+	@rc=0; $(BUILD)/glass_material_transparency_neg > $(BUILD)/glass-material-transparency-neg.log 2>&1 || rc=$$?; test $$rc -eq 1
+	@rg '^FAIL reduced transparency interior is opaque on both backdrops$$' $(BUILD)/glass-material-transparency-neg.log
+	@rg '^FAIL reduced transparency skips backdrop blur allocation$$' $(BUILD)/glass-material-transparency-neg.log
+	@echo 'Glass material controls: fixed tint and ignored transparency setting both failed.'
 
 test-glass-material-parity: $(BUILD)/glass_material_test $(BUILD)/glass_material_slow
 	$(BUILD)/glass_material_test > $(BUILD)/glass-material-fast.log

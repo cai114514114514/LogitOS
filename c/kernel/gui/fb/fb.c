@@ -579,6 +579,11 @@ void fb_liquid_glass(int x, int y, int w, int h, int radius,
     ol_display_liquid_glass(fb_sdk() ,x,y,w,h,radius,tr,tg,tb,ta);
 }
 
+void fb_set_reduce_transparency(int enabled)
+{
+    sdk_display.reduce_transparency = enabled != 0;
+}
+
 void fb_liquid_glass_cut(int x, int y, int w, int h, int radius,
                          uint8_t tr, uint8_t tg, uint8_t tb, uint8_t ta,
                          unsigned cut)

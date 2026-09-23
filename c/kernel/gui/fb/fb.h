@@ -187,6 +187,8 @@ void fb_blur_rect(int x, int y, int w, int h, int radius, int corner);
  * colour (white for light glass, dark for dark glass), ta = its 0..255 strength. */
 void fb_liquid_glass(int x, int y, int w, int h, int radius,
                      uint8_t tr, uint8_t tg, uint8_t tb, uint8_t ta);
+/* All glass calls, including app SYS_GUI_GLASS, use this one material choice. */
+void fb_set_reduce_transparency(int enabled);
 
 /* Same material, with named edges CUT: a cut edge is where the panel is
  * truncated by something that isn't the panel's own boundary -- the screen

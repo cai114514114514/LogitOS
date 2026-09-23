@@ -80,8 +80,17 @@ static void page_appearance(struct aui_rect body)
     }
     aui_set_accent(preview_accent());
     row = group(&body, 56);
-    toggle_row(row, "Reduce motion", "Use fewer interface animations", &v_reduce_motion, F_MOTION);
-    aim("motion", row.x + row.w - 24, row.y + 14);
+    /* Both accessibility switches fit in the existing card. Another full row
+     * would run under the fixed footer at the minimum 820x560 window size. */
+    int half_row = row.w / 2;
+    struct aui_rect motion = {row.x, row.y, half_row, row.h};
+    struct aui_rect transparency = {row.x + half_row, row.y,
+                                    row.w - half_row, row.h};
+    toggle_row(motion, "Reduce motion", "Fewer animations", &v_reduce_motion, F_MOTION);
+    aim("motion", motion.x + motion.w - 24, motion.y + 14);
+    toggle_row(transparency, "Reduce transparency", "Solid glass panels",
+               &v_reduce_transparency, F_TRANSPARENCY);
+    aim("transparency", transparency.x + transparency.w - 24, transparency.y + 14);
 }
 static void page_desktop(struct aui_rect body)
 {

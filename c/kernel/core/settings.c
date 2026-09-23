@@ -93,6 +93,7 @@ static const struct setting_def schema[] = {
   { "ui.dark",               "Dark appearance",           SET_T_BOOL,  SET_G_APPEARANCE,  0, 1,          "0",               NULL },
   /* Shared SDK motion preference: AUI, WM and browser media queries. */
   { "ui.reduce_motion",      "Reduce motion",             SET_T_BOOL,  SET_G_APPEARANCE,  0, 1,          "0",               NULL },
+  { "ui.reduce_transparency", "Reduce transparency",       SET_T_BOOL,  SET_G_APPEARANCE,  0, 1,          "0",               NULL },
   { "ui.accent",             "Accent colour",             SET_T_COLOR, SET_G_APPEARANCE,  0, 0xFFFFFF,   "0x5E96FF",        NULL },
   { "ui.wallpaper",          "Wallpaper image",           SET_T_STR,   SET_G_DESKTOP,     0, 0,          "/wallpaper.png",  NULL },
   { "desktop.restore_session","Reopen windows on login",  SET_T_BOOL,  SET_G_DESKTOP,     0, 1,          "1",               NULL },

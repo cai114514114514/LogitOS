@@ -163,3 +163,39 @@ void glass_render(struct glass_panel *panel, struct glass_color tint, int opacit
         draw_edge(panel, &style, row, distance_y, direction_y, span.end, panel->clip_right);
     }
 }
+
+void glass_render_solid(struct glass_panel *panel, struct glass_color tint)
+{
+    struct ol_display *display = panel->display;
+    uint32_t fill = display_rgb(display, tint.red, tint.green, tint.blue);
+
+    /* A rounded panel may be cropped by the screen or clipped by damage.
+     * Drawing a fresh rounded rectangle from its visible bounds invents a rim
+     * at that crop; use the original shape and the same cut-edge field as the
+     * translucent material. Only the one-pixel antialias fringe blends. */
+    for (int row = panel->clip_top; row < panel->clip_bottom; row++) {
+        uint32_t *destination = display->target.px +
+                                (long)(panel->y + row) * display->target.w;
+        if (panel->radius == 0) {
+            for (int column = panel->clip_left; column < panel->clip_right; column++)
+                destination[panel->x + column] = fill;
+            continue;
+        }
+
+        int offset_y = row - panel->center_y;
+        int direction_y = offset_y < 0 ? -1 : 1;
+        int distance_y = axis_distance(offset_y, panel->inner_y, panel->cut,
+                                       OL_GLASS_CUT_TOP, OL_GLASS_CUT_BOTTOM);
+        for (int column = panel->clip_left; column < panel->clip_right; column++) {
+            int offset_x = column - panel->center_x;
+            int direction_x = offset_x < 0 ? -1 : 1;
+            int distance_x = axis_distance(offset_x, panel->inner_x, panel->cut,
+                                           OL_GLASS_CUT_LEFT, OL_GLASS_CUT_RIGHT);
+            int coverage = pixel_field(panel, distance_x, distance_y,
+                                       direction_x, direction_y).coverage;
+            if (coverage == 255) destination[panel->x + column] = fill;
+            else if (coverage)
+                store_pixel(display, &destination[panel->x + column], tint, coverage);
+        }
+    }
+}

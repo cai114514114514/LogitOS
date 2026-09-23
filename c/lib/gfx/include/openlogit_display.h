@@ -29,6 +29,10 @@ struct ol_display {
     uint32_t *blur_scratch,*glass_buf;
     int *glass_line;
     int blur_scratch_n,glass_buf_n,glass_line_n,error;
+    /* When enabled, glass draws a solid panel without reading the backdrop.
+     * This is per display so host probes and other render targets can opt in
+     * without changing the ordinary material or sharing global state. */
+    int reduce_transparency;
     unsigned shadow_clamped;
     uint64_t batches;
 };

@@ -13,6 +13,13 @@ enum { WIDTH = 160, HEIGHT = 128, PIXELS = WIDTH * HEIGHT };
 struct color { unsigned char r, g, b; };
 static int checks, failures;
 static uint64_t patterned_hash = UINT64_C(14695981039346656037);
+static int scratch_allocations;
+
+static void *counted_alloc(unsigned long bytes)
+{
+    scratch_allocations++;
+    return malloc(bytes);
+}
 
 static void check(int condition, const char *name)
 {
@@ -228,12 +235,99 @@ static void clip_parity(void)
     }
 }
 
+static void draw_solid_at(uint32_t *pixels, int x, int radius, int clipped, unsigned cut)
+{
+    struct ol_display display = {
+        .allocate = counted_alloc, .release = free,
+        .reduce_transparency = 1,
+    };
+    struct ol_pixel_target target = {
+        .px = pixels, .w = WIDTH, .h = HEIGHT,
+        .clip_on = clipped, .clx0 = 31, .cly0 = 27, .clx1 = 123, .cly1 = 101,
+    };
+    if (ol_display_bind(&display, &target, 16, 8, 0) != OL_OK) {
+        fprintf(stderr, "solid glass fixture could not bind target\n");
+        exit(2);
+    }
+    ol_display_liquid_glass_cut(&display, x, 16, 128, 96, radius,
+                                230, 235, 240, 16, cut);
+    check(display.error == OL_OK, "reduced transparency renderer reports no error");
+    ol_display_destroy(&display);
+}
+
+static void draw_solid(uint32_t *pixels, int radius, int clipped, unsigned cut)
+{
+    draw_solid_at(pixels, 16, radius, clipped, cut);
+}
+
+static void reduced_transparency(void)
+{
+    uint32_t first[PIXELS], second[PIXELS], clipped[PIXELS];
+    const uint32_t tint = rgb((struct color){230, 235, 240});
+
+    /* Black and white are adversarial backdrops: a stronger alpha or a blur
+     * still depends on them, whereas a solid interior cannot. The zero-alpha
+     * fringe at a curved outline is outside the panel, not its background. */
+    for (int radius = 0; radius <= 18; radius += 18) {
+        fill(first, (struct color){0, 0, 0});
+        fill(second, (struct color){255, 255, 255});
+        scratch_allocations = 0;
+        draw_solid(first, radius, 0, 0);
+        draw_solid(second, radius, 0, 0);
+        check(first[64 * WIDTH + 80] == tint && second[64 * WIDTH + 80] == tint,
+              "reduced transparency interior is opaque on both backdrops");
+        check(scratch_allocations == 0,
+              "reduced transparency skips backdrop blur allocation");
+        check(first[0] == 0 && second[0] == 0xFFFFFF,
+              "reduced transparency leaves outside pixels unchanged");
+    }
+
+    fill(first, (struct color){0, 0, 0});
+    draw_solid(first, 18, 0, 0);
+    check(first[16 * WIDTH + 16] == 0,
+          "solid rounded panel preserves its free corner");
+    fill(first, (struct color){0, 0, 0});
+    draw_solid(first, 18, 0, OL_GLASS_CUT_TOP | OL_GLASS_CUT_LEFT);
+    check(first[16 * WIDTH + 16] == tint,
+          "solid cut edges join without an invented rounded corner");
+
+    fill(first, (struct color){40, 80, 120});
+    memcpy(clipped, first, sizeof clipped);
+    draw_solid(first, 18, 0, OL_GLASS_CUT_TOP);
+    draw_solid(clipped, 18, 1, OL_GLASS_CUT_TOP);
+    int changed_inside = 0, changed_outside = 0;
+    for (int y = 0; y < HEIGHT; y++) {
+        for (int x = 0; x < WIDTH; x++) {
+            int at = y * WIDTH + x;
+            if (x >= 31 && x < 123 && y >= 27 && y < 101)
+                changed_inside += clipped[at] != first[at];
+            else
+                changed_outside += clipped[at] != rgb((struct color){40, 80, 120});
+        }
+    }
+    check(changed_inside == 0, "solid glass matches full render inside damage clip");
+    check(changed_outside == 0, "solid glass leaves outside damage clip untouched");
+
+    /* The visible rectangle begins at screen x=0 while the panel began at
+     * x=-12. Both the geometry and destination pointer must remain valid. */
+    fill(first, (struct color){40, 80, 120});
+    fill(clipped, (struct color){40, 80, 120});
+    draw_solid_at(first, -12, 18, 0, 0);
+    draw_solid_at(clipped, -12, 18, 1, 0);
+    check(first[64 * WIDTH] == tint, "cropped solid panel fills its visible interior");
+    check(clipped[64 * WIDTH + 40] == first[64 * WIDTH + 40],
+          "cropped solid panel preserves original geometry inside clip");
+    check(clipped[64 * WIDTH] == rgb((struct color){40, 80, 120}),
+          "cropped solid panel does not write outside clip");
+}
+
 int main(void)
 {
     neutral_contrast();
     transparency_and_color();
     endpoints();
     clip_parity();
+    reduced_transparency();
     printf("glass patterned hash: %016llx\n", (unsigned long long)patterned_hash);
     printf("glass material: %d checks, %d failed\n", checks, failures);
     return failures ? 1 : 0;

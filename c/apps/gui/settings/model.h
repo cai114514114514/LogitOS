@@ -34,14 +34,14 @@ static int settings_mask(const char *text)
     return (host & (host + 1)) == 0;
 }
 
-enum setting_field { F_MOTION, F_ACCENT, F_WALLPAPER, F_RESTORE,
+enum setting_field { F_MOTION, F_TRANSPARENCY, F_ACCENT, F_WALLPAPER, F_RESTORE,
                      F_DHCP, F_IP, F_MASK, F_GW, F_DNS,
 #define PREF_ENUM(field, key, label, low, high, value) F_##field,
                      LOGIT_DESKTOP_PREFS(PREF_ENUM)
 #undef PREF_ENUM
                      F_COUNT };
 static const char *const field_keys[F_COUNT] = {
-    "ui.reduce_motion", "ui.accent", "ui.wallpaper", "desktop.restore_session",
+    "ui.reduce_motion", "ui.reduce_transparency", "ui.accent", "ui.wallpaper", "desktop.restore_session",
     "net.dhcp", "net.ip", "net.mask", "net.gw", "net.dns",
 #define PREF_KEY(field, key, label, low, high, value) key,
     LOGIT_DESKTOP_PREFS(PREF_KEY)

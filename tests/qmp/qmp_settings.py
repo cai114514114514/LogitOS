@@ -240,6 +240,14 @@ def main(argv):
                 acc += luma(c); n += 1
             return acc // max(1, n)
 
+        def solid_menu_pixels(path):
+            # The dark menu-bar panel is 24,24,32 in wm.c. Use a blank span
+            # away from the app menus and clock, not a screenshot-wide mean
+            # that can change when Settings repaints its own window.
+            p = PPM(path)
+            return sum(p.at(x, pt(6)) == (24, 24, 32)
+                       for x in range(pt(400), pt(600)))
+
         mb_light = menubar_luma(shot)
         ck(mb_light > 140, "the kernel-drawn menu bar is light too", "luma=%d" % mb_light)
 
@@ -339,6 +347,7 @@ def main(argv):
 
         page = which_page(shot)
         ck(page == "appearance", "still on Appearance after the toggle", "page=%r" % page)
+        dark_material_pixels = 0
         if page == "appearance":
             fd = Frame(shot, "appearance")
             dark_bg = fd.mean(300, 40, 60, 12)
@@ -354,6 +363,7 @@ def main(argv):
                "light=%d dark=%d" % (mb_light, mb_dark))
             ppm_to_png(shot, base_out + "-dark.png")
             print("     wrote %s" % (base_out + "-dark.png"))
+            dark_material_pixels = solid_menu_pixels(shot)
 
         # ---- and it PERSISTED ------------------------------------------------
         # wm_set_dark() commits ui.dark immediately, so the store must already
@@ -401,6 +411,35 @@ def main(argv):
         click_control("apply")
         ck("status error=0 Changes saved" in open(serial).read(),
            "an edited preference reaches the save path")
+        park()
+        ui.screendump(shot, settle=1.5 * slow)
+        motion_only_pixels = solid_menu_pixels(shot)
+        ck(motion_only_pixels == dark_material_pixels,
+           "Reduce Motion alone leaves translucent menu glass unchanged",
+           "tint pixels %d -> %d" % (dark_material_pixels, motion_only_pixels))
+        ppm_to_png(shot, base_out + "-motion-only.png")
+
+        # The same checkbox changes kernel chrome and the SYS_GUI_GLASS
+        # material. A solid tint should replace backdrop-dependent menu glass
+        # without waiting for a reboot; the host material gate checks the
+        # application-surface entry and the no-allocation fast path.
+        click_control("transparency")
+        click_control("apply")
+        park()
+        ui.screendump(shot, settle=1.5 * slow)
+        solid_pixels = solid_menu_pixels(shot)
+        ck(solid_pixels > pt(160) and solid_pixels > motion_only_pixels + pt(100),
+           "Reduce Transparency changes the kernel menu bar to opaque glass",
+           "tint pixels %d -> %d" % (motion_only_pixels, solid_pixels))
+        ppm_to_png(shot, base_out + "-solid-glass.png")
+        click_control("transparency")
+        click_control("apply")
+        park()
+        ui.screendump(shot, settle=1.5 * slow)
+        restored_pixels = solid_menu_pixels(shot)
+        ck(restored_pixels < solid_pixels - pt(100),
+           "turning the setting off restores backdrop-dependent glass",
+           "tint pixels %d -> %d" % (solid_pixels, restored_pixels))
 
         navigate(6)
         click_control("search")

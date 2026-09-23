@@ -60,5 +60,6 @@ static inline int glass_clamp(int value, int low, int high)
 
 void glass_blur(struct glass_panel *panel);
 void glass_render(struct glass_panel *panel, struct glass_color tint, int opacity);
+void glass_render_solid(struct glass_panel *panel, struct glass_color tint);
 
 #endif

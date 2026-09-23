@@ -112,6 +112,17 @@ void ol_display_liquid_glass_cut(struct ol_display *display,
     struct glass_panel panel;
     if (!prepare_panel(&panel, display, x, y, width, height, radius, cut)) return;
 
+#ifndef GLASS_IGNORE_REDUCE_TRANSPARENCY
+    if (display->reduce_transparency) {
+        /* Raising tint alpha still pays for blur/refraction and leaves the
+         * optical rim. Apple's Reduce Transparency setting calls for a solid
+         * background, so skip both effects and their scratch allocation.
+         * Keep the same panel geometry, clip and cut-edge rules. */
+        glass_render_solid(&panel, (struct glass_color){red, green, blue});
+        return;
+    }
+#endif
+
     if (!reserve_scratch(&panel)) {
         /* The former frost-only fallback re-rounded the cropped rectangle:
          * at x=100 on a 128px target it painted 227 pixels outside the lens.
