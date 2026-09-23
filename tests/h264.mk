@@ -7,12 +7,59 @@
 # tests/usb.mk already use.
 
 .PHONY: test-h264 test-h264-units test-h264-diff test-h264-high \
-        test-h264-negctl test-h264-real test-h264-pts
+        test-h264-negctl test-h264-real test-h264-pts \
+        test-h264-bounds test-h264-bounds-negctl
 
 H264_SRC := c/lib/video/h264.c c/lib/video/h264_nal.c c/lib/video/h264_cavlc.c \
             c/lib/video/h264_cabac.c c/lib/video/h264_dpb.c c/lib/video/h264_mb.c \
             c/lib/video/h264_pred.c c/lib/video/h264_mc.c c/lib/video/h264_deblock.c
 H264_INC := -Ic/lib/video
+H264_BOUNDS_FLAGS := -O1 -g -Wall -Wextra -fsanitize=address,undefined \
+                     -fno-omit-frame-pointer
+
+# The historical slice check compared a cast signed ue() value only with the
+# upper bound. Restoring that exact check in a build-only source copy makes the
+# crafted second IDR slice write 324 bytes 648 bytes before its allocation
+# (Darwin arm64 ASan); removing the SPS crop guard makes -2 report a 20x16
+# output plane from a 16x16 allocation. Both mutants must fail for those named
+# reasons before the current parser's rejection can count as a passing gate.
+test-h264-bounds-negctl:
+	@mkdir -p $(BUILD)/h264-bounds
+	@python3 tests/unit/h264_bounds_mutate.py slice c/lib/video/h264.c \
+	    $(BUILD)/h264-bounds/old_h264.c
+	@$(CC) $(H264_BOUNDS_FLAGS) -o $(BUILD)/h264-bounds/old_slice \
+	    tests/unit/h264_bounds_test.c $(BUILD)/h264-bounds/old_h264.c \
+	    $(filter-out c/lib/video/h264.c,$(H264_SRC)) $(H264_INC)
+	@status=0; $(BUILD)/h264-bounds/old_slice slice tests/fixtures/video/sample.h264 \
+	    >$(BUILD)/h264-bounds/slice.log 2>&1 || status=$$?; \
+	    if [ "$$status" -eq 0 ] || \
+	       ! rg -q 'H264-BOUNDS-SETUP: valid first picture' $(BUILD)/h264-bounds/slice.log || \
+	       ! rg -q 'AddressSanitizer: heap-buffer-overflow' $(BUILD)/h264-bounds/slice.log || \
+	       ! rg -q 'h264_decode_mb' $(BUILD)/h264-bounds/slice.log; then \
+	        cat $(BUILD)/h264-bounds/slice.log; \
+	        echo 'H264-BOUNDS-NEGCTL-FAIL: old slice guard did not reproduce the wild write'; exit 1; \
+	    fi; echo 'H264-BOUNDS-NEGCTL-RED: old slice guard writes before the picture allocation'
+	@python3 tests/unit/h264_bounds_mutate.py crop c/lib/video/h264_nal.c \
+	    $(BUILD)/h264-bounds/old_h264_nal.c
+	@$(CC) $(H264_BOUNDS_FLAGS) -o $(BUILD)/h264-bounds/old_crop \
+	    tests/unit/h264_bounds_test.c $(BUILD)/h264-bounds/old_h264_nal.c \
+	    $(filter-out c/lib/video/h264_nal.c,$(H264_SRC)) $(H264_INC)
+	@status=0; $(BUILD)/h264-bounds/old_crop crop \
+	    >$(BUILD)/h264-bounds/crop.log 2>&1 || status=$$?; \
+	    if [ "$$status" -ne 1 ] || \
+	       ! rg -q 'H264-BOUNDS-FAIL crop negative-left: parse=0 info=0 size=20x16 want=-1' \
+	         $(BUILD)/h264-bounds/crop.log; then \
+	        cat $(BUILD)/h264-bounds/crop.log; \
+	        echo 'H264-BOUNDS-NEGCTL-FAIL: old crop guard did not misreport geometry'; exit 1; \
+	    fi; echo 'H264-BOUNDS-NEGCTL-RED: old crop guard exposes 20x16 from a 16x16 SPS'
+
+$(BUILD)/h264_bounds_test: tests/unit/h264_bounds_test.c $(H264_SRC)
+	@mkdir -p $(BUILD)
+	@$(CC) $(H264_BOUNDS_FLAGS) -o $@ $< $(H264_SRC) $(H264_INC)
+
+test-h264-bounds: test-h264-bounds-negctl $(BUILD)/h264_bounds_test
+	@$(BUILD)/h264_bounds_test crop
+	@$(BUILD)/h264_bounds_test slice tests/fixtures/video/sample.h264
 
 # --- whole-stream gate ------------------------------------------------------
 # tools/genvideo.sh generates the stream matrix with ffmpeg/libx264 and the
@@ -55,7 +102,7 @@ H264_GATE := i-only-160x120 i-only-322x242 ip-320x240 ip-640x360 \
              high-full-320x240 high-full-640x360 high-slices-320x240 \
              high-cqm-flat-320x240
 
-test-h264:
+test-h264: test-h264-bounds
 	@mkdir -p $(BUILD)/h264ref
 	@bash tools/genvideo.sh $(BUILD)/h264ref
 	@$(CC) -O2 -Wall -Wextra -o $(BUILD)/h264_test tests/unit/h264test.c $(H264_SRC) $(H264_INC)

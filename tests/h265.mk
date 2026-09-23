@@ -7,7 +7,8 @@
 # already use.
 
 .PHONY: test-h265 test-h265-units test-h265-units-control test-h265-units-asan \
-        test-h265-diff test-h265-b test-video265 test-h265-m10
+        test-h265-diff test-h265-b test-video265 test-h265-m10 \
+        test-h265-bounds test-h265-bounds-negctl
 
 H265_SRC := c/lib/video/h265.c c/lib/video/h265_nal.c c/lib/video/h265_cabac.c \
             c/lib/video/h265_pred.c c/lib/video/h265_mc.c c/lib/video/h265_deblock.c
@@ -45,7 +46,7 @@ H265_GATE10 := m10-i-160x120 m10-i-qp12 m10-i-qp40 m10-i-322x242 \
 # fixture below still runs, so this target means something on a machine with no
 # encoder installed. That is the same reason tests/fixtures/video/sample.h264
 # exists for H.264.
-test-h265: $(BUILD)/h265_test
+test-h265: test-h265-bounds $(BUILD)/h265_test
 	@mkdir -p $(BUILD)/h265ref
 	@rc=0; bash tools/genvideo265.sh $(BUILD)/h265ref core || rc=$$?; \
 	 if [ $$rc = 3 ]; then \
@@ -88,6 +89,52 @@ $(BUILD)/h265_test: tests/unit/h265test.c $(H265_SRC) c/lib/video/h265.h \
                     c/lib/video/h265_int.h
 	@mkdir -p $(BUILD)
 	@$(CC) -O2 -Wall -Wextra -o $@ tests/unit/h265test.c $(H265_SRC) $(H265_INC)
+
+# Both audit findings were already guarded, but neither had a regression
+# gate. The controls below compile each historical omission into the same
+# decoder: the RPS case must trip UBSan at keep[34], and the malformed SPS
+# must be accepted. A merely nonzero exit is insufficient (e.g. an ASan host
+# startup failure); each control must print its named failure.
+H265_BOUNDS_SRC := tests/unit/h265_bounds_test.c \
+                   $(filter-out c/lib/video/h265.c c/lib/video/h265_nal.c,$(H265_SRC))
+H265_BOUNDS_FLAGS := -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer \
+                     -Wall -Wextra $(H265_INC)
+
+$(BUILD)/h265_bounds_test: $(H265_BOUNDS_SRC) c/lib/video/h265.c c/lib/video/h265_nal.c \
+                           c/lib/video/h265_int.h c/lib/video/bs.h
+	@mkdir -p $(BUILD)
+	@$(CC) $(H265_BOUNDS_FLAGS) -o $@ $(H265_BOUNDS_SRC)
+
+test-h265-bounds: test-h265-bounds-negctl $(BUILD)/h265_bounds_test
+	@ASAN_OPTIONS=detect_leaks=0 UBSAN_OPTIONS=halt_on_error=1 \
+	    $(BUILD)/h265_bounds_test rps
+	@ASAN_OPTIONS=detect_leaks=0 UBSAN_OPTIONS=halt_on_error=1 \
+	    $(BUILD)/h265_bounds_test crop
+
+test-h265-bounds-negctl:
+	@mkdir -p $(BUILD)
+	@$(CC) $(H265_BOUNDS_FLAGS) -DH265_CONTROL_NO_RPS_BOUND \
+	    -o $(BUILD)/h265_bounds_rps_control $(H265_BOUNDS_SRC)
+	@$(CC) $(H265_BOUNDS_FLAGS) -DH265_CONTROL_NO_CROP_BOUND \
+	    -o $(BUILD)/h265_bounds_crop_control $(H265_BOUNDS_SRC)
+	@ASAN_OPTIONS=detect_leaks=0:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1 \
+	    $(BUILD)/h265_bounds_rps_control rps >$(BUILD)/h265_bounds_rps.log 2>&1; \
+	    rc=$$?; \
+	    if [ $$rc -eq 0 ] || ! rg -q 'runtime error: index 34 out of bounds|stack-buffer-overflow' \
+	        $(BUILD)/h265_bounds_rps.log; then \
+	        cat $(BUILD)/h265_bounds_rps.log; \
+	        echo 'CONTROL-FAIL: old RPS append did not overflow keep[34]'; exit 1; \
+	    fi; \
+	    echo 'CONTROL-OK: old RPS append overflows keep[34]'
+	@ASAN_OPTIONS=detect_leaks=0 UBSAN_OPTIONS=halt_on_error=1 \
+	    $(BUILD)/h265_bounds_crop_control crop >$(BUILD)/h265_bounds_crop.log 2>&1; \
+	    rc=$$?; \
+	    if [ $$rc -eq 0 ] || ! rg -q '^FAIL crop: malformed SPS accepted' \
+	        $(BUILD)/h265_bounds_crop.log; then \
+	        cat $(BUILD)/h265_bounds_crop.log; \
+	        echo 'CONTROL-FAIL: old SPS parser did not accept invalid crop'; exit 1; \
+	    fi; \
+	    echo 'CONTROL-OK: old SPS parser accepts invalid crop'
 
 # --- the bisection tool -----------------------------------------------------
 # Total wrong bytes per case, per plane, plus the first three bad pictures and

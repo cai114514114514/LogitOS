@@ -277,7 +277,9 @@ static int apply_rps(h265dec *d, const slice_t *sl, int nal_type)
      * entries; the sum can exceed H265_MAX_DPB*2, so every append below is
      * guarded -- LSB long-term matching can hit the same picture repeatedly
      * and nkeep is attacker-driven. Found by the 2026-09-16 audit. */
+#ifndef H265_CONTROL_NO_RPS_BOUND
     const int keep_cap = (int)(sizeof keep / sizeof *keep);
+#endif
     int nkeep = 0;
 
     if (IS_IDR(nal_type) || IS_BLA(nal_type) ||
@@ -295,7 +297,9 @@ static int apply_rps(h265dec *d, const slice_t *sl, int nal_type)
     for (int i = 0; i < r->num_negative; i++) {
         pic_t *p = find_poc(d, d->poc + r->delta_poc[i], 0);
         if (p) {
+#ifndef H265_CONTROL_NO_RPS_BOUND
             if (nkeep >= keep_cap) return H265_ERR_CORRUPT;
+#endif
             p->reference = 1; keep[nkeep++] = p;
         }
         if (r->used[i]) st_before[n_before++] = p;
@@ -304,7 +308,9 @@ static int apply_rps(h265dec *d, const slice_t *sl, int nal_type)
         int k = r->num_negative + i;
         pic_t *p = find_poc(d, d->poc + r->delta_poc[k], 0);
         if (p) {
+#ifndef H265_CONTROL_NO_RPS_BOUND
             if (nkeep >= keep_cap) return H265_ERR_CORRUPT;
+#endif
             p->reference = 1; keep[nkeep++] = p;
         }
         if (r->used[k]) st_after[n_after++] = p;
@@ -322,7 +328,9 @@ static int apply_rps(h265dec *d, const slice_t *sl, int nal_type)
             p = find_poc(d, poc & (d->max_poc_lsb - 1), 1);
         }
         if (p) {
+#ifndef H265_CONTROL_NO_RPS_BOUND
             if (nkeep >= keep_cap) return H265_ERR_CORRUPT;
+#endif
             p->reference = 2; keep[nkeep++] = p;
         }
         if (sl->lt_used[i]) lt_curr[n_lt++] = p;

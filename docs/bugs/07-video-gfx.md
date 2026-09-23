@@ -21,9 +21,9 @@
 
 ## 发现（按严重度）
 
-### [high] [CONFIRMED] H.264 `first_mb_in_slice` 有符号比较绕过——负值直接变野指针写
+### [high] [FIXED 2026-09-18; formerly CONFIRMED] H.264 `first_mb_in_slice` 有符号比较绕过——负值直接变野指针写
 
-- 位置：`c/lib/video/h264_nal.c:448`（解析）、`c/lib/video/h264.c:550`（失守的比较）、`c/lib/video/h264.c:583`（进入循环）、`c/lib/video/h264_mb.c:1211-1212`（野指针写）
+- 原位置：`c/lib/video/h264_nal.c:448`（解析）、`c/lib/video/h264.c:550`（失守的比较）、`c/lib/video/h264.c:583`（进入循环）、`c/lib/video/h264_mb.c:1211-1212`（野指针写）；以下代码是修复前的历史样例，行号也是审计当日的。
 
 ```c
 /* h264_nal.c:448 -- bs_ue 可返回 0xFFFFFFFF，(int) 强转后为负 */
@@ -42,6 +42,8 @@ memset(mi, 0, sizeof *mi);                 /* 野指针写，必崩 */
 - 触发与后果：`bs_ue` 的返回值域是 0..2^32-1（`bs.h:70-81` 无上限语义，前导零 31 位时可达 0xFFFFFFFF）。攻击流只需：一个合法的首 slice 建起 `d->cur`，随后第二个 slice NAL 携带 `first_mb_in_slice ≥ 0x80000000`。`== 0` 为假走 else 分支，`>= total` 对负值恒真放行，`addr` 以 `sizeof(mbinfo_t)≈384 字节 × 20 多亿` 的偏移参与 `&d->mb[addr]`——CAVLC 路径先经 `h264_decode_skip_mb`（同样 `&d->mb[addr]` 后 memset），即一次确定性的进程内野写/段错误。附带一处：`run > (uint32_t)(total - addr)` 在 `addr=INT_MIN` 时 `total - addr` 本身是有符号溢出 UB（`h264.c:590`）。
 - 对比：H.265 同位置的 `segment_address` 是无符号读出后再 `>= sps->ctb_count` 拒绝（`h265_nal.c:651-653`），没有这个洞——两套解码器的约定不一致恰好说明 H.264 侧是遗漏而非设计。
 - 修复建议：解析处钳制 `if ((uint32_t)sl->first_mb_in_slice > (uint32_t)(d->mbw * d->mbh - 1)) return H264_ERR_CORRUPT;`（以无符号比较），或 `decode_slice` 的检查改为 `if (sl->first_mb_in_slice < 0 || sl->first_mb_in_slice >= total)`。一行修复，建议同时给 `tests/` 补一个负向用例并让它先红后绿。
+
+2026-09-23 复核：`921f1ce22` 已在 `h264.c` 的 `decode_slice` 加入后者的有符号下界检查；负地址在 `h264_build_lists`、宏块循环以及 `total - addr` 之前拒绝。审计原文称 `bs_ue` 可返回 `0xFFFFFFFF` 不准确：当前 `bs.h` 在 32 个前导零时拒绝，最大可返回 `0xFFFFFFFE`，但它强转后的 `-2` 已足以触发原问题。`test-h264-bounds` 使用提交内的合法首张图片和改写过的第二个 IDR slice：当前代码返回 `H264_ERR_CORRUPT`；构建目录里的旧比较负控由 ASan 报 `h264_decode_mb` 向 97,200 字节分配区之前 648 字节处写 324 字节。该负控是 `test-h264` 的前置条件。
 
 ### [high] [CONFIRMED] H.265 `apply_rps` 的 `keep[]` 栈缓冲溢出——RPS 条目数上界之和超过表容量
 
@@ -66,6 +68,8 @@ for (int i = 0; i < sl->num_long_term; i++) {    /* ≤32 项 */
 - 触发与后果：三个循环的 append 次数上界是 16（短期，负+正合计被 parse_strps 钳到 16）+ 32（长期）= **48**，而 `keep` 只有 34 项。长期条目按 LSB 匹配（`find_poc(..., lsb_only=1)`）且**不去重**：攻击者构造 16 张已被标为短期参考的图片，再发一个 slice 头携带 19+ 个 LSB 全部指向这些图片的 long-term 条目，`nkeep` 即达 35+，`keep[34..47]` 越界写越出栈数组、砸坏 `apply_rps` 调用帧（写入值是 `pic_t*`，非完全受控但仍可破坏返回地址/寄存器保存区）。这是纯栈越界写，ring-3 下是媒体进程崩溃乃至潜在控制流劫持；对"每个输入字节不可信"的自家约定是一次正面击穿。`lt_curr[32]` 恰好装得下 32 项，说明作者数过长期表，漏数了 `keep` 要同时装两个来源。
 - 修复建议：`keep` 按"条目数上界"开：`pic_t *keep[H265_MAX_REFS + 32];`（=48），或在 append 前钳 `if (nkeep >= (int)(sizeof keep / sizeof *keep)) return H265_ERR_CORRUPT;`。后者一行，且对畸形流是更符合本文件风格的"响亮拒绝"。
 
+2026-09-23 复核：`921f1ce22` 已选择后者，在三处 append 前均检查 `nkeep < 34`，上述越界描述是修复前的状态。`test-h265-bounds` 构造 16 个短期命中及 19 个指向同一张图的长期条目：当前实现于第 35 次 append 前返回 `H265_ERR_CORRUPT`；仅在负控中关掉边界检查，UBSan 精确报 `index 34 out of bounds for type 'pic_t *[34]'`。负控现为 `test-h265` 的前置条件。该构造直接调用 `apply_rps`，验证的是解码器内部边界；设备内 `vidcheck265` 的普通样本通过，但这不等于恶意 RPS 已在 guest 端逐 NAL 验证。
+
 ### [high] [CONFIRMED] H.265 SPS `conf_win` 完全未校验——负偏移使解码器内部按任意偏移越界读
 
 - 位置：`c/lib/video/h265_nal.c:351-352`（读入，无任何范围检查）；后果点 `c/lib/video/h265.c:484-493`（`emit()` 用它给输出平面定位）与 `c/lib/video/h265.c:439-470`（`build_display()` 按它的宽高读样本）
@@ -86,6 +90,8 @@ out->y16 = p->y + (long)ct * p->stride_y + cl;   /* 无界偏移 */
 
 - 触发与后果：恶意 SPS 声明 `conf_win_left_offset = 0xFFFFFF9C`（(int) 后为 -100）即得 `cl = -200`、`width = 编码宽 + 200`；更极端的值让 `y16` 落到分配区外任意位置，`build_display` 从那里读 `stride_y × height` 个样本——确定性堆越界读（段错误）或读回相邻堆块当像素。`*2` 处 `conf_win[i] ≥ 0x40000000` 时另有有符号溢出 UB。解码器自身当场崩，无需借道调用方。规范上 ConfWin 偏移必须非负且 `width - (left+right) > 0`；`h264_stream_info` 同样会交出负宽高。这是与 S1/H-5 同一族的"SPS 几何字段信任"缺口，只是发生在 ring-3。
 - 修复建议：解析处校验并拒绝：`if (s.conf_win[0] + s.conf_win[1] > s.width / 2 || s.conf_win[2] + s.conf_win[3] > s.height / 2) return H265_ERR_CORRUPT;`（值先按 uint32 比较、再钳非负），一行挡掉整族。
+
+2026-09-23 复核：`921f1ce22` 已在 `h265_parse_sps` 内先拒绝负数或超过单边界的裁剪值，再拒绝零宽/零高或超出编码尺寸的裁剪和；旧文的“完全未校验”不再是当前状态。`test-h265-bounds` 用完整的 64×64 SPS 解析路径验证合法 `(1,1,1,1)` 被接受，强转后为负的 `0x80000000`、零宽 `(16,16,0,0)`、越界 `(0,33,0,0)` 均被拒绝；只在负控中去掉这些检查，解析器打印 `FAIL crop: malformed SPS accepted`。`bs_ue` 的 32 个前导零限制拒绝 `0xFFFFFFFF`，但这里使用的 `0x80000000` 可被解析，足以证明旧的有符号转换漏洞。
 
 ### [medium] [CONFIRMED] H.264 I16x16 DC 与色度 DC 的反量化缺 level 钳制——crafted 系数即可 int32 溢出（UB，静默花屏）
 
@@ -109,9 +115,9 @@ int p = c * ls[r];
 - 触发与后果：CAVLC `decode_level` 允许 level 达 ±3.4e7（`h264_cavlc.c:110` 的 `CAVLC_MAX_LEVEL_PREFIX 28` 路径），CABAC UEG 可达 ±1.7e7（`h264_cabac.c:283-291`）。一个 ±1.35e7 的 I16x16 DC 系数经 Hadamard（×1 即可）后乘 flat 默认表的 `ls[0]=160` 就越过 INT32_MAX；色度 DC（2×2 Hadamard 后 `h264_mb.c:279`）同样。后果是有符号溢出 UB（回绕为错的 DC → 亮/暗异常块 → 经帧内预测沿参考链扩散）。对比之下 4×4/8×8 残差路径（`h264_pred.c:117/182`）经作者计算恰好封顶在 int32 内（1.94e9 / 9.7e8），且 `idct_add_dc_ac` 有显式钳制——两条 DC 路径是同一防御意图下的漏网点。
 - 修复建议：两处乘法前加与 `idct_add_dc_ac` 相同的 `clamp_level`（±16383）。注意 I16x16 的钳制点必须在 `h264_dc16_transform` 之前（对原始 coef），否则 Hadamard 已放大。
 
-### [medium] [CONFIRMED] H.264 SPS 裁剪窗口未校验——负 crop 使输出帧声明几何大于分配，调用方越界读
+### [medium] [FIXED 2026-09-18; formerly CONFIRMED] H.264 SPS 裁剪窗口未校验——负 crop 使输出帧声明几何大于分配，调用方越界读
 
-- 位置：`c/lib/video/h264_nal.c:318-320`（读入无检查）；后果点 `c/lib/video/h264.c:498-502`（`new_picture`）
+- 原位置：`c/lib/video/h264_nal.c:318-320`（读入无检查）；后果点 `c/lib/video/h264.c:498-502`（`new_picture`）。以下代码是修复前的历史样例。
 
 ```c
 /* h264_nal.c:319 -- (int) 强转，可为负 */
@@ -126,6 +132,8 @@ if (d->width <= 0 || d->height <= 0) return H264_ERR_CORRUPT;   /* 只挡非正 
 
 - 触发与后果：`crop[0] = 0xFFFFF060`（int -4000）等值使 `d->width` 比 `stride_y` 的可见区宽出数千像素；解码器本身不按 width 寻址，但 `h264frame.width/height` 原样交给调用方（h264.h:36-37 的契约是"caller displays from (0,0) with w/h"），Preview/vidcheck/播放器按此 blit 即越过帧分配读内存。`crop[0]+crop[1] ≥ 2^30` 时乘 2 另有溢出 UB。与上一条 H.265 conf_win 同族，只是越界点在消费方，故降一档。
 - 修复建议：解析处校验 `crop` 非负且 `(crop[0]+crop[1])*2 < mb_width*16`、`(crop[2]+crop[3])*2 < mb_height*16`（规范等价条件），违规返回 CORRUPT。
+
+2026-09-23 复核：`324d32cd8` 已在 `h264_parse_sps` 校验四个非负偏移、各轴范围和非空裁剪结果，之后才让 SPS 可见于 `new_picture` 与 `h264_stream_info`。`test-h264-bounds` 的 16×16 SPS 接受合法 12×12 可见区，拒绝负左偏移、空宽度和超高偏移；移除检查的构建目录负控让负偏移通过解析，并把 16×16 编码平面错误报告为 20×16。负控是正向门禁的前置条件。
 
 ### [low] [CONFIRMED] H.264 MMCO / ref_pic_list_reordering 参数经 `(int)` 强转后参与有符号运算——多处溢出 UB
 

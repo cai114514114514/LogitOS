@@ -350,6 +350,7 @@ int h265_parse_sps(h265dec *d, bs_t *bs)
         s.width > 16384 || s.height > 16384) return H265_ERR_CORRUPT;
     if (bs_u1(bs)) {
         for (int i = 0; i < 4; i++) s.conf_win[i] = (int)bs_ue(bs);
+#ifndef H265_CONTROL_NO_CROP_BOUND
         /* Offsets are chroma units consumed as `*2` luma samples (4:2:0 is
          * the only chroma format here). bs_ue is unsigned and the (int) cast
          * turns >= 2^31 negative; an oversized pair would push the display
@@ -363,6 +364,7 @@ int h265_parse_sps(h265dec *d, bs_t *bs)
         if ((s.conf_win[0] + s.conf_win[1]) * 2 >= s.width ||
             (s.conf_win[2] + s.conf_win[3]) * 2 >= s.height)
             return H265_ERR_CORRUPT;
+#endif
     }
 
     s.bit_depth_luma = (int)bs_ue(bs) + 8;
