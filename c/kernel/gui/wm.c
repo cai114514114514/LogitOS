@@ -384,6 +384,7 @@ struct win {
     unsigned wait_refs; /* a parked syscall pins this slot until it returns */
     int  wants_close;
     int  focus_notified;     /* last EV_WINDOW_FOCUS value; -1 before first delivery */
+    int  want_keyup;         /* WINS_WANT_KEYUP: deliver EV_KEY_UP + modifier keys */
     int  cw_pt, ch_pt;        /* content size in POINTS -- what the app CURRENTLY has */
     char cwd[128];            /* Finder: current directory path */
     uint64_t open_t0;         /* monotonic ms when the open pop began (0 = settled) */
@@ -397,6 +398,7 @@ struct win {
      * paying for a full app repaint per pointer sample. */
     int  min_w_pt, min_h_pt;  /* app-declared minimum CONTENT size, in points */
     int  zoomed;              /* filling the desktop (see zoom_rect) */
+    int  snapped;             /* SNAP_LEFT / SNAP_RIGHT half, 0 if not (see win_snap) */
     int  minimized;           /* hidden: not composited, not hit-tested */
     /* ---- the dock fly (minimise / restore) --------------------------------
      * `minimized` is set the INSTANT the gesture starts, not when the flight
@@ -1280,18 +1282,6 @@ static void remove_win(int wi)
     spin_unlock_irqrestore(&win_lock, wf);
 }
 
-/* Send a window to the BACK. The exact inverse of raise_win, which is what
- * makes Cmd+Shift+Tab undo Cmd+Tab instead of merely being another rotation
- * in the same direction. */
-static void lower_win(int wi)
-{
-    int at = -1;
-    for (int i = 0; i < norder; i++) if (order[i] == wi) at = i;
-    if (at < 0) return;
-    for (int j = at; j > 0; j--) order[j] = order[j - 1];
-    order[0] = wi;
-}
-
 /* The topmost window a user can actually see and type into, as an index into
  * wins[] -- or -1. Minimised windows keep their place in the z-order (so
  * un-minimising restores where they were) but must not be focused, hit-tested
@@ -1386,6 +1376,7 @@ static void win_set_zoom(struct win *w, int on)
 {
     on = on ? 1 : 0;
     if (on == w->zoomed) return;
+    w->snapped = 0;
     if (on) {
         w->sx = w->x; w->sy = w->y; w->sw = w->w; w->sh = w->h;
         int x, y, ww, wh;
@@ -1420,6 +1411,87 @@ static void win_break_zoom(struct win *w)
     if (!w->zoomed) return;
     w->zoomed = 0;
     w->sx = w->x; w->sy = w->y; w->sw = w->w; w->sh = w->h;
+}
+
+/* ===========================================================================
+ * SNAPPING ("Fluid" P3): drag a window to the left or right edge of the
+ * screen and it takes that half of the desktop; drag it into the menu bar and
+ * it fills the desktop (the zoom). A translucent preview shows where it will
+ * land while the pointer is in a zone; letting go applies it. Dragging a
+ * snapped window away gives it back the size it had, with the pointer at the
+ * same place along its titlebar -- the half-screen size is where it was put,
+ * not what it is.
+ *
+ * The halves are cut from zoom_rect, so they stop above the dock for the same
+ * reason the zoom does. The preview is deliberately NOT glass: its damage is
+ * its own box and nothing it covers has to be re-frosted.
+ * ======================================================================== */
+enum { SNAP_NONE, SNAP_LEFT, SNAP_RIGHT, SNAP_TOP };
+static int g_snap_zone;
+
+static void snap_frame(int zone, int *x, int *y, int *ww, int *wh)
+{
+    zoom_rect(x, y, ww, wh);
+    if (zone == SNAP_LEFT || zone == SNAP_RIGHT) {
+        int half = *ww / 2;
+        if (zone == SNAP_RIGHT) *x += *ww - half;
+        *ww = half;
+    }
+}
+
+static void snap_box(struct drect *r)
+{
+    if (!g_snap_zone) { r->x0 = r->y0 = r->x1 = r->y1 = 0; return; }
+    int x, y, ww, wh;
+    snap_frame(g_snap_zone, &x, &y, &ww, &wh);
+    r->x0 = x + S(6); r->y0 = y + S(6); r->x1 = x + ww - S(6); r->y1 = y + wh - S(6);
+}
+
+static void snap_set(int zone)
+{
+    if (zone == g_snap_zone) return;
+    struct drect r;
+    snap_box(&r); if (r.x1 > r.x0) dirty_rect(r.x0, r.y0, r.x1 - r.x0, r.y1 - r.y0);
+    g_snap_zone = zone;
+    snap_box(&r); if (r.x1 > r.x0) dirty_rect(r.x0, r.y0, r.x1 - r.x0, r.y1 - r.y0);
+}
+
+static int snap_zone_at(int px, int py)
+{
+    if (py < MBH) return SNAP_TOP;
+    if (px <= S(1)) return SNAP_LEFT;
+    if (px >= W - 1 - S(1)) return SNAP_RIGHT;
+    return SNAP_NONE;
+}
+
+static void draw_snap_preview(void)
+{
+    struct drect r; snap_box(&r);
+    int w = r.x1 - r.x0, h = r.y1 - r.y0;
+    if (w <= 0 || h <= 0) return;
+    fb_blend_round_rect(r.x0, r.y0, w, h, S(12), 94, 150, 255, 60);
+    fb_blend_round_rect(r.x0, r.y0, w, S(3), S(2), 94, 150, 255, 140);
+}
+
+static void win_snap(struct win *w, int zone)
+{
+    const char *name = zone == SNAP_LEFT ? "left" : zone == SNAP_RIGHT ? "right" : "top";
+    if (zone == SNAP_TOP) {
+        w->snapped = 0;
+        win_set_zoom(w, 1);
+    } else {
+        /* Remember the size to give back; the position is wherever the drag
+         * that snapped it started, and the drag that un-snaps it decides the
+         * next one. */
+        if (!w->snapped) { w->sw = w->w; w->sh = w->h; }
+        w->zoomed = 0;
+        w->snapped = zone;
+        int x, y, ww, wh;
+        snap_frame(zone, &x, &y, &ww, &wh);
+        win_set_frame(w, x, y, ww, wh);
+    }
+    kprintf("[wm] snap win=%d zone=%s frame %d %d %d %d was %d %d\n", (int)(w - wins), name,
+            w->x, w->y, w->w, w->h, w->sw, w->sh);
 }
 
 /* ===========================================================================
@@ -3096,6 +3168,7 @@ static long wm_gui_dispatch(long num, long a, long b, long c)
         case WINS_MINIMIZED: return w->minimized;
         case WINS_FOCUSED:   return wm_keyboard_focus() == ap->win;
         case WINS_KEY_HELD:  return wm_keyboard_focus() == ap->win && kbd_key_held((int)b);
+        case WINS_WANT_KEYUP: w->want_keyup = (int)b != 0; return w->want_keyup;
         case WINS_SET_ZOOM:
             win_set_zoom(w, (int)b < 0 ? !w->zoomed : ((int)b != 0));
             return w->zoomed;
@@ -3281,6 +3354,82 @@ static void wm_set_dark(int on)
 }
 
 /* ---------- reaping dead apps ---------- */
+/* ===========================================================================
+ * THE CLOSE ANIMATION ("Fluid" P3): a closed window does not vanish in one
+ * frame; its last picture shrinks to 0.92 and fades out over CLOSE_MS, the
+ * way an opened one pops in. The window itself is gone the moment it closes --
+ * its slot is free, focus has moved -- and what remains is a GHOST that owns
+ * the window's last canvas and nothing else, so reusing the slot is safe.
+ *
+ * Drawn after the windows, as a solid titlebar strip plus the canvas, both
+ * through anim_blit_fade/fb_blend (no shared scratch, so safe in a parallel
+ * band). Damage is the window's original frame, which contains every shrunk
+ * frame; the terminal tick damages it once more AFTER the ghost is gone, which
+ * is what leaves no residue (-DWM_CLOSE_DAMAGE_LIE skips that last report and
+ * make test-close-anim must then fail its round trip).
+ * ======================================================================== */
+#define CLOSE_MS 150
+#define NGHOST 4
+static struct ghost {
+    int used;
+    struct surface surf;
+    int x, y, w, h, dark;
+    uint64_t t0;
+} g_ghost[NGHOST];
+static int g_nghost;
+
+static void ghost_box(const struct ghost *g, struct drect *r)
+{ r->x0 = g->x; r->y0 = g->y; r->x1 = g->x + g->w; r->y1 = g->y + g->h; }
+
+static int ghost_geom(const struct ghost *g, int *dx, int *dy, int *dw, int *dh, int *alpha)
+{
+    uint64_t e = anim_elapsed(g->t0);
+    int p = e >= CLOSE_MS ? 256 : (int)(e * 256 / CLOSE_MS);
+    int k = ease_out(p);
+    int sc = 256 - k * 20 / 256;                      /* 1.00 -> 0.92 */
+    *dw = g->w * sc / 256; *dh = g->h * sc / 256;
+    *dx = g->x + (g->w - *dw) / 2; *dy = g->y + (g->h - *dh) / 2;
+    *alpha = 255 - 255 * k / 256;
+    return p;
+}
+
+static void anim_blit_fade(const struct drect *clip,int dx,int dy,int dw,int dh,
+                           const struct surface *src,int alpha);
+static void draw_ghost(const struct drect *R, const struct ghost *g)
+{
+    int dx, dy, dw, dh, a;
+    ghost_geom(g, &dx, &dy, &dw, &dh, &a);
+    if (a <= 0 || dw <= 0 || dh <= 0) return;
+    int tbh = TBH * dw / (g->w ? g->w : 1);
+    if (tbh > dh) tbh = dh;
+    if (g->dark) fb_blend_round_rect(dx, dy, dw, tbh + S(10), S(10), 44, 44, 52, a);
+    else         fb_blend_round_rect(dx, dy, dw, tbh + S(10), S(10), 236, 236, 240, a);
+    if (g->surf.px && dh - tbh > 0) anim_blit_fade(R, dx, dy + tbh, dw, dh - tbh, &g->surf, a);
+}
+
+/* Take window wi's canvas for a ghost. 1 if taken (the caller must not free
+ * it), 0 if this close should just vanish (reduce motion, locked screen, a
+ * window not drawn the ordinary way, or no free ghost). */
+static int ghost_take(int wi)
+{
+    struct win *w = &wins[wi];
+    int x, y, ww, wh, a;
+    if (wm_reduce_motion || g_locked || w->minimized || !w->surf.px) return 0;
+    if (!win_draw_rect(w, &x, &y, &ww, &wh, &a) || !win_drawn_direct(w, x, y, ww, wh, a)) return 0;
+    for (int k = 0; k < NGHOST; k++) {
+        struct ghost *g = &g_ghost[k];
+        if (g->used) continue;
+        g->surf = w->surf;
+        g->x = w->x; g->y = w->y; g->w = w->w; g->h = w->h;
+        g->dark = g_ui_dark;
+        g->t0 = anim_stamp();
+        g->used = 1;
+        g_nghost++;
+        return 1;
+    }
+    return 0;
+}
+
 static void reap(void)
 {
     for (int i = 0; i < MAXWIN; i++) {
@@ -3290,7 +3439,9 @@ static void reap(void)
                 __atomic_store_n(&wins[wi].wants_close, 1, __ATOMIC_RELEASE);
                 waitq_wake_all(&wins[wi].evwq);
                 if (__atomic_load_n(&wins[wi].wait_refs, __ATOMIC_ACQUIRE)) continue;
-                if (wins[wi].surf.px) kfree(wins[wi].surf.px);
+                /* The canvas either becomes the close animation's ghost (which
+                 * then owns it) or is freed here, as before. */
+                if (wins[wi].surf.px && !ghost_take(wi)) kfree(wins[wi].surf.px);
                 /* Clear the pointer, do not merely free what it pointed at.
                  * The slot is reused by the next SYS_GUI_CREATE, and until that
                  * call installs a new buffer the field is a dangling pointer into
@@ -3349,6 +3500,16 @@ void wm_key(int c)
 {
     inputq_push_key(&inq, c, kbd_mods());
 }
+void wm_key_up(int c)
+{
+    inputq_push_typed(&inq, INPUTQ_KEYUP, c, kbd_mods());
+}
+void wm_mods_changed(void)
+{
+    inputq_push_typed(&inq, INPUTQ_MODS, 0, kbd_mods());
+}
+static void wm_process_key_up(int c, int mods);
+static void wm_process_mods(int mods);
 /* At most one fixed batch per desktop pass. Returning backlog lets wm_run skip
  * hlt and start another pass, but every batch still reaches resize, network,
  * animation, composite and scheduler work before the next sixteen events. */
@@ -3357,8 +3518,12 @@ static int wm_drain_input(void)
     struct inputq_event batch[INPUTQ_DRAIN_BUDGET];
     int n = inputq_drain(&inq, batch);
     for (int i = 0; i < n; i++) {
-        if (batch[i].type == INPUTQ_POINTER) wm_process_mouse(&batch[i]);
-        else                                 wm_process_key(batch[i].x, batch[i].mods);
+        switch (batch[i].type) {
+        case INPUTQ_POINTER: wm_process_mouse(&batch[i]); break;
+        case INPUTQ_KEYUP:   wm_process_key_up(batch[i].x, batch[i].mods); break;
+        case INPUTQ_MODS:    wm_process_mods(batch[i].mods); break;
+        default:             wm_process_key(batch[i].x, batch[i].mods); break;
+        }
         /* Publish a window switch before processing the next queued key. */
         wm_sync_focus();
     }
@@ -3877,9 +4042,25 @@ static int wm_keyboard_focus(void)
     return top_visible();
 }
 
+/* MOST RECENTLY USED, for the Cmd+Tab switcher: the focused window moves to
+ * the front every time focus is published. Closed windows are filtered out
+ * when the list is read, not here -- a slot can be reused, and `used` at read
+ * time is the only honest answer to "is this still that window". */
+static int g_mru[MAXWIN], g_nmru;
+static void mru_touch(int wi)
+{
+    int k = 0;
+    while (k < g_nmru && g_mru[k] != wi) k++;
+    if (k == g_nmru && g_nmru < MAXWIN) g_nmru++;
+    if (k >= g_nmru) k = g_nmru - 1;
+    for (; k > 0; k--) g_mru[k] = g_mru[k - 1];
+    g_mru[0] = wi;
+}
+
 static void wm_sync_focus(void)
 {
     int wi = wm_keyboard_focus();
+    if (wi >= 0 && (g_nmru == 0 || g_mru[0] != wi)) mru_touch(wi);
     for (int i = 0; i < MAXWIN; i++) {
         struct win *w = &wins[i];
         if (!w->used || w->kind != WK_APP) continue;
@@ -4167,6 +4348,137 @@ static void draw_overlay_panel(void)
     const char *olabel = g_overlay == OV_CONFIRM_SHUTDOWN ? "Shut Down" : "Restart";
     int otw = fb_text_width(olabel);
     fb_text(o.x0 + ((o.x1 - o.x0) - otw) / 2, o.y0 + S(7), olabel, rgb(255, 255, 255));
+}
+
+/* ===========================================================================
+ * THE Cmd+Tab SWITCHER ("Fluid" P2)
+ *
+ * Hold Cmd, press Tab: a panel of the open windows in most-recently-used
+ * order, the second one selected; Tab / Shift+Tab move the selection; letting
+ * go of Cmd switches to it; Escape cancels. A quick Cmd+Tab -- released before
+ * SW_SHOW_MS -- switches without ever drawing the panel, which is what makes
+ * one tap flip between the two most recent windows.
+ *
+ * It needed an event this machine did not have: the RELEASE of Cmd. The
+ * keyboard driver dropped every release until key-up existed (wm_key_up,
+ * wm_mods_changed), which is why Cmd+Tab used to rotate the z-order one step
+ * per press with nothing on screen. The WM loop also re-reads kbd_mods() every
+ * pass while the panel is open, so a lost release cannot strand it.
+ * ======================================================================== */
+#define SW_SHOW_MS 150
+static struct { int open, shown, n, sel; int list[MAXWIN]; uint64_t t0; } g_sw;
+
+static void sw_geom(int *cell, int *x0, int *y0, int *w, int *h)
+{
+    int c = S(100), maxw = W - S(80);
+    if (g_sw.n > 0 && g_sw.n * c + S(24) > maxw) c = (maxw - S(24)) / g_sw.n;
+    *cell = c;
+    *w = g_sw.n * c + S(24);
+    *h = c + S(40);
+    *x0 = (W - *w) / 2;
+    *y0 = (H - *h) / 2;
+}
+
+static void sw_box(struct drect *r)
+{
+    if (!g_sw.shown) { r->x0 = r->y0 = r->x1 = r->y1 = 0; return; }
+    int c, x0, y0, w, h;
+    sw_geom(&c, &x0, &y0, &w, &h);
+    r->x0 = x0 - S(40); r->y0 = y0 - S(40);            /* the shadow too */
+    r->x1 = x0 + w + S(40); r->y1 = y0 + h + S(40);
+}
+static void sw_glass_box(struct drect *r)
+{
+    int c, x0, y0, w, h;
+    sw_geom(&c, &x0, &y0, &w, &h);
+    r->x0 = x0; r->y0 = y0; r->x1 = x0 + w; r->y1 = y0 + h;
+}
+static void dirty_switcher(void)
+{ struct drect r; sw_box(&r); if (r.x1 > r.x0) dirty_rect(r.x0, r.y0, r.x1 - r.x0, r.y1 - r.y0); }
+
+static void draw_switcher(void)
+{
+    int cell, x0, y0, w, h;
+    sw_geom(&cell, &x0, &y0, &w, &h);
+    fb_shadow(x0, y0, w, h, S(18), S(10), S(28), g_ui_dark ? 170 : 90);
+    if (g_ui_dark) profiled_glass(x0, y0, w, h, S(OVERLAY_GLASS_PT), 28, 28, 36, 195);
+    else           profiled_glass(x0, y0, w, h, S(OVERLAY_GLASS_PT), 250, 250, 255, 210);
+    int isz = cell * 64 / 100;
+    for (int i = 0; i < g_sw.n; i++) {
+        int cx = x0 + S(12) + i * cell + cell / 2, cy = y0 + S(12) + cell / 2 - S(6);
+        if (i == g_sw.sel)
+            fb_blend_round_rect(x0 + S(12) + i * cell + S(4), y0 + S(8), cell - S(8), cell - S(2), S(14),
+                                g_ui_dark ? 255 : 0, g_ui_dark ? 255 : 0, g_ui_dark ? 255 : 0, g_ui_dark ? 40 : 28);
+        struct win *sw = &wins[g_sw.list[i]];
+        if (nreg > 0) dock_tile(dock_slot_for(sw), cx, cy, isz);
+        else fb_fill_circle(cx, cy, isz / 2, rgb(94, 150, 255));
+    }
+    const char *t = wins[g_sw.list[g_sw.sel]].title;
+    int tw = fb_text_width(t);
+    fb_text(x0 + (w - tw) / 2, y0 + h - S(30), t, g_ui_dark ? rgb(232, 233, 238) : rgb(40, 40, 48));
+}
+
+static void sw_close(void)
+{
+    if (g_sw.shown) dirty_switcher();
+    g_sw.open = g_sw.shown = 0;
+}
+
+static void sw_open(int dir)
+{
+    int n = 0, seen[MAXWIN] = {0};
+    for (int k = 0; k < g_nmru; k++) {
+        int wi = g_mru[k];
+        if (wi < 0 || wi >= MAXWIN || seen[wi] || !wins[wi].used || wins[wi].kind != WK_APP) continue;
+        seen[wi] = 1; g_sw.list[n++] = wi;
+    }
+    for (int k = norder - 1; k >= 0; k--) {            /* never focused yet: z-order */
+        int wi = order[k];
+        if (seen[wi] || !wins[wi].used || wins[wi].kind != WK_APP) continue;
+        seen[wi] = 1; g_sw.list[n++] = wi;
+    }
+    if (n < 2) return;
+    g_sw.n = n;
+    g_sw.sel = dir < 0 ? n - 1 : 1;
+    g_sw.open = 1; g_sw.shown = 0;
+    g_sw.t0 = anim_stamp();
+    kprintf("[wm] switcher open n=%d sel=%d\n", n, g_sw.sel);
+}
+
+static void sw_step(int dir)
+{
+    g_sw.sel = (g_sw.sel + (dir < 0 ? g_sw.n - 1 : 1)) % g_sw.n;
+    if (g_sw.shown) dirty_switcher();
+    kprintf("[wm] switcher step sel=%d\n", g_sw.sel);
+}
+
+static void sw_commit(void)
+{
+    int wi = g_sw.list[g_sw.sel];
+    sw_close();
+    if (wi < 0 || wi >= MAXWIN || !wins[wi].used) return;
+    win_set_min(&wins[wi], 0);
+    raise_win(wi);
+    dirty_full(FULL_ZORDER_SYSTEM);
+    kprintf("[wm] switcher commit win=%d '%s'\n", wi, wins[wi].title);
+}
+
+static void sw_cancel(void)
+{
+    sw_close();
+    kprintf("[wm] switcher cancel\n");
+}
+
+/* Called every WM pass: reveal the panel once it has been held long enough to
+ * be a browse rather than a tap, and never leave it open without Cmd. */
+static void sw_tick(void)
+{
+    if (!g_sw.open) return;
+    if (!(kbd_mods() & EV_MOD_SUPER)) { sw_commit(); return; }
+    if (!g_sw.shown && (anim_elapsed(g_sw.t0) >= SW_SHOW_MS || wm_reduce_motion)) {
+        g_sw.shown = 1;
+        dirty_switcher();
+    }
 }
 
 /* The file browser is now the ring-3 Finder app (src/apps/gui/files.c), launched
@@ -4785,6 +5097,10 @@ static int dmg_expand(struct drect *r, int n)
                 overlay_box(&p);
                 rect_or_glass_input(&r[i], p, S(OVERLAY_GLASS_PT), &grew);
             }
+            if (g_sw.shown) {                             /* the Cmd+Tab switcher */
+                sw_glass_box(&p);
+                rect_or_glass_input(&r[i], p, S(OVERLAY_GLASS_PT), &grew);
+            }
             for (int k = 0; k < norder; k++) {           /* each window's glass titlebar */
                 /* Asked of win_glass_box, not of w->x/w->w: a window being
                  * flown or scaled has NO glass this frame (it is rendered
@@ -5008,6 +5324,13 @@ static void render_layers(const struct drect *R)
                     k == ex_hov ? rgb(255, 255, 255) : rgb(214, 216, 226));
         }
     }
+    for (int k = 0; g_nghost && k < NGHOST; k++) {      /* closing windows, fading */
+        if (!g_ghost[k].used) continue;
+        struct drect p; ghost_box(&g_ghost[k], &p);
+        if (rect_hit(&p, R)) draw_ghost(R, &g_ghost[k]);
+    }
+    if (g_snap_zone) { struct drect p; snap_box(&p);     /* where a snap would land */
+      if (rect_hit(&p, R)) draw_snap_preview(); }
     { struct drect p; menubar_box(&p);                  /* frosted chrome ON TOP: */
       if (rect_hit(&p, R)) draw_menubar(); }            /* real-time vibrancy      */
     { struct drect p; dock_box(&p);
@@ -5019,6 +5342,8 @@ static void render_layers(const struct drect *R)
       if (rect_hit(&p, R)) draw_menu_dropdown(); }
     if (g_overlay != OV_NONE) { struct drect p; overlay_box(&p);
       if (rect_hit(&p, R)) draw_overlay_panel(); }
+    if (g_sw.shown) { struct drect p; sw_box(&p);
+      if (rect_hit(&p, R)) draw_switcher(); }
 }
 
 /* THE TOP OF THE STACK: what is drawn over every layer, on ONE core, after
@@ -5218,6 +5543,7 @@ static int par_nocut(const struct drect *R, struct wm_yrange *nc, int max)
     dock_panel_box(&p);     PAR_ADD(S(DOCK_GLASS_PT));
     if (g_menu_open >= 0) { menu_dropdown_box(&p); PAR_ADD(S(DROPDOWN_GLASS_PT)); }
     if (g_overlay != OV_NONE) { overlay_box(&p); PAR_ADD(S(OVERLAY_GLASS_PT)); }
+    if (g_sw.shown) { sw_glass_box(&p); PAR_ADD(S(OVERLAY_GLASS_PT)); }
     for (int k = 0; k < norder; k++)
         if (win_glass_box(&wins[order[k]], &p)) PAR_ADD(S(TITLE_GLASS_PT));
 #undef PAR_ADD
@@ -5308,6 +5634,9 @@ static int par_render(const struct drect *r, int n)
             struct drect d = { r[k].x0, b[i].y0, r[k].x1, b[i].y1 };
             g_par.band[nb] = d;
             g_par.wm_only[nb] = (unsigned char)rect_hit(&d, &dock);
+            /* The switcher draws app icons too (dock_tile -> app_icon_draw,
+             * which may read the disk): same rule as the dock. */
+            if (g_sw.shown) { struct drect sb; sw_box(&sb); if (rect_hit(&d, &sb)) g_par.wm_only[nb] = 1; }
             g_par.state[nb] = 0;
             nb++;
         }
@@ -5463,6 +5792,29 @@ static void wm_anim_tick(void)
         anim_damage(w);
         if (w->open_t0)
             anim_trace("open", i, w, (int)(e * 256 / OPEN_DUR_MS));
+    }
+
+    /* 1b. THE CLOSE FADE. Damage the whole original frame every tick; on the
+     *     last one the ghost is freed FIRST and then damaged, so the frame
+     *     that follows paints what was under it. */
+    for (int k = 0; g_nghost && k < NGHOST; k++) {
+        struct ghost *g = &g_ghost[k];
+        if (!g->used) continue;
+        struct drect b; ghost_box(g, &b);
+        uint64_t e = anim_elapsed_at(g->t0, t);
+        if (e >= CLOSE_MS || wm_reduce_motion) {
+            if (g->surf.px) kfree(g->surf.px);
+            g->surf.px = 0;
+            g->used = 0;
+            g_nghost--;
+            kprintf("[wm] anim close ghost %d done\n", k);
+#ifndef WM_CLOSE_DAMAGE_LIE
+            dirty_rect(b.x0, b.y0, b.x1 - b.x0, b.y1 - b.y0);
+#endif
+            continue;
+        }
+        kprintf("[wm] anim close ghost %d p %d\n", k, (int)(e * 256 / CLOSE_MS));
+        dirty_rect(b.x0, b.y0, b.x1 - b.x0, b.y1 - b.y0);
     }
 
     /* 2. THE DOCK FLY. */
@@ -5803,35 +6155,14 @@ static int wm_shortcut(int c, int mods)
          * something to do is one an app can learn to swallow. */
         ex_enter();
         return 1;
-    case '\t': {
-        /* NO ON-SCREEN SWITCHER, and the reason is a missing event rather than
-         * a missing panel. A hold-to-browse switcher has to know when Cmd comes
-         * UP -- that is what commits the choice -- and this machine has no such
-         * event: the keyboard driver enqueues make codes for mapped keys only,
-         * and a modifier produces no wm_key() at all. Inventing one is a change
-         * to the input path three other lines are building on this week.
-         *
-         * So each press switches immediately, and the two directions are exact
-         * inverses: forward raises the BOTTOM-most window (a rotation that
-         * reaches every window, unlike "raise the one below the top", which
-         * ping-pongs between the top two forever and can never reach a third),
-         * backward sends the top one to the bottom. Press forward n times with
-         * n windows and you are back where you started. */
-        if (norder < 2) return 1;
-        if (mods & EV_MOD_SHIFT) {
-            int top = top_visible();
-            if (top >= 0) lower_win(top);
-        } else {
-            int bot = -1;
-            for (int i = 0; i < norder; i++) {
-                struct win *cw = &wins[order[i]];
-                if (cw->used) { bot = order[i]; break; }
-            }
-            if (bot >= 0) { win_set_min(&wins[bot], 0); raise_win(bot); }
-        }
-        dirty_full(FULL_ZORDER_SYSTEM); /* a z-order change re-stacks every overlap on screen */
+    case '\t':
+        /* Correction 2026-09-24: there IS an on-screen switcher now -- the
+         * missing event this comment used to name (Cmd coming UP) exists.
+         * The first Cmd+Tab opens it on the previous window; the release of
+         * Cmd commits (wm_process_mods / sw_tick). See the SWITCHER block. */
+        if (!g_sw.open) sw_open((mods & EV_MOD_SHIFT) ? -1 : 1);
+        else            sw_step((mods & EV_MOD_SHIFT) ? -1 : 1);
         return 1;
-    }
     case '`':
     case '~':
         /* Rotate among the windows of ONE app. With SYS_GUI_CREATE refusing a
@@ -5875,6 +6206,16 @@ static void wm_process_key(int c, int mods)
         if (c == 27) ex_leave(-1);                                   /* Escape */
         else if ((mods & EV_MOD_SUPER) && (c == 'e' || c == 'E')) ex_leave(-1);
         else if (c == '\n' || c == '\r') ex_leave(ex_hov >= 0 ? ex_wi[ex_hov] : -1);
+        return;
+    }
+    /* THE SWITCHER OWNS THE KEYBOARD while it is open: Tab steps (through
+     * wm_shortcut, as Cmd+Tab), arrows step, Escape cancels, and anything
+     * else is swallowed -- it was typed with Cmd held, at a panel. */
+    if (!g_locked && g_sw.open) {
+        if (c == 27) sw_cancel();
+        else if (c == KEY_LEFT) sw_step(-1);
+        else if (c == KEY_RIGHT) sw_step(1);
+        else if (c == '\t' && (mods & EV_MOD_SUPER)) sw_step((mods & EV_MOD_SHIFT) ? -1 : 1);
         return;
     }
     /* THE PANEL AND THE MENU OWN THE KEYBOARD while either is up, same rule as
@@ -5943,6 +6284,36 @@ static void wm_process_key(int c, int mods)
         dirty_win_content(w);
 #endif
     }
+}
+
+/* KEY-UP and MODIFIER edges (wm_key_up / wm_mods_changed). Delivered only to
+ * a focused app window that asked with WINS_WANT_KEYUP; the switcher's commit
+ * rides on the modifier edge whether anyone asked or not. */
+static int g_last_mods;
+static void wm_process_key_up(int c, int mods)
+{
+    int wi = wm_keyboard_focus();
+    if (wi < 0) return;
+    struct win *w = &wins[wi];
+    if (w->kind == WK_APP && w->want_keyup)
+        enqueue_input(w, EV_KEY_UP, c, 0, mods, EV_BTN_NONE, 0);
+}
+static void wm_process_mods(int mods)
+{
+    int old = g_last_mods;
+    g_last_mods = mods;
+    if (g_sw.open && !(mods & EV_MOD_SUPER)) sw_commit();
+    int wi = wm_keyboard_focus();
+    if (wi < 0) return;
+    struct win *w = &wins[wi];
+    if (w->kind != WK_APP || !w->want_keyup) return;
+    static const struct { int bit, key; } m[4] = {
+        { EV_MOD_SHIFT, KEY_SHIFT }, { EV_MOD_CTRL, KEY_CTRL },
+        { EV_MOD_ALT, KEY_ALT },     { EV_MOD_SUPER, KEY_CMD },
+    };
+    for (int k = 0; k < 4; k++)
+        if ((old ^ mods) & m[k].bit)
+            enqueue_input(w, (mods & m[k].bit) ? EV_KEY : EV_KEY_UP, m[k].key, 0, mods, EV_BTN_NONE, 0);
 }
 
 /* Topmost app window whose CONTENT area (below the titlebar) contains (x,y),
@@ -6382,6 +6753,12 @@ static void wm_process_mouse(const struct inputq_event *in)
     if (!left && !right && !middle) mouse_capture = -1;   /* all buttons up: release the pointer */
 
     if (!left) {
+#ifndef WM_SNAP_NEGCTL
+        /* THE CONTROL (make test-snap-negctl) leaves this out: the preview
+         * shows, the release does nothing, and every frame check must fail. */
+        if (dragging >= 0 && g_snap_zone && wins[dragging].used) win_snap(&wins[dragging], g_snap_zone);
+#endif
+        snap_set(SNAP_NONE);
         dragging = -1;
         /* Letting go ends the resize AND forces the canvas to catch up, with no
          * throttle. Everything else about the drag is best-effort by design;
@@ -6395,8 +6772,20 @@ static void wm_process_mouse(const struct inputq_event *in)
     if (dragging >= 0 && left) {
         struct win *w = &wins[dragging];
         int nx = x - drag_dx, ny = y - drag_dy;
+        if ((nx != w->x || ny != w->y) && w->snapped) {
+            /* Leaving a half: back to the remembered size, the pointer at the
+             * same fraction of the titlebar it had grabbed. */
+            if (w->w > 0) drag_dx = drag_dx * w->sw / w->w;
+            w->snapped = 0;
+            nx = x - drag_dx;
+            win_set_frame(w, nx, ny, w->sw, w->sh);
+            kprintf("[wm] unsnap win=%d size %d %d\n", dragging, w->w, w->h);
+        }
         if (nx != w->x || ny != w->y) win_break_zoom(w);   /* movement, not the press */
         win_set_frame(w, nx, ny, w->w, w->h);
+#ifndef WM_SNAP_NEGCTL_NOPREVIEW
+        snap_set(snap_zone_at(x, y));
+#endif
     }
 
     /* The resize drag. The new frame is computed from the ANCHOR, not from the
@@ -7122,6 +7511,7 @@ void wm_run(void)
          * live). Nothing polls; an idle desktop with nothing moving reaches
          * this line, requests no damage, and goes back to sleep on the hlt. */
         wm_hotcorner_tick();
+        sw_tick();                /* Cmd+Tab switcher: reveal after a hold, never strand it open */
         wm_anim_tick();
         /* Animation/hot-corner changes can transfer keyboard ownership without
          * an input event. Notify apps and settle IME before damage is captured. */

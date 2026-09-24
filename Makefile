@@ -5866,3 +5866,4 @@ include tools/build/product.mk
 -include tests/textutils.mk
 -include tests/fluid_perf.mk
 -include tests/shebang.mk
+-include tests/fluid_desktop.mk

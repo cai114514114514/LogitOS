@@ -159,6 +159,15 @@ int inputq_push_key(struct input_queue *q, int key, int mods)
     return result;
 }
 
+int inputq_push_typed(struct input_queue *q, int type, int key, int mods)
+{
+    struct inputq_event e = { type, key, 0, 0, 0, 0, 0, mods, 0 };
+    uint64_t flags = iq_lock(q);
+    int result = push_locked(q, &e);
+    iq_unlock(q, flags);
+    return result;
+}
+
 int inputq_drain(struct input_queue *q, struct inputq_event *out)
 {
     uint64_t flags = iq_lock(q);

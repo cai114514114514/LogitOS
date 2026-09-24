@@ -16,6 +16,11 @@ void wm_run(void);                 /* scheduler "main" thread; does not return *
  * user (down), 0 for a mouse with no wheel. */
 void wm_mouse_event(int x, int y, int left, int right, int middle, int wheel);
 void wm_key(int c);
+/* The other edge (keyboard.c, from IRQ context, like wm_key): a mapped key
+ * released, reported by its unshifted identity; and the modifier set having
+ * changed. Both only enqueue. See EV_KEY_UP in logit_abi.h. */
+void wm_key_up(int c);
+void wm_mods_changed(void);
 
 /* Launch a .aex application (optionally with a file argument). */
 void wm_launch(const char *aex_file, const char *arg);

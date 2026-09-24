@@ -277,6 +277,13 @@
 #define KEY_F10   0x112
 #define KEY_F11   0x113
 #define KEY_F12   0x114
+/* The modifiers as KEYS -- only in EV_KEY / EV_KEY_UP to a window that set
+ * WINS_WANT_KEYUP. Left and right are one key each: the event says a modifier
+ * changed, and `mods` says which are held. */
+#define KEY_SHIFT 0x115
+#define KEY_CTRL  0x116
+#define KEY_ALT   0x117
+#define KEY_CMD   0x118
 
 /* EV_KEY `a` in [KEY_UP, KEY_F12] is a key, not a code point. The block is
  * contiguous (0x101..0x114). Han commits are U+4E00 and above, so they stay
@@ -316,6 +323,19 @@ static inline int logit_key_is_command(unsigned a)
  * system menus. Enqueuing wakes SYS_WAIT_EVENT, so an idle app need not poll.
  * WINS_FOCUSED queries the same state before the first event is consumed. */
 #define EV_WINDOW_FOCUS 10
+
+/* A key came UP. a = the key's UNSHIFTED identity -- the same code its press
+ * carried in EV_KEY, lowercased ('a' for an 'A' typed with Shift; a Ctrl+S
+ * that arrived as 0x13 comes up as 's') -- or KEY_UP.., KEY_F1.. for those, or
+ * KEY_SHIFT/KEY_CTRL/KEY_ALT/KEY_CMD for a modifier. mods = the modifiers still
+ * held after the release.
+ *
+ * OPT-IN, per window, with WINS_WANT_KEYUP: an app written before this event
+ * existed never sees one -- nor the EV_KEY a modifier's PRESS then produces,
+ * which would otherwise arrive in its key handler as a character it has never
+ * heard of. Until 2026-09-24 the keyboard driver dropped every release, so the
+ * only way to know a key was still down was to poll WINS_KEY_HELD. */
+#define EV_KEY_UP 11
 
 /* Modifier keys held when the event was generated (struct logit_event.mods).
  * Sampled in the IRQ that produced the event, not when the app polls it -- a
@@ -799,6 +819,7 @@ struct logit_mmap_file_req {
 #define WINS_SET_MIN   5   /* arg: 1 minimise, 0 restore -> new state */
 #define WINS_FOCUSED   6   /* -> 1 if this window receives keyboard input, else 0 */
 #define WINS_KEY_HELD  7   /* arg: unshifted ASCII / KEY_*; 0 unless focused. */
+#define WINS_WANT_KEYUP 8  /* arg: 1 deliver EV_KEY_UP and modifier keys, 0 stop -> new state */
 
 /* logit_procinfo.state -- mirrors enum proc_state in c/kernel/exec/proc.h. */
 #define LOGIT_PROC_RUNNING   1

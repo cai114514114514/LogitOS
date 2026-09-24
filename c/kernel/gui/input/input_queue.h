@@ -41,6 +41,8 @@ struct inputq_lock { spinlock_t raw; };
 enum inputq_type {
     INPUTQ_POINTER = 0,
     INPUTQ_KEY = 1,
+    INPUTQ_KEYUP = 2,      /* x = the released key (EV_KEY_UP)          */
+    INPUTQ_MODS = 3,       /* mods = the modifier set after an edge      */
 };
 
 struct inputq_event {
@@ -83,6 +85,9 @@ void inputq_reset(struct input_queue *q);
 int inputq_push_pointer(struct input_queue *q, int x, int y,
                         int left, int right, int middle, int wheel, int mods);
 int inputq_push_key(struct input_queue *q, int key, int mods);
+/* KEYUP / MODS: semantic like a key -- never merged, never evicted for room
+ * the way pointer motion is. */
+int inputq_push_typed(struct input_queue *q, int type, int key, int mods);
 
 /* `out` must hold INPUTQ_DRAIN_BUDGET entries. */
 int inputq_drain(struct input_queue *q, struct inputq_event *out);

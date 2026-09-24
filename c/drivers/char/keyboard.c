@@ -109,8 +109,21 @@ int kbd_key_held(int key)
 
 static void modk(int bit, int down)
 {
-    if (down) __atomic_fetch_or(&mod_keys, bit, __ATOMIC_RELAXED);
-    else      __atomic_fetch_and(&mod_keys, ~bit, __ATOMIC_RELAXED);
+#ifdef KEYUP_NEGCTL
+    /* THE CONTROL for make test-switcher: releases are dropped, the way every
+     * non-modifier release still was before key-up existed. Cmd then latches
+     * down and a held Cmd+Tab can never commit. */
+    if (!down) return;
+#endif
+    int old = down ? __atomic_fetch_or(&mod_keys, bit, __ATOMIC_RELAXED)
+                   : __atomic_fetch_and(&mod_keys, ~bit, __ATOMIC_RELAXED);
+    /* A modifier changing is an EVENT now, not only state to be sampled:
+     * the window manager's Cmd+Tab switcher commits when Cmd comes UP, and an
+     * app that asked for key-up (WINS_WANT_KEYUP) sees Shift/Ctrl/Alt/Cmd as
+     * keys. Only real edges are reported -- typematic repeat of a held
+     * modifier re-sends its make code and must not look like a new press. */
+    int now = down ? (old | bit) : (old & ~bit);
+    if (now != old) wm_mods_changed();
 }
 
 int kbd_mods(void)
@@ -146,7 +159,6 @@ void keyboard_handle(void)
         case SC_E0_RCTRL: modk(MK_RCTRL,  !rel); return;
         case SC_E0_RALT:  modk(MK_RALT,   !rel); return;
         }
-        if (rel) return;                             /* other extended releases */
         int k = 0;
         switch (code) {
             case 0x48: k = KEY_UP;   break;  case 0x50: k = KEY_DOWN;  break;
@@ -170,7 +182,9 @@ void keyboard_handle(void)
              * without needing a second decoder to notice. */
             case 0x53: k = 0x7F; break;
         }
-        if (k) wm_key(k);
+        /* Releases of these keys are reported too (wm_key_up -> EV_KEY_UP to
+         * a window that asked); they used to stop at `if (rel) return;`. */
+        if (k) { if (rel) wm_key_up(k); else wm_key(k); }
         return;
     }
 
@@ -184,8 +198,19 @@ void keyboard_handle(void)
     case SC_LALT:           modk(MK_LALT,   1); return;
     case SC_LALT   | 0x80:  modk(MK_LALT,   0); return;
     }
-    if (sc & 0x80)
-        return;                      /* other key releases */
+    if (sc & 0x80) {
+        /* KEY-UP. Reported as the key's UNSHIFTED identity -- 'a', not 'A' or
+         * ^A -- because a release is about a physical key, and a game that
+         * saw 'A' go down with Shift held must still see the same key come up
+         * after Shift was let go first. F-keys map as on press. */
+        int rsc = sc & 0x7F, k = 0;
+        if (rsc >= 0x3B && rsc <= 0x44) k = KEY_F1 + (rsc - 0x3B);
+        else if (rsc == 0x57) k = KEY_F11;
+        else if (rsc == 0x58) k = KEY_F12;
+        else k = (unsigned char)scancode_map[rsc];
+        if (k) wm_key_up(k);
+        return;
+    }
 
     /* F1..F12 -- set-1 make codes 0x3B..0x44 (F1-F10), 0x57 (F11), 0x58
      * (F12), all UNPREFIXED (no 0xE0). They fall through scancode_map
