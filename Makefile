@@ -5861,3 +5861,4 @@ include tests/build_dir.mk
 -include tests/dns_ttl.mk
 -include tests/fb_display.mk
 include tools/build/product.mk
+-include tests/term_wrap.mk

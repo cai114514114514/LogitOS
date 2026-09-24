@@ -51,6 +51,7 @@
 #include "logit_rich.h"
 #include "logit_sniff.h"
 #include "logit_cells.h"
+#include "term_line.h"
 #include "h264.h"
 #include "h265.h"
 #include "audio.h"
@@ -118,8 +119,13 @@ static void theme_load(void)
 #define L_TEXT 0
 #define L_OBJ  1
 
+/* Bytes a text line may hold. MAXCOLS counts CELLS; a line of three-byte CJK
+ * reaches MAXCOLS cells at 1.5x MAXCOLS bytes, so the buffer is twice MAXCOLS
+ * and the cell ceiling is the one that binds (term_line.h). */
+#define MAXLBYTES (MAXCOLS * 2)
+
 struct tline {
-    char  t[MAXCOLS + 1];
+    char  t[MAXLBYTES + 1];
     short len;
     unsigned char kind;      /* L_TEXT / L_OBJ  */
     unsigned char stream;    /* S_*             */
@@ -614,18 +620,49 @@ static struct tline *cur_line(int stream)
     return l;
 }
 
-static void end_line(int stream) { open_line[stream] = -1; }
-static void end_all_lines(void) { for (int i = 0; i < NSTREAM; i++) open_line[i] = -1; }
+/* A UTF-8 sequence split across two pipe reads waits here, per stream, and is
+ * placed only once it is whole (term_line.h). */
+static struct tl_asm line_asm[NSTREAM];
+
+static void place_unit(int stream, const struct tl_unit *u)
+{
+    struct tline *l = cur_line(stream);
+    int len = l->len;
+    if (!tl_fits(l->t, len, cols, MAXLBYTES, u)) {
+        open_line[stream] = -1;
+        l = cur_line(stream);
+        len = l->len;
+    }
+    tl_put(l->t, &len, u);
+    l->len = (short)len;
+}
+
+/* Whatever half-sequence is pending is real output: place it before the line
+ * closes, rather than letting it prefix the next line. */
+static void flush_asm(int stream)
+{
+    struct tl_unit u;
+    if (tl_asm_flush(&line_asm[stream], &u)) place_unit(stream, &u);
+}
+
+static void end_line(int stream) { flush_asm(stream); open_line[stream] = -1; }
+static void end_all_lines(void) { for (int i = 0; i < NSTREAM; i++) end_line(i); }
 
 static void put_char(int stream, char c)
 {
     if (c == '\r') return;
     if (c == '\n') { (void)cur_line(stream); end_line(stream); return; }
-    struct tline *l = cur_line(stream);
-    if (c == '\b' || c == 127) { if (l->len > 0) { l->len--; l->t[l->len] = 0; } return; }
+    if (c == '\b' || c == 127) {
+        line_asm[stream].n = line_asm[stream].need = 0;   /* half a character: gone */
+        struct tline *l = cur_line(stream);
+        int len = l->len; tl_backspace(l->t, &len); l->len = (short)len;
+        return;
+    }
     if (c == '\t') {
-        do { if (l->len < MAXCOLS) l->t[l->len++] = ' '; } while (l->len % 8 && l->len < MAXCOLS);
-        l->t[l->len] = 0; return;
+        flush_asm(stream);
+        struct tline *l = cur_line(stream);
+        int len = l->len; tl_tab(l->t, &len, cols, MAXLBYTES); l->len = (short)len;
+        return;
     }
     /* CONTROL CHARACTERS ONLY, and `unsigned char` is the whole fix. `char` is
      * SIGNED on this target -- UCFLAGS (Makefile) sets no -funsigned-char -- so
@@ -638,9 +675,12 @@ static void put_char(int stream, char c)
      * was deliberate and stays. It just has to refuse C0, not the upper half of
      * every UTF-8 code point. `\t` is handled above and never reaches here. */
     if ((unsigned char)c < 32) return;        /* no in-band control language   */
-    if (l->len >= cols || l->len >= MAXCOLS) { end_line(stream); l = cur_line(stream); }
-    l->t[l->len++] = c;
-    l->t[l->len] = 0;
+    /* WRAP ON CELLS, at a character boundary -- see term_line.h for the bug
+     * this replaced (bytes against a width in cells, and a wrap that could
+     * split one character across two lines). */
+    struct tl_unit u[2];
+    int k = tl_asm_feed(&line_asm[stream], (unsigned char)c, u);
+    for (int i = 0; i < k; i++) place_unit(stream, &u[i]);
 }
 
 static void put_text(int stream, const char *s)
@@ -1977,8 +2017,10 @@ static void paint(void)
         /* selection highlight */
         if (sel_on && i >= l0 && i <= l1) {
             int from = (i == l0) ? c0 : 0;
-            int to   = (i == l1) ? c1 : l->len;
-            if (to > l->len) to = l->len;
+            /* c0/c1 are CELL columns (hit_line); so is the line's end. */
+            int lcells = lc_cells(l->t, l->len);
+            int to   = (i == l1) ? c1 : lcells;
+            if (to > lcells) to = lcells;
             if (from < 0) from = 0;
             if (to > from) gui_rect(x + from * cell, y, (to - from) * cell, lh, P.sel);
         }
@@ -1993,10 +2035,10 @@ static void paint(void)
             if (cr && cr->done && cr->status != 0) {
                 char st[16], n[12]; itoa_s(cr->status, n);
                 int k = 0; st[k++] = '['; for (int q = 0; n[q]; q++) st[k++] = n[q]; st[k++] = ']'; st[k] = 0;
-                draw_text(x + (l->len + 4) * cell, y, P.bad, st);
+                draw_text(x + (lc_cells(l->t, l->len) + 4) * cell, y, P.bad, st);
             }
             if (cr && cr->folded)
-                draw_text(x + (l->len + 9) * cell, y, P.dim, "...");
+                draw_text(x + (lc_cells(l->t, l->len) + 9) * cell, y, P.dim, "...");
         } else {
             draw_text(x, y, col, l->t);
         }
@@ -2117,7 +2159,10 @@ static int hit_line(int mx, int my, int *col, int *lrow)
         struct tline *l = LN(i);
         if (!line_visible(l)) continue;
         if (want < row + l->vrows) {
-            if (col) { int c = (mx - text_x) / cell; if (c < 0) c = 0; if (c > l->len) c = l->len; *col = c; }
+            if (col) {                                   /* a CELL column */
+                int c = (mx - text_x) / cell, lcells = lc_cells(l->t, l->len);
+                if (c < 0) c = 0; if (c > lcells) c = lcells; *col = c;
+            }
             if (lrow) *lrow = want - row;
             return i;
         }
@@ -2134,8 +2179,9 @@ static void copy_selection(void)
     for (int i = l0; i <= l1 && i < lcount; i++) {
         struct tline *l = LN(i);
         if (!line_visible(l)) continue;
-        int from = (i == l0) ? c0 : 0;
-        int to   = (i == l1) ? c1 : l->len;
+        /* Selection columns are cells; copy whole characters, in bytes. */
+        int from = (i == l0) ? lc_bytes(l->t, l->len, c0) : 0;
+        int to   = (i == l1) ? lc_bytes(l->t, l->len, c1) : l->len;
         if (to > l->len) to = l->len;
         for (int k = from; k < to && clip_n < (int)sizeof clip - 2; k++) clip[clip_n++] = l->t[k];
         if (i != l1 && clip_n < (int)sizeof clip - 2) clip[clip_n++] = '\n';
