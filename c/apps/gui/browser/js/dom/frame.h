@@ -16,6 +16,11 @@
  * the measured reason a real DOM inside the frame is not attempted
  * (js_dom.c:4364's unguarded JS_NewClassID -- a second js_dom_init would
  * overwrite the parent's g_root/g_document/elem_cid, not merely leak them).
+ * CORRECTION 2026-09-25: "no real DOM" still holds, but the frame's global is
+ * now a Window for the frame's DOMParser-backed document -- `document`,
+ * parent/top/frameElement, location, timers -- built by
+ * frame_install_window() from what __frameAdopt(doc, element, url, navigate)
+ * is given. A frame script naming `document` used to be a ReferenceError.
  *
  * Install from js_platform_install(), NOT js_page.c -- see js_frame.c's
  * header for why js_page.c is off-limits to this pass. Self-registers the

@@ -22,6 +22,18 @@
 #                              no-op. Four earlier live contexts plus four new
 #                              ones fill the 8 slots; the remaining eight
 #                              sequential frames must fail the 12/12 assertion.
+#   make test-frame-nodoc-negctl builds a copy of js_frame.c whose frame
+#                              Window has every member EXCEPT `document` -- the
+#                              realm Cloudflare's bootstrap died in on
+#                              openai.com. It must fail EVERY "[doc]"-labelled
+#                              assertion, NO other one, and must reproduce the
+#                              measured symptom: "ReferenceError: 'document' is
+#                              not defined" from inside the frame.
+#   make test-frame-srcreflect-negctl builds with -DDOMPARSER_NO_SRC_REFLECT
+#                              (js_domparser.c's own switch, the same shape as
+#                              DOMPARSER_NO_REMOVE): `s.src = url` on a frame
+#                              document's <script> is an expando again, and
+#                              EXACTLY the "[src]" assertions must fail.
 #
 # THIS FRAGMENT DOES NOT LINK BROWSER_JS_SRC OR js_platform.c. Per the build's
 # own allocation, js_platform.c owns the contentDocument/contentWindow
@@ -41,7 +53,8 @@ FRAME_TEST_BASE_SRC := tests/unit/frame_test.c \
 FRAME_TEST_SRC := $(FRAME_TEST_BASE_SRC) c/apps/gui/browser/js/dom/frame.c
 FRAME_CF := $(BTEST_INC) $(CSS_INC) $(JS_INC) -Iinclude/abi -DCONFIG_VERSION='"host"' -DWEBAPI_HOST
 
-.PHONY: test-frame test-frame-negctl test-frame-lifecycle-negctl
+.PHONY: test-frame test-frame-negctl test-frame-lifecycle-negctl test-frame-nodoc-negctl \
+        test-frame-srcreflect-negctl
 
 $(BUILD)/frame_test: $(FRAME_TEST_SRC) $(BUILD)/libcss_host.a
 	@mkdir -p $(BUILD)
@@ -53,7 +66,8 @@ $(BUILD)/frame_test: $(FRAME_TEST_SRC) $(BUILD)/libcss_host.a
 # not a prerequisite of anything as a NEW stranded control (CLAUDE.md rule 5
 # names this exact trap and gives tests/idb.mk/tests/worker.mk as the worked
 # examples this fragment follows).
-test-frame: test-frame-negctl test-frame-lifecycle-negctl $(BUILD)/frame_test
+test-frame: test-frame-negctl test-frame-lifecycle-negctl test-frame-nodoc-negctl \
+            test-frame-srcreflect-negctl $(BUILD)/frame_test
 	@$(BUILD)/frame_test
 
 $(BUILD)/frame_test_negctl: $(FRAME_TEST_SRC) $(BUILD)/libcss_host.a
@@ -78,7 +92,7 @@ test-frame-negctl: $(BUILD)/frame_test_negctl
 # refactor could make the patch match nothing and leave a green fake control.
 $(BUILD)/frame_test_lifecycle_negctl: $(FRAME_TEST_SRC) $(BUILD)/libcss_host.a
 	@mkdir -p $(BUILD)/frame-negctl
-	@sed 's/if (doc) (void)frame_release_doc(doc);/(void)doc;/' \
+	@sed 's/if (doc) (void)frame_release_doc(doc, 1);/(void)doc;/' \
 	    c/apps/gui/browser/js/dom/frame.c > $(BUILD)/frame-negctl/js_frame_no_release.c
 	@cmp -s c/apps/gui/browser/js/dom/frame.c $(BUILD)/frame-negctl/js_frame_no_release.c && \
 	    { echo "test-frame-lifecycle-negctl: FAILED -- sed patched nothing"; exit 1; } || true
@@ -96,6 +110,73 @@ test-frame-lifecycle-negctl: $(BUILD)/frame_test_lifecycle_negctl
 	    echo "test-frame-lifecycle-negctl: ok -- no release fills 8 slots and fails the 12/12 assertion"; \
 	    grep -E 'refused: too many live frames|FAIL: 12 sequential' $(BUILD)/frame_lifecycle_negctl.log | head -4; \
 	 fi
+
+# THE DOCUMENT CONTROL. Same sed-built shape as the lifecycle control, for the
+# same reason: no shipping switch may turn a frame's `document` off. The sed
+# removes ONE line -- the Window's `document` accessor -- and leaves every
+# other member, the script door, and the frame document's own location/URL.
+# Three things must all hold, or the control proves nothing:
+#   1. the binary fails, and every FAIL line is a "[doc]" assertion (nothing
+#      unrelated broke -- the Window minus one member is still a Window);
+#   2. every "[doc]" assertion fails (none of them passes without the
+#      binding, so none of them is decoration);
+#   3. the frame printed the MEASURED symptom, verbatim from the openai.com
+#      probe: ReferenceError: 'document' is not defined.
+$(BUILD)/frame_test_nodoc_negctl: $(FRAME_TEST_SRC) $(BUILD)/libcss_host.a
+	@mkdir -p $(BUILD)/frame-negctl
+	@sed 's/def_accessor(fctx, g, "document", FG_CONST, 1, \&docv, JS_UNDEFINED, E);/(void)0;/' \
+	    c/apps/gui/browser/js/dom/frame.c > $(BUILD)/frame-negctl/js_frame_no_document.c
+	@cmp -s c/apps/gui/browser/js/dom/frame.c $(BUILD)/frame-negctl/js_frame_no_document.c && \
+	    { echo "test-frame-nodoc-negctl: FAILED -- sed patched nothing"; exit 1; } || true
+	@$(CC) -O2 -w $(FRAME_CF) -o $@ $(FRAME_TEST_BASE_SRC) \
+	    $(BUILD)/frame-negctl/js_frame_no_document.c $(QJS_SRC) $(BUILD)/libcss_host.a -lm
+
+test-frame-nodoc-negctl: $(BUILD)/frame_test_nodoc_negctl
+	@log=$(BUILD)/frame_nodoc_negctl.log; \
+	 if $(BUILD)/frame_test_nodoc_negctl > $$log 2>&1; then \
+	    echo "test-frame-nodoc-negctl: FAILED -- the suite PASSED with the frame's document binding removed"; exit 1; \
+	 fi; \
+	 other=$$(grep '^FAIL: ' $$log | grep -vc '^FAIL: \[doc\]'); \
+	 docpass=$$(grep -c '^PASS: \[doc\]' $$log); \
+	 docfail=$$(grep -c '^FAIL: \[doc\]' $$log); \
+	 if [ "$$other" != "0" ]; then \
+	    echo "test-frame-nodoc-negctl: FAILED -- $$other assertion(s) that do not need the binding failed:"; \
+	    grep '^FAIL: ' $$log | grep -v '^FAIL: \[doc\]'; exit 1; \
+	 fi; \
+	 if [ "$$docpass" != "0" ] || [ "$$docfail" = "0" ]; then \
+	    echo "test-frame-nodoc-negctl: FAILED -- $$docpass [doc] assertion(s) passed without the binding"; \
+	    grep '^PASS: \[doc\]' $$log; exit 1; \
+	 fi; \
+	 grep -q "^\[frame\] uncaught: ReferenceError: 'document' is not defined" $$log || \
+	   { echo "test-frame-nodoc-negctl: FAILED -- the frame never raised the measured ReferenceError"; exit 1; }; \
+	 echo "test-frame-nodoc-negctl: ok -- without the binding exactly the $$docfail [doc] assertions fail,"; \
+	 echo "  every other one passes, and the frame reproduces the measured symptom:"; \
+	 grep -m1 "^\[frame\] uncaught: ReferenceError" $$log
+
+# THE src CONTROL. Without reflection the bootstrap's loader <script> gets no
+# src ATTRIBUTE, js_frame.c's door sees an empty inline script and returns
+# without a word -- the silent shape this whole fragment exists to refuse.
+# Both "[src]" assertions must fail, nothing else may.
+$(BUILD)/frame_test_srcreflect_negctl: $(FRAME_TEST_SRC) $(BUILD)/libcss_host.a
+	@mkdir -p $(BUILD)
+	@$(CC) -O2 -w $(FRAME_CF) -DDOMPARSER_NO_SRC_REFLECT -o $@ $(FRAME_TEST_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a -lm
+
+test-frame-srcreflect-negctl: $(BUILD)/frame_test_srcreflect_negctl
+	@log=$(BUILD)/frame_srcreflect_negctl.log; \
+	 if $(BUILD)/frame_test_srcreflect_negctl > $$log 2>&1; then \
+	    echo "test-frame-srcreflect-negctl: FAILED -- the suite PASSED without src reflection"; exit 1; \
+	 fi; \
+	 other=$$(grep '^FAIL: ' $$log | grep -vc '\[src\]'); \
+	 srcpass=$$(grep '^PASS: ' $$log | grep -c '\[src\]'); \
+	 srcfail=$$(grep '^FAIL: ' $$log | grep -c '\[src\]'); \
+	 if [ "$$other" != "0" ] || [ "$$srcpass" != "0" ] || [ "$$srcfail" = "0" ]; then \
+	    echo "test-frame-srcreflect-negctl: FAILED -- other=$$other src-pass=$$srcpass src-fail=$$srcfail"; \
+	    grep -E '^(FAIL|PASS): .*\[src\]|^FAIL' $$log; exit 1; \
+	 fi; \
+	 grep -q 'refused: <script src="/boot-loader.js' $$log && \
+	   { echo "test-frame-srcreflect-negctl: FAILED -- the loader was still refused by name"; exit 1; }; \
+	 echo "test-frame-srcreflect-negctl: ok -- without reflection exactly the $$srcfail [src] assertions fail"; \
+	 echo "  and the loader <script> reaches no named refusal (dropped silently, as before the fix)"
 
 # ===========================================================================
 # test-frame-wired -- CLAUDE.md RULE 4: LINKING A TU IS NOT RUNNING IT.

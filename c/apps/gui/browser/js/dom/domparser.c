@@ -137,7 +137,7 @@ struct dp_arena {
 
 struct dp_handle { struct dp_arena *arena; struct node *n; uint32_t serial; };
 
-static JSClassID dp_cid, dp_doc_proto_cid;
+static JSClassID dp_cid, dp_doc_proto_cid, dp_src_proto_cid;
 
 /* ============================================================================
  * MUTATION SURFACE -- added for js_frame.c (a same-origin second browsing
@@ -1080,8 +1080,52 @@ static const JSCFunctionListEntry dp_doc_funcs[] = {
 #endif
 };
 
+/* The `src` IDL attribute, on the HTML elements that have one. Found by the
+ * frame specimen, not assumed: a same-origin frame's script does
+ * `s = document.createElement('script'); s.src = url; head.appendChild(s)`,
+ * and with no reflection that assignment made an EXPANDO -- no attribute, so
+ * js_frame.c's script door saw an empty inline script and dropped it without
+ * a word. Every loader that builds a <script> this way vanished silently.
+ * Reflected here, on a prototype of its own between Node and these elements,
+ * so `'src' in div` stays false as it is in a browser. The getter returns the
+ * attribute as written, NOT resolved against a base URL: a DOMParser document
+ * has no base URL of its own in this engine (a frame document's is its
+ * creator's), and inventing one here would be a second answer to a question
+ * js_platform.c owns. Named deviation, not an accident. */
+#ifndef DOMPARSER_NO_SRC_REFLECT
+static int dp_has_src(const struct node *n)
+{
+    static const char *const T[] = { "script", "img", "iframe", "frame", "embed",
+                                     "audio", "video", "source", "track", "input" };
+    if (n->type != N_ELEM || n->ns != NS_HTML) return 0;
+    for (unsigned i = 0; i < countof(T); i++) if (!strcmp(n->tag, T[i])) return 1;
+    return 0;
+}
+static JSValue dp_get_src(JSContext *ctx, JSValueConst t)
+{ struct node *n = dp_of(t); const char *v = n ? dom_attr(n, "src") : 0; return JS_NewString(ctx, v ? v : ""); }
+static JSValue dp_set_src(JSContext *ctx, JSValueConst t, JSValueConst v)
+{
+    struct node *n = dp_of(t);
+    if (!n) return JS_UNDEFINED;
+    size_t len = 0;
+    const char *s = JS_ToCStringLen(ctx, &len, v);
+    if (!s) return JS_EXCEPTION;
+    dom_set_attr_raw(n, "src", 3, s, (int)len);   /* same write as setAttribute('src', v) */
+    JS_FreeCString(ctx, s);
+    return JS_UNDEFINED;
+}
+static const JSCFunctionListEntry dp_src_funcs[] = {
+    JS_CGETSET_DEF("src", dp_get_src, dp_set_src),
+};
+#else
+static int dp_has_src(const struct node *n) { (void)n; return 0; }
+#endif
+
 static JSValue dp_proto_for(JSContext *ctx,const struct node *n)
-{ return JS_GetClassProto(ctx,n->type == N_DOCUMENT ? dp_doc_proto_cid : dp_cid); }
+{
+    return JS_GetClassProto(ctx, n->type == N_DOCUMENT ? dp_doc_proto_cid
+                                 : dp_has_src(n) ? dp_src_proto_cid : dp_cid);
+}
 
 /* One wrapper per node, cached in node->jsw exactly like js_dom.c's wrap() --
  * the PUBLIC half of that mechanism (dom.h's dom_set_wrapper), so
@@ -1212,14 +1256,21 @@ void js_domparser_install(JSContext *ctx)
     JSRuntime *rt = JS_GetRuntime(ctx);
     if (!dp_cid) JS_NewClassID(&dp_cid);
     if (!dp_doc_proto_cid) JS_NewClassID(&dp_doc_proto_cid);
+    if (!dp_src_proto_cid) JS_NewClassID(&dp_src_proto_cid);
     JS_NewClass(rt, dp_cid, &dp_class);
     JS_NewClass(rt, dp_doc_proto_cid, &dp_class);
+    JS_NewClass(rt, dp_src_proto_cid, &dp_class);
 
     JSValue node_proto = JS_NewObject(ctx);
     JS_SetPropertyFunctionList(ctx, node_proto, dp_node_funcs, countof(dp_node_funcs));
 
     JSValue doc_proto = JS_NewObjectProto(ctx, node_proto);
     JS_SetPropertyFunctionList(ctx, doc_proto, dp_doc_funcs, countof(dp_doc_funcs));
+
+    JSValue src_proto = JS_NewObjectProto(ctx, node_proto);
+#ifndef DOMPARSER_NO_SRC_REFLECT
+    JS_SetPropertyFunctionList(ctx, src_proto, dp_src_funcs, countof(dp_src_funcs));
+#endif
 
     JSValue parser_proto = JS_NewObject(ctx);
     JS_SetPropertyFunctionList(ctx, parser_proto, dp_ctor_funcs, countof(dp_ctor_funcs));
@@ -1243,8 +1294,10 @@ void js_domparser_install(JSContext *ctx)
      * live exactly as long as the page runtime that installed them. */
     JS_DefinePropertyValueStr(ctx, ctor, "__dpNodeProto", node_proto, 0);
     JS_DefinePropertyValueStr(ctx, ctor, "__dpDocProto", doc_proto, 0);
+    JS_DefinePropertyValueStr(ctx, ctor, "__dpSrcProto", src_proto, 0);
     JS_SetClassProto(ctx,dp_cid,JS_DupValue(ctx,node_proto));
     JS_SetClassProto(ctx,dp_doc_proto_cid,JS_DupValue(ctx,doc_proto));
+    JS_SetClassProto(ctx,dp_src_proto_cid,JS_DupValue(ctx,src_proto));
 
     JSValue g = JS_GetGlobalObject(ctx);
     JS_SetPropertyStr(ctx, g, "DOMParser", ctor);
