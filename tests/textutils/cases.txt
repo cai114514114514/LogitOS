@@ -1,0 +1,27 @@
+# TAG  SNIPPET -- see run_host.py. Each snippet runs in a fresh copy of fixture/.
+# The first word is the tool under test; everything else in the snippet (ls,
+# cut, sort...) comes from the same PATH, so a tool this line later adds is
+# tested in these cases too.
+
+# ---- chmod: octal, symbolic, the umask rule, refusals (status only; the
+#      wording of a message on stderr is not compared) ----
+posix  chmod 640 tree/a.txt && ls -l tree/a.txt | cut -c1-10
+posix  chmod 0755 tree/a.txt && ls -l tree/a.txt | cut -c1-10
+posix  chmod u+x,g-r tree/a.txt && ls -l tree/a.txt | cut -c1-10
+posix  chmod a=r tree/a.txt && ls -l tree/a.txt | cut -c1-10
+posix  chmod o+w,u-w tree/a.txt && ls -l tree/a.txt | cut -c1-10
+posix  chmod go= tree/a.txt && ls -l tree/a.txt | cut -c1-10
+posix  chmod u=rwx,go=rx tree/a.txt && ls -l tree/a.txt | cut -c1-10
+posix  chmod 600 tree/a.txt && umask 022 && chmod +x tree/a.txt && ls -l tree/a.txt | cut -c1-10
+posix  chmod 600 tree/a.txt && umask 077 && chmod +r tree/a.txt && ls -l tree/a.txt | cut -c1-10
+posix  chmod 644 tree/a.txt tree/sub/one.txt && ls -l tree/a.txt tree/sub/one.txt | cut -c1-10
+posix  chmod 644 no-such-file 2>/dev/null; echo $?
+posix  chmod q+x tree/a.txt 2>/dev/null; echo $?
+
+# ---- du: allocation in KiB; order from a directory walk is not specified,
+#      so multi-line output is sorted ----
+posix  du -sk tree
+posix  du -k tree | sort
+posix  du -ak tree | sort
+posix  du -sk tree/a.txt tree/sub
+posix  du -sk no-such 2>/dev/null; echo $?

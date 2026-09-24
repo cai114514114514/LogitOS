@@ -213,6 +213,7 @@ static int syscall_cap_class(int num)
     case SYS_OPEN: case SYS_CHDIR: case SYS_RENAME: case SYS_OPEN_PATH:
     case SYS_IMG_DECODE:
     case SYS_FSREF: case SYS_STAT: case SYS_LSTAT: case SYS_GETDENTS: case SYS_CHMOD:
+    case SYS_STATVFS:
     case SYS_SYMLINK: case SYS_READLINK: case SYS_LINK: case SYS_CHOWN:
         return CAP_FS;
 
@@ -1443,6 +1444,7 @@ static void syscall_do(struct registers *r, const void *user_fxarea)
      * it means are facts about this subsystem. Proc-level, not GUI: a CLI
      * program is the main caller and has no window. */
     case SYS_FSREF:
+    case SYS_STATVFS:
     case SYS_STAT:
     case SYS_LSTAT:
     case SYS_FSTAT:

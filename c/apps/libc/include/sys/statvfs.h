@@ -2,8 +2,10 @@
 #define _SYS_STATVFS_H
 #include <sys/types.h>
 
-/* statvfs()/fstatvfs(): filesystem capacity/usage. See the header comment in
- * fsmisc.c for why both are ENOSYS on this kernel -- short version, LogitFS
+/* statvfs()/fstatvfs(): filesystem capacity/usage. CORRECTION 2026-09-24:
+ * statvfs() now works (SYS_STATVFS); fstatvfs() is still ENOSYS. The rest of
+ * this comment is the older state, kept as the record. See the header comment in
+ * fsmisc.c for why both were ENOSYS on this kernel -- short version, LogitFS
  * (c/fs/logitfs.c) tracks free/total blocks in `struct lfs_super`, but that
  * struct lives entirely kernel-side and NO syscall hands its numbers to ring
  * 3. SYS_SYSINFO prints a free-form TEXT report (uptime/mem/process list,

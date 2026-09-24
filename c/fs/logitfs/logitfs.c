@@ -1940,9 +1940,38 @@ void logitfs_set_read_run(uint32_t n)
     spin_unlock_irqrestore(&lfs_lock, fl);
 }
 
+/* SYS_STATVFS. Counted, not cached: the in-RAM bitmap IS the allocator's
+ * state, so a count taken under lfs_lock is exact at that instant and cannot
+ * drift from what balloc() will do next -- a separately maintained free
+ * counter could. A block freed by an uncommitted transaction is still set in
+ * the bitmap (bfree defers the clear to commit) and so counts as used, which
+ * is true until the commit record is on the medium. 16 KiB of bitmap and 8,192
+ * inodes on the shipped geometry: microseconds. */
+static int logitfs_statfs(struct vstatfs *o)
+{
+    uint64_t fl = spin_lock_irqsave(&lfs_lock);
+    if (!bitmap || !inodes) { spin_unlock_irqrestore(&lfs_lock, fl); return -1; }
+    uint64_t used = 0;
+    for (uint32_t b = 0; b < sb.total_blocks; b++) if (bit_test(b)) used++;
+    uint64_t ifree = 0;
+    for (uint32_t i = 0; i < sb.inode_count; i++) if (inodes[i].type == T_FREE) ifree++;
+    o->bsize = BS;
+    o->blocks = sb.total_blocks;
+    o->bfree = sb.total_blocks - used;
+    o->files = sb.inode_count;
+    o->ffree = ifree;
+    o->flags = 0;
+    o->namemax = LFS_NAME_MAX - 1;
+    spin_unlock_irqrestore(&lfs_lock, fl);
+    return 0;
+}
+
 #include "logitfs_identity.inc"
 
 struct filesystem logitfs = {
+#ifndef LOGITFS_NO_STATFS                 /* the control for make test-statvfs */
+    .statfs = logitfs_statfs,
+#endif
     .refpath = logitfs_refpath,
     .name     = "logitfs",
     .mount    = logitfs_mount,

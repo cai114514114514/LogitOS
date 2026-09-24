@@ -235,6 +235,18 @@ Stat = layout("logit_stat", 120, [
     ["revision", 112, 8, "u"]
 ])
 
+Statvfs = layout("logit_statvfs", 56, [
+    ["len", 0, 4, "u"],
+    ["version", 4, 4, "u"],
+    ["bsize", 8, 8, "u"],
+    ["blocks", 16, 8, "u"],
+    ["bfree", 24, 8, "u"],
+    ["files", 32, 8, "u"],
+    ["ffree", 40, 8, "u"],
+    ["flags", 48, 4, "u"],
+    ["namemax", 52, 4, "u"]
+])
+
 Dirent = layout("logit_dirent", 280, [
     ["reclen", 0, 4, "u"],
     ["type", 4, 4, "u"],

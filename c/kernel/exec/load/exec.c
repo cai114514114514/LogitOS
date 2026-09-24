@@ -1,5 +1,6 @@
 #include <stdint.h>
 #include <stddef.h>
+#include "shebang.h"
 #include "interrupts.h"
 #include "proc.h"
 #include "sched.h"
@@ -452,6 +453,18 @@ uint64_t exec_interpreter_stack(uint64_t cr3, const struct elf_image *img,
     return setup_user_stack(cr3, img, path, argv, arg && *arg ? 2 : 1, 0, 0, pages);
 }
 
+/* Copy a kernel string into the exec argument store. NULL when it does not
+ * fit -- the caller reports E2BIG rather than shortening an argument. */
+static char *exec_store(char *store, int *used, const char *str)
+{
+    int len = 0; while (str[len]) len++;
+    if (*used + len + 1 > ARGBUFSZ) return 0;
+    char *d = store + *used;
+    for (int i = 0; i <= len; i++) d[i] = str[i];
+    *used += len + 1;
+    return d;
+}
+
 /* execve(path, argv, envp): replace the current process's user address space with
  * a freshly loaded program. fds + cwd survive; on success this does not return to
  * the caller -- it rewrites the syscall frame `r` so the iretq enters the new
@@ -493,6 +506,60 @@ long proc_execve(struct registers *r)
         kprintf("[execve] %s: permission denied (not executable)\n", abs);
         return -1;
     }
+
+    /* 1.6. `#!`. A script is run by the interpreter its first line names, with
+     * argv rebuilt the way Linux builds it: interpreter, the optional single
+     * argument, the script's path as the caller spelled it, then the caller's
+     * argv[1..]. Parsing is shebang.h's (host-gated by make test-shebang);
+     * this block only moves strings. ONE level: the interpreter must be a
+     * binary, and one that is itself a script is refused by name below
+     * rather than as the "bad aex header" it would otherwise read as. */
+#ifndef EXEC_NEGCTL_NO_SHEBANG
+    {
+        char hb[SHEBANG_MAX + 1];
+        int fsz = vfs_size(abs);
+        int got = vfs_pread(abs, hb, SHEBANG_MAX, 0);
+        char *interp = 0, *iarg = 0;
+        int sr = got >= 2 ? shebang_parse(hb, got, fsz >= 0 && got >= fsz, &interp, &iarg)
+                          : SHEBANG_NOT;
+        if (sr == SHEBANG_TOOLONG) {
+            kprintf("[execve] %s: #! line does not end within %d bytes; refused, not truncated\n",
+                    abs, SHEBANG_MAX);
+            return -1;
+        }
+        if (sr == SHEBANG_EMPTY) { kprintf("[execve] %s: #! names no interpreter\n", abs); return -1; }
+        if (sr == SHEBANG_OK) {
+            int n = 1 + (iarg ? 1 : 0) + 1 + (argc > 1 ? argc - 1 : 0);
+            char *ip = exec_store(argstore, &used, interp);
+            char *ap = iarg ? exec_store(argstore, &used, iarg) : 0;
+            char *sp = exec_store(argstore, &used, path);
+            if (n > MAXARG || !ip || (iarg && !ap) || !sp) {
+                uvec_refused("execve", abs, "argv (after #!)", LOGIT_EXEC_E2BIG);
+                return LOGIT_EXEC_E2BIG;
+            }
+            /* Shift the caller's argv[1..] right to make room; walk from the
+             * end so nothing is overwritten before it is moved. */
+            int head = n - (argc > 1 ? argc - 1 : 0);
+            for (int i = argc - 1; i >= 1; i--) argv[head + i - 1] = argv[i];
+            int k = 0;
+            argv[k++] = ip;
+            if (ap) argv[k++] = ap;
+            argv[k++] = sp;
+            argc = n;
+            proc_resolve(p, interp, abs, sizeof abs);
+            if (vfs_access(abs, MAY_EXEC) < 0) {
+                kprintf("[execve] %s: #! interpreter %s is not executable\n", sp, abs);
+                return -1;
+            }
+            char ib[2];
+            if (vfs_pread(abs, ib, 2, 0) == 2 && ib[0] == '#' && ib[1] == '!') {
+                kprintf("[execve] %s: #! interpreter %s is itself a script; one level only\n", sp, abs);
+                return -1;
+            }
+            kprintf("[execve] #! %s -> %s\n", sp, abs);
+        }
+    }
+#endif
 
     /* 2. Validate the container's fixed header before destroying the old space,
      *    so a bad path/exec leaves the caller intact and returns -1.

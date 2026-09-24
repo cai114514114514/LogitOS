@@ -677,6 +677,45 @@ _Static_assert(offsetof(struct logit_stat, revision) == 112,
 _Static_assert(sizeof(((struct logit_stat *)0)->revision) == 8,
                "abi.as is stale: logit_stat.revision changed width -- run tools/gen_abi.py --write");
 
+_Static_assert(sizeof(struct logit_statvfs) == 56,
+               "abi.as is stale: sizeof(struct logit_statvfs) changed -- run tools/gen_abi.py --write");
+_Static_assert(offsetof(struct logit_statvfs, len) == 0,
+               "abi.as is stale: logit_statvfs.len moved -- run tools/gen_abi.py --write");
+_Static_assert(sizeof(((struct logit_statvfs *)0)->len) == 4,
+               "abi.as is stale: logit_statvfs.len changed width -- run tools/gen_abi.py --write");
+_Static_assert(offsetof(struct logit_statvfs, version) == 4,
+               "abi.as is stale: logit_statvfs.version moved -- run tools/gen_abi.py --write");
+_Static_assert(sizeof(((struct logit_statvfs *)0)->version) == 4,
+               "abi.as is stale: logit_statvfs.version changed width -- run tools/gen_abi.py --write");
+_Static_assert(offsetof(struct logit_statvfs, bsize) == 8,
+               "abi.as is stale: logit_statvfs.bsize moved -- run tools/gen_abi.py --write");
+_Static_assert(sizeof(((struct logit_statvfs *)0)->bsize) == 8,
+               "abi.as is stale: logit_statvfs.bsize changed width -- run tools/gen_abi.py --write");
+_Static_assert(offsetof(struct logit_statvfs, blocks) == 16,
+               "abi.as is stale: logit_statvfs.blocks moved -- run tools/gen_abi.py --write");
+_Static_assert(sizeof(((struct logit_statvfs *)0)->blocks) == 8,
+               "abi.as is stale: logit_statvfs.blocks changed width -- run tools/gen_abi.py --write");
+_Static_assert(offsetof(struct logit_statvfs, bfree) == 24,
+               "abi.as is stale: logit_statvfs.bfree moved -- run tools/gen_abi.py --write");
+_Static_assert(sizeof(((struct logit_statvfs *)0)->bfree) == 8,
+               "abi.as is stale: logit_statvfs.bfree changed width -- run tools/gen_abi.py --write");
+_Static_assert(offsetof(struct logit_statvfs, files) == 32,
+               "abi.as is stale: logit_statvfs.files moved -- run tools/gen_abi.py --write");
+_Static_assert(sizeof(((struct logit_statvfs *)0)->files) == 8,
+               "abi.as is stale: logit_statvfs.files changed width -- run tools/gen_abi.py --write");
+_Static_assert(offsetof(struct logit_statvfs, ffree) == 40,
+               "abi.as is stale: logit_statvfs.ffree moved -- run tools/gen_abi.py --write");
+_Static_assert(sizeof(((struct logit_statvfs *)0)->ffree) == 8,
+               "abi.as is stale: logit_statvfs.ffree changed width -- run tools/gen_abi.py --write");
+_Static_assert(offsetof(struct logit_statvfs, flags) == 48,
+               "abi.as is stale: logit_statvfs.flags moved -- run tools/gen_abi.py --write");
+_Static_assert(sizeof(((struct logit_statvfs *)0)->flags) == 4,
+               "abi.as is stale: logit_statvfs.flags changed width -- run tools/gen_abi.py --write");
+_Static_assert(offsetof(struct logit_statvfs, namemax) == 52,
+               "abi.as is stale: logit_statvfs.namemax moved -- run tools/gen_abi.py --write");
+_Static_assert(sizeof(((struct logit_statvfs *)0)->namemax) == 4,
+               "abi.as is stale: logit_statvfs.namemax changed width -- run tools/gen_abi.py --write");
+
 _Static_assert(sizeof(struct logit_dirent) == 280,
                "abi.as is stale: sizeof(struct logit_dirent) changed -- run tools/gen_abi.py --write");
 _Static_assert(offsetof(struct logit_dirent, reclen) == 0,

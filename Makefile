@@ -5863,4 +5863,6 @@ include tests/build_dir.mk
 include tools/build/product.mk
 -include tests/term_wrap.mk
 -include tests/aui_damage.mk
+-include tests/textutils.mk
 -include tests/fluid_perf.mk
+-include tests/shebang.mk

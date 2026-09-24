@@ -1,0 +1,8 @@
+apple 3 red
+banana 12 yellow
+cherry 7 red
+date 12 brown
+elderberry 1 purple
+fig 7 purple
+grape 30 green
+apple 3 red

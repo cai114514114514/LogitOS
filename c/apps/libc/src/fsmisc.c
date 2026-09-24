@@ -2,6 +2,12 @@
  * utimensat() -- both "the kernel has real numbers, but no syscall hands them
  * to ring 3" cases, and both handled the same way: ENOSYS, not a guess.
  *
+ * CORRECTION 2026-09-24: statvfs() is no longer one of them. SYS_STATVFS hands
+ * logitfs's counts to ring 3 (include/abi/logit_abi.h, struct logit_statvfs),
+ * and statvfs() below uses it. fstatvfs() and the utime family are still
+ * ENOSYS for the reasons given here; the paragraphs about statvfs are kept as
+ * the record of why it used to be.
+ *
  * WHY NOT INVENT PLAUSIBLE NUMBERS. A `struct statvfs` with a fabricated
  * f_bsize/f_blocks is worse than one this call refuses to fill in: a caller
  * that sizes a buffer from f_bsize, or decides whether a write will fit from
@@ -31,18 +37,31 @@
 #include <sys/stat.h>
 #include <utime.h>
 #include <errno.h>
+#include "logit_abi.h"
+
+static long sys(long n, long a, long b, long c)
+{ long r; __asm__ volatile ("int $0x80" : "=a"(r) : "a"(n), "D"(a), "S"(b), "d"(c) : "memory"); return r; }
 
 int statvfs(const char *path, struct statvfs *buf)
 {
-    (void)buf;
-    if (!path) { errno = EFAULT; return -1; }
-    /* A real statvfs distinguishes "no such path" from "can't report usage";
-     * this kernel can answer the first half for free and it is worth doing,
-     * since a caller that mistyped a path deserves ENOENT, not ENOSYS. */
+    if (!path || !buf) { errno = EFAULT; return -1; }
+    /* SYS_STATVFS (2026-09-24). A path that does not exist is still ENOENT
+     * (stat first, so errno says so); a filesystem that cannot report its
+     * capacity (the kernel's VFS_ENOSYS) is still ENOSYS -- never a guess. */
     struct stat st;
     if (stat(path, &st) < 0) return -1;   /* stat() already set errno (ENOENT, etc.) */
-    errno = ENOSYS;
-    return -1;
+    struct logit_statvfs k;
+    long r = sys(SYS_STATVFS, (long)path, (long)&k, (long)sizeof k);
+    if (r < 0 || k.len < sizeof k) { errno = ENOSYS; return -1; }
+    buf->f_bsize = buf->f_frsize = (unsigned long)k.bsize;
+    buf->f_blocks = (fsblkcnt_t)k.blocks;
+    buf->f_bfree = buf->f_bavail = (fsblkcnt_t)k.bfree;
+    buf->f_files = (fsfilcnt_t)k.files;
+    buf->f_ffree = buf->f_favail = (fsfilcnt_t)k.ffree;
+    buf->f_fsid = (unsigned long)st.st_dev;
+    buf->f_flag = (k.flags & LSVFS_RDONLY) ? ST_RDONLY : 0;
+    buf->f_namemax = k.namemax;
+    return 0;
 }
 
 int fstatvfs(int fd, struct statvfs *buf)

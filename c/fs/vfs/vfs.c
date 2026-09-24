@@ -100,6 +100,9 @@ static int fs_read(struct filesystem *f, const char *p, void *b, int m)
 static int fs_pread(struct filesystem *f, const char *p, void *b, int m, long long o)
 { return f->iops ? (f->iops->pread ? f->iops->pread(f, p, b, m, o) : VFS_ENOSYS)
                  : (f->pread ? f->pread(p, b, m, o) : VFS_ENOSYS); }
+static int fs_statfs(struct filesystem *f, struct vstatfs *o)
+{ return f->iops ? (f->iops->statfs ? f->iops->statfs(f, o) : VFS_ENOSYS)
+                 : (f->statfs ? f->statfs(o) : VFS_ENOSYS); }
 static int fs_count(struct filesystem *f, const char *d)
 { return f->iops ? (f->iops->count ? f->iops->count(f, d) : -1) : (f->count ? f->count(d) : -1); }
 static const char *fs_ent_name(struct filesystem *f, const char *d, int i)
@@ -900,6 +903,21 @@ int vfs_pread(const char *path, void *buf, int max, long long off)
     if (!m) return -1;
     char sub[VFS_PATH_MAX];
     return fs_pread(m->fs, sub_path(m, real, sub, (int)sizeof sub), buf, max, off);
+}
+
+int vfs_statfs(const char *path, struct vstatfs *out)
+{
+    char abs[VFS_PATH_MAX];
+    int rc = resolve(path, abs, (int)sizeof abs, 1);
+    if (rc < 0) return rc;
+    /* The path must exist: a statvfs of a typo is ENOENT, not the capacity of
+     * whatever mount the typo would have lived on. */
+    struct vattr a;
+    if ((rc = vfs_stat(abs, &a)) < 0) return rc;
+    MOUNT_REF(m, abs);
+    if (!m) return VFS_ENOENT;
+    for (unsigned i = 0; i < sizeof *out; i++) ((char *)out)[i] = 0;
+    return fs_statfs(m->fs, out);
 }
 
 /* Publication needs one atomic absent-name check and write. open(O_EXCL)

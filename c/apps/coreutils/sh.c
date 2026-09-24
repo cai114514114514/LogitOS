@@ -130,6 +130,10 @@ static int  ctl_fd = -1;
 static int  last_status;
 static unsigned cmdid_next = 1;
 static const char *g_arg0 = "sh";   /* $0 -- our own argv[0], or -c's name arg */
+/* $1..$9 and $# -- set only when running a script FILE (`sh file args`, which
+ * is what execve builds for a `#!/bin/sh` script). */
+static char **g_pos;
+static int    g_npos;
 
 static struct rt_parser cparse;
 static struct rt_enc    enc;
@@ -775,11 +779,26 @@ static int tokenize(const char *in, char *store, int storemax, struct tok *out, 
                     for (int i = 0; t[i]; i++) TOK_PUT(t[i]);
                     continue;
                 }
+                if (*p == '#') {                  /* $# -- how many positional args */
+                    char t[16];
+                    outn_str(t, g_npos);
+                    p++;
+                    for (int i = 0; t[i]; i++) TOK_PUT(t[i]);
+                    continue;
+                }
                 char name[64]; int k = 0;
-                while (*p && ((*p >= 'A' && *p <= 'Z') || (*p >= 'a' && *p <= 'z') ||
-                              (*p >= '0' && *p <= '9') || *p == '_') && k < 63) name[k++] = *p++;
+                if (*p >= '0' && *p <= '9') {
+                    name[k++] = *p++;             /* ONE digit: `$10` is `$1` then `0` */
+                } else {
+                    while (*p && ((*p >= 'A' && *p <= 'Z') || (*p >= 'a' && *p <= 'z') ||
+                                  (*p >= '0' && *p <= '9') || *p == '_') && k < 63) name[k++] = *p++;
+                }
                 name[k] = 0;
-                const char *v = (k == 1 && name[0] == '0') ? g_arg0 : (k ? env_get(name) : 0);
+                const char *v;
+                if (k == 1 && name[0] == '0') v = g_arg0;
+                else if (k == 1 && name[0] >= '1' && name[0] <= '9')
+                    v = name[0] - '0' <= g_npos ? g_pos[name[0] - '1'] : 0;
+                else v = k ? env_get(name) : 0;
                 if (v) for (int i = 0; v[i]; i++) TOK_PUT(v[i]);
                 continue;
             }
@@ -1241,8 +1260,9 @@ static void exec_line(char *line)
  * `system("export A=1; echo $A")` ran only the export (with a trailing `;` in
  * its value) and still returned success. Each segment is parsed after the
  * preceding command finishes, so `$?` and newly exported variables are fresh.
- * This deliberately adds only sequential `;` and LF; `&&`, `||`, subshells,
- * and positional parameters beyond $0 still need their own grammar. */
+ * This deliberately adds only sequential `;` and LF; `&&`, `||` and subshells
+ * still need their own grammar. ($1..$9 and $# exist for script files since
+ * 2026-09-24; see main.) */
 static void exec_commands(const char *text)
 {
 #ifdef SH_COMMAND_LIST_NEGCTL
@@ -1355,8 +1375,9 @@ int main(int argc, char **argv)
      * exited 0, the worst of the three failure shapes because the caller
      * believes it. `name`, if given, becomes $0 for the command string --
      * exactly the argument POSIX defines and nothing past it (no $1.., no
-     * `-s`, no interactive fallback): this shell has no positional-parameter
-     * expansion anywhere else, so there is nothing further to wire up. */
+     * `-s`, no interactive fallback). Correction 2026-09-24: positional
+     * parameters now exist, but only for a script FILE (`sh file args`,
+     * below); -c still takes none. */
     if (argc > 1 && c_streq(argv[1], "-c")) {
 #ifndef SH_DASHC_NEGCTL
         if (argc <= 2) { errs("sh: -c: option requires an argument\n"); app_exit(2); }
@@ -1366,6 +1387,34 @@ int main(int argc, char **argv)
 #endif
         /* SH_DASHC_NEGCTL: fall through as if -c meant nothing -- the exact
          * old behaviour, kept reachable so the gate has something to fail. */
+    }
+
+    /* `sh FILE [ARGS...]` runs FILE as a script: its lines in order, `;` and
+     * newlines separating commands exactly as for -c, $0 = FILE and $1..$9 /
+     * $# from ARGS. This is the argv execve builds for a `#!/bin/sh` script
+     * (c/kernel/exec/load/shebang.h), and before it existed this shell
+     * ignored argv[1] and read commands from stdin -- so a script "ran" by
+     * doing nothing. A leading `#!` line is skipped; a script larger than
+     * SCRIPT_MAX is refused, not run as its prefix. */
+    if (argc > 1 && argv[1][0] != '-') {
+        enum { SCRIPT_MAX = 64 * 1024 };
+        static char script[SCRIPT_MAX + 1];
+        int fd = sys_open(argv[1], O_RDONLY);
+        if (fd < 0) { errs("sh: cannot open "); errs(argv[1]); errs("\n"); app_exit(127); }
+        int n = 0, r;
+        while (n < SCRIPT_MAX && (r = sys_read(fd, script + n, SCRIPT_MAX - n)) > 0) n += r;
+        char extra;
+        int more = n == SCRIPT_MAX && sys_read(fd, &extra, 1) > 0;
+        sys_close(fd);
+        if (more) { errs("sh: "); errs(argv[1]); errs(": script larger than 64 KiB; refused\n"); app_exit(2); }
+        script[n] = 0;
+        const char *body = script;
+        if (body[0] == '#' && body[1] == '!') { while (*body && *body != '\n') body++; }
+        g_arg0 = argv[1];
+        g_pos = argv + 2;
+        g_npos = argc - 2;
+        exec_commands(body);
+        app_exit(last_status);
     }
 
     if (!interactive) {

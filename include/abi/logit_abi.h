@@ -84,6 +84,7 @@
 #define SYS_IMG_DECODE  67 /* (struct logit_imgreq*) decode an image file -> RGBA in app buffer */
 #define SYS_CPU_INDEX   68 /* () -> the index (0..N-1) of the core running the caller (SMP proof) */
 #define SYS_CPU_COUNT  196 /* () -> current online logical CPU count; never a build-time topology constant */
+#define SYS_STATVFS    202 /* (path, struct logit_statvfs*, len) -> 0, or <0; capacity of the filesystem holding path */
 #define SYS_KHEAP_STRESS 69 /* (iters, size, seed) -> corruption count; BKL-FREE concurrent kmalloc/kfree stress (M25 P1 gate) */
 #define SYS_UI_DARK     70 /* (set) set<0 query, else set system dark mode (0/1); -> current value */
 #define SYS_GUI_ICON    71 /* ((x<<16)|y, (id<<16)|px, color) draw a vector icon into the window */
@@ -1461,6 +1462,30 @@ struct logit_stat {
 };
 #define LSTA_ID 0x0020
 #define LOGIT_STAT_VERSION 1
+
+/* SYS_STATVFS: how big the filesystem holding a path is, and how much of it is
+ * free. Until this existed nothing on the machine could report free space --
+ * libc's statvfs() was ENOSYS and there was no df -- so the only symptom of a
+ * full disk was a write that quietly did not happen.
+ *
+ * Counts are in `bsize` units and are exact at the moment of the call: logitfs
+ * counts its in-RAM allocation bitmap under the mount's own lock. A block freed
+ * by a transaction that has not committed yet still counts as USED -- it is,
+ * until the commit record is on the medium (logitfs.c, bfree()). A backend
+ * that cannot answer returns VFS_ENOSYS rather than a plausible number. */
+struct logit_statvfs {
+    unsigned int       len;      /* bytes the kernel wrote (<= the len argument) */
+    unsigned int       version;  /* LOGIT_STATVFS_VERSION */
+    unsigned long long bsize;    /* block size, bytes */
+    unsigned long long blocks;   /* total blocks */
+    unsigned long long bfree;    /* free blocks */
+    unsigned long long files;    /* total inodes (0 = no fixed table) */
+    unsigned long long ffree;    /* free inodes */
+    unsigned int       flags;    /* LSVFS_* */
+    unsigned int       namemax;  /* longest name, bytes */
+};
+#define LSVFS_RDONLY 0x0001
+#define LOGIT_STATVFS_VERSION 1
 
 /* SYS_GETDENTS: the directory read that SYS_DIR_NAME is not.
  *

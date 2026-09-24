@@ -50,6 +50,14 @@ struct filesystem;
  * once -- a ramfs per mount point, a read-only LogitFS per block device --
  * publishes this vtable and the VFS prefers it. A backend fills in exactly one
  * of the two; logitfs keeps the one it has and is untouched. */
+/* What a backend reports for SYS_STATVFS (include/abi/logit_abi.h,
+ * struct logit_statvfs). Counts are in `bsize` units. */
+struct vstatfs {
+    uint64_t bsize, blocks, bfree, files, ffree;
+    uint32_t flags, namemax;       /* flags: VSTATFS_RDONLY */
+};
+#define VSTATFS_RDONLY 1
+
 struct fs_iops {
     int  (*mount)(struct filesystem *);
     void (*umount)(struct filesystem *);
@@ -68,6 +76,8 @@ struct fs_iops {
      * initializers, so a member inserted anywhere else silently re-aims every
      * pointer after it. See ->pread on struct filesystem for what it is. */
     int  (*pread)(struct filesystem *, const char *path, void *buf, int max, long long off);
+    /* Also appended at the END, for the same positional-initializer reason. */
+    int  (*statfs)(struct filesystem *, struct vstatfs *out);
 };
 
 struct filesystem {
@@ -118,6 +128,9 @@ struct filesystem {
     const struct fs_iops *iops;
     void *priv;                                     /* backend instance cookie */
     int (*refpath)(const struct logit_file_id *, char *, int);
+    /* Capacity of this filesystem (SYS_STATVFS). Optional: a backend that
+     * leaves it NULL makes vfs_statfs answer VFS_ENOSYS, never a guess. */
+    int (*statfs)(struct vstatfs *out);
 };
 int vfs_refpath(const struct logit_file_id *, char *, int);
 
@@ -151,6 +164,9 @@ int  vfs_read(const char *path, void *buf, int max);
  * Negative return = a VFS_E*; VFS_ENOSYS = this backend cannot read part of a
  * file (see ->pread on struct filesystem). */
 int  vfs_pread(const char *path, void *buf, int max, long long off);
+/* Capacity of the filesystem that holds `path` (resolved, must exist). 0, or
+ * VFS_ENOENT / VFS_ENOSYS (the backend cannot say). */
+int  vfs_statfs(const char *path, struct vstatfs *out);
 int  vfs_count(const char *dir);
 const char *vfs_ent_name(const char *dir, int i);
 int vfs_ent_name_copy(const char *dir, int i, char *out, int cap);

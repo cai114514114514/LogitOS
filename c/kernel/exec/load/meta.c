@@ -121,6 +121,30 @@ static long stat_path(const char *upath, void *ubuf, long len, int follow)
     return emit(&st, ubuf, len);
 }
 
+/* SYS_STATVFS -- same versioned-length contract as stat: the kernel writes
+ * min(len, sizeof) bytes and says how many in `len`; nothing on failure. */
+static long statvfs_path(const char *upath, void *ubuf, long len)
+{
+    char path[128], abs[128];
+    struct proc *p = proc_current();
+    if (!p || user_copy_string(path, sizeof path, upath) < 0) return -1;
+    proc_resolve(p, path, abs, sizeof abs);
+    if (len < (long)sizeof(unsigned int) * 2) return -1;
+    struct vstatfs v;
+    int rc = vfs_statfs(abs, &v);
+    if (rc < 0) return rc;
+    struct logit_statvfs o = {0};
+    o.version = LOGIT_STATVFS_VERSION;
+    o.bsize = v.bsize; o.blocks = v.blocks; o.bfree = v.bfree;
+    o.files = v.files; o.ffree = v.ffree;
+    o.flags = (v.flags & VSTATFS_RDONLY) ? LSVFS_RDONLY : 0;
+    o.namemax = v.namemax;
+    long n = len < (long)sizeof o ? len : (long)sizeof o;
+    if (!user_range_ok(ubuf, (uint64_t)n, 1)) return -1;
+    o.len = (unsigned int)n;
+    return user_copy_to(ubuf, &o, (uint64_t)n);
+}
+
 /* --------------------------------------------------------------------------
  * fstat
  *
@@ -269,6 +293,7 @@ long meta_syscall(long num, long a, long b, long c)
         int rc=vfs_refpath(&q.id,q.path,sizeof q.path);
         return rc<0 ? rc : user_copy_to((void *)a,&q,sizeof q);
     }
+    case SYS_STATVFS:  return statvfs_path((const char *)a, (void *)b, c);
     case SYS_STAT:     return stat_path((const char *)a, (void *)b, c, 1);
     case SYS_LSTAT:    return stat_path((const char *)a, (void *)b, c, 0);
     case SYS_FSTAT:    return stat_fd((int)a, (void *)b, c);

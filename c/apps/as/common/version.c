@@ -4,6 +4,17 @@
 
 int as_source_version(const char *s)
 {
+    /* A `#!` line comes FIRST in an executable script (`#!/bin/as`, then
+     * `# aether: 3.0`), because execve reads the interpreter from line 1
+     * (c/kernel/exec/load/shebang.h). Skip it the way Python does, so the
+     * version header on line 2 is the one that counts. The `#!` line is an
+     * ordinary comment to the lexer. */
+#ifndef AS_VERSION_NEGCTL_NO_SHEBANG
+    if (s[0] == '#' && s[1] == '!') {
+        while (*s && *s != '\n') s++;
+        if (*s == '\n') s++;
+    }
+#endif
     /* `#aether: 3` is what a first Studio program looks like. Requiring a
      * space after `#` classified that alias as unversioned A2; after the VM
      * was deleted, Run printed "engine removed" instead of compiling the file. */
