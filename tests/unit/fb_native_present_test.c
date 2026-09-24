@@ -11,6 +11,7 @@
 #include <string.h>
 #include "fb.h"
 #include "glass.h"
+#include "openlogit_glass.h"   /* struct glass_lut, for the glass_lut_get stub */
 #define W 24
 #define H 18
 #define FRONT_STRIDE 28
@@ -49,6 +50,10 @@ void glass_build_lut(int e,int r) { (void)e;(void)r; }
 unsigned gl_isqrt(unsigned long v) { (void)v;return 0; }
 int glass_disp[3][GLASS_E_MAX + 1];
 unsigned char glass_fres[GLASS_E_MAX + 1];
+/* Since band-parallel composition (2026-09-24) glass_render reads its tables
+ * through glass_lut_get, not the arrays above: the same all-zero stub. */
+const struct glass_lut *glass_lut_get(int E, int refract, struct glass_lut *own)
+{ (void)E; (void)refract; memset(own, 0, sizeof *own); return own; }
 extern void *fb_dma_test_hold_writer(void);
 extern void fb_dma_test_release_writer(void);
 

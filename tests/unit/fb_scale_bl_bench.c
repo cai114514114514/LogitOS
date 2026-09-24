@@ -27,7 +27,8 @@
 
 #include "fb.h"
 #include "gfx.h"      /* GFX_MASK_* -- for the gfx_mask_corner stub's signature only */
-#include "glass.h"    /* GLASS_E_MAX -- for the glass_disp/glass_fres stub arrays */
+#include "glass.h"
+#include "openlogit_glass.h"   /* struct glass_lut, for the glass_lut_get stub */    /* GLASS_E_MAX -- for the glass_disp/glass_fres stub arrays */
 
 /* ---- the world fb.c expects, stubbed (identical shape to fb_clip_test.c) - */
 void *kmalloc(unsigned long n) { return malloc(n); }
@@ -64,6 +65,10 @@ void glass_build_lut(int E, int refract) { (void)E; (void)refract; }
 unsigned gl_isqrt(unsigned long v) { (void)v; return 0; }
 int glass_disp[3][GLASS_E_MAX + 1];
 unsigned char glass_fres[GLASS_E_MAX + 1];
+/* Since band-parallel composition (2026-09-24) glass_render reads its tables
+ * through glass_lut_get, not the arrays above: the same all-zero stub. */
+const struct glass_lut *glass_lut_get(int E, int refract, struct glass_lut *own)
+{ (void)E; (void)refract; memset(own, 0, sizeof *own); return own; }
 
 /* ---- rdtsc: the SAME primitive kbench.h's kb_rdtsc() is (c/kernel/sched/
  * kbench.h) -- two 32-bit halves off EDX:EAX, no lfence (matching the
