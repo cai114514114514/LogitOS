@@ -314,6 +314,11 @@ static int  g_have_pending_nav;
  * explicit ancestor-derived site (opaque by default), never a mutable URL. */
 static int g_embedded_site;
 static char g_site_url[WURL_MAX];
+/* HTML sandboxed origin flag: this document's origin is a unique opaque
+ * origin, not its URL's. Set by the embedder before install; never cleared.
+ * Its URL still resolves requests and still is location.href -- only the
+ * ORIGIN (fetch initiator, cookie and storage access, self.origin) changes. */
+static int g_opaque_origin;
 
 #define WT_MAX 8
 struct wtimer { int used; unsigned long long due; JSValue fn; };
@@ -2237,13 +2242,40 @@ static void timers_clear(JSContext *ctx)
     }
 }
 
+/* A real DOMException from this realm's constructor, as js_dom_throw_dom
+ * builds one (that TU is not linked into every host consumer of this file). */
+static JSValue throw_security_error(JSContext *ctx, const char *msg)
+{
+    JSValue g = JS_GetGlobalObject(ctx);
+    JSValue ctor = JS_GetPropertyStr(ctx, g, "DOMException");
+    JSValue exc = JS_UNDEFINED;
+    if (JS_IsFunction(ctx, ctor)) {
+        JSValue argv[2] = { JS_NewString(ctx, msg), JS_NewString(ctx, "SecurityError") };
+        exc = JS_CallConstructor(ctx, ctor, 2, (JSValueConst *)argv);
+        JS_FreeValue(ctx, argv[0]);
+        JS_FreeValue(ctx, argv[1]);
+    }
+    JS_FreeValue(ctx, ctor);
+    JS_FreeValue(ctx, g);
+    if (JS_IsException(exc)) return exc;
+    if (!JS_IsObject(exc)) { JS_FreeValue(ctx, exc); return JS_ThrowTypeError(ctx, "SecurityError: %s", msg); }
+    return JS_Throw(ctx, exc);
+}
+
 /* ---- document.cookie ---------------------------------------------------
  * The same jar the network uses, minus HttpOnly -- which is the whole point of
  * HttpOnly, and is enforced inside cookies.c by the http_api flag rather than
  * by filtering afterwards here. */
+/* HTML document.cookie: "if this's origin is an opaque origin, throw a
+ * SecurityError DOMException" -- for the getter AND the setter. An empty
+ * string would be the cookie-averse answer, which is a different document
+ * kind; a silently ignored write would be that too. */
 static JSValue js_cookie_get(JSContext *ctx, JSValueConst t)
 {
     (void)t;
+    if (g_opaque_origin)
+        return throw_security_error(ctx, "Failed to read the 'cookie' property from 'Document': "
+                                         "the document is sandboxed and lacks the 'allow-same-origin' flag.");
     if (!g_loc_valid) return JS_NewString(ctx, "");
     struct cookie_ctx cc;
     ck_ctx(&cc, &g_loc, 0);
@@ -2265,6 +2297,9 @@ static JSValue js_cookie_get(JSContext *ctx, JSValueConst t)
 static JSValue js_cookie_set(JSContext *ctx, JSValueConst t, JSValueConst v)
 {
     (void)t;
+    if (g_opaque_origin)
+        return throw_security_error(ctx, "Failed to set the 'cookie' property on 'Document': "
+                                         "the document is sandboxed and lacks the 'allow-same-origin' flag.");
     if (!g_loc_valid) return JS_UNDEFINED;
     const char *s = JS_ToCString(ctx, v);
     if (!s) return JS_EXCEPTION;
@@ -3786,6 +3821,14 @@ static JSValue make_storage(JSContext *ctx, const char *origin, int session)
     return o;
 }
 
+static JSValue storage_denied(JSContext *ctx, JSValueConst t, int magic)
+{
+    (void)t;
+    return throw_security_error(ctx, magic
+        ? "Failed to read the 'sessionStorage' property from 'Window': the document is sandboxed and lacks the 'allow-same-origin' flag."
+        : "Failed to read the 'localStorage' property from 'Window': the document is sandboxed and lacks the 'allow-same-origin' flag.");
+}
+
 static int g_vp_dirty;
 void js_webapi_media_changed(void) { g_vp_dirty = 1; }
 
@@ -3812,7 +3855,11 @@ void js_webapi_install(JSContext *ctx, const char *url)
     }
     g_webapi_ctx = ctx;
     set_location(url);
-    g_page_fetch=fetch_realm_new(ctx,url,url,g_embedded_site ? g_site_url : url);
+    /* An opaque origin is no origin a URL can name: the realm's initiator is
+     * left invalid, which is what serializes `Origin: null`, makes every
+     * request cross-origin (so 'same-origin' credentials send nothing) and
+     * requires the server's CORS opt-in even for the document's own host. */
+    g_page_fetch=fetch_realm_new(ctx,url,g_opaque_origin ? NULL : url,g_embedded_site ? g_site_url : url);
     if(!g_page_fetch){g_webapi_ctx=NULL;return;}
     hist_reset(0, g_loc_raw);
     g_popstate_state = JS_NULL;
@@ -3846,7 +3893,7 @@ void js_webapi_install(JSContext *ctx, const char *url)
              * Empty string for an opaque-origin document, where `.split('.')`
              * gives [""], still not a throw. */
             JS_SetPropertyStr(ctx, doc, "domain",
-                              JS_NewString(ctx, g_loc_valid ? g_loc.host : ""));
+                              JS_NewString(ctx, g_loc_valid && !g_opaque_origin ? g_loc.host : ""));
             /* document.cookie: the same jar the network uses, minus HttpOnly.
              * An accessor pair rather than a data property, because a page
              * writes it as `document.cookie = "a=1"` and expects the write to
@@ -3922,7 +3969,8 @@ void js_webapi_install(JSContext *ctx, const char *url)
      * pages share one -- which is what an opaque origin would NOT do. Named
      * because it is a real, if unreachable, deviation. */
     char origin[URL_HOST_MAX + 16];
-    if (g_loc_valid) wurl_origin(&g_loc, origin, (int)sizeof origin);
+    if (g_opaque_origin) scopy(origin, "null", (int)sizeof origin);
+    else if (g_loc_valid) wurl_origin(&g_loc, origin, (int)sizeof origin);
     else scopy(origin, g_loc_raw, (int)sizeof origin);
 
     /* Finalizers in an inactive runtime still use this process-wide ID. */
@@ -3932,8 +3980,24 @@ void js_webapi_install(JSContext *ctx, const char *url)
         JS_SetPropertyFunctionList(ctx, proto, storage_proto,
                                    (int)(sizeof storage_proto / sizeof storage_proto[0]));
         JS_SetClassProto(ctx, storage_cid, JS_DupValue(ctx, proto));
-        JS_SetPropertyStr(ctx, g, "localStorage", make_storage(ctx, origin, 0));
-        JS_SetPropertyStr(ctx, g, "sessionStorage", make_storage(ctx, origin, 1));
+        if (g_opaque_origin) {
+            /* HTML: obtaining a storage bottle map for an opaque origin fails,
+             * and the localStorage/sessionStorage getters then throw
+             * SecurityError. No Storage object is ever made, so there is no
+             * store keyed "null" for two sandboxed documents to share. */
+            static const char *const names[2] = { "localStorage", "sessionStorage" };
+            for (int i = 0; i < 2; i++) {
+                JSAtom a = JS_NewAtom(ctx, names[i]);
+                JS_DefinePropertyGetSet(ctx, g, a,
+                    JS_NewCFunctionMagic(ctx, (JSCFunctionMagic *)storage_denied, names[i], 0,
+                                         JS_CFUNC_getter_magic, i),
+                    JS_UNDEFINED, JS_PROP_ENUMERABLE | JS_PROP_CONFIGURABLE);
+                JS_FreeAtom(ctx, a);
+            }
+        } else {
+            JS_SetPropertyStr(ctx, g, "localStorage", make_storage(ctx, origin, 0));
+            JS_SetPropertyStr(ctx, g, "sessionStorage", make_storage(ctx, origin, 1));
+        }
 
         /* window.Storage, the INTERFACE OBJECT.  Two working stores and no
          * constructor is not a small omission -- it is how kimi.com stops.
@@ -4240,7 +4304,7 @@ int js_webapi_pump(JSContext *ctx)
  * intentionally shared, unlike document history and its private JS hooks. */
 #define WEBAPI_CONTEXT_FIELDS(X) \
     X(g_loc) X(g_webapi_ctx) X(g_loc_valid) X(g_loc_raw) \
-    X(g_pending_nav) X(g_have_pending_nav) X(g_embedded_site) X(g_site_url) \
+    X(g_pending_nav) X(g_have_pending_nav) X(g_embedded_site) X(g_site_url) X(g_opaque_origin) \
     X(g_page_fetch) X(g_storage_session) X(g_hist) X(g_hist_n) X(g_hist_i) \
     X(g_popstate_queued) X(g_hashchange_queued) X(g_popstate_state) \
     X(g_hash_old) X(g_hash_new) X(g_mk_response) X(g_viewport_changed) \
@@ -4283,6 +4347,15 @@ void js_webapi_context_activate(struct js_webapi_context *next)
     WEBAPI_CONTEXT_FIELDS(WEBAPI_LOAD)
 #undef WEBAPI_LOAD
     webapi_active_context=next;
+}
+
+int js_webapi_context_set_opaque_origin(struct js_webapi_context *s)
+{
+    /* Only an embedded slot, only before its realm is installed: flipping a
+     * live document's origin would strand values keyed by the old one. */
+    if (!s || s == &webapi_default_context || s->g_webapi_ctx) return 0;
+    s->g_opaque_origin = 1;
+    return 1;
 }
 
 int js_webapi_context_destroy(struct js_webapi_context *s)

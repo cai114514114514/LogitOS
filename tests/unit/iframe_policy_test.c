@@ -80,8 +80,14 @@ int main(int argc,char **argv)
     ck(iframe_policy_frame("https://same.example/a","https://same.example/b",0,0,"sameorigin\nSAMEORIGIN"),1,"XFO repeated same origin");
     ck(iframe_policy_frame("https://same.example/a","https://same.example/b",0,0,"sameorigin,DENY"),0,"conflicting XFO deny");
     FRAME(0,0,"ALLOW-FROM https://parent.example",0,"unsupported obsolete XFO refused");
-    FRAME("sandbox allow-same-origin",0,0,0,"parent sandbox not fabricated");
-    FRAME(0,"sandbox allow-same-origin",0,0,"child sandbox not fabricated");
+    /* ~~A CSP sandbox directive refused the frame ("not fabricated").~~ It is
+     * a sandboxing flag set now (frame/sandbox.h, frame/passive.c), enforced
+     * on the document; it is not a source list and decides no fetch here. */
+    FRAME("sandbox allow-same-origin",0,0,1,"parent sandbox directive is flags, not a frame refusal");
+    FRAME(0,"sandbox allow-same-origin",0,1,"child sandbox directive is flags, not a frame refusal");
+    FRAME("sandbox; frame-src 'none'",0,0,0,"a sandbox directive does not mask the policy beside it");
+    ck(iframe_policy_inline_script("sandbox allow-scripts",0),1,"sandbox directive is not a script source list");
+    ck(iframe_policy_eval("sandbox allow-scripts; script-src 'none'"),0,"sandbox directive does not grant eval");
     IMAGE("img-src *.example","https://asset.example/a.png",1,"wildcard subdomain");
     IMAGE("img-src *.example","https://example/a.png",0,"wildcard excludes bare suffix");
     IMAGE("img-src *.example","https://asset.example.test/a.png",0,"wildcard host boundary");

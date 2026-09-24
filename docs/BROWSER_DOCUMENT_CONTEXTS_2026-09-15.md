@@ -175,3 +175,22 @@ a677bc639b80cf2945b90903b69acd407f2df47e7b7c0d4aa14449ee7931dae6  browser.aex
 ## 第四阶段更新（2026-09-16）
 
 上一节的 Worker 缺失状态已由独立 owner 和受限 Blob classic Worker 实现推进；旧 PID 79422 已在核对启动参数后退出，以便重建同一独立测试磁盘。当前实现、宿主负对照、真实客机消费者和仍未通过的 Google 验收见 [嵌入 Worker 验证记录](BROWSER_EMBEDDED_WORKERS_2026-09-16.md)。这不是完整 Worker 标准实现，也不代表 Google 验证页已经可操作。
+
+## 第五阶段更新（2026-09-25）：iframe sandbox 由拒绝改为标志集
+
+第三阶段写的"sandbox……不能假装支持"已过时，保留原句供核对。旧实现对任何带 `sandbox` 属性的 iframe（以及任何带 CSP `sandbox` 指令的策略）整体拒绝：网络 frame 不加载，JS 侧 `contentWindow` 抛 `Blocked access to a sandboxed frame`。Cloudflare Turnstile 的 widget iframe 带 `sandbox="allow-same-origin allow-scripts allow-popups"`，所以 widget 从未存在（chatgpt.com 一次加载 16 次该异常）。
+
+现在按 HTML 标准的 sandboxing flag set 执行（`c/apps/gui/browser/frame/sandbox.h`，仅头文件，网络 frame 加载器、about:blank/srcdoc 加载器和宿主门禁共用同一解析器）：
+
+- 属性在**导航开始时**快照，与嵌入文档自身 flags 取并集（嵌套继承）；响应头 CSP `sandbox` 指令并入（`<meta>` 与 report-only 按 CSP3 忽略）。之后改属性只影响下一次导航。
+- scripts：网络 frame 不打开运行时（脚本、内联处理器、`javascript:` 均无入口）；about:blank/srcdoc 不作为脚本宿主（父页仍可用 `allow-same-origin` 子 realm 的干净内置对象）。
+- origin：opaque。请求带 `Origin: null` 且对一切跨源（含自身主机，需要 CORS 放行）；SameSite 站点为 opaque；`document.cookie` 读写与 `localStorage`/`sessionStorage` 读取抛 `SecurityError`（HTML 规范原文是抛出，不是返回空串）；`self.origin` 为 `"null"`；消息 `event.origin` 为 `"null"`，只有 targetOrigin `"*"` 能投递给它；opaque origin 的 Worker 未实现，因此不提供 `Worker`。about:blank/srcdoc：`contentDocument` 为 `null`（规范是 null 而不是抛异常），`contentWindow` 只暴露跨源白名单，其余访问抛 `SecurityError`。
+- modals：`alert`/`print` 直接返回，`confirm` 返回 false，`prompt` 返回 null，并向控制台报告；消息文本不会到达控制台（这是本浏览器唯一的对话框表面）。`confirm`/`prompt` 以前不存在，现在所有文档都有，走规范"UA 可选择不显示"的分支（记录消息，返回否定答案）。
+- popups：`window.open` 先解析 URL（无效仍抛 SyntaxError），再返回 null 并报告。forms：`submit()`/`requestSubmit()` 不提交并报告（子文档目前没有安装表单模块，此项在客机上不可区分）。top navigation：跨运行时的 `top.location` 本来就拒绝，无法区分。其余 flag 解析并保存。
+- 仍然拒绝、并在代码中写明原因的：网络 frame 上的 `srcdoc`/`csp=`/`credentialless`、Trusted Types、以及"打开嵌入页面"按钮对 sandbox frame（会创建不带限制的顶层文档）。顶层文档自身的 CSP sandbox 仍不执行（只向子 frame 继承）。
+
+门禁（`tests/frame_sandbox.mk`）：`test-frame-sandbox-parse`（47 项，负对照为大小写敏感比较，恰好 3 项失败）、`test-frame-sandbox-host`（真实 app_main 三模式，负对照忽略全部 flag：每个限制断言按名失败、正向断言保持通过）、`test-frame-sandbox-host-san`、`test-frame-sandbox-guest`（QEMU，两个本机来源四个 frame：13 条限制断言在产品中全部成立、在忽略 flag 的对照构建中全部失败，正向断言两边都成立；contentDocument 与"从不请求 popup"两条标为不可区分）。about:blank/srcdoc 由 `test-frame-bootstrap-wiring` 覆盖，两个负对照复现历史上的两种绕过形状。
+
+诊断：`-DJS_PROBE_TRACE` 构建中每个子文档以 `frame:` 前缀安装 probe；`js_probe_reset` 只按对象所属上下文释放引用（`test-jsprobe-owner-negctl` 复现旧的"只有第一个安装者释放、且用它的上下文释放全部"）。探针构建曾因 `passive.o` 的 `UCFLAGS :=` 早于 `tests/jsprobe.mk` 展开而漏掉该标志，已在 jsprobe.mk 修正。
+
+真实站点只做观察（probe 构建，`make probe-site`，未点击、未注入、未触碰令牌）：chatgpt.com 返回 403 挑战页，本次在 `fqStart` 抛 `TypeError: ArrayBuffer object expected`（fetch 请求体类型，另一条线的问题），在创建 widget iframe 之前就停下；`Blocked access to a sandboxed frame` 出现 0 次，但本次根本没走到 iframe，不能当作与此前 16 次的同条件对比。nowsecure.nl 返回 200，`window.turnstile` 未定义，也没有创建 iframe。**挑战没有通过**；sandbox 路径目前只由上面的本机两来源门禁证明。

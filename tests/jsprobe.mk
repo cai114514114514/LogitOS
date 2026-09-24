@@ -21,6 +21,11 @@ UCFLAGS       += -DJS_PROBE_TRACE
 # fragment is read. The first probe build compiled QuickJS with the hooks and
 # the browser without probe.c's body, and printed nothing at all.
 $(BROWSER_JS_OBJ): JS_CF += -DJS_PROBE_TRACE
+# The same trap a second time: the network frame loader is a BROWSER_OBJ
+# whose `UCFLAGS := $(BROWSER_JS_CF)` was also expanded before this line, so
+# its js_probe_install(ctx, "frame:") compiled out and every embedded
+# document -- the challenge widget's included -- was invisible to the probe.
+$(BUILD)/browserobj/c/apps/gui/browser/frame/passive.o: UCFLAGS += -DJS_PROBE_TRACE
 endif
 PROBE_BUILD := $(BUILD)-probe
 
@@ -48,7 +53,21 @@ probe-site: probe-build
 # exactly that check must fail.
 JSPROBE_CF  := -DJS_PROBE_TRACE $(JS_INC) -Ic/apps/gui/browser -DCONFIG_VERSION='"host"'
 JSPROBE_SRC := tests/unit/jsprobe_test.c c/apps/gui/browser/js/runtime/probe.c $(QJS_SRC)
-.PHONY: test-jsprobe test-jsprobe-negctl
+.PHONY: test-jsprobe test-jsprobe-negctl test-jsprobe-owner-negctl
+# The second control: the old reset, which released probe references only for
+# the first installer and then all of them through its context. An embedded
+# document ("frame:", its own runtime) then keeps objects alive after its
+# context is freed -- exactly the one check that must fail, and the test stops
+# before running the old wrong-runtime release.
+test-jsprobe-owner-negctl:
+	@mkdir -p $(BUILD)
+	@$(CC) -O1 -w $(JSPROBE_CF) -DPROBE_NEGCTL_OWNER_ONLY_RESET -o $(BUILD)/jsprobe_owner_negctl $(JSPROBE_SRC) -lm
+	@rc=0; ./$(BUILD)/jsprobe_owner_negctl > $(BUILD)/jsprobe_owner_negctl.log 2>&1 || rc=$$?; \
+	if [ $$rc -eq 1 ] && grep -q "^FAIL an embedded document's reset releases every probe reference into its own runtime" $(BUILD)/jsprobe_owner_negctl.log && \
+	   [ "$$(grep -c '^FAIL' $(BUILD)/jsprobe_owner_negctl.log)" = 1 ]; then \
+		echo "negative control ok: the owner-only reset leaks an embedded document's references"; \
+	else cat $(BUILD)/jsprobe_owner_negctl.log; echo "NEGATIVE CONTROL FAILED"; exit 1; fi
+test-jsprobe: test-jsprobe-owner-negctl
 test-jsprobe-negctl:
 	@mkdir -p $(BUILD)
 	@$(CC) -O1 -w $(JSPROBE_CF) -DPROBE_NEGCTL_NO_WALK -o $(BUILD)/jsprobe_negctl $(JSPROBE_SRC) -lm

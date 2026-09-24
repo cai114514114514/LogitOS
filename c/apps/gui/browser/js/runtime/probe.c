@@ -42,7 +42,10 @@
 #define PROBE_SEEN   8192      /* distinct misses/throws remembered */
 #define PROBE_LABEL  64
 
-struct probe_obj { void *p; char label[PROBE_LABEL]; JSValue keep; };
+/* `ctx` is the context that took the reference: an embedded document's
+ * objects live in ITS OWN runtime, and a reference must be dropped through
+ * the context (and so the runtime) that owns it, never the top page's. */
+struct probe_obj { void *p; char label[PROBE_LABEL]; JSValue keep; JSContext *ctx; };
 static struct probe_obj g_objs[PROBE_OBJS];
 static int g_nobjs;
 
@@ -50,7 +53,7 @@ struct probe_seen { unsigned long h; char text[160]; unsigned count; };
 static struct probe_seen g_seen[PROBE_SEEN];
 static int g_nseen, g_dropped;
 static int g_building;
-static JSContext *g_owner;     /* the context whose objects g_objs keeps alive */
+static JSContext *g_owner;     /* the top page: its reset reports and clears the counts */
 
 static unsigned long hash_str(const char *s)
 {
@@ -84,6 +87,7 @@ static void add_obj(JSContext *ctx, JSValueConst v, const char *label)
     g_objs[k].p = p;
     snprintf(g_objs[k].label, sizeof g_objs[k].label, "%s", label);
     g_objs[k].keep = JS_DupValue(ctx, v);       /* a freed-and-reused address must not be misnamed */
+    g_objs[k].ctx = ctx;
     g_nobjs++;
 }
 
@@ -182,7 +186,10 @@ void js_probe_install(JSContext *ctx, const char *prefix)
             JS_FreeContext(bare);
         }
     }
-    if (!g_owner) g_owner = ctx;
+    /* Only the top page (the unprefixed install) owns the counts. An embedded
+     * document opened while no page owns them must not become the owner, or
+     * its close would print and wipe the top page's totals. */
+    if (!g_owner && !(prefix && *prefix)) g_owner = ctx;
     JSValue g = JS_GetGlobalObject(ctx);
     char lab[PROBE_LABEL];
     snprintf(lab, sizeof lab, "%swindow", prefix ? prefix : "");
@@ -227,7 +234,8 @@ void js_probe_install(JSContext *ctx, const char *prefix)
         if (JS_IsObject(o)) {
             JSPropertyEnum *ot; uint32_t on;
             if (JS_GetOwnPropertyNames(ctx, &ot, &on, o, JS_GPN_STRING_MASK | JS_GPN_SYMBOL_MASK) == 0) {
-                char line[2048]; int used = snprintf(line, sizeof line, "[probe] own %s (%u):", owners[oi], on);
+                char line[2048]; int used = snprintf(line, sizeof line, "[probe] own %s%s (%u):",
+                                                     prefix ? prefix : "", owners[oi], on);
                 for (uint32_t i = 0; i < on; i++) {
                     const char *nm = JS_AtomToCString(ctx, ot[i].atom);
                     if (nm && used < (int)sizeof line - 64) used += snprintf(line + used, sizeof line - used, " %s", nm);
@@ -244,8 +252,9 @@ void js_probe_install(JSContext *ctx, const char *prefix)
     JS_SetProbeHooks(rt, on_miss, on_throw, NULL);
     JS_SetProbeNote(rt, on_note);
     g_building = 0;
-    printf("[probe] installed %s: %d platform globals, %d intrinsic names excluded, %d objects tracked\n",
-           prefix && *prefix ? prefix : "page", platform, nintrinsic, g_nobjs);
+    /* A prefix already ends in its own ':' ("frame:"); the page has none. */
+    printf("[probe] installed %s %d platform globals, %d intrinsic names excluded, %d objects tracked "
+           "(table-wide)\n", prefix && *prefix ? prefix : "page:", platform, nintrinsic, g_nobjs);
 }
 
 void js_probe_report(void)
@@ -260,12 +269,37 @@ void js_probe_report(void)
 
 void js_probe_reset(JSContext *ctx)
 {
-    /* Called before the context that owns the tracked objects is freed. */
+    /* Called before `ctx` is freed, for EVERY context the probe labelled --
+     * the top page and each embedded document ("frame:"). One table holds
+     * them all, so this drops exactly ctx's references, through ctx, and
+     * leaves every other context's labels in place. The old reset returned
+     * early for any context but the first installer, so an embedded
+     * document's runtime was freed with probe references still live in it;
+     * and the owner's reset then dropped THOSE through the owner's context,
+     * i.e. into the wrong runtime. Removing entries from an open-addressed
+     * table breaks probe chains, so the survivors are re-inserted. */
+#ifdef PROBE_NEGCTL_OWNER_ONLY_RESET
+    if (ctx != g_owner) return;   /* test-only control: the old shape */
+#endif
+    static struct probe_obj keep[PROBE_OBJS];
+    int nkeep = 0;
+    for (int i = 0; i < PROBE_OBJS; i++) {
+        if (!g_objs[i].p) continue;
+#ifdef PROBE_NEGCTL_OWNER_ONLY_RESET
+        JS_FreeValue(ctx, g_objs[i].keep);
+#else
+        if (g_objs[i].ctx == ctx) JS_FreeValue(ctx, g_objs[i].keep);
+        else keep[nkeep++] = g_objs[i];
+#endif
+    }
+    memset(g_objs, 0, sizeof g_objs);
+    g_nobjs = 0;
+    for (int i = 0; i < nkeep; i++) {
+        int k = slot_for(keep[i].p);
+        if (k >= 0) { g_objs[k] = keep[i]; g_nobjs++; }
+    }
     if (ctx != g_owner) return;
     js_probe_report();
-    for (int i = 0; i < PROBE_OBJS; i++)
-        if (g_objs[i].p) { JS_FreeValue(ctx, g_objs[i].keep); g_objs[i].p = NULL; }
-    g_nobjs = 0;
     memset(g_seen, 0, sizeof g_seen);
     g_nseen = g_dropped = 0;
     g_owner = NULL;

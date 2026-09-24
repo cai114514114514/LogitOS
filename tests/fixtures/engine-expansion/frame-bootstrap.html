@@ -9,17 +9,44 @@ var dynamicFrame=document.createElement('iframe');
 dynamicFrame.srcdoc=parserFrame.getAttribute('srcdoc');
 document.body.appendChild(dynamicFrame);
 var parentStable=parserFrame.contentDocument!==dynamicFrame.contentDocument&&document.getElementById('frame-result')!==null;
+/* HTML sandboxing, not a refusal: sandbox="" gives the frame's document an
+ * opaque origin, so its embedder's contentDocument is NULL and
+ * contentWindow.document throws SecurityError. Every way of reaching a blank
+ * document must carry the flags; a document that leaks is probed with a
+ * script that must never run. */
 var sandboxRefused=0;
 ['missing','empty-src','empty-srcdoc','invalid-src-update'].forEach(function(kind){
  var f=document.createElement('iframe');f.setAttribute('sandbox','');
  if(kind==='empty-src')f.setAttribute('src','');if(kind==='empty-srcdoc')f.setAttribute('srcdoc','');
  document.body.appendChild(f);
  if(kind==='invalid-src-update')f.setAttribute('src','http://');
- try{var doc=f.contentDocument;var s=doc.createElement('script');s.textContent="console.log('FRAME-SANDBOX-BYPASS-RAN')";doc.getElementsByTagName('head')[0].appendChild(s)}
- catch(e){if(e.name==='SecurityError')sandboxRefused++}
+ var doc=f.contentDocument,denied=false;
+ try{f.contentWindow.document}catch(e){denied=e.name==='SecurityError'}
+ if(doc===null&&denied)sandboxRefused++;
+ else if(doc){try{var s=doc.createElement('script');s.textContent="console.log('FRAME-SANDBOX-BYPASS-RAN')";doc.getElementsByTagName('head')[0].appendChild(s)}catch(e){}}
 });
+/* allow-same-origin without allow-scripts: the document and its fresh realm
+ * are the embedder's to use, but no script IN the document ever runs. */
+var sameOriginReadable=0;
+var so=document.createElement('iframe');so.setAttribute('sandbox','allow-same-origin');document.body.appendChild(so);
+try{var sd=so.contentDocument,sw=so.contentWindow;
+ if(sd&&sw.JSON&&sw.JSON!==JSON&&sw.JSON.parse('[3]')[0]===3)sameOriginReadable=1;
+ var s2=sd.createElement('script');s2.textContent="console.log('FRAME-SANDBOX-NOSCRIPT-RAN')";sd.getElementsByTagName('head')[0].appendChild(s2);
+}catch(e){console.log('FRAME-SANDBOX-SAMEORIGIN-ERROR '+e)}
+/* allow-scripts allow-same-origin: an ordinary frame. */
+var sa=document.createElement('iframe');sa.setAttribute('sandbox','allow-scripts allow-same-origin');
+sa.srcdoc="<script>console.log('FRAME-SANDBOX-ALLOWED-RAN')<\/script>";document.body.appendChild(sa);
+/* allow-scripts alone: its own script runs; its embedder cannot reach in. */
+var sx=document.createElement('iframe');sx.setAttribute('sandbox','allow-scripts');
+sx.srcdoc="<script>console.log('FRAME-SANDBOX-OPAQUE-RAN')<\/script>";document.body.appendChild(sx);
+var opaqueDenied=sx.contentDocument===null&&
+ (function(){try{sx.contentWindow.document;return false}catch(e){return e.name==='SecurityError'}})()&&
+ (function(){try{sx.contentWindow.JSON;return false}catch(e){return e.name==='SecurityError'}})()&&
+ (function(){try{return 'JSON' in sx.contentWindow,false}catch(e){return e.name==='SecurityError'}})()&&
+ Object.keys(sx.contentWindow).indexOf('document')<0&&
+ typeof sx.contentWindow.postMessage==='function'?1:0;
 document.getElementById('frame-result').textContent=parentStable?'Parent DOM intact. Serial must contain exactly two FRAME-WIDGET-RAN count=1 lines.':'Parent DOM failure';
 console.log('FRAME-WIDGET-PARENT stable='+parentStable);
-console.log('FRAME-WIDGET-SANDBOX refused='+sandboxRefused);
+console.log('FRAME-WIDGET-SANDBOX refused='+sandboxRefused+' sameOrigin='+sameOriginReadable+' opaque='+opaqueDenied);
 window.frameAuditReady=true;
 </script>

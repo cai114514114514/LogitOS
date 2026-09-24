@@ -48,6 +48,16 @@ static int frame_origin(const char *url,char *out)
     char *s=url_get(u,URLC_ORIGIN);int ok=s&&strcmp(s,"null")&&strlen(s)<PF_URL;
     if(ok)strcpy(out,s);free(s);url_free_w(u);return ok;
 }
+/* The child DOCUMENT's origin, which is not always its URL's: a document
+ * whose sandboxing flags include the origin flag has a unique opaque origin
+ * (HTML "sandboxed origin browsing context flag"). It serializes as "null"
+ * in MessageEvent.origin, and no targetOrigin but "*" can ever match it --
+ * frame_origin() refuses to parse "null", so a page cannot name it either. */
+static int frame_document_origin(const struct pframe *f,char *out)
+{
+    if(f->sandbox&SANDBOX_ORIGIN){strcpy(out,"null");return 1;}
+    return frame_origin(f->url,out);
+}
 static int frame_window_connected(struct pf_window *w)
 {
     if(!w->host||w->host->serial!=w->serial)return 0;
@@ -89,7 +99,7 @@ static JSValue frame_post_message(JSContext *ctx,JSValueConst self,int argc,
         return js_dom_throw_dom(ctx,"DataCloneError","Window transfer lists are not supported");
     }
     char source[PF_URL],dest[PF_URL];
-    if(to_parent){if(!frame_origin(f->url,source)){JS_FreeValue(ctx,target);JS_FreeValue(ctx,transfer);return JS_UNDEFINED;}}
+    if(to_parent){if(!frame_document_origin(f,source)){JS_FreeValue(ctx,target);JS_FreeValue(ctx,transfer);return JS_UNDEFINED;}}
     else strcpy(source,w->origin);
     if(JS_IsUndefined(target))strcpy(dest,source);
     else {
@@ -230,7 +240,7 @@ static int frame_messages_pump(void)
         memmove(frame_messages,frame_messages+1,(size_t)(--frame_message_count)*sizeof *frame_messages);
         struct pf_window *w=m.window;struct pframe *f=w->child;char dest[PF_URL];
         if(!f||m.epoch!=w->epoch||!frame_window_connected(w)){frame_diag(w,m.to_parent,"drop-stale",0);frame_message_discard(&m);continue;}
-        if(m.to_parent)strcpy(dest,w->origin);else if(!frame_origin(f->url,dest)){frame_message_discard(&m);continue;}
+        if(m.to_parent)strcpy(dest,w->origin);else if(!frame_document_origin(f,dest)){frame_message_discard(&m);continue;}
         if(strcmp(m.target,"*")&&strcmp(m.target,dest)){frame_diag(w,m.to_parent,"drop-origin",0);frame_message_discard(&m);continue;}
         struct js_page_context *old=0;
         if(!js_page_context_activate(m.to_parent?0:f->page,&old)){frame_diag(w,m.to_parent,"owner-busy",0);frame_message_discard(&m);continue;}

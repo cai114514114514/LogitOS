@@ -18,7 +18,10 @@ void loader_poll_hook(void){
  host_clock+=5;if(closing)return;
  if(read_int("typeof frameAuditReady!=='undefined'&&frameAuditReady")>0){
    seen=1;closing=1;CHECK(read_int("parentStable")==1,"two frame documents preserve the parent DOM");
-   CHECK(read_int("sandboxRefused")==4,"sandboxed blank frames refuse access through all source forms");post(EV_CLOSE);return;
+   CHECK(read_int("sandboxRefused")==4,"sandboxed blank frames refuse access through all source forms");
+   CHECK(read_int("sameOriginReadable")==1,"allow-same-origin keeps a sandboxed frame's document and fresh realm readable");
+   CHECK(read_int("opaqueDenied")==1,"an allow-scripts-only frame is opaque to its embedder: null document, SecurityError window");
+   post(EV_CLOSE);return;
  }
  if(++steps>1800){CHECK(0,"frame bootstrap fixture completed within bounded polls");closing=1;post(EV_CLOSE);}
 }
@@ -39,6 +42,13 @@ int main(int argc,char **argv){
  printf("frame bootstrap actual child executions=%d expected=2\n",ran);
  CHECK(ran==2,"parser and dynamic srcdoc both execute the same child script exactly once");
  CHECK(strstr(output,"[frame] FRAME-SANDBOX-BYPASS-RAN")==0,"sandboxed blank frames never execute the injection probe");
+ CHECK(strstr(output,"[frame] FRAME-SANDBOX-NOSCRIPT-RAN")==0,"no script runs in a frame sandboxed without allow-scripts, even a same-origin one");
+ CHECK(strstr(output,"FRAME-SANDBOX-SAMEORIGIN-ERROR")==0,"the allow-same-origin frame was usable without an exception");
+ {int allowed=0,opaque=0;const char *m1="[frame] FRAME-SANDBOX-ALLOWED-RAN",*m2="[frame] FRAME-SANDBOX-OPAQUE-RAN";
+  for(char *p=output;(p=strstr(p,m1));p+=strlen(m1))allowed++;
+  for(char *p=output;(p=strstr(p,m2));p+=strlen(m2))opaque++;
+  CHECK(allowed==1,"allow-scripts allow-same-origin runs its own script exactly once");
+  CHECK(opaque==1,"allow-scripts alone runs its own script exactly once in its opaque realm");}
  CHECK(seen&&host_exited&&host_exit_code==0,"real frame browser loop completes and closes normally");
  free(output);free(page);printf("frame-bootstrap-wiring: %s\n",fail?"FAIL":"PASS");return fail?1:0;
 }

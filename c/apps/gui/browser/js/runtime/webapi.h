@@ -99,6 +99,11 @@ struct js_webapi_context;
 WEBAPI_FN struct js_webapi_context *js_webapi_context_create(const char *site_url);
 WEBAPI_FN void js_webapi_context_activate(struct js_webapi_context *);
 WEBAPI_FN int js_webapi_context_destroy(struct js_webapi_context *);
+/* Give a not-yet-installed embedded slot a unique OPAQUE origin (the HTML
+ * sandboxed origin flag): its requests carry `Origin: null` and are
+ * cross-origin to everything, document.cookie and local/sessionStorage throw
+ * SecurityError, self.origin is "null". Irreversible for that slot. */
+WEBAPI_FN int js_webapi_context_set_opaque_origin(struct js_webapi_context *);
 
 /* Install everything into `ctx`. `url` is the document's address, used as the
  * base for relative fetches, as location's value and as the storage origin.
@@ -227,6 +232,7 @@ LOGIT_WEAK_STUB(js_webapi_set_net);
 LOGIT_WEAK_STUB(js_webapi_context_create);
 LOGIT_WEAK_STUB(js_webapi_context_activate);
 LOGIT_WEAK_STUB(js_webapi_context_destroy);
+LOGIT_WEAK_STUB(js_webapi_context_set_opaque_origin);
 LOGIT_WEAK_STUB(js_webapi_install);
 LOGIT_WEAK_STUB(js_webapi_install_encoding);
 LOGIT_WEAK_STUB(js_webapi_fetch_install);

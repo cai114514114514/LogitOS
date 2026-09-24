@@ -23,6 +23,7 @@
  * js_page.c uses for js_worker.h, including the weaksym.h Mach-O half. */
 #define JS_FRAME_OPTIONAL
 #include "js/dom/frame.h"
+#include "frame/sandbox.h"
 #include "logit_abi.h"     /* CLIP_F_TEXT / CLIP_E_* -- needed in BOTH builds,
                              * see the clipboard section below for why the host
                              * stub still needs the real error codes. */
@@ -225,8 +226,27 @@ extern int passive_frames_enabled(void) LOGIT_WEAK;
 LOGIT_WEAK_STUB(passive_frames_enabled);
 extern JSValue passive_frame_window(JSContext *,JSValueConst,int,JSValueConst *) LOGIT_WEAK;
 LOGIT_WEAK_STUB(passive_frame_window);
+/* The selected document's own sandboxing flags (js/runtime/page.c). A build
+ * without page.c answers 0: an unsandboxed document. */
+extern unsigned js_page_sandbox_flags(void) LOGIT_WEAK;
+LOGIT_WEAK_STUB(js_page_sandbox_flags);
+/* __sandboxParse(value): the ONE sandboxing-directive parser (frame/sandbox.h)
+ * that the network frame loader also uses, so the two iframe doors cannot
+ * disagree about a token. */
+_Static_assert(SANDBOX_ORIGIN == 32 && SANDBOX_SCRIPTS == 256 && SANDBOX_ALL == 0x3ffff,
+               "installIframes' SB_ORIGIN/SB_SCRIPTS/fail-closed literals must match frame/sandbox.h");
+static JSValue js_sandbox_parse(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
+{
+    (void)t;
+    size_t len = 0;
+    const char *s = argc ? JS_ToCStringLen(ctx, &len, argv[0]) : NULL;
+    if (argc && !s) return JS_EXCEPTION;
+    unsigned flags = sandbox_parse_n(s ? s : "", len);
+    if (s) JS_FreeCString(ctx, s);
+    return JS_NewUint32(ctx, flags);
+}
 static const char *PLATFORM_PRELUDE =
-"(function (__random, __vw, __vh, __randomStrong, __clipWriteText, __nativeMOFlush, __initialIframes, __passiveFrames, __embeddedWindow, __legacyMarkup) {\n"
+"(function (__random, __vw, __vh, __randomStrong, __clipWriteText, __nativeMOFlush, __initialIframes, __passiveFrames, __embeddedWindow, __legacyMarkup, __sandboxParse, __ownSandbox) {\n"
 "'use strict';\n"
 "var G = globalThis;\n"
 /* The house rule for this whole file. Three lines are adding to this runtime
@@ -900,7 +920,11 @@ static const char *PLATFORM_PRELUDE =
  * `this`, and a Proxy is not that pointer. */
 "(function () {\n"
 "  function wrapStorage(name) {\n"
-"    var s = G[name];\n"
+   /* An opaque-origin (sandboxed) document's storage getters THROW
+    * SecurityError by specification; reading one here must not abort the
+    * rest of this prelude. */
+"    var s;\n"
+"    try { s = G[name]; } catch (e) { return; }\n"
 "    if (!s || typeof s.getItem !== 'function' || s.__named) return;\n"
 "    var proxy = new Proxy(s, {\n"
 "      get: function (t, k) {\n"
@@ -3119,6 +3143,14 @@ static const char *PLATFORM_PRELUDE =
  * SecurityError naming sandbox rather than answering null: a silently-null
  * same-origin-shaped document is indistinguishable from "not loaded yet",
  * the one shape this whole feature is measured against.
+ * CORRECTION 2026-09-25, kept beside the paragraph above: the refusal is
+ * gone because its premise is. The attribute's RESTRICTIONS are honoured now
+ * (HTML sandboxing flag set, frame/sandbox.h; see `creationFlags` below), so
+ * presence no longer means "present-and-wrong". The cost of refusing was
+ * measured, not assumed: Cloudflare's widget iframe carries
+ * sandbox="allow-same-origin allow-scripts allow-popups", and every access
+ * to it threw "Blocked access to a sandboxed frame" (16 times on one
+ * chatgpt.com load) while the widget never existed.
  *
  * INSERTION USED TO BE CAUGHT FOUR WAYS AND THAT WAS NOT ENOUGH. The original
  * shape here wrapped appendChild/insertBefore/replaceChild/setAttribute plus
@@ -3287,14 +3319,37 @@ static const char *PLATFORM_PRELUDE =
    /* `blocked` names WHY contentWindow/contentDocument must throw, and is the
       only thing the getters and makeWindow() need to build the right
       SecurityError message -- 'cross-origin' for a real navigation refusal,
-      'sandbox' because this engine does not honour the attribute's
-      allowances and a silent same-origin-shaped blank would be the exact
-      hang shape the whole feature is measured against. */
+      'passive' for a network frame owned by the native loader. */
 "  var blockedErr = function (r) {\n"
 "    if (r.blocked === 'passive') return new G.DOMException('Passive embedded documents have no script-visible browsing context.', 'NotSupportedError');\n"
-"    if (r.blocked === 'sandbox')\n"
-"      return new G.DOMException('Blocked access to a sandboxed frame: this engine does not honour the sandbox attribute, so access is refused rather than silently granted.', 'SecurityError');\n"
 "    return new G.DOMException('Blocked a frame from accessing a cross-origin frame.', 'SecurityError');\n"
+"  };\n"
+   /* ~~'sandbox' was a third `blocked` reason: every sandboxed frame was
+      refused whole, because the attribute's restrictions were not honoured
+      and "absent is safer than present-and-wrong".~~ Correction 2026-09-25:
+      the restrictions ARE honoured now, as HTML's sandboxing flag set, and
+      a sandboxed frame is an ordinary frame carrying flags:
+        SB_SCRIPTS  its document is never adopted as a script host, so no
+                    <script> in it ever runs (the parent can still use its
+                    fresh intrinsics through __frameGlobal, which never
+                    executes a document script -- the specimen's clean-realm
+                    idiom with allow-same-origin keeps working);
+        SB_ORIGIN   its document's origin is opaque: contentDocument is null
+                    (HTML: not same origin-domain), and the contentWindow
+                    WindowProxy answers only the cross-origin allowlist.
+      The flags are the attribute parsed at NAVIGATION time, unioned with
+      this document's own (a nested frame inherits its container's), by the
+      same native parser the network loader uses. */
+"  var SB_ORIGIN = 32, SB_SCRIPTS = 256;\n"
+"  var opaqueErr = function () {\n"
+"    return new G.DOMException('Blocked a frame from accessing a cross-origin frame: it is sandboxed without allow-same-origin, so its origin is opaque.', 'SecurityError');\n"
+"  };\n"
+"  var creationFlags = function (el) {\n"
+"    var f = __ownSandbox >>> 0;\n"
+"    try {\n"
+"      if (el.hasAttribute && el.hasAttribute('sandbox')) f = (f | __sandboxParse(el.getAttribute('sandbox'))) >>> 0;\n"
+"    } catch (e) { f = 0x3ffff; }\n"   /* an unreadable attribute fails closed */
+"    return f;\n"
 "  };\n"
    /* The one exit every load path funnels through. `doc` set + `blocked` null
       is a real, readable document (about:blank, srcdoc, a same-origin fetch,
@@ -3312,14 +3367,16 @@ static const char *PLATFORM_PRELUDE =
           asynchronous navigation is still in flight. */
 "    if (r.doc && r.doc !== doc) releaseDoc(r);\n"
 "    r.doc = doc; r.blocked = blocked || null;\n"
+"    r.opaque = !!(doc && !blocked && ((r.sandbox >>> 0) & SB_ORIGIN));\n"
+"    var scripted = !((r.sandbox >>> 0) & SB_SCRIPTS);\n"
        /* ==== the frame becomes a SCRIPT HOST here, and only here ==========
           __frameAdopt (js_frame.c) gives this document a JSContext of its own
           on the page's existing runtime, so a <script> inside it runs instead
           of being data. Everything about WHICH documents may do that is
           already decided ABOVE this line and is unchanged: the cross-origin
-          refusal and the sandbox refusal both `settle(el, r, gen, null,
-          'cross-origin'|'sandbox')` and so arrive here with doc === null AND
-          blocked set, failing this guard twice over. This call adds no origin
+          refusal `settle(el, r, gen, null, 'cross-origin')` arrives here with
+          doc === null AND blocked set, failing this guard twice over, and a
+          frame sandboxed without allow-scripts fails `scripted`. This call adds no origin
           logic of its own -- deliberately, because it MUST NOT become a
           second place where "may this run" is decided (one jar, two doors);
           js_platform.c's existing gate stays the only door.
@@ -3344,7 +3401,7 @@ static const char *PLATFORM_PRELUDE =
           (see the include) then take a JS branch that does not exist, which
           is the same "absent dependency is inert" contract the weak symbol
           gives the C half. */
-"      if (doc && !blocked && typeof G.__frameAdopt === 'function') {\n"
+"      if (doc && !blocked && scripted && typeof G.__frameAdopt === 'function') {\n"
 "        try { G.__frameAdopt(doc); } catch (eAdopt) {}\n"
 "      }\n"
        /* ONE JAR, TWO DOORS, closed: contentDocument.defaultView must be the
@@ -3368,7 +3425,7 @@ static const char *PLATFORM_PRELUDE =
 "            } });\n"
 "          Object.defineProperty(doc, 'defaultView', { configurable: true, enumerable: true,\n"
 "            get: function () {\n"
-"              if (r.blocked) return null;\n"
+"              if (r.blocked || r.opaque) return null;\n"
 "              if (!r.win) r.win = makeWindow(el, r);\n"
 "              return r.win;\n"
 "            } });\n"
@@ -3389,7 +3446,9 @@ static const char *PLATFORM_PRELUDE =
           `load` below whichever way this goes. */
 "      if (doc && !blocked) {\n"
 "        try { if (doc.querySelector && doc.querySelector('script'))\n"
-"          console.log(typeof G.__frameAdopt === 'function'\n"
+"          console.log(!scripted\n"
+"            ? '[iframe] a <script> inside this frame document will not run: the frame is sandboxed without allow-scripts'\n"
+"            : typeof G.__frameAdopt === 'function'\n"
 "            ? '[iframe] a <script> inside this frame document runs in the frame\\'s OWN JSContext ' +\n"
 "              '(fresh intrinsics, no document/DOM of its own) -- see js_frame.c'\n"
 "            : '[iframe] a <script> inside a frame document will never run: ' +\n"
@@ -3405,18 +3464,15 @@ static const char *PLATFORM_PRELUDE =
 "    if (!r) return;\n"
 "    var gen = ++r.gen;\n"
 #ifdef FRAME_SANDBOX_URL_BYPASS
-/* Negative control: restore the old malformed-URL return before refusal. */
+/* Negative control: the malformed-URL fallback settles before this
+ * navigation's flags exist, i.e. as an unsandboxed blank document. */
 "    try { new G.URL(String(url), D.baseURI || (G.location && G.location.href) || ''); }\n"
-"    catch (badURL) { settle(el, r, gen, parseDoc(''), null); return; }\n"
+"    catch (badURL) { r.sandbox = 0; settle(el, r, gen, parseDoc(''), null); return; }\n"
 #endif
-/* Attribute setters enter startLoad directly. Refuse before invalid-URL
- * fallback too, otherwise a sandboxed frame can acquire an unrestricted blank
- * document by assigning malformed src after insertion. */
-"    if (el.hasAttribute && el.hasAttribute('sandbox')) {\n"
-"      console.log('[iframe] refused: sandbox attribute is not honoured by this engine, src=' + String(url));\n"
-"      settle(el, r, gen, null, 'sandbox');\n"
-"      return;\n"
-"    }\n"
+/* Attribute setters enter startLoad directly, so the flags are snapshotted
+ * HERE, before the invalid-URL fallback: otherwise a sandboxed frame could
+ * acquire an unrestricted blank document by assigning a malformed src. */
+"    r.sandbox = creationFlags(el);\n"
 "    var base = D.baseURI || (G.location && G.location.href) || '';\n"
 "    var u = null;\n"
 "    try { u = new G.URL(String(url), base); } catch (e) {}\n"
@@ -3435,8 +3491,10 @@ static const char *PLATFORM_PRELUDE =
 "      if (r.doc) releaseDoc(r); r.doc = null; r.blocked = 'passive'; return;\n"
 "    }\n"
 "    var top = (G.location && G.location.origin) || '';\n"
-"    if (u.origin !== top) {\n"
-"      console.log('[iframe] cross-origin navigation refused: ' + u.origin + ' (top is ' + top + ')');\n"
+   /* A document with an opaque origin (itself sandboxed without
+      allow-same-origin) is same-origin with nothing, its own URL included. */
+"    if ((__ownSandbox & SB_ORIGIN) || u.origin !== top) {\n"
+"      console.log('[iframe] cross-origin navigation refused: ' + u.origin + ' (top is ' + ((__ownSandbox & SB_ORIGIN) ? 'an opaque origin' : top) + ')');\n"
 "      settle(el, r, gen, null, 'cross-origin');\n"
 "      return;\n"
 "    }\n"
@@ -3459,11 +3517,7 @@ static const char *PLATFORM_PRELUDE =
 "    var r = rec(el);\n"
 "    if (!r) return;\n"
 "    var gen = ++r.gen;\n"
-"    if (el.hasAttribute && el.hasAttribute('sandbox')) {\n"
-"      console.log('[iframe] refused: sandbox attribute is not honoured by this engine (srcdoc)');\n"
-"      settle(el, r, gen, null, 'sandbox');\n"
-"      return;\n"
-"    }\n"
+"    r.sandbox = creationFlags(el);\n"
 "    settle(el, r, gen, parseDoc(html), null);\n"
 "  };\n"
    /* The navigation DECISION, factored out of the once-ever guard below so it
@@ -3473,23 +3527,21 @@ static const char *PLATFORM_PRELUDE =
       first; the current content attributes are the source of truth each
       time, exactly as they are the first time. */
 "  var navigate = function (el) {\n"
-#ifndef FRAME_SANDBOX_BLANK_BYPASS
-/* An empty/missing src never reached startLoad/loadSrcdoc's sandbox guards.
- * That granted a readable document and ran injected child scripts while the
- * element advertised sandbox. Refuse before choosing ANY source, including
- * about:blank; this does not claim to implement sandbox token permissions. */
-"    if (el.hasAttribute && el.hasAttribute('sandbox')) {\n"
-"      var blockedRec = rec(el);\n"
-"      if (blockedRec) settle(el, blockedRec, ++blockedRec.gen, null, 'sandbox');\n"
-"      return;\n"
-"    }\n"
-#endif
 "    var sd = el.getAttribute ? el.getAttribute('srcdoc') : null;\n"
 "    var sr = el.getAttribute ? el.getAttribute('src') : null;\n"
 "    if (sd !== null && sd !== '') { loadSrcdoc(el, sd); return; }\n"
 "    if (sr !== null && sr !== '') { startLoad(el, sr); return; }\n"
 "    var r = rec(el);\n"
-"    if (r) settle(el, r, r.gen, parseDoc(''), null);\n"
+"    if (!r) return;\n"
+/* An empty/missing src is still a navigation (to about:blank) and still
+ * carries the frame's flags. This path once skipped the sandbox guard and
+ * granted a readable, script-running document to a sandboxed element. */
+#ifdef FRAME_SANDBOX_BLANK_BYPASS
+"    r.sandbox = 0;\n"   /* negative control: that old shape */
+#else
+"    r.sandbox = creationFlags(el);\n"
+#endif
+"    settle(el, r, r.gen, parseDoc(''), null);\n"
 "  };\n"
    /* Runs once per element, ever -- the '__frameInit' expando is the guard,
       same shape as '__frame' above. Both the mutation wraps and the
@@ -3520,10 +3572,10 @@ static const char *PLATFORM_PRELUDE =
 "  var makeWindow = function (el, r) {\n"
 "    var win = {};\n"
 "    try {\n"
-"      Object.defineProperty(win, 'document', { enumerable: true,\n"
-"        get: function () { if (r.blocked) throw blockedErr(r); return r.doc || null; } });\n"
-"      Object.defineProperty(win, 'location', { enumerable: true,\n"
-"        get: function () { if (r.blocked) throw blockedErr(r); return G.location; },\n"
+"      Object.defineProperty(win, 'document', { enumerable: true, configurable: true,\n"
+"        get: function () { if (r.blocked) throw blockedErr(r); if (r.opaque) throw opaqueErr(); return r.doc || null; } });\n"
+"      Object.defineProperty(win, 'location', { enumerable: true, configurable: true,\n"
+"        get: function () { if (r.blocked) throw blockedErr(r); if (r.opaque) throw opaqueErr(); return G.location; },\n"
 "        set: function (v) {\n"
 "          var base = D.baseURI || (G.location && G.location.href) || '';\n"
 "          try { new G.URL(String(v), base); }\n"
@@ -3557,27 +3609,57 @@ static const char *PLATFORM_PRELUDE =
  * enforce the same origin gate for retained windows, not only the getter.
  * This is not a complete WindowProxy exotic object: descriptor/enumeration
  * forwarding and frame-side DOM/event-loop support remain separate work. */
+/* An opaque-origin frame's WindowProxy answers only the cross-origin
+ * allowlist (HTML CrossOriginProperties; `location` is left out because this
+ * stand-in has no cross-origin Location object, so reading it throws). The
+ * check is made per access against r.opaque, so the SAME proxy is correct
+ * across a navigation that changes the frame's flags. */
+   /* No prototype: a key the page adds to Object.prototype is not allowed. */
+"    var XO = Object.create(null);\n"
+"    ['window', 'self', 'frames', 'top', 'parent', 'opener', 'closed', 'length',\n"
+"     'postMessage', 'close', 'focus', 'blur'].forEach(function (k) { XO[k] = 1; });\n"
+"    var xo = function (key) {\n"
+"      if (typeof key === 'string' && XO[key] === 1) return true;\n"
+"      if (key === 'then' || typeof key === 'symbol') return false;\n"
+"      throw opaqueErr();\n"
+"    };\n"
+"    var realm = null;\n"
 #ifndef FRAME_NO_REALM_GLOBALS
-"    if (typeof nativeFrameGlobal === 'function') {\n"
-"      var realm = function () { if (r.blocked) throw blockedErr(r); return r.doc ? nativeFrameGlobal(r.doc) : null; };\n"
-"      var proxy = new Proxy(win, {\n"
-"        get: function (target, key, receiver) {\n"
-"          var g = realm();\n"
-"          if (Object.prototype.hasOwnProperty.call(target, key)) return Reflect.get(target, key, receiver);\n"
-"          return g ? Reflect.get(g, key, g) : undefined;\n"
-"        },\n"
-"        set: function (target, key, value, receiver) {\n"
-"          var g = realm();\n"
-"          if (Object.prototype.hasOwnProperty.call(target, key)) return Reflect.set(target, key, value, receiver);\n"
-"          return g ? Reflect.set(g, key, value, g) : false;\n"
-"        },\n"
-"        has: function (target, key) { var g=realm(); return key in target || !!(g && key in g); }\n"
-"      });\n"
-"      win.window = win.self = win.globalThis = proxy;\n"
-"      return proxy;\n"
-"    }\n"
+"    if (typeof nativeFrameGlobal === 'function')\n"
+"      realm = function () { if (r.blocked) throw blockedErr(r); if (r.opaque) throw opaqueErr(); return r.doc ? nativeFrameGlobal(r.doc) : null; };\n"
 #endif
-"    return win;\n"
+"    if (typeof Proxy !== 'function') return win;\n"
+"    var proxy = new Proxy(win, {\n"
+"      get: function (target, key, receiver) {\n"
+"        if (r.opaque && !xo(key)) return undefined;\n"
+"        if (Object.prototype.hasOwnProperty.call(target, key)) return Reflect.get(target, key, receiver);\n"
+"        var g = realm && realm();\n"
+"        return g ? Reflect.get(g, key, g) : undefined;\n"
+"      },\n"
+"      set: function (target, key, value, receiver) {\n"
+"        if (r.opaque) throw opaqueErr();\n"
+"        if (Object.prototype.hasOwnProperty.call(target, key)) return Reflect.set(target, key, value, receiver);\n"
+"        var g = realm && realm();\n"
+"        return g ? Reflect.set(g, key, value, g) : false;\n"
+"      },\n"
+"      has: function (target, key) {\n"
+"        if (r.opaque) return xo(key);\n"
+"        var g = realm && realm(); return key in target || !!(g && key in g);\n"
+"      },\n"
+"      getOwnPropertyDescriptor: function (target, key) {\n"
+"        if (r.opaque && !xo(key)) return undefined;\n"
+"        return Reflect.getOwnPropertyDescriptor(target, key);\n"
+"      },\n"
+   /* Every property of the stand-in is configurable, so the proxy may list
+      only the allowlist without breaking an invariant. */
+"      ownKeys: function (target) {\n"
+"        var keys = Reflect.ownKeys(target);\n"
+"        return r.opaque ? keys.filter(function (k) { return typeof k === 'string' && XO[k] === 1; }) : keys;\n"
+"      }\n"
+"    });\n"
+"    win.window = win.self = proxy;\n"
+"    if (realm) win.globalThis = proxy;\n"
+"    return proxy;\n"
 "  };\n"
 "  Object.defineProperty(IFP, 'contentWindow', { configurable: true, get: function () {\n"
 "    initFrame(this);\n"
@@ -3594,6 +3676,9 @@ static const char *PLATFORM_PRELUDE =
 "    if (!r) return null;\n"
 "    if (r.blocked === 'passive') return null;\n"
 "    if (r.blocked) throw blockedErr(r);\n"
+   /* HTML content document: null unless same origin-domain. An opaque
+      origin is same origin-domain with nothing. A null here, not a throw. */
+"    if (r.opaque) return null;\n"
 "    return r.doc || null;\n"
 "  } });\n"
    /* Shared by every insertion path below: the element itself (if it is an
@@ -4118,7 +4203,7 @@ void js_platform_install(JSContext *ctx)
         JS_FreeValue(ctx, fn);
         return;
     }
-    JSValue args[10];
+    JSValue args[12];
     args[0] = JS_NewCFunction(ctx, js_random, "__random", 2);
     args[1] = JS_NewInt32(ctx, g_vw);
     args[2] = JS_NewInt32(ctx, g_vh);
@@ -4129,12 +4214,14 @@ void js_platform_install(JSContext *ctx)
     args[7] = JS_NewBool(ctx,LOGIT_HAVE(passive_frames_enabled)&&passive_frames_enabled());
     args[8] = LOGIT_HAVE(passive_frame_window)?JS_NewCFunction(ctx,passive_frame_window,"embeddedWindow",1):JS_UNDEFINED;
     args[9] = JS_NewBool(ctx,g_legacy_frames);
+    args[10] = JS_NewCFunction(ctx, js_sandbox_parse, "sandboxParse", 1);
+    args[11] = JS_NewUint32(ctx, LOGIT_HAVE(js_page_sandbox_flags) ? js_page_sandbox_flags() : 0);
     if(JS_IsException(args[6])) {
-        for(int i=0;i<10;i++)JS_FreeValue(ctx,args[i]);
+        for(int i=0;i<12;i++)JS_FreeValue(ctx,args[i]);
         JS_FreeValue(ctx,fn);return;
     }
-    JSValue hooks = JS_Call(ctx, fn, JS_UNDEFINED, 10, (JSValueConst *)args);
-    for (int i = 0; i < 10; i++) JS_FreeValue(ctx, args[i]);
+    JSValue hooks = JS_Call(ctx, fn, JS_UNDEFINED, 12, (JSValueConst *)args);
+    for (int i = 0; i < 12; i++) JS_FreeValue(ctx, args[i]);
     JS_FreeValue(ctx, fn);
     if (JS_IsException(hooks)) {
         JSValue e = JS_GetException(ctx);
