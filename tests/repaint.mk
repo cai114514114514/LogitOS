@@ -168,11 +168,23 @@ test-anim: test-anim-negctl
 # OVERRIDING UCFLAGS from this recipe rather than by adding a hook variable to
 # the root Makefile, so this fragment needs no edit in a file three other lines
 # of work are also editing today.
+# THE OFF BUILD APPENDS, IT DOES NOT OVERRIDE. This recipe used to pass
+# UCFLAGS="$(UCFLAGS) -DAUI_ANIM_OFF" on the command line, and a command-line
+# variable silently beats every TARGET-SPECIFIC append in the Makefile --
+# including the `UCFLAGS += $(JS_INC)` that browser objects need for
+# quickjs.h. Any time a browser object had to be rebuilt the control died with
+# "'quickjs.h' file not found" before measuring anything (found 2026-09-24,
+# and reproduced on the untouched tree). As before, only the object this
+# recipe deletes (aui.o) is actually rebuilt with the define.
+ifeq ($(AUIANIMOFF),1)
+UCFLAGS += -DAUI_ANIM_OFF
+endif
+
 test-anim-negctl: $(ISO) $(DISK)
 	@echo "--- animation NEGATIVE CONTROL: aui_anim() returns its target instantly ---"
 	@mkdir -p $(BUILD)
 	@rm -f $(BUILD)/apps/aui.o
-	@$(MAKE) --no-print-directory $(DISK) UCFLAGS="$(UCFLAGS) -DAUI_ANIM_OFF" >/dev/null
+	@$(MAKE) --no-print-directory $(DISK) AUIANIMOFF=1 >/dev/null
 	@python3 tests/qmp/qmp_repaint.py --iso $(ISO) --only anim --reps 1 \
 	    --json $(BUILD)/anim_negctl.json > $(BUILD)/anim_negctl.log 2>&1 || true
 	@python3 -c "import json,sys; \
