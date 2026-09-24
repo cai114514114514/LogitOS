@@ -22,6 +22,10 @@
 #define JS_PLATFORM_OPTIONAL
 #include "js/runtime/platform.h"
 #include "js/runtime/probe.h"   /* diagnostic builds only: -DJS_PROBE_TRACE */
+/* The WebIDL shape pass -- js/runtime/idl_shape.c. Weak like every optional
+ * module here: a link without it keeps the shape the installers produce. */
+#define JS_IDL_SHAPE_OPTIONAL
+#include "js/runtime/idl_shape.h"
 #define JS_PORTS_OPTIONAL
 #include "js/workers/ports.h"
 #include "dom/focus.h"
@@ -1539,6 +1543,16 @@ int js_page_open(struct node *root)
      * js_platform.c, or it wraps a placeholder and the real one overwrites the
      * wrapper afterwards, leaving animate() present and unobservable. */
     if (PAGE_HAVE(js_anim_install)) JS_OPEN_STEP("js_anim_install", js_anim_install(g_ctx));
+    /* AFTER EVERY INSTALLER ABOVE: the shape pass moves what they put on
+     * navigator/document/body/history/performance/screen/crypto onto the
+     * interface prototypes, so anything installed after it would land back on
+     * the instance (and the `k in obj` guards above would then see the moved
+     * member and skip). LOGIT_HAVE, not PAGE_HAVE: it holds no process-wide
+     * state, only this realm's objects, so a network frame's child context
+     * gets its own pass over its own document. A nativize pass, where one is
+     * linked, goes AFTER this one -- it must see the functions this pass
+     * builds -- and before the probe block below. */
+    if (LOGIT_HAVE(js_idl_shape_install)) JS_OPEN_STEP("js_idl_shape_install", js_idl_shape_install(g_ctx));
     JS_FreeValue(g_ctx, g);
 #ifdef JS_PROBE_TRACE
     /* LAST: the probe snapshots what the platform installed, so everything

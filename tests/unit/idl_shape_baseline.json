@@ -1,0 +1,16 @@
+{
+ "counts": {
+  "ABSENT": 731,
+  "CHAIN": 16,
+  "CTOR": 1,
+  "EXTRA-OWN": 0,
+  "KIND": 5,
+  "MISPLACED": 197,
+  "MISSING-IFACE": 30,
+  "NATIVE": 6,
+  "SHARED-PROTO": 4,
+  "TAG": 5
+ },
+ "reference": "chrome-153.json",
+ "total": 995
+}

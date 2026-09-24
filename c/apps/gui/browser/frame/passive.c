@@ -34,6 +34,8 @@
 #include "js/workers/worker.h"
 #define JS_PORTS_OPTIONAL
 #include "js/workers/ports.h"
+#define JS_IDL_SHAPE_OPTIONAL
+#include "js/runtime/idl_shape.h"
 #include "paint/renderer.h"
 #include "../../../../net/http/cookies.h"
 #ifndef URL_CORE_ONLY
@@ -434,6 +436,10 @@ static int frame_runtime_open(struct pframe *f)
         JS_SetStringCodeGenerationAllowed(js_page_ctx(),iframe_policy_eval(f->csp));
         if(LOGIT_HAVE(js_frame_refresh_policy))js_frame_refresh_policy(js_page_ctx());
         ok=js_webapi_set_connect_policy(js_page_ctx(),frame_connect,f)&&frame_window_open_child(f)&&frame_focus_install(f);
+        /* frame_focus_install defines document.activeElement AFTER js_page_open
+         * ran the shape pass; run it again so that member lands on this realm's
+         * Document.prototype like every other one. The pass is idempotent. */
+        if(ok&&LOGIT_HAVE(js_idl_shape_install))js_idl_shape_install(js_page_ctx());
         if(ok)css_context_set_interactive(1);
         js_dom_set_inline_handler_policy(frame_inline_handlers);
         js_dom_set_script_sink(frame_script_offer);

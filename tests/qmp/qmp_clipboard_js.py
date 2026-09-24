@@ -29,7 +29,9 @@ site is gated behind):
             content on the store untouched -- checked by the second process
             again, so "untouched" is a claim about the kernel's store and not
             about what the page believes.
-  absent    delete navigator.clipboard and click again: no exception escapes
+  absent    delete navigator.clipboard (from Navigator.prototype, where the
+            accessor lives since the shape pass -- js/runtime/idl_shape.c --
+            exactly as in a browser) and click again: no exception escapes
             the handler (a page must be able to feature-test this), and the
             store is NOT touched -- proving the write in the first claim came
             from the API under test and not from some other path.
@@ -167,7 +169,11 @@ document.getElementById('btn').addEventListener('click', function () {
 
 document.getElementById('btn2').addEventListener('click', function () {
   try {
+    // Where it lives: an accessor on Navigator.prototype (WebIDL), where
+    // `delete navigator.clipboard` alone removes nothing -- in a browser too.
+    // The own-property delete stays for a build that still installs it there.
     delete navigator.clipboard;
+    delete Object.getPrototypeOf(navigator).clipboard;
     var r = navigator.clipboard;
     console.log('CLIP-NOAPI-DELETED typeof-after=' + typeof r);
     if (r && r.writeText) {
