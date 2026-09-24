@@ -2289,8 +2289,21 @@ static JSValue doc_get_head(JSContext *ctx, JSValueConst t)
     if (g_root) for (struct node *c = g_root->first_child; c && !head; c = c->next) head = find_sel(c, "head");
     return wrap(ctx, head);
 }
+/* From `this`, like every other Node getter -- it used to answer 9 for ANY
+ * receiver, so Document.prototype.nodeType was 9 and Document.prototype
+ * passed for a document (a real browser throws "Illegal invocation" there).
+ * The page document and createHTMLDocument documents are wrapped nodes; the
+ * host-test document with no root is the one plain object that is still a
+ * document. */
 static JSValue doc_get_nodeType(JSContext *ctx, JSValueConst t)
-{ (void)t; return JS_NewInt32(ctx, 9); }
+{
+    struct node *n = node_of(t);
+    if (n) return JS_NewInt32(ctx, node_type_of(n));
+    if (JS_IsObject(t) && JS_IsObject(g_document) &&
+        JS_VALUE_GET_PTR(t) == JS_VALUE_GET_PTR(g_document))
+        return JS_NewInt32(ctx, 9);
+    return JS_ThrowTypeError(ctx, "Illegal invocation");
+}
 
 /* ---- classList (DOMTokenList over the class attribute) ---- */
 static JSClassID token_cid;

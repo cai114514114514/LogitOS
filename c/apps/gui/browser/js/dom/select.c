@@ -669,9 +669,9 @@ static const char *SELECT_PRELUDE =
 "function plainPseudo(el, name, ctx) {\n"
 "  var p, sibs;\n"
 "  switch (name) {\n"
-"    case 'root': return el === (doc.documentElement || null);\n"
+"    case 'root': return el === (ctx.root !== undefined ? ctx.root : (doc.documentElement || null));\n"
 "    case 'empty': return isEmptyEl(el);\n"
-"    case 'scope': return ctx.scope ? el === ctx.scope : el === doc.documentElement;\n"
+"    case 'scope': return ctx.scope ? el === ctx.scope : el === (ctx.root !== undefined ? ctx.root : doc.documentElement);\n"
 "    case 'first-child':\n"
 "      p = el.parentNode; return !!p && elemChildren(p)[0] === el;\n"
 "    case 'last-child':\n"
@@ -969,9 +969,27 @@ static const char *SELECT_PRELUDE =
 "function nodelist(arr) { return list(arr, NLP); }\n"
 "function collection(arr) { return list(arr, HCP); }\n"
 
+/* A DOCUMENT scope is any Document, not only this page's: Document.prototype's
+ * query methods are shared by createHTMLDocument documents, and a library may
+ * call them on a DOMParser document too (DOMPurify's
+ * getElementsByTagName.call(parsedDoc, 'body') is in tests/fixtures). For a
+ * document the search starts at ITS root element, the root itself is a
+ * candidate, and :root/:scope mean that document's root. */
+"function isDoc(s) { return s === doc || (!!s && s.nodeType === 9); }\n"
 "function rootOf(scope) {\n"
 "  if (scope === doc) return doc.documentElement || doc.body;\n"
+"  if (isDoc(scope)) return scope.documentElement || null;\n"
 "  return scope;\n"
+"}\n"
+"function scopeCtx(scope) {\n"
+"  if (!isDoc(scope)) return { scope: scope };\n"
+"  return scope === doc ? { scope: null } : { scope: null, root: scope.documentElement || null };\n"
+"}\n"
+/* The native fast paths walk this page's node arena. A document that is not
+ * on this page's Document.prototype (a DOMParser document) takes the script
+ * matcher instead. */
+"function nativeOK(scope) {\n"
+"  return !isDoc(scope) || scope === doc || Object.getPrototypeOf(scope) === Object.getPrototypeOf(doc);\n"
 "}\n"
 /* The C door deliberately accepts no selector text: AST admission follows
  * full strict parsing. A compound made only from unqualified type/class/id
@@ -982,7 +1000,7 @@ static const char *SELECT_PRELUDE =
  * pseudos, namespaces and combinators retain the complete matcher rather than
  * being approximated. */
 "function simpleQuery(scope, r, alts, one) {\n"
-"  if (typeof nativeSimple !== 'function' || alts.length !== 1 || alts[0].length !== 1) return;\n"
+"  if (typeof nativeSimple !== 'function' || !nativeOK(scope) || alts.length !== 1 || alts[0].length !== 1) return;\n"
 "  var step = alts[0][0];\n"
 "  if (step.comb !== null) return;\n"
 "  var tests = [];\n"
@@ -1003,10 +1021,10 @@ static const char *SELECT_PRELUDE =
 "    }\n"
 "    else return;\n"
 "  }\n"
-"  if (!tests.length) return nativeSimple(r, 0, '', scope === doc, one, QUIRKS, NAMES_FOLD);\n"
+"  if (!tests.length) return nativeSimple(r, 0, '', isDoc(scope), one, QUIRKS, NAMES_FOLD);\n"
 "  if (tests.length === 1)\n"
-"    return nativeSimple(r, tests[0][0], tests[0][1], scope === doc, one, QUIRKS, NAMES_FOLD);\n"
-"  return nativeSimple(r, 6, tests, scope === doc, one, QUIRKS, NAMES_FOLD);\n"
+"    return nativeSimple(r, tests[0][0], tests[0][1], isDoc(scope), one, QUIRKS, NAMES_FOLD);\n"
+"  return nativeSimple(r, 6, tests, isDoc(scope), one, QUIRKS, NAMES_FOLD);\n"
 "}\n"
 /* The original rule above still governs COMPLETE native answers. A compound
  * can nevertheless reject most nodes before creating wrappers: every match
@@ -1059,8 +1077,8 @@ static const char *SELECT_PRELUDE =
 #endif
 "}\n"
 "function candidateQuery(scope, r, filter, one, after) {\n"
-"  if (filter === undefined) return;\n"
-"  return nativeSimple(r, filter[0], filter[1], scope === doc, one, QUIRKS, NAMES_FOLD, after);\n"
+"  if (filter === undefined || !nativeOK(scope)) return;\n"
+"  return nativeSimple(r, filter[0], filter[1], isDoc(scope), one, QUIRKS, NAMES_FOLD, after);\n"
 "}\n"
 "function qsa(scope, sel) {\n"
 "  var alts = compile(sel), r = rootOf(scope);\n"
@@ -1068,7 +1086,7 @@ static const char *SELECT_PRELUDE =
 "  var fast = simpleQuery(scope, r, alts, false);\n"
 "  if (fast !== undefined) return nodelist(fast);\n"
 "  var out = [];\n"
-"  var ctx = { scope: scope === doc ? null : scope };\n"
+"  var ctx = scopeCtx(scope);\n"
 "  var candidates = candidateQuery(scope, r, candidateFilter(alts), false);\n"
 "  if (candidates !== undefined) {\n"
 "    for (var i = 0; i < candidates.length; i++)\n"
@@ -1078,7 +1096,7 @@ static const char *SELECT_PRELUDE =
    /* The root itself is a candidate for document.querySelectorAll('html') but
       never for element.querySelectorAll -- a selector matches descendants of
       the scope, not the scope. */
-"  if (scope === doc && matchAny(r, alts, ctx)) out.push(r);\n"
+"  if (isDoc(scope) && matchAny(r, alts, ctx)) out.push(r);\n"
 "  descendants(r, function (el) { if (matchAny(el, alts, ctx)) out.push(el); });\n"
 "  return nodelist(out);\n"
 "}\n"
@@ -1087,7 +1105,7 @@ static const char *SELECT_PRELUDE =
 "  if (!r) return null;\n"
 "  var fast = simpleQuery(scope, r, alts, true);\n"
 "  if (fast !== undefined) return fast;\n"
-"  var ctx = { scope: scope === doc ? null : scope };\n"
+"  var ctx = scopeCtx(scope);\n"
 #ifndef SELECTOR_NO_BATCH_CANDIDATES
 "  var filter = candidateFilter(alts), after;\n"
 "  if (filter !== undefined) {\n"
@@ -1099,7 +1117,7 @@ static const char *SELECT_PRELUDE =
 "    }\n"
 "  }\n"
 #endif
-"  if (scope === doc && matchAny(r, alts, ctx)) return r;\n"
+"  if (isDoc(scope) && matchAny(r, alts, ctx)) return r;\n"
 "  descendants(r, function (el) {\n"
 "    if (matchAny(el, alts, ctx)) { found = el; return false; }\n"
 "  });\n"
@@ -1121,7 +1139,7 @@ static const char *SELECT_PRELUDE =
 "    if (all) return true;\n"
 "    return isHTML(el) ? localOf(el) === lo : localOf(el) === want;\n"
 "  };\n"
-"  if (scope === doc && ok(r)) out.push(r);\n"
+"  if (isDoc(scope) && ok(r)) out.push(r);\n"
 "  descendants(r, function (el) { if (ok(el)) out.push(el); });\n"
 "  return collection(out);\n"
 "}\n"
@@ -1141,7 +1159,7 @@ static const char *SELECT_PRELUDE =
 "    }\n"
 "    return anyLN || localOf(el) === wantLN;\n"
 "  };\n"
-"  if (scope === doc && ok(r)) out.push(r);\n"
+"  if (isDoc(scope) && ok(r)) out.push(r);\n"
 "  descendants(r, function (el) { if (ok(el)) out.push(el); });\n"
 "  return collection(out);\n"
 "}\n"
@@ -1161,7 +1179,7 @@ static const char *SELECT_PRELUDE =
 "    }\n"
 "    return true;\n"
 "  };\n"
-"  if (scope === doc && ok(r)) out.push(r);\n"
+"  if (isDoc(scope) && ok(r)) out.push(r);\n"
 "  descendants(r, function (el) { if (ok(el)) out.push(el); });\n"
 "  return collection(out);\n"
 "}\n"
@@ -1177,25 +1195,32 @@ static const char *SELECT_PRELUDE =
 "} }\n"
 
 /* ON Document.prototype, NOT on the document. WebIDL puts ParentNode's
- * operations on the interface prototype; these five used to be own properties
- * of `document`, so Document.prototype.querySelectorAll was undefined -- and
+ * operations on the interface prototype; these used to be own properties of
+ * `document`, so Document.prototype.querySelectorAll was undefined -- and
  * Cloudflare's challenge does `new Proxy(Document.prototype.querySelectorAll,
  * ...)`, which threw "not an object" (measured with the JS probe,
- * tests/jsprobe.mk). They answer for THIS page's document only: another
- * Document (a DOMParser result) carries its own implementations, and anything
- * else is refused the way a browser refuses it -- TypeError: Illegal
- * invocation -- rather than silently searching the page. */
+ * tests/jsprobe.mk). They answer for WHICHEVER Document `this` is (see
+ * rootOf), and refuse a receiver that is not a Document the way a browser
+ * does: TypeError: Illegal invocation.
+ *
+ * getElementsByTagNameNS is deliberately NOT replaced: Document.prototype
+ * already carries a C version that dispatches on `this` correctly
+ * (dom_iface.inc el_getElementsByTagNameNS); the own copy that used to shadow
+ * it on `document` is simply removed. */
 "var DP = Object.getPrototypeOf(doc);\n"
 "if (!DP || DP === Object.prototype) DP = doc;\n"
+#ifdef SELECT_NEGCTL_DOC_OWN
+"DP = doc;\n"   /* the control: back to own properties of `document` */
+#endif
 "function thisDoc(o) {\n"
-"  if (o !== doc) throw new TypeError('Illegal invocation');\n"
-"  return doc;\n"
+"  if (!isDoc(o)) throw new TypeError('Illegal invocation');\n"
+"  return o;\n"
 "}\n"
 "own(DP, 'querySelectorAll', function querySelectorAll(s) { return qsa(thisDoc(this), s); });\n"
 "own(DP, 'querySelector', function querySelector(s) { return qs1(thisDoc(this), s); });\n"
 "own(DP, 'getElementsByTagName', function getElementsByTagName(n) { return byTag(thisDoc(this), n); });\n"
-"own(DP, 'getElementsByTagNameNS', function getElementsByTagNameNS(ns, n) { return byTagNS(thisDoc(this), ns, n); });\n"
 "own(DP, 'getElementsByClassName', function getElementsByClassName(n) { return byClass(thisDoc(this), n); });\n"
+"if (DP === doc) own(doc, 'getElementsByTagNameNS', function (ns, n) { return byTagNS(doc, ns, n); });\n"
 "if (DP !== doc) ['querySelectorAll', 'querySelector', 'getElementsByTagName', 'getElementsByTagNameNS',\n"
 "  'getElementsByClassName'].forEach(function (k) { try { delete doc[k]; } catch (e) {} });\n"
 "def(doc, 'getElementsByName', function (n) {\n"

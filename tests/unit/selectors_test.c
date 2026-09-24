@@ -378,6 +378,59 @@ static void group_case_quirks(void)
     in_case_group = 0;
 }
 
+/* Group 4: WHICH OBJECT the ParentNode queries live on, and which receivers
+ * they answer for. Cloudflare's challenge does
+ * `new Proxy(Document.prototype.querySelectorAll, handler)`; with the methods
+ * installed as own properties of `document` that target was undefined and the
+ * Proxy constructor threw "not an object". DOMPurify calls
+ * getElementsByTagName.call(<a DOMParser document>, 'body'), and
+ * createHTMLDocument documents share Document.prototype -- so the methods must
+ * answer for WHICHEVER document `this` is, and refuse only a non-document. */
+static void group_document_receivers(void)
+{
+    printf("== group 4: Document.prototype receivers ==\n");
+    ckjs("Object.prototype.hasOwnProperty.call(Document.prototype, 'querySelectorAll') &&"
+         "Object.prototype.hasOwnProperty.call(Document.prototype, 'querySelector') &&"
+         "Object.prototype.hasOwnProperty.call(Document.prototype, 'getElementsByTagName') &&"
+         "Object.prototype.hasOwnProperty.call(Document.prototype, 'getElementsByClassName')",
+         "the ParentNode queries live on Document.prototype");
+    ckjs("['querySelectorAll','querySelector','getElementsByTagName','getElementsByTagNameNS',"
+         "'getElementsByClassName'].every(function (k) {"
+         "  return !Object.prototype.hasOwnProperty.call(document, k); })",
+         "...and are not own properties of document");
+    ckjs("typeof new Proxy(Document.prototype.querySelectorAll, {}) === 'function'",
+         "new Proxy(Document.prototype.querySelectorAll, {}) -- the challenge's shape -- works");
+    ckjs("document.querySelectorAll('p').length === 3 && document.querySelector('#p2').id === 'p2' &&"
+         "document.getElementsByTagName('LI').length === 3 && document.getElementsByClassName('sel').length === 1",
+         "the page document still answers");
+    ckjs("document.querySelector(':root') === document.documentElement &&"
+         "document.querySelectorAll('html').length === 1",
+         "the page root is still a candidate and :root");
+    ckjs("(function () { var d = document.implementation.createHTMLDocument('x');"
+         "  var p = d.createElement('p'); p.className = 'z'; d.body.appendChild(p);"
+         "  d.body.appendChild(d.createElement('p'));"
+         "  return d.querySelectorAll('p').length === 2 && d.querySelector('.z') === p &&"
+         "    d.getElementsByTagName('p').length === 2 && d.getElementsByClassName('z').length === 1 &&"
+         "    d.querySelector(':root') === d.documentElement && d.querySelectorAll('html').length === 1 &&"
+         "    document.querySelectorAll('p').length === 3; })()",
+         "a createHTMLDocument document is searched in ITS tree, not the page's");
+    ckjs("(function () { var d = document.implementation.createHTMLDocument('x');"
+         "  d.body.appendChild(d.createElement('p'));"
+         "  return d.getElementsByTagNameNS('http://www.w3.org/1999/xhtml', 'p').length === 1; })()",
+         "getElementsByTagNameNS keeps its this-aware C implementation");
+    ckjs("(function () { try { Document.prototype.querySelectorAll.call({}, 'p'); return false; }"
+         "  catch (e) { return e instanceof TypeError && /Illegal invocation/.test(e.message); } })()",
+         "a non-document receiver is refused: TypeError Illegal invocation");
+    ckjs("(function () { try { Document.prototype.getElementsByTagName.call(Document.prototype, 'p'); return false; }"
+         "  catch (e) { return e instanceof TypeError; } })()",
+         "Document.prototype itself is not a document");
+    ckjs("typeof DOMParser !== 'function' || (function () {"
+         "  var pd = new DOMParser().parseFromString('<p>a</p><p>b</p>', 'text/html');"
+         "  return Document.prototype.getElementsByTagName.call(pd, 'p').length === 2 &&"
+         "    Document.prototype.getElementsByTagName.call(pd, 'body').length === 1; })()",
+         "DOMPurify's getElementsByTagName.call(<DOMParser document>) answers for that document");
+}
+
 int main(void)
 {
     struct node *root = dom_parse(HTML, (int)strlen(HTML));
@@ -392,6 +445,7 @@ int main(void)
 
     group_case_standards();
     group_grammar();
+    group_document_receivers();
 
     js_page_close();
     dom_free(root);

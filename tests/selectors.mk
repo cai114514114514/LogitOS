@@ -77,7 +77,7 @@ $(BUILD)/selectors_test: $(SELECTORS_SRC) $(HTML_PARSER_SRC) $(BUILD)/libcss_hos
 # what makes that assumption true. The control sat stranded in
 # tests/audit-stranded.baseline from the day it landed -- excluded from
 # CI and invoked by nobody, which reads exactly like a covered control.
-test-selectors: test-selectors-negctl $(BUILD)/selectors_test
+test-selectors: test-selectors-negctl test-selectors-docproto-negctl $(BUILD)/selectors_test
 	@$(BUILD)/selectors_test
 
 test-selectors-negctl: $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
@@ -94,3 +94,21 @@ test-selectors-negctl: $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
 	    grep '^FAIL' $(BUILD)/selectors_negctl.log | head -6; \
 	    tail -2 $(BUILD)/selectors_negctl.log; \
 	 fi
+
+# Group 4's control: -DSELECT_NEGCTL_DOC_OWN puts the ParentNode queries back
+# on `document` as own properties -- the shape Cloudflare's challenge tripped
+# on (`new Proxy(Document.prototype.querySelectorAll, ...)` threw "not an
+# object"). The placement checks and the Proxy check must fail; the checks
+# about what the page document ANSWERS must not.
+.PHONY: test-selectors-docproto-negctl
+test-selectors-docproto-negctl: $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
+	@mkdir -p $(BUILD)
+	@$(CC) -O2 -w $(SELECTORS_CF) -DSELECT_NEGCTL_DOC_OWN \
+	    -o $(BUILD)/selectors_docproto_negctl $(SELECTORS_SRC) $(HTML_PARSER_SRC) $(QJS_SRC) \
+	    $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
+	@$(BUILD)/selectors_docproto_negctl > $(BUILD)/selectors_docproto_negctl.log 2>&1 || true
+	@if grep -q '^FAIL the ParentNode queries live on Document.prototype' $(BUILD)/selectors_docproto_negctl.log && \
+	    grep -q '^FAIL new Proxy(Document.prototype.querySelectorAll' $(BUILD)/selectors_docproto_negctl.log && \
+	    ! grep -q '^FAIL the page document still answers' $(BUILD)/selectors_docproto_negctl.log; then \
+	    echo "test-selectors-docproto-negctl: ok -- own-on-document fails the placement and Proxy checks, nothing else"; \
+	else cat $(BUILD)/selectors_docproto_negctl.log | grep -E '^(FAIL|==)'; echo "test-selectors-docproto-negctl: CONTROL BROKEN"; exit 1; fi
