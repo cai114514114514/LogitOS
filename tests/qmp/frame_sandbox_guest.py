@@ -2,7 +2,7 @@
 """HTML iframe sandboxing on the device: four sandboxed network frames.
 
 Two local origins (two ports on the host, 10.0.2.2 from the guest). The
-parent embeds four frames from the child origin:
+parent embeds four frames (the loader's PF_MAX) from the child origin:
 
   1  sandbox="allow-scripts allow-same-origin"   script runs; message round
      trip with the child's real origin; document.cookie, localStorage and a
@@ -11,14 +11,18 @@ parent embeds four frames from the child origin:
      OPAQUE: parent sees event.origin "null"; a message addressed to the
      child URL's origin is never delivered, "*" is; localStorage,
      sessionStorage and document.cookie throw SecurityError; its fetches go
-     out with `Origin: null` (read off the host server's own request log)
-     and the same host's non-CORS resource is refused.
+     out with `Origin: null` and NO `Referer` (both read off the host
+     server's own request log; frame 1's same-origin fetch shows the log
+     does see a Referer) and the same host's non-CORS resource is refused.
   3  sandbox=""                                  the document paints, but no
-     script in it runs: no console line, no message, /c3.js never requested.
-  4  sandbox="allow-scripts"                     alert/confirm/prompt/print
-     show nothing (their text never reaches the console, this browser's only
-     dialog surface), confirm false, prompt null, open() null, /popup never
-     requested.
+     script in it runs: no console line, no message, /c3.js never requested;
+     the parent's <iframe> still gets its `load` event.
+  4  NO sandbox attribute: the RESPONSE carries
+     `Content-Security-Policy: sandbox allow-scripts`, and the directive
+     alone must do what the attribute does: alert/confirm/prompt/print show
+     nothing (their text never reaches the console, this browser's only
+     dialog surface), the blocks are reported, /popup is never requested,
+     and the document is opaque (localStorage throws, self.origin "null").
 
 Every assertion is classified. POSITIVE ones must hold in both builds.
 RESTRICTION ones must hold in the product and must FAIL in the control build
@@ -57,10 +61,11 @@ def pages(parent_origin, child_origin):
 <iframe id=f1 sandbox="allow-scripts allow-same-origin" src="%(C)s/case1"></iframe>
 <iframe id=f2 sandbox="allow-scripts" src="%(C)s/case2"></iframe>
 <iframe id=f3 sandbox="" src="%(C)s/case3"></iframe>
-<iframe id=f4 sandbox="allow-scripts" src="%(C)s/case4"></iframe>
+<iframe id=f4 src="%(C)s/case4"></iframe>
 <script>
 var CHILD=%(Cj)s;
 var w=[1,2,3,4].map(function(i){return document.getElementById('f'+i).contentWindow});
+document.getElementById('f3').addEventListener('load',function(){console.log('SBX-P3-LOAD')});
 var f2=document.getElementById('f2'),doc2,throws2='none';
 try{doc2=f2.contentDocument===null?'null':'object'}catch(e){doc2='threw-'+e.name}
 try{f2.contentWindow.document}catch(e){throws2=e.name}
@@ -110,6 +115,8 @@ addEventListener('message',function(e){
                       "r.push('prompt='+t(function(){return prompt('SBX-C4-PROMPT-TEXT','d')}));"
                       "r.push('print='+t(function(){return print('SBX-C4-PRINT-TEXT')}));"
                       "r.push('open='+t(function(){return open('/popup?case=4')}));"
+                      "r.push('ls='+t(function(){return typeof localStorage.getItem}));"
+                      "r.push('origin='+t(function(){return self.origin}));"
                       "s.textContent='SBX-C4-DONE';console.log('SBX-C4-RESULT '+r.join(','));"),
         '/data.txt': ('text/plain', 'child-data'),
         '/cors.txt': ('text/plain', 'cors-data'),
@@ -141,7 +148,8 @@ def main():
             path, _, query = self.path.partition('?')
             with lock:
                 requests.append({'port': self.server.server_port, 'path': path, 'query': query,
-                                 'origin': self.headers.get('Origin'), 'cookie': self.headers.get('Cookie')})
+                                 'origin': self.headers.get('Origin'), 'cookie': self.headers.get('Cookie'),
+                                 'referer': self.headers.get('Referer')})
             table = pages('http://10.0.2.2:%d' % parent_server.server_port,
                           'http://10.0.2.2:%d' % child_server.server_port)
             if path not in table or (path == '/parent') != (self.server is parent_server):
@@ -155,6 +163,9 @@ def main():
             self.send_header('Cache-Control', 'no-store')
             if path == '/cors.txt':
                 self.send_header('Access-Control-Allow-Origin', '*')
+            if path == '/case4':
+                # The only sandbox frame 4 has: an enforced response header.
+                self.send_header('Content-Security-Policy', 'sandbox allow-scripts')
             self.end_headers()
             self.wfile.write(body)
 
@@ -257,6 +268,15 @@ def main():
                    for r in req('/data.txt', 2) + req('/cors.txt', 2)]
         check('restriction', 'f2 requests carry Origin: null (server log)', len(origins) == 2 and all(o == 'null' for o in origins),
               json.dumps(origins))
+        # Referrer Policy: an opaque-origin document's requests have no
+        # referrer. Frame 1's same-origin fetch is the instrument's control:
+        # the log does record a Referer when one is sent.
+        r1 = [r['referer'] for r in req('/data.txt', 1)]
+        check('positive', 'f1 same-origin fetch carries its document URL as Referer (server log)',
+              r1 == [C + '/case1'], json.dumps(r1))
+        r2 = [r['referer'] for r in req('/data.txt', 2) + req('/cors.txt', 2)]
+        check('restriction', 'f2 requests carry no Referer (server log)', len(r2) == 2 and all(v is None for v in r2),
+              json.dumps(r2))
         reply = line(r'SBX-C2-REPLY origin=[^\r\n]*')
         check('positive', 'f2 receives the parent\'s "*" message with the parent origin and source',
               reply == 'SBX-C2-REPLY origin=%s source=true' % P, reply)
@@ -269,15 +289,26 @@ def main():
         check('restriction', 'f3 inline script never runs', 'SBX-C3-SCRIPT-RAN' not in text and 'SBX-C3-SCRIPT-DID-RUN' not in text)
         check('restriction', 'f3 external script is never requested', not [r for r in reqs if r['path'] == '/c3.js'])
         check('restriction', 'f3 never messages the parent', not re.search(r'SBX-P3 ', text))
-        # ---- frame 4: allow-scripts, no allow-modals/allow-popups ----
+        # HTML's iframe load steps do not depend on the child running script.
+        check('positive', 'f3 still fires load on its iframe element', 'SBX-P3-LOAD' in text)
+        # ---- frame 4: header-only CSP sandbox allow-scripts ----
         r4 = line(r'SBX-C4-RESULT [^\r\n]*')
         check('positive', 'f4 script runs', r4.startswith('SBX-C4-RESULT '), r4)
         check('restriction', 'f4 dialog text never reaches the console',
               not any(s in text for s in ('SBX-C4-ALERT-TEXT', 'SBX-C4-CONFIRM-TEXT', 'SBX-C4-PROMPT-TEXT', 'SBX-C4-PRINT-TEXT')))
         check('restriction', 'f4 blocked dialogs are reported to the developer console',
               "Ignored call to 'alert()'" in text and "Ignored call to 'print()'" in text)
-        check('restriction', 'f4 alert/print return undefined, confirm false, prompt null, open null',
-              r4 == 'SBX-C4-RESULT alert=undefined,confirm=false,prompt=null,print=undefined,open=null', r4)
+        # Return values are NOT sandbox evidence: this browser shows no dialog
+        # anywhere, so alert/print return undefined, confirm false and prompt
+        # null in every document; and an unsandboxed network frame has no
+        # window.open at all (ReferenceError), so "open() is not a window"
+        # holds in both builds. The two console reports are the evidence.
+        check('nondiscriminating', 'f4 alert/print return undefined, confirm false, prompt null',
+              r4.startswith('SBX-C4-RESULT alert=undefined,confirm=false,prompt=null,print=undefined,'), r4)
+        check('nondiscriminating', 'f4 open() never yields a window (null sandboxed; absent in any network frame)',
+              ',open=null,' in r4 or ',open=ReferenceError,' in r4, r4)
+        check('restriction', 'f4 header-only CSP sandbox makes the document opaque: localStorage throws, self.origin "null"',
+              r4.endswith(',ls=SecurityError,origin=null'), r4)
         check('restriction', 'f4 blocked popup is reported to the developer console', 'Blocked opening a new window' in text)
         check('nondiscriminating', 'f4 no popup is ever requested', not [r for r in reqs if r['path'] == '/popup'])
         # ---- the parent document itself ----

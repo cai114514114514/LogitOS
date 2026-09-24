@@ -10,15 +10,17 @@
 #                              table (unknown/duplicate tokens, ASCII-only case
 #                              folding, the CSP directive's first-wins/union).
 #   test-frame-sandbox-host    host: the real browser (app_main, frame loader,
-#                              child runtimes) over mocked HTTP, three modes.
+#                              child runtimes, srcdoc and Worker doors) over
+#                              mocked HTTP: seven modes, attribute AND CSP.
 #   test-frame-sandbox-guest   QEMU: a real two-origin page with four sandboxed
-#                              network frames, observed off the serial log and
+#                              network frames (one sandboxed by its response
+#                              header alone), observed off the serial log and
 #                              the host server's own request log.
 #
 # Each has a control that was watched failing for the reason it names. The
 # about:blank/srcdoc half (platform.c) is gated by test-frame-bootstrap-wiring,
-# whose fixture now asserts the flag semantics and whose two controls
-# reproduce the two historical bypass shapes.
+# whose fixture asserts the flag semantics and whose three controls reproduce
+# the two historical bypass shapes and the opaque-origin adoption.
 
 FRAME_SANDBOX_DIR := $(BUILD)/frame-sandbox
 FRAME_SANDBOX_TEST_SRC := tests/unit/frame_sandbox_test.c
@@ -50,38 +52,85 @@ ci-host: test-frame-sandbox-parse
 # ---- test-frame-sandbox-host: the real browser, not a fake -----------------
 # tests/unit/passive_frame_test.c runs the production app_main, network frame
 # loader, child page/WebAPI/platform runtimes and message bridge over a mocked
-# HTTP transport. Three modes belong to this gate:
+# HTTP transport. The modes that belong to this gate:
 #   sandbox          sandbox=""; the child has <script>s and NO CSP, so only
 #                    the scripts flag can keep /never.js unfetched and the
-#                    inline script unrun (the document still paints).
+#                    inline script unrun (the document still paints), and the
+#                    parent's <iframe> still gets its one `load`.
 #   active-sandbox   allow-scripts allow-same-origin: the unsandboxed frame's
-#                    whole click/message round trip, plus modals/popups flags.
+#                    whole click/message round trip, plus modals/popups flags;
+#                    its fetch keeps its Referer (the recorder's own control).
 #   active-opaque    allow-scripts: "null" message origins both ways, a
 #                    non-"*" targetOrigin never delivered, SecurityError for
-#                    localStorage/sessionStorage/document.cookie, no Worker.
-# Both active modes also judge the console, this browser's only dialog
+#                    localStorage/sessionStorage/document.cookie, no Worker,
+#                    and a fetch with `Origin: null` and NO Referer.
+# The same flags through the CSP doors, no sandbox attribute anywhere:
+#   csp-sandbox               child header `Content-Security-Policy: sandbox`
+#   active-csp-opaque         child header `... sandbox allow-scripts`
+#   active-parent-csp-opaque  TOP-LEVEL header `... sandbox allow-scripts`,
+#                             inherited by the network frame AND by a srcdoc
+#                             frame (platform.c's door)
+#   active-worker-csp         a network Worker whose response header sandboxes
+#                             it (CSP3: scripts/origin flag -> Blocked)
+# Every active mode also judges the console, this browser's only dialog
 # surface: no alert/confirm/prompt text may reach it.
 #
+# The harness is the realm fixture (ports + frame.c + domparser.c, so the
+# srcdoc door is real) plus js/workers/worker.c (so the Worker door is real).
 # This fragment is read BEFORE passive_frame.mk (it sits after jsprobe.mk), so
 # no prerequisite here may name a variable that fragment defines: those expand
-# empty at parse time. The shipping harness binary itself is the prerequisite
-# that carries the whole source list; recipes expand the variables late.
-FRAME_SANDBOX_HARNESS := $(BUILD)/passive-frame/current
-FRAME_SANDBOX_HOST_MODES := sandbox active-sandbox active-opaque
-$(FRAME_SANDBOX_DIR)/ignore-flags: $(FRAME_SANDBOX_HARNESS) c/apps/gui/browser/frame/sandbox.h tests/frame_sandbox.mk
-	@mkdir -p $(FRAME_SANDBOX_DIR)
-	@$(CC) $(RUNTIME_SCROLL_CF) $(IMG_HOST_INC) -DSANDBOX_NEGCTL_IGNORE_FLAGS -o $@ $(PASSIVE_FRAME_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
+# empty at parse time. The realm binary is the prerequisite that carries that
+# source list; recipes expand the variables late.
+FRAME_SANDBOX_HARNESS := $(FRAME_SANDBOX_DIR)/harness
+FRAME_SANDBOX_HOST_SRC = $(FRAME_REALM_SRC) c/apps/gui/browser/js/workers/worker.c
+FRAME_SANDBOX_HOST_DEP := $(BUILD)/passive-frame/realm c/apps/gui/browser/js/workers/worker.c \
+  c/apps/gui/browser/frame/sandbox.h c/apps/gui/browser/frame/passive.h tests/frame_sandbox.mk
+FRAME_SANDBOX_BUILD = @mkdir -p $(FRAME_SANDBOX_DIR); $(CC) $(RUNTIME_SCROLL_CF) $(IMG_HOST_INC) $(1) -o $@ \
+  $(FRAME_SANDBOX_HOST_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
+FRAME_SANDBOX_HOST_MODES := sandbox active-sandbox active-opaque \
+  csp-sandbox active-csp-opaque active-parent-csp-opaque active-worker-csp
+$(FRAME_SANDBOX_DIR)/harness: $(FRAME_SANDBOX_HOST_DEP)
+	$(call FRAME_SANDBOX_BUILD,)
+$(FRAME_SANDBOX_DIR)/ignore-flags: $(FRAME_SANDBOX_HOST_DEP)
+	$(call FRAME_SANDBOX_BUILD,-DSANDBOX_NEGCTL_IGNORE_FLAGS)
+$(FRAME_SANDBOX_DIR)/ignore-csp: $(FRAME_SANDBOX_HOST_DEP)
+	$(call FRAME_SANDBOX_BUILD,-DSANDBOX_NEGCTL_IGNORE_CSP)
+$(FRAME_SANDBOX_DIR)/no-pageless-load: $(FRAME_SANDBOX_HOST_DEP)
+	$(call FRAME_SANDBOX_BUILD,-DPF_TEST_NO_PAGELESS_LOAD)
+$(FRAME_SANDBOX_DIR)/opaque-referrer: $(FRAME_SANDBOX_HOST_DEP)
+	$(call FRAME_SANDBOX_BUILD,-DWEBAPI_NEGCTL_OPAQUE_REFERRER)
+$(FRAME_SANDBOX_DIR)/san: $(FRAME_SANDBOX_HOST_DEP)
+	$(call FRAME_SANDBOX_BUILD,-O1 -g -fsanitize=address$(FRAME_SANDBOX_COMMA)undefined -fno-omit-frame-pointer)
 
-# The control ignores every flag (the old "present and ignored" shape the
-# refusal once guarded against). Each restriction assertion must FAIL, by
-# name, and each positive assertion must still pass -- a control that failed
-# everything would show only that the harness broke.
+# One control runner: `$(call FRAME_SANDBOX_NEG,binary,mode,fails,passes)`.
+# The binary must exit 1 on the mode, name every listed restriction check as
+# FAIL and every listed positive one as ok -- a control that failed
+# everything would show only that the harness broke. An empty fail list means
+# the mode must PASS under the control (the half it does not remove).
+define FRAME_SANDBOX_NEG
+	@log=$(FRAME_SANDBOX_DIR)/$(notdir $(1))-$(2).log; rc=0; $(1) $(2) > $$log 2>&1 || rc=$$?; \
+	 fails="$(3)"; passes="$(4)"; \
+	 if [ -z "$$fails" ]; then \
+	   if [ $$rc -ne 0 ]; then grep '^FAIL' $$log; echo "NEGATIVE CONTROL FAILED: $(notdir $(1)) $(2) must still pass, exited $$rc"; exit 1; fi; \
+	   echo "negative control ok: $(notdir $(1)) leaves $(2) passing"; exit 0; fi; \
+	 if [ $$rc -ne 1 ]; then tail -30 $$log; echo "NEGATIVE CONTROL FAILED: $(notdir $(1)) $(2) exited $$rc"; exit 1; fi; \
+	 eval "set -- $$fails"; for want; do grep -qF "FAIL: $$want" $$log || \
+	   { grep '^FAIL' $$log; echo "NEGATIVE CONTROL FAILED: $(notdir $(1)) $(2) did not fail: $$want"; exit 1; }; done; \
+	 eval "set -- $$passes"; for want; do grep -qF "ok: $$want" $$log || \
+	   { echo "NEGATIVE CONTROL FAILED: $(notdir $(1)) $(2) lost a positive check: $$want"; exit 1; }; done; \
+	 echo "negative control ok: $(notdir $(1)) $(2) fails its restriction checks, keeps its positive ones"
+endef
+FRAME_SANDBOX_COMMA := ,
+
+# ignore-flags: every flag ignored (the old "present and ignored" shape the
+# refusal once guarded against), on the three ATTRIBUTE modes.
 FRAME_SANDBOX_NEG_FAILS_sandbox := \
   'policy-blocked scripts and nested documents never fetch' \
   'native preview notice appears only for documents whose scripts were refused'
 FRAME_SANDBOX_NEG_PASSES_sandbox := \
   'actual child document text reaches embedded paint' \
-  'child DOM and scripts do not enter the parent realm'
+  'child DOM and scripts do not enter the parent realm' \
+  'the parent iframe element gets exactly one load event' 
 FRAME_SANDBOX_NEG_FAILS_active-sandbox := \
   'allow-same-origin frame keeps its origin, storage and cookies; modals and popups stay sandboxed' \
   'no simple dialog message reaches the console without allow-modals' \
@@ -89,31 +138,58 @@ FRAME_SANDBOX_NEG_FAILS_active-sandbox := \
   'the blocked popup is reported to the developer console'
 FRAME_SANDBOX_NEG_PASSES_active-sandbox := \
   'native child click and bidirectional message repaint embedded pixels' \
-  'parent receives exact child origin and stable source identity'
+  'parent receives exact child origin and stable source identity' \
+  'a same-origin sandboxed document fetch keeps its Referer' 
 FRAME_SANDBOX_NEG_FAILS_active-opaque := \
   'native child click and bidirectional message repaint embedded pixels' \
   'opaque-origin frame: storage/cookie SecurityError, null origin, no dialogs, popup null, no Worker' \
   'parent receives exact child origin and stable source identity' \
-  'no simple dialog message reaches the console without allow-modals'
+  'no simple dialog message reaches the console without allow-modals' \
+  'an opaque-origin document fetch carries Origin: null and no Referer' 
 FRAME_SANDBOX_NEG_PASSES_active-opaque := \
   'external classic child script loaded once per document runtime' \
   'frame WindowProxy identity survives child load'
+# ignore-csp: ONLY the response-header CSP sandbox doors answer "no directive"
+# (passive.c csp_sandbox). The CSP modes fail as their attribute twins do;
+# the attribute mode must still pass, so the control removes the CSP half only.
+FRAME_SANDBOX_NEG_FAILS_csp-sandbox := $(FRAME_SANDBOX_NEG_FAILS_sandbox)
+FRAME_SANDBOX_NEG_PASSES_csp-sandbox := $(FRAME_SANDBOX_NEG_PASSES_sandbox)
+FRAME_SANDBOX_NEG_FAILS_active-csp-opaque := $(FRAME_SANDBOX_NEG_FAILS_active-opaque)
+FRAME_SANDBOX_NEG_PASSES_active-csp-opaque := $(FRAME_SANDBOX_NEG_PASSES_active-opaque)
+FRAME_SANDBOX_NEG_FAILS_active-parent-csp-opaque := $(FRAME_SANDBOX_NEG_FAILS_active-opaque) \
+  'a srcdoc frame inherits the top-level CSP sandbox exactly as the network frame does'
+FRAME_SANDBOX_NEG_PASSES_active-parent-csp-opaque := $(FRAME_SANDBOX_NEG_PASSES_active-opaque)
+FRAME_SANDBOX_NEG_FAILS_active-worker-csp := 'a network Worker whose response CSP sandboxes it never runs'
+FRAME_SANDBOX_NEG_PASSES_active-worker-csp := \
+  'native child click and bidirectional message repaint embedded pixels' \
+  'parent receives exact child origin and stable source identity'
+
+# A check name with commas cannot be a literal $(call) argument.
+FRAME_SANDBOX_REFERRER_KEEPS := 'opaque-origin frame: storage/cookie SecurityError, null origin, no dialogs, popup null, no Worker'
+
 .PHONY: test-frame-sandbox-host test-frame-sandbox-host-negctl
-test-frame-sandbox-host-negctl: $(FRAME_SANDBOX_DIR)/ignore-flags
-	@for mode in $(FRAME_SANDBOX_HOST_MODES); do \
-	  rc=0; $(FRAME_SANDBOX_DIR)/ignore-flags $$mode > $(FRAME_SANDBOX_DIR)/ignore-$$mode.log 2>&1 || rc=$$?; \
-	  if [ $$rc -ne 1 ]; then tail -30 $(FRAME_SANDBOX_DIR)/ignore-$$mode.log; echo "NEGATIVE CONTROL FAILED: $$mode exited $$rc"; exit 1; fi; \
-	  case $$mode in \
-	    sandbox) fails="$(FRAME_SANDBOX_NEG_FAILS_sandbox)"; passes="$(FRAME_SANDBOX_NEG_PASSES_sandbox)";; \
-	    active-sandbox) fails="$(FRAME_SANDBOX_NEG_FAILS_active-sandbox)"; passes="$(FRAME_SANDBOX_NEG_PASSES_active-sandbox)";; \
-	    active-opaque) fails="$(FRAME_SANDBOX_NEG_FAILS_active-opaque)"; passes="$(FRAME_SANDBOX_NEG_PASSES_active-opaque)";; \
-	  esac; \
-	  eval "set -- $$fails"; for want; do grep -qF "FAIL: $$want" $(FRAME_SANDBOX_DIR)/ignore-$$mode.log || \
-	    { echo "NEGATIVE CONTROL FAILED: $$mode did not fail: $$want"; exit 1; }; done; \
-	  eval "set -- $$passes"; for want; do grep -qF "ok: $$want" $(FRAME_SANDBOX_DIR)/ignore-$$mode.log || \
-	    { echo "NEGATIVE CONTROL FAILED: $$mode lost a positive check: $$want"; exit 1; }; done; \
-	  echo "negative control ok: $$mode with flags ignored fails its restriction checks, keeps its positive ones"; \
-	done
+test-frame-sandbox-host-negctl: $(FRAME_SANDBOX_DIR)/ignore-flags $(FRAME_SANDBOX_DIR)/ignore-csp \
+    $(FRAME_SANDBOX_DIR)/no-pageless-load $(FRAME_SANDBOX_DIR)/opaque-referrer
+	$(call FRAME_SANDBOX_NEG,$(FRAME_SANDBOX_DIR)/ignore-flags,sandbox,$(FRAME_SANDBOX_NEG_FAILS_sandbox),$(FRAME_SANDBOX_NEG_PASSES_sandbox))
+	$(call FRAME_SANDBOX_NEG,$(FRAME_SANDBOX_DIR)/ignore-flags,active-sandbox,$(FRAME_SANDBOX_NEG_FAILS_active-sandbox),$(FRAME_SANDBOX_NEG_PASSES_active-sandbox))
+	$(call FRAME_SANDBOX_NEG,$(FRAME_SANDBOX_DIR)/ignore-flags,active-opaque,$(FRAME_SANDBOX_NEG_FAILS_active-opaque),$(FRAME_SANDBOX_NEG_PASSES_active-opaque))
+	$(call FRAME_SANDBOX_NEG,$(FRAME_SANDBOX_DIR)/ignore-csp,csp-sandbox,$(FRAME_SANDBOX_NEG_FAILS_csp-sandbox),$(FRAME_SANDBOX_NEG_PASSES_csp-sandbox))
+	$(call FRAME_SANDBOX_NEG,$(FRAME_SANDBOX_DIR)/ignore-csp,active-csp-opaque,$(FRAME_SANDBOX_NEG_FAILS_active-csp-opaque),$(FRAME_SANDBOX_NEG_PASSES_active-csp-opaque))
+	$(call FRAME_SANDBOX_NEG,$(FRAME_SANDBOX_DIR)/ignore-csp,active-parent-csp-opaque,$(FRAME_SANDBOX_NEG_FAILS_active-parent-csp-opaque),$(FRAME_SANDBOX_NEG_PASSES_active-parent-csp-opaque))
+	$(call FRAME_SANDBOX_NEG,$(FRAME_SANDBOX_DIR)/ignore-csp,active-worker-csp,$(FRAME_SANDBOX_NEG_FAILS_active-worker-csp),$(FRAME_SANDBOX_NEG_PASSES_active-worker-csp))
+	$(call FRAME_SANDBOX_NEG,$(FRAME_SANDBOX_DIR)/ignore-csp,active-opaque,,)
+# no-pageless-load: a runtime-less frame's parent <iframe> gets no `load`
+# (the old shape). Exactly that check fails, nothing else; a frame WITH a
+# runtime is unaffected (its load comes from the runtime pump).
+	$(call FRAME_SANDBOX_NEG,$(FRAME_SANDBOX_DIR)/no-pageless-load,sandbox,'the parent iframe element gets exactly one load event','actual child document text reaches embedded paint')
+	@test "$$(grep -c '^FAIL' $(FRAME_SANDBOX_DIR)/no-pageless-load-sandbox.log)" = 1 || { echo "NEGATIVE CONTROL FAILED: no-pageless-load sandbox failed more than the load check"; exit 1; }
+	$(call FRAME_SANDBOX_NEG,$(FRAME_SANDBOX_DIR)/no-pageless-load,csp-sandbox,'the parent iframe element gets exactly one load event','actual child document text reaches embedded paint')
+	@test "$$(grep -c '^FAIL' $(FRAME_SANDBOX_DIR)/no-pageless-load-csp-sandbox.log)" = 1 || { echo "NEGATIVE CONTROL FAILED: no-pageless-load csp-sandbox failed more than the load check"; exit 1; }
+	$(call FRAME_SANDBOX_NEG,$(FRAME_SANDBOX_DIR)/no-pageless-load,paint,,)
+# opaque-referrer: an opaque-origin document's fetch names its URL again.
+	$(call FRAME_SANDBOX_NEG,$(FRAME_SANDBOX_DIR)/opaque-referrer,active-opaque,'an opaque-origin document fetch carries Origin: null and no Referer',$(FRAME_SANDBOX_REFERRER_KEEPS))
+	@test "$$(grep -c '^FAIL' $(FRAME_SANDBOX_DIR)/opaque-referrer-active-opaque.log)" = 1 || { echo "NEGATIVE CONTROL FAILED: opaque-referrer failed more than the Referer check"; exit 1; }
+	$(call FRAME_SANDBOX_NEG,$(FRAME_SANDBOX_DIR)/opaque-referrer,active-sandbox,,)
 test-frame-sandbox-host: test-frame-sandbox-host-negctl $(FRAME_SANDBOX_HARNESS)
 	@for mode in $(FRAME_SANDBOX_HOST_MODES); do \
 	  rc=0; $(FRAME_SANDBOX_HARNESS) $$mode > $(FRAME_SANDBOX_DIR)/$$mode.log 2>&1 || rc=$$?; \
@@ -160,8 +236,8 @@ ci-boot: test-frame-sandbox-guest
 # opaque-origin getters, the skipped runtime of a scripts-sandboxed frame and
 # the sandbox prelude all run inside teardown-heavy child documents.
 .PHONY: test-frame-sandbox-host-san
-test-frame-sandbox-host-san: test-frame-sandbox-host $(BUILD)/passive-frame/san
+test-frame-sandbox-host-san: test-frame-sandbox-host $(FRAME_SANDBOX_DIR)/san
 	@for mode in $(FRAME_SANDBOX_HOST_MODES); do \
-	  ASAN_OPTIONS=detect_leaks=0 UBSAN_OPTIONS=halt_on_error=1 $(BUILD)/passive-frame/san $$mode > $(FRAME_SANDBOX_DIR)/san-$$mode.log 2>&1 || \
+	  ASAN_OPTIONS=detect_leaks=0 UBSAN_OPTIONS=halt_on_error=1 $(FRAME_SANDBOX_DIR)/san $$mode > $(FRAME_SANDBOX_DIR)/san-$$mode.log 2>&1 || \
 	    { tail -60 $(FRAME_SANDBOX_DIR)/san-$$mode.log; exit 1; }; tail -1 $(FRAME_SANDBOX_DIR)/san-$$mode.log; done
 ci-host: test-frame-sandbox-host-san

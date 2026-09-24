@@ -33,3 +33,18 @@ test-frame-sandbox-url-negctl: $(BUILD)/wiring-next/frame_sandbox_url_negctl
 	 test $$rc -eq 1 && grep -F 'FAIL: sandboxed blank frames refuse access through all source forms' $(BUILD)/wiring-next/frame_sandbox_url_negctl.log && \
 	 test "$$(grep -c '^\[frame\] FRAME-SANDBOX-BYPASS-RAN' $(BUILD)/wiring-next/frame_sandbox_url_negctl.log)" -eq 1
 test-frame-bootstrap-wiring: test-frame-sandbox-url-negctl
+
+# The old adoption: an opaque-origin (sandbox="allow-scripts") srcdoc document
+# was made a script host in a JSContext on its EMBEDDER's runtime. Exactly the
+# no-adoption check fails and exactly one opaque probe line runs; the embedder
+# secrets stay unreached only because today's adopted realm holds nothing of
+# the parent's -- the check that would catch a merge that gives it more.
+$(BUILD)/wiring-next/frame_sandbox_opaque_negctl: $(FRAME_BOOTSTRAP_DEP)
+	@mkdir -p $(BUILD)/wiring-next
+	@$(CC) $(RUNTIME_SCROLL_CF) -DFRAME_SANDBOX_OPAQUE_ADOPT -o $@ $(FRAME_BOOTSTRAP_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
+.PHONY: test-frame-sandbox-opaque-negctl
+test-frame-sandbox-opaque-negctl: $(BUILD)/wiring-next/frame_sandbox_opaque_negctl
+	@$(BUILD)/wiring-next/frame_sandbox_opaque_negctl tests/fixtures/engine-expansion/frame-bootstrap.html > $(BUILD)/wiring-next/frame_sandbox_opaque_negctl.log 2>&1; rc=$$?; \
+	 test $$rc -eq 1 && grep -F "FAIL: an opaque-origin srcdoc runs no script in its embedder's runtime" $(BUILD)/wiring-next/frame_sandbox_opaque_negctl.log && \
+	 test "$$(grep -c '^\[frame\] FRAME-SANDBOX-OPAQUE-RAN' $(BUILD)/wiring-next/frame_sandbox_opaque_negctl.log)" -eq 1
+test-frame-bootstrap-wiring: test-frame-sandbox-opaque-negctl

@@ -194,3 +194,18 @@ a677bc639b80cf2945b90903b69acd407f2df47e7b7c0d4aa14449ee7931dae6  browser.aex
 诊断：`-DJS_PROBE_TRACE` 构建中每个子文档以 `frame:` 前缀安装 probe；`js_probe_reset` 只按对象所属上下文释放引用（`test-jsprobe-owner-negctl` 复现旧的"只有第一个安装者释放、且用它的上下文释放全部"）。探针构建曾因 `passive.o` 的 `UCFLAGS :=` 早于 `tests/jsprobe.mk` 展开而漏掉该标志，已在 jsprobe.mk 修正。
 
 真实站点只做观察（probe 构建，`make probe-site`，未点击、未注入、未触碰令牌）：chatgpt.com 返回 403 挑战页，本次在 `fqStart` 抛 `TypeError: ArrayBuffer object expected`（fetch 请求体类型，另一条线的问题），在创建 widget iframe 之前就停下；`Blocked access to a sandboxed frame` 出现 0 次，但本次根本没走到 iframe，不能当作与此前 16 次的同条件对比。nowsecure.nl 返回 200，`window.turnstile` 未定义，也没有创建 iframe。**挑战没有通过**；sandbox 路径目前只由上面的本机两来源门禁证明。
+
+### 第五阶段审查更正（2026-09-25）
+
+上一节有四处被审查推翻或补足，原文保留，更正如下：
+
+- **opaque origin 的 about:blank/srcdoc 不再作为脚本宿主。** 上一节"about:blank/srcdoc 不作为脚本宿主"只对缺 `allow-scripts` 的情况成立；`sandbox="allow-scripts"`（无 `allow-same-origin`）的 srcdoc 仍被 `__frameAdopt` 收养进**父页面运行时**上的 JSContext。`js/dom/frame.c` 的前提是只收养同源或无来源文档：同一运行时上值可以跨上下文自由流动，那个 realm 将来拿到的任何东西（parent、top、document、creator 的 fetch/storage）都是父页面的。审查把本线与给收养 realm 加 parent 的并行线合并后实测：opaque srcdoc 读到了父页面全局变量、cookie 和 localStorage，而父页面看到的 `contentDocument` 是 null。现在 `settle()` 对 opaque 文档不收养，控制台说明原因；本引擎没有给 about:blank/srcdoc 的独立运行时（网络 frame 有）。门禁：`test-frame-bootstrap-wiring` 断言 opaque srcdoc 不执行、原因被记录、父页面的 secret 不出现在任何 `[frame]` 行；负对照 `FRAME_SANDBOX_OPAQUE_ADOPT`（旧收养）恰好执行一次探针。
+- **响应头 CSP sandbox 有门禁了。** 以前唯一执行它的一行删掉后所有门禁仍然是绿的。现在三扇 CSP 门（顶层文档的、frame 文档自己的、网络 Worker 的）经 `csp_sandbox()` 一个宏，宿主门禁新增 `csp-sandbox`、`active-csp-opaque`、`active-parent-csp-opaque`、`active-worker-csp` 四种没有 sandbox 属性的模式；负对照 `SANDBOX_NEGCTL_IGNORE_CSP` 只去掉 CSP 这一半，四种模式按名失败，属性模式 `active-opaque` 仍通过。客机 frame 4 改为只靠响应头 `Content-Security-Policy: sandbox allow-scripts`。顶层 CSP sandbox 现在也由 srcdoc frame 继承（`passive_frames_parent_sandbox()` 并入 `__ownSandbox`），与网络 frame 一致。
+- **opaque origin 不发 Referer。** Referrer Policy "determine request's referrer"：文档 origin 为 opaque 时没有 referrer。以前请求带 `Origin: null` 却同时在 Referer 里给出完整 URL。宿主门禁读子 frame fetch 的请求字节（负对照 `WEBAPI_NEGCTL_OPAQUE_REFERRER`），客机读服务器日志（frame 1 的同源 fetch 证明日志能看到 Referer）。
+- **没有脚本的 sandbox 网络 frame 也会给父页面的 `<iframe>` 发 `load`。** 以前只在运行时泵里派发，没有运行时的 frame 永远不发，等 onload 的父页面会挂住。负对照 `PF_TEST_NO_PAGELESS_LOAD` 恰好失败这一项。
+
+同时修的小项：sandbox 文档的 site for cookies 按 RFC 6265bis 用其 URL 的 origin 计算（fetch 与原生加载器一致）；opaque frame 的 WindowProxy 替身把 `closed`/`length`/`frames`/`opener`/`close`/`focus`/`blur` 作为自有成员回答，`location` 可跨源赋值；iframe 记录从作者可预定义的 `__frame` expando 移到闭包内 WeakMap（无原型对象）；多条 CSP 策略取并集写明为对 HTML 原文（取最后一条）的有意偏离；客机 f4 的对话框返回值检查改为"不可区分"（这些返回值在沙箱内外相同）；表单 sandbox 分支在 frame 中实际上什么都没绑定（frame 不安装表单模块），已在注释中写明。
+
+门禁复测（本次）：`test-frame-sandbox-host` 七种模式全部通过，四个负对照（ignore-flags、ignore-csp、no-pageless-load、opaque-referrer）按名失败且正向断言保持通过；`test-frame-sandbox-guest` 产品构建 14 条限制断言全部成立，忽略 flag 的对照构建 14 条全部失败，正向断言两边都成立。
+
+仍未做：`noscript` 在禁用脚本的文档中仍被隐藏（解析器固定 scripting=1）；`iframe.sandbox.supports()` 仍抛 TypeError；sandbox 文档内 `open(url,'_self')` 返回 null 而非导航自身；顶层文档自身的 CSP sandbox 仍不执行。

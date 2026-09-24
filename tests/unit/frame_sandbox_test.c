@@ -91,7 +91,9 @@ int main(void)
     ck(sandbox_parse("allow-\xe2\x80\x8bscripts"), ALL, "a zero-width space is not whitespace");
 
     /* CSP3 sandbox directive: enforced header policies only (the caller's job),
-     * first occurrence per policy, union across policies. */
+     * first occurrence per policy, union across policies -- the union is this
+     * engine's documented deviation from HTML's last-policy-wins text (see
+     * sandbox.h), not the standard's answer. */
     ck(sandbox_from_csp(NULL), 0, "no policy: no sandbox");
     ck(sandbox_from_csp("default-src 'self'; script-src 'none'"), 0, "no sandbox directive: no flags");
     ck(sandbox_from_csp("sandbox"), ALL, "bare sandbox directive: every restriction");
@@ -100,7 +102,7 @@ int main(void)
     ck(sandbox_from_csp("sandboxed allow-scripts"), 0, "a longer directive name is not sandbox");
     ck(sandbox_from_csp("sandbox allow-scripts; sandbox"), ALL & ~SCRIPTS, "duplicate directive: the first one wins");
     ck(sandbox_from_csp("sandbox allow-scripts\nsandbox allow-same-origin"), ALL,
-       "two policies: the union of restrictions (the intersection of allowances)");
+       "two policies: the union of restrictions (a deliberate deviation: HTML keeps the last policy's)");
     ck(sandbox_from_csp("sandbox allow-scripts allow-same-origin, script-src 'self'"), ALL & ~(SCRIPTS | SANDBOX_ORIGIN),
        "comma-separated serialized policies");
     ck(sandbox_from_csp("script-src 'self'\n  sandbox allow-forms ; img-src *"), ALL & ~SANDBOX_FORMS,

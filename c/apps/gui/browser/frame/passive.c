@@ -22,7 +22,12 @@
  * flag -> opaque origin (Origin: null fetches, SecurityError cookie/storage,
  * "null" message origins, no Worker); modals/popups/forms -> page.c. What is
  * still refused is only what has no implementation: srcdoc, csp= and
- * credentialless on a network frame, and Trusted Types. */
+ * credentialless on a network frame, and Trusted Types.
+ * Review fixes, same day: a script-less (sandboxed) frame still fires `load`
+ * on its parent <iframe> (frame_pageless_load); an opaque document's
+ * site-for-cookies is computed from its URL (RFC 6265bis), so its fetch and
+ * the native loader agree; the three CSP doors are one macro, csp_sandbox(),
+ * with a control that removes exactly them (test-frame-sandbox-host). */
 #include "frame/passive.h"
 #include "layout/block.h"
 #include "css/style.h"
@@ -198,8 +203,23 @@ static void fail_frame(struct pframe *f,const char *reason)
 {drop_content(f);f->state=PF_FAILED;f->generation=next_generation++;printf("[iframe] passive refused: %s\n",reason);}
 void passive_frames_reset(void)
 {for(int i=0;i<PF_MAX;i++){if(frames[i].state)drop_content(&frames[i]);memset(&frames[i],0,sizeof frames[i]);frames[i].id=-1;}frame_windows_reset();parent_root=0;parent_known=0;parent_sandbox=0;parent_url[0]=parent_base[0]=parent_csp[0]=0;parent_mutation=(unsigned long long)-1;}
+/* SANDBOX_NEGCTL_IGNORE_CSP (host/guest control only): the three doors
+ * through which a RESPONSE-HEADER CSP sandbox directive becomes flags -- the
+ * top-level document's (inherited by its frames), a frame document's own, and
+ * a network Worker's -- all answer "no directive". The attribute still works,
+ * so a gate that fails under this build fails for the CSP half alone. */
+#ifdef SANDBOX_NEGCTL_IGNORE_CSP
+#define csp_sandbox(p) ((void)(p),0u)
+#else
+#define csp_sandbox(p) sandbox_from_csp(p)
+#endif
 void passive_frames_set_parent(const char *url,const char *csp,int known)
-{parent_known=known&&url&&strlen(url)<sizeof parent_url&&(!csp||strlen(csp)<sizeof parent_csp);parent_url[0]=parent_base[0]=parent_csp[0]=0;parent_sandbox=0;if(parent_known){strcpy(parent_url,url);strcpy(parent_base,url);if(csp){strcpy(parent_csp,csp);parent_sandbox=sandbox_from_csp(csp);}}parent_mutation=(unsigned long long)-1;}
+{parent_known=known&&url&&strlen(url)<sizeof parent_url&&(!csp||strlen(csp)<sizeof parent_csp);parent_url[0]=parent_base[0]=parent_csp[0]=0;parent_sandbox=0;if(parent_known){strcpy(parent_url,url);strcpy(parent_base,url);if(csp){strcpy(parent_csp,csp);parent_sandbox=csp_sandbox(csp);}}parent_mutation=(unsigned long long)-1;}
+/* The same top-level flags, for the OTHER iframe door: platform.c's
+ * about:blank/srcdoc loader unions them into the embedding document's own
+ * flags (__ownSandbox), so a top-level CSP sandbox reaches a srcdoc frame
+ * exactly as it reaches a network frame (one jar, two doors). */
+unsigned passive_frames_parent_sandbox(void){return parent_known?parent_sandbox:0;}
 int passive_frame_content_box(const struct node *n,int w,int h,int *x,int *y,int *cw,int *ch)
 {
     const struct cstyle *s=n?n->style:0;if(!s)return 0;
@@ -434,7 +454,7 @@ static int frame_worker_entry(void *owner,char *url,int cap,unsigned char **byte
      * sandbox directive is CSP3 6.3.2.2: a WorkerGlobalScope whose parsed
      * flags include the scripts or the origin flag is Blocked. */
     if(ok&&ci_has(r->csp,"require-trusted-types-for"))ok=0;
-    if(ok&&(sandbox_from_csp(r->csp)&(SANDBOX_SCRIPTS|SANDBOX_ORIGIN)))ok=0;
+    if(ok&&(csp_sandbox(r->csp)&(SANDBOX_SCRIPTS|SANDBOX_ORIGIN))){ok=0;printf("[iframe] network Worker response refused: its CSP sandbox directive sets the scripts or origin flag\n");}
     if(!ok){free(r);bfetch_release(id);printf("[iframe] network Worker response refused: policy/mime/status/budget\n");return -1;}
     len=bfetch_take(id,bytes);if(len<0){free(r);return -1;}
     strcpy(url,final);strcpy(r->url,final);r->frame=f;f->bytes+=len;*length=len;
@@ -464,9 +484,17 @@ static int frame_runtime_open(struct pframe *f)
     int opaque=(f->sandbox&SANDBOX_ORIGIN)!=0;
     if(!frame_window_bind(f))return 0;
     struct url child,ancestor;const char *site=0;
-    /* An opaque origin is same-site with nothing: its site-for-cookies stays
-     * NULL (opaque), so no SameSite cookie can ride its requests. */
-    if(!opaque&&!url_parse(f->url,&child)&&!url_parse(parent_url,&ancestor)){
+    /* ~~An opaque origin is same-site with nothing: its site-for-cookies stays
+     * NULL (opaque), so no SameSite cookie can ride its requests.~~
+     * Correction 2026-09-25: RFC 6265bis 5.2.1 computes a sandboxed
+     * document's site for cookies from the origin of its URI ("if item's
+     * sandboxed origin browsing context flag is set"), and the native loader's
+     * requests for this same document (bfetch_start_embedded) already did.
+     * The two request doors of one document now agree. What the opaque
+     * origin still changes is the INITIATOR: every fetch is cross-origin
+     * (Origin: null), so credentials:'same-origin' sends no cookie at all, and
+     * document.cookie throws. */
+    if(!url_parse(f->url,&child)&&!url_parse(parent_url,&ancestor)){
         struct cookie_ctx dst={child.host,child.path,child.https,1};
         struct cookie_request req={ancestor.host,ancestor.https,0,1,0};
         if(cookie_request_kind(&dst,&req)==CK_REQ_SAME_SITE)site=parent_url;
@@ -605,6 +633,24 @@ static int frame_runtime_pump(struct pframe *f)
     }
     return changed;
 }
+/* A document with NO runtime -- sandboxed without allow-scripts, or refused
+ * one for Trusted Types -- still completes loading, and HTML's iframe load
+ * event steps do not ask whether the child can run script: the parent's
+ * <iframe> gets its `load` once the document is ready. It used to be
+ * dispatched only from frame_runtime_pump(), which such a document never
+ * reaches, so a parent awaiting onload on a script-less sandboxed preview
+ * frame waited forever. No child event fires (there is nobody to hear it).
+ * Dispatched in the caller's (the parent's) context, as the pump's is. */
+static int frame_pageless_load(struct pframe *f)
+{
+    f->loaded=2;
+#ifdef PF_TEST_NO_PAGELESS_LOAD
+    return 0; /* Host control: the old shape, no parent load for these frames. */
+#endif
+    struct node *n=f->host;if(!n||n->serial!=f->serial||!parent_root)return 0;
+    while(n&&n!=parent_root)n=n->parent;if(n!=parent_root)return 0;
+    struct js_event_init ev={0};js_dom_dispatch(f->host,"load",&ev);return 1;
+}
 void passive_frames_blur(void){focused_frame=0;}
 #ifdef JS_RUNTIME_DIAGNOSTICS
 static unsigned frame_input_lines;
@@ -698,7 +744,7 @@ static int advance_frame(struct pframe *f)
          * prepare_document merges <meta> policies next, whose sandbox
          * directive CSP3 ignores. The union must precede the runtime. */
 #ifndef SANDBOX_NEGCTL_IGNORE_FLAGS
-        f->sandbox|=sandbox_from_csp(f->csp);
+        f->sandbox|=csp_sandbox(f->csp);
 #endif
         if(!prepare_document(f)){fail_frame(f,"document, response policy, or budget");return 1;}
         f->state=PF_STYLES;
@@ -795,6 +841,7 @@ int passive_frames_update(struct node *root,unsigned long long mutation)
         int w,h;if(host_size(f->host,&w,&h)&&(w!=f->width||h!=f->height)){f->width=w;f->height=h;f->dirty=1;changed=1;}
         changed|=advance_frame(f);
         if(f->page&&f->state>=PF_PIXELS&&f->state<=PF_READY)changed|=frame_runtime_pump(f);
+        else if(!f->page&&f->state==PF_READY&&!f->loaded)changed|=frame_pageless_load(f);
         frame_focus_commit_parent(f);
     }}
     return changed;

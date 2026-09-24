@@ -21,6 +21,7 @@ void loader_poll_hook(void){
    CHECK(read_int("sandboxRefused")==4,"sandboxed blank frames refuse access through all source forms");
    CHECK(read_int("sameOriginReadable")==1,"allow-same-origin keeps a sandboxed frame's document and fresh realm readable");
    CHECK(read_int("opaqueDenied")==1,"an allow-scripts-only frame is opaque to its embedder: null document, SecurityError window");
+   CHECK(read_int("opaqueAllowlist")==1,"an opaque frame's cross-origin allowlist answers without throwing, and location is settable");
    post(EV_CLOSE);return;
  }
  if(++steps>1800){CHECK(0,"frame bootstrap fixture completed within bounded polls");closing=1;post(EV_CLOSE);}
@@ -48,7 +49,19 @@ int main(int argc,char **argv){
   for(char *p=output;(p=strstr(p,m1));p+=strlen(m1))allowed++;
   for(char *p=output;(p=strstr(p,m2));p+=strlen(m2))opaque++;
   CHECK(allowed==1,"allow-scripts allow-same-origin runs its own script exactly once");
-  CHECK(opaque==1,"allow-scripts alone runs its own script exactly once in its opaque realm");}
+  /* An opaque-origin about:blank/srcdoc document is never adopted into a
+   * realm on its embedder's runtime (platform.c settle()): its script stays
+   * off, and the console names why. Its control, FRAME_SANDBOX_OPAQUE_ADOPT,
+   * is the old adoption. */
+  printf("frame bootstrap opaque srcdoc executions=%d expected=0\n",opaque);
+  CHECK(opaque==0,"an opaque-origin srcdoc runs no script in its embedder's runtime");
+  CHECK(strstr(output,"will not run: it is sandboxed without allow-same-origin, so its origin is opaque")!=0,
+        "the refused opaque-origin srcdoc script is reported by name");}
+ /* No embedder secret ever reaches a line the frame wrote. */
+ {int leaked=0;for(char *p=output;(p=strstr(p,"[frame] "));p+=8){char *e=strchr(p,'\n');size_t n=e?(size_t)(e-p):strlen(p);
+   char line[1024];if(n>=sizeof line)n=sizeof line-1;memcpy(line,p,n);line[n]=0;
+   if(strstr(line,"PSECRET-7f3")||strstr(line,"LSSECRET-7f3")||strstr(line,"CKSECRET-7f3"))leaked++;}
+  CHECK(leaked==0,"no embedder global, cookie or storage value reaches an opaque-origin frame");}
  CHECK(seen&&host_exited&&host_exit_code==0,"real frame browser loop completes and closes normally");
  free(output);free(page);printf("frame-bootstrap-wiring: %s\n",fail?"FAIL":"PASS");return fail?1:0;
 }

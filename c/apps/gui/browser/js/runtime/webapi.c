@@ -330,6 +330,10 @@ struct fetch_realm {
     JSContext *ctx;
     struct wurl base, origin, site;
     int base_valid, origin_valid, site_valid, stopped;
+    /* Referrer Policy, "determine request's referrer": a request whose
+     * client is a Window whose document's ORIGIN IS OPAQUE has no referrer.
+     * The base URL still resolves requests; it is just never disclosed. */
+    int no_referrer;
     unsigned identity;
     int (*connect_policy)(void *, const char *);
     void *connect_policy_opaque;
@@ -2014,7 +2018,11 @@ static JSValue js_fetch_start(JSContext *ctx, JSValueConst t, int argc, JSValueC
         f->initiator = owner->origin;
         f->initiator_valid = owner->origin_valid;
         f->referrer = owner->base;
-        f->referrer_valid = owner->base_valid;
+#ifdef WEBAPI_NEGCTL_OPAQUE_REFERRER
+        f->referrer_valid = owner->base_valid;   /* host control: the old leak */
+#else
+        f->referrer_valid = owner->base_valid && !owner->no_referrer;
+#endif
         f->cookie_site=owner->site;f->cookie_site_valid=owner->site_valid;
         f->resolve = f->reject = JS_UNDEFINED;
         f->push = f->fin = f->fail = JS_UNDEFINED;
@@ -3861,6 +3869,10 @@ void js_webapi_install(JSContext *ctx, const char *url)
      * requires the server's CORS opt-in even for the document's own host. */
     g_page_fetch=fetch_realm_new(ctx,url,g_opaque_origin ? NULL : url,g_embedded_site ? g_site_url : url);
     if(!g_page_fetch){g_webapi_ctx=NULL;return;}
+    /* ...and a document whose origin is opaque sends no Referer: its fetch
+     * goes out with `Origin: null`, and naming its URL in the next header
+     * would disclose exactly what the sandbox withholds. */
+    g_page_fetch->no_referrer=g_opaque_origin;
     hist_reset(0, g_loc_raw);
     g_popstate_state = JS_NULL;
     g_popstate_queued = g_hashchange_queued = 0;

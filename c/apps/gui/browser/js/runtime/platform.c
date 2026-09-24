@@ -230,6 +230,16 @@ LOGIT_WEAK_STUB(passive_frame_window);
  * without page.c answers 0: an unsandboxed document. */
 extern unsigned js_page_sandbox_flags(void) LOGIT_WEAK;
 LOGIT_WEAK_STUB(js_page_sandbox_flags);
+/* The top-level document's response-header CSP sandbox flags, which the
+ * network frame loader (frame/passive.c) already makes every frame inherit.
+ * The top-level page context itself carries no flags (page.c refuses them on
+ * the default context: they are not enforced on the top-level document yet),
+ * so without this union a srcdoc frame and a network frame of the SAME page
+ * disagreed about what they inherit. An embedded document's own flags are
+ * already a superset of these (it inherited them), so the union is a no-op
+ * there. A build without passive.c answers 0. */
+extern unsigned passive_frames_parent_sandbox(void) LOGIT_WEAK;
+LOGIT_WEAK_STUB(passive_frames_parent_sandbox);
 /* __sandboxParse(value): the ONE sandboxing-directive parser (frame/sandbox.h)
  * that the network frame loader also uses, so the two iframe doors cannot
  * disagree about a token. */
@@ -3259,8 +3269,8 @@ static const char *PLATFORM_PRELUDE =
 "  try { IFP = Object.getPrototypeOf(D.createElement('iframe')); } catch (e) {}\n"
 "  if (!IFP || Object.prototype.hasOwnProperty.call(IFP, 'contentWindow')) return;\n"
 "  var nativeFrameGlobal = G.__frameGlobal;\n"
-   /* One record per element, an own non-enumerable expando -- lives exactly as
-      long as the element does. ~~It needs no C-side lifetime hook.~~ That old
+   /* One record per element -- lives exactly as long as the element does.
+      ~~It needs no C-side lifetime hook.~~ That old
       claim was refuted by WPT creating and removing more than eight sequential
       iframes: the record itself keeps `doc` reachable, so DOMParser's finalizer
       cannot free js_frame.c's JSContext and its fixed 8-slot table fills. The
@@ -3270,15 +3280,30 @@ static const char *PLATFORM_PRELUDE =
       it does anything async, and every continuation checks its own captured
       gen against the current one before touching anything -- a src changed or
       an element removed mid-fetch is a stale continuation that settles into
-      a no-op, not a race. */
+      a no-op, not a race.
+      CORRECTION 2026-09-25: the record used to be an own `__frame` expando on
+      the element. It carries the frame's sandbox flags, its opaque bit and its
+      document, so it must not be author-reachable: page script could
+      predefine `__frame` with a `sandbox` getter pinned to 0 (a sandbox=""
+      srcdoc then ran its script), flip `opaque` to hand out an opaque frame's
+      document, or read `doc` and adopt it. The record now lives in a WeakMap
+      closed over here, is prototype-less (an Object.prototype accessor named
+      `opaque` cannot answer for it), and is reached through intrinsics
+      captured before any author byte runs. */
+"  var RECS = typeof WeakMap === 'function' ? new WeakMap() : null;\n"
+"  var recGet = RECS && WeakMap.prototype.get, recSet = RECS && WeakMap.prototype.set;\n"
+"  var recApply = Reflect.apply, recCreate = Object.create;\n"
+"  var peekRec = function (el) {\n"
+"    if (!RECS || !el || typeof el !== 'object') return null;\n"
+"    return recApply(recGet, RECS, [el]) || null;\n"
+"  };\n"
 "  var rec = function (el) {\n"
-"    if (!Object.prototype.hasOwnProperty.call(el, '__frame')) {\n"
-"      try {\n"
-"        Object.defineProperty(el, '__frame', { value: { doc: null, win: null, blocked: null, gen: 0 },\n"
-"                                                enumerable: false, configurable: false, writable: false });\n"
-"      } catch (e) { return null; }\n"
-"    }\n"
-"    return el.__frame;\n"
+"    var r = peekRec(el);\n"
+"    if (r || !RECS || !el || typeof el !== 'object') return r;\n"
+"    r = recCreate(null);\n"
+"    r.doc = null; r.win = null; r.blocked = null; r.gen = 0; r.sandbox = 0; r.opaque = false;\n"
+"    try { recApply(recSet, RECS, [el, r]); } catch (e) { return null; }\n"
+"    return r;\n"
 "  };\n"
    /* Connectedness by walking parentNode to the Document, not
       Node.prototype.contains/isConnected -- neither is guaranteed present,
@@ -3369,14 +3394,36 @@ static const char *PLATFORM_PRELUDE =
 "    r.doc = doc; r.blocked = blocked || null;\n"
 "    r.opaque = !!(doc && !blocked && ((r.sandbox >>> 0) & SB_ORIGIN));\n"
 "    var scripted = !((r.sandbox >>> 0) & SB_SCRIPTS);\n"
+       /* An OPAQUE-origin document (sandboxed without allow-same-origin) is
+          never a script host here, even with allow-scripts. __frameAdopt puts
+          a document's scripts in a JSContext on the EMBEDDER's own runtime,
+          and js_frame.c's premise is that it hosts only documents that are
+          same-origin with their embedder or carry no origin of their own: on
+          one runtime, values cross contexts freely, so whatever that realm is
+          ever given (parent, top, document, frameElement, the creator's fetch
+          or storage) is the embedder's, not a cross-origin view of it. An
+          opaque document is precisely the case that must NOT reach its
+          embedder, and this engine has no independent runtime for an
+          about:blank/srcdoc document (network frames get one; frame/passive.c).
+          So its scripts stay off, and the console says why (below). Measured
+          on a merge of this line with one that gives adopted realms their
+          parent: an allow-scripts-only srcdoc read the parent's globals,
+          cookie and localStorage while its embedder's contentDocument was null. */
+#ifdef FRAME_SANDBOX_OPAQUE_ADOPT
+"    var hostable = scripted;\n"   /* negative control: the old adoption */
+#else
+"    var hostable = scripted && !r.opaque;\n"
+#endif
+
        /* ==== the frame becomes a SCRIPT HOST here, and only here ==========
           __frameAdopt (js_frame.c) gives this document a JSContext of its own
           on the page's existing runtime, so a <script> inside it runs instead
           of being data. Everything about WHICH documents may do that is
           already decided ABOVE this line and is unchanged: the cross-origin
           refusal `settle(el, r, gen, null, 'cross-origin')` arrives here with
-          doc === null AND blocked set, failing this guard twice over, and a
-          frame sandboxed without allow-scripts fails `scripted`. This call adds no origin
+          doc === null AND blocked set, failing this guard twice over, a
+          frame sandboxed without allow-scripts fails `scripted`, and an
+          opaque-origin one fails `hostable` (above). This call adds no origin
           logic of its own -- deliberately, because it MUST NOT become a
           second place where "may this run" is decided (one jar, two doors);
           js_platform.c's existing gate stays the only door.
@@ -3401,7 +3448,7 @@ static const char *PLATFORM_PRELUDE =
           (see the include) then take a JS branch that does not exist, which
           is the same "absent dependency is inert" contract the weak symbol
           gives the C half. */
-"      if (doc && !blocked && scripted && typeof G.__frameAdopt === 'function') {\n"
+"      if (doc && !blocked && hostable && typeof G.__frameAdopt === 'function') {\n"
 "        try { G.__frameAdopt(doc); } catch (eAdopt) {}\n"
 "      }\n"
        /* ONE JAR, TWO DOORS, closed: contentDocument.defaultView must be the
@@ -3448,6 +3495,10 @@ static const char *PLATFORM_PRELUDE =
 "        try { if (doc.querySelector && doc.querySelector('script'))\n"
 "          console.log(!scripted\n"
 "            ? '[iframe] a <script> inside this frame document will not run: the frame is sandboxed without allow-scripts'\n"
+"            : !hostable\n"
+"            ? '[iframe] a <script> inside this frame document will not run: it is sandboxed without allow-same-origin, ' +\n"
+"              'so its origin is opaque, and an about:blank/srcdoc document can only be hosted in a realm on its ' +\n"
+"              'embedder\\'s own runtime (js/dom/frame.c), which is no cross-origin boundary'\n"
 "            : typeof G.__frameAdopt === 'function'\n"
 "            ? '[iframe] a <script> inside this frame document runs in the frame\\'s OWN JSContext ' +\n"
 "              '(fresh intrinsics, no document/DOM of its own) -- see js_frame.c'\n"
@@ -3480,8 +3531,10 @@ static const char *PLATFORM_PRELUDE =
           treated here the same as no src: about:blank. */
 "    if (!u) { settle(el, r, gen, parseDoc(''), null); return; }\n"
 /* about:blank inherits the embedding origin; URL.origin is "null", which
- * must not feed the ordinary cross-origin network check below. Sandbox was
- * already refused above this branch. Other about: URLs remain refused. */
+ * must not feed the ordinary cross-origin network check below. ~~Sandbox was
+ * already refused above this branch.~~ (Stale since 2026-09-25: the frame's
+ * flags were snapshotted above, and settle() applies them.) Other about: URLs
+ * remain refused. */
 "    if (u.protocol === 'about:' && u.pathname === 'blank') { settle(el, r, gen, parseDoc(''), null); return; }\n"
 /* Network frames now have a separate native document owner. Do not ALSO fetch
  * their bytes through parent fetch/CORS, expose a DOMParser copy, execute child
@@ -3587,6 +3640,19 @@ static const char *PLATFORM_PRELUDE =
 "        } });\n"
 "    } catch (e) {}\n"
 "    win.parent = G; win.top = G; win.self = win; win.frameElement = el;\n"
+       /* The rest of HTML's CrossOriginProperties, as the stand-in's OWN
+          members, so they answer for an opaque-origin frame too instead of
+          falling through to realm() and its SecurityError (they used to).
+          closed: its browsing context is gone once the element leaves the
+          document. length: this loader never navigates a frame document's
+          nested <iframe>s, so it has no child navigables. opener: a frame is
+          never an auxiliary browsing context. close() on a non-auxiliary
+          navigable does nothing; focus()/blur() are not implemented for these
+          frames and do nothing rather than throw. `frames` is the proxy
+          itself (set below, beside window/self). */
+"    try { Object.defineProperty(win, 'closed', { enumerable: true, configurable: true, get: function () { return !connected(el); } }); } catch (e) {}\n"
+"    win.length = 0; win.opener = null;\n"
+"    win.close = function () {}; win.focus = function () {}; win.blur = function () {};\n"
 "    win.DOMException = G.DOMException; win.Node = G.Node; win.Element = G.Element; win.Document = G.Document;\n"
        /* Still a terminating no-op, but the REASON changed and the old one is
           now false, so it is restated rather than left to rot: it used to be
@@ -3637,7 +3703,9 @@ static const char *PLATFORM_PRELUDE =
 "        return g ? Reflect.get(g, key, g) : undefined;\n"
 "      },\n"
 "      set: function (target, key, value, receiver) {\n"
-"        if (r.opaque) throw opaqueErr();\n"
+         /* HTML: `location` is cross-origin SETTABLE (a navigation of that
+            frame); every other cross-origin set throws. */
+"        if (r.opaque) { if (key === 'location') return Reflect.set(target, key, value, receiver); throw opaqueErr(); }\n"
 "        if (Object.prototype.hasOwnProperty.call(target, key)) return Reflect.set(target, key, value, receiver);\n"
 "        var g = realm && realm();\n"
 "        return g ? Reflect.set(g, key, value, g) : false;\n"
@@ -3657,7 +3725,7 @@ static const char *PLATFORM_PRELUDE =
 "        return r.opaque ? keys.filter(function (k) { return typeof k === 'string' && XO[k] === 1; }) : keys;\n"
 "      }\n"
 "    });\n"
-"    win.window = win.self = proxy;\n"
+"    win.window = win.self = win.frames = proxy;\n"
 "    if (realm) win.globalThis = proxy;\n"
 "    return proxy;\n"
 "  };\n"
@@ -3791,8 +3859,8 @@ static const char *PLATFORM_PRELUDE =
 "    for (var i = 0; i < frames.length; i++) {\n"
 "      var el = frames[i], live = false;\n"
 "      try { live = connected(el); } catch (e) {}\n"
-"      if (live || !Object.prototype.hasOwnProperty.call(el, '__frame')) continue;\n"
-"      var r = el.__frame;\n"
+"      var r = live ? null : peekRec(el);\n"
+"      if (!r) continue;\n"
 "      ++r.gen;\n"
 "      releaseDoc(r);\n"
 "      r.win = null; r.blocked = null;\n"
@@ -4215,7 +4283,8 @@ void js_platform_install(JSContext *ctx)
     args[8] = LOGIT_HAVE(passive_frame_window)?JS_NewCFunction(ctx,passive_frame_window,"embeddedWindow",1):JS_UNDEFINED;
     args[9] = JS_NewBool(ctx,g_legacy_frames);
     args[10] = JS_NewCFunction(ctx, js_sandbox_parse, "sandboxParse", 1);
-    args[11] = JS_NewUint32(ctx, LOGIT_HAVE(js_page_sandbox_flags) ? js_page_sandbox_flags() : 0);
+    args[11] = JS_NewUint32(ctx, (LOGIT_HAVE(js_page_sandbox_flags) ? js_page_sandbox_flags() : 0) |
+                                 (LOGIT_HAVE(passive_frames_parent_sandbox) ? passive_frames_parent_sandbox() : 0));
     if(JS_IsException(args[6])) {
         for(int i=0;i<12;i++)JS_FreeValue(ctx,args[i]);
         JS_FreeValue(ctx,fn);return;

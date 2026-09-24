@@ -122,12 +122,20 @@ static inline unsigned sandbox_parse_n(const char *value, size_t len)
 static inline unsigned sandbox_parse(const char *value)
 { return sandbox_parse_n(value, (size_t)-1); }
 
-/* CSP3: the union over every ENFORCED policy of the flags its FIRST `sandbox`
+/* The union over every ENFORCED policy of the flags its FIRST `sandbox`
  * directive parses to (a later duplicate directive in one policy is ignored,
  * CSP3 2.2.1). `policies` is the header value list the loader joined with
  * '\n'; ',' also separates serialized policies. Directive names compare
  * ASCII case-insensitively. 0 = no sandbox directive at all. Never feed this
- * <meta> policies or Content-Security-Policy-Report-Only. */
+ * <meta> policies or Content-Security-Policy-Report-Only.
+ *
+ * A DELIBERATE DEVIATION, stated rather than dressed as the standard: HTML's
+ * "CSP-derived sandboxing flags" keeps only the LAST enforced policy that has
+ * a sandbox directive (directives[size - 1]), so a later, looser policy would
+ * lift an earlier one's restrictions. This takes the union of restrictions
+ * instead -- every policy's restrictions hold, as every other directive of a
+ * multi-policy list does (CSP3: each policy is enforced independently), and
+ * as Chromium combines them. It is only ever stricter than the text. */
 static inline unsigned sandbox_from_csp(const char *policies)
 {
     unsigned out = 0;

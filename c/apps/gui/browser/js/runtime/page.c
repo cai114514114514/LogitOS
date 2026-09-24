@@ -1236,9 +1236,17 @@ static JSValue js_prompt(JSContext *ctx, JSValueConst t, int argc, JSValueConst 
  *           when the sandboxed forms flag is set -- submit() and
  *           requestSubmit() both. (Frames have no native form owner, so
  *           this binds whatever form surface the document was given.)
+ *           CORRECTION, measured: an embedded context is created with no
+ *           extensions (js_forms_install never runs there), so in a frame
+ *           HTMLFormElement.prototype.submit does not exist and this branch
+ *           binds NOTHING -- form submission from a frame is absent whether
+ *           sandboxed or not, and no gate measures this branch. If forms is
+ *           ever installed in frames, this is not enough: the natives behind
+ *           submit (__fc_submit/__fc_reqsubmit) are globals this prelude does
+ *           not hide, so the check must move into the native submit path.
  * Nothing here keeps a reference to what it replaces, so no author code in
- * this realm can recover an unrestricted original. Top-level navigation from
- * a frame is not reachable at all (the parent WindowProxy's location
+ * this realm can recover an unrestricted window.open. Top-level navigation
+ * from a frame is not reachable at all (the parent WindowProxy's location
  * refuses: cross-runtime navigation is unimplemented), sandboxed or not. */
 static const char SANDBOX_PRELUDE[] =
 "(function (G, flags, POPUPS, FORMS) {\n"
