@@ -1,0 +1,17 @@
+grep -n red words.txt
+grep -c fox text.txt
+grep -oE '[0-9]+' words.txt
+grep -ri one tree
+sed 's/\(e\)/[\1]/g' words.txt
+sed -n '2,4p' words.txt
+sed '$!N;s/\n/ + /' words.txt
+sort -k2,2n -k1,1 words.txt
+sort -u words.txt
+sort words.txt | uniq -c
+tail -n 3 words.txt
+cut -d ' ' -f1,3 words.txt
+tr a-z A-Z < words.txt
+find tree
+find tree -name '*.txt'
+diff words.txt text.txt
+diff -u words.txt text.txt

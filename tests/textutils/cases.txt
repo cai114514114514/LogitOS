@@ -25,3 +25,202 @@ posix  du -k tree | sort
 posix  du -ak tree | sort
 posix  du -sk tree/a.txt tree/sub
 posix  du -sk no-such 2>/dev/null; echo $?
+
+# ---- grep: POSIX behaviour, host BSD grep as the reference ----
+posix  grep fox text.txt
+posix  grep -i fox text.txt
+posix  grep -v fox text.txt
+posix  grep -c fox text.txt
+posix  grep -ci fox text.txt
+posix  grep -n red words.txt
+posix  grep -l red words.txt text.txt
+posix  grep -L red words.txt text.txt
+posix  grep -q red words.txt; echo $?
+posix  grep -q nothing-here words.txt; echo $?
+posix  grep nothing-here words.txt; echo $?
+posix  grep red no-such-file 2>/dev/null; echo $?
+posix  grep -s red no-such-file words.txt; echo $?
+posix  grep -x 'fig 7 purple' words.txt
+posix  grep -w fox text.txt
+posix  grep -F 'a.b' words.txt; echo $?
+posix  grep -e apple -e fig words.txt
+posix  grep -E 'apple|fig' words.txt
+posix  grep -E '^[a-c]' words.txt
+posix  grep '^[[:upper:]]' text.txt
+posix  grep '[[:digit:]][[:digit:]]' words.txt
+posix  grep -E '[0-9]{2}' words.txt
+posix  grep 'y\{2\}' words.txt
+posix  grep -E '(an){2}' words.txt
+posix  grep 'e$' words.txt
+posix  grep '^$' text.txt | wc -l
+posix  grep -o 'r[a-z]*' words.txt
+posix  grep -oE 'a|ab|abc' words.txt
+posix  grep -E -o '[0-9]+' words.txt
+posix  grep -n -o 'e' words.txt
+posix  grep -h red words.txt text.txt
+posix  grep -H red words.txt
+posix  grep -r one tree
+posix  grep -rl a tree | sort
+posix  grep -c '' words.txt text.txt
+posix  grep 'a.*y' words.txt
+posix  grep '\.' text.txt
+posix  grep '[^a-z ]' words.txt
+posix  grep -E 'b(an)+a' words.txt
+posix  cat words.txt | grep purple
+posix  grep -f words.txt words.txt | wc -l
+
+# GNU grep extensions (BRE \| \+ \?, \< \> \b \w)
+gnu    grep 'fig\|date' words.txt
+gnu    grep 'p\+' words.txt
+gnu    grep 'colou\?r' text.txt; echo $?
+gnu    grep '\<fox\>' text.txt
+gnu    grep -o '\bl\w*' text.txt
+gnu    grep -o '\w\+' text.txt
+
+# ---- sed: POSIX behaviour, host BSD sed as the reference ----
+posix  sed 's/red/RED/' words.txt
+posix  sed 's/e/E/g' words.txt
+posix  sed 's/e/E/2' words.txt
+posix  sed -n 's/red/RED/p' words.txt
+posix  sed -n '2p' words.txt
+posix  sed -n '$p' words.txt
+posix  sed -n '2,4p' words.txt
+posix  sed '2,4d' words.txt
+posix  sed -n '/banana/,/date/p' words.txt
+posix  sed -n '/cherry/,$p' words.txt
+posix  sed '/purple/!d' words.txt
+posix  sed -n '/red/!p' words.txt
+posix  sed '3q' words.txt
+posix  sed -n '=' words.txt | tail -1
+posix  sed 's/\([a-z]*\) \([0-9]*\)/\2 \1/' words.txt
+posix  sed -E 's/([a-z]+) ([0-9]+)/\2 \1/' words.txt
+posix  sed 's/[0-9][0-9]*/<&>/' words.txt
+posix  sed 's|a|/|g' words.txt
+posix  sed 's/a\/b/x/' words.txt
+posix  sed 'y/abc/ABC/' words.txt
+posix  sed -e 's/a/A/' -e 's/b/B/' words.txt
+posix  sed '1d;$d' words.txt
+posix  sed -n '1!G;h;$p' words.txt
+posix  sed '$!N;s/\n/ + /' words.txt
+posix  sed -n 'h;n;G;p' words.txt
+posix  sed '/apple/{s/3/three/;s/red/RED/;}' words.txt
+posix  sed ':a
+s/pp/p/
+ta' words.txt
+posix  sed 's/x*/-/g' words.txt
+posix  sed 's/b*/x/g' words.txt
+posix  sed -n '/^$/=' text.txt
+posix  sed '2i\
+INSERTED' words.txt
+posix  sed '2a\
+APPENDED' words.txt
+posix  sed '2,3c\
+CHANGED' words.txt
+posix  sed 's/[[:space:]]\{1,\}/_/g' text.txt
+gnu    sed -n 'p' no-such-file 2>/dev/null; echo $?
+posix  printf 'a\nb\nc\n' | sed -n '$='
+posix  sed = words.txt | sed 'N;s/\n/ /'
+posix  sed 'n;d' words.txt
+
+# GNU sed extensions (one-line a/i/c, \n in the replacement, the I flag,
+# -i without a suffix argument, N at end of input)
+gnu    sed '2a APPENDED' words.txt
+gnu    sed '1i HEAD' words.txt
+gnu    sed 's/ /\n/' words.txt
+gnu    sed 's/APPLE/pear/I' words.txt
+gnu    sed -i 's/red/RED/' words.txt && cat words.txt
+gnu    sed -i.bak 's/red/RED/' words.txt && cat words.txt words.txt.bak
+gnu    sed 'N;s/\n/ /' words.txt
+gnu    printf 'a\nb\nc\n' | sed 'N;N;N;s/\n/,/g'
+
+# ---- sort ----
+posix  sort words.txt
+posix  sort -r words.txt
+posix  sort -u words.txt
+posix  sort -n -k2 words.txt
+posix  sort -k2,2n -k1,1 words.txt
+posix  sort -k3 words.txt
+posix  sort -t ' ' -k3,3 -k1,1r words.txt
+posix  sort -f text.txt
+posix  sort -k2.2 words.txt
+posix  printf '10\n9\n-3\n2.5\n0\n-0\n100\n' | sort -n
+posix  printf '12345678901234567890\n12345678901234567891\n9\n' | sort -n
+posix  sort -s -k3,3 words.txt
+posix  sort -o out.txt words.txt && cat out.txt
+posix  sort -c words.txt 2>/dev/null; echo $?
+posix  sort words.txt | sort -c; echo $?
+posix  sort -rn -k2 words.txt | head -3
+
+# ---- uniq (-c's width is GNU's %7d; BSD pads to 4) ----
+posix  sort words.txt | uniq
+posix  sort words.txt | uniq -d
+posix  sort words.txt | uniq -u
+posix  printf 'a\nA\nb\n' | uniq -i
+posix  printf 'x 1\ny 1\nz 2\n' | uniq -f 1
+posix  printf 'ab\nac\nbc\n' | uniq -s 1
+gnu    sort words.txt | uniq -c
+gnu    cut -d ' ' -f3 words.txt | sort | uniq -c | sort -rn
+
+# ---- tail ----
+posix  tail -3 words.txt
+posix  tail -n 2 words.txt
+posix  tail -n +6 words.txt
+posix  tail -c 10 words.txt
+posix  tail -n 1 tree/a.txt words.txt
+posix  printf 'no newline' | tail -n 1
+posix  tail words.txt
+
+# ---- cut ----
+posix  cut -d ' ' -f1 words.txt
+posix  cut -d ' ' -f1,3 words.txt
+posix  cut -d ' ' -f2- words.txt
+posix  cut -c1-3 words.txt
+posix  cut -c3,1 words.txt
+posix  cut -f2 text.txt
+posix  cut -s -f2 text.txt
+posix  cut -b -4 words.txt
+
+# ---- tr ----
+posix  tr a-z A-Z < words.txt
+posix  tr -d aeiou < words.txt
+posix  tr -s ' ' < text.txt
+posix  tr -cd '[:digit:]\n' < words.txt
+posix  tr '[:lower:]' '[:upper:]' < text.txt
+posix  tr -s 'a-z' < words.txt
+posix  tr ' ' '\n' < words.txt | head -5
+posix  echo hello | tr el ip
+posix  echo hello | tr a-y b-z
+
+# ---- find (every multi-line output sorted: directory order is not specified) ----
+posix  find tree | sort
+posix  find tree -name '*.txt' | sort
+posix  find tree -type d | sort
+posix  find tree -maxdepth 1 | sort
+posix  find tree -mindepth 2 | sort
+posix  find tree ! -name '*.txt' | sort
+posix  find tree -name a.txt -o -name one.txt | sort
+posix  find tree -empty | sort
+posix  find tree -type f -exec wc -c {} \; | sort
+posix  find tree -iname 'A.TXT'
+posix  find tree -path '*sub*' | sort
+posix  find no-such 2>/dev/null; echo $?
+
+# ---- diff: checked by applying it, never by its bytes ----
+posix  diff words.txt words.txt; echo $?
+posix  diff words.txt text.txt > /dev/null; echo $?
+posix  sort words.txt > s.txt; diff words.txt s.txt > p.diff; patch -s -o out.txt words.txt p.diff && cmp out.txt s.txt && echo applied
+posix  sort words.txt > s.txt; diff -u words.txt s.txt > p.diff; patch -s -o out.txt words.txt p.diff && cmp out.txt s.txt && echo applied
+posix  tr a-z A-Z < text.txt > u.txt; diff -u text.txt u.txt > p.diff; patch -s -o out.txt text.txt p.diff && cmp out.txt u.txt && echo applied
+posix  printf 'a\nb' > x; printf 'a\nc\n' > y; diff -u x y > p.diff; patch -s -o out x p.diff && cmp out y && echo applied
+posix  diff -q words.txt text.txt; echo $?
+posix  diff words.txt no-such 2>/dev/null; echo $?
+
+# ---- ln, kill ----
+posix  ln -s tree/a.txt L && cat L && ls -l L | cut -c1
+posix  ln tree/a.txt H && cat H && ls -l tree/a.txt | awk '{print $2}'
+posix  ln -s a.txt tree/sub/ 2>/dev/null; echo $?; ls tree/sub | sort
+posix  ln tree/a.txt tree/sub && ls tree/sub | sort
+posix  kill -0 $$; echo $?
+posix  kill 999999 2>/dev/null; echo $?
+posix  printf 'a\nb\n' > x; printf 'a\nc' > y; diff -u x y > p.diff; patch -s -o out x p.diff && cmp out y && echo applied
+posix  printf 'a\nb\n' > x; printf 'a\nc' > y; diff x y > p.diff; patch -s -o out x p.diff && cmp out y && echo applied

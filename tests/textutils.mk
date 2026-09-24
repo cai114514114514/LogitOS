@@ -12,11 +12,22 @@
 # the image depend on it. Both are the pattern tests/libc.mk uses for
 # /bin/libctest2.
 
-TEXTUTILS := chmod df du
+TEXTUTILS := chmod df du grep sed sort uniq tail cut tr find diff kill ln
 # Tools carrying a -DTEXTUTIL_NEGCTL mutation that the host cases must catch.
-TEXTUTILS_MUTATED := chmod du
+TEXTUTILS_MUTATED := chmod du grep sed sort uniq tail cut tr find diff
 TEXTUTIL_DIR := c/apps/coreutils/text
 TEXTUTIL_HDRS := $(wildcard $(TEXTUTIL_DIR)/*.h)
+
+# grep and sed share one regular-expression engine (lre.c): an object for the
+# guest, a source for the host build. Its mutation (leftmost-first instead of
+# leftmost-longest) is what the grep and sed controls plant.
+$(BUILD)/textutils/lre.o: $(TEXTUTIL_DIR)/lre.c $(TEXTUTIL_HDRS)
+	@mkdir -p $(dir $@)
+	$(COMPILE) $(UCFLAGS) -c $< -o $@
+TEXTUTIL_EXTRA_grep := $(BUILD)/textutils/lre.o
+TEXTUTIL_EXTRA_sed  := $(BUILD)/textutils/lre.o
+TEXTUTIL_HOST_EXTRA_grep := $(TEXTUTIL_DIR)/lre.c
+TEXTUTIL_HOST_EXTRA_sed  := $(TEXTUTIL_DIR)/lre.c
 
 define TEXTUTIL_RULE
 $(BUILD)/textutils/$(1).o: $(TEXTUTIL_DIR)/$(1).c $(TEXTUTIL_HDRS)
@@ -36,7 +47,7 @@ $(foreach t,$(TEXTUTILS),$(eval $(call TEXTUTIL_RULE,$(t))))
 
 # ---- the host gate: the same sources, built natively, against host tools ----
 TEXTUTILS_HOST := $(BUILD)/textutils-host
-$(TEXTUTILS_HOST)/%: $(TEXTUTIL_DIR)/%.c $(TEXTUTIL_HDRS)
+$(TEXTUTILS_HOST)/%: $(TEXTUTIL_DIR)/%.c $(TEXTUTIL_HDRS) $(TEXTUTIL_DIR)/lre.c
 	@mkdir -p $(dir $@)
 	@$(HOSTCC) -O2 -Wall -Wextra $(TEXTUTIL_HOST_CFLAGS_$*) -I$(TEXTUTIL_DIR) -o $@ $< $(TEXTUTIL_HOST_EXTRA_$*)
 HOSTCC ?= cc
@@ -47,7 +58,7 @@ HOSTCC ?= cc
 # and must fail for every tool that has a mutation -- a tool whose mutation no
 # case catches has cases that measure nothing.
 TEXTUTILS_HOST_NEG := $(BUILD)/textutils-host-negctl
-$(TEXTUTILS_HOST_NEG)/%: $(TEXTUTIL_DIR)/%.c $(TEXTUTIL_HDRS)
+$(TEXTUTILS_HOST_NEG)/%: $(TEXTUTIL_DIR)/%.c $(TEXTUTIL_HDRS) $(TEXTUTIL_DIR)/lre.c
 	@mkdir -p $(dir $@)
 	@$(HOSTCC) -O2 -w -DTEXTUTIL_NEGCTL $(TEXTUTIL_HOST_CFLAGS_$*) -I$(TEXTUTIL_DIR) -o $@ $< $(TEXTUTIL_HOST_EXTRA_$*)
 
@@ -55,7 +66,7 @@ $(TEXTUTILS_HOST_NEG)/%: $(TEXTUTIL_DIR)/%.c $(TEXTUTIL_HDRS)
 test-textutils-host-negctl: $(addprefix $(TEXTUTILS_HOST_NEG)/,$(TEXTUTILS))
 	@python3 tests/textutils/run_host.py $(TEXTUTILS_HOST_NEG) > $(BUILD)/textutils_negctl.log 2>&1; \
 	missed=""; for t in $(TEXTUTILS_MUTATED); do \
-		grep -q "^FAIL \[[a-z]*\] $$t " $(BUILD)/textutils_negctl.log || missed="$$missed $$t"; done; \
+		grep -q "^FAIL \[[a-z]*:$$t\] " $(BUILD)/textutils_negctl.log || missed="$$missed $$t"; done; \
 	if [ -n "$$missed" ]; then cat $(BUILD)/textutils_negctl.log; \
 		echo "NEGATIVE CONTROL FAILED: no case catches the planted mistake in:$$missed"; exit 1; fi; \
 	echo "negative control ok: $$(grep -c '^FAIL' $(BUILD)/textutils_negctl.log) cases catch the planted mistakes in: $(TEXTUTILS_MUTATED)"
@@ -78,3 +89,24 @@ test-statvfs-negctl: $(DISK)
 test-statvfs: test-statvfs-negctl $(ISO) $(DISK)
 	@bash tests/boot/run-statvfs-test.sh $(ISO) $(DISK)
 ci-boot: test-statvfs
+
+# ---- the tools on the machine: same commands, guest vs host build ----
+TU_FIX := tests/textutils/fixture
+FS_FILES += $(TU_FIX)/words.txt:/tu/words.txt $(TU_FIX)/text.txt:/tu/text.txt \
+            $(TU_FIX)/tree/a.txt:/tu/tree/a.txt $(TU_FIX)/tree/sub/big.txt:/tu/tree/sub/big.txt \
+            $(TU_FIX)/tree/sub/one.txt:/tu/tree/sub/one.txt $(TU_FIX)/tree/empty/.keep:/tu/tree/empty/.keep
+# The fragment itself too: FS_FILES is read at recipe time, so a new line here
+# changes the image without touching any file make compares it against.
+$(DISK): $(TU_FIX)/words.txt $(TU_FIX)/text.txt tests/textutils.mk
+# The control compares the machine against the MUTATED host build: the same
+# boot and the same comparison must then report differences.
+.PHONY: test-textutils test-textutils-negctl
+test-textutils-negctl: test-textutils-host-negctl $(ISO) $(DISK)
+	@if bash tests/boot/run-textutils-test.sh $(ISO) $(DISK) $(TEXTUTILS_HOST_NEG) \
+	      > $(BUILD)/textutils_guest_negctl.log 2>&1; then \
+		cat $(BUILD)/textutils_guest_negctl.log; \
+		echo "NEGATIVE CONTROL FAILED: the machine matched the mutated tools"; exit 1; \
+	else echo "negative control ok: $$(grep -c 'FAIL: \[' $(BUILD)/textutils_guest_negctl.log) commands differ from the mutated build"; fi
+test-textutils: test-textutils-host test-textutils-negctl $(ISO) $(DISK)
+	@bash tests/boot/run-textutils-test.sh $(ISO) $(DISK) $(TEXTUTILS_HOST)
+ci-boot: test-textutils

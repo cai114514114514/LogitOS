@@ -25,6 +25,7 @@ Output is compared with LC_ALL=C. `#` starts a comment line.
 Usage: run_host.py OURS_DIR [--only TOOL]
 """
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -39,24 +40,26 @@ def tools_in(ours):
     return sorted(n for n in os.listdir(ours) if os.access(os.path.join(ours, n), os.X_OK))
 
 
-def ref_dir(tag, names, tmp):
-    """A directory of links to the host's tools of these names, or (None, why)."""
-    d = os.path.join(tmp, "ref-" + tag)
+def ref_dir(tag, tool, names, tmp):
+    """A directory of links to the host's tools of these names, or (None, why).
+
+    For a `gnu` case only the TOOL UNDER TEST must be GNU (the g-prefixed
+    build); any other tool the snippet uses is the host's own, as in a posix
+    case."""
+    d = os.path.join(tmp, "ref-%s-%s" % (tag, tool))
     os.makedirs(d, exist_ok=True)
     for n in names:
-        cands = ["g" + n] if tag == "gnu" else [n]
+        want_gnu = tag == "gnu" and n == tool
         found = None
-        for c in cands:
-            for base in (["/opt/homebrew/bin", "/usr/local/bin"] if tag == "gnu" else []) + \
-                        ["/usr/bin", "/bin", "/usr/sbin", "/sbin"]:
-                p = os.path.join(base, c)
-                if os.access(p, os.X_OK):
-                    found = p
-                    break
-            if found:
+        bases = (["/opt/homebrew/bin", "/usr/local/bin"] if want_gnu else []) + \
+                ["/usr/bin", "/bin", "/usr/sbin", "/sbin"]
+        for base in bases:
+            p = os.path.join(base, ("g" + n) if want_gnu else n)
+            if os.access(p, os.X_OK):
+                found = p
                 break
         if not found:
-            if tag == "gnu":
+            if want_gnu:
                 return None, "g%s not found (brew install coreutils gnu-sed grep diffutils findutils)" % n
             continue
         dst = os.path.join(d, n)
@@ -78,6 +81,53 @@ def run(snippet, lead, tmp, label):
     return p.returncode, p.stdout
 
 
+def cases():
+    """(line number, tag, snippet). A snippet may span lines: it continues
+    until its quotes balance, so a sed script with embedded newlines is one
+    case (e.g. `:a` loops and POSIX `a\\` text)."""
+    lines = open(CASES, encoding="utf-8").read().split("\n")
+    i = 0
+    while i < len(lines):
+        line, ln = lines[i], i + 1
+        i += 1
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        while True:
+            try:
+                shlex.split(line)
+                break
+            except ValueError:
+                if i >= len(lines):
+                    break
+                line += "\n" + lines[i]
+                i += 1
+        tag, snippet = line.split(None, 1)
+        yield ln, tag, snippet
+
+
+def words(snippet):
+    """Command words of a snippet: the first word of each pipeline stage."""
+    out = []
+    try:
+        toks = shlex.split(snippet, posix=True)
+    except ValueError:
+        return out
+    start = True
+    for t in toks:
+        if start:
+            out.append(t)
+            start = False
+        if t in ("|", "&&", "||", ";") or t.endswith(";"):
+            start = True
+    # A stage glued to a separator ("a|b" in quotes is not one) -- catch the
+    # common "cmd | tool" spacing as well.
+    for part in snippet.replace("&&", "|").replace(";", "|").split("|"):
+        w = part.split()
+        if w:
+            out.append(w[0])
+    return out
+
+
 def main(argv):
     if len(argv) < 2:
         print(__doc__)
@@ -89,22 +139,19 @@ def main(argv):
     refs = {}
     passed = failed = skipped = 0
     try:
-        for ln, line in enumerate(open(CASES, encoding="utf-8"), 1):
-            line = line.rstrip("\n")
-            if not line.strip() or line.lstrip().startswith("#"):
-                continue
-            tag, snippet = line.split(None, 1)
-            tool = snippet.split()[0]
+        for ln, tag, snippet in cases():
+            tool = next((w for w in words(snippet) if w in names), None)
             if only and tool != only:
                 continue
-            if tool not in names:
-                print("FAIL %s:%d names %r, which is not among the tools built (%s)"
-                      % (os.path.basename(CASES), ln, tool, " ".join(names)))
+            if tool is None:
+                print("FAIL %s:%d runs none of the tools built (%s): %s"
+                      % (os.path.basename(CASES), ln, " ".join(names), snippet))
                 failed += 1
                 continue
-            if tag not in refs:
-                refs[tag] = ref_dir(tag, names, tmp)
-            rdir, why = refs[tag]
+            key = (tag, tool)
+            if key not in refs:
+                refs[key] = ref_dir(tag, tool, names, tmp)
+            rdir, why = refs[key]
             if rdir is None:
                 print("SKIP [%s] %s -- %s" % (tag, snippet, why))
                 skipped += 1
@@ -115,7 +162,7 @@ def main(argv):
                 passed += 1
             else:
                 failed += 1
-                print("FAIL [%s] %s" % (tag, snippet))
+                print("FAIL [%s:%s] %s" % (tag, tool, snippet))
                 if rc_o != rc_r:
                     print("     exit: ours %d, reference %d" % (rc_o, rc_r))
                 if out_o != out_r:
