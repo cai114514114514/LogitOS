@@ -291,7 +291,8 @@ static void ad_note_icon(int icon, int x, int y, int size, unsigned color)
  * that way), antialiasing bleed a pixel or two past the glyph's hinted edge.
  * Measuring the real extent would mean a second SYS_TEXT_MEASURE per draw
  * call, doubling the syscall count of every label in the system for a few
- * pixels of tightness. Padding vertically by a quarter of the point size
+ * pixels of tightness. Padding vertically by HALF the point size (a quarter
+ * until 2026-09-24 -- see the correction in the function body)
  * (floor 4px) and running the box to the window's own right edge -- rather
  * than trying to also learn the string's rendered WIDTH here -- is the
  * WIDEN-BEFORE-YOU-NARROW answer: always safe, costs nothing extra to
@@ -301,7 +302,14 @@ static void ad_note_text(int x, int y, int px, int mono, unsigned color, const c
 {
     unsigned h = 2166136261u; AD_MIX(h, px); AD_MIX(h, mono); AD_MIX(h, color); AD_MIX(h, len);
     if (s && len > 0) h = ad_hash_bytes(s, len, h);
-    int pad = px / 4; if (pad < 4) pad = 4;
+    /* HALF the size, not a quarter. A quarter was enough while every change
+     * in a frame was unioned into one box, because a neighbour's box usually
+     * covered what a glyph overhung. Since the damage became a SET of boxes
+     * (aui_damage.h) each text run is reported on its own, and at 22 px the
+     * descenders of a replaced string ("Spotlight Search" -> "term") left
+     * their last antialiased rows on screen, unreported. Found by looking at
+     * Spotlight, 2026-09-24. */
+    int pad = px / 2; if (pad < 4) pad = 4;
     int w = win_w - x; if (w < 1) w = 1;
     ad_record(x, y - pad, w, px + 2 * pad, h);
 }
