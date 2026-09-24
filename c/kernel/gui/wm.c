@@ -52,6 +52,10 @@ static struct desktop_preferences desktop_prefs = {LOGIT_DESKTOP_PREFS(PREF_DEFA
 #include "notify.h"     /* WM-HOOK 1/6: the notification overlay (see notify.h) */
 #include "ime_ui.h"     /* IME-HOOK 1/4: the pinyin candidate bar (see ime_ui.h) */
 #include "keyboard.h"
+#include "wm_bands.h"   /* the band splitter: see par_render */
+#include "gfx_ctx.h"    /* GFX_NCTX: how many band workers there can be */
+#include "smp.h"        /* smp_kick_others, smp_cpu_count */
+#include "spinlock.h"
 #include "net.h"
 #include "http.h"
 #include "kprintf.h"
@@ -759,9 +763,19 @@ static uint64_t anim_elapsed_at(uint64_t stamp, uint64_t now)
     uint64_t start = stamp - 1;
     return now >= start ? now - start : 0;
 }
+/* ONE INSTANT PER FRAME. While a frame is being composited, every animation
+ * reads the time the frame began, not the time it happens to be drawn: a frame
+ * is now drawn by several cores in bands (par_render), and a bouncing dock
+ * icon or a ticking clock must not be at two different moments in one
+ * picture. It is also what lets WM_PAR_VERIFY re-render a rectangle and expect
+ * the same pixels. Outside a frame (input, hit tests) it is the live clock. */
+static uint64_t g_frame_ms;            /* 0 = not inside a frame */
+static struct rtc_time g_frame_rtc;
+static uint64_t anim_now(void) { return g_frame_ms ? g_frame_ms : time_mono_ms(); }
+static void frame_rtc(struct rtc_time *t) { if (g_frame_ms) *t = g_frame_rtc; else rtc_now(t); }
 static uint64_t anim_elapsed(uint64_t stamp)
 {
-    return anim_elapsed_at(stamp, time_mono_ms());
+    return anim_elapsed_at(stamp, anim_now());
 }
 
 #define EX_GUTTER_PT    26      /* between cells, and to the screen edge */
@@ -1924,7 +1938,7 @@ static void blit_content(struct win *w, int dx, int dy, int cw, int ch)
     /* THE DEFECT, COUNTED -- here, at the blit, rather than where the fix is,
      * so the measurement is the same instrument in both builds. Every path that
      * puts an app's canvas on screen goes through this function. */
-    if (w->drawing) perf_torn++;
+    if (w->drawing) __atomic_fetch_add(&perf_torn, 1, __ATOMIC_RELAXED);
     if (w->surf.w == cw && w->surf.h == ch) fb_blit_surface(dx, dy, &w->surf);
     else fb_blit_surface_scaled(dx, dy, cw, ch, &w->surf);
 }
@@ -3435,8 +3449,8 @@ static void profiled_glass(int x, int y, int w, int h, int radius,
 {
     uint64_t t = time_mono_ns();
     fb_liquid_glass(x, y, w, h, radius, tr, tg, tb, ta);
-    frame_glass_ns += time_mono_ns() - t;
-    frame_glass_px += (uint64_t)w * (uint64_t)h;
+    __atomic_fetch_add(&frame_glass_ns, time_mono_ns() - t, __ATOMIC_RELAXED);
+    __atomic_fetch_add(&frame_glass_px, (uint64_t)w * (uint64_t)h, __ATOMIC_RELAXED);
 }
 
 static void profiled_glass_cut(int x, int y, int w, int h, int radius,
@@ -3445,8 +3459,8 @@ static void profiled_glass_cut(int x, int y, int w, int h, int radius,
 {
     uint64_t t = time_mono_ns();
     fb_liquid_glass_cut(x, y, w, h, radius, tr, tg, tb, ta, cut);
-    frame_glass_ns += time_mono_ns() - t;
-    frame_glass_px += (uint64_t)w * (uint64_t)h;
+    __atomic_fetch_add(&frame_glass_ns, time_mono_ns() - t, __ATOMIC_RELAXED);
+    __atomic_fetch_add(&frame_glass_px, (uint64_t)w * (uint64_t)h, __ATOMIC_RELAXED);
 }
 /* WM-HOOK (out): see wm.h. The IME's indicator lives in the bar and ime_ui.c
  * must be able to say "it changed" without knowing MBH. */
@@ -3815,7 +3829,7 @@ static int fmt2(char *b, int v) { b[0] = '0' + (v / 10) % 10; b[1] = '0' + v % 1
 static void draw_clock(void)
 {
     static const char *wd[7] = { "Sun","Mon","Tue","Wed","Thu","Fri","Sat" };
-    struct rtc_time t; rtc_now(&t);
+    struct rtc_time t; frame_rtc(&t);
     char b[48]; int p = 0;
     const char *w = wd[t.weekday % 7];
     if (desktop_prefs.clock_weekday) {
@@ -4862,35 +4876,21 @@ static int opaque_content_start(const struct drect *R)
  * Every layer is drawn in the same order it always was, and the rectangle is
  * re-laid from the wallpaper up: that is what makes a partial frame produce the
  * same pixels a full one would. */
-static void render_region(const struct drect *R)
+/* THE LAYERS OF A RECTANGLE: wallpaper, windows, and the chrome that sits on
+ * them (menu bar, dock, dropdown, overlay panel). Everything here reads only
+ * pixels inside R or -- for glass -- inside a panel's sample extent, which the
+ * band splitter never cuts (wm_bands.h). That is what lets several cores run
+ * this on disjoint bands of one frame at once (par_render below). The caller
+ * has set the clip to R. Not for the locked screen. */
+static void render_layers(const struct drect *R)
 {
     int rw = R->x1 - R->x0, rh = R->y1 - R->y0;
-    fb_target(NULL);
-    fb_set_clip(R->x0, R->y0, rw, rh);
-    int first = g_locked ? -1 : opaque_content_start(R);
+    int first = opaque_content_start(R);
     if (first < 0) {
         for (int y = R->y0; y < R->y1; y++)    /* wallpaper (baked in bg) */
             blit(back + (long)y * W + R->x0, bg + (long)y * W + R->x0, rw);
     } else {
-        perf_bgskip += (uint64_t)rw * (uint64_t)rh;
-    }
-    /* LOCKED: exactly ONE window is composited, it fills the screen, and it is
-     * drawn with no frame at all -- no titlebar, so no close button exists to
-     * be hit-tested, and no dock and no menu bar. There is nothing behind it
-     * to leak because nothing else has been launched: see the g_locked block
-     * comment, and note that this branch is the COSMETIC half of the lock.
-     * wm_launch()'s refusal is the half that matters. */
-    if (g_locked) {
-        int gw = greeter_win();
-        if (gw >= 0 && wins[gw].used && wins[gw].surf.px)
-            blit_content(&wins[gw], 0, 0, W, H);
-        if (!hw_cursor) draw_cursor_back(mx, my);
-        fb_clear_clip();
-        uint64_t t_lock = time_mono_ns();
-        fb_present_rect(R->x0, R->y0, rw, rh);
-        perf_present_ns += time_mono_ns() - t_lock;
-        perf_cpx += (uint64_t)rw * (uint64_t)rh;
-        return;
+        __atomic_fetch_add(&perf_bgskip, (uint64_t)rw * (uint64_t)rh, __ATOMIC_RELAXED);
     }
 
     /* THE DIM, behind the Expose grid, so the windows read as the content and
@@ -4990,7 +4990,7 @@ static void render_region(const struct drect *R)
         if (w->surf.px && dh - tbh_s > 0) {
             if (alpha >= 255) wm_scaled_blit(dx, dy + tbh_s, dw, dh - tbh_s, &w->surf);
             else              anim_blit_fade(R, dx, dy + tbh_s, dw, dh - tbh_s, &w->surf, alpha);
-            if (w->drawing) perf_torn++;   /* counted at every path that shows a canvas */
+            if (w->drawing) __atomic_fetch_add(&perf_torn, 1, __ATOMIC_RELAXED);   /* counted at every path that shows a canvas */
         }
         /* The hairline, only while opaque: one row at a third of an alpha on a
          * shrinking window is not a boundary anybody can see, and drawing it
@@ -5019,6 +5019,15 @@ static void render_region(const struct drect *R)
       if (rect_hit(&p, R)) draw_menu_dropdown(); }
     if (g_overlay != OV_NONE) { struct drect p; overlay_box(&p);
       if (rect_hit(&p, R)) draw_overlay_panel(); }
+}
+
+/* THE TOP OF THE STACK: what is drawn over every layer, on ONE core, after
+ * every band of the rectangle is finished -- the IME candidate bar, the
+ * notification cards, and a composited cursor. Drawn last, so doing it after
+ * a parallel layer pass gives the same pixels as doing it inline. Kept off the
+ * band workers because their compose functions advance their own state. */
+static void render_top(void)
+{
     /* WM-HOOK 4/6: the notification overlay -- above every window, below the
      * pointer. No rect_hit guard: the fb clip is already this rectangle and
      * every primitive notify_compose uses is clip-exact (it is deliberately not
@@ -5032,12 +5041,308 @@ static void render_region(const struct drect *R)
     ime_ui_compose();
     notify_compose();
     if (!hw_cursor) draw_cursor_back(mx, my);   /* no plane: arrow into the composite */
-    fb_clear_clip();
+}
 
+static void render_present(const struct drect *R)
+{
+    int rw = R->x1 - R->x0, rh = R->y1 - R->y0;
     uint64_t t_pres = time_mono_ns();
     fb_present_rect(R->x0, R->y0, rw, rh);
     perf_present_ns += time_mono_ns() - t_pres;
     perf_cpx += (uint64_t)rw * (uint64_t)rh;
+}
+
+static void render_region(const struct drect *R)
+{
+    int rw = R->x1 - R->x0, rh = R->y1 - R->y0;
+    fb_target(NULL);
+    fb_set_clip(R->x0, R->y0, rw, rh);
+    /* LOCKED: exactly ONE window is composited, it fills the screen, and it is
+     * drawn with no frame at all -- no titlebar, so no close button exists to
+     * be hit-tested, and no dock and no menu bar. There is nothing behind it
+     * to leak because nothing else has been launched: see the g_locked block
+     * comment, and note that this branch is the COSMETIC half of the lock.
+     * wm_launch()'s refusal is the half that matters. */
+    if (g_locked) {
+        int gw = greeter_win();
+        if (gw >= 0 && wins[gw].used && wins[gw].surf.px)
+            blit_content(&wins[gw], 0, 0, W, H);
+        if (!hw_cursor) draw_cursor_back(mx, my);
+    } else {
+        render_layers(R);
+        render_top();
+    }
+    fb_clear_clip();
+    render_present(R);
+}
+
+/* ===========================================================================
+ * BAND-PARALLEL COMPOSITION ("Fluid" P1, docs/superpowers/specs/
+ * 2026-09-24-experience-release-design.md)
+ *
+ * WHY. A large-window drag at 1920x1200 took 60-95 ms a frame while three of
+ * four cores sat halted (measured 2026-08-28 and again 2026-09-24): one core
+ * held the whole frame. Here every damage rectangle is cut into horizontal
+ * bands (wm_bands.h) and the LAYERS of each band -- wallpaper, windows, chrome
+ * -- are rendered by whichever core claims it: the compositor thread itself
+ * and up to GFX_NCTX-1 band workers. The top of the stack (render_top) and the
+ * present stay on the compositor thread, after every band is done.
+ *
+ * WHY IT IS THE SAME PICTURE. The splitter never cuts through a glass panel's
+ * sample extent, so no core reads pixels another core is writing; each band's
+ * result is exactly what a serial pass over it produces. -DWM_PAR_VERIFY
+ * re-renders every parallel rectangle serially and counts differing pixels
+ * (make test-wm-par); -DWM_BANDS_NEGCTL_IGNORE_GLASS is the control that must
+ * make that count non-zero.
+ *
+ * WHAT STAYS SERIAL, and why each: the locked screen (one window, no chrome);
+ * any window mid-animation or in Expose (they draw through the shared
+ * anim_scratch); a rectangle too short to split; and any band touching the
+ * dock, which only the compositor may render -- app_icon_draw can read the
+ * disk on a cache miss, and a band worker must never block mid-band.
+ *
+ * HOW A WORKER IS REACHED. Workers are ordinary kernel threads parked on
+ * par_lock. The compositor bumps the generation, wakes them, and sends vector
+ * 243 to the other cores: an idle core leaves hlt and schedules the worker at
+ * once instead of at its next timer tick. Nothing waits on a worker that has
+ * not started -- the compositor claims every band nobody else has -- so a
+ * busy machine degrades to the serial frame, never to a stall.
+ * ======================================================================== */
+#define PAR_NW (GFX_NCTX - 1)
+#define PAR_MAXB (NDMG * WM_BAND_MAX)
+
+static struct {
+    struct drect band[PAR_MAXB];
+    unsigned char wm_only[PAR_MAXB];
+    int state[PAR_MAXB];          /* 0 free, 1 claimed, 2 done */
+    int n, done;
+    unsigned gen;
+} g_par;
+static spinlock_t par_lock = SPINLOCK_INIT;
+static struct thread *par_thr[PAR_NW > 0 ? PAR_NW : 1];
+static int par_started, par_nw;
+static uint64_t perf_parframes, perf_parbands, perf_parbands_worker, perf_serialframes;
+#ifdef WM_PAR_VERIFY
+static uint64_t perf_parmismatch, perf_parverified;
+#endif
+
+/* Render one band's layers with this thread's drawing context. */
+static void par_band(int i)
+{
+    const struct drect *R = &g_par.band[i];
+    fb_target(NULL);
+    fb_set_clip(R->x0, R->y0, R->x1 - R->x0, R->y1 - R->y0);
+    render_layers(R);
+    fb_clear_clip();
+}
+
+/* Claim and render bands until none is left. The compositor passes wm=1 and
+ * may take a dock band; a worker passes 0 and skips them. */
+static int par_try(int i)
+{
+    int free_ = 0;
+    if (!__atomic_compare_exchange_n(&g_par.state[i], &free_, 1, 0,
+                                     __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) return 0;
+    par_band(i);
+    __atomic_store_n(&g_par.state[i], 2, __ATOMIC_RELEASE);
+    __atomic_fetch_add(&g_par.done, 1, __ATOMIC_ACQ_REL);
+    return 1;
+}
+
+/* Claim and render bands until none is left. ORDER IS THE LOAD BALANCE:
+ * workers take bands front to back; the compositor first takes the bands only
+ * it may render (the dock's), then the rest BACK to front -- so while workers
+ * are still waking it works on the far end of the list instead of taking the
+ * very bands they are about to claim. */
+static int par_drain(int wm)
+{
+    int did = 0;
+    if (!wm) {
+        for (int i = 0; i < g_par.n; i++)
+            if (!g_par.wm_only[i]) did += par_try(i);
+        return did;
+    }
+    for (int i = 0; i < g_par.n; i++) if (g_par.wm_only[i]) did += par_try(i);
+    for (int i = g_par.n - 1; i >= 0; i--) did += par_try(i);
+    return did;
+}
+
+static void par_worker(void)
+{
+    int id = __atomic_add_fetch(&par_nw, 1, __ATOMIC_ACQ_REL);   /* 1..PAR_NW */
+    if (id > PAR_NW || fb_ctx_register(id) < 0) { for (;;) { uint64_t f = spin_lock_irqsave(&par_lock); sched_block_self_unlock(&par_lock, f); } }
+    par_thr[id - 1] = sched_current_thread();
+    unsigned seen = 0;
+    for (;;) {
+        uint64_t f = spin_lock_irqsave(&par_lock);
+        while (__atomic_load_n(&g_par.gen, __ATOMIC_ACQUIRE) == seen) {
+            sched_block_self_unlock(&par_lock, f);
+            f = spin_lock_irqsave(&par_lock);
+        }
+        seen = g_par.gen;
+        spin_unlock_irqrestore(&par_lock, f);
+        int got = par_drain(0);
+        if (got) __atomic_fetch_add(&perf_parbands_worker, (uint64_t)got, __ATOMIC_RELAXED);
+    }
+}
+
+static void par_start(void)
+{
+#ifndef WM_PAR_OFF
+    if (par_started || PAR_NW < 1) return;
+    par_started = 1;
+    int want = smp_cpu_count() - 1;
+    if (want > PAR_NW) want = PAR_NW;
+    /* 64 KiB, not the default 16: a band draws window titles, and a glyph
+     * cache miss on a CFF face shapes and rasterises on this stack (~13 KiB
+     * of frames on its own -- see thread_create_stack). */
+    for (int k = 0; k < want; k++) (void)thread_create_stack(par_worker, "wm-band", 64 * 1024);
+    kprintf("[wm] band workers: %d (cpus %d, contexts %d)\n", want, smp_cpu_count(), GFX_NCTX);
+#endif
+}
+
+/* Glass sample extents (the rows no band boundary may fall inside) for the
+ * panels that horizontally meet R -- the same panels and the same halo
+ * dmg_expand protects, asked of the same functions. */
+static int par_nocut(const struct drect *R, struct wm_yrange *nc, int max)
+{
+    int n = 0;
+    struct drect p;
+#define PAR_ADD(radius) do { \
+        int halo_ = wm_reduce_transparency ? 0 : \
+            ol_display_glass_sample_halo(p.x1 - p.x0, p.y1 - p.y0, (radius)); \
+        if (p.x1 + halo_ > R->x0 && p.x0 - halo_ < R->x1 && \
+            p.y1 + halo_ > R->y0 && p.y0 - halo_ < R->y1 && n < max) { \
+            nc[n].y0 = p.y0 - halo_; nc[n].y1 = p.y1 + halo_; n++; } } while (0)
+    menubar_box(&p);        PAR_ADD(S(MENU_GLASS_PT));
+    dock_panel_box(&p);     PAR_ADD(S(DOCK_GLASS_PT));
+    if (g_menu_open >= 0) { menu_dropdown_box(&p); PAR_ADD(S(DROPDOWN_GLASS_PT)); }
+    if (g_overlay != OV_NONE) { overlay_box(&p); PAR_ADD(S(OVERLAY_GLASS_PT)); }
+    for (int k = 0; k < norder; k++)
+        if (win_glass_box(&wins[order[k]], &p)) PAR_ADD(S(TITLE_GLASS_PT));
+#undef PAR_ADD
+    return n;
+}
+
+/* May this frame's layers be split at all? */
+static int par_frame_ok(void)
+{
+#ifdef WM_PAR_OFF
+    return 0;
+#else
+    if (g_locked || !par_nw || ex_state()) return 0;
+    for (int k = 0; k < norder; k++) {
+        struct win *w = &wins[order[k]];
+        int x, y, ww, wh, a;
+        if (!w->used || !win_draw_rect(w, &x, &y, &ww, &wh, &a)) continue;
+        if (!win_drawn_direct(w, x, y, ww, wh, a)) return 0;   /* animating: anim_scratch */
+    }
+    return 1;
+#endif
+}
+
+#ifdef WM_PAR_VERIFY
+/* THE GATE'S INSTRUMENT: keep what the bands drew, draw the same rectangle
+ * again the serial way, and count pixels that differ. Idempotent because a
+ * rectangle is always rebuilt from the wallpaper up. */
+static uint32_t *par_copy;
+static long par_copy_n;
+static void par_verify(const struct drect *R)
+{
+    long w = R->x1 - R->x0, h = R->y1 - R->y0;
+    if (w * h > par_copy_n) {
+        if (par_copy) kfree(par_copy);
+        par_copy = kmalloc((unsigned long)(w * h) * 4);
+        par_copy_n = par_copy ? w * h : 0;
+        if (!par_copy) return;
+    }
+    for (long y = 0; y < h; y++)
+        for (long x = 0; x < w; x++) par_copy[y * w + x] = back[(R->y0 + y) * W + R->x0 + x];
+    fb_target(NULL);
+    fb_set_clip(R->x0, R->y0, (int)w, (int)h);
+    render_layers(R);
+    fb_clear_clip();
+    uint64_t bad = 0;
+    long bx0 = w, by0 = h, bx1 = -1, by1 = -1;
+    for (long y = 0; y < h; y++)
+        for (long x = 0; x < w; x++)
+            if (par_copy[y * w + x] != back[(R->y0 + y) * W + R->x0 + x]) {
+                bad++;
+                if (x < bx0) bx0 = x; if (x > bx1) bx1 = x;
+                if (y < by0) by0 = y; if (y > by1) by1 = y;
+            }
+    perf_parmismatch += bad;
+    perf_parverified += (uint64_t)(w * h);
+    /* Where, so a failure names a place rather than a count (first 16). */
+    static int reported;
+    if (bad && reported < 16) {
+        reported++;
+        kprintf("[wm] parverify diff n=%lu at %ld,%ld-%ld,%ld in rect %d,%d-%d,%d\n",
+                (unsigned long)bad, R->x0 + bx0, R->y0 + by0, R->x0 + bx1 + 1, R->y0 + by1 + 1,
+                R->x0, R->y0, R->x1, R->y1);
+    }
+}
+#endif
+
+/* Composite `r[0..n)` -- the frame's damage, already expanded -- with the
+ * layers split across cores where that is allowed. Returns 1 if it did the
+ * work (including the top and the present), 0 if the caller should render
+ * serially. */
+static int par_render(const struct drect *r, int n)
+{
+    if (!par_frame_ok()) return 0;
+    /* Twice as many bands as participants: a band is claimed whole, so with
+     * exactly one each the frame waits for the slowest (the one holding the
+     * dock's glass); finer bands let whoever finishes early take another. */
+    int nb = 0, want = 2 * (par_nw + 1);
+    for (int k = 0; k < n; k++) {
+        struct wm_yrange nc[4 + MAXWIN];
+        int nn = par_nocut(&r[k], nc, (int)(sizeof nc / sizeof nc[0]));
+        struct wm_band b[WM_BAND_MAX];
+        int m = (r[k].y1 - r[k].y0 >= 128) ?
+                wm_bands_split(r[k].y0, r[k].y1, nc, nn, nc, nn, want, b) : 1;
+        if (m < 1) m = 1;
+        if (m == 1) { b[0].y0 = r[k].y0; b[0].y1 = r[k].y1; }
+        struct drect dock; dock_box(&dock);
+        for (int i = 0; i < m && nb < PAR_MAXB; i++) {
+            struct drect d = { r[k].x0, b[i].y0, r[k].x1, b[i].y1 };
+            g_par.band[nb] = d;
+            g_par.wm_only[nb] = (unsigned char)rect_hit(&d, &dock);
+            g_par.state[nb] = 0;
+            nb++;
+        }
+    }
+    if (nb < 2) return 0;
+    g_par.n = nb;
+    __atomic_store_n(&g_par.done, 0, __ATOMIC_RELEASE);
+
+    uint64_t f = spin_lock_irqsave(&par_lock);
+    __atomic_add_fetch(&g_par.gen, 1, __ATOMIC_ACQ_REL);
+    spin_unlock_irqrestore(&par_lock, f);
+    for (int w = 0; w < par_nw && w < PAR_NW; w++) if (par_thr[w]) (void)sched_wake(par_thr[w]);
+#ifndef WMPARNEGCTL
+    smp_kick_others();
+#endif
+
+    par_drain(1);
+    while (__atomic_load_n(&g_par.done, __ATOMIC_ACQUIRE) < nb) {
+        par_drain(1);                          /* anything a worker has not reached */
+        __asm__ volatile ("pause");
+    }
+    perf_parframes++;
+    perf_parbands += (uint64_t)nb;
+
+    for (int k = 0; k < n; k++) {
+#ifdef WM_PAR_VERIFY
+        par_verify(&r[k]);
+#endif
+        fb_target(NULL);
+        fb_set_clip(r[k].x0, r[k].y0, r[k].x1 - r[k].x0, r[k].y1 - r[k].y0);
+        render_top();
+        fb_clear_clip();
+        render_present(&r[k]);
+    }
+    return 1;
 }
 
 /* ---- one pass of every animation ------------------------------------------
@@ -5246,7 +5551,17 @@ static void wm_hotcorner_tick(void)
  * `back` is a correct composite of the ENTIRE screen when this returns -- see
  * the invariant at the top of the file. Nothing else in here is allowed to be
  * true only sometimes. */
+static void wm_render_locked_inner(void);
 static void wm_render_locked(void)
+{
+    g_frame_ms = time_mono_ms();
+    rtc_now(&g_frame_rtc);
+    if (!g_frame_ms) g_frame_ms = 1;
+    wm_render_locked_inner();
+    g_frame_ms = 0;
+}
+
+static void wm_render_locked_inner(void)
 {
     reap();
     fb_target(NULL);
@@ -5346,8 +5661,10 @@ static void wm_render_locked(void)
      * to ask is not "is the peel correct" but "does this kernel still have a
      * big lock" -- and the way to answer it is to grep for a DECLARATION
      * (`spinlock_t g_bkl` or an extern of it), never for the name. */
-    for (int k = 0; k < draw_n; k++) {
-        render_region(&r[k]);
+    if (!par_render(r, draw_n)) {
+        if (!g_locked) perf_serialframes++;
+        for (int k = 0; k < draw_n; k++)
+            render_region(&r[k]);
     }
     /* origin/main re-armed a full frame here while a window's open pop was
      * still running, off a flag its render_region() returned. That flag has
@@ -6536,6 +6853,19 @@ static void wm_perf_report(void)
             (unsigned long)iqstats.batches_with_backlog,
             (unsigned long)iqstats.high_watermark, (unsigned long)fb_openlogit_batches(),
             (unsigned long)perf_bgskip);
+    /* Band-parallel composition (par_render). A separate line on purpose:
+     * qmp_repaint.py parses the perf line above by its full field set. */
+    kprintf("[wm] par frames=%lu serial=%lu bands=%lu worker_bands=%lu workers=%d"
+#ifdef WM_PAR_VERIFY
+            " verified=%lu mismatch=%lu"
+#endif
+            "\n",
+            (unsigned long)perf_parframes, (unsigned long)perf_serialframes,
+            (unsigned long)perf_parbands, (unsigned long)perf_parbands_worker, par_nw
+#ifdef WM_PAR_VERIFY
+            , (unsigned long)perf_parverified, (unsigned long)perf_parmismatch
+#endif
+            );
     kprintf("[wm] locks calls=%lu hold_ns=%lu max_ns=%lu render_locked=%lu\n",
             wm_lock_calls, wm_lock_ns, wm_lock_max_ns, wm_lock_render_frames);
     wm_lock_report_prepare();
@@ -6627,6 +6957,7 @@ void wm_run(void)
 
     sched_init();
     smp_mark_sched_ready();   /* release parked APs into the scheduler now the ring exists */
+    par_start();              /* band workers for par_render (need the ring too) */
 
     /* Historical SMP BKL discipline: the WM is a ring-0 thread that does kernel work (the
      * compositor) directly, so it must hold the BKL while doing it (vs APs that

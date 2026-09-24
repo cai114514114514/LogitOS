@@ -23,6 +23,11 @@ struct glass_panel {
     int radius;
     int edge_width;
     unsigned cut;
+    /* The refraction/Fresnel tables this render reads -- set once by
+     * glass_render from glass_lut_get(), never the shared globals, so two
+     * cores rendering two panels cannot see each other's tables. */
+    const struct glass_lut *lut;
+    struct glass_lut lut_own;
 };
 
 struct glass_color {
@@ -42,6 +47,7 @@ struct glass_style {
     unsigned char opacity_by_luma[256];
     int band[GLASS_E_MAX + 1];
     int tilt[GLASS_E_MAX + 1];
+    const unsigned char *fres;    /* panel->lut->fres, for lighting() */
 };
 
 struct glass_light {

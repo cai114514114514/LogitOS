@@ -29,9 +29,9 @@ static inline struct glass_color sample_color(const struct glass_panel *panel,
     struct ol_display *display = panel->display;
     int depth = glass_clamp(field.depth, 0, GLASS_E_MAX);
     return (struct glass_color){
-        sample_channel(panel, column, row, field, glass_disp[0][depth], display->rpos),
-        sample_channel(panel, column, row, field, glass_disp[1][depth], display->gpos),
-        sample_channel(panel, column, row, field, glass_disp[2][depth], display->bpos),
+        sample_channel(panel, column, row, field, panel->lut->disp[0][depth], display->rpos),
+        sample_channel(panel, column, row, field, panel->lut->disp[1][depth], display->gpos),
+        sample_channel(panel, column, row, field, panel->lut->disp[2][depth], display->bpos),
     };
 }
 
@@ -81,9 +81,9 @@ static void draw_span(const struct glass_panel *panel, const struct glass_style 
     struct ol_display *display = panel->display;
     int depth = glass_clamp(field.depth, 0, GLASS_E_MAX);
     int direction = field.normal_y / 256;
-    const uint32_t *red_row = sample_row(panel, row, direction, glass_disp[0][depth]);
-    const uint32_t *green_row = sample_row(panel, row, direction, glass_disp[1][depth]);
-    const uint32_t *blue_row = sample_row(panel, row, direction, glass_disp[2][depth]);
+    const uint32_t *red_row = sample_row(panel, row, direction, panel->lut->disp[0][depth]);
+    const uint32_t *green_row = sample_row(panel, row, direction, panel->lut->disp[1][depth]);
+    const uint32_t *blue_row = sample_row(panel, row, direction, panel->lut->disp[2][depth]);
     uint32_t *destination = display->target.px +
                             (long)(panel->y + row) * display->target.w + panel->x;
     struct glass_light light = lighting(style, field);
@@ -177,7 +177,7 @@ static void render_square(struct glass_panel *panel, const struct glass_style *s
 void glass_render(struct glass_panel *panel, struct glass_color tint, int opacity)
 {
     int refraction = panel->edge_width < 18 ? panel->edge_width : 18;
-    glass_build_lut(panel->edge_width, refraction);
+    panel->lut = glass_lut_get(panel->edge_width, refraction, &panel->lut_own);
     struct glass_style style;
     prepare_style(&style, panel, tint, opacity);
 

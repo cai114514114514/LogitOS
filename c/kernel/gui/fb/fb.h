@@ -230,4 +230,8 @@ int fb_blit_user_rgba(int dx, int dy, int dw, int dh, const uint8_t *rgba, int s
 uint64_t fb_openlogit_batches(void); /* SDK draw batches, not displayed frames */
 void fb_graphics_lock(void);
 void fb_graphics_unlock(void);
+/* Band workers only (wm.c): from now on the CALLING THREAD draws with
+ * context `ctx` (1..GFX_NCTX-1). -1 if the kernel has no such context. See the
+ * comment above g_ctx_thread in fb.c. */
+int fb_ctx_register(int ctx);
 #endif /* LOGIT_FB_H */

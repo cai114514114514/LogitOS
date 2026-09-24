@@ -32,6 +32,21 @@ extern unsigned char glass_fres[GLASS_E_MAX + 1];
 
 void glass_build_lut(int E, int refract);
 
+/* THE SAME TABLES, WITHOUT SHARED MUTABLE STATE. glass_disp/glass_fres above
+ * are one global pair rebuilt whenever (E, refract) changes -- and the menu
+ * bar, the dock and every titlebar have different geometry, so two cores
+ * drawing two panels at once would rebuild them under each other's reads.
+ * glass_lut_get() hands back a table that is never written again once
+ * published: the canonical refract for E (min(E, 18), the only one the
+ * renderer asks for) is cached per E, and anything else is filled into the
+ * caller's `own` storage. glass_build_lut() keeps its old contract for the
+ * host tests that read the globals. */
+struct glass_lut {
+    int disp[3][GLASS_E_MAX + 1];
+    unsigned char fres[GLASS_E_MAX + 1];
+};
+const struct glass_lut *glass_lut_get(int E, int refract, struct glass_lut *own);
+
 /* Schlick's approximation at incidence parameter u (16.16), as 0..255.
  * Exposed for the host test alongside glass_refract_ratio. */
 /* The cap glass_schlick() clamps its output to. Here rather than in glass.c

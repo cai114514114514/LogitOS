@@ -67,6 +67,7 @@
  * row. That is the difference between one rasterizer and two. */
 #include "gfx.h"
 #include "openlogit_sw.h"
+#include "gfx_ctx.h"
 
 struct edge {
     int ytop, ybot;      /* device 24.8, half-open [ytop, ybot)  */
@@ -86,7 +87,10 @@ struct gfx_raster_workspace {
     unsigned char row[GFX_MAX_W], row_clip[GFX_MAX_W];
     unsigned short acc[GFX_MAX_W];
 };
-static struct gfx_raster_workspace legacy_workspace;
+/* One per drawing context (gfx_ctx.h): the synchronous API below shares it
+ * across calls, and two compositor bands rasterising at once must not. */
+static struct gfx_raster_workspace legacy_workspaces[GFX_NCTX];
+#define legacy_workspace (legacy_workspaces[gfx_ctx()])
 #define g_edge ws->edge
 #define g_order ws->order
 #define g_act ws->active

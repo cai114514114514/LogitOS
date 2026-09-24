@@ -210,9 +210,8 @@ int glass_schlick(int u)
     return out > GLASS_FRES_MAX ? GLASS_FRES_MAX : out;
 }
 
-void glass_build_lut(int E, int refract)
+static void glass_lut_fill(struct glass_lut *l, int E, int refract)
 {
-    if (E == glass_lut_e && refract == glass_lut_r) return;  /* cached */
     if (E < 1) E = 1;
     if (E > GLASS_E_MAX) E = GLASS_E_MAX;
 
@@ -241,17 +240,52 @@ void glass_build_lut(int E, int refract)
             /* Rounded, not truncated: at 18 px the whole fringe is under two
              * pixels wide, so a systematic half-pixel bias downward is a
              * meaningful fraction of the effect. */
-            glass_disp[c][s] = (int)((r * refract + peak / 2) / peak);
+            l->disp[c][s] = (int)((r * refract + peak / 2) / peak);
         }
-        for (int s = E + 1; s <= GLASS_E_MAX; s++) glass_disp[c][s] = 0;
+        for (int s = E + 1; s <= GLASS_E_MAX; s++) l->disp[c][s] = 0;
     }
 
     for (int s = 0; s <= E; s++)
-        glass_fres[s] = (unsigned char)glass_schlick((E - s) * 65536 / E);
+        l->fres[s] = (unsigned char)glass_schlick((E - s) * 65536 / E);
     /* Past the band the surface is flat, and flat glass still reflects R0.
      * Zeroing here would put a seam at s == E. */
-    for (int s = E + 1; s <= GLASS_E_MAX; s++) glass_fres[s] = glass_fres[E];
+    for (int s = E + 1; s <= GLASS_E_MAX; s++) l->fres[s] = l->fres[E];
 
+}
+
+void glass_build_lut(int E, int refract)
+{
+    if (E == glass_lut_e && refract == glass_lut_r) return;  /* cached */
+    struct glass_lut l;
+    glass_lut_fill(&l, E, refract);
+    for (int c = 0; c < 3; c++)
+        for (int s = 0; s <= GLASS_E_MAX; s++) glass_disp[c][s] = l.disp[c][s];
+    for (int s = 0; s <= GLASS_E_MAX; s++) glass_fres[s] = l.fres[s];
     glass_lut_e = E;
     glass_lut_r = refract;
+}
+
+/* One slot per E for the canonical refract. state: 0 empty, 1 being filled,
+ * 2 published (never written again). A caller that finds a slot being filled
+ * fills its own copy rather than waiting -- the answer is identical and a
+ * compositor band never spins on another core's table. */
+static struct { struct glass_lut lut; int state; } glass_luts[GLASS_E_MAX + 1];
+
+const struct glass_lut *glass_lut_get(int E, int refract, struct glass_lut *own)
+{
+    if (E < 1) E = 1;
+    if (E > GLASS_E_MAX) E = GLASS_E_MAX;
+    int canonical = E < 18 ? E : 18;
+    if (refract == canonical) {
+        if (__atomic_load_n(&glass_luts[E].state, __ATOMIC_ACQUIRE) == 2) return &glass_luts[E].lut;
+        int empty = 0;
+        if (__atomic_compare_exchange_n(&glass_luts[E].state, &empty, 1, 0,
+                                        __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) {
+            glass_lut_fill(&glass_luts[E].lut, E, refract);
+            __atomic_store_n(&glass_luts[E].state, 2, __ATOMIC_RELEASE);
+            return &glass_luts[E].lut;
+        }
+    }
+    glass_lut_fill(own, E, refract);
+    return own;
 }

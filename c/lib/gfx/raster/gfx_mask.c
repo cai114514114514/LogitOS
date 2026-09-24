@@ -21,6 +21,7 @@
  * analytic distance ramp. It lives here because it shares the cache, not
  * because it shares the scanline loop. */
 #include "gfx.h"
+#include "gfx_ctx.h"
 
 #define NMASK 16     /* Sized by what one FRAME asks for. A page mixing control
                       * radii, a stroked outline, badges and four elevations of
@@ -30,15 +31,30 @@
                       * corner. Sixteen slots is 83 KB in an app that has
                       * megabytes. */
 
-static unsigned char mdata[NMASK][GFX_MASK_MAX * GFX_MASK_MAX];
-static int mkind[NMASK], mkw[NMASK], mkh[NMASK], mkp[NMASK];
-static int mnext, mhit, mmiss, mrefuse;
-
-/* Path scratch for the corner tiles. At the 1/64-pixel tolerance below a
- * 72-pixel quadrant flattens to about 64 segments, so two arcs fit inside 512
- * points with room to spare. */
-static int cpt[512 * 2];
-static int csub[8];
+/* One cache per drawing context (gfx_ctx.h): gfx_mask_corner hands back a
+ * pointer INTO the cache and the caller blits from it after the return, so a
+ * second core inserting into the same cache could evict a tile mid-blit. The
+ * statistics stay shared -- they are counters, read only by tests. */
+static struct gfx_mask_cache {
+    unsigned char mdata[NMASK][GFX_MASK_MAX * GFX_MASK_MAX];
+    int mkind[NMASK], mkw[NMASK], mkh[NMASK], mkp[NMASK];
+    int mnext;
+    /* Path scratch for the corner tiles. At the 1/64-pixel tolerance below a
+     * 72-pixel quadrant flattens to about 64 segments, so two arcs fit inside
+     * 512 points with room to spare. */
+    int cpt[512 * 2];
+    int csub[8];
+} g_mcache[GFX_NCTX];
+static int mhit, mmiss, mrefuse;
+#define MC (&g_mcache[gfx_ctx()])
+#define mdata (MC->mdata)
+#define mkind (MC->mkind)
+#define mkw   (MC->mkw)
+#define mkh   (MC->mkh)
+#define mkp   (MC->mkp)
+#define mnext (MC->mnext)
+#define cpt   (MC->cpt)
+#define csub  (MC->csub)
 
 /* The quarter-ellipse corner region, in tile coordinates: the tile is [0,w] x
  * [0,h] and the arc is centred on the tile's BOTTOM-RIGHT corner (w,h) with

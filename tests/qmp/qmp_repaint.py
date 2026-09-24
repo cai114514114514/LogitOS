@@ -910,6 +910,7 @@ def main(argv):
     iso, disk, only, jpath = None, None, None, None
     do_assert, assert_open, assert_cover, expect_off = False, False, False, None
     max_frac = {}
+    assert_par = None
     i = 1
     while i < len(argv):
         if argv[i] == "--xres":    xres = int(argv[i + 1]); i += 2
@@ -923,6 +924,7 @@ def main(argv):
         elif argv[i] == "--assert-open": assert_open = True; i += 1
         elif argv[i] == "--assert-cover": assert_cover = True; i += 1
         elif argv[i] == "--expect-off": expect_off = int(argv[i + 1]); i += 2
+        elif argv[i] == "--assert-par": assert_par = argv[i + 1]; i += 2
         elif argv[i] == "--assert-max-frac":
             name, frac = argv[i + 1].split("="); max_frac[name] = float(frac); i += 2
         else:
@@ -1134,6 +1136,9 @@ def main(argv):
             _json.dump({"xres": xres, "yres": yres, "scale": scale,
                         "iso": iso, "workloads": result}, fh, indent=1)
         print("     wrote %s" % jpath)
+    if assert_par:
+        rc = assert_par_lines(open(serial, errors="replace").read(), assert_par)
+        if rc: return rc
     if max_frac:
         rc = assert_max_frac(result, max_frac, xres * yres)
         if rc: return rc
@@ -1162,6 +1167,48 @@ def main(argv):
 # interaction costs the compositor, read from its own counters -- the number a
 # damage regression moves. tests/fluid_perf.mk runs it with a control kernel
 # that restores a known over-report and must exceed the same ceiling.
+
+# --assert-par verify|control: read the kernel's last `[wm] par` line (wm.c,
+# par_render). A WM_PAR_VERIFY kernel re-renders every parallel rectangle
+# serially and counts differing pixels. `verify` requires parallel frames to
+# have happened, the comparison to have covered pixels, and ZERO mismatches;
+# `control` (the same kernel with the splitter allowed to cut through glass)
+# requires mismatches -- the proof the comparison can see a wrong band.
+
+def assert_par_lines(log, mode):
+    # The LAST COMPLETE line: the guest is killed at the end of the run and
+    # its final report can be cut mid-line (seen: "... worker_ba"), which would
+    # read as "not a verify kernel". Same trap perf_samples() documents.
+    need = ("frames=", "worker_bands=", "verified=", "mismatch=")
+    lines = [l for l in log.splitlines() if l.startswith("[wm] par ")]
+    if not lines:
+        print("FAIL par: the kernel printed no [wm] par line")
+        return 1
+    whole = [l for l in lines if all(k in l for k in need) and l.split()[-1].split("=")[-1].isdigit()]
+    lines = whole or lines
+    f = dict(kv.split("=", 1) for kv in lines[-1].split()[2:] if "=" in kv)
+    try:
+        frames, workers = int(f["frames"]), int(f["worker_bands"])
+        verified, bad = int(f["verified"]), int(f["mismatch"])
+    except (KeyError, ValueError):
+        print("FAIL par: not a WM_PAR_VERIFY kernel: %s" % lines[-1])
+        return 1
+    print("     %s" % lines[-1])
+    if frames == 0 or verified == 0 or workers == 0:
+        print("FAIL par: nothing was checked (frames=%d worker_bands=%d verified=%d)"
+              % (frames, workers, verified))
+        return 1
+    if mode == "verify" and bad:
+        print("FAIL par: %d of %d pixels differ from a serial render" % (bad, verified))
+        return 1
+    if mode == "control" and not bad:
+        print("FAIL par-control: cutting through glass changed no pixel -- the "
+              "comparison cannot see a wrong band")
+        return 1
+    print("ok   par %s: %d parallel frames, %d worker bands, %d pixels compared, %d differ"
+          % (mode, frames, workers, verified, bad))
+    return 0
+
 
 def assert_max_frac(result, limits, screen):
     rc = 0

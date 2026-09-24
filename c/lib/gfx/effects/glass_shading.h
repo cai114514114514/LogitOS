@@ -14,6 +14,7 @@ static inline int color_luma(struct glass_color color)
 static void prepare_style(struct glass_style *style, const struct glass_panel *panel,
                           struct glass_color tint, int opacity)
 {
+    style->fres = panel->lut->fres;
     style->tint = tint;
     style->opacity = opacity;
     style->adaptive = 0;
@@ -84,7 +85,7 @@ static inline struct glass_light lighting(const struct glass_style *style,
     environment = glass_clamp(environment, 96, 250);
     return (struct glass_light){
         .environment = {environment, environment, environment},
-        .reflection = glass_fres[depth],
+        .reflection = style->fres[depth],
         .highlight = highlight * 64 / 256,
         .shadow = shadow * 46 / 256,
     };

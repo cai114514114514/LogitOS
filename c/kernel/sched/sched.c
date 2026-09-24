@@ -586,9 +586,19 @@ extern void kthread_bootstrap(void);   /* sched.c: releases g_sched_lock, calls 
 
 int thread_create(void (*entry)(void), const char *name)
 {
+    return thread_create_stack(entry, name, STACK_SIZE);
+}
+
+/* A kernel thread with a stack of `bytes` (>= STACK_SIZE). For work whose call
+ * depth the default does not cover -- the compositor's band workers draw
+ * text, and shaping a CFF glyph alone is ~13 KiB of frames (shape_run 5.7 KiB,
+ * cff_glyph_path 7.1 KiB, measured with -fstack-usage 2026-09-24). */
+int thread_create_stack(void (*entry)(void), const char *name, unsigned long bytes)
+{
+    if (bytes < STACK_SIZE) bytes = STACK_SIZE;
     struct thread *t = kmalloc(sizeof *t);
     if (!t) return -1;
-    t->stack = kmalloc(STACK_SIZE);
+    t->stack = kmalloc(bytes);
     if (!t->stack) { kfree(t); return -1; }
     t->kstack_top = 0;
     t->cr3 = vmm_kernel_cr3();
@@ -621,7 +631,7 @@ int thread_create(void (*entry)(void), const char *name)
      *
      * ring3_bootstrap and fork_ret are unaffected: both are assembly and end in
      * iretq, so no C prologue ever runs on the misaligned frame. */
-    uint64_t top = (((uint64_t)t->stack + STACK_SIZE) & ~(uint64_t)0xF) - 8;
+    uint64_t top = (((uint64_t)t->stack + bytes) & ~(uint64_t)0xF) - 8;
     uint64_t *sp = (uint64_t *)top;
     *--sp = (uint64_t)kthread_bootstrap;  /* ret target (drops g_sched_lock, calls entry) */
     *--sp = 0; *--sp = 0; *--sp = 0; *--sp = 0; *--sp = 0; *--sp = 0;

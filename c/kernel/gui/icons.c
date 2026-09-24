@@ -22,6 +22,7 @@
 #include "icons.h"
 #include "gfx.h"
 #include "fb.h"
+#include "spinlock.h"
 
 void *kmalloc(unsigned long);
 void  kfree(void *);
@@ -158,7 +159,24 @@ static struct gfx_path ic_path;
  * for a button being dragged is right here. */
 #define IC_SUBS   16
 
+/* THE ICON LOCK, text.c's argument in miniature: the cache hands back a
+ * pointer the blit below reads after the fill, and the fill shares ic_path.
+ * Two compositor bands drawing icons at once (the dock and the menu bar can
+ * land in different bands) would otherwise re-rasterise into each other's
+ * tile or kfree it under a blit. Held across fill AND blit for that reason.
+ * Never entered from an interrupt, so the plain form. */
+static spinlock_t icon_lock = SPINLOCK_INIT;
+
+static void icon_draw_locked(int id, int x, int y, int px, uint32_t color);
+
 void icon_draw(int id, int x, int y, int px, uint32_t color)
+{
+    spin_lock(&icon_lock);
+    icon_draw_locked(id, x, y, px, color);
+    spin_unlock(&icon_lock);
+}
+
+static void icon_draw_locked(int id, int x, int y, int px, uint32_t color)
 {
     if (id < 0 || id >= ICON_COUNT || !TBL[id].c) return;
     if (px <= 0 || px > GFX_MAX_W) return;

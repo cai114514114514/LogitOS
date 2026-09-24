@@ -179,6 +179,16 @@ void interrupt_handler(struct registers *r, void *fxarea)
         lapic_eoi();
         goto done;
     }
+    if (r->vector == 243) {        /* compositor kick: nothing to do HERE. An idle
+                                    * core was halted in sched_become_idle(); this
+                                    * interrupt ends its hlt, and the loop's own
+                                    * schedule() then runs the band worker that
+                                    * wm.c just woke -- instead of the next timer
+                                    * tick, up to 10 ms later (sched.c sends no
+                                    * reschedule IPI of its own). */
+        lapic_eoi();
+        goto done;
+    }
 #ifdef LOGIT_RAPTOR_SMP_QEMU_TEST
     if (r->vector == 242) {        /* synthetic all-destination fixed-IPI probe */
         smp_test_ipi_interrupt();
@@ -382,7 +392,7 @@ done:
         int cls = (r->vector == 128) ? KB_C_SYSCALL
                 : (r->vector == 32)  ? KB_C_TIMER
                 : (r->vector < 32)   ? KB_C_FAULT
-                : (r->vector == 240 || r->vector == 241) ? KB_C_IPI
+                : (r->vector == 240 || r->vector == 241 || r->vector == 243) ? KB_C_IPI
                 : KB_C_IRQ;
         /* this_cpu() and not the entry-time `me`: schedule() may have resumed
          * this thread on a different core, and charging another core's counters

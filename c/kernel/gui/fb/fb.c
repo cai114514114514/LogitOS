@@ -13,6 +13,7 @@ void fb_graphics_unlock(void) { gui_mutex_unlock(&graphics_lock); }
 #include "text.h"
 #include "virtio_gpu.h"
 #include "gfx.h"
+#include "gfx_ctx.h"
 #include "glass.h"        /* Open Logit's mask cache -- see corner_mask_for() below */
 
 /* --- Multiboot2 framebuffer info tag (type 8) --- */
@@ -94,10 +95,51 @@ void fb_dma_test_release_writer(void) { fb_front_release(); }
 #endif
 
 
-static struct surface screen;     /* wraps the back buffer (the visible screen) */
-static struct surface *T;         /* current draw target (defaults to screen) */
-static int sdk_target_dirty=1;
+/* PER DRAWING CONTEXT (gfx_ctx.h), because the compositor renders bands of
+ * one frame on several cores at once (wm.c, wm_bands.h): each core draws with
+ * its own target, its own clip -- which lives ON the target surface, so each
+ * context also has its own view of the screen back buffer -- and its own
+ * OpenLogit display, whose blur/glass scratch must not be shared either. The
+ * back buffer the views wrap is one buffer; only the bookkeeping is per core.
+ * Outside a band everything runs on context 0, exactly as before. */
+struct fb_ctx {
+    struct surface screen;        /* wraps the back buffer (the visible screen) */
+    struct surface *T;            /* current draw target (defaults to screen) */
+    int dirty;                    /* the display must rebind before drawing */
+    struct ol_display disp;
+};
+static struct fb_ctx g_fbctx[GFX_NCTX];
 static uint64_t sdk_draw_calls;
+#define FBC (&g_fbctx[gfx_ctx()])
+
+#if GFX_NCTX > 1
+/* WHICH CONTEXT A THREAD DRAWS WITH -- by THREAD, not by core.
+ *
+ * Every ordinary drawer -- the compositor thread, a GUI syscall filling an app
+ * canvas -- uses context 0, serialised by graphics_lock exactly as before. The
+ * compositor's band workers (wm.c) each own one context from 1 up, registered
+ * here once at creation. Keying on the core instead would break the moment a
+ * drawer blocked or was preempted and resumed elsewhere (graphics_lock is a
+ * sleeping lock and may be held across a preemption): its target and clip
+ * would silently become whatever that core's context held. */
+#include "sched.h"
+static struct thread *volatile g_ctx_thread[GFX_NCTX];
+static int fb_gfx_ctx(void)
+{
+    struct thread *t = sched_current_thread();
+    for (int i = 1; i < GFX_NCTX; i++) if (t && g_ctx_thread[i] == t) return i;
+    return 0;
+}
+int (*gfx_ctx_hook)(void) = fb_gfx_ctx;
+int fb_ctx_register(int ctx)
+{
+    if (ctx < 1 || ctx >= GFX_NCTX) return -1;
+    g_ctx_thread[ctx] = sched_current_thread();
+    return 0;
+}
+#else
+int fb_ctx_register(int ctx) { (void)ctx; return -1; }
+#endif
 
 /* The clip rectangle lives ON THE CURRENT TARGET (struct surface), not in a
  * global -- so a clip set while drawing into one app's surface can never affect
@@ -105,11 +147,12 @@ static uint64_t sdk_draw_calls;
  * opened Terminal white). */
 void fb_set_clip(int x, int y, int w, int h)
 {
-    struct surface *s = T ? T : &screen;
-    sdk_target_dirty=1;
+    struct fb_ctx *c = FBC;
+    struct surface *s = c->T ? c->T : &c->screen;
+    c->dirty=1;
     s->clip_on = 1; s->clx0 = x; s->cly0 = y; s->clx1 = x + w; s->cly1 = y + h;
 }
-void fb_clear_clip(void) { struct surface *s = T ? T : &screen; s->clip_on = 0; sdk_target_dirty=1; }
+void fb_clear_clip(void) { struct fb_ctx *c = FBC; struct surface *s = c->T ? c->T : &c->screen; s->clip_on = 0; c->dirty=1; }
 
 uint32_t fb_width(void)  { return fb_w; }
 uint32_t fb_height(void) { return fb_h; }
@@ -195,7 +238,7 @@ uint32_t fb_rgb(uint8_t r, uint8_t g, uint8_t b)
 
 int fb_init(uint64_t mb_info_addr)
 {
-    sdk_target_dirty=1;
+    for (int i = 0; i < GFX_NCTX; i++) g_fbctx[i].dirty = 1;
     boot_lfb_addr = boot_lfb_bytes = 0;
     /* Prefer virtio-gpu: a normal-RAM framebuffer (fast CPU writes) presented by
      * DMA (TRANSFER+FLUSH) instead of byte-copying into uncached VGA MMIO. */
@@ -252,17 +295,18 @@ int fb_init(uint64_t mb_info_addr)
  * only draws into that surface and never leaks onto another app's surface or the
  * WM's screen compositing. The screen back buffer's clip is never set, so chrome
  * is always drawn in full. */
-static struct ol_display sdk_display = {.allocate=kmalloc,.release=kfree};
 static struct ol_display *fb_sdk(void)
 {
-    const struct surface *surface = T ? T : &screen;
-    sdk_draw_calls++;
+    struct fb_ctx *c = FBC;
+    const struct surface *surface = c->T ? c->T : &c->screen;
+    __atomic_fetch_add(&sdk_draw_calls, 1, __ATOMIC_RELAXED);
+    if (!c->disp.allocate) { c->disp.allocate = kmalloc; c->disp.release = kfree; }
     /* The old adapter revalidated/copy-bound the same target for EVERY pixel
      * of the fallback wallpaper (1,024,000 binds at 1280x800). Target/clip
      * changes are explicit owner operations; cache their binding so a thin
      * compatibility call does not repeat frame setup inside the pixel loop. */
-    if (sdk_target_dirty || sdk_display.target.px != surface->px ||
-        sdk_display.target.w != surface->w || sdk_display.target.h != surface->h) {
+    if (c->dirty || c->disp.target.px != surface->px ||
+        c->disp.target.w != surface->w || c->disp.target.h != surface->h) {
         struct ol_pixel_target target = {
             .px = surface->px,
             .w = surface->w,
@@ -274,21 +318,21 @@ static struct ol_display *fb_sdk(void)
             .cly1 = surface->cly1,
         };
 #ifdef FB_BIND_UNCHECKED
-        sdk_display.target = target;
-        ol_display_bind(&sdk_display, &target, rpos, gpos, bpos);
+        c->disp.target = target;
+        ol_display_bind(&c->disp, &target, rpos, gpos, bpos);
 #else
-        if (ol_display_bind(&sdk_display, &target, rpos, gpos, bpos) != OL_OK) {
+        if (ol_display_bind(&c->disp, &target, rpos, gpos, bpos) != OL_OK) {
             /* The former pre-assignment tried to avoid keeping an old target,
              * but published an unvalidated one with stale channel positions.
              * On a fresh 5K bind, ff8040 became 0000ff. Disable drawing on a
              * rejected surface; a later valid bind restores the whole batch. */
-            sdk_display.target = (struct ol_pixel_target){0};
-            sdk_display.error = OL_ARGUMENT;
+            c->disp.target = (struct ol_pixel_target){0};
+            c->disp.error = OL_ARGUMENT;
         }
 #endif
-        sdk_target_dirty = 0;
+        c->dirty = 0;
     }
-    return &sdk_display;
+    return &c->disp;
 }
 uint64_t fb_openlogit_batches(void) {return sdk_draw_calls;}
 
@@ -301,17 +345,22 @@ void fb_put(int x, int y, uint32_t color)
 
 void fb_set_backbuffer(uint32_t *buf)
 {
-    screen.px = buf;
-    screen.w  = (int)fb_w;
-    screen.h  = (int)fb_h;
-    T = &screen;
-    sdk_target_dirty=1;
+    for (int i = 0; i < GFX_NCTX; i++) {      /* every context's view of it */
+        struct fb_ctx *c = &g_fbctx[i];
+        c->screen.px = buf;
+        c->screen.w  = (int)fb_w;
+        c->screen.h  = (int)fb_h;
+        c->screen.clip_on = 0;
+        c->T = &c->screen;
+        c->dirty = 1;
+    }
 }
 
 void fb_target(struct surface *s)
 {
-    T = s ? s : &screen;
-    sdk_target_dirty=1;
+    struct fb_ctx *c = FBC;
+    c->T = s ? s : &c->screen;
+    c->dirty=1;
 }
 
 /* Composite a window surface onto the current target with a direct row copy
@@ -349,7 +398,7 @@ void fb_blit_surface_scaled_bl(int dx, int dy, int dw, int dh, const struct surf
 
 void fb_copy_rect(int x, int y, int w, int h)
 {
-    if (!screen.px) return;
+    if (!g_fbctx[0].screen.px) return;
     if (x < 0) { w += x; x = 0; }
     if (y < 0) { h += y; y = 0; }
     if (x + w > (int)fb_w) w = (int)fb_w - x;
@@ -359,7 +408,7 @@ void fb_copy_rect(int x, int y, int w, int h)
     if (!mem) return;
     for (int yy = 0; yy < h; yy++) {
         volatile uint32_t *dst = (volatile uint32_t *)(mem + (uint32_t)(y + yy) * fb_pitch);
-        const uint32_t *src = screen.px + (uint32_t)(y + yy) * fb_w;
+        const uint32_t *src = g_fbctx[0].screen.px + (uint32_t)(y + yy) * fb_w;
         for (int xx = 0; xx < w; xx++) dst[x + xx] = src[x + xx];
     }
     fb_front_release();
@@ -393,7 +442,7 @@ void fb_present_rect(int x, int y, int w, int h)
     if (y < 0) { h += y; y = 0; }
     if (x + w > (int)fb_w) w = (int)fb_w - x;
     if (y + h > (int)fb_h) h = (int)fb_h - y;
-    if (w <= 0 || h <= 0 || !screen.px ||
+    if (w <= 0 || h <= 0 || !g_fbctx[0].screen.px ||
         __atomic_load_n(&fb_front_quarantined, __ATOMIC_SEQ_CST)) {
         fb_graphics_unlock();
         return;
@@ -409,7 +458,7 @@ void fb_present_rect(int x, int y, int w, int h)
             --spins;
         int rc = -1;
         if (!__atomic_load_n(&fb_front_writers, __ATOMIC_SEQ_CST))
-            rc = native_present(screen.px, fb_w, (uint32_t)x, (uint32_t)y,
+            rc = native_present(g_fbctx[0].screen.px, fb_w, (uint32_t)x, (uint32_t)y,
                                 (uint32_t)w, (uint32_t)h);
 #ifdef FB_NATIVE_PRESENT_NEGCTL_CPU_FALLBACK
         if (rc == 0) rc = -1; /* Watched mutation: overwrite a completed GPU frame. */
@@ -581,7 +630,7 @@ void fb_liquid_glass(int x, int y, int w, int h, int radius,
 
 void fb_set_reduce_transparency(int enabled)
 {
-    sdk_display.reduce_transparency = enabled != 0;
+    for (int i = 0; i < GFX_NCTX; i++) g_fbctx[i].disp.reduce_transparency = enabled != 0;
 }
 
 void fb_liquid_glass_cut(int x, int y, int w, int h, int radius,
@@ -604,7 +653,8 @@ void fb_blit_rgba(int dx, int dy, int dw, int dh, const uint8_t *rgba, int sw, i
 int fb_blit_user_rgba(int dx, int dy, int dw, int dh,
                      const uint8_t *rgba, int sw, int sh)
 {
-    struct surface *t = T ? T : &screen;
+    struct fb_ctx *c = FBC;
+    struct surface *t = c->T ? c->T : &c->screen;
     if (!rgba || !t->px || dw <= 0 || dh <= 0 || sw <= 0 || sw > 4096 || sh <= 0) return -1;
     long j0 = dy < 0 ? -(long)dy : 0, j1 = dh;
     if (j1 > (long)t->h - dy) j1 = (long)t->h - dy;

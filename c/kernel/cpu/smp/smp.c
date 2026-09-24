@@ -250,6 +250,19 @@ void smp_present_ipi(void)               /* vector-241 handler body (interrupts.
     }
 }
 
+/* The compositor woke its band workers (wm.c); an idle core would otherwise
+ * notice only at its next timer tick. A fixed IPI ends its hlt, and the idle
+ * loop's schedule() picks the worker up. A busy core just takes a no-op
+ * interrupt; the compositor claims any band nobody else reached. */
+void smp_kick_others(void)
+{
+    int n = __atomic_load_n(&g_online, __ATOMIC_ACQUIRE);
+    if (n > PERCPU_MAXCPU) n = PERCPU_MAXCPU;
+    int self = this_cpu()->index;
+    for (int i = 0; i < n; i++)
+        if (i != self) (void)lapic_send_ipi(g_cpus[i].lapic_id, 243);
+}
+
 static void smp_present_par(int x, int y, int w, int h)
 {
     int n = __atomic_load_n(&g_online, __ATOMIC_ACQUIRE);
