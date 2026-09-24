@@ -860,7 +860,9 @@ HarfBuzz venv) and `test-bidi` fails hard rather than skipping — see rule 5.
   was rewritten. **What IS broken is next door**: `terminal.c:412` wraps on
   BYTES while `cols` counts display CELLS, so Chinese wraps after ~cols/3
   characters leaving a third of every row blank, and the wrap can land inside a
-  UTF-8 sequence. `third_party/fonts/` additionally ships **DejaVuSans
+  UTF-8 sequence. **Fixed 2026-09-24** (`c/apps/gui/terminal/term_line.h`):
+  Terminal wraps on display cells at character boundaries; `make test-term-wrap`,
+  control `TERM_WRAP_NEGCTL` (the byte wrap). `third_party/fonts/` additionally ships **DejaVuSans
   whole** as `/fonts/text.ttf`, and the reason is a measurement: **subsetting
   broke shaping** — "the two Noto subsets carry no Arabic and no Hebrew, and
   subsetting stripped their GSUB/GPOS/GDEF tables, so with only those two the
@@ -1199,6 +1201,22 @@ picture. `-DJPEG_PROG_MCU_GRID` fails **only** at 23×17 and hides completely at
 `c/kernel/gui/`: `wm.c` (5,594 lines — the largest file in the tree), `fb.c`,
 `text.c`, `notify.c`, `clipboard.c`, `ime_ui.c`.
 
+**Correction 2026-09-24 ("Fluid" release, spec
+`docs/superpowers/specs/2026-09-24-experience-release-design.md`).** Added since this
+section was written, each with a gate whose control was watched failing:
+**band-parallel composition** (`wm_bands.h`: horizontal bands that never cut a
+glass sample extent, rendered on every core with per-thread draw contexts
+`gfx_ctx.h` / `struct fb_ctx`; `test-wm-par` compares against a serial re-render,
+0 of 88 M px differ); **key-up events** (`EV_KEY_UP`, opt-in `WINS_WANT_KEYUP`) and
+a **Cmd+Tab switcher you hold** (`test-switcher`); **snapping** to halves and zoom
+and a **close fade** (`test-snap`, `test-close-anim`); **Spotlight** on Cmd+Space
+(`/sbin/spotlight.aex`, a `WINS_SET_PANEL` window; `test-spotlight`); and **app
+menus** — `SYS_GUI_MENU_SET` (201) with the blob format in
+`c/kernel/gui/menu_blob.h`, `EV_MENU` (12), and Cmd+<key> routed to the top
+window's item with that key (`test-menu-blob`, `test-appmenu`). The menu bar
+is LogitOS, the top window's menus, then Window; a window that published
+nothing keeps File and View. TextEdit, Terminal and Files publish menus.
+
 - **Damage tracking is real and it works.** The compositor recomposites only
   rectangles something reported as damaged, and that is a **correctness** change
   underneath: `dirty_rect` used to throw all four arguments away, and now every
@@ -1215,7 +1233,10 @@ picture. `-DJPEG_PROG_MCU_GRID` fails **only** at 23×17 and hides completely at
 - **`SYS_GUI_FLUSH` carries no rectangle**, and `wm.c:2113` states the cost:
   *"the flush carries no rectangle, so the smallest honest extent an app can be
   held to is its whole canvas. That is the floor on an app repaint, and it is an
-  ABI limit, not a compositor one."*
+  ABI limit, not a compositor one."* **Stale:** `SYS_GUI_FLUSH_RECT` (188)
+  exists and aui uses it; since 2026-09-24 aui reports up to six disjoint damage
+  rectangles per flush (`aui_damage.h`), so one keystroke into TextEdit
+  recomposites ~20% of the screen, not 68–79% (`test-type-damage`).
 - **The pointer is on the display's hardware cursor plane** (`virtio_gpu.c`), so
   pure motion costs nothing — *"at 1920×1200 that is 2.3 M pixels of work to move
   an arrow eight of them"* if it were composited. **Consequence for harnesses: the
@@ -1276,6 +1297,15 @@ composition state machine and candidate bar). Dictionary `/ime/pinyin.dat`,
 ---
 
 ## The desktop is slow, and this is where the time goes — measured 2026-08-28
+
+**Correction 2026-09-24 — re-measured, then changed.** The table below predates
+the flush rectangle and other work. Re-measured at 1920×1200 before the "Fluid"
+release: large-window drag **62.9 ms (15.9 fps)**, one keystroke into TextEdit
+**54.6 ms (18.3 fps)** compositing 78.6% of the screen. After band-parallel
+composition and multi-rectangle damage: drag **35.3 ms (28.3 fps)**, keystroke
+**20.1 ms (49.7 fps)** at ~20% of the screen. The "94.95% idle / single-core
+critical section" diagnosis below is what band-parallel composition answers.
+The measurements that follow are historical.
 
 The complaint was "very laggy, and I don't know why", at the shipped default
 (`make run`, 1920×1200, 4-core TCG on an Apple M4 Max). `tests/qmp/qmp_repaint.py`
@@ -1518,7 +1548,9 @@ ordinary host program) and the two stdouts are diffed byte for byte.
 `ENOSYS` because a caller that gets 0 believes it holds a lock; `ioctl`'s tty
 requests return `ENOTTY`, matching `termios.c` rather than inventing a second
 answer; `statvfs`/`utime` return `ENOSYS` because a fabricated `f_bsize` is worse
-for a caller sizing a buffer than an error is.
+for a caller sizing a buffer than an error is. (**Correction 2026-09-24:**
+`statvfs` is real now — `SYS_STATVFS` (202), LogitFS counts its bitmap, and
+`/bin/df` and `/bin/du` use it; `test-statvfs`. `utime` is still `ENOSYS`.)
 
 **TinyCC is vendored, patched, and runs on the device.** `third_party/tcc/` (398
 files, 91k lines) is **not a pristine upstream copy** — it is patched in place
@@ -1652,7 +1684,9 @@ feared: `test-audio-codec-fuzz-deep`, `test-h265`, `test-demux` and
 `test-csstext-all` all failed in the parallel phase and pass by themselves. **A
 sweep that reports those is MANUFACTURING bugs**, which is worse than missing them.
 `make test-sweep-host` is the half worth running after an ordinary change; the full
-one boots QEMU ~156 times.
+one boots QEMU ~156 times. **2026-09-24:** on stock macOS the sweep called GNU `timeout`,
+which is not there, and reported 1666 of 1666 host targets failing without
+running one; `tests/boot/sweep-timeout.sh` now falls back to `gtimeout` or perl.
 
 **Other gates worth knowing by name.** `tools/check-test-liveness.py` finds tests
 that **cannot fail** (rule 1 fails the build; rules 2-4 warn) and is more specific
@@ -1721,6 +1755,9 @@ guest checks files written by semicolon, quoted-separator, `export`, and `$?`
 commands.
 `execve` still does not honor `#!`, and this shell remains deliberately small;
 the older blanket execution-contract conclusion no longer describes every path.
+**2026-09-24:** `execve` honours `#!` now — one level, and the interpreter must
+be a native binary (`c/kernel/exec/load/shebang.h`; `test-shebang`, control
+`EXEC_NEGCTL_NO_SHEBANG`). `sh FILE args` runs a script with `$1`..`$9` and `$#`.
 
 **2. There is no loading contract for a foreign binary.** `PT_INTERP`,
 `PT_DYNAMIC` and `ET_DYN` are refused by name; zero relocations; no `dlopen`. The
@@ -1753,6 +1790,9 @@ a menu. The input path has no key-release event and no focus event. The clipboar
 four flavours are all UTF-8 text; there is no drag-and-drop. Any ported toolkit
 needs a second top-level surface and key-up on its first screen, and the ABI has
 nowhere to put them.
+**2026-09-24:** half of this is closed. Apps publish menus (`SYS_GUI_MENU_SET`),
+and key-up and focus events exist (`EV_KEY_UP`, `EV_WINDOW_FOCUS`). Still open:
+one window per process, text-only clipboard, and no drag-and-drop.
 
 **5. There is no clock running the gates.** See the top of this file.
 
@@ -1762,7 +1802,11 @@ single process holding every capability while it is the only thing that runs
 adversary code, with no ASLR and no stack canaries; **no bold and no italic**;
 **no iframe, Worker, ServiceWorker, WebSocket or IndexedDB**, and `localStorage`
 that does not survive a reboot; **no text coreutils and no on-machine editor** —
-no `grep sed awk find sort diff tar less vi make df du kill ln chmod`; **the
+no `grep sed awk find sort diff tar less vi make df du kill ln chmod`; (**2026-09-24:**
+`grep sed sort uniq tail cut tr find diff kill ln chmod df du` exist now, written
+from scratch in `c/apps/coreutils/text/` over a linear-time regex engine `lre`,
+and are diffed against the host's tools by `test-textutils-host` / `test-textutils`;
+still missing: `awk tar less vi make` and an editor); **the
 machine has never booted on real hardware** (128 boot harnesses, all
 `qemu-system-x86_64`), so every UEFI/NVMe/xHCI/HDA/MSI claim is a claim about a
 machine nobody has seen; no modesetting, EDID or multi-monitor (one global

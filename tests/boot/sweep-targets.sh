@@ -21,6 +21,7 @@
 set -u
 
 OUT="${1:?usage: sweep-targets.sh <result-file> [jobs] [timeout]}"
+. "$(dirname "$0")/sweep-timeout.sh"   # macOS has no `timeout`
 JOBS="${2:-6}"
 TMO="${3:-1200}"
 LOGDIR="$(dirname "$OUT")/sweeplogs"

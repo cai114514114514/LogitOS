@@ -15,6 +15,7 @@
 set -u
 
 OUT="${1:?usage: sweep-resume.sh <result-file> [timeout]}"
+. "$(dirname "$0")/sweep-timeout.sh"   # macOS has no `timeout`
 TMO="${2:-900}"
 LOGDIR="$(dirname "$OUT")/sweeplogs"
 mkdir -p "$LOGDIR"
