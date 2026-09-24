@@ -868,7 +868,7 @@ def w_bmutate(ui, geo, secs=2.5):
 
 # ---------------------------------------------------------------------------
 
-def boot(iso, xres, yres, tmp, disk=None):
+def boot(iso, xres, yres, tmp, disk=None, snapshot=True):
     # DEFAULT IS A SIBLING OF `iso`, NOT A HARDCODED ROOT/build/disk.img.
     # AGENTS.md section 4: `BUILD=` is how several agents build this tree at
     # once without manufacturing each other's failures, and this file's own
@@ -887,8 +887,9 @@ def boot(iso, xres, yres, tmp, disk=None):
          "-cdrom", iso,
          "-drive", "file=%s,format=raw,if=none,id=hd0,file.locking=off"
                    % disk,
-         "-device", "virtio-blk-pci,drive=hd0", "-boot", "d", "-snapshot",
-         "-m", "512M", "-smp", "4", "-accel", "tcg,thread=multi", "-cpu", "max",
+         "-device", "virtio-blk-pci,drive=hd0", "-boot", "d"] +
+        (["-snapshot"] if snapshot else []) +      # False: the caller reads the disk afterwards
+        ["-m", "512M", "-smp", "4", "-accel", "tcg,thread=multi", "-cpu", "max",
          "-rtc", "base=localtime",
          "-vga", "none", "-device", "virtio-gpu-pci,xres=%d,yres=%d" % (xres, yres),
          "-netdev", "user,id=n0", "-device", "e1000,netdev=n0",

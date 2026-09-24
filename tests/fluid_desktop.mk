@@ -123,3 +123,50 @@ test-spotlight-negctl:
 test-spotlight: test-spotlight-rank test-spotlight-negctl $(ISO) $(DISK)
 	@python3 tests/qmp/qmp_spotlight.py --iso $(ISO) --disk $(DISK)
 ci-boot: test-spotlight
+
+# ---- P5: an app's own menus on the menu bar ----
+# test-menu-blob (host): the parser the kernel runs on an app's bytes, driven
+# as an attack surface -- round trip, every strict prefix, one broken rule at a
+# time (checked by return code and reason, not by an ASan abort), 20,000 random
+# blobs under ASan+UBSan -- and the builder apps use, round-tripped through it.
+# The control (-DMB_PARSE_NEGCTL) accepts an over-long title, i.e. truncates
+# where the format says refuse, and must fail.
+MENU_BLOB_DIR := c/kernel/gui
+.PHONY: test-menu-blob test-menu-blob-negctl
+test-menu-blob-negctl:
+	@mkdir -p $(BUILD)
+	@$(CC) -std=c11 -O1 -w -DMB_PARSE_NEGCTL -I$(MENU_BLOB_DIR) -o $(BUILD)/menu_blob_negctl tests/unit/menu_blob_test.c
+	@if ./$(BUILD)/menu_blob_negctl > $(BUILD)/menu_blob_negctl.log 2>&1; then \
+		echo "NEGATIVE CONTROL FAILED: a truncating parser passes"; exit 1; \
+	elif grep -q 'FAIL CORPUS: a 25-byte title is refused, not truncated' $(BUILD)/menu_blob_negctl.log; then \
+		echo "negative control ok: the truncating parser is caught at the title rule"; \
+	else cat $(BUILD)/menu_blob_negctl.log; echo "NEGATIVE CONTROL FAILED: wrong check"; exit 1; fi
+test-menu-blob: test-menu-blob-negctl
+	@$(CC) -std=c11 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined -fno-sanitize-recover=all \
+		-I$(MENU_BLOB_DIR) -o $(BUILD)/menu_blob_test tests/unit/menu_blob_test.c
+	@ASAN_OPTIONS=detect_leaks=0 ./$(BUILD)/menu_blob_test
+ci-host: test-menu-blob
+
+# test-appmenu (QMP): the Finder's and TextEdit's published menus appear on
+# the bar in turn; Edit > Select All is chosen by clicking its row, "Z" typed,
+# and Cmd+S routed to TextEdit's Save item; the verdict is /untitled.txt read
+# back off the (non -snapshot) disk copy, which must be exactly "Z". The
+# control kernel (-DWM_MENU_NEGCTL_DROP_EVENT) logs every choice but never
+# delivers EV_MENU, so only the file check can catch it -- and must.
+ifeq ($(MENUDROP),1)
+CFLAGS += -DWM_MENU_NEGCTL_DROP_EVENT
+endif
+MENU_CTL_BUILD := $(BUILD)-menudrop
+.PHONY: test-appmenu test-appmenu-negctl
+test-appmenu-negctl: $(DISK)
+	@$(MAKE) --no-print-directory BUILD=$(MENU_CTL_BUILD) MENUDROP=1 \
+		$(MENU_CTL_BUILD)/logit.iso > $(BUILD)/appmenu_ctl_build.log 2>&1
+	@rc=0; python3 tests/qmp/qmp_appmenu.py --iso $(MENU_CTL_BUILD)/logit.iso --disk $(DISK) \
+		> $(BUILD)/appmenu_ctl.log 2>&1 || rc=$$?; cat $(BUILD)/appmenu_ctl.log; \
+		if [ $$rc -eq 1 ] && grep -q 'FAIL  /untitled.txt is exactly' $(BUILD)/appmenu_ctl.log && \
+		   ! grep -q 'FAIL  clicking the row chose Select All' $(BUILD)/appmenu_ctl.log; then \
+			echo "negative control ok: a menu that is chosen but never delivered leaves the file wrong"; \
+		else echo "NEGATIVE CONTROL FAILED"; exit 1; fi
+test-appmenu: test-menu-blob test-appmenu-negctl $(ISO) $(DISK)
+	@python3 tests/qmp/qmp_appmenu.py --iso $(ISO) --disk $(DISK)
+ci-boot: test-appmenu

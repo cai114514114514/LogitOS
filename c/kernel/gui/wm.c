@@ -52,6 +52,7 @@ static struct desktop_preferences desktop_prefs = {LOGIT_DESKTOP_PREFS(PREF_DEFA
 #include "notify.h"     /* WM-HOOK 1/6: the notification overlay (see notify.h) */
 #include "ime_ui.h"     /* IME-HOOK 1/4: the pinyin candidate bar (see ime_ui.h) */
 #include "keyboard.h"
+#include "menu_blob.h"  /* SYS_GUI_MENU_SET: an app's own menus ("Fluid" P5) */
 #include "wm_bands.h"   /* the band splitter: see par_render */
 #include "gfx_ctx.h"    /* GFX_NCTX: how many band workers there can be */
 #include "smp.h"        /* smp_kick_others, smp_cpu_count */
@@ -386,6 +387,8 @@ struct win {
     int  focus_notified;     /* last EV_WINDOW_FOCUS value; -1 before first delivery */
     int  want_keyup;         /* WINS_WANT_KEYUP: deliver EV_KEY_UP + modifier keys */
     int  panel;              /* WINS_SET_PANEL: no titlebar, hides when it loses focus */
+    struct mb_set *menus;     /* SYS_GUI_MENU_SET: the app's menus, NULL if it published none */
+    unsigned menus_gen;       /* unique per publish (g_menus_gen), so the menu bar knows to rebuild */
     int  cw_pt, ch_pt;        /* content size in POINTS -- what the app CURRENTLY has */
     char cwd[128];            /* Finder: current directory path */
     uint64_t open_t0;         /* monotonic ms when the open pop began (0 = settled) */
@@ -1159,6 +1162,8 @@ static void wm_set_dark(int on);
 static int top_visible(void);   /* fwd: wm_ime_anchor, immediately below */
 static int wm_keyboard_focus(void);
 static void wm_sync_focus(void);
+static void menu_model_sync(void);   /* fwd: the menu bar follows the top window */
+static unsigned g_menus_gen;         /* SYS_GUI_MENU_SET stamps; never reused, unlike a slot */
 static void panel_show(struct win *w, int show);
 
 /* IME-HOOK (the one call in the other direction; declared in wm.h). The
@@ -2705,6 +2710,12 @@ static long wm_gui_dispatch(long num, long a, long b, long c)
          * would say why. */
         w->min_w_pt = w->min_h_pt = 0;
         w->zoomed = w->minimized = 0;
+        /* ...and the same for what P2-P5 added, which this list missed until
+         * 2026-09-24: a slot whose last tenant was Spotlight would open its
+         * next window as a titlebar-less PANEL that hides on focus loss. */
+        w->want_keyup = w->panel = w->snapped = 0;
+        if (w->menus) { kfree(w->menus); w->menus = 0; }
+        w->menus_gen = 0;
         /* ...and that now includes the dock fly. A slot whose last occupant was
          * halfway to the dock would open its new window mid-flight, at a scale
          * and an opacity nobody asked for, shrinking into an icon belonging to
@@ -3214,6 +3225,37 @@ static long wm_gui_dispatch(long num, long a, long b, long c)
         else launch_for_ext(ext_of(path), path);
         return 0;
     }
+    case SYS_GUI_MENU_SET: {
+        /* The window's menus ("Fluid" P5): a blob in menu_blob.h's format,
+         * parsed here and kept per window until the next publish, len 0, or
+         * the window's end. A malformed blob is refused WHOLE and the reason
+         * logged -- the previous menus stay, never a truncated set. */
+        struct win *w = app_window(ap); if (!w) return -1;
+        int len = (int)b;
+        if (len == 0) {
+            if (w->menus) { kfree(w->menus); w->menus = 0; }
+            w->menus_gen = 0;
+            menu_model_sync();
+            return 0;
+        }
+        if (len < 0 || len > MB_BLOB_MAX || !user_range_ok((const void *)a, (uint64_t)len, 0)) return -1;
+        uint8_t *blob = kmalloc((unsigned)len);
+        struct mb_set *ms = kmalloc(sizeof *ms);
+        const char *why = "no memory";
+        int ok = blob && ms && user_copy_from(blob, (const void *)a, (unsigned)len) == 0 &&
+                 (why = "", mb_parse(blob, len, ms, &why) == 0);
+        if (blob) kfree(blob);
+        if (!ok) {
+            if (ms) kfree(ms);
+            kprintf("[wm] menus refused win=%d '%s': %s\n", ap->win, w->title, why);
+            return -1;
+        }
+        if (w->menus) kfree(w->menus);
+        w->menus = ms;
+        w->menus_gen = ++g_menus_gen;
+        menu_model_sync();
+        return 0;
+    }
     case SYS_OPEN_PATH_ARG: {
         /* SYS_OPEN_PATH with the argument an app reads back with get_arg():
          * how Spotlight hands the assistant a question. Only an .aex takes
@@ -3242,6 +3284,7 @@ static int wm_domain_call(long num)
     case SYS_GUI_BLIT: case SYS_GUI_CLIP: case SYS_GUI_FLUSH:
     case SYS_GUI_FLUSH_RECT: case SYS_GUI_WIN_MIN: case SYS_GUI_WIN_STATE:
     case SYS_UI_DARK: case SYS_OPEN_PATH: case SYS_OPEN_PATH_ARG: case SYS_GET_ARG: case SYS_SYSINFO:
+    case SYS_GUI_MENU_SET:
         return 1;
     }
     return 0;
@@ -3499,6 +3542,8 @@ static void reap(void)
                 wins[wi].surf.px = 0;
                 wins[wi].surf.w = wins[wi].surf.h = 0;
                 wins[wi].surf_cap = 0;   /* ...and the capacity that block held */
+                if (wins[wi].menus) { kfree(wins[wi].menus); wins[wi].menus = 0; }
+                wins[wi].menus_gen = 0;
                 wins[wi].used = 0;
                 remove_win(wi);
                 if (dragging == wi) dragging = -1;   /* don't drag a reaped (soon reused) slot */
@@ -3709,9 +3754,25 @@ static int menu_ime_x, menu_ime_w; /* drawn label geometry, also the toggle hit 
  * so a click and the word it lands on cannot disagree about where the word is.
  * Valid only after the first draw_menubar() -- the same "not on screen yet
  * either" caveat dock_hover_at documents for dock_x0/dock_y0. */
-#define NMENU 3
-static const char *g_menu_title[NMENU] = { "LogitOS", "File", "View" };
-static int g_menu_tx[NMENU], g_menu_tw[NMENU];   /* device px, published each frame */
+/* THE MODEL. Correction 2026-09-24 ("Fluid" P5): the titles used to be three
+ * constants -- { "LogitOS", "File", "View" } -- and no app could put a command
+ * on the menu bar. Now the bar is the kernel's LogitOS menu, then the menus the
+ * top window published with SYS_GUI_MENU_SET followed by the kernel's Window
+ * menu; a window that published nothing gets the old File and View, unchanged.
+ * menu_model_sync() rebuilds it, and never while a menu is open, so a dropdown
+ * cannot change shape under the pointer that is choosing from it. */
+enum { MK_LOGO, MK_FILE, MK_VIEW, MK_WINDOW, MK_APP };
+#define NMENU_MAX (MB_MAX_MENUS + 2)
+struct mrow { char label[MB_LABEL_MAX + 1]; uint16_t id; uint8_t flags; char key; };
+static int g_nmenu;
+static uint8_t g_menu_kind[NMENU_MAX];
+static char g_menu_title[NMENU_MAX][MB_TITLE_MAX + 1];
+static struct mrow g_menu_rows[NMENU_MAX][MB_MAX_ITEMS];
+static int g_menu_nitems[NMENU_MAX];
+static int g_menu_src = -2;              /* window whose menus these are, -1 none, -2 never built */
+static unsigned g_menu_src_gen;
+static int g_menu_reported;              /* menu_bar_layout's report, once per model */
+static int g_menu_tx[NMENU_MAX], g_menu_tw[NMENU_MAX];   /* device px, published each frame */
 
 static void menu_title_hit(int i, struct drect *r)
 {
@@ -3720,23 +3781,23 @@ static void menu_title_hit(int i, struct drect *r)
     r->x1 = g_menu_tx[i] + g_menu_tw[i] + S(14);
 }
 
-/* Reported ONCE, the first time the geometry is computed -- same reasoning as
- * "[wm] win N frame ..." and "[wm] expose cell ...": a test driver has no
- * business re-deriving AA-font text width in Python to find where "File" is
- * clickable, and a driver that guessed a pixel offset here is exactly the kind
- * of thing that rots silently the day the font or the title text changes. */
+/* Reported once per model, the first time its geometry is computed -- same
+ * reasoning as "[wm] win N frame ..." and "[wm] expose cell ...": a test
+ * driver has no business re-deriving AA-font text width in Python to find
+ * where "File" is clickable, and a driver that guessed a pixel offset here is
+ * exactly the kind of thing that rots silently the day the font or the title
+ * text changes. Since P5 the titles change with focus, so the report does. */
 static void menu_bar_layout(void)
 {
-    static int reported;
     int x = S(32);                            /* unchanged from the old hardcoded "LogitOS" x */
-    for (int i = 0; i < NMENU; i++) {
+    for (int i = 0; i < g_nmenu; i++) {
         g_menu_tx[i] = x;
         g_menu_tw[i] = fb_text_width(g_menu_title[i]);
         x += g_menu_tw[i] + S(44);            /* the old File-Edit gap, kept for the same rhythm */
     }
-    if (!reported) {
-        reported = 1;
-        for (int i = 0; i < NMENU; i++) {
+    if (!g_menu_reported) {
+        g_menu_reported = 1;
+        for (int i = 0; i < g_nmenu; i++) {
             struct drect t; menu_title_hit(i, &t);
             kprintf("[wm] menu title %d %s x0 %d y0 %d x1 %d y1 %d\n",
                     i, g_menu_title[i], t.x0, t.y0, t.x1, t.y1);
@@ -3758,7 +3819,7 @@ static void draw_menubar(void)
     uint32_t ink = g_ui_dark ? rgb(232, 233, 238) : rgb(40, 40, 48);
     fb_fill_circle(S(16), MBH / 2, S(6), ink);
     menu_bar_layout();                        /* publishes g_menu_tx/tw for the click path */
-    for (int i = 0; i < NMENU; i++) fb_text(g_menu_tx[i], S(4), g_menu_title[i], ink);
+    for (int i = 0; i < g_nmenu; i++) fb_text(g_menu_tx[i], S(4), g_menu_title[i], ink);
     /* dark-mode toggle switch: track + knob (knob right = dark) */
     menu_tog_w = S(38); menu_tog_h = S(18);
     menu_tog_x = W - S(210); menu_tog_y = (MBH - menu_tog_h) / 2;
@@ -4061,7 +4122,7 @@ static void draw_clock(void)
     fb_text(W - fb_text_width(b) - S(12), S(4), b, g_ui_dark ? rgb(228, 229, 235) : rgb(40, 40, 46));
 }
 
-/* -1 = closed; else an index into g_menu_title[]/g_menu_items[]. */
+/* -1 = closed; else an index into g_menu_title[]/g_menu_rows[]. */
 static int g_menu_open = -1;
 static int g_menu_item_hov = -1;
 
@@ -4139,6 +4200,7 @@ static void wm_sync_focus(void)
     }
     /* Preserve the locked-screen IME policy; the greeter still receives keys. */
     ime_ui_focus(g_locked ? -1 : wi);
+    menu_model_sync();
 }
 
 #define AB_W S(320)
@@ -4196,28 +4258,106 @@ static void overlay_open(int kind)
 }
 
 /* ---- the dropdown's items -------------------------------------------------
- * `label == NULL` is a separator: drawn as a hairline, never hit-tested. One
- * array per menu, walked by both the painter and the hit-tester below so a
- * row's picture and its hitbox are the same computation. */
-struct mi { const char *label; };
-static const struct mi MI_LOGO[] = {
-    { "About This Machine" }, { "Settings..." }, { NULL },
-    { "Shut Down..." }, { "Restart..." },
+ * One row array per menu (g_menu_rows), walked by both the painter and the
+ * hit-tester below so a row's picture and its hitbox are the same
+ * computation. MB_SEP is a separator: drawn as a hairline, never hit-tested.
+ * The kernel's own menus are these tables; an app's come from its blob. The
+ * `key` column is the Cmd shortcut drawn at the right. */
+struct kmi { const char *label; uint16_t id; uint8_t flags; char key; };
+static const struct kmi KM_LOGO[] = {
+    { "About This Machine", 0, 0, 0 }, { "Settings...", 1, 0, ',' }, { "", 2, MB_SEP, 0 },
+    { "Shut Down...", 3, 0, 0 }, { "Restart...", 4, 0, 0 },
 };
-static const struct mi MI_FILE[] = { { "Close Window" }, { "Minimize" } };
-static const struct mi MI_VIEW[] = { { "Show All Windows" } };
-static const struct mi *g_menu_items[NMENU] = { MI_LOGO, MI_FILE, MI_VIEW };
-static const int g_menu_nitems[NMENU] = {
-    (int)(sizeof MI_LOGO / sizeof MI_LOGO[0]),
-    (int)(sizeof MI_FILE / sizeof MI_FILE[0]),
-    (int)(sizeof MI_VIEW / sizeof MI_VIEW[0]),
+/* File/View (no app menus) and Window (after them) share ids: 0 close,
+ * 1 minimise, 2 Expose -- one switch in menu_item_fire serves all three. */
+static const struct kmi KM_FILE[] = { { "Close Window", 0, 0, 'W' }, { "Minimize", 1, 0, 'M' } };
+static const struct kmi KM_VIEW[] = { { "Show All Windows", 2, 0, 'E' } };
+static const struct kmi KM_WINDOW[] = {
+    { "Minimize", 1, 0, 'M' }, { "Close Window", 0, 0, 'W' }, { "", 2, MB_SEP, 0 },
+    { "Show All Windows", 2, 0, 'E' },
 };
+
+static void menu_add_kernel(int kind, const char *title, const struct kmi *t, int n)
+{
+    int m = g_nmenu++;
+    g_menu_kind[m] = (uint8_t)kind;
+    scopy(g_menu_title[m], title, sizeof g_menu_title[m]);
+    g_menu_nitems[m] = n;
+    for (int i = 0; i < n; i++) {
+        struct mrow *r = &g_menu_rows[m][i];
+        scopy(r->label, t[i].label, sizeof r->label);
+        r->id = t[i].id; r->flags = t[i].flags; r->key = t[i].key;
+    }
+}
+
+/* Rebuild the bar for whatever window is on top, if that changed or it
+ * published new menus. Cheap when nothing changed (two compares), so it is
+ * called from wm_sync_focus, after a publish, and once per desktop pass. */
+static void menu_model_sync(void)
+{
+    if (g_menu_open >= 0) return;
+    int src = g_locked ? -1 : top_visible();
+    if (src >= 0 && (!wins[src].used || wins[src].kind != WK_APP)) src = -1;
+    unsigned gen = src >= 0 ? wins[src].menus_gen : 0;
+    if (src == g_menu_src && gen == g_menu_src_gen) return;
+    int had_app = g_menu_src >= 0 && g_menu_src_gen != 0;
+    g_nmenu = 0;
+    menu_add_kernel(MK_LOGO, "LogitOS", KM_LOGO, (int)(sizeof KM_LOGO / sizeof KM_LOGO[0]));
+    const struct mb_set *ms = src >= 0 ? wins[src].menus : 0;
+#ifdef WM_MENU_NEGCTL_IGNORE_APP
+    ms = 0;                               /* the control: a bar that never shows the app's menus */
+#endif
+    if (ms) {
+        for (int k = 0; k < ms->n; k++) {
+            int m = g_nmenu++;
+            g_menu_kind[m] = MK_APP;
+            scopy(g_menu_title[m], ms->m[k].title, sizeof g_menu_title[m]);
+            g_menu_nitems[m] = ms->m[k].n;
+            for (int i = 0; i < ms->m[k].n; i++) {
+                struct mrow *r = &g_menu_rows[m][i];
+                const struct mb_item *it = &ms->m[k].it[i];
+                scopy(r->label, it->label, sizeof r->label);
+                r->id = it->id; r->flags = it->flags; r->key = it->key;
+            }
+        }
+        menu_add_kernel(MK_WINDOW, "Window", KM_WINDOW, (int)(sizeof KM_WINDOW / sizeof KM_WINDOW[0]));
+    } else {
+        menu_add_kernel(MK_FILE, "File", KM_FILE, (int)(sizeof KM_FILE / sizeof KM_FILE[0]));
+        menu_add_kernel(MK_VIEW, "View", KM_VIEW, (int)(sizeof KM_VIEW / sizeof KM_VIEW[0]));
+    }
+    int first = g_menu_src == -2;
+    g_menu_src = src; g_menu_src_gen = ms ? gen : 0;
+    if (first || had_app || ms) {
+        /* Only a change of TITLES repaints the bar or re-reports it: focus
+         * moving between two apps that both use File/View changes nothing a
+         * person can see. */
+        g_menu_reported = 0;
+        if (!first) wm_damage_menubar();
+        kprintf("[wm] menus win=%d n=%d", src, g_nmenu);
+        for (int i = 0; i < g_nmenu; i++) kprintf(" %s", g_menu_title[i]);
+        kprintf("\n");
+    }
+}
 
 #define MI_ROW_H S(22)
 #define MI_SEP_H S(9)
 #define MI_PAD_X S(14)
 #define MI_PAD_Y S(6)
-static int menu_row_h(const struct mi *it) { return it->label ? MI_ROW_H : MI_SEP_H; }
+#define MI_CHECK_W S(16)                  /* the tick column, only in a menu that has a checked row */
+#define MI_KEY_GAP S(28)                  /* label to shortcut, at least */
+static int menu_row_h(const struct mrow *it) { return (it->flags & MB_SEP) ? MI_SEP_H : MI_ROW_H; }
+static int menu_has_check(int m)
+{
+    for (int i = 0; i < g_menu_nitems[m]; i++) if (g_menu_rows[m][i].flags & MB_CHECKED) return 1;
+    return 0;
+}
+/* "⌘S" -- the glyph comes from /fonts/text.ttf through the shaper's fallback
+ * chain; ui.ttf does not carry U+2318. */
+static void menu_key_text(char key, char out[8])
+{
+    out[0] = (char)0xE2; out[1] = (char)0x8C; out[2] = (char)0x98;
+    out[3] = key; out[4] = 0;
+}
 
 /* Same discipline as menu_title_hit: the dropdown's geometry is computed once
  * here and read by the painter, the hit-tester and dmg_expand, so none of the
@@ -4225,11 +4365,15 @@ static int menu_row_h(const struct mi *it) { return it->label ? MI_ROW_H : MI_SE
 static void menu_dropdown_box(struct drect *r)
 {
     if (g_menu_open < 0) { r->x0 = r->y0 = r->x1 = r->y1 = 0; return; }
-    const struct mi *items = g_menu_items[g_menu_open];
+    const struct mrow *items = g_menu_rows[g_menu_open];
     int n = g_menu_nitems[g_menu_open], maxw = 0;
-    for (int i = 0; i < n; i++)
-        if (items[i].label) { int w = fb_text_width(items[i].label); if (w > maxw) maxw = w; }
-    int panel_w = maxw + 2 * MI_PAD_X;
+    for (int i = 0; i < n; i++) {
+        if (items[i].flags & MB_SEP) continue;
+        int w = fb_text_width(items[i].label);
+        if (items[i].key) { char k[8]; menu_key_text(items[i].key, k); w += MI_KEY_GAP + fb_text_width(k); }
+        if (w > maxw) maxw = w;
+    }
+    int panel_w = maxw + 2 * MI_PAD_X + (menu_has_check(g_menu_open) ? MI_CHECK_W : 0);
     if (panel_w < S(170)) panel_w = S(170);
     int panel_h = 2 * MI_PAD_Y;
     for (int i = 0; i < n; i++) panel_h += menu_row_h(&items[i]);
@@ -4243,11 +4387,20 @@ static void menu_dropdown_box(struct drect *r)
 /* One report, one call site each for "just opened" and "just switched" (see
  * both callers below) -- same "ask the guest, don't re-derive its geometry in
  * Python" reasoning as menu_bar_layout()'s report above: the panel's exact
- * pixel box depends on font metrics a test driver has no business computing. */
+ * pixel box depends on font metrics a test driver has no business computing.
+ * Each row follows, so a driver can click "Select All" by name. */
 static void menu_report_open(void)
 {
     struct drect p; menu_dropdown_box(&p);
     kprintf("[wm] menu open %d x0 %d y0 %d x1 %d y1 %d\n", g_menu_open, p.x0, p.y0, p.x1, p.y1);
+    int y = p.y0 + MI_PAD_Y;
+    for (int i = 0; i < g_menu_nitems[g_menu_open]; i++) {
+        const struct mrow *it = &g_menu_rows[g_menu_open][i];
+        int h = menu_row_h(it);
+        if (!(it->flags & MB_SEP))
+            kprintf("[wm] menu row %d '%s' y0 %d y1 %d\n", i, it->label, y, y + h);
+        y += h;
+    }
 }
 
 /* The item under (px,py) in menu `mi`, or -1 (outside the panel, or a
@@ -4255,15 +4408,15 @@ static void menu_report_open(void)
  * is what the hover highlight paints. */
 static int menu_item_at(int mi, int px, int py, struct drect *out_row)
 {
-    if (mi != g_menu_open) return -1;
+    if (mi < 0 || mi != g_menu_open) return -1;
     struct drect p; menu_dropdown_box(&p);
     if (px < p.x0 || px >= p.x1 || py < p.y0 || py >= p.y1) return -1;
     int y = p.y0 + MI_PAD_Y;
-    const struct mi *items = g_menu_items[mi];
+    const struct mrow *items = g_menu_rows[mi];
     int n = g_menu_nitems[mi];
     for (int i = 0; i < n; i++) {
         int h = menu_row_h(&items[i]);
-        if (items[i].label && py >= y && py < y + h) {
+        if (!(items[i].flags & MB_SEP) && py >= y && py < y + h) {
             if (out_row) { out_row->x0 = p.x0; out_row->x1 = p.x1; out_row->y0 = y; out_row->y1 = y + h; }
             return i;
         }
@@ -4272,12 +4425,15 @@ static int menu_item_at(int mi, int px, int py, struct drect *out_row)
     return -1;
 }
 
-/* File's two items need a real focused app window; everything else is always
- * available (Expose is claimed even with zero windows -- see wm_shortcut). */
+/* Close and Minimize need a real focused app window; an app's own item is
+ * enabled unless it said otherwise; everything else is always available
+ * (Expose is claimed even with zero windows -- see wm_shortcut). */
 static int menu_item_enabled(int mi, int idx)
 {
-    (void)idx;
-    if (mi == 1) {
+    const struct mrow *r = &g_menu_rows[mi][idx];
+    if (r->flags & (MB_SEP | MB_DISABLED)) return 0;
+    int k = g_menu_kind[mi];
+    if ((k == MK_FILE || k == MK_WINDOW) && r->id <= 1) {
         int wi = top_visible();
         return wi >= 0 && wins[wi].used && wins[wi].kind == WK_APP;
     }
@@ -4293,30 +4449,69 @@ static void menu_close(void)
     kprintf("[wm] menu closed\n");        /* a test syncs on this rather than guessing a delay */
 }
 
+/* An app's item, chosen: EV_MENU to the window that published it -- if it is
+ * still that window. The slot can have been reaped and reused since the model
+ * was built; menus_gen is never reused, so it tells the two tenants apart. */
+static void menu_send_app(int mi, int idx, const char *how)
+{
+    int wi = g_menu_src;
+    if (wi < 0 || !wins[wi].used || wins[wi].kind != WK_APP ||
+        !wins[wi].menus || wins[wi].menus_gen != g_menu_src_gen) return;
+    const struct mrow *r = &g_menu_rows[mi][idx];
+    kprintf("[wm] menu %s win=%d id=%d '%s'\n", how, wi, r->id, r->label);
+#ifndef WM_MENU_NEGCTL_DROP_EVENT
+    enqueue(&wins[wi], EV_MENU, r->id, mi - 1);   /* b: the menu's index in the app's blob */
+#endif
+}
+
 /* The one place a menu item's action actually happens. Closes the menu on
  * every reachable path -- a fired action always dismisses, exactly like a
  * real menu -- so no caller has to remember to. */
 static void menu_item_fire(int mi, int idx)
 {
-    if (mi == 0) {                                        /* LogitOS */
-        switch (idx) {
+    int kind = g_menu_kind[mi], id = g_menu_rows[mi][idx].id;
+    if (kind == MK_LOGO) {
+        switch (id) {
         case 0: menu_close(); overlay_open(OV_ABOUT); return;
         case 1: menu_close(); wm_launch("settings.aex", ""); return;
         case 3: menu_close(); overlay_open(OV_CONFIRM_SHUTDOWN); return;
         case 4: menu_close(); overlay_open(OV_CONFIRM_RESTART); return;
         default: menu_close(); return;                    /* the separator: unreachable, but safe */
         }
-    } else if (mi == 1) {                                 /* File */
+    } else if (kind == MK_APP) {
+        menu_close();
+        menu_send_app(mi, idx, "fire");
+    } else {                                               /* File, View, Window */
         int wi = top_visible();
         menu_close();
+        if (id == 2) { ex_enter(); return; }
         if (wi < 0 || !wins[wi].used || wins[wi].kind != WK_APP) return;
         struct win *w = &wins[wi];
-        if (idx == 0) enqueue(w, EV_CLOSE, 0, 0);          /* same event the traffic light sends */
-        else if (idx == 1) win_set_min(w, 1);
-    } else {                                               /* View */
-        menu_close();
-        if (idx == 0) ex_enter();
+        if (id == 0) enqueue(w, EV_CLOSE, 0, 0);           /* same event the traffic light sends */
+        else if (id == 1) win_set_min(w, 1);
     }
+}
+
+/* Cmd+<key> with no system meaning, and the top window published an item
+ * with that shortcut: the same EV_MENU a click on it sends. This is what makes
+ * the hint drawn beside the label TRUE -- an app's shortcuts are the ones in
+ * its menus, and the app handles each command once, as a menu id. */
+static int menu_key(int c)
+{
+    menu_model_sync();
+    if (c >= 'a' && c <= 'z') c = c - 'a' + 'A';
+    for (int m = 0; m < g_nmenu; m++) {
+        if (g_menu_kind[m] != MK_APP) continue;
+        for (int i = 0; i < g_menu_nitems[m]; i++) {
+            const struct mrow *r = &g_menu_rows[m][i];
+            int k = r->key;
+            if (k >= 'a' && k <= 'z') k = k - 'a' + 'A';
+            if (!k || k != c || !menu_item_enabled(m, i)) continue;
+            menu_send_app(m, i, "key");
+            return 1;
+        }
+    }
+    return 0;
 }
 
 static void draw_menu_dropdown(void)
@@ -4330,12 +4525,13 @@ static void draw_menu_dropdown(void)
     unsigned ac = settings_get_color("ui.accent", 0x5E96FF);
     uint8_t ar = (uint8_t)(ac >> 16), ag = (uint8_t)(ac >> 8), ab = (uint8_t)ac;
 
-    const struct mi *items = g_menu_items[g_menu_open];
+    const struct mrow *items = g_menu_rows[g_menu_open];
     int n = g_menu_nitems[g_menu_open];
+    int lx = p.x0 + MI_PAD_X + (menu_has_check(g_menu_open) ? MI_CHECK_W : 0);
     int y = p.y0 + MI_PAD_Y;
     for (int i = 0; i < n; i++) {
         int rh = menu_row_h(&items[i]);
-        if (!items[i].label) {
+        if (items[i].flags & MB_SEP) {
             fb_fill_rect(p.x0 + S(8), y + rh / 2, w - S(16), S(1),
                          g_ui_dark ? rgb(70, 70, 80) : rgb(214, 214, 220));
         } else {
@@ -4346,7 +4542,14 @@ static void draw_menu_dropdown(void)
             if (!enabled) ink = g_ui_dark ? rgb(112, 112, 120) : rgb(180, 180, 186);
             else if (hov)  ink = rgb(255, 255, 255);
             else           ink = g_ui_dark ? rgb(228, 229, 235) : rgb(40, 40, 48);
-            fb_text(p.x0 + MI_PAD_X, y + S(3), items[i].label, ink);
+            if (items[i].flags & MB_CHECKED) fb_text(p.x0 + MI_PAD_X - S(2), y + S(3), "\xe2\x9c\x93", ink);
+            fb_text(lx, y + S(3), items[i].label, ink);
+            if (items[i].key) {
+                char k[8]; menu_key_text(items[i].key, k);
+                uint32_t kink = hov ? ink : (g_ui_dark ? rgb(150, 150, 160) : rgb(130, 130, 138));
+                if (!enabled) kink = ink;
+                fb_text(p.x1 - MI_PAD_X - fb_text_width(k), y + S(3), k, kink);
+            }
         }
         y += rh;
     }
@@ -6313,6 +6516,7 @@ static void wm_process_key(int c, int mods)
         return;
     }
     if (!g_locked && (mods & EV_MOD_SUPER) && wm_shortcut(c, mods)) return;
+    if (!g_locked && (mods & EV_MOD_SUPER) && menu_key(c)) return;
     int wi = wm_keyboard_focus();
     if (wi < 0) return;
     struct win *w = &wins[wi];
@@ -6574,7 +6778,7 @@ static void wm_menu_mouse(const struct inputq_event *in)
     /* Hovering a DIFFERENT title switches menus live -- the detail that makes
      * a menu bar read as one system instead of four separate buttons. */
     int hit_title = -1;
-    for (int i = 0; i < NMENU; i++) {
+    for (int i = 0; i < g_nmenu; i++) {
         struct drect t; menu_title_hit(i, &t);
         if (in_rect(x, y, t.x0, t.y0, t.x1 - t.x0, t.y1 - t.y0)) { hit_title = i; break; }
     }
@@ -6639,7 +6843,7 @@ static void wm_process_mouse(const struct inputq_event *in)
      * switch just above: the menu bar is chrome drawn on top, so it must win
      * the click before the dock or a window gets a chance to. */
     if (left && !mleft) {
-        for (int i = 0; i < NMENU; i++) {
+        for (int i = 0; i < g_nmenu; i++) {
             struct drect t; menu_title_hit(i, &t);
             if (!in_rect(x, y, t.x0, t.y0, t.x1 - t.x0, t.y1 - t.y0)) continue;
             g_menu_open = i; g_menu_item_hov = -1;
@@ -7593,6 +7797,7 @@ void wm_run(void)
          * this line, requests no damage, and goes back to sleep on the hlt. */
         wm_hotcorner_tick();
         sw_tick();                /* Cmd+Tab switcher: reveal after a hold, never strand it open */
+        menu_model_sync();        /* the top window changed some other way (reap, launch): follow it */
         wm_anim_tick();
         /* Animation/hot-corner changes can transfer keyboard ownership without
          * an input event. Notify apps and settle IME before damage is captured. */

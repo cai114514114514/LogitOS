@@ -90,6 +90,10 @@ static inline int  wait_event_ms(struct logit_event *e, int ms) { return (int)_s
  * event loop, and the whole reason the syscall accepts a NULL event. */
 static inline void wait_idle(int ms) { _sys(SYS_WAIT_EVENT, 0, ms, 0); }
 static inline int  get_arg(char *b, int m) { return (int)_sys(SYS_GET_ARG, (long)b, m, 0); }
+/* The window's menus on the menu bar: a blob made with menu_blob.h's mb_*
+ * builder (c/kernel/gui/menu_blob.h). 0, or -1 with the reason on the serial
+ * log; len 0 withdraws them. A chosen item arrives as EV_MENU, a = its id. */
+static inline int  gui_menu_set(const void *b, int len) { return (int)_sys(SYS_GUI_MENU_SET, (long)b, len, 0); }
 static inline void get_time(struct logit_time *t) { _sys(SYS_GET_TIME, (long)t, 0, 0); }
 /* Milliseconds since boot: the clock to SUBTRACT. get_time() is the wall clock
  * in whole seconds and can be set backwards, so it can neither time an

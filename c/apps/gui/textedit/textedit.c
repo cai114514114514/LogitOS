@@ -23,6 +23,7 @@
  * arguments below describe the implementation this replaces, not its limits.
  * Layout now caches line starts and uses AUI text primitives for invalidation. */
 #include "aui.h"
+#include "menu_blob.h"
 #include "textedit_document.h"
 #include <stdio.h>
 #include "../../../lib/agent/sdk.h"
@@ -474,6 +475,32 @@ static int te_fit(int start, int limit, int avail, int px)
  * middle-of-document edits, selections, review highlights and disappearing rows. */
 #include "textedit_work.inc"
 
+/* THE MENU BAR ("Fluid" P5). Each item's id IS the key code its shortcut
+ * already produced (Ctrl+S = 19, ...), and EV_MENU is turned back into that
+ * EV_KEY at the top of the event loop -- so a menu command, its Cmd shortcut
+ * (routed by the kernel from the key column) and the old Ctrl chord are one
+ * code path, and there is no second implementation of Save to drift. */
+static struct mb_builder te_menus;
+static void te_publish_menus(void)
+{
+    struct mb_builder *b = &te_menus;
+    mb_begin(b);
+    mb_menu(b, "File");
+    mb_item(b, CTRL_S, 0, 'S', "Save");
+    mb_menu(b, "Edit");
+    mb_item(b, 26, 0, 'Z', "Undo");
+    mb_sep(b);
+    mb_item(b, 24, 0, 'X', "Cut");
+    mb_item(b, 3, 0, 'C', "Copy");
+    mb_item(b, 22, 0, 'V', "Paste");
+    mb_sep(b);
+    mb_item(b, 1, 0, 'A', "Select All");
+    mb_menu(b, "Assistant");
+    mb_item(b, 12, 0, 'L', "Ask Logit...");
+    int n = mb_end(b);
+    if (n > 0) gui_menu_set(b->buf, n);
+}
+
 void app_main(void)
 {
     text=malloc(MAXT+1);
@@ -488,6 +515,7 @@ void app_main(void)
     load_geometry(&w, &h);
     gui_create(fname, w, h);
     aui_set_size(w, h);
+    te_publish_menus();
 
     if(fname[0]!='/'){char absolute[AG_PATH];absolute[0]='/';
         size_t len=strlen(fname);if(len+2>sizeof absolute)app_exit(1);
@@ -510,6 +538,7 @@ void app_main(void)
         struct logit_event e;
         int changed = agent_refresh();
         while (poll_event(&e)) {
+            if(e.type==EV_MENU){e.type=EV_KEY;e.mods=0;}   /* see te_publish_menus */
             if(e.type==EV_MOUSE||e.type==EV_MOUSE_UP||e.type==EV_MOUSE_MOVE){
                 if(e.type==EV_MOUSE&&work_citation_click(e.a,e.b)){aui_feed_done();draw();continue;}
                 if(e.type==EV_MOUSE&&work_body_hit(e.a,e.b)){

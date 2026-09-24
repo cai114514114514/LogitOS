@@ -52,6 +52,7 @@
 #include "logit_sniff.h"
 #include "logit_cells.h"
 #include "term_line.h"
+#include "menu_blob.h"
 #include "h264.h"
 #include "h265.h"
 #include "audio.h"
@@ -2609,6 +2610,43 @@ static void on_key(struct logit_event *e)
     }
 }
 
+/* The menu bar ("Fluid" P5). An item's id is the key code on_key already
+ * handles, plus TM_SHIFT for "as if Shift was held" -- which is what makes the
+ * menu's Copy a copy and never an interrupt (on_key: ^C copies only with a
+ * selection or Shift). EV_MENU is replayed through on_key, so the menu, the
+ * kernel-routed Cmd shortcut and the Ctrl chord are one code path. Errors
+ * Only carries a tick, so toggling it republishes. */
+#define TM_SHIFT 0x100
+static struct mb_builder tm_menus;
+static void tm_publish_menus(void)
+{
+    struct mb_builder *b = &tm_menus;
+    mb_begin(b);
+    mb_menu(b, "Edit");
+    mb_item(b, 3 | TM_SHIFT, 0, 'C', "Copy");
+    mb_item(b, 22, 0, 'V', "Paste");
+    mb_sep(b);
+    mb_item(b, 12, 0, 'K', "Clear Scrollback");
+    mb_menu(b, "View");
+    mb_item(b, 5, errs_only ? MB_CHECKED : 0, 0, "Errors Only");
+    mb_menu(b, "Shell");
+    mb_item(b, 3, alive ? 0 : MB_DISABLED, 0, "Interrupt (Ctrl+C)");
+    mb_item(b, 4, alive ? 0 : MB_DISABLED, 0, "End of Input (Ctrl+D)");
+    int n = mb_end(b);
+    if (n > 0) gui_menu_set(b->buf, n);
+}
+
+static void on_menu(const struct logit_event *e)
+{
+    struct logit_event k = *e;
+    k.type = EV_KEY;
+    k.a = e->a & 0xFF;
+    k.mods = (e->a & TM_SHIFT) ? EV_MOD_SHIFT : 0;
+    int was = errs_only;
+    if (alive || k.a == 3 || k.a == 12 || k.a == 5) on_key(&k);
+    if (errs_only != was) tm_publish_menus();
+}
+
 /* ----------------------------------------------------------------- main --- */
 
 void app_main(void)
@@ -2625,6 +2663,7 @@ void app_main(void)
     } else {
         send_size();
     }
+    tm_publish_menus();
 
     /* Opened on a file (the WM's file-type fallback launches the Terminal with
      * the path as its argument): run something sensible on it. */
@@ -2648,7 +2687,8 @@ void app_main(void)
             case EV_CLOSE: app_exit(0);
             case EV_THEME: theme_load(); redraw = 1; break;
             case EV_RESIZE: on_resize(e.a, e.b); break;
-            case EV_KEY:   if (alive) on_key(&e); break;
+            case EV_KEY:   if (alive) { int was = errs_only; on_key(&e); if (errs_only != was) tm_publish_menus(); } break;
+            case EV_MENU:  on_menu(&e); break;
             case EV_MOUSE:
             case EV_MOUSE_R: {
                 if (e.a > win_w - PAD - SBW && e.b >= text_y && e.b < text_y + text_h) {
@@ -2702,6 +2742,7 @@ void app_main(void)
                 if (in_w >= 0) { sys_close(in_w); in_w = -1; }
                 put_text(S_SYS, "[shell exited]");
                 redraw = 1;
+                tm_publish_menus();     /* the Shell items go grey */
             }
         }
 

@@ -86,6 +86,7 @@
 #define SYS_CPU_COUNT  196 /* () -> current online logical CPU count; never a build-time topology constant */
 #define SYS_STATVFS    202 /* (path, struct logit_statvfs*, len) -> 0, or <0; capacity of the filesystem holding path */
 #define SYS_OPEN_PATH_ARG 203 /* (path, arg) -> 0; SYS_OPEN_PATH, and an .aex also gets `arg` (get_arg) */
+#define SYS_GUI_MENU_SET 201 /* (blob, len) -> 0, or -1; the window's menus (c/kernel/gui/menu_blob.h); len 0 withdraws them */
 #define SYS_KHEAP_STRESS 69 /* (iters, size, seed) -> corruption count; BKL-FREE concurrent kmalloc/kfree stress (M25 P1 gate) */
 #define SYS_UI_DARK     70 /* (set) set<0 query, else set system dark mode (0/1); -> current value */
 #define SYS_GUI_ICON    71 /* ((x<<16)|y, (id<<16)|px, color) draw a vector icon into the window */
@@ -337,6 +338,12 @@ static inline int logit_key_is_command(unsigned a)
  * heard of. Until 2026-09-24 the keyboard driver dropped every release, so the
  * only way to know a key was still down was to poll WINS_KEY_HELD. */
 #define EV_KEY_UP 11
+
+/* A menu item the app published with SYS_GUI_MENU_SET was chosen -- clicked,
+ * or its Cmd+<key> pressed while this window had the keyboard. a = the item's
+ * id, b = the index of its menu in the app's blob. Sent only for an item that
+ * was enabled when chosen; separators never fire. */
+#define EV_MENU 12
 
 /* Modifier keys held when the event was generated (struct logit_event.mods).
  * Sampled in the IRQ that produced the event, not when the app polls it -- a

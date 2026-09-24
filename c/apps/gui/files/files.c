@@ -1,5 +1,6 @@
 #include "aui.h"
 #include "hidden.h"
+#include "menu_blob.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -571,6 +572,56 @@ static const struct menu_item MENU[] = {
     { "Get Info",    do_get_info },
 };
 #define MENU_N (int)(sizeof MENU / sizeof MENU[0])
+
+/* THE MENU BAR ("Fluid" P5) is the same idea as MENU above, one step further:
+ * label, shortcut and action in ONE row, and the item's id is its index in
+ * this table -- the id the kernel echoes back in EV_MENU. Cmd+<key> reaches
+ * the same row through the kernel (wm.c menu_key), so there is no separate
+ * shortcut table to disagree with it. */
+static void toggle_view(void);
+static void mb_hidden(void)  { show_hidden = !show_hidden; scroll = 0; info_open = 0; }
+static void mb_view(void)    { toggle_view(); }
+static void mb_up(void)      { go_up(); }
+static void mb_ask(void)     { ask_logit(); }
+struct bar_item { const char *menu, *label; char key; void (*run)(void); int (*checked)(void); };
+static int ck_hidden(void) { return show_hidden; }
+static int ck_icons(void)  { return view_mode == 0; }   /* 0 = icon grid */
+static const struct bar_item BAR[] = {
+    { "File", "New Project",       'N', start_newfolder, 0 },
+    { "File", "Open",              'O', mi_open,         0 },
+    { "File", 0,                    0,  0,               0 },
+    { "File", "Get Info",          'I', do_get_info,     0 },
+    { "File", "Rename",             0,  start_rename,    0 },
+    { "File", 0,                    0,  0,               0 },
+    { "File", "Delete",             0,  do_delete,       0 },
+    { "Edit", "Cut",               'X', mi_cut,          0 },
+    { "Edit", "Copy",              'C', mi_copy,         0 },
+    { "Edit", "Paste",             'V', do_paste,        0 },
+    { "View", "as Icons",           0,  mb_view,         ck_icons },
+    { "View", "Show Hidden Files",  0,  mb_hidden,       ck_hidden },
+    { "Go",   "Enclosing Folder",  '[', mb_up,           0 },
+    { "Go",   "Ask Logit...",      'L', mb_ask,          0 },
+};
+#define BAR_N (int)(sizeof BAR / sizeof BAR[0])
+static struct mb_builder bar_blob;
+static void bar_publish(void)
+{
+    struct mb_builder *b = &bar_blob;
+    mb_begin(b);
+    for (int i = 0; i < BAR_N; i++) {
+        if (i == 0 || !streq(BAR[i].menu, BAR[i - 1].menu)) mb_menu(b, BAR[i].menu);
+        if (!BAR[i].label) { mb_sep(b); continue; }
+        mb_item(b, i, BAR[i].checked && BAR[i].checked() ? MB_CHECKED : 0, BAR[i].key, BAR[i].label);
+    }
+    int n = mb_end(b);
+    if (n > 0) gui_menu_set(b->buf, n);
+}
+static void bar_run(int id)
+{
+    if (id < 0 || id >= BAR_N || !BAR[id].run) return;
+    BAR[id].run();
+    menu_open = 0;                          /* a command dismisses the context menu too */
+}
 #define MENU_W 124
 #define MENU_IH 24
 
@@ -955,6 +1006,7 @@ void app_main(void)
      * widgets. Seven others (settings, monitor, gallery, studio, textedit, ch,
      * assistant) have it. The real fix is for one call to serve both doors. */
     aui_set_size(WINW, WINH);
+    bar_publish();
     project_refresh(1);
     frame();
     struct logit_event e;
@@ -974,10 +1026,14 @@ void app_main(void)
         ctrl_held  = (e.mods & EV_MOD_CTRL) != 0;
 
         int feed = 0;
+        int ticks = show_hidden * 2 + (view_mode != 0);    /* the menu bar's two ticks */
         switch (e.type) {
         case EV_KEY:
             handle_key((int)e.a);
             feed = 1;
+            break;
+        case EV_MENU:
+            bar_run((int)e.a);
             break;
         case EV_MOUSE_R:
             if (e.a >= CONTENT_RIGHT) continue;
@@ -992,6 +1048,7 @@ void app_main(void)
             break;                          /* EV_THEME and anything new: repaint */
         }
 
+        if (ticks != show_hidden * 2 + (view_mode != 0)) bar_publish();
         if (!streq(cwd, project_path)) project_refresh(1);
         if (feed) { aui_feed(&e); frame(); aui_feed_done(); }
         else frame();
