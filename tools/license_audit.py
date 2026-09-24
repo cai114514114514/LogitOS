@@ -53,7 +53,14 @@ import re
 import struct
 import sys
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# LICENSE_AUDIT_ROOT: the negative control (tests/license.mk) audits a SHADOW
+# of the tree built by tools/shadow_tree.py, never the tree itself. It used to
+# break the real Makefile and THIRD_PARTY.md and put them back, and under the
+# parallel sweep that is not a private act: on 2026-09-24 two overlapping runs
+# restored a half-written Makefile, and every make after it -- 960 sweep
+# targets -- died on "missing separator" against a tree nobody had edited.
+ROOT = os.environ.get("LICENSE_AUDIT_ROOT") or \
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def p(*parts):
