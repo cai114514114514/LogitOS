@@ -937,6 +937,27 @@ void JS_SetHostPromiseRejectionTracker(JSRuntime *rt, JSHostPromiseRejectionTrac
 /* return != 0 if the JS code needs to be interrupted */
 typedef int JSInterruptHandler(JSRuntime *rt, void *opaque);
 void JS_SetInterruptHandler(JSRuntime *rt, JSInterruptHandler *cb, void *opaque);
+#ifdef JS_PROBE_TRACE
+/* LOGIT PATCH (diagnostic builds only, -DJS_PROBE_TRACE): two observers for
+ * "what did this script ask the engine for that it did not get".
+ *   miss:  a property lookup walked the whole prototype chain and found
+ *          nothing. kind 0 = get, 1 = has (`in`), 2 = get that throws a
+ *          ReferenceError (an undeclared global read). `obj` is the receiver.
+ *   throw: the ENGINE created an error (TypeError, ReferenceError, ...), caught
+ *          or not. `where` names the C function for the context-free throws
+ *          ("not an object") and is NULL otherwise; `fn` is the innermost JS
+ *          function running, or NULL.
+ * Neither exists in a production build: the fields, the calls and this
+ * declaration all compile out. */
+typedef void JSProbeMissFunc(JSContext *ctx, JSValueConst obj, JSAtom prop, int kind, void *opaque);
+typedef void JSProbeThrowFunc(JSContext *ctx, int error_num, const char *msg,
+                              const char *where, const char *fn, void *opaque);
+void JS_SetProbeHooks(JSRuntime *rt, JSProbeMissFunc *miss, JSProbeThrowFunc *thr, void *opaque);
+/* note: a free-form observation ("tostring NAME <file> source|native"). */
+typedef void JSProbeNoteFunc(JSContext *ctx, const char *text, void *opaque);
+void JS_SetProbeNote(JSRuntime *rt, JSProbeNoteFunc *note);
+void *JS_ProbeRawProto(void *obj);   /* JSObject* -> its prototype, no trap, no ref */
+#endif
 /* if can_block is TRUE, Atomics.wait() can be used */
 void JS_SetCanBlock(JSRuntime *rt, JS_BOOL can_block);
 /* set the [IsHTMLDDA] internal slot */

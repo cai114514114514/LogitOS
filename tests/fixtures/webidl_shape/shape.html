@@ -1,0 +1,16 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>shape</title></head>
+<body><p id="status">shape</p>
+<script src="shape.js"></script>
+<script>
+/* Emits the dump as SHAPE-BEGIN / chunked SHAPE lines / SHAPE-END on the
+ * console, 300 characters per line, so a serial log can carry it. */
+(function () {
+  var s = JSON.stringify(shapeDump());
+  window.__shape = s;
+  console.log('SHAPE-BEGIN ' + s.length);
+  for (var i = 0; i < s.length; i += 300) console.log('SHAPE ' + s.slice(i, i + 300));
+  console.log('SHAPE-END');
+  document.getElementById('status').textContent = 'shape ' + s.length;
+})();
+</script></body></html>

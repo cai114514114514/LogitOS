@@ -3921,6 +3921,7 @@ test-webapi-asan: $(RUST_LIB_HOST)
 # the fragment that builds it.
 -include tests/stall.mk
 -include tests/canvas.mk
+-include tests/jsprobe.mk
 # The PNG ENCODER (rust/src/pngenc.rs) -- the other direction from png.rs, and
 # what removes the premise under js_canvas.c's toDataURL refusal. Two oracles,
 # one of them outside this tree; own fragment, see the file.

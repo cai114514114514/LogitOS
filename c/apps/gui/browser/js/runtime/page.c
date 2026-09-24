@@ -21,6 +21,7 @@
  * weak for the same reason: the host tests of THIS file link without it. */
 #define JS_PLATFORM_OPTIONAL
 #include "js/runtime/platform.h"
+#include "js/runtime/probe.h"   /* diagnostic builds only: -DJS_PROBE_TRACE */
 #define JS_PORTS_OPTIONAL
 #include "js/workers/ports.h"
 #include "dom/focus.h"
@@ -1539,6 +1540,11 @@ int js_page_open(struct node *root)
      * wrapper afterwards, leaving animate() present and unobservable. */
     if (PAGE_HAVE(js_anim_install)) JS_OPEN_STEP("js_anim_install", js_anim_install(g_ctx));
     JS_FreeValue(g_ctx, g);
+#ifdef JS_PROBE_TRACE
+    /* LAST: the probe snapshots what the platform installed, so everything
+     * above must already be there -- see js/runtime/probe.c. */
+    js_probe_install(g_ctx, "");
+#endif
 #ifdef JS_PAGE_INSTALL_PROFILE
     js_install_report(js_samples,js_sample_count,now_ms()-js_open_start);
 #endif
@@ -1576,6 +1582,9 @@ void js_page_close(void)
      * is torn down, not after. It also frees each worker's own JSRuntime --
      * a second live runtime outliving the page it belongs to is exactly the
      * kind of thing nothing downstream would notice until it crashed. */
+#ifdef JS_PROBE_TRACE
+    js_probe_reset(g_ctx);      /* prints the page's totals, releases the tracked objects */
+#endif
     if (PAGE_HAVE(js_semantics_close)) js_semantics_close(g_ctx);
     if (PAGE_HAVE(js_anim_close)) js_anim_close(g_ctx);
     if (PAGE_WORKER_HAVE(js_worker_close_all)) js_worker_close_all();

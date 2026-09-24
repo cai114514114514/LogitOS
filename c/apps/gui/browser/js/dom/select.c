@@ -1176,11 +1176,28 @@ static const char *SELECT_PRELUDE =
 "  catch (q) {}\n"
 "} }\n"
 
-"own(doc, 'querySelectorAll', function (s) { return qsa(doc, s); });\n"
-"own(doc, 'querySelector', function (s) { return qs1(doc, s); });\n"
-"own(doc, 'getElementsByTagName', function (n) { return byTag(doc, n); });\n"
-"own(doc, 'getElementsByTagNameNS', function (ns, n) { return byTagNS(doc, ns, n); });\n"
-"own(doc, 'getElementsByClassName', function (n) { return byClass(doc, n); });\n"
+/* ON Document.prototype, NOT on the document. WebIDL puts ParentNode's
+ * operations on the interface prototype; these five used to be own properties
+ * of `document`, so Document.prototype.querySelectorAll was undefined -- and
+ * Cloudflare's challenge does `new Proxy(Document.prototype.querySelectorAll,
+ * ...)`, which threw "not an object" (measured with the JS probe,
+ * tests/jsprobe.mk). They answer for THIS page's document only: another
+ * Document (a DOMParser result) carries its own implementations, and anything
+ * else is refused the way a browser refuses it -- TypeError: Illegal
+ * invocation -- rather than silently searching the page. */
+"var DP = Object.getPrototypeOf(doc);\n"
+"if (!DP || DP === Object.prototype) DP = doc;\n"
+"function thisDoc(o) {\n"
+"  if (o !== doc) throw new TypeError('Illegal invocation');\n"
+"  return doc;\n"
+"}\n"
+"own(DP, 'querySelectorAll', function querySelectorAll(s) { return qsa(thisDoc(this), s); });\n"
+"own(DP, 'querySelector', function querySelector(s) { return qs1(thisDoc(this), s); });\n"
+"own(DP, 'getElementsByTagName', function getElementsByTagName(n) { return byTag(thisDoc(this), n); });\n"
+"own(DP, 'getElementsByTagNameNS', function getElementsByTagNameNS(ns, n) { return byTagNS(thisDoc(this), ns, n); });\n"
+"own(DP, 'getElementsByClassName', function getElementsByClassName(n) { return byClass(thisDoc(this), n); });\n"
+"if (DP !== doc) ['querySelectorAll', 'querySelector', 'getElementsByTagName', 'getElementsByTagNameNS',\n"
+"  'getElementsByClassName'].forEach(function (k) { try { delete doc[k]; } catch (e) {} });\n"
 "def(doc, 'getElementsByName', function (n) {\n"
 "  var out = [], r = rootOf(doc);\n"
 "  if (r) descendants(r, function (el) {\n"

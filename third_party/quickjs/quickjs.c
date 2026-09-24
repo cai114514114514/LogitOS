@@ -250,6 +250,14 @@ typedef struct {
 } JSNumericOperations;
 
 struct JSRuntime {
+#ifdef JS_PROBE_TRACE
+    JSProbeMissFunc *probe_miss;          /* LOGIT PATCH: see quickjs.h */
+    JSProbeThrowFunc *probe_throw;
+    void *probe_opaque;
+    int probe_depth;                      /* a hook's own lookups are not reported */
+    const char *probe_where;              /* set by JS_ThrowTypeErrorNotAnObject */
+    JSProbeNoteFunc *probe_note;
+#endif
     JSMallocFunctions mf;
     JSMallocState malloc_state;
     const char *rt_info;
@@ -1864,6 +1872,29 @@ void JS_SetGCThreshold(JSRuntime *rt, size_t gc_threshold)
 #define malloc(s) malloc_is_forbidden(s)
 #define free(p) free_is_forbidden(p)
 #define realloc(p,s) realloc_is_forbidden(p,s)
+
+#ifdef JS_PROBE_TRACE
+void JS_SetProbeHooks(JSRuntime *rt, JSProbeMissFunc *miss, JSProbeThrowFunc *thr, void *opaque)
+{
+    rt->probe_miss = miss;
+    rt->probe_throw = thr;
+    rt->probe_opaque = opaque;
+}
+
+/* The prototype of object `p` (a JSObject*), raw: no reference taken and --
+ * unlike JS_GetPrototype -- no Proxy trap run, so an observer can walk a
+ * chain without executing page code. NULL at the end of the chain. */
+void JS_SetProbeNote(JSRuntime *rt, JSProbeNoteFunc *note)
+{
+    rt->probe_note = note;
+}
+
+void *JS_ProbeRawProto(void *p)
+{
+    JSObject *o = p;
+    return o ? o->shape->proto : NULL;
+}
+#endif
 
 void JS_SetInterruptHandler(JSRuntime *rt, JSInterruptHandler *cb, void *opaque)
 {
@@ -6877,6 +6908,21 @@ static JSValue JS_ThrowError2(JSContext *ctx, JSErrorEnum error_num,
     JSValue obj, ret;
 
     vsnprintf(buf, sizeof(buf), fmt, ap);
+#ifdef JS_PROBE_TRACE
+    {
+        JSRuntime *rt = ctx->rt;
+        const char *where = rt->probe_where;
+        rt->probe_where = NULL;
+        if (rt->probe_throw && !rt->probe_depth && !rt->in_out_of_memory) {
+            JSStackFrame *sf = rt->current_stack_frame;
+            const char *fn = sf ? get_func_name(ctx, sf->cur_func) : NULL;
+            rt->probe_depth++;
+            rt->probe_throw(ctx, (int)error_num, buf, where, fn, rt->probe_opaque);
+            if (fn) JS_FreeCString(ctx, fn);
+            rt->probe_depth--;
+        }
+    }
+#endif
     obj = JS_NewObjectProtoClass(ctx, ctx->native_error_proto[error_num],
                                  JS_CLASS_ERROR);
     if (unlikely(JS_IsException(obj))) {
@@ -7030,6 +7076,16 @@ static JSValue JS_ThrowTypeErrorNotAnObject(JSContext *ctx)
 {
     return JS_ThrowTypeError(ctx, "not an object");
 }
+#ifdef JS_PROBE_TRACE
+/* 52 call sites share one context-free message; in a probe build each site
+ * records which C function threw, so "not an object" becomes answerable. */
+static JSValue JS_ThrowTypeErrorNotAnObjectAt(JSContext *ctx, const char *where)
+{
+    ctx->rt->probe_where = where;
+    return JS_ThrowTypeErrorNotAnObject(ctx);
+}
+#define JS_ThrowTypeErrorNotAnObject(ctx) JS_ThrowTypeErrorNotAnObjectAt(ctx, __func__)
+#endif
 
 static JSValue JS_ThrowTypeErrorNotASymbol(JSContext *ctx)
 {
@@ -7514,6 +7570,13 @@ JSValue JS_GetPropertyInternal(JSContext *ctx, JSValueConst obj,
         if (!p)
             break;
     }
+#ifdef JS_PROBE_TRACE
+    if (ctx->rt->probe_miss && !ctx->rt->probe_depth && tag == JS_TAG_OBJECT) {
+        ctx->rt->probe_depth++;
+        ctx->rt->probe_miss(ctx, obj, prop, throw_ref_error ? 2 : 0, ctx->rt->probe_opaque);
+        ctx->rt->probe_depth--;
+    }
+#endif
     if (unlikely(throw_ref_error)) {
         return JS_ThrowReferenceErrorNotDefined(ctx, prop);
     } else {
@@ -8115,6 +8178,13 @@ int JS_HasProperty(JSContext *ctx, JSValueConst obj, JSAtom prop)
         if (!p)
             break;
     }
+#ifdef JS_PROBE_TRACE
+    if (ctx->rt->probe_miss && !ctx->rt->probe_depth) {
+        ctx->rt->probe_depth++;
+        ctx->rt->probe_miss(ctx, obj, prop, 1, ctx->rt->probe_opaque);
+        ctx->rt->probe_depth--;
+    }
+#endif
     return FALSE;
 }
 
@@ -39759,6 +39829,34 @@ static JSValue js_function_toString(JSContext *ctx, JSValueConst this_val,
         return JS_EXCEPTION;
 
     p = JS_VALUE_GET_OBJ(this_val);
+#ifdef JS_PROBE_TRACE
+    /* Who stringifies a function, and does it get source or [native code]?
+     * Page-script functions are the page's own business; a function compiled
+     * from a platform prelude (pseudo-filename "<...>") handing its SOURCE to
+     * the page is the observation that matters. */
+    if (ctx->rt->probe_note && !ctx->rt->probe_depth) {
+        char text[160];
+        const char *nm = get_func_name(ctx, this_val);
+        if (js_class_has_bytecode(p->class_id)) {
+            JSFunctionBytecode *b0 = p->u.func.function_bytecode;
+            const char *fname = b0->has_debug ? JS_AtomToCString(ctx, b0->debug.filename) : NULL;
+            if (fname && fname[0] == '<') {
+                snprintf(text, sizeof text, "tostring %s %s -> %s", nm && *nm ? nm : "(anonymous)",
+                         fname, (b0->has_debug && b0->debug.source) ? "SOURCE" : "no-source");
+                ctx->rt->probe_depth++;
+                ctx->rt->probe_note(ctx, text, ctx->rt->probe_opaque);
+                ctx->rt->probe_depth--;
+            }
+            if (fname) JS_FreeCString(ctx, fname);
+        } else {
+            snprintf(text, sizeof text, "tostring %s native", nm && *nm ? nm : "(anonymous)");
+            ctx->rt->probe_depth++;
+            ctx->rt->probe_note(ctx, text, ctx->rt->probe_opaque);
+            ctx->rt->probe_depth--;
+        }
+        if (nm) JS_FreeCString(ctx, nm);
+    }
+#endif
     if (js_class_has_bytecode(p->class_id)) {
         JSFunctionBytecode *b = p->u.func.function_bytecode;
         if (b->has_debug && b->debug.source) {
