@@ -87,6 +87,9 @@
 #define JS_WASM_OPTIONAL
 #include "js/wasm/wasm.h"
 #undef JS_WASM_OPTIONAL
+#define JS_NATIVE_SHAPE_OPTIONAL
+#include "js/runtime/native_shape.h"
+#undef JS_NATIVE_SHAPE_OPTIONAL
 #include "net/fetch.h"
 #include "../../../../../net/http/url.h"
 #include <stdio.h>
@@ -1205,6 +1208,10 @@ static void worker_start(struct jsworker *w)
         deliver_error_to_parent(w,"could not initialize worker globals",w->url,0,0);
         mark_dead_keep_notify(w);return;
     }
+    /* The worker realm's globals are the platform's too, and this is the
+     * one moment between their install and the worker's own script: see
+     * js/runtime/native_shape.c (the same pass js_page_open runs). */
+    if (LOGIT_HAVE(js_native_shape_install)) js_native_shape_install(wctx, 0);
 
     worker_diag(w->id, "eval", "begin");
     worker_slice_begin(w);

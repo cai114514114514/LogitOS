@@ -754,6 +754,73 @@ JS_BOOL JS_IsFunction(JSContext* ctx, JSValueConst val);
 JS_BOOL JS_IsConstructor(JSContext* ctx, JSValueConst val);
 JS_BOOL JS_SetConstructorBit(JSContext *ctx, JSValueConst func_obj, JS_BOOL val);
 
+/* ---- LOGIT PATCH (vs upstream QuickJS 2024-01-13) ----------------------
+ * HOST FUNCTIONS THAT LOOK LIKE BUILT-INS.
+ *
+ * An embedder that writes part of its platform in JavaScript hands the page
+ * functions that stringify to their SOURCE, carry a `prototype`, and can be
+ * `new`ed -- none of which a browser's built-in does, and all of which an
+ * anti-tamper script checks. ECMA-262 lets the host give its built-in
+ * functions the NativeFunction form; to the page these ARE built-ins.
+ *
+ * JS_MarkNativeFunction(ctx, fn, flags) -- fn is host code:
+ *   - Function.prototype.toString gives "function NAME() { [native code] }"
+ *     for it and for every other closure of the same code (the mark is on
+ *     the code; see quickjs.c). NAME is fn's own `name` data property.
+ *   - .caller / .arguments throw, .fileName / .lineNumber are undefined, and
+ *     it is never reported as another function's .caller.
+ *   - unless flags has JS_NATIVE_FN_CONSTRUCTOR: [[Construct]] is removed,
+ *     the own `prototype` is deleted (configurable or not), and an async or
+ *     generator function's [[Prototype]] becomes Function.prototype -- the
+ *     shape of a WebIDL operation or accessor. A function that has evidently
+ *     been used as a class (read-only `prototype`, or a `prototype` holding
+ *     methods or a parent) keeps its constructor shape regardless.
+ *   Returns 1 if the operation shape was applied, 0 if only the toString
+ *   form was (a constructor, or a C/bound function, already native), -1 if
+ *   fn is not a function. Never throws; call it before page code runs.
+ *   The verdict is also recorded on fn's CODE: every closure of that code
+ *   made later is born an operation (1) or a constructor (0) -- see below.
+ *
+ * JS_MarkNativeCode(ctx, flags) -- the toString half, for every function
+ *   the EMBEDDER compiled in realm ctx so far (JS_Eval). Code compiled by
+ *   the running program -- eval, the Function constructor, at any depth --
+ *   is never marked: a host prelude that turns a page's
+ *   <body onload="..."> into `new Function('event', src)` is compiling page
+ *   code. With JS_NATIVE_CODE_OPERATIONS, every closure of a marked code
+ *   made AFTER the call is born with a WebIDL operation's shape (no
+ *   `prototype`, no [[Construct]], Function.prototype as its parent) unless
+ *   the code is evidently a constructor: its static name starts with an
+ *   uppercase letter, the binding that names it at creation does (`var C =
+ *   function () {}` -- the name arrives by SetFunctionName, and the shape is
+ *   restored at that moment, before anything can observe it), or
+ *   JS_MarkNativeFunction was asked to keep a closure of it a constructor.
+ *   A constructor made later by ASSIGNMENT (`o.Foo = function () {}`) is
+ *   born an operation: this is the convention the embedder signs up for.
+ *   Returns how many codes it newly marked. Only meaningful before the realm
+ *   has run any page code.
+ *
+ * JS_GetOwnPropertyQuiet -- read an own property RUNNING NOTHING: no getter
+ *   call, no lazy (auto-init) instantiation, no Proxy trap. Returns
+ *   JS_QUIET_DATA (desc->value set), JS_QUIET_ACCESSOR (desc->getter/setter
+ *   set), JS_QUIET_LAZY (a not-yet-created built-in: nothing set),
+ *   JS_QUIET_ABSENT, or JS_QUIET_EXOTIC (a Proxy: not inspected). desc->flags
+ *   carries the JS_PROP_C_W_E bits. The caller frees what was set.
+ * -------------------------------------------------------------------- */
+#define JS_NATIVE_FN_CONSTRUCTOR (1 << 0)
+int JS_MarkNativeFunction(JSContext *ctx, JSValueConst fn, int flags);
+#define JS_NATIVE_CODE_OPERATIONS (1 << 0)
+int JS_MarkNativeCode(JSContext *ctx, int flags);
+JS_BOOL JS_IsHostNativeCode(JSContext *ctx, JSValueConst fn);
+JS_BOOL JS_IsBytecodeFunction(JSContext *ctx, JSValueConst val);
+JS_BOOL JS_IsProxy(JSValueConst val);
+#define JS_QUIET_ABSENT   0
+#define JS_QUIET_DATA     1
+#define JS_QUIET_ACCESSOR 2
+#define JS_QUIET_LAZY     3
+#define JS_QUIET_EXOTIC   4
+int JS_GetOwnPropertyQuiet(JSContext *ctx, JSPropertyDescriptor *desc,
+                           JSValueConst obj, JSAtom prop);
+
 JSValue JS_NewArray(JSContext *ctx);
 int JS_IsArray(JSContext *ctx, JSValueConst val);
 

@@ -26,6 +26,11 @@
  * module here: a link without it keeps the shape the installers produce. */
 #define JS_IDL_SHAPE_OPTIONAL
 #include "js/runtime/idl_shape.h"
+/* Platform functions that look native -- native_shape.c. Weak for the same
+ * reason as the installers: host harnesses that link THIS file from a
+ * hand-kept list do not link that one, and simply keep the old shape. */
+#define JS_NATIVE_SHAPE_OPTIONAL
+#include "js/runtime/native_shape.h"
 #define JS_PORTS_OPTIONAL
 #include "js/workers/ports.h"
 #include "dom/focus.h"
@@ -1554,6 +1559,15 @@ int js_page_open(struct node *root)
      * builds -- and before the probe block below. */
     if (LOGIT_HAVE(js_idl_shape_install)) JS_OPEN_STEP("js_idl_shape_install", js_idl_shape_install(g_ctx));
     JS_FreeValue(g_ctx, g);
+    /* AFTER every installer and BEFORE any page code: the nativize pass
+     * (js/runtime/native_shape.c) declares every function compiled in this
+     * realm so far to be host code, and gives each platform operation and
+     * accessor a built-in's shape. The shape pass, if present, must PRECEDE
+     * this call -- it moves members onto prototypes, and this pass marks
+     * them wherever they end up -- and the probe block below must follow
+     * it, or the probe snapshots the unmarked shape. Not gated on
+     * g_extensions: a core child realm's functions are built-ins too. */
+    if (LOGIT_HAVE(js_native_shape_install)) JS_OPEN_STEP("js_native_shape_install", js_native_shape_install(g_ctx, 0));
 #ifdef JS_PROBE_TRACE
     /* LAST: the probe snapshots what the platform installed, so everything
      * above must already be there -- see js/runtime/probe.c. */

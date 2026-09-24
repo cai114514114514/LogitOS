@@ -622,8 +622,25 @@ typedef struct JSFunctionBytecode {
     uint8_t has_debug : 1;
     uint8_t backtrace_barrier : 1; /* stop backtrace on this function */
     uint8_t read_only_bytecode : 1;
-    uint8_t is_direct_or_indirect_eval : 1; /* used by JS_GetScriptOrModuleName() */ 
-    /* XXX: 4 bits available */
+    uint8_t is_direct_or_indirect_eval : 1; /* used by JS_GetScriptOrModuleName() */
+    /* LOGIT PATCH (vs upstream QuickJS 2024-01-13): the embedder declared
+       this code to be part of the HOST (JS_MarkNativeFunction /
+       JS_MarkNativeCode). Every closure of it stringifies as
+       "function NAME() { [native code] }" and reads as a built-in to
+       .caller/.arguments/.fileName. Never serialized: a bytecode read back
+       from JS_ReadObject is page data until someone marks it. */
+    uint8_t host_native : 1;
+    /* LOGIT PATCH: every closure of this host code made from now on gets a
+       WebIDL operation's shape (no `prototype`, no [[Construct]], a
+       Function.prototype parent) -- see JS_MarkNativeCode. */
+    uint8_t host_operation : 1;
+    /* LOGIT PATCH: compiled by the RUNNING program (eval, the Function
+       constructor), not by the embedder's JS_Eval. JS_MarkNativeCode never
+       marks it: the host's own preludes compile page content this way (a
+       <body onload="..."> attribute is `new Function('event', src)`), and
+       that code is the page's. */
+    uint8_t eval_code : 1;
+    /* XXX: 1 bit available */
     uint8_t *byte_code_buf; /* (self pointer) */
     int byte_code_len;
     JSAtom func_name;
@@ -9768,14 +9785,18 @@ static BOOL js_object_has_name(JSContext *ctx, JSValueConst obj)
     return (p->len != 0);
 }
 
+static void js_native_named_constructor(JSContext *ctx, JSValueConst obj,
+                                        JSAtom name);   /* LOGIT PATCH */
+
 static int JS_DefineObjectName(JSContext *ctx, JSValueConst obj,
                                JSAtom name, int flags)
 {
     if (name != JS_ATOM_NULL
     &&  JS_IsObject(obj)
-    &&  !js_object_has_name(ctx, obj)
-    &&  JS_DefinePropertyValue(ctx, obj, JS_ATOM_name, JS_AtomToString(ctx, name), flags) < 0) {
-        return -1;
+    &&  !js_object_has_name(ctx, obj)) {
+        if (JS_DefinePropertyValue(ctx, obj, JS_ATOM_name, JS_AtomToString(ctx, name), flags) < 0)
+            return -1;
+        js_native_named_constructor(ctx, obj, name);   /* LOGIT PATCH */
     }
     return 0;
 }
@@ -9791,11 +9812,16 @@ static int JS_DefineObjectNameComputed(JSContext *ctx, JSValueConst obj,
         if (prop == JS_ATOM_NULL)
             return -1;
         name_str = js_get_function_name(ctx, prop);
+        if (JS_IsException(name_str)) {
+            JS_FreeAtom(ctx, prop);
+            return -1;
+        }
+        if (JS_DefinePropertyValue(ctx, obj, JS_ATOM_name, name_str, flags) < 0) {
+            JS_FreeAtom(ctx, prop);
+            return -1;
+        }
+        js_native_named_constructor(ctx, obj, prop);   /* LOGIT PATCH */
         JS_FreeAtom(ctx, prop);
-        if (JS_IsException(name_str))
-            return -1;
-        if (JS_DefinePropertyValue(ctx, obj, JS_ATOM_name, name_str, flags) < 0)
-            return -1;
     }
     return 0;
 }
@@ -10107,6 +10133,294 @@ BOOL JS_SetConstructorBit(JSContext *ctx, JSValueConst func_obj, BOOL val)
     p = JS_VALUE_GET_OBJ(func_obj);
     p->is_constructor = val;
     return TRUE;
+}
+
+/* ---- LOGIT PATCH (vs upstream QuickJS 2024-01-13) ----------------------
+ * HOST FUNCTIONS THAT LOOK LIKE BUILT-INS. See quickjs.h for the contract;
+ * this is the mechanism.
+ *
+ * The mark lives on the function's CODE (JSFunctionBytecode.host_native),
+ * not on the object, for two reasons. The measured one: a platform written
+ * as JS preludes makes new closures after the page starts -- per-instance
+ * methods, wrappers around the page's own callbacks, the functions a getter
+ * hands out -- and every one of them is a closure of code the host compiled
+ * before any page script existed; marking the code covers them all, while
+ * a per-object mark covers only the objects that existed when the pass
+ * ran. The structural one: JSObject's flag byte is full, and the
+ * bytecode's bitfield had four bits free. A page's own scripts compile to
+ * their own codes, so a mark on the code never reaches them -- with ONE
+ * exception, measured: the host's preludes compile page CONTENT at install
+ * time (`new Function('event', src)` for a <body onload="..."> attribute,
+ * js/style/cssom.c), before the mark, in the same realm. That is what
+ * eval_code is for: anything eval or the Function constructor compiled is
+ * the running program's code, and JS_MarkNativeCode leaves it alone.
+ *
+ * The shape change for an operation -- no own `prototype`, no
+ * [[Construct]], because WebIDL operations and accessors are not
+ * constructors -- is applied to an existing OBJECT by JS_MarkNativeFunction
+ * (JS_NATIVE_FN_CONSTRUCTOR opts out), and to closures made AFTER the mark
+ * by js_closure, from the code's host_operation bit: set by JS_MarkNativeCode
+ * from the code's static name, overridden by every JS_MarkNativeFunction
+ * verdict on a closure of it, and undone for one closure by SetFunctionName
+ * with an uppercase name (js_native_named_constructor).
+ * -------------------------------------------------------------------- */
+
+/* An uppercase first letter: this tree's convention, and the web's, for a
+   constructor. Symbols and integer atoms are never constructor names. */
+static BOOL js_native_atom_is_ctor_name(JSContext *ctx, JSAtom atom)
+{
+    JSString *p;
+    uint32_t c;
+
+    if (atom == JS_ATOM_NULL || __JS_AtomIsTaggedInt(atom))
+        return FALSE;
+    p = ctx->rt->atom_array[atom];
+    if (!p || p->atom_type != JS_ATOM_TYPE_STRING || p->len == 0)
+        return FALSE;
+    c = string_get(p, 0);
+    return c >= 'A' && c <= 'Z';
+}
+
+/* Born-an-operation, for the closures js_closure makes of host code. */
+static BOOL js_native_code_is_operation(JSContext *ctx, JSFunctionBytecode *b)
+{
+    if (b->func_kind != JS_FUNC_NORMAL)
+        return TRUE;    /* async / generator: never a WebIDL constructor */
+    if (!b->has_prototype)
+        return FALSE;   /* arrow, method, accessor: nothing to take away */
+    return !js_native_atom_is_ctor_name(ctx, b->func_name);
+}
+
+/* js_closure's half: `func_obj` is a fresh closure of host operation code.
+   Give it what JS_MarkNativeFunction gives an existing one. Returns FALSE
+   when the code is not host operation code (the caller then builds the
+   ordinary shape). */
+static BOOL js_native_closure_as_operation(JSContext *ctx, JSValueConst func_obj,
+                                           JSFunctionBytecode *b)
+{
+    if (!b->host_native || !b->host_operation)
+        return FALSE;
+    if (b->func_kind == JS_FUNC_NORMAL) {
+#ifdef JS_NATIVE_NEGCTL_KEEP_CONSTRUCT
+        JS_SetConstructorBit(ctx, func_obj, TRUE);   /* the control: see JS_MarkNativeFunction */
+#endif
+        return TRUE;
+    }
+    /* A generator's `prototype` is where its generator objects' parent
+       comes from; without one they get the realm's %GeneratorPrototype%
+       (js_create_from_ctor). */
+    JS_SetPrototypeInternal(ctx, func_obj, ctx->function_proto, FALSE);
+    return TRUE;
+}
+
+/* SetFunctionName's half: `var C = function () {}` compiles to a nameless
+   code, so js_closure made C an operation; the name arriving now says it is
+   a constructor, and nothing has run in between (OP_fclosure is followed
+   directly by OP_set_name), so no observer saw the operation shape. */
+static void js_native_named_constructor(JSContext *ctx, JSValueConst obj,
+                                        JSAtom name)
+{
+    JSObject *p;
+    JSFunctionBytecode *b;
+    JSProperty *pr;
+
+    if (JS_VALUE_GET_TAG(obj) != JS_TAG_OBJECT)
+        return;
+    p = JS_VALUE_GET_OBJ(obj);
+    if (p->class_id != JS_CLASS_BYTECODE_FUNCTION)
+        return;
+    b = p->u.func.function_bytecode;
+    if (!b->host_native || !b->host_operation || !b->has_prototype ||
+        !js_native_atom_is_ctor_name(ctx, name))
+        return;
+    if (find_own_property(&pr, p, JS_ATOM_prototype))
+        return;
+    JS_SetConstructorBit(ctx, obj, TRUE);
+    JS_DefineAutoInitProperty(ctx, obj, JS_ATOM_prototype,
+                              JS_AUTOINIT_ID_PROTOTYPE, NULL,
+                              JS_PROP_WRITABLE);
+}
+
+/* The function object has been USED as a class, whatever the embedder
+   asked: its `prototype` was made read-only (class syntax, JS_SetConstructor)
+   or was given methods or a parent. Stripping it would break every later
+   `new`, so a mark never does. A `prototype` still in its lazy auto-init
+   state was never read by anyone, so nothing can depend on it. */
+static BOOL js_native_looks_like_class(JSContext *ctx, JSShapeProperty *prs,
+                                       JSProperty *pr)
+{
+    JSObject *o;
+    JSShape *sh;
+    JSShapeProperty *q;
+    int i;
+
+    switch (prs->flags & JS_PROP_TMASK) {
+    case JS_PROP_AUTOINIT:
+        return FALSE;
+    case JS_PROP_NORMAL:
+        break;
+    default:
+        return TRUE;
+    }
+    if (!(prs->flags & JS_PROP_WRITABLE))
+        return TRUE;
+    if (JS_VALUE_GET_TAG(pr->u.value) != JS_TAG_OBJECT)
+        return FALSE;
+    o = JS_VALUE_GET_OBJ(pr->u.value);
+    if (o->is_exotic || o->class_id != JS_CLASS_OBJECT)
+        return TRUE;
+    sh = o->shape;
+    if (sh->proto != JS_VALUE_GET_OBJ(ctx->class_proto[JS_CLASS_OBJECT]))
+        return TRUE;
+    for (i = 0, q = get_shape_prop(sh); i < sh->prop_count; i++, q++) {
+        if (q->atom != JS_ATOM_NULL && q->atom != JS_ATOM_constructor)
+            return TRUE;
+    }
+    return FALSE;
+}
+
+int JS_MarkNativeFunction(JSContext *ctx, JSValueConst fn, int flags)
+{
+    JSObject *p;
+    JSFunctionBytecode *b;
+    JSProperty *pr;
+    JSShapeProperty *prs;
+
+    if (!JS_IsFunction(ctx, fn))
+        return -1;
+    p = JS_VALUE_GET_OBJ(fn);
+    /* A C function, a bound function or a C closure already stringifies as
+       native code, and is a constructor only if it was built as one. */
+    if (!js_class_has_bytecode(p->class_id))
+        return 0;
+    b = p->u.func.function_bytecode;
+    b->host_native = 1;
+    /* The verdict on this closure is the verdict on its code's later
+       closures too: a factory that made one operation before the mark
+       makes the next one after it. */
+    b->host_operation = 0;
+    if (flags & JS_NATIVE_FN_CONSTRUCTOR)
+        return 0;
+    prs = find_own_property(&pr, p, JS_ATOM_prototype);
+    if (prs && b->func_kind == JS_FUNC_NORMAL &&
+        js_native_looks_like_class(ctx, prs, pr))
+        return 0;
+    b->host_operation = 1;
+#ifndef JS_NATIVE_NEGCTL_KEEP_CONSTRUCT
+    /* The negative control of test-native-fn: the most plausible wrong
+       version of this function deletes `prototype` and stops -- which
+       leaves `new fn()` WORKING (it falls back to Object.prototype), so the
+       function still answers IsConstructor and still is not a built-in. */
+    p->is_constructor = 0;
+#endif
+    if (prs) {
+        /* `prototype` of an ordinary function is non-configurable, so an
+           ordinary delete refuses. The embedder is removing a property the
+           page has never seen (the pass runs before page code), which is
+           the one time doing so is not an observable invariant break. */
+        if (!(prs->flags & JS_PROP_CONFIGURABLE) &&
+            js_update_property_flags(ctx, p, &prs,
+                                     prs->flags | JS_PROP_CONFIGURABLE))
+            return -1;
+        if (delete_property(ctx, p, JS_ATOM_prototype) < 0)
+            return -1;
+    }
+    /* An async or generator function's [[Prototype]] is %AsyncFunction%
+       .prototype or %GeneratorFunction%.prototype, which no built-in has:
+       Object.getPrototypeOf(fetch) === Function.prototype in a browser.
+       Calling one does not consult its [[Prototype]]; a generator's result
+       falls back to the realm's %GeneratorPrototype% once `prototype` is
+       gone (js_create_from_ctor). */
+    if (b->func_kind != JS_FUNC_NORMAL && b->realm) {
+        JSContext *realm = b->realm;
+        JSObject *proto = p->shape->proto;
+        if (proto && JS_VALUE_GET_TAG(realm->class_proto[p->class_id]) == JS_TAG_OBJECT &&
+            proto == JS_VALUE_GET_OBJ(realm->class_proto[p->class_id]) &&
+            JS_SetPrototypeInternal(ctx, fn, realm->function_proto, FALSE) < 0)
+            return -1;
+    }
+    return 1;
+}
+
+int JS_MarkNativeCode(JSContext *ctx, int flags)
+{
+    struct list_head *el;
+    int n = 0;
+
+    list_for_each(el, &ctx->rt->gc_obj_list) {
+        JSGCObjectHeader *gp = list_entry(el, JSGCObjectHeader, link);
+        if (gp->gc_obj_type == JS_GC_OBJ_TYPE_FUNCTION_BYTECODE) {
+            JSFunctionBytecode *b = (JSFunctionBytecode *)gp;
+#ifndef JS_NATIVE_NEGCTL_MARK_EVAL
+            if (b->realm == ctx && !b->host_native && !b->eval_code) {
+#else
+            /* The second control of test-native-fn: this function's first
+               version, which marked everything the realm had compiled. */
+            if (b->realm == ctx && !b->host_native) {
+#endif
+                b->host_native = 1;
+                if (flags & JS_NATIVE_CODE_OPERATIONS)
+                    b->host_operation = js_native_code_is_operation(ctx, b);
+                n++;
+            }
+        }
+    }
+    return n;
+}
+
+BOOL JS_IsHostNativeCode(JSContext *ctx, JSValueConst fn)
+{
+    JSFunctionBytecode *b = JS_GetFunctionBytecode(fn);
+    return b && b->host_native;
+}
+
+BOOL JS_IsBytecodeFunction(JSContext *ctx, JSValueConst val)
+{
+    return JS_GetFunctionBytecode(val) != NULL;
+}
+
+BOOL JS_IsProxy(JSValueConst val)
+{
+    return JS_VALUE_GET_TAG(val) == JS_TAG_OBJECT &&
+        JS_VALUE_GET_OBJ(val)->class_id == JS_CLASS_PROXY;
+}
+
+int JS_GetOwnPropertyQuiet(JSContext *ctx, JSPropertyDescriptor *desc,
+                           JSValueConst obj, JSAtom prop)
+{
+    JSObject *p;
+    JSProperty *pr;
+    JSShapeProperty *prs;
+
+    if (JS_VALUE_GET_TAG(obj) != JS_TAG_OBJECT)
+        return JS_QUIET_ABSENT;
+    p = JS_VALUE_GET_OBJ(obj);
+    if (p->class_id == JS_CLASS_PROXY)
+        return JS_QUIET_EXOTIC;
+    prs = find_own_property(&pr, p, prop);
+    if (!prs)
+        return JS_QUIET_ABSENT;
+    desc->flags = prs->flags & (JS_PROP_C_W_E | JS_PROP_TMASK);
+    desc->value = JS_UNDEFINED;
+    desc->getter = JS_UNDEFINED;
+    desc->setter = JS_UNDEFINED;
+    switch (prs->flags & JS_PROP_TMASK) {
+    case JS_PROP_AUTOINIT:
+        return JS_QUIET_LAZY;
+    case JS_PROP_GETSET:
+        if (pr->u.getset.getter)
+            desc->getter = JS_DupValue(ctx, JS_MKPTR(JS_TAG_OBJECT, pr->u.getset.getter));
+        if (pr->u.getset.setter)
+            desc->setter = JS_DupValue(ctx, JS_MKPTR(JS_TAG_OBJECT, pr->u.getset.setter));
+        return JS_QUIET_ACCESSOR;
+    case JS_PROP_VARREF:
+        if (JS_VALUE_GET_TAG(*pr->u.var_ref->pvalue) != JS_TAG_UNINITIALIZED)
+            desc->value = JS_DupValue(ctx, *pr->u.var_ref->pvalue);
+        return JS_QUIET_DATA;
+    default:
+        desc->value = JS_DupValue(ctx, pr->u.value);
+        return JS_QUIET_DATA;
+    }
 }
 
 BOOL JS_IsError(JSContext *ctx, JSValueConst val)
@@ -15183,7 +15497,14 @@ static JSValue js_function_proto_caller(JSContext *ctx, JSValueConst this_val,
     JSStackFrame *sf;
     JSObject *this_p;
 
-    if (!b || (b->js_mode & JS_MODE_STRICT) || !b->has_prototype) {
+    /* LOGIT PATCH (host_native, see JS_MarkNativeFunction): host code
+       answers .caller the way a C built-in does -- it throws -- and it is
+       never handed out AS a caller: a page callback run from a host
+       dispatcher sees null, as it does when a native dispatcher runs it in
+       a browser. Otherwise `cb.caller` gives the page the host function
+       itself, source and all, from one level down. */
+    if (!b || (b->js_mode & JS_MODE_STRICT) || !b->has_prototype ||
+        b->host_native) {
         return js_throw_type_error(ctx, this_val, 0, NULL);
     }
     this_p = JS_VALUE_GET_OBJ(this_val);
@@ -15195,7 +15516,7 @@ static JSValue js_function_proto_caller(JSContext *ctx, JSValueConst this_val,
             if (!caller || JS_VALUE_GET_TAG(caller->cur_func) != JS_TAG_OBJECT)
                 return JS_NULL;
             cb = JS_GetFunctionBytecode(caller->cur_func);
-            if (!cb || !cb->has_prototype)
+            if (!cb || !cb->has_prototype || cb->host_native)
                 return JS_NULL;
             return JS_DupValue(ctx, caller->cur_func);
         }
@@ -15219,17 +15540,21 @@ static JSValue js_function_proto_arguments(JSContext *ctx, JSValueConst this_val
                                            int argc, JSValueConst *argv)
 {
     JSFunctionBytecode *b = JS_GetFunctionBytecode(this_val);
-    if (!b || (b->js_mode & JS_MODE_STRICT) || !b->has_prototype) {
+    if (!b || (b->js_mode & JS_MODE_STRICT) || !b->has_prototype ||
+        b->host_native /* LOGIT PATCH: like a C built-in */) {
         return js_throw_type_error(ctx, this_val, 0, NULL);
     }
     return JS_UNDEFINED;
 }
 
+/* LOGIT PATCH (host_native): the two non-standard getters below told the
+   page where host code came from -- `document.createElement.fileName` was
+   "<platform>". A marked function answers what a C built-in answers. */
 static JSValue js_function_proto_fileName(JSContext *ctx,
                                           JSValueConst this_val)
 {
     JSFunctionBytecode *b = JS_GetFunctionBytecode(this_val);
-    if (b && b->has_debug) {
+    if (b && b->has_debug && !b->host_native) {
         return JS_AtomToString(ctx, b->debug.filename);
     }
     return JS_UNDEFINED;
@@ -15239,7 +15564,7 @@ static JSValue js_function_proto_lineNumber(JSContext *ctx,
                                             JSValueConst this_val)
 {
     JSFunctionBytecode *b = JS_GetFunctionBytecode(this_val);
-    if (b && b->has_debug) {
+    if (b && b->has_debug && !b->host_native) {
         return JS_NewInt32(ctx, b->debug.line_num);
     }
     return JS_UNDEFINED;
@@ -16257,7 +16582,11 @@ static JSValue js_closure(JSContext *ctx, JSValue bfunc,
     js_function_set_properties(ctx, func_obj, name_atom,
                                b->defined_arg_count);
 
-    if (b->func_kind & JS_FUNC_GENERATOR) {
+    /* LOGIT PATCH: a closure of host operation code is born a built-in
+       operation (see JS_MarkNativeCode): no `prototype`, no [[Construct]]. */
+    if (unlikely(b->host_native) && js_native_closure_as_operation(ctx, func_obj, b)) {
+        /* nothing more */
+    } else if (b->func_kind & JS_FUNC_GENERATOR) {
         JSValue proto;
         int proto_class_id;
         /* generators have a prototype field which is used as
@@ -20586,6 +20915,8 @@ typedef struct JSFunctionDef {
 
     BOOL is_eval; /* TRUE if eval code */
     int eval_type; /* only valid if is_eval = TRUE */
+    BOOL eval_code; /* LOGIT PATCH: inside a direct/indirect eval or a
+                       Function constructor body, at any depth */
     BOOL is_global_var; /* TRUE if variables are not defined locally:
                            eval global, eval module or non strict eval */
     BOOL is_func_expr; /* TRUE if function expression */
@@ -30591,6 +30922,7 @@ static JSFunctionDef *js_new_function_def(JSContext *ctx,
         list_add_tail(&fd->link, &parent->child_list);
         fd->js_mode = parent->js_mode;
         fd->parent_scope_level = parent->scope_level;
+        fd->eval_code = parent->eval_code;   /* LOGIT PATCH, see eval_code */
     }
 
     fd->is_eval = is_eval;
@@ -34612,6 +34944,7 @@ static JSValue js_create_function(JSContext *ctx, JSFunctionDef *fd)
     b->backtrace_barrier = fd->backtrace_barrier;
     b->is_direct_or_indirect_eval = (fd->eval_type == JS_EVAL_TYPE_DIRECT ||
                                      fd->eval_type == JS_EVAL_TYPE_INDIRECT);
+    b->eval_code = fd->eval_code;   /* LOGIT PATCH */
     b->realm = JS_DupContext(ctx);
 
     add_gc_object(ctx->rt, &b->header, JS_GC_OBJ_TYPE_FUNCTION_BYTECODE);
@@ -35570,6 +35903,11 @@ static JSValue __JS_EvalInternal(JSContext *ctx, JSValueConst this_obj,
         goto fail1;
     s->cur_func = fd;
     fd->eval_type = eval_type;
+    /* LOGIT PATCH: set before parsing, so every nested function def inherits
+       it (js_new_function_def). The Function constructor arrives here as an
+       INDIRECT eval (js_function_constructor -> JS_EvalObject). */
+    fd->eval_code = (eval_type == JS_EVAL_TYPE_DIRECT ||
+                     eval_type == JS_EVAL_TYPE_INDIRECT);
     fd->has_this_binding = (eval_type != JS_EVAL_TYPE_DIRECT);
     fd->backtrace_barrier = ((flags & JS_EVAL_FLAG_BACKTRACE_BARRIER) != 0);
     if (eval_type == JS_EVAL_TYPE_DIRECT) {
@@ -39819,6 +40157,9 @@ static JSValue js_function_bind(JSContext *ctx, JSValueConst this_val,
     return JS_EXCEPTION;
 }
 
+static JSValue js_native_function_string(JSContext *ctx, JSObject *p,
+                                         JSFunctionKindEnum func_kind);
+
 static JSValue js_function_toString(JSContext *ctx, JSValueConst this_val,
                                     int argc, JSValueConst *argv)
 {
@@ -39842,7 +40183,8 @@ static JSValue js_function_toString(JSContext *ctx, JSValueConst this_val,
             const char *fname = b0->has_debug ? JS_AtomToCString(ctx, b0->debug.filename) : NULL;
             if (fname && fname[0] == '<') {
                 snprintf(text, sizeof text, "tostring %s %s -> %s", nm && *nm ? nm : "(anonymous)",
-                         fname, (b0->has_debug && b0->debug.source) ? "SOURCE" : "no-source");
+                         fname, b0->host_native ? "native (host)" :
+                         (b0->has_debug && b0->debug.source) ? "SOURCE" : "no-source");
                 ctx->rt->probe_depth++;
                 ctx->rt->probe_note(ctx, text, ctx->rt->probe_opaque);
                 ctx->rt->probe_depth--;
@@ -39859,15 +40201,48 @@ static JSValue js_function_toString(JSContext *ctx, JSValueConst this_val,
 #endif
     if (js_class_has_bytecode(p->class_id)) {
         JSFunctionBytecode *b = p->u.func.function_bytecode;
+        /* LOGIT PATCH: host code is a built-in to the page (see
+           JS_MarkNativeFunction), and a built-in is always spelled
+           "function", never "async function" or "function *". */
+        if (b->host_native)
+            return js_native_function_string(ctx, p, JS_FUNC_NORMAL);
         if (b->has_debug && b->debug.source) {
             return JS_NewStringLen(ctx, b->debug.source, b->debug.source_len);
         }
         func_kind = b->func_kind;
     }
-    {
-        JSValue name;
-        const char *pref, *suff;
+    return js_native_function_string(ctx, p, func_kind);
+}
 
+/* ---- LOGIT PATCH (vs upstream QuickJS 2024-01-13) ----------------------
+ * THE NativeFunction SPELLING, and where its name comes from.
+ *
+ * Upstream printed "function NAME() {\n    [native code]\n}" -- conformant
+ * (ECMA-262 fixes only the NativeFunction grammar; whitespace is free), but
+ * no browser engine prints it, and the anti-tamper scripts this browser
+ * meets compare EXACT strings: the common idiom takes the string of one
+ * known built-in, swaps the name, and compares the result with the function
+ * under test. So there is one spelling here, the single line V8 and
+ * SpiderMonkey print, for EVERY native function: the engine's own C
+ * built-ins and host code the embedder marked (JS_MarkNativeFunction). A
+ * split -- built-ins one way, marked platform functions another -- is
+ * exactly the difference that idiom exists to find.
+ *
+ * NAME is the function's OWN `name` data property when that is a string,
+ * and "" otherwise. Upstream used a full [[Get]], which ran a page-defined
+ * `name` getter (or read Function.prototype.name) from inside
+ * Function.prototype.toString; stringifying a built-in runs no page code in
+ * any engine.
+ * -------------------------------------------------------------------- */
+static JSValue js_native_function_string(JSContext *ctx, JSObject *p,
+                                         JSFunctionKindEnum func_kind)
+{
+    JSProperty *pr;
+    JSShapeProperty *prs;
+    JSValue name;
+    const char *pref;
+
+    {
         switch(func_kind) {
         default:
         case JS_FUNC_NORMAL:
@@ -39883,11 +40258,28 @@ static JSValue js_function_toString(JSContext *ctx, JSValueConst this_val,
             pref = "async function *";
             break;
         }
-        suff = "() {\n    [native code]\n}";
-        name = JS_GetProperty(ctx, this_val, JS_ATOM_name);
-        if (JS_IsUndefined(name))
+        /* A callable Proxy is spelled with its innermost target's name, read
+           through the internal slot and never through a `get` trap. The
+           platform wraps built-ins in Proxies (HTMLElement's construct trap
+           for custom elements, platform.c), and upstream's [[Get]] of `name`
+           is what used to make that wrapper read as "HTMLElement"; this
+           keeps that answer without running a handler. */
+        {
+            int depth;
+            for (depth = 0; p->class_id == JS_CLASS_PROXY && depth < 32; depth++) {
+                JSProxyData *s = p->u.opaque;
+                if (!s || s->is_revoked || JS_VALUE_GET_TAG(s->target) != JS_TAG_OBJECT)
+                    break;
+                p = JS_VALUE_GET_OBJ(s->target);
+            }
+        }
+        prs = find_own_property(&pr, p, JS_ATOM_name);
+        if (prs && (prs->flags & JS_PROP_TMASK) == JS_PROP_NORMAL &&
+            JS_VALUE_GET_TAG(pr->u.value) == JS_TAG_STRING)
+            name = JS_DupValue(ctx, pr->u.value);
+        else
             name = JS_AtomToString(ctx, JS_ATOM_empty_string);
-        return JS_ConcatString3(ctx, pref, name, suff);
+        return JS_ConcatString3(ctx, pref, name, "() { [native code] }");
     }
 }
 
