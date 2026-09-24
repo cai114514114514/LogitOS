@@ -1,0 +1,8 @@
+FAIL: Uint8Array view with byteOffset 3: only its 3 bytes are sent
+FAIL: Uint8Array view: Content-Length is the view's byteLength
+FAIL: DataView(buf, 2, 3): honours byteOffset and byteLength
+FAIL: Int16Array(buf, 2, 2): 2 elements = 4 bytes from offset 2
+FAIL: Request(view): bytes copied when the Request was built
+FAIL: new Response(view): the view's own bytes, copied at construction
+FAIL: XHR Uint8Array view with byteOffset: only its bytes, no Content-Type
+FAIL: XHR DataView with byteOffset: only its bytes

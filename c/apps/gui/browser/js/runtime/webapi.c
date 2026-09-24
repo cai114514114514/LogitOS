@@ -872,6 +872,7 @@ struct wfetch {
     char  method[H1_METHOD_MAX];
     struct h1_headers hdr;         /* caller headers, re-sent on each hop */
     char *body; int body_len;      /* request body, owned */
+    int   has_body;                /* a body exists, even an empty one */
     int   hops, redirected, transport_retries;
     unsigned long long deadline;
     /* When fetch_step last ran for this request.  The idle deadline above is
@@ -1285,6 +1286,12 @@ static int fetch_send_request(JSContext *ctx, struct wfetch *f)
         for (int i = 0; i < f->hdr.n; i++)
             h1_request_add_header(&q, f->hdr.v[i].name, f->hdr.v[i].value);
         if (f->body && f->body_len > 0) h1_request_set_body(&q, f->body, f->body_len);
+        /* Fetch, HTTP-network-or-cache fetch: a non-null body sends its length
+         * even when that is 0, and a POST or PUT with NO body still sends
+         * Content-Length: 0. h1_request_build only writes one for a non-empty
+         * body; a server that insists on a length (411) is not being fussy. */
+        else if (f->has_body || ci_streq(f->method, "POST") || ci_streq(f->method, "PUT"))
+            h1_request_set_header(&q, "Content-Length", "0");
     }
 
     char *raw = 0; int rawlen = 0;
@@ -1668,7 +1675,7 @@ static int fetch_redirect(JSContext *ctx, struct wfetch *f)
     if (h1_redirect_method(r->code, f->method, m, (int)sizeof m, &drop) != H1_OK) return 0;
     scopy(f->method, m, H1_METHOD_MAX);
     if (drop) {
-        free(f->body); f->body = 0; f->body_len = 0;
+        free(f->body); f->body = 0; f->body_len = 0; f->has_body = 0;
         h1_headers_remove(&f->hdr, "content-type");
         h1_headers_remove(&f->hdr, "content-length");
     }
@@ -1980,7 +1987,7 @@ static JSValue js_fetch_start(JSContext *ctx, JSValueConst t, int argc, JSValueC
     JSValue promise = JS_NewPromiseCapability(ctx, rf);
     if (JS_IsException(promise)) return promise;
 
-    const char *msg = 0;
+    const char *msg = 0, *body_msg = 0;
     struct wurl u;
     const char *us = argc > 0 ? JS_ToCString(ctx, argv[0]) : 0;
 
@@ -2033,20 +2040,33 @@ static JSValue js_fetch_start(JSContext *ctx, JSValueConst t, int argc, JSValueC
                 JS_FreeValue(ctx, kv); JS_FreeValue(ctx, vv); JS_FreeValue(ctx, p);
             }
         }
+        /* The body is EXACTLY an ArrayBuffer (possibly empty) or null. Every
+         * BodyInit type is turned into bytes by the prelude's bodyInitBytes
+         * (Fetch "extract a body"), which is the only caller that passes one.
+         *
+         * This used to try the ArrayBuffer and fall back to JS_ToCStringLen
+         * for anything else. The fallback is what made a Uint8Array arrive
+         * as "1,2,3" and a FormData as "[object FormData]" wherever a caller
+         * forgot to convert, and the failed JS_GetArrayBuffer it went through
+         * CREATED a TypeError on every string body -- swallowed here, and the
+         * line the JS probe printed from chatgpt.com's challenge ("TypeError:
+         * ArrayBuffer object expected in fqStart"). Anything else now rejects
+         * the request, loudly, instead of sending a guess.
+         *
+         * `has_body` remembers that a body exists even when it is empty: an
+         * empty body is still sent as Content-Length: 0 (Fetch, HTTP-network-
+         * or-cache fetch), which a null one on a GET is not. */
         if (argc > 3 && !JS_IsNull(argv[3]) && !JS_IsUndefined(argv[3])) {
             size_t bl = 0;
-            uint8_t *bp = ab_bytes(ctx, argv[3], &bl);
-            if (bp) {
-                if (bl > 0 && (f->body = (char *)malloc(bl)) != 0) {
-                    memcpy(f->body, bp, bl); f->body_len = (int)bl;
+            uint8_t *bp = JS_GetArrayBuffer(ctx, &bl, argv[3]);
+            if (!bp) { JS_FreeValue(ctx, JS_GetException(ctx)); body_msg = "request body is not an ArrayBuffer"; }
+            else if (bl > 0x7fffffff) body_msg = "request body is too large";
+            else {
+                f->has_body = 1;
+                if (bl > 0) {
+                    if ((f->body = (char *)malloc(bl)) == 0) body_msg = "out of memory for the request body";
+                    else { memcpy(f->body, bp, bl); f->body_len = (int)bl; }
                 }
-            } else {
-                size_t sl = 0;
-                const char *s = JS_ToCStringLen(ctx, &sl, argv[3]);
-                if (s && sl > 0 && (f->body = (char *)malloc(sl)) != 0) {
-                    memcpy(f->body, s, sl); f->body_len = (int)sl;
-                }
-                if (s) JS_FreeCString(ctx, s);
             }
         }
         /* mode + credentials.  Unrecognised values fall back to the defaults
@@ -2070,7 +2090,8 @@ static JSValue js_fetch_start(JSContext *ctx, JSValueConst t, int argc, JSValueC
             }
             JS_FreeValue(ctx, cv);
         }
-        if (fetch_dial(f) != 0) { f->failure_at = "connect-start"; f->conn.err = H1_E_TRANSPORT; fetch_trace_detail(f); h1_headers_free(&f->hdr); free(f->body); f->body = 0; msg = "could not open a socket"; }
+        if (body_msg) { h1_headers_free(&f->hdr); free(f->body); f->body = 0; f->body_len = 0; msg = body_msg; }
+        else if (fetch_dial(f) != 0) { f->failure_at = "connect-start"; f->conn.err = H1_E_TRANSPORT; fetch_trace_detail(f); h1_headers_free(&f->hdr); free(f->body); f->body = 0; msg = "could not open a socket"; }
         else if (f->mode == WF_MODE_SAME_ORIGIN && f->cross) {
             g_net->close(f->fd); f->fd = -1;
             h1_headers_free(&f->hdr); free(f->body); f->body = 0;
@@ -2266,6 +2287,33 @@ static JSValue js_utf8(JSContext *ctx, JSValueConst t, int argc, JSValueConst *a
     uint8_t *p = ab_bytes(ctx, argv[0], &len);
     if (!p) return JS_ToString(ctx, argv[0]);
     return JS_NewStringLen(ctx, (const char *)p, len);
+}
+
+/* __utf8Encode(string) -> ArrayBuffer: WebIDL's USVString conversion followed
+ * by UTF-8 encode -- the bytes a request body made from a string is (Fetch
+ * "extract a body"). In C because the prelude's TextEncoder does the same job
+ * one code point at a time and measured ~40 ms per 100 KB on the host.
+ *
+ * QuickJS's JS_ToCStringLen2(..., cesu8 = 0) already joins every valid
+ * surrogate PAIR into one 4-byte sequence; what it does with a LONE surrogate
+ * is write its 3-byte generalized-UTF-8 form, ED A0..BF xx, which is not
+ * UTF-8 and is not what any browser sends. A USVString has U+FFFD there, and
+ * U+FFFD is also three bytes (EF BF BD), so the repair is in place. 0xED is
+ * only ever a LEAD byte, so a byte-wise scan cannot mistake a continuation. */
+static JSValue js_utf8_encode(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
+{
+    (void)t;
+    size_t n = 0;
+    const char *s = JS_ToCStringLen2(ctx, &n, argc > 0 ? argv[0] : JS_UNDEFINED, 0);
+    if (!s) return JS_EXCEPTION;
+    JSValue ab = JS_NewArrayBufferCopy(ctx, (const uint8_t *)s, n);
+    JS_FreeCString(ctx, s);
+    if (JS_IsException(ab)) return ab;
+    size_t len = 0;
+    uint8_t *d = JS_GetArrayBuffer(ctx, &len, ab);
+    for (size_t i = 0; d && i + 2 < len; i++)
+        if (d[i] == 0xED && d[i + 1] >= 0xA0) { d[i] = 0xEF; d[i + 1] = 0xBF; d[i + 2] = 0xBD; i += 2; }
+    return ab;
 }
 
 /* The Encoding Standard's label table and single-byte indexes, plus the two
@@ -3075,7 +3123,8 @@ static const JSCFunctionListEntry hist_funcs[] = {
 #endif
 static const char *PRELUDE =
 "(function (__fetchStart, __utf8, __urlParse, __mediaMatch, __fetchAbort, __later,\n"
-"          __cancelLater, __fetchSlots, __encLabel, __encIndex, __base64Decode, __xhrDiag) {\n"
+"          __cancelLater, __fetchSlots, __encLabel, __encIndex, __base64Decode, __utf8Encode,\n"
+"          __xhrDiag) {\n"
 "'use strict';\n"
 "var G = globalThis;\n"
 
@@ -3341,6 +3390,37 @@ static const char *PRELUDE =
 "function xhrStateNew(self) { var s = {}; xhrSlotSet(xhrStates, self, s); return s; }\n"
 "function xhrStateGet(self) { var s = xhrSlotGet(xhrStates, self); if (!s) throw new TypeError('Illegal XMLHttpRequest receiver'); return s; }\n"
 #endif
+/* send(body), steps 3-4 of the XHR Standard: the body and its Content-Type,
+ * decided HERE and handed to fetch() already final, as bytes in an
+ * ArrayBuffer (which carries no type of its own, so fetch() adds none).
+ *   - GET/HEAD ignore the body -- a request, not an error (send() above);
+ *   - everything else goes through the one extraction fetch() uses; a
+ *     ReadableStream is not an XMLHttpRequestBodyInit, so WebIDL makes it the
+ *     string "[object ReadableStream]", as in every browser;
+ *   - an author Content-Type wins. For a string body only, a charset
+ *     parameter that is not UTF-8 is rewritten to UTF-8 -- the bytes ARE
+ *     UTF-8, and a label saying otherwise would make the server misdecode
+ *     them. Without an author Content-Type the extracted one is used.
+ * `hdrs` is XHR's own [name, value] list and is edited in place. */
+"function xhrBody(body, hdrs) {\n"
+"  var x = bodyInitBytes(body), at = [], ct = null, i;\n"
+"  for (i = 0; i < hdrs.length; i++)\n"
+"    if (String(hdrs[i][0]).toLowerCase() === 'content-type') {\n"
+"      at.push(i); ct = ct === null ? String(hdrs[i][1]) : ct + ', ' + String(hdrs[i][1]);\n"
+"    }\n"
+"  if (ct === null) { if (x.type !== null) hdrs.push(['Content-Type', x.type]); }\n"
+"  else if (x.text) {\n"
+"    var rec = mimeParse(ct);\n"
+"    for (var p = 0; rec && p < rec.params.length; p++) {\n"
+"      if (rec.params[p][0] !== 'charset' || rec.params[p][1].toLowerCase() === 'utf-8') continue;\n"
+"      rec.params[p][1] = 'UTF-8';\n"
+"      for (i = at.length - 1; i >= 0; i--) hdrs.splice(at[i], 1);\n"
+"      hdrs.push(['Content-Type', mimeSerialize(rec)]);\n"
+"      break;\n"
+"    }\n"
+"  }\n"
+"  return bytesAB(x.bytes);\n"
+"}\n"
 "G.XMLHttpRequest = function XMLHttpRequest() {\n"
 "  var state = xhrStateNew(this);\n"
 "  state.readyState = 0; state.status = 0; state.statusText = ''; state.responseText = '';\n"
@@ -3382,7 +3462,9 @@ static const char *PRELUDE =
 "    xhrDiagSet(xhrDiagRecords, self, diag);\n"
 #endif
 "    self._ac = new G.AbortController();\n"
-"    G.fetch(this._u, { method: this._m || 'GET', headers: this._h, body: body,\n"
+"    var method = String(this._m || 'GET'), hdrs = this._h.slice();\n"
+"    var reqBody = (body === undefined || body === null || /^(GET|HEAD)$/i.test(method)) ? null : xhrBody(body, hdrs);\n"
+"    G.fetch(this._u, { method: method, headers: hdrs, body: reqBody,\n"
 "                       signal: self._ac.signal,\n"
 "                       credentials: state.withCredentials ? 'include' : 'same-origin' })\n"
 "      .then(function (r) {\n"
@@ -3523,7 +3605,7 @@ static const char *PRELUDE =
 #define WEBAPI_FETCH_WORKER_PRELUDE
 static const char *WORKER_FETCH_PRELUDE =
 "(function (__fetchStart, __utf8, __urlParse, __mediaMatch, __fetchAbort, __later,\n"
-"          __cancelLater, __fetchSlots, __encLabel, __encIndex, __base64Decode) {\n"
+"          __cancelLater, __fetchSlots, __encLabel, __encIndex, __base64Decode, __utf8Encode) {\n"
 "'use strict'; var G = globalThis;\n"
 #include "../net/fetch_body_prelude.inc"
 #include "../net/fetch_object_url_prelude.inc"
@@ -3575,7 +3657,7 @@ int js_webapi_fetch_install(JSContext *ctx,const char *base_url,
     JSValue fn=JS_Eval(ctx,WORKER_FETCH_PRELUDE,strlen(WORKER_FETCH_PRELUDE),
                        "<worker-fetch>",JS_EVAL_TYPE_GLOBAL);
     if(JS_IsException(fn)){JS_FreeValue(ctx,fn);js_webapi_fetch_close(ctx);return -1;}
-    JSValue args[11]={
+    JSValue args[12]={
         fetch_binding(ctx,0,5),
         JS_NewCFunction(ctx,js_utf8,"utf8",1),JS_UNDEFINED,JS_UNDEFINED,
         fetch_binding(ctx,1,1),
@@ -3584,9 +3666,10 @@ int js_webapi_fetch_install(JSContext *ctx,const char *base_url,
         fetch_binding(ctx,2,0),
         JS_NewCFunction(ctx,js_enc_label,"encodingLabel",1),
         JS_NewCFunction(ctx,js_enc_index,"encodingIndex",1),
-        JS_NewCFunction(ctx,js_base64_decode,"base64Decode",1)};
-    JSValue hooks=JS_Call(ctx,fn,JS_UNDEFINED,11,(JSValueConst*)args);
-    for(int i=0;i<11;i++)JS_FreeValue(ctx,args[i]);JS_FreeValue(ctx,fn);
+        JS_NewCFunction(ctx,js_base64_decode,"base64Decode",1),
+        JS_NewCFunction(ctx,js_utf8_encode,"utf8Encode",1)};
+    JSValue hooks=JS_Call(ctx,fn,JS_UNDEFINED,12,(JSValueConst*)args);
+    for(int i=0;i<12;i++)JS_FreeValue(ctx,args[i]);JS_FreeValue(ctx,fn);
     if(JS_IsException(hooks)){JS_FreeValue(ctx,hooks);js_webapi_fetch_close(ctx);return -1;}
     owner->mk_response=JS_GetPropertyStr(ctx,hooks,"mkResponse");
     owner->mk_error=JS_GetPropertyStr(ctx,hooks,"mkError");
@@ -4019,7 +4102,7 @@ void js_webapi_install(JSContext *ctx, const char *url)
         JS_FreeValue(ctx, g);
         return;
     }
-    JSValue args[12];
+    JSValue args[13];
     args[0] = fetch_binding(ctx,0,5);
     args[1] = JS_NewCFunction(ctx, js_utf8, "__utf8", 1);
     args[2] = JS_NewCFunction(ctx, js_url_parse, "__urlParse", 2);
@@ -4031,7 +4114,8 @@ void js_webapi_install(JSContext *ctx, const char *url)
     args[8] = JS_NewCFunction(ctx, js_enc_label, "__encLabel", 1);
     args[9] = JS_NewCFunction(ctx, js_enc_index, "__encIndex", 1);
     args[10] = JS_NewCFunction(ctx, js_base64_decode, "__base64Decode", 1);
-    int prelude_argc = 11;
+    args[11] = JS_NewCFunction(ctx, js_utf8_encode, "__utf8Encode", 1);
+    int prelude_argc = 12;
 #ifdef JS_RUNTIME_DIAGNOSTICS
     args[prelude_argc++] = make_xhr_diag_hook(ctx);
 #endif

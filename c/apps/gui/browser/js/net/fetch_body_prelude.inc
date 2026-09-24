@@ -492,6 +492,11 @@
  * referencing it here, before its own text, is not a forward-reference bug). */
 #include "blob_prelude.inc"
 
+/* ---- FormData ----
+ * Beside Blob/File because a FormData entry IS one (append() converts a Blob
+ * into a File), and because extractBody below encodes it. */
+#include "formdata_prelude.inc"
+
 /* ---- AbortController ----
  * A real cancellation now that the socket ABI has a close: abort() shuts the
  * connection, it does not merely stop looking at what arrives. */
@@ -693,53 +698,129 @@
 "    });\n"
 "  };\n"
 "}\n"
-   /* fetch #concept-bodyinit-extract, the subset this engine needs. Returns
-      {stream, contentType}; contentType is null when the BodyInit carries no
-      opinion (ReadableStream, ArrayBuffer/view) and the caller must set it
-      itself only when the caller has not already set one -- same rule for
-      Request and Response because it is the same spec step on both sides of
-      the connection, which is the whole reason this is one function instead
-      of two copies that could drift. */
-"function extractBody(v) {\n"
-"  if (v === undefined || v === null) return { stream: null, contentType: null };\n"
-"  if (v instanceof G.ReadableStream) return { stream: v, contentType: null };\n"
-   /* The body IS the snapshot already taken at Blob-construction time, so no
-      re-copy is needed beyond the one .slice() that keeps the stream's chunk
-      independent of the Blob's own storage. */
-"  if (v instanceof G.Blob) return { stream: rsOf(v._b.slice()), contentType: v.type || null };\n"
-"  if (typeof v === 'string')\n"
-"    return { stream: rsOf(new G.TextEncoder().encode(v)), contentType: 'text/plain;charset=UTF-8' };\n"
-"  if (G.URLSearchParams && v instanceof G.URLSearchParams)\n"
-"    return { stream: rsOf(new G.TextEncoder().encode(v.toString())), contentType: 'application/x-www-form-urlencoded;charset=UTF-8' };\n"
-   /* FormData -> multipart/form-data, the wire encoding formData() (installBody,
-      above) decodes back -- the two are meant to round-trip. The boundary is
-      random per call, as any implementation's must be: the whole reason a
-      boundary exists is that it cannot collide with anything a part's own
-      bytes could contain. */
-"  if (G.FormData && v instanceof G.FormData) {\n"
-"    var boundary = 'LogitFormBoundary' + Math.random().toString(36).slice(2) + Date.now().toString(36);\n"
-"    var enc = new G.TextEncoder(), chunks = [];\n"
-"    v.forEach(function (val, key) {\n"
-"      chunks.push(enc.encode('--' + boundary + '\\r\\n'));\n"
-"      if (val instanceof G.Blob) {\n"
-"        var filename = val.name !== undefined ? val.name : 'blob';\n"
-"        chunks.push(enc.encode('Content-Disposition: form-data; name=\"' + key + '\"; filename=\"' + filename + '\"\\r\\n'));\n"
-"        chunks.push(enc.encode('Content-Type: ' + (val.type || 'application/octet-stream') + '\\r\\n\\r\\n'));\n"
-"        chunks.push(val._b);\n"
-"      } else {\n"
-"        chunks.push(enc.encode('Content-Disposition: form-data; name=\"' + key + '\"\\r\\n\\r\\n'));\n"
-"        chunks.push(enc.encode(String(val)));\n"
-"      }\n"
-"      chunks.push(enc.encode('\\r\\n'));\n"
-"    });\n"
-"    chunks.push(enc.encode('--' + boundary + '--\\r\\n'));\n"
-"    var total = 0, ci;\n"
-"    for (ci = 0; ci < chunks.length; ci++) total += chunks[ci].length;\n"
-"    var all = new Uint8Array(total), o = 0;\n"
-"    for (ci = 0; ci < chunks.length; ci++) { all.set(chunks[ci], o); o += chunks[ci].length; }\n"
-"    return { stream: rsOf(all), contentType: 'multipart/form-data; boundary=' + boundary };\n"
+/* ---- extract a body (fetch #concept-bodyinit-extract) ----
+ *
+ * ONE extraction for every door a request body can come through: fetch()'s
+ * init.body, a Request's body handed to fetch(), XMLHttpRequest.send(), and
+ * the Request/Response constructors. Before this, fetch() had its own
+ * five-branch conversion, extractBody had another, XHR passed whatever it got
+ * to fetch(), and the native __fetchStart accepted an ArrayBuffer and
+ * stringified everything else. The probe caught that last one on Cloudflare's
+ * managed challenge (chatgpt.com) as a swallowed `TypeError: ArrayBuffer
+ * object expected in fqStart`, and what reached the wire for a FormData was
+ * the text "[object FormData]" with no Content-Type.
+ *
+ * bodyInitBytes(v) handles every BodyInit except ReadableStream (the callers
+ * decide about that: fetch() refuses it, XHR stringifies it because its
+ * XMLHttpRequestBodyInit has no stream member) and returns
+ *   { bytes: a PRIVATE COPY taken now, type: Content-Type or null, text }
+ * `text` marks the USVString branch, the one case XHR's send() rewrites an
+ * author charset for. Anything that is none of the BodyInit types is what
+ * WebIDL makes of it -- a USVString -- so `{}` sends "[object Object]" as
+ * text/plain, exactly like every other browser, rather than throwing.
+ *
+ * Strings go through the native __utf8Encode: the USVString conversion (a
+ * lone surrogate becomes U+FFFD) plus UTF-8, in C. The JS TextEncoder is the
+ * same function in the spec but measured ~40 ms per 100 KB on the host, which
+ * is a watchdog slice under TCG for a challenge payload. */
+"function bodyStringBytes(s) { return new Uint8Array(__utf8Encode(String(s))); }\n"
+"var abSlice = ArrayBuffer.prototype.slice;\n"
+   /* A copy of [off, off+len) of an ArrayBuffer. len 0 never touches the
+      buffer, so a detached one (whose byteLength reads 0) is the empty byte
+      sequence WebIDL's "get a copy of the bytes" says it is. */
+"function bufferCopy(buf, off, len) {\n"
+"  return len ? new Uint8Array(abSlice.call(buf, off, off + len)) : new Uint8Array(0);\n"
+"}\n"
+"function bodyInitBytes(v) {\n"
+"  if (typeof v === 'string') return { bytes: bodyStringBytes(v), type: 'text/plain;charset=UTF-8', text: true };\n"
+#ifndef WEBAPI_FETCH_BODY_AB_ONLY
+   /* A Blob's bytes were snapshotted when it was built; its type was
+      normalized then too, and '' means "no opinion". */
+"  if (v instanceof G.Blob) return { bytes: v._b ? v._b.slice() : new Uint8Array(0), type: v.type || null, text: false };\n"
+   /* EVERY ArrayBufferView -- all TypedArrays and DataView -- is its own
+      window [byteOffset, byteOffset+byteLength) onto a buffer that may be far
+      larger. The element type is irrelevant: these bytes, copied now. */
+"  if (ArrayBuffer.isView(v)) {\n"
+"    if (typeof SharedArrayBuffer === 'function' && v.buffer instanceof SharedArrayBuffer)\n"
+"      throw new TypeError('a view on a SharedArrayBuffer is not a valid body');\n"
+#ifdef WEBAPI_FETCH_BODY_VIEW_WHOLE_BUFFER
+   /* Negative control: the classic bug -- the view's whole underlying buffer. */
+"    return { bytes: bufferCopy(v.buffer, 0, v.buffer.byteLength), type: null, text: false };\n"
+#else
+"    return { bytes: bufferCopy(v.buffer, v.byteOffset, v.byteLength), type: null, text: false };\n"
+#endif
 "  }\n"
-"  return { stream: rsOf(toU8(v)), contentType: null };\n"
+#endif
+"  if (v instanceof ArrayBuffer) return { bytes: bufferCopy(v, 0, v.byteLength), type: null, text: false };\n"
+#ifndef WEBAPI_FETCH_BODY_AB_ONLY
+"  if (G.FormData && v instanceof G.FormData) return multipartEncode(v);\n"
+#endif
+"  if (G.URLSearchParams && v instanceof G.URLSearchParams)\n"
+"    return { bytes: bodyStringBytes(v.toString()), type: 'application/x-www-form-urlencoded;charset=UTF-8', text: false };\n"
+"  return { bytes: bodyStringBytes(v), type: 'text/plain;charset=UTF-8', text: true };\n"
+"}\n"
+   /* The whole-buffer case hands its buffer over; anything else is sliced. */
+"function bytesAB(u8) {\n"
+"  return (u8.byteOffset === 0 && u8.byteLength === u8.buffer.byteLength) ? u8.buffer : u8ab(u8);\n"
+"}\n"
+/* FormData -> multipart/form-data: HTML's "multipart/form-data encoding
+ * algorithm", which formData() (installBody, above) decodes back.
+ *   1. newlines in every NAME and every string VALUE are normalized to CRLF
+ *      (a lone CR or a lone LF becomes CRLF); a File's bytes are untouched;
+ *   2. names and filenames then escape LF as %0A, CR as %0D and '"' as %22
+ *      -- and nothing else, which is what keeps a quote from ending the
+ *      quoted-string and a newline from starting a header of its own;
+ *   3. a File part carries Content-Type: its type, or application/octet-
+ *      stream; a string part carries none.
+ * The boundary is random per body and drawn from a Math.random captured at
+ * install time: a page that replaces Math.random or crypto.getRandomValues
+ * must not be able to watch (or steer) the browser choose it. */
+"var mathRandom = Math.random;\n"
+"function mpNormNL(s) { return s.replace(/\\r\\n|\\r|\\n/g, '\\r\\n'); }\n"
+"function mpEscape(s) { return s.replace(/\\n/g, '%0A').replace(/\\r/g, '%0D').replace(/\"/g, '%22'); }\n"
+"function mpBoundary() {\n"
+"  var a = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789', s = '----LogitFormBoundary';\n"
+"  for (var i = 0; i < 16; i++) s += a.charAt(Math.floor(mathRandom() * a.length));\n"
+"  return s;\n"
+"}\n"
+"function multipartEncode(fd) {\n"
+"  var boundary = mpBoundary(), chunks = [], total = 0, i;\n"
+"  function put(u8) { chunks.push(u8); total += u8.length; }\n"
+"  function str(s) { put(bodyStringBytes(s)); }\n"
+"  var list = fd._e || [];\n"
+"  for (i = 0; i < list.length; i++) {\n"
+"    var name = mpEscape(mpNormNL(String(list[i][0]))), val = list[i][1];\n"
+"    if (val instanceof G.Blob) {\n"
+"      var fname = val.name !== undefined ? String(val.name) : 'blob';\n"
+"      str('--' + boundary + '\\r\\nContent-Disposition: form-data; name=\"' + name +\n"
+"          '\"; filename=\"' + mpEscape(fname) + '\"\\r\\nContent-Type: ' +\n"
+"          (val.type || 'application/octet-stream') + '\\r\\n\\r\\n');\n"
+"      put(val._b || new Uint8Array(0));\n"
+"      str('\\r\\n');\n"
+"    } else {\n"
+"      str('--' + boundary + '\\r\\nContent-Disposition: form-data; name=\"' + name + '\"\\r\\n\\r\\n' +\n"
+"          mpNormNL(String(val)) + '\\r\\n');\n"
+"    }\n"
+"  }\n"
+"  str('--' + boundary + '--\\r\\n');\n"
+"  var all = new Uint8Array(total), o = 0;\n"
+"  for (i = 0; i < chunks.length; i++) { all.set(chunks[i], o); o += chunks[i].length; }\n"
+"  return { bytes: all, type: 'multipart/form-data; boundary=' + boundary, text: false };\n"
+"}\n"
+   /* Request/Response's side of the same step. Returns {stream, contentType,
+      source}: `source` is the extracted byte sequence (the spec's body
+      "source"), kept so that fetch(request) can send a Request's body without
+      reading its stream; it is null for a ReadableStream body, whose bytes do
+      not exist yet. The stream gets its own copy, so a page that reads and
+      scribbles on a chunk cannot reach the source. */
+"function extractBody(v) {\n"
+"  if (v === undefined || v === null) return { stream: null, contentType: null, source: null };\n"
+"  if (v instanceof G.ReadableStream) return { stream: v, contentType: null, source: null };\n"
+"  var x = bodyInitBytes(v);\n"
+"  return { stream: rsOf(x.bytes.slice()), contentType: x.type, source: x.bytes };\n"
+"}\n"
+"function streamBodyError() {\n"
+"  return new TypeError('fetch: a ReadableStream request body is not supported (streaming uploads are not implemented)');\n"
 "}\n"
 
 "var NULL_BODY_STATUS = [204, 205, 304];\n"
@@ -1211,9 +1292,41 @@
 "  return Promise.resolve(makeResponse(rsOf(slice), { status: 206, statusText: 'Partial Content',\n"
 "    headers: rh, url: url, redirected: false, type: 'basic' }));\n"
 "}\n"
+/* The request body, decided before anything else -- in the spec this is the
+ * Request constructor that fetch() runs first (steps 37-45), so a GET with a
+ * body rejects even for a data: URL. Where the bytes come from:
+ *   - init.body, when it is present and not null, is extracted now (a private
+ *     copy: writing through the page's view afterwards changes nothing);
+ *   - otherwise a Request's own body, which is taken: the Request is disturbed
+ *     (bodyUsed) and a second fetch() of it rejects, as the spec's "unusable"
+ *     rule says.
+ * A ReadableStream body -- in init or inside the Request -- REJECTS with a
+ * TypeError that says so. There is no streaming upload here; the old code
+ * sent the text "[object ReadableStream]", which a server cannot tell from a
+ * real payload. */
+"function fetchBody(input, init, method) {\n"
+"  var req = (input instanceof G.Request) ? input : null;\n"
+"  var hasInitBody = init.body !== undefined && init.body !== null;\n"
+"  var hadInputBody = !!(req && (req.body || req._bodyUsed));\n"
+"  if ((hasInitBody || hadInputBody) && (method === 'GET' || method === 'HEAD'))\n"
+"    throw new TypeError('fetch: a ' + method + ' request cannot have a body');\n"
+"  if (hasInitBody) {\n"
+"    if (init.body instanceof G.ReadableStream) throw streamBodyError();\n"
+"    return bodyInitBytes(init.body);\n"
+"  }\n"
+"  if (!hadInputBody) return null;\n"
+"  if (req._bodyUsed || (req.body && req.body.locked))\n"
+"    throw new TypeError('fetch: the Request body has already been used');\n"
+"  if (!req._bodySrc) throw streamBodyError();\n"
+"  req._bodyUsed = true;\n"
+"  return { bytes: req._bodySrc, type: null, text: false };\n"
+"}\n"
 "G.fetch = function fetch(input, init) {\n"
 "  init = init || {};\n"
 "  var url = (input && typeof input === 'object' && input.url) ? input.url : String(input);\n"
+"  var method = String(init.method || (input && input.method) || 'GET').toUpperCase();\n"
+"  var extracted;\n"
+"  try { extracted = fetchBody(input, init, method); } catch (e) { return Promise.reject(e); }\n"
 "  if (url.slice(0, 5).toLowerCase() === 'data:') {\n"
 "    var dr = dataURL(url);\n"
 "    return dr ? Promise.resolve(dr)\n"
@@ -1224,28 +1337,13 @@
 "  }\n"
 "  var __fpu = parsedURLOrNull(url);\n"
 "  if (__fpu && isBadPort(__fpu)) return Promise.reject(new TypeError('fetch: blocked port ' + __fpu.port));\n"
-"  var method = String(init.method || (input && input.method) || 'GET').toUpperCase();\n"
 "  var hs = new G.Headers(init.headers || (input && input.headers));\n"
-"  var body = init.body;\n"
-"  if (body !== undefined && body !== null) {\n"
-"    if (G.URLSearchParams && body instanceof G.URLSearchParams) {\n"
-"      if (!hs.has('content-type')) hs.set('content-type', 'application/x-www-form-urlencoded;charset=UTF-8');\n"
-"      body = body.toString();\n"
-       /* A Blob body's bytes are what go over the wire; its .type becomes
-          Content-Type when the caller did not already set one -- same rule
-          Response's constructor uses, because it is the same spec step
-          (extractBody) on both sides of the connection. Before this branch
-          existed a Blob fell to String(body) below and sent the literal text
-          "[object Blob]" instead of the Blob's bytes. */
-"    } else if (body instanceof G.Blob) {\n"
-"      if (body.type && !hs.has('content-type')) hs.set('content-type', body.type);\n"
-"      body = u8ab(body._b);\n"
-"    } else if (ArrayBuffer.isView(body)) {\n"
-"      body = body.buffer.slice(body.byteOffset, body.byteOffset + body.byteLength);\n"
-"    } else if (!(body instanceof ArrayBuffer) && typeof body !== 'string') {\n"
-"      body = String(body);\n"
-"    }\n"
-"  } else body = null;\n"
+   /* The extracted Content-Type goes on only when the page set none: an
+      explicit Content-Type always wins (Request constructor step 40). */
+"  if (extracted && extracted.type !== null && !hs.has('content-type')) hs.set('content-type', extracted.type);\n"
+   /* __fetchStart takes exactly an ArrayBuffer or null. An EMPTY buffer is
+      still a body (Content-Length: 0), which null is not. */
+"  var body = extracted ? bytesAB(extracted.bytes) : null;\n"
 "  var pairs = []; hs.forEach(function (v, k) { pairs.push([k, v]); });\n"
 "  var opts = { mode: init.mode, credentials: init.credentials };\n"
 "  var sig = init.signal || (input && input.signal);\n"
@@ -1287,28 +1385,30 @@
 "  this.signal = init.signal !== undefined ? init.signal : (src ? src.signal : ((input && input.signal) || null));\n"
 "  this._bodyUsed = false;\n"
 "  this._duplex = init.duplex !== undefined ? init.duplex : (src ? src._duplex : undefined);\n"
-"  if (init.body !== undefined) {\n"
-"    var bodySrc = init.body;\n"
-"    if (bodySrc !== null && (this._method === 'GET' || this._method === 'HEAD'))\n"
-"      throw new TypeError('Request: a ' + this._method + ' request cannot have a body');\n"
-"    if (bodySrc instanceof G.ReadableStream && init.duplex !== 'half')\n"
+   /* Steps 37-45. init.body counts only when present AND non-null; a null
+      one leaves the input Request's body in place, and EITHER body makes a
+      GET/HEAD throw -- `new Request(postWithBody, {method: 'GET'})` too. */
+"  var inputBody = src ? src.body : null;\n"
+"  var hasInitBody = init.body !== undefined && init.body !== null;\n"
+"  if ((hasInitBody || inputBody) && (this._method === 'GET' || this._method === 'HEAD'))\n"
+"    throw new TypeError('Request: a ' + this._method + ' request cannot have a body');\n"
+"  this.body = null; this._bodySrc = null;\n"
+"  if (hasInitBody) {\n"
+"    if (init.body instanceof G.ReadableStream && init.duplex !== 'half')\n"
 "      throw new TypeError(\"Request: a ReadableStream body requires duplex: 'half'\");\n"
-"    if (bodySrc === null) { this.body = null; }\n"
-"    else {\n"
-"      var eb = extractBody(bodySrc);\n"
-"      this.body = eb.stream;\n"
-"      if (eb.contentType && !this._headers.has('content-type')) this._headers.set('content-type', eb.contentType);\n"
-"    }\n"
+"    var eb = extractBody(init.body);\n"
+"    this.body = eb.stream; this._bodySrc = eb.source;\n"
+"    if (eb.contentType && !this._headers.has('content-type')) this._headers.set('content-type', eb.contentType);\n"
    /* input was a Request and this Request is taking its body -- the source
       cannot be read from again (fetch spec: "set this's body to input's
       body", which moves ownership rather than copying). Both sides write the
       PRIVATE field: bodyUsed is a readonly getter (below) precisely so that
       script cannot forge it, which means internal code cannot go through the
-      public name either. */
-"  } else if (src) {\n"
-"    this.body = src.body;\n"
-"    if (src.body) { src._bodyUsed = true; src.body = null; }\n"
-"  } else { this.body = null; }\n"
+      public name either. The extracted bytes (_bodySrc) move with it. */
+"  } else if (inputBody) {\n"
+"    this.body = inputBody; this._bodySrc = src._bodySrc || null;\n"
+"    src._bodyUsed = true; src.body = null;\n"
+"  }\n"
 "};\n"
 "G.Request.prototype = {\n"
 "  constructor: G.Request,\n"
@@ -1316,6 +1416,7 @@
 "    if (this.bodyUsed) throw new TypeError('body already read');\n"
 "    var r = Object.create(G.Request.prototype);\n"
 "    if (this.body) { var t = this.body.tee(); this.body = t[0]; r.body = t[1]; } else r.body = null;\n"
+"    r._bodySrc = this._bodySrc;\n"
 "    r._url = this._url; r._method = this._method;\n"
 "    r._headers = new G.Headers(this._headers); r._headers._guard = this._headers._guard;\n"
 "    r._duplex = this._duplex; r._bodyUsed = false;\n"

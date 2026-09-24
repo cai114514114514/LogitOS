@@ -557,7 +557,19 @@ int main(int argc, char **argv)
          "cloning a function throws DataCloneError, as the spec says");
 
     /* ==== FormData ========================================================
-     * Still this file's own: FormData (unlike Blob, below) has not moved. */
+     * NOT inverted any more: FormData moved to js_webapi.c
+     * (js/net/formdata_prelude.inc) beside Blob, because fetch()/XHR encode it
+     * and Body.formData() builds it, and js_webapi.c is linked in the control
+     * build too -- the same reason the Blob block below is not inverted. Its
+     * wire encoding is gated by tests/fetch_body.mk.
+     *
+     * Correction: the third check used to read "FormData.append keeps a Blob a
+     * Blob" and required `f.get('file') === b`. That asserted the bug. The
+     * XHR Standard's "create an entry" turns a Blob into a File named "blob"
+     * (or the filename argument) at append time -- which is how the name
+     * reaches Content-Disposition's filename -- so get() returns a NEW File
+     * holding the same bytes, in every browser. */
+    { int save = inverted; inverted = 0;
     ckjs("(function(){ var f = new FormData(); f.append('a','1'); f.append('a','2'); f.append('b','3');"
          " return f.getAll('a').length === 2 && f.get('a') === '1'"
          "     && Array.from(f.keys()).join(',') === 'a,a,b'; })()",
@@ -565,13 +577,12 @@ int main(int argc, char **argv)
     ckjs("(function(){ var f = new FormData(); f.append('a','1'); f.append('a','2'); f.set('a','9');"
          " return f.getAll('a').length === 1 && f.get('a') === '9'; })()",
          "FormData.set collapses duplicates");
-    /* FormData needs js_platform.c (this check stays inverted, unlike the
-     * block below): what it proves is that the Blob FormData sees is the REAL
-     * class from js_webapi.c, not some Blob-shaped object of its own -- so it
-     * has to run where FormData exists, which is only the positive build. */
-    ckjs("(function(){ var f = new FormData(); var b = new Blob(['x']); f.append('file', b);"
-         " return f.get('file') === b && b instanceof Blob; })()",
-         "FormData.append keeps a Blob a Blob (js_platform.c sees js_webapi.c's real class)");
+    ckjs("(function(){ var f = new FormData(); var b = new Blob(['x'], {type:'text/plain'});"
+         " f.append('file', b); f.append('named', b, 'n.txt'); var g = f.get('file'), h = f.get('named');"
+         " return g !== b && g instanceof File && g instanceof Blob && g.name === 'blob'"
+         "     && g.type === 'text/plain' && g.size === 1 && h instanceof File && h.name === 'n.txt'; })()",
+         "FormData.append turns a Blob into a File named 'blob' or the given filename");
+    inverted = save; }
 
     /* ==== Blob / createObjectURL =========================================
      * NOT inverted, on purpose, unlike the rest of this section: Blob and

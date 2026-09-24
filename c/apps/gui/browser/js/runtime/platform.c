@@ -1197,7 +1197,14 @@ static const char *PLATFORM_PRELUDE =
  *
  * FormData's iteration order is insertion order INCLUDING duplicates -- a form
  * with three checkboxes of the same name is the case that made the spec say so,
- * and a Map-backed implementation loses two of them. */
+ * and a Map-backed implementation loses two of them.
+ *
+ * Correction 2026-09-25: FormData, like Blob before it, now lives in
+ * js_webapi.c (js/net/formdata_prelude.inc), which runs first -- so the
+ * `if (!G.FormData)` block below is a fallback only for a build without
+ * js_webapi.o. The live one converts a Blob entry to a File at append() time,
+ * which this fallback never did (the filename argument was stored and ignored
+ * by the encoder). */
 "(function () {\n"
 "  function enc(s) {\n"
 "    if (G.TextEncoder) return new G.TextEncoder().encode(s);\n"
