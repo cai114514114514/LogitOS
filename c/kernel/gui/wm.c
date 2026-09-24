@@ -5604,14 +5604,27 @@ static void wm_process_key(int c, int mods)
              * window nor changes its focus, so the shadow is untouched. (The
              * candidate BAR damages itself, in ime_ui.c's bar_changed -- it is
              * not inside this rectangle and never was.) */
+#ifdef WM_KEY_PREDIRTY
             if (nc > 0) dirty_win_content(w);
+#endif
             return;
         }
         /* `a` is unchanged -- Ctrl+S still arrives as 0x13, because a decade of
          * terminal habit lives on that mapping and TextEdit reads it. `mods` is
          * additional information, not a replacement encoding. */
         enqueue_input(w, EV_KEY, c, 0, mods, EV_BTN_NONE, 0);
-        dirty_win_content(w);          /* the app repaints; the frame does not move */
+        /* NO DAMAGE HERE, and there used to be: dirty_win_content(w) on every
+         * key, "the app repaints", from the M8 window system, when a flush
+         * carried no rectangle and pre-damaging the whole canvas was the only
+         * way the app's repaint could reach the screen. It is the app's
+         * flush that reports what changed now (SYS_GUI_FLUSH_RECT, aui's
+         * damage set), so this recomposited the WHOLE window once per key
+         * for nothing -- measured 2026-09-24 at 1920x1200: half the frames
+         * of a TextEdit typing run were this, 1.77 M px each, beside the
+         * app's own ~0.4 M. -DWM_KEY_PREDIRTY puts it back as the control. */
+#ifdef WM_KEY_PREDIRTY
+        dirty_win_content(w);
+#endif
     }
 }
 
@@ -5896,7 +5909,9 @@ static void wm_process_mouse(const struct inputq_event *in)
             if (nc >= 0) {
                 for (int i = 0; i < nc; i++)
                     enqueue_input(&wins[wi], EV_KEY, (int)cps[i], 0, 0, EV_BTN_NONE, 0);
+#ifdef WM_KEY_PREDIRTY
                 if (nc) dirty_win_content(&wins[wi]);
+#endif
                 ime_mouse_capture = 1;
                 mleft = left; mright = right; mmiddle = middle;
                 return;

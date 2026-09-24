@@ -1,5 +1,6 @@
 #include "openlogit_bitmap.h"
 #include "aui.h"
+#include "aui_damage.h"
 #include "gfx.h"
 #include "openlogit_anim.h"
 #include "aui_scroll_motion.h"
@@ -305,12 +306,17 @@ static void ad_note_text(int x, int y, int px, int mono, unsigned color, const c
     ad_record(x, y - pad, w, px + 2 * pad, h);
 }
 
-static void ad_union(int *dx0, int *dy0, int *dx1, int *dy1, int *any,
-                     int x0, int y0, int x1, int y1)
+/* The damage is a small set of rectangles, not one bounding box: see
+ * aui_damage.h for why and for the merge rule. */
+static struct ad_set g_ad;
+#define g_ad_r  (g_ad.r)
+#define g_ad_nr (g_ad.n)
+
+static void ad_union(int *any, int x0, int y0, int x1, int y1)
 {
-    if (!*any) { *dx0 = x0; *dy0 = y0; *dx1 = x1; *dy1 = y1; *any = 1; return; }
-    if (x0 < *dx0) *dx0 = x0; if (y0 < *dy0) *dy0 = y0;
-    if (x1 > *dx1) *dx1 = x1; if (y1 > *dy1) *dy1 = y1;
+    if (x1 <= x0 || y1 <= y0) return;
+    *any = 1;
+    ad_set_add(&g_ad, x0, y0, x1, y1);
 }
 
 /* -1: no honest diff (first frame, resize, or this frame's array overflowed)
@@ -320,13 +326,13 @@ static void ad_union(int *dx0, int *dy0, int *dx1, int *dy1, int *any,
  * browser_paint_dirty_rect(), deliberately -- one jar, and now two doors that
  * agree on its shape instead of two that could drift. */
 static int g_ad_result_valid;
-static int g_ad_rx, g_ad_ry, g_ad_rw, g_ad_rh;
 
 static void ad_finish(void)
 {
     int can_diff = g_ad_have_prev && !g_ad_overflow &&
                    g_ad_prev_w == win_w && g_ad_prev_h == win_h;
-    int dx0 = 0, dy0 = 0, dx1 = 0, dy1 = 0, any = 0;
+    int any = 0;
+    g_ad_nr = 0;
     if (can_diff) {
         int n = g_ad_prev_n > g_ad_cur_n ? g_ad_prev_n : g_ad_cur_n;
         for (int i = 0; i < n; i++) {
@@ -337,25 +343,31 @@ static void ad_finish(void)
                     continue;                          /* byte-identical to last pass */
                 int ux0 = imin(a->x, b->x), uy0 = imin(a->y, b->y);
                 int ux1 = imax(a->x + a->w, b->x + b->w), uy1 = imax(a->y + a->h, b->y + b->h);
-                ad_union(&dx0, &dy0, &dx1, &dy1, &any, ux0, uy0, ux1, uy1);
+                ad_union(&any, ux0, uy0, ux1, uy1);
             } else {
                 const struct ad_ent *e = inc ? &g_ad_cur[i] : &g_ad_prev[i];
-                ad_union(&dx0, &dy0, &dx1, &dy1, &any, e->x, e->y, e->x + e->w, e->y + e->h);
+                ad_union(&any, e->x, e->y, e->x + e->w, e->y + e->h);
             }
         }
     }
     if (g_ad_extra_have)
-        ad_union(&dx0, &dy0, &dx1, &dy1, &any, g_ad_ex0, g_ad_ey0, g_ad_ex1, g_ad_ey1);
+        ad_union(&any, g_ad_ex0, g_ad_ey0, g_ad_ex1, g_ad_ey1);
 
     if (!can_diff) {
         g_ad_result_valid = -1;
     } else if (!any) {
         g_ad_result_valid = 0;
     } else {
-        if (dx0 < 0) dx0 = 0; if (dy0 < 0) dy0 = 0;
-        if (dx1 > win_w) dx1 = win_w; if (dy1 > win_h) dy1 = win_h;
-        if (dx1 <= dx0 || dy1 <= dy0) g_ad_result_valid = 0;
-        else { g_ad_result_valid = 1; g_ad_rx = dx0; g_ad_ry = dy0; g_ad_rw = dx1 - dx0; g_ad_rh = dy1 - dy0; }
+        /* Clamp each to the canvas; drop any that clamps to nothing. */
+        int k = 0;
+        for (int i = 0; i < g_ad_nr; i++) {
+            struct ad_rect r = g_ad_r[i];
+            if (r.x0 < 0) r.x0 = 0; if (r.y0 < 0) r.y0 = 0;
+            if (r.x1 > win_w) r.x1 = win_w; if (r.y1 > win_h) r.y1 = win_h;
+            if (r.x1 > r.x0 && r.y1 > r.y0) g_ad_r[k++] = r;
+        }
+        g_ad_nr = k;
+        g_ad_result_valid = k ? 1 : 0;
     }
     /* Pointer swap, not a copy -- the browser's pd_finish() does the same
      * with realloc'd buffers; these are fixed, so the swap is simpler still
@@ -380,25 +392,27 @@ static void ad_flush(void)
     ad_finish();
     if (g_ad_result_valid == -1) { gui_flush(); return; }
     if (g_ad_result_valid == 0) return;
-    int x = g_ad_rx, y = g_ad_ry, w = g_ad_rw, h = g_ad_rh;
+    for (int i = 0; i < g_ad_nr; i++) {
+        int x = g_ad_r[i].x0, y = g_ad_r[i].y0, w = g_ad_r[i].x1 - x, h = g_ad_r[i].y1 - y;
 #ifdef AUI_FLUSH_NEGCTL_SHRINK
-    /* THE NEGATIVE CONTROL for this whole mechanism (make AUIFLUSHCTL=1;
-     * tests/appflush.mk's test-appflush-negctl). Deliberately reports a
-     * rectangle SMALLER than what ad_finish() actually computed -- 3px
-     * inward on every side, floored at 1px so a thin change never collapses
-     * to w<=0||h<=0 and gets read as "whole canvas" by SYS_GUI_FLUSH_RECT's
-     * own contract (logit_abi.h says so explicitly; c/apps/logit.h's
-     * gui_flush_rect comment repeats it). If the compositor is honouring the
-     * rectangle this app reports rather than quietly recompositing more than
-     * it was told, this MUST leave a visible border of stale pixels on
-     * screen after any narrow-flushed edit -- watching that happen is what
-     * earns the right to trust any table measured with this flag off
-     * (AGENTS.md rule 5: a control that cannot be watched failing is worse
-     * than no control). */
-    x += 3; y += 3; w -= 6; h -= 6;
-    if (w < 1) w = 1; if (h < 1) h = 1;
+        /* THE NEGATIVE CONTROL for this whole mechanism (make AUIFLUSHCTL=1;
+         * tests/appflush.mk's test-appflush-negctl). Deliberately reports a
+         * rectangle SMALLER than what ad_finish() actually computed -- 3px
+         * inward on every side, floored at 1px so a thin change never collapses
+         * to w<=0||h<=0 and gets read as "whole canvas" by SYS_GUI_FLUSH_RECT's
+         * own contract (logit_abi.h says so explicitly; c/apps/logit.h's
+         * gui_flush_rect comment repeats it). If the compositor is honouring the
+         * rectangle this app reports rather than quietly recompositing more than
+         * it was told, this MUST leave a visible border of stale pixels on
+         * screen after any narrow-flushed edit -- watching that happen is what
+         * earns the right to trust any table measured with this flag off
+         * (AGENTS.md rule 5: a control that cannot be watched failing is worse
+         * than no control). */
+        x += 3; y += 3; w -= 6; h -= 6;
+        if (w < 1) w = 1; if (h < 1) h = 1;
 #endif
-    gui_flush_rect(x, y, w, h);
+        gui_flush_rect(x, y, w, h);
+    }
 }
 
 

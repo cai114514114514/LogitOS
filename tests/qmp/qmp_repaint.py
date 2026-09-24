@@ -909,6 +909,7 @@ def main(argv):
     xres, yres, reps = 1920, 1200, 3
     iso, disk, only, jpath = None, None, None, None
     do_assert, assert_open, assert_cover, expect_off = False, False, False, None
+    max_frac = {}
     i = 1
     while i < len(argv):
         if argv[i] == "--xres":    xres = int(argv[i + 1]); i += 2
@@ -922,6 +923,8 @@ def main(argv):
         elif argv[i] == "--assert-open": assert_open = True; i += 1
         elif argv[i] == "--assert-cover": assert_cover = True; i += 1
         elif argv[i] == "--expect-off": expect_off = int(argv[i + 1]); i += 2
+        elif argv[i] == "--assert-max-frac":
+            name, frac = argv[i + 1].split("="); max_frac[name] = float(frac); i += 2
         else:
             print("unknown arg %r" % argv[i]); return 2
     if iso is None:
@@ -1131,6 +1134,9 @@ def main(argv):
             _json.dump({"xres": xres, "yres": yres, "scale": scale,
                         "iso": iso, "workloads": result}, fh, indent=1)
         print("     wrote %s" % jpath)
+    if max_frac:
+        rc = assert_max_frac(result, max_frac, xres * yres)
+        if rc: return rc
     if do_assert:
         return assert_anim(result, ANIM_FLIPS, expect_off)
     if assert_cover:
@@ -1148,6 +1154,31 @@ def main(argv):
         print("ok   wm-cover: skipped %.0f hidden wallpaper px/frame of %.0f painted"
               % (skipped, painted))
     return 0
+
+
+# ---------------------------------------------------------------------------
+# --assert-max-frac NAME=FRAC: the MEDIAN composited pixels per frame of class
+# NAME, as a fraction of the screen, must not exceed FRAC. A ceiling on what one
+# interaction costs the compositor, read from its own counters -- the number a
+# damage regression moves. tests/fluid_perf.mk runs it with a control kernel
+# that restores a known over-report and must exceed the same ceiling.
+
+def assert_max_frac(result, limits, screen):
+    rc = 0
+    for name, frac in sorted(limits.items()):
+        sample = result.get(name)
+        if not sample or not sample.get("cpx"):
+            print("FAIL max-frac %s: the class produced no measurement" % name)
+            rc = 1
+            continue
+        vals = sorted(sample["cpx"])
+        med = vals[len(vals) // 2] / float(screen)
+        if med > frac:
+            print("FAIL max-frac %s: %.3f of the screen per frame > %.3f" % (name, med, frac))
+            rc = 1
+        else:
+            print("ok   max-frac %s: %.3f of the screen per frame <= %.3f" % (name, med, frac))
+    return rc
 
 
 # ---------------------------------------------------------------------------

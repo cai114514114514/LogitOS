@@ -5862,3 +5862,5 @@ include tests/build_dir.mk
 -include tests/fb_display.mk
 include tools/build/product.mk
 -include tests/term_wrap.mk
+-include tests/aui_damage.mk
+-include tests/fluid_perf.mk
