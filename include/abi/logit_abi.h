@@ -85,6 +85,7 @@
 #define SYS_CPU_INDEX   68 /* () -> the index (0..N-1) of the core running the caller (SMP proof) */
 #define SYS_CPU_COUNT  196 /* () -> current online logical CPU count; never a build-time topology constant */
 #define SYS_STATVFS    202 /* (path, struct logit_statvfs*, len) -> 0, or <0; capacity of the filesystem holding path */
+#define SYS_OPEN_PATH_ARG 203 /* (path, arg) -> 0; SYS_OPEN_PATH, and an .aex also gets `arg` (get_arg) */
 #define SYS_KHEAP_STRESS 69 /* (iters, size, seed) -> corruption count; BKL-FREE concurrent kmalloc/kfree stress (M25 P1 gate) */
 #define SYS_UI_DARK     70 /* (set) set<0 query, else set system dark mode (0/1); -> current value */
 #define SYS_GUI_ICON    71 /* ((x<<16)|y, (id<<16)|px, color) draw a vector icon into the window */
@@ -820,6 +821,9 @@ struct logit_mmap_file_req {
 #define WINS_FOCUSED   6   /* -> 1 if this window receives keyboard input, else 0 */
 #define WINS_KEY_HELD  7   /* arg: unshifted ASCII / KEY_*; 0 unless focused. */
 #define WINS_WANT_KEYUP 8  /* arg: 1 deliver EV_KEY_UP and modifier keys, 0 stop -> new state */
+#define WINS_SET_PANEL  9  /* make this window a PANEL: no titlebar, centred, out of Cmd+Tab and
+                            * Expose, hidden when it loses focus (Spotlight). One way. -> 1 */
+#define WINS_SET_HIDDEN 10 /* panels only: arg 1 hide, 0 show -> 1 if now hidden */
 
 /* logit_procinfo.state -- mirrors enum proc_state in c/kernel/exec/proc.h. */
 #define LOGIT_PROC_RUNNING   1

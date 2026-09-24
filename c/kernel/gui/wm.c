@@ -385,6 +385,7 @@ struct win {
     int  wants_close;
     int  focus_notified;     /* last EV_WINDOW_FOCUS value; -1 before first delivery */
     int  want_keyup;         /* WINS_WANT_KEYUP: deliver EV_KEY_UP + modifier keys */
+    int  panel;              /* WINS_SET_PANEL: no titlebar, hides when it loses focus */
     int  cw_pt, ch_pt;        /* content size in POINTS -- what the app CURRENTLY has */
     char cwd[128];            /* Finder: current directory path */
     uint64_t open_t0;         /* monotonic ms when the open pop began (0 = settled) */
@@ -444,6 +445,11 @@ struct win {
 
 static struct app apps[MAXWIN];
 static struct win wins[MAXWIN];
+/* A window's titlebar height: TBH, or 0 for a panel (WINS_SET_PANEL), whose
+ * canvas starts at its top edge. Every per-window use of the titlebar height
+ * goes through this, so a panel is placed, hit-tested and composited without
+ * a strip nobody draws in. */
+static inline int win_tbh(const struct win *w) { return w->panel ? 0 : TBH; }
 static struct input_queue inq = INPUT_QUEUE_INIT;
 static int order[MAXWIN], norder;      /* z-order; order[norder-1] is on top */
 
@@ -1055,7 +1061,7 @@ static void dirty_win_content_rect(const struct win *w, int rx, int ry, int rw, 
      * see through. */
     rw /= 2; rh /= 2;
 #endif
-    dirty_rect(x + rx, y + TBH + ry, rw, rh);
+    dirty_rect(x + rx, y + win_tbh(w) + ry, rw, rh);
 }
 
 /* THE RESIZE NEGATIVE CONTROL, and it is a DIFFERENT mistake from the one
@@ -1153,6 +1159,7 @@ static void wm_set_dark(int on);
 static int top_visible(void);   /* fwd: wm_ime_anchor, immediately below */
 static int wm_keyboard_focus(void);
 static void wm_sync_focus(void);
+static void panel_show(struct win *w, int show);
 
 /* IME-HOOK (the one call in the other direction; declared in wm.h). The
  * FOCUSED window, not the top of the z-order -- top_visible() already draws
@@ -1571,7 +1578,7 @@ static void ex_layout(void)
      * items move for no reason the user can see is a picker you have to read
      * every time instead of aiming at. */
     for (int i = 0; i < norder && ex_n < MAXWIN; i++)
-        if (wins[order[i]].used) ex_wi[ex_n++] = order[i];
+        if (wins[order[i]].used && !wins[order[i]].panel) ex_wi[ex_n++] = order[i];
     if (!ex_n) return;
 
     /* rows = ceil(sqrt(N)). This machine's world is NAPPS ~ 11 and one window
@@ -1727,6 +1734,7 @@ static int win_glass_box(const struct win *w, struct drect *p)
     if (!w->used) return 0;
     if (!win_draw_rect(w, &x, &y, &ww, &wh, &a)) return 0;
     if (!win_drawn_direct(w, x, y, ww, wh, a)) return 0;
+    if (w->panel) return 0;                           /* no titlebar, no glass */
     p->x0 = x; p->y0 = y;
     p->x1 = x + ww; p->y1 = y + TBH + S(10);
     return 1;
@@ -1916,7 +1924,7 @@ static int resize_hit(int x, int y, int *edge)
  * would make a window's geometry depend on heap pressure. */
 static void win_apply_size(struct win *w)
 {
-    int cw = w->w, ch = w->h - TBH;
+    int cw = w->w, ch = w->h - win_tbh(w);
     if (cw < 1) cw = 1;
     if (ch < 1) ch = 1;
     /* No canvas at all means the app has not created its window yet; there is
@@ -2664,7 +2672,7 @@ static long wm_gui_dispatch(long num, long a, long b, long c)
          * which the pointer is null. PUBLISH LAST. */
         w->used = 1; w->app = ap;
         w->cw_pt = cw_pt; w->ch_pt = ch_pt;
-        w->w = cw; w->h = TBH + ch;
+        w->w = cw; w->h = win_tbh(w) + ch;
         w->x = S(110 + cascade * 28); w->y = S(70 + cascade * 28);
         cascade = (cascade + 1) % 6;
         { int SW = (int)fb_width(), SH = (int)fb_height();   /* keep big windows on-screen */
@@ -3169,6 +3177,27 @@ static long wm_gui_dispatch(long num, long a, long b, long c)
         case WINS_FOCUSED:   return wm_keyboard_focus() == ap->win;
         case WINS_KEY_HELD:  return wm_keyboard_focus() == ap->win && kbd_key_held((int)b);
         case WINS_WANT_KEYUP: w->want_keyup = (int)b != 0; return w->want_keyup;
+        case WINS_SET_PANEL:
+            /* One way, at most once: a panel has no titlebar (win_tbh), sits
+             * centred a quarter of the way down, stays out of Cmd+Tab and
+             * Expose, and hides when it loses focus (wm_sync_focus). The
+             * canvas keeps its size; the frame loses the titlebar strip. */
+            if (!w->panel) {
+                dirty_win(w);
+                w->panel = 1;
+                int ch = w->h - TBH;
+                w->h = ch > 1 ? ch : 1;
+                w->x = (W - w->w) / 2;
+                w->y = H / 4 - S(40);
+                if (w->y < MBH + S(8)) w->y = MBH + S(8);
+                dirty_full(FULL_WINDOW_CREATE);
+                kprintf("[wm] panel win=%d '%s' %d %d %d %d\n", ap->win, w->title, w->x, w->y, w->w, w->h);
+            }
+            return 1;
+        case WINS_SET_HIDDEN:
+            if (!w->panel) return -1;
+            panel_show(w, (int)b == 0);
+            return w->minimized;
         case WINS_SET_ZOOM:
             win_set_zoom(w, (int)b < 0 ? !w->zoomed : ((int)b != 0));
             return w->zoomed;
@@ -3182,6 +3211,18 @@ static long wm_gui_dispatch(long num, long a, long b, long c)
         char path[USER_PATH_MAX];
         if (user_copy_string(path, sizeof path, (const char *)a) < 0) return -1;
         if (ends_aex(path)) wm_launch(path, "");
+        else launch_for_ext(ext_of(path), path);
+        return 0;
+    }
+    case SYS_OPEN_PATH_ARG: {
+        /* SYS_OPEN_PATH with the argument an app reads back with get_arg():
+         * how Spotlight hands the assistant a question. Only an .aex takes
+         * one; a document is opened exactly as SYS_OPEN_PATH opens it. */
+        char path[USER_PATH_MAX], arg[sizeof ap->arg];
+        if (user_copy_string(path, sizeof path, (const char *)a) < 0) return -1;
+        if (!b) arg[0] = 0;
+        else if (user_copy_string(arg, sizeof arg, (const char *)b) < 0) return -1;
+        if (ends_aex(path)) wm_launch(path, arg);
         else launch_for_ext(ext_of(path), path);
         return 0;
     }
@@ -3200,7 +3241,7 @@ static int wm_domain_call(long num)
     case SYS_GUI_ICON: case SYS_GUI_GLASS: case SYS_GUI_TEXT_RUN:
     case SYS_GUI_BLIT: case SYS_GUI_CLIP: case SYS_GUI_FLUSH:
     case SYS_GUI_FLUSH_RECT: case SYS_GUI_WIN_MIN: case SYS_GUI_WIN_STATE:
-    case SYS_UI_DARK: case SYS_OPEN_PATH: case SYS_GET_ARG: case SYS_SYSINFO:
+    case SYS_UI_DARK: case SYS_OPEN_PATH: case SYS_OPEN_PATH_ARG: case SYS_GET_ARG: case SYS_SYSINFO:
         return 1;
     }
     return 0;
@@ -3373,7 +3414,7 @@ static void wm_set_dark(int on)
 static struct ghost {
     int used;
     struct surface surf;
-    int x, y, w, h, dark;
+    int x, y, w, h, dark, tbh;
     uint64_t t0;
 } g_ghost[NGHOST];
 static int g_nghost;
@@ -3400,10 +3441,12 @@ static void draw_ghost(const struct drect *R, const struct ghost *g)
     int dx, dy, dw, dh, a;
     ghost_geom(g, &dx, &dy, &dw, &dh, &a);
     if (a <= 0 || dw <= 0 || dh <= 0) return;
-    int tbh = TBH * dw / (g->w ? g->w : 1);
+    int tbh = g->tbh * dw / (g->w ? g->w : 1);
     if (tbh > dh) tbh = dh;
-    if (g->dark) fb_blend_round_rect(dx, dy, dw, tbh + S(10), S(10), 44, 44, 52, a);
-    else         fb_blend_round_rect(dx, dy, dw, tbh + S(10), S(10), 236, 236, 240, a);
+    if (tbh > 0) {
+        if (g->dark) fb_blend_round_rect(dx, dy, dw, tbh + S(10), S(10), 44, 44, 52, a);
+        else         fb_blend_round_rect(dx, dy, dw, tbh + S(10), S(10), 236, 236, 240, a);
+    }
     if (g->surf.px && dh - tbh > 0) anim_blit_fade(R, dx, dy + tbh, dw, dh - tbh, &g->surf, a);
 }
 
@@ -3422,6 +3465,7 @@ static int ghost_take(int wi)
         g->surf = w->surf;
         g->x = w->x; g->y = w->y; g->w = w->w; g->h = w->h;
         g->dark = g_ui_dark;
+        g->tbh = win_tbh(w);
         g->t0 = anim_stamp();
         g->used = 1;
         g_nghost++;
@@ -4057,9 +4101,31 @@ static void mru_touch(int wi)
     g_mru[0] = wi;
 }
 
+/* A panel is shown and hidden, not minimised: the same `minimized` state every
+ * hit test, focus rule and compositor path already honours, but set without
+ * the flight to the dock -- a panel has no dock icon to fly to. */
+static void panel_show(struct win *w, int show)
+{
+    if (!w->panel || w->minimized == !show) return;
+    dirty_win(w);
+    w->minimized = !show;
+    w->min_t0 = 0;
+    if (show) raise_win((int)(w - wins));
+    dirty_full(FULL_ZORDER_SYSTEM);
+    kprintf("[wm] panel %s win=%d\n", show ? "show" : "hide", (int)(w - wins));
+}
+
 static void wm_sync_focus(void)
 {
     int wi = wm_keyboard_focus();
+    /* A PANEL HIDES WHEN IT LOSES FOCUS -- clicking anywhere else, Cmd+Tab,
+     * a new window. Checked against the previous focus so a panel that was
+     * never focused is not hidden on creation. */
+    static int prev_focus = -1;
+    if (prev_focus >= 0 && prev_focus != wi && prev_focus < MAXWIN &&
+        wins[prev_focus].used && wins[prev_focus].panel && !wins[prev_focus].minimized)
+        panel_show(&wins[prev_focus], 0);
+    prev_focus = wi = wm_keyboard_focus();
     if (wi >= 0 && (g_nmru == 0 || g_mru[0] != wi)) mru_touch(wi);
     for (int i = 0; i < MAXWIN; i++) {
         struct win *w = &wins[i];
@@ -4429,12 +4495,12 @@ static void sw_open(int dir)
     int n = 0, seen[MAXWIN] = {0};
     for (int k = 0; k < g_nmru; k++) {
         int wi = g_mru[k];
-        if (wi < 0 || wi >= MAXWIN || seen[wi] || !wins[wi].used || wins[wi].kind != WK_APP) continue;
+        if (wi < 0 || wi >= MAXWIN || seen[wi] || !wins[wi].used || wins[wi].kind != WK_APP || wins[wi].panel) continue;
         seen[wi] = 1; g_sw.list[n++] = wi;
     }
     for (int k = norder - 1; k >= 0; k--) {            /* never focused yet: z-order */
         int wi = order[k];
-        if (seen[wi] || !wins[wi].used || wins[wi].kind != WK_APP) continue;
+        if (seen[wi] || !wins[wi].used || wins[wi].kind != WK_APP || wins[wi].panel) continue;
         seen[wi] = 1; g_sw.list[n++] = wi;
     }
     if (n < 2) return;
@@ -4540,6 +4606,7 @@ static void draw_frame(struct win *w, int focused)
 {
     int x = w->x, y = w->y, ww = w->w, wh = w->h;
     fb_shadow(x, y, ww, wh, S(10), WSH_DY(focused), WSH_BLUR(focused), WSH_ALPHA(focused));
+    if (w->panel) return;                 /* a panel is its canvas and its shadow */
     uint8_t a = focused ? (g_ui_dark ? 150 : 104) : (g_ui_dark ? 180 : 140);
     if (g_ui_dark) profiled_glass(x, y, ww, TBH + S(10), S(TITLE_GLASS_PT), 30, 30, 40, a);
     else           profiled_glass(x, y, ww, TBH + S(10), S(TITLE_GLASS_PT), 250, 250, 255, a);
@@ -4993,7 +5060,7 @@ static struct surface *anim_scratch(int w, int h)
  * to grow with it. */
 static struct surface *win_chrome_strip(struct win *w, int focused)
 {
-    int sh = TBH;
+    int sh = win_tbh(w);
     if (sh > w->h) sh = w->h;
     if (sh < 1) return NULL;
     struct surface *tmp = anim_scratch(w->w, sh);
@@ -5175,10 +5242,10 @@ static int opaque_content_start(const struct drect *R)
         if (!w->used || !w->surf.px ||
             !win_draw_rect(w, &x, &y, &ww, &wh, &alpha) ||
             !win_drawn_direct(w, x, y, ww, wh, alpha) ||
-            w->surf.w != ww || w->surf.h != wh - TBH)
+            w->surf.w != ww || w->surf.h != wh - win_tbh(w))
             continue;
         if (R->x0 >= x && R->x1 <= x + ww &&
-            R->y0 >= y + TBH && R->y1 <= y + wh)
+            R->y0 >= y + win_tbh(w) && R->y1 <= y + wh)
             return i;
     }
     return -1;
@@ -5248,8 +5315,8 @@ static void render_layers(const struct drect *R)
             /* The proof above says this canvas overwrites every pixel in R.
              * Its shadow and glass are under that opaque copy; the separator
              * is on top of the first content row, so it still goes last. */
-            blit_content(w, dx, dy + TBH, dw, dh - TBH);
-            draw_titlebar_sep(dx, dy + TBH, dw);
+            blit_content(w, dx, dy + win_tbh(w), dw, dh - win_tbh(w));
+            if (!w->panel) draw_titlebar_sep(dx, dy + TBH, dw);
             continue;
         }
 
@@ -5262,8 +5329,8 @@ static void render_layers(const struct drect *R)
             /* The canvas is allowed to be a size behind the frame mid-drag, so
              * the content is stretched rather than left as a hole -- see
              * blit_content and RESIZE_APPLY_MS. */
-            blit_content(w, w->x, w->y + TBH, w->w, w->h - TBH);
-            draw_titlebar_sep(w->x, w->y + TBH, w->w);  /* after the blit -- see draw_titlebar_sep */
+            blit_content(w, w->x, w->y + win_tbh(w), w->w, w->h - win_tbh(w));
+            if (!w->panel) draw_titlebar_sep(w->x, w->y + TBH, w->w);  /* after the blit -- see draw_titlebar_sep */
             continue;
         }
 
@@ -5295,8 +5362,8 @@ static void render_layers(const struct drect *R)
          * rects ABUT and do not overlap, so with a fade every pixel is blended
          * exactly once; overlapping them would blend the seam rows twice and
          * show a darker band that gets darker as the window fades. */
-        int tbh_s = TBH * sr / 256;
-        if (tbh_s < 1) tbh_s = 1;
+        int tbh_s = win_tbh(w) * sr / 256;
+        if (tbh_s < 1 && !w->panel) tbh_s = 1;
         if (tbh_s > dh) tbh_s = dh;
         struct surface *cs = win_chrome_strip(w, focused);
         if (cs) {
@@ -6134,7 +6201,21 @@ static int wm_shortcut(int c, int mods)
     if (c >= 'A' && c <= 'Z') c = c - 'A' + 'a';      /* Cmd+Shift+W is still close */
 
     switch (c) {
-    case ' ': wm_launch_locked("/assistant.aex", ""); return 1;
+    case ' ': {
+        /* Spotlight ("Fluid" P4): show the running one, or start it. The
+         * assistant is its last row now, one Enter away. */
+        for (int k = 0; k < MAXWIN; k++) {
+            struct win *sw = &wins[k];
+            if (sw->used && sw->panel && sw->app && streq(sw->app->name, "Spotlight")) {
+                /* The chord toggles: open and focused, it puts Spotlight away. */
+                panel_show(sw, sw->minimized || wm_keyboard_focus() != k);
+                wm_sync_focus();
+                return 1;
+            }
+        }
+        wm_launch_locked("/sbin/spotlight.aex", "");
+        return 1;
+    }
     case 'w':
         if (w && w->kind == WK_APP) { enqueue(w, EV_CLOSE, 0, 0); return 1; }
         return 1;                                     /* claimed even with no window */
@@ -6325,7 +6406,7 @@ static int win_content_at(int x, int y)
     for (int i = norder - 1; i >= 0; i--) {
         struct win *w = &wins[order[i]];
         if (!w->used || w->minimized || w->kind != WK_APP) continue;
-        if (in_rect(x, y, w->x, w->y + TBH, w->w, w->h - TBH)) return order[i];
+        if (in_rect(x, y, w->x, w->y + win_tbh(w), w->w, w->h - win_tbh(w))) return order[i];
     }
     return -1;
 }
@@ -6667,7 +6748,7 @@ static void wm_process_mouse(const struct inputq_event *in)
             if (prev_top >= 0 && prev_top != wi && wins[prev_top].used)
                 dirty_win(&wins[prev_top]);
             int cx = x - w->x, cy = y - w->y;
-            if (cy < TBH) {
+            if (cy < win_tbh(w)) {
                 /* The three lights, at last all three doing something. The
                  * yellow and green ones have been drawn since M8 and have been
                  * decoration for as long -- which is worse than absent, because
@@ -6691,7 +6772,7 @@ static void wm_process_mouse(const struct inputq_event *in)
                     dragging = wi; drag_dx = cx; drag_dy = cy;
                 }
             } else if (w->kind == WK_APP) {
-                enqueue_input(w, EV_MOUSE, PT(cx), PT(cy - TBH), mods, EV_BTN_LEFT, 0);
+                enqueue_input(w, EV_MOUSE, PT(cx), PT(cy - win_tbh(w)), mods, EV_BTN_LEFT, 0);
                 mouse_capture = wi;     /* this window owns the pointer until the button comes up */
             }
         }
@@ -6702,13 +6783,13 @@ static void wm_process_mouse(const struct inputq_event *in)
             struct win *w = &wins[order[i]];
             if (!w->used || !in_rect(x, y, w->x, w->y, w->w, w->h)) continue;
             int cx = x - w->x, cy = y - w->y;
-            if (cy >= TBH && w->kind == WK_APP) {
+            if (cy >= win_tbh(w) && w->kind == WK_APP) {
                 int prev_top = norder ? order[norder - 1] : -1;
                 raise_win(order[i]);    /* focus + bring to front (like left-click) so the menu shows on top */
                 dirty_win(w);
                 if (prev_top >= 0 && prev_top != order[i] && wins[prev_top].used)
                     dirty_win(&wins[prev_top]);
-                enqueue_input(w, EV_MOUSE_R, PT(cx), PT(cy - TBH), mods, EV_BTN_RIGHT, 0);
+                enqueue_input(w, EV_MOUSE_R, PT(cx), PT(cy - win_tbh(w)), mods, EV_BTN_RIGHT, 0);
                 mouse_capture = order[i];
             }
             break;
@@ -6722,7 +6803,7 @@ static void wm_process_mouse(const struct inputq_event *in)
         int wi = win_content_at(x, y);
         if (wi >= 0) {
             struct win *w = &wins[wi];
-            enqueue_input(w, EV_MOUSE, PT(x - w->x), PT(y - w->y - TBH), mods, EV_BTN_MIDDLE, 0);
+            enqueue_input(w, EV_MOUSE, PT(x - w->x), PT(y - w->y - win_tbh(w)), mods, EV_BTN_MIDDLE, 0);
             mouse_capture = wi;
             /* No damage: a middle press deliberately does not raise, so the WM
              * changed nothing. Whatever the app does about it arrives as its
@@ -6747,7 +6828,7 @@ static void wm_process_mouse(const struct inputq_event *in)
             int wi = mouse_capture >= 0 ? mouse_capture : win_content_at(x, y);
             if (wi < 0 || !wins[wi].used || wins[wi].kind != WK_APP) continue;
             struct win *w = &wins[wi];
-            enqueue_input(w, EV_MOUSE_UP, PT(x - w->x), PT(y - w->y - TBH), mods, id[k], 0);
+            enqueue_input(w, EV_MOUSE_UP, PT(x - w->x), PT(y - w->y - win_tbh(w)), mods, id[k], 0);
         }
     }
     if (!left && !right && !middle) mouse_capture = -1;   /* all buttons up: release the pointer */
@@ -6831,7 +6912,7 @@ static void wm_process_mouse(const struct inputq_event *in)
         int wi = mouse_capture >= 0 ? mouse_capture : win_content_at(x, y);
         if (wi >= 0 && wins[wi].used && wins[wi].kind == WK_APP) {
             struct win *w = &wins[wi];
-            enqueue_input(w, EV_MOUSE_MOVE, PT(x - w->x), PT(y - w->y - TBH), mods, EV_BTN_NONE, 0);
+            enqueue_input(w, EV_MOUSE_MOVE, PT(x - w->x), PT(y - w->y - win_tbh(w)), mods, EV_BTN_NONE, 0);
         }
     }
 
@@ -6842,7 +6923,7 @@ static void wm_process_mouse(const struct inputq_event *in)
         int wi = mouse_capture >= 0 ? mouse_capture : win_content_at(x, y);
         if (wi >= 0 && wins[wi].used && wins[wi].kind == WK_APP) {
             struct win *w = &wins[wi];
-            enqueue_input(w, EV_WHEEL, PT(x - w->x), PT(y - w->y - TBH), mods, EV_BTN_NONE,
+            enqueue_input(w, EV_WHEEL, PT(x - w->x), PT(y - w->y - win_tbh(w)), mods, EV_BTN_NONE,
                           desktop_prefs.natural_scroll ? -in->wheel : in->wheel);
             /* Same as the middle press: the scroll is the app's to draw. */
         }

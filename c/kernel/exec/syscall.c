@@ -210,7 +210,7 @@ static int syscall_cap_class(int num)
     case SYS_CREATE_FILE: case SYS_READ_FILE: case SYS_WRITE_FILE: case SYS_DELETE_FILE:
     case SYS_MKDIR: case SYS_DIR_COUNT: case SYS_DIR_NAME:
     case SYS_FILE_COUNT: case SYS_FILE_NAME:
-    case SYS_OPEN: case SYS_CHDIR: case SYS_RENAME: case SYS_OPEN_PATH:
+    case SYS_OPEN: case SYS_CHDIR: case SYS_RENAME: case SYS_OPEN_PATH: case SYS_OPEN_PATH_ARG:
     case SYS_IMG_DECODE:
     case SYS_FSREF: case SYS_STAT: case SYS_LSTAT: case SYS_GETDENTS: case SYS_CHMOD:
     case SYS_STATVFS:

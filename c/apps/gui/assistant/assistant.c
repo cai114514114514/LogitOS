@@ -95,7 +95,11 @@ int main(void)
 {
     struct aex_agent_identity self;if(ag_self(&self)<0||self.mode!=AEX_ACT_UI)return 1;
     /* Keep the task controls above the dock on the 1280x800 baseline. */
-    gui_create("Logit Assistant",720,580);aui_set_size(720,580);refresh();draw();
+    gui_create("Logit Assistant",720,580);aui_set_size(720,580);
+    /* Launched from Spotlight's "Ask Assistant" row: the question arrives as
+     * the launch argument (SYS_OPEN_PATH_ARG) and becomes the goal field. */
+    {char q[sizeof goal];int n=get_arg(q,sizeof q);if(n>0){memcpy(goal,q,(size_t)n);goal[n]=0;}}
+    refresh();draw();
     unsigned long long next=monotonic_ms()+1500;
     for(;;){struct logit_event e;int changed=0;
         while(poll_event(&e)){if(e.type==EV_CLOSE)app_exit(0);aui_feed(&e);draw();aui_feed_done();changed=1;}

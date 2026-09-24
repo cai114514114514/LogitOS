@@ -353,7 +353,8 @@ static const struct fs_iops lfsro_iops = {
     lr_mount, lr_umount, NULL,
     lr_size, lr_read, lr_count, lr_ent_name, lr_ent_size, lr_ent_is_dir,
     NULL, NULL, NULL, NULL,
-    lr_pread,                    /* positional: pread is LAST in struct fs_iops */
+    lr_pread,                    /* positional: after pread comes statfs */
+    0,                           /* statfs: capacity not reported (VFS_ENOSYS) */
 };
 
 struct filesystem *lfsro_create(const char *dev)

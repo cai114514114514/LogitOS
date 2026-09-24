@@ -287,7 +287,8 @@ static const struct fs_iops ramfs_iops = {
     rf_mount, rf_umount, NULL,
     rf_size, rf_read, rf_count, rf_ent_name, rf_ent_size, rf_ent_is_dir,
     rf_write, rf_del, rf_mkdir, rf_rename,
-    rf_pread,                    /* positional: pread is LAST in struct fs_iops */
+    rf_pread,                    /* positional: after pread comes statfs */
+    0,                           /* statfs: capacity not reported (VFS_ENOSYS) */
 };
 
 struct filesystem *ramfs_create(const char *label)

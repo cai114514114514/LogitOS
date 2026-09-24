@@ -67,3 +67,59 @@ test-close-anim: test-close-anim-negctl $(ISO) $(DISK)
 	@python3 tests/qmp/qmp_snapclose.py --iso $(ISO) --disk $(DISK) --only close
 
 ci-boot: test-snap test-close-anim
+
+# ---- P4: Spotlight ----
+# /sbin/spotlight.aex: a panel app (WINS_SET_PANEL) the window manager starts
+# on the first Cmd+Space. In /sbin so it is not in the dock. Linked against
+# mini-libc (opendir/stdio for the file index), like Terminal.
+SPOTLIGHT_DIR := c/apps/gui/spotlight
+ifeq ($(SPOTLIGHTNOFILES),1)
+SPOTLIGHT_CFLAGS := -DSPOTLIGHT_NEGCTL_NO_FILES
+endif
+$(BUILD)/spotlight/spotlight.o: $(SPOTLIGHT_DIR)/spotlight.c $(SPOTLIGHT_DIR)/sl_rank.h c/apps/gui/aui.h
+	@mkdir -p $(dir $@)
+	$(COMPILE) $(UCFLAGS) $(SPOTLIGHT_CFLAGS) -c $< -o $@
+$(BUILD)/spotlight.elf: $(BUILD)/spotlight/spotlight.o $(BUILD)/apps/crt0.o $(BUILD)/apps/aui.o \
+  $(GFX_OBJ) $(LIBC_OBJS)
+	$(LD) -nostdlib -e _start -Ttext=0x4E000000 -o $@ --start-group \
+	    $(BUILD)/apps/crt0.o $(BUILD)/spotlight/spotlight.o $(BUILD)/apps/aui.o $(GFX_OBJ) \
+	    $(LIBC_OBJS) --end-group
+$(BUILD)/spotlight.aex: $(BUILD)/spotlight.elf tools/mkaex.py
+	python3 tools/mkaex.py $< $@ Spotlight - S 90 90 110
+FS_FILES += $(BUILD)/spotlight.aex:/sbin/spotlight.aex
+$(DISK): $(BUILD)/spotlight.aex tests/fluid_desktop.mk
+
+# The ranking, on the host: orderings a person would call obviously right. The
+# control ranks by "appears anywhere" alone and must misorder at least one.
+.PHONY: test-spotlight-rank test-spotlight-rank-negctl
+test-spotlight-rank-negctl:
+	@mkdir -p $(BUILD)
+	@$(CC) -O2 -w -DSL_RANK_NEGCTL -I$(SPOTLIGHT_DIR) -o $(BUILD)/sl_rank_negctl tests/unit/sl_rank_test.c
+	@if ./$(BUILD)/sl_rank_negctl > $(BUILD)/sl_rank_negctl.log 2>&1; then \
+		echo "NEGATIVE CONTROL FAILED: substring-only ranking passes"; exit 1; \
+	else echo "negative control ok: $$(grep -c '^FAIL' $(BUILD)/sl_rank_negctl.log) orderings wrong without the prefix/word tiers"; fi
+test-spotlight-rank: test-spotlight-rank-negctl
+	@$(CC) -O2 -Wall -Wextra -I$(SPOTLIGHT_DIR) -o $(BUILD)/sl_rank_test tests/unit/sl_rank_test.c
+	@./$(BUILD)/sl_rank_test
+ci-host: test-spotlight-rank
+
+# test-spotlight (QMP): Cmd+Space starts the panel; "term" launches Terminal;
+# a second Cmd+Space shows the same process; a file from the index opens in
+# TextEdit; a query nothing matches asks the assistant; Escape hides it; and the
+# typed-into panel is pixel-identical to a full composite of it (watched failing
+# at 43 px with aui's old px/4 text padding). The control is a whole disk whose
+# Spotlight has no file source (-DSPOTLIGHT_NEGCTL_NO_FILES).
+SPOTLIGHT_CTL_BUILD := $(BUILD)-spotnofiles
+.PHONY: test-spotlight test-spotlight-negctl
+test-spotlight-negctl:
+	@$(MAKE) --no-print-directory BUILD=$(SPOTLIGHT_CTL_BUILD) SPOTLIGHTNOFILES=1 \
+		$(SPOTLIGHT_CTL_BUILD)/logit.iso $(SPOTLIGHT_CTL_BUILD)/disk.img > $(BUILD)/spotlight_ctl_build.log 2>&1
+	@rc=0; python3 tests/qmp/qmp_spotlight.py --iso $(SPOTLIGHT_CTL_BUILD)/logit.iso \
+		--disk $(SPOTLIGHT_CTL_BUILD)/disk.img --negctl > $(BUILD)/spotlight_ctl.log 2>&1 || rc=$$?; \
+		cat $(BUILD)/spotlight_ctl.log; \
+		if [ $$rc -eq 1 ] && grep -q 'FAIL  "shaping" + Enter opened /docs/shaping.txt' $(BUILD)/spotlight_ctl.log; then \
+			echo "negative control ok: without the file source the file case fails"; \
+		else echo "NEGATIVE CONTROL FAILED"; exit 1; fi
+test-spotlight: test-spotlight-rank test-spotlight-negctl $(ISO) $(DISK)
+	@python3 tests/qmp/qmp_spotlight.py --iso $(ISO) --disk $(DISK)
+ci-boot: test-spotlight
