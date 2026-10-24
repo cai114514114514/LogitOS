@@ -1,0 +1,49 @@
+box,circle,10,40,100,80,radial geometry keeps its CSS border-box
+box,conic,250,40,100,80,conic geometry keeps its CSS border-box
+box,font-current,10,340,100,80,font-relative gradient keeps its CSS border-box
+box,single,10,430,100,30,single stop gradient keeps its CSS border-box
+pixel,60,80,ff0000,circle center retains the inner color
+pixel,76,80,ff0000,circle percentage radius uses the rectangular scaled diagonal
+pixel,79,80,0000ff,circle percentage radius does not use the image width
+pixel,80,80,0000ff,circle radius crosses its 40 percent hard stop
+pixel,180,80,00ff00,ellipse center retains the inner color
+pixel,205,80,0000ff,ellipse horizontal radius uses its own dimension
+pixel,180,95,0000ff,ellipse vertical radius uses its own dimension
+pixel,330,60,ff0000,conic zero degrees starts upward and rotates clockwise
+pixel,330,100,00ff00,conic second quadrant is green
+pixel,270,100,0000ff,conic third quadrant is blue
+pixel,270,60,ffffff,conic fourth quadrant returns white
+pixel,376,80,ff0000,repeating linear first red stripe
+pixel,386,80,0000ff,repeating linear first blue stripe
+pixel,396,80,ff0000,repeating linear repeats beyond its final stop,no-repeat
+pixel,555,80,0000ff,repeating radial crosses the blue annulus
+pixel,565,80,ff0000,repeating radial repeats beyond its final stop,no-repeat
+pixel,85,155,000000,repeating conic honors its from angle
+pixel,60,145,ffffff,repeating conic wraps before its rotated first ray
+pixel,85,210,000000,repeating conic repeats beyond its last angular stop,no-repeat
+pixel,215,180,737373,stop fixup clamps declarations before distributing omitted stops,bad-fixup
+pixel,225,180,00008c,stop fixup places the omitted black stop at 90px,bad-fixup
+pixel,250,180,bf0040,negative color stop contributes at the image start
+pixel,349,180,4000bf,color stop beyond 100 percent contributes at the image end
+pixel,395,180,bebeff,transparent red does not leak into premultiplied blue,no-premult
+pixel,420,180,7e7eff,premultiplied blue alpha composites over white,no-premult
+pixel,515,180,818181,transition hint puts the halfway color at 25 percent
+pixel,60,280,000000,zero circle preserves explicit pixel stop distance
+pixel,75,280,ffffff,zero circle remains circular with explicit pixel stops
+pixel,180,248,ff0000,zero width ellipse becomes a mirrored horizontal gradient
+pixel,195,280,0000ff,zero width ellipse retains horizontal pixel stop distance
+pixel,300,280,0000ff,zero height ellipse becomes the last color
+pixel,420,280,808080,repeating zero height ellipse becomes its weighted average,no-repeat
+pixel,540,280,bf80bf,zero repeating period weights endpoints by half,no-repeat
+pixel,60,380,00aa44,currentColor uses the element computed color
+pixel,78,380,00aa44,radial em radius uses the actual 20px font rather than a default
+pixel,85,380,0000ff,radial em radius resolves against the element font
+pixel,155,380,ff0000,farthest corner ellipse honors its off-center center
+pixel,229,419,0000ff,farthest corner ellipse uses the side ellipse aspect ratio
+pixel,300,345,bfbfbf,conic negative stop contributes at the upward ray
+pixel,255,380,606060,conic beyond one turn contributes before the seam
+pixel,375,380,0000ff,repeating gradient extends before the first stop,no-repeat
+pixel,385,380,ff0000,repeating gradient preserves its offset first red stripe
+pixel,540,343,7f7fff,rounded border opacity is applied once above the gradient
+pixel,540,380,ff7f7f,transparent rounded gradient retains red under one opacity pass
+pixel,60,445,7fd4a1,single currentColor gradient preserves computed color alpha over white

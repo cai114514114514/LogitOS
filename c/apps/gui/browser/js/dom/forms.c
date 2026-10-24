@@ -22,6 +22,12 @@
  *   configured before insertion is not lost to the document-only key walk.
  *   Other hooks retain the old integer protocol here.
  *
+ * Correction (2026-09-30): the control hooks below now accept the actual node
+ * wrapper, including disconnected controls. The integer path remains only
+ * for older native callers and editing-event IDs; value/checked/selection
+ * state no longer lives in a second set of wrapper expandos that disappears
+ * on insertion. Validity and submission must read the SAME native state.
+ *
  * WHAT IS IN C AND WHAT IS IN THE SHIM. The C is only what has to reach forms.c
  * -- twelve entry points, all taking the integer key. Everything that is
  * plumbing (the property descriptors, the tag guards, activeElement, `form`,
@@ -37,6 +43,7 @@
 #include "js/dom/dom.h"
 #include "dom/forms.h"
 #include "dom/focus.h"
+#include "js/dom/validation.h"
 #include "css/style.h"
 #include "../../../../../../include/weaksym.h"
 /* Focus-only host embeddings can omit the style engine. Shipping builds use
@@ -95,18 +102,23 @@ static int arg_id(JSContext *ctx, JSValueConst v)
     return (int)id;
 }
 
+static struct node *control_node(JSContext *ctx, JSValueConst value)
+{
+    return JS_IsObject(value) ? js_dom_node_from(value) : node_of(arg_id(ctx, value));
+}
+
 /* ==================================================== the native surface == */
 
 static JSValue jf_newid(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
 { (void)t; (void)argc; (void)argv; return JS_NewInt32(ctx, g_next_id++); }
 
 static JSValue jf_kind(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
-{ (void)t; (void)argc; return JS_NewInt32(ctx, fc_kind(node_of(arg_id(ctx, argv[0])))); }
+{ (void)t; return JS_NewInt32(ctx, fc_kind(argc ? control_node(ctx, argv[0]) : 0)); }
 
 static JSValue jf_value(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
 {
     (void)t; (void)argc;
-    struct node *n = node_of(arg_id(ctx, argv[0]));
+    struct node *n = argc ? control_node(ctx, argv[0]) : 0;
     if (!n) return JS_NewString(ctx, "");
     int len = 0;
     const char *v = fc_value(n, &len);
@@ -116,7 +128,7 @@ static JSValue jf_value(JSContext *ctx, JSValueConst t, int argc, JSValueConst *
 static JSValue jf_default_value(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
 {
     (void)t; (void)argc;
-    struct node *n = node_of(arg_id(ctx, argv[0]));
+    struct node *n = argc ? control_node(ctx, argv[0]) : 0;
     if (!n) return JS_NewString(ctx, "");
     int len = 0;
     const char *v = fc_default_value(n, &len);
@@ -126,22 +138,31 @@ static JSValue jf_default_value(JSContext *ctx, JSValueConst t, int argc, JSValu
 static JSValue jf_setvalue(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
 {
     (void)t; (void)argc;
-    struct node *n = node_of(arg_id(ctx, argv[0]));
+    if (argc < 2) return JS_UNDEFINED;
+    struct node *n = control_node(ctx, argv[0]);
+    uint32_t serial = n ? n->serial : 0;
     size_t len = 0;
     const char *s = JS_ToCStringLen(ctx, &len, argv[1]);
-    if (n && s) fc_set_value(n, s, (int)len);
-    if (s) JS_FreeCString(ctx, s);
+    if (!s) return JS_EXCEPTION;
+    if (n && n->serial == serial) {
+        int kind = fc_kind(n);
+        if (FC_IS_BUTTON(kind) || FC_IS_TOGGLE(kind) || kind == FC_HIDDEN)
+            js_dom_attr_write(ctx, n, "value", s, (int)len);
+        else if (fc_set_value(n, s, (int)len)) js_dom_control_changed(n);
+    }
+    JS_FreeCString(ctx, s);
     return JS_UNDEFINED;
 }
 
 static JSValue jf_checked(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
-{ (void)t; (void)argc; return JS_NewBool(ctx, fc_checked(node_of(arg_id(ctx, argv[0])))); }
+{ (void)t; return JS_NewBool(ctx, fc_checked(argc ? control_node(ctx, argv[0]) : 0)); }
 
 static JSValue jf_setchecked(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
 {
     (void)t; (void)argc;
-    struct node *n = node_of(arg_id(ctx, argv[0]));
-    if (n) fc_set_checked(n, JS_ToBool(ctx, argv[1]) > 0);
+    if (argc < 2) return JS_UNDEFINED;
+    struct node *n = control_node(ctx, argv[0]);
+    if (n) { fc_set_checked(n, JS_ToBool(ctx, argv[1]) > 0); js_dom_control_changed(n); }
     return JS_UNDEFINED;
 }
 
@@ -149,7 +170,7 @@ static JSValue jf_setchecked(JSContext *ctx, JSValueConst t, int argc, JSValueCo
 static JSValue jf_selpos(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv, int magic)
 {
     (void)t; (void)argc;
-    struct node *n = node_of(arg_id(ctx, argv[0]));
+    struct node *n = argc ? control_node(ctx, argv[0]) : 0;
     if (!n || !FC_IS_TEXTUAL(fc_kind(n))) return JS_NULL;
     int a = 0, b = 0;
     fc_selection(n, &a, &b);
@@ -191,7 +212,7 @@ static JSValue jf_setsel(JSContext *ctx, JSValueConst t, int argc, JSValueConst 
 {
     (void)t;
     if (argc < 3) return JS_UNDEFINED;
-    struct node *n = node_of(arg_id(ctx, argv[0]));
+    struct node *n = argc ? control_node(ctx, argv[0]) : 0;
 #ifdef FORM_SELECTION_RAW_BYTES
     int32_t a = 0, b = 0;
     JS_ToInt32(ctx, &a, argv[1]);
@@ -222,7 +243,7 @@ static JSValue jf_setsel(JSContext *ctx, JSValueConst t, int argc, JSValueConst 
 static JSValue jf_selectall(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
 {
     (void)t; (void)argc;
-    struct node *n = node_of(arg_id(ctx, argv[0]));
+    struct node *n = argc ? control_node(ctx, argv[0]) : 0;
     if (n) fc_edit_select_all(n);
     return JS_UNDEFINED;
 }
@@ -230,8 +251,7 @@ static JSValue jf_selectall(JSContext *ctx, JSValueConst t, int argc, JSValueCon
 static struct node *selection_node(JSContext *ctx, int argc, JSValueConst *argv)
 {
     if (argc < 1) return 0;
-    return JS_IsObject(argv[0]) ? js_dom_node_from(argv[0])
-                               : node_of(arg_id(ctx, argv[0]));
+    return control_node(ctx, argv[0]);
 }
 
 static JSValue jf_selidx(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
@@ -260,9 +280,15 @@ static JSValue jf_setoptsel(JSContext *ctx, JSValueConst t, int argc, JSValueCon
     (void)t;
     if (argc >= 2) {
         struct node *n = selection_node(ctx, argc, argv);
-        fc_set_option_selected(n, JS_ToBool(ctx, argv[1]));
-        for (struct node *p = n ? n->parent : 0; p; p = p->parent)
-            if (fc_kind(p) == FC_SELECT) { js_dom_control_changed(p); break; }
+        int on = JS_ToBool(ctx, argv[1]) > 0;
+        struct node *select = n ? n->parent : 0;
+        while (select && fc_kind(select) != FC_SELECT) select = select->parent;
+        if (select && on && !dom_attr(select, "multiple")) {
+            int count = fc_option_count(select);
+            for (int i = 0; i < count; i++)
+                if (fc_option_at(select, i) == n) { fc_set_selected_index(select, i); break; }
+        } else fc_set_option_selected(n, on);
+        if (select) js_dom_control_changed(select);
     }
     return JS_UNDEFINED;
 }
@@ -279,8 +305,7 @@ static JSValue jf_resetsel(JSContext *ctx, JSValueConst t, int argc, JSValueCons
 static JSValue jf_focus(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv, int magic)
 {
     (void)t; (void)argc;
-    struct node *n = argc > 0 && JS_IsObject(argv[0]) ? js_dom_node_from(argv[0])
-                                                      : argc > 0 ? node_of(arg_id(ctx, argv[0])) : 0;
+    struct node *n = argc ? control_node(ctx, argv[0]) : 0;
     if (magic) { if (focus_current() == n) focus_set(0); }
     else if (n) {
         /* Detached focus must be a no-op, and must not make the style cache
@@ -327,10 +352,23 @@ static JSValue jf_active(JSContext *ctx, JSValueConst t, int argc, JSValueConst 
 static JSValue jf_formact(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv, int magic)
 {
     (void)t;
-    struct node *f = node_of(arg_id(ctx, argv[0]));
-    if (!f) return JS_UNDEFINED;
-    if (magic == 2) { fc_reset_form(f); return JS_UNDEFINED; }
-    struct node *sub = (argc > 1) ? node_of(arg_id(ctx, argv[1])) : 0;
+    struct node *f = argc ? control_node(ctx, argv[0]) : 0;
+    if (!f || f->type != N_ELEM || !fc__tag(f->tag, "form"))
+        return JS_ThrowTypeError(ctx, "Illegal invocation");
+    if (magic == 2) {
+        uint32_t serial = f->serial;
+        if (fc_dispatch(f, "reset", 1, 1) && f->serial == serial) fc_reset_form(f);
+        return JS_UNDEFINED;
+    }
+    struct node *sub = 0;
+    if (magic == 1 && argc > 1 && !JS_IsNull(argv[1]) && !JS_IsUndefined(argv[1])) {
+        sub = js_dom_node_from(argv[1]);
+        int kind = fc_kind(sub);
+        if (!sub || (kind != FC_SUBMIT && kind != FC_IMAGEBTN))
+            return JS_ThrowTypeError(ctx, "The submitter is not a submit button");
+        if (fc_form_of(sub) != f)
+            return js_dom_throw_dom(ctx, "NotFoundError", "The submitter does not belong to this form");
+    }
     fc_submit(f, sub, magic == 1);
     return JS_UNDEFINED;
 }
@@ -338,7 +376,7 @@ static JSValue jf_formact(JSContext *ctx, JSValueConst t, int argc, JSValueConst
 static JSValue jf_encode(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
 {
     (void)t; (void)argc;
-    struct node *f = node_of(arg_id(ctx, argv[0]));
+    struct node *f = argc ? control_node(ctx, argv[0]) : 0;
     static char buf[8192];
     int n = f ? fc_encode(f, 0, buf, (int)sizeof buf) : -1;
     if (n < 0) return JS_NewString(ctx, "");
@@ -595,11 +633,11 @@ static const char SHIM[] =
 "function protoOf(t){ try { var e = doc.createElement(t);\n"
 "    return e ? Object.getPrototypeOf(e) : null; } catch (x) { return null; } }\n"
 "var HTMLEP = (G.HTMLElement && G.HTMLElement.prototype) || null;\n"
-/* The integer key. Stamped lazily: an element nobody scripts costs nothing. */
+/* Correction: controls pass their real wrappers. Keep the small key() name
+ * here because Selection's historical path protocol still calls its own key,
+ * but do not stamp author-visible attributes merely to read control state. */
 "function key(el){\n"
-"  var k = el.getAttribute && el.getAttribute('data-logit-fcid');\n"
-"  if (!k) { k = String(G.__fc_newid()); el.setAttribute('data-logit-fcid', k); }\n"
-"  return +k;\n"
+"  return el;\n"
 "}\n"
 "function tag(el){ return (el.tagName||'').toLowerCase(); }\n"
 /* DETACHED ELEMENTS, and this is the one real limitation of the integer-key
@@ -615,8 +653,8 @@ static const char SHIM[] =
  * it exists because `js_dom_node_of(JSValueConst)` does not, and it disappears
  * the day that lands. Known gap: a value set while detached does not carry over
  * when the element is inserted. */
-"function detached(el){ return G.__fc_kind(key(el)) === 0; }\n"
-"function dget(el, slot, dflt){ return (slot in el) ? el[slot] : dflt; }\n"
+/* Correction: the wrapper-native door above makes the old detached fallback
+ * unnecessary. The historical explanation is retained to identify the bug. */
 "function isCtl(el){ var t = tag(el); return t==='input'||t==='select'||t==='textarea'||t==='button'; }\n"
 "function isField(el){ var t = tag(el); return t==='input'||t==='textarea'; }\n"
 /* NEVER CLOBBER. js_dom.c publishes the Element wrapper and js_platform.c fills
@@ -709,11 +747,7 @@ static const char SHIM[] =
  * its identity; no input/change events accompany script assignment. */
 "    if (isFile(this)) return '';\n"
 "    if (isCtl(this)) {\n"
-"      if (!detached(this)) return G.__fc_value(key(this));\n"
-"      if ('__fcv' in this) return this.__fcv;\n"
-"      if (tag(this)==='textarea') return this.textContent || '';\n"
-"      var a = this.getAttribute('value');\n"
-"      return a === null ? '' : a;\n"
+"      return G.__fc_value(this);\n"
 "    }\n"
 "    var v = this.getAttribute('value');\n"
 "    return v === null ? (tag(this)==='option' ? this.textContent : '') : v; },\n"
@@ -722,9 +756,8 @@ static const char SHIM[] =
 "      if (v !== null && String(v) !== '') throw new DOMException('File input value can only be cleared', 'InvalidStateError');\n"
 "      return;\n"
 "    }\n"
-"    var s = (v === null || v === undefined) ? '' : String(v);\n"
-"    if (isCtl(this)) { if (detached(this)) this.__fcv = s;\n"
-"                       else G.__fc_setvalue(key(this), s); return; }\n"
+"    var s = v === null ? '' : String(v);\n"
+"    if (isCtl(this)) { G.__fc_setvalue(this, s); return; }\n"
 "    if (hasValue(this)) this.setAttribute('value', s); });\n"
 "def(proto, 'defaultValue',\n"
 "  function(){ return isCtl(this) ? G.__fc_defvalue(key(this)) : undefined; },\n"
@@ -733,10 +766,9 @@ static const char SHIM[] =
 /* ---- checked / defaultChecked -------------------------------------------- */
 "def(proto, 'checked',\n"
 "  function(){ if (tag(this)!=='input') return undefined;\n"
-"    if (!detached(this)) return G.__fc_checked(key(this));\n"
-"    return dget(this, '__fcc', this.hasAttribute('checked')); },\n"
+"    return G.__fc_checked(this); },\n"
 "  function(v){ if (tag(this)!=='input') return;\n"
-"    if (detached(this)) this.__fcc = !!v; else G.__fc_setchecked(key(this), !!v); });\n"
+"    G.__fc_setchecked(this, !!v); });\n"
 "def(proto, 'defaultChecked',\n"
 "  function(){ return this.hasAttribute('checked'); },\n"
 "  function(v){ if (v) this.setAttribute('checked',''); else this.removeAttribute('checked'); });\n"
@@ -798,12 +830,10 @@ static const char SHIM[] =
 /* ---- selection ----------------------------------------------------------- */
 "function selGet(el, which){\n"
 "  if (!isField(el)) return null;\n"
-"  if (!detached(el)) return which ? G.__fc_selend(key(el)) : G.__fc_selstart(key(el));\n"
-"  return dget(el, which ? '__fcs1' : '__fcs0', (el.value || '').length);\n"
+"  return which ? G.__fc_selend(el) : G.__fc_selstart(el);\n"
 "}\n"
 "function selDir(el){\n"
 "  if (!isField(el)) return null;\n"
-"  if (detached(el)) return dget(el, '__fcsd', 'none');\n"
 "  var d = G.__fc_seldirection(key(el)); return d < 0 ? 'backward' : d > 0 ? 'forward' : 'none';\n"
 "}\n"
 "function selSet(el, a, b, d){\n"
@@ -815,8 +845,7 @@ static const char SHIM[] =
 "  if (a > n) a = n; if (b > n) b = n;\n"
 "  if (b < a) a = b;\n"
 "  d = String(d); if (d !== 'forward' && d !== 'backward') d = 'none';\n"
-"  if (detached(el)) { el.__fcs0 = a; el.__fcs1 = b; el.__fcsd = d; }\n"
-"  else G.__fc_setsel(key(el), a, b, d === 'backward' ? -1 : d === 'forward' ? 1 : 0);\n"
+"  G.__fc_setsel(el, a, b, d === 'backward' ? -1 : d === 'forward' ? 1 : 0);\n"
 "}\n"
 "def(proto, 'selectionStart',\n"
 "  function(){ return selGet(this, 0); },\n"
@@ -855,34 +884,22 @@ static const char SHIM[] =
 "  function(v){ if (tag(this)==='select') G.__fc_setselidx(key(this), v|0); });\n"
 "def(proto, 'options', function(){\n"
 "  if (tag(this)!=='select') return undefined;\n"
-"  var out = [], st = [this];\n"
-"  while (st.length) { var n = st.shift(), c = n.children||[];\n"
-"    for (var i=0;i<c.length;i++){ var t=(c[i].tagName||'').toLowerCase();\n"
-"      if (t==='option') out.push(c[i]); else if (t==='optgroup') st.push(c[i]); } }\n"
+"  var out = [];\n"
+"  (function walk(n){var c=n.children||[];for(var i=0;i<c.length;i++){\n"
+"    var t=(c[i].tagName||'').toLowerCase();if(t==='option')out.push(c[i]);else if(t==='optgroup')walk(c[i]);\n"
+"  }})(this);\n"
 "  return out; });\n"
 "def(proto, 'selected',\n"
 "  function(){ if (tag(this)!=='option') return undefined;\n"
-"    var s = this.parentNode; while (s && (s.tagName||'').toLowerCase()!=='select') s = s.parentNode;\n"
-"    if (!s) return this.hasAttribute('selected');\n"
-"    var o = s.options; for (var i=0;i<o.length;i++) if (o[i]===this) return i === s.selectedIndex;\n"
-"    return false; },\n"
+"    return G.__fc_optsel(this); },\n"
 "  function(v){ if (tag(this)!=='option') return;\n"
-"    var s = this.parentNode; while (s && (s.tagName||'').toLowerCase()!=='select') s = s.parentNode;\n"
-"    if (!s) return;\n"
-"    var o = s.options; for (var i=0;i<o.length;i++) if (o[i]===this) { s.selectedIndex = v ? i : -1; return; } });\n"
+"    G.__fc_setoptsel(this, !!v); });\n"
 /* ---- <label> ------------------------------------------------------------- */
 "def(proto, 'htmlFor',\n"
 "  function(){ return this.getAttribute('for') || ''; },\n"
 "  function(v){ this.setAttribute('for', String(v)); });\n"
 /* ---- form / elements ----------------------------------------------------- */
-"function ownerForm(el){\n"
-"  var fid = el.getAttribute && el.getAttribute('form');\n"
-"  if (fid) { var f = doc.getElementById(fid);\n"
-"             return (f && (f.tagName||'').toLowerCase()==='form') ? f : null; }\n"
-"  var p = el.parentNode;\n"
-"  while (p && p.tagName) { if ((p.tagName||'').toLowerCase()==='form') return p; p = p.parentNode; }\n"
-"  return null;\n"
-"}\n"
+"function ownerForm(el){ return G.__fc_owner(el); }\n"
 "def(proto, 'form', function(){ return isCtl(this)||tag(this)==='fieldset' ? ownerForm(this) : undefined; });\n"
 "def(proto, 'elements', function(){\n"
 "  if (tag(this)!=='form') return undefined;\n"
@@ -891,10 +908,11 @@ static const char SHIM[] =
 "     for (var i=0;i<c.length;i++){ if (isCtl(c[i]) && ownerForm(c[i])===self) out.push(c[i]); walk(c[i]); } })(doc.documentElement||this);\n"
 "  return out; });\n"
 
-"proto.submit        = function(){ if (tag(this)==='form') G.__fc_submit(key(this), 0); };\n"
-"proto.requestSubmit = function(sub){ if (tag(this)==='form')\n"
-"                                       G.__fc_reqsubmit(key(this), sub ? key(sub) : 0); };\n"
-"proto.reset         = function(){ if (tag(this)==='form') G.__fc_formreset(key(this)); };\n"
+"if (proto === protoOf('form')) {\n"
+"  proto.submit = function(){ G.__fc_submit(this); };\n"
+"  proto.requestSubmit = function(sub){ G.__fc_reqsubmit(this, sub); };\n"
+"  proto.reset = function(){ G.__fc_formreset(this); };\n"
+"}\n"
 "}\n"
 /* The served tags. Not "every tag": each member above is guarded on tag(this),
  * so a prototype that no guard can ever match would only carry dead accessors
@@ -1335,6 +1353,7 @@ void js_forms_install(JSContext *ctx)
         JS_FreeValue(ctx, e);
     }
     JS_FreeValue(ctx, r);
+    js_validation_install(ctx);
 
     /* The Selection/Range surface, in its own eval so a fault in it cannot take
      * the forms bindings -- which shipped first -- down with it. */
@@ -1382,5 +1401,6 @@ void js_forms_cleanup(void);
 void js_forms_cleanup(void)
 {
     g_ctx = 0;
+    js_validation_cleanup();
     fc_set_dispatch_input(0);
 }

@@ -147,6 +147,14 @@ int tcp_connect_start(uint32_t dst, uint16_t port)
     return tcp_connect_start_addr(&a, port);
 }
 
+/* This lower-layer model already retains failed slots until tcp_close. The
+ * real ownership/reuse boundary is exercised with tcp.c in sock_tcb_test.c;
+ * these adapters preserve this fixture's destination/fallback assertions. */
+int tcp_connect_owned_addr(const struct tcp_addr *dst, uint16_t port)
+{ return tcp_connect_start_addr(dst, port); }
+int tcp_connect_owned(uint32_t dst, uint16_t port)
+{ return tcp_connect_start(dst, port); }
+
 /* A refused connection keeps its model slot until tcp_close(), which is the
  * conservative half of what c/net/transport/tcp.c does: a RST in SYN_SENT
  * frees the slot there (conn_closed / the ICMP path both clear `used`), but a

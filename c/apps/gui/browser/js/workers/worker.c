@@ -76,6 +76,7 @@
 #include "js/workers/worker.h"
 #include "js/runtime/page.h"
 #include "js/runtime/task_budget.h"
+#include "js/runtime/timers.h"
 #define JS_PORTS_OPTIONAL
 #include "js/workers/ports.h"
 #define JS_WEBAPI_OPTIONAL
@@ -211,6 +212,7 @@ static JSValue get_method(JSContext *ctx, JSValueConst obj, const char *name)
 enum { WK_EMPTY = 0, WK_STARTING, WK_RUNNING, WK_DEAD };
 
 struct pending_msg { struct pending_msg *next; unsigned char *buf; size_t len; };
+struct wtask;
 
 struct jsworker {
     int used;
@@ -238,6 +240,9 @@ struct jsworker {
     int blob_length;
     struct js_worker_policy policy;
     struct pending_msg *inbound_head, *inbound_tail;  /* posted while STARTING */
+    struct wtask *running_timer;   /* owns a detached timer through its checkpoint */
+    unsigned timer_nesting;
+    int timer_finishing;          /* callback returned, jobs may have yielded */
     /* this worker's OWN watchdog -- see the file header, point 1. Deliberately
      * separate state from js_page.c's g_slice_*, so a lower per-worker budget
      * never touches the page's. */
@@ -247,7 +252,6 @@ struct jsworker {
     int free_pending;              /* WK_DEAD, rt/ctx not yet reaped -- see reap_dead() */
 };
 
-struct wtask;
 struct js_worker_context {
     struct jsworker workers[JSW_MAX_WORKERS];
     struct wtask *tasks;
@@ -402,7 +406,7 @@ struct wtask {
     JSValue thisArg;
     JSValue *argv; int argc;
     long long due;
-    int interval_ms;          /* >0: re-arm after firing (a worker's own setInterval) */
+    struct js_timer_state timer;
     int timer_id;               /* >0: cancellable by the worker's clearTimeout/Interval */
     unsigned long long seq;
     struct js_port_packet *packet; /* outbound transfer, materialized at dispatch */
@@ -423,8 +427,19 @@ static void task_free(struct wtask *t)
     free(t);
 }
 
-static int task_add(int wid, int kind, JSContext *ctx, JSValue callee, JSValue thisArg,
-                     JSValue *argv, int argc, long long due, int interval_ms, int timer_id)
+static void worker_release_timer(struct jsworker *w)
+{
+    /* A checkpoint can yield with its timer detached from g_tasks. Both lazy
+     * reaping and navigation's direct close must release that last owner before
+     * JS_FreeContext/Runtime; neither door runs while worker JS is executing. */
+    if (w->running_timer) task_free(w->running_timer);
+    w->running_timer = NULL;
+    w->timer_finishing = 0;
+    w->timer_nesting = 0;
+}
+
+static struct wtask *task_add(int wid, int kind, JSContext *ctx, JSValue callee, JSValue thisArg,
+                              JSValue *argv, int argc, long long due, int repeat, int timer_id)
 {
     struct wtask *t;
 #ifdef JS_WORKER_TEST_START_OOM
@@ -438,14 +453,14 @@ static int task_add(int wid, int kind, JSContext *ctx, JSValue callee, JSValue t
             for (int i = 0; i < argc; i++) JS_FreeValue(ctx, argv[i]);
         }
         free(argv);
-        return 0;
+        return NULL;
     }
     t->wid = wid; t->kind = kind; t->ctx = ctx; t->callee = callee; t->thisArg = thisArg;
-    t->argv = argv; t->argc = argc; t->due = due; t->interval_ms = interval_ms;
+    t->argv = argv; t->argc = argc; t->due = due; t->timer.repeat = !!repeat;
     t->timer_id = timer_id; t->seq = ++g_wseq;
     t->next = g_tasks;
     g_tasks = t;
-    return 1;
+    return t;
 }
 
 /* `keep_parent_notify`: skip tasks BOUND FOR THE PARENT (ctx == w->pctx) --
@@ -545,6 +560,7 @@ static void reap_dead(void)
          * ever protects tasks with ctx == w->pctx, so it changes nothing
          * about the worker-bound leftover task this purge exists for. */
         cancel_worker_tasks(w, 1);
+        worker_release_timer(w);
         if (w->wctx) {
             if(LOGIT_HAVE(js_ports_close))js_ports_close(w->wctx);
             if(LOGIT_HAVE(js_webapi_fetch_close))js_webapi_fetch_close(w->wctx);
@@ -635,9 +651,15 @@ static void deliver_error_to_parent(struct jsworker *w, const char *message,
  * itself (`function f(){ Promise.resolve().then(f) } f()`, inside a
  * worker) must not wedge the one thread the whole browser runs on. */
 #define WORKER_MAX_JOBS_PER_PUMP 100000
+static void worker_finish_timer(struct jsworker *w);
 static int worker_drain_jobs(struct jsworker *w)
 {
     if (!w || !w->rt) return 0;
+    /* Every worker Promise/queueMicrotask runs through this door. It must not
+     * inherit a timer task's nesting even when this checkpoint is entered
+     * inside that timer; restoring preserves its surrounding synchronous task. */
+    unsigned previous_nesting = w->timer_nesting;
+    w->timer_nesting = 0;
     int n = 0;
     for (; n < WORKER_MAX_JOBS_PER_PUMP; n++) {
         /* A fetch reaction may call close(). Do not then execute a second
@@ -679,6 +701,8 @@ static int worker_drain_jobs(struct jsworker *w)
     if (n >= WORKER_MAX_JOBS_PER_PUMP)
         printf("[worker %d] microtask queue did not drain in %d jobs -- giving up this turn\n",
                w->id, WORKER_MAX_JOBS_PER_PUMP);
+    w->timer_nesting = previous_nesting;
+    worker_finish_timer(w);
     return n;
 }
 
@@ -894,23 +918,70 @@ static JSValue js__wImportScripts(JSContext *ctx, JSValueConst t, int argc, JSVa
     return JS_UNDEFINED;
 }
 
+static int wtimer_id_used(struct jsworker *w, int id)
+{
+    if (w->running_timer && !w->running_timer->timer.cancelled &&
+        w->running_timer->timer_id == id) return 1;
+    for (struct wtask *t = g_tasks; t; t = t->next)
+        if (t->wid == w->id && t->ctx == w->wctx && t->timer_id == id) return 1;
+    return 0;
+}
+
+static int wtimer_new_id(struct jsworker *w)
+{
+    int first = js_timer_next_id(&g_next_timer_id), id = first;
+    do {
+        if (!wtimer_id_used(w, id)) return id;
+        id = js_timer_next_id(&g_next_timer_id);
+    } while (id != first);
+    return 0;
+}
+
+static void worker_finish_timer(struct jsworker *w)
+{
+    if (!w->timer_finishing || worker_jobs_pending(w)) return;
+    struct wtask *t = w->running_timer;
+    w->running_timer = NULL;
+    w->timer_finishing = 0;
+    if (t->timer.repeat && !t->timer.cancelled && w->state == WK_RUNNING) {
+        /* Previously an interval cloned callee/args BEFORE callback dispatch;
+         * an OOM silently removed its arguments, timeout 0 became 1, and time
+         * spent in the callback shortened the next wait. Keep this owned task
+         * and re-initialize only after its full checkpoint finishes. If the
+         * worker's budget yielded between jobs, this function is resumed by
+         * the same worker_drain_jobs door before another task in that realm. */
+        js_timer_repeat(&t->timer);
+        t->due = (long long)js_page_now_ms() + t->timer.timeout;
+        t->seq = ++g_wseq;
+        t->next = g_tasks;
+        g_tasks = t;
+    } else {
+        task_free(t);
+    }
+}
+
 static JSValue wtimer_add(JSContext *ctx, int wid, int interval, int argc, JSValueConst *argv)
 {
+    int32_t ms;
+    if (js_timer_convert(ctx, argc, argv, &ms) < 0) return JS_EXCEPTION;
     struct jsworker *w = find_worker(wid);
-    if (!w || argc < 1 || !JS_IsFunction(ctx, argv[0])) return JS_NewInt32(ctx, 0);
-    int32_t ms = 0;
-    if (argc > 1) JS_ToInt32(ctx, &ms, argv[1]);
-    if (ms < 0) ms = 0;
+    if (!w || w->wctx != ctx || w->state == WK_DEAD) return JS_NewInt32(ctx, 0);
+    struct js_timer_state timer;
+    js_timer_init(&timer, ms, w->timer_nesting, interval);
+    int id = wtimer_new_id(w);
+    if (!id) return JS_NewInt32(ctx, 0);
     int extra = argc > 2 ? argc - 2 : 0;
     JSValue *args = 0;
     if (extra > 0) {
         args = malloc((size_t)extra * sizeof *args);
-        if (args) for (int i = 0; i < extra; i++) args[i] = JS_DupValue(ctx, argv[2 + i]);
-        else extra = 0;
+        if (!args) return JS_ThrowOutOfMemory(ctx);
+        for (int i = 0; i < extra; i++) args[i] = JS_DupValue(ctx, argv[2 + i]);
     }
-    int id = g_next_timer_id++;
-    task_add(wid, WTK_CALL, ctx, JS_DupValue(ctx, argv[0]), JS_UNDEFINED, args, extra,
-             (long long)js_page_now_ms() + ms, interval ? (ms > 0 ? ms : 1) : 0, id);
+    struct wtask *t = task_add(wid, WTK_CALL, ctx, JS_DupValue(ctx, argv[0]),
+                               JS_GetGlobalObject(ctx), args, extra,
+                               (long long)js_page_now_ms() + timer.timeout, interval, id);
+    if (!t) return JS_ThrowOutOfMemory(ctx);
+    t->timer = timer;
     return JS_NewInt32(ctx, id);
 }
 static JSValue js__wSetTimeout(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv, int wid)
@@ -919,12 +990,18 @@ static JSValue js__wSetInterval(JSContext *ctx, JSValueConst t, int argc, JSValu
 { (void)t; return wtimer_add(ctx, wid, 1, argc, argv); }
 static JSValue js__wClearTimer(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv, int wid)
 {
-    (void)t; (void)wid;
+    (void)t;
     int32_t id = 0;
-    if (argc > 0) JS_ToInt32(ctx, &id, argv[0]);
-    if (id == 0) return JS_UNDEFINED;
+    if (argc > 0 && js_timer_long(ctx, &id, argv[0]) < 0) return JS_EXCEPTION;
+    struct jsworker *w = find_worker(wid);
+    if (id <= 0 || !w || w->wctx != ctx) return JS_UNDEFINED;
+    if (w->running_timer && !w->running_timer->timer.cancelled &&
+        w->running_timer->timer_id == id) {
+        w->running_timer->timer.cancelled = 1;
+        return JS_UNDEFINED;
+    }
     for (struct wtask **pp = &g_tasks; *pp; pp = &(*pp)->next)
-        if ((*pp)->timer_id == id) {
+        if ((*pp)->wid == wid && (*pp)->ctx == ctx && (*pp)->timer_id == id) {
             struct wtask *victim = *pp;
             *pp = victim->next;
             task_free(victim);
@@ -1653,6 +1730,7 @@ static struct wtask *worker_ready(long long now,unsigned long long limit,int par
 
 static void worker_dispatch_task(struct wtask *best,long long now)
 {
+        (void)now; /* readiness uses the frozen time; repeats start a fresh wait */
         struct wtask **pp = &g_tasks;
         while (*pp && *pp != best) pp = &(*pp)->next;
         if (*pp == best) *pp = best->next;
@@ -1666,18 +1744,7 @@ static void worker_dispatch_task(struct wtask *best,long long now)
 
         struct jsworker *w = find_worker(best->wid);
         int is_worker_call = (w && w->wctx && best->ctx == w->wctx);
-
-        if (best->interval_ms > 0 && w && w->state == WK_RUNNING) {
-            JSValue callee2 = JS_DupValue(best->ctx, best->callee);
-            JSValue this2   = JS_DupValue(best->ctx, best->thisArg);
-            JSValue *args2 = NULL;
-            if (best->argc > 0) {
-                args2 = malloc((size_t)best->argc * sizeof *args2);
-                if (args2) for (int i = 0; i < best->argc; i++) args2[i] = JS_DupValue(best->ctx, best->argv[i]);
-            }
-            task_add(best->wid, WTK_CALL, best->ctx, callee2, this2, args2, args2 ? best->argc : 0,
-                     now + best->interval_ms, best->interval_ms, best->timer_id);
-        }
+        int is_worker_timer = is_worker_call && best->timer_id > 0;
 
         /* Drop only a WORKER-bound call whose worker is gone -- never a
          * PARENT-bound one. THE BUG THIS REPLACES: `!w || w->state ==
@@ -1708,7 +1775,16 @@ static void worker_dispatch_task(struct wtask *best,long long now)
             best->argv=args;best->argc=2;
         }
 
-        if (is_worker_call) {worker_slice_begin(w);WORKER_PHASE(w,"task");}
+        unsigned previous_nesting = is_worker_call ? w->timer_nesting : 0;
+        if (is_worker_call) {
+            worker_slice_begin(w);WORKER_PHASE(w,"task");
+            w->timer_nesting = is_worker_timer ? best->timer.nesting : 0;
+            /* The detached entry is the unique live handle, not its recyclable
+             * integer ID. clearInterval from the callback or one of its jobs
+             * only marks this owner; a replacement using the old ID cannot
+             * cause the cancelled interval to be re-armed afterward. */
+            if (is_worker_timer) w->running_timer = best;
+        }
         else js_page_slice_begin();   /* a delivery INTO the parent gets the page's own watchdog */
 
 #ifdef JS_RUNTIME_DIAGNOSTICS
@@ -1729,7 +1805,17 @@ static void worker_dispatch_task(struct wtask *best,long long now)
             }
         }
         JS_FreeValue(best->ctx, r);
-        if (is_worker_call) worker_drain_jobs(w);   /* the call just made can enqueue a promise reaction in w->rt; see worker_drain_jobs's header */
+        if (is_worker_call) {
+            w->timer_nesting = previous_nesting;
+            if (is_worker_timer) {
+                w->timer_finishing = 1;
+                worker_drain_jobs(w);
+                /* worker_finish_timer either re-enqueued the same entry,
+                 * disposed it, or retained it until the checkpoint resumes. */
+                return;
+            }
+            worker_drain_jobs(w);
+        }
         else {
             if(LOGIT_HAVE(js_page_pump))js_page_pump();
             /* The old delivery armed the page watchdog without closing its
@@ -1864,6 +1950,7 @@ void js_worker_close_all(void)
     for (int i = 0; i < JSW_MAX_WORKERS; i++) {
         struct jsworker *w = &g_workers[i];
         if (!w->used) continue;
+        worker_release_timer(w);
         if (w->wctx) {
             if(LOGIT_HAVE(js_ports_close))js_ports_close(w->wctx);
             if(LOGIT_HAVE(js_webapi_fetch_close))js_webapi_fetch_close(w->wctx);

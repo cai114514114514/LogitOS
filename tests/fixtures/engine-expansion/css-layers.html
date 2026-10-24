@@ -1,0 +1,29 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>CSS background layer consumers</title>
+<link rel="stylesheet" href="css-layers.css">
+<!-- Samples belong to the shared CSV. The page deliberately has no script
+     that paints its own oracle or waits for an expected color. -->
+<div class="tile" id="stack"></div>
+<div class="tile" id="none-cycle"></div>
+<div class="tile" id="truncate"></div>
+<div class="tile" id="shorthand"></div>
+<div class="tile" id="origin"></div>
+<div class="tile" id="color-clip"></div>
+<div class="tile" id="font-parent"><div id="font-child"></div></div>
+<div class="tile" id="invalid-tail"></div>
+<div class="tile" id="reset"></div>
+<div class="tile" id="later-image"></div>
+<div class="tile" id="bitmap-third"></div>
+<div class="tile" id="mixed"></div>
+<div class="tile" id="opacity"></div>
+<div class="tile" id="repeat-cycle"></div>
+<div class="tile" id="invalid-unused"></div>
+<div class="tile" id="space"></div>
+<div class="tile" id="gradient-parent"><div id="gradient-child"></div></div>
+<div class="tile" id="round"></div>
+<div id="zero-routing">
+  <div class="routing-case" id="zero-width"></div>
+  <div class="routing-case" id="zero-height"></div>
+  <div class="routing-case" id="sized-neighbor"></div>
+</div>

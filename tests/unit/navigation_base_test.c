@@ -10,6 +10,7 @@ void app_main(void);
 static int stage, polls, activated, finished, click_x, click_y;
 static int source_tab, tab_opened, tab_returned;
 static int key_submit, same_url_submit, handler_started, handler_returned, submit_events;
+static int source_ready, destination_ready, handler_start_requests, handler_after_requests;
 /* A destination replaces the source JS realm. Keep only observation counters
  * in the host, so an after-submit assertion cannot disappear with that realm.
  * This callback never dispatches input, submits a form, or navigates. */
@@ -17,10 +18,10 @@ static JSValue record_form_handler(JSContext *ctx,JSValueConst self,int argc,JSV
 {
     const char *label=argc?JS_ToCString(ctx,argv[0]):0;
     if(label){
-        if(!strcmp(label,"before"))handler_started++;
-        if(!strcmp(label,"after"))handler_returned++;
+        if(!strcmp(label,"before")){handler_started++;handler_start_requests=fake_site_requests();}
+        if(!strcmp(label,"after")){handler_returned++;handler_after_requests=fake_site_requests();}
         if(!strcmp(label,"submit"))submit_events++;
-        printf("FORM-HANDLER %s\n",label);fflush(stdout);JS_FreeCString(ctx,label);
+        printf("FORM-HANDLER %s requests=%d\n",label,fake_site_requests());fflush(stdout);JS_FreeCString(ctx,label);
     }
     return JS_UNDEFINED;
 }
@@ -28,6 +29,39 @@ static const char *mode, *expected;
 static const char *source_url = "http://fixture.test/dir/source.html?old=1";
 static const char *draft_url = "http://uncommitted.test/wrong.html";
 static const char *destination = "<!doctype html><body>NAV-DESTINATION</body>";
+
+static void location_diagnostic(const char *boundary, const char *wanted)
+{
+    /* Observe readiness as well as bytes: progressive paint can reach the
+     * polling hook before the page's JS runtime has been opened. This prints
+     * evidence only; every existing location assertion remains unchanged. */
+    printf("NAV-LOCATION %s mode=%s poll=%d ctx=%s actual=[%s] expected=[%s]\n",
+           boundary, mode, polls, js_page_ctx() ? "open" : "closed",
+           js_page_location(), wanted);
+    fflush(stdout);
+}
+
+static int runtime_ready(void)
+{
+    JSContext *ctx=js_page_ctx();
+    if(!ctx || js_page_entry_active() || js_page_cancel_requested())return 0;
+    /* Earlier correction waited only for ctx != NULL. JS_NewContext publishes
+     * that pointer BEFORE document/form installers finish, so the key fixture
+     * asserted missing submit methods in mid-bootstrap. The neutral lifecycle
+     * plus adapter fence applies to link pages too; otherwise finish() can
+     * send Close while the destination's installers are still running.
+     * No expected URL enters this predicate: a wrong navigation stays visible
+     * to the strict URL/request assertions, and missing APIs time out loudly. */
+    const char *probe="typeof document==='object' && document.readyState==='complete' && "
+        "typeof HTMLFormElement==='function' && "
+        "typeof HTMLFormElement.prototype.submit==='function' && "
+        "typeof HTMLFormElement.prototype.requestSubmit==='function'";
+    JSValue ready=JS_Eval(ctx,probe,strlen(probe),"<navigation-runtime-apparatus>",JS_EVAL_TYPE_GLOBAL);
+    int result=!JS_IsException(ready)&&JS_ToBool(ctx,ready)==1;
+    if(JS_IsException(ready))JS_FreeValue(ctx,JS_GetException(ctx));
+    JS_FreeValue(ctx,ready);
+    return result;
+}
 
 static void post(int type, int a, int b, int button, int mods)
 {
@@ -54,6 +88,12 @@ static void finish(void)
     finished=1;
     for(int i=0;i<fake_site_requests();i++)
         printf("navigation-base %s request[%d]=%s\n",mode,i,fake_site_request(i));
+    CHECK(source_ready,"source runtime completes installation before observations");
+    /* A refused navigation has no destination document/runtime to install.
+     * Its existing request/location/painter assertions still reject it. When
+     * a target frame was painted, missing installers must fail explicitly. */
+    if(last_text(same_url_submit?"NAV-ACTIVATE":"NAV-DESTINATION"))
+        CHECK(destination_ready,"destination runtime completes installation before observations");
     CHECK(activated,"native activation was delivered after address editing");
 #ifdef NAVIGATION_COOKIE_CONTEXT
     CHECK(fake_site_nav_first_browser(),"initial chrome navigation has no page initiator");
@@ -62,6 +102,12 @@ static void finish(void)
     if(key_submit){
         CHECK(handler_started==1,"native keydown entered form submission handler once");
         CHECK(handler_returned==1,"form submission returned to the still-live keydown handler");
+        /* The page-close entry guard now preserves an executing JSRuntime, so
+         * the old synchronous-load control need not abort in JS_FreeRuntime.
+         * Its defect remains observable at the producer boundary: it starts
+         * the destination fetch before this very keydown handler can return. */
+        CHECK(handler_start_requests==1&&handler_after_requests==1,
+              "form navigation waits until keydown handler returns");
         CHECK(submit_events==(!strcmp(mode,"key-request-submit")?1:0),
               "requestSubmit fires submit event while submit bypasses it");
     }
@@ -69,6 +115,7 @@ static void finish(void)
         CHECK(tab_opened && tab_returned,"native tab round trip actually completed");
     CHECK(exact_requests(expected)==(same_url_submit?2:1),"native navigation requests exact document-origin destination");
     if(key_submit)CHECK(fake_site_requests()==2,"shared navigation queue performs only the final requested navigation");
+    location_diagnostic("destination", expected);
     CHECK(!strcmp(js_page_location(),expected),"committed location reaches exact destination");
     CHECK(last_text(same_url_submit?"NAV-ACTIVATE":"NAV-DESTINATION")!=0,"destination reaches actual painter");
     stage=99; post(EV_CLOSE,0,0,0,0);
@@ -80,7 +127,12 @@ void loader_poll_hook(void)
     if(++polls>400){finish();return;}
     if(stage==0){
         const struct paintop *p=last_text("NAV-ACTIVATE");
-        if(!p)return;
+        /* Progressive first paint precedes runtime initialization. The old
+         * paint-only boundary read about:blank, then posted input while load
+         * was still draining its private event queue. Wait for the neutral fence,
+         * never for the EXPECTED URL (which would hide the navigation defect). */
+        if(!p||!runtime_ready())return;
+        source_ready=1;
         if(key_submit){
             JSContext *ctx=js_page_ctx();if(!ctx)return;
             JSValue global=JS_GetGlobalObject(ctx);
@@ -91,6 +143,7 @@ void loader_poll_hook(void)
             CHECK(!JS_IsException(ready)&&JS_ToBool(ctx,ready)==1,"real form submit and requestSubmit bindings installed");
             if(JS_IsException(ready)){JSValue e=JS_GetException(ctx);JS_FreeValue(ctx,e);}JS_FreeValue(ctx,ready);
         }
+        location_diagnostic("initial", source_url);
         CHECK(!strcmp(js_page_location(),source_url),"initial committed document has its original query");
         source_tab=tabs_active();
         click_x=p->x+5; click_y=p->y+5;
@@ -104,6 +157,7 @@ void loader_poll_hook(void)
     if(stage==1){
         if(host_evq_head!=host_evq_tail)return;
         CHECK(fake_site_requests()==1,"typing the address does not navigate");
+        location_diagnostic("typing", source_url);
         CHECK(!strcmp(js_page_location(),source_url),"typing preserves the committed page URL");
         if(!strcmp(mode,"tab-link")){
             /* Both shortcuts tear down a document, so discard borrowed paint
@@ -153,7 +207,11 @@ void loader_poll_hook(void)
         if(fake_site_requests()<2)return;
         paint_nops=0;stage=4;post(EV_RESIZE,1180,620,0,0);return;
     }
-    if(stage==4 && last_text(same_url_submit?"NAV-ACTIVATE":"NAV-DESTINATION"))finish();
+    /* finish posts EV_CLOSE: at first paint that canceled the destination load
+     * before its runtime even opened. Observe the same complete-runtime fence. */
+    if(stage==4 && last_text(same_url_submit?"NAV-ACTIVATE":"NAV-DESTINATION") && runtime_ready()){
+        destination_ready=1;finish();
+    }
 }
 int main(int argc,char **argv)
 {

@@ -1,0 +1,39 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>CSS component layout and image backgrounds</title>
+<link rel="stylesheet" href="styles/components.css">
+<h1>Cards, picture backgrounds and column layouts</h1>
+<p>These ordinary components use one external sheet and one shared bitmap.</p>
+<div class="pictures">
+  <div><div id="cover" class="picture"></div><p>Cover, centered crop</p></div>
+  <div><div id="contain" class="picture"></div><p>Contain, centered</p></div>
+  <div><div id="repeat" class="picture"></div><p>Repeated small tiles</p></div>
+</div>
+<div class="layout-row">
+  <div><div id="ratio"></div><p>16 / 9 card</p></div>
+  <div id="auto-col"><div id="basis-a"></div><div id="basis-b"></div></div>
+  <div id="wrap-col"><div id="wrap-a"></div><div id="wrap-b"></div><div id="wrap-c"></div></div>
+</div>
+<div class="layout-row">
+  <div><div id="normal-grid" class="grid"><div id="normal-a"></div><div></div></div><p>Grid normal</p></div>
+  <div><div id="start-grid" class="grid"><div id="start-a"></div><div></div></div><p>Grid start</p></div>
+</div>
+<div id="nested" class="card"><div class="nested-body"><div id="nested-leaf" class="leaf"></div></div></div>
+<p id="result">Measuring rendered geometry</p>
+<script>
+(function () {
+  var names = ['cover','contain','repeat','ratio','auto-col','basis-a','basis-b',
+    'wrap-a','wrap-b','wrap-c','normal-a','start-a','nested-leaf'];
+  setTimeout(function () {
+    var boxes = {};
+    names.forEach(function (name) {
+      var r = document.getElementById(name).getBoundingClientRect();
+      boxes[name] = {x:r.x,y:r.y,width:r.width,height:r.height};
+    });
+    document.getElementById('result').textContent = 'CSS_COMPONENTS_READY';
+    fetch('/report', {method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({kind:'css-components',boxes:boxes})});
+    console.log('CSS_COMPONENTS_READY');
+  }, 300);
+})();
+</script>

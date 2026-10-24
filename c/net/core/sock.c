@@ -259,7 +259,13 @@ static void announce(const char *what, const char *host, const ip6_addr *a,
             ip6_is_v4mapped(a) ? "ipv4" : "ipv6", t);
 }
 
-/* Open a TCP connection to one destination. Returns a connection id or < 0. */
+/* The broker holds the TCP index until drop_transport, including after RST or
+ * ICMP failure. The original unowned open let TCP publish that index as free
+ * before sock_pump observed the failure. Measured with actual tcp.c+sock.c:
+ * old sock 1/tcp 0 -> new sock 0/tcp 0 -> old close deletes the new SYN;
+ * its valid SYN-ACK receives RST. Pinning makes the new dial use tcp 1 and ACK.
+ * SOCKET handles and TCP indices are different lifetimes; the broker's mutex
+ * alone cannot protect an index that the packet layer has already recycled. */
 static int connect_to(struct sock *s, const ip6_addr *d)
 {
 #ifdef TCP_AF_INET6
@@ -271,13 +277,21 @@ static int connect_to(struct sock *s, const ip6_addr *d)
         a.af = TCP_AF_INET6;
         memcpy(a.a.v6, d->b, 16);
     }
+#ifdef SOCK_UNPIN_TCP
     return tcp_connect_start_addr(&a, s->port);
+#else
+    return tcp_connect_owned_addr(&a, s->port);
+#endif
 #else
     /* Without the TCP line's family-general entry point there is no way to
      * open an IPv6 connection; a v6 destination simply cannot be used, and the
      * fallback list is what saves the socket. */
     if (!ip6_is_v4mapped(d)) return -1;
+#ifdef SOCK_UNPIN_TCP
     return tcp_connect_start(ip6_to_v4(d), s->port);
+#else
+    return tcp_connect_owned(ip6_to_v4(d), s->port);
+#endif
 #endif
 }
 
@@ -420,7 +434,9 @@ static int promote_alt(struct sock *s, uint64_t now)
 
 static void pump_one(struct sock *s)
 {
+#ifdef SOCK_STALE_PHASE_CLOCK
     uint64_t now = timer_ticks();
+#endif
 
     /* A completed resolver lookup and a warm ARP entry are decisions, not I/O.
      * Each used to consume a whole net_poll() pass: RESOLVE merely changed the
@@ -436,6 +452,17 @@ static void pump_one(struct sock *s)
      * an unbounded loop.  SOCK_NEGCTL_PHASE_PER_POLL restores the old one-phase
      * shape for the watched timing/control test. */
     for (int eager = 0; eager < 3; eager++) {
+#ifndef SOCK_STALE_PHASE_CLOCK
+    /* The original eager pump sampled now once at entry. Correction: an
+     * active open samples its CONNECT start after sending SYN, and that work
+     * can cross a tick. Comparing the older now with that newer uint64_t t0
+     * underflows and expires a seven-second dial immediately. The real
+     * tcp.c+sock.c clock cases advance one tick at that read: the old path
+     * releases SYN_SENT and replies RST to a valid SYN-ACK; this path keeps
+     * the pending dial and replies ACK in both address families. Refresh per
+     * phase rather than giving up the cached-DNS/warm-ARP eager transition. */
+    uint64_t now = timer_ticks();
+#endif
     switch (s->state) {
     case S_RESOLVE: {
         int n = dns_query_addrs(s->dnsq, s->dst, SOCK_MAXDST);

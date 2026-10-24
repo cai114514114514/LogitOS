@@ -1,4 +1,8 @@
 #include <string.h>
+#include "css/nesting.h"
+#include "../../../../../include/weaksym.h"
+extern int css_normalize_stylesheet(const char *,int,char **,int *) LOGIT_WEAK;
+LOGIT_WEAK_STUB(css_normalize_stylesheet);
 /* CSS custom properties (var()) preprocessor.
  *
  * The vendored LibCSS predates CSS variables: it rejects `--x: 8px` as an
@@ -600,8 +604,14 @@ static void vars_prepare(const char *in,int inlen){
 
 int css_expand_vars(const char *in,int inlen,char *out,int outmax)
 {
+    char *owned=0;int length=inlen;
+    if(LOGIT_HAVE(css_normalize_stylesheet) &&
+       css_normalize_stylesheet(in,inlen,&owned,&length)<0)return -1;
+    if(owned)in=owned;inlen=length;
     vars_prepare(in,inlen);
-    return var_subst(in,inlen,out,outmax,0,0);
+    int result=var_subst(in,inlen,out,outmax,0,0);
+    /* vars_prepare copied winning values into its own arena. */
+    extern void kfree(void *);kfree(owned);return result;
 }
 
 int css_expand_vars_alloc(const char *in,int inlen,char **out,int *cap,int limit)
@@ -612,16 +622,21 @@ int css_expand_vars_alloc(const char *in,int inlen,char **out,int *cap,int limit
      * refuses the whole expansion at its explicit ceiling and leaves the
      * caller's previous bytes intact. It neither refetches nor recollects
      * variables between the size and emit passes. */
+    char *owned=0;int length=inlen;
+    if(LOGIT_HAVE(css_normalize_stylesheet) &&
+       css_normalize_stylesheet(in,inlen,&owned,&length)<0)return -1;
+    if(owned)in=owned;inlen=length;
     vars_prepare(in,inlen);
     int overflow=0;
     int needed=var_subst(in,inlen,0,limit,0,&overflow);
-    if(overflow||needed>=limit-1)return -1;
+    extern void kfree(void *);
+    if(overflow||needed>=limit-1){kfree(owned);return -1;}
     if(*cap<needed+2){
         extern void *malloc(unsigned long);extern void free(void *);
-        char *next=malloc((unsigned long)needed+2);if(!next)return -1;
+        char *next=malloc((unsigned long)needed+2);if(!next){kfree(owned);return -1;}
         free(*out);*out=next;*cap=needed+2;
     }
-    return var_subst(in,inlen,*out,*cap,0,0);
+    int result=var_subst(in,inlen,*out,*cap,0,0);kfree(owned);return result;
 }
 
 /* Test seam: how many distinct custom properties the last expansion collected,

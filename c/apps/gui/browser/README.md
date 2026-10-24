@@ -21,6 +21,7 @@ ABI names are unchanged by the 2026-09-22 reorganization.
 | `js/net/` | Fetch, Blob, URL, WebSocket and download bindings |
 | `js/storage/` | IndexedDB, Cache and service-worker registration bindings |
 | `js/workers/` | Workers, ports and inter-context messaging |
+| `js/streams/` | Readable/writable queues, readers, writers, pipes, transforms and text streams |
 | `js/media/` | Media element bindings and Media Source engine |
 | `js/graphics/` | Canvas and matrix bindings |
 | `js/crypto/` | Digest, SubtleCrypto and entropy contract |
@@ -28,6 +29,35 @@ ABI names are unchanged by the 2026-09-22 reorganization.
 | `js/wasm/` | WebAssembly bindings |
 
 ## Includes and build rules
+
+Cancellation lives in `js/net/abort.c`; stream state machines live in
+`js/streams/{core,readable,writable,transform}.c`. Both page and Worker Fetch
+install the same services. Their private hooks carry byte accounting and body
+disturbance into Fetch, without copying another implementation into a prelude.
+`BROWSER_WEBAPI_SRC` includes these services for narrower host consumers.
+
+The HTML priority batch uses `js/runtime/clone.c` and `clone_graph.c` for
+structured cloning, `js/runtime/timers.h` for shared page/Worker timer rules,
+`dom/validation.c` and `js/dom/validation.c` for live form validation, and
+`dom/entries.c` for successful-control snapshots. Blob/File and FormData now
+keep bytes and entries private in `js/net/{blob,formdata}.c`. Native submit,
+scripted requestSubmit, button activation and Enter share the form controller.
+Scope and deferred validation are recorded in
+[`html-priority-2026-09-30.md`](../../../../docs/engine-plan/html-priority-2026-09-30.md).
+
+The 2026-09-30 stream expansion is an implementation batch awaiting combined
+validation. It adds default streams and text pipelines; byte sources/BYOB and
+transferable streams still require separate buffer-ownership work.
+Correction after the validation phase: see the measured host and guest results,
+observed negative controls and remaining gaps in
+[`html-priority-validation-2026-09-30.md`](../../../../docs/engine-plan/html-priority-validation-2026-09-30.md).
+
+The 2026-10-01 CSS batch adds focused nesting, sizing and background producers,
+ratio/column/Grid consumers, bitmap resource discovery and rounded box painting.
+It follows declarations through real resource requests and guest scanout; the
+default disk contains the same browser binary as the validated isolated build.
+Measured before/after results, fault controls and unsupported cases are in
+[`css-expansion-2026-10-01.md`](../../../../docs/engine-plan/css-expansion-2026-10-01.md).
 
 Include browser headers from the browser root, for example `"dom/tree.h"`
 and `"js/dom/dom.h"`. Only that root is on the compiler include path; adding

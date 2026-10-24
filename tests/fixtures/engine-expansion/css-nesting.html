@@ -1,0 +1,54 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>CSS nesting and preferred ratios</title>
+<style>
+body { margin: 0; font: 16px sans-serif; color: #15243a; background: #eef2f8; }
+h1 { margin: 20px; font-size: 24px; }
+.gallery, #unmatched-specificity {
+  --panel-width: 280px;
+  display: flex;
+  align-items: start;
+  gap: 20px;
+  margin: 20px;
+  > .panel {
+    width: var(--panel-width);
+    aspect-ratio: 7 / 4;
+    background: #255c99;
+    color: white;
+    border-radius: 14px;
+    &.warm { background: #bb4e25; }
+    .caption { margin: 16px; font-size: 20px; }
+    @supports (aspect-ratio: 7 / 4) {
+      .detail { margin: 16px; color: #ffffff; }
+    }
+  }
+}
+/* The unmatched ID still contributes specificity to the nested rule. */
+.gallery .panel { width: 190px; }
+.order { width: 120px; height: 28px; background: #3b8562; margin: 20px;
+  & { width: 150px; }
+  width: 180px;
+}
+@supports (display: made-up) {
+  .panel { aspect-ratio: 1 / 1; width: 80px; --panel-width: 80px; }
+}
+</style>
+<h1>Nested component styles</h1>
+<div class="gallery">
+  <div id="nest-blue" class="panel"><div class="caption">Aspect ratio 7 : 4</div><div class="detail">280 × 160, conditional child</div></div>
+  <div id="nest-warm" class="panel warm"><div class="caption">Parent modifier</div><div class="detail">Same size, nested ampersand</div></div>
+</div>
+<div id="nest-order" class="order"></div>
+<script>
+(function () {
+  var checks=0,failures=0;
+  function check(ok,label) { checks++; if(!ok)failures++; console.log((ok?'ok: ':'FAIL: ')+label); }
+  var blue=document.getElementById('nest-blue'), warm=document.getElementById('nest-warm');
+  check(blue.offsetWidth===280 && blue.offsetHeight===160,'CSS_NEST blue preferred ratio and parent-list specificity');
+  check(warm.offsetWidth===280 && warm.offsetHeight===160,'CSS_NEST warm preferred ratio');
+  check(getComputedStyle(warm).backgroundColor==='rgb(187, 78, 37)','CSS_NEST ampersand modifier paints warm card');
+  check(document.getElementById('nest-order').offsetWidth===180,'CSS_NEST trailing declaration source order');
+  check(CSS.supports('aspect-ratio','7/4') && !CSS.supports('aspect-ratio','1.'),'CSS_NEST value-aware feature detection');
+  console.log('CSS_NEST checks='+checks+' fail='+failures);
+})();
+</script>

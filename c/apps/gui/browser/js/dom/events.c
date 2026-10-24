@@ -825,23 +825,10 @@ static const char EVENTS_JS[] =
 "defv(ET.prototype, 'constructor', ET);\n"
 "G.EventTarget = ET;\n"
 "\n"
-/* AbortSignal.abort() / .timeout() are static factories the options tests use
- * to get an already-aborted signal without building a controller. Added only
- * if js_webapi.c's AbortSignal is present and does not have them. */
-"if (typeof G.AbortSignal === 'function' && typeof G.AbortController === 'function') {\n"
-"  if (typeof G.AbortSignal.abort !== 'function') {\n"
-"    G.AbortSignal.abort = named(function (reason) {\n"
-"      var c = new G.AbortController(); c.abort(reason); return c.signal;\n"
-"    }, 'abort', 0);\n"
-"  }\n"
-"  if (typeof G.AbortSignal.timeout !== 'function' && typeof G.setTimeout === 'function') {\n"
-"    G.AbortSignal.timeout = named(function (ms) {\n"
-"      var c = new G.AbortController();\n"
-"      G.setTimeout(function () { c.abort(domErr('signal timed out', 'TimeoutError')); }, ms);\n"
-"      return c.signal;\n"
-"    }, 'timeout', 1);\n"
-"  }\n"
-"}\n"
+/* The old layer supplied AbortSignal.abort/timeout only after DOM events
+ * installed. Correction: js/net/abort.c now owns every factory in both page
+ * and worker realms. A fallback here would recreate the split timer policy
+ * and hide a missing service on narrower host links. */
 "return 'ok';\n"
 "})();\n";
 

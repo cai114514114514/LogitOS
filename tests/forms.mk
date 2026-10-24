@@ -93,7 +93,7 @@
 test-forms: test-forms-ce-negctl
 
 FORMS_SRC := tests/unit/forms_test.c \
-             c/apps/gui/browser/dom/forms.c c/apps/gui/browser/dom/focus.c \
+             $(BROWSER_FORM_SRC) c/apps/gui/browser/dom/focus.c \
              c/apps/gui/browser/layout/block.c c/apps/gui/browser/layout/text.c c/apps/gui/browser/css/engine.c \
              c/apps/gui/browser/css/vars.c $(HTML_PARSER_SRC)
 
@@ -126,8 +126,7 @@ test-forms-ce-negctl: $(BUILD)/libcss_host.a
 	    exit 1; \
 	 else \
 	    echo "ok: the control fails, as it must. What it lost:"; \
-	    grep -c '^FAIL' $(BUILD)/forms_noev.log | sed 's/^/    failing checks: /'; \
-	    grep '^FAIL' $(BUILD)/forms_noev.log | head -6 | sed 's/^/    /'; \
+	    python3 -c 'import pathlib,sys; rows=[r for r in pathlib.Path(sys.argv[1]).read_text().splitlines() if r.startswith("FAIL")]; print("    failing checks: "+str(len(rows))); print("\n".join("    "+r for r in rows[:6]))' $(BUILD)/forms_noev.log; \
 	    echo "    (the DOM still changed and the text still painted -- only the"; \
 	    echo "     events the page listens for went missing)"; \
 	 fi

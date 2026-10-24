@@ -17,6 +17,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include "css/import.h"
+#include "../../../../../include/weaksym.h"
+extern int css_background_url_token(const char *,int,int *,char *,int) LOGIT_WEAK;
+LOGIT_WEAK_STUB(css_background_url_token);
 
 int css_text_reserve(char **out,int *cap,int needed,int limit)
 {
@@ -66,12 +69,22 @@ static int ci_quote_end(const char *s,int n,int p)
     while(p<n) { if(s[p]=='\\'&&p+1<n) {p+=2;continue;} if(s[p++]==q)return p; }
     return n;
 }
-/* A bounded URL token. CSS escapes are deliberately not decoded here; retain
- * that rule unchanged rather than requesting a subtly different URL. */
+/* The former rule was "CSS escapes are deliberately not decoded here".
+ * Correction: bitmap backgrounds now consume escaped URLs. Decode/rebase
+ * them while the sheet still has its response URL, using the consumer's SAME
+ * token reader. Decoding only at paint time would request an escaped relative
+ * path against the document's directory and silently show a different image.
+ * Narrow import-only host links retain the previous refusal when this parser
+ * is absent; they never acquire the bitmap consumer either. */
 static int ci_url(const char *s,int n,int *pos,char *url,int cap)
 {
     int p=ci_trivia(s,n,*pos), end, a;
     int fn=ci_word(s,n,p,"url");
+    if(fn&&LOGIT_HAVE(css_background_url_token)){
+        int consumed=0;
+        if(!css_background_url_token(s+p,n-p,&consumed,url,cap))return -1;
+        *pos=p+consumed;return 0;
+    }
     if(fn) {p=ci_trivia(s,n,p+3);if(p>=n||s[p++]!='(')return -1;p=ci_trivia(s,n,p);}
     if(p>=n)return -1;
     if(s[p]=='\''||s[p]=='"') {

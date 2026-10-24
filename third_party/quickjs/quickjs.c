@@ -10385,6 +10385,13 @@ BOOL JS_IsProxy(JSValueConst val)
         JS_VALUE_GET_OBJ(val)->class_id == JS_CLASS_PROXY;
 }
 
+JSClassID JS_GetClassID(JSValueConst val)
+{
+    if (JS_VALUE_GET_TAG(val) != JS_TAG_OBJECT)
+        return 0;
+    return JS_VALUE_GET_OBJ(val)->class_id;
+}
+
 int JS_GetOwnPropertyQuiet(JSContext *ctx, JSPropertyDescriptor *desc,
                            JSValueConst obj, JSAtom prop)
 {
@@ -55537,6 +55544,14 @@ void JS_DetachArrayBuffer(JSContext *ctx, JSValueConst obj)
     }
 }
 
+BOOL JS_IsDetachedArrayBuffer(JSValueConst obj)
+{
+    if (JS_VALUE_GET_TAG(obj) != JS_TAG_OBJECT)
+        return FALSE;
+    JSObject *p = JS_VALUE_GET_OBJ(obj);
+    return p->class_id == JS_CLASS_ARRAY_BUFFER && p->u.array_buffer->detached;
+}
+
 /* get an ArrayBuffer or SharedArrayBuffer */
 static JSArrayBuffer *js_get_array_buffer(JSContext *ctx, JSValueConst obj)
 {
@@ -55794,6 +55809,26 @@ JSValue JS_GetTypedArrayBuffer(JSContext *ctx, JSValueConst obj,
     if (pbytes_per_element) {
         *pbytes_per_element = 1 << typed_array_size_log2(p->class_id);
     }
+    return JS_DupValue(ctx, JS_MKPTR(JS_TAG_OBJECT, ta->buffer));
+}
+
+JSValue JS_GetArrayBufferView(JSContext *ctx, JSValueConst obj,
+                             size_t *pbyte_offset, size_t *pbyte_length,
+                             size_t *pbytes_per_element)
+{
+    if (JS_GetClassID(obj) != JS_CLASS_DATAVIEW)
+        return JS_GetTypedArrayBuffer(ctx, obj, pbyte_offset, pbyte_length,
+                                     pbytes_per_element);
+    JSObject *p = JS_VALUE_GET_OBJ(obj);
+    if (typed_array_is_detached(ctx, p))
+        return JS_ThrowTypeErrorDetachedArrayBuffer(ctx);
+    JSTypedArray *ta = p->u.typed_array;
+    if (pbyte_offset)
+        *pbyte_offset = ta->offset;
+    if (pbyte_length)
+        *pbyte_length = ta->length;
+    if (pbytes_per_element)
+        *pbytes_per_element = 1;
     return JS_DupValue(ctx, JS_MKPTR(JS_TAG_OBJECT, ta->buffer));
 }
                                

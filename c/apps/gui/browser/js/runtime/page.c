@@ -9,6 +9,7 @@
 #include "js/dom/dom.h"
 #include "js/runtime/page.h"
 #include "js/runtime/task_budget.h"
+#include "js/runtime/timers.h"
 /* The queue is compiled here so every existing host consumer of js_page uses
  * the same scheduling code as browser.aex; do not also link page_runtime.c. */
 #include "../../app/page.c"
@@ -96,6 +97,7 @@ LOGIT_WEAK_STUB(focus_context_destroy);
  * through a header because it is one symbol; weak for the same reason as the
  * five above. */
 void js_forms_install(JSContext *ctx) LOGIT_WEAK;
+void js_forms_cleanup(void) LOGIT_WEAK;
 /* The HTML element interfaces -- js_semantics.c: <dialog>'s showModal/close,
  * <table>'s rows/insertRow, <select>'s options, the popover and
  * command/commandfor invokers, and HTMLElement.prototype.click. Weak for the
@@ -126,6 +128,7 @@ void js_domparser_install(JSContext *ctx) LOGIT_WEAK;
 void js_canvas_install(JSContext *ctx) LOGIT_WEAK;
 /* The Mach-O half of all five: see include/weaksym.h. */
 LOGIT_WEAK_STUB(js_forms_install);
+LOGIT_WEAK_STUB(js_forms_cleanup);
 LOGIT_WEAK_STUB(js_semantics_install);
 LOGIT_WEAK_STUB(js_semantics_close);
 LOGIT_WEAK_STUB(js_anim_install);
@@ -704,9 +707,10 @@ const char *js_page_location(void) { return g_location; }
  * coin flip. */
 struct jstimer {
     struct page_task task;
+    struct jstimer *active_next;    /* detached callbacks keep stable ownership */
     int id;
     int raf;                       /* requestAnimationFrame callback */
-    int interval_ms;               /* >0: re-arm after firing (setInterval) */
+    struct js_timer_state timer;
     JSValue fn;
     JSValue *argv; int argc;       /* extra setTimeout(fn, ms, ...args) arguments */
 };
@@ -718,6 +722,8 @@ static struct page_runtime page_default_queue;
 static struct page_runtime *g_page = &page_default_queue;
 static int g_next_id = 1;                    /* setTimeout/setInterval handles */
 static int g_next_raf_id = 1;                /* rAF has its own handle space, per spec */
+static struct jstimer *g_running_timer;
+static unsigned g_timer_nesting;
 static unsigned long long g_frame_due;       /* the next animation-frame boundary */
 /* Resume a partially dispatched turn at its next phase. A fixed fetch ->
  * worker -> timer order with a fresh budget at each phase can still starve
@@ -744,6 +750,49 @@ static void timer_free(JSContext *ctx, struct jstimer *t)
 static void timer_dispose(void *context, void *payload)
 {
     timer_free(context, payload);
+}
+
+unsigned js_page_timer_checkpoint_begin(JSContext *ctx)
+{
+    if (ctx != g_ctx) return 0;
+    unsigned nesting = g_timer_nesting;
+    g_timer_nesting = 0;
+    return nesting;
+}
+
+void js_page_timer_checkpoint_end(JSContext *ctx, unsigned nesting)
+{
+    if (ctx == g_ctx) g_timer_nesting = nesting;
+}
+
+static int timer_id_used(int id, int raf)
+{
+    for (struct jstimer *t = g_running_timer; t; t = t->active_next)
+        if (!t->timer.cancelled && t->id == id && t->raf == raf) return 1;
+    for (struct page_task *task = g_page->tasks; task; task = task->next) {
+        struct jstimer *t = task->payload;
+        if (t->id == id && t->raf == raf) return 1;
+    }
+    return 0;
+}
+
+static int timer_new_id(int raf)
+{
+    int *next = raf ? &g_next_raf_id : &g_next_id;
+    int first = js_timer_next_id(next), id = first;
+    do {
+        if (!timer_id_used(id, raf)) return id;
+        id = js_timer_next_id(next);
+    } while (id != first);
+    return 0;
+}
+
+static size_t timer_repeat_slots(void)
+{
+    size_t slots = 0;
+    for (struct jstimer *t = g_running_timer; t; t = t->active_next)
+        if (t->timer.repeat && !t->timer.cancelled) slots++;
+    return slots;
 }
 
 int js_page_pending(void)
@@ -951,37 +1000,24 @@ run_phases:
         if (!ready) break;
         struct jstimer *best = ready->payload;
 
-        /* Take our own references before calling: the callback may clear this
-         * very timer (clearInterval(self) is idiomatic), which would otherwise
-         * free the JSValue we are about to invoke. */
-        JSValue fn = JS_DupValue(g_ctx, best->fn);
-        /* A one-shot is freed BEFORE dispatch so cancellation/reentrancy sees
-         * an already-removed timer. The old profiler label read best->raf after
-         * timer_free: an ordinary timeout trips ASan even with profiling off.
-         * Snapshot metadata as well as JS references; delaying free until after
-         * the callback would let self-cancellation free the same entry twice. */
+        /* Historical rule: "A one-shot is freed BEFORE dispatch" required
+         * copying its JS arguments again, and allocation failure silently
+         * called fn with no arguments. Detach instead: the executing callback
+         * owns this stable entry until its checkpoint finishes. clearTimer
+         * marks it cancelled without freeing it, so self-cancellation and ID
+         * reuse cannot free these arguments or resurrect the old interval. */
+        page_task_detach(g_page, &best->task);
+        best->active_next = g_running_timer;
+        g_running_timer = best;
         const int is_raf = best->raf;
+        const unsigned previous_nesting = g_timer_nesting;
         int nargs = best->argc;
-        JSValue *args = 0;
+        JSValue timestamp = JS_UNDEFINED;
+        JSValueConst *args = (JSValueConst *)best->argv;
         if (is_raf) {
             nargs = 1;
-            args = malloc(sizeof *args);
-            if (args) args[0] = JS_NewFloat64(g_ctx, (double)(now - g_t0));
-            else nargs = 0;
-        } else if (nargs > 0) {
-            args = malloc((size_t)nargs * sizeof *args);
-            if (args) for (int i = 0; i < nargs; i++) args[i] = JS_DupValue(g_ctx, best->argv[i]);
-            else nargs = 0;
-        }
-
-        if (best->interval_ms > 0) {
-            /* Re-arm from NOW, not from the old deadline: catching up on missed
-             * ticks after a slow page load would fire a burst of callbacks the
-             * page never asked for. */
-            page_task_rearm(g_page, &best->task,
-                            now + (unsigned long long)best->interval_ms);
-        } else {
-            page_task_cancel(g_page, &best->task);
+            timestamp = JS_NewFloat64(g_ctx, (double)(now - g_t0));
+            args = &timestamp;
         }
 
         js_prof_label(is_raf ? "<rAF callback>" : "<timer callback>");
@@ -993,7 +1029,8 @@ run_phases:
          * instead; sharing a queue must not merge the two invocation rules.
          * JS_Call itself preserves bound/arrow receivers. */
         JSValue receiver = is_raf ? JS_UNDEFINED : JS_GetGlobalObject(g_ctx);
-        JSValue r = JS_Call(g_ctx, fn, receiver, nargs, (JSValueConst *)args);
+        g_timer_nesting = is_raf ? 0 : best->timer.nesting;
+        JSValue r = JS_Call(g_ctx, best->fn, receiver, nargs, args);
         JS_FreeValue(g_ctx, receiver);
         if (JS_IsException(r)) {
             JSValue e = JS_GetException(g_ctx);
@@ -1006,10 +1043,28 @@ run_phases:
             JS_FreeValue(g_ctx, e);
         }
         JS_FreeValue(g_ctx, r);
-        JS_FreeValue(g_ctx, fn);
-        for (int i = 0; i < nargs; i++) JS_FreeValue(g_ctx, args[i]);
-        free(args);
-        js_dom_run_jobs(g_ctx);          /* a timer that resolves a promise: run its reactions now */
+        JS_FreeValue(g_ctx, timestamp);
+        g_timer_nesting = 0;
+        js_dom_run_jobs(g_ctx);          /* reactions are microtasks, not nested timer tasks */
+        g_timer_nesting = previous_nesting;
+        g_running_timer = best->active_next;
+        if (best->timer.repeat && !best->timer.cancelled &&
+            !js_page_cancel_requested() && page_runtime_accepts(best->task.token)) {
+            /* The old interval was re-armed BEFORE its callback from the frozen
+             * batch's time, and timeout 0 was changed to 1. HTML re-initializes
+             * AFTER invocation: use the current clock, the same ID/owned args,
+             * and the running timer task's nesting level. A new sequence still
+             * excludes this repeat from the frozen due/sequence snapshot. */
+            js_timer_repeat(&best->timer);
+            unsigned long long due = now_ms() + (unsigned long long)best->timer.timeout;
+            if (page_task_enqueue(g_page, &best->task, best->task.token, due,
+                                  PAGE_TASK_TIMER, best, timer_dispose) != PAGE_TASK_OK) {
+                printf("[js] timer could not be re-armed: queue refused ownership\n");
+                timer_free(g_ctx, best);
+            }
+        } else {
+            timer_free(g_ctx, best);
+        }
         js_page_slice_end();
         ran++;
         if (js_page_cancel_requested()) return ran;
@@ -1030,17 +1085,19 @@ phases_done:
     return ran;
 }
 
-static int timer_add(JSContext *ctx, JSValueConst fn, long delay, int interval,
+static int timer_add(JSContext *ctx, JSValueConst fn, int32_t delay, int interval,
                      int raf, int argc, JSValueConst *argv)
 {
     /* The old queue grew until allocation failed. A shared explicit ceiling
      * now bounds timer/rAF ownership at JS_PAGE_TASK_CAPACITY entries; refusal
      * returns the existing failure handle 0 and retains no callback references.
-     * Check before allocating, then let enqueue enforce the same ownership rule. */
+     * Check before allocating, then let enqueue enforce the same ownership rule.
+     * A detached live interval reserves its slot until its callback finishes;
+     * otherwise the callback could fill the queue and silently lose its repeat. */
     if (ctx != g_page->context || !page_runtime_accepts(page_runtime_token(g_page)) ||
-        g_page->count >= g_page->capacity) return 0;
+        g_page->count + timer_repeat_slots() >= g_page->capacity) return 0;
     struct jstimer *t = calloc(1, sizeof *t);
-    if (!t) return 0;
+    if (!t) { JS_ThrowOutOfMemory(ctx); return -1; }
     unsigned long long now = now_ms(), due;
     if (raf) {
         /* Every rAF callback registered before the boundary runs in the same
@@ -1048,18 +1105,24 @@ static int timer_add(JSContext *ctx, JSValueConst fn, long delay, int interval,
          * several animations and have them stay in step. */
         if (!g_frame_due || g_frame_due <= now) g_frame_due = now + FRAME_MS;
         due = g_frame_due;
-        t->id = g_next_raf_id++;
+        t->id = timer_new_id(1);
         t->raf = 1;
     } else {
-        if (delay < 0) delay = 0;
-        due = now + (unsigned long long)delay;
-        t->id = g_next_id++;
-        t->interval_ms = interval ? (delay > 0 ? (int)delay : 1) : 0;
+        js_timer_init(&t->timer, delay, g_timer_nesting, interval);
+        due = now + (unsigned long long)t->timer.timeout;
+        t->id = timer_new_id(0);
     }
+    if (!t->id) { free(t); return 0; }
     t->fn = JS_DupValue(ctx, fn);
     if (argc > 0) {
         t->argv = malloc((size_t)argc * sizeof *t->argv);
-        if (t->argv) { for (int i = 0; i < argc; i++) t->argv[i] = JS_DupValue(ctx, argv[i]); t->argc = argc; }
+        if (!t->argv) {
+            timer_free(ctx, t);
+            JS_ThrowOutOfMemory(ctx);
+            return -1;
+        }
+        for (int i = 0; i < argc; i++) t->argv[i] = JS_DupValue(ctx, argv[i]);
+        t->argc = argc;
     }
     if (page_task_enqueue(g_page, &t->task, page_runtime_token(g_page), due,
                           raf ? PAGE_TASK_ANIMATION_FRAME : PAGE_TASK_TIMER,
@@ -1072,7 +1135,13 @@ static int timer_add(JSContext *ctx, JSValueConst fn, long delay, int interval,
 
 static void timer_cancel(JSContext *ctx, int id, int raf)
 {
-    (void)ctx;
+    if (ctx != g_page->context || id <= 0) return;
+    for (struct jstimer *t = g_running_timer; t; t = t->active_next) {
+        if (!t->timer.cancelled && t->id == id && t->raf == raf) {
+            t->timer.cancelled = 1;
+            return;
+        }
+    }
     for (struct page_task *task = g_page->tasks; task; task = task->next) {
         struct jstimer *t = task->payload;
         if (t->id == id && t->raf == raf) {
@@ -1082,32 +1151,32 @@ static void timer_cancel(JSContext *ctx, int id, int raf)
     }
 }
 
-/* setTimeout(fn, delay, ...args). A string first argument (the eval form) is
- * deliberately not supported -- it is deprecated, and supporting it would mean
- * carrying a second code path that can only ever compile untrusted text. */
+static JSValue timer_handle(JSContext *ctx, int id)
+{
+    return id < 0 ? JS_EXCEPTION : JS_NewInt32(ctx, id);
+}
+
 static JSValue js_setTimeout(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
 {
     (void)t;
-    if (argc < 1 || !JS_IsFunction(ctx, argv[0])) return JS_NewInt32(ctx, 0);
-    int32_t ms = 0;
-    if (argc > 1) JS_ToInt32(ctx, &ms, argv[1]);
-    return JS_NewInt32(ctx, timer_add(ctx, argv[0], ms, 0, 0,
+    int32_t ms;
+    if (js_timer_convert(ctx, argc, argv, &ms) < 0) return JS_EXCEPTION;
+    return timer_handle(ctx, timer_add(ctx, argv[0], ms, 0, 0,
                                       argc > 2 ? argc - 2 : 0, argc > 2 ? argv + 2 : 0));
 }
 static JSValue js_setInterval(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
 {
     (void)t;
-    if (argc < 1 || !JS_IsFunction(ctx, argv[0])) return JS_NewInt32(ctx, 0);
-    int32_t ms = 0;
-    if (argc > 1) JS_ToInt32(ctx, &ms, argv[1]);
-    return JS_NewInt32(ctx, timer_add(ctx, argv[0], ms, 1, 0,
+    int32_t ms;
+    if (js_timer_convert(ctx, argc, argv, &ms) < 0) return JS_EXCEPTION;
+    return timer_handle(ctx, timer_add(ctx, argv[0], ms, 1, 0,
                                       argc > 2 ? argc - 2 : 0, argc > 2 ? argv + 2 : 0));
 }
 static JSValue js_clearTimer(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
 {
     (void)t;
     int32_t id = 0;
-    if (argc > 0) JS_ToInt32(ctx, &id, argv[0]);
+    if (argc > 0 && js_timer_long(ctx, &id, argv[0]) < 0) return JS_EXCEPTION;
     timer_cancel(ctx, id, 0);
     return JS_UNDEFINED;
 }
@@ -1115,13 +1184,13 @@ static JSValue js_raf(JSContext *ctx, JSValueConst t, int argc, JSValueConst *ar
 {
     (void)t;
     if (argc < 1 || !JS_IsFunction(ctx, argv[0])) return JS_NewInt32(ctx, 0);
-    return JS_NewInt32(ctx, timer_add(ctx, argv[0], 0, 0, 1, 0, 0));
+    return timer_handle(ctx, timer_add(ctx, argv[0], 0, 0, 1, 0, 0));
 }
 static JSValue js_caf(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
 {
     (void)t;
     int32_t id = 0;
-    if (argc > 0) JS_ToInt32(ctx, &id, argv[0]);
+    if (argc > 0 && js_timer_long(ctx, &id, argv[0]) < 0) return JS_EXCEPTION;
     timer_cancel(ctx, id, 1);
     return JS_UNDEFINED;
 }
@@ -1342,6 +1411,7 @@ int js_page_open(struct node *root)
         g_ctx = 0; g_rt = 0; return 0;
     }
     g_next_id = 1; g_next_raf_id = 1; g_frame_due = 0;
+    g_running_timer = 0; g_timer_nesting = 0;
     g_cur_script = 0;
 
     JSValue g = JS_GetGlobalObject(g_ctx);
@@ -1557,7 +1627,15 @@ int js_page_open(struct node *root)
      * gets its own pass over its own document. A nativize pass, where one is
      * linked, goes AFTER this one -- it must see the functions this pass
      * builds -- and before the probe block below. */
-    if (LOGIT_HAVE(js_idl_shape_install)) JS_OPEN_STEP("js_idl_shape_install", js_idl_shape_install(g_ctx));
+    /* IDL relocation can hide an existing namespace in a getter closure.
+     * Keep its private data records across this installer handoff: the native
+     * walk cannot recover them without executing getters. This value never
+     * becomes an author global, and is freed even in links without the walk. */
+    JSValue shape_roots = JS_UNDEFINED;
+    if (LOGIT_HAVE(js_idl_shape_install_roots))
+        JS_OPEN_STEP("js_idl_shape_install", shape_roots = js_idl_shape_install_roots(g_ctx));
+    else if (LOGIT_HAVE(js_idl_shape_install))
+        JS_OPEN_STEP("js_idl_shape_install", js_idl_shape_install(g_ctx));
     JS_FreeValue(g_ctx, g);
     /* AFTER every installer and BEFORE any page code: the nativize pass
      * (js/runtime/native_shape.c) declares every function compiled in this
@@ -1567,7 +1645,11 @@ int js_page_open(struct node *root)
      * them wherever they end up -- and the probe block below must follow
      * it, or the probe snapshots the unmarked shape. Not gated on
      * g_extensions: a core child realm's functions are built-ins too. */
-    if (LOGIT_HAVE(js_native_shape_install)) JS_OPEN_STEP("js_native_shape_install", js_native_shape_install(g_ctx, 0));
+    if (LOGIT_HAVE(js_native_shape_install_roots))
+        JS_OPEN_STEP("js_native_shape_install", js_native_shape_install_roots(g_ctx, shape_roots, 0));
+    else if (LOGIT_HAVE(js_native_shape_install))
+        JS_OPEN_STEP("js_native_shape_install", js_native_shape_install(g_ctx, 0));
+    JS_FreeValue(g_ctx, shape_roots);
 #ifdef JS_PROBE_TRACE
     /* LAST: the probe snapshots what the platform installed, so everything
      * above must already be there -- see js/runtime/probe.c. */
@@ -1589,6 +1671,7 @@ void js_page_close(void)
     if (g_entry_depth) { js_page_request_cancel(); return; }
     slice_disarm();
     g_due_phase=0;g_due_timer_active=0;
+    g_running_timer=0;g_timer_nesting=0;
     /* Invalidate BEFORE subsystem cleanup: no producer may queue more work
      * for this document once closing starts. Keep the context alive until the
      * queue has disposed every JS reference. Epochs survive context reuse. */
@@ -1630,6 +1713,12 @@ void js_page_close(void)
      * aborted in JS_FreeRuntime (wasm_lifecycle_test, before this hook). */
     if (PAGE_HAVE(js_wasm_reset)) js_wasm_reset(g_ctx);
 #endif
+    /* Forms used to keep only native focus/edit state, so the app cleaned
+     * them after closing JS. Validation now owns live JSValue wrappers; that
+     * old order aborts in JS_FreeRuntime's gc_obj_list assertion. Release them
+     * while this context and its DOM wrappers still exist. Core child realms
+     * never installed this optional module and must not clear the parent. */
+    if (PAGE_HAVE(js_forms_cleanup)) js_forms_cleanup();
     js_dom_cleanup(g_ctx);
     js_dom_set_note(0);
     JS_FreeContext(g_ctx);
@@ -1734,7 +1823,7 @@ int js_page_eval(const char *src, int len, const char *filename, struct node *no
     X(g_entry_depth) X(g_prof) X(g_prof_n) X(g_prof_over) X(g_prof_on) \
     X(g_prof_last_ms) X(g_prof_in_js) X(g_prof_label) X(g_polls) \
     X(g_rt) X(g_ctx) X(g_t0) X(g_location) X(g_page) \
-    X(g_next_id) X(g_next_raf_id) X(g_frame_due) X(g_due_phase) \
+    X(g_next_id) X(g_next_raf_id) X(g_running_timer) X(g_timer_nesting) X(g_frame_due) X(g_due_phase) \
     X(g_due_timer_active) X(g_due_timer_now) X(g_due_timer_limit) X(g_cur_script)
 
 struct js_page_context {

@@ -385,16 +385,16 @@ static void t_grad_stop_pos(void)
     }
 }
 
-/* A refused value must fall back to the background COLOUR, not to something
- * approximate and not to nothing. */
+/* Old claim: radial-gradient was refused because no producer existed.
+ * Correction: radial now has real geometry/pixel gates. A negative radius is
+ * invalid CSS and remains refused; keep this fallback-color assertion strict. */
 static void t_grad_refused(void)
 {
     render("<body><div id=a></div></body>",
            "body{margin:0} #a{position:absolute;left:0;top:0;width:200px;height:100px;"
-           "background:#123456;background-image:radial-gradient(#ff0000,#0000ff)}");
+           "background:#123456;background-image:radial-gradient(circle -1px,#ff0000,#0000ff)}");
     CHECK(ramp_count() == 0,
-          "refusal: radial-gradient paints NO ramp (the engine has the paint, "
-          "the parser does not produce it yet)");
+          "refusal: negative radial radius paints NO ramp (invalid CSS)");
     CHECK(solid_at(100, 50, 0x123456) != 0,
           "refusal: ... and the background COLOUR is painted exactly as before");
 }
@@ -452,13 +452,23 @@ static void t_round_border_nobg(void)
           "border colour");
 
     /* A NON-uniform border keeps the square path on purpose: the rounded path
-     * collapses four edges into one ring and would invent three of them. */
+     * collapses four edges into one ring and would invent three of them.
+     * Correction: the per-edge box path now subtracts the actual inner shape;
+     * the bottom edge follows its two corner arcs without inventing a ring.
+     * Keep the old claim beside the new pixel/coverage boundary: preserving
+     * the previous square degradation is no longer the correct expectation. */
     render("<body><div id=a></div></body>",
            "body{margin:0} #a{box-sizing:border-box;position:absolute;left:100px;top:100px;"
            "width:200px;height:100px;border-bottom:2px solid #ff0000;border-radius:12px}");
-    CHECK(rect_exact(100, 198, 200, 2, 0xFF0000) != 0,
-          "non-uniform rounded border: still the square path -- one bottom edge, "
-          "full width, and no ring round the other three sides");
+    int bottom_ink=0;
+    for(int i=0;i<paint_nops;i++){
+        const struct paintop *o=&paint_ops[i];
+        if(o->kind!=OP_BLIT||o->y+o->h<198)continue;
+        for(int k=0;k<o->nsamp;k++)
+            if(o->samp[k][0]==255 && !o->samp[k][1] && !o->samp[k][2] && o->samp[k][3])bottom_ink=1;
+    }
+    CHECK(rect_exact(100, 198, 200, 2, 0xFF0000) == 0 && bottom_ink,
+          "non-uniform rounded border: bottom ink follows the arcs instead of a full-width square bar");
 }
 
 /* The case that must NOT change: a rounded box WITH a background still goes

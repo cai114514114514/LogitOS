@@ -145,7 +145,9 @@
 "  }\n"
 "  return out;\n"
 "}\n"
+"var fetchBrands = new WeakSet();\n"
 "G.Headers = function Headers(init) {\n"
+"  fetchBrands.add(this);\n"
 "  this._l = []; this._guard = 'none';\n"
 "  if (init !== undefined && init !== null) {\n"
 "    if (Array.isArray(init)) {\n"
@@ -230,243 +232,9 @@
       already being finished. */
 "Object.defineProperty(G.Headers.prototype, Symbol.toStringTag, { value: 'Headers', configurable: true });\n"
 
-/* ---- streams ----
- * A real ReadableStream, because Response.body has to be one and because a
- * chat reply is a stream before it is a string. The queue is a plain array and
- * a byte count; the byte count is what C reads back from push() to decide
- * whether to keep reading the socket, so it is load-bearing rather than
- * decorative. */
-   /* Captured HERE, before any page script has had a chance to run, so it is
-      the REAL Promise.prototype.then and not whatever a page later assigns
-      to that name. getReader() below uses it to mark a reader's `closed`
-      promise as handled without going through the (patchable) exposed
-      `.then`/`.catch` -- calling those instead makes `rs.pipeTo(ws)` itself
-      throw synchronously on a page that has patched Promise.prototype.then
-      (streams/readable-streams/patched-global.any.js does exactly this),
-      because getReader() runs synchronously at the top of pipeTo(), outside
-      the `new Promise` executor that would otherwise swallow it. */
-"var __nativeThen = Promise.prototype.then;\n"
-"function chLen(c) { return c == null ? 0 : (c.byteLength !== undefined ? c.byteLength : (c.length || 0)); }\n"
-"function rsPut(s, ch) {\n"
-"  if (s._st !== 'readable') return;\n"
-"  if (s._w.length) { s._w.shift()[0]({ value: ch, done: false }); return; }\n"
-"  s._q.push(ch); s._qb += chLen(ch);\n"
-"}\n"
-   /* rsClosedSettle notifies every watcher of reader.closed that the stream
-      has finished -- fulfilled on a normal close, rejected with the same
-      error on an error. It is the piece that was entirely missing: before
-      this, `closed` was `new Promise(function () {})`, an executor that
-      captures neither resolve nor reject, so nothing anywhere could ever
-      settle it and a page awaiting it hung forever with no error and no log
-      line (see the header of this finding in the tree's own notes). */
-"function rsClosedSettle(s) {\n"
-"  var w = s._cw; s._cw = [];\n"
-"  for (var i = 0; i < w.length; i++) {\n"
-"    if (s._st === 'errored') w[i][1](s._e); else w[i][0](undefined);\n"
-"  }\n"
-"}\n"
-"function rsEnd(s) {\n"
-"  if (s._st !== 'readable') return;\n"
-"  s._st = 'closed';\n"
-"  while (s._w.length) s._w.shift()[0]({ value: undefined, done: true });\n"
-"  rsClosedSettle(s);\n"
-"}\n"
-"function rsErr(s, e) {\n"
-"  if (s._st !== 'readable') { return; }\n"
-"  s._st = 'errored'; s._e = e;\n"
-"  while (s._w.length) s._w.shift()[1](e);\n"
-"  s._q = []; s._qb = 0;\n"
-"  rsClosedSettle(s);\n"
-"}\n"
-   /* pull() may be an async function -- its return value is a promise, and a
-      SYNCHRONOUS throw inside it never happens; the rejection surfaces only
-      through that promise. Before this fix the promise pull() returned was
-      simply dropped, so an async pull that rejected settled nothing: the
-      reader's read() stayed pending forever, with no error and no log line
-      (measured against axios's trackStream, whose pull ends
-      `.catch(err => { onFinish(err); throw err })` -- exactly this shape, and
-      exactly the shape a mid-stream network failure produces). Route it to
-      rsErr the same way a synchronous throw already is. */
-"function rsPull(s) {\n"
-"  if (typeof s._src.pull !== 'function') return;\n"
-"  try {\n"
-"    var __rp = s._src.pull(s._c);\n"
-"    if (__rp && typeof __rp.then === 'function') __rp.then(undefined, function (e) { rsErr(s, e); });\n"
-"  } catch (e) { rsErr(s, e); }\n"
-"}\n"
-"function rsRead(s) {\n"
-"  if (s._q.length) { var c = s._q.shift(); s._qb -= chLen(c); if (s._qb < 0) s._qb = 0;\n"
-"    rsPull(s); return Promise.resolve({ value: c, done: false }); }\n"
-"  if (s._st === 'closed') return Promise.resolve({ value: undefined, done: true });\n"
-"  if (s._st === 'errored') return Promise.reject(s._e);\n"
-"  return new Promise(function (res, rej) { s._w.push([res, rej]); rsPull(s); });\n"
-"}\n"
-"function rsCancel(s, reason) {\n"
-"  if (s._st === 'readable') { s._st = 'closed';\n"
-"    while (s._w.length) s._w.shift()[0]({ value: undefined, done: true });\n"
-"    rsClosedSettle(s); }\n"
-"  s._q = []; s._qb = 0;\n"
-"  if (typeof s._src.cancel === 'function') { try { s._src.cancel(reason); } catch (e) {} }\n"
-"  return Promise.resolve();\n"
-"}\n"
-"G.ReadableStream = function ReadableStream(src) {\n"
-"  var s = this;\n"
-"  s._src = src || {}; s._q = []; s._qb = 0; s._st = 'readable'; s._e = undefined;\n"
-"  s._w = []; s._cw = []; s._locked = false;\n"
-"  s._c = {\n"
-"    enqueue: function (ch) { rsPut(s, ch); },\n"
-"    close: function () { rsEnd(s); },\n"
-"    error: function (e) { rsErr(s, e); },\n"
-"    bytes: function () { return s._qb; },\n"
-"    get desiredSize() { return 65536 - s._qb; }\n"
-"  };\n"
-"  if (typeof s._src.start === 'function') s._src.start(s._c);\n"
-"};\n"
-"G.ReadableStream.prototype = {\n"
-"  constructor: G.ReadableStream,\n"
-"  get locked() { return this._locked; },\n"
-   /* getReader() gives the reader a real identity (`released`/`pair`) rather
-      than just flipping the stream's lock bit, because release() has to undo
-      exactly what THIS acquisition did: reject the reads THIS reader left
-      pending and settle THIS reader's `closed`, in a stream a second reader
-      may already be locking again by the time release() runs (spec:
-      ReadableStreamDefaultReaderRelease). `closedP` is built already-settled
-      when the stream finished before acquisition; otherwise its [res, rej]
-      pair is parked on s._cw for rsClosedSettle to find later.
-      `closedP` is a `var`, not a `const`, because the spec's release
-      algorithm has TWO cases and they are not the same case: if the stream
-      is still "readable" when release() runs, the EXISTING closedPromise is
-      rejected in place (same identity, now settled); otherwise (already
-      closed or errored) it is REPLACED with a brand-new rejected promise,
-      because the old one is already fulfilled/rejected and cannot be
-      un-settled. WPT tests this identity distinction directly
-      (default-reader.any.js "closed is replaced when stream closes and
-      reader releases its lock", templated.any.js "releasing the lock should
-      cause closed to reject and change identity") -- getting the branch
-      backwards is invisible to any test that only checks `.closed` rejects,
-      which is why it is called out here rather than left for the next
-      reader to rediscover. */
-"  getReader: function () {\n"
-"    if (this._locked) throw new TypeError('ReadableStream is locked');\n"
-"    var s = this; s._locked = true;\n"
-"    var released = false, pair = null;\n"
-"    var closedP = new Promise(function (res, rej) {\n"
-"      if (s._st === 'closed') { res(undefined); return; }\n"
-"      if (s._st === 'errored') { rej(s._e); return; }\n"
-"      pair = [res, rej]; s._cw.push(pair);\n"
-"    });\n"
-     /* Mark `closedP` handled through the CAPTURED native then, not the
-        exposed (patchable) one -- see __nativeThen's own comment above. */
-"    __nativeThen.call(closedP, undefined, function () {});\n"
-"    function release() {\n"
-"      if (released) return; released = true; s._locked = false;\n"
-"      var e = new TypeError('Reader was released');\n"
-"      while (s._w.length) s._w.shift()[1](e);\n"
-"      if (s._st === 'readable') {\n"
-"        if (pair) { var i = s._cw.indexOf(pair); if (i >= 0) s._cw.splice(i, 1); pair[1](e); }\n"
-"      } else {\n"
-"        closedP = Promise.reject(e);\n"
-"        __nativeThen.call(closedP, undefined, function () {});\n"
-"      }\n"
-"    }\n"
-"    return {\n"
-"      read: function () {\n"
-"        if (released) return Promise.reject(new TypeError('Reader was released'));\n"
-"        return rsRead(s);\n"
-"      },\n"
-     /* reader.cancel() does NOT release the reader -- ReadableStreamDefaultReaderCancel
-        is a thin wrapper over ReadableStreamCancel and never touches the lock.
-        The stream stays locked to THIS reader until an explicit releaseLock(),
-        same as a real browser: `await reader.cancel(); stream.locked` is still
-        true. This used to unlock unconditionally and mark the reader released
-        right here, which made a later releaseLock() a no-op (release()'s
-        `if (released) return` guard) -- and that silently skipped the
-        identity-replace `closed` needs on release (see getReader's own
-        comment on `closedP`), which is exactly what
-        templated.any.js's "(closed via cancel after getting reader):
-        releasing the lock should cause closed to reject and change identity"
-        checks. */
-"      cancel: function (r) {\n"
-"        if (released) return Promise.reject(new TypeError('Reader was released'));\n"
-"        return rsCancel(s, r);\n"
-"      },\n"
-"      releaseLock: function () { release(); },\n"
-"      get closed() { return closedP; }\n"
-"    };\n"
-"  },\n"
-"  cancel: function (r) { return rsCancel(this, r); },\n"
-"  tee: function () {\n"
-"    var cs = [null, null];\n"
-"    var out = [new G.ReadableStream({ start: function (c) { cs[0] = c; } }),\n"
-"               new G.ReadableStream({ start: function (c) { cs[1] = c; } })];\n"
-"    var rd = this.getReader();\n"
-"    (function loop() {\n"
-"      rd.read().then(function (r) {\n"
-"        if (r.done) { cs[0].close(); cs[1].close(); return; }\n"
-"        cs[0].enqueue(r.value); cs[1].enqueue(r.value); loop();\n"
-"      }, function (e) { cs[0].error(e); cs[1].error(e); });\n"
-"    })();\n"
-"    return out;\n"
-"  },\n"
-"  pipeTo: function (w) {\n"
-"    var rd = this.getReader(), wr = w.getWriter();\n"
-"    return new Promise(function (res, rej) {\n"
-"      (function loop() {\n"
-"        rd.read().then(function (r) {\n"
-"          if (r.done) { Promise.resolve(wr.close()).then(res, rej); return; }\n"
-"          Promise.resolve(wr.write(r.value)).then(loop, rej);\n"
-"        }, function (e) { try { wr.abort(e); } catch (x) {} rej(e); });\n"
-"      })();\n"
-"    });\n"
-"  },\n"
-"  pipeThrough: function (t) { this.pipeTo(t.writable); return t.readable; }\n"
-"};\n"
-"Object.defineProperty(G.ReadableStream.prototype, Symbol.toStringTag, { value: 'ReadableStream', configurable: true });\n"
-"if (typeof Symbol !== 'undefined' && Symbol.asyncIterator) {\n"
-"  G.ReadableStream.prototype[Symbol.asyncIterator] = function () {\n"
-"    var rd = this.getReader();\n"
-     /* return() cancels AND releases -- spec's CreateReadableStreamAsyncIterator
-        returnSteps do both (ReadableStreamReaderGenericCancel then
-        ReadableStreamReaderGenericRelease), synchronously one after the
-        other, not waiting for the cancel promise to settle. Before
-        reader.cancel() stopped auto-releasing (see cancel()'s own comment
-        above), this line got the release for free as cancel()'s side effect;
-        now that cancel() no longer does that, a `for await` loop that
-        `break`s would otherwise leave the stream locked forever. */
-"    return { next: function () { return rd.read(); },\n"
-"             'return': function () { rd.cancel(); rd.releaseLock(); return Promise.resolve({ done: true }); },\n"
-"             '@@asyncIterator': function () { return this; } };\n"
-"  };\n"
-"}\n"
-"G.WritableStream = function WritableStream(sink) { this._sink = sink || {}; this._locked = false; };\n"
-"G.WritableStream.prototype = {\n"
-"  constructor: G.WritableStream,\n"
-"  get locked() { return this._locked; },\n"
-"  getWriter: function () {\n"
-"    var s = this; s._locked = true;\n"
-"    return {\n"
-"      write: function (c) { return Promise.resolve(s._sink.write ? s._sink.write(c) : undefined); },\n"
-"      close: function () { return Promise.resolve(s._sink.close ? s._sink.close() : undefined); },\n"
-"      abort: function (e) { return Promise.resolve(s._sink.abort ? s._sink.abort(e) : undefined); },\n"
-"      releaseLock: function () { s._locked = false; },\n"
-"      ready: Promise.resolve(), closed: Promise.resolve()\n"
-"    };\n"
-"  }\n"
-"};\n"
-"G.TransformStream = function TransformStream(t) {\n"
-"  t = t || {};\n"
-"  var rc = null;\n"
-"  this.readable = new G.ReadableStream({ start: function (c) { rc = c; } });\n"
-"  var tc = { enqueue: function (c) { rc.enqueue(c); },\n"
-"             terminate: function () { rc.close(); },\n"
-"             error: function (e) { rc.error(e); } };\n"
-"  this.writable = new G.WritableStream({\n"
-"    write: function (chunk) { return Promise.resolve(t.transform ? t.transform(chunk, tc) : tc.enqueue(chunk)); },\n"
-"    close: function () { return Promise.resolve(t.flush ? t.flush(tc) : undefined).then(function () { rc.close(); }); },\n"
-"    abort: function (e) { rc.error(e); }\n"
-"  });\n"
-"  if (typeof t.start === 'function') t.start(tc);\n"
-"};\n"
+/* Streams are installed once by js/streams/core.c. Queue state, locks and
+ * byte accounting are private service hooks shared by page and Worker Fetch;
+ * extending those interfaces no longer grows this textual prelude. */
 
 /* ---- bytes <-> text: TextEncoder / TextDecoder ----
  * Four hundred lines of Encoding Standard, in its own file. The thirty that
@@ -474,6 +242,7 @@
  * see the header of js_encoding_prelude.inc for what that cost and for what
  * is still not implemented. */
 #include "../text/encoding_prelude.inc"
+"__streams.installText(G.TextEncoder, G.TextDecoder);\n"
 
 /* ---- document.fonts ----
  * Ranked second in the corpus by files killed (182), behind only `CSS`, and
@@ -495,49 +264,14 @@
 /* ---- FormData ----
  * Beside Blob/File because a FormData entry IS one (append() converts a Blob
  * into a File), and because extractBody below encodes it. */
-#include "formdata_prelude.inc"
+/* Correction 2026-09-30: the old constructor ignored its form argument.
+ * Native snapshots now share the successful-control rules with navigation. */
+"var formdataAPI = __formdata(blobAPI);\n"
 
-/* ---- AbortController ----
- * A real cancellation now that the socket ABI has a close: abort() shuts the
- * connection, it does not merely stop looking at what arrives. */
-   /* A real DOMException, not a plain Error wearing a `.name` property that
-      only LOOKS like one. `e instanceof DOMException` is the guard every
-      abort-aware fetch wrapper writes (`catch (e) { if (e instanceof
-      DOMException && e.name === 'AbortError') return; throw e; }`), and a
-      plain Error fails it, so a deliberate cancellation rethrows as an
-      uncaught error. `G.DOMException` is installed by js_platform.c, which
-      this file's OWN comment above js_webapi_install (search "Layering,
-      load-bearing") says runs AFTER js_webapi_install -- but that only
-      matters for code that runs at INSTALL time; abortError() is a function
-      body, not evaluated until a page actually calls .abort(), by which
-      point every install is long done. `|| TypeError` is the same
-      already-fallen-back-to-here shape as URL.createObjectURL's quota
-      errors above, for the pathological case of a fetch that aborts before
-      install finished. */
-/* Correction 2026-09-10: the fallback above renamed a cancellation to
- * TypeError: Error constructors ignore the second DOMException name argument.
- * The WebAPI-only stream gate exposed this on all three abort boundaries.
- * Use one constructor policy; a real DOMException is still used when present. */
-"function abortError() { return mkError('AbortError', 'The operation was aborted.'); }\n"
-"G.AbortSignal = function AbortSignal() { this.aborted = false; this.reason = undefined;\n"
-"  this.onabort = null; this._l = []; };\n"
-"G.AbortSignal.prototype = {\n"
-"  constructor: G.AbortSignal,\n"
-"  addEventListener: function (t, f) { if (t === 'abort' && typeof f === 'function') this._l.push(f); },\n"
-"  removeEventListener: function (t, f) { var i = this._l.indexOf(f); if (i >= 0) this._l.splice(i, 1); },\n"
-"  throwIfAborted: function () { if (this.aborted) throw this.reason; },\n"
-"  dispatchEvent: function () { return true; }\n"
-"};\n"
-"G.AbortController = function AbortController() { this.signal = new G.AbortSignal(); };\n"
-"G.AbortController.prototype.abort = function (reason) {\n"
-"  var s = this.signal;\n"
-"  if (s.aborted) return;\n"
-"  s.aborted = true;\n"
-"  s.reason = reason !== undefined ? reason : abortError();\n"
-"  var e = { type: 'abort', target: s };\n"
-"  if (typeof s.onabort === 'function') s.onabort(e);\n"
-"  s._l.slice().forEach(function (f) { f.call(s, e); });\n"
-"};\n"
+/* Cancellation is installed once per realm by js/net/abort.c. Fetch captures
+ * its private algorithms; dispatchEvent(new Event('abort')) is only an event,
+ * and must never close a socket or choose an abort reason. */
+"function abortError() { return __abort.error('AbortError', 'The operation was aborted.'); }\n"
 
 /* ---- the Body mixin, and extractBody ----
  * Shared between Response and Request (N2): before this, Response had
@@ -607,7 +341,7 @@
       directly (never through the public name, which has no setter). */
 "function installBody(proto) {\n"
 "  Object.defineProperty(proto, 'bodyUsed', {\n"
-"    get: function () { return !!this._bodyUsed; }, enumerable: true, configurable: true });\n"
+"    get: function () { return !!this._bodyUsed || !!(this.body && __streams.disturbed(this.body)); }, enumerable: true, configurable: true });\n"
    /* bodyUsed's real definition (fetch #dom-body-bodyused) is "this's body is
       non-null AND its stream is disturbed" -- NOT "a consuming method was
       called". A bodyless Request/Response (no body: init member at all) can
@@ -618,17 +352,18 @@
       request-consume-empty.any.js is built to catch: repeated `assert_false
       (request.bodyUsed)` after consuming a request that had no body. */
 "  proto._drain = function () {\n"
-"    if (this._bodyUsed) return Promise.reject(new TypeError('body already read'));\n"
+"    if (this.bodyUsed) return Promise.reject(new TypeError('body already read'));\n"
 "    var b = this.body;\n"
 "    if (!b) return Promise.resolve([]);\n"
+"    if (b.locked) return Promise.reject(new TypeError('body stream is locked'));\n"
 "    this._bodyUsed = true;\n"
 "    var rd = b.getReader(), parts = [];\n"
 "    return new Promise(function (res, rej) {\n"
 "      (function loop() {\n"
 "        rd.read().then(function (r) {\n"
-"          if (r.done) { res(parts); return; }\n"
+"          if (r.done) { rd.releaseLock(); res(parts); return; }\n"
 "          parts.push(r.value); loop();\n"
-"        }, rej);\n"
+"        }, function (e) { rd.releaseLock(); rej(e); });\n"
 "      })();\n"
 "    });\n"
 "  };\n"
@@ -736,7 +471,7 @@
 #ifndef WEBAPI_FETCH_BODY_AB_ONLY
    /* A Blob's bytes were snapshotted when it was built; its type was
       normalized then too, and '' means "no opinion". */
-"  if (v instanceof G.Blob) return { bytes: v._b ? v._b.slice() : new Uint8Array(0), type: v.type || null, text: false };\n"
+"  if (blobAPI.is(v)) return { bytes: blobAPI.bytes(v).slice(), type: blobAPI.type(v) || null, text: false };\n"
    /* EVERY ArrayBufferView -- all TypedArrays and DataView -- is its own
       window [byteOffset, byteOffset+byteLength) onto a buffer that may be far
       larger. The element type is irrelevant: these bytes, copied now. */
@@ -753,7 +488,7 @@
 #endif
 "  if (v instanceof ArrayBuffer) return { bytes: bufferCopy(v, 0, v.byteLength), type: null, text: false };\n"
 #ifndef WEBAPI_FETCH_BODY_AB_ONLY
-"  if (G.FormData && v instanceof G.FormData) return multipartEncode(v);\n"
+"  if (formdataAPI.is(v)) return multipartEncode(v);\n"
 #endif
 "  if (G.URLSearchParams && v instanceof G.URLSearchParams)\n"
 "    return { bytes: bodyStringBytes(v.toString()), type: 'application/x-www-form-urlencoded;charset=UTF-8', text: false };\n"
@@ -787,15 +522,15 @@
 "  var boundary = mpBoundary(), chunks = [], total = 0, i;\n"
 "  function put(u8) { chunks.push(u8); total += u8.length; }\n"
 "  function str(s) { put(bodyStringBytes(s)); }\n"
-"  var list = fd._e || [];\n"
+"  var list = formdataAPI.entries(fd);\n"
 "  for (i = 0; i < list.length; i++) {\n"
 "    var name = mpEscape(mpNormNL(String(list[i][0]))), val = list[i][1];\n"
-"    if (val instanceof G.Blob) {\n"
-"      var fname = val.name !== undefined ? String(val.name) : 'blob';\n"
+"    if (blobAPI.is(val)) {\n"
+"      var fname = blobAPI.isFile(val) ? blobAPI.name(val) : 'blob';\n"
 "      str('--' + boundary + '\\r\\nContent-Disposition: form-data; name=\"' + name +\n"
 "          '\"; filename=\"' + mpEscape(fname) + '\"\\r\\nContent-Type: ' +\n"
-"          (val.type || 'application/octet-stream') + '\\r\\n\\r\\n');\n"
-"      put(val._b || new Uint8Array(0));\n"
+"          (blobAPI.type(val) || 'application/octet-stream') + '\\r\\n\\r\\n');\n"
+"      put(blobAPI.bytes(val));\n"
 "      str('\\r\\n');\n"
 "    } else {\n"
 "      str('--' + boundary + '\\r\\nContent-Disposition: form-data; name=\"' + name + '\"\\r\\n\\r\\n' +\n"
@@ -841,6 +576,7 @@
  */
 "var responseToken = {}, ResponseCtor;\n"
 "G.Response = ResponseCtor = function Response(body, init) {\n"
+"  fetchBrands.add(this);\n"
 "  var internal = arguments[2] === responseToken;\n"
 "  init = init || {};\n"
 "  this.status = init.status === undefined ? 200 : (init.status | 0);\n"
@@ -900,7 +636,8 @@
 "G.Response.prototype = {\n"
 "  constructor: G.Response,\n"
 "  clone: function () {\n"
-"    if (this.bodyUsed) throw new TypeError('body already read');\n"
+"    if (this._bodyUsed || (this.body && (this.body.locked || __streams.disturbed(this.body))))\n"
+"      throw new TypeError('body is unusable');\n"
 "    var t = this.body ? this.body.tee() : [null, null];\n"
 "    this.body = t[0];\n"
 #if defined(JS_RUNTIME_DIAGNOSTICS) && !defined(WEBAPI_FETCH_WORKER_PRELUDE)
@@ -1162,12 +899,20 @@
       without one. Put it back at the FRONT -- it was next -- and wait. */
 "  if (!st || !st.p) { fqQ.unshift(e); fqRearm(); return; }\n"
 "  e.started = true;\n"
+"  e.handle = st.h;\n"
+"  fqAborts.set(st.h, e.unfollow);\n"
 "  fqLive++;\n"
-"  if (e.sig && typeof e.sig.addEventListener === 'function')\n"
-"    e.sig.addEventListener('abort', function () { __fetchAbort(st.h); });\n"
-"  if (e.sig && e.sig.aborted) __fetchAbort(st.h);\n"
 "  var done = function () { fqLive--; fqDrain(); };\n"
-"  st.p.then(function (v) { done(); e.res(v); }, function (x) { done(); e.rej(x); });\n"
+"  st.p.then(function (v) { if (!v.body) fqCleanup(st.h); done(); e.res(v); },\n"
+"    function (x) { fqCleanup(st.h); done(); e.rej(x); });\n"
+"}\n"
+/* Keep the algorithm through body completion, not just through headers: an
+ * abort after fetch() resolves must error its reader too. Remove it on all
+ * completion paths so a long-lived controller does not retain every download. */
+"var fqAborts = new Map();\n"
+"function fqCleanup(handle) {\n"
+"  var unfollow = fqAborts.get(handle); fqAborts.delete(handle);\n"
+"  if (unfollow) unfollow();\n"
 "}\n"
 "function fqDrain() {\n"
 "  while (fqQ.length && fqCanStart()) {\n"
@@ -1184,15 +929,13 @@
 "  return new Promise(function (res, rej) {\n"
 "    var e = { url: url, method: method, pairs: pairs, body: body, opts: opts,\n"
 "              sig: sig, res: res, rej: rej, cancelled: false };\n"
-     /* The abort listener is attached whether or not the request starts
-        immediately: a queued entry that is aborted must reject now and never
-        dial, and one that started has its handle aborted in fqStart. */
-"    if (sig && typeof sig.addEventListener === 'function')\n"
-"      sig.addEventListener('abort', function () {\n"
-"        if (e.cancelled || e.started) return;\n"
+"    e.unfollow = sig ? __abort.follow(sig, function (reason) {\n"
+"        if (e.cancelled) return;\n"
 "        e.cancelled = true;\n"
-"        rej(sig.reason || abortError());\n"
-"      });\n"
+"        if (e.started) __fetchAbort(e.handle, reason);\n"
+"        rej(reason);\n"
+"      }) : null;\n"
+"    if (e.cancelled) return;\n"
 "    if (fqCanStart()) { fqStart(e); return; }\n"
 "    fqQ.push(e);\n"
 "    fqRearm();\n"
@@ -1280,15 +1023,15 @@
       only agrees with an implementation that sets the header unconditionally
       rather than omitting it when the Blob's type is the empty string. */
 "  if (range === null) {\n"
-"    var bh = [['content-type', bo.type || ''], ['content-length', String(bo.size)]];\n"
-"    return Promise.resolve(makeResponse(rsOf(bo._b.slice()), { status: 200, statusText: 'OK',\n"
+"    var bh = [['content-type', blobAPI.type(bo) || ''], ['content-length', String(blobAPI.bytes(bo).length)]];\n"
+"    return Promise.resolve(makeResponse(rsOf(blobAPI.bytes(bo).slice()), { status: 200, statusText: 'OK',\n"
 "      headers: bh, url: url, redirected: false, type: 'basic' }));\n"
 "  }\n"
-"  var r = rangeParse(range, bo.size);\n"
+"  var r = rangeParse(range, blobAPI.bytes(bo).length);\n"
 "  if (!r) return Promise.reject(new TypeError('fetch: malformed Range header'));\n"
-"  var slice = bo._b.slice(r.start, r.end + 1);\n"
-"  var rh = [['content-type', bo.type || ''], ['content-length', String(slice.length)],\n"
-"            ['content-range', 'bytes ' + r.start + '-' + r.end + '/' + bo.size]];\n"
+"  var slice = blobAPI.bytes(bo).slice(r.start, r.end + 1);\n"
+"  var rh = [['content-type', blobAPI.type(bo) || ''], ['content-length', String(slice.length)],\n"
+"            ['content-range', 'bytes ' + r.start + '-' + r.end + '/' + blobAPI.bytes(bo).length]];\n"
 "  return Promise.resolve(makeResponse(rsOf(slice), { status: 206, statusText: 'Partial Content',\n"
 "    headers: rh, url: url, redirected: false, type: 'basic' }));\n"
 "}\n"
@@ -1315,18 +1058,26 @@
 "    return bodyInitBytes(init.body);\n"
 "  }\n"
 "  if (!hadInputBody) return null;\n"
-"  if (req._bodyUsed || (req.body && req.body.locked))\n"
+"  if (req._bodyUsed || (req.body && (req.body.locked || __streams.disturbed(req.body))))\n"
 "    throw new TypeError('fetch: the Request body has already been used');\n"
 "  if (!req._bodySrc) throw streamBodyError();\n"
 "  req._bodyUsed = true;\n"
 "  return { bytes: req._bodySrc, type: null, text: false };\n"
 "}\n"
 "G.fetch = function fetch(input, init) {\n"
+"  try {\n"
 "  init = init || {};\n"
 "  var url = (input && typeof input === 'object' && input.url) ? input.url : String(input);\n"
 "  var method = String(init.method || (input && input.method) || 'GET').toUpperCase();\n"
 "  var extracted;\n"
 "  try { extracted = fetchBody(input, init, method); } catch (e) { return Promise.reject(e); }\n"
+/* Request conversion and the initial abort check precede every URL scheme.
+ * The old placement after data:/blob: let those two return success for an
+ * already-aborted operation. A malformed signal rejects the Fetch promise;
+ * it must not turn fetch() into a synchronous exception. */
+"  var sig = init.signal !== undefined ? init.signal : (input instanceof G.Request ? input.signal : null);\n"
+"  if (sig != null) { var signalState = __abort.check(sig);\n"
+"    if (signalState.aborted) return Promise.reject(signalState.reason); }\n"
 "  if (url.slice(0, 5).toLowerCase() === 'data:') {\n"
 "    var dr = dataURL(url);\n"
 "    return dr ? Promise.resolve(dr)\n"
@@ -1346,10 +1097,8 @@
 "  var body = extracted ? bytesAB(extracted.bytes) : null;\n"
 "  var pairs = []; hs.forEach(function (v, k) { pairs.push([k, v]); });\n"
 "  var opts = { mode: init.mode, credentials: init.credentials };\n"
-"  var sig = init.signal || (input && input.signal);\n"
-"  if (sig && typeof sig === 'object' && sig.aborted)\n"
-"    return Promise.reject(sig.reason || abortError());\n"
 "  return fqEnqueue(url, method, pairs, body, opts, sig);\n"
+"  } catch (e) { return Promise.reject(e); }\n"
 "};\n"
 /* ---- Request ----
  * Used to be a five-line object literal with no prototype at all -- Request
@@ -1360,6 +1109,7 @@
  * the four throws the spec requires (forbidden method; a body on GET/HEAD; a
  * ReadableStream body without duplex:'half'; a blocked port, N6). */
 "G.Request = function Request(input, init) {\n"
+"  fetchBrands.add(this);\n"
 "  init = init || {};\n"
 "  var src = (input && typeof input === 'object' && input instanceof G.Request) ? input : null;\n"
 "  if (src && src.bodyUsed) throw new TypeError('Request: input has already been used');\n"
@@ -1382,7 +1132,11 @@
 "  this._destination = '';\n"
 "  this._isReloadNavigation = false;\n"
 "  this._isHistoryNavigation = false;\n"
-"  this.signal = init.signal !== undefined ? init.signal : (src ? src.signal : ((input && input.signal) || null));\n"
+/* Every Request has a distinct dependent signal, including the empty-source
+ * case. Reusing the caller's object gave clone() the same identity and left
+ * default requests with null, breaking wrappers that subscribe to .signal. */
+"  var parentSignal = init.signal !== undefined ? init.signal : (src ? src.signal : null);\n"
+"  this._signal = __abort.dependent(parentSignal);\n"
 "  this._bodyUsed = false;\n"
 "  this._duplex = init.duplex !== undefined ? init.duplex : (src ? src._duplex : undefined);\n"
    /* Steps 37-45. init.body counts only when present AND non-null; a null
@@ -1413,8 +1167,10 @@
 "G.Request.prototype = {\n"
 "  constructor: G.Request,\n"
 "  clone: function () {\n"
-"    if (this.bodyUsed) throw new TypeError('body already read');\n"
+"    if (this._bodyUsed || (this.body && (this.body.locked || __streams.disturbed(this.body))))\n"
+"      throw new TypeError('body is unusable');\n"
 "    var r = Object.create(G.Request.prototype);\n"
+"    fetchBrands.add(r);\n"
 "    if (this.body) { var t = this.body.tee(); this.body = t[0]; r.body = t[1]; } else r.body = null;\n"
 "    r._bodySrc = this._bodySrc;\n"
 "    r._url = this._url; r._method = this._method;\n"
@@ -1424,7 +1180,7 @@
 "    r._referrer = this._referrer; r._referrerPolicy = this._referrerPolicy; r._integrity = this._integrity;\n"
 "    r.keepalive = this.keepalive; r._destination = this._destination;\n"
 "    r._isReloadNavigation = this._isReloadNavigation; r._isHistoryNavigation = this._isHistoryNavigation;\n"
-"    r.signal = this.signal;\n"
+"    r._signal = __abort.dependent(this._signal);\n"
 "    return r;\n"
 "  }\n"
 "};\n"
@@ -1443,6 +1199,7 @@
 "  method:             { get: roGet('_method'), enumerable: true, configurable: true },\n"
 "  url:                { get: roGet('_url'), enumerable: true, configurable: true },\n"
 "  headers:            { get: roGet('_headers'), enumerable: true, configurable: true },\n"
+"  signal:             { get: roGet('_signal'), enumerable: true, configurable: true },\n"
 "  destination:        { get: roGet('_destination'), enumerable: true, configurable: true },\n"
 "  referrer:           { get: roGet('_referrer'), enumerable: true, configurable: true },\n"
 "  referrerPolicy:     { get: roGet('_referrerPolicy'), enumerable: true, configurable: true },\n"

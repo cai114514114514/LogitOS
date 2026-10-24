@@ -84,7 +84,7 @@ static inline int fc__tag(const char *t, const char *lit)
  * of an invisible one. */
 static inline int fc_kind(const struct node *n)
 {
-    if (!n || n->type != N_ELEM) return FC_NONE;
+    if (!n || n->type != N_ELEM || n->ns != NS_HTML) return FC_NONE;
     const char *t = n->tag;
     if (fc__tag(t, "textarea")) return FC_TEXTAREA;
     if (fc__tag(t, "select"))   return FC_SELECT;
@@ -168,6 +168,15 @@ void fc_reset(void);
 /* The control's current value. Never NULL; *len is set. For a <select> this is
  * the selected option's value. */
 const char *fc_value(struct node *n, int *len);
+/* The editor retains incomplete number text ("-", "1e") while the API value
+ * is empty. Painting/caret operations use this door; submission uses fc_value. */
+const char *fc_edit_value(struct node *n, int *len);
+int fc_user_edited(struct node *n);
+int fc_bad_input(struct node *n);
+/* Custom errors survive form.reset(), and share the control's serial-checked
+ * storage rather than introducing an independently reset second table. */
+int fc_set_custom_validity(struct node *n, const char *message, int len);
+const char *fc_custom_validity(struct node *n, int *len);
 /* Replace it. `len` < 0 means strlen. Returns 1 on success (0 = out of memory).
  * Sets the dirty-value flag, so later changes to the `value` ATTRIBUTE stop
  * being reflected -- which is the spec's rule and also what stops a repaint
@@ -219,8 +228,9 @@ int fc_selection_direction(struct node *n);
 int  fc_disabled(struct node *n);
 int  fc_readonly(struct node *n);
 
-/* The <form> this control belongs to: the `form` attribute's target if it
- * names one, else the nearest <form> ancestor. NULL for neither. */
+/* Resolve ownership in the control's ordinary tree. A present `form` attribute
+ * on a connected control overrides ancestry even if empty/missing/non-form;
+ * detached controls use their nearest ancestor form. */
 struct node *fc_form_of(struct node *n);
 /* The <label>'s labelled control: `for` by id, else the first control inside
  * the label. Clicking a label focuses (and for a checkbox, toggles) it, which
@@ -266,6 +276,13 @@ int  fc_mark_focus(struct node *n);
 typedef int (*fc_submit_fn)(struct node *form, struct node *submitter, int fire_event);
 void fc_set_submit(fc_submit_fn fn);
 int  fc_submit(struct node *form, struct node *submitter, int fire_event);
+/* Validation and submission events run before the navigation callback. The
+ * callback receives fire_event=0 so it must not dispatch submit a second time.
+ * A richer dispatcher supplies SubmitEvent.submitter; the base event seam is
+ * the no-runtime fallback. */
+typedef int (*fc_submit_event_fn)(struct node *form, struct node *submitter);
+void fc_set_submit_event(fc_submit_event_fn fn);
+int fc_implicit_submit(struct node *control);
 
 /* Build `application/x-www-form-urlencoded` for `form`, with `submitter` (the
  * button that was activated, may be NULL) contributing its own name/value.

@@ -47,7 +47,7 @@ URLELEM_ROOT ?= build/wpt
 # link and not a special case -- which is itself worth having one target prove.
 URLELEM_SRC := tests/unit/urlelem_test.c \
                c/apps/gui/browser/js/runtime/page.c c/apps/gui/browser/js/dom/dom.c \
-               c/apps/gui/browser/js/runtime/webapi.c c/apps/gui/browser/js/runtime/platform.c \
+               $(BROWSER_WEBAPI_SRC) c/apps/gui/browser/js/runtime/platform.c \
                c/apps/gui/browser/js/dom/select.c c/apps/gui/browser/js/text/intl.c \
                c/apps/gui/browser/js/runtime/module.c c/apps/gui/browser/js/dom/tokenlist.c \
                c/apps/gui/browser/js/dom/characterdata.c \

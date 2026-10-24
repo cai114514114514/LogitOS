@@ -90,7 +90,7 @@ static css_error parsePseudo(css_language *c,
  * stylesheet.h and the call site inside parsePseudo(). */
 static css_error parseIsWhereList(css_language *c,
 		const parserutils_vector *vector, int32_t *ctx,
-		bool is_where, css_selector_altlist **result);
+		bool is_where, bool forgiving, css_selector_altlist **result);
 static css_error parseIsWhereCompound(css_language *c,
 		const parserutils_vector *vector, int32_t *ctx,
 		css_selector **result);
@@ -507,6 +507,73 @@ extern int logit_css_engine_ignores_name(const char *name, int len) LOGIT_WEAK;
 LOGIT_WEAK_STUB(logit_css_engine_ignores_name);
 extern int logit_css_generated_supports(const uint32_t *code, uint32_t used) LOGIT_WEAK;
 LOGIT_WEAK_STUB(logit_css_generated_supports);
+extern int logit_css_extra_supports_value(const char *,int,const char *,int) LOGIT_WEAK;
+LOGIT_WEAK_STUB(logit_css_extra_supports_value);
+extern int logit_css_background_attachment(const char *,int) LOGIT_WEAK;
+LOGIT_WEAK_STUB(logit_css_background_attachment);
+
+/* Reject unsupported top-level attachment keywords before the shorthand can
+ * publish native color bytecode. URI/string tokens are atomic and functions
+ * are skipped: url("fixed") is an ordinary image, not a fixed background.
+ * A LibCSS-only consumer without the painting owner keeps its native grammar.
+ * The owner supplies the decision so two keyword tables cannot drift. */
+static bool background_attachment_ok(const parserutils_vector *vector,int32_t ctx)
+{
+    if(!LOGIT_HAVE(logit_css_background_attachment))return true;
+    int depth=0;const css_token *token;
+    while((token=parserutils_vector_iterate(vector,&ctx))!=NULL){
+        if(token->type==CSS_TOKEN_FUNCTION||tokenIsChar(token,'('))depth++;
+        else if(tokenIsChar(token,')'))depth--;
+        else if(!depth&&token->type==CSS_TOKEN_IDENT&&
+            !logit_css_background_attachment(lwc_string_data(token->idata),(int)lwc_string_length(token->idata)))return false;
+    }
+    return true;
+}
+
+/* A token's data has lost HASH/FUNCTION/URI punctuation. Reconstruct only a
+ * producer-owned query, without advancing the parser's context. Quoted strings
+ * and URLs are escaped again: concatenating their decoded contents could turn
+ * a harmless ')' or ';' into syntax. Oversized queries refuse rather than test
+ * a truncated prefix; normal declarations still use LibCSS's native handler. */
+static int supports_extra_value(const css_token *prop,
+        const parserutils_vector *vector,int32_t ctx)
+{
+    const char *name=lwc_string_data(prop->idata);
+    int n=(int)lwc_string_length(prop->idata);
+    if(!LOGIT_HAVE(logit_css_extra_supports_value) ||
+       logit_css_extra_supports_value(name,n,NULL,0)<0)return -1;
+    char value[8192];size_t used=0;int depth=0;
+    const css_token *t;
+    while((t=parserutils_vector_iterate(vector,&ctx))!=NULL) {
+        if(tokenIsChar(t,')') && !depth)break;
+        if(t->type==CSS_TOKEN_FUNCTION||tokenIsChar(t,'('))depth++;
+        else if(tokenIsChar(t,')'))depth--;
+        const char *data=t->idata?lwc_string_data(t->idata):(const char *)t->data.data;
+        size_t len=t->idata?lwc_string_length(t->idata):t->data.len;
+        const char *pre="",*post="";bool quoted=false;
+        switch(t->type) {
+        case CSS_TOKEN_S:case CSS_TOKEN_COMMENT:data=" ";len=1;break;
+        case CSS_TOKEN_HASH:pre="#";break;
+        case CSS_TOKEN_FUNCTION:post="(";break;
+        case CSS_TOKEN_PERCENTAGE:post="%";break;
+        case CSS_TOKEN_STRING:pre="\"";post="\"";quoted=true;break;
+        case CSS_TOKEN_URI:pre="url(\"";post="\")";quoted=true;break;
+        default:break;
+        }
+        if(!data)return 0;
+        for(size_t j=0;pre[j];j++){if(used==sizeof value-1)return 0;value[used++]=pre[j];}
+        for(size_t j=0;j<len;j++) {
+            unsigned char c=data[j];
+            if(quoted&&(c=='\\'||c=='"')){if(used==sizeof value-1)return 0;value[used++]='\\';}
+            if(quoted&&(c=='\n'||c=='\r'||c=='\f'))return 0;
+            if(used==sizeof value-1)return 0;value[used++]=(char)c;
+        }
+        for(size_t j=0;post[j];j++){if(used==sizeof value-1)return 0;value[used++]=post[j];}
+    }
+    if(!t||depth)return 0;
+    value[used]=0;
+    return logit_css_extra_supports_value(name,n,value,(int)used);
+}
 
 /**
  * Is `( <property> : <value> )` something this engine can actually do?
@@ -586,6 +653,9 @@ static bool supports_decl(css_language *c, const parserutils_vector *vector,
 		return false;
 	}
 	consumeWhitespace(vector, ctx);
+
+	int extra=supports_extra_value(prop,vector,*ctx);
+	if(extra>=0){skip_to_close(vector,ctx);return extra!=0;}
 
 	for (i = FIRST_PROP; i <= LAST_PROP; i++) {
 		if (lwc_string_caseless_isequal(prop->idata, c->strings[i],
@@ -2015,7 +2085,7 @@ css_error parsePseudo(css_language *c, const parserutils_vector *vector,
 			 * everything". See language.h and the
 			 * lut_idx == N_ELEMENTS(pseudo_lut) branch above. */
 			c->in_not_depth++;
-			error = parseIsWhereList(c, vector, ctx, false,
+			error = parseIsWhereList(c, vector, ctx, false, false,
 					&altlist);
 			c->in_not_depth--;
 			if (error != CSS_OK)
@@ -2084,7 +2154,7 @@ css_error parsePseudo(css_language *c, const parserutils_vector *vector,
 			css_selector_altlist *altlist = NULL;
 
 			error = parseIsWhereList(c, vector, ctx,
-					fun_type == WHERE, &altlist);
+					fun_type == WHERE, true, &altlist);
 			if (error != CSS_OK)
 				return error;
 
@@ -2277,115 +2347,140 @@ css_error parseIsWhereCompound(css_language *c,
  *	 the caller (parsePseudo) consumes it exactly as it does for every
  *	 other function pseudo-class.
  */
-css_error parseIsWhereList(css_language *c,
-		const parserutils_vector *vector, int32_t *ctx,
-		bool is_where, css_selector_altlist **result)
+/* Original scope: only compound alternatives were accepted, and combinators
+ * were explicitly refused. CSS nesting needs :is(parent selector list), where
+ * parents can be complex; naive list expansion gives the MATCHING arm's
+ * specificity instead of the required maximum across all valid alternatives.
+ * Reuse ordinary compound parsing and selector_combine for the whole chain.
+ * 128 compounds bound recursive alternative matching without invoking a
+ * stylesheet cascade from inside selector matching. */
+static css_error parseIsWhereComplex(css_language *c,
+        const parserutils_vector *vector, int32_t *ctx, css_selector **result)
 {
-	css_selector_altlist *altlist;
-	css_selector **alts = NULL;
-	uint32_t n = 0, alloc = 0;
-	uint32_t max_specificity = 0;
-	css_error error;
+    css_selector *selector = NULL;
+    css_error error = parseIsWhereCompound(c, vector, ctx, &selector);
+    unsigned compounds = 1;
+    if (error != CSS_OK) return error;
+    for (;;) {
+        const css_token *token = parserutils_vector_peek(vector, *ctx);
+        css_combinator comb;
+        css_selector *other = NULL;
+        if (token == NULL || tokenIsChar(token, ',') || tokenIsChar(token, ')')) break;
+        error = parseCombinator(c, vector, ctx, &comb);
+        if (error != CSS_OK) goto failed;
+        token = parserutils_vector_peek(vector, *ctx);
+        if (comb == CSS_COMBINATOR_ANCESTOR && token != NULL &&
+            (tokenIsChar(token, ',') || tokenIsChar(token, ')'))) break;
+        if (++compounds > 128) { error = CSS_INVALID; goto failed; }
+        error = parseIsWhereCompound(c, vector, ctx, &other);
+        if (error != CSS_OK) goto failed;
+        error = css__stylesheet_selector_combine(c->sheet, comb, selector, other);
+        if (error != CSS_OK) {
+            css__stylesheet_selector_destroy(c->sheet, other);
+            goto failed;
+        }
+        selector = other;
+    }
+    /* Pseudo-elements are not legal alternatives for these logical pseudos.
+     * selector_combine already rejects a pseudo on a LEFT compound, but the
+     * rightmost one must be rejected here too. Otherwise boolean matching
+     * discards the pseudo result and :is(.card::before) matches .card itself.
+     * :is/:where discard this invalid arm; strict :not rejects the whole list. */
+    for (const css_selector *part = selector; part; part = part->combinator) {
+        const css_selector_detail *detail = &part->data;
+        for (;;) {
+            if (detail->type == CSS_SELECTOR_PSEUDO_ELEMENT) {
+                error = CSS_INVALID;
+                goto failed;
+            }
+            if (!detail->next) break;
+            detail++;
+        }
+    }
+    *result = selector;
+    return CSS_OK;
+failed:
+    css__stylesheet_selector_destroy(c->sheet, selector);
+    return error;
+}
 
-	altlist = malloc(sizeof(*altlist));
-	if (altlist == NULL)
-		return CSS_NOMEM;
+/* A forgiving list discards an invalid arm as a WHOLE token stream. Start
+ * from its beginning: a failed pseudo parser may have advanced past a nested
+ * opening function. Resuming at that failure would mistake its comma or ')' for
+ * this list's delimiter, accidentally accepting a different selector. */
+static void skipIsWhereArm(const parserutils_vector *vector, int32_t *ctx)
+{
+    int depth = 0;
+    const css_token *token;
+    while ((token = parserutils_vector_peek(vector, *ctx)) != NULL) {
+        if (depth == 0 && (tokenIsChar(token, ',') || tokenIsChar(token, ')'))) return;
+        if (token->type == CSS_TOKEN_FUNCTION || tokenIsChar(token, '(') ||
+            tokenIsChar(token, '[')) depth++;
+        else if ((tokenIsChar(token, ')') || tokenIsChar(token, ']')) && depth) depth--;
+        parserutils_vector_iterate(vector, ctx);
+    }
+}
 
-	for (;;) {
-		css_selector *sel = NULL;
-		const css_token *token;
-
-		consumeWhitespace(vector, ctx);
-
-		error = parseIsWhereCompound(c, vector, ctx, &sel);
-		if (error != CSS_OK)
-			goto error_cleanup;
-
-		if (sel->specificity > max_specificity)
-			max_specificity = sel->specificity;
-
-		if (n == alloc) {
-			css_selector **grown;
-			uint32_t new_alloc = alloc ? alloc * 2 : 4;
-
-			grown = realloc(alts, new_alloc * sizeof(*alts));
-			if (grown == NULL) {
-				css__stylesheet_selector_destroy(c->sheet, sel);
-				error = CSS_NOMEM;
-				goto error_cleanup;
-			}
-
-			alts = grown;
-			alloc = new_alloc;
-		}
-		alts[n++] = sel;
-
-		/* parseIsWhereCompound() stops at the first token it does not
-		 * understand as part of a compound selector, WITHOUT
-		 * consuming leading whitespace before it -- so a combinator
-		 * (descendant, '>', '+', '~') is still sitting right here,
-		 * unconsumed, and is exactly what distinguishes "another
-		 * alternative" or "end of the argument" from "a combinator
-		 * we refuse to support inside :is()/:where()". */
-		token = parserutils_vector_peek(vector, *ctx);
-		if (token != NULL && token->type == CSS_TOKEN_S) {
-			/* Whitespace here is either trailing (before ',' or
-			 * ')') or a descendant combinator -- tell them apart
-			 * by peeking past it. */
-			int32_t peek_ctx = *ctx;
-			const css_token *next;
-
-			parserutils_vector_iterate(vector, &peek_ctx);
-			next = parserutils_vector_peek(vector, peek_ctx);
-
-			if (next != NULL && tokenIsChar(next, ',') == false &&
-					tokenIsChar(next, ')') == false) {
-				/* A real combinator: out of scope. */
-				error = CSS_INVALID;
-				goto error_cleanup;
-			}
-
-			*ctx = peek_ctx;
-			token = next;
-		}
-
-		if (token != NULL && tokenIsChar(token, ',')) {
-			parserutils_vector_iterate(vector, ctx);
-			continue;
-		} else if (token != NULL && tokenIsChar(token, ')')) {
-			break;
-		} else if (token != NULL && (tokenIsChar(token, '>') ||
-				tokenIsChar(token, '+') ||
-				tokenIsChar(token, '~'))) {
-			/* Combinator with no preceding whitespace
-			 * (":is(a>b)"): also out of scope. */
-			error = CSS_INVALID;
-			goto error_cleanup;
-		} else {
-			error = CSS_INVALID;
-			goto error_cleanup;
-		}
-	}
-
-	altlist->alts = alts;
-	altlist->n = n;
-	altlist->specificity = is_where ? 0 : max_specificity;
-
-	*result = altlist;
-
-	return CSS_OK;
-
+css_error parseIsWhereList(css_language *c,
+        const parserutils_vector *vector, int32_t *ctx,
+        bool is_where, bool forgiving, css_selector_altlist **result)
+{
+    /* Nested logical pseudos recurse before any selector-chain bound applies.
+     * A 64-level resource ceiling returns NOMEM, never a dropped forgiving
+     * arm: dropping it could make :not(...) become true on a refused input. */
+    if(c->in_not_depth>=64)return CSS_NOMEM;
+    css_selector_altlist *altlist = malloc(sizeof(*altlist));
+    css_selector **alts = NULL;
+    uint32_t n = 0, alloc = 0, max_specificity = 0;
+    css_error error = CSS_INVALID;
+    if (altlist == NULL) return CSS_NOMEM;
+    for (;;) {
+        css_selector *sel = NULL;
+        const css_token *token;
+        int32_t arm_start;
+        consumeWhitespace(vector, ctx);
+        arm_start = *ctx;
+        /* The existing negation guard rejects unknown pseudo names instead
+         * of storing an inert detail. Forgiving lists need that strict arm
+         * validation too: an invalid #id:unknown must not inflate specificity. */
+        c->in_not_depth++;
+        error = parseIsWhereComplex(c, vector, ctx, &sel);
+        c->in_not_depth--;
+        if (error != CSS_OK) {
+            if (!forgiving || error == CSS_NOMEM) goto error_cleanup;
+            *ctx = arm_start;
+            skipIsWhereArm(vector, ctx);
+        } else {
+            if (n == alloc) {
+                uint32_t new_alloc = alloc ? alloc * 2 : 4;
+                css_selector **grown = realloc(alts, new_alloc * sizeof(*alts));
+                if (grown == NULL) {
+                    css__stylesheet_selector_destroy(c->sheet, sel);
+                    error = CSS_NOMEM;
+                    goto error_cleanup;
+                }
+                alts = grown; alloc = new_alloc;
+            }
+            alts[n++] = sel;
+            if (sel->specificity > max_specificity) max_specificity = sel->specificity;
+        }
+        token = parserutils_vector_peek(vector, *ctx);
+        if (token != NULL && tokenIsChar(token, ',')) {
+            parserutils_vector_iterate(vector, ctx);
+            continue;
+        }
+        if (token != NULL && tokenIsChar(token, ')')) break;
+        error = CSS_INVALID;
+        goto error_cleanup;
+    }
+    altlist->alts = alts; altlist->n = n;
+    altlist->specificity = is_where ? 0 : max_specificity;
+    *result = altlist;
+    return CSS_OK;
 error_cleanup:
-	{
-		uint32_t i;
-
-		for (i = 0; i < n; i++)
-			css__stylesheet_selector_destroy(c->sheet, alts[i]);
-	}
-	free(alts);
-	free(altlist);
-
-	return error;
+    for (uint32_t i = 0; i < n; i++) css__stylesheet_selector_destroy(c->sheet, alts[i]);
+    free(alts); free(altlist);
+    return error;
 }
 
 css_error parseSpecific(css_language *c,
@@ -2454,8 +2549,14 @@ css_error parseAppendSpecific(css_language *c,
 	if (error != CSS_OK)
 		return error;
 
-	return css__stylesheet_selector_append_specific(c->sheet, parent,
-			&specific);
+	error = css__stylesheet_selector_append_specific(c->sheet, parent, &specific);
+	/* append_specific takes an altlist only on success. On allocation failure
+	 * the parent cannot release this newly parsed list, so keep exactly one
+	 * ownership handoff; ordinary token-string references retain their old path. */
+	if (error != CSS_OK && specific.value_type == CSS_SELECTOR_DETAIL_VALUE_SELECTOR_LIST &&
+			specific.value.altlist != NULL)
+		css__stylesheet_selector_altlist_destroy(c->sheet, specific.value.altlist);
+	return error;
 }
 
 css_error parseSelectorSpecifics(css_language *c,
@@ -2796,6 +2897,15 @@ css_error parseProperty(css_language *c, const css_token *property,
 	uint8_t flags = 0;
 	css_style *style = NULL;
 	const css_token *token;
+
+	if(LOGIT_HAVE(logit_css_background_attachment)) {
+		bool background=false,attachment=false;
+		lwc_string_caseless_isequal(property->idata,c->strings[BACKGROUND],&background);
+		lwc_string_caseless_isequal(property->idata,c->strings[BACKGROUND_ATTACHMENT],&attachment);
+		if((background||attachment)&&!background_attachment_ok(vector,*ctx)){
+			report_drop(property,CSS_DROP_BAD_VALUE);return CSS_INVALID;
+		}
+	}
 
 	/* Find property index */
 	/** \todo improve on this linear search */

@@ -157,6 +157,9 @@ void browser_paint_text_counts(int *runs, int *chars);
 void browser_paint_shadow_stats(int *inset_blur_skipped, int *blur_tightened);
 void browser_paint_xform_stats(int *xf_unbounded, int *xf_unrotated);
 void browser_paint_rclip_stats(int *applied, int *refused);
+/* Bounded tile/path refusals in the background and per-edge rounded path.
+ * Large ordinary radii are tiled at device resolution, not scaled masks. */
+void browser_paint_box_stats(int *refused);
 
 /* Hit-test a viewport-local point; on a link, copy its href (NUL-terminated)
  * into buf (<= max) and return 1, else 0. */

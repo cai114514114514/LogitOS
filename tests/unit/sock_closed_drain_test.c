@@ -122,6 +122,14 @@ int tcp_connect_start(uint32_t dst, uint16_t port)
     return tcp_connect_start_addr(&a, port);
 }
 
+/* Failed model connections are already pinned until close. Keep this drain
+ * fixture's API surface current; sock_tcb_test.c uses actual tcp.c to test
+ * ownership instead of mistaking this model policy for production evidence. */
+int tcp_connect_owned_addr(const struct tcp_addr *dst, uint16_t port)
+{ return tcp_connect_start_addr(dst, port); }
+int tcp_connect_owned(uint32_t dst, uint16_t port)
+{ return tcp_connect_start(dst, port); }
+
 /* A refused connection keeps its model slot until tcp_close(), which is the
  * conservative half of what c/net/transport/tcp.c does: a RST in SYN_SENT
  * frees the slot there (conn_closed / the ICMP path both clear `used`), but a

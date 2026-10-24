@@ -33,14 +33,15 @@
 #endif
 
 #include "dom/forms.h"               /* form control state + submission */
+#include "dom/validation.h"
+#define JS_ENTRIES_OPTIONAL
+#include "js/dom/entries.h"
 #include "dom/focus.h"               /* the focused element and Tab navigation */
 
 /* js_forms.c's teardown: it holds the page's JSContext for the editing-event
  * dispatcher, and that context dies with the page. Weak because that
  * translation unit is absent from BROWSER_PIPE and from the host loader test,
  * where there is nothing to clean up. */
-void js_forms_cleanup(void) LOGIT_WEAK;
-LOGIT_WEAK_STUB(js_forms_cleanup);
 /* Native clicks do not call HTMLElement.click(). Reuse the same invoker
  * default after cancellation has been checked; otherwise parser-created
  * popover/command buttons work in script and silently do nothing on screen. */
@@ -1599,11 +1600,13 @@ static int image_fetch_ready(const char *src, unsigned char **bytes, int *len)
     free(q->src);q->src=0;
     return ok?0:-1;
 }
+#include "background.c"
+
 static void image_requests_prune(void)
 {
     const struct item *its=layout_items();int count=layout_count();
     for(int q=0;q<IMG_FRAME_BUDGET;q++)if(g_image_requests[q].src){
-        int used=dom_images_wants(g_image_requests[q].src);
+        int used=dom_images_wants(g_image_requests[q].src) || background_images_wants(g_image_requests[q].src);
         for(int i=0;!used&&i<count;i++)if(its[i].type==IT_IMAGE&&its[i].imgsrc&&str_eq(its[i].imgsrc,g_image_requests[q].src)){used=1;break;}
         if(!used){bfetch_release(g_image_requests[q].id);free(g_image_requests[q].src);g_image_requests[q].src=0;}
     }
@@ -1652,6 +1655,7 @@ static int load_late_images(int budget)
             bfetch_cache_put(g_res[i].url, g_res[i].data, g_res[i].len);
     res_reset();
     int got = layout_load_images(budget);
+    got += background_images_load(budget, res_fetch);
     if(got>0)flush_image_geometry();
     set_status(keep);
     return got;
@@ -1663,6 +1667,7 @@ static int load_late_images(int budget)
     image_requests_prune();
     bfetch_pump();
     int got=layout_load_images_fetch(budget,image_fetch_ready);
+    got+=background_images_load(budget-got,image_fetch_ready);
     if(got>0)flush_image_geometry();
     return got;
 #endif
@@ -1972,7 +1977,10 @@ static int settle_frame(void)
      * then. */
     if (g_img_owed) {
         if (load_late_images(IMG_FRAME_BUDGET) > 0) { ph = layout_height(); g_page_width = browser_content_width(g_root, win_w); g_hbar = max_scroll_x() > 0 ? 12 : 0; changed = 1; }
-        g_img_owed = layout_images_pending() > 0;
+        /* Background-only pages have no IT_IMAGE entries. The old scan would
+         * clear owed and immediately cancel the CSS request just queued above.
+         * Both consumers share the bounded cache and keep this pump live. */
+        g_img_owed = layout_images_pending() > 0 || background_images_pending();
         /* A full decoded-image cache explicitly refuses further images.
          * Those requests must be cancelled too, rather than left owning
          * sockets after the pending scan has stopped the pump. */
@@ -2893,11 +2901,7 @@ static void load_once_impl(const char *u, const char *initiator)
     image_requests_reset();
     if(LOGIT_HAVE(passive_frames_reset))passive_frames_reset();
     dom_images_reset(); stylesheet_reset(); pending_scripts_reset(); top_layer_reset(); js_page_close();
-    /* js_forms.c's editing-event dispatcher holds the JS context js_page_close
-     * just freed. Left installed, the next keystroke would call into it. Weak
-     * so a build without js_forms.o (BROWSER_PIPE, the host loader test) still
-     * links -- there is nothing to clean up there. */
-    if (LOGIT_HAVE(js_forms_cleanup)) js_forms_cleanup();
+    /* js_page_close owns forms cleanup BEFORE it frees the JS runtime. */
     /* Focus and every control's state point INTO the document that is about to
      * be freed. dom.c recycles node slots, so a pointer kept across this line
      * would not merely dangle -- it would silently name a DIFFERENT element in
@@ -3390,11 +3394,7 @@ static void tab_dehydrate(void)
      * holds {node, serial} handles into the DOM, so it dies first. */
     image_requests_reset();
     dom_images_reset(); stylesheet_reset(); pending_scripts_reset(); top_layer_reset(); js_page_close();
-    /* js_forms.c's editing-event dispatcher holds the JS context js_page_close
-     * just freed. Left installed, the next keystroke would call into it. Weak
-     * so a build without js_forms.o (BROWSER_PIPE, the host loader test) still
-     * links -- there is nothing to clean up there. */
-    if (LOGIT_HAVE(js_forms_cleanup)) js_forms_cleanup();
+    /* js_page_close owns forms cleanup BEFORE it frees the JS runtime. */
     /* Focus and every control's state point INTO the document that is about to
      * be freed. dom.c recycles node slots, so a pointer kept across this line
      * would not merely dangle -- it would silently name a DIFFERENT element in
@@ -5080,36 +5080,54 @@ static int ce_settle(struct node *host)
  * firing the submit event -- the difference between it and requestSubmit() is
  * exactly that, and a page that calls submit() from inside its own submit
  * handler would otherwise recurse. */
+static void report_form_error(struct node *control, const char *message)
+{
+    /* A visible native status message is the current reporting UI. There is
+     * no validation balloon; reportValidity still uses the real focus model. */
+    set_status(message);
+    focus_set(control);
+}
+
 static int form_submit_ex(struct node *form, struct node *submitter, int fire_event)
 {
+    (void)fire_event;
     if (!form) return 0;
-    /* `submit` fires AT THE FORM, bubbles and is cancelable -- and a page that
-     * cancels it and does its own fetch() is the single most common shape of
-     * form handling on the modern web, so honouring the cancel matters more
-     * than the navigation does. */
-    if (fire_event && !forms_dispatch(form, "submit", 1, 1)) {
-        set_status("submit cancelled by the page");
-        return 0;
-    }
-    int n = fc_encode(form, submitter, g_submit_buf, (int)sizeof g_submit_buf);
+    /* fc_submit has already applied validation and dispatched SubmitEvent.
+     * Repeating either here bypasses the common JS/button/Enter protocol. */
+    uint32_t serial=form->serial;
+    /* The private FormData constructor raises formdata and retains listener
+     * edits. With no JS service, the same native collector supplies entries. */
+    int n=LOGIT_HAVE(js_form_encode)?
+        js_form_encode(js_page_ctx(),form,submitter,g_submit_buf,(int)sizeof g_submit_buf):-2;
+    if (n==-2) n=fc_encode(form,submitter,g_submit_buf,(int)sizeof g_submit_buf);
+    if (form->serial!=serial||!fc_connected(form)) return 0;
     if (n < 0) { set_status("form is too large to submit"); return 0; }
 
     char target[700];
     int o = 0;
-    const char *act = fc_action(form);
-    if (act[0]) {
-        while (act[o] && o < 640) { target[o] = act[o]; o++; }
-    } else {
-        /* No action: this page. The existing query and fragment are dropped,
-         * which is what the spec's "URL record with the query replaced" means
-         * and what a search box on a results page depends on. */
-        const char *page = navigation_base();
-        for (int i = 0; page[i] && page[i] != '?' && page[i] != '#' && o < 640; i++)
-            target[o++] = page[i];
+    const char *act=submitter?dom_attr(submitter,"formaction"):NULL;
+    if (!act) act=fc_action(form);
+    /* GET replaces the action's query. Previously both this copy (640 bytes)
+     * and the query append silently truncated: a large form reached the server
+     * as a different, apparently valid request. Preserve the existing bounded
+     * navigation transport, but refuse an oversized URL before scheduling it. */
+    const char *address=act[0]?act:navigation_base();
+    const char *fragment=strchr(address,'#');
+    while (address[o] && address[o]!='?' && address[o]!='#') {
+        if (o >= (int)sizeof target - 1) {
+            set_status("form URL is too large to submit");return 0;
+        }
+        target[o]=address[o];o++;
     }
     target[o] = 0;
 
-    if (fc_method_post(form)) {
+    const char *method=submitter?dom_attr(submitter,"formmethod"):NULL;
+    if (!method) method=dom_attr(form,"method");
+    if (fc__ieq(method,"dialog")) {
+        set_status("dialog form submission is not wired yet");
+        return 0;
+    }
+    if (fc__ieq(method,"post")) {
         /* Deliberately loud rather than silently wrong. See the comment above:
          * the payload is built and correct, the network path is not this
          * line's file. */
@@ -5121,11 +5139,32 @@ static int form_submit_ex(struct node *form, struct node *submitter, int fire_ev
     int q = 0;
     while (target[q] && target[q] != '?' && target[q] != '#') q++;
     target[q] = 0;
-    if (n > 0 && q < 660) {
+    if (n > 0) {
+#ifdef BROWSER_FORM_GET_TRUNCATE
+        if (q >= (int)sizeof target - 2) return 0;
+#endif
+#ifndef BROWSER_FORM_GET_TRUNCATE
+        if (n > (int)sizeof target - q - 2) {
+            set_status("form URL is too large to submit");return 0;
+        }
+#endif
         target[q++] = '?';
         for (int i = 0; i < n && q < (int)sizeof target - 1; i++) target[q++] = g_submit_buf[i];
     }
     target[q] = 0;
+    /* GET replaces only the query. The original code also discarded the
+     * action fragment; keep it for the committed document URL. The HTTP
+     * transport parser excludes it from the request target on the wire. */
+    if (fragment) {
+        int length=(int)strlen(fragment);
+        if (length >= (int)sizeof target - q) {
+#ifndef BROWSER_FORM_GET_TRUNCATE
+            set_status("form URL is too large to submit");return 0;
+#endif
+        } else {
+            memcpy(target+q,fragment,(size_t)length+1);
+        }
+    }
     printf("[browser] FORM-GET bytes=%d\n", n);
 #ifdef BROWSER_FORM_SUBMIT_SYNC_LOAD
     follow_link(target);
@@ -5150,15 +5189,13 @@ static int form_submit_ex(struct node *form, struct node *submitter, int fire_ev
 }
 
 static int form_submit(struct node *form, struct node *submitter)
-{ return form_submit_ex(form, submitter, 1); }
+{ return fc_submit(form, submitter, 1); }
 
 /* The default form for an implicit submission (Enter in a text field), and the
  * form a submit button belongs to. */
 static int implicit_submit(struct node *ctl)
 {
-    struct node *form = fc_form_of(ctl);
-    if (!form) return 0;
-    return form_submit(form, 0);
+    return fc_implicit_submit(ctl);
 }
 
 static int select_popup_box(struct node *sel, int *px, int *py, int *pw, int *ph2)
@@ -5592,6 +5629,7 @@ void app_main(void)
      * the JS bindings reach it through a pointer rather than the other way
      * round. */
     fc_set_submit(form_submit_ex);
+    fc_set_validation_reporter(report_form_error);
     /* The size is chosen BEFORE the window exists, and the cascade is told
      * about it again afterwards: css_viewport was called above with the
      * placeholder, and @media/vw/vh would otherwise evaluate against a window

@@ -178,6 +178,11 @@ struct gridcfg {
      * (possibly spanning) area is known. Receives the measure callback's ctx;
      * return GRID_INDEFINITE to retain the ordinary auto/stretch behavior. */
     int (*resolve_width)(void *ctx, int item, int area_width);
+    /* Row percentages and min/max constraints wait until tracks are known.
+     * The used border-box width is separate from the area's width: content
+     * measurement uses the former, percentage margins use the latter. */
+    int (*resolve_height)(void *ctx, int item, int area_width, int area_height,
+                          int used_width);
     struct gtemplate cols, rows;      /* grid-template-columns / -rows */
     struct gtracklist auto_cols;      /* grid-auto-columns (cycled) */
     struct gtracklist auto_rows;      /* grid-auto-rows   (cycled) */

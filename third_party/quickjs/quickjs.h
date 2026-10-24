@@ -525,6 +525,9 @@ typedef struct JSClassDef {
 } JSClassDef;
 
 JSClassID JS_NewClassID(JSClassID *pclass_id);
+/* Native branding for embedders. Unlike instanceof/toStringTag this runs no
+ * author code; class numbers stay private to the engine's class registry. */
+JSClassID JS_GetClassID(JSValueConst val);
 int JS_NewClass(JSRuntime *rt, JSClassID class_id, const JSClassDef *class_def);
 int JS_IsRegisteredClass(JSRuntime *rt, JSClassID class_id);
 
@@ -921,11 +924,19 @@ JSValue JS_NewArrayBuffer(JSContext *ctx, uint8_t *buf, size_t len,
                           JS_BOOL is_shared);
 JSValue JS_NewArrayBufferCopy(JSContext *ctx, const uint8_t *buf, size_t len);
 void JS_DetachArrayBuffer(JSContext *ctx, JSValueConst obj);
+/* A zero-length buffer can have a NULL data pointer without being detached.
+ * Test the internal slot, never infer detachment from JS_GetArrayBuffer(). */
+JS_BOOL JS_IsDetachedArrayBuffer(JSValueConst obj);
 uint8_t *JS_GetArrayBuffer(JSContext *ctx, size_t *psize, JSValueConst obj);
 JSValue JS_GetTypedArrayBuffer(JSContext *ctx, JSValueConst obj,
                                size_t *pbyte_offset,
                                size_t *pbyte_length,
                                size_t *pbytes_per_element);
+/* Same internal-slot read for either a TypedArray or a DataView. DataView's
+ * element width is one; no public buffer/offset/length getter is consulted. */
+JSValue JS_GetArrayBufferView(JSContext *ctx, JSValueConst obj,
+                             size_t *pbyte_offset, size_t *pbyte_length,
+                             size_t *pbytes_per_element);
 typedef struct {
     void *(*sab_alloc)(void *opaque, size_t size);
     void (*sab_free)(void *opaque, void *ptr);

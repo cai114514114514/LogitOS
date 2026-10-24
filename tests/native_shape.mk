@@ -28,11 +28,23 @@
 #                             shim compiles with `new Function` AT INSTALL.
 #                             Every [eval] check must fail and nothing else.
 #   test-native-shape-negctl  native_shape.c with -DNATIVE_SHAPE_NEGCTL_SKIP:
-#                             the pass does nothing. Every [native] check must
-#                             fail, and every [engine]/[page]/[works] check --
+#                             the pass does nothing. Every check of that pass
+#                             [native] must fail; [idl]/[engine]/[page]/[works] --
 #                             the platform still working after the pass
 #                             deleted hundreds of `prototype`s, the page's own
 #                             functions untouched -- must still pass.
+#
+# Original claim: "Every [native] check must fail" included readyState and
+# sendBeacon. Correction (2026-09-30), measured by the actual skip binary:
+# 48 checks, 25 of 27 [native] failed, zero other failures. The earlier IDL
+# pass already gives those two computed getters/methods their name and lack
+# of prototype, and 'use strip' supplies their native spelling. Their checks
+# are retained as [idl], so this control now observes exactly the 25 checks
+# dependent on the native pass, with both earlier-producer checks still green.
+# A signal can leave the expected FAIL rows printed before aborting cleanup.
+# Accept only the runner's normal exit 1 and its completed summary, matched
+# against every observed row; an abort or unrelated JS exception is not the
+# requested control even if every [native] label has already gone red.
 #
 # THE CONVENTION THE ENGINE HALF SIGNS UP FOR. A closure of platform code made
 # AFTER the pass (a collection's item(), a stream reader's read(), a worker
@@ -68,7 +80,7 @@ NATIVE_FN_CF  := $(JS_INC) -DCONFIG_VERSION='"host"'
 
 NATIVE_SHAPE_JS_OUT := c/apps/gui/browser/app/main.c \
                        c/apps/gui/browser/js/media/media.c c/apps/gui/browser/js/media/media_src.c \
-                       c/apps/gui/browser/js/dom/forms.c
+                       $(BROWSER_FORM_JS_SRC)
 NATIVE_SHAPE_SRC = tests/unit/native_shape_test.c tests/unit/loader_fakebfetch.c \
                    $(filter-out $(NATIVE_SHAPE_JS_OUT),$(BROWSER_JS_SRC)) \
                    c/apps/gui/browser/css/engine.c c/apps/gui/browser/css/vars.c \
@@ -81,7 +93,7 @@ NATIVE_SHAPE_CF = $(BTEST_INC) $(CSS_INC) $(JS_INC) $(IMG_HOST_INC) -Iinclude/ab
                   -DCONFIG_VERSION='"host"' -DWEBAPI_HOST
 
 .PHONY: test-native-fn test-native-fn-negctl test-native-fn-negctl-eval test-native-shape test-native-shape-negctl \
-        native-shape-link-check
+        test-native-shape-san native-shape-link-check
 
 # A control is a PREREQUISITE of its suite (tools/audit_tests.py NOT_CI drops
 # every test-*-negctl on the assumption its positive runs it; this makes that
@@ -134,9 +146,15 @@ test-native-shape-negctl: native-shape-link-check $(BUILD)/libcss_host.a $(RUST_
 	all=$$(grep -cE '^(ok +|FAIL )\[native\]' $(BUILD)/native_shape_negctl.log); \
 	bad=$$(grep -c '^FAIL \[native\]' $(BUILD)/native_shape_negctl.log); \
 	any=$$(grep -c '^FAIL' $(BUILD)/native_shape_negctl.log); \
-	if [ $$rc -ne 0 ] && grep -q '^\[native-shape\] SKIPPED' $(BUILD)/native_shape_negctl.log && \
-	   [ $$all -gt 0 ] && [ $$bad = $$all ] && [ $$any = $$bad ]; then \
-		echo "negative control ok: without the pass all $$bad [native] checks fail, every [engine]/[page]/[works] check passes"; \
+	rows=$$(grep -cE '^(ok +|FAIL )\[[a-z]+\]' $(BUILD)/native_shape_negctl.log); \
+	idl=$$(grep -cE '^(ok +|FAIL )\[idl\]' $(BUILD)/native_shape_negctl.log); \
+	idl_ok=$$(grep -cE '^ok +\[idl\]' $(BUILD)/native_shape_negctl.log); \
+	if [ $$rc -eq 1 ] && grep -q '^\[native-shape\] SKIPPED' $(BUILD)/native_shape_negctl.log && \
+	   [ $$all -gt 0 ] && [ $$bad = $$all ] && [ $$any = $$bad ] && \
+	   [ $$idl -gt 0 ] && [ $$idl_ok = $$idl ] && \
+	   ! grep -q '\[js exception\]' $(BUILD)/native_shape_negctl.log && \
+	   grep -Fqx "native-shape: $$rows checks, $$bad failed ($$bad of $$all [native]; 0 other)" $(BUILD)/native_shape_negctl.log; then \
+	  echo "negative control ok: all $$bad pass-dependent [native] checks fail; all $$idl [idl] and other checks pass, complete runner exits 1"; \
 	else grep -E '^(FAIL|ok|census|native-shape|\[native-shape\])' $(BUILD)/native_shape_negctl.log; \
 		echo "NEGATIVE CONTROL FAILED: rc=$$rc, [native] $$bad of $$all failed, $$any failures in all"; exit 1; fi
 
@@ -148,4 +166,19 @@ test-native-shape: test-native-shape-negctl test-native-fn $(BUILD)/libcss_host.
 	@rc=0; $(BUILD)/native_shape_test > $(BUILD)/native_shape_test.log 2>&1 || rc=$$?; \
 		grep -E '^(FAIL|census|native-shape:|\[native-shape\])' $(BUILD)/native_shape_test.log; exit $$rc
 
-ci-host: test-native-shape
+# Exercise the owned JSValue handoff and its release in the same real page
+# lifecycle, after both genuine controls and the normal suite have run.
+# Darwin has no LeakSanitizer here; address and undefined-behaviour failures
+# remain fatal. libcss_host.a/Rust stay the ordinary host prerequisite builds.
+test-native-shape-san: test-native-shape
+	@$(CC) -O1 -g -w -fsanitize=address,undefined -fno-omit-frame-pointer \
+		$(NATIVE_SHAPE_CF) -o $(BUILD)/native_shape_san \
+		$(NATIVE_SHAPE_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
+	@rc=0; ASAN_OPTIONS=detect_leaks=0:abort_on_error=1 \
+		UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 \
+		$(BUILD)/native_shape_san > $(BUILD)/native_shape_san.log 2>&1 || rc=$$?; \
+		grep -E '^(FAIL|native-shape:)' $(BUILD)/native_shape_san.log; \
+		if [ $$rc -ne 0 ] || grep -q '\[js exception\]' $(BUILD)/native_shape_san.log; then \
+		  cat $(BUILD)/native_shape_san.log; exit 1; fi
+
+ci-host: test-native-shape test-native-shape-san

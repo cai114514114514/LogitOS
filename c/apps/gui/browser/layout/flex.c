@@ -39,6 +39,7 @@
  */
 
 #include "layout/flex.h"
+#include "layout/ratio.h"
 
 void *kmalloc(unsigned long);
 void  kfree(void *);
@@ -68,6 +69,7 @@ typedef long long fxw;      /* falls back to 64-bit; only extreme inputs differ 
 #define F_ONE 1024
 
 #define BIGSIZE 0x3FFFFFFF          /* stands in for an absent max constraint */
+
 
 /* ---------------- axis mapping (§ 5, Appendix A) ---------------- */
 
@@ -211,6 +213,21 @@ struct fitem {
  * or a wide image inside a flex row pushes the row wider instead of being
  * squeezed, and why `min-width:0` and `overflow:hidden` are the two standard
  * escapes from an item that refuses to shrink. */
+static int flex_transfer(const struct fitem *f, int size, int main_horiz, int to_main)
+{
+    int from_extra = to_main ? f->bp_cross : f->bp_main;
+    int to_extra = to_main ? f->bp_main : f->bp_cross;
+    int to_width = to_main ? main_horiz : !main_horiz;
+    if (f->in->ratio_border) {
+        if (size > BIGSIZE - from_extra) size = BIGSIZE;
+        else size += from_extra;
+    }
+    int value = to_width ? ratio_px(size, f->in->ratio_w, f->in->ratio_h)
+                         : ratio_px(size, f->in->ratio_h, f->in->ratio_w);
+    if (f->in->ratio_border) value -= to_extra;
+    return value > 0 ? value : 0;
+}
+
 static int auto_min_main(const struct fitem *f, const struct axis *a,
                          int avail_main, int avail_cross, int maxm)
 {
@@ -246,8 +263,7 @@ static int auto_min_main(const struct fitem *f, const struct axis *a,
                 hi = to_inner(st, t, f->bp_cross);
             if (hi < lo) hi = lo;
             c = clampi(c, lo, hi);
-            trans = a->main_horiz ? (int)((long long)c * f->in->ratio_w / f->in->ratio_h)
-                                  : (int)((long long)c * f->in->ratio_h / f->in->ratio_w);
+            trans = flex_transfer(f, c, a->main_horiz, 1);
             have_trans = 1;
         }
     }
@@ -289,8 +305,7 @@ static void item_base_size(struct fitem *f, const struct axis *a,
         int c;
         if (len_def(pref_size(st, !horiz), avail_cross, &c)) {
             int ci = to_inner(st, c, f->bp_cross);
-            transferred = horiz ? (int)((long long)ci * f->in->ratio_w / f->in->ratio_h)
-                                : (int)((long long)ci * f->in->ratio_h / f->in->ratio_w);
+            transferred = flex_transfer(f, ci, horiz, 1);
             have_cross = 1;
         }
     }
@@ -563,6 +578,7 @@ static int align_of(const struct cstyle *cst, const struct cstyle *ist)
 {
     int a = ist ? ist->align_self : AL_AUTO;
     if (a == AL_AUTO) a = cst ? cst->align_items : AL_STRETCH;
+    if (a == AL_NORMAL) a = AL_STRETCH;
     return a;
 }
 
@@ -709,8 +725,7 @@ int layout_flex_run(const struct flex_in *c, const struct flex_item_in *in, int 
         if (len_def(pref_size(f->st, horiz_cross), c->avail_cross, &t))
             hc = to_inner(f->st, t, f->bp_cross);
         else if (f->in->ratio_w > 0 && f->in->ratio_h > 0)
-            hc = ax.main_horiz ? (int)((long long)f->used_main * f->in->ratio_h / f->in->ratio_w)
-                               : (int)((long long)f->used_main * f->in->ratio_w / f->in->ratio_h);
+            hc = flex_transfer(f, f->used_main, ax.main_horiz, 0);
         else
             hc = (m && m->cross) ? m->cross(f->in->ref, f->used_main, m->ctx) : 0;
         if (hc < 0) hc = 0;

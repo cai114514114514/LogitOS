@@ -1874,8 +1874,10 @@ int tcp_connect_start_addr(const struct tcp_addr *dst, uint16_t port)
 
 /* Claim ownership before the SYN leaves, under the allocation lock. Setting
  * it after returning would race a fast reset and another caller's slot reuse. */
+int tcp_connect_owned_addr(const struct tcp_addr *dst, uint16_t port)
+{ return connect_start_addr(dst,port,1); }
 int tcp_connect_owned(uint32_t dst, uint16_t port)
-{ struct tcp_addr a;addr_v4(&a,dst);return connect_start_addr(&a,port,1); }
+{ struct tcp_addr a;addr_v4(&a,dst);return tcp_connect_owned_addr(&a,port); }
 
 int tcp_connect_start(uint32_t dst, uint16_t port)
 {
@@ -2439,7 +2441,16 @@ void tcp_error(uint16_t lport, uint32_t rip, uint16_t rport, int type, int code)
     /* Keep used=1 so a blocked tcp_recv() reports the failure and frees the
      * slot (same convention as the FIN_WAIT -> CLOSED path). In SYN_SENT
      * there is no reader to notify; free now so tcp_connect() fails fast
-     * instead of riding out its handshake timeout. */
+     * instead of riding out its handshake timeout.
+     * Correction (2026-10-01): that last claim applies only to an UNOWNED
+     * connect. An async socket or descriptor still holds this bare index; a
+     * new open before its cleanup could reuse it, and the old close would
+     * then delete the new SYN. The real tcp.c+sock.c gate observes a guest-
+     * shaped RST instead of the new handshake ACK with this guard removed. */
+#ifdef TCP_ICMP_UNPIN
     if (was_syn_sent)
+#else
+    if (was_syn_sent && !c->app_owned)
+#endif
         c->used = 0;
 }

@@ -60,16 +60,18 @@ typedef enum css_selector_detail_value_type {
 	CSS_SELECTOR_DETAIL_VALUE_STRING,
 	CSS_SELECTOR_DETAIL_VALUE_NTH,
 	/* LogitOS: :is()/:where() -- a detail whose "value" is not one string
-	 * or one (a,b) pair but a LIST OF ALTERNATIVE COMPOUND SELECTORS, any
+	 * or one (a,b) pair but a LIST OF ALTERNATIVE COMPLEX SELECTORS, any
 	 * one of which satisfies the detail. See css_selector_altlist below
 	 * and match_detail()'s CSS_SELECTOR_PSEUDO_CLASS case in select.c. */
 	CSS_SELECTOR_DETAIL_VALUE_SELECTOR_LIST
 } css_selector_detail_value_type;
 
-/* LogitOS: the argument list of :is()/:where(), each alternative a full
- * css_selector (built by the ordinary parseSimpleSelector -- type selector
- * plus specifics, NO combinator: `:is(a b)` is out of this engine's scope
- * and is refused at parse time, not silently mismatched). `specificity` is
+/* Original scope: each :is()/:where() alternative was a compound selector
+ * with NO combinator, and :is(a b) was refused. Correction: CSS nesting needs
+ * complex parent alternatives, represented by ordinary css_selector chains.
+ * Their existing destructor owns the complete chain and recursive altlists;
+ * no second selector representation or cleanup path is introduced.
+ * `specificity` is
  * the contribution the OWNING detail should add to its selector: 0 for
  * :where() (that is the entire point of :where()), and the max over `alts`
  * for :is() -- both computed once, at parse time, per the spec's own
@@ -355,4 +357,3 @@ css_error css__stylesheet_string_add(css_stylesheet *sheet,
 		lwc_string *string, uint32_t *string_number);
 
 #endif
-

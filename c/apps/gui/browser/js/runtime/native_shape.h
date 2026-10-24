@@ -37,8 +37,18 @@ struct js_native_shape_report {
 
 NATIVE_SHAPE_FN int js_native_shape_install(JSContext *ctx, struct js_native_shape_report *out);
 
+/* Single-pass variant with the owned-by-caller records returned by
+ * js_idl_shape_install_roots (an object with own numeric record keys). Values
+ * hidden inside IDL getters are seeded as
+ * extra platform roots; reading the records and walking their values both
+ * use quiet descriptors. This object is private installer metadata, never an
+ * author global property. This call borrows it and retains nothing. */
+NATIVE_SHAPE_FN int js_native_shape_install_roots(JSContext *ctx, JSValueConst roots,
+                                                struct js_native_shape_report *out);
+
 #ifdef JS_NATIVE_SHAPE_OPTIONAL
 LOGIT_WEAK_STUB(js_native_shape_install);
+LOGIT_WEAK_STUB(js_native_shape_install_roots);
 #endif
 
 #endif /* LOGIT_JS_NATIVE_SHAPE_H */

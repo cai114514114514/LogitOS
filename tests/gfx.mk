@@ -237,6 +237,11 @@ PAINTGFX_SRC := tests/unit/paint_gfx_test.c \
                 c/apps/gui/browser/css/extra.c c/apps/gui/browser/css/interp.c \
                 c/lib/image/svg.c
 
+# The renderer/extra owners include focused C modules. Editing a sampler must
+# invalidate every old painter control too, rather than preserve a stale green
+# executable merely because that included file is not a translation unit.
+$(PAINTGFX_DIR)/paint_gfx_test $(PAINTGFX_DIR)/pg_hasbg $(PAINTGFX_DIR)/pg_noorigin $(PAINTGFX_DIR)/pg_norclip $(PAINTGFX_DIR)/pg_noclip: $(BROWSER_STYLE_MODULES) $(BROWSER_HEADERS)
+
 # $1 = output binary, $2 = extra -D flags
 define PAINTGFX_BUILD
 	@mkdir -p $(PAINTGFX_DIR)
@@ -293,9 +298,14 @@ test-paint-gfx: $(PAINTGFX_DIR)/paint_gfx_test test-paint-gfx-negctl
 #                  square. It is also the control that proves the rows are
 #                  measuring gfx_fill_mask_clipped and not merely that a
 #                  clipped box paints.
+# Correction (2026-10-02): the original hasbg:4 consisted of three uniform
+# outline assertions plus the clipper's own outline corner. The new per-edge
+# arc assertion now ALSO observes the restored square-outline fault: five
+# exact named failures, including the new non-uniform row. Its former test
+# expected the square degradation and could not prove the repaired arc.
 test-paint-gfx-negctl: $(PAINTGFX_DIR)/pg_hasbg $(PAINTGFX_DIR)/pg_noorigin \
                        $(PAINTGFX_DIR)/pg_noclip $(PAINTGFX_DIR)/pg_norclip
-	@for c in hasbg:4 noorigin:3 noclip:2 norclip:4; do \
+	@for c in hasbg:5 noorigin:3 noclip:2 norclip:4; do \
 	   b=$${c%%:*}; want=$${c##*:}; \
 	   if $(PAINTGFX_DIR)/pg_$$b > $(PAINTGFX_DIR)/$$b.log 2>&1; then \
 	     echo "test-paint-gfx-negctl: FAILED -- pg_$$b PASSED, so nothing in the"; \
@@ -307,8 +317,9 @@ test-paint-gfx-negctl: $(PAINTGFX_DIR)/pg_hasbg $(PAINTGFX_DIR)/pg_noorigin \
 	     echo "  Re-measure it; never adjust the number to whatever the run printed."; \
 	     grep '^FAIL:' $(PAINTGFX_DIR)/$$b.log; exit 1; \
 	   fi; \
+	   if [ "$$b" = hasbg ]; then grep -qx 'FAIL: non-uniform rounded border: bottom ink follows the arcs instead of a full-width square bar' $(PAINTGFX_DIR)/$$b.log || exit 1; fi; \
 	   echo "test-paint-gfx-negctl: ok -- pg_$$b reddens exactly $$n row(s):"; \
-	   grep '^FAIL:' $(PAINTGFX_DIR)/$$b.log | sed 's/^/    /'; \
+	   grep '^FAIL:' $(PAINTGFX_DIR)/$$b.log; \
 	 done
 
 # Named on the suite so it runs, and its control is a prerequisite of the

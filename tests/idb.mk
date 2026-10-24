@@ -52,7 +52,7 @@
 
 IDB_JS_OUT := c/apps/gui/browser/app/main.c \
               c/apps/gui/browser/js/media/media.c c/apps/gui/browser/js/media/media_src.c \
-              c/apps/gui/browser/js/dom/forms.c c/apps/gui/browser/js/runtime/module.c \
+              $(BROWSER_FORM_JS_SRC) c/apps/gui/browser/js/runtime/module.c \
               c/apps/gui/browser/js/graphics/canvas.c c/apps/gui/browser/js/dom/semantics.c \
               c/apps/gui/browser/js/dom/reflect.c c/apps/gui/browser/js/net/urlbind.c \
               c/apps/gui/browser/js/net/websocket.c c/apps/gui/browser/js/workers/worker.c

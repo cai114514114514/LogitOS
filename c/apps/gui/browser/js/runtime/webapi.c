@@ -24,6 +24,11 @@
 
 #include "quickjs.h"
 #include "js/runtime/webapi.h"
+#include "js/net/abort.h"
+#include "js/net/blob.h"
+#include "js/net/formdata.h"
+#include "js/runtime/clone.h"
+#include "js/streams/core.h"
 #include "http1.h"
 #include "cookies.h"
 /* One persistence implementation, like storage_backend.c below. */
@@ -328,7 +333,7 @@ struct fetch_realm {
     unsigned identity;
     int (*connect_policy)(void *, const char *);
     void *connect_policy_opaque;
-    JSValue mk_response, mk_error;
+    JSValue mk_response, mk_error, clone_hosts, form_entries;
     struct wtimer timers[WT_MAX];
 };
 static struct fetch_realm *g_fetch_realms, *g_page_fetch;
@@ -339,6 +344,20 @@ static struct fetch_realm *fetch_realm_for(JSContext *ctx)
         if(r->ctx==ctx)return r;
     return NULL;
 }
+
+JSValue js_webapi_clone_hosts(JSContext *ctx)
+{
+    struct fetch_realm *owner=fetch_realm_for(ctx);
+    return owner?JS_DupValue(ctx,owner->clone_hosts):JS_UNDEFINED;
+}
+
+JSValue js_webapi_form_entries(JSContext *ctx, JSValueConst form, JSValueConst submitter)
+{
+    struct fetch_realm *owner=fetch_realm_for(ctx);
+    if (!owner||!JS_IsFunction(ctx,owner->form_entries)) return JS_UNDEFINED;
+    JSValueConst args[2]={form,submitter};
+    return JS_Call(ctx,owner->form_entries,JS_UNDEFINED,2,args);
+}
 static struct fetch_realm *fetch_realm_new(JSContext *ctx, const char *base,
                                          const char *origin, const char *site)
 {
@@ -346,7 +365,7 @@ static struct fetch_realm *fetch_realm_new(JSContext *ctx, const char *base,
     if(g_fetch_realm_serial==~0u){JS_ThrowRangeError(ctx,"fetch realm identity exhausted");return NULL;}
     struct fetch_realm *r=calloc(1,sizeof *r);
     if(!r){JS_ThrowOutOfMemory(ctx);return NULL;}
-    r->ctx=ctx;r->mk_response=r->mk_error=JS_UNDEFINED;
+    r->ctx=ctx;r->mk_response=r->mk_error=r->clone_hosts=r->form_entries=JS_UNDEFINED;
     r->identity=++g_fetch_realm_serial;
     r->base_valid=base&&wurl_parse(base,NULL,&r->base)==0;
     r->origin_valid=origin&&wurl_parse(origin,NULL,&r->origin)==0;
@@ -1771,7 +1790,17 @@ static int fetch_step(JSContext *ctx, struct wfetch *f)
     if (f->resolved && f->queued > WF_HIGHWATER) { f->deadline = now_ms() + WF_TIMEOUT; return 0; }
 
     int bits = g_net->poll(f->fd);
-    if (bits < 0 || (bits & SOCK_P_ERROR)) { f->failure_at="connect-or-socket"; fetch_fail(ctx, f, "connection failed", "TypeError"); return 1; }
+    if (bits < 0 || (bits & SOCK_P_ERROR)) {
+        /* The old detail named only "connect-or-socket" and left HTTP's error
+         * at zero, losing the socket ABI's encoded refusal reason. Preserve
+         * that integer so a failed dial can be separated from a stale handle
+         * without logging URLs, headers or request bytes. */
+        printf("[webapi] fetch-socket id=%d bits=%d error=%d\n", wf_handle(f), bits,
+               bits < 0 ? bits : SOCK_ERR_CODE(bits));
+        f->failure_at = "connect-or-socket";
+        fetch_fail(ctx, f, "connection failed", "TypeError");
+        return 1;
+    }
     if (!(bits & SOCK_P_CONNECTED)) return 0;             /* DNS/TCP/TLS still running */
 
     if (!f->started) {
@@ -2128,7 +2157,7 @@ static JSValue js_fetch_start(JSContext *ctx, JSValueConst t, int argc, JSValueC
     return out;
 }
 
-/* __fetchAbort(handle) -- a REAL cancellation.  bd1f53d gave the socket ABI a
+/* __fetchAbort(handle, reason?) -- a REAL cancellation. bd1f53d gave the socket ABI a
  * close, so this closes the connection rather than merely refusing to look at
  * what arrives: the transfer stops on the wire and the slot is freed. */
 static JSValue js_fetch_abort(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
@@ -2144,7 +2173,24 @@ static JSValue js_fetch_abort(JSContext *ctx, JSValueConst t, int argc, JSValueC
 #ifndef WEBAPI_FETCH_NO_OWNER
     if(f->ctx!=ctx||f->owner!=fetch_realm_for(ctx)||f->owner->stopped)return JS_FALSE;
 #endif
-    fetch_fail(f->ctx, f, "aborted", "AbortError");
+    if (argc > 1) {
+        /* Abort reasons are arbitrary JS values, including null and false.
+         * Converting them through fetch_fail's message/name pair silently
+         * changes identity. Send the same value to the promise or body sink. */
+        JSValue callback = f->resolved ? f->fail : f->reject;
+        JSValue result;
+        if (f->resolved) {
+            JSValueConst args[3] = { JS_UNDEFINED, JS_UNDEFINED, argv[1] };
+            result = JS_Call(ctx, callback, JS_UNDEFINED, 3, args);
+        } else {
+            result = JS_Call(ctx, callback, JS_UNDEFINED, 1, &argv[1]);
+        }
+        if (JS_IsException(result)) JS_FreeValue(ctx, JS_GetException(ctx));
+        JS_FreeValue(ctx, result);
+        fetch_release(ctx, f);
+    } else {
+        fetch_fail(f->ctx, f, "aborted", "AbortError");
+    }
     return JS_TRUE;
 }
 
@@ -3124,7 +3170,7 @@ static const JSCFunctionListEntry hist_funcs[] = {
 static const char *PRELUDE =
 "(function (__fetchStart, __utf8, __urlParse, __mediaMatch, __fetchAbort, __later,\n"
 "          __cancelLater, __fetchSlots, __encLabel, __encIndex, __base64Decode, __utf8Encode,\n"
-"          __xhrDiag) {\n"
+"          __abort, __streams, __blob, __formdata, __xhrDiag) {\n"
 "'use strict';\n"
 "var G = globalThis;\n"
 
@@ -3605,7 +3651,7 @@ static const char *PRELUDE =
 #define WEBAPI_FETCH_WORKER_PRELUDE
 static const char *WORKER_FETCH_PRELUDE =
 "(function (__fetchStart, __utf8, __urlParse, __mediaMatch, __fetchAbort, __later,\n"
-"          __cancelLater, __fetchSlots, __encLabel, __encIndex, __base64Decode, __utf8Encode) {\n"
+"          __cancelLater, __fetchSlots, __encLabel, __encIndex, __base64Decode, __utf8Encode, __abort, __streams, __blob, __formdata) {\n"
 "'use strict'; var G = globalThis;\n"
 #include "../net/fetch_body_prelude.inc"
 #include "../net/fetch_object_url_prelude.inc"
@@ -3657,7 +3703,7 @@ int js_webapi_fetch_install(JSContext *ctx,const char *base_url,
     JSValue fn=JS_Eval(ctx,WORKER_FETCH_PRELUDE,strlen(WORKER_FETCH_PRELUDE),
                        "<worker-fetch>",JS_EVAL_TYPE_GLOBAL);
     if(JS_IsException(fn)){JS_FreeValue(ctx,fn);js_webapi_fetch_close(ctx);return -1;}
-    JSValue args[12]={
+    JSValue args[16]={
         fetch_binding(ctx,0,5),
         JS_NewCFunction(ctx,js_utf8,"utf8",1),JS_UNDEFINED,JS_UNDEFINED,
         fetch_binding(ctx,1,1),
@@ -3668,11 +3714,21 @@ int js_webapi_fetch_install(JSContext *ctx,const char *base_url,
         JS_NewCFunction(ctx,js_enc_index,"encodingIndex",1),
         JS_NewCFunction(ctx,js_base64_decode,"base64Decode",1),
         JS_NewCFunction(ctx,js_utf8_encode,"utf8Encode",1)};
-    JSValue hooks=JS_Call(ctx,fn,JS_UNDEFINED,12,(JSValueConst*)args);
-    for(int i=0;i<12;i++)JS_FreeValue(ctx,args[i]);JS_FreeValue(ctx,fn);
+    args[12] = js_abort_install(ctx, args[5]);
+    args[13] = JS_IsException(args[12]) ? JS_EXCEPTION : js_streams_install(ctx, args[12]);
+    args[14] = JS_IsException(args[13]) ? JS_EXCEPTION : js_blob_factory(ctx);
+    args[15] = JS_IsException(args[14]) ? JS_EXCEPTION : js_formdata_factory(ctx);
+    JSValue hooks = JS_IsException(args[15]) ? JS_EXCEPTION :
+        JS_Call(ctx, fn, JS_UNDEFINED, 16, (JSValueConst *)args);
+    for(int i=0;i<16;i++)JS_FreeValue(ctx,args[i]);JS_FreeValue(ctx,fn);
     if(JS_IsException(hooks)){JS_FreeValue(ctx,hooks);js_webapi_fetch_close(ctx);return -1;}
     owner->mk_response=JS_GetPropertyStr(ctx,hooks,"mkResponse");
     owner->mk_error=JS_GetPropertyStr(ctx,hooks,"mkError");
+    owner->clone_hosts=JS_GetPropertyStr(ctx,hooks,"cloneHosts");
+    owner->form_entries=JS_GetPropertyStr(ctx,hooks,"formEntries");
+    if (!js_clone_install_host(ctx,owner->clone_hosts)) {
+        JS_FreeValue(ctx,hooks);js_webapi_fetch_close(ctx);return -1;
+    }
     char origin[URL_HOST_MAX+16],generation[24];
     if(owner->origin_valid)wurl_origin(&owner->origin,origin,sizeof origin);else strcpy(origin,"null");
     snprintf(generation,sizeof generation,"%llu",++g_blob_generation);
@@ -3701,6 +3757,8 @@ void js_webapi_fetch_close(JSContext *ctx)
         fetch_release(ctx,&g_fetch[i]);
     timers_clear(ctx);
     JS_FreeValue(ctx,r->mk_response);JS_FreeValue(ctx,r->mk_error);
+    JS_FreeValue(ctx,r->clone_hosts);
+    JS_FreeValue(ctx,r->form_entries);
     struct fetch_realm **link=&g_fetch_realms;
     while(*link&&*link!=r)link=&(*link)->next;
     if(*link)*link=r->next;
@@ -4102,7 +4160,7 @@ void js_webapi_install(JSContext *ctx, const char *url)
         JS_FreeValue(ctx, g);
         return;
     }
-    JSValue args[13];
+    JSValue args[17];
     args[0] = fetch_binding(ctx,0,5);
     args[1] = JS_NewCFunction(ctx, js_utf8, "__utf8", 1);
     args[2] = JS_NewCFunction(ctx, js_url_parse, "__urlParse", 2);
@@ -4115,17 +4173,26 @@ void js_webapi_install(JSContext *ctx, const char *url)
     args[9] = JS_NewCFunction(ctx, js_enc_index, "__encIndex", 1);
     args[10] = JS_NewCFunction(ctx, js_base64_decode, "__base64Decode", 1);
     args[11] = JS_NewCFunction(ctx, js_utf8_encode, "__utf8Encode", 1);
-    int prelude_argc = 12;
+    args[12] = js_abort_install(ctx, args[5]);
+    args[13] = JS_IsException(args[12]) ? JS_EXCEPTION : js_streams_install(ctx, args[12]);
+    args[14] = JS_IsException(args[13]) ? JS_EXCEPTION : js_blob_factory(ctx);
+    args[15] = JS_IsException(args[14]) ? JS_EXCEPTION : js_formdata_factory(ctx);
+    int prelude_argc = 16;
 #ifdef JS_RUNTIME_DIAGNOSTICS
     args[prelude_argc++] = make_xhr_diag_hook(ctx);
 #endif
-    JSValue hooks = JS_Call(ctx, fn, JS_UNDEFINED, prelude_argc, (JSValueConst *)args);
+    JSValue hooks = JS_IsException(args[15]) ? JS_EXCEPTION :
+        JS_Call(ctx, fn, JS_UNDEFINED, prelude_argc, (JSValueConst *)args);
     for (int i = 0; i < prelude_argc; i++) JS_FreeValue(ctx, args[i]);
     JS_FreeValue(ctx, fn);
     if (JS_IsException(hooks)) {
         JSValue e = JS_GetException(ctx);
         const char *m = JS_ToCString(ctx, e);
         printf("[webapi] prelude call failed: %s\n", m ? m : "?");
+        JSValue trace=JS_GetPropertyStr(ctx,e,"stack");
+        const char *where=JS_ToCString(ctx,trace);
+        if (where) { printf("[webapi] bootstrap stack: %s\n",where);JS_FreeCString(ctx,where); }
+        JS_FreeValue(ctx,trace);
         if (m) JS_FreeCString(ctx, m);
         JS_FreeValue(ctx, e);
         JS_FreeValue(ctx, hooks);
@@ -4138,6 +4205,8 @@ void js_webapi_install(JSContext *ctx, const char *url)
     g_mk_error         = JS_GetPropertyStr(ctx, hooks, "mkError");
     g_page_fetch->mk_response=JS_DupValue(ctx,g_mk_response);
     g_page_fetch->mk_error=JS_DupValue(ctx,g_mk_error);
+    g_page_fetch->clone_hosts=JS_GetPropertyStr(ctx,hooks,"cloneHosts");
+    g_page_fetch->form_entries=JS_GetPropertyStr(ctx,hooks,"formEntries");
     g_blob_fn          = JS_GetPropertyStr(ctx, hooks, "blobSnapshot");
     scopy(g_blob_origin,g_loc_valid?origin:"null",sizeof g_blob_origin);
     {

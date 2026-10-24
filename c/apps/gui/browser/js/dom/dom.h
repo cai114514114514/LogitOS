@@ -241,6 +241,15 @@ struct js_event_init {
 int js_dom_dispatch(struct node *target, const char *type,
                     const struct js_event_init *init);
 
+/* Private UA delivery for payload-bearing events such as submit/formdata.
+ * The Event must belong to ctx; this door grants no user activation. Calling
+ * the public dispatchEvent instead would clear the native trust flag. */
+JSValue js_dom_deliver_event(JSContext *ctx, struct node *target,
+                             JSValueConst event);
+/* The actual native handler producer's names, for the private IDL shape pass.
+ * A second handwritten list leaves new handlers on the document singleton. */
+JSValue js_dom_event_types(JSContext *ctx);
+
 void js_dom_text_changed(struct node *n);
 JSValue js_dom_wrap_node(JSContext *, struct node *);
 /* Private selector installer argument, never a property on globalThis.

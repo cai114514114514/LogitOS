@@ -1,0 +1,26 @@
+box,edges,230,80,100,60,ordinary CSS keeps the expected border-box geometry
+pixel,60,35,ff0000,transparent gradient retains the box background color,old-box;no-base
+pixel,170,35,7f0080,translucent gradient composites over the box background color,old-box;no-base
+pixel,280,35,0000ff,opaque gradient remains above the background color
+pixel,11,81,0000ff,gradient retains a square top-left corner,old-box
+pixel,108,81,ffffff,gradient follows the rounded top-right corner
+pixel,108,138,0000ff,gradient retains a square bottom-right corner,old-box
+pixel,170,137,ff0000,rounded bottom-only border remains visible,old-box
+pixel,280,81,ff0000,rounded border retains the top edge color and thickness
+pixel,327,110,00ff00,rounded border retains the right edge color and thickness,old-box
+pixel,280,137,0000ff,rounded border retains the bottom edge color and thickness,old-box
+pixel,231,110,ffff00,rounded border retains the left edge color and thickness,old-box
+pixel,241,110,ffffff,rounded border does not use the widest edge as every inset
+pixel,11,151,00ff00,transparent asymmetric outline keeps its square top-left corner,old-box
+pixel,60,180,ffffff,transparent outline does not repaint its center
+pixel,130,160,ffffff,percentage radius on a wide box has elliptical corner geometry,old-box
+pixel,255,175,ffffff,opposing unequal radii retain the large top-left arc,old-box
+pixel,232,243,0000ff,opposing unequal radii retain the small bottom-left arc
+pixel,11,271,0000ff,rounded overflow retains the ancestor square top-left corner,old-box
+pixel,108,271,ffffff,rounded overflow clips the ancestor rounded top-right corner,no-rclip
+pixel,121,271,0000ff,gradient child keeps the ancestor square top-left corner
+pixel,218,271,ffffff,gradient child honors the ancestor rounded overflow clip,old-box;no-rclip
+pixel,60,341,ffffff,transparent top border does not borrow an adjacent edge color
+pixel,60,397,ff0000,visible bottom border survives a transparent top edge,old-box
+pixel,280,273,7f7fff,element opacity applies once to the completed solid border
+pixel,280,300,ff7f7f,element opacity applies once to the completed inner background,old-box;no-base

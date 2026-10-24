@@ -2,6 +2,7 @@
 #include "css/style.h"
 #include "dom/top_layer.h"
 #include "weaksym.h"
+#include <math.h>
 /* Declared, not <stdio.h>: this file compiles into the freestanding browser
  * and into host harnesses, and the only thing it wants is the one line
  * layout_load_images prints when an image will not load. Same idiom as
@@ -352,6 +353,15 @@ int layout_img_dimensions(const char *src, int *w, int *h)
     if(i<0)return 0;
     if(g_ic[i].img){if(w)*w=g_ic[i].img->w;if(h)*h=g_ic[i].img->h;return 1;}
     return -1;
+}
+const struct image *layout_img_get(const char *src)
+{
+    int i = ic_find(src);
+    return i < 0 ? 0 : g_ic[i].img;
+}
+int layout_img_can_load(void)
+{
+    return g_ic_n < IMGCACHE_MAX;
 }
 int layout_image_geometry_pending(void)
 {
@@ -831,15 +841,17 @@ static int resolve_len(int v, int pct, int off, int avail)
 { return pct ? avail * v / 100 + off : v; }
 
 /* Clamp a border-box width by min-width/max-width. Both are authored under the
- * element's own box-sizing, so they go through the same conversion. */
+ * element's own box-sizing, so they go through the same conversion. Cyclic
+ * percentage constraints are omitted at an indefinite intrinsic basis and
+ * resolved later against the formatting algorithm's actual allocated area. */
 static int clamp_w(const struct cstyle *st, int w, int avail)
 {
     if (st) {
-        if (st->has_max_w) {
+        if (st->has_max_w && !(st->max_w_pct && avail < 0)) {
             int m = to_border_w(st, resolve_len(st->max_w, st->max_w_pct, 0, avail));
             if (w > m) w = m;
         }
-        if (st->has_min_w) {
+        if (st->has_min_w && !(st->min_w_pct && avail < 0)) {
             int m = to_border_w(st, resolve_len(st->min_w, st->min_w_pct, 0, avail));
             if (w < m) w = m;
         }
@@ -985,10 +997,57 @@ static const char *image_node_source(struct node *n)
     const char *src=dom_attr(n,"src");
     return src?src:dom_attr(n,"data-src");
 }
-static int image_ratio_size(int size,int numerator,int denominator)
+struct preferred_ratio { double w, h; int border; };
+
+/* CSS Sizing 4: an authored ratio uses the box selected by box-sizing; an
+ * intrinsic replaced ratio ALWAYS relates content dimensions. auto <ratio>
+ * reserves space before decode, then yields to real metadata. Cache inspection
+ * is synchronous: layout must never fetch while measuring a flex/grid trial. */
+static int preferred_ratio(struct node *n, const struct cstyle *st,
+                           struct preferred_ratio *r)
 {
-    long long v=(long long)size*numerator/denominator;
-    return v>0x3fffffff?0x3fffffff:(int)v;
+    int nw = 0, nh = 0, have_natural = n && n->type == N_ELEM &&
+        tag_eq(n->tag, "img") &&
+        layout_img_dimensions(image_node_source(n), &nw, &nh) == 1 && nw > 0 && nh > 0;
+#ifndef CSS_LAYOUT_NO_RATIO
+    if (st && st->aspect_w > 0 && st->aspect_h > 0 &&
+        !(st->aspect_auto && have_natural)) {
+        r->w = st->aspect_w; r->h = st->aspect_h;
+        r->border = st->box_sizing == BOX_BORDER;
+        return 1;
+    }
+#endif
+    if (have_natural) {
+        r->w = nw; r->h = nh; r->border = 0;
+        return 1;
+    }
+    r->w = r->h = 0; r->border = 0;
+    return 0;
+}
+static int ratio_content_height(const struct cstyle *st,
+                                const struct preferred_ratio *r, int content_w)
+{
+    int w = content_w;
+    if (r->border) w += hextra(st);
+    int h = ratio_px(w, r->h, r->w);
+    if (r->border) h -= vextra(st);
+    return h > 0 ? h : 0;
+}
+static int ratio_content_width(const struct cstyle *st,
+                               const struct preferred_ratio *r, int content_h)
+{
+    int h = content_h;
+    if (r->border) h += vextra(st);
+    int w = ratio_px(h, r->w, r->h);
+    if (r->border) w -= hextra(st);
+    return w > 0 ? w : 0;
+}
+static int ratio_intrinsic_width(struct node *n, const struct cstyle *st)
+{
+    struct preferred_ratio r;
+    int h = spec_h(st, -1);
+    if (h < 0 || !preferred_ratio(n, st, &r)) return -1;
+    return ratio_content_width(st, &r, h - vextra(st)) + hextra(st);
 }
 static int image_height_limit(const struct cstyle *s,int v,int basis)
 {
@@ -1019,8 +1078,14 @@ static int image_decoded_size(struct node *n,const struct cstyle *style,int avai
     (void)n;(void)style;(void)avail;(void)assigned_content_w;(void)intrinsic;(void)outw;(void)outh;
     return 0;
 #else
-    int nw,nh;
-    if(!style||layout_img_dimensions(image_node_source(n),&nw,&nh)!=1||nw<=0||nh<=0)return 0;
+    int nw=0,nh=0;
+    int decoded=layout_img_dimensions(image_node_source(n),&nw,&nh)==1&&nw>0&&nh>0;
+    struct preferred_ratio ratio;
+    if(!style||!preferred_ratio(n,style,&ratio))return 0;
+    /* An authored ratio can reserve the image's true layout box before its
+     * bytes arrive. Keep the existing small loading width if neither dimension
+     * is supplied; a ratio is not invented intrinsic pixel dimensions. */
+    if(!decoded){nw=24;nh=ratio_content_height(style,&ratio,nw);}
     struct cstyle s=*style;
     /* Intrinsic contributions cannot resolve a cyclic percentage against a
      * made-up zero width. Placement resolves it later against the real area. */
@@ -1039,25 +1104,36 @@ static int image_decoded_size(struct node *n,const struct cstyle *style,int avai
     if(assigned_content_w>=0)w=assigned_content_w;
     int wa=w<0,ha=h<0;
     if(wa&&ha) {
-        w=nw;h=nh;
+        w=nw;h=ratio_content_height(&s,&ratio,w);
+        /* Keep the ratio-determining dimensions fractional until constraints
+         * have chosen a scale. Rounding 320/1000 to zero first made min-height:
+         * 10px disappear, because a zero base height skipped its lower bound.
+         * Authored border-box ratios scale the border box; fixed padding must
+         * be subtracted afterwards, not scaled with the image content. */
+        double basew=ratio.border?w+ex:w;
+        double baseh=basew*ratio.h/ratio.w;
         int minw=clamp_w(&s,ex,avail)-ex,maxw=clamp_w(&s,0x3fffffff,avail)-ex;
         int minh=image_height_limit(&s,0,hb),maxh=image_height_limit(&s,0x3fffffff,hb);
         if(minw<0)minw=0;if(maxw<0)maxw=0;
-        double low=(double)minw/nw,high=(double)maxw/nw;
-        if((double)minh/nh>low)low=(double)minh/nh;
-        if((double)maxh/nh<high)high=(double)maxh/nh;
-        if(low<=high) {
+        int rx=ratio.border?ex:0,ry=ratio.border?ey:0;
+        double low=(minw+rx)/(basew?basew:1),high=(maxw+rx)/(basew?basew:1);
+        if(baseh>0&&(minh+ry)/baseh>low)low=(minh+ry)/baseh;
+        if(baseh>0&&(maxh+ry)/baseh<high)high=(maxh+ry)/baseh;
+        if(low<=high && baseh>0 && isfinite(baseh)) {
             double scale=1;if(scale<low)scale=low;if(scale>high)scale=high;
-            w=(int)(nw*scale);h=(int)(nh*scale);
+            double scaled=basew*scale-rx;
+            w=scaled>0x3fffffff?0x3fffffff:scaled>0?(int)scaled:0;
+            w=clamp_w(&s,w+ex,avail)-ex;
+            h=image_height_limit(&s,ratio_content_height(&s,&ratio,w),hb);
         } else { /* incompatible min/max constraints cannot preserve ratio */
             w=clamp_w(&s,w+ex,avail)-ex;h=image_height_limit(&s,h,hb);
         }
     } else if(wa) {
-        h=image_height_limit(&s,h,hb);w=image_ratio_size(h,nw,nh);
+        h=image_height_limit(&s,h,hb);w=ratio_content_width(&s,&ratio,h);
         w=clamp_w(&s,w+ex,avail)-ex;
     } else {
         w=clamp_w(&s,w+ex,avail)-ex;if(w<0)w=0;
-        if(ha)h=image_ratio_size(w,nh,nw);
+        if(ha)h=ratio_content_height(&s,&ratio,w);
         h=image_height_limit(&s,h,hb);
     }
     if(w<0)w=0;if(h<0)h=0;*outw=w+ex;*outh=h+ey;return 1;
@@ -1086,6 +1162,15 @@ static int block_width(const struct cstyle *st, int avail)
     int ml = st->ml, mr = st->mr;
     int w = st->has_w ? to_border_w(st, resolve_len(st->width, st->w_pct, st->w_off, avail))
                       : avail - ml - mr;
+    /* A definite height can be the ratio-determining axis even for a block.
+     * This does not turn width:auto on an ordinary height:auto card into
+     * shrink-to-fit: that case still fills its containing block. */
+    if (!st->has_w) {
+        struct preferred_ratio ratio;
+        int h = spec_h(st, -1);
+        if (h >= 0 && preferred_ratio(0, st, &ratio))
+            w = ratio_content_width(st, &ratio, h-vextra(st)) + hextra(st);
+    }
     return clamp_w(st, w, avail);
 }
 
@@ -2239,6 +2324,7 @@ static int intrinsic_replaced(struct node *n)
     return fc_kind(n)!=FC_NONE || tag_eq(n->tag,"img") ||
         tag_eq(n->tag,"svg") || intrinsic_external_box(n);
 }
+static int block_node_width(struct node *n, int avail);
 
 static void flow_node(struct iflow *f, struct node *c, const char *href)
 {
@@ -2471,7 +2557,7 @@ static void flow_node(struct iflow *f, struct node *c, const char *href)
          * does not narrow block boxes by floats, only their line boxes. */
         int avail = f->bx1 - f->bx0;
         int bx = f->bx0 + (st ? st->ml : 0);
-        int bw = block_width(st, avail);
+        int bw = block_node_width(c, avail);
         bx = f->bx0 + block_left(st, avail, bw);
         if (atomic) {
             /* The old block path broke the line and filled 200px for a flex
@@ -2906,6 +2992,8 @@ static int m_bot_open(struct node *n, const struct cstyle *st)
     if (is_bfc_root(n, st)) return 0;
     if (st->border_w[2] || st->pb) return 0;
     if (st->has_h) return 0;
+    struct preferred_ratio ratio;
+    if (preferred_ratio(n, st, &ratio)) return 0;
     if (st->has_min_h && st->min_h > 0) return 0;
     return 1;
 }
@@ -2917,6 +3005,8 @@ static int m_bot_open(struct node *n, const struct cstyle *st)
 static int m_self_collapse(struct node *n, int depth)
 {
     struct cstyle *st = n->style;
+    struct preferred_ratio ratio;
+    if (spec_h(st, height_basis(n)) < 0 && preferred_ratio(n, st, &ratio)) return 0;
     if (!st || depth > 12 || m_replaced(n)) return 0;
     if (is_bfc_root(n, st)) return 0;
     if (any_border(st) || st->pt || st->pb) return 0;
@@ -3547,7 +3637,52 @@ static int has_local_abs(struct node *n, int depth)
     }
     return 0;
 }
+static int layout_block_used(struct node *n, int x, int y, int w);
+static int g_ratio_measure;
 static int layout_block(struct node *n, int x, int y, int w)
+{
+    struct cstyle *st = n ? n->style : 0;
+    struct preferred_ratio ratio;
+    /* The allocator owns width; transfer it only into an automatic height.
+     * Applying a ratio after box_close would change pixels but leave siblings,
+     * percentage descendants, absolute containing blocks and clips stale. */
+    if (!st || st->display == DISP_INLINE || spec_h(st, height_basis(n)) >= 0 ||
+        tag_eq(n->tag, "img") || !preferred_ratio(n, st, &ratio))
+        return layout_block_used(n, x, y, w);
+    int basis = height_basis(n);
+    int h = ratio_content_height(st, &ratio, w) + vextra(st);
+    if (!g_ratio_measure && !intrinsic_replaced(n) && !st->has_min_h &&
+        st->overflow_y == OVF_VISIBLE && layout_first(n)) {
+        /* Measure the content minimum while THIS box still has auto height.
+         * Otherwise a flex container would size its children against the ratio
+         * height and conceal the very minimum that may enlarge that height.
+         * Nested ratio boxes use their ordinary trial result; suppressing nested
+         * minimum trials bounds this to one extra subtree pass, not 2^depth. */
+        int im=nitem,bm=nbox,z=g_z,nf=g_nfloat,fb=g_fbase,mh=g_mhoist;
+        g_ratio_measure++;
+        int natural = layout_block_used(n, x, y, w) - y + vextra(st);
+        g_ratio_measure--;
+        discard_items(im); nbox=bm; g_z=z; g_nfloat=nf; g_fbase=fb; g_mhoist=mh;
+        if (natural > h) h = natural;
+    }
+    h = block_height(st, h, basis);
+    int old_h = st->height, old_has = st->has_h, old_pct = st->h_pct, old_off = st->h_off;
+    st->has_h = 1; st->h_pct = st->h_off = 0;
+    st->height = h - (st->box_sizing == BOX_BORDER ? 0 : vextra(st));
+    if (st->height < 0) st->height = 0;
+    int bottom = layout_block_used(n, x, y, w);
+    st->height = old_h; st->has_h = old_has; st->h_pct = old_pct; st->h_off = old_off;
+    int used = h - vextra(st);
+    /* The automatic content minimum can enlarge a non-replaced ratio box.
+     * Explicit min-height (including zero) or scrollable overflow suppresses
+     * that minimum; overflow then remains scroll extent, not flow height.
+     * Orthogonal writing and fragmentation remain outside this horizontal
+     * block-flow implementation rather than being advertised as ratio support. */
+    if (!intrinsic_external_box(n) && !st->has_min_h && st->overflow_y == OVF_VISIBLE &&
+        bottom - y > used) used = block_height(st, bottom-y+vextra(st), basis)-vextra(st);
+    return y + (used > 0 ? used : 0);
+}
+static int layout_block_used(struct node *n, int x, int y, int w)
 {
     struct cstyle *st=n?n->style:0;
     if(!st || st->position==POS_STATIC || layout_contents(n))
@@ -3894,7 +4029,7 @@ static int layout_flow(struct node *n, int x, int y, int w, int hoist)
 #endif
             int ml = st->ml;
             int bx = x + ml;
-            int bw = block_width(st, w);
+            int bw = block_node_width(c, w);
             bx = x + block_left(st, w, bw);
             /* ---- margin collapsing, the in-flow block case ---- */
             int selfc = m_self_collapse(c, 0);
@@ -4175,6 +4310,7 @@ static int content_width_impl(struct node *n, int px, int mono, int depth,
      * width already includes them. */
     int extra = hextra(st);
     if (st && st->has_w && !st->w_pct) return to_border_w(st, st->width);
+    { int ratio = ratio_intrinsic_width(n, st); if (ratio >= 0) return ratio; }
     if (st && st->display == DISP_GRID) {
         int grid = grid_intrinsic_width(n, 0);
         if (grid >= 0) return grid + extra;
@@ -4279,6 +4415,11 @@ static int min_content_width(struct node *n, int px, int mono, int depth)
      * box for min/max-content, as images already do below. */
     if (fc_kind(n) != FC_NONE) return content_width(n, px, mono, depth);
 #endif
+    /* An atomic inline with a definite width cannot break inside its box.
+     * Ignoring that width made the automatic minimum of a height-driven ratio
+     * parent zero even though its 150px inline-block child cannot fit in 120px. */
+    if (atomic_inline_in_flow(n) && st && st->has_w && !st->w_pct)
+        return to_border_w(st, st->width);
     /* Replaced content has no internal break opportunity at all. */
     if (tag_eq(n->tag, "img") || tag_eq(n->tag, "svg") || intrinsic_external_box(n))
         return content_width(n, px, mono, depth);
@@ -4299,6 +4440,23 @@ static int min_content_width(struct node *n, int px, int mono, int depth)
 
 /* Measure one anonymous inline run starting at `first` as a single unwrapped
  * line; *end gets the first node past the run (a block sibling or NULL). */
+static int block_node_width(struct node *n, int avail)
+{
+    struct cstyle *st = n->style;
+    int w = block_width(st, avail);
+    struct preferred_ratio ratio;
+    int h = spec_h(st, height_basis(n));
+    if (st && !st->has_w && h >= 0 && preferred_ratio(n, st, &ratio)) {
+        w = ratio_content_width(st, &ratio, h-vextra(st)) + hextra(st);
+        if (!st->has_min_w && st->overflow_x == OVF_VISIBLE && !intrinsic_replaced(n)) {
+            int minimum = min_content_width(n, st->font_px, st_face(st), 0);
+            if (minimum > w) w = minimum;
+        }
+        w = clamp_w(st, w, avail);
+    }
+    return w;
+}
+
 static int flex_run(struct node *first, struct node **end, int px, int mono)
 {
     int w = 0;
@@ -4421,6 +4579,7 @@ static int flex_align_of(const struct cstyle *nst, const struct flexslot *fi)
 {
     int a = fi->st ? fi->st->align_self : AL_AUTO;
     if (a == AL_AUTO) a = nst ? nst->align_items : AL_STRETCH;
+    if (a == AL_NORMAL) a = AL_STRETCH;
     /* We have no baseline metrics in the display list; first-baseline
      * alignment of same-font items is indistinguishable from flex-start. */
     if (a == AL_BASELINE) a = AL_START;
@@ -4514,7 +4673,7 @@ static int flex_place_impl(struct flexslot *f, int px, int py, int iw, int force
     }
     struct cstyle *st = f->st;
     int old_h = st->height, old_has_h = st->has_h, old_hp = st->h_pct, old_ho = st->h_off;
-    if (exact_h) {
+    if (exact_h == 1) {
         /* A post-flex definite main size is the descendant percentage basis
          * (Flexbox 9.8), including when shrinking below natural content. Merely
          * resizing the background AFTER layout leaves a 400px overflow item
@@ -4573,7 +4732,7 @@ static int flex_place_impl(struct flexslot *f, int px, int py, int iw, int force
     }
     g_z = zsave;
     f->hi = nitem; f->bhi = nbox;
-    if (exact_h) {
+    if (exact_h == 1) {
         st->height = old_h; st->has_h = old_has_h; st->h_pct = old_hp; st->h_off = old_ho;
     }
     return ch;
@@ -4659,7 +4818,10 @@ static void flex_justify(int mode, int slack, int count, int *lead, int *between
  * available cross width before flexing. flex_column_spec below measures its
  * real content at that width and connects it to the same solver. Auto-height
  * and wrapping columns still keep the stated boundary; do not fabricate a
- * main-axis intrinsic contribution to make those cases enter this bridge. */
+ * main-axis intrinsic contribution to make those cases enter this bridge.
+ * Correction (2026-10-01): measured cross widths also permit auto-main columns
+ * and definite wrapping columns. The solver already represents indefinite
+ * main space; bypassing it discarded even an explicit flex-basis:60px. */
 
 /* Truncate the display list back to `mark`, RELEASING WHAT THE ABANDONED
  * ENTRIES OWN.
@@ -4755,6 +4917,15 @@ static int flexb_cross(void *ref, int main_inner, void *ctx)
     return flex_measure_cross((struct flexslot *)ref, main_inner, b->fpx, b->fmono);
 }
 
+static void flex_preferred_ratio(struct flexslot *f, struct flex_item_in *in)
+{
+    struct preferred_ratio ratio;
+    if (preferred_ratio(f->n, f->st, &ratio)) {
+        in->ratio_w = ratio.w; in->ratio_h = ratio.h;
+        in->ratio_border = (unsigned char)ratio.border;
+    }
+}
+
 /* Run § 9 over an already-collected row and draw the result. Returns 0 and
  * writes the container's content bottom to *out_bottom; -1 means "could not
  * allocate", and the caller falls back to the path below rather than dropping
@@ -4795,6 +4966,7 @@ static int flex_row_spec(struct node *n, int x, int y, int w,
         int mnv = min_content_width(f->n, fpx, fmono, 0) - ex;
         in[i].max_content_main = mx < 0 ? 0 : mx;
         in[i].min_content_main = mnv < 0 ? 0 : mnv;
+        flex_preferred_ratio(f, &in[i]);
         if (tag_eq(f->n->tag, "img") || tag_eq(f->n->tag, "svg") ||
             tag_eq(f->n->tag, "video") || tag_eq(f->n->tag, "canvas"))
             in[i].replaced = 1;
@@ -4854,20 +5026,24 @@ static int flex_column_cross(void *ref, int main_inner, void *ctx)
     return ((struct flexslot *)ref)->cross;
 }
 
-/* Definite nowrap columns: establish cross width, measure block content,
+/* Columns: establish cross width, measure block content,
  * solve main sizes, then lay out at those USED sizes. The old stack/grow-only
  * path measured 400px for a flex:1 overflow:auto body with only 160px left;
  * the DOM gate observes that failure, unlike pure numeric solver tests.
  * This costs one real trial per item to obtain its content-size minimum as
  * well as its basis. It deliberately does not
- * claim wrapping-column intrinsic sizing or general orthogonal layout. */
+ * claim cyclic wrapping-column intrinsic sizing or general orthogonal layout.
+ * Wrapping measures each item's preferred cross width before line packing;
+ * nowrap stretch has the entire container width. */
 static int flex_column_spec(struct node *n, int x, int y, int w,
                             struct flexslot *fi, int cnt, int fpx, int fmono,
                             int *out_bottom)
 {
     struct cstyle *nst = n->style;
     int sh = flex_definite_height(n);
+#ifdef CSS_LAYOUT_COLUMN_FALLBACK
     if (sh < 0 || (nst && nst->flex_wrap != FWRAP_NOWRAP)) return -1;
+#endif
     struct flex_item_in *in = kmalloc(sizeof(*in) * (unsigned long)cnt);
     if (!in) return -1;
     memset(in, 0, sizeof(*in) * (unsigned long)cnt);
@@ -4877,7 +5053,8 @@ static int flex_column_spec(struct node *n, int x, int y, int w,
         int avail = w - (st ? st->ml + st->mr : 0), iw;
         if (avail < 0) avail = 0;
         if (st && st->has_w) iw = clamp_w(st, block_width(st, w), w);
-        else if (flex_align_of(nst, f) == AL_STRETCH && !(st && (st->margin_auto & 10)))
+        else if ((!nst || nst->flex_wrap == FWRAP_NOWRAP) &&
+                 flex_align_of(nst, f) == AL_STRETCH && !(st && (st->margin_auto & 10)))
             iw = clamp_w(st, avail, w);
         else {
             iw = st ? content_width(f->n, fpx, fmono, 0) : f->base;
@@ -4890,13 +5067,14 @@ static int flex_column_spec(struct node *n, int x, int y, int w,
         in[i].ref = f; in[i].st = st; in[i].basis = FLEX_FB_FROM_STYLE;
         in[i].min_content_main = in[i].max_content_main =
             flex_measure_cross(f, f->cross, fpx, fmono);
+        flex_preferred_ratio(f, &in[i]);
         if (tag_eq(f->n->tag, "img") || tag_eq(f->n->tag, "svg") ||
             tag_eq(f->n->tag, "video") || tag_eq(f->n->tag, "canvas")) in[i].replaced = 1;
     }
     struct flex_in cin;
     memset(&cin, 0, sizeof cin);
-    cin.st = nst; cin.avail_main = sh - vextra(nst);
-    if (cin.avail_main < 0) cin.avail_main = 0;
+    cin.st = nst; cin.avail_main = sh >= 0 ? sh - vextra(nst) : FLEX_INDEFINITE;
+    if (cin.avail_main != FLEX_INDEFINITE && cin.avail_main < 0) cin.avail_main = 0;
     cin.avail_cross = w; cin.wm = FLEX_WM_HORIZ_TB; cin.align_content_space = -1;
     struct flex_metrics fm = { flex_column_cross, 0, 0 };
     struct flex_out fo;
@@ -4904,7 +5082,12 @@ static int flex_column_spec(struct node *n, int x, int y, int w,
     for (int i = 0; i < fo.nitems; i++) {
         struct flex_item_out *o = &fo.items[i];
         struct flexslot *f = (struct flexslot *)o->ref;
-        flex_place_impl(f, x + o->x, y + o->y, o->w, o->h, fpx, fmono, 1);
+        /* A definite container or basis makes the post-flex main size a
+         * percentage basis (§9.8). Content-basis items in an auto container
+         * retain an indefinite height even though they have a pixel box. */
+        int definite = sh >= 0 || (f->st && f->st->has_fb && !f->st->fb_pct) ||
+                       spec_h(f->st, height_basis(f->n)) >= 0;
+        flex_place_impl(f, x + o->x, y + o->y, o->w, o->h, fpx, fmono, definite ? 1 : 2);
     }
     *out_bottom = y + fo.main_size;
     layout_flex_free(&fo); kfree(in); return 0;
@@ -4963,7 +5146,10 @@ static int layout_flex(struct node *n, int x, int y, int w)
          * what a block stack does, and the right answer for the card/sidebar
          * shape that `flex-direction:column` is nearly always used for.
          * flex-wrap is treated as nowrap here: a multi-column wrap needs a
-         * definite height to break against, which we do not have. */
+         * definite height to break against, which we do not have.
+         * Correction: normal calls now use the solver above even with an
+         * indefinite main size. This approximation remains only for allocation
+         * failure and fault controls; it ignores authored basis and wrapping. */
         int container_h = spec_h(nst, height_basis(n));
         /* spec_h is border-box; auto margins distribute CONTENT-box space. */
         if (container_h >= 0) { container_h -= vextra(nst); if (container_h < 0) container_h = 0; }
@@ -5216,6 +5402,7 @@ static int gr_have(const struct cstyle *st, int g)
 static int grid_ga_from_al(int al)
 {
     switch (al) {
+    case AL_NORMAL:   return GA_NORMAL;
     case AL_START:    return GA_START;
     case AL_END:      return GA_END;
     case AL_CENTER:   return GA_CENTER;
@@ -5227,7 +5414,7 @@ static int grid_ga_from_al(int al)
     default:          return GA_STRETCH;
     }
 }
-/* JC_START -> GA_NORMAL, and this one line is worth its comment: it decides
+/* JC_START -> GA_NORMAL was the original lossy bridge, and this comment records
  * whether a grid's `auto` tracks FILL the container or shrink to their content.
  * css_engine.c folds `normal`, `start` and `flex-start` onto JC_START (LibCSS's
  * justify-content switch has them in one default arm), and `normal` is grid's
@@ -5239,10 +5426,20 @@ static int grid_ga_from_al(int al)
  * thing that differs is the stretch, which is what the initial value asks for.
  * An author who really wrote `justify-content: start` on a grid with auto
  * tracks gets stretch they did not ask for; that is the rarer case and it is
- * the one cstyle cannot currently express. */
+ * the one cstyle cannot currently express.
+ * Correction (2026-10-01): the style producer now preserves normal, stretch
+ * and explicit start separately. Map them separately here; changing only the
+ * numeric solver would leave real authored grids stretched exactly as before. */
 static int grid_ga_from_jc(int jc)
 {
     switch (jc) {
+    case JC_START:
+#ifdef CSS_LAYOUT_GRID_START_AS_NORMAL
+        return GA_NORMAL;
+#else
+        return GA_START;
+#endif
+    case JC_STRETCH: return GA_STRETCH;
     case JC_END:     return GA_END;
     case JC_CENTER:  return GA_CENTER;
     case JC_BETWEEN: return GA_SPACE_BETWEEN;
@@ -5262,14 +5459,92 @@ static int grid_ga_from_jc(int jc)
  * node in a grid container from the display list, which is a much louder
  * failure than a missing feature, and it cost this bridge its first
  * measurement. */
-struct gridbridge { struct flexslot *fi; int n, fpx, fmono, avail_w; };
+struct gridbridge {
+    struct flexslot *fi;
+    struct griditem *gi;
+    const struct gridcfg *cfg;
+    int n, fpx, fmono, avail_w;
+};
 
 static int grid_resolve_width_cb(void *ctx, int i, int area)
 {
     struct gridbridge *b = ctx;
     const struct cstyle *st = b->fi[i].st;
-    if (!st || !st->has_w) return GRID_INDEFINITE;
-    return clamp_w(st, to_border_w(st, resolve_len(st->width, st->w_pct, st->w_off, area)), area);
+    if (!st) return GRID_INDEFINITE;
+    if (st->has_w)
+        return clamp_w(st, to_border_w(st, resolve_len(st->width, st->w_pct, st->w_off, area)), area);
+    struct flexslot *f = &b->fi[i];
+    struct preferred_ratio ratio;
+    int js = b->gi[i].justify_self == GA_AUTO ? b->cfg->justify_items : b->gi[i].justify_self;
+#ifndef CSS_LAYOUT_GRID_IGNORE_BOUNDS
+    if (st->has_min_w || st->has_max_w) {
+        int room = area - css_margin_px(st, 3, area) - css_margin_px(st, 1, area);
+        if (room < 0) room = 0;
+        if (js != GA_NORMAL && js != GA_STRETCH) {
+            int mn = min_content_width(f->n, b->fpx, b->fmono, 0);
+            int mx = content_width(f->n, b->fpx, b->fmono, 0);
+            room = room < mx ? room : mx;
+            if (room < mn) room = mn;
+        }
+        /* Returning a preferred width before row measurement AND alignment
+         * keeps constrained stretch/fit-content, text wrapping and the placed
+         * box consistent. A 10px fixed track may hold a 20px-minimum item. */
+        if (!preferred_ratio(f->n, st, &ratio) || js == GA_STRETCH)
+            return clamp_w(st, room, area);
+    }
+#endif
+    if (!preferred_ratio(f->n, st, &ratio)) return GRID_INDEFINITE;
+    if (js == GA_STRETCH) return GRID_INDEFINITE;
+    int h = spec_h(st, height_basis(f->n));
+    if (h >= 0)
+        return clamp_w(st, ratio_content_width(st, &ratio, h-vextra(st))+hextra(st), area);
+    if (js == GA_NORMAL) {
+        int iw, ih;
+        if (tag_eq(f->n->tag,"img") && image_decoded_size(f->n,st,area,-1,0,&iw,&ih)) return iw;
+        /* normal retains ordinary block width, then transfers it to height;
+         * mapping both axes to start would shrink an empty ratio card to zero. */
+        return block_width(st, area);
+    }
+    return GRID_INDEFINITE;
+}
+
+static int grid_item_height(struct gridbridge *b, struct flexslot *f, int width)
+{
+    struct cstyle *st = f->st;
+    int has_h = st ? st->has_h : 0, min_h = st ? st->has_min_h : 0;
+    int max_h = st ? st->has_max_h : 0;
+    /* A row's area does not exist during intrinsic measurement. Borrowing the
+     * whole grid height makes a 50% item/minimum a cyclic container-sized row.
+     * Suppress only those cyclic constraints for this synchronous trial; final
+     * placement resolves them against the solved area and restores CSS state. */
+    if (st) {
+        if (st->h_pct) st->has_h = 0;
+        if (st->min_h_pct) st->has_min_h = 0;
+        if (st->max_h_pct) st->has_max_h = 0;
+    }
+    int inner = width - hextra(st); if (inner < 0) inner = 0;
+    int h = flex_measure_cross(f, inner, b->fpx, b->fmono) + vextra(st);
+    if (st) { st->has_h = has_h; st->has_min_h = min_h; st->has_max_h = max_h; }
+    return block_height(st, h, -1);
+}
+
+static int grid_resolve_height_cb(void *ctx, int i, int area_w, int area_h, int width)
+{
+    struct gridbridge *b = ctx;
+    struct flexslot *f = &b->fi[i];
+    const struct cstyle *st = f->st;
+    if (!st) return GRID_INDEFINITE;
+    int h = spec_h(st, area_h);
+    if (h >= 0) return block_height(st, h, area_h);
+    int as = b->gi[i].align_self == GA_AUTO ? b->cfg->align_items : b->gi[i].align_self;
+    struct preferred_ratio ratio;
+    if (!st->has_min_h && !st->has_max_h && !preferred_ratio(f->n, st, &ratio))
+        return GRID_INDEFINITE;
+    if (as == GA_STRETCH || as == GA_NORMAL) {
+        h = area_h - css_margin_px(st, 0, area_w) - css_margin_px(st, 2, area_w);
+        if (h < 0) h = 0;
+    } else h = grid_item_height(b, f, width);
+    return block_height(st, h, area_h);
 }
 
 static void grid_measure_cb(void *ctx, int i, int axis, int avail, struct gmeas *out)
@@ -5294,6 +5569,15 @@ static void grid_measure_cb(void *ctx, int i, int axis, int avail, struct gmeas 
             mx = content_width(f->n, b->fpx, b->fmono, 0);
             mn = min_content_width(f->n, b->fpx, b->fmono, 0);
         }
+        /* The old bridge reported minimum=20 but both intrinsic contributions
+         * as zero for an empty min-width:20px item. The solver then capped its
+         * minimum to min-content and collapsed explicit-start auto tracks to
+         * 0px (guest specimen: start-a 0px, normal-a 90px). Contributions include
+         * definite min/max constraints; cyclic percentages wait for the area. */
+#ifndef CSS_LAYOUT_GRID_IGNORE_BOUNDS
+        mn = clamp_w(st, mn, -1);
+        mx = clamp_w(st, mx, -1);
+#endif
         if (mn > mx) mx = mn;
         out->max_content = mx + ml + mr;
         out->min_content = mn + ml + mr;
@@ -5302,7 +5586,11 @@ static void grid_measure_cb(void *ctx, int i, int axis, int avail, struct gmeas 
          * `min-width: 0` stops working inside a grid. An explicit min-width
          * replaces the automatic minimum outright. */
         if (st && st->has_min_w) {
+#ifdef CSS_LAYOUT_GRID_IGNORE_BOUNDS
             int m = to_border_w(st, resolve_len(st->min_w, st->min_w_pct, 0, b->avail_w));
+#else
+            int m = clamp_w(st, 0, -1);
+#endif
             out->minimum = (m < 0 ? 0 : m) + ml + mr;
         } else {
             out->minimum = out->min_content;
@@ -5310,9 +5598,13 @@ static void grid_measure_cb(void *ctx, int i, int axis, int avail, struct gmeas 
         return;
     }
     /* GAX_ROW: `avail` is the item's resolved BORDER-box inline size. */
+#ifdef CSS_LAYOUT_GRID_IGNORE_BOUNDS
     int inner = avail - hextra(st); if (inner < 0) inner = 0;
     int h = flex_measure_cross(f, inner, b->fpx, b->fmono) + vextra(st);
     h = block_height(st, h, height_basis(f->n));
+#else
+    int h = grid_item_height(b, f, avail);
+#endif
     out->max_content = out->min_content = out->minimum = h + mt + mb;
 }
 
@@ -5348,6 +5640,9 @@ static int grid_run(struct node *n, int x, int y, int w, int *out_bottom,
     memset(&cfg, 0, sizeof cfg);
 #ifndef LAYOUT_GRID_PERCENT_CONTAINER
     cfg.resolve_width = grid_resolve_width_cb;
+#endif
+#ifndef CSS_LAYOUT_GRID_IGNORE_BOUNDS
+    cfg.resolve_height = grid_resolve_height_cb;
 #endif
     memset(&areas, 0, sizeof areas);
     memset(&go, 0, sizeof go);
@@ -5410,6 +5705,11 @@ static int grid_run(struct node *n, int x, int y, int w, int *out_bottom,
         g->def_w = g->def_h = GRID_INDEFINITE;
         g->justify_self = GA_AUTO;
         g->align_self = (unsigned char)(st ? grid_ga_from_al(st->align_self) : GA_AUTO);
+        struct preferred_ratio ratio;
+        if (preferred_ratio(fi[i].n, st, &ratio)) {
+            int as = g->align_self == GA_AUTO ? cfg.align_items : g->align_self;
+            if (as == GA_NORMAL) g->align_self = GA_START;
+        }
         /* Formerly width:100% entered intrinsic sizing as the entire grid's
          * width: a 676px navigation grid grew EACH 1fr track to 676px. A grid
          * area's width is unknown until columns are sized. Defer percentages
@@ -5419,8 +5719,12 @@ static int grid_run(struct node *n, int x, int y, int w, int *out_bottom,
 #else
         if (st && st->has_w && !st->w_pct)
 #endif
-            g->def_w = clamp_w(st, to_border_w(st, resolve_len(st->width, st->w_pct, st->w_off, w)), w);
+            g->def_w = clamp_w(st, to_border_w(st, resolve_len(st->width, st->w_pct, st->w_off, w)), -1);
+#ifdef CSS_LAYOUT_GRID_IGNORE_BOUNDS
         { int sh = spec_h(st, height_basis(fi[i].n)); if (sh > 0) g->def_h = sh; }
+#else
+        { int sh = spec_h(st, -1); if (sh >= 0) g->def_h = block_height(st, sh, -1); }
+#endif
         if (!st) continue;                            /* anonymous item: no style to read */
         /* Percent margins depend on the GRID AREA, not the whole container.
          * Carry the original fraction through track sizing to placement. */
@@ -5445,22 +5749,36 @@ static int grid_run(struct node *n, int x, int y, int w, int *out_bottom,
         }
     }
 
-    br.fi = fi; br.n = nitems_g; br.fpx = fpx; br.fmono = fmono; br.avail_w = w;
+    br.fi = fi; br.gi = gi; br.cfg = &cfg;
+    br.n = nitems_g; br.fpx = fpx; br.fmono = fmono; br.avail_w = w;
     if (grid_layout(&cfg, gi, nitems_g, grid_measure_cb, &br, &go) != 0) goto done;
 
     if (out_width) *out_width = go.width;
     if (intrinsic) { *out_bottom = go.height; rc = 0; goto done; }
+#ifdef CSS_LAYOUT_GRID_IGNORE_BOUNDS
     int bot = y;
+#endif
     for (int i = 0; i < go.nitems && i < nitems_g; i++) {
         struct gridpos *p = &go.items[i];
         struct flexslot *f = &fi[i];
         css_resolve_margins(f->st, p->area_w);
-        int ch = flex_place(f, x + p->x, y + p->y, p->w, p->h, fpx, fmono);
+        int as = gi[i].align_self == GA_AUTO ? cfg.align_items : gi[i].align_self;
+        int ch = flex_place_impl(f, x + p->x, y + p->y, p->w, p->h, fpx, fmono,
+                                 as == GA_STRETCH || as == GA_NORMAL ? 1 : 2);
+#ifdef CSS_LAYOUT_GRID_IGNORE_BOUNDS
         if (y + p->y + ch > bot) bot = y + p->y + ch;
+#else
+        (void)ch;
+#endif
     }
 
     *out_bottom = y + go.height;
+#ifdef CSS_LAYOUT_GRID_IGNORE_BOUNDS
     if (cfg.avail_h == GRID_INDEFINITE && bot > *out_bottom) *out_bottom = bot;
+#endif
+    /* Used grid height is its solved tracks, not its children's ink/overflow.
+     * A 10px fixed row containing a 20px minimum item reserves 10px in flow;
+     * the retained child box still contributes 20px to scrollable overflow. */
     rc = 0;
 done:
     grid_out_free(&go);

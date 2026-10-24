@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Cancellation</title>
+<style>
+body { margin: 24px; font: 24px sans-serif; color: #102a23; background: #fff; }
+#result { padding: 28px; background: #efd179; }
+button { font: inherit; padding: 12px; }
+pre { font-size: 18px; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<h1>Request cancellation</h1>
+<div id="result">Checks are running</div>
+<pre id="details"></pre>
+<script>
+'use strict';
+var failures = [], completed = [], mark = document.getElementById('result');
+function check(ok, name) {
+  (ok ? completed : failures).push(name);
+  console.log('ABORT-' + (ok ? 'PASS ' : 'FAIL ') + name);
+}
+function finish() {
+  var ok = failures.length === 0;
+  mark.textContent = ok ? 'Cancellation checks passed' : 'Cancellation checks failed';
+  mark.style.backgroundColor = ok ? '#138d59' : '#c03232';
+  document.getElementById('details').textContent = completed.concat(failures).join('\n');
+  console.log('ABORT-DONE ' + completed.length + '/' + (completed.length + failures.length));
+}
+async function runChecks() {
+  try {
+    var source = new AbortController();
+    var child = AbortSignal.any([source.signal]);
+    var grandchild = AbortSignal.any([child]);
+    var settled = false;
+    source.signal.addEventListener('abort', function (e) {
+      settled = child.aborted && grandchild.aborted;
+      e.stopImmediatePropagation();
+    });
+    source.abort(false);
+    check(settled && grandchild.reason === false, 'dependent states before source event');
+    check(child instanceof EventTarget, 'signal inherits EventTarget');
+
+    var synthetic = new AbortController(), events = 0;
+    synthetic.signal.addEventListener('abort', function () { events++; }, { once: true });
+    synthetic.signal.dispatchEvent(new Event('abort'));
+    check(events === 1 && !synthetic.signal.aborted, 'synthetic event leaves state pending');
+
+    var requestController = new AbortController();
+    var request = new Request('/hold', { signal: requestController.signal });
+    var copy = request.clone();
+    requestController.abort('request');
+    check(new Request('/hold').signal instanceof AbortSignal, 'default Request owns a signal');
+    check(request.signal !== requestController.signal && copy.signal !== request.signal &&
+      request.signal.reason === 'request' && copy.signal.reason === 'request', 'Request clones follow through distinct signals');
+
+    var masked = AbortSignal.abort(false), localReason = 'pending';
+    Object.defineProperty(masked, 'aborted', { value: false });
+    Object.defineProperty(masked, 'reason', { value: 'forged' });
+    try { await fetch('data:,ready', { signal: masked }); }
+    catch (e) { localReason = e; }
+    check(localReason === false, 'local URL uses private cancellation state');
+
+    var active = new AbortController();
+    var response = await fetch('/stream', { signal: active.signal });
+    var reader = response.body.getReader();
+    var first = await reader.read();
+    check(!first.done && first.value.length > 0, 'body bytes arrive before cancellation');
+    var pending = reader.read();
+    active.abort(null);
+    try { await pending; check(false, 'body rejects with original null reason'); }
+    catch (e) { check(e === null, 'body rejects with original null reason'); }
+
+    var clock = AbortSignal.timeout(300);
+    var timed = AbortSignal.any([clock]);
+    check(!timed.aborted, 'timeout starts pending');
+    try { await fetch('/hold', { signal: timed }); check(false, 'timeout reaches Fetch'); }
+    catch (e) {
+      if (!(e === timed.reason && e instanceof DOMException && e.name === 'TimeoutError'))
+        console.log('ABORT-TIMEOUT observed=' + String(e) + ' aborted=' + timed.aborted);
+      check(e === timed.reason && e instanceof DOMException && e.name === 'TimeoutError', 'timeout reaches Fetch');
+    }
+
+    var workerResult = await new Promise(function (resolve, reject) {
+      var worker = new Worker('/worker.js');
+      worker.onmessage = function (event) { worker.terminate(); resolve(event.data); };
+      worker.onerror = function (event) { worker.terminate(); reject(new Error(event.message)); };
+    });
+    check(workerResult, 'Worker uses the same factories and cancellation reason');
+  } catch (e) {
+    check(false, 'unexpected error: ' + String(e));
+  }
+  finish();
+}
+runChecks();
+</script>
+</body>
+</html>

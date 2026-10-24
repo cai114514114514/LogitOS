@@ -19,7 +19,8 @@ enum { WS_NORMAL, WS_PRE, WS_NOWRAP, WS_PRE_WRAP, WS_PRE_LINE };
 /* flexbox */
 enum { FDIR_ROW, FDIR_ROW_REV, FDIR_COL, FDIR_COL_REV };
 enum { FWRAP_NOWRAP, FWRAP_WRAP, FWRAP_WRAP_REV };
-enum { JC_START, JC_END, JC_CENTER, JC_BETWEEN, JC_AROUND, JC_EVENLY };
+enum { JC_START, JC_END, JC_CENTER, JC_BETWEEN, JC_AROUND, JC_EVENLY,
+       JC_NORMAL, JC_STRETCH }; /* appended: Grid normal is not explicit start */
 /* align-items / align-self / align-content share this vocabulary. AL_AUTO is
  * only ever an align-self value ("use the container's align-items"). */
 enum { AL_STRETCH, AL_START, AL_END, AL_CENTER, AL_BASELINE, AL_AUTO,
@@ -27,7 +28,7 @@ enum { AL_STRETCH, AL_START, AL_END, AL_CENTER, AL_BASELINE, AL_AUTO,
  * flex modules all switch on these, and renumbering AL_STRETCH..AL_AUTO
  * would change the meaning of every stored byte in a way no compiler
  * would complain about. */
-       AL_BETWEEN, AL_AROUND, AL_EVENLY };
+       AL_BETWEEN, AL_AROUND, AL_EVENLY, AL_NORMAL };
 
 enum { POS_STATIC, POS_RELATIVE, POS_ABSOLUTE, POS_FIXED, POS_STICKY };
 enum { FLT_NONE, FLT_LEFT, FLT_RIGHT };
@@ -95,11 +96,13 @@ enum { GR_TEMPL_COLS = 0, GR_TEMPL_ROWS, GR_TEMPL_AREAS,
 #include "paint/svg_style_props.h"
 enum { XR_TRANSFORM = 0,        /* the <transform-list>, or `none`           */
        XR_TRANSFORM_ORIGIN,     /* 1-3 components, css_origin_parse          */
-       XR_BG_IMAGE,             /* the `linear-gradient(...)` call, verbatim */
+       XR_BG_IMAGE,             /* whole image layer list, or marked shorthand */
        XR_BOX_SHADOW,           /* the whole shadow list                     */
 #define CSS_SVG_XR(id, name, initial, inherited) XR_SVG_##id,
        CSS_SVG_PAINT_PROPERTIES(CSS_SVG_XR)
 #undef CSS_SVG_XR
+       XR_BG_SIZE, XR_BG_POSITION, XR_BG_REPEAT, /* appended: retain SVG slot IDs */
+       XR_BG_ORIGIN, XR_BG_CLIP, XR_BG_ATTACHMENT, XR_BG_COLOR,
        XR__COUNT };
 
 /* ---- linear-gradient, parsed ----
@@ -124,32 +127,10 @@ enum { XR_TRANSFORM = 0,        /* the <transform-list>, or `none`           */
  * can resolve `currentColor` (782 uses across the corpus, of which 1 is a
  * gradient stop), which needs the element's own colour and is therefore not
  * answerable at capture time either. */
-enum { CG_NONE = 0, CG_LINEAR };
-enum { CG_DIR_ANGLE = 0, CG_DIR_CORNER };
 /* `to bottom right` is NOT a fixed angle: CSS Images 3 puts the gradient line
  * perpendicular to the box's OTHER diagonal, so it depends on w/h. Kept as a
  * keyword and resolved by whoever holds the box. */
-enum { CG_CORNER_TL = 0, CG_CORNER_TR, CG_CORNER_BR, CG_CORNER_BL };
-enum { CG_POS_AUTO = 0, CG_POS_PCT, CG_POS_PX };
-
-#define CG_MAXSTOP 8            /* == GFX_MAX_STOPS; the engine's cap, not ours */
-
-struct cgstop {
-    const char *color; int colorlen;    /* span into the sheet; see above     */
-    int pos_kind;                       /* CG_POS_*                           */
-    int pos;                            /* hundredths of a percent, or px     */
-};
-
-struct cgradient {
-    int kind;                           /* CG_NONE / CG_LINEAR                */
-    int dir;                            /* CG_DIR_ANGLE / CG_DIR_CORNER       */
-    int corner;                         /* CG_CORNER_* when dir == CORNER     */
-    int angle_mdeg;                     /* MILLIdegrees, CSS convention:
-                                         * 0 = to top, 90000 = to right,
-                                         * clockwise. Normalised to [0,360000) */
-    int nstop;
-    struct cgstop stop[CG_MAXSTOP];
-};
+#include "css/gradient.h"
 
 /* ---- box-shadow, parsed ---- */
 #define CS_MAXSHADOW 4
@@ -215,6 +196,10 @@ struct cstyle {
     unsigned char generated_kind;       /* 1 before, 2 after; 0 real element */
     int display;
     uint32_t color;                 /* 0xRRGGBB (text) */
+    /* Computed foreground alpha, including legitimate zero, is needed when
+     * currentColor is consumed by gradients/backgrounds. Text painters retain
+     * their separate alpha limitation; this field does not claim to fix it. */
+    int color_alpha;
     uint32_t background; int has_bg;
     int bg_alpha;                   /* background-color alpha 0..255 (255 = opaque).
                                      * Blended by the painter, combined with the
@@ -249,6 +234,15 @@ struct cstyle {
      * pt/pr/pb/pl fields are used caches and cannot supply it on a resize. */
     int padding_pct_offset[4];
     int width, height; int has_w, has_h, w_pct, h_pct;
+    /* CSS Sizing 4 preferred ratio. Preserve author decimals rather than
+     * truncating 0.5/1 to an absent ratio. auto+ratio lets replaced elements
+     * prefer an intrinsic ratio; non-replaced elements use this ratio.
+     * Zero components are valid but degenerate, so layout treats them as auto.
+     * aspect_auto==2 is only the extra cascade's temporary inherit marker,
+     * resolved parent-first before any layout consumer sees this style. */
+    double aspect_w, aspect_h;
+    unsigned char aspect_auto;
+    unsigned char aspect_has_ratio; /* computed auto differs from auto 0/0 */
     int w_off, h_off;               /* px addend when w_pct/h_pct (calc) */
     int min_w, max_w, min_h, max_h;             /* min/max sizing */
     int has_min_w, has_max_w, has_min_h, has_max_h;
@@ -273,11 +267,20 @@ struct cstyle {
      * un-rounded every .btn always. That producer is DELETED; there is exactly
      * one door now. See the header of tests/unit/css_border_radius_test.c.
      *
-     * radius_pct[i] is a percentage of min(w,h), resolved at paint because a
+     * Original claim: radius_pct[i] is a percentage of min(w,h).
+     * Correction: paint resolves the horizontal/vertical axes against width
+     * and height separately, so a single percentage can form an ellipse.
+     * Percentage geometry is resolved at paint because a
      * percentage radius is relative to the border box. A corner is either px
      * or pct, never both: setting one clears the other. */
     int radius[4];
     int radius_pct[4];
+    /* Old basis covered size/position only. Image gradients also contain
+     * computed em stops/radii. Indices 0 size, 1 position, 2 image retain
+     * their parent's basis on inherit; percentages still use the child's box. */
+    int background_font[3];
+    unsigned background_shorthand; /* BG_SLOTS bits: raw span is a whole shorthand */
+    unsigned char mask_refused; /* no mask compositor: retain decoration refusal */
     int underline, strike, overline;            /* text-decoration bits */
     int opacity;                    /* 0..255; 255 = fully opaque */
     int list_item;                  /* 1 for <li>-style markers */
@@ -376,7 +379,10 @@ struct cstyle {
      * grid_raw[] above. NULL means the property was never declared, which is
      * the correct answer for nearly every element. */
     const char    *xraw[XR__COUNT];
-    unsigned short xrawlen[XR__COUNT];
+    /* Old ushort storage silently truncated an accepted span at 65535. Layer
+     * lists can cross that boundary: retain the validator's whole value, or a
+     * resource refusal, never a different prefix than the author supplied. */
+    int xrawlen[XR__COUNT];
 
     /* ---- the ANIMATION declarations, same shape one more time ----
      *
@@ -526,6 +532,7 @@ enum {
     CSSP_LIST_STYLE_TYPE,
     CSSP_POINTER_EVENTS,
     CSSP_BACKFACE_VISIBILITY, CSSP_TRANSFORM_STYLE,
+    CSSP_ASPECT_RATIO,
     CSSP__COUNT,
 
     /* A CUSTOM PROPERTY (`--x`), which is not a member of the enum in any
@@ -616,7 +623,10 @@ unsigned long long css_generated_skip_count(void);
  * LibCSS rather than keeping one here is what makes the agreement structural:
  * a property added to the vendored parser appears in both answers at once.
  *
- * Order is LibCSS's (alphabetical); the index is stable for one build only,
+ * Correction (2026-10-01): producer-owned names absent from LibCSS, currently
+ * aspect-ratio, append to that enumeration. Their grammar owns their name too;
+ * publishing support without this append would leave style.aspectRatio absent.
+ * Order starts with LibCSS's (alphabetical); the index is stable for one build only,
  * which is all any caller needs it for. */
 int         css_known_prop_count(void);
 const char *css_known_prop_at(int i, int *len);   /* NUL-terminated; len optional */
@@ -936,6 +946,9 @@ int  css_anim_frozen(void);
  * nothing outside string.h, which is what keeps css_extra.c linkable into the
  * eighteen host source lists that name it today without dragging in libm, the
  * 2D engine or css_interp.c.
+ * Correction (2026-10-02): gradient positions/radii now retain double precision
+ * until geometry exists; origin/shadow retain their older integer contract.
+ * The dedicated gradient module still needs no libm or renderer dependency.
  *
  * `fs_px` is the element's font-size and `root_px` the root element's, for em
  * and rem. The first is `cstyle.font_px` on the same style the span came from;
@@ -986,6 +999,17 @@ int  css_root_px(void);
  *                                the 50% point; treating it as a stop with no
  *                                colour would invent one.
  *   more than CG_MAXSTOP stops   1 of 385 in the corpus.
+ *
+ * Correction (2026-10-02): radial/conic and all three repeating forms now
+ * have dedicated parser/sampler modules. Hints and two-position stops retain
+ * their distinct metadata; zero without angle units is accepted where Images4
+ * explicitly permits <zero>. Old vendor-angle conventions and unsupported
+ * interpolation spaces still refuse. Background layer lists are owned by the
+ * background module; css_gradient_parse intentionally parses ONE whole image.
+ * Images4 also permits a single color stop and a percentage circle radius:
+ * the former expands to a uniform two-stop image, the latter uses the scaled
+ * diagonal in the sampler. Unsupported calculations/dual radial extent terms
+ * remain refused rather than accepted without corresponding geometry.
  */
 int css_gradient_parse(const char *v, int len, int fs_px, int root_px,
                        struct cgradient *out);

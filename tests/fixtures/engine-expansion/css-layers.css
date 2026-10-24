@@ -1,0 +1,74 @@
+/* One page is consumed by the host pixel recorder and the shipping guest.
+ * Distinct URL queries reveal the loader reaching a third image layer; all
+ * successful URLs use the existing real stripes.bmp, never a painted proxy. */
+html, body { margin: 0; padding: 0; background: white; }
+.tile { position: absolute; width: 100px; height: 60px; box-sizing: border-box; }
+#stack { left: 10px; top: 10px; background: white;
+  background-image: linear-gradient(rgba(0,0,255,.5),rgba(0,0,255,.5)), linear-gradient(red,red); }
+#none-cycle { left: 120px; top: 10px; background-color: white;
+  background-image: none, linear-gradient(blue,blue), linear-gradient(red,red);
+  background-size: 20px 10px, 40px 10px;
+  background-position: 0 0, 30px 0;
+  background-repeat: no-repeat; }
+#truncate { left: 230px; top: 10px; background-color: white;
+  background-image: linear-gradient(red,red);
+  background-size: 10px 10px, 60px 60px;
+  background-position: left top, right bottom; background-repeat: no-repeat; }
+#shorthand { left: 10px; top: 80px; padding: 10px; border: 4px solid transparent;
+  background: linear-gradient(blue,blue) left top / 80px 40px no-repeat border-box content-box red; }
+#origin { left: 120px; top: 80px; padding: 10px; border: 4px solid transparent;
+  background-color: #dedc71; background-image: url(assets/stripes.bmp?layer=front);
+  background-size: 20px 10px; background-position: left top;
+  background-repeat: no-repeat; background-origin: content-box; background-clip: border-box; }
+#color-clip { left: 230px; top: 80px; padding: 10px; border: 4px solid transparent;
+  background-color: blue; background-image: none, none;
+  background-clip: border-box, content-box; }
+#font-parent { left: 10px; top: 150px; font-size: 20px;
+  background-size: 2em 1em; background-position: 1em 0; }
+#font-child { width: 100px; height: 60px; font-size: 10px; background-color: white;
+  background-image: linear-gradient(blue,blue); background-repeat: no-repeat;
+  background-size: inherit; background-position: inherit; }
+#invalid-tail { left: 120px; top: 150px; background: #00ff00;
+  background: url(assets/stripes.bmp?invalid=tail) no-repeat,
+    linear-gradient(blue,blue) left top / -1px 2px red; }
+#reset { left: 230px; top: 150px;
+  background-image: linear-gradient(blue,blue); background: red; }
+#later-image { left: 10px; top: 220px;
+  background: red; background-image: linear-gradient(blue,blue); }
+#bitmap-third { left: 120px; top: 220px; background-color: #dedc71;
+  background-image: none, linear-gradient(transparent,transparent), url(assets/stripes.bmp?layer=back);
+  background-size: 100% 100%; background-repeat: no-repeat; }
+#mixed { left: 230px; top: 220px;
+  background: url(assets/stripes.bmp?layer=front) 0 0 / 20px 10px no-repeat,
+    linear-gradient(blue,blue) 0 0 / 100% 100% no-repeat #dedc71; }
+#opacity { left: 10px; top: 290px; background-color: white; opacity: .5;
+  background-image: linear-gradient(rgba(0,0,255,.5),rgba(0,0,255,.5)), linear-gradient(red,red); }
+#repeat-cycle { left: 120px; top: 290px; background-color: white;
+  background-image: none, linear-gradient(blue,blue), linear-gradient(red,red);
+  background-size: 20px 10px, 10px 10px;
+  background-position: 0 0, 0 20px;
+  background-repeat: no-repeat, repeat-x; }
+#invalid-unused { left: 230px; top: 290px; background-color: white;
+  background-image: linear-gradient(blue,blue); background-repeat: no-repeat;
+  background-size: 20px 10px; background-size: 20px 10px, banana; }
+#space { left: 10px; top: 360px; background-color: white;
+  background-image: linear-gradient(blue,blue); background-size: 30px 10px;
+  background-position: 11px 0; background-repeat: space no-repeat; }
+#gradient-parent { left: 120px; top: 360px; font-size: 20px;
+  background-image: linear-gradient(to right, red 1em, red 2em, blue 2em, blue 3em); }
+#gradient-child { width: 100px; height: 60px; font-size: 10px; background-color: white;
+  background-image: inherit; }
+#round { left: 230px; top: 360px; background-color: white;
+  background-image: url(assets/stripes.bmp?layer=front);
+  background-size: 30px 10px; background-position: 0 0; background-repeat: round no-repeat; }
+/* A zero-size image is valid but draws nothing. The children have NO base
+ * color: one would hide the ready-only routing defect by forcing the newer
+ * compositor anyway. The red ancestor makes that transparent result visible;
+ * the normal neighbor proves we did not simply drop gradient painting. */
+#zero-routing { position: absolute; left: 340px; top: 10px;
+  width: 50px; height: 140px; background-color: red; }
+.routing-case { position: absolute; left: 0; width: 50px; height: 40px;
+  background-image: linear-gradient(blue,blue); background-repeat: no-repeat; }
+#zero-width { top: 0; background-size: 0 10px; }
+#zero-height { top: 50px; background-size: 10px 0; }
+#sized-neighbor { top: 100px; background-size: 20px 10px; }

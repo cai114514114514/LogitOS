@@ -68,7 +68,7 @@ endif
 #                    be linked and js_forms.c cannot be linked without it.
 WEBAPI_JS_OUT := c/apps/gui/browser/app/main.c \
                  c/apps/gui/browser/js/media/media.c c/apps/gui/browser/js/media/media_src.c \
-                 c/apps/gui/browser/js/dom/forms.c
+                 $(BROWSER_FORM_JS_SRC)
 
 # --- test-webapi-slots-negctl ----------------------------------------------
 # The negative control for admitting fetches against the REAL free-slot count.

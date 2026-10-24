@@ -10,6 +10,7 @@
  */
 static void xpatch_merge(struct xpatch *a, const struct xpatch *b)
 {
+    css_sizing_merge(&a->sizing, &b->sizing);
     if(b->backface_set){a->backface_set=1;a->backface=b->backface;}
     if(b->preserve_set){a->preserve_set=1;a->preserve=b->preserve;}
     a->do_none |= b->do_none; a->do_masked |= b->do_masked;
@@ -28,7 +29,14 @@ static void xpatch_merge(struct xpatch *a, const struct xpatch *b)
     for (int i = 0; i < 2; i++) if (b->gap_raw[i]) { a->gap_raw[i] = b->gap_raw[i]; a->gap_len[i] = b->gap_len[i]; }
     for (int i = 0; i < 4; i++) if (b->padding_raw[i]) { a->padding_raw[i] = b->padding_raw[i]; a->padding_len[i] = b->padding_len[i]; }
     for (int i = 0; i < GR__COUNT; i++) if (b->gr[i]) { a->gr_any = 1; a->gr[i] = b->gr[i]; a->gr_len[i] = b->gr_len[i]; }
-    for (int i = 0; i < XR__COUNT; i++) if (b->xr[i]) { a->xr_any = 1; a->xr[i] = b->xr[i]; a->xr_len[i] = b->xr_len[i]; }
+    for (int i = 0; i < XR__COUNT; i++) if (b->xr[i]) {
+        a->xr_any = 1; a->xr[i] = b->xr[i]; a->xr_len[i] = b->xr_len[i];
+        int bg=css_background_slot(i);
+        if(bg>=0) {
+            unsigned bit=1u<<bg;
+            a->bg_shorthand=(a->bg_shorthand&~bit)|(b->bg_shorthand&bit);
+        }
+    }
 }
 
 static int xc_trivia(const char *s, int i, int end)

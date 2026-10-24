@@ -13,6 +13,10 @@
  * script cannot produce any. */
 #include "quickjs.h"
 #include "js/runtime/platform.h"
+#include "js/runtime/clone.h"
+#include "../../../../../../include/weaksym.h"
+extern JSValue js_webapi_clone_hosts(JSContext *) LOGIT_WEAK;
+LOGIT_WEAK_STUB(js_webapi_clone_hosts);
 #include "js/dom/dom.h"        /* js_dom_has_activation -- the writeText activation gate below */
 /* js_frame.c: the same-origin second browsing context an <iframe> below hands
  * its settled document to. OPTIONAL on purpose -- six host source lists name
@@ -225,8 +229,26 @@ extern int passive_frames_enabled(void) LOGIT_WEAK;
 LOGIT_WEAK_STUB(passive_frames_enabled);
 extern JSValue passive_frame_window(JSContext *,JSValueConst,int,JSValueConst *) LOGIT_WEAK;
 LOGIT_WEAK_STUB(passive_frame_window);
+static JSValue install_clone(JSContext *ctx, JSValueConst self, int argc, JSValueConst *argv)
+{
+    (void)self;
+    JSValue hosts=LOGIT_HAVE(js_webapi_clone_hosts)?js_webapi_clone_hosts(ctx):JS_UNDEFINED;
+    if (JS_IsUndefined(hosts)) hosts=JS_NewArray(ctx);
+    if (JS_IsException(hosts)) return hosts;
+    if (argc && JS_IsObject(argv[0])) {
+        JSValue length=JS_GetPropertyStr(ctx,hosts,"length");
+        uint32_t count=0;
+        int failed=JS_ToUint32(ctx,&count,length)<0;
+        JS_FreeValue(ctx,length);
+        if (!failed) failed=JS_SetPropertyUint32(ctx,hosts,count,JS_DupValue(ctx,argv[0]))<0;
+        if (failed) {JS_FreeValue(ctx,hosts);return JS_EXCEPTION;}
+    }
+    int ok=js_clone_install_host(ctx,hosts);
+    JS_FreeValue(ctx,hosts);return ok?JS_UNDEFINED:JS_EXCEPTION;
+}
+
 static const char *PLATFORM_PRELUDE =
-"(function (__random, __vw, __vh, __randomStrong, __clipWriteText, __nativeMOFlush, __initialIframes, __passiveFrames, __embeddedWindow, __legacyMarkup) {\n"
+"(function (__random, __vw, __vh, __randomStrong, __clipWriteText, __nativeMOFlush, __initialIframes, __passiveFrames, __embeddedWindow, __legacyMarkup, __cloneInstall) {\n"
 "'use strict';\n"
 "var G = globalThis;\n"
 /* The house rule for this whole file. Three lines are adding to this runtime
@@ -1142,51 +1164,11 @@ static const char *PLATFORM_PRELUDE =
 "  });\n"
 "})();\n"
 
-/* ==== structuredClone ====================================================
- * REQUESTED, NOT MEASURED. A real deep clone with cycle handling, because the
- * one-line JSON round trip that usually stands in for it silently drops Map,
- * Set, Date, TypedArray and every cycle, and a page that clones its state with
- * it gets corrupted state rather than an error. Functions throw
- * DataCloneError, as the spec says -- that is how a page finds its own bug. */
-"def(G, 'structuredClone', function (v) {\n"
-"  var seen = new Map();\n"
-"  function cl(x) {\n"
-"    if (x === null || typeof x !== 'object') {\n"
-"      if (typeof x === 'function') throw new G.DOMException('could not be cloned', 'DataCloneError');\n"
-"      if (typeof x === 'symbol') throw new G.DOMException('could not be cloned', 'DataCloneError');\n"
-"      return x;\n"
-"    }\n"
-"    if (seen.has(x)) return seen.get(x);\n"
-"    if ((portIs && portIs(x)) || (G.MessagePort && x instanceof G.MessagePort) || (G.Node && x instanceof G.Node) ||\n"
-"        (typeof Promise!=='undefined' && x instanceof Promise) ||\n"
-"        (typeof WeakMap!=='undefined' && x instanceof WeakMap) ||\n"
-"        (typeof WeakSet!=='undefined' && x instanceof WeakSet) ||\n"
-"        (typeof WeakRef!=='undefined' && x instanceof WeakRef) ||\n"
-"        (typeof SharedArrayBuffer!=='undefined' && x instanceof SharedArrayBuffer))\n"
-"      throw new G.DOMException('could not be cloned','DataCloneError');\n"
-"    var out;\n"
-"    if (x instanceof Date) { out = new Date(x.getTime()); seen.set(x, out); return out; }\n"
-"    if (x instanceof RegExp) { out = new RegExp(x.source, x.flags); seen.set(x, out); return out; }\n"
-"    if (x instanceof ArrayBuffer) { out = x.slice(0); seen.set(x, out); return out; }\n"
-"    if (ArrayBuffer.isView(x)) {\n"
-"      out = new x.constructor(cl(x.buffer), x.byteOffset, x.length !== undefined ? x.length : undefined);\n"
-"      seen.set(x, out); return out;\n"
-"    }\n"
-"    if (x instanceof Map) { out = new Map(); seen.set(x, out);\n"
-"      x.forEach(function (v2, k2) { out.set(cl(k2), cl(v2)); }); return out; }\n"
-"    if (x instanceof Set) { out = new Set(); seen.set(x, out);\n"
-"      x.forEach(function (v2) { out.add(cl(v2)); }); return out; }\n"
-"    if (Array.isArray(x)) { out = new Array(x.length); seen.set(x, out);\n"
-"      for (var i = 0; i < x.length; i++) if (i in x) out[i] = cl(x[i]); return out; }\n"
-"    if (x instanceof Error) { out = new x.constructor(x.message); seen.set(x, out);\n"
-"      out.name = x.name; return out; }\n"
-"    out = {}; seen.set(x, out);\n"
-"    var ks = Object.keys(x);\n"
-"    for (var j = 0; j < ks.length; j++) Object.defineProperty(out,ks[j],{value:cl(x[ks[j]]),writable:true,enumerable:true,configurable:true});\n"
-"    return out;\n"
-"  }\n"
-"  return cl(v);\n"
-"});\n"
+/* structuredClone now uses native brands and transactional transfer in
+ * runtime/clone.c. Install here after DOMException, before portClone captures
+ * the function; replacing the global only after this prelude leaves ports
+ * holding the older lossy copier. The argument is the private fallback brand. */
+"__cloneInstall(portIs ? [portIs] : undefined);\n"
 "portClone=G.structuredClone;\n"
 
 /* ==== Blob / File / FormData ============================================
@@ -1200,11 +1182,13 @@ static const char *PLATFORM_PRELUDE =
  * and a Map-backed implementation loses two of them.
  *
  * Correction 2026-09-25: FormData, like Blob before it, now lives in
- * js_webapi.c (js/net/formdata_prelude.inc), which runs first -- so the
+ * js_webapi.c (then js/net/formdata_prelude.inc), which runs first -- so the
  * `if (!G.FormData)` block below is a fallback only for a build without
  * js_webapi.o. The live one converts a Blob entry to a File at append() time,
  * which this fallback never did (the filename argument was stored and ignored
  * by the encoder). */
+/* Correction 2026-09-30: the live class is now js/net/formdata.c, with private
+ * lists and native form construction. This no-webapi fallback remains older. */
 "(function () {\n"
 "  function enc(s) {\n"
 "    if (G.TextEncoder) return new G.TextEncoder().encode(s);\n"
@@ -4118,7 +4102,7 @@ void js_platform_install(JSContext *ctx)
         JS_FreeValue(ctx, fn);
         return;
     }
-    JSValue args[10];
+    JSValue args[11];
     args[0] = JS_NewCFunction(ctx, js_random, "__random", 2);
     args[1] = JS_NewInt32(ctx, g_vw);
     args[2] = JS_NewInt32(ctx, g_vh);
@@ -4129,12 +4113,13 @@ void js_platform_install(JSContext *ctx)
     args[7] = JS_NewBool(ctx,LOGIT_HAVE(passive_frames_enabled)&&passive_frames_enabled());
     args[8] = LOGIT_HAVE(passive_frame_window)?JS_NewCFunction(ctx,passive_frame_window,"embeddedWindow",1):JS_UNDEFINED;
     args[9] = JS_NewBool(ctx,g_legacy_frames);
+    args[10] = JS_NewCFunction(ctx,install_clone,"installClone",1);
     if(JS_IsException(args[6])) {
-        for(int i=0;i<10;i++)JS_FreeValue(ctx,args[i]);
+        for(int i=0;i<11;i++)JS_FreeValue(ctx,args[i]);
         JS_FreeValue(ctx,fn);return;
     }
-    JSValue hooks = JS_Call(ctx, fn, JS_UNDEFINED, 10, (JSValueConst *)args);
-    for (int i = 0; i < 10; i++) JS_FreeValue(ctx, args[i]);
+    JSValue hooks = JS_Call(ctx, fn, JS_UNDEFINED, 11, (JSValueConst *)args);
+    for (int i = 0; i < 11; i++) JS_FreeValue(ctx, args[i]);
     JS_FreeValue(ctx, fn);
     if (JS_IsException(hooks)) {
         JSValue e = JS_GetException(ctx);

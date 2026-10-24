@@ -126,6 +126,9 @@ static css_error match_universal_combinator(css_select_ctx *ctx,
 static css_error match_details(css_select_ctx *ctx, void *node,
 		const css_selector_detail *detail, css_select_state *state,
 		bool *match, css_pseudo_element *pseudo_element);
+static css_error match_alt_chain(css_select_ctx *ctx, void *node,
+		const css_selector *selector, css_select_state *state,
+		unsigned depth, bool *match);
 static css_error match_detail(css_select_ctx *ctx, void *node,
 		const css_selector_detail *detail, css_select_state *state,
 		bool *match, css_pseudo_element *pseudo_element);
@@ -782,6 +785,7 @@ static css_error css__set_node_data(void *node, css_select_state *state,
 		return error;
 	}
 	node_data->bloom = bloom;
+	state->node_bloom_owned = true;
 
 	/* Set selection results */
 	results = state->results;
@@ -1099,6 +1103,13 @@ static void css_select__finalise_selection_state(
 	}
 
 	if (state->node_data != NULL) {
+		/* Initialization stores a BORROWED parent bloom for matching. Only
+		 * css__set_node_data replaces it with this node's own allocation.
+		 * The old cleanup treated both as owned: the 33-ancestor alternative
+		 * budget case returns NOMEM before completion, and ASan observed a
+		 * double-free when the parent's real owner subsequently released it.
+		 * This applies to every early selection error, not just that limit. */
+		if (!state->node_bloom_owned) state->node_data->bloom = NULL;
 		css__destroy_node_data(state->node_data);
 	}
 
@@ -2573,6 +2584,69 @@ static inline bool match_nth(int32_t a, int32_t b, int32_t count)
 	}
 }
 
+/* Alternative chains never pass through the outer rule hash, so every type
+ * selector must be checked explicitly. Backtrack over ALL ancestors/general
+ * siblings: choosing the nearest matching .b in :is(.a > .b .c) can fail even
+ * when a farther .b satisfies the left-hand chain. This evaluates a boolean
+ * only, without cascading a rule, running match-report callbacks or sharing
+ * the outer selector's reject cache. Parsing caps alternatives at 128 parts.
+ * That old depth bound did NOT bound candidate work: repeated descendant arms
+ * can choose(D,K) ancestors. The shared per-node visit ceiling reports a real
+ * CSS_NOMEM refusal, including nested :is(), instead of hanging or publishing
+ * a fabricated false match. Memoization is a future optimization, not a claim
+ * that the current DFS is linear. */
+static css_error match_alt_chain(css_select_ctx *ctx, void *node,
+        const css_selector *selector, css_select_state *state,
+        unsigned depth, bool *match)
+{
+    bool name_ok = true, details_ok = false;
+    css_error error;
+    void *candidate = NULL;
+    css_combinator comb;
+    *match = false;
+    if (node == NULL || selector == NULL || depth >= 128) return CSS_OK;
+    if (++state->alt_work > 65536) {
+#ifdef CSS_ALT_LIMIT_AS_FALSE
+        /* Fault only the actual refusal edge: treating resource exhaustion as
+         * a boolean false lets :not() invert it to true. The public matcher
+         * gate observes that wrong match, without an unbounded billion-visit
+         * control run or replacing the selector implementation. */
+        return CSS_OK;
+#else
+        return CSS_NOMEM;
+#endif
+    }
+    if (selector->data.qname.name != ctx->str.universal) {
+        error = state->handler->node_has_name(state->pw, node,
+                                             &selector->data.qname, &name_ok);
+        if (error != CSS_OK) return error;
+    }
+    if (!name_ok) return CSS_OK;
+    error = match_details(ctx, node, &selector->data, state, &details_ok, NULL);
+    if (error != CSS_OK || !details_ok) return error;
+    comb = selector->data.comb;
+    if (comb == CSS_COMBINATOR_NONE) { *match = true; return CSS_OK; }
+    if (comb == CSS_COMBINATOR_PARENT || comb == CSS_COMBINATOR_ANCESTOR)
+        error = state->handler->parent_node(state->pw, node, &candidate);
+    else
+        error = state->handler->sibling_node(state->pw, node, &candidate);
+    if (error != CSS_OK) return error;
+    while (candidate != NULL) {
+        bool left_ok = false;
+        error = match_alt_chain(ctx, candidate, selector->combinator, state,
+                               depth + 1, &left_ok);
+        if (error != CSS_OK) return error;
+        if (left_ok) { *match = true; return CSS_OK; }
+        if (comb == CSS_COMBINATOR_PARENT || comb == CSS_COMBINATOR_SIBLING) break;
+        if (comb == CSS_COMBINATOR_ANCESTOR)
+            error = state->handler->parent_node(state->pw, candidate, &candidate);
+        else
+            error = state->handler->sibling_node(state->pw, candidate, &candidate);
+        if (error != CSS_OK) return error;
+    }
+    return CSS_OK;
+}
+
 css_error match_detail(css_select_ctx *ctx, void *node,
 		const css_selector_detail *detail, css_select_state *state,
 		bool *match, css_pseudo_element *pseudo_element)
@@ -2629,31 +2703,10 @@ css_error match_detail(css_select_ctx *ctx, void *node,
 
 			*match = false;
 			for (i = 0; altlist != NULL && i < altlist->n; i++) {
-				const css_selector *alt = altlist->alts[i];
-				bool name_ok = true;
 				bool sub_match = false;
-
-				if (alt->data.qname.name != ctx->str.universal) {
-					error = state->handler->node_has_name(
-							state->pw, node,
-							&alt->data.qname,
-							&name_ok);
-					if (error != CSS_OK)
-						return error;
-				}
-
-				if (name_ok) {
-					error = match_details(ctx, node,
-							&alt->data, state,
-							&sub_match, NULL);
-					if (error != CSS_OK)
-						return error;
-				}
-
-				if (name_ok && sub_match) {
-					*match = true;
-					break;
-				}
+				error = match_alt_chain(ctx, node, altlist->alts[i], state, 0, &sub_match);
+				if (error != CSS_OK) return error;
+				if (sub_match) { *match = true; break; }
 			}
 		} else if (is_root == false &&
 				detail->qname.name == ctx->str.first_child) {
@@ -3103,4 +3156,3 @@ void dump_chain(const css_selector *selector)
 	} while (detail);
 }
 #endif
-

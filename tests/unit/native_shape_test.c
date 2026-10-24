@@ -10,10 +10,13 @@
  * WebIDL's, not '' or 'value'. And a function the PAGE writes is untouched:
  * its source, its prototype, its constructibility.
  *
- * FOUR KINDS OF CHECK, tagged, because the negative control depends on it:
+ * FIVE KINDS OF CHECK, tagged, because the negative control depends on it:
  *   [native]  the pass's effect. -DNATIVE_SHAPE_NEGCTL_SKIP compiles the
- *             pass to a no-op, and in that build EVERY [native] check must
- *             fail and NOTHING else may -- tests/native_shape.mk counts.
+ *             pass to a no-op; every check of that effect must fail and
+ *             NOTHING else may -- tests/native_shape.mk counts.
+ *   [idl]     the earlier IDL pass's computed methods/getters, whose names,
+ *             lack of prototype and stripped source already have the right
+ *             shape without the native pass: true in both builds.
  *   [engine]  QuickJS's own spelling of C built-ins: true in both builds.
  *   [page]    a page function is untouched: true in both builds -- including
  *             the <body onload> the PLATFORM compiles at install, before the
@@ -23,6 +26,14 @@
  *   [works]   the platform still works after the pass (it deletes
  *             `prototype`s and removes [[Construct]] from hundreds of
  *             functions its own preludes wrote): true in both builds.
+ *
+ * Original claim: EVERY check then tagged [native] must fail without the
+ * pass. Correction (2026-09-30): the real skip build ran 48 checks but only
+ * 25 of 27 [native] failed, with no other failure. readyState and sendBeacon
+ * were the two survivors: idl_shape_prelude.inc rebuilds them before this
+ * pass with computed getter/method syntax and 'use strip'. They remain real
+ * checks under [idl]; making their already-correct shape fail would test a
+ * different producer rather than the skip control this gate names.
  *
  * THREE READINGS OF "every platform function" besides the C walk's own. A
  * census written here in JS, sharing no code with the C walk, reaches
@@ -442,11 +453,15 @@ int main(int argc, char **argv)
     ck("engine", "setTimeout (a C function) is native code, one line",
        "String(setTimeout) === 'function setTimeout() { [native code] }'");
     ck("engine", "Function.prototype.toString of itself", "String(Function.prototype.toString) === 'function toString() { [native code] }'");
-    ck("native", "an accessor the platform wrote in JS: document.readyState's getter is 'get readyState', native, no prototype",
+    /* These used to be [native], but the IDL prelude creates their complete
+     * observed shape before the native walk. Keep them in both builds so a
+     * skip control cannot hide collateral damage to that earlier producer. */
+    ck("idl", "document.readyState's IDL getter is 'get readyState', native, no prototype",
        "(function(){ var d = Object.getOwnPropertyDescriptor(document, 'readyState') || Object.getOwnPropertyDescriptor(Document.prototype, 'readyState');"
        "  return d.get.name === 'get readyState' && d.get.toString() === 'function get readyState() { [native code] }' && !('prototype' in d.get); })()");
-    ck("native", "a descriptor-literal method gets its WebIDL name: navigator.sendBeacon.name",
-       "typeof navigator.sendBeacon !== 'function' || (navigator.sendBeacon.name === 'sendBeacon' && String(navigator.sendBeacon) === 'function sendBeacon() { [native code] }')");
+    ck("idl", "navigator.sendBeacon's IDL method is named, native, without prototype",
+       "typeof navigator.sendBeacon === 'function' && navigator.sendBeacon.name === 'sendBeacon' &&"
+       "String(navigator.sendBeacon) === 'function sendBeacon() { [native code] }' && !('prototype' in navigator.sendBeacon)");
     ck("native", "a C getter made with a bare name reads 'get KEY': screen.width",
        "(function(){ var d = Object.getOwnPropertyDescriptor(screen, 'width') || Object.getOwnPropertyDescriptor(Object.getPrototypeOf(screen), 'width');"
        "  return !d || !d.get || d.get.name === 'get width'; })() &&"
@@ -563,8 +578,13 @@ int main(int argc, char **argv)
        "__nsCensus(false).name.length === 0");
     ck("native", "census, through the singletons' getters: every function still reads native",
        "__nsCensus(true).src.length === 0");
-    /* What the getters hand out is made AFTER the pass (a fresh collection
-     * per call): so this is the closure-time shape, not the walk's. */
+    /* Original claim: what getters hand out is made AFTER the pass (a fresh
+     * collection per call), so this measures only closure-time shape.
+     * Correction (2026-09-30): IDL getters also close over EXISTING namespace
+     * objects, e.g. navigator.plugins. The positive run found 20 operations
+     * with prototype/[[Construct]] behind those getters: a quiet descriptor
+     * walk cannot reach the closed-over values. Keep that public surface in
+     * the check; deleting it would hide a producer handoff defect. */
     ck("native", "census, through the singletons' getters: no operation or accessor owns a prototype or constructs",
        "(function(){ var c = __nsCensus(true); return c.proto.length === 0 && c.ctor.length === 0; })()");
     census_report("instances", "JSON.stringify((function(c){ return { made: c.made, fns: c.fns, src: c.src.length, proto: c.proto.length, ctor: c.ctor.length,"

@@ -521,13 +521,55 @@ static void ns_free(struct ns *s)
     JS_FreeAtom(s->ctx, s->a_name);
 }
 
-int js_native_shape_install(JSContext *ctx, struct js_native_shape_report *out)
+/* The IDL producer's private null-prototype object contains data-property
+ * records under numeric keys, not getter results. The original bridge used
+ * a packed array, whose element storage JS_GetOwnPropertyQuiet cannot read:
+ * enumeration saw 12 properties but the real positive gate stayed 48/2.
+ * Ordinary own slots preserve the quiet boundary. These numeric keys denote
+ * explicit installer roots, so seed their record values before
+ * the ordinary quiet walk. Never JS_GetProperty here: even a malformed input
+ * must not make the native pass invoke an accessor or Proxy trap.
+ *
+ * Measured defect (2026-09-30): with IDL first and only global roots, the real
+ * positive gate found 20 namespace operations owning prototype/[[Construct]]
+ * behind getters, while ordinary reflection found zero. Calling every getter
+ * would recover some values by executing code; this handoff preserves the
+ * existing RUNS NOTHING boundary instead. */
+static void ns_hidden_roots(struct ns *s, JSValueConst roots)
+{
+    JSContext *ctx = s->ctx;
+    JSPropertyEnum *tab;
+    uint32_t n;
+    if (!JS_IsObject(roots) || JS_IsProxy(roots)) return;
+    if (JS_GetOwnPropertyNames(ctx, &tab, &n, roots, JS_GPN_STRING_MASK) < 0) {
+        JS_FreeValue(ctx, JS_GetException(ctx));
+        s->oom = 1;
+        return;
+    }
+    for (uint32_t i = 0; i < n && !s->oom; i++) {
+        if (!ns_is_index_key(ctx, tab[i].atom)) continue;
+        JSPropertyDescriptor d;
+        int k = JS_GetOwnPropertyQuiet(ctx, &d, roots, tab[i].atom);
+        if (k == JS_QUIET_DATA) ns_push(s, d.value, NS_PLATFORM, 0);
+        if (k == JS_QUIET_DATA || k == JS_QUIET_ACCESSOR) {
+            JS_FreeValue(ctx, d.value);
+            JS_FreeValue(ctx, d.getter);
+            JS_FreeValue(ctx, d.setter);
+        }
+    }
+    for (uint32_t i = 0; i < n; i++) JS_FreeAtom(ctx, tab[i].atom);
+    js_free(ctx, tab);
+}
+
+int js_native_shape_install_roots(JSContext *ctx, JSValueConst roots,
+                                  struct js_native_shape_report *out)
 {
     struct ns s;
     memset(&s, 0, sizeof s);
     s.ctx = ctx;
     if (out) memset(out, 0, sizeof *out);
 #ifdef NATIVE_SHAPE_NEGCTL_SKIP
+    (void)roots;
     printf("[native-shape] SKIPPED (-DNATIVE_SHAPE_NEGCTL_SKIP, the negative control)\n");
     return 0;
 #endif
@@ -575,6 +617,7 @@ int js_native_shape_install(JSContext *ctx, struct js_native_shape_report *out)
      * every non-intrinsic global. The global's intrinsic-named properties
      * are skipped here -- phase 1 took them. */
     s.rep.objects++;
+    ns_hidden_roots(&s, roots);
     for (uint32_t i = 0; i < n && !s.oom; i++) {
         if (ns_is_intrinsic(ctx, tab[i].atom)) continue;
         JSPropertyDescriptor d;
@@ -610,4 +653,9 @@ int js_native_shape_install(JSContext *ctx, struct js_native_shape_report *out)
     int oom = s.oom;
     ns_free(&s);
     return oom ? -1 : 0;
+}
+
+int js_native_shape_install(JSContext *ctx, struct js_native_shape_report *out)
+{
+    return js_native_shape_install_roots(ctx, JS_UNDEFINED, out);
 }

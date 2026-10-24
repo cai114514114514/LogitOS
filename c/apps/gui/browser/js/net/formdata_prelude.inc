@@ -1,5 +1,10 @@
 /* FormData (XHR Standard, "Interface FormData").
  *
+ * Correction 2026-09-30: this historical include is no longer installed.
+ * js/net/formdata.c now owns private entries and the real form constructor;
+ * fetch_body_prelude.inc calls its factory. The old ignored-form claim below
+ * is retained beside this correction so it cannot be mistaken for live scope.
+ *
  * A chunk of js_webapi.c's PRELUDE, included right after blob_prelude.inc for
  * the same reason Blob lives there: fetch() and XMLHttpRequest.send() have to
  * ENCODE one (multipart/form-data, see extractBody in fetch_body_prelude.inc)

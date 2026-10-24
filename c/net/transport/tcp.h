@@ -80,6 +80,7 @@ int  tcp_connect(uint32_t dst, uint16_t port);
 int  tcp_connect_start(uint32_t dst, uint16_t port);
 /* Descriptor-owned active open; retained until tcp_close even after failure. */
 int  tcp_connect_owned(uint32_t dst, uint16_t port);
+int  tcp_connect_owned_addr(const struct tcp_addr *dst, uint16_t port);
 int  tcp_connect_start_addr(const struct tcp_addr *dst, uint16_t port);
 int  tcp_connect_status(int id);
 

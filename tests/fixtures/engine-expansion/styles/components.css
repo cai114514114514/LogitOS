@@ -1,0 +1,31 @@
+/* The image is relative to this external sheet, not to the document. */
+html { font-size:16px; background:white; }
+body { margin:16px; font:14px sans-serif; color:#253042; }
+h1 { font-size:20px; margin:0 0 8px; }
+p { margin:6px 0 10px; }
+.pictures, .layout-row { display:flex; gap:16px; margin-bottom:14px; align-items:flex-start; }
+.picture { width:160px; height:90px; background-color:#dedc71;
+  background-image:url('../assets/stripes.bmp'); background-repeat:no-repeat;
+  background-position:center; }
+#cover { background-size:cover; }
+#contain { background-size:contain; }
+#repeat { background-image:url('../assets/str\69 pes.bmp');
+  background-size:40px 20px; background-position:0 0; background-repeat:repeat; }
+#ratio { width:240px; aspect-ratio:16 / 9; background:#2375b7; }
+#auto-col { display:flex; flex-direction:column; width:60px; }
+#basis-a { flex:0 0 60px; background:#d85c57; }
+#basis-b { flex:0 0 90px; background:#40a676; }
+#wrap-col { display:flex; flex-flow:column wrap; height:100px; width:160px; align-content:flex-start; }
+#wrap-col > div { flex:0 0 60px; width:40px; }
+#wrap-a { background:#ad53c6; } #wrap-b { background:#12b6c1; } #wrap-c { background:#ddb323; }
+.grid { display:grid; width:180px; grid-template-columns:auto auto; }
+.grid > div { height:20px; min-width:20px; background:#a35a2d; }
+#start-grid { justify-content:start; }
+/* Complex parent + selector-list nesting exercises the real matcher. The ID
+ * alternative does not match, but still contributes :is() max specificity. */
+.card, #unused-parent {
+  .nested-body {
+    & > .leaf { width:80px; height:16px; background:#2b7dbe; }
+  }
+}
+.leaf { width:12px; height:8px; background:#ae334a; }

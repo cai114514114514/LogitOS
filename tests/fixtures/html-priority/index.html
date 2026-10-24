@@ -1,0 +1,50 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>HTML priority acceptance</title>
+<style>
+body{font:16px sans-serif;background:#f7f7f2;color:#202728;margin:24px;}
+#marker{width:240px;height:48px;background:#b0b0b0;margin:16px 0;}
+pre{white-space:pre-wrap;font:13px monospace;max-width:1000px;}
+</style>
+<h1>HTML priority acceptance</h1>
+<p>Public API scenarios for the rebuilt LogitOS browser. Results appear below.</p>
+<div id="marker"></div><strong id="result">Running</strong><pre id="records"></pre>
+<script src="clone.js"></script><script src="forms.js"></script>
+<script src="formdata.js"></script><script src="timers.js"></script>
+<script src="streams.js"></script><script src="ui.js"></script>
+<script>
+(async function () {
+    var pass=0,fail=0,records=[];
+    function check(condition,label){if(condition)pass++;else fail++;records.push((condition?'PASS ':'FAIL ')+label);console.log((condition?'HTML-PASS ':'HTML-FAIL ')+label);}
+    function show(){document.getElementById('records').textContent=records.join('\n');}
+    try {
+        for(var entry of [['clone',testHTMLClone],['forms',testHTMLForms],['entries',testHTMLFormData],['streams',testHTMLStreams],['timers',testHTMLTimers],['native UI',testHTMLUI]]) {
+            records.push('PHASE '+entry[0]);await entry[1](check);show();
+        }
+        await new Promise(function(resolve){
+            var worker=new Worker('worker.js');
+            var timer=setTimeout(function(){check(false,'Worker acceptance deadline');worker.terminate();resolve();},30000);
+            worker.onmessage=function(event){
+                var data=event.data;if(!data||data.kind!=='html-priority-worker')return;
+                clearTimeout(timer);pass+=data.pass;fail+=data.fail;
+                records=records.concat(data.records.map(function(line){return 'WORKER '+line;}));
+                data.records.forEach(function(line){console.log('HTML-WORKER '+line);});
+                worker.terminate();resolve();
+            };
+            worker.onerror=function(event){clearTimeout(timer);check(false,'Worker error: '+event.message);worker.terminate();resolve();};
+        });
+    } catch(error){check(false,'page exception: '+error.name+': '+error.message);}
+    document.getElementById('result').textContent='pass='+pass+' fail='+fail;
+    document.getElementById('marker').style.backgroundColor=fail?'#c52a2a':'#23a15b';
+    show();
+    // Kernel diagnostics and ring-3 console writes share the serial device
+    // and can interleave within one assertion. Send the same guest-owned
+    // records over ordinary Fetch; the host checks coverage and scanout, not
+    // reconstructed fragments of a corrupted console line.
+    try {
+        var receipt=await fetch('/report',{method:'POST',body:JSON.stringify({kind:'html-priority',pass:pass,fail:fail,records:records})});
+        if(!receipt.ok)throw new Error('report status '+receipt.status);
+    } catch(error){console.log('HTML_REPORT_ERROR '+String(error));}
+    console.log('HTML_PRIORITY pass='+pass+' fail='+fail);
+})();
+</script>

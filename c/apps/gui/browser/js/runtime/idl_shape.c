@@ -67,6 +67,9 @@
 #include <stdio.h>
 #include <string.h>
 #include "quickjs.h"
+#include "../../../../../../include/weaksym.h"
+extern JSValue js_dom_event_types(JSContext *) LOGIT_WEAK;
+LOGIT_WEAK_STUB(js_dom_event_types);
 #include "js/runtime/idl_shape.h"
 
 /* Relative to this file, like every other prelude in js/: that is how
@@ -110,7 +113,7 @@ static void shape_report(JSContext *ctx, const char *what)
     JS_FreeValue(ctx, e);
 }
 
-void js_idl_shape_install(JSContext *ctx)
+JSValue js_idl_shape_install_roots(JSContext *ctx)
 {
 #ifdef IDL_SHAPE_NEGCTL_SKIP
     /* The negative control: the same link, the same page, no pass. */
@@ -118,23 +121,34 @@ void js_idl_shape_install(JSContext *ctx)
     (void)shape_mk_iface;
     (void)shape_report;
     (void)IDL_SHAPE_PRELUDE;
-    return;
+    return JS_UNDEFINED;
 #else
-    if (!ctx) return;
+    if (!ctx) return JS_UNDEFINED;
     JSValue fn = JS_Eval(ctx, IDL_SHAPE_PRELUDE, sizeof IDL_SHAPE_PRELUDE - 1,
                          "<idl-shape>", JS_EVAL_TYPE_GLOBAL);
-    if (JS_IsException(fn)) { shape_report(ctx, "prelude did not compile"); return; }
-    JSValue args[2];
+    if (JS_IsException(fn)) { shape_report(ctx, "prelude did not compile"); return JS_UNDEFINED; }
+    JSValue args[3];
     args[0] = JS_GetGlobalObject(ctx);
     args[1] = JS_NewCFunction(ctx, shape_mk_iface, "mkIface", 2);
-    JSValue r = JS_Call(ctx, fn, JS_UNDEFINED, 2, (JSValueConst *)args);
+    args[2] = LOGIT_HAVE(js_dom_event_types)?js_dom_event_types(ctx):JS_NewArray(ctx);
+    JSValue r = JS_IsException(args[2])?JS_EXCEPTION:
+        JS_Call(ctx, fn, JS_UNDEFINED, 3, (JSValueConst *)args);
     /* A throw part-way leaves what was already moved moved: every step is
      * complete for the member it touches, so a half-run pass is a page with
      * fewer members relocated, never one with a member lost. */
-    if (JS_IsException(r)) shape_report(ctx, "pass threw");
-    JS_FreeValue(ctx, r);
+    if (JS_IsException(r)) {
+        shape_report(ctx, "pass threw");
+        r = JS_UNDEFINED;
+    }
     JS_FreeValue(ctx, args[0]);
     JS_FreeValue(ctx, args[1]);
+    JS_FreeValue(ctx, args[2]);
     JS_FreeValue(ctx, fn);
+    return r;
 #endif
+}
+
+void js_idl_shape_install(JSContext *ctx)
+{
+    if (ctx) JS_FreeValue(ctx, js_idl_shape_install_roots(ctx));
 }

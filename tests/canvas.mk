@@ -89,7 +89,7 @@ endif
 #                    when supplying what it needs would drag ring 3 in.
 CANVAS_JS_OUT = c/apps/gui/browser/app/main.c \
                 c/apps/gui/browser/js/media/media.c c/apps/gui/browser/js/media/media_src.c \
-                c/apps/gui/browser/js/dom/forms.c c/apps/gui/browser/js/runtime/module.c \
+                $(BROWSER_FORM_JS_SRC) c/apps/gui/browser/js/runtime/module.c \
                 c/apps/gui/browser/js/workers/worker.c
 CANVAS_JS_SRC = $(filter-out $(CANVAS_JS_OUT),$(BROWSER_JS_SRC))
 

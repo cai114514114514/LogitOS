@@ -1,0 +1,74 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Native GET submission</title>
+<style>
+body{margin:24px;font:16px sans-serif;background:#f7f7f2;color:#202728;}
+.row{display:flex;align-items:center;gap:12px;margin:16px 0;}
+.anchor{width:8px;height:8px;display:inline-block;}
+input{width:180px;height:30px;} button{width:90px;height:30px;}
+</style>
+<h1>Native GET submission</h1>
+<form id="send" action="unused" method="post">
+  <div class="row"><span class="anchor" style="background:#0c75b7"></span><input name="typed" required></div>
+  <input type="hidden" name="duplicate" value="one">
+  <input type="hidden" name="duplicate" value="two">
+  <input type="hidden" name="notes" value="original">
+  <input type="hidden" name="edited" value="original">
+  <div class="row"><span class="anchor" style="background:#ae53c5"></span><button name="go" value="send" formaction="submitted?discard=1#complete" formmethod="get">Send</button></div>
+</form>
+<input type="hidden" form="send" name="external" value="outside">
+<script>
+var namespaces=[navigator.scheduling,navigator.mimeTypes,navigator.plugins,
+                navigator.clipboard,navigator.serviceWorker,performance.timing];
+var operations=0,constructors=0;
+var functions=new Set();
+namespaces.forEach(function(object){
+    var descriptors=Object.getOwnPropertyDescriptors(object);
+    Object.keys(descriptors).forEach(function(key){
+        var descriptor=descriptors[key];
+        [descriptor.value,descriptor.get,descriptor.set].forEach(function(fn){
+            if(typeof fn!=='function')return;
+            // read/readText share one denial function: 21 property references
+            // expose 20 function objects. Match the host census's identity
+            // count rather than mistaking an alias for an extra constructor.
+            if(functions.has(fn))return;
+            functions.add(fn);
+            operations++;
+            var constructible=false;
+            // Testing newTarget never invokes the platform operation itself.
+            try{Reflect.construct(function(){},[],fn);constructible=true;}catch(error){}
+            if(constructible||Object.prototype.hasOwnProperty.call(fn,'prototype'))constructors++;
+        });
+    });
+});
+console.log('HTML_NAV_NAMESPACE checks='+operations+' fail='+constructors);
+var form=document.getElementById('send');
+var entryLists=0;
+var sizes=location.search.indexOf('size=400')>=0?[400]:[800,400];
+form.addEventListener('invalid',function(){console.log('HTML_NAV_INVALID');},true);
+form.addEventListener('submit',function(event){
+    console.log('HTML_NAV_SUBMIT trusted='+event.isTrusted+' submitter='+event.submitter.value);
+});
+form.addEventListener('formdata',function(event){
+    // This submit is allowed to navigate. The server must receive these edits;
+    // constructing FormData successfully without using it on the wire is not
+    // evidence that the native GET consumer shares the same entry list.
+    event.formData.set('notes','a\nb');
+    event.formData.set('edited','listener✓');
+    event.formData.append('added','tail');
+    if (entryLists<sizes.length) {
+        var size=sizes[entryLists++];
+        // Both broken paths clip the same x-prefix to the same URL. Keep a
+        // small differing field before it, so an HTTP cache cannot replay the
+        // first red result and masquerade as a second on-wire observation.
+        event.formData.append('capacity',String(size));
+        event.formData.append('oversize','x'.repeat(size));
+        // The bounded native URL transport must refuse this submission. Its
+        // old truncation instead left the page and reached the server with a
+        // partial value; the outer driver observes that real request as red.
+        setTimeout(function(){console.log('HTML_NAV_LARGE_STAYED size='+size);},100);
+    }
+    console.log('HTML_NAV_ENTRIES');
+});
+console.log('HTML_NAV_READY');
+</script>

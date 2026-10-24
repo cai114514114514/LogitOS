@@ -2,6 +2,8 @@
 # raw-list view is watched failing; merely renaming a stale assertion would
 # leave the existing standard behavior without a regression boundary.
 # Observed on the actual WEBAPI_TEST_SRC consumer: normal 227/0; raw 227/6.
+# Correction: seven later fixture checks make the totals normal 234/0 and raw
+# 234/6; the same six named failures remain the required control boundary.
 # Four Headers checks and the two existing XHR serialization consumers fail;
 # get() still preserves every value and network Set-Cookie remains hidden.
 WEBAPI_HEADERS_DIR = $(BUILD)/site-general/continue/headers
@@ -18,7 +20,7 @@ test-webapi-headers-negctl: $(WEBAPI_HEADERS_DIR)/raw
 	 tail -8 $(WEBAPI_HEADERS_DIR)/raw.log; \
 	 test $$rc -eq 1 && \
 	 test "$$(grep -c '^FAIL:' $(WEBAPI_HEADERS_DIR)/raw.log)" -eq 6 && \
-	 grep -q '^227 checks, 6 failures$$' $(WEBAPI_HEADERS_DIR)/raw.log && \
+	 grep -q '^234 checks, 6 failures$$' $(WEBAPI_HEADERS_DIR)/raw.log && \
 	 grep -q '^FAIL: repeated response headers iterate once with both wire values' $(WEBAPI_HEADERS_DIR)/raw.log && \
 	 grep -q '^FAIL: response forEach sorts names and combines repeated values in wire order' $(WEBAPI_HEADERS_DIR)/raw.log && \
 	 grep -q '^FAIL: response entries keys and values share the combined iteration view' $(WEBAPI_HEADERS_DIR)/raw.log && \

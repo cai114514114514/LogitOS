@@ -94,7 +94,9 @@ struct flex_item_in {
     /* Preferred aspect ratio as width:height, or 0/0 for none. Used for the
      * transferred size suggestion and for a `content` basis with a definite
      * cross size. */
-    int ratio_w, ratio_h;
+    double ratio_w, ratio_h;    /* CSS <number> preserves fractional ratios */
+    unsigned char ratio_border; /* authored ratio under box-sizing:border-box;
+                                * a replaced intrinsic ratio is content-box */
 
     unsigned char basis;        /* FLEX_FB_* */
     unsigned char replaced;     /* a replaced element (img/video/canvas): its

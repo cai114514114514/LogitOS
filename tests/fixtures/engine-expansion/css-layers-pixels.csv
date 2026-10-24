@@ -1,0 +1,53 @@
+box,shorthand,10,80,100,60,shorthand leaves the border box geometry intact
+box,origin,120,80,100,60,origin leaves padding and border outside content sizing
+pixel,60,35,7f0080,first image composites above the lower image
+pixel,122,12,ff0000,none preserves its layer index for size and position cycling
+pixel,152,12,0000ff,second layer receives the second size and position
+pixel,145,12,ffffff,cycling retains the gap between independent layers
+pixel,232,12,ff0000,first size and position are used
+pixel,328,68,ffffff,excess longhand list entries do not create images
+pixel,22,100,ffffff,content clip excludes the padding background
+pixel,30,100,0000ff,border origin and content clip remain independent
+pixel,60,124,ff0000,shorthand color remains below the sized image
+pixel,122,100,dedc71,border clip preserves color beneath a transparent border
+pixel,126,100,dedc71,content origin does not turn into padding origin
+pixel,135,95,e72939,bitmap starts at the content edge
+pixel,143,95,1fbf67,content-origin bitmap retains its authored size
+pixel,248,110,0000ff,bottom none layer clips the base color to content
+pixel,236,110,ffffff,color does not use the first layer clip
+pixel,22,152,ffffff,inherited position retains the parent computed em offset
+pixel,32,152,0000ff,inherited size retains the parent computed em width
+pixel,65,152,0000ff,inherited size is not recomputed using the child font
+pixel,72,152,ffffff,inherited image ends at the parent computed size
+pixel,170,180,00ff00,invalid shorthand tail preserves the entire earlier background
+pixel,280,180,ff0000,later color shorthand resets an earlier image in one declaration block
+pixel,60,250,0000ff,later image longhand overrides an earlier shorthand in source order
+pixel,122,240,e72939,loader reaches a URL behind two non-URL layers
+pixel,170,240,1fbf67,third bitmap layer uses the real decoded picture
+pixel,217,240,2549df,third bitmap layer retains the right stripe
+pixel,232,222,e72939,URL shorthand first layer paints above the gradient
+pixel,239,222,1fbf67,URL shorthand size participates in image sampling
+pixel,260,250,0000ff,gradient shorthand layer remains visible outside the bitmap
+pixel,60,320,bf7fbf,element opacity applies once after all image layers
+pixel,122,292,ff0000,repeat list cycles by image index including none
+pixel,170,315,0000ff,second repeat value extends the second gradient horizontally
+pixel,170,292,ffffff,cyclic no-repeat does not become the last list value
+pixel,232,292,0000ff,invalid unused size entry preserves the prior whole longhand
+pixel,260,292,ffffff,unused invalid size entry is not silently discarded
+pixel,12,362,0000ff,space ignores position when multiple copies fit
+pixel,42,362,ffffff,space keeps the first computed gap
+pixel,47,362,0000ff,space places the next tile after the gap
+pixel,90,362,0000ff,space puts the last tile against the far edge
+pixel,150,390,ff0000,inherited gradient em stops retain the parent computed font
+pixel,170,390,0000ff,inherited gradient hard stop retains its computed location
+pixel,262,362,2549df,round rescales the tile to fit three copies
+pixel,265,362,e72939,round starts the second resized tile
+pixel,282,362,1fbf67,round samples the second resized tile
+box,zero-width,340,10,50,40,zero width background retains the child border box
+box,zero-height,340,60,50,40,zero height background retains the child border box
+box,sized-neighbor,340,110,50,40,sized gradient neighbor retains the child border box
+pixel,345,15,ff0000,zero width gradient preserves the visible ancestor
+pixel,345,65,ff0000,zero height gradient preserves the visible ancestor
+pixel,345,115,0000ff,normal sized gradient neighbor remains visible
+pixel,369,115,ff0000,normal sized gradient keeps its horizontal extent
+pixel,345,125,ff0000,normal sized gradient keeps its vertical extent

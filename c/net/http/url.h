@@ -10,16 +10,21 @@ struct url {
     int      https;                 /* 1 if scheme is https (M12), else http */
     char     host[URL_HOST_MAX];
     uint16_t port;                  /* default 80 (http) / 443 (https) */
-    char     path[URL_PATH_MAX];    /* always begins with '/' */
+    char     path[URL_PATH_MAX];    /* HTTP request target: '/' prefix, no #fragment */
 };
 
 /* Parse "http://host[:port]/path". Returns 0 on success, -1 on a malformed or
- * unsupported URL. A missing path becomes "/". */
+ * unsupported URL, or an endpoint that cannot fit the host/path arrays. A
+ * missing path becomes "/"; a #fragment is omitted from the wire path. The
+ * output record is unchanged on failure. This remains a small HTTP splitter,
+ * not the WHATWG URL implementation used by the browser's JS URL class. */
 int url_parse(const char *s, struct url *out);
 
 /* Resolve `ref` (which may be absolute "http://...", root-relative "/p", or
  * relative "p") against `base`, writing an absolute URL into out (max bytes).
- * Returns 0 on success. */
+ * Navigation fragments are retained in the absolute result. Returns 0 only
+ * when the complete result and intermediate path fit, otherwise -1. Callers
+ * must not consume the output after failure. */
 int url_resolve(const struct url *base, const char *ref, char *out, int max);
 
 #endif /* LOGIT_URL_H */

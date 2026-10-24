@@ -2199,7 +2199,9 @@ int grid_layout(const struct gridcfg *cfg, const struct griditem *items, int nit
         if (preferred != GRID_INDEFINITE)           w = preferred;
         else if (jd == 3)                            w = aw;
         else                                         w = imax(mc[i].min_content, imin(mc[i].max_content, aw));
-        if (items[i].def_h != GRID_INDEFINITE)      h = items[i].def_h;
+        int preferred_h = cfg->resolve_height
+            ? cfg->resolve_height(ctx, i, p->area_w, p->area_h, w) : items[i].def_h;
+        if (preferred_h != GRID_INDEFINITE)        h = preferred_h;
         else if (ad == 3)                            h = ah;
         else                                         h = imax(mr[i].min_content, imin(mr[i].max_content, ah));
 

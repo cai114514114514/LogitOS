@@ -93,8 +93,12 @@ typedef struct css_select_state {
 
 	reject_item reject_cache[128];	/* Reject cache (filled from end) */
 	reject_item *next_reject;	/* Next free slot in reject cache */
+	/* Shared by nested alternatives for ONE node selection. A chain-depth
+	 * ceiling alone does not bound choose(ancestors, compounds) backtracking. */
+	unsigned alt_work;
 
 	struct css_node_data *node_data;	/* Data we'll store on node */
+	bool node_bloom_owned; /* before completion its bloom borrows the parent's */
 
 	prop_state props[CSS_N_PROPERTIES][CSS_PSEUDO_ELEMENT_COUNT];
 } css_select_state;
@@ -109,4 +113,3 @@ bool css__outranks_existing(uint16_t op, bool important,
 		css_select_state *state, enum flag_value explicit_default);
 
 #endif
-

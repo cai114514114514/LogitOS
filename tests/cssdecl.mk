@@ -83,6 +83,11 @@ test-cssdecl: $(CSSDECL_DIR)/cssdecl_test test-cssdecl-negctl
 #                 catch are "a parser row started depending on the capture"
 #                 and "a capture row stopped measuring it", and both of those
 #                 also just move the number.
+# Correction (2026-10-02): multi-layer capture is now a supported contract.
+# Its former absence assertion became a presence assertion, so reverting the
+# producer adds exactly `capture: multiple background layers remain a whole
+# ordered value` to the prior 14 failures. Require that named row as well as
+# the new count; this is not permission to adjust counts on unrelated changes.
 #
 #   GRAD_PCT_AS_PX is the PLAUSIBLE wrong implementation rather than the absent
 #                 one, and it is a bug this tree has already paid for once:
@@ -99,8 +104,8 @@ test-cssdecl-negctl: $(CSSDECL_DIR)/cssdecl_nocapture $(CSSDECL_DIR)/cssdecl_pct
 	   echo "  so nothing in it is measuring css_extra's scan."; exit 1; \
 	 else \
 	   n=`grep -c '^FAIL:' $(CSSDECL_DIR)/nocapture.log`; \
-	   if [ "$$n" != "14" ]; then \
-	     echo "test-cssdecl-negctl: FAILED -- NO_XCAPTURE reddened $$n rows, expected 14."; \
+	   if [ "$$n" != "15" ] || ! grep -qx 'FAIL: capture: multiple background layers remain a whole ordered value' $(CSSDECL_DIR)/nocapture.log; then \
+	     echo "test-cssdecl-negctl: FAILED -- NO_XCAPTURE reddened $$n rows, expected 15 including the new layer capture."; \
 	     echo "  Either a parser row started depending on the capture, or a capture"; \
 	     echo "  row stopped. Both are worth looking at; neither is a rebuild."; \
 	     grep '^FAIL:' $(CSSDECL_DIR)/nocapture.log; exit 1; \

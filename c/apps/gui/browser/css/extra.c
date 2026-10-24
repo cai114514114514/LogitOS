@@ -30,7 +30,14 @@
 #include <string.h>
 #include <stdio.h>
 #include "css/style.h"
+#include "css/nesting.h"
 #include "dom/tree.h"
+/* Textual modules, as with flex/grid: every established consumer of this
+ * producer gets the same syntax and cascade without a copied link list. */
+#include "sizing.c"
+#define CSS_BACKGROUND_EMBEDDED
+#include "background.c"
+#undef CSS_BACKGROUND_EMBEDDED
 /* The animation-clock hook at the bottom of css_extra_apply is weak: this
  * file is linked into eighteen host source lists that carry neither
  * js_anim.c nor a DOM to clock, and the stub (not a NULL test -- see
@@ -54,6 +61,8 @@ void css_anim_note(struct node *root) LOGIT_WEAK;
 LOGIT_WEAK_STUB(css_anim_note);
 extern int img_css_color(const char *, int, unsigned char[4]) LOGIT_WEAK;
 LOGIT_WEAK_STUB(img_css_color);
+extern int css_normalize_stylesheet(const char *,int,char **,int *) LOGIT_WEAK;
+LOGIT_WEAK_STUB(css_normalize_stylesheet);
 static int g_extra_passive;
 
 static int spc(int c) { return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f'; }
@@ -98,23 +107,46 @@ static int decls_vish(const char *d, int dlen)
     return 0;
 }
 
-/* Find the LAST "key: value" declaration in [d,dlen); *vs/*ve get the value
+/* Find the LAST "key: value" declaration in [d,dlen); vs and ve get the value
  * span. The key must start a declaration (preceded by start/ws/';'/'{', so
  * "gap" never matches inside "column-gap") and be followed by ':'. */
 static int find_decl(const char *d, int dlen, const char *key, int *vs, int *ve)
 {
-    int kl = (int)strlen(key), found = 0;
-    for (int i = 0; i + kl < dlen; i++) {
-        if (i > 0 && !spc(d[i-1]) && d[i-1] != ';' && d[i-1] != '{') continue;
-        if (memcmp(d + i, key, kl)) continue;
-        int j = i + kl;
-        while (j < dlen && spc(d[j])) j++;
-        if (j >= dlen || d[j] != ':') continue;
-        j++;
-        int s = j;
-        while (j < dlen && d[j] != ';' && d[j] != '}') j++;
-        *vs = s; *ve = j; found = 1;
-        i = j;
+    /* The old substring scan ended a data: URL at its first semicolon and
+     * could discover declarations inside quoted content/custom values. Parse
+     * declaration boundaries instead; shipping callers supply one declaration
+     * at a time, while the legacy whole-block caller still gets its last one. */
+    int kl = (int)strlen(key), found = 0, i=0;
+    while(i<dlen) {
+        while(i<dlen && (spc(d[i])||d[i]==';'||d[i]=='{'))i++;
+        if(i+1<dlen&&d[i]=='/'&&d[i+1]=='*') {
+            i+=2;while(i+1<dlen&&!(d[i]=='*'&&d[i+1]=='/'))i++;i+=2;continue;
+        }
+        int name=i;while(i<dlen&&d[i]!=':'&&d[i]!=';'&&d[i]!='}')i++;
+        if(i==dlen||d[i]!=':'){if(i<dlen)i++;continue;}
+        int last=i;while(last>name&&spc(d[last-1]))last--;
+        int equal=last-name==kl;
+        for(int k=0;equal&&k<kl;k++) {
+            int c=(unsigned char)d[name+k];if(c>='A'&&c<='Z')c+=32;
+            if(c!=key[k])equal=0;
+        }
+        int start=++i,quote=0,parens=0,brackets=0,braces=0;
+        while(i<dlen) {
+            int c=d[i];
+            if(c=='\\' && i+1<dlen){i+=2;continue;}
+            if(quote){if(c==quote)quote=0;i++;continue;}
+            if(c=='\''||c=='"'){quote=c;i++;continue;}
+            if(i+1<dlen&&c=='/'&&d[i+1]=='*') {
+                i+=2;while(i+1<dlen&&!(d[i]=='*'&&d[i+1]=='/'))i++;i+=2;continue;
+            }
+            if(c=='(')parens++;else if(c==')'&&parens)parens--;
+            else if(c=='[')brackets++;else if(c==']'&&brackets)brackets--;
+            else if(c=='{')braces++;else if(c=='}'&&braces)braces--;
+            else if(!parens&&!brackets&&!braces&&(c==';'||c=='}'))break;
+            i++;
+        }
+        if(equal){*vs=start;*ve=i;found=1;}
+        if(i<dlen)i++;
     }
     return found;
 }
@@ -308,6 +340,7 @@ enum { LGX_ML = 0, LGX_MR, LGX_MT, LGX_MB,
 
 /* Everything we may want to patch from one declarations block. */
 struct xpatch {
+    struct css_sizing_patch sizing;
     int backface_set, backface, preserve_set, preserve;
     int do_none;                            /* visually-hidden -> display:none */
     int do_masked;                          /* mask-image set: the background is
@@ -358,6 +391,7 @@ struct xpatch {
     const char *xr[XR__COUNT];
     int xr_len[XR__COUNT];
     int xr_any;
+    unsigned bg_shorthand;
 };
 
 static int ieq(const char *s, int n, const char *lit);
@@ -664,6 +698,12 @@ static void trim_val(const char *d, int *vs, int *ve)
 /* The first of `keys` that is declared in the block, trimmed. 1 if found.
  * Order is preference order, and it is the caller's cascade: the unprefixed
  * spelling first, always. */
+/* Correction (2026-10-02) to the unprefixed-first claim above: Chromium's
+ * -webkit-transform/origin/box-shadow are aliases, so normal/important buckets
+ * and declaration order decide the winner. The shipping cascade calls this
+ * helper on ONE declaration; the old whole-block use survives only in the
+ * explicit legacy-cascade fault apparatus. Never reintroduce that use as a
+ * way to prefer an unprefixed spelling over a later valid alias. */
 static int decl_first(const char *d, int dlen, const char *const *keys, int nkeys,
                       int *vs, int *ve)
 {
@@ -675,55 +715,15 @@ static int decl_first(const char *d, int dlen, const char *const *keys, int nkey
     return 0;
 }
 
-/* Number of TOP-LEVEL (outside parens and quotes) comma-separated components
- * in [v,v+len). A background with more than one layer is refused rather than
- * half-painted: the layers composite, and drawing only the first is a guess
- * about what is underneath it. */
-static int top_commas(const char *v, int len)
-{
-    int depth = 0, n = 1; char q = 0;
-    for (int i = 0; i < len; i++) {
-        char c = v[i];
-        if (q) { if (c == q) q = 0; continue; }
-        if (c == '\'' || c == '"') { q = c; continue; }
-        if (c == '(') depth++;
-        else if (c == ')') { if (depth) depth--; }
-        else if (c == ',' && depth == 0) n++;
-    }
-    return n;
-}
-
-/* Locate the `linear-gradient(` CALL inside a background value and return its
- * whole span, parens included. The ident-boundary check on the left is what
- * declines `repeating-linear-gradient(` and `-webkit-linear-gradient(`, both
- * of which contain this name as a substring and neither of which means what
- * this one means. */
-static int find_lgrad(const char *v, int len, int *gs, int *ge)
-{
-    static const char *nm = "linear-gradient";
-    int nl = 15;
-    for (int i = 0; i + nl < len; i++) {
-        if (i > 0 && ident((unsigned char)v[i-1])) continue;
-        if (!ieq(v + i, nl, nm)) continue;
-        int j = i + nl;
-        while (j < len && spc(v[j])) j++;
-        if (j >= len || v[j] != '(') continue;
-        int depth = 0, k = j;
-        for (; k < len; k++) {
-            if (v[k] == '(') depth++;
-            else if (v[k] == ')') { depth--; if (!depth) { k++; break; } }
-        }
-        if (depth) return 0;                    /* unbalanced: not a value */
-        *gs = i; *ge = k;
-        return 1;
-    }
-    return 0;
-}
-
+/* Background syntax/defaults/layer limits AND both slot-map directions are
+ * owned by background.c; duplication here would let capture and paint agree
+ * on the same wrong property slot. */
 static void xr_set(struct xpatch *p, int idx, const char *s, int len)
 {
     if (len <= 0) return;
     p->xr[idx] = s; p->xr_len[idx] = len; p->xr_any = 1;
+    int bg=css_background_slot(idx);
+    if(bg>=0)p->bg_shorthand&=~(1u<<bg);
 }
 
 /* THE PROPERTY NAMES parse_xraw() ANSWERS TO, hoisted to file scope so that
@@ -845,7 +845,7 @@ static void parse_xraw(const char *d, int dlen, struct xpatch *p)
     /* The capture helpers stay compiled (they are the thing being reverted,
      * not deleted) so the control differs from the shipped build in exactly
      * one behaviour and not in what the file contains. */
-    (void)decl_first; (void)top_commas; (void)find_lgrad; (void)xr_set;
+    (void)decl_first; (void)xr_set;
 }
 #else
 static void parse_xraw(const char *d, int dlen, struct xpatch *p)
@@ -869,30 +869,45 @@ static void parse_xraw(const char *d, int dlen, struct xpatch *p)
             svg_paint_value(XR_SVG_FILL + (int)i, d + vs, ve - vs))
             xr_set(p, XR_SVG_FILL + (int)i, d + vs, ve - vs);
 
-    /* The gradient is looked for in BOTH `background-image` and the
-     * `background` shorthand, because more than a third of them are written in
-     * the shorthand. Measured over tests/fixtures/cssweb by splitting the 102
-     * sheets into declarations and asking which values contain an unprefixed,
-     * non-repeating `linear-gradient(`: 134 in `background-image` and 77 in
-     * `background`, so 36% of them. Reading only the longhand would have lost
-     * those 77 silently -- the same mistake the grid-template shorthand
-     * comment above records, one property along. */
-    for (int k = 0; k < 2; k++) {
-        if (!find_decl(d, dlen, k_bg[k], &vs, &ve)) continue;
-        trim_val(d, &vs, &ve);
-        if (ve <= vs) continue;
-        if (top_commas(d + vs, ve - vs) != 1) continue;   /* multiple layers: refused */
-        int gs, ge;
-        if (!find_lgrad(d + vs, ve - vs, &gs, &ge)) continue;
-        xr_set(p, XR_BG_IMAGE, d + vs + gs, ge - gs);
-        break;                                  /* longhand wins over shorthand */
+    /* Old capture found a linear-gradient substring and salvaged it from a
+     * shorthand, refusing multiple layers. Correction: the background module
+     * validates the WHOLE declaration and publishes every reset atomically.
+     * Its spans borrow the original source, including marked full shorthands;
+     * no temporary concatenated component string can escape into cstyle. */
+    static const char *const names[] = {
+        "background-image", "background-size", "background-position",
+        "background-repeat", "background-origin", "background-clip",
+        "background-attachment", "background-color", "background"
+    };
+    for(unsigned k=0;k<sizeof names/sizeof *names;k++) {
+        struct bg_declaration value;
+        if(!find_decl(d,dlen,names[k],&vs,&ve))continue;
+        trim_val(d,&vs,&ve);
+        if(!css_background_declaration(names[k],(int)strlen(names[k]),d+vs,ve-vs,&value))continue;
+        for(int slot=0;slot<BG_SLOTS;slot++)if(value.value[slot]) {
+            xr_set(p,css_background_xr(slot),value.value[slot],value.len[slot]);
+            unsigned bit=1u<<slot;
+            p->bg_shorthand=(p->bg_shorthand&~bit)|(value.shorthand_bits&bit);
+        }
     }
+
 }
 #endif
 
 static void parse_decls(const char *d, int dlen, struct xpatch *p)
 {
     memset(p, 0, sizeof *p);
+    static const char *const sizing_names[] = {
+        "aspect-ratio", "justify-content", "align-items", "align-self"
+    };
+    for (unsigned i = 0; i < sizeof sizing_names / sizeof *sizing_names; i++) {
+        int start, end;
+        struct css_sizing_patch value;
+        if (find_decl(d, dlen, sizing_names[i], &start, &end) &&
+            css_sizing_declaration(sizing_names[i], (int)strlen(sizing_names[i]),
+                                   d+start, end-start, &value))
+            css_sizing_merge(&p->sizing, &value);
+    }
     parse_grid_raw(d, dlen, p);
     parse_xraw(d, dlen, p);
     if (decls_vish(d, dlen)) p->do_none = 1;
@@ -1186,13 +1201,14 @@ static void apply_patch_base(struct node *n, const struct xpatch *p,
 {
     if (!n->style) return;
     struct cstyle *st = n->style;
+    css_sizing_apply(st, &p->sizing);
     if(p->backface_set)st->backface_hidden=(unsigned char)p->backface;
     if(p->preserve_set)st->preserve_3d=(unsigned char)p->preserve;
     if (p->do_none) { st->display = DISP_NONE; return; }
     /* A masked background is a SHAPE, and we have no mask: painting the solid
      * colour is strictly wrong (see decls_masked). Drop the background and
      * keep the box. */
-    if (p->do_masked) st->has_bg = 0;
+    if (p->do_masked) { st->has_bg = 0; st->mask_refused = 1; }
     if (p->do_grid) {
         st->grid_cols = p->gcols;
         for (int i = 0; i < p->gcols && i < GRID_MAXCOL; i++) st->grid_tracks[i] = p->gtracks[i];
@@ -1218,9 +1234,13 @@ static void apply_patch_base(struct node *n, const struct xpatch *p,
         for (int g = 0; g < XR__COUNT; g++) {
             if (!p->xr[g]) continue;
             int l = p->xr_len[g];
-            if (l > 0xffff) l = 0xffff;
             st->xraw[g] = p->xr[g];
-            st->xrawlen[g] = (unsigned short)l;
+            st->xrawlen[g] = l;
+            int bg=css_background_slot(g);
+            if(bg>=0) {
+                unsigned bit=1u<<bg;
+                st->background_shorthand=(st->background_shorthand&~bit)|(p->bg_shorthand&bit);
+            }
         }
     }
     if (p->gx_set) st->grid_gap_x = p->gx;
@@ -1295,6 +1315,7 @@ static void apply_patch(struct node *n,const struct xpatch *p)
 static int patch_ndecl(const struct xpatch *p)
 {
     int n = 0;
+    n += p->sizing.ratio_set + p->sizing.justify_set + p->sizing.items_set + p->sizing.self_set;
     if(p->backface_set)n++;
     if(p->preserve_set)n++;
     if (p->do_none) n++;
@@ -1828,7 +1849,7 @@ static void compile_exact_matcher(void);
 /* Scan [css,len) for the rules that can patch something, storing them against a
  * private copy. Returns 1 if g_rules is usable, 0 if the caller must fall back
  * to scanning the text itself (only on allocation failure). */
-static int compile_sheet(const char *css, int len)
+static int compile_sheet_bytes(const char *css, int len)
 {
     int vw = css_media_width(), vh = css_media_height(), dark = css_color_scheme();
     int sw = css_screen_width(), sh = css_screen_height();
@@ -2001,6 +2022,56 @@ static void walk_facing(struct node *n,int backface,int preserve)
     for(struct node *c=n->first_child;c;c=c->next)walk_facing(c,backface,preserve);
 }
 
+static int compile_sheet(const char *css,int len)
+{
+    char *owned=NULL;int outlen=len;
+    if(LOGIT_HAVE(css_normalize_stylesheet) &&
+       css_normalize_stylesheet(css,len,&owned,&outlen)<0)return 0;
+    int ok=compile_sheet_bytes(owned?owned:css,outlen);
+    /* g_src owns its private copy and all raw spans point into that copy. */
+    kfree(owned);return ok;
+}
+static void walk_sizing(struct node *n, const struct cstyle *parent)
+{
+    if (n->type == N_ELEM && n->style) {
+        css_sizing_resolve(n->style, parent);
+        parent = n->style;
+    }
+    for (struct node *c = n->first_child; c; c = c->next) walk_sizing(c, parent);
+}
+
+static void walk_background(struct node *n, const struct cstyle *parent)
+{
+    if (n->type == N_ELEM && n->style) {
+        struct cstyle *style = n->style;
+        for (int i=0;i<BG_SLOTS;i++) {
+            int slot = css_background_xr(i);
+            int inherited = style->xraw[slot] && ieq(style->xraw[slot], style->xrawlen[slot], "inherit");
+            int font=i==BG_IMAGE?2:i==BG_SIZE?0:i==BG_POSITION?1:-1;
+            if(font>=0)style->background_font[font]=inherited&&parent?parent->background_font[font]:style->font_px;
+            if (inherited) {
+                style->xraw[slot] = parent ? parent->xraw[slot] : NULL;
+                style->xrawlen[slot] = parent ? parent->xrawlen[slot] : 0;
+                unsigned bit=1u<<i;
+                style->background_shorthand=(style->background_shorthand&~bit)|
+                    (parent?(parent->background_shorthand&bit):0);
+            }
+        }
+        unsigned color;int alpha;
+        if(css_background_color(style,&color,&alpha)) {
+            style->background=color;style->bg_alpha=alpha;style->has_bg=alpha>0;
+        }
+        if(style->mask_refused)style->has_bg=0;
+        /* Generated proxy nodes are outside the authored DOM child list.
+         * Calling the same parent-first consumer keeps their raw provenance
+         * and native backgrounds intact; a missing raw color returns no patch. */
+        if(!style->generated_kind)
+            for(int i=0;i<2;i++)if(style->generated[i])walk_background(style->generated[i],style);
+        parent = style;
+    }
+    for (struct node *c = n->first_child; c; c = c->next) walk_background(c, parent);
+}
+
 void css_extra_apply(struct node *root, const char *css, int len)
 {
     if (!root) return;
@@ -2029,6 +2100,8 @@ void css_extra_apply(struct node *root, const char *css, int len)
 #endif
     walk_anim(root);
     const struct cstyle *parent_style=root->parent?root->parent->style:0;
+    walk_sizing(root, parent_style);
+    walk_background(root, parent_style);
     walk_facing(root,parent_style?parent_style->backface_hidden:0,parent_style?parent_style->preserve_3d:0);
     /* The clock's post-cascade hook, LAST so the engine sees the same
      * cstyle the painter will: it re-applies the current animated values
@@ -2349,216 +2422,19 @@ int css_shadow_parse(const char *v, int len, int fs_px, int root_px,
     return n;
 }
 
-/* ---------------------------------------------------------- linear-gradient */
-
-/* `to <side-or-corner>` -> a direction. 0 if the keywords are not a pair we
- * recognise. */
-static int grad_to(const char *v, int len, struct cgradient *out)
+/* The old linear-only parser lived here. Its unsupported forms and the
+ * measurement remain beside their corrections in style.h. The specialized
+ * module now validates every stop against the same literal-color authority
+ * the sampler uses; narrow CSS hosts may use the actual native color parser. */
+static int extra_gradient_color(const char *value,int len)
 {
-    int ts[3], te[3];
-    int n = ws_tokens(v, len, ts, te, 3);
-    if (n < 2 || n > 3 || !ieq(v + ts[0], te[0] - ts[0], "to")) return 0;
-    int k1 = origin_kw(v + ts[1], te[1] - ts[1]);
-    int k2 = n == 3 ? origin_kw(v + ts[2], te[2] - ts[2]) : OK_NONE;
-    if (n == 2) {
-        out->dir = CG_DIR_ANGLE;
-        switch (k1) {
-        case OK_TOP:    out->angle_mdeg = 0;      return 1;
-        case OK_RIGHT:  out->angle_mdeg = 90000;  return 1;
-        case OK_BOTTOM: out->angle_mdeg = 180000; return 1;
-        case OK_LEFT:   out->angle_mdeg = 270000; return 1;
-        default: return 0;
-        }
-    }
-    int vert = (k1 == OK_TOP || k1 == OK_BOTTOM) ? k1
-             : ((k2 == OK_TOP || k2 == OK_BOTTOM) ? k2 : OK_NONE);
-    int horz = (k1 == OK_LEFT || k1 == OK_RIGHT) ? k1
-             : ((k2 == OK_LEFT || k2 == OK_RIGHT) ? k2 : OK_NONE);
-    if (!vert || !horz) return 0;
-    out->dir = CG_DIR_CORNER;
-    if (vert == OK_TOP) out->corner = (horz == OK_LEFT) ? CG_CORNER_TL : CG_CORNER_TR;
-    else                out->corner = (horz == OK_LEFT) ? CG_CORNER_BL : CG_CORNER_BR;
-    return 1;
+    unsigned char rgba[4];
+    if(LOGIT_HAVE(img_css_color))return img_css_color(value,len,rgba);
+    return LOGIT_HAVE(css_native_supports_decl)&&css_native_supports_decl("color",5,value,len);
 }
-
-/* A single <angle> component -> millidegrees, or 0 if it is not one. An angle
- * ALWAYS carries a unit -- `linear-gradient(45, ...)` is a parse error and so
- * is a bare 0 -- which is the same rule css_interp.c's ang_rad() states, and
- * for the same reason: a unitless number is a valid <length>, never a valid
- * <angle>, so accepting one here would take a declaration the cascade drops. */
-static int grad_angle(const char *v, int len, int *mdeg)
-{
-    struct vscan k = { v, len, 0 };
-    long long m;
-    char u[8];
-    if (!scan_num(&k, &m, u, 8)) return 0;
-    while (k.i < k.n && spc(k.s[k.i])) k.i++;
-    if (k.i != k.n) return 0;
-    long long d;
-    if (!strcmp(u, "deg")) d = m;
-    else if (!strcmp(u, "turn")) d = m * 360;
-    else if (!strcmp(u, "grad")) d = m * 9 / 10;
-    /* rad -> mdeg is m * (180/pi). 57295779/1000000 is 180/pi to eight
-     * figures; over the whole legal angle range that is under a thousandth of
-     * a degree of error, and it needs no libm. */
-    else if (!strcmp(u, "rad")) d = m * 57295779LL / 1000000LL;
-    else return 0;
-    d %= 360000;
-    if (d < 0) d += 360000;
-    *mdeg = (int)d;
-    return 1;
-}
-
-/* One stop position token -> (kind, value). */
-static int grad_pos(const char *v, int len, int fs, int root, int *kind, int *val)
-{
-    struct vscan k = { v, len, 0 };
-    long long m;
-    char u[8];
-    if (!scan_num(&k, &m, u, 8)) return 0;
-    while (k.i < k.n && spc(k.s[k.i])) k.i++;
-    if (k.i != k.n) return 0;
-    if (!strcmp(u, "%")) {
-#ifdef CSS_NEGCTL_GRAD_PCT_AS_PX
-        /* NEGATIVE CONTROL: a percentage stored as a pixel count. This is the
-         * shape of the bug this tree already paid for once (CLAUDE.md, M17:
-         * `padding-top:56.25%` became fifty-six pixels) -- nothing is zero,
-         * nothing overflows, every gradient still has its stops in a plausible
-         * order, and only the stops that are percentages land in the wrong
-         * place. */
-        *kind = CG_POS_PX; *val = (int)(m / 1000);
-#else
-        *kind = CG_POS_PCT; *val = (int)(m / 10);   /* hundredths of a percent */
-#endif
-        return 1;
-    }
-    if (!milli_px(m, u, fs, root, val)) return 0;
-    *kind = CG_POS_PX;
-    return 1;
-}
-
-int css_gradient_parse(const char *v, int len, int fs_px, int root_px,
-                       struct cgradient *out)
-{
-    if (!out) return 0;
-    memset(out, 0, sizeof *out);
-    if (!v || len <= 0) return 0;
-    int s = 0, e = len;
-    span_trim(v, &s, &e);
-    for (int i = s; i < e; i++) if (v[i] == '!') { e = i; break; }
-    span_trim(v, &s, &e);
-
-    /* The function name, matched WHOLE. `repeating-linear-gradient`,
-     * `-webkit-linear-gradient`, `-moz-` and `-o-` all contain this name and
-     * none of them means what it means; a suffix match would render 49 calls
-     * in the corpus as something they are not (13 + 22 + 7 + 7, counted over
-     * the same 102 sheets as everything else here). */
-    int i = s;
-    while (i < e && ident((unsigned char)v[i])) i++;
-    if (!ieq(v + s, i - s, "linear-gradient")) return 0;
-    while (i < e && spc(v[i])) i++;
-    if (i >= e || v[i] != '(') return 0;
-    int bs = i + 1, depth = 0, be = -1;
-    for (int k = i; k < e; k++) {
-        if (v[k] == '(') depth++;
-        else if (v[k] == ')') { depth--; if (!depth) { be = k; break; } }
-    }
-    if (be < 0) return 0;
-
-    int ps[CG_MAXSTOP + 3], pe[CG_MAXSTOP + 3];
-    int np = comma_parts(v + bs, be - bs, ps, pe, CG_MAXSTOP + 3);
-    if (np < 1) return 0;
-    for (int k = 0; k < np; k++) { ps[k] += bs; pe[k] += bs; span_trim(v, &ps[k], &pe[k]); }
-
-    int first = 0;
-    out->kind = CG_LINEAR;
-    out->dir = CG_DIR_ANGLE;
-    out->angle_mdeg = 180000;                  /* the implicit direction: to bottom */
-    {
-        const char *c = v + ps[0];
-        int cl = pe[0] - ps[0];
-        int ts[3], te[3];
-        int nt = ws_tokens(c, cl, ts, te, 3);
-        if (nt >= 1 && ieq(c + ts[0], te[0] - ts[0], "to")) {
-            if (!grad_to(c, cl, out)) return 0;
-            first = 1;
-        } else if (nt >= 1 && ieq(c + ts[0], te[0] - ts[0], "in")) {
-            /* `in oklab` / `in hsl longer hue`: a colour interpolation space
-             * we do not have. Interpolating in sRGB instead is not a rounding
-             * difference -- it is visibly a different ramp through the middle
-             * -- so the declaration is refused and the background-color shows.
-             * 20 in the corpus. */
-            return 0;
-        } else if (grad_angle(c, cl, &out->angle_mdeg)) {
-            first = 1;
-        }
-    }
-
-    int n = 0;
-    for (int k = first; k < np; k++) {
-        const char *c = v + ps[k];
-        int cl = pe[k] - ps[k];
-        if (cl <= 0) return 0;
-        int ts[4], te[4];
-        int nt = ws_tokens(c, cl, ts, te, 4);
-        if (nt < 1 || nt > 3) return 0;
-        /* THE COLOUR TOKEN MUST NOT BE A NUMBER, and two different malformed
-         * values arrive that way -- both of which would otherwise become a
-         * stop with an INVENTED colour rather than a refusal:
-         *
-         *   `#fff, 40%, #000`  a bare percentage between two colours is a
-         *                      COLOUR HINT: it moves the halfway point of the
-         *                      ramp without adding a colour. Read as a stop it
-         *                      needs a colour nobody wrote; dropped silently it
-         *                      moves every colour after it.
-         *   `linear-gradient(45, #fff, #000)`
-         *                      a unitless first component is a malformed angle
-         *                      (an <angle> always carries a unit), so it falls
-         *                      through to the stop loop. Read as a colour it
-         *                      makes a THREE-stop gradient whose first stop is
-         *                      whatever the colour parser does with "45" --
-         *                      which is nothing, so the first band comes out
-         *                      the previous colour. Found by the gate: this
-         *                      row was written as a refusal and returned 1.
-         *
-         * No CSS colour begins with a digit, a sign or a dot, so "the whole
-         * token scans as a number" is an exact test rather than a heuristic. */
-        {
-            struct vscan nk = { c + ts[0], te[0] - ts[0], 0 };
-            long long nm; char nu[8];
-            if (scan_num(&nk, &nm, nu, 8)) {
-                while (nk.i < nk.n && spc(nk.s[nk.i])) nk.i++;
-                if (nk.i == nk.n) return 0;
-            }
-        }
-        int kind1 = CG_POS_AUTO, val1 = 0, kind2 = CG_POS_AUTO, val2 = 0;
-        if (nt >= 2 && !grad_pos(c + ts[1], te[1] - ts[1], fs_px, root_px, &kind1, &val1)) return 0;
-        if (nt == 3 && !grad_pos(c + ts[2], te[2] - ts[2], fs_px, root_px, &kind2, &val2)) return 0;
-        if (n >= CG_MAXSTOP) return 0;
-        out->stop[n].color = c + ts[0];
-        out->stop[n].colorlen = te[0] - ts[0];
-        out->stop[n].pos_kind = kind1;
-        out->stop[n].pos = val1;
-        n++;
-        /* `red 10% 20%` is the two-stop shorthand: the same colour at both
-         * positions, i.e. a hard band. Expanded here rather than making every
-         * consumer know the shorthand, which keeps a stop list a stop list. */
-        if (nt == 3) {
-            if (n >= CG_MAXSTOP) return 0;
-            out->stop[n] = out->stop[n - 1];
-            out->stop[n].pos_kind = kind2;
-            out->stop[n].pos = val2;
-            n++;
-        }
-    }
-    /* Fewer than two stops is not a gradient -- `linear-gradient(red)` is a
-     * parse error, and the 43 one-component values in the corpus are all
-     * var() references that survived expansion unresolved. Refusing them
-     * leaves the background-color, which is what the page falls back to. */
-    if (n < 2) return 0;
-    out->nstop = n;
-    return 1;
-}
+#define CSS_GRADIENT_COLOR_VALIDATOR extra_gradient_color
+#include "gradient.c"
+#undef CSS_GRADIENT_COLOR_VALIDATOR
 
 /* ======================================================================
  * @supports's TWO WEAK HOOKS -- called from third_party/css/libcss/src/
@@ -2756,6 +2632,25 @@ int logit_css_extra_supports_name(const char *name, int len)
             return 1;
     }
     return 0;
+}
+
+/* -1 means this producer has no opinion. Unlike the old name-only hook this
+ * runs BEFORE LibCSS's table lookup, because background-image already lives
+ * in that table. Rendering, CSS.supports and @supports share these grammars;
+ * a serialization-only canonicalizer must never affirm an invalid value. */
+int logit_css_extra_supports_value(const char *name,int n,const char *value,int len)
+{
+    int sizing=ieq(name,n,"aspect-ratio")||ieq(name,n,"justify-content")||
+        ieq(name,n,"align-items")||ieq(name,n,"align-self");
+    int background=ieq(name,n,"background")||ieq(name,n,"background-image")||
+        ieq(name,n,"background-size")||ieq(name,n,"background-position")||
+        ieq(name,n,"background-repeat")||ieq(name,n,"background-origin")||
+        ieq(name,n,"background-clip")||ieq(name,n,"background-attachment")||
+        ieq(name,n,"background-color");
+    if(!sizing&&!background)return -1;
+    if(!value||len<=0)return 0;
+    if(sizing)return css_sizing_supports(name,n,value,len);
+    return css_background_supports(name,n,value,len);
 }
 
 /* Every grid_raw/anim_raw/trans_raw span borrows the compiled source. Keeping

@@ -196,8 +196,25 @@ BROWSER_FILES := $(sort $(shell find $(BROWSER_DIR) -type f))
 BROWSER_SOURCES := $(filter %.c,$(BROWSER_FILES))
 BROWSER_HEADERS := $(filter %.h,$(BROWSER_FILES))
 BROWSER_INCLUDES := $(filter %.inc,$(BROWSER_FILES))
+# Focused C modules included by their owning TU must also invalidate the build.
+# Restrict this inventory to the CSS/layout/paint pipeline; linking these as
+# standalone objects would duplicate the same implementation and symbols.
+BROWSER_STYLE_MODULES := $(filter $(BROWSER_DIR)/css/%.c $(BROWSER_DIR)/layout/%.c $(BROWSER_DIR)/paint/%.c,$(BROWSER_SOURCES))
 BROWSER_JS_FILES := $(filter $(BROWSER_DIR)/js/%,$(BROWSER_FILES))
 BROWSER_JS_C := $(filter %.c,$(BROWSER_JS_FILES))
+# Narrow network host gates must install the same cancellation service as the
+# full browser. Keep this dependency group authoritative for those consumers.
+BROWSER_WEBAPI_SRC := c/apps/gui/browser/js/runtime/webapi.c c/apps/gui/browser/js/net/abort.c \
+                      c/apps/gui/browser/js/net/blob.c c/apps/gui/browser/js/net/formdata.c \
+                      $(filter $(BROWSER_DIR)/js/runtime/clone%.c,$(BROWSER_JS_C)) \
+                      $(filter $(BROWSER_DIR)/js/streams/%.c,$(BROWSER_JS_C))
+# A native control now depends on validation and the shared entry collector.
+# Keep narrow host source/subtraction lists on these groups too; otherwise they
+# link an old control or strand its new dependencies when one owner is removed.
+BROWSER_FORM_SRC := c/apps/gui/browser/dom/forms.c c/apps/gui/browser/dom/entries.c \
+                    c/apps/gui/browser/dom/validation.c
+BROWSER_FORM_JS_SRC := c/apps/gui/browser/js/dom/forms.c c/apps/gui/browser/js/dom/entries.c \
+                       c/apps/gui/browser/js/dom/validation.c
 BROWSER_JS_INCLUDES := $(filter %.inc,$(BROWSER_JS_FILES))
 BROWSER_JS_PRELUDES := $(filter %prelude.inc,$(BROWSER_JS_FILES))
 INCDIRS := $(addprefix -I,$(filter-out %/include/sys %/include/uonly c/apps/as/% $(BROWSER_DIR)/%,$(sort $(shell find c include -type d))))
@@ -1285,7 +1302,7 @@ BROWSER_CRYPTO_OPS_SRC := c/crypto/hash/hmac_hkdf.c c/crypto/aead/aesgcm.c c/cry
 BROWSER_PIPE := c/apps/gui/browser/dom/tree.c c/apps/gui/browser/html/tokenizer.c \
                 c/apps/gui/browser/html/tree.c c/apps/gui/browser/dom/serialize.c \
                 c/apps/gui/browser/layout/block.c c/apps/gui/browser/layout/text.c \
-                c/apps/gui/browser/dom/forms.c c/apps/gui/browser/dom/focus.c \
+                $(BROWSER_FORM_SRC) c/apps/gui/browser/dom/focus.c \
                 c/apps/gui/browser/app/runtime.c c/apps/gui/browser/paint/renderer.c \
                 c/apps/gui/browser/frame/passive.c c/apps/gui/browser/frame/policy.c \
                 c/apps/gui/browser/app/tabs.c \
@@ -1361,6 +1378,9 @@ $(BUILD)/cssobj/%.o: %.c
 # makes this one line the thing they all have to edit.
 BROWSER_JS_SRC := c/apps/gui/browser/app/main.c $(sort $(BROWSER_JS_C))
 BROWSER_JS_OBJ := $(patsubst %.c,$(BUILD)/jsobj/%.o,$(BROWSER_JS_SRC))
+$(BUILD)/browserobj/c/apps/gui/browser/css/extra.o $(BUILD)/cssobj/c/apps/gui/browser/css/engine.o: $(BROWSER_STYLE_MODULES)
+$(BUILD)/browserobj/c/apps/gui/browser/paint/renderer.o: $(BROWSER_STYLE_MODULES)
+$(BUILD)/jsobj/c/apps/gui/browser/app/main.o: c/apps/gui/browser/app/background.c
 
 # ...but WITHOUT `-include features.h`. That header is musl's INTERNAL one: it
 # defines lowercase `weak`, `hidden` and `weak_alias` so libm's own sources
@@ -3889,9 +3909,14 @@ test-browser: $(BUILD)/libcss_host.a $(RUST_LIB_HOST) test-http-dechunk
 # request/response state machine (short writes, 7-byte reads, redirects,
 # chunked bodies, concurrent requests) is exercised without QEMU.
 # -DWEBAPI_HOST keeps logit.h's `int 0x80` wrappers out of the host binary.
-WEBAPI_TEST_SRC := tests/unit/webapi_test.c c/apps/gui/browser/js/runtime/webapi.c \
+WEBAPI_TEST_SRC := tests/unit/webapi_test.c $(BROWSER_WEBAPI_SRC) \
                    c/net/http/http1.c c/net/http/url.c c/net/http/cookies.c \
                    tests/unit/rust_host_shim.c
+-include tests/abort.mk
+-include tests/html_clone.mk
+-include tests/html_streams.mk
+ci-host: test-html-clone test-html-clone-san
+ci-host: test-html-streams test-html-streams-san
 test-webapi: $(RUST_LIB_HOST)
 	@mkdir -p $(BUILD)
 	@$(CC) -O2 -w $(BTEST_INC) -Iinclude/abi $(JS_INC) -DCONFIG_VERSION='"host"' -DWEBAPI_HOST \
@@ -3902,12 +3927,17 @@ test-webapi: $(RUST_LIB_HOST)
 # promise resolvers, a request buffer and a parsed response; the failure mode
 # for all of it is a leak or a use-after-free on the abandon path, neither of
 # which shows up as a wrong answer.
-test-webapi-asan: $(RUST_LIB_HOST)
+# Correction: the original recipe forced detect_leaks=1 on Darwin too, where
+# LeakSanitizer aborts before main. Share the existing host capability switch;
+# keep ASan/UBSan active and name the unavailable check instead of hiding it.
+test-webapi-asan: test-webapi $(RUST_LIB_HOST)
 	@mkdir -p $(BUILD)
 	@$(CC) -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -w \
 	    $(BTEST_INC) -Iinclude/abi $(JS_INC) -DCONFIG_VERSION='"host"' -DWEBAPI_HOST \
 	    -o $(BUILD)/webapi_asan $(WEBAPI_TEST_SRC) $(QJS_SRC) $(RUST_LIB_HOST) -lm
-	@ASAN_OPTIONS=detect_leaks=1 $(BUILD)/webapi_asan
+	@if [ "$(ASAN_LEAKS)" = 0 ]; then \
+	    echo 'test-webapi-asan: LeakSanitizer unavailable on this host; ASan and UBSan still run'; fi
+	@ASAN_OPTIONS=detect_leaks=$(ASAN_LEAKS) UBSAN_OPTIONS=halt_on_error=1 $(BUILD)/webapi_asan
 
 # Web-platform targets: probe-webapi (the global-miss instrument over the
 # committed real-page corpus) and test-platform / -control / -asan for
@@ -4009,8 +4039,7 @@ test-fetch-ui: $(ISO) $(DISK)
 # point: the fake server can RELEASE a response in pieces, so a test can assert
 # the page held the first tokens while the response was still open. See the
 # header of tests/unit/stream_net.h.
-STREAM_TEST_SRC := c/apps/gui/browser/js/runtime/webapi.c c/net/http/http1.c c/net/http/url.c \
-                   c/net/http/cookies.c tests/unit/rust_host_shim.c
+STREAM_TEST_SRC := $(filter-out tests/unit/webapi_test.c,$(WEBAPI_TEST_SRC))
 test-stream: $(RUST_LIB_HOST)
 	@mkdir -p $(BUILD)
 	@$(CC) -O2 -w $(BTEST_INC) -Iinclude/abi $(JS_INC) -DCONFIG_VERSION='"host"' -DWEBAPI_HOST \
@@ -4036,7 +4065,13 @@ test-stream-asan: $(RUST_LIB_HOST)
 	    $(BTEST_INC) -Iinclude/abi $(JS_INC) -DCONFIG_VERSION='"host"' -DWEBAPI_HOST \
 	    -o $(BUILD)/stream_asan tests/unit/stream_test.c $(STREAM_TEST_SRC) $(QJS_SRC) \
 	    $(RUST_LIB_HOST) -lm
-	@ASAN_OPTIONS=detect_leaks=1 $(BUILD)/stream_asan
+# The old recipe forced detect_leaks=1. Darwin/arm64 aborts before main with
+# "detect_leaks is not supported on this platform", so no stream was tested.
+# ASAN_LEAKS is the existing host capability switch from audio_codec.mk;
+# only unavailable leak detection is omitted, with an explicit log line.
+	@if [ "$(ASAN_LEAKS)" = 0 ]; then \
+	    echo 'test-stream-asan: LeakSanitizer unavailable on this host; ASan and UBSan still run'; fi
+	@ASAN_OPTIONS=detect_leaks=$(ASAN_LEAKS) UBSAN_OPTIONS=halt_on_error=1 $(BUILD)/stream_asan
 
 # --- test-cookie-cors: which requests carry the session, and which
 # cross-origin responses a page may read. Every refusal is paired with the
@@ -5148,6 +5183,7 @@ clean-scratch:
 -include tests/button_auto_metrics.mk
 -include tests/foreign_attributes.mk
 -include tests/sock_closed_drain.mk
+-include tests/sock_tcb.mk
 -include tests/page_runtime.mk
 -include tests/importmap.mk
 
@@ -5473,6 +5509,10 @@ bench-aui: $(ISO) $(BUILD)/gallery.aex
 -include tests/page_lifecycle.mk
 -include tests/dom_id.mk
 -include tests/select_state.mk
+-include tests/html_forms.mk
+-include tests/html_timers.mk
+-include tests/html_priority.mk
+ci-host: test-html-timers
 -include tests/page_timers.mk
 
 # The HTML element interfaces (js_semantics.c): <dialog>, <table>, <select>,
@@ -5526,6 +5566,7 @@ bench-aui: $(ISO) $(BUILD)/gallery.aex
 # Measured against the corpus's OWN data (urltestdata.json, setters_tests.json)
 # rather than through the WPT runner. See the fragment header.
 -include tests/url.mk
+-include tests/http_url.mk
 
 # <a>/<area> URL decomposition: `make test-urlelem` / `test-urlelem-negctl`.
 # c/apps/gui/browser/js/net/urlbind.c -- the document base URL, the eleven
@@ -5735,6 +5776,14 @@ test-mk-wired:
 # Browser expansion gates: controls are prerequisites of each positive gate.
 -include tests/css_extra_cascade.mk
 -include tests/css_spacing_math.mk
+-include tests/css_layout.mk
+-include tests/css_nesting.mk
+-include tests/css_background.mk
+-include tests/css_background_image.mk
+-include tests/css_guest.mk
+-include tests/css_gradients.mk
+-include tests/css_gradient_parse.mk
+-include tests/css_background_layers.mk
 -include tests/interaction_runtime.mk
 # Consumes INTERACTION_RUNTIME_DEPS at rule parse time: include after producer,
 # or an edited browser.c silently leaves the host input binary up to date.

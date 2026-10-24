@@ -663,7 +663,12 @@ static void test_fetch(void)
     settle(20);
     ckjs("F === 'TypeError'", "an unopenable connection rejects with a TypeError");
 
-    run("var BAD = 'pending'; fetch('::::not a url').catch(function (e) { BAD = e.name; });");
+    /* The old "::::not a url" fixture was claimed to be unparseable, but it
+     * resolves as a valid relative URL against the page. After two pumps that
+     * request was still pending: fs_reset() clears fake sockets, not fetches,
+     * so it reused their handles beneath the next POST and broke five wire
+     * assertions. An unterminated absolute IPv6 host fails before socket open. */
+    run("var BAD = 'pending'; fetch('http://[::1').catch(function (e) { BAD = e.name; });");
     settle(2);
     ckjs("BAD === 'TypeError'", "an unparseable URL rejects rather than throwing");
 }

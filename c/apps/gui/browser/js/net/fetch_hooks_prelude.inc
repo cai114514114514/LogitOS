@@ -26,13 +26,17 @@
 "  var e = new Error(message); e.name = name; return e;\n"
 "}\n"
 "return {\n"
+"  formEntries: formdataAPI.submission,\n"
+"  cloneHosts: [[blobAPI.is, blobAPI.clone], [formdataAPI.is], [__abort.is], [__streams.is],\n"
+"    [function (value) { return fetchBrands.has(value) ||\n"
+"      (typeof xhrStates !== 'undefined' && xhrStates.has(value)); }]],\n"
 "  mkError: mkError,\n"
 /* The table stays private. Only its owning C realm may request bytes; copying
  * to worker-owned memory happens synchronously at construction, before a
  * caller can revoke the URL on the next line. A fragment is not a store key. */
 "  blobConfigure: function (origin, generation) { __objURLOrigin=origin; __objURLGeneration=generation; },\n"
 "  blobSnapshot: function (url) { var hash=url.indexOf('#'); if(hash>=0)url=url.slice(0,hash);\n"
-"    return Object.prototype.hasOwnProperty.call(__objURLs,url)?__objURLs[url]._b:null; },\n"
+"    return Object.prototype.hasOwnProperty.call(__objURLs,url)?blobAPI.bytes(__objURLs[url]):null; },\n"
    /* Called when the HEADERS arrive, not when the body does. C keeps the
       three functions handed back and drives the body through them, which is
       what makes the response a stream the page can read from while the
@@ -65,11 +69,12 @@
 "    xhrDiagSet(xhrResponseDiag, r, {fetch: handle, json: diagnosticJSON, status: status});\n"
 #endif
 "    return { r: r,\n"
-"      push: function (buf) { ctrl.enqueue(new Uint8Array(buf)); return ctrl.bytes(); },\n"
-"      close: function () { ctrl.close(); },\n"
+"      push: function (buf) { ctrl.enqueue(new Uint8Array(buf)); return __streams.bytes(stream); },\n"
+"      close: function () { fqCleanup(handle); ctrl.close(); },\n"
    /* The failure that arrives AFTER the promise settled belongs to the body
       stream -- which is what a browser does when a connection dies (or is
       aborted) mid-download. The name is carried through so an abort reads as
       an AbortError to the page and not as a generic network failure. */
-"      error: function (m, n) { ctrl.error(mkError(n || 'TypeError', m)); } };\n"
+"      error: function (m, n, reason) { fqCleanup(handle);\n"
+"        ctrl.error(arguments.length > 2 ? reason : mkError(n || 'TypeError', m)); } };\n"
 "  },\n"

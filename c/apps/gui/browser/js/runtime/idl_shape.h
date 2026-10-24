@@ -26,8 +26,20 @@
 
 IDL_SHAPE_FN void js_idl_shape_install(JSContext *ctx);
 
+/* Same install, returning an owned private record object. A data value moved
+ * behind a getter is no longer reachable by the
+ * native pass's quiet descriptor walk. Pass these records directly to
+ * js_native_shape_install_roots, then free them; never publish them on the
+ * author global or evaluate the new getters to rediscover their values.
+ * Its own numeric keys hold records; it is deliberately not a packed array,
+ * whose element storage JS_GetOwnPropertyQuiet does not inspect.
+ * The ordinary installer above discards this handoff for callers that do not
+ * run a native pass. JS_UNDEFINED means no roots (including the skip control). */
+IDL_SHAPE_FN JSValue js_idl_shape_install_roots(JSContext *ctx);
+
 #ifdef JS_IDL_SHAPE_OPTIONAL
 LOGIT_WEAK_STUB(js_idl_shape_install);
+LOGIT_WEAK_STUB(js_idl_shape_install_roots);
 #endif
 
 #endif /* LOGIT_JS_IDL_SHAPE_H */

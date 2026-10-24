@@ -799,339 +799,181 @@ static int paint_shadows(const struct item *e, int sx, int sy, int r, int op, in
     return painted;
 }
 
-/* ---- linear-gradient backgrounds -----------------------------------------
- *
- * WHAT THE CORPUS LOOKS LIKE, and it is what decided the shape of this code.
- * 385 `linear-gradient(` calls across the 102 sheets of tests/fixtures/cssweb,
- * classified by their first argument:
- *
- *     203  no direction at all  -> `to bottom`   ]  349 of 385 = 91%
- *     146  an axis-aligned keyword or a 0/90/180/270deg angle  ]  AXIS-ALIGNED
- *      36  a corner keyword or an off-axis angle              -> diagonal
- *
- * So nine gradients in ten are a ONE-DIMENSIONAL ramp along x or y, which the
- * compositor can replicate for free from a 1 x n source -- the same trick
- * aui_vgrad has drawn the desktop with since M8, at the cost of a flat fill.
- * The diagonal tenth cannot be expressed that way at all and goes through a
- * bounded surface. Two paths, and the split is measured rather than assumed.
- *
- * THE RAMP IS BUILT IN DEVICE ORDER, not gradient order, which is why
- * gfx_gradient_strip_paint() is not what is called here: its contract is `n`
- * entries with t running 0 -> 65536 across the strip, and that is only the
- * right ramp when the strip IS the whole gradient extent, running the same way
- * the device rows do. `to top` runs UP the box, and a rounded box's three
- * bands each index a SUB-RANGE of the ramp. gfx_paint_sample() is the
- * primitive that answers both -- one call per device sample, at the sample's
- * own coordinate -- and it is what the corner tiles need too, so bands and
- * corners come out of the same evaluator and cannot disagree at the seam. */
+/* ---- gradient backgrounds -------------------------------------------------
+ * The 2026-09 corpus count was 385 linear calls, 349 axis-aligned. Keep their
+ * 1xN blit optimization, but color/geometry/fixup now have one authority in
+ * gradient.c. Old claim: a downscaled 128px diagonal surface was always safe
+ * because channels step <=2. Correction: hard stops and repeating gradients
+ * invalidate that assumption. Larger surfaces are tiled at device resolution.
+ */
+#define PAINT_GRADIENT_EMBEDDED
+#include "gradient.c"
+#undef PAINT_GRADIENT_EMBEDDED
 
-/* The largest gradient surface, DEVICE px per side. Only the diagonal tenth
- * ever allocates it. 128 is chosen from the banding it can cost, not from
- * taste: a box wider than this is rendered smaller and stretched by the
- * compositor, and across 128 samples a channel that traverses its whole 0..255
- * range steps by at most 2 levels per sample -- so nearest-neighbour cannot
- * introduce a step the ramp did not already have. That is the one case where
- * stretching is provably safe, and it is exactly the opposite of the rule for
- * corner MASKS (generated at device size, never stretched, because a mask of a
- * SHARP shape does not survive it). 64 KiB of .bss; the alternative -- a
- * full-size surface -- is 2.8 MB for one hero gradient. */
-#define GSURF_MAX 128
-static unsigned char gsurf[GSURF_MAX * GSURF_MAX * 4];
-/* `* 2` because gfx_path_init's capacity is in POINTS and the buffer holds x
- * and y interleaved -- the convention c/lib/gfx/gfx_mask.c's `cpt[512 * 2]`
- * with `gfx_path_init(&p, cpt, 512, ...)` sets, and the one this file's own
- * ctl_pt[] got wrong (see the note there). 64 points is a rounded rect with
- * room: four kappa cubics flatten to about 12 segments each at this
- * tolerance. */
-static int grad_pt[64 * 2], grad_sub[8];
+enum { GSURF_MAX=128 };
+static unsigned char gsurf[GSURF_MAX*GSURF_MAX*4];
+struct renderer_gradient {
+    struct paint_gradient paint;
+    int x,y;
+    double pixel_size;
+};
 
-/* t at a device point, in the engine's own arithmetic. Copied deliberately
- * from gfx_paint.c's GFX_LINEAR row loop rather than approximated: a corner
- * tile and the band it abuts must land on the same byte or the seam shows, and
- * "the same formula" is the only way to be sure of that. */
-static int grad_t_at(const struct gfx_paint *p, long long px8, long long py8)
+static int renderer_gradient_prepare(const struct cgradient *cg,int x,int y,
+                                      int w,int h,unsigned cur,int cur_alpha,
+                                      struct renderer_gradient *p)
 {
-    long long dx = p->x1 - p->x0, dy = p->y1 - p->y0;
-    long long len2 = dx * dx + dy * dy;
-    if (len2 == 0) return 0;
-    long long t = ((px8 - p->x0) * dx + (py8 - p->y0) * dy) * GFX_MONE / len2;
-    return (int)(t < 0 ? 0 : (t > GFX_MONE ? GFX_MONE : t));
+    if(w<=0 || h<=0 || !css_gradient_prepare_rgba(cg,w,h,cur,cur_alpha,&p->paint)) return 0;
+    p->x=x;p->y=y;
+    (void)dev(x); /* initialize the real compositor scale before its inverse */
+    p->pixel_size=100.0/(scale_pct?scale_pct:100);
+    return 1;
 }
 
-/* Resolve one stop's colour span. `cur` is the element's own `color`, which is
- * what `currentColor` means and what an unreadable colour falls back to. */
-static uint32_t grad_color(const char *s, int len, uint32_t cur, int *alpha)
+static unsigned renderer_gradient_sample(const struct renderer_gradient *p,
+                                         double dx,double dy,int *alpha)
 {
-    *alpha = 255;
-    if (!s || len <= 0) return cur;
-    /* currentColor is resolved HERE and not in css_extra, because it needs the
-     * element's computed colour and the capture runs once per sheet. One of
-     * the corpus's 385 gradient stops uses it; 782 declarations use it
-     * somewhere. */
-    if (len == 12) {
-        int i = 0;
-        const char *k = "currentcolor";
-        for (; i < 12; i++) {
-            char c = s[i];
-            if (c >= 'A' && c <= 'Z') c = (char)(c + 32);
-            if (c != k[i]) break;
-        }
-        if (i == 12) return cur;
-    }
-    if (!LOGIT_HAVE(img_css_color)) return cur;
-    unsigned char rgba[4] = { 0, 0, 0, 255 };
-    if (!img_css_color(s, len, rgba)) return cur;
-    *alpha = rgba[3];
-    return pack_rgb(rgba[0], rgba[1], rgba[2]);
+    unsigned color;
+    css_gradient_sample_pixel(&p->paint,dx*p->pixel_size-p->x,
+                              dy*p->pixel_size-p->y,
+                              p->pixel_size,p->pixel_size,&color,alpha);
+    return color;
 }
 
-/* Build the gfx_paint for `cg` over the box (x,y,w,h) in window POINTS. The
- * axis is written in ABSOLUTE device 24.8, so any sub-rect of the box -- a
- * 9-slice band, a corner tile, a downscaled surface -- can be expressed
- * against it without re-deriving the geometry. Returns 0 if the value is not
- * one we can paint, and 0 must mean "fall back to the background colour". */
-static int grad_build(const struct cgradient *cg, int x, int y, int w, int h,
-                      uint32_t cur, struct gfx_paint *p)
+static int grad_axis(const struct renderer_gradient *p,int *vertical)
 {
-    if (!cg || cg->kind != CG_LINEAR || cg->nstop < 2) return 0;
-    int dw = devlen(x, w), dh = devlen(y, h);
-    if (dw <= 0 || dh <= 0) return 0;
-
-    /* The unit direction, 16.16, y DOWN. CSS's angle is clockwise from
-     * "to top", so the direction is (sin, -cos). */
-    int ux, uy;
-    if (cg->dir == CG_DIR_CORNER) {
-        /* A corner keyword is NOT a fixed angle: CSS Images 3 puts the
-         * gradient line perpendicular to the line through the ending corner's
-         * two NEIGHBOURS, which is the box's other diagonal -- so it depends
-         * on w and h. For `to top right` the other diagonal runs (0,0)->(w,h),
-         * and (h,-w) is perpendicular to it and points into the top-right
-         * quadrant. No trigonometry is needed for any of the four, which is
-         * also why they are kept as a keyword all the way down here rather
-         * than converted to an angle at capture time. */
-        int vx, vy;
-        switch (cg->corner) {
-        case CG_CORNER_TR: vx =  dh; vy = -dw; break;
-        case CG_CORNER_BR: vx =  dh; vy =  dw; break;
-        case CG_CORNER_BL: vx = -dh; vy =  dw; break;
-        default:           vx = -dh; vy = -dw; break;   /* CG_CORNER_TL */
-        }
-        long long d = (long long)gfx_isqrt((unsigned long long)((long long)dw * dw +
-                                                                (long long)dh * dh));
-        if (d <= 0) return 0;
-        ux = (int)((long long)vx * GFX_MONE / d);
-        uy = (int)((long long)vy * GFX_MONE / d);
-    } else {
-        int deg256 = (int)((long long)cg->angle_mdeg * GFX_ONE / 1000);
-        ux = gfx_sin(deg256);
-        uy = -gfx_cos(deg256);
-    }
-
-    /* The gradient line's length: the box's extent projected onto it. */
-    long au = ux < 0 ? -ux : ux, av = uy < 0 ? -uy : uy;
-    long long L8 = ((long long)dw * au + (long long)dh * av) * 256 / GFX_MONE;  /* 24.8 */
-    if (L8 <= 0) return 0;
-    long long cx8 = (long long)dev(x) * 256 + (long long)dw * 128;
-    long long cy8 = (long long)dev(y) * 256 + (long long)dh * 128;
-    long long hx = (L8 / 2) * ux / GFX_MONE, hy = (L8 / 2) * uy / GFX_MONE;
-    gfx_paint_linear(p, (int)(cx8 - hx), (int)(cy8 - hy),
-                        (int)(cx8 + hx), (int)(cy8 + hy));
-
-    /* Stop positions -> t. A percentage is hundredths of a percent (so 62.5%
-     * is 6250 and not 62 -- the units bug this tree already paid for once);
-     * a length is CSS px, i.e. POINTS here, measured along the gradient line
-     * whose length is L8. An unpositioned first/last stop is 0/100%, and an
-     * unpositioned interior run is spread evenly between its defined
-     * neighbours, which is the spec's rule and not a convenience. */
-    int t[CG_MAXSTOP], have[CG_MAXSTOP];
-    int n = cg->nstop;
-    for (int i = 0; i < n; i++) {
-        have[i] = 1;
-        if (cg->stop[i].pos_kind == CG_POS_PCT)
-            t[i] = (int)((long long)cg->stop[i].pos * GFX_MONE / 10000);
-        else if (cg->stop[i].pos_kind == CG_POS_PX) {
-            long long px8 = (long long)cg->stop[i].pos * (scale_pct ? scale_pct : 100) * 256 / 100;
-            t[i] = (int)(px8 * GFX_MONE / L8);
-        } else if (i == 0)          t[i] = 0;
-        else if (i == n - 1)        t[i] = GFX_MONE;
-        else                        have[i] = 0;
-    }
-    for (int i = 1; i < n - 1; i++) {
-        if (have[i]) continue;
-        int j = i;
-        while (j < n && !have[j]) j++;            /* j is the next defined stop */
-        int lo = t[i - 1], hi = t[j];
-        for (int k = i; k < j; k++) {
-            t[k] = lo + (int)((long long)(hi - lo) * (k - i + 1) / (j - i + 1));
-            have[k] = 1;
-        }
-        i = j - 1;
-    }
-    /* Non-decreasing: CSS clamps a stop up to its predecessor rather than
-     * letting the ramp run backwards. */
-    for (int i = 1; i < n; i++) if (t[i] < t[i - 1]) t[i] = t[i - 1];
-
-    for (int i = 0; i < n; i++) {
-        int a;
-        uint32_t c = grad_color(cg->stop[i].color, cg->stop[i].colorlen, cur, &a);
-        gfx_paint_stop(p, t[i], c, a);
-    }
-    return p->nstop >= 2;
-}
-
-/* Is the paint's axis exactly along x or exactly along y? Exact, not
- * approximate: gfx_sin(0) is 0 and gfx_sin(90 deg) is 65536 to the bit, so the
- * 349 axis-aligned gradients land here and the 36 diagonal ones do not. */
-static int grad_axis(const struct gfx_paint *p, int *vertical)
-{
-    if (p->x0 == p->x1) { *vertical = 1; return p->y0 != p->y1; }
-    if (p->y0 == p->y1) { *vertical = 0; return 1; }
+    if(p->paint.kind!=CG_LINEAR) return 0;
+    if(p->paint.ux==0) { *vertical=1;return 1; }
+    if(p->paint.uy==0) { *vertical=0;return 1; }
     return 0;
 }
 
-/* One axis-aligned band: `n` device samples of the ramp, blitted as a 1 x n
- * (or n x 1) source that the compositor replicates. The samples are taken at
- * the band's OWN device coordinates, so a band of a rounded box gets the slice
- * of the ramp that belongs to it. */
-static void grad_band(int x, int y, int w, int h, const struct gfx_paint *p,
-                      int vertical, int galpha)
+/* Every source sample uses its physical pixel center, including rounded
+ * corner tiles. Separate stop math for the strips would make seams visible. */
+static void grad_band(int x,int y,int w,int h,const struct renderer_gradient *p,
+                      int vertical,int opacity)
 {
-    if (w <= 0 || h <= 0 || galpha <= 0) return;
-    if (x + w <= cl_x0 || x >= cl_x1 || y + h <= cl_y0 || y >= cl_y1) return;
-    int span = vertical ? devlen(y, h) : devlen(x, w);
-    if (span <= 0) return;
-    int n = span > RAMP_MAX ? RAMP_MAX : span;
-    int base = vertical ? dev(y) : dev(x);
-    for (int k = 0; k < n; k++) {
-        long long d = base + (long long)k * span / n;
-        int t = vertical ? grad_t_at(p, p->x0, d * 256 + 128)
-                         : grad_t_at(p, d * 256 + 128, p->y0);
-        int a;
-        unsigned c = gfx_paint_sample(p, t, &a);
-        ramp_buf[k * 4 + 0] = (unsigned char)GFX_R(c);
-        ramp_buf[k * 4 + 1] = (unsigned char)GFX_G(c);
-        ramp_buf[k * 4 + 2] = (unsigned char)GFX_B(c);
-        ramp_buf[k * 4 + 3] = (unsigned char)(a * galpha / 255);
-    }
-    if (vertical) gui_blit(x, y, w, h, ramp_buf, 1, n);
-    else          gui_blit(x, y, w, h, ramp_buf, n, 1);
-}
-
-/* One corner tile, tinted per pixel by the gradient at that pixel's own device
- * coordinate. Same evaluator as grad_band, so the arc and the band it meets
- * agree byte for byte. */
-static void grad_corner(int x, int y, int r, const unsigned char *cov, int cw, int ch,
-                        const struct gfx_paint *p, int fx, int fy, int galpha)
-{
-    if (!cov || cw <= 0 || ch <= 0 || r <= 0) return;
-    if ((long)cw * ch * 4 > (long)sizeof corner_rgba) return;
-    int bx = dev(x), by = dev(y);
-    for (int j = 0; j < ch; j++) {
-        int sj = fy ? ch - 1 - j : j;
-        unsigned char *d = corner_rgba + (long)j * cw * 4;
-        const unsigned char *s = cov + (long)sj * cw;
-        for (int i = 0; i < cw; i++) {
-            int si = fx ? cw - 1 - i : i;
-            int t = grad_t_at(p, (long long)(bx + i) * 256 + 128,
-                                 (long long)(by + j) * 256 + 128);
-            int a;
-            unsigned c = gfx_paint_sample(p, t, &a);
-            d[i * 4 + 0] = (unsigned char)GFX_R(c);
-            d[i * 4 + 1] = (unsigned char)GFX_G(c);
-            d[i * 4 + 2] = (unsigned char)GFX_B(c);
-            d[i * 4 + 3] = (unsigned char)(s[si] * a / 255 * galpha / 255);
+    if(w<=0 || h<=0 || opacity<=0 ||
+       x+w<=cl_x0 || x>=cl_x1 || y+h<=cl_y0 || y>=cl_y1) return;
+    int span=vertical?devlen(y,h):devlen(x,w);
+    if(span<=0) return;
+    /* Repeating/hard ramps must not be downsampled. The bounded scratch ramp
+     * is still shared with shadows: split long bands at device scale. */
+    if(span>RAMP_MAX) {
+        int point_span=RAMP_MAX*100/(scale_pct?scale_pct:100);
+        if(point_span<1) point_span=1;
+        int length=vertical?h:w;
+        for(int k=0;k<length;k+=point_span) {
+            int count=length-k<point_span?length-k:point_span;
+            grad_band(x+(vertical?0:k),y+(vertical?k:0),
+                      vertical?w:count,vertical?count:h,p,vertical,opacity);
         }
+        return;
     }
-    gui_blit(x, y, r, r, corner_rgba, cw, ch);
+    int base=vertical?dev(y):dev(x);
+    for(int k=0;k<span;k++) {
+        int alpha;
+        double dx=vertical?dev(p->x)+.5:base+k+.5;
+        double dy=vertical?base+k+.5:dev(p->y)+.5;
+        unsigned color=renderer_gradient_sample(p,dx,dy,&alpha);
+        ramp_buf[k*4]=(unsigned char)(color>>16);
+        ramp_buf[k*4+1]=(unsigned char)(color>>8);
+        ramp_buf[k*4+2]=(unsigned char)color;
+        ramp_buf[k*4+3]=(unsigned char)(alpha*opacity/255);
+    }
+    if(vertical) gui_blit(x,y,w,h,ramp_buf,1,span);
+    else gui_blit(x,y,w,h,ramp_buf,span,1);
 }
 
-/* The diagonal path: composite the paint through a real path into a surface
- * and blit it. This is ol_raster_fill()'s shape -- a paint, a path and a rule -- and
- * the only place in the browser that has ever asked for it. */
-static void grad_surface(int x, int y, int w, int h, int rpt,
-                         const struct gfx_paint *P, int galpha)
+static void grad_corner(int x,int y,int r,const unsigned char *cov,int cw,int ch,
+                        const struct renderer_gradient *p,int flipx,int flipy,
+                        int opacity)
 {
-    int dw = devlen(x, w), dh = devlen(y, h);
-    if (dw <= 0 || dh <= 0 || galpha <= 0) return;
-    if (x + w <= cl_x0 || x >= cl_x1 || y + h <= cl_y0 || y >= cl_y1) return;
-    int sw = dw, sh = dh, down = 0;
-    while (sw > GSURF_MAX || sh > GSURF_MAX) {
-        sw = (sw + 1) / 2; sh = (sh + 1) / 2; down = 1;
+    if(!cov || cw<=0 || ch<=0 || r<=0 ||
+       (long)cw*ch*4>(long)sizeof corner_rgba) return;
+    int bx=dev(x),by=dev(y);
+    for(int j=0;j<ch;j++) for(int i=0;i<cw;i++) {
+        int alpha;
+        unsigned color=renderer_gradient_sample(p,bx+i+.5,by+j+.5,&alpha);
+        unsigned char *d=corner_rgba+((long)j*cw+i)*4;
+        int coverage=cov[(flipy?ch-1-j:j)*cw+(flipx?cw-1-i:i)];
+        d[0]=(unsigned char)(color>>16);d[1]=(unsigned char)(color>>8);
+        d[2]=(unsigned char)color;
+        d[3]=(unsigned char)(coverage*alpha/255*opacity/255);
     }
-    if (sw <= 0 || sh <= 0) return;
-    /* The paint's axis, mapped from absolute device into this surface's
-     * coordinates. A scale and a translate, so the ramp keeps running in the
-     * same direction at the same rate relative to the box. */
-    struct gfx_paint p = *P;
-    long long ox = (long long)dev(x) * 256, oy = (long long)dev(y) * 256;
-    p.x0 = (int)((P->x0 - ox) * sw / dw); p.y0 = (int)((P->y0 - oy) * sh / dh);
-    p.x1 = (int)((P->x1 - ox) * sw / dw); p.y1 = (int)((P->y1 - oy) * sh / dh);
-    p.global_alpha = galpha;
-    struct gfx_surface s;
-    gfx_surface_init(&s, gsurf, sw, sh, sw * 4);
-    ol_raster_clear(&s);
-    struct gfx_path pa;
-    gfx_path_init(&pa, grad_pt, 64, grad_sub, 8);
-    /* The radius is honoured only at 1:1. Downscaled, an antialiased corner is
-     * a SHARP shape being stretched -- the one thing the mask discipline
-     * forbids -- so a big rounded box is painted band-by-band with device-size
-     * corner tiles instead, and this path is called with rpt = 0. */
-    int rs = down ? 0 : devlen(x, rpt);
-    if (rs > 0) gfx_path_rrect(&pa, 0, 0, sw * GFX_ONE, sh * GFX_ONE, rs * GFX_ONE);
-    else        gfx_path_rect(&pa, 0, 0, sw * GFX_ONE, sh * GFX_ONE);
-    ol_raster_fill(&s, &pa, GFX_NONZERO, &p, 0);
-    gui_blit(x, y, w, h, gsurf, sw, sh);
+    gui_blit(x,y,r,r,corner_rgba,cw,ch);
 }
 
-/* Paint the element's background gradient over its border box. Returns 0 when
- * there is no gradient to paint or it is one we refuse, and the caller then
- * paints the background COLOUR exactly as it did before -- never something
- * approximate. */
-static int paint_gradient(const struct item *e, int sx, int sy, int r, int op)
+static void grad_surface(int x,int y,int w,int h,
+                         const struct renderer_gradient *p,int opacity)
 {
-    const struct cstyle *st = sty(e);
-    if (!st || !LOGIT_HAVE(css_gradient_parse) || !st->xraw[XR_BG_IMAGE] || op <= 0) return 0;
+    if(w<=0 || h<=0 || opacity<=0 ||
+       x+w<=cl_x0 || x>=cl_x1 || y+h<=cl_y0 || y>=cl_y1) return;
+    int tile_points=GSURF_MAX*100/(scale_pct?scale_pct:100);
+    if(tile_points<1) tile_points=1;
+    for(int py=0;py<h;py+=tile_points) for(int px=0;px<w;px+=tile_points) {
+        int tw=w-px<tile_points?w-px:tile_points;
+        int th=h-py<tile_points?h-py:tile_points;
+        int bx=dev(x+px),by=dev(y+py);
+        int dw=devlen(x+px,tw),dh=devlen(y+py,th);
+        if(dw<=0 || dh<=0 || dw>GSURF_MAX || dh>GSURF_MAX) continue;
+        for(int j=0;j<dh;j++) for(int i=0;i<dw;i++) {
+            int alpha;
+            unsigned color=renderer_gradient_sample(p,bx+i+.5,by+j+.5,&alpha);
+            unsigned char *d=gsurf+((long)j*dw+i)*4;
+            d[0]=(unsigned char)(color>>16);d[1]=(unsigned char)(color>>8);
+            d[2]=(unsigned char)color;d[3]=(unsigned char)(alpha*opacity/255);
+        }
+        gui_blit(x+px,y+py,tw,th,gsurf,dw,dh);
+    }
+}
+
+/* Legacy single-image adapter. The integrated layer compositor handles
+ * background color beneath transparent images, per-layer geometry/clip and
+ * solid borders in one opacity pass. This fallback shares its sampler. */
+static int paint_gradient(const struct item *e,int sx,int sy,int r,int opacity)
+{
+    const struct cstyle *st=sty(e);
+    if(!st || st->mask_refused || !LOGIT_HAVE(css_gradient_parse) || !st->xraw[XR_BG_IMAGE] ||
+       opacity<=0) return 0;
     struct cgradient cg;
-    if (!css_gradient_parse(st->xraw[XR_BG_IMAGE], st->xrawlen[XR_BG_IMAGE],
-                            st->font_px > 0 ? st->font_px : 16, root_px(), &cg))
-        return 0;
-    struct gfx_paint p;
-    if (!grad_build(&cg, sx, sy, e->w, e->h, st->color, &p)) return 0;
-
-    int vertical = 0;
-    int axis = grad_axis(&p, &vertical);
-    if (r <= 0) {
-        if (axis) grad_band(sx, sy, e->w, e->h, &p, vertical, op);
-        else      grad_surface(sx, sy, e->w, e->h, 0, &p, op);
+    /* Explicit inheritance preserves the image's computed em basis; resolving
+     * raw tokens against a child's smaller font silently shrinks its stops. */
+    int font=st->background_font[2]>0?st->background_font[2]:st->font_px;
+    if(!css_gradient_parse(st->xraw[XR_BG_IMAGE],st->xrawlen[XR_BG_IMAGE],
+                           font>0?font:16,root_px(),&cg)) return 0;
+    struct renderer_gradient p;
+    if(!renderer_gradient_prepare(&cg,sx,sy,e->w,e->h,st->color,st->color_alpha,&p)) return 0;
+    int vertical=0,axis=grad_axis(&p,&vertical);
+    if(r<=0) {
+        if(axis) grad_band(sx,sy,e->w,e->h,&p,vertical,opacity);
+        else grad_surface(sx,sy,e->w,e->h,&p,opacity);
         return 1;
     }
-    int cw = devlen(sx, r), ch = devlen(sy, r);
-    const unsigned char *cov = gfx_mask_corner(GFX_MASK_FILL, cw, ch, 0);
-    if (!cov) {
-        /* The tile ceiling. Square corners on a gradient is gfx_mask.c's
-         * acceptable degradation -- complete, already counted there -- and
-         * skipping the gradient entirely would silently hand the box back to
-         * its flat background colour, which looks like the gradient was never
-         * declared. */
-        if (axis) grad_band(sx, sy, e->w, e->h, &p, vertical, op);
-        else      grad_surface(sx, sy, e->w, e->h, 0, &p, op);
-        return 1;
-    }
-    if (axis) {
-        grad_band(sx + r, sy,             e->w - 2 * r, r,             &p, vertical, op);
-        grad_band(sx,     sy + r,         e->w,         e->h - 2 * r,  &p, vertical, op);
-        grad_band(sx + r, sy + e->h - r,  e->w - 2 * r, r,             &p, vertical, op);
+    int cw=devlen(sx,r),ch=devlen(sy,r);
+    const unsigned char *cov=gfx_mask_corner(GFX_MASK_FILL,cw,ch,0);
+    /* Large/asymmetric radii use box.c's path masks. The legacy adapter
+     * reports refusal when its corner cache cannot supply true coverage. */
+    if(!cov) return 0;
+    if(axis) {
+        grad_band(sx+r,sy,e->w-2*r,r,&p,vertical,opacity);
+        grad_band(sx,sy+r,e->w,e->h-2*r,&p,vertical,opacity);
+        grad_band(sx+r,sy+e->h-r,e->w-2*r,r,&p,vertical,opacity);
     } else {
-        grad_surface(sx + r, sy,            e->w - 2 * r, r,            0, &p, op);
-        grad_surface(sx,     sy + r,        e->w,         e->h - 2 * r, 0, &p, op);
-        grad_surface(sx + r, sy + e->h - r, e->w - 2 * r, r,            0, &p, op);
+        grad_surface(sx+r,sy,e->w-2*r,r,&p,opacity);
+        grad_surface(sx,sy+r,e->w,e->h-2*r,&p,opacity);
+        grad_surface(sx+r,sy+e->h-r,e->w-2*r,r,&p,opacity);
     }
-    grad_corner(sx,             sy,            r, cov, cw, ch, &p, 0, 0, op);
-    grad_corner(sx + e->w - r,  sy,            r, cov, cw, ch, &p, 1, 0, op);
-    grad_corner(sx,             sy + e->h - r, r, cov, cw, ch, &p, 0, 1, op);
-    grad_corner(sx + e->w - r,  sy + e->h - r, r, cov, cw, ch, &p, 1, 1, op);
+    grad_corner(sx,sy,r,cov,cw,ch,&p,0,0,opacity);
+    grad_corner(sx+e->w-r,sy,r,cov,cw,ch,&p,1,0,opacity);
+    grad_corner(sx,sy+e->h-r,r,cov,cw,ch,&p,0,1,opacity);
+    grad_corner(sx+e->w-r,sy+e->h-r,r,cov,cw,ch,&p,1,1,opacity);
     return 1;
 }
+
+/* Keep box coverage/composition in one focused module without making any of
+ * the existing host paint consumers silently omit its translation unit. */
+#include "background.c"
+#include "box.c"
 
 /* ---- the ROUNDED overflow clip: path clipping's first consumer -----------
  *
@@ -2445,6 +2287,18 @@ static uint32_t pd_item_sig(const struct item *e, const struct fpaint *fp)
     PD_MIX(e->is_float); PD_MIX(e->ctl); PD_MIX(e->ctl_mono); PD_MIX(e->ctl_font);
     /* The four live-read style spans -- see the block comment above. */
     const struct cstyle *st = sty(e);
+    if(st&&e->type==IT_RECT){
+        PD_MIX(st->color);PD_MIX(st->color_alpha);
+#ifndef PAINT_BACKGROUND_STATIC_SIGNATURE
+        /* The old signature below covered authored spans, but a CSS image
+         * can finish loading without changing any span or box. The guest
+         * layer page decoded both 80x40 BMPs yet retained ten stale pixel
+         * samples: redraw_page submitted no damage for their new pixels.
+         * Include every cached layer identity, rather than force a full-page
+         * flush whenever an unrelated image elsewhere finishes loading. */
+        PD_MIX(background_cached_signature(st));
+#endif
+    }
     if (st && e->type == IT_IMAGE) {
         /* Padding can move the bitmap without changing its outer geometry. */
         PD_MIX(st->pl);PD_MIX(st->pr);PD_MIX(st->pt);PD_MIX(st->pb);
@@ -2863,6 +2717,10 @@ static void paint_display_list(int vx,int vy,int vw,int vh,int scroll_x,int scro
              * and the vertical against the height, but this painter draws a
              * CIRCULAR arc, and min(w,h) is the reading that cannot make a
              * corner bulge past the shorter side. */
+            /* Correction (2026-10-02): this circular approximation belongs to
+             * legacy shadows/affine fallback only. box.c resolves percentage
+             * axes independently and handles each corner/solid edge for the
+             * actual layered-background path before these fallbacks run. */
             int rr[4], maxr = (e->w < e->h ? e->w : e->h) / 2;
             for (int k = 0; k < 4; k++) {
                 rr[k] = e->radius_pct[k]
@@ -2932,13 +2790,17 @@ static void paint_display_list(int vx,int vy,int vw,int vh,int scroll_x,int scro
             }
             /* box-shadow, outer half: UNDER everything this box paints. */
             if (!rect_done) paint_shadows(e, sx, sy, r, op, 1);
+            int background_done=0;
+#ifndef CSS_BACKGROUND_OLD_BOX
+            if (!rect_done) background_done=paint_box_repaired(e, e0, sx, sy, op, dx, vy, scroll);
+#endif
             /* A background gradient replaces the background COLOUR (it is a
              * background-IMAGE layer, painted over it) and nothing else -- the
              * border still comes from the branches below, which is why this
              * only reports whether it painted rather than taking the box
              * over. `grad` == 0 keeps every existing path bit for bit. */
-            int grad = rect_done ? 0 : paint_gradient(e, sx, sy, r, op);
-            int rounded_done = rect_done;
+            int grad = rect_done || background_done ? 0 : paint_gradient(e, sx, sy, r, op);
+            int rounded_done = rect_done || background_done==1;
 #ifdef PAINT_NEGCTL_ROUND_HASBG
             /* NEGATIVE CONTROL (test-paint-gfx-negctl): the `&& e->has_bg`
              * guard exactly as it stood, so a rounded border with no
@@ -2946,7 +2808,7 @@ static void paint_display_list(int vx,int vy,int vw,int vh,int scroll_x,int scro
              * so only the rounded-outline rows may redden. */
             if (0)
 #else
-            if (!rect_done && r > 0 && !e->has_bg && !grad)
+            if (!rect_done && !background_done && r > 0 && !e->has_bg && !grad)
 #endif
             {
                 /* THE ROUNDED BORDER WITH NO BACKGROUND. This case used to
@@ -2974,7 +2836,7 @@ static void paint_display_list(int vx,int vy,int vw,int vh,int scroll_x,int scro
             if (rect_done) rounded_done = 1;      /* the transformed path drew it */
             if (rounded_done) {
                 /* handled above */
-            } else if (r > 0 && (e->has_bg || grad)) {
+            } else if (!background_done && r > 0 && (e->has_bg || grad)) {
                 /* rounded box: border ring (uniform color/width approximation) +
                  * rounded fill inset by the widest edge */
                 /* The rounded path draws ONE ring in the top edge's colour, so
@@ -3004,7 +2866,7 @@ static void paint_display_list(int vx,int vy,int vw,int vh,int scroll_x,int scro
                     fill_round4(sx, sy, e->w, e->h, rr, e->bg, bga);
                 }
             } else {
-                if (e->has_bg && !grad) {
+                if (e->has_bg && !grad && !background_done) {
                     /* The one place a rounded overflow clip changes what a
                      * square box paints: a plain background inside a rounded
                      * scroller must follow the scroller's arc, not its

@@ -94,7 +94,7 @@ SEM_JS_SRC := $(filter-out c/apps/gui/browser/app/main.c,$(sort $(BROWSER_JS_C))
 SEM_SRC := tests/unit/semantics_test.c $(SEM_JS_SRC) \
            c/apps/gui/browser/css/engine.c c/apps/gui/browser/css/vars.c \
            c/apps/gui/browser/css/extra.c c/apps/gui/browser/layout/block.c c/apps/gui/browser/layout/text.c \
-           c/apps/gui/browser/dom/forms.c c/apps/gui/browser/dom/focus.c \
+           $(BROWSER_FORM_SRC) c/apps/gui/browser/dom/focus.c \
            c/net/http/http1.c c/net/http/url.c c/net/http/cookies.c \
            c/net/http/ws.c c/net/ssh/base64.c c/crypto/hash/sha1.c \
            c/lib/image/img.c c/lib/image/gif.c c/lib/image/jpeg.c \

@@ -28,8 +28,12 @@
 #include "html/tree.h"
 #include "js/dom/dom.h"
 #include "js/runtime/page.h"          /* js_page_slice_begin/end -- see js_dom_dispatch() */
+#include "../../../../../../include/weaksym.h"   /* optional host services */
+extern unsigned js_page_timer_checkpoint_begin(JSContext *) LOGIT_WEAK;
+extern void js_page_timer_checkpoint_end(JSContext *, unsigned) LOGIT_WEAK;
+LOGIT_WEAK_STUB(js_page_timer_checkpoint_begin);
+LOGIT_WEAK_STUB(js_page_timer_checkpoint_end);
 #include "layout/block.h"
-#include "../../../../../../include/weaksym.h"   /* the weak layout_* declarations below */
 /* THE SAME SPLIT js_platform.c ALREADY CARRIES, AND ITS COMMENT SAYS WHY IT
  * IS NOT OPTIONAL: "this include missed when the getrandom line landed -- it
  * broke every test-platform* link with logit.h not found until the
@@ -3426,6 +3430,11 @@ static unsigned page_job_diag_lines;
 int js_dom_run_jobs(JSContext *ctx)
 {
     if (!ctx || js_page_cancel_requested()) return 0;
+    /* DOM dispatch can enter this checkpoint from inside a timer callback.
+     * Microtasks are separate running tasks, so timers they create must not
+     * inherit the enclosing timer's nesting/clamp. Restore it for the caller. */
+    unsigned nesting=LOGIT_HAVE(js_page_timer_checkpoint_begin)?
+        js_page_timer_checkpoint_begin(ctx):0;
     /* The one place that is reliably reached after js_page_open has run EVERY
      * installer and before a page script can observe the result. */
     iface_bridge(ctx);
@@ -3454,6 +3463,7 @@ int js_dom_run_jobs(JSContext *ctx)
     if (n >= MAX_JOBS_PER_PUMP)
         printf("[js] microtask queue did not drain in %d jobs -- giving up this turn\n",
                MAX_JOBS_PER_PUMP);
+    if (LOGIT_HAVE(js_page_timer_checkpoint_end)) js_page_timer_checkpoint_end(ctx,nesting);
     return n;
 }
 
@@ -4307,7 +4317,10 @@ int js_dom_dispatch(struct node *target, const char *type,
             ev->code = dupstr(init->code ? init->code : "");
             proto = g_proto_key;
         } else {
-            proto = g_proto_mouse;   /* every other native event we raise is pointer-shaped */
+            /* Original assumption: "every other native event is pointer-shaped".
+             * Correction: invalid is an Event even when the form bridge uses
+             * a zeroed init structure; exposing MouseEvent changes feature tests. */
+            proto = !strcmp(type,"invalid") ? g_proto_event : g_proto_mouse;
         }
     }
     JSValue evobj = event_new(ctx, proto, ev);
@@ -4390,6 +4403,27 @@ int js_dom_dispatch(struct node *target, const char *type,
     if (--g_dispatch_depth == 0) js_page_slice_end();
 #endif
     return ok;
+}
+
+JSValue js_dom_deliver_event(JSContext *ctx, struct node *target,
+                             JSValueConst event)
+{
+    if (!ctx || ctx != g_ctx || !target) return JS_FALSE;
+    struct jsevent *ev = JS_GetOpaque(event, event_cid);
+    if (!ev || ev->dispatching || !ev->type)
+        return JS_ThrowTypeError(ctx, "native delivery requires a fresh Event");
+    /* A formdata/submit event is UA generated but is not device input. Keep
+     * this separate from js_dom_dispatch's activation-triggering type list. */
+    ev->trusted = 1;
+#ifndef JS_DOM_NO_SLICE_BRACKET
+    if (g_dispatch_depth++ == 0) js_page_slice_begin();
+#endif
+    int ok = dispatch_event(ctx, target, event, ev);
+    if (!js_page_cancel_requested()) js_dom_run_jobs(ctx);
+#ifndef JS_DOM_NO_SLICE_BRACKET
+    if (--g_dispatch_depth == 0) js_page_slice_end();
+#endif
+    return JS_NewBool(ctx, ok);
 }
 
 /* ---- the JS-visible EventTarget API ---- */
@@ -4492,9 +4526,23 @@ static const char *const on_names[] = {
     "mouseout", "mouseenter", "mouseleave", "contextmenu", "wheel",
     "keydown", "keyup", "keypress",
     "load", "unload", "scroll", "resize", "error",
-    "input", "change", "submit", "reset", "focus", "blur",
+    "input", "change", "submit", "reset", "focus", "blur", "invalid", "formdata",
 };
 #define N_ON_NAMES ((int)(sizeof on_names / sizeof on_names[0]))
+
+JSValue js_dom_event_types(JSContext *ctx)
+{
+    JSValue names=JS_NewArray(ctx);
+    if (JS_IsException(names)) return names;
+    for (int i=0;i<N_ON_NAMES;i++) {
+        JSValue name=JS_NewString(ctx,on_names[i]);
+        if (JS_IsException(name)) {JS_FreeValue(ctx,names);return name;}
+        if (JS_SetPropertyUint32(ctx,names,(uint32_t)i,name)<0) {
+            JS_FreeValue(ctx,names);return JS_EXCEPTION;
+        }
+    }
+    return names;
+}
 
 static JSValue on_get_for(JSContext *ctx, struct node *n, int magic)
 {

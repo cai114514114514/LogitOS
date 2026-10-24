@@ -54,11 +54,11 @@ ci-host: test-progress-paint
 LOADER_INC := -Itests/unit/loaderhost -Itests/unit -Iinclude/abi
 LOADER_SRC := tests/unit/loader_test.c tests/unit/loader_fakebfetch.c \
               c/apps/gui/browser/app/main.c c/apps/gui/browser/paint/renderer.c \
-              c/apps/gui/browser/layout/block.c c/apps/gui/browser/layout/text.c c/apps/gui/browser/dom/forms.c c/apps/gui/browser/dom/focus.c \
+              c/apps/gui/browser/layout/block.c c/apps/gui/browser/layout/text.c $(BROWSER_FORM_SRC) c/apps/gui/browser/dom/focus.c \
               c/apps/gui/browser/css/engine.c \
               c/apps/gui/browser/css/vars.c c/apps/gui/browser/css/extra.c \
               c/apps/gui/browser/js/dom/dom.c c/apps/gui/browser/js/runtime/page.c \
-              c/apps/gui/browser/js/runtime/webapi.c c/apps/gui/browser/js/runtime/module.c \
+              $(BROWSER_WEBAPI_SRC) c/apps/gui/browser/js/runtime/module.c \
               c/apps/gui/browser/app/tabs.c \
               c/net/http/url.c c/net/http/http1.c c/net/http/cookies.c \
               tests/unit/rust_host_shim.c $(GFX_SRC) $(HTML_PARSER_SRC)

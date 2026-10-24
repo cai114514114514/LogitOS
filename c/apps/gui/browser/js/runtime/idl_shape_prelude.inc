@@ -1,12 +1,14 @@
 /* The shape pass's prelude -- idl_shape.c's header says what and why; this is
  * how. It is ONE function expression, called once per realm with the global
- * and mkIface (a native illegal-constructor factory), and it returns nothing.
+ * and mkIface (a native illegal-constructor factory). Original contract: it
+ * returns nothing. Correction (2026-09-30): it returns a private record object
+ * records for the following native walk; no author-visible key holds them.
  *
  * Written as C string lines so its comments stay out of the JS: the engine
  * never sees them, and with 'use strip' it keeps no source text either. The
  * JS uses single quotes only and no backslashes, so no line here needs C
  * escaping beyond the quotes around it. */
-"(function (G, mkIface) {\n"
+"(function (G, mkIface, eventTypes) {\n"
 "'use strip';\n"
 /* 'use strip' drops the source text QuickJS would otherwise keep for every
  * function below, so Function.prototype.toString on a moved getter answers
@@ -22,6 +24,24 @@
  * not be able to reach inside a platform getter through them. */
 "function has(o, k) { return rApply(hasOwnP, o, [k]); }\n"
 "function isObj(o) { return o !== null && (typeof o === 'object' || typeof o === 'function'); }\n"
+/* Turning data into a getter hides its object from a quiet descriptor walk.
+ * Preserve the actual value and its original key, not a later getter result:
+ * invoking a getter can run code, and marking the prelude's bytecode changes
+ * only future closures, not these already-created namespace operations.
+ * A one-property record also keeps a function-valued attribute's real name
+ * available to the walk. These records live only until the C caller frees
+ * the returned object after the single native pass.
+ *
+ * The first handoff used a packed array: reflection listed 12 properties,
+ * but JS_GetOwnPropertyQuiet cannot read packed elements, so the real gate
+ * remained 48/2. Use ordinary own slots on null-prototype objects; otherwise
+ * an apparently populated metadata list silently seeds no roots at all. */
+"var hidden = O.create(null), hiddenCount = 0;\n"
+"function keepData(k, v) {\n"
+"  if (!isObj(v)) return;\n"
+"  var record = O.create(null); record[k] = v;\n"
+"  hidden[hiddenCount++] = record;\n"
+"}\n"
 "function illegal() { throw new TE('Illegal invocation'); }\n"
 "function arity(f, len) { try { dP(f, 'length', { value: len, configurable: true }); } catch (e) {} return f; }\n"
 /* Method-definition syntax, never `function`: a WebIDL operation has no
@@ -60,6 +80,7 @@
 "      defM(P, k, method(k, spec.m, function (t, a) { brand(t); return rApply(f, inst, a); }));\n"
 "    } else if (spec.rw) {\n"
 "      var cur = has(d, 'value') ? d.value : (d.get ? rApply(d.get, inst, []) : undefined);\n"
+"      if (has(d, 'value')) keepData(k, cur);\n"
 "      defA(P, k, getter(k, function (t) { brand(t); return cur; }),\n"
 "                 setter(k, function (t, v) { brand(t); var s = spec.rw(v); if (s !== undefined) cur = s; }));\n"
 "    } else if (d.get) {\n"
@@ -68,6 +89,7 @@
 "                 s ? setter(k, function (t, v) { brand(t); rApply(s, inst, [v]); }) : undefined);\n"
 "    } else {\n"
 "      var v = d.value;\n"
+"      keepData(k, v);\n"
 "      if (spec.freeze && isObj(v)) { try { freeze(v); } catch (e) {} }\n"
 "      defA(P, k, getter(k, function (t) { brand(t); return v; }), undefined);\n"
 "    }\n"
@@ -249,14 +271,14 @@
 "  elementFromPoint: 2, elementsFromPoint: 2, createRange: 0, getSelection: 0, execCommand: 1,\n"
 "  queryCommandEnabled: 1, queryCommandIndeterm: 1, queryCommandState: 1,\n"
 "  queryCommandSupported: 1, queryCommandValue: 1, getAnimations: 0 };\n"
-/* The 24 GlobalEventHandlers document carries (dom.c on_names). `unload` is
+/* The original list named 24 GlobalEventHandlers. Adding invalid/formdata to
+ * dom.c left them behind as document own properties (three shape assertions
+ * failed). Derive from the producer so the next handler cannot drift again.
+ * `unload` is
  * the 25th, and it is not a Document member at all -- 'onunload' in document
  * is false in a browser, and nothing here ever dispatches unload -- so it is
  * dropped rather than moved. */
-"['click', 'dblclick', 'mousedown', 'mouseup', 'mousemove', 'mouseover', 'mouseout',\n"
-" 'mouseenter', 'mouseleave', 'contextmenu', 'wheel', 'keydown', 'keyup', 'keypress', 'load',\n"
-" 'scroll', 'resize', 'error', 'input', 'change', 'submit', 'reset', 'focus', 'blur'\n"
-"].forEach(function (ty) { FOREIGN['on' + ty] = 'on'; });\n"
+"eventTypes.forEach(function (ty) { if (ty !== 'unload') FOREIGN['on' + ty] = 'on'; });\n"
 "\n"
 "function moveDocument() {\n"
   /* The flat build (-DJSDOM_NO_INTERFACE_HIERARCHY, test-dom-iface-negctl):
@@ -340,6 +362,7 @@
       /* A readonly attribute, accessor or data today (fonts and timeline are
        * data): after, a getter that hands back the SAME object for the page. */
 "      var ga = d.get, va = d.value;\n"
+"      if (!ga) keepData(k, va);\n"
 "      defA(DP, k, getter(k, function (t) {\n"
 "        var w = docKind(t);\n"
 "        if (w === 1) return ga ? rApply(ga, D, []) : va;\n"
@@ -501,4 +524,5 @@
 "  else if (has(td, 'value') && typeof td.value === 'string' && td.configurable && (td.writable || td.enumerable))\n"
 "    dP(P, TAG, { value: td.value, writable: false, enumerable: false, configurable: true });\n"
 "});\n"
+"return hidden;\n"
 "})\n"

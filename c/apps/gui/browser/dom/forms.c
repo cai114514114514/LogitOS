@@ -20,7 +20,9 @@
  */
 
 #include "dom/forms.h"
+#include "dom/entries.h"
 #include "dom/focus.h"
+#include "dom/validation.h"
 #include "css/style.h"
 
 #include <stdlib.h>
@@ -42,6 +44,8 @@ struct fctl {
 
     char *val; int vlen, vcap;      /* the CURRENT value */
     unsigned char dirty_value;      /* the spec's dirty value flag */
+    unsigned char user_edited;      /* last value change came from editing */
+    unsigned char submitting;       /* form: firing submission events */
     unsigned char dirty_checked;    /* the spec's dirty checkedness flag */
     unsigned char checked;
     unsigned char dirty_sel;        /* <select>: selectedness has been set */
@@ -56,6 +60,7 @@ struct fctl {
     int  scroll_x;                  /* px the field is scrolled */
 
     char *fval; int fvlen;          /* value when focus arrived -> `change` */
+    char *custom_error; int custom_len;
 };
 
 static struct fctl *g_buck[FC_NBUCKET];
@@ -74,6 +79,7 @@ static void ent_free(struct fctl *c)
 {
     free(c->val);
     free(c->fval);
+    free(c->custom_error);
     free(c);
 }
 
@@ -182,32 +188,53 @@ int fc_disabled(struct node *n)
 {
     if (!n || n->type != N_ELEM) return 0;
     if (dom_attr(n, "disabled")) return 1;
-    for (struct node *p = n->parent; p && p->type == N_ELEM; p = p->parent)
-        if (tag_is(p->tag, "fieldset") && dom_attr(p, "disabled")) return 1;
+    for (struct node *p = n->parent; p && p->type == N_ELEM && !dom_is_shadow_root(p); p = p->parent) {
+        if (!tag_is(p->tag, "fieldset") || !dom_attr(p, "disabled")) continue;
+        struct node *legend = p->first_child;
+        while (legend && (legend->type != N_ELEM || !tag_is(legend->tag, "legend")))
+            legend = legend->next;
+        int exempt = 0;
+        for (struct node *a = n; a && a != p; a = a->parent)
+            if (a == legend) { exempt = 1; break; }
+        /* Each fieldset has its own exemption. An inner first legend does not
+         * escape a disabled outer fieldset whose first legend is elsewhere. */
+        if (!exempt) return 1;
+    }
     return 0;
 }
 
 int fc_readonly(struct node *n)
 {
     if (!n || n->type != N_ELEM) return 0;
-    return dom_attr(n, "readonly") != 0;
+    return FC_IS_TEXTUAL(fc_kind(n)) && dom_attr(n, "readonly") != 0;
 }
 
 struct node *fc_form_of(struct node *n)
 {
     if (!n || n->type != N_ELEM) return 0;
-    const char *fid = dom_attr(n, "form");
-    if (fid && fid[0]) {
-        /* The `form` attribute wins over the ancestor, and it may point OUT of
-         * the form entirely -- that is what it is for. */
-        struct node *root = n;
-        while (root->parent) root = root->parent;
-        struct node *f = root->doc ? dom_get_element_by_id(root->doc, fid) : 0;
-        if (f && f->type == N_ELEM && tag_is(f->tag, "form")) return f;
+    const struct dom_attr *form_attr = dom_find_attr(n, "form");
+    const char *fid = form_attr ? form_attr->value : 0;
+    struct node *root = n;
+    while (root->parent && !dom_is_shadow_root(root)) root = root->parent;
+    struct node *connected = root;
+    while (connected->parent) connected = connected->parent;
+    if (fid && connected->type == N_DOCUMENT && connected == dom_doc_root(n->doc)) {
+        /* Correction: the old doc-index lookup also found detached controls'
+         * targets and treated form="" as absent. The association algorithm
+         * uses the first ID in THIS tree, and a non-form first match blocks a
+         * later form with the same ID; neither failure falls back to ancestry. */
+        for (struct node *f = root; f;) {
+            const struct dom_attr *id = f->type == N_ELEM ? dom_find_attr(f, "id") : 0;
+            if (id && id->vlen == form_attr->vlen && !memcmp(id->value, fid, id->vlen))
+                return f->ns == NS_HTML && tag_is(f->tag, "form") ? f : 0;
+            if (f->first_child) { f = f->first_child; continue; }
+            while (f != root && !f->next) f = f->parent;
+            f = f == root ? 0 : f->next;
+        }
         return 0;
     }
-    for (struct node *p = n->parent; p && p->type == N_ELEM; p = p->parent)
-        if (tag_is(p->tag, "form")) return p;
+    for (struct node *p = n->parent; p && p->type == N_ELEM && !dom_is_shadow_root(p); p = p->parent)
+        if (p->ns == NS_HTML && tag_is(p->tag, "form")) return p;
     return 0;
 }
 
@@ -300,10 +327,22 @@ int fc_option_value(struct node *opt, char *buf, int max)
     return fc_option_label(opt, buf, max);
 }
 
-int fc_option_selected(struct node *n)
+static int option_selected_state(struct node *n)
 {
     struct fctl *c = ent(n, 0);
     return c && c->dirty_option ? c->option_selected : dom_attr(n, "selected") != 0;
+}
+
+int fc_option_selected(struct node *n)
+{
+    if (!n || n->type != N_ELEM || !tag_is(n->tag, "option")) return 0;
+    struct node *select = n->parent;
+    while (select && !dom_is_shadow_root(select) && fc_kind(select) != FC_SELECT)
+        select = select->parent;
+    if (!select || fc_kind(select) != FC_SELECT || dom_attr(select, "multiple"))
+        return option_selected_state(n);
+    int index = fc_selected_index(select);
+    return index >= 0 && fc_option_at(select, index) == n;
 }
 
 void fc_set_option_selected(struct node *n, int on)
@@ -325,7 +364,7 @@ int fc_selected_index(struct node *n)
     int multiple = dom_attr(n, "multiple") != 0;
     for (int i = 0; i < cnt; i++) {
         struct node *o = fc_option_at(n, i);
-        if (o && fc_option_selected(o)) {
+        if (o && option_selected_state(o)) {
             if (multiple) return i;
             selected = i; selected_count++;
         }
@@ -336,7 +375,7 @@ int fc_selected_index(struct node *n)
          * the options the single-select state already deselected. */
         if (selected_count > 1)
             for (int i = 0; i < cnt; i++)
-                if (i != selected && fc_option_selected(fc_option_at(n, i)))
+                if (i != selected && option_selected_state(fc_option_at(n, i)))
                     fc_set_option_selected(fc_option_at(n, i), 0);
         return selected;
     }
@@ -394,16 +433,71 @@ const char *fc_default_value(struct node *n, int *len)
         if (len) *len = l;
         return buf;
     }
-    const char *v = dom_attr(n, "value");
-    if (!v) v = "";
-    if (len) *len = slen(v);
+    const struct dom_attr *attribute = dom_find_attr(n, "value");
+    const char *v = attribute ? attribute->value : "";
+    if (len) *len = attribute ? (int)attribute->vlen : 0;
     return v;
 }
 
-const char *fc_value(struct node *n, int *len)
+/* Sanitization belongs to the control state, so a script assignment, default
+ * markup and a submission cannot disagree. Incomplete number text is the one
+ * deliberate exception: user editing keeps it in the editor, API reads hide
+ * it and validation reports badInput. */
+static int set_control_value(struct node *n, struct fctl *c, const char *s, int len)
+{
+    int k = fc_kind(n);
+    if (!s) { s = ""; len = 0; }
+    if (len < 0) len = slen(s);
+    if (k == FC_NUMBER) {
+        double number;
+        if (len && !fc_parse_number(s, len, &number)) { s = ""; len = 0; }
+        return set_val(c, s, len);
+    }
+    if (!FC_IS_TEXTUAL(k)) return set_val(c, s, len);
+    char *clean = malloc((size_t)len + 1);
+    if (!clean) return 0;
+    int used = 0;
+    for (int i = 0; i < len; i++) {
+        if (k == FC_TEXTAREA) {
+            if (s[i] == '\r') {
+                clean[used++] = '\n';
+                if (i + 1 < len && s[i + 1] == '\n') i++;
+            } else clean[used++] = s[i];
+        } else if (s[i] != '\r' && s[i] != '\n') clean[used++] = s[i];
+    }
+    int first = 0, last = used;
+    if (k == FC_EMAIL || k == FC_URL) {
+        while (first < last && fc_ascii_space(clean[first])) first++;
+        while (last > first && fc_ascii_space(clean[last - 1])) last--;
+    }
+    if (k == FC_EMAIL && dom_attr(n, "multiple")) {
+        int out = 0, start = first;
+        for (int i = first; i <= last; i++) {
+            if (i < last && clean[i] != ',') continue;
+            int a = start, b = i;
+            while (a < b && fc_ascii_space(clean[a])) a++;
+            while (b > a && fc_ascii_space(clean[b - 1])) b--;
+            while (a < b) clean[out++] = clean[a++];
+            if (i < last) clean[out++] = ',';
+            start = i + 1;
+        }
+        first = 0; last = out;
+    }
+    int ok = set_val(c, clean + first, last - first);
+    free(clean);
+    return ok;
+}
+
+const char *fc_edit_value(struct node *n, int *len)
 {
     int k = fc_kind(n);
     if (k == FC_NONE) { if (len) *len = 0; return ""; }
+    if (FC_IS_TOGGLE(k) && !dom_attr(n, "value")) {
+        if (len) *len = 2;
+        return "on";
+    }
+    if (FC_IS_BUTTON(k) || FC_IS_TOGGLE(k) || k == FC_HIDDEN)
+        return fc_default_value(n, len);
 #ifndef FORM_FILES_MARKUP_VALUE
     /* No selected-file broker exists yet (see js_forms.c). An HTML value or
      * prior text-mode edit is not a selected file; all native readers must
@@ -419,14 +513,66 @@ const char *fc_value(struct node *n, int *len)
         int dl = 0;
         const char *d = fc_default_value(n, &dl);
         if (dl != c->vlen || (dl && memcmp(c->val ? c->val : "", d, (size_t)dl) != 0))
-            set_val(c, d, dl);
+            set_control_value(n, c, d, dl);
     }
     if (len) *len = c->vlen;
     return c->val ? c->val : "";
 }
 
+const char *fc_value(struct node *n, int *len)
+{
+    int size = 0;
+    const char *value = fc_edit_value(n, &size);
+    double number;
+    if (fc_kind(n) == FC_NUMBER && size && !fc_parse_number(value, size, &number)) {
+        if (len) *len = 0;
+        return "";
+    }
+    if (len) *len = size;
+    return value;
+}
+
+int fc_user_edited(struct node *n)
+{ struct fctl *c = ent(n, 0); return c && c->dirty_value && c->user_edited; }
+
+int fc_bad_input(struct node *n)
+{
+    if (fc_kind(n) != FC_NUMBER || !fc_user_edited(n)) return 0;
+    int len = 0; double number;
+    const char *value = fc_edit_value(n, &len);
+    return len && !fc_parse_number(value, len, &number);
+}
+
+int fc_set_custom_validity(struct node *n, const char *message, int len)
+{
+    struct fctl *c = ent(n, 1);
+    if (!c) return 0;
+    if (!message) { message = ""; len = 0; }
+    if (len < 0) len = slen(message);
+    char *copy = malloc((size_t)len + 1);
+    if (!copy) return 0;
+    memcpy(copy, message, (size_t)len); copy[len] = 0;
+    free(c->custom_error); c->custom_error = copy; c->custom_len = len;
+    return 1;
+}
+
+const char *fc_custom_validity(struct node *n, int *len)
+{
+    struct fctl *c = ent(n, 0);
+    if (len) *len = c ? c->custom_len : 0;
+    return c && c->custom_error ? c->custom_error : "";
+}
+
 int fc_set_value(struct node *n, const char *s, int len)
 {
+    int kind = fc_kind(n);
+    if (FC_IS_BUTTON(kind) || FC_IS_TOGGLE(kind) || kind == FC_HIDDEN) {
+        /* These states use the default/default-on modes: value reflects the
+         * content attribute. A dirty editor string would diverge from button
+         * painting, defaultValue and the submitted value after assignment. */
+        if (!s) { s = ""; len = 0; }
+        return dom_set_attr_len(n, "value", s, len < 0 ? slen(s) : len);
+    }
 #ifndef FORM_FILES_MARKUP_VALUE
     if (fc_kind(n) == FC_FILE && (len < 0 ? slen(s) : len) != 0) return 0;
 #endif
@@ -447,8 +593,9 @@ int fc_set_value(struct node *n, const char *s, int len)
         fc_set_selected_index(n, -1);
         return 1;
     }
-    if (!set_val(c, s, len)) return 0;
+    if (!set_control_value(n, c, s, len)) return 0;
     c->dirty_value = 1;
+    c->user_edited = 0;
     /* Per the spec, setting `value` moves the caret to the end and drops the
      * selection. Pages depend on it: an input-mask handler rewrites the value
      * on every keystroke and expects to keep typing at the end. */
@@ -463,6 +610,7 @@ void fc_reset_control(struct node *n)
     struct fctl *c = ent(n, 0);
     if (!c) return;
     c->dirty_value = 0;
+    c->user_edited = 0;
     c->dirty_checked = 0;
     c->dirty_sel = 0;
     if (fc_kind(n) == FC_SELECT) {
@@ -477,7 +625,7 @@ void fc_reset_control(struct node *n)
     c->scroll_x = 0;
     int dl = 0;
     const char *d = fc_default_value(n, &dl);
-    set_val(c, d, dl);
+    set_control_value(n, c, d, dl);
 }
 
 static void reset_walk(struct node *n, struct node *form)
@@ -491,10 +639,17 @@ static void reset_walk(struct node *n, struct node *form)
 
 void fc_reset_form(struct node *form)
 {
+#ifdef SELECT_STATE_NO_RESET
+    /* The old negative control disconnected only semantics.c's JS Map reset.
+     * Reset now enters this native door, so leaving the switch over there made
+     * the broken-reset control pass 39/39 checks without breaking anything. */
+    (void)form;
+#else
     if (!form) return;
     struct node *root = form;
-    while (root->parent) root = root->parent;
+    while (root->parent && !dom_is_shadow_root(root)) root = root->parent;
     reset_walk(root, form);
+#endif
 }
 
 /* =============================================================== checked === */
@@ -521,23 +676,21 @@ static void uncheck_group(struct node *radio)
     if (!nm || !nm[0]) return;              /* an unnamed radio is its own group */
     struct node *form = fc_form_of(radio);
     struct node *root = radio;
-    while (root->parent) root = root->parent;
+    while (root->parent && !dom_is_shadow_root(root)) root = root->parent;
 
-    struct node *stack[128];
-    int sp = 0;
-    stack[sp++] = root;
-    while (sp > 0) {
-        struct node *e = stack[--sp];
-        for (struct node *c = e->first_child; c; c = c->next) {
-            if (c->type != N_ELEM) continue;
-            if (sp < 128) stack[sp++] = c;
-            if (c == radio || fc_kind(c) != FC_RADIO) continue;
-            const char *n2 = dom_attr(c, "name");
-            if (!n2 || slen(n2) != slen(nm) || memcmp(n2, nm, (size_t)slen(nm)) != 0) continue;
-            if (fc_form_of(c) != form) continue;
-            struct fctl *o = ent(c, 1);
-            if (o) { o->checked = 0; o->dirty_checked = 1; }
+    /* The old 128-entry stack quietly kept checked peers in deeper trees.
+     * Follow parent/sibling links instead, including a detached tree's root. */
+    for (struct node *c = root; c;) {
+        if (c != radio && fc_kind(c) == FC_RADIO && fc_form_of(c) == form) {
+            const char *peer = dom_attr(c, "name");
+            if (peer && !strcmp(peer, nm)) {
+                struct fctl *o = ent(c, 1);
+                if (o) { o->checked = 0; o->dirty_checked = 1; }
+            }
         }
+        if (c->first_child) { c = c->first_child; continue; }
+        while (c != root && !c->next) c = c->parent;
+        c = c == root ? 0 : c->next;
     }
 }
 
@@ -558,7 +711,7 @@ void fc_selection(struct node *n, int *start, int *end)
 {
     struct fctl *c = ent(n, 1);
     int vl = 0;
-    fc_value(n, &vl);
+    fc_edit_value(n, &vl);
     int a = c ? c->sel0 : 0, b = c ? c->sel1 : 0;
     if (a > vl) a = vl;
     if (b > vl) b = vl;
@@ -580,7 +733,7 @@ void fc_set_selection_directed(struct node *n, int start, int end, int direction
     struct fctl *c = ent(n, 1);
     if (!c) return;
     int vl = 0;
-    fc_value(n, &vl);
+    fc_edit_value(n, &vl);
     if (start < 0) start = 0;
     if (end < 0) end = 0;
     if (start > vl) start = vl;
@@ -630,11 +783,7 @@ static int char_count(const char *s, int len)
 
 static int max_length(struct node *n)
 {
-    const char *v = dom_attr(n, "maxlength");
-    if (!v) return -1;
-    int x = 0, any = 0;
-    for (const char *p = v; *p >= '0' && *p <= '9'; p++) { x = x * 10 + (*p - '0'); any = 1; if (x > 1000000) break; }
-    return any ? x : -1;
+    return fc_length_limit(n, "maxlength");
 }
 
 static int editable(struct node *n)
@@ -655,7 +804,7 @@ static int splice(struct node *n, int a, int b, const char *s, int len,
     struct fctl *c = ent(n, 1);
     if (!c) return 0;
     int vl = 0;
-    fc_value(n, &vl);
+    fc_edit_value(n, &vl);
     if (a < 0) a = 0;
     if (b > vl) b = vl;
     if (b < a) b = a;
@@ -663,17 +812,18 @@ static int splice(struct node *n, int a, int b, const char *s, int len,
     if (len == 0 && a == b) return 0;
 
     if (len > 0) {
-        int ml = max_length(n);
+        int ml = fc_length_applies(n) ? max_length(n) : -1;
         if (ml >= 0) {
-            int have = char_count(c->val, vl) - char_count(c->val + a, b - a);
+            int have = fc_value_length(c->val, vl) - fc_value_length(c->val + a, b - a);
             int room = ml - have;
             if (room <= 0) return 0;
             /* Truncate the insertion on a character boundary. */
             int used = 0, cut = 0;
             while (cut < len) {
                 int nx = step_right(s, len, cut);
-                if (used + 1 > room) break;
-                used++; cut = nx;
+                int units = fc_value_length(s + cut, nx - cut);
+                if (used + units > room) break;
+                used += units; cut = nx;
             }
             len = cut;
             if (len == 0) return 0;
@@ -697,7 +847,14 @@ static int splice(struct node *n, int a, int b, const char *s, int len,
         dbuf[dl] = 0;
         data = dbuf;
     }
+    uint32_t serial = n->serial;
     if (!fc_dispatch_input(n, "beforeinput", itype, data, 1, 1)) return 0;
+    if (n->serial != serial || !editable(n)) return 0;
+    c = ent(n, 1);
+    if (!c) return 0;
+    fc_edit_value(n, &vl);
+    if (a > vl) a = vl;
+    if (b > vl) b = vl;
 
     int nl = vl - (b - a) + len;
     char *nb = (char *)malloc((size_t)nl + 1);
@@ -710,6 +867,7 @@ static int splice(struct node *n, int a, int b, const char *s, int len,
     free(nb);
     if (!ok) return 0;
     c->dirty_value = 1;
+    c->user_edited = 1;
     c->sel0 = c->sel1 = c->anchor = a + len;
     c->selection_direction = 0;
     fc_dispatch_input(n, "input", itype, data, 1, 0);
@@ -754,7 +912,7 @@ int fc_edit_delete(struct node *n)
     struct fctl *c = ent(n, 1);
     if (!c) return 0;
     int vl = 0;
-    fc_value(n, &vl);
+    fc_edit_value(n, &vl);
     if (c->sel0 != c->sel1) return splice(n, c->sel0, c->sel1, "", 0, "deleteContentForward");
     if (c->sel1 >= vl) return 0;
     int b = step_right(c->val ? c->val : "", vl, c->sel1);
@@ -786,7 +944,7 @@ int fc_edit_move(struct node *n, int dir, int word, int extend)
     struct fctl *c = ent(n, 1);
     if (!c) return 0;
     int vl = 0;
-    const char *v = fc_value(n, &vl);
+    const char *v = fc_edit_value(n, &vl);
     /* A plain arrow with a selection collapses to that end rather than moving
      * one character from it -- the behaviour every editor has and the one a
      * caret model gets wrong by default. */
@@ -829,7 +987,7 @@ int fc_edit_home(struct node *n, int extend)
     struct fctl *c = ent(n, 1);
     if (!c) return 0;
     int vl = 0;
-    const char *v = fc_value(n, &vl);
+    const char *v = fc_edit_value(n, &vl);
     int a, b;
     line_bounds(v, vl, c->selection_direction < 0 ? c->sel0 : c->sel1, &a, &b);
     return move_to(c, a, extend);
@@ -841,7 +999,7 @@ int fc_edit_end(struct node *n, int extend)
     struct fctl *c = ent(n, 1);
     if (!c) return 0;
     int vl = 0;
-    const char *v = fc_value(n, &vl);
+    const char *v = fc_edit_value(n, &vl);
     int a, b;
     line_bounds(v, vl, c->selection_direction < 0 ? c->sel0 : c->sel1, &a, &b);
     return move_to(c, b, extend);
@@ -853,7 +1011,7 @@ int fc_edit_select_all(struct node *n)
     struct fctl *c = ent(n, 1);
     if (!c) return 0;
     int vl = 0;
-    fc_value(n, &vl);
+    fc_edit_value(n, &vl);
     c->sel0 = 0; c->sel1 = vl; c->anchor = 0;
     c->selection_direction = 0;
     return 1;
@@ -864,7 +1022,7 @@ int fc_mark_focus(struct node *n)
     struct fctl *c = ent(n, 1);
     if (!c) return 0;
     int vl = 0;
-    const char *v = fc_value(n, &vl);
+    const char *v = fc_edit_value(n, &vl);
     char *nb = (char *)realloc(c->fval, (size_t)vl + 1);
     if (!nb) return 0;
     for (int i = 0; i < vl; i++) nb[i] = v[i];
@@ -878,7 +1036,7 @@ int fc_commit(struct node *n)
     struct fctl *c = ent(n, 0);
     if (!c) return 0;
     int vl = 0;
-    const char *v = fc_value(n, &vl);
+    const char *v = fc_edit_value(n, &vl);
     if (c->fval && c->fvlen == vl && (vl == 0 || memcmp(c->fval, v, (size_t)vl) == 0)) return 0;
     if (!c->fval && vl == 0) return 0;
     fc_mark_focus(n);
@@ -897,133 +1055,49 @@ void fc_select_set_open(struct node *n, int on)
 /* ============================================================ submission === */
 
 static fc_submit_fn g_submit;
+static fc_submit_event_fn g_submit_event;
 void fc_set_submit(fc_submit_fn fn) { g_submit = fn; }
+void fc_set_submit_event(fc_submit_event_fn fn) { g_submit_event = fn; }
 int  fc_submit(struct node *form, struct node *submitter, int fire_event)
-{ return g_submit ? g_submit(form, submitter, fire_event) : 0; }
-
-static int urlenc(char *out, int o, int max, const char *s, int len)
 {
-    static const char hex[] = "0123456789ABCDEF";
-    for (int i = 0; i < len; i++) {
-        unsigned char ch = (unsigned char)s[i];
-        if ((ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') ||
-            (ch >= '0' && ch <= '9') || ch == '*' || ch == '-' || ch == '.' || ch == '_') {
-            if (o >= max) return -1;
-            out[o++] = (char)ch;
-        } else if (ch == ' ') {
-            if (o >= max) return -1;
-            out[o++] = '+';
-        } else {
-            if (o + 3 > max) return -1;
-            out[o++] = '%'; out[o++] = hex[ch >> 4]; out[o++] = hex[ch & 15];
-        }
+    if (!form || form->type != N_ELEM || !tag_is(form->tag, "form") ||
+        !fc_connected(form)) return 0;
+    uint32_t serial = form->serial, submitter_serial = submitter ? submitter->serial : 0;
+    if (fire_event) {
+        struct fctl *c = ent(form, 1);
+        if (!c || c->submitting) return 0;
+        c->submitting = 1;
+        int skip = dom_attr(form, "novalidate") != 0 ||
+                   (submitter && dom_attr(submitter, "formnovalidate"));
+        /* One door for the JS API, buttons and Enter. The previous JS-only
+         * implementation dispatched submit while native activation skipped
+         * all constraints. Canceling invalid claims the UI; it never makes
+         * the invalid form eligible to submit. */
+        int valid = skip || fc_validate_form(form, 1);
+        if (form->serial != serial) return 0;
+        c = ent(form, 0);
+        if (!c) return 0;
+        if (!valid || !fc_connected(form)) { c->submitting = 0; return 0; }
+        if (submitter && submitter->serial != submitter_serial) submitter = 0;
+        int proceed = g_submit_event ? g_submit_event(form, submitter)
+                                     : fc_dispatch(form, "submit", 1, 1);
+        if (form->serial != serial) return 0;
+        c = ent(form, 0);
+        if (c) c->submitting = 0;
+        if (!proceed || !fc_connected(form)) return 0;
+        if (submitter && submitter->serial != submitter_serial) submitter = 0;
     }
-    return o;
-}
-
-/* The `application/x-www-form-urlencoded` serialiser. Newlines in a textarea
- * are normalised to CRLF first, which is in the spec and which servers that
- * split on \r\n depend on. */
-static int enc_pair(char *out, int o, int max, const char *nm, int nl,
-                    const char *v, int vl, int first, int crlf)
-{
-    if (!first) { if (o >= max) return -1; out[o++] = '&'; }
-    o = urlenc(out, o, max, nm, nl);
-    if (o < 0) return -1;
-    if (o >= max) return -1;
-    out[o++] = '=';
-    if (!crlf) return urlenc(out, o, max, v, vl);
-    for (int i = 0; i < vl; i++) {
-        if (v[i] == '\r') continue;                     /* re-emitted with the \n */
-        if (v[i] == '\n') { o = urlenc(out, o, max, "\r\n", 2); }
-        else              { o = urlenc(out, o, max, v + i, 1); }
-        if (o < 0) return -1;
-    }
-    return o;
-}
-
-struct enc_ctx { char *out; int o, max, first, err; struct node *form, *submitter; };
-
-static void enc_one(struct enc_ctx *e, struct node *n)
-{
-    int k = fc_kind(n);
-    if (k == FC_NONE) return;
-    if (fc_form_of(n) != e->form) return;
-    if (fc_disabled(n)) return;
-    const char *nm = dom_attr(n, "name");
-    int nl = slen(nm);
-    if (!nm || nl == 0) return;
-    if (FC_IS_BUTTON(k)) {
-        /* Only the button that was actually activated contributes, and a reset
-         * button never submits anything at all. */
-        if (n != e->submitter || k == FC_RESET) return;
-        const char *v = dom_attr(n, "value");
-        int o = enc_pair(e->out, e->o, e->max, nm, nl, v ? v : "", v ? slen(v) : 0, e->first, 0);
-        if (o < 0) { e->err = 1; return; }
-        e->o = o; e->first = 0;
-        return;
-    }
-    if (FC_IS_TOGGLE(k)) {
-        if (!fc_checked(n)) return;
-        const char *v = dom_attr(n, "value");
-        if (!v) v = "on";                       /* the HTML default */
-        int o = enc_pair(e->out, e->o, e->max, nm, nl, v, slen(v), e->first, 0);
-        if (o < 0) { e->err = 1; return; }
-        e->o = o; e->first = 0;
-        return;
-    }
-    if (k == FC_FILE) {
-        /* No file picker on this machine, so the field is empty rather than
-         * absent -- which is what a real browser sends for an untouched file
-         * input under urlencoded, and keeps the field count right. */
-        int o = enc_pair(e->out, e->o, e->max, nm, nl, "", 0, e->first, 0);
-        if (o < 0) { e->err = 1; return; }
-        e->o = o; e->first = 0;
-        return;
-    }
-    if (k == FC_SELECT) {
-        /* `multiple` submits every selected option; we track one selection, so
-         * this is the single-select case and a multiple select contributes its
-         * one current index. Stated as a limitation in the report. */
-        int i = fc_selected_index(n);
-        struct node *opt = fc_option_at(n, i);
-        if (!opt) return;
-        char b[512];
-        int bl = fc_option_value(opt, b, (int)sizeof b);
-        int o = enc_pair(e->out, e->o, e->max, nm, nl, b, bl, e->first, 0);
-        if (o < 0) { e->err = 1; return; }
-        e->o = o; e->first = 0;
-        return;
-    }
-    int vl = 0;
-    const char *v = fc_value(n, &vl);
-    int o = enc_pair(e->out, e->o, e->max, nm, nl, v, vl, e->first, k == FC_TEXTAREA);
-    if (o < 0) { e->err = 1; return; }
-    e->o = o; e->first = 0;
-}
-
-static void enc_walk(struct enc_ctx *e, struct node *n)
-{
-    for (struct node *c = n->first_child; c && !e->err; c = c->next) {
-        if (c->type != N_ELEM) continue;
-        enc_one(e, c);
-        enc_walk(e, c);
-    }
+    /* Event ownership moved here. Passing zero keeps an older navigation
+     * backend from redispatching a plain Event after our SubmitEvent. */
+    return g_submit ? g_submit(form, submitter, 0) : 0;
 }
 
 int fc_encode(struct node *form, struct node *submitter, char *out, int max)
 {
-    if (!form || max <= 0) return -1;
-    struct node *root = form;
-    while (root->parent) root = root->parent;
-    struct enc_ctx e = { out, 0, max - 1, 1, 0, form, submitter };
-    /* Document-wide, filtered by fc_form_of: the `form` attribute lets a
-     * control live anywhere in the document and still belong to this form, and
-     * walking the form's subtree alone would silently drop it. */
-    enc_walk(&e, root);
-    if (e.err) return -1;
-    out[e.o] = 0;
-    return e.o;
+    struct form_entries list;
+    if (fc_entries(form, submitter, &list)) return -1;
+    int result = fc_entries_encode(&list, out, max);
+    fc_entries_free(&list); return result;
 }
 
 int fc_method_post(struct node *form)
@@ -1146,7 +1220,7 @@ int fc_paint_state(struct node *n, int font_px, int mono, int content_w, struct 
     /* --- textual --- */
     struct fctl *c = ent(n, 1);
     int vl = 0;
-    const char *v = fc_value(n, &vl);
+    const char *v = fc_edit_value(n, &vl);
     const char *shown = v;
     int shown_len = vl;
     if (k == FC_PASSWORD) shown = mask_of(v, vl, &shown_len);
@@ -1227,7 +1301,7 @@ int fc_offset_at_px(struct node *n, int px, int font_px, int mono)
     int k = fc_kind(n);
     if (!FC_IS_TEXTUAL(k)) return 0;
     int vl = 0;
-    const char *v = fc_value(n, &vl);
+    const char *v = fc_edit_value(n, &vl);
     const char *shown = v;
     int shown_len = vl;
 #ifndef FC_CARET_OLD_GEOMETRY

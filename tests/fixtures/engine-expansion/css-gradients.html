@@ -1,0 +1,45 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>CSS gradient geometry and alpha</title>
+<style>
+body{margin:0;background:white;color:#222;font:16px sans-serif}
+h1{margin:0;font-size:20px;line-height:30px}
+.box{position:absolute;width:100px;height:80px;box-sizing:border-box}
+#circle{left:10px;top:40px;background:radial-gradient(circle 50%,#f00 0% 40%,#00f 40% 100%)}
+#ellipse{left:130px;top:40px;background:radial-gradient(ellipse 40px 20px,#0f0 0%,#0f0 50%,#00f 50%,#00f 100%)}
+#conic{left:250px;top:40px;background:conic-gradient(#f00 0deg 90deg,#0f0 90deg 180deg,#00f 180deg 270deg,#fff 270deg 360deg)}
+#repeat-linear{left:370px;top:40px;background:repeating-linear-gradient(to right,#f00 0px 10px,#00f 10px 20px)}
+#repeat-radial{left:490px;top:40px;background:repeating-radial-gradient(circle 60px,#f00 0px 10px,#00f 10px 20px)}
+#repeat-conic{left:10px;top:140px;background:repeating-conic-gradient(from 45deg,#000 0deg 45deg,#fff 45deg 90deg)}
+#fixup{left:130px;top:140px;background:linear-gradient(to right,#f00 80px,#fff 0px,#000,#00f 100px)}
+#off-range{left:250px;top:140px;background:linear-gradient(to right,#f00 -50%,#00f 150%)}
+#premultiplied{left:370px;top:140px;background:white;background-image:linear-gradient(to right,rgba(255,0,0,0),#00f)}
+#hint{left:490px;top:140px;background:linear-gradient(to right,#000 0%,25%,#fff 100%)}
+#zero-circle{left:10px;top:240px;background:radial-gradient(circle 0px,#000 0px 10px,#fff 10px 20px)}
+#zero-width{left:130px;top:240px;background:radial-gradient(ellipse 0px 30px,#f00 0px 10px,#00f 10px 20px)}
+#zero-height{left:250px;top:240px;background:radial-gradient(ellipse 30px 0px,#f00 0px,#00f 50px)}
+#zero-height-repeat{left:370px;top:240px;background:repeating-radial-gradient(ellipse 30px 0px,#000 0px,#fff 10px,#000 20px)}
+#zero-period{left:490px;top:240px;background:repeating-linear-gradient(#f00 0px,#fff 0px,#00f 0px)}
+#font-current{left:10px;top:340px;color:#00aa44;font-size:20px;background:radial-gradient(circle 2em,currentColor 0% 50%,#00f 50% 100%)}
+#farthest{left:130px;top:340px;background:radial-gradient(ellipse farthest-corner at 25% 50%,#f00 0% 99%,#00f 99% 100%)}
+#conic-off-range{left:250px;top:340px;background:conic-gradient(#fff -50%,#000 150%)}
+#negative-repeat{left:370px;top:340px;background:repeating-linear-gradient(to right,#f00 10px 20px,#00f 20px 30px)}
+#rounded-alpha{left:490px;top:340px;border:6px solid #00f;border-radius:20px;background:#f00;background-image:linear-gradient(transparent,transparent);opacity:.5}
+#single{left:10px;top:430px;width:100px;height:30px;color:rgba(0,170,68,.5);background:conic-gradient(currentColor)}
+p{position:absolute;left:10px;top:480px;width:580px;margin:0}
+</style>
+<h1>Radial / conic / repeating gradients</h1>
+<div class="box" id="circle"></div><div class="box" id="ellipse"></div>
+<div class="box" id="conic"></div><div class="box" id="repeat-linear"></div>
+<div class="box" id="repeat-radial"></div><div class="box" id="repeat-conic"></div>
+<div class="box" id="fixup"></div><div class="box" id="off-range"></div>
+<div class="box" id="premultiplied"></div><div class="box" id="hint"></div>
+<div class="box" id="zero-circle"></div><div class="box" id="zero-width"></div>
+<div class="box" id="zero-height"></div><div class="box" id="zero-height-repeat"></div>
+<div class="box" id="zero-period"></div><div class="box" id="font-current"></div>
+<div class="box" id="farthest"></div><div class="box" id="conic-off-range"></div>
+<div class="box" id="negative-repeat"></div><div class="box" id="rounded-alpha"></div>
+<div class="box" id="single"></div>
+<p>Ordinary CSS, ordinary text, no canvas or host pixel injection. The shared
+pixel table checks shapes, stop fixup, premultiplied sRGB and group opacity.
+Other color interpolation spaces and calculated positions are explicitly refused.</p>

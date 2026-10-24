@@ -7,6 +7,7 @@
 #include "dom/forms.h"         /* FC_PAD_*: UA button defaults and intrinsic metrics agree */
 #include "css/interp.h"    /* struct ci_xform -- see sup_beside_libcss() */
 #include "css/report.h"    /* the ONE accounting of the stylesheet pipeline */
+#include "css/nesting.h"
 #include "../../../../../include/weaksym.h"   /* LOGIT_WEAK/_STUB/LOGIT_HAVE */
 
 /* ...and the one function taken from it is WEAK, for the reason the block at
@@ -33,6 +34,12 @@ extern int css_facing_keyword(const char *,int,int) LOGIT_WEAK;
 LOGIT_WEAK_STUB(css_facing_keyword);
 extern int css_box_supports_decl(const char *,int,const char *,int) LOGIT_WEAK;
 LOGIT_WEAK_STUB(css_box_supports_decl);
+extern int logit_css_extra_supports_value(const char *,int,const char *,int) LOGIT_WEAK;
+LOGIT_WEAK_STUB(logit_css_extra_supports_value);
+extern const char *css_sizing_property(int) LOGIT_WEAK;
+LOGIT_WEAK_STUB(css_sizing_property);
+extern int css_background_color(const struct cstyle *,unsigned *,int *) LOGIT_WEAK;
+LOGIT_WEAK_STUB(css_background_color);
 /* The production SVG codec is also the shared literal colour evaluator. Host
  * CSS-only harnesses intentionally omit the image pipeline; they have no SVG
  * pixels to resolve. Keep that source-list boundary explicit. */
@@ -66,10 +73,14 @@ LOGIT_WEAK_STUB(img_css_color);
 #include "select/propset.h"
 #include "select/arena.h"
 #include "stylesheet.h"
+#include "parse/mq.h"
 
 /* cstyle is owned by the DOM node and freed via kfree in dom_free. */
 void *kmalloc(unsigned long);
 void  kfree(void *);
+/* One normalization entry serves vars, the native sheet and the extension
+ * cache. Including the module here preserves existing CSS-only host links. */
+#include "nesting.c"
 
 /* ---------- small helpers ---------- */
 static int lc(int c) { return (c >= 'A' && c <= 'Z') ? c + 32 : c; }
@@ -1052,8 +1063,16 @@ static css_stylesheet *make_sheet(const char *data, size_t len, bool inl, bool q
     p.resolve = resolve_url;
     css_stylesheet *s = NULL;
     if (css_stylesheet_create(&p, &s) != CSS_OK || !s) return NULL;
-    css_stylesheet_append_data(s, (const uint8_t *)data, len);
-    css_stylesheet_data_done(s);
+    /* A non-null sheet is not proof that its parser completed. The old path
+     * ignored both statuses: an allocation failure then looked like an invalid
+     * selector or a false @supports condition in the nesting probes, letting
+     * the three consumers see different partial sheets. Pending imports are
+     * a completed parse with unresolved dependencies and retain their existing
+     * contract; fatal parser failures discard the whole owned sheet. */
+    css_error status=css_stylesheet_append_data(s, (const uint8_t *)data, len);
+    if(status!=CSS_OK && status!=CSS_NEEDDATA){css_stylesheet_destroy(s);return NULL;}
+    status=css_stylesheet_data_done(s);
+    if(status!=CSS_OK && status!=CSS_IMPORTS_PENDING){css_stylesheet_destroy(s);return NULL;}
     return s;
 }
 
@@ -1076,6 +1095,7 @@ struct css_extra_matcher {
     css_stylesheet *sheet;
     css_select_ctx *ctx;
     int count;
+    int error; /* last real css_select_style result; refusal census/test seam */
 };
 static unsigned char *extra_matches;
 static int extra_match_count;
@@ -1198,6 +1218,7 @@ int css_extra_matcher_match_specificity(void *ptr, struct node *node, unsigned c
     css__select_match_report = extra_match_report;
     css_error err = css_select_style(m->ctx, node, &g_unit, &g_media, NULL,
                                      &handler, &data, &res);
+    m->error=err;
     css__select_match_report = old_report;
     extra_matches = NULL; extra_match_count = 0; extra_specificity = NULL;
     if (res) css_select_results_destroy(res);
@@ -1213,6 +1234,8 @@ int css_extra_matcher_match_specificity(void *ptr, struct node *node, unsigned c
 
 int css_extra_matcher_match(void *ptr, struct node *node, unsigned char *matches)
 { return css_extra_matcher_match_specificity(ptr, node, matches, NULL); }
+int css_extra_matcher_error(void *ptr)
+{return ptr?((const struct css_extra_matcher *)ptr)->error:CSS_BADPARM;}
 
 /* ---------------- the author stylesheet, parsed ONCE ----------------
  *
@@ -1254,7 +1277,74 @@ static int             g_author_parses;   /* test seam; see css_sheet_parses() *
 
 int css_sheet_parses(void) { return g_author_parses; }
 
-static css_stylesheet *author_sheet(const char *data, size_t len, bool quirks)
+/* Synthetic syntax probes must not enter the author census or leave borrowed
+ * rule pointers there. They use the same parser, with reporting suspended for
+ * their synchronous lifetime, rather than a second supports/selector grammar. */
+static css_stylesheet *nest_probe_sheet(const char *source,int len)
+{
+    void (*decl)(const css_rule *)=css__stylesheet_rule_decl_report;
+    void (*drop)(const char *,size_t,int)=css__parse_drop_report;
+    void (*selector)(const char *,size_t)=css__parse_selector_drop_report;
+    void (*recover)(int)=css__parse_recover_report;
+    css__stylesheet_rule_decl_report=NULL;css__parse_drop_report=NULL;
+    css__parse_selector_drop_report=NULL;css__parse_recover_report=NULL;
+    css_stylesheet *sheet=make_sheet(source,(size_t)len,false,false);
+    css__stylesheet_rule_decl_report=decl;css__parse_drop_report=drop;
+    css__parse_selector_drop_report=selector;css__parse_recover_report=recover;
+    return sheet;
+}
+static int nest_validate_selector(const char *source,int len)
+{
+    static const char tail[]="{z-index:0}";
+    if(len<=0)return 0;
+    if(len>1024*1024)return -1;
+    char *probe=kmalloc((unsigned long)len+sizeof tail);
+    if(!probe)return -1;
+    memcpy(probe,source,(unsigned)len);memcpy(probe+len,tail,sizeof tail);
+    css_stylesheet *sheet=nest_probe_sheet(probe,len+(int)sizeof tail-1);
+    int valid=sheet?0:-1;
+    if(sheet && sheet->rule_list && sheet->rule_list->type==CSS_RULE_SELECTOR &&
+       !sheet->rule_list->next) {
+        const css_rule_selector *r=(const css_rule_selector *)sheet->rule_list;
+        valid=r->base.items?1:0;
+        for(unsigned i=0;i<r->base.items;i++)
+            for(const css_selector *part=r->selectors[i];part;part=part->combinator) {
+                const css_selector_detail *d=&part->data;
+                do {if(d->type==CSS_SELECTOR_PSEUDO_ELEMENT)valid=2;}
+                while((d++)->next);
+            }
+    }
+    if(sheet)css_stylesheet_destroy(sheet);kfree(probe);return valid;
+}
+static int nest_supports_condition(const char *source,int len)
+{
+    if(len<=0)return 0;
+    if(len>1024*1024)return -1;
+    char *probe=kmalloc((unsigned long)len+17);
+    if(!probe)return -1;
+    memcpy(probe,"@supports ",10);memcpy(probe+10,source,(unsigned)len);
+    memcpy(probe+10+len," {}",4);
+    css_stylesheet *sheet=nest_probe_sheet(probe,len+13);
+    int valid=sheet?0:-1;
+    if(sheet && sheet->rule_list && sheet->rule_list->type==CSS_RULE_MEDIA) {
+        const css_mq_query *q=((const css_rule_media *)sheet->rule_list)->media;
+        /* language.c emits all/not-all after its actual supports evaluator.
+         * Inspect that result; evaluating its condition again would drift. */
+        valid=q && !q->negate_type;
+    }
+    if(sheet)css_stylesheet_destroy(sheet);kfree(probe);return valid;
+}
+int css_normalize_stylesheet(const char *source,int len,char **owned,int *outlen)
+{
+    if(!source&&len==0)source="";
+    const struct css_nesting_hooks hooks={nest_validate_selector,nest_supports_condition};
+    struct css_nesting_report report={0};
+    int result=css_nesting_normalize(source,len,owned,outlen,&hooks,&report);
+    if(report.refused)printf("[css] nesting: refused %d unsupported child rule(s)\n",report.refused);
+    if(result<0)printf("[css] nesting: refused sheet (allocation/depth/size limit)\n");
+    return result;
+}
+static css_stylesheet *author_sheet_bytes(const char *data, size_t len, bool quirks)
 {
     if (g_author_sheet && g_author_quirks == quirks && g_author_srclen == len &&
         (len == 0 || memcmp(g_author_src, data, len) == 0)) {
@@ -1278,13 +1368,25 @@ static css_stylesheet *author_sheet(const char *data, size_t len, bool quirks)
      * actually got parsed. */
     css_report_parsed(s != NULL, (int)len);
     if (!s) return NULL;
-    /* Without the source copy we cannot answer "is this the same sheet?" next
-     * time, so a failed copy means: use this parse, but do not cache it. */
+    /* The old claim was "use an uncached second parse if its source-key copy
+     * fails". That leaked: callers release by removing from the select context
+     * and assume this cache owns author_sheet. Refuse instead of returning an
+     * ownerless sheet; the normalizer's temporary source is then safe to free. */
     char *cp = (char *)kmalloc(len ? len : 1);
-    if (!cp) { css_stylesheet_destroy(s); return make_sheet(data, len, false, quirks); }
+    if (!cp) { css_stylesheet_destroy(s); return NULL; }
     if (len) memcpy(cp, data, len);
     g_author_sheet = s; g_author_src = cp; g_author_srclen = len; g_author_quirks = quirks;
     return s;
+}
+
+static css_stylesheet *author_sheet(const char *data,size_t len,bool quirks)
+{
+    char *owned=NULL;int outlen=(int)len;
+    if(len>0x7fffffff || css_normalize_stylesheet(data,(int)len,&owned,&outlen)<0)return NULL;
+    css_stylesheet *sheet=author_sheet_bytes(owned?owned:data,(size_t)outlen,quirks);
+    kfree(owned);return sheet;
+    /* g_auto_css remains the caller's original stable source, not this freed
+     * temporary. Both parsed-sheet and raw extension caches own byte copies. */
 }
 
 /* dom.c owns node->computed but must not know what a css_computed_style is
@@ -1626,6 +1728,9 @@ static int is_html_table_box(const struct node *n)
 
 static void convert(const css_computed_style *cs, int parent_font, struct cstyle *o)
 {
+    o->aspect_w = o->aspect_h = 0;
+    o->aspect_auto = 1;
+    o->aspect_has_ratio = 0;
     css_fixed len; css_unit unit; css_color col;
 
     /* font-size first (everything else may be em-relative) */
@@ -1658,7 +1763,15 @@ static void convert(const css_computed_style *cs, int parent_font, struct cstyle
     default:                       o->display = DISP_BLOCK; break;  /* block + table-ish */
     }
 
-    if (css_computed_color(cs, &col) == CSS_COLOR_COLOR) o->color = to_rgb(col);
+    /* The old RGB-only carrier discarded foreground alpha. That also made
+     * every currentColor gradient/background opaque, even though LibCSS had
+     * correctly inherited rgba(). Retain the computed alpha for consumers
+     * that composite color; this does not claim that the text GUI now has a
+     * complete glyph-alpha path. Zero is a real transparent color. */
+    o->color_alpha=255;
+    if (css_computed_color(cs, &col) == CSS_COLOR_COLOR) {
+        o->color = to_rgb(col);o->color_alpha=(int)((col>>24)&255);
+    }
 
     /* Any non-zero alpha counts as "has a background"; the alpha itself is
      * carried through to the display list so the painter can blend it (it does
@@ -2149,12 +2262,15 @@ static void convert(const css_computed_style *cs, int parent_font, struct cstyle
     case CSS_JUSTIFY_CONTENT_SPACE_BETWEEN: o->justify = JC_BETWEEN; break;
     case CSS_JUSTIFY_CONTENT_SPACE_AROUND:  o->justify = JC_AROUND; break;
     case CSS_JUSTIFY_CONTENT_SPACE_EVENLY:  o->justify = JC_EVENLY; break;
-    default:                                o->justify = JC_START; break;
+    /* Old LibCSS uses FLEX_START as its initial encoding. The complete
+     * author alignment set is recovered by extra's matched cascade, so an
+     * explicit start overrides this genuine CSS initial normal value. */
+    default:                                o->justify = JC_NORMAL; break;
     }
 #define ALIGN_CONVERT(v) ((v) == CSS_ALIGN_ITEMS_FLEX_START ? AL_START : \
                           (v) == CSS_ALIGN_ITEMS_FLEX_END   ? AL_END : \
                           (v) == CSS_ALIGN_ITEMS_CENTER     ? AL_CENTER : \
-                          (v) == CSS_ALIGN_ITEMS_BASELINE   ? AL_BASELINE : AL_STRETCH)
+                          (v) == CSS_ALIGN_ITEMS_BASELINE   ? AL_BASELINE : AL_NORMAL)
     o->align_items = ALIGN_CONVERT(css_computed_align_items(cs));
     { uint8_t a = css_computed_align_self(cs);
       o->align_self = (a == CSS_ALIGN_SELF_AUTO) ? AL_AUTO : ALIGN_CONVERT(a); }
@@ -2284,7 +2400,10 @@ static const char *const g_prop_names[CSSP__COUNT] = {
 };
 
 const char *css_prop_name(int i)
-{ return (i >= 0 && i < CSSP__COUNT) ? g_prop_names[i] : 0; }
+{
+    if(i==CSSP_ASPECT_RATIO)return LOGIT_HAVE(css_sizing_property)?css_sizing_property(0):NULL;
+    return (i >= 0 && i < CSSP__COUNT) ? g_prop_names[i] : 0;
+}
 
 /* Accepts both spellings a script can hand us. The IDL name is the dashed name
  * with each "-x" folded to "X", so one comparison covers both: walk the dashed
@@ -2362,7 +2481,8 @@ int css_prop_lookup(const char *name, int len)
     if (len <= 0) return -1;
     if (len == 8 && memcmp(name, "cssFloat", 8) == 0) return CSSP_FLOAT;
     for (int p = 0; p < CSSP__COUNT; p++) {
-        const char *d = g_prop_names[p];
+        const char *d = css_prop_name(p);
+        if(!d)continue;
         int i = 0, j = 0, ok = 1;
         while (d[i]) {
             if (j >= len) { ok = 0; break; }
@@ -2674,6 +2794,15 @@ int css_computed_text(struct node *n, int prop, char *out, int outmax)
      * EVERY property, including the most ordinary ones. */
     css_ensure_styled(n);
     if (!n->computed) return 0;
+    if(prop==CSSP_ASPECT_RATIO) {
+        const struct cstyle *s=n->style;
+        if(!s)return 0;
+        /* The ratio is computed syntax, never inferred from used dimensions.
+         * Zero/degenerate syntax is retained; layout decides whether usable. */
+        int size=!s->aspect_has_ratio?snprintf(out,(size_t)outmax,"auto"):
+            snprintf(out,(size_t)outmax,"%s%.15g / %.15g",s->aspect_auto?"auto ":"",s->aspect_w,s->aspect_h);
+        return size<outmax?size:outmax-1;
+    }
     const css_computed_style *cs = (const css_computed_style *)n->computed;
 
     struct obuf b = { out, 0, outmax };
@@ -2748,6 +2877,20 @@ int css_computed_text(struct node *n, int prop, char *out, int outmax)
         ob_color(&b, col);
         break;
     case CSSP_BACKGROUND_COLOR:
+        /* Complex image shorthands are owned by the extension producer. The
+         * native sheet can reject that syntax while the renderer correctly
+         * paints its color, so reading only native bytecode reported transparent
+         * above a red box. Use the same selected color authority as painting.
+         * It reads the declaration color independently of mask decoration
+         * refusal; hiding ink must not rewrite an authored computed color. */
+#ifndef CSS_BACKGROUND_OLD_COLOR_TEXT
+        if(n->style&&LOGIT_HAVE(css_background_color)){
+            unsigned rgb;int alpha;
+            if(css_background_color(n->style,&rgb,&alpha)){
+                ob_color(&b,((uint32_t)alpha<<24)|rgb);break;
+            }
+        }
+#endif
         /* An unset background is transparent, and every browser spells that
          * "rgba(0, 0, 0, 0)" rather than the keyword. */
         if (css_computed_background_color(cs, &col) == CSS_BACKGROUND_COLOR_COLOR) ob_color(&b, col);
@@ -3691,6 +3834,7 @@ static int cstyle_diff(const struct cstyle *a, const struct cstyle *b)
     struct cstyle t;
     memcpy(&t, a, sizeof t);                    /* byte copy: see snap_push */
     t.color = b->color;
+    t.color_alpha = b->color_alpha;
     t.background = b->background; t.has_bg = b->has_bg; t.bg_alpha = b->bg_alpha;
     for (int i = 0; i < 4; i++) {
         t.border_color[i] = b->border_color[i];
@@ -3887,6 +4031,11 @@ static int sup_beside_libcss(const char *prop, int plen, const char *value, int 
     char buf[1024];
     int len = 0;
 
+    if(LOGIT_HAVE(logit_css_extra_supports_value)) {
+        int accepted=logit_css_extra_supports_value(prop,plen,value,vlen);
+        if(accepted>=0)return accepted;
+    }
+
 #ifndef CSS_PHYSICAL_SPACING_LEGACY
     if(LOGIT_HAVE(css_box_supports_decl) && css_box_supports_decl(prop,plen,value,vlen))return 1;
 #endif
@@ -3941,6 +4090,12 @@ int css_supports_decl(const char *prop, int plen, const char *value, int vlen)
     while (vlen && (value[0] == ' ' || value[0] == '\t' || value[0] == '\n')) { value++; vlen--; }
     while (vlen && (value[vlen-1] == ' ' || value[vlen-1] == '\t' || value[vlen-1] == '\n')) vlen--;
     if (plen <= 0 || vlen <= 0) return 0;
+#ifndef CSSSUP_LIBCSS_ONLY
+    if(LOGIT_HAVE(logit_css_extra_supports_value)) {
+        int accepted=logit_css_extra_supports_value(prop,plen,value,vlen);
+        if(accepted>=0)return accepted;
+    }
+#endif
     /* A custom property is supported by definition: --x takes any value that
      * is a balanced token stream, and the cascade stores it verbatim. */
     if (plen >= 2 && prop[0] == '-' && prop[1] == '-') return 1;
@@ -4023,12 +4178,16 @@ extern const struct css_smap_entry stringmap[];
 
 int css_known_prop_count(void)
 {
-    return (int)(LAST_PROP - FIRST_PROP + 1);
+    return (int)(LAST_PROP - FIRST_PROP + 1)+(LOGIT_HAVE(css_sizing_property)?1:0);
 }
 
 const char *css_known_prop_at(int i, int *len)
 {
     if (i < 0 || i >= css_known_prop_count()) { if (len) *len = 0; return 0; }
+    if(i==(int)(LAST_PROP-FIRST_PROP+1)) {
+        const char *name=css_sizing_property(0);
+        if(len)*len=(int)strlen(name);return name;
+    }
     const struct css_smap_entry *e = &stringmap[FIRST_PROP + i];
     if (len) *len = (int)e->len;
     return e->data;
@@ -4517,6 +4676,19 @@ int css_value_serialize(const char *val, int vlen, char *out, int outmax)
 int css_specified_canon(const char *prop, int plen, const char *value, int vlen,
                         char *out, int outcap, int *outlen)
 {
+    if(!prop||!value||!out||outcap<=0||!outlen)return CSS_CANON_INVALID;
+    if(plen<0)plen=(int)strlen(prop);
+    if(vlen<0)vlen=(int)strlen(value);
+    if(LOGIT_HAVE(logit_css_extra_supports_value)) {
+        int accepted=logit_css_extra_supports_value(prop,plen,value,vlen);
+        if(accepted>=0) {
+            if(!accepted)return CSS_CANON_INVALID;
+            /* Validate with the producer first. Canon's name-only branches
+             * may serialize an invalid background geometry value unchanged. */
+            *outlen=css_value_serialize(value,vlen,out,outcap);
+            return CSS_CANON_OK;
+        }
+    }
     return css_canon_decl(prop, plen, value, vlen, out, outcap, outlen);
 }
 

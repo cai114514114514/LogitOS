@@ -182,5 +182,11 @@ void layout_dump_images(struct node *root); /* LOGIT_LAYOUT_H */
  * returns 0 pending/unseen, 1 decoded, -1 broken; store succeeds only on decode. */
 int layout_img_dimensions(const char *src, int *w, int *h);
 int layout_img_store(const char *src, const unsigned char *data, int len);
+/* Borrow decoded pixels without fetching. The pointer lasts only until the
+ * next cache mutation/navigation; painting may use it synchronously, but must
+ * not retain it across a resource callback or free it. */
+const struct image *layout_img_get(const char *src);
+/* Slot admission only; decode and byte-budget refusal remain store's decision. */
+int layout_img_can_load(void);
 
 #endif

@@ -3,6 +3,12 @@
 
 #include "quickjs.h"
 
+/* Bootstrap-only private brands for structuredClone. Returns a duplicate in
+ * the requested realm, or undefined when no Fetch surface was installed. */
+JSValue js_webapi_clone_hosts(JSContext *ctx);
+JSValue js_webapi_form_entries(JSContext *ctx, JSValueConst form,
+                                JSValueConst submitter);
+
 /* Context-owned native connect policy, applied before initial requests and
  * every redirect. Set immediately after install, before author script runs.
  * Callback/opaque must outlive this context's fetch realm. */

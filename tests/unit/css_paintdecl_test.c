@@ -17,6 +17,9 @@
  * accepted under the modern angle rule is every one of them rotated ninety
  * degrees, and a colour hint read as a stop invents a colour. Each of those is
  * a row asserting 0.
+ * Correction (2026-10-02): repeating/radial/conic and color hints now have
+ * real sampler consumers. Those rows assert their actual parsed forms below;
+ * malformed colors and vendor-angle conventions continue to refuse.
  *
  * Colours travel as SPANS and are asserted BYTE FOR BYTE rather than as RGBA.
  * That is not a weaker assertion -- an exact span comparison catches an
@@ -32,6 +35,7 @@
 #include "css/style.h"
 #include "dom/tree.h"
 #include "css/interp.h"
+#include "css/background.h"
 
 void *kmalloc(unsigned long n) { return malloc(n); }
 void  kfree(void *p) { free(p); }
@@ -72,6 +76,7 @@ struct gcase {
     int nstop;
     const char *c0; int k0, p0;     /* first stop: colour span, kind, pos  */
     const char *cN; int kN, pN;     /* last stop                           */
+    int kind, repeating, hint; /* zero kind retains the legacy LINEAR default */
 };
 
 static const struct gcase G[] = {
@@ -175,35 +180,49 @@ static const struct gcase G[] = {
   "LINEAR-GRADIENT(TO RIGHT, #fff, #000)", 1, CG_DIR_ANGLE, 0, 90000, 2,
   "#fff", CG_POS_AUTO, 0, "#000", CG_POS_AUTO, 0 },
 
-{ "grad: eight stops is the engine's cap and is accepted",
-  "linear-gradient(#1, #2, #3, #4, #5, #6, #7, #8)", 1,
+/* Old cap was eight, with malformed #1 colors accidentally accepted because
+ * no literal-color validator ran. Keep eight real colors; new cap is 32. */
+{ "grad: eight valid stops remain accepted",
+  "linear-gradient(#111, #222, #333, #444, #555, #666, #777, #888)", 1,
   CG_DIR_ANGLE, 0, 180000, 8,
-  "#1", CG_POS_AUTO, 0, "#8", CG_POS_AUTO, 0 },
+  "#111", CG_POS_AUTO, 0, "#888", CG_POS_AUTO, 0 },
 
 /* --- refused ------------------------------------------------------------- */
-{ "grad REFUSED: repeating-linear-gradient (a different tiling rule)",
-  "repeating-linear-gradient(45deg, #fff 0 10px, #000 10px 20px)", 0, 0,0,0,0, 0,0,0, 0,0,0 },
+/* Old refusal: repeating needs tiling. Correction: the real sampler repeats. */
+{ "grad: repeating-linear-gradient carries its tiling flag",
+  "repeating-linear-gradient(45deg, #fff 0 10px, #000 10px 20px)", 1,
+  CG_DIR_ANGLE,0,45000,4,"#fff",CG_POS_PX,0,"#000",CG_POS_PX,20,CG_LINEAR,1,0 },
 
 { "grad REFUSED: -webkit-linear-gradient (the prefixed angle convention differs)",
   "-webkit-linear-gradient(top, #fff, #000)", 0, 0,0,0,0, 0,0,0, 0,0,0 },
 
-{ "grad REFUSED: radial-gradient (gfx_paint_radial exists, this parser does not emit it)",
-  "radial-gradient(circle, #fff, #000)", 0, 0,0,0,0, 0,0,0, 0,0,0 },
+/* Old refusal: radial was not produced. Dedicated geometry now consumes it. */
+{ "grad: radial-gradient emits real radial metadata",
+  "radial-gradient(circle, #fff, #000)", 1,CG_DIR_ANGLE,0,0,2,
+  "#fff",CG_POS_AUTO,0,"#000",CG_POS_AUTO,0,CG_RADIAL,0,0 },
 
-{ "grad REFUSED: conic-gradient (the engine has no conic paint)",
-  "conic-gradient(from 0deg, #fff, #000)", 0, 0,0,0,0, 0,0,0, 0,0,0 },
+/* Old refusal: conic had no painter. The angular sampler now owns this case. */
+{ "grad: conic-gradient emits real angular metadata",
+  "conic-gradient(from 0deg, #fff, #000)", 1,CG_DIR_ANGLE,0,0,2,
+  "#fff",CG_POS_AUTO,0,"#000",CG_POS_AUTO,0,CG_CONIC,0,0 },
 
 { "grad REFUSED: an `in oklab` interpolation space",
   "linear-gradient(in oklab, #fff, #000)", 0, 0,0,0,0, 0,0,0, 0,0,0 },
 
-{ "grad REFUSED: a bare-percentage colour HINT would have to invent a colour",
-  "linear-gradient(#fff, 40%, #000)", 0, 0,0,0,0, 0,0,0, 0,0,0 },
+/* Old refusal: treating a hint as a color invents one. It now remains a hint. */
+{ "grad: a percentage color hint has no invented color",
+  "linear-gradient(#fff, 40%, #000)", 1,CG_DIR_ANGLE,0,180000,3,
+  "#fff",CG_POS_AUTO,0,"#000",CG_POS_AUTO,0,CG_LINEAR,0,1 },
 
-{ "grad REFUSED: one stop is not a gradient (an unresolved var() looks like this)",
+/* Old reason was the two-stop rule. Images4 permits a literal single color;
+ * the actual refusal here is its unresolved variable, not the stop count. */
+{ "grad REFUSED: an unresolved variable is not a literal stop color",
   "linear-gradient(var(--brand))", 0, 0,0,0,0, 0,0,0, 0,0,0 },
 
-{ "grad REFUSED: nine stops exceeds GFX_MAX_STOPS",
-  "linear-gradient(#1,#2,#3,#4,#5,#6,#7,#8,#9)", 0, 0,0,0,0, 0,0,0, 0,0,0 },
+/* Old nine-stop refusal was the GFX cap; the dedicated sampler's cap is 32. */
+{ "grad: nine valid stops fit the browser sampler",
+  "linear-gradient(#111,#222,#333,#444,#555,#666,#777,#888,#999)", 1,
+  CG_DIR_ANGLE,0,180000,9,"#111",CG_POS_AUTO,0,"#999",CG_POS_AUTO,0 },
 
 /* A unitless number is a valid <length> and never a valid <angle>, so this is
  * a parse error -- the same rule css_interp.c's ang_rad() states. Accepting it
@@ -226,7 +245,8 @@ static void run_gradients(void)
         int r = css_gradient_parse(g->decl, (int)strlen(g->decl), 16, 16, &cg);
         int good = (r == g->ok);
         if (good && r) {
-            good = cg.kind == CG_LINEAR && cg.dir == g->dir && cg.nstop == g->nstop &&
+            good = cg.kind == (g->kind?g->kind:CG_LINEAR) && cg.repeating==g->repeating &&
+                   (!g->hint||cg.stop[1].hint) && cg.dir == g->dir && cg.nstop == g->nstop &&
                    (g->dir == CG_DIR_CORNER ? cg.corner == g->corner
                                             : cg.angle_mdeg == g->angle) &&
                    spaneq(cg.stop[0].color, cg.stop[0].colorlen, g->c0) &&
@@ -239,7 +259,7 @@ static void run_gradients(void)
             printf("  [%s]\n    got ok=%d dir=%d corner=%d angle=%d nstop=%d",
                    g->decl, r, cg.dir, cg.corner, cg.angle_mdeg, cg.nstop);
             if (r && cg.nstop > 0)
-                printf(" first=(%.*s,k%d,%d) last=(%.*s,k%d,%d)",
+                printf(" first=(%.*s,k%d,%g) last=(%.*s,k%d,%g)",
                        cg.stop[0].colorlen, cg.stop[0].color, cg.stop[0].pos_kind,
                        cg.stop[0].pos,
                        cg.stop[cg.nstop-1].colorlen, cg.stop[cg.nstop-1].color,
@@ -463,7 +483,13 @@ static void run_capture(void)
          * source-order argument. Two fifths of the corpus's box-shadow blocks
          * are written this way, and the unprefixed value must still win,
          * because they are different properties and a real browser never
-         * applies the prefixed one. */
+         * applies the prefixed one.
+         * Correction (2026-10-02): that claim was wrong. Chromium's property
+         * table marks -webkit-box-shadow alias_for box-shadow, so the later
+         * alias is the same property and wins at equal importance. Keep this
+         * specimen, but assert the actual alias cascade instead of fitting the
+         * old whole-block fallback scanner. Source: Chromium main
+         * third_party/blink/renderer/core/css/css_properties.json5. */
         ".both{box-shadow:0 1px 2px #abc;-webkit-box-shadow:9px 9px 9px #f00}";
 
     struct node *root = dom_parse(html, (int)strlen(html));
@@ -496,14 +522,19 @@ static void run_capture(void)
                                   CST(g1)->xrawlen[XR_BG_IMAGE],
                                   "linear-gradient(90deg,#fff,#000)"),
           "capture: background-image gradient reaches cstyle.xraw");
-    /* The gradient is lifted OUT of the shorthand, so the parser gets a value
-     * and not a background layer. */
+    /* Old claim: lift the gradient OUT of its shorthand. Correction: retain
+     * the validated whole shorthand and provenance; components are extracted
+     * at use time without a temporary string escaping into computed style. */
     CHECK(g2 && CST(g2) && spaneq(CST(g2)->xraw[XR_BG_IMAGE],
                                   CST(g2)->xrawlen[XR_BG_IMAGE],
-                                  "linear-gradient(to right,red,blue)"),
+                                  "#fff linear-gradient(to right,red,blue) no-repeat") &&
+          (CST(g2)->background_shorthand&(1u<<BG_IMAGE)),
           "capture: the `background` SHORTHAND's gradient is found too");
-    CHECK(mu && CST(mu) && CST(mu)->xraw[XR_BG_IMAGE] == NULL,
-          "capture REFUSED: more than one background layer");
+    /* Old refusal: multiple layers had no consumer. All layers now remain in
+     * order, including any empty/failed resource layer; no first-layer salvage. */
+    CHECK(mu && CST(mu) && spaneq(CST(mu)->xraw[XR_BG_IMAGE],CST(mu)->xrawlen[XR_BG_IMAGE],
+          "linear-gradient(#fff,#000),url(x.png)"),
+          "capture: multiple background layers remain a whole ordered value");
     CHECK(mz && CST(mz) && spaneq(CST(mz)->xraw[XR_TRANSFORM],
                                   CST(mz)->xrawlen[XR_TRANSFORM], "skewX(4deg)") &&
           spaneq(CST(mz)->xraw[XR_BOX_SHADOW], CST(mz)->xrawlen[XR_BOX_SHADOW],
@@ -511,10 +542,12 @@ static void run_capture(void)
           "capture: -moz- transform and box-shadow are taken when alone");
     /* THE ONE THAT DECIDES THE RULE. If the fallback were source-order, the
      * span here would be the -webkit- value, which is deliberately a
-     * different, obviously wrong shadow so the failure names itself. */
+     * different, obviously wrong shadow so the failure names itself.
+     * Correction: it IS an alias and source order is the right rule; the old
+     * expected unprefixed span encoded the defect, not browser conformance. */
     CHECK(bo && CST(bo) && spaneq(CST(bo)->xraw[XR_BOX_SHADOW],
-                                  CST(bo)->xrawlen[XR_BOX_SHADOW], "0 1px 2px #abc"),
-          "capture: unprefixed wins even when the PREFIXED spelling is last");
+                                   CST(bo)->xrawlen[XR_BOX_SHADOW], "9px 9px 9px #f00"),
+          "capture: later webkit alias shares the canonical property cascade");
     CHECK(no && CST(no) && spaneq(CST(no)->xraw[XR_TRANSFORM],
                                   CST(no)->xrawlen[XR_TRANSFORM], "none"),
           "capture: `transform:none` is captured, not dropped");

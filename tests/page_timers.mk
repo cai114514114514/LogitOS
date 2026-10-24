@@ -1,7 +1,7 @@
 # Same core runtime as test-js-dom-asan; no copied QuickJS/HTML source lists.
 .PHONY: test-page-timers test-page-timers-negctl
 PAGE_TIMERS_CF = -O1 -g -w -fsanitize=address -fno-omit-frame-pointer $(JSDOM_HOST_CF)
-PAGE_TIMERS_DEPS = tests/unit/page_timers_test.c $(JSDOM_HOST_SRC) c/apps/gui/browser/js/runtime/page.h c/apps/gui/browser/dom/tree.h c/apps/gui/browser/css/style.h
+PAGE_TIMERS_DEPS = tests/unit/page_timers_test.c $(JSDOM_HOST_SRC) c/apps/gui/browser/js/runtime/page.h c/apps/gui/browser/js/runtime/timers.h c/apps/gui/browser/app/page.c c/apps/gui/browser/app/page.h c/apps/gui/browser/dom/tree.h c/apps/gui/browser/css/style.h
 PAGE_TIMERS_ASAN = ASAN_OPTIONS=detect_leaks=0:abort_on_error=0:exitcode=86
 
 $(BUILD)/page_timers_test: $(PAGE_TIMERS_DEPS) $(BUILD)/libcss_host.a
