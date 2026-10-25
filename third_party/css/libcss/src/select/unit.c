@@ -6,6 +6,7 @@
  * Copyright 2021 Michael Drake <tlsa@netsurf-browser.org>
  */
 
+#include <assert.h>
 #include <libcss/stylesheet.h>
 
 #include "utils/utils.h"

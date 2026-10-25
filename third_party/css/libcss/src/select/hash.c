@@ -71,10 +71,15 @@ static css_error _iterate_universal(
 
 
 
-/* Get case insensitive hash value for a name.
- * All element/class/id names are known to have their insensitive ptr set. */
-#define _hash_name(name) \
-	lwc_string_hash_value(name->insensitive)
+/* LogitOS integration: the former provider exposed a cached lowercase atom.
+ * The replacement stores a folded hash without allocating that second string.
+ * Use the public operation so selector buckets and bloom filters agree. */
+static lwc_hash _hash_name(lwc_string *name)
+{
+	lwc_hash hash = 0;
+	lwc_string_caseless_hash_value(name, &hash);
+	return hash;
+}
 
 
 /* No bytecode if rule body is empty or wholly invalid --
@@ -358,9 +363,9 @@ css_error css__selector_hash_find(css_selector_hash *hash,
 			lwc_error lerror;
 			bool match = false;
 
-			lerror = lwc_string_isequal(
-					req->qname.name->insensitive,
-					head->sel->data.qname.name->insensitive,
+			lerror = lwc_string_caseless_isequal(
+					req->qname.name,
+					head->sel->data.qname.name,
 					&match);
 			if (lerror != lwc_error_ok)
 				return css_error_from_lwc_error(lerror);
@@ -434,9 +439,9 @@ css_error css__selector_hash_find_by_class(css_selector_hash *hash,
 
 			n = _class_name(head->sel);
 			if (n != NULL) {
-				lerror = lwc_string_isequal(
-						req->class->insensitive,
-						n->insensitive, &match);
+				lerror = lwc_string_caseless_isequal(
+						req->class,
+						n, &match);
 				if (lerror != lwc_error_ok)
 					return css_error_from_lwc_error(lerror);
 
@@ -516,9 +521,9 @@ css_error css__selector_hash_find_by_id(css_selector_hash *hash,
 
 			n = _id_name(head->sel);
 			if (n != NULL) {
-				lerror = lwc_string_isequal(
-						req->id->insensitive,
-						n->insensitive, &match);
+				lerror = lwc_string_caseless_isequal(
+						req->id,
+						n, &match);
 				if (lerror != lwc_error_ok)
 					return css_error_from_lwc_error(lerror);
 
@@ -692,7 +697,6 @@ static inline void _chain_bloom_add_detail(
 		const css_selector_detail *d,
 		css_bloom bloom[CSS_BLOOM_SIZE])
 {
-	lwc_string *add; /* String to add to bloom */
 
 	switch (d->type) {
 	case CSS_SELECTOR_ELEMENT:
@@ -704,13 +708,7 @@ static inline void _chain_bloom_add_detail(
 		/* Fall through */
 	case CSS_SELECTOR_CLASS:
 	case CSS_SELECTOR_ID:
-		/* Element, Id and Class names always have the insensitive
-		 * string set at css_selector_detail creation time. */
-		add = d->qname.name->insensitive;
-
-		if (add != NULL) {
-			css_bloom_add_hash(bloom, lwc_string_hash_value(add));
-		}
+		css_bloom_add_hash(bloom, _hash_name(d->qname.name));
 		break;
 
 	default:

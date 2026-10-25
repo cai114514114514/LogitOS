@@ -5,6 +5,7 @@
  * Copyright 2009 John-Mark Bell <jmb@netsurf-browser.org>
  */
 
+#include <assert.h>
 #include "bytecode/bytecode.h"
 #include "bytecode/opcodes.h"
 #include "select/propset.h"

@@ -18,7 +18,6 @@ subject to upstream terms where required.
 | musl libm subset | Math functions used by QuickJS | `third_party/libm/` | Exact upstream revision not recorded | MIT and other permissive per-file terms |
 | NetSurf LibCSS | CSS parsing, cascade, and computed style | `third_party/css/libcss/` | Exact upstream revision not recorded | MIT |
 | NetSurf libparserutils | Parser utilities used by LibCSS | `third_party/css/libparserutils/` | Exact upstream revision not recorded | MIT |
-| NetSurf libwapcaplet | Interned strings used by LibCSS | `third_party/css/libwapcaplet/` | Exact upstream revision not recorded | MIT |
 | Crafting Interpreters / clox | Architectural lineage and adapted implementation in AetherScript | `c/apps/as/` and related design documents | Exact upstream revision not recorded | MIT for upstream code |
 | Mozilla/NSS-derived CA trust store | Public TLS trust anchors | `tools/roots/`, generated into `c/crypto/trust/roots_bundle.inc` | 130-root host bundle imported 2026-06-08; exact source revision/hash not recorded | MPL 2.0 for the Mozilla-derived bundle |
 | Noto Sans SC and Noto Sans Mono | Source fonts and generated runtime subsets | `third_party/fonts/`, `fsroot/fonts/` | Google Fonts commit `2796410152d4f9524b68ed46e69c1b60f8e0f7c3` | SIL OFL 1.1 |
@@ -116,6 +115,13 @@ later application while retaining the FFmpeg files' LGPL terms.
 
 ## NetSurf CSS libraries
 
+**2026-10-25 correction:** LibCSS and libparserutils remain third-party code.
+The former libwapcaplet string provider was removed from the source and build,
+replaced by independently implemented `c/lib/logitwapcaplet/` under the project's
+GPL-3.0-or-later core-library boundary. Existing API spellings remain; private
+objects and lowercase-partner caching do not. The historical entry below refers
+to the original import at commit `368959e94`, not a currently present directory.
+
 The following libraries were imported in LogitOS OS commit `f840b45` and trimmed
 to the source, public headers, generators, and license files needed by the
 browser port. Upstream tests, documentation, examples, CI configuration, and
@@ -135,7 +141,7 @@ NetSurf build files were not retained.
 - Copyright: Copyright (C) 2007-8 J-M Bell.
 - License: MIT; see `third_party/css/libparserutils/COPYING`.
 
-### libwapcaplet
+### libwapcaplet (removed from the current tree)
 
 - Upstream: <https://git.netsurf-browser.org/libwapcaplet.git/>
 - Location: `third_party/css/libwapcaplet/`
@@ -143,7 +149,8 @@ NetSurf build files were not retained.
 - License: MIT; see `third_party/css/libwapcaplet/COPYING`.
 
 LogitOS OS's DOM select handler and computed-style adapter live in
-`c/apps/browser/css_engine.c`; that adapter is project code and is covered by
+`c/apps/gui/browser/css/engine.c` (formerly `c/apps/browser/css_engine.c`);
+that adapter is project code and is covered by
 the outer-component MIT License defined in `LICENSING.md`.
 
 ## Crafting Interpreters / clox lineage

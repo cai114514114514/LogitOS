@@ -5,6 +5,7 @@
  * Copyright 2017 Lucas Neves <lcneves@gmail.com>
  */
 
+#include <assert.h>
 #include "bytecode/bytecode.h"
 #include "bytecode/opcodes.h"
 #include "select/propset.h"

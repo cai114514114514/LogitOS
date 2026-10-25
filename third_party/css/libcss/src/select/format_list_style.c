@@ -5,6 +5,7 @@
  * Copyright 2021 Vincent Sanders <vince@netsurf-browser.org>
  */
 
+#include <assert.h>
 #include "select/propget.h"
 #include "utils/utils.h"
 

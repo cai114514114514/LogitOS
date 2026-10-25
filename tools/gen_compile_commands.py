@@ -36,15 +36,16 @@ def find_files(*bases, suffix):
 # Match the browser's qualified-header namespace in Makefile. Flattening the
 # new subdirectories would make js/media/media.h shadow the shared demuxer API
 # in the editor even though the real compiler selects the correct header.
+CSS_SUPPORT = ("c/lib/logitwapcaplet",)
 incdirs = sorted(d for d in find_dirs("c", "include")
-                 if not d.startswith("c/apps/gui/browser/"))
+                 if not d.startswith(("c/apps/gui/browser/",) + CSS_SUPPORT))
 INC = [f"-I{d}" for d in incdirs]
 
 JS_INC  = ["-Ithird_party/libm", "-Ithird_party/quickjs"]
 CSS     = "third_party/css"
-CSS_INC = [f"-I{CSS}/libwapcaplet/include", f"-I{CSS}/libparserutils/include",
-           f"-I{CSS}/libcss/include", f"-I{CSS}/libcss/src",
-           f"-I{CSS}/libparserutils/src"]
+CSS_INC = [f"-I{path}/include" for path in CSS_SUPPORT] + [
+    f"-I{CSS}/libcss/include", f"-I{CSS}/libcss/src",
+    f"-I{CSS}/libparserutils/include", f"-I{CSS}/libparserutils/src"]
 
 # Common freestanding flags (mirror CFLAGS/UCFLAGS; -nostdlibinc keeps clang's own
 # builtin headers but blocks the macOS SDK so <stdio.h> resolves to ours).
@@ -57,7 +58,7 @@ ENGINE = ["-include", "features.h", '-DCONFIG_VERSION="logit-2024"',
           "-DLOGIT_OS", "-DCONFIG_STACK_CHECK"] + JS_INC
 
 def flags_for(path):
-    if path.startswith("third_party/css/"):
+    if path.startswith(("third_party/css/",) + CSS_SUPPORT):
         return BASE + ["-fcommon", "-D_ALIGNED=", "-DWITHOUT_ICONV_FILTER"] + CSS_INC + INC
     if (path.startswith("third_party/quickjs/") or path.startswith("third_party/libm/")
             or path.startswith("c/apps/libc/") or path.startswith("c/apps/gui/browser/")

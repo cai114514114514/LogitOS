@@ -7,6 +7,7 @@
 
 /* https://drafts.csswg.org/mediaqueries/ */
 
+#include <assert.h>
 #include <string.h>
 
 #include <libcss/fpmath.h>

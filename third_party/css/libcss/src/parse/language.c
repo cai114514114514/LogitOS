@@ -1480,10 +1480,8 @@ css_error parseClass(css_language *c, const parserutils_vector *vector,
 	qname.ns = NULL;
 	qname.name = token->idata;
 
-	/* Ensure lwc insensitive string is available for class names */
-	if (qname.name->insensitive == NULL &&
-			lwc__intern_caseless_string(qname.name) != lwc_error_ok)
-		return CSS_NOMEM;
+	/* LogitOS atoms compute the folded hash at creation. The old lazy
+	 * lowercase-atom preparation is no longer part of selector construction. */
 
 	return css__stylesheet_selector_detail_init(c->sheet,
 			CSS_SELECTOR_CLASS, &qname, detail_value,
@@ -2505,11 +2503,6 @@ css_error parseSpecific(css_language *c,
 		qname.ns = NULL;
 		qname.name = token->idata;
 
-		/* Ensure lwc insensitive string is available for id names */
-		if (qname.name->insensitive == NULL &&
-				lwc__intern_caseless_string(
-				qname.name) != lwc_error_ok)
-			return CSS_NOMEM;
 
 		error = css__stylesheet_selector_detail_init(c->sheet,
 				CSS_SELECTOR_ID, &qname, detail_value,
@@ -2633,11 +2626,6 @@ css_error parseTypeSelector(css_language *c, const parserutils_vector *vector,
 		qname->name = prefix;
 	}
 
-	/* Ensure lwc insensitive string is available for element names */
-	if (qname->name->insensitive == NULL &&
-			lwc__intern_caseless_string(
-			qname->name) != lwc_error_ok)
-		return CSS_NOMEM;
 
 	return CSS_OK;
 }

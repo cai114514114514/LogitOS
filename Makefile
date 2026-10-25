@@ -133,7 +133,6 @@ RELEASE_NOTICES := LICENSE LICENSING.md \
                    third_party/quickjs/LICENSE \
                    third_party/css/libcss/COPYING \
                    third_party/css/libparserutils/COPYING \
-                   third_party/css/libwapcaplet/COPYING \
                    third_party/libm/COPYRIGHT \
                    $(FONT_NOTICES)
 
@@ -217,7 +216,10 @@ BROWSER_FORM_JS_SRC := c/apps/gui/browser/js/dom/forms.c c/apps/gui/browser/js/d
                        c/apps/gui/browser/js/dom/validation.c
 BROWSER_JS_INCLUDES := $(filter %.inc,$(BROWSER_JS_FILES))
 BROWSER_JS_PRELUDES := $(filter %prelude.inc,$(BROWSER_JS_FILES))
-INCDIRS := $(addprefix -I,$(filter-out %/include/sys %/include/uonly c/apps/as/% $(BROWSER_DIR)/%,$(sort $(shell find c include -type d))))
+# CSS support headers use qualified names (parserutils/utils/buffer.h, etc.).
+# Flattening their directories would let those names shadow kernel headers.
+CSS_SUPPORT_DIRS := c/lib/logitwapcaplet
+INCDIRS := $(addprefix -I,$(filter-out %/include/sys %/include/uonly c/apps/as/% $(BROWSER_DIR)/% $(CSS_SUPPORT_DIRS) $(addsuffix /%,$(CSS_SUPPORT_DIRS)),$(sort $(shell find c include -type d))))
 # Host-built unit tests compile kernel sources against the host libc: the
 # mini-libc headers (c/apps/libc/include) would shadow glibc's <features.h>
 # and break <stdint.h>, so host tests use INCDIRS without that dir.
@@ -564,7 +566,9 @@ RING3_NET := c/net/http/cookies.c c/net/http/http1.c c/net/http/hpool.c \
 # c/lib/agent uses the POSIX user runtime, like the other ring-3 libraries.
 # OpenLogit custom shaders and software 3D execute in ring 3. Keep this entire
 # directory out of the kernel, including files added by later SDK revisions.
-C_SRC   := $(filter-out c/lib/gfx3d/% c/lib/image/inflate.c c/lib/image/png.c c/lib/image/svg.c $(wildcard c/lib/video/*.c) $(wildcard c/lib/audio/*.c) $(wildcard c/lib/media/*.c) $(wildcard c/lib/nn/*.c) $(wildcard c/lib/agent/*.c) $(RING3_NET),$(shell find c/kernel c/drivers c/lib c/fs c/net c/crypto -name '*.c'))
+# The independent CSS support libraries allocate with the userland runtime;
+# their location under c/lib does not make them kernel translation units.
+C_SRC   := $(filter-out $(addsuffix /%,$(CSS_SUPPORT_DIRS)) c/lib/gfx3d/% c/lib/image/inflate.c c/lib/image/png.c c/lib/image/svg.c $(wildcard c/lib/video/*.c) $(wildcard c/lib/audio/*.c) $(wildcard c/lib/media/*.c) $(wildcard c/lib/nn/*.c) $(wildcard c/lib/agent/*.c) $(RING3_NET),$(shell find c/kernel c/drivers c/lib c/fs c/net c/crypto -name '*.c'))
 ASM_SRC := $(wildcard c/boot/*.asm)
 # uACPI is kept outside c/: its generic io.h/types.h names must not enter the
 # kernel's recursive include search. Only the interpreter and its adapter see
@@ -1335,8 +1339,8 @@ BROWSER_PIPE := c/apps/gui/browser/dom/tree.c c/apps/gui/browser/html/tokenizer.
 # hand-added to every fragment that links "the browser minus something".
 BROWSER_OBJ  := $(patsubst %.c,$(BUILD)/browserobj/%.o,$(BROWSER_PIPE))
 
-# dom.c interns element and attribute names through libwapcaplet (LibCSS's own
-# interning library, already linked), so this group needs CSS_INC. Only dom.c
+# The old interning provider was NetSurf libwapcaplet. It is now logitwapcaplet,
+# linked through the same caller interface, so this group needs CSS_INC. Only dom.c
 # actually does: dom.h forward-declares lwc_string, so every other consumer of
 # the DOM still compiles without the include path.
 # iframe_policy uses the URL API header, whose public declarations include JSValue.
@@ -1346,7 +1350,7 @@ $(BUILD)/browserobj/%.o: %.c
 	@mkdir -p $(dir $@)
 	$(COMPILE) $(UCFLAGS) $(CSS_INC) -c $< -o $@
 
-# NetSurf LibCSS (+ libparserutils + libwapcaplet) + our css_engine.c adapter.
+# NetSurf LibCSS + libparserutils + independent LogitOS string support.
 CSS_DIR := third_party/css
 # -Iinclude is here ONLY for language.c's `#include "weaksym.h"` (the
 # @supports-honesty hooks into c/apps/gui/browser/css/engine.c and css_extra.c --
@@ -1360,10 +1364,12 @@ CSS_DIR := third_party/css
 # basename under include/ (checked: `find . -iname weaksym.h`), so this one
 # addition cannot shadow anything the CLAUDE.md flat-include-list trap warns
 # about -- that trap is INCDIRS (c + include together); this is CSS_INC alone.
-CSS_INC := -I$(CSS_DIR)/libwapcaplet/include -I$(CSS_DIR)/libparserutils/include \
-           -I$(CSS_DIR)/libcss/include -I$(CSS_DIR)/libcss/src -I$(CSS_DIR)/libparserutils/src \
+CSS_INC := $(addprefix -I,$(addsuffix /include,$(CSS_SUPPORT_DIRS))) \
+           -I$(CSS_DIR)/libcss/include -I$(CSS_DIR)/libcss/src \
+           -I$(CSS_DIR)/libparserutils/include -I$(CSS_DIR)/libparserutils/src \
            -Iinclude
-CSS_SRC := $(shell find $(CSS_DIR) -name '*.c' ! -name css_property_parser_gen.c)
+CSS_SRC := $(shell find $(CSS_DIR) -name '*.c' ! -name css_property_parser_gen.c) \
+           $(foreach dir,$(CSS_SUPPORT_DIRS),$(wildcard $(dir)/*.c))
 CSS_OBJ := $(patsubst %.c,$(BUILD)/cssobj/%.o,$(CSS_SRC)) $(BUILD)/cssobj/c/apps/gui/browser/css/engine.o \
            $(BUILD)/cssobj/c/apps/gui/browser/css/report.o
 
@@ -1924,7 +1930,6 @@ $(DISK): $(FS_BASE_HOSTS) $(AS_EXAMPLES) $(FONTS) $(FONT_TEXT) $(RELEASE_NOTICES
 	    third_party/quickjs/LICENSE:/licenses/third_party/quickjs-LICENSE.txt \
 	    third_party/css/libcss/COPYING:/licenses/third_party/libcss-COPYING.txt \
 	    third_party/css/libparserutils/COPYING:/licenses/third_party/libparserutils-COPYING.txt \
-	    third_party/css/libwapcaplet/COPYING:/licenses/third_party/libwapcaplet-COPYING.txt \
 	    third_party/libm/COPYRIGHT:/licenses/third_party/musl-libm-COPYRIGHT.txt \
 	    $(ROOT_AEX_PACK) \
 	    $(foreach c,$(CLI),$(BUILD)/$(c).aex:/bin/$(c)) $(BUILD)/as.aex:/bin/as $(BUILD)/libctest.aex:/bin/libctest \
@@ -3828,6 +3833,8 @@ $(BUILD)/csshost/%.o: %.c
 	$(CC) -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP $(CSS_INC) $(BROWSER_INC) -c $< -o $@
 
 $(BUILD)/libcss_host.a: $(CSSHOST_OBJ)
+	@# ar rcs replaces named members but does not remove retired library members.
+	@rm -f $@
 	@ar rcs $@ $^
 
 test-browser: $(BUILD)/libcss_host.a $(RUST_LIB_HOST) test-http-dechunk

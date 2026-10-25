@@ -9,6 +9,7 @@
 #ifndef css_select_mq_h_
 #define css_select_mq_h_
 
+#include <assert.h>
 #include "select/helpers.h"
 #include "select/strings.h"
 #include "select/unit.h"
