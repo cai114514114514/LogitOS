@@ -6,6 +6,10 @@ build/
 *.png
 .DS_Store
 
+# Keep new tests local, per the owner's 2026-10-24 update policy.
+# Ignore rules do not suppress changes to files Git already tracks.
+/tests/
+
 # Python bytecode cache
 # Anywhere, not two named directories: tests/unit/__pycache__ appeared the
 # moment a test grew a Python generator, and a listed-by-hand set of paths only
