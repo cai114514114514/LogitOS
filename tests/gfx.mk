@@ -19,7 +19,7 @@ include tests/openlogit.mk
 #   make bench-gfx-frame   what ONE APP FRAME costs on the machine, at three
 #                          resolutions, with gui_clear and text separated out
 # ============================================================================
-.PHONY: test-gfx test-gfx-clip test-gfx-clip-negctl test-gfx-raster test-gfx-paint test-gfx-stroke test-gfx-negctl \
+.PHONY: test-gfx test-gfx-clip test-gfx-clip-negctl test-gfx-raster test-gfx-paint test-gfx-stroke test-gfx-negctl test-gfx-matrix test-gfx-matrix-negctl \
         test-gfx-stroke-negctl bench-gfx bench-gfx-stroke bench-gfx-frame
 
 GFX_TEST_CF := -O1 -g -Wall -Wextra $(GFX_INC)
@@ -86,7 +86,31 @@ $(BUILD)/gfx_clip_test: tests/unit/gfx_clip_test.c $(GFX_SRC) c/lib/gfx/include/
 test-gfx-clip: test-gfx-clip-negctl $(BUILD)/gfx_clip_test
 	$(BUILD)/gfx_clip_test
 
-test-gfx: test-gfx-raster test-gfx-paint test-gfx-stroke test-gfx-clip
+# Inverse / scale of SHRINKING matrices. The determinant was truncated to 16.16
+# before dividing: a 1% scale inverted 9% off and anything under 1/256 was
+# refused as singular. -DGFX_M_TRUNC_DET restores that arithmetic and the same
+# assertions must fail. The control is a prerequisite of the positive target,
+# not a NOT_CI orphan (see test-gfx-clip above for how that went wrong once).
+$(BUILD)/gfx_matrix_test: tests/unit/gfx_matrix_test.c c/lib/gfx/geometry/gfx_math.c c/lib/gfx/include/gfx.h
+	@mkdir -p $(BUILD)
+	$(CC) $(GFX_TEST_CF) -o $@ tests/unit/gfx_matrix_test.c c/lib/gfx/geometry/gfx_math.c -lm
+
+test-gfx-matrix-negctl:
+	@mkdir -p $(BUILD)
+	$(CC) $(GFX_TEST_CF) -DGFX_M_TRUNC_DET -o $(BUILD)/gfx_matrix_negctl \
+	    tests/unit/gfx_matrix_test.c c/lib/gfx/geometry/gfx_math.c -lm
+	@if $(BUILD)/gfx_matrix_negctl > $(BUILD)/gfx_matrix_negctl.log 2>&1; then \
+	    echo "NEGATIVE CONTROL FAILED: the 16.16 determinant matched the reference"; \
+	    exit 1; \
+	else \
+	    grep -c '^FAIL' $(BUILD)/gfx_matrix_negctl.log | \
+	        xargs -I{} echo "negative control ok: {} assertion(s) fail with the truncated determinant"; \
+	fi
+
+test-gfx-matrix: test-gfx-matrix-negctl $(BUILD)/gfx_matrix_test
+	$(BUILD)/gfx_matrix_test
+
+test-gfx: test-gfx-raster test-gfx-paint test-gfx-stroke test-gfx-clip test-gfx-matrix
 
 # The NEGATIVE CONTROL, and it is meant to fail. -DGFX_NO_AA drops the
 # rasterizer to a single centre sample per row with binary horizontal coverage

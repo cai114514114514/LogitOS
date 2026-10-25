@@ -176,18 +176,37 @@ void gfx_m_apply(const struct gfx_matrix *m, int x, int y, int *ox, int *oy)
  * refused rather than producing coordinates that wrap. */
 int gfx_m_invert(struct gfx_matrix *o, const struct gfx_matrix *m)
 {
-    long long det = ((long long)m->a * m->d - (long long)m->b * m->c) >> 16;
+    /* The determinant stays 32.32. It USED to be shifted down to 16.16 first,
+     * which throws away exactly the bits a shrinking matrix lives in: a 1%
+     * uniform scale has det = 6.55 in 16.16 units, truncated to 6, so every
+     * coefficient of the inverse came out 9% too large (a 4000 px photo drawn
+     * at 40 px sampled x = 4367 instead of 4000), and below 1/256 the
+     * determinant rounded to 0 and the matrix was refused as singular though
+     * it is perfectly invertible. Each coefficient is d * 2^32 / det32, which
+     * is the 16.16 quotient of two 16.16 numbers.
+     *
+     * `* 4294967296LL` rather than `<< 32`: a matrix coefficient is signed and
+     * any rotation or flip makes one of these negative, and left-shifting a
+     * negative signed value is undefined behaviour. Same fix as
+     * gfx_raster.c's add_edge. */
+    long long det = (long long)m->a * m->d - (long long)m->b * m->c;
+#ifdef GFX_M_TRUNC_DET
+    /* NEGATIVE CONTROL (-DGFX_M_TRUNC_DET): the old 16.16 determinant. */
+    det = (det / 65536) * 65536;
+#endif
     if (det == 0) return 0;
+    long long q[4] = {
+        ((long long)m->d * 4294967296LL) / det,
+        (-(long long)m->b * 4294967296LL) / det,
+        (-(long long)m->c * 4294967296LL) / det,
+        ((long long)m->a * 4294967296LL) / det,
+    };
+    /* An inverse that does not fit 16.16 would wrap into a plausible wrong
+     * matrix; refuse it like a singular one. */
+    for (int i = 0; i < 4; i++)
+        if (q[i] > 2147483647LL || q[i] < -2147483647LL) return 0;
     struct gfx_matrix t;
-    /* `* 65536` rather than `<< 16`: a matrix coefficient is signed and any
-     * rotation or flip makes one of these negative, and left-shifting a
-     * negative signed value is undefined behaviour. Same instruction, same
-     * fix as gfx_raster.c's add_edge -- see the comment there for how the
-     * class was found. */
-    t.a = (int)(((long long)m->d * 65536) / det);
-    t.b = (int)((-(long long)m->b * 65536) / det);
-    t.c = (int)((-(long long)m->c * 65536) / det);
-    t.d = (int)(((long long)m->a * 65536) / det);
+    t.a = (int)q[0]; t.b = (int)q[1]; t.c = (int)q[2]; t.d = (int)q[3];
     /* Translation of the inverse: -(A^-1) * t. */
     t.e = (int)(-(((long long)t.a * m->e + (long long)t.c * m->f) >> 16));
     t.f = (int)(-(((long long)t.b * m->e + (long long)t.d * m->f) >> 16));
@@ -200,10 +219,15 @@ int gfx_m_invert(struct gfx_matrix *o, const struct gfx_matrix *m)
  * percent out costs a segment, not a pixel. */
 int gfx_m_scale_of(const struct gfx_matrix *m)
 {
-    long long det = ((long long)m->a * m->d - (long long)m->b * m->c) >> 16;
+    long long det = (long long)m->a * m->d - (long long)m->b * m->c;
     if (det < 0) det = -det;
-    /* det is 16.16; sqrt of (det << 16) is the 16.16 root. */
-    return (int)gfx_isqrt((unsigned long long)det << 16);
+#ifdef GFX_M_TRUNC_DET
+    det = (det / 65536) * 65536;
+#endif
+    /* det is 32.32 here (not shifted to 16.16 first: that truncated a 1% scale
+     * to 6 of 6.55 and any scale under 1/256 to ZERO), and the square root of
+     * a 32.32 value is already the 16.16 root. */
+    return (int)gfx_isqrt((unsigned long long)det);
 }
 
 /* ---------------------------------------------------------------- colour -- */
