@@ -77,6 +77,17 @@ int ol3d_mesh_create(const struct ol3d_mesh_desc *description, struct ol3d_mesh 
     struct ol3d_mesh mesh = {0};
     unsigned columns = description->columns;
     unsigned rows = description->rows;
+    /* Refuse what no draw path accepts (ol3d_draw_indexed, ol3d_buffer_create)
+     * instead of returning a 256x256 mesh that fails later, opaquely, at the
+     * first draw. A sphere drops the zero-area half of each polar quad. */
+    size_t triangles = (size_t)columns * rows * 2;
+    if (description->primitive == OL3D_SPHERE)
+        triangles -= (size_t)columns * 2;
+#ifndef OL3D_MESH_NO_LIMIT /* negative control: the pre-fix behaviour */
+    if ((size_t)(columns + 1) * (rows + 1) > OL3D_MAX_VERTICES ||
+        triangles * 3 > OL3D_MAX_INDICES)
+        return OL_ARGUMENT;
+#endif
     mesh.vertex_count = (size_t)(columns + 1) * (rows + 1);
     mesh.vertices = calloc(mesh.vertex_count, sizeof *mesh.vertices);
     mesh.indices = malloc((size_t)columns * rows * 6 * sizeof *mesh.indices);

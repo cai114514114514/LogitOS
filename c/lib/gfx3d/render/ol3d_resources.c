@@ -11,7 +11,7 @@ int ol3d_buffer_create(unsigned kind,const void *data,size_t count,struct ol3d_b
 {
     if(!out)return OL_ARGUMENT;*out=0;
     size_t stride=kind==OL3D_VERTEX_BUFFER?sizeof(struct ol3d_vertex):sizeof(uint32_t);
-    size_t limit=kind==OL3D_VERTEX_BUFFER?65536:196608;
+    size_t limit=kind==OL3D_VERTEX_BUFFER?OL3D_MAX_VERTICES:OL3D_MAX_INDICES;
     if((kind!=OL3D_VERTEX_BUFFER&&kind!=OL3D_INDEX_BUFFER)||!data||!count||count>limit)return OL_ARGUMENT;
     struct ol3d_buffer *b=malloc(sizeof *b+stride*count);if(!b)return OL_LIMIT;
     b->kind=kind;b->count=count;b->stride=stride;b->version=1;

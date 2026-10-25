@@ -233,8 +233,8 @@ int ol3d_draw_indexed(struct ol3d_context *c, const struct ol3d_draw *d)
         return OL_STATE;
     if (c->error)
         return c->error;
-    if (!d->vertices || !d->indices || !d->vertex_count || d->vertex_count > 65536 ||
-        d->index_count > 196608 || d->index_count % 3 ||
+    if (!d->vertices || !d->indices || !d->vertex_count || d->vertex_count > OL3D_MAX_VERTICES ||
+        d->index_count > OL3D_MAX_INDICES || d->index_count % 3 ||
         d->pipeline.varying_count > OL3D_MAX_VARYINGS ||
         ol3d_pipeline_validate(&d->pipeline, &d->bindings, 0) ||
         d->pipeline.vertex->stage != OLS_VERTEX || d->pipeline.pixel->stage != OLS_PIXEL ||

@@ -50,6 +50,24 @@ static void meshes(void)
               "mesh counts exclude degenerate sphere poles");
         ol3d_mesh_destroy(&mesh);
     }
+    /* A generated mesh must be drawable: the draw and buffer paths cap a draw
+     * at OL3D_MAX_VERTICES / OL3D_MAX_INDICES, and a 256x256 plane (66049
+     * vertices, 393216 indices) used to be created and then refused at first use. */
+    struct ol3d_mesh big = {0};
+    struct ol3d_mesh_desc over = {OL3D_PLANE, 256, 256, 1, 1};
+    check(ol3d_mesh_create(&over, &big) != OL_OK && !big.vertices,
+          "oversize mesh is refused at creation, not at first draw");
+    ol3d_mesh_destroy(&big);
+    struct ol3d_mesh_desc edge = {OL3D_PLANE, 256, 128, 1, 1};
+    struct ol3d_buffer *vb = 0, *ib = 0;
+    int created = ol3d_mesh_create(&edge, &big) == OL_OK;
+    check(created && big.index_count == OL3D_MAX_INDICES &&
+              ol3d_buffer_create(OL3D_VERTEX_BUFFER, big.vertices, big.vertex_count, &vb) == OL_OK &&
+              ol3d_buffer_create(OL3D_INDEX_BUFFER, big.indices, big.index_count, &ib) == OL_OK,
+          "largest accepted mesh is accepted by the buffer API");
+    ol3d_buffer_destroy(vb);
+    ol3d_buffer_destroy(ib);
+    ol3d_mesh_destroy(&big);
 }
 
 static void camera_and_shadow(void)

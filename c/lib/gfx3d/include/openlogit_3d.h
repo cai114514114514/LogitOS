@@ -12,6 +12,10 @@
 #define OL3D_MAX_VARYINGS 8
 #define OL3D_MAX_TEXTURES 8
 #define OL3D_MAX_UNIFORMS 256
+/* One draw's vertex and index budget. A buffer, a draw and a generated mesh must
+ * all agree on these, or an object can be created that nothing will accept. */
+#define OL3D_MAX_VERTICES 65536
+#define OL3D_MAX_INDICES 196608
 #define OLS_REGISTERS 64
 #define OLS_INSTRUCTIONS 256
 #define OLS_MAGIC 0x31534c4fu
