@@ -1042,6 +1042,56 @@ fail:
     return -1;
 }
 
+/* Rewrite a LOGGED inode (a directory) over the blocks it already owns, for a
+ * rewrite that keeps its block count. Every block goes through the log, so this
+ * is as crash-atomic as writing fresh blocks: nothing reaches the old ones
+ * before the commit record is durable.
+ *
+ * Why it exists. inode_write() is copy-on-write: it must ALLOCATE the new
+ * blocks before the old ones can be released, because frees are deferred to
+ * commit. So with zero free blocks every directory change failed -- delete
+ * included -- and a full disk could not free anything. Zero is reachable with
+ * ordinary operations: creating the first file in an EMPTY directory takes the
+ * last two blocks (its data block and the directory's first block) and has no
+ * old directory block to give back. Deleting needs no new space at all, so it
+ * must not be made to ask for any.
+ *
+ * Only delete uses it (dir_remove's in_place flag). rename keeps the
+ * copy-on-write path: it re-reads a directory it has just rewritten inside the
+ * same transaction, and log_add() keeps a SECOND entry for a block staged twice
+ * while bread() answers from the FIRST, so an in-place rewrite there would be
+ * read back stale. Falls back to inode_write() on a hole or unreadable chain. */
+static int inode_rewrite_logged(struct dinode *in, const void *buf, int size)
+{
+#ifndef LFS_DIR_COW_NEGCTL
+    uint32_t nblk = ((uint32_t)size + BS - 1) / BS;
+    if (size > 0 && size_ok(in->size) && ((uint32_t)in->size + BS - 1) / BS == nblk &&
+        !(sb.version == LFS_ID_VERSION && in->revision == UINT64_MAX)) {
+        uint32_t *owned = kmalloc((size_t)nblk * sizeof *owned);
+        if (!owned) return -1;
+        if (imap_fill(in, 0, nblk, owned) == nblk) {
+            const uint8_t *src = buf;
+            int ok = 1;
+            for (uint32_t i = 0; i < nblk && ok; i++) {
+                uint32_t off = i * BS;
+                uint32_t n = (uint32_t)size - off < BS ? (uint32_t)size - off : BS;
+                const void *page = src + off;
+                if (n != BS) { memset(blk_buf, 0, BS); memcpy(blk_buf, src + off, n); page = blk_buf; }
+                ok = log_add(owned[i], page) == 0;
+            }
+            kfree(owned);
+            if (!ok) return -1;           /* nothing allocated and *in untouched: caller aborts */
+            in->size = (uint32_t)size;
+            itouch(in, TS_M | TS_C);
+            if (sb.version == LFS_ID_VERSION) in->revision++;
+            return size;
+        }
+        kfree(owned);
+    }
+#endif
+    return inode_write(in, buf, size, 1);
+}
+
 /* --- directory ops --- */
 static uint32_t dir_lookup(struct dinode *d, const char *name)
 {
@@ -1159,7 +1209,7 @@ static int dir_add(uint32_t dino, const char *name, uint32_t child)
     return rc < 0 ? -1 : 0;
 }
 
-static int dir_remove(uint32_t dino, const char *name)
+static int dir_remove(uint32_t dino, const char *name, int in_place)
 {
     struct dinode *d = iget(dino);
     uint32_t sz = d->size;
@@ -1175,7 +1225,8 @@ static int dir_remove(uint32_t dino, const char *name)
     de[found].name[0] = 0;
     de[found].ino = 0;
 
-    int rc = inode_write(d, buf, (int)sz, 1);        /* directory: fully logged */
+    int rc = in_place ? inode_rewrite_logged(d, buf, (int)sz)
+                      : inode_write(d, buf, (int)sz, 1);   /* directory: fully logged */
     kfree(buf);
     return rc < 0 ? -1 : 0;
 }
@@ -1531,7 +1582,7 @@ static int logitfs_delete_locked(const char *path)
     struct tx_undo undo;
     if (undo_begin(&undo, ino, parent)) return -1;
     tx_begin();
-    if (dir_remove(parent, leaf) < 0) {
+    if (dir_remove(parent, leaf, 1) < 0) {
         undo_abort(&undo);
         return -1;
     }
@@ -1799,10 +1850,10 @@ static int logitfs_rename_locked(const char *old_path, const char *new_path)
 
     tx_begin();
     if (dir_add(np, new_leaf, src) < 0) goto abort;
-    if (dir_remove(op, old_leaf) < 0) {
+    if (dir_remove(op, old_leaf, 0) < 0) {
 #ifdef LFS_RENAME_ABORT_NEGCTL
         /* The former compensating operation fails when its allocation does. */
-        dir_remove(np, new_leaf);
+        dir_remove(np, new_leaf, 0);
 #endif
         goto abort;
     }

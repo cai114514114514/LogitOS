@@ -57,3 +57,31 @@ test-fs-abort: test-fs-abort-negctl $(BUILD)/fs_abort_test
 
 test-fs-host: test-fs-abort
 ci-host: test-fs-abort
+
+# A full disk must still be able to free space. Directory changes used to be
+# copy-on-write, so at zero free blocks even a delete failed and the volume was
+# wedged. -DLFS_DIR_COW_NEGCTL restores that for delete; every assertion that
+# deleting works must then fail.
+FS_FULL_DELETE_SRC := tests/unit/fs_full_delete_test.c $(FS_CORE)
+FS_FULL_DELETE_DEPS := $(FS_FULL_DELETE_SRC) tests/fs_rename_space.mk \
+                       $(wildcard c/fs/logitfs/*.h c/fs/logitfs/*.inc c/fs/cache/*.h tests/unit/fsstub/*.h)
+
+$(BUILD)/fs_full_delete_test: $(FS_FULL_DELETE_DEPS)
+	@mkdir -p $(BUILD)
+	$(CC) $(FS_CFLAGS) -o $@ $(FS_FULL_DELETE_SRC) $(FS_STUB)
+
+$(BUILD)/fs_full_delete_control: $(FS_FULL_DELETE_DEPS)
+	@mkdir -p $(BUILD)
+	$(CC) $(FS_CFLAGS) -DLFS_DIR_COW_NEGCTL -o $@ $(FS_FULL_DELETE_SRC) $(FS_STUB)
+
+.PHONY: test-fs-full-delete test-fs-full-delete-negctl
+test-fs-full-delete-negctl: $(BUILD)/fs_full_delete_control
+	@rc=0; ASAN_OPTIONS=detect_leaks=0 $< > $(BUILD)/fs-full-delete-control.log 2>&1 || rc=$$?; test $$rc -eq 1
+	@rg 'FAIL: delete a file at zero free blocks' $(BUILD)/fs-full-delete-control.log
+	@rg 'FAIL: delete a large file at zero free blocks' $(BUILD)/fs-full-delete-control.log
+
+test-fs-full-delete: test-fs-full-delete-negctl $(BUILD)/fs_full_delete_test
+	@ASAN_OPTIONS=detect_leaks=0 $(BUILD)/fs_full_delete_test
+
+test-fs-host: test-fs-full-delete
+ci-host: test-fs-full-delete
