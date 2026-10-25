@@ -4,7 +4,6 @@
 # Run from the repo root. Needs host clang + perl. Idempotent.
 set -e
 CSS=third_party/css/libcss
-PU=third_party/css/libparserutils
 
 # 1) Simple CSS property parsers: one .c per non-comment line of properties.gen.
 #    (Complex properties -- background/border/font/... -- are hand-written .c.)
@@ -28,6 +27,6 @@ while IFS= read -r line; do
 done < "$CSS/src/parse/properties/properties.gen"
 echo "generated $n property parsers -> $CSS/src/parse/properties/autogen/"
 
-# 2) Charset alias table (libparserutils): build/Aliases -> src/charset/aliases.inc
-( cd "$PU" && perl build/make-aliases.pl )
-echo "generated $PU/src/charset/aliases.inc"
+# The retired parserutils alias generator used to run here. The independent
+# registry is generated explicitly by tools/gen_charset_registry.py from an
+# IANA CSV snapshot; generating CSS never downloads or rewrites that data.

@@ -132,7 +132,6 @@ RELEASE_NOTICES := LICENSE LICENSING.md \
                    THIRD_PARTY.md third_party/fonts/LICENSE-DejaVu.txt \
                    third_party/quickjs/LICENSE \
                    third_party/css/libcss/COPYING \
-                   third_party/css/libparserutils/COPYING \
                    third_party/libm/COPYRIGHT \
                    $(FONT_NOTICES)
 
@@ -218,7 +217,7 @@ BROWSER_JS_INCLUDES := $(filter %.inc,$(BROWSER_JS_FILES))
 BROWSER_JS_PRELUDES := $(filter %prelude.inc,$(BROWSER_JS_FILES))
 # CSS support headers use qualified names (parserutils/utils/buffer.h, etc.).
 # Flattening their directories would let those names shadow kernel headers.
-CSS_SUPPORT_DIRS := c/lib/logitwapcaplet
+CSS_SUPPORT_DIRS := c/lib/logitwapcaplet c/lib/logitparserutils
 INCDIRS := $(addprefix -I,$(filter-out %/include/sys %/include/uonly c/apps/as/% $(BROWSER_DIR)/% $(CSS_SUPPORT_DIRS) $(addsuffix /%,$(CSS_SUPPORT_DIRS)),$(sort $(shell find c include -type d))))
 # Host-built unit tests compile kernel sources against the host libc: the
 # mini-libc headers (c/apps/libc/include) would shadow glibc's <features.h>
@@ -1350,7 +1349,7 @@ $(BUILD)/browserobj/%.o: %.c
 	@mkdir -p $(dir $@)
 	$(COMPILE) $(UCFLAGS) $(CSS_INC) -c $< -o $@
 
-# NetSurf LibCSS + libparserutils + independent LogitOS string support.
+# NetSurf LibCSS + independently implemented LogitOS support libraries.
 CSS_DIR := third_party/css
 # -Iinclude is here ONLY for language.c's `#include "weaksym.h"` (the
 # @supports-honesty hooks into c/apps/gui/browser/css/engine.c and css_extra.c --
@@ -1366,9 +1365,8 @@ CSS_DIR := third_party/css
 # about -- that trap is INCDIRS (c + include together); this is CSS_INC alone.
 CSS_INC := $(addprefix -I,$(addsuffix /include,$(CSS_SUPPORT_DIRS))) \
            -I$(CSS_DIR)/libcss/include -I$(CSS_DIR)/libcss/src \
-           -I$(CSS_DIR)/libparserutils/include -I$(CSS_DIR)/libparserutils/src \
            -Iinclude
-CSS_SRC := $(shell find $(CSS_DIR) -name '*.c' ! -name css_property_parser_gen.c) \
+CSS_SRC := $(shell find $(CSS_DIR)/libcss -name '*.c' ! -name css_property_parser_gen.c) \
            $(foreach dir,$(CSS_SUPPORT_DIRS),$(wildcard $(dir)/*.c))
 CSS_OBJ := $(patsubst %.c,$(BUILD)/cssobj/%.o,$(CSS_SRC)) $(BUILD)/cssobj/c/apps/gui/browser/css/engine.o \
            $(BUILD)/cssobj/c/apps/gui/browser/css/report.o
@@ -1929,7 +1927,6 @@ $(DISK): $(FS_BASE_HOSTS) $(AS_EXAMPLES) $(FONTS) $(FONT_TEXT) $(RELEASE_NOTICES
 	    third_party/fonts/LICENSE-DejaVu.txt:/licenses/fonts/LICENSE-DejaVu.txt \
 	    third_party/quickjs/LICENSE:/licenses/third_party/quickjs-LICENSE.txt \
 	    third_party/css/libcss/COPYING:/licenses/third_party/libcss-COPYING.txt \
-	    third_party/css/libparserutils/COPYING:/licenses/third_party/libparserutils-COPYING.txt \
 	    third_party/libm/COPYRIGHT:/licenses/third_party/musl-libm-COPYRIGHT.txt \
 	    $(ROOT_AEX_PACK) \
 	    $(foreach c,$(CLI),$(BUILD)/$(c).aex:/bin/$(c)) $(BUILD)/as.aex:/bin/as $(BUILD)/libctest.aex:/bin/libctest \

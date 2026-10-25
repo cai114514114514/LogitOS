@@ -6,6 +6,7 @@
  */
 
 #include <assert.h>
+#include <parserutils/utils/buffer.h>
 #include <string.h>
 #include <strings.h>
 

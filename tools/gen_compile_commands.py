@@ -36,7 +36,7 @@ def find_files(*bases, suffix):
 # Match the browser's qualified-header namespace in Makefile. Flattening the
 # new subdirectories would make js/media/media.h shadow the shared demuxer API
 # in the editor even though the real compiler selects the correct header.
-CSS_SUPPORT = ("c/lib/logitwapcaplet",)
+CSS_SUPPORT = ("c/lib/logitwapcaplet", "c/lib/logitparserutils")
 incdirs = sorted(d for d in find_dirs("c", "include")
                  if not d.startswith(("c/apps/gui/browser/",) + CSS_SUPPORT))
 INC = [f"-I{d}" for d in incdirs]
@@ -44,8 +44,7 @@ INC = [f"-I{d}" for d in incdirs]
 JS_INC  = ["-Ithird_party/libm", "-Ithird_party/quickjs"]
 CSS     = "third_party/css"
 CSS_INC = [f"-I{path}/include" for path in CSS_SUPPORT] + [
-    f"-I{CSS}/libcss/include", f"-I{CSS}/libcss/src",
-    f"-I{CSS}/libparserutils/include", f"-I{CSS}/libparserutils/src"]
+    f"-I{CSS}/libcss/include", f"-I{CSS}/libcss/src"]
 
 # Common freestanding flags (mirror CFLAGS/UCFLAGS; -nostdlibinc keeps clang's own
 # builtin headers but blocks the macOS SDK so <stdio.h> resolves to ours).

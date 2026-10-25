@@ -17,7 +17,7 @@ subject to upstream terms where required.
 | QuickJS | JavaScript engine | `third_party/quickjs/` | 2024-01-13 | MIT |
 | musl libm subset | Math functions used by QuickJS | `third_party/libm/` | Exact upstream revision not recorded | MIT and other permissive per-file terms |
 | NetSurf LibCSS | CSS parsing, cascade, and computed style | `third_party/css/libcss/` | Exact upstream revision not recorded | MIT |
-| NetSurf libparserutils | Parser utilities used by LibCSS | `third_party/css/libparserutils/` | Exact upstream revision not recorded | MIT |
+| IANA character-set registry | Encoding names, aliases and numeric identifiers; data only | `c/lib/logitparserutils/registry.c` | Retrieved 2026-10-25; source SHA-256 in generated header | CC0-1.0 |
 | Crafting Interpreters / clox | Architectural lineage and adapted implementation in AetherScript | `c/apps/as/` and related design documents | Exact upstream revision not recorded | MIT for upstream code |
 | Mozilla/NSS-derived CA trust store | Public TLS trust anchors | `tools/roots/`, generated into `c/crypto/trust/roots_bundle.inc` | 130-root host bundle imported 2026-06-08; exact source revision/hash not recorded | MPL 2.0 for the Mozilla-derived bundle |
 | Noto Sans SC and Noto Sans Mono | Source fonts and generated runtime subsets | `third_party/fonts/`, `fsroot/fonts/` | Google Fonts commit `2796410152d4f9524b68ed46e69c1b60f8e0f7c3` | SIL OFL 1.1 |
@@ -115,12 +115,22 @@ later application while retaining the FFmpeg files' LGPL terms.
 
 ## NetSurf CSS libraries
 
-**2026-10-25 correction:** LibCSS and libparserutils remain third-party code.
-The former libwapcaplet string provider was removed from the source and build,
-replaced by independently implemented `c/lib/logitwapcaplet/` under the project's
-GPL-3.0-or-later core-library boundary. Existing API spellings remain; private
-objects and lowercase-partner caching do not. The historical entry below refers
-to the original import at commit `368959e94`, not a currently present directory.
+**2026-10-25 correction:** LibCSS remains the third-party CSS engine. Its two
+former support libraries, libparserutils and libwapcaplet, were removed from the
+current source tree and build. They are replaced by independently implemented
+`c/lib/logitparserutils/` and `c/lib/logitwapcaplet/`, licensed under the project's
+GPL-3.0-or-later core-library boundary. Existing API spellings remain so LibCSS
+can call them; the original private representations and implementations do not.
+The former inventories below describe historical versions, available at commit
+`368959e94`, and do not claim the removed directories are still present.
+
+新解析库中的 `registry.c` 是单独标注 CC0 的 IANA 注册数据，不能把整目录笼统
+视为项目原创数据。共 258 条记录，源地址与 CSV 的 SHA-256 写在文件头；生成器
+`tools/gen_charset_registry.py` 只读取显式提供的 CSV，构建不联网。数据许可依据
+[IANA licensing terms](https://www.iana.org/help/licensing-terms)，原始数据来自
+[character-set registry](https://www.iana.org/assignments/character-sets/character-sets-1.csv)。
+查询与转换算法仍是项目独立实现。字符映射复用浏览器已有 WHATWG 数据，保留
+`c/apps/gui/browser/js/text/encoding_tables.inc` 的原有来源说明。
 
 The following libraries were imported in LogitOS OS commit `f840b45` and trimmed
 to the source, public headers, generators, and license files needed by the
@@ -134,7 +144,7 @@ NetSurf build files were not retained.
 - Copyright: Copyright (C) 2007 J-M Bell.
 - License: MIT; see `third_party/css/libcss/COPYING`.
 
-### libparserutils
+### libparserutils (removed from the current tree)
 
 - Upstream: <https://git.netsurf-browser.org/libparserutils.git/>
 - Location: `third_party/css/libparserutils/`
