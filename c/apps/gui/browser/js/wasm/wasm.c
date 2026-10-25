@@ -732,6 +732,22 @@ static void jw_cstr(char *dst, size_t cap, const struct jw_module *M,
 	dst[n] = 0;
 }
 
+/* THE WATCHDOG MUST REACH INTO WASM. QuickJS's CPU-slice watchdog is polled by
+ * the JS interpreter every 10,000 branches and calls, and wasm_invoke runs a
+ * whole call inside ONE native function: no bytecode executes, no poll ever
+ * happens, and `exports.spin()` on a `loop br 0` froze the browser with the
+ * watchdog -- built for exactly that -- unable to fire. The wasm interpreter
+ * now polls on the same cadence and this forwards each poll to whatever
+ * handler the realm's runtime has (the page's slice_interrupt, or a worker's
+ * own), so wasm is charged against the same budget as script and a page
+ * close cancels it too. A closed realm stops at once. */
+static int jw_poll(void *opaque)
+{
+	struct jw_realm *s = opaque;
+	if (s->closed) return 1;
+	return JS_RunInterruptHandler(s->rt);
+}
+
 static JSValue jw_instantiate(struct jw_realm *s, JSContext *ctx, JSValueConst this_val,
                               int argc, JSValueConst *argv)
 {
@@ -921,6 +937,7 @@ static JSValue jw_instantiate(struct jw_realm *s, JSContext *ctx, JSValueConst t
 		JS_SetPropertyStr(ctx, r, "link", JS_NewBool(ctx, link));
 		return r;
 	}
+	wasm_set_interrupt(I->in, jw_poll, s);
 	I->used = 1;
 
 	/* A memory the module DEFINED (rather than imported) still has to be
@@ -1041,6 +1058,17 @@ static JSValue jw_call(struct jw_realm *s, JSContext *ctx, JSValueConst this_val
 	if (s->inst[h].tabh >= 0 && s->inst[h].in)
 		s->tab[s->inst[h].tabh].size = wasm_table_size(s->inst[h].in);
 
+	if (trap == WASM_TRAP_INTERRUPTED) {
+		/* The watchdog (or a page close) stopped this run. Raise what
+		 * __js_poll_interrupts raises, and mark it uncatchable: a RuntimeError
+		 * here would let `try { spin() } catch {}` swallow the interrupt and
+		 * call spin() again, defeating the one-interrupt-per-slice rule. */
+		JSValue ex;
+		JS_ThrowInternalError(ctx, "interrupted");
+		ex = JS_GetException(ctx);
+		JS_SetUncatchableError(ctx, ex, 1);
+		return JS_Throw(ctx, ex);
+	}
 	if (trap != WASM_TRAP_NONE) {
 		char buf[224];
 		if (frame.host_threw) {

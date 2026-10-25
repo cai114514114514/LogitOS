@@ -65,7 +65,12 @@ enum {
 
 	/* apparatus, NOT a verdict about the module (see wasm.h on the same
 	 * distinction for WASM_E_NOMEM): our arena ran out. */
-	WASM_TRAP_NOMEM = 140
+	WASM_TRAP_NOMEM = 140,
+
+	/* the HOST stopped the run: an interrupt callback (wasm_set_interrupt)
+	 * answered nonzero.  Not the module's fault -- a verdict about how long it
+	 * was allowed to run -- so wasm_trap_is_module_fault() says no. */
+	WASM_TRAP_INTERRUPTED
 };
 
 const char *wasm_trapstr(int code);   /* also names WASM_E_* codes */
@@ -212,6 +217,27 @@ uint32_t wasm_apparatus_count(const struct wasm_instance *in);
  * An unimplemented opcode that cannot be named is most of the way back to a
  * silent one. */
 uint8_t wasm_trap_opcode(const struct wasm_instance *in);
+
+/* ---- interrupting a run ------------------------------------------------
+ * wasm_invoke executes the whole call inside ONE native function, so a host
+ * whose watchdog is driven by its own interpreter (QuickJS counts branches and
+ * calls and polls every 10,000) never gets a poll while a module runs: a
+ * `loop br 0` with no exit simply never returns, and nothing can end it short of
+ * killing the process.  The call-depth bound above does not help -- a loop is
+ * not recursion.
+ *
+ * So the interpreter polls for the host.  Every WASM_POLL_PERIOD "poll events"
+ * it calls `fn(ctx)`; a nonzero answer makes the run stop and wasm_invoke
+ * return WASM_TRAP_INTERRUPTED.  A poll event is exactly what QuickJS counts: a
+ * BACKWARD branch (a branch to a loop head) or a call.  Forward branches cannot
+ * run forever, so they are not polled.  The period matches QuickJS's, so a host
+ * that charges one unit of fuel per callback charges the same for wasm and JS.
+ *
+ * NULL `fn` removes the hook.  The default is none: existing hosts, including
+ * the spec-suite runner, behave exactly as before. */
+typedef int (*wasm_interrupt_fn)(void *ctx);
+void wasm_set_interrupt(struct wasm_instance *in, wasm_interrupt_fn fn, void *ctx);
+#define WASM_POLL_PERIOD 10000u
 
 /* Bound on the interpreter's recursion, exposed because it is a property of
  * THIS implementation and not of WebAssembly: a test that recurses deeper is

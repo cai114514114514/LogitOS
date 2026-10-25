@@ -356,7 +356,7 @@ test-wasm-js: test-wasm-js-negctl test-wasm-modules $(BUILD)/wasm_js_test
 test-wasm-js-negctl: $(WASM_JS_DEP) $(QJS_SRC)
 	@mkdir -p $(BUILD)
 	@ok=1; \
-	 for c in JS_WASM_NEGCTL_I64 JS_WASM_NEGCTL_DETACH WASM_NEGCTL_MEMP; do \
+	 for c in JS_WASM_NEGCTL_I64 JS_WASM_NEGCTL_DETACH WASM_NEGCTL_MEMP WASM_NEGCTL_NO_POLL; do \
 	   $(CC) $(WASM_JS_CF) -D$$c -o $(BUILD)/wasm_js_$$c $(WASM_JS_SRC) \
 	      $(QJS_SRC) -lm || { echo "wasm-js-negctl: $$c did not BUILD"; ok=0; continue; }; \
 	   out=$$($(BUILD)/wasm_js_$$c 2>&1); rc=$$?; \
@@ -454,3 +454,35 @@ test-wasm-page-negctl: $(ISO) $(DISK)
 # tests/audit-unwired.baseline as deliberate debt; run them by name.
 ci-host: test-wasm test-wasm-exec test-wasm-js test-wasm-modules test-wasm-js-asan
 ci-boot: test-wasm-page
+
+# A wasm export must be interruptible by the host. wasm_invoke runs a whole call
+# inside one native function, so a watchdog polled by the JS interpreter never
+# got a poll while a module ran, and `loop br 0` never returned. The interpreter
+# now polls on backward branches and calls. -DWASM_NEGCTL_NO_POLL restores the
+# old one; the spin export then hangs, which tests/unit/wasm_interrupt_test.c's
+# alarm turns into a FAIL line (so the control reddens instead of stalling CI).
+WASM_INT_SRC := tests/unit/wasm_interrupt_test.c $(WASM_SRC) c/lib/wasm/wasm_exec.c
+WASM_INT_DEP := $(WASM_INT_SRC) $(WASM_HDR) c/lib/wasm/wasm_exec.h tests/wasm.mk
+.PHONY: test-wasm-interrupt test-wasm-interrupt-negctl
+
+$(BUILD)/wasm_interrupt_test: $(WASM_INT_DEP)
+	@mkdir -p $(BUILD)
+	@$(CC) $(WASM_CF) -std=gnu11 -fsanitize=address,undefined -fno-sanitize-recover=all \
+	   -o $@ $(WASM_INT_SRC) -lm
+
+$(BUILD)/wasm_interrupt_control: $(WASM_INT_DEP)
+	@mkdir -p $(BUILD)
+	@$(CC) $(WASM_CF) -std=gnu11 -DWASM_NEGCTL_NO_POLL -fsanitize=address,undefined \
+	   -o $@ $(WASM_INT_SRC) -lm
+
+test-wasm-interrupt-negctl: $(BUILD)/wasm_interrupt_control
+	@rc=0; ASAN_OPTIONS=detect_leaks=0 $< > $(BUILD)/wasm-interrupt-control.log 2>&1 || rc=$$?; \
+	 if [ $$rc -eq 0 ]; then echo "wasm-interrupt-negctl: PASSED and must not have -- the control is dead"; exit 1; fi
+	@rg 'FAIL: spin never returned' $(BUILD)/wasm-interrupt-control.log >/dev/null && \
+	 echo "wasm-interrupt-negctl: WASM_NEGCTL_NO_POLL reddens the gate (the spin export hangs)"
+
+test-wasm-interrupt: test-wasm-interrupt-negctl $(BUILD)/wasm_interrupt_test
+	@ASAN_OPTIONS=detect_leaks=0 $(BUILD)/wasm_interrupt_test
+
+test-wasm: test-wasm-interrupt
+ci-host: test-wasm-interrupt

@@ -28,6 +28,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <signal.h>
+#include <unistd.h>
 
 #include "quickjs.h"
 #include "js/wasm/wasm.h"
@@ -36,6 +38,34 @@
 #include "wasm_js_modules.inc"
 
 static int g_fail, g_checks;
+
+/* ---- the watchdog must reach into wasm ----------------------------------
+ * (func (export "spin") loop br 0 end): a loop with no exit. QuickJS's CPU-slice
+ * watchdog is polled by the JS interpreter, and wasm_invoke runs a whole call in
+ * one native function, so before the interpreter polled for the host this call
+ * never returned and the watchdog built to stop it could not fire. The bytes
+ * are inline rather than in wasm_js_modules.inc, which is generated from .wat. */
+static const unsigned char SPIN_WASM[] = {
+	0x00,0x61,0x73,0x6d, 0x01,0x00,0x00,0x00,
+	0x01,0x04, 0x01,0x60,0x00,0x00,
+	0x03,0x02, 0x01,0x00,
+	0x07,0x08, 0x01, 0x04,'s','p','i','n', 0x00,0x00,
+	0x0a,0x09, 0x01, 0x07, 0x00, 0x03,0x40, 0x0c,0x00, 0x0b, 0x0b,
+};
+static int g_wd_polls;
+static int spin_watchdog(JSRuntime *rt, void *opaque)
+{
+	(void)rt; (void)opaque;
+	return ++g_wd_polls >= 3;       /* "the slice is over" on the third poll */
+}
+static void on_hang(int sig)
+{
+	(void)sig;
+	printf("  FAIL a wasm export that never returns was not interrupted by the runtime's watchdog\n");
+	printf("\nwasm-js: HUNG\n");
+	fflush(stdout);
+	_exit(1);
+}
 
 static void ck(int cond, const char *what)
 {
@@ -413,6 +443,43 @@ int main(void)
 	/* ---- the bytes are OURS after compile ---- */
 	js_ck(ctx, "overwriting the source buffer after compiling changes nothing",
 	      "var src = M_ADD.slice();var m = new WebAssembly.Module(src);src.fill(0);var i = new WebAssembly.Instance(m, {}); return i.exports.add(1, 2) === 3 ? 'ok' : 'the module read freed bytes'");
+
+	/* ---- the runtime's watchdog stops a wasm loop, and it stays stopped ---- */
+	{
+		JSValue r, ex, caught;
+		const char *msg;
+		put_module(ctx, g, "M_SPIN", SPIN_WASM, sizeof SPIN_WASM);
+		g_wd_polls = 0;
+		JS_SetInterruptHandler(rt, spin_watchdog, 0);
+		signal(SIGALRM, on_hang);
+		alarm(20);
+		r = JS_Eval(ctx,
+		      "globalThis.__caught = 0;"
+		      "try { new WebAssembly.Instance(new WebAssembly.Module(M_SPIN), {}).exports.spin(); }"
+		      "catch (e) { globalThis.__caught = 1; }"
+		      "'the loop returned';",
+		      strlen("globalThis.__caught = 0;try { new WebAssembly.Instance(new WebAssembly.Module(M_SPIN), {}).exports.spin(); }catch (e) { globalThis.__caught = 1; }'the loop returned';"),
+		      "<spin>", JS_EVAL_TYPE_GLOBAL);
+		alarm(0);
+		ck(JS_IsException(r), "an infinite wasm loop ends the script instead of returning");
+		ex = JS_GetException(ctx);
+		msg = JS_ToCString(ctx, ex);
+		ck(msg && strstr(msg, "interrupted"), "...with the watchdog's own 'interrupted' error");
+		if (msg) JS_FreeCString(ctx, msg);
+		JS_FreeValue(ctx, ex);
+		JS_FreeValue(ctx, r);
+		ck(g_wd_polls == 3, "...at exactly the poll the watchdog asked for");
+		caught = JS_GetPropertyStr(ctx, g, "__caught");
+		{
+			int32_t c = -1;
+			JS_ToInt32(ctx, &c, caught);
+			ck(c == 0, "...and try/catch cannot swallow it (it is uncatchable)");
+		}
+		JS_FreeValue(ctx, caught);
+		JS_SetInterruptHandler(rt, 0, 0);
+		js_ck(ctx, "the realm still works after an interrupt",
+		      "return new WebAssembly.Instance(new WebAssembly.Module(M_ADD), {}).exports.add(2, 3) === 5 ? 'ok' : 'broken'");
+	}
 
 	/* BEFORE JS_FreeContext -- see js_wasm.h.  The other order leaves the
 	 * cached ArrayBuffers alive and QuickJS asserts at JS_FreeRuntime. */

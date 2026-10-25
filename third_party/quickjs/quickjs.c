@@ -7147,6 +7147,12 @@ static JSValue JS_ThrowTypeErrorInvalidClass(JSContext *ctx, int class_id)
     return JS_ThrowTypeErrorAtom(ctx, "%s object expected", name);
 }
 
+int JS_RunInterruptHandler(JSRuntime *rt)
+{
+    return rt->interrupt_handler &&
+           rt->interrupt_handler(rt, rt->interrupt_opaque) != 0;
+}
+
 static no_inline __exception int __js_poll_interrupts(JSContext *ctx)
 {
     JSRuntime *rt = ctx->rt;

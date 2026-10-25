@@ -1015,6 +1015,14 @@ void JS_SetHostPromiseRejectionTracker(JSRuntime *rt, JSHostPromiseRejectionTrac
 /* return != 0 if the JS code needs to be interrupted */
 typedef int JSInterruptHandler(JSRuntime *rt, void *opaque);
 void JS_SetInterruptHandler(JSRuntime *rt, JSInterruptHandler *cb, void *opaque);
+/* Run the runtime's interrupt handler now, as the interpreter does at a poll
+ * point. For NATIVE code that runs long without executing any bytecode (the
+ * WebAssembly interpreter): such a call produces no poll events, so the
+ * handler -- the CPU-slice watchdog -- would otherwise never be consulted.
+ * Returns nonzero if the caller must stop; the caller then raises an
+ * uncatchable error (JS_SetUncatchableError) as __js_poll_interrupts does. */
+int JS_RunInterruptHandler(JSRuntime *rt);
+void JS_SetUncatchableError(JSContext *ctx, JSValueConst val, JS_BOOL flag);
 #ifdef JS_PROBE_TRACE
 /* LOGIT PATCH (diagnostic builds only, -DJS_PROBE_TRACE): two observers for
  * "what did this script ask the engine for that it did not get".

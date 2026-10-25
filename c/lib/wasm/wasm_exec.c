@@ -254,7 +254,30 @@ struct wasm_instance {
 
 	uint32_t apparatus;
 	uint8_t  trap_op;
+
+	wasm_interrupt_fn intr; void *intr_ctx;   /* host watchdog; see wasm_exec.h */
+	uint32_t poll;                            /* poll events since the last callback */
 };
+
+/* One poll event.  Returns nonzero when the host wants the run stopped. */
+#ifndef WASM_NEGCTL_NO_POLL
+static int poll_host(struct wasm_instance *in)
+{
+	if (!in->intr) return 0;
+	if (++in->poll < WASM_POLL_PERIOD) return 0;
+	in->poll = 0;
+	return in->intr(in->intr_ctx) != 0;
+}
+#else
+/* NEGATIVE CONTROL (-DWASM_NEGCTL_NO_POLL): the pre-fix interpreter, which
+ * never asks the host.  The interrupt gate must then FAIL. */
+static int poll_host(struct wasm_instance *in) { (void)in; return 0; }
+#endif
+
+void wasm_set_interrupt(struct wasm_instance *in, wasm_interrupt_fn fn, void *ctx)
+{
+	in->intr = fn; in->intr_ctx = ctx; in->poll = 0;
+}
 
 const char *wasm_trapstr(int c)
 {
@@ -274,6 +297,7 @@ const char *wasm_trapstr(int c)
 	case WASM_TRAP_UNLINKABLE:    return "REFUSED: unknown import";
 	case WASM_TRAP_DESYNC:        return "REFUSED: instruction boundary cross-check failed";
 	case WASM_TRAP_NOMEM:         return "APPARATUS: interpreter arena exhausted";
+	case WASM_TRAP_INTERRUPTED:   return "interrupted by the host";
 	default:                      return wasm_errstr(c);
 	}
 }
@@ -991,7 +1015,12 @@ static int run_body(struct wasm_instance *in, uint32_t fidx)
 			 * a branch to anything else leaves the block, so the frame
 			 * goes with it.  Getting this backwards makes every loop run
 			 * once and every block run forever. */
-			if (f->is_loop) { in->ctop = idx + 1; r.i = f->cont; }
+			if (f->is_loop) {
+				/* The only way a loop runs again, hence the only place a
+				 * loop can run forever: poll the host here. */
+				if (poll_host(in)) { in->ctop = idx + 1; tr = WASM_TRAP_INTERRUPTED; goto trap; }
+				in->ctop = idx + 1; r.i = f->cont;
+			}
 			else            { in->ctop = idx;     r.i = f->cont; }
 			break;
 		}
@@ -1373,6 +1402,9 @@ static int call_any(struct wasm_instance *in, uint32_t fidx)
 	ft = &m->types[m->functype_of[fidx]];
 
 	if (in->depth >= WASM_MAX_CALL_DEPTH) return WASM_TRAP_EXHAUSTED;
+	/* Calls are poll events too: unbounded work that never loops (a function
+	 * that fans out into calls) would otherwise be uninterruptible. */
+	if (poll_host(in)) return WASM_TRAP_INTERRUPTED;
 	in->depth++;
 
 	if (fidx < m->nimp_funcs) {
