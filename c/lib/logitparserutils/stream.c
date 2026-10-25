@@ -86,7 +86,13 @@ static parserutils_error select_encoding(parserutils_inputstream *s)
         if (error == PARSERUTILS_NEEDDATA && !s->eof) return error;
         if (error && error != PARSERUTILS_NEEDDATA) return error;
     }
-    if (!text_supported(encoding)) return PARSERUTILS_BADENCODING;
+    /* A name the registry knows but no decoder implements (Shift_JIS, GB2312)
+     * must not discard the whole stylesheet: ignore the in-band declaration
+     * and keep the encoding the caller chose, as for an unknown name. */
+    if (!text_supported(encoding)) {
+        encoding = s->encoding;
+        origin = s->origin;
+    }
     size_t skip = 0;
     if ((encoding == TEXT_UTF32 || encoding == TEXT_UTF32LE) && length >= 4 &&
         bytes[0] == 0xff && bytes[1] == 0xfe && bytes[2] == 0 && bytes[3] == 0) {
