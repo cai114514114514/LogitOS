@@ -136,6 +136,19 @@ static AtNode *atom(AtParser *r)
     } else {
         at_parse_error(r, t, "AS3100",
                        "expected expression (this construct is not supported in native code yet)");
+        /* A missing operand at the end of a line ("x =", "x = 1 +") puts this
+         * error ON the NEWLINE, and atom() had already consumed it like any
+         * other token. The statement parser's newline() then met the NEXT
+         * line's first token, reported "expected end of statement" there and
+         * recover()ed through that whole line: `x =\ny = 2` flagged the valid
+         * second line, and in `x =\ny =\nz =` y's own error vanished behind
+         * the false one (measured with `asc check --json`, 2026-10-26). Hand a
+         * statement boundary back to the statement parser, as recover() does
+         * for DEDENT. A bad token in mid-line is still consumed, so the parse
+         * always advances. */
+        if (t.type == T_NEWLINE || t.type == T_DEDENT) {
+            r->pos--;
+        }
         n = at_parse_node(r, AN_INT, t);
     }
     while (n) {
