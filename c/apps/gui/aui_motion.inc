@@ -43,6 +43,8 @@
  * called it once per loop turn would be reintroducing, in a smaller way,
  * exactly the 3.3-million-syscall mistake the top of aui.h is about. */
 
+#include "openlogit_motion.h"
+
 struct anim_slot {
     int      id;        /* owning widget id; 0 = never used                 */
     int      key;       /* AUI_AK_*: several animations on one widget       */
@@ -53,7 +55,46 @@ struct anim_slot {
     unsigned t0;        /* frame_ms when this leg started                   */
     unsigned gen;       /* frame number this slot was last queried at       */
     int      arrived;   /* latched: returns `to` and schedules nothing      */
+    /* aui_spring / aui_anim_color live in the SAME slots (key spaces below), so
+     * the 32-slot limit and LRU eviction cover them. */
+    struct ol_spring256 sp;     /* aui_spring: position/velocity in 24.8          */
+    unsigned last_ms;           /* aui_spring: frame_ms of the last step          */
+    uint32_t c_from, c_to, c_cur;   /* aui_anim_color: leg endpoints, last drawn  */
 };
+#define AUI_KEY_SPRING 0x1000   /* slot key = caller key | this */
+#define AUI_KEY_COLOR  0x2000
+
+/* AUI_EASE_* below 13 ARE ol_curve values; the presets are beziers. */
+_Static_assert(AUI_EASE_LINEAR == OL_LINEAR && AUI_EASE_OUT == OL_EASE_OUT &&
+               AUI_EASE_INOUT == OL_EASE_INOUT && AUI_EASE_IN == OL_EASE_IN &&
+               AUI_EASE_OUT_CUBIC == OL_EASE_OUT_CUBIC && AUI_EASE_IN_CUBIC == OL_EASE_IN_CUBIC &&
+               AUI_EASE_INOUT_CUBIC == OL_EASE_INOUT_CUBIC && AUI_EASE_OUT_QUART == OL_EASE_OUT_QUART &&
+               AUI_EASE_OUT_EXPO == OL_EASE_OUT_EXPO && AUI_EASE_OUT_BACK == OL_EASE_OUT_BACK &&
+               AUI_EASE_INOUT_BACK == OL_EASE_INOUT_BACK, "AUI_EASE_* must mirror ol_curve");
+
+#ifndef AUI_ANIM_OFF
+/* Curve id -> ol_ease256_ex arguments. Anything unknown (and bezier/steps ids
+ * 4 and 5, which carry parameters this enum cannot) falls back to ease-out. */
+static int aui_ease_eval(int curve, int t256)
+{
+#ifdef AUI_MOTION_LEGACY3      /* negative control: the old three-curve map */
+    int c = curve == AUI_EASE_INOUT ? OL_EASE_INOUT : curve == AUI_EASE_LINEAR ? OL_LINEAR : OL_EASE_OUT;
+    return ol_ease256_ex((enum ol_curve)c, t256, 0, 0);
+#else
+    static const struct ol_bezier bz[4] = {
+        { OL_FX(0.2),  OL_FX(0.0),  OL_FX(0.0), OL_FX(1.0)  },   /* STANDARD   */
+        { OL_FX(0.05), OL_FX(0.7),  OL_FX(0.1), OL_FX(1.0)  },   /* EMPHASIZED */
+        { OL_FX(0.0),  OL_FX(0.0),  OL_FX(0.2), OL_FX(1.0)  },   /* DECEL      */
+        { OL_FX(0.34), OL_FX(1.56), OL_FX(0.64), OL_FX(1.0) },   /* BACK       */
+    };
+    if (curve >= AUI_EASE_STANDARD && curve <= AUI_EASE_BACK)
+        return ol_ease256_ex(OL_CUBIC_BEZIER, t256, &bz[curve - AUI_EASE_STANDARD], 0);
+    if (curve == OL_CUBIC_BEZIER || curve == OL_STEPS || curve < 0 || curve > AUI_EASE_INOUT_BACK)
+        curve = AUI_EASE_OUT;
+    return ol_ease256_ex((enum ol_curve)curve, t256, 0, 0);
+#endif
+}
+#endif
 
 static struct anim_slot anim_tab[AUI_ANIM_MAX];
 static int anim_reduced;
@@ -170,21 +211,93 @@ int aui_anim(int key, int target, int ms, int curve)
             s->cur = s->to;
             s->arrived = 1;
         } else {
-            int sdk_curve = curve == AUI_EASE_INOUT ? OL_EASE_INOUT
-                          : curve == AUI_EASE_LINEAR ? OL_LINEAR : OL_EASE_OUT;
             /* THE 255/256 SEAM IS CLOSED HERE AND NOWHERE ELSE. The curves are
              * exact on 0..256 because 256 is a power of two; aui_mix is on
              * 0..255. Scaling the DELTA by e/256 lands on `to` exactly when e
-             * hits 256 and never overshoots, so no widget ever sees a 256. */
-            /* 2026-09-13: widget identity and scheduling remain here; the
-             * actual interpolation now belongs to the shared SDK. */
-            s->cur = ol_transition256(s->from,s->to,el,(uint64_t)s->dur,sdk_curve,0);
+             * hits 256. The back family overshoots 256, so the result is
+             * clamped into 0..255: no widget ever sees a 256 or a negative. */
+            int t = (int)((double)el * 256 / (double)s->dur);
+            int e = aui_ease_eval(curve, t);
+            s->cur = iclamp(s->from + (int)((long long)(s->to - s->from) * e / 256), 0, 255);
         }
     }
     if (!s->arrived) anim_live++;
     return s->cur;
 #endif /* AUI_ANIM_OFF */
 }
+
+#ifndef AUI_ANIM_OFF
+/* ---- aui_spring ----------------------------------------------------------
+ * Same slot table, key space `key | AUI_KEY_SPRING`. dt is the frame clock's
+ * delta (capped, so a window that slept for a minute does not integrate a
+ * minute). Critical-ish damping (zeta 0.5): a visible overshoot that settles
+ * in a few hundred ms. The slot is `arrived` once ol_spring256_step says
+ * settled, which is also what stops it requesting frames. */
+#define AUI_SPRING_STIFF 900u
+#define AUI_SPRING_DAMP  7680u     /* Q8: 30/s, zeta 0.5 at omega 30/s */
+#define AUI_SPRING_DT_MAX_MS 250u
+
+int aui_spring(int id, int target24)
+{
+    int wid = id_ctr, fresh = 0;
+    struct anim_slot *s;
+    if (wid <= 0) return target24;
+    s = anim_slot_for(wid, id | AUI_KEY_SPRING, &fresh);
+    if (fresh || anim_reduced) {
+        ol_spring256_init(&s->sp, target24, AUI_SPRING_STIFF, AUI_SPRING_DAMP);
+        s->arrived = 1; s->last_ms = frame_ms; s->gen = anim_gen;
+        s->cur = target24;
+        return target24;
+    }
+    s->gen = anim_gen;
+    if (target24 != s->sp.target) {
+        ol_spring256_retarget(&s->sp, target24);
+        s->arrived = 0;
+    }
+    if (!s->arrived) {
+        unsigned dt = frame_ms - s->last_ms;
+        if (dt > AUI_SPRING_DT_MAX_MS) dt = AUI_SPRING_DT_MAX_MS;
+        if (!ol_spring256_step(&s->sp, dt * 1000u)) s->arrived = 1;
+    }
+    s->last_ms = frame_ms;
+    s->cur = s->sp.x;
+    if (!s->arrived) anim_live++;
+    return s->sp.x;
+}
+
+/* ---- aui_anim_color -------------------------------------------------------
+ * Key space `key | AUI_KEY_COLOR`. Progress is linear over AUI_T_FAST, the
+ * mix is ol_mix_argb_premul. s->from/to/cur are unused here; c_* carry it. */
+uint32_t aui_anim_color(int id, uint32_t from, uint32_t to)
+{
+    int wid = id_ctr, fresh = 0;
+    struct anim_slot *s;
+    if (wid <= 0) return to;
+    s = anim_slot_for(wid, id | AUI_KEY_COLOR, &fresh);
+    if (anim_reduced) {
+        s->c_from = s->c_to = s->c_cur = to; s->arrived = 1; s->gen = anim_gen;
+        return to;
+    }
+    if (fresh) {
+        s->c_from = from; s->c_to = to; s->c_cur = from;
+        s->t0 = frame_ms; s->arrived = (from == to);
+    } else if (to != s->c_to) {
+        s->c_from = s->c_cur; s->c_to = to;      /* re-aim from what is on screen */
+        s->t0 = frame_ms; s->arrived = 0;
+    }
+    s->gen = anim_gen;
+    if (!s->arrived) {
+        unsigned el = frame_ms - s->t0;
+        if ((int)el >= AUI_T_FAST) { s->c_cur = s->c_to; s->arrived = 1; }
+        else s->c_cur = ol_mix_argb_premul(s->c_from, s->c_to, (int)(el * 256u / AUI_T_FAST));
+    }
+    if (!s->arrived) anim_live++;
+    return s->c_cur;
+}
+#else  /* instant, like aui_anim() in this build */
+int aui_spring(int id, int target24) { (void)id; return target24; }
+uint32_t aui_anim_color(int id, uint32_t from, uint32_t to) { (void)id; (void)from; return to; }
+#endif
 
 unsigned aui_anim_loop(void) { if(anim_reduced)return 0; anim_loop_want = 1; return frame_ms; }
 

@@ -52,7 +52,18 @@ struct command {
     int mask_x, mask_y;
     struct ol_layer_options layer;
     struct gfx_rect effect_clip;
+    /* CMD_BACKDROP from ol_cmd_backdrop_rrect: per-corner radii (TL,TR,BR,BL,
+     * already clamped to half the rect) and blur passes. Zero-filled by
+     * record(): passes 0 and all-zero corners are the legacy command. */
+    int corner[4], passes;
 };
+/* Rounded-backdrop executor (effects/openlogit_effects.c). */
+unsigned long ol_sw_backdrop_rrect_size(struct gfx_rect, const int corner[4], int radius,
+                                         int passes, int width, int height);
+void ol_sw_backdrop_rrect(struct gfx_surface *, struct gfx_rect, const int corner[4], int radius,
+                          int passes, unsigned rgb, int opacity, void *scratch);
+/* Pixels around the rect that a backdrop command reads: the whole blur reach. */
+int ol_sw_backdrop_reach(int radius, int passes);
 static inline unsigned long align8(unsigned long n)
 {
     return (n + 7) & ~7ul;

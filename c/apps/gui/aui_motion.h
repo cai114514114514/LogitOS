@@ -47,6 +47,25 @@
                               * category: an indicator that travels across
                               * open space and whose midpoint the eye tracks
                               * (the segmented pill, the tab underline).     */
+/* The rest of the catalog mirrors enum ol_curve numerically (aui_motion.inc
+ * asserts it), so a value here IS the ol_ease256_ex curve. Used sparingly:
+ * the rule above about a small closed set still stands. */
+#define AUI_EASE_IN           3
+#define AUI_EASE_OUT_CUBIC    6
+#define AUI_EASE_IN_CUBIC     7
+#define AUI_EASE_INOUT_CUBIC  8
+#define AUI_EASE_OUT_QUART    9
+#define AUI_EASE_OUT_EXPO    10
+#define AUI_EASE_OUT_BACK    11
+#define AUI_EASE_INOUT_BACK  12
+/* Bezier presets (CSS cubic-bezier, resolved by ol_ease256_ex). */
+#define AUI_EASE_STANDARD    16  /* cubic-bezier(.2, 0, 0, 1)        */
+#define AUI_EASE_EMPHASIZED  17  /* cubic-bezier(.05, .7, .1, 1)     */
+#define AUI_EASE_DECEL       18  /* cubic-bezier(0, 0, .2, 1)        */
+#define AUI_EASE_BACK        19  /* cubic-bezier(.34, 1.56, .64, 1)  */
+/* aui_anim() answers on 0..255 (aui_mix's domain), so a curve that overshoots
+ * (the back family) is clamped there: the overshoot is visible only through
+ * aui_spring(), whose domain is 24.8 and unclamped. */
 
 /* ---- durations, in milliseconds ----
  * One number and two ratios, so there is one thing to change. 180 is not taste:
@@ -126,6 +145,20 @@
  * declares nothing and immediate mode is untouched. */
 #define AUI_ANIM_MAX 32
 int  aui_anim(int key, int target, int ms, int curve);
+/* A spring on 24.8 values. `id` is an AUI_AK_* style key, scoped to the widget
+ * being drawn exactly like aui_anim()'s. Returns where the value IS this frame
+ * (24.8); `target24` re-aims it keeping position AND velocity. It keeps
+ * requesting frames until ol_spring256 reports settled (|x-target| and |v| both
+ * under 1/256), then snaps to the target and asks for nothing. A fresh slot
+ * latches to the target; reduced motion snaps on the first sample. Shares the
+ * AUI_ANIM_MAX slots with aui_anim (separate key space). */
+int aui_spring(int id, int target24);
+/* A colour tween in premultiplied space (ol_mix_argb_premul): opaque red to
+ * transparent passes through half-transparent RED, not dark red. Straight ARGB
+ * in and out. The tween runs `from` -> `to` over AUI_T_FAST, linearly; it
+ * restarts from the colour currently on screen when `to` changes, and a fresh
+ * slot starts at `from`. Reduced motion returns `to` on the first sample. */
+uint32_t aui_anim_color(int id, uint32_t from, uint32_t to);
 /* Register an ENDLESS animation for this frame (the spinner, the indeterminate
  * bar). It keeps no value -- it only tells the wake contract below that a frame
  * is wanted every AUI_ANIM_TICK_LOOP ms. Returns aui_ms() so a caller can phase

@@ -16,7 +16,7 @@ static int execute(struct ol_device *d, const struct command *c, struct gfx_surf
         ol_sw_layer(target,&source,c->rect,&options,scratch);return 1;
     }
     if(c->op==CMD_BACKDROP) {
-        ol_sw_backdrop(target,c->rect,c->layer.blur_radius,c->rgb,c->alpha,scratch);return 1;
+        ol_sw_backdrop_rrect(target,c->rect,c->corner,c->layer.blur_radius,c->passes,c->rgb,c->alpha,scratch);return 1;
     }
     if (c->op == CMD_CLEAR || c->op == CMD_CLEAR_RECT) {
         struct gfx_rect rect = {0, 0, target->w, target->h};
@@ -170,7 +170,8 @@ static int submit(struct ol_device *d, const struct ol_list *l, struct ol_surfac
             }
         }
         if(c->op==CMD_BACKDROP)reads=ol_damage_move(reads,
-            ol_sw_effect_bounds(r,c->layer.blur_radius,target.w,target.h),0,target.w,target.h);
+            ol_sw_effect_bounds(r,ol_sw_backdrop_reach(c->layer.blur_radius,c->passes),target.w,target.h),
+            0,target.w,target.h);
         damage=ol_damage_move(damage,r,0,target.w,target.h);
         count++; o+=c->bytes;
     }
@@ -235,7 +236,8 @@ int ol_submit_workspace_size(const struct ol_list *l,const struct ol_surface *s,
             if(c->layer.shadow_opacity&&c->layer.shadow_radius>radius)radius=c->layer.shadow_radius;
             if(radius)need=(s->desc.width+2*radius)*4*sizeof(unsigned);
         } else if(c->op==CMD_BACKDROP)
-            need=ol_sw_backdrop_size(c->rect,c->layer.blur_radius,s->desc.width,s->desc.height);
+            need=ol_sw_backdrop_rrect_size(c->rect,c->corner,c->layer.blur_radius,c->passes,
+                                           s->desc.width,s->desc.height);
         if(need>*out)*out=need;o+=c->bytes;
     }
     return OL_OK;

@@ -127,19 +127,28 @@ void gfx_m_set(struct gfx_matrix *m, int a, int b, int c, int d, int e, int f)
     m->a = a; m->b = b; m->c = c; m->d = d; m->e = e; m->f = f;
 }
 
+/* v / 65536 rounded half away from zero: the one matrix rounding rule. A plain
+ * >> 16 floors, which biases every composed coefficient toward minus infinity
+ * and makes a rotation drift when it is composed many times. */
+int gfx_m_mulfix(long long v)
+{
+    long long h = GFX_MONE / 2;
+    return (int)(v >= 0 ? (v + h) / GFX_MONE : -((-v + h) / GFX_MONE));
+}
+
 /* o = l * r: apply r first, then l. Written into a temporary because callers
  * legitimately pass o == l or o == r while composing a CTM. */
 void gfx_m_mul(struct gfx_matrix *o, const struct gfx_matrix *l, const struct gfx_matrix *r)
 {
     struct gfx_matrix t;
-    t.a = (int)(((long long)l->a * r->a + (long long)l->c * r->b) >> 16);
-    t.b = (int)(((long long)l->b * r->a + (long long)l->d * r->b) >> 16);
-    t.c = (int)(((long long)l->a * r->c + (long long)l->c * r->d) >> 16);
-    t.d = (int)(((long long)l->b * r->c + (long long)l->d * r->d) >> 16);
+    t.a = gfx_m_mulfix((long long)l->a * r->a + (long long)l->c * r->b);
+    t.b = gfx_m_mulfix((long long)l->b * r->a + (long long)l->d * r->b);
+    t.c = gfx_m_mulfix((long long)l->a * r->c + (long long)l->c * r->d);
+    t.d = gfx_m_mulfix((long long)l->b * r->c + (long long)l->d * r->d);
     /* r's translation is in 24.8 and passes through l's linear part; l's own
      * translation is already in device 24.8 and is simply added. */
-    t.e = (int)(((long long)l->a * r->e + (long long)l->c * r->f) >> 16) + l->e;
-    t.f = (int)(((long long)l->b * r->e + (long long)l->d * r->f) >> 16) + l->f;
+    t.e = gfx_m_mulfix((long long)l->a * r->e + (long long)l->c * r->f) + l->e;
+    t.f = gfx_m_mulfix((long long)l->b * r->e + (long long)l->d * r->f) + l->f;
     *o = t;
 }
 
