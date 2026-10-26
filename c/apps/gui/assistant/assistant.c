@@ -52,7 +52,7 @@ static void draw(void)
     else if(shown&&shown->object_count)snprintf(scope,sizeof scope,"%u 份资料：%s",shown->object_count,shown->objects[0].path);
     else snprintf(scope,sizeof scope,"在 Finder 中选择资料，或在 TextEdit 中使用“询问 Logit”。");
     aui_label(20,43,scope,AUI_MUTED);
-    aui_label(20,73,"要让应用做什么？",AUI_TEXT);
+    aui_label(20,70,"要让应用做什么？",AUI_TEXT);   /* was 73: its foot touched the field at 94 */
     int submit=aui_textfield(20,94,680,goal,sizeof goal);
     aui_label(20,126,"新报告存储位置",AUI_MUTED);aui_textfield(170,120,350,output,sizeof output);
     if(aui_button(20,157,160,28,"生成报告")||submit){

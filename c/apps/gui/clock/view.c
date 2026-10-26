@@ -54,9 +54,11 @@ enum clock_action clock_view(struct clock_ui *ui, const struct clock_state *app,
                  app->hour24       ? "24 小时制"
                  : time->hour < 12 ? "上午"
                                    : "下午");
-    centered(x, y + size + 8, width, detail, AUI_MUTED, 13);
+    /* The detail line sat 8 points under the digits' box and read as touching
+     * them (2026-10-26 tour), against 26 between it and the date: 16 and 18. */
+    centered(x, y + size + 16, width, detail, AUI_MUTED, 13);
     snprintf(date, sizeof date, "%04d / %02d / %02d", time->year, time->month, time->day);
-    centered(x, y + size + 34, width, date, AUI_MUTED, 15);
+    centered(x, y + size + 42, width, date, AUI_MUTED, 15);
     int gap = 10, button_w = (w - 58) / 2;
     if (button_w > 170)
         button_w = 170;

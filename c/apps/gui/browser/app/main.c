@@ -3654,6 +3654,8 @@ static void tab_label(const char *s, int maxpx, char *out, int max)
     int n = 0; while (s[n]) n++;
     if (n <= budget) { int i = 0; for (; s[i]; i++) out[i] = s[i]; out[i] = 0; return; }
     int keep = budget - 1; if (keep < 1) keep = 1;
+    /* Never inside a UTF-8 sequence: a cut Chinese title showed a broken glyph. */
+    while (keep > 1 && ((unsigned char)s[keep] & 0xC0) == 0x80) keep--;
     for (int i = 0; i < keep; i++) out[i] = s[i];
     out[keep] = '~';                       /* one byte, and the font has it */
     out[keep + 1] = 0;
@@ -3673,7 +3675,10 @@ static void draw_tab_strip(void)
         int idx = ord[k];
         struct tab *t = tab_at(idx);
         int on = (idx == tabs_active());
-        gui_glass(x, 4, w, TABH - 6, 7, 255, 255, 255, on ? 210 : 80);
+        /* Solid tabs with a hairline, not small glass pills: at this size the
+         * glass rim drew only dark specks at the corners (2026-10-26 tour). */
+        gui_rrect(x, 4, w, TABH - 6, 7, on ? rgb(204, 207, 216) : rgb(226, 228, 234));
+        gui_rrect(x + 1, 5, w - 2, TABH - 8, 6, on ? rgb(255, 255, 255) : rgb(244, 245, 248));
         /* Two pixels of accent under the active tab. The glass alone does not
          * carry enough contrast over a light page to say WHICH tab you are on,
          * and "which tab am I on" is the one question a tab strip exists to
@@ -3682,16 +3687,19 @@ static void draw_tab_strip(void)
         if (on) gui_rect(x + 6, TABH - 4, w - 12, 2, rgb(90, 150, 240));
         char lab[64];
         tab_label(t->title[0] ? t->title : "新标签页", w - (on ? 32 : 16), lab, (int)sizeof lab);
-        gui_text(x + 8, 8, on ? rgb(25, 25, 35) : rgb(105, 105, 118), lab);
+        /* 14 px: at 16 the label's foot sat on the active tab's accent line. */
+        { int n = 0; while (lab[n]) n++;
+          gui_text_run(x + 8, 9, 14, 0, on ? rgb(25, 25, 35) : rgb(105, 105, 118), lab, n); }
         if (on && w >= TAB_MINW) {
             /* the close box, on the active tab only -- see the note above */
-            gui_glass(x + w - 20, 9, 14, 14, 7, 255, 255, 255, 140);
-            gui_text(x + w - 16, 8, rgb(90, 90, 100), "x");
+            gui_rrect(x + w - 20, 9, 14, 14, 7, rgb(232, 234, 240));
+            gui_text_run(x + w - 16, 9, 12, 0, rgb(90, 90, 100), "x", 1);
         }
         x += w + TAB_GAP;
     }
     /* new tab */
-    gui_glass(x, 4, TAB_PLUSW, TABH - 6, 7, 255, 255, 255, 90);
+    gui_rrect(x, 4, TAB_PLUSW, TABH - 6, 7, rgb(226, 228, 234));
+    gui_rrect(x + 1, 5, TAB_PLUSW - 2, TABH - 8, 6, rgb(244, 245, 248));
     gui_text(x + 9, 8, rgb(80, 80, 92), "+");
 }
 
@@ -4133,7 +4141,9 @@ static void redraw(int editing)
     draw_hbar();
     /* glass status line (frosts the bottom of the page) */
     gui_glass(0, win_h - 18, win_w, 18, 1, 255, 255, 255, 70);
-    gui_text(10, win_h - 16, rgb(110, 110, 120), status);
+    /* 12 px, not gui_text's 16: the line is 18 points tall and a 16 px CJK
+     * status ("来自上次的会话 ...") lost its lower third to the window edge. */
+    { int n = 0; while (status[n]) n++; gui_text_run(10, win_h - 15, 12, 0, rgb(110, 110, 120), status, n); }
     gui_flush();
 }
 
@@ -5315,7 +5325,7 @@ static void redraw_page(int editing)
         draw_tab_strip();
         draw_address_bar(editing);
         gui_glass(0, win_h - 18, win_w, 18, 1, 255, 255, 255, 70);
-        gui_text(10, win_h - 16, rgb(110, 110, 120), status);
+        { int n = 0; while (status[n]) n++; gui_text_run(10, win_h - 15, 12, 0, rgb(110, 110, 120), status, n); }
         gui_flush();
         return;
     }

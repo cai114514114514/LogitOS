@@ -24,7 +24,14 @@ static void draw_address_bar(int editing)
     if(editing)gui_rect(14+ucaret*8,TABH+7,2,16,rgb(90,150,240));
 #else
     gui_glass(0,TABH,win_w,BARH,1,255,255,255,70);
-    gui_glass(10,TABH+5,win_w-20,20,8,255,255,255,95);
+    /* A solid field with a hairline, not glass: at this size the glass rim
+     * showed only as dark specks at both ends (2026-10-26 tour). It is three
+     * points taller than it was, all of it below: a 16 px URL's descenders
+     * reach TABH+26 and the old 18-row clip cut them ("example.com" lost the
+     * foot of its p). The caret and text rows are unchanged; qmp_addrbar pins
+     * them. */
+    gui_rrect(10,TABH+5,win_w-20,23,8,rgb(208,210,218));
+    gui_rrect(11,TABH+6,win_w-22,21,7,rgb(255,255,255));
     int width=win_w-50;if(width<2)width=2;
     int caret=addr_width(ucaret),total=addr_width(ulen);
     if(!editing)addr_hscroll=0;
@@ -34,11 +41,11 @@ static void draw_address_bar(int editing)
         int max=total-width+2;if(max<0)max=0;
         if(addr_hscroll>max)addr_hscroll=max;
     }
-    gui_clip(14,TABH+6,width,18);
+    gui_clip(14,TABH+6,width,21);
     if(editing&&usel!=ucaret) {
         int a=addr_width(usel),b=caret;
         if(a>b){int t=a;a=b;b=t;}
-        gui_rect(14+a-addr_hscroll,TABH+6,b-a,18,rgb(140,180,250));
+        gui_rect(14+a-addr_hscroll,TABH+6,b-a,21,rgb(140,180,250));
     }
     gui_text_run(14-addr_hscroll,TABH+7,ADDRESS_FONT_PX,0,rgb(40,40,48),url,ulen);
     if(editing)gui_rect(14+caret-addr_hscroll,TABH+7,2,16,rgb(90,150,240));
