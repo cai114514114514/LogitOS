@@ -77,7 +77,7 @@ int ol_ui_focus(struct ol_ui *ui, unsigned id)
 int ol_ui_event(struct ol_ui *ui, const struct ol_ui_event *event)
 {
     if (!ui || !event)
-        return -1;
+        return OL_ARGUMENT;
     ui->dirty = 1;
     if (event->type == OL_UI_PREVIOUS || event->type == OL_UI_NEXT) {
         int direction = event->type == OL_UI_NEXT ? 1 : -1;
@@ -160,7 +160,12 @@ int ol_ui_feedback(struct ol_ui *ui, unsigned id, float target, struct ol_ui_fee
         !(target >= 0 && target <= 1))
         return OL_ARGUMENT;
     struct ol_ui_slot *slot = &ui->slots[id];
+    /* A disabled slot is not a hit target, so it never gains hover or press. */
+#ifdef OL_UI_HOVER_IGNORES_ENABLED
     int hover = contains(slot->bounds, ui->pointer_x, ui->pointer_y);
+#else
+    int hover = slot->enabled && contains(slot->bounds, ui->pointer_x, ui->pointer_y);
+#endif
     out->hover = sample(ui, &slot->hover, hover);
     out->press = sample(ui, &slot->press, ui->captured == (int)id && hover);
     out->value = sample(ui, &slot->value, target);
