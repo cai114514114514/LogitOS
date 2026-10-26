@@ -4,8 +4,8 @@ The disk image uses four checked-in, redistributable font subsets:
 
 | File | Internal name | Derived from | Coverage | SHA-256 |
 |---|---|---|---|---|
-| `ui.ttf` | Logit UI Regular | Noto Sans SC `wght=400` | GB2312, ASCII, and selected CJK/fullwidth punctuation | `e773892e65aba7712d3e0a04d67da2a1092a4ad70057b4a64a58eff0b8fe8821` |
-| `ui-bold.ttf` | Logit UI Bold | Noto Sans SC `wght=700` | identical codepoint set to `ui.ttf` | `e0c768b5279eb97741d35ac2ac872df66cb1ac542b85dbf7a85c04a1b26b89bf` |
+| `ui.ttf` | Logit UI Regular | Noto Sans SC `wght=400` | GB2312, ASCII, and selected CJK/fullwidth punctuation | `c26e4469f4209adc9d656492d175a70752e277fae94d2bba5aac98e31284f67c` |
+| `ui-bold.ttf` | Logit UI Bold | Noto Sans SC `wght=700` | identical codepoint set to `ui.ttf` | `88256312b966cd851befca3679f40bf2e27ebab40d365c0adc7cbaf807403116` |
 | `mono.ttf` | Logit Mono Regular | Noto Sans Mono `wght=400 wdth=100` | printable ASCII plus non-breaking space | `360015a138312fd70b834a5157a7164602ccafa3ccac0ece12327c0bb3b0cd27` |
 | `mono-bold.ttf` | Logit Mono Bold | Noto Sans Mono `wght=700 wdth=100` | identical codepoint set to `mono.ttf` | `fa25e03e0d6ace14132c45cbe31cfe4446a0b435df29294b57bb0865f76beaf8` |
 
@@ -42,6 +42,17 @@ regular text beside it. Measured on the generated pair: `ui.ttf` and
 `mono.ttf` and `mono-bold.ttf` both report `ascent=1069 descent=-293
 lineGap=0`. Re-check this after any regeneration — it is a property of the
 sources, not of this pipeline, and nothing else in the tree asserts it.
+
+## Retained layout features
+
+`ui.ttf` and `ui-bold.ttf` keep **GPOS restricted to the `kern` feature, plus
+GDEF**, for the retained glyph set, so Latin pairs such as `AV` and `To` kern
+(`c/lib/text/otlayout.c` already applies GPOS). `GSUB`, `BASE` and every other
+GPOS feature are dropped, and `mkfont.py` aborts if any GPOS feature other than
+`kern` survives. `mono.ttf` and `mono-bold.ttf` keep no layout tables and their
+hashes are unchanged. Measured: CJK and fullwidth-punctuation advances are
+unchanged (`make test-font-ui-kerning`). `mkfont.py --drop-layout` builds the UI
+faces without GPOS/GDEF; it exists only for that test's negative control.
 
 ## Regeneration
 
