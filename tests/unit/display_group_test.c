@@ -15,6 +15,8 @@
  *   interleave     two displays on two gfx contexts, groups using the
  *                  per-display scratch slot, the hook switching contexts
  *                  mid-group
+ *   xbyte          bits outside the channels (the X byte) come from the
+ *                  drawn pixel wherever w > 0
  *   plus limit, argument, bytes, lifo, clip-restored, outside-untouched and
  *   round-rect-match (a group around a fill paints ol_display_round_rect's
  *   corner).
@@ -475,6 +477,55 @@ static void info_mask_deviation(void)
     }
 }
 
+/* The bits outside the three channels (BGRX's X byte, which on a window
+ * surface can carry wm2_backdrop's marker) of a pixel the children wrote come
+ * from the DRAWN pixel wherever its weight is > 0, and a pixel with weight 0
+ * or one the children left alone comes back bit-exactly (X included). The
+ * child writes raw pixels so its X bits are known. */
+static void xbyte_check(const char *name, const struct layout *L, int opacity, const int rad[4])
+{
+    uint32_t chan = 255u << L->r | 255u << L->g | 255u << L->b, other = ~chan;
+    uint32_t *pre = malloc(TW * TH * 4), *drawn = malloc(TW * TH * 4);
+    struct ol_display d;
+    bind(&d, pre, L, 0);
+    fill_noise(pre, L, 77);
+    for (int i = 0; i < TW * TH; i++) pre[i] = (pre[i] & chan) | (0x5A5A5A5Au & other);
+    uint32_t *act = malloc(TW * TH * 4);
+    memcpy(act, pre, TW * TH * 4);
+    d.target.px = act;
+    const int gx = 40, gy = 30, gw = 383, gh = 300;   /* odd: span tails */
+    struct ol_display_group g;
+    if (ol_display_group_begin(&d, &g, gx, gy, gw, gh, rad, opacity, 0, 0) != OL_OK) {
+        fail("xbyte", "begin");
+        goto out;
+    }
+    memcpy(drawn, act, TW * TH * 4);
+    for (int y = gy; y < gy + 200; y++)          /* covers the TL and TR corners */
+        for (int x = gx; x < gx + gw; x++)
+            act[y * TW + x] = drawn[y * TW + x] = (~pre[y * TW + x] & chan) | (0xC3C3C3C3u & other);
+    if (ol_display_group_end(&d, &g) != OL_OK) fail("xbyte", "end");
+    long bad_x = 0, bad_keep = 0;
+    for (int i = 0; i < TW * TH; i++) {
+        if (drawn[i] == pre[i]) { if (act[i] != pre[i]) bad_keep++; }
+        else if (act[i] != pre[i] && (act[i] & other) != (drawn[i] & other)) bad_x++;
+    }
+    /* The rect's interior pixels have weight opacity: they must carry the
+     * drawn bits (opacity 0 restores everything instead). */
+    int ci = (gy + 100) * TW + gx + gw / 2;
+    if (opacity > 0 && (act[ci] & other) != (drawn[ci] & other)) bad_x++;
+    char buf[160];
+    if (bad_x || bad_keep) {
+        snprintf(buf, sizeof buf, "%s: %ld written pixels without the drawn X bits, %ld untouched pixels changed",
+                 name, bad_x, bad_keep);
+        fail("xbyte", buf);
+    }
+    printf("  %-15s %-28s %ld/%ld bad\n", "xbyte", name, bad_x, bad_keep);
+out:
+    d.target.px = pre;
+    ol_display_destroy(&d);
+    free(pre); free(drawn); free(act);
+}
+
 int main(void)
 {
     gfx_ctx_hook = hook;
@@ -491,6 +542,12 @@ int main(void)
     /* (b) rounded clips at opacity 255 */
     run_one("rrect-corner", "r=24", &BGRX, (struct gspec){ 40, 30, 380, 300, { 24, 24, 24, 24 }, 255 }, 0, 21);
     run_one("rrect-corner", "r=24 clipped", &BGRX, (struct gspec){ 40, 30, 380, 300, { 24, 24, 24, 24 }, 255 }, &cut, 22);
+    /* A clip whose edges run through the TL and BR arcs (tile-local i >= 5,
+     * j >= 6 and the mirror), so clipped partial-coverage pixels are tested. */
+    {
+        struct clip arc = { 1, 45, 36, 415, 325 };
+        run_one("rrect-corner", "r=24 clip through arcs", &BGRX, (struct gspec){ 40, 30, 380, 300, { 24, 24, 24, 24 }, 255 }, &arc, 30);
+    }
     run_one("rrect-corner", "r=15 (125%)", &BGRX, (struct gspec){ 41, 31, 301, 211, { 15, 15, 15, 15 }, 255 }, 0, 23);
     run_one("rrect-corner", "r=17", &BGRX, (struct gspec){ 41, 31, 301, 211, { 17, 17, 17, 17 }, 255 }, 0, 24);
     run_one("rrect-corner", "r=27 (150%)", &BGRX, (struct gspec){ 41, 31, 301, 211, { 27, 27, 27, 27 }, 255 }, 0, 25);
@@ -513,6 +570,15 @@ int main(void)
         run_nested("nested-product", "3 levels clipped", &BGRX, n3, 3, inner, &cut, 33, 0);
     }
 
+    {
+        static const int sq[4] = { 0, 0, 0, 0 }, r24[4] = { 24, 24, 24, 24 }, r90[4] = { 90, 90, 90, 90 };
+        xbyte_check("a=128 bgrx (vector span)", &BGRX, 128, sq);
+        xbyte_check("a=128 r=24 bgrx", &BGRX, 128, r24);
+        xbyte_check("a=255 r=24 bgrx (corners)", &BGRX, 255, r24);
+        xbyte_check("a=200 r=90 bgrx (analytic)", &BGRX, 200, r90);
+        xbyte_check("a=128 r0g10b20 (scalar)", &ODD, 128, r24);
+        xbyte_check("a=0 bgrx", &BGRX, 0, r24);
+    }
     round_rect_match(15);
     round_rect_match(24);
     interleave();
