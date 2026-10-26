@@ -216,12 +216,12 @@ static void test_regular_identity(void)
                   OL_GLASS_RIM_DIRECTIONAL);
         if (memcmp(a, b, sizeof a)) same = 0;
         check(memcmp(a, base, sizeof a) != 0, "legacy render changes the backdrop");
-        /* SYMMETRIC is accepted and renders as DIRECTIONAL for now. */
+        /* SYMMETRIC is a distinct, view-independent rim (glass-symmetric-rim). */
         memcpy(b, base, sizeof base);
         render_ex(b, OL_GLASS_BLUR_REGULAR, 0, cases[i].cut, cases[i].x, cases[i].y,
                   cases[i].w, cases[i].h, cases[i].r, cases[i].tint, cases[i].op,
                   OL_GLASS_RIM_SYMMETRIC);
-        if (memcmp(a, b, sizeof a)) same = 0;
+        check(memcmp(a, b, sizeof a) != 0, "SYMMETRIC differs from DIRECTIONAL");
     }
     check(same, "REGULAR ex bit-identical to legacy");
     check(ol_display_glass_sample_halo_ex(200, 120, 24, 0) == ol_display_glass_sample_halo(200, 120, 24),

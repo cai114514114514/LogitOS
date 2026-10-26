@@ -25,7 +25,8 @@ enum {
 
 enum {
     OL_GLASS_RIM_DIRECTIONAL = 0,
-    /* Accepted and rendered as DIRECTIONAL until glass-symmetric-rim. */
+    /* View-independent ring: edge-distance brightening with no dark side,
+     * reflection damped by backdrop variance; for small controls. */
     OL_GLASS_RIM_SYMMETRIC   = 1,
 };
 
