@@ -178,6 +178,17 @@ int ol_cmd_layer(struct ol_list *, struct ol_surface *source, struct gfx_rect ds
  * Transparent sampling beyond target edges matches offscreen layer filtering. */
 int ol_cmd_backdrop(struct ol_list *, struct gfx_rect region, int radius,
                      unsigned tint_rgb, int tint_opacity);
+/* Rounded frosted panel. corner[] = radii in pixels, top-left, top-right,
+ * bottom-right, bottom-left (each >= 0, clamped to half the shorter side).
+ * The blurred, tinted result is composited through the rounded-rect coverage
+ * (anti-aliased edge); outside the shape the source is untouched. blur_radius is
+ * the blur reach as in ol_cmd_backdrop. passes is 1 (one box blur, the legacy
+ * filter) or 3 (three box blurs of radius ceil(blur_radius/3): a gaussian-like
+ * kernel whose reach is 3*ceil(blur_radius/3) pixels). All corners 0 with
+ * passes 1 is bit-identical to ol_cmd_backdrop. Damage and workspace sizing
+ * account for the full reach. */
+int ol_cmd_backdrop_rrect(struct ol_list *, struct gfx_rect region, const int corner[4],
+                           int blur_radius, int passes, unsigned tint_rgb, int tint_opacity);
 /* Effects allocate nothing internally. Query scratch for this list/target and
  * supply disjoint, 8-byte aligned caller storage. Plain submit returns OL_LIMIT
  * when scratch is required; it never silently omits an effect. The largest
