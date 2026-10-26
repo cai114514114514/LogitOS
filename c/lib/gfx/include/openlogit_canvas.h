@@ -56,6 +56,8 @@ struct ol_canvas {
     /* Caller-provided A8 scratch for clip masks; see ol_canvas_init_clip_arena. */
     unsigned char *clip_arena;
     unsigned long clip_arena_bytes, clip_arena_used;
+    /* The path ol_canvas_path_begin last prepared (canvas-side flag, path-ctm). */
+    const struct gfx_path *device_path;
 };
 /* This recorder owns no allocator, clock or pixel loop. Paths are flattened
  * by gfx geometry builders. Paint coordinates stay in device space, matching
@@ -70,6 +72,19 @@ int ol_canvas_opacity(struct ol_canvas *canvas, int opacity);
 int ol_canvas_mask(struct ol_canvas *canvas, struct ol_image *coverage, int x, int y);
 int ol_canvas_fill(struct ol_canvas *canvas, const struct gfx_path *path, int rule,
                    const struct gfx_paint *paint);
+/* Device-space flattening. Call on a freshly initialised (empty) path BEFORE
+ * building it: the path then takes the current CTM (gfx_path_matrix) and a
+ * tolerance of base/scale (gfx_path_tolerance, never coarser than the default
+ * 1/32 px), so a curve enlarged by the CTM is subdivided for its device size
+ * instead of being flattened in user space and stretched into a polygon.
+ * Build the path in user coordinates. ol_canvas_fill then recognises it
+ * (ol_canvas_path_is_device: same path, matrix still equal to the CTM) and
+ * records it with the IDENTITY transform, as its points are already in device
+ * space. Any other path keeps the old behaviour (flattened user-space points,
+ * transformed by the fill). Returns OL_OK, or OL_ARGUMENT / OL_STATE when
+ * the path already holds points (nothing is changed). */
+int ol_canvas_path_begin(struct ol_canvas *canvas, struct gfx_path *path);
+int ol_canvas_path_is_device(const struct ol_canvas *canvas, const struct gfx_path *path);
 int ol_canvas_stroke(struct ol_canvas *canvas, const struct gfx_path *path,
                      const struct gfx_stroke *stroke, const struct gfx_paint *paint,
                      struct gfx_path *scratch);
