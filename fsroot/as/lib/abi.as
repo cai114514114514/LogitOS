@@ -363,7 +363,7 @@ Path2 = layout("logit_path2", 64, [
     ["flags", 60, 4, "u"]
 ])
 
-Paint2 = layout("logit_paint2", 168, [
+Paint2 = layout("logit_paint2", 64, [
     ["size", 0, 4, "u"],
     ["kind", 4, 1, "u"],
     ["op", 5, 1, "u"],
@@ -376,39 +376,9 @@ Paint2 = layout("logit_paint2", 168, [
     ["y1", 24, 4, "i"],
     ["r0", 28, 4, "i"],
     ["r1", 32, 4, "i"],
-    ["stop_pos_0", 36, 4, "u"],
-    ["stop_pos_1", 40, 4, "u"],
-    ["stop_pos_2", 44, 4, "u"],
-    ["stop_pos_3", 48, 4, "u"],
-    ["stop_pos_4", 52, 4, "u"],
-    ["stop_pos_5", 56, 4, "u"],
-    ["stop_pos_6", 60, 4, "u"],
-    ["stop_pos_7", 64, 4, "u"],
-    ["stop_pos_8", 68, 4, "u"],
-    ["stop_pos_9", 72, 4, "u"],
-    ["stop_pos_10", 76, 4, "u"],
-    ["stop_pos_11", 80, 4, "u"],
-    ["stop_pos_12", 84, 4, "u"],
-    ["stop_pos_13", 88, 4, "u"],
-    ["stop_pos_14", 92, 4, "u"],
-    ["stop_pos_15", 96, 4, "u"],
-    ["stop_argb_0", 100, 4, "u"],
-    ["stop_argb_1", 104, 4, "u"],
-    ["stop_argb_2", 108, 4, "u"],
-    ["stop_argb_3", 112, 4, "u"],
-    ["stop_argb_4", 116, 4, "u"],
-    ["stop_argb_5", 120, 4, "u"],
-    ["stop_argb_6", 124, 4, "u"],
-    ["stop_argb_7", 128, 4, "u"],
-    ["stop_argb_8", 132, 4, "u"],
-    ["stop_argb_9", 136, 4, "u"],
-    ["stop_argb_10", 140, 4, "u"],
-    ["stop_argb_11", 144, 4, "u"],
-    ["stop_argb_12", 148, 4, "u"],
-    ["stop_argb_13", 152, 4, "u"],
-    ["stop_argb_14", 156, 4, "u"],
-    ["stop_argb_15", 160, 4, "u"],
-    ["flags", 164, 4, "u"]
+    ["stop_pos", 40, 8, "p"],
+    ["stop_argb", 48, 8, "p"],
+    ["flags", 56, 4, "u"]
 ])
 
 Stroke2 = layout("logit_stroke2", 52, [

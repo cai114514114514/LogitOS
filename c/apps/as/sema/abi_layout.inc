@@ -1063,7 +1063,7 @@ _Static_assert(offsetof(struct logit_path2, flags) == 60,
 _Static_assert(sizeof(((struct logit_path2 *)0)->flags) == 4,
                "abi.as is stale: logit_path2.flags changed width -- run tools/gen_abi.py --write");
 
-_Static_assert(sizeof(struct logit_paint2) == 168,
+_Static_assert(sizeof(struct logit_paint2) == 64,
                "abi.as is stale: sizeof(struct logit_paint2) changed -- run tools/gen_abi.py --write");
 _Static_assert(offsetof(struct logit_paint2, size) == 0,
                "abi.as is stale: logit_paint2.size moved -- run tools/gen_abi.py --write");
@@ -1113,135 +1113,15 @@ _Static_assert(offsetof(struct logit_paint2, r1) == 32,
                "abi.as is stale: logit_paint2.r1 moved -- run tools/gen_abi.py --write");
 _Static_assert(sizeof(((struct logit_paint2 *)0)->r1) == 4,
                "abi.as is stale: logit_paint2.r1 changed width -- run tools/gen_abi.py --write");
-_Static_assert(offsetof(struct logit_paint2, stop_pos[0]) == 36,
-               "abi.as is stale: logit_paint2.stop_pos[0] moved -- run tools/gen_abi.py --write");
-_Static_assert(sizeof(((struct logit_paint2 *)0)->stop_pos[0]) == 4,
-               "abi.as is stale: logit_paint2.stop_pos[0] changed width -- run tools/gen_abi.py --write");
-_Static_assert(offsetof(struct logit_paint2, stop_pos[1]) == 40,
-               "abi.as is stale: logit_paint2.stop_pos[1] moved -- run tools/gen_abi.py --write");
-_Static_assert(sizeof(((struct logit_paint2 *)0)->stop_pos[1]) == 4,
-               "abi.as is stale: logit_paint2.stop_pos[1] changed width -- run tools/gen_abi.py --write");
-_Static_assert(offsetof(struct logit_paint2, stop_pos[2]) == 44,
-               "abi.as is stale: logit_paint2.stop_pos[2] moved -- run tools/gen_abi.py --write");
-_Static_assert(sizeof(((struct logit_paint2 *)0)->stop_pos[2]) == 4,
-               "abi.as is stale: logit_paint2.stop_pos[2] changed width -- run tools/gen_abi.py --write");
-_Static_assert(offsetof(struct logit_paint2, stop_pos[3]) == 48,
-               "abi.as is stale: logit_paint2.stop_pos[3] moved -- run tools/gen_abi.py --write");
-_Static_assert(sizeof(((struct logit_paint2 *)0)->stop_pos[3]) == 4,
-               "abi.as is stale: logit_paint2.stop_pos[3] changed width -- run tools/gen_abi.py --write");
-_Static_assert(offsetof(struct logit_paint2, stop_pos[4]) == 52,
-               "abi.as is stale: logit_paint2.stop_pos[4] moved -- run tools/gen_abi.py --write");
-_Static_assert(sizeof(((struct logit_paint2 *)0)->stop_pos[4]) == 4,
-               "abi.as is stale: logit_paint2.stop_pos[4] changed width -- run tools/gen_abi.py --write");
-_Static_assert(offsetof(struct logit_paint2, stop_pos[5]) == 56,
-               "abi.as is stale: logit_paint2.stop_pos[5] moved -- run tools/gen_abi.py --write");
-_Static_assert(sizeof(((struct logit_paint2 *)0)->stop_pos[5]) == 4,
-               "abi.as is stale: logit_paint2.stop_pos[5] changed width -- run tools/gen_abi.py --write");
-_Static_assert(offsetof(struct logit_paint2, stop_pos[6]) == 60,
-               "abi.as is stale: logit_paint2.stop_pos[6] moved -- run tools/gen_abi.py --write");
-_Static_assert(sizeof(((struct logit_paint2 *)0)->stop_pos[6]) == 4,
-               "abi.as is stale: logit_paint2.stop_pos[6] changed width -- run tools/gen_abi.py --write");
-_Static_assert(offsetof(struct logit_paint2, stop_pos[7]) == 64,
-               "abi.as is stale: logit_paint2.stop_pos[7] moved -- run tools/gen_abi.py --write");
-_Static_assert(sizeof(((struct logit_paint2 *)0)->stop_pos[7]) == 4,
-               "abi.as is stale: logit_paint2.stop_pos[7] changed width -- run tools/gen_abi.py --write");
-_Static_assert(offsetof(struct logit_paint2, stop_pos[8]) == 68,
-               "abi.as is stale: logit_paint2.stop_pos[8] moved -- run tools/gen_abi.py --write");
-_Static_assert(sizeof(((struct logit_paint2 *)0)->stop_pos[8]) == 4,
-               "abi.as is stale: logit_paint2.stop_pos[8] changed width -- run tools/gen_abi.py --write");
-_Static_assert(offsetof(struct logit_paint2, stop_pos[9]) == 72,
-               "abi.as is stale: logit_paint2.stop_pos[9] moved -- run tools/gen_abi.py --write");
-_Static_assert(sizeof(((struct logit_paint2 *)0)->stop_pos[9]) == 4,
-               "abi.as is stale: logit_paint2.stop_pos[9] changed width -- run tools/gen_abi.py --write");
-_Static_assert(offsetof(struct logit_paint2, stop_pos[10]) == 76,
-               "abi.as is stale: logit_paint2.stop_pos[10] moved -- run tools/gen_abi.py --write");
-_Static_assert(sizeof(((struct logit_paint2 *)0)->stop_pos[10]) == 4,
-               "abi.as is stale: logit_paint2.stop_pos[10] changed width -- run tools/gen_abi.py --write");
-_Static_assert(offsetof(struct logit_paint2, stop_pos[11]) == 80,
-               "abi.as is stale: logit_paint2.stop_pos[11] moved -- run tools/gen_abi.py --write");
-_Static_assert(sizeof(((struct logit_paint2 *)0)->stop_pos[11]) == 4,
-               "abi.as is stale: logit_paint2.stop_pos[11] changed width -- run tools/gen_abi.py --write");
-_Static_assert(offsetof(struct logit_paint2, stop_pos[12]) == 84,
-               "abi.as is stale: logit_paint2.stop_pos[12] moved -- run tools/gen_abi.py --write");
-_Static_assert(sizeof(((struct logit_paint2 *)0)->stop_pos[12]) == 4,
-               "abi.as is stale: logit_paint2.stop_pos[12] changed width -- run tools/gen_abi.py --write");
-_Static_assert(offsetof(struct logit_paint2, stop_pos[13]) == 88,
-               "abi.as is stale: logit_paint2.stop_pos[13] moved -- run tools/gen_abi.py --write");
-_Static_assert(sizeof(((struct logit_paint2 *)0)->stop_pos[13]) == 4,
-               "abi.as is stale: logit_paint2.stop_pos[13] changed width -- run tools/gen_abi.py --write");
-_Static_assert(offsetof(struct logit_paint2, stop_pos[14]) == 92,
-               "abi.as is stale: logit_paint2.stop_pos[14] moved -- run tools/gen_abi.py --write");
-_Static_assert(sizeof(((struct logit_paint2 *)0)->stop_pos[14]) == 4,
-               "abi.as is stale: logit_paint2.stop_pos[14] changed width -- run tools/gen_abi.py --write");
-_Static_assert(offsetof(struct logit_paint2, stop_pos[15]) == 96,
-               "abi.as is stale: logit_paint2.stop_pos[15] moved -- run tools/gen_abi.py --write");
-_Static_assert(sizeof(((struct logit_paint2 *)0)->stop_pos[15]) == 4,
-               "abi.as is stale: logit_paint2.stop_pos[15] changed width -- run tools/gen_abi.py --write");
-_Static_assert(offsetof(struct logit_paint2, stop_argb[0]) == 100,
-               "abi.as is stale: logit_paint2.stop_argb[0] moved -- run tools/gen_abi.py --write");
-_Static_assert(sizeof(((struct logit_paint2 *)0)->stop_argb[0]) == 4,
-               "abi.as is stale: logit_paint2.stop_argb[0] changed width -- run tools/gen_abi.py --write");
-_Static_assert(offsetof(struct logit_paint2, stop_argb[1]) == 104,
-               "abi.as is stale: logit_paint2.stop_argb[1] moved -- run tools/gen_abi.py --write");
-_Static_assert(sizeof(((struct logit_paint2 *)0)->stop_argb[1]) == 4,
-               "abi.as is stale: logit_paint2.stop_argb[1] changed width -- run tools/gen_abi.py --write");
-_Static_assert(offsetof(struct logit_paint2, stop_argb[2]) == 108,
-               "abi.as is stale: logit_paint2.stop_argb[2] moved -- run tools/gen_abi.py --write");
-_Static_assert(sizeof(((struct logit_paint2 *)0)->stop_argb[2]) == 4,
-               "abi.as is stale: logit_paint2.stop_argb[2] changed width -- run tools/gen_abi.py --write");
-_Static_assert(offsetof(struct logit_paint2, stop_argb[3]) == 112,
-               "abi.as is stale: logit_paint2.stop_argb[3] moved -- run tools/gen_abi.py --write");
-_Static_assert(sizeof(((struct logit_paint2 *)0)->stop_argb[3]) == 4,
-               "abi.as is stale: logit_paint2.stop_argb[3] changed width -- run tools/gen_abi.py --write");
-_Static_assert(offsetof(struct logit_paint2, stop_argb[4]) == 116,
-               "abi.as is stale: logit_paint2.stop_argb[4] moved -- run tools/gen_abi.py --write");
-_Static_assert(sizeof(((struct logit_paint2 *)0)->stop_argb[4]) == 4,
-               "abi.as is stale: logit_paint2.stop_argb[4] changed width -- run tools/gen_abi.py --write");
-_Static_assert(offsetof(struct logit_paint2, stop_argb[5]) == 120,
-               "abi.as is stale: logit_paint2.stop_argb[5] moved -- run tools/gen_abi.py --write");
-_Static_assert(sizeof(((struct logit_paint2 *)0)->stop_argb[5]) == 4,
-               "abi.as is stale: logit_paint2.stop_argb[5] changed width -- run tools/gen_abi.py --write");
-_Static_assert(offsetof(struct logit_paint2, stop_argb[6]) == 124,
-               "abi.as is stale: logit_paint2.stop_argb[6] moved -- run tools/gen_abi.py --write");
-_Static_assert(sizeof(((struct logit_paint2 *)0)->stop_argb[6]) == 4,
-               "abi.as is stale: logit_paint2.stop_argb[6] changed width -- run tools/gen_abi.py --write");
-_Static_assert(offsetof(struct logit_paint2, stop_argb[7]) == 128,
-               "abi.as is stale: logit_paint2.stop_argb[7] moved -- run tools/gen_abi.py --write");
-_Static_assert(sizeof(((struct logit_paint2 *)0)->stop_argb[7]) == 4,
-               "abi.as is stale: logit_paint2.stop_argb[7] changed width -- run tools/gen_abi.py --write");
-_Static_assert(offsetof(struct logit_paint2, stop_argb[8]) == 132,
-               "abi.as is stale: logit_paint2.stop_argb[8] moved -- run tools/gen_abi.py --write");
-_Static_assert(sizeof(((struct logit_paint2 *)0)->stop_argb[8]) == 4,
-               "abi.as is stale: logit_paint2.stop_argb[8] changed width -- run tools/gen_abi.py --write");
-_Static_assert(offsetof(struct logit_paint2, stop_argb[9]) == 136,
-               "abi.as is stale: logit_paint2.stop_argb[9] moved -- run tools/gen_abi.py --write");
-_Static_assert(sizeof(((struct logit_paint2 *)0)->stop_argb[9]) == 4,
-               "abi.as is stale: logit_paint2.stop_argb[9] changed width -- run tools/gen_abi.py --write");
-_Static_assert(offsetof(struct logit_paint2, stop_argb[10]) == 140,
-               "abi.as is stale: logit_paint2.stop_argb[10] moved -- run tools/gen_abi.py --write");
-_Static_assert(sizeof(((struct logit_paint2 *)0)->stop_argb[10]) == 4,
-               "abi.as is stale: logit_paint2.stop_argb[10] changed width -- run tools/gen_abi.py --write");
-_Static_assert(offsetof(struct logit_paint2, stop_argb[11]) == 144,
-               "abi.as is stale: logit_paint2.stop_argb[11] moved -- run tools/gen_abi.py --write");
-_Static_assert(sizeof(((struct logit_paint2 *)0)->stop_argb[11]) == 4,
-               "abi.as is stale: logit_paint2.stop_argb[11] changed width -- run tools/gen_abi.py --write");
-_Static_assert(offsetof(struct logit_paint2, stop_argb[12]) == 148,
-               "abi.as is stale: logit_paint2.stop_argb[12] moved -- run tools/gen_abi.py --write");
-_Static_assert(sizeof(((struct logit_paint2 *)0)->stop_argb[12]) == 4,
-               "abi.as is stale: logit_paint2.stop_argb[12] changed width -- run tools/gen_abi.py --write");
-_Static_assert(offsetof(struct logit_paint2, stop_argb[13]) == 152,
-               "abi.as is stale: logit_paint2.stop_argb[13] moved -- run tools/gen_abi.py --write");
-_Static_assert(sizeof(((struct logit_paint2 *)0)->stop_argb[13]) == 4,
-               "abi.as is stale: logit_paint2.stop_argb[13] changed width -- run tools/gen_abi.py --write");
-_Static_assert(offsetof(struct logit_paint2, stop_argb[14]) == 156,
-               "abi.as is stale: logit_paint2.stop_argb[14] moved -- run tools/gen_abi.py --write");
-_Static_assert(sizeof(((struct logit_paint2 *)0)->stop_argb[14]) == 4,
-               "abi.as is stale: logit_paint2.stop_argb[14] changed width -- run tools/gen_abi.py --write");
-_Static_assert(offsetof(struct logit_paint2, stop_argb[15]) == 160,
-               "abi.as is stale: logit_paint2.stop_argb[15] moved -- run tools/gen_abi.py --write");
-_Static_assert(sizeof(((struct logit_paint2 *)0)->stop_argb[15]) == 4,
-               "abi.as is stale: logit_paint2.stop_argb[15] changed width -- run tools/gen_abi.py --write");
-_Static_assert(offsetof(struct logit_paint2, flags) == 164,
+_Static_assert(offsetof(struct logit_paint2, stop_pos) == 40,
+               "abi.as is stale: logit_paint2.stop_pos moved -- run tools/gen_abi.py --write");
+_Static_assert(sizeof(((struct logit_paint2 *)0)->stop_pos) == 8,
+               "abi.as is stale: logit_paint2.stop_pos changed width -- run tools/gen_abi.py --write");
+_Static_assert(offsetof(struct logit_paint2, stop_argb) == 48,
+               "abi.as is stale: logit_paint2.stop_argb moved -- run tools/gen_abi.py --write");
+_Static_assert(sizeof(((struct logit_paint2 *)0)->stop_argb) == 8,
+               "abi.as is stale: logit_paint2.stop_argb changed width -- run tools/gen_abi.py --write");
+_Static_assert(offsetof(struct logit_paint2, flags) == 56,
                "abi.as is stale: logit_paint2.flags moved -- run tools/gen_abi.py --write");
 _Static_assert(sizeof(((struct logit_paint2 *)0)->flags) == 4,
                "abi.as is stale: logit_paint2.flags changed width -- run tools/gen_abi.py --write");

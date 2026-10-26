@@ -12,6 +12,10 @@
  *   fb-clip       fb_clip_push is OL_UNSUPPORTED, depth 0, clip untouched
  *   wm-switch     every new number is in wm.c's wm_domain_call, and the
  *                 pixel-writing ones (only those) in is_draw_call
+ *   as-layout     every layout gen_abi wrote into fsroot/as/lib/abi.as fits
+ *                 AetherScript's rules (<= 32 fields, each inside the record),
+ *                 so lib/abi.as importers still compile (AS3811); neither
+ *                 check-abi nor `make all` compiles one
  *
  * Linked host-side with fb.c, glass.c, $(GFX_SRC), wm_draw2*.c and
  * wm_backdrop.c, like test-fb-clip. text.c is NOT linked, so this file
@@ -62,12 +66,12 @@ SZ(logit_path2, 64);
 OFF(logit_path2, size, 0); OFF(logit_path2, verbs, 8); OFF(logit_path2, xy, 16);
 OFF(logit_path2, nverb, 24); OFF(logit_path2, nxy, 28); OFF(logit_path2, rule, 32);
 OFF(logit_path2, m, 36); OFF(logit_path2, flags, 60);
-SZ(logit_paint2, 168);
+SZ(logit_paint2, 64);
 OFF(logit_paint2, size, 0); OFF(logit_paint2, kind, 4); OFF(logit_paint2, op, 5);
 OFF(logit_paint2, spread, 6); OFF(logit_paint2, nstop, 7); OFF(logit_paint2, argb, 8);
 OFF(logit_paint2, x0, 12); OFF(logit_paint2, y0, 16); OFF(logit_paint2, x1, 20);
 OFF(logit_paint2, y1, 24); OFF(logit_paint2, r0, 28); OFF(logit_paint2, r1, 32);
-OFF(logit_paint2, stop_pos, 36); OFF(logit_paint2, stop_argb, 100); OFF(logit_paint2, flags, 164);
+OFF(logit_paint2, stop_pos, 40); OFF(logit_paint2, stop_argb, 48); OFF(logit_paint2, flags, 56);
 SZ(logit_stroke2, 52);
 OFF(logit_stroke2, size, 0); OFF(logit_stroke2, width, 4); OFF(logit_stroke2, cap, 8);
 OFF(logit_stroke2, join, 9); OFF(logit_stroke2, ndash, 10); OFF(logit_stroke2, pad, 11);
@@ -482,6 +486,47 @@ static void test_wm_switches(const char *wm_path)
     check_fails("wm-switch", bad, "12 numbers in wm_domain_call + wm_gui_dispatch, 7 in is_draw_call");
 }
 
+/* ---- static check over the generated AetherScript layouts -------------- */
+#define GAV2_AS_MAX_FIELDS 32   /* AT_ARGS: c/apps/as/frontend/layout.c AS3811 */
+static void test_as_layouts(const char *as_path)
+{
+    int bad = 0, layouts = 0, widest = 0;
+    char *src = slurp(as_path);   /* AS comments are '#', never C ones */
+    if (!src) { printf("FAIL as-layout: cannot read %s\n", as_path); fails++; return; }
+    for (char *p = strstr(src, "= layout(\""); p; p = strstr(p + 1, "= layout(\"")) {
+        char name[96] = "?";
+        const char *ls = p;
+        while (ls > src && ls[-1] != '\n') ls--;
+        sscanf(ls, "%95[A-Za-z0-9_]", name);
+        const char *q = strchr(p + 10, '"');
+        long size = q ? strtol(q + 2, NULL, 10) : -1;
+        char *end = strstr(p, "])");
+        if (!q || size <= 0 || !end) { printf("     as-layout: %s: unparsable header\n", name); bad++; continue; }
+        int nf = 0;
+        for (char *f = strstr(p, "\n    [\""); f && f < end; f = strstr(f + 1, "\n    [\"")) {
+            char fname[96]; long off, w; char kind[8];
+            nf++;
+            if (sscanf(f, " [\"%95[^\"]\", %ld, %ld, \"%7[^\"]\"]", fname, &off, &w, kind) != 4) {
+                printf("     as-layout: %s: unparsable field %d\n", name, nf); bad++; continue;
+            }
+            if (w <= 0 || off < 0 || off + w > size) {
+                printf("     as-layout: %s.%s [%ld,+%ld) outside %ld bytes\n", name, fname, off, w, size); bad++;
+            }
+        }
+        layouts++;
+        if (nf > widest) widest = nf;
+        if (nf > GAV2_AS_MAX_FIELDS) {
+            printf("     as-layout: %s has %d fields (AetherScript allows %d)\n", name, nf, GAV2_AS_MAX_FIELDS);
+            bad++;
+        }
+    }
+    if (layouts < 11) { printf("     as-layout: only %d layouts found\n", layouts); bad++; }
+    free(src);
+    char what[96];
+    snprintf(what, sizeof what, "%d layouts, widest %d fields <= %d", layouts, widest, GAV2_AS_MAX_FIELDS);
+    check_fails("as-layout", bad, what);
+}
+
 int main(int argc, char **argv)
 {
     const char *wm_path = argc > 1 ? argv[1] : "c/kernel/gui/wm.c";
@@ -494,6 +539,7 @@ int main(int argc, char **argv)
     test_router();
     test_fb_clip();
     test_wm_switches(wm_path);
+    test_as_layouts(argc > 2 ? argv[2] : "fsroot/as/lib/abi.as");
     if (fails) { printf("gui-abi-v2: %d check(s) FAILED\n", fails); return 1; }
     printf("gui-abi-v2: all checks passed\n");
     return 0;

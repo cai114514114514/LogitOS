@@ -78,7 +78,7 @@ int gav2_wire_run(void)
         r = ol_window_path2(&p, &q, 0);
         ck(cap.n == SYS_GUI_PATH && cap.a == (long)&p && cap.b == (long)&q && cap.c == 0,
            "path-fill", "wrong emission");
-        ck(cap.size_a == 64 && cap.size_b == 168, "path-fill", "sizes not stamped (64, 168)");
+        ck(cap.size_a == 64 && cap.size_b == 64, "path-fill", "sizes not stamped (64, 64)");
         ck(!memcmp((char *)&p + 4, (char *)&pb + 4, sizeof p - 4) &&
            !memcmp((char *)&q + 4, (char *)&qb + 4, sizeof q - 4), "path-fill", "other bytes changed");
         ck(!memcmp(&s, &sb, sizeof s), "path-fill", "touched the unused stroke");

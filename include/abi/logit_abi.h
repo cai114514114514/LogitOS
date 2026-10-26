@@ -3053,7 +3053,11 @@ struct logit_path2 {
     unsigned flags;
 };
 /* The paint. stop_pos is 0..65536 along the gradient; the first `nstop`
- * entries of stop_pos/stop_argb are read. x0..r1 are 24.8 points in the
+ * entries of the stop_pos/stop_argb arrays are read (both may be 0 when
+ * nstop is 0). The stops live behind pointers, not inline: AetherScript
+ * layouts are capped at 32 fields and gen_abi expands scalar arrays one
+ * field per element, so two inline [16] arrays would make Paint2 46 fields
+ * and break every lib/abi.as importer (AS3811). x0..r1 are 24.8 points in the
  * path's own space. Until the engine work lands the kernel rejects
  * CONIC, op != 0, spread != 0 and nstop > 8 with OL_UNSUPPORTED and leaves
  * LOGIT_GUI2_F_PATH_EXT clear. */
@@ -3067,8 +3071,8 @@ struct logit_paint2 {
     unsigned char kind, op, spread, nstop;
     unsigned argb;
     int x0, y0, x1, y1, r0, r1;
-    unsigned stop_pos[16];
-    unsigned stop_argb[16];
+    const unsigned *stop_pos;   /* nstop entries, 0..65536 */
+    const unsigned *stop_argb;  /* nstop entries */
     unsigned flags;
 };
 /* Present (SYS_GUI_PATH's third argument) = stroke the path instead of
