@@ -761,7 +761,7 @@ static void draw_sidebar(void)
 static void glass_btn(int x, int y, int w, int h, const char *label)
 {
     int rad = h / 2; if (rad > 11) rad = 11;
-    aui_glass(x, y, w, h, rad);
+    aui_button_face(x, y, w, h, rad);   /* was aui_glass: see aui.c button_face */
     int lw = text_measure_px(label, slen(label), 13, 0);
     gui_text_run(x + (w - lw) / 2, y + (h - 13) / 2, 13, 0, AUI_TEXT, label, slen(label));
 }

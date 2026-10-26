@@ -1635,6 +1635,32 @@ static unsigned face_for(int st)
     return aui_mix(AUI_FACE, AUI_FACE_HOVER, t);
 }
 
+/* The default button's face: a raised tile with a hairline all the way round.
+ *
+ * It was gui_glass() at 24 points (2026-10-26 release tour). The glass material
+ * lights its rim from the upper left and pulls every rim pixel facing away from
+ * that light toward a mid grey -- right for the dock, which has a wallpaper
+ * behind it to refract. A button sits on a flat window panel, so there is
+ * nothing to refract and the only visible part of the material was that grey:
+ * two dark crescents, lower-left and upper-right, which read as a torn edge.
+ * This face is symmetric by construction: a vertical gradient from near the
+ * surface colour down to the control face, and one uniform border. `base` is
+ * face_for()'s answer, so hover and press keep their colours. */
+static void button_face(int x, int y, int w, int h, int rad, unsigned base)
+{
+    unsigned top, bot;
+    if (theme_dark) { top = aui_shade(base, 8); bot = base; }
+    else { top = aui_mix(AUI_SURFACE, base, 64); bot = aui_mix(AUI_SURFACE, base, 220); }
+    aui_vgrad_round(x, y, w, h, rad, top, bot);
+    aui_stroke(x, y, w, h, rad, 1, AUI_BORDER);
+}
+
+void aui_button_face(int x, int y, int w, int h, int radius)
+{
+    aui_ensure();
+    button_face(x, y, w, h, radius, AUI_FACE);
+}
+
 /* Two concentric RINGS, never a filled halo: a filled rounded rect behind the
  * control is drawn over it by the control itself, and drawn after it washes the
  * control blue. Rings also survive on any background, which is the point -- the
@@ -1920,15 +1946,9 @@ int aui_button_ex(int x, int y, int w, int h, const char *label, enum aui_varian
     if (r.st & AUI_OFF) { fill = AUI_DISABLED; fg = AUI_DISABLED_TX; }
 
     if (v == AUI_V_GLASS && !(r.st & AUI_OFF)) {
-        int rr = imin(h / 2, 11);
-        if (r.st & AUI_ACTIVE) {
-            if (theme_dark) gui_glass(wx, wy, w, h, rr, 94, 150, 255, 180);
-            else            gui_glass(wx, wy, w, h, rr, 64, 130, 246, 170);
-            fg = AUI_ACCENT_TEXT;
-        } else {
-            aui_glass(x, y, w, h, rr);
-            if (r.st & AUI_HOVER) aui_round_a(x, y, w, h, rr, AUI_ACCENT, 26);
-        }
+        /* Still called GLASS -- every aui_button() caller asks for it -- but
+         * drawn as button_face(); see there for why. */
+        button_face(x, y, w, h, imin(h / 2, 11), face_for(r.st));
     } else if (v == AUI_V_GHOST) {
         if (r.st & AUI_ACTIVE)      aui_round_a(x, y, w, h, rad, AUI_ACCENT, 52);
         else if (r.st & AUI_HOVER)  aui_round_a(x, y, w, h, rad, AUI_ACCENT, 26);

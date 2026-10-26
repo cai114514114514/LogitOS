@@ -280,6 +280,9 @@ void aui_vhairline(int x, int y, int h);
 /* Liquid-glass a region over the content drawn behind it (theme-tinted). For
  * app chrome (sidebars/toolbars/cards) -- draw the content first, then glass. */
 void aui_glass(int x, int y, int w, int h, int radius);
+/* The default button's face without a widget: for a caller that hit-tests
+ * its own buttons (Finder's toolbar) and must look like aui_button(). */
+void aui_button_face(int x, int y, int w, int h, int radius);
 
 /* text: aui_label is body size; aui_heading is title size; aui_text_sz is any. */
 void aui_label(int x, int y, const char *s, unsigned color);
