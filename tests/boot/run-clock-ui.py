@@ -176,9 +176,29 @@ try:
         ui.launch_app('settings', title='Settings', probe=str(out / 'pointer.ppm'))
         settings = wait(lambda: win_by_title(str(serial), 'Settings'), 'Settings')
         time.sleep(.4)
-        ui.click_at_confirmed(str(out / 'pointer.ppm'), settings['x'] + pt(584),
-            settings['y'] + settings['h'] - pt(settings['ch']) + pt(388))
+        # Where the switch IS, from Settings' own `[settings] aim motion X Y`
+        # (content-local points). A hard-coded (584, 388) stood here and had
+        # drifted off the control as the Appearance page was laid out again;
+        # the app publishes these points so drivers do not have to guess.
+        aim = wait(lambda: (re.findall(r'\[settings\] aim motion (\d+) (\d+)',
+                                       serial.read_text(errors='replace')) or [None])[-1], 'Settings aim')
+        top = settings['y'] + settings['h'] - pt(settings['ch'])
+        ui.click_at_confirmed(str(out / 'pointer.ppm'), settings['x'] + pt(int(aim[0])), top + pt(int(aim[1])))
+        # The switch only edits the DRAFT (settings view.inc toggle_row ->
+        # change()); nothing reaches a running app until Apply. Without this
+        # click the wait below timed out on every run, before and after
+        # 2026-10-26.
+        time.sleep(.6)
+        apply_at = (re.findall(r'\[settings\] aim apply (\d+) (\d+)',
+                               serial.read_text(errors='replace')) or [None])[-1]
+        if apply_at:
+            ui.click_at_confirmed(str(out / 'pointer.ppm'), settings['x'] + pt(int(apply_at[0])), top + pt(int(apply_at[1])))
         wait(lambda: frames()[-1][9] == 1, 'reduced motion setting')
+        # Close Settings (nothing is unsaved after Apply). Since the WM keeps
+        # new windows inside the work area (wm.c win_fit_work_area), Settings
+        # opens at y=64 and covers Clock's titlebar, where the click below aims.
+        cmd_key(ui, 'w')
+        time.sleep(1.0)
         w = window()
         ui.click_at_confirmed(str(out / 'pointer.ppm'), w['x'] + w['w'] // 2, w['y'] + pt(15))
         tap('s')

@@ -34,6 +34,7 @@ where the compositor put the window.
 Usage: qmp_monitor.py <iso> <disk> [--xres N] [--yres N] [--out shot.png] [--keep]
 """
 import os
+import re
 import struct
 import subprocess
 import sys
@@ -258,6 +259,7 @@ def main(argv):
         f = Frame(shot)
         ck(f.tab == "processes", "the tab strip returns to Processes",
            "tab=%r" % (f.tab,))
+        home = (f.ox, f.oy)
 
         # --- dark theme -------------------------------------------------------
         # The menu-bar switch: wm.c puts it at W - S(240), S(3), S(38) x S(18).
@@ -305,12 +307,32 @@ def main(argv):
         time.sleep(6 * slow)
         ui.screendump(shot, settle=1.2 * slow)
         f = Frame(shot)
-        ck(f.ok(), "the Monitor is still up after launching Clock", fatal=True)
+        if not f.ok():
+            # Clock is no longer started at boot, so the click above LAUNCHES
+            # it ("[wm] launched Clock", 2026-10-26) at the next cascade slot,
+            # 28 points right of and below the Monitor. Its focused shadow
+            # (WSH_BLUR, 32 points) then lies across the Monitor's probe at
+            # window-local (4,4), and an exact-colour search cannot find it.
+            # The Monitor has not moved, so its origin carries forward; whether
+            # its window still EXISTS is the compositor's to say.
+            # Only a "gone" AFTER the Monitor's last frame counts: at boot the
+            # compositor reports every empty slot as gone, its own included.
+            text = log()
+            m = list(re.finditer(r"\[wm\] win (\d+) frame .* Activity Monitor", text))
+            gone = bool(m) and ("[wm] win %s gone" % m[-1].group(1)) in text[m[-1].end():]
+            if m and not gone:
+                f.ox, f.oy = home
+                f.tab = "covered by Clock's shadow"
+        ck(f.ok(), "the Monitor is still up after launching Clock", "tab=%r" % (f.tab,), fatal=True)
 
         # Record where Clock's window is, so its DISAPPEARANCE can be asserted
         # later. The Clock face is a large light disc; sample the desktop region
         # it occupies and require it to change after the kill.
-        ui.click_at_confirmed(probe, f.ox + pt(330), f.oy + pt(20))
+        # On the Monitor's TITLEBAR (20 points above its content): when Clock
+        # opens at the next cascade slot it covers the content point that stood
+        # here, (330, 20), and the click raised Clock. The titlebar row above
+        # Clock's top edge is the Monitor's whichever way Clock was opened.
+        ui.click_at_confirmed(probe, f.ox + pt(330), f.oy - pt(20))
         time.sleep(1.5 * slow)
         park(f)
         ui.screendump(shot, settle=1.2 * slow)
@@ -435,10 +457,23 @@ def main(argv):
         f2 = Frame(shot)
         ck(f2.ok(), "the Monitor is still alive after the kill")
         if f2.ok():
-            after_row3 = f2.dark(TABLE_X, ROW3_Y, 620, ROW_H, 120)
-            ck(before_row3 > 10 and after_row3 <= 2,
+            # The count is the Monitor's own: it prints `rows=N` with its paint
+            # statistics. The ink of the FOURTH row stood here, which assumed
+            # exactly four processes; since Clock is no longer a boot app the
+            # table holds five (2026-10-26), the row that leaves is the fifth,
+            # and the fourth kept its ink. The negative control kills pid 0, so
+            # nothing leaves and the count does not move.
+            rows_re = r"\[monitor\] paints=\d+ .*?rows=(\d+)"
+            was = re.findall(rows_re, pre)
+            now = []
+            for _ in range(24):
+                now = re.findall(rows_re, log()[len(pre):])
+                if was and now and int(now[-1]) < int(was[-1]):
+                    break
+                time.sleep(0.5)
+            ck(bool(was) and bool(now) and int(now[-1]) == int(was[-1]) - 1,
                "the process table lost a row (SYS_PROCS no longer lists it)",
-               "4th row ink %d -> %d" % (before_row3, after_row3))
+               "rows %s -> %s" % (was[-1] if was else None, now[-1] if now else None))
 
         # 3. the WINDOW is gone. A killed GUI app must not leave a corpse on the
         #    desktop -- this is the assertion that proc_exit's wm_app_exit()

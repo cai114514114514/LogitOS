@@ -239,8 +239,18 @@ def build_negative():
     tmp = tempfile.mkdtemp(prefix="logit-wnegctl-")
     dst = os.path.join(tmp, "tree")
     print("     copying the tree to %s ..." % dst)
-    shutil.copytree(ROOT, dst, ignore=shutil.ignore_patterns(
-        ".git", "build", "build-wm", "__pycache__", "*.pyc", "rust"))
+    # The build outputs are skipped at the TOP of the tree only. A pattern
+    # applies at every depth, and "build" also matched tools/build/, which the
+    # Makefile includes (jobs.mk, cache.mk, product.mk) -- so from the day that
+    # directory appeared the copy could not build and this control failed
+    # before its kernel existed (found 2026-10-26).
+    top = {".git", "build", "build-wm", "rust"}
+    def skip(d, names):
+        out = {n for n in names if n == "__pycache__" or n.endswith(".pyc")}
+        if os.path.abspath(d) == os.path.abspath(ROOT):
+            out |= top & set(names)
+        return out
+    shutil.copytree(ROOT, dst, ignore=skip)
     src_rust = os.path.join(ROOT, "rust")
     if os.path.isdir(src_rust):
         shutil.copytree(src_rust, os.path.join(dst, "rust"))
@@ -427,7 +437,11 @@ def main(argv):
     SKIP = pt(24) + 2
     nshot = [0]
 
-    qemu, sock, serial = boot(iso, xres, yres, tmp)
+    # The disk is always the main tree's (booted -snapshot, so never written).
+    # boot() would look beside the ISO, and the negative control's ISO comes
+    # from a copied tree whose `make` builds no disk.img: the control then
+    # died with "qemu exited early" before its kernel ran (found 2026-10-26).
+    qemu, sock, serial = boot(iso, xres, yres, tmp, disk=os.path.join(ROOT, "build", "disk.img"))
     try:
         time.sleep(5 * slow)
         ui = Session(sock, serial=serial)
