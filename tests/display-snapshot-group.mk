@@ -28,7 +28,8 @@ test-display-snapshot-group: test-display-snapshot-group-negctl $(BUILD)/dsg/dis
 	$(BUILD)/dsg/display_group_test
 
 # Budget: a corner-only group around a 1280x800 content blit <= 1.10x the
-# plain blit, a full opacity group <= 3.0x (tests/unit/bench_budget.h).
+# plain blit, a full opacity group <= 5.0x (tests/unit/bench_budget.h; 5.0x
+# because a group is three full passes -- snapshot, children, 2-read blend).
 DSG_BENCH_SRC := tests/unit/display_group_bench.c $(GFX_SRC)
 
 $(BUILD)/dsg/display_group_bench: $(DSG_BENCH_SRC) $(GFX_HEADERS) tests/unit/bench_budget.h
