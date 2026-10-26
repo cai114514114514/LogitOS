@@ -67,8 +67,19 @@
 #include "pit.h"
 #include "kprintf.h"
 
+/* The guard c/net/ip/ip.c and c/net/core/sock.c already carry. tests/link.mk
+ * builds this file for the host after <string.h>; at -O1 without a sanitizer
+ * the macOS SDK turns memcpy/memset into fortified MACROS and these bare
+ * prototypes stop parsing ("conflicting types for '__builtin___memset_chk'").
+ * test-arp-host never saw it -- ASan switches the fortify macros off -- but
+ * test-arp-negctl, built -O1 -w, failed to compile, and a control that cannot
+ * compile cannot fire. memcmp is not fortified, so it needs no guard. */
+#ifndef memcpy
 void *memcpy(void *, const void *, size_t);
+#endif
+#ifndef memset
 void *memset(void *, int, size_t);
+#endif
 int   memcmp(const void *, const void *, size_t);
 
 #define ARP_HTYPE_ETH  1
