@@ -267,7 +267,12 @@ static inline int gui_app_icon(const char *name, int x, int y, int px)
 { return (int)_sys(SYS_GUI_ICON, ((long)(x & 65535) << 16) | (y & 65535),
                    ((long)LOGIT_ICON_APP << 16) | (px & 65535), (long)name); }
 enum { GICON_FOLDER, GICON_DOC, GICON_TERMINAL, GICON_GRID, GICON_GLOBE,
-       GICON_CODE, GICON_CHART, GICON_CLOCK, GICON_IMAGE };
+       GICON_CODE, GICON_CHART, GICON_CLOCK, GICON_IMAGE,
+       /* ICON_PHOTOS/ICON_SLIDERS (9,10) have no GICON twin; the values below
+        * match kernel icons.h so gui_icon() passes them straight through. */
+       GICON_CHEVRON_L = 11, GICON_CHEVRON_R, GICON_CHEVRON_U, GICON_CHEVRON_D,
+       GICON_CLOSE, GICON_PLUS, GICON_MINUS, GICON_CHECK,
+       GICON_SEARCH, GICON_SIDEBAR, GICON_ELLIPSIS, GICON_GEAR };
 static inline void gui_icon(int id, int x, int y, int px, unsigned color)
 { ol_window_icon(id, x, y, px, color); }
 /* Liquid-glass a region of THIS window over the content already drawn there

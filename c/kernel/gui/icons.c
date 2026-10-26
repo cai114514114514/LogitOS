@@ -30,7 +30,10 @@ static int seq(const char *a, const char *b) { while (*a && *a == *b) { a++; b++
 
 /* op + up to 3 control/end points, in icon-space units. MOVE/LINE use pt0;
  * QUAD uses pt0=ctrl, pt1=end; CUBIC uses pt0,pt1=ctrls, pt2=end. */
-enum { IC_MOVE, IC_LINE, IC_QUAD, IC_CUBIC, IC_CLOSE };
+enum { IC_MOVE, IC_LINE, IC_QUAD, IC_CUBIC, IC_CLOSE,
+       IC_ARC,      /* gfx_arc: pt0=centre, x[1]=radius, x[2]=start deg, y[2]=sweep deg */
+       IC_SBEGIN,   /* following ops build STROKE source geometry ...             */
+       IC_STROKE }; /* ... stroked with width x[0] (box units, weight 2) and appended */
 struct ic_cmd { unsigned char op; short x[3], y[3]; };
 
 #define MV(a,b)               { IC_MOVE,  {(short)(a)},                 {(short)(b)} }
@@ -38,6 +41,9 @@ struct ic_cmd { unsigned char op; short x[3], y[3]; };
 #define QD(cx,cy,a,b)         { IC_QUAD,  {(short)(cx),(short)(a)},     {(short)(cy),(short)(b)} }
 #define CB(p,q,r,s,a,b)       { IC_CUBIC, {(short)(p),(short)(r),(short)(a)}, {(short)(q),(short)(s),(short)(b)} }
 #define CL                    { IC_CLOSE, {0}, {0} }
+#define AR(cx,cy,r,st,sw)     { IC_ARC,   {(short)(cx),(short)(r),(short)(st)}, {(short)(cy),0,(short)(sw)} }
+#define SB                    { IC_SBEGIN, {0}, {0} }
+#define STK(w)                { IC_STROKE, {(short)(w)}, {0} }
 
 /* --- the icons --- */
 static const struct ic_cmd ic_folder[] = {       /* filled folder w/ tab */
@@ -123,6 +129,35 @@ static const struct ic_cmd ic_sliders[] = {
                CB(49,69,53,65,58,65), CB(63,65,67,69,67,74), CL,       /* knob  3 */
 };
 
+/* --- set A: core UI symbols. Stroked glyphs (SB ... STK(w)): the subpaths
+ * between SB and STK are stroked with round caps and joins at width w (box
+ * units, the weight-2 width; weight 1/3 are 2 units thinner/thicker) and the
+ * outline joins the fill path. Everything stays 10..90 so the ink never
+ * reaches the bitmap border at any size. */
+static const struct ic_cmd ic_chev_r[] = { SB, MV(38,20), LN(68,50), LN(38,80), STK(10) };
+static const struct ic_cmd ic_chev_l[] = { SB, MV(62,20), LN(32,50), LN(62,80), STK(10) };
+static const struct ic_cmd ic_chev_d[] = { SB, MV(20,38), LN(50,68), LN(80,38), STK(10) };
+static const struct ic_cmd ic_chev_u[] = { SB, MV(20,62), LN(50,32), LN(80,62), STK(10) };
+static const struct ic_cmd ic_x[]      = { SB, MV(25,25), LN(75,75), MV(75,25), LN(25,75), STK(8) };
+static const struct ic_cmd ic_plus[]   = { SB, MV(50,20), LN(50,80), MV(20,50), LN(80,50), STK(8) };
+static const struct ic_cmd ic_minus[]  = { SB, MV(20,50), LN(80,50), STK(8) };
+static const struct ic_cmd ic_check[]  = { SB, MV(22,52), LN(42,72), LN(78,28), STK(10) };
+static const struct ic_cmd ic_search[] = {
+    SB, AR(44,44,26,0,360), CL, MV(63,63), LN(84,84), STK(9),
+};
+static const struct ic_cmd ic_sidebar[] = {
+    SB, MV(14,22), LN(86,22), LN(86,78), LN(14,78), CL, MV(38,22), LN(38,78), STK(7),
+};
+static const struct ic_cmd ic_ellipsis[] = {     /* three filled dots */
+    AR(20,50,8,0,360), CL, AR(50,50,8,0,360), CL, AR(80,50,8,0,360), CL,
+};
+static const struct ic_cmd ic_gear[] = {         /* ring + eight round-capped teeth */
+    SB, AR(50,50,24,0,360), CL,
+    MV(79,50), LN(85,50), MV(50,79), LN(50,85), MV(21,50), LN(15,50), MV(50,21), LN(50,15),
+    MV(71,71), LN(75,75), MV(29,71), LN(25,75), MV(29,29), LN(25,25), MV(71,29), LN(75,25),
+    STK(8),
+};
+
 static const struct { const struct ic_cmd *c; int n; } TBL[ICON_COUNT] = {
     [ICON_FOLDER]   = { ic_folder,   sizeof ic_folder   / sizeof(struct ic_cmd) },
     [ICON_DOC]      = { ic_doc,      sizeof ic_doc      / sizeof(struct ic_cmd) },
@@ -135,20 +170,50 @@ static const struct { const struct ic_cmd *c; int n; } TBL[ICON_COUNT] = {
     [ICON_IMAGE]    = { ic_image,    sizeof ic_image    / sizeof(struct ic_cmd) },
     [ICON_PHOTOS]   = { ic_photos,   sizeof ic_photos   / sizeof(struct ic_cmd) },
     [ICON_SLIDERS]  = { ic_sliders,  sizeof ic_sliders  / sizeof(struct ic_cmd) },
+    [ICON_CHEVRON_L] = { ic_chev_l, sizeof ic_chev_l / sizeof(struct ic_cmd) },
+    [ICON_CHEVRON_R] = { ic_chev_r, sizeof ic_chev_r / sizeof(struct ic_cmd) },
+    [ICON_CHEVRON_U] = { ic_chev_u, sizeof ic_chev_u / sizeof(struct ic_cmd) },
+    [ICON_CHEVRON_D] = { ic_chev_d, sizeof ic_chev_d / sizeof(struct ic_cmd) },
+    [ICON_CLOSE] = { ic_x, sizeof ic_x / sizeof(struct ic_cmd) },
+    [ICON_PLUS] = { ic_plus, sizeof ic_plus / sizeof(struct ic_cmd) },
+    [ICON_MINUS] = { ic_minus, sizeof ic_minus / sizeof(struct ic_cmd) },
+    [ICON_CHECK] = { ic_check, sizeof ic_check / sizeof(struct ic_cmd) },
+    [ICON_SEARCH] = { ic_search, sizeof ic_search / sizeof(struct ic_cmd) },
+    [ICON_SIDEBAR] = { ic_sidebar, sizeof ic_sidebar / sizeof(struct ic_cmd) },
+    [ICON_ELLIPSIS] = { ic_ellipsis, sizeof ic_ellipsis / sizeof(struct ic_cmd) },
+    [ICON_GEAR] = { ic_gear, sizeof ic_gear / sizeof(struct ic_cmd) },
 };
 
-static struct { int px, w, h; uint8_t *cov; } cache[ICON_COUNT];
+/* Cache: a 64-entry LRU keyed by (id, px, weight). px is DEVICE pixels, so a
+ * scale change re-keys by itself and the old size ages out; eviction bounds the
+ * count (not the bytes: each entry is px*px, and wm.c caps px at 512).
+ * -DICON_CACHE_SINGLE shrinks it to one entry (the old one-slot-per-id
+ * thrash, as a test control). All of it is guarded by icon_lock. */
+#ifdef ICON_CACHE_SINGLE
+#define IC_CACHE_N 1
+#else
+#define IC_CACHE_N 64
+#endif
+static struct ic_ent { int id, px, wt; unsigned long stamp; uint8_t *cov; } ic_cache[IC_CACHE_N];
+static unsigned long ic_tick;
+static unsigned ic_hits, ic_misses;
 
 /* Path storage for the replay. Caller-owned, like every buffer the engine
  * touches -- 4096 points is 32 KiB of kernel .bss and clears the worst icon
  * here (the six-petal pinwheel, twelve cubics) at wm.c's 512 px ceiling with
  * room to spare; the dock draws these at 31. An icon that overflowed would be
  * refused by gfx_fill_mask_subs rather than drawn half-formed. */
-#define IC_MAXPT  4096
+#define IC_MAXPT  8192
 #define IC_MAXSUB 64
 static int ic_pt[IC_MAXPT * 2];
 static int ic_sub[IC_MAXSUB];
 static struct gfx_path ic_path;
+/* Stroke source (between SB and STK) and its storage; same lock as ic_path. */
+#define IC_SMAXPT  512
+#define IC_SMAXSUB 16
+static int ic_spt[IC_SMAXPT * 2];
+static int ic_ssub[IC_SMAXSUB];
+static struct gfx_path ic_spath;
 
 /* 16 sub-scanlines, not the engine's default 4, and for the same measured
  * reason type uses 16: several of these icons are built from thin horizontal
@@ -158,6 +223,10 @@ static struct gfx_path ic_path;
  * (id, px) and cached below, exactly like a glyph, so the trade that is wrong
  * for a button being dragged is right here. */
 #define IC_SUBS   16
+/* Stroked glyphs are diagonal-heavy (X, check, handle): x is exact in the
+ * engine but y is sampled, so a 16-row stair leaves up to ~11/255 of asymmetry
+ * between an X and its 90-degree rotation. 64 rows cuts that to noise. */
+#define IC_SUBS_STROKE 64
 
 /* THE ICON LOCK, text.c's argument in miniature: the cache hands back a
  * pointer the blit below reads after the fill, and the fill shares ic_path.
@@ -167,46 +236,107 @@ static struct gfx_path ic_path;
  * Never entered from an interrupt, so the plain form. */
 static spinlock_t icon_lock = SPINLOCK_INIT;
 
-static void icon_draw_locked(int id, int x, int y, int px, uint32_t color);
+static void icon_draw_locked(int id, int x, int y, int px, uint32_t color, int weight);
 
-void icon_draw(int id, int x, int y, int px, uint32_t color)
+void icon_draw_w(int id, int x, int y, int px, uint32_t color, int weight)
 {
     spin_lock(&icon_lock);
-    icon_draw_locked(id, x, y, px, color);
+    icon_draw_locked(id, x, y, px, color, weight);
     spin_unlock(&icon_lock);
 }
 
-static void icon_draw_locked(int id, int x, int y, int px, uint32_t color)
+void icon_draw(int id, int x, int y, int px, uint32_t color)
+{
+    icon_draw_w(id, x, y, px, color, 2);
+}
+
+void icon_cache_stats(unsigned *hits, unsigned *misses, unsigned *entries)
+{
+    spin_lock(&icon_lock);
+    if (hits) *hits = ic_hits;
+    if (misses) *misses = ic_misses;
+    if (entries) { unsigned n = 0; for (int i = 0; i < IC_CACHE_N; i++) n += ic_cache[i].cov != 0; *entries = n; }
+    spin_unlock(&icon_lock);
+}
+
+static int icon_has_stroke(int id)
+{
+    for (int i = 0; i < TBL[id].n; i++) if (TBL[id].c[i].op == IC_STROKE) return 1;
+    return 0;
+}
+
+/* Replay TBL[id] at `px` into ic_path (fill geometry plus stroke outlines). */
+static int icon_build(int id, int px, int weight)
+{
+    /* icon units (0..100, y down) -> device 24.8, per point. */
+    /* Stroked glyphs round to nearest so a mirrored pair (x -> 100-x) lands on
+     * mirrored 24.8 coordinates; the fill-only legacy icons keep truncation
+     * (bit-identical to before). */
+    const long bias = icon_has_stroke(id) ? 50 : 0;
+    #define SX(v) ((int)(((long)(v) * px * 256 + bias) / 100))
+    struct gfx_path *t = &ic_path;
+    gfx_path_init(&ic_path, ic_pt, IC_MAXPT, ic_sub, IC_MAXSUB);
+    for (int i = 0; i < TBL[id].n; i++) {
+        const struct ic_cmd *c = &TBL[id].c[i];
+        switch (c->op) {
+        case IC_MOVE:  gfx_move_to (t, SX(c->x[0]), SX(c->y[0])); break;
+        case IC_LINE:  gfx_line_to (t, SX(c->x[0]), SX(c->y[0])); break;
+        case IC_QUAD:  gfx_quad_to (t, SX(c->x[0]), SX(c->y[0]),
+                                       SX(c->x[1]), SX(c->y[1])); break;
+        case IC_CUBIC: gfx_cubic_to(t, SX(c->x[0]), SX(c->y[0]),
+                                       SX(c->x[1]), SX(c->y[1]),
+                                       SX(c->x[2]), SX(c->y[2])); break;
+        case IC_CLOSE: gfx_close   (t); break;
+        case IC_ARC:   gfx_arc(t, SX(c->x[0]), SX(c->y[0]), SX(c->x[1]), SX(c->x[1]),
+                               c->x[2] * 256, c->y[2] * 256, 0); break;
+        case IC_SBEGIN:
+            gfx_path_init(&ic_spath, ic_spt, IC_SMAXPT, ic_ssub, IC_SMAXSUB);
+            t = &ic_spath; break;
+        case IC_STROKE: {
+            struct gfx_stroke st = { 0 };
+            int w = c->x[0] + (weight - 2) * 2;
+            st.width = SX(w); st.cap = GFX_CAP_ROUND; st.join = GFX_JOIN_ROUND;
+            st.miter_limit = 4 << 16;
+            if (!gfx_stroke_path(&ic_path, &ic_spath, &st)) return 0;
+            t = &ic_path; break;
+        }
+        }
+    }
+    #undef SX
+    return 1;
+}
+
+static void icon_draw_locked(int id, int x, int y, int px, uint32_t color, int weight)
 {
     if (id < 0 || id >= ICON_COUNT || !TBL[id].c) return;
     if (px <= 0 || px > GFX_MAX_W) return;
-    if (cache[id].px != px || !cache[id].cov) {
-        if (cache[id].cov) { kfree(cache[id].cov); cache[id].cov = 0; }
+    if (weight < 1) weight = 1;
+    if (weight > 3) weight = 3;
+    if (!icon_has_stroke(id)) weight = 2;      /* weight is meaningless: share one entry */
+
+    struct ic_ent *e = 0, *victim = 0;
+    for (int i = 0; i < IC_CACHE_N; i++) {
+        struct ic_ent *c = &ic_cache[i];
+        if (c->cov && c->id == id && c->px == px && c->wt == weight) { e = c; break; }
+        if (!victim || !c->cov || (victim->cov && c->stamp < victim->stamp)) victim = c;
+    }
+    if (e) {
+        ic_hits++;
+    } else {
+        ic_misses++;
+        if (victim->cov) { kfree(victim->cov); victim->cov = 0; }
         uint8_t *cov = kmalloc((unsigned long)px * px);
         if (!cov) return;
-        /* icon units (0..100, y down) -> device 24.8, per point. */
-        #define SX(v) ((int)(((long)(v) * px * 256) / 100))
-        gfx_path_init(&ic_path, ic_pt, IC_MAXPT, ic_sub, IC_MAXSUB);
-        for (int i = 0; i < TBL[id].n; i++) {
-            const struct ic_cmd *c = &TBL[id].c[i];
-            switch (c->op) {
-            case IC_MOVE:  gfx_move_to (&ic_path, SX(c->x[0]), SX(c->y[0])); break;
-            case IC_LINE:  gfx_line_to (&ic_path, SX(c->x[0]), SX(c->y[0])); break;
-            case IC_QUAD:  gfx_quad_to (&ic_path, SX(c->x[0]), SX(c->y[0]),
-                                                  SX(c->x[1]), SX(c->y[1])); break;
-            case IC_CUBIC: gfx_cubic_to(&ic_path, SX(c->x[0]), SX(c->y[0]),
-                                                  SX(c->x[1]), SX(c->y[1]),
-                                                  SX(c->x[2]), SX(c->y[2])); break;
-            case IC_CLOSE: gfx_close   (&ic_path); break;
-            }
-        }
-        #undef SX
-        if (!ol_raster_mask_subs(&ic_path, GFX_NONZERO, cov, px, px, 0, 0, IC_SUBS)) {
+        if (!icon_build(id, px, weight) ||
+            !ol_raster_mask_subs(&ic_path, GFX_NONZERO, cov, px, px, 0, 0,
+                                 icon_has_stroke(id) ? IC_SUBS_STROKE : IC_SUBS)) {
             kfree(cov); return;
         }
-        cache[id].px = px; cache[id].w = px; cache[id].h = px; cache[id].cov = cov;
+        victim->id = id; victim->px = px; victim->wt = weight; victim->cov = cov;
+        e = victim;
     }
-    fb_blit_glyph(x, y, cache[id].cov, cache[id].w, cache[id].h, color);
+    e->stamp = ++ic_tick;
+    fb_blit_glyph(x, y, e->cov, px, px, color);
 }
 
 int icon_for_app(const char *name, const char *ext)
