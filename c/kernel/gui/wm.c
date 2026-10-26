@@ -4346,19 +4346,29 @@ static int overlay_button_at(int x, int y)
 /* Dirty wherever it IS, THEN change state -- the same order win_set_min uses
  * and for the same reason: the box a moment ago cannot be re-derived once
  * g_overlay has already moved on. */
+/* The panel's shadow is part of what it paints, so it is part of what opening
+ * and closing must repaint -- see dirty_menu_dropdown() for what leaving it
+ * out did to the menus. */
+#define OVERLAY_SH_DY   S(10)
+#define OVERLAY_SH_BLUR S(28)
+static void dirty_overlay(void)
+{
+    struct drect p; overlay_box(&p);
+    dirty_rect(p.x0 - OVERLAY_SH_BLUR, p.y0 - OVERLAY_SH_BLUR + OVERLAY_SH_DY,
+               p.x1 - p.x0 + 2 * OVERLAY_SH_BLUR, p.y1 - p.y0 + 2 * OVERLAY_SH_BLUR);
+}
+
 static void overlay_close(void)
 {
     if (g_overlay == OV_NONE) return;
-    struct drect p; overlay_box(&p);
+    dirty_overlay();
     g_overlay = OV_NONE; g_overlay_btn_hov = -1;
-    dirty_rect(p.x0, p.y0, p.x1 - p.x0, p.y1 - p.y0);
 }
 
 static void overlay_open(int kind)
 {
     g_overlay = kind; g_overlay_btn_hov = -1;
-    struct drect p; overlay_box(&p);
-    dirty_rect(p.x0, p.y0, p.x1 - p.x0, p.y1 - p.y0);
+    dirty_overlay();
 }
 
 /* ---- the dropdown's items -------------------------------------------------
@@ -4488,6 +4498,25 @@ static void menu_dropdown_box(struct drect *r)
     r->x1 = x0 + panel_w; r->y1 = MBH + panel_h;
 }
 
+/* The dropdown's drop shadow, and the box it paints: the panel grown by the
+ * blur on every side and by the offset below. Damage for opening, switching
+ * and closing a menu is THIS box, not menu_dropdown_box() -- the panel alone
+ * left each closed menu's shadow on the desktop as a dark streak under its
+ * title (reported from `make run`, 2026-10-26). Same rule as sw_box(). */
+#define MENU_SH_DY   S(6)
+#define MENU_SH_BLUR S(16)
+static void dirty_menu_dropdown(void)
+{
+    struct drect p; menu_dropdown_box(&p);
+    if (p.x1 <= p.x0) return;
+#ifdef WM_MENU_SHADOW_NEGCTL
+    dirty_rect(p.x0, p.y0, p.x1 - p.x0, p.y1 - p.y0);   /* the control: the panel only */
+#else
+    dirty_rect(p.x0 - MENU_SH_BLUR, p.y0 - MENU_SH_BLUR + MENU_SH_DY,
+               p.x1 - p.x0 + 2 * MENU_SH_BLUR, p.y1 - p.y0 + 2 * MENU_SH_BLUR);
+#endif
+}
+
 /* One report, one call site each for "just opened" and "just switched" (see
  * both callers below) -- same "ask the guest, don't re-derive its geometry in
  * Python" reasoning as menu_bar_layout()'s report above: the panel's exact
@@ -4547,9 +4576,8 @@ static int menu_item_enabled(int mi, int idx)
 static void menu_close(void)
 {
     if (g_menu_open < 0) return;
-    struct drect p; menu_dropdown_box(&p);
+    dirty_menu_dropdown();
     g_menu_open = -1; g_menu_item_hov = -1;
-    dirty_rect(p.x0, p.y0, p.x1 - p.x0, p.y1 - p.y0);
     kprintf("[wm] menu closed\n");        /* a test syncs on this rather than guessing a delay */
 }
 
@@ -4622,7 +4650,7 @@ static void draw_menu_dropdown(void)
 {
     struct drect p; menu_dropdown_box(&p);
     int w = p.x1 - p.x0, h = p.y1 - p.y0;
-    fb_shadow(p.x0, p.y0, w, h, S(10), S(6), S(16), g_ui_dark ? 150 : 70);
+    fb_shadow(p.x0, p.y0, w, h, S(10), MENU_SH_DY, MENU_SH_BLUR, g_ui_dark ? 150 : 70);
     if (g_ui_dark) profiled_glass(p.x0, p.y0, w, h, S(DROPDOWN_GLASS_PT), 30, 30, 38, 165);
     else           profiled_glass(p.x0, p.y0, w, h, S(DROPDOWN_GLASS_PT), 250, 250, 255, 190);
 
@@ -4676,7 +4704,7 @@ static void draw_overlay_panel(void)
 {
     struct drect p; overlay_box(&p);
     int w = p.x1 - p.x0, h = p.y1 - p.y0;
-    fb_shadow(p.x0, p.y0, w, h, S(14), S(10), S(28), g_ui_dark ? 170 : 90);
+    fb_shadow(p.x0, p.y0, w, h, S(14), OVERLAY_SH_DY, OVERLAY_SH_BLUR, g_ui_dark ? 170 : 90);
     if (g_ui_dark) profiled_glass(p.x0, p.y0, w, h, S(OVERLAY_GLASS_PT), 28, 28, 36, 195);
     else           profiled_glass(p.x0, p.y0, w, h, S(OVERLAY_GLASS_PT), 250, 250, 255, 210);
     uint32_t ink = g_ui_dark ? rgb(232, 233, 238) : rgb(40, 40, 48);
@@ -6887,11 +6915,9 @@ static void wm_menu_mouse(const struct inputq_event *in)
         if (in_rect(x, y, t.x0, t.y0, t.x1 - t.x0, t.y1 - t.y0)) { hit_title = i; break; }
     }
     if (hit_title >= 0 && hit_title != g_menu_open) {
-        struct drect old; menu_dropdown_box(&old);
+        dirty_menu_dropdown();                    /* the old panel and its shadow */
         g_menu_open = hit_title; g_menu_item_hov = -1;
-        struct drect nu; menu_dropdown_box(&nu);
-        dirty_rect(old.x0, old.y0, old.x1 - old.x0, old.y1 - old.y0);
-        dirty_rect(nu.x0, nu.y0, nu.x1 - nu.x0, nu.y1 - nu.y0);
+        dirty_menu_dropdown();                    /* the new one */
         menu_report_open();   /* hover switch */
     }
 
@@ -6951,8 +6977,7 @@ static void wm_process_mouse(const struct inputq_event *in)
             struct drect t; menu_title_hit(i, &t);
             if (!in_rect(x, y, t.x0, t.y0, t.x1 - t.x0, t.y1 - t.y0)) continue;
             g_menu_open = i; g_menu_item_hov = -1;
-            struct drect p; menu_dropdown_box(&p);
-            dirty_rect(p.x0, p.y0, p.x1 - p.x0, p.y1 - p.y0);
+            dirty_menu_dropdown();
             menu_report_open();
             mleft = left; mright = right; mmiddle = middle;
             return;

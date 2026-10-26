@@ -1,6 +1,6 @@
 # The menu bar gate -- click "LogitOS", hover to "File", Esc.
 #
-# NOT YET WIRED INTO THE MAKEFILE, same reasoning tests/motion.mk gives (and
+# (Since wired: the Makefile has `-include tests/menu.mk`.) It was NOT YET WIRED, same reasoning tests/motion.mk gives (and
 # the same file this unit's brief named as a concurrent line): several other
 # lines are editing the Makefile this week, and one `-include` line is a
 # cheaper merge for whoever owns it than a conflict is for everybody. To
@@ -30,7 +30,24 @@
 
 MENU_OUT ?= build/menu
 
-.PHONY: test-menu
-test-menu: $(ISO) $(DISK)
+# THE SHADOW CONTROL (2026-10-26). A closed dropdown used to repaint its
+# panel and not its drop shadow, leaving a dark streak under each menu title
+# that had been open. -DWM_MENU_SHADOW_NEGCTL builds that old damage back in;
+# the gate's two "shadow below the panel is repainted" checks must fail on it.
+ifeq ($(MENUSHADOWNEGCTL),1)
+CFLAGS += -DWM_MENU_SHADOW_NEGCTL
+endif
+MENU_CTL_BUILD := $(BUILD)-menushadow
+
+.PHONY: test-menu test-menu-negctl
+test-menu-negctl: $(DISK)
+	@$(MAKE) --no-print-directory BUILD=$(MENU_CTL_BUILD) MENUSHADOWNEGCTL=1 \
+		$(MENU_CTL_BUILD)/logit.iso > $(BUILD)/menu_ctl_build.log 2>&1
+	@rc=0; python3 tests/qmp/qmp_menu.py --iso $(MENU_CTL_BUILD)/logit.iso --disk $(DISK) \
+		--out $(MENU_OUT)-ctl > $(BUILD)/menu_ctl.log 2>&1 || rc=$$?; cat $(BUILD)/menu_ctl.log; \
+		if [ $$rc -ne 0 ] && grep -q "FAIL.*shadow below the panel is repainted" $(BUILD)/menu_ctl.log; then \
+			echo "negative control ok: panel-only damage leaves the shadow behind"; \
+		else echo "NEGATIVE CONTROL FAILED"; exit 1; fi
+test-menu: test-menu-negctl $(ISO) $(DISK)
 	@mkdir -p $(MENU_OUT)
 	python3 tests/qmp/qmp_menu.py --iso $(ISO) --disk $(DISK) --out $(MENU_OUT)

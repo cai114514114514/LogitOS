@@ -227,6 +227,19 @@ def main(argv):
             same = pixels_in_rect(shot3, box1) == pixels_in_rect(baseline, box1)
             g.check(same, "the covered region is repainted byte-for-byte (no ghost)",
                     "box=%s" % (box1,))
+            # The panel is not all a dropdown paints: its drop shadow reaches
+            # S(16) to each side and S(6)+S(16) below (wm.c MENU_SH_*). Until
+            # 2026-10-26 only the panel was repainted, and every menu that had
+            # been open left a dark streak under its title. Checked for both
+            # menus, since LogitOS's was closed by the hover switch and File's
+            # by Escape -- two different damage paths.
+            for name, b in (("LogitOS", opened[1:] if opened else None), ("File", box1)):
+                if not b:
+                    continue
+                band = (max(0, b[0] - 16), b[3], b[2] + 16, b[3] + 22)
+                g.check(pixels_in_rect(shot3, band) == pixels_in_rect(baseline, band),
+                        "the %s dropdown's shadow below the panel is repainted too" % name,
+                        "band=%s" % (band,))
 
         print("\nscreendumps: %s" % outdir)
     finally:
