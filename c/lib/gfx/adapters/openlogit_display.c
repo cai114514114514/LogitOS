@@ -294,15 +294,68 @@ void ol_display_fill_circle(struct ol_display *ctx, int cx, int cy, int r, uint3
             blend_cov(ctx, cx - r + i, cy - r + j, color, corner_cov(i, j, d, d, rad, m));
 }
 
+/* ---- rounded-rect fast path (bit-identical to the per-pixel corner_cov loop) ----
+ *
+ * corner_cov() is 255 everywhere outside the four rad x rad corner squares, so
+ * only those squares need a coverage lookup. For row j of the shape, rr_span()
+ * returns the column range [*lo,*hi) (clamped to the clip range [i0,i1)) whose
+ * coverage is exactly 255; the pixels left of *lo and from *hi on, if any, are
+ * corner pixels and still go through corner_cov(). i and j keep their meaning
+ * (they index the SHAPE), so the corner arithmetic is the unchanged one. */
+static inline void rr_span(int j, int w, int h, int rad, int i0, int i1, int *lo, int *hi)
+{
+    if (rad <= 0 || (j >= rad && j < h - rad)) { *lo = i0; *hi = i1; return; }
+    int l = rad > i0 ? rad : i0;
+    int r = w - rad < i1 ? w - rad : i1;
+    if (l > i1) l = i1;
+    if (r < l) r = l;
+    *lo = l; *hi = r;
+}
+
+#ifdef OL_RRECT_FAST_NEGCTL
+/* Test-only mutation: corner pixels are written solid, i.e. coverage ignored. */
+#define RR_COV(i, j, w, h, rad, m) ((void)(m), 255)
+#else
+#define RR_COV(i, j, w, h, rad, m) corner_cov(i, j, w, h, rad, m)
+#endif
+
+static inline void rr_fill(uint32_t *row, int a, int b, uint32_t c)
+{
+    for (int i = a; i < b; i++) row[i] = c;
+}
+
+/* Span form of blend_cov(): every pixel is inside the clip (clip_ij proved it),
+ * so the put/get bounds checks are redundant; the arithmetic is the same. */
+static inline void rr_blend_span(struct ol_display *ctx, uint32_t *row, int a, int b, uint32_t color, int al)
+{
+    if (al <= 0) return;
+    if (al >= 255) { rr_fill(row, a, b, color); return; }
+    int cr, cg, cb; unpack(ctx, color, &cr, &cg, &cb);
+    for (int i = a; i < b; i++) {
+        int br, bg, bb; unpack(ctx, row[i], &br, &bg, &bb);
+        row[i] = ol_display_rgb(ctx, (uint8_t)((cr * al + br * (255 - al)) / 255),
+                                (uint8_t)((cg * al + bg * (255 - al)) / 255),
+                                (uint8_t)((cb * al + bb * (255 - al)) / 255));
+    }
+}
+
 void ol_display_round_rect(struct ol_display *ctx, int x, int y, int w, int h, int radius, uint32_t color)
 {
     int i0, j0, i1, j1;
     if (!clip_ij(ctx, x, y, w, h, &i0, &j0, &i1, &j1)) return;
     int rad = radius;
     const unsigned char *m = corner_mask_for(w, h, &rad);
-    for (int j = j0; j < j1; j++)
-        for (int i = i0; i < i1; i++)
-            blend_cov(ctx, x + i, y + j, color, corner_cov(i, j, w, h, rad, m));
+    struct ol_pixel_target *s = &ctx->target;
+    for (int j = j0; j < j1; j++) {
+        int lo, hi;
+        rr_span(j, w, h, rad, i0, i1, &lo, &hi);
+        uint32_t *row = s->px + (long)(y + j) * s->w + x;
+        for (int i = i0; i < lo; i++)
+            blend_cov(ctx, x + i, y + j, color, RR_COV(i, j, w, h, rad, m));
+        rr_fill(row, lo, hi, color);
+        for (int i = hi; i < i1; i++)
+            blend_cov(ctx, x + i, y + j, color, RR_COV(i, j, w, h, rad, m));
+    }
 }
 
 /* Blit an 8-bit coverage bitmap as anti-aliased text: each cov[i] is the alpha
@@ -362,15 +415,27 @@ void ol_display_blend_round_rect(struct ol_display *ctx, int x, int y, int w, in
     if (!clip_ij(ctx, x, y, w, h, &i0, &j0, &i1, &j1)) return;
     int rad = radius;
     const unsigned char *m = corner_mask_for(w, h, &rad);
+    struct ol_pixel_target *s = &ctx->target;
+    uint32_t col = ol_display_rgb(ctx, r, g, b);
     for (int j = j0; j < j1; j++) {
-        for (int i = i0; i < i1; i++) {
-            /* Two alphas meet here and they MULTIPLY: the caller's opacity and
-             * the corner's coverage. Taking either one alone gives a panel that
-             * is translucent in the middle and hard-edged at the corner, which
-             * is what the boolean test used to produce. */
-            int cov = corner_cov(i, j, w, h, rad, m);
+        int lo, hi;
+        rr_span(j, w, h, rad, i0, i1, &lo, &hi);
+        uint32_t *row = s->px + (long)(y + j) * s->w + x;
+        /* Two alphas meet here and they MULTIPLY: the caller's opacity and
+         * the corner's coverage. Taking either one alone gives a panel that
+         * is translucent in the middle and hard-edged at the corner, which
+         * is what the boolean test used to produce. Interior coverage is 255,
+         * so its alpha is a*255/255 == a. */
+        for (int i = i0; i < lo; i++) {
+            int cov = RR_COV(i, j, w, h, rad, m);
             if (cov <= 0) continue;
-            blend_cov(ctx, x + i, y + j, ol_display_rgb(ctx, r, g, b), a * cov / 255);
+            blend_cov(ctx, x + i, y + j, col, a * cov / 255);
+        }
+        rr_blend_span(ctx, row, lo, hi, col, a);
+        for (int i = hi; i < i1; i++) {
+            int cov = RR_COV(i, j, w, h, rad, m);
+            if (cov <= 0) continue;
+            blend_cov(ctx, x + i, y + j, col, a * cov / 255);
         }
     }
 }
@@ -535,8 +600,14 @@ void ol_display_round_rect_vgrad(struct ol_display *ctx, int x, int y, int w, in
     const unsigned char *m = corner_mask_for(w, h, &rad);
     for (int j = j0; j < j1; j++) {
         uint32_t c = color_lerp(ctx, top, bottom, j, h > 1 ? h - 1 : 1);
-        for (int i = i0; i < i1; i++)
-            blend_cov(ctx, x + i, y + j, c, corner_cov(i, j, w, h, rad, m));
+        int lo, hi;
+        rr_span(j, w, h, rad, i0, i1, &lo, &hi);
+        uint32_t *row = ctx->target.px + (long)(y + j) * ctx->target.w + x;
+        for (int i = i0; i < lo; i++)
+            blend_cov(ctx, x + i, y + j, c, RR_COV(i, j, w, h, rad, m));
+        rr_fill(row, lo, hi, c);
+        for (int i = hi; i < i1; i++)
+            blend_cov(ctx, x + i, y + j, c, RR_COV(i, j, w, h, rad, m));
     }
 }
 
