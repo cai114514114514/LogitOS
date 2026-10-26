@@ -3898,12 +3898,31 @@ static void draw_menubar(void)
     for (int i = 0; i < g_nmenu; i++) fb_text(g_menu_tx[i], S(4), g_menu_title[i], ink);
     /* dark-mode toggle switch: track + knob (knob right = dark) */
     menu_tog_w = S(38); menu_tog_h = S(18);
-    menu_tog_x = W - S(210); menu_tog_y = (MBH - menu_tog_h) / 2;
+    /* W - 210 until 2026-10-26: the default clock ("周一 2026-10-26  19:22:22")
+     * is ~177 points from the right edge, and the switch's end at W - 172 ran
+     * into its first letter. 240 leaves ~25 points to the default clock. The
+     * QMP gates that click the switch (qmp_damage, qmp_monitor, qmp_repaint,
+     * qmp_window) name the same constant. */
+    menu_tog_x = W - S(240); menu_tog_y = (MBH - menu_tog_h) / 2;
     if (g_ui_dark) fb_round_rect(menu_tog_x, menu_tog_y, menu_tog_w, menu_tog_h, menu_tog_h / 2, rgb(94, 150, 255));
     else           fb_round_rect(menu_tog_x, menu_tog_y, menu_tog_w, menu_tog_h, menu_tog_h / 2, rgb(198, 200, 208));
     int kr = menu_tog_h / 2 - S(2);
     int kx = g_ui_dark ? menu_tog_x + menu_tog_w - kr - S(3) : menu_tog_x + kr + S(3);
     fb_fill_circle(kx, menu_tog_y + menu_tog_h / 2, kr, rgb(255, 255, 255));
+    /* What the switch is FOR, drawn in its knob: a sun while light, a crescent
+     * moon while dark. A bare track and knob beside the clock said nothing
+     * about what it would change (release tour, 2026-10-26). The crescent is a
+     * disc with a second, offset disc in the knob's own white over it. */
+    {
+        int cy = menu_tog_y + menu_tog_h / 2, gr = kr * 5 / 8;
+        if (gr < 2) gr = 2;
+        if (g_ui_dark) {
+            fb_fill_circle(kx, cy, gr, rgb(70, 120, 230));
+            fb_fill_circle(kx + gr / 2 + 1, cy - gr / 2, gr - 1, rgb(255, 255, 255));
+        } else {
+            fb_fill_circle(kx, cy, gr, rgb(242, 164, 36));
+        }
+    }
     /* THE IME INDICATOR, and it exists because of a measurement rather than a
      * taste. Before it, the toggle changed NOTHING a user could see: the state
      * line goes to the serial console, and the candidate bar does not exist
@@ -4111,7 +4130,16 @@ static void draw_dock(void)
     fb_shadow(dock_x0, dock_y0, dw, dh, S(28), DOCKSH_DY, DOCKSH_BLUR, 56);
     /* Liquid Glass: frost + rim refraction + specular highlight + body tint */
     if (g_ui_dark) profiled_glass(dock_x0, dock_y0, dw, dh, S(DOCK_GLASS_PT), 26, 26, 34, 104);
-    else           profiled_glass(dock_x0, dock_y0, dw, dh, S(DOCK_GLASS_PT), 255, 255, 255, 44);
+    /* Light: not white. A white tint is "light glass" to the material's adaptive
+     * tint (glass_shading.h prepare_style), which raises opacity until the
+     * result is at least luma 176 so dark text on it stays legible. The menu
+     * bar needs that; the dock carries no text. Over the release wallpaper's
+     * dark foreground (37,33,73) white/44 came out an opaque grey slab
+     * (180,177,191) -- release tour, 2026-10-26. A neutral tint of luma ~203
+     * is outside the adaptive range by the material's own rule (a tone between
+     * 64 and 224 is left alone), so the dock is translucent over a dark
+     * wallpaper and a faint grey lift over a light one. */
+    else           profiled_glass(dock_x0, dock_y0, dw, dh, S(DOCK_GLASS_PT), 200, 202, 216, 92);
 
     /* Live hover magnification: the icon under the cursor grows in place (kept
      * inside the panel + gap so it never overlaps a neighbour) and shows its name

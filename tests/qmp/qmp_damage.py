@@ -241,7 +241,7 @@ def main(argv):
             repaints everything (wm_set_dark -> dirty_full), so an even number
             of them leaves the desktop exactly as it was, drawn by the full
             path."""
-            tx = xres - pt(210) + pt(19)
+            tx = xres - pt(240) + pt(19)
             ty = (pt(24) - pt(18)) // 2 + pt(9)
             ui.goto(tx, ty, settle=0.2)
             for _ in range(times):

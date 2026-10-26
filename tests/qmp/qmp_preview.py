@@ -611,17 +611,17 @@ def main(argv):
         ppm_to_png(shot, os.path.join(outdir, "00-images.png"))
         ui.click_at_confirmed(shot, origin[0] + pt(80), origin[1] + pt(118))
         time.sleep(0.8)
-        # The desktop switch is drawn at W-210, width 38 (wm.c). Verify the
+        # The desktop switch is drawn at W-240, width 38 (wm.c). Verify the
         # app's own surface follows its theme event, not just the menu bar.
         ui.screendump(shot)
         light = PPM(shot).at(origin[0] + pt(174), origin[1] + pt(80))
-        ui.click_at_confirmed(shot, 1280 - 191, 12)
+        ui.click_at_confirmed(shot, 1280 - 221, 12)
         time.sleep(1.0)
         ui.screendump(shot)
         dark = PPM(shot).at(origin[0] + pt(174), origin[1] + pt(80))
         ck(sum(dark) < sum(light) / 2, "the library follows the desktop dark theme")
         ppm_to_png(shot, os.path.join(outdir, "00-dark.png"))
-        ui.click_at_confirmed(shot, 1280 - 191, 12)
+        ui.click_at_confirmed(shot, 1280 - 221, 12)
         time.sleep(1.0)
 
 

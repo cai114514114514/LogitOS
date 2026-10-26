@@ -589,7 +589,7 @@ def main(argv):
             dark-mode switch is the one interaction that legitimately repaints
             everything, so an even number leaves the desktop as it was, drawn
             entirely by the full path."""
-            tx = xres - pt(210) + pt(19)
+            tx = xres - pt(240) + pt(19)
             ty = (pt(24) - pt(18)) // 2 + pt(9)
             aim(ui, P, tx, ty)
             for _ in range(times):

@@ -1045,7 +1045,7 @@ def main(argv):
             "title": title,
             "content": (title[0], title[1] + pt(120)),
             # menu_tog_* from draw_menubar() in c/kernel/gui/wm.c
-            "toggle": (xres - pt(210) + pt(19), (pt(24) - pt(18)) // 2 + pt(9)),
+            "toggle": (xres - pt(240) + pt(19), (pt(24) - pt(18)) // 2 + pt(9)),
             "ppm": os.path.join(tmp, "aim.ppm"),
         }
         print("     focused titlebar at %r, toggle at %r" % (geo["title"], geo["toggle"]))

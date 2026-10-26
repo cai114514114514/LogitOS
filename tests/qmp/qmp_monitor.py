@@ -256,8 +256,8 @@ def main(argv):
            "tab=%r" % (f.tab,))
 
         # --- dark theme -------------------------------------------------------
-        # The menu-bar switch: wm.c puts it at W - S(210), S(3), S(38) x S(18).
-        DARK_X, DARK_Y = xres - pt(210) + pt(19), pt(12)
+        # The menu-bar switch: wm.c puts it at W - S(240), S(3), S(38) x S(18).
+        DARK_X, DARK_Y = xres - pt(240) + pt(19), pt(12)
         light_bg = f.at(600, 20)
         ui.click_at_confirmed(probe, DARK_X, DARK_Y)
         time.sleep(2.5 * slow)
