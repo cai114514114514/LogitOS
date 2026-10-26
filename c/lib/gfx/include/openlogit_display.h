@@ -21,6 +21,12 @@ struct ol_pixel_target {
     uint32_t *px;int w,h;
     int clip_on,clx0,cly0,clx1,cly1;
 };
+/* Per-display scratch slots. RULE: every new display primitive keeps its
+ * temporary buffers in these slots (display_scratch() in adapters/display_pixels.h),
+ * never in file-scope statics. The kernel owns one ol_display per drawing
+ * context (g_fbctx[gfx_ctx()].disp) and renders bands on several cores, so
+ * per-display scratch is per-context scratch. ol_display_destroy frees all. */
+enum { OL_DS_GROUP, OL_DS_PATH, OL_DS_BLIT, OL_DS_SHADOW, OL_DS_GLASS2, OL_DS_USER, OL_DS_SPARE, OL_DS_N };
 struct ol_display {
     struct ol_pixel_target target;
     unsigned rpos,gpos,bpos;
@@ -35,6 +41,8 @@ struct ol_display {
     int reduce_transparency;
     unsigned shadow_clamped;
     uint64_t batches;
+    void *scratch[OL_DS_N];
+    unsigned long scratch_n[OL_DS_N];
 };
 /* Initialize storage to zero, set allocator callbacks if effects are used.
  * Bind starts a batch; callers can inspect error after drawing. Explicit

@@ -44,43 +44,11 @@ void ol_display_put(struct ol_display *ctx, int x, int y, uint32_t color)
  * is the property tests/unit/fb_clip_test.c pins down.
  *
  * Returns 0 when nothing survives. */
-static int clip_ij(struct ol_display *ctx, int x, int y, int w, int h, int *i0, int *j0, int *i1, int *j1)
-{
-    struct ol_pixel_target *s = &ctx->target;
-    if (!s->px || w <= 0 || h <= 0) return 0;
-    int cx0 = 0, cy0 = 0, cx1 = s->w, cy1 = s->h;
-    if (s->clip_on) {
-        if (s->clx0 > cx0) cx0 = s->clx0;
-        if (s->cly0 > cy0) cy0 = s->cly0;
-        if (s->clx1 < cx1) cx1 = s->clx1;
-        if (s->cly1 < cy1) cy1 = s->cly1;
-    }
-    *i0 = cx0 - x; if (*i0 < 0) *i0 = 0;
-    *j0 = cy0 - y; if (*j0 < 0) *j0 = 0;
-    *i1 = cx1 - x; if (*i1 > w) *i1 = w;
-    *j1 = cy1 - y; if (*j1 > h) *j1 = h;
-    return *i0 < *i1 && *j0 < *j1;
-}
 
 /* Is this pixel of the CURRENT TARGET writable? For the two primitives that
  * write s->px straight (the blur and the glass, which read a neighbourhood and
  * so cannot be expressed as a clamped loop over their own output). */
-static int clip_px(const struct ol_pixel_target *s, int x, int y)
-{
-    if (x < 0 || y < 0 || x >= s->w || y >= s->h) return 0;
-    if (s->clip_on && (x < s->clx0 || y < s->cly0 || x >= s->clx1 || y >= s->cly1)) return 0;
-    return 1;
-}
 
-static uint32_t display_get(struct ol_display *ctx, int x, int y)
-{
-    struct ol_pixel_target *s = &ctx->target;
-    if (!s->px || x < 0 || y < 0 || x >= s->w || y >= s->h)
-        return 0;
-    if (s->clip_on && (x < s->clx0 || y < s->cly0 || x >= s->clx1 || y >= s->cly1))
-        return 0;
-    return s->px[y * s->w + x];
-}
 
 
 void ol_display_blit_surface(struct ol_display *ctx, int dx, int dy, const struct ol_pixel_target *src)
@@ -298,69 +266,16 @@ void ol_display_fill_rect(struct ol_display *ctx, int x, int y, int w, int h, ui
  * array index) is what makes every caller below match shadow_tile exactly.
  * The coverage values, the mask cache, and the fallback rule are UNCHANGED --
  * this is a call-site restructuring, not a new computation. */
-static const unsigned char *corner_mask_for(int w, int h, int *rad)
-{
-    int r = *rad;
-    if (r > w / 2) r = w / 2;
-    if (r > h / 2) r = h / 2;
-    if (r <= 0) { *rad = 0; return 0; }
-    *rad = r;
-    return gfx_mask_corner(GFX_MASK_FILL, r, r, 0);
-}
 
 /* Coverage of local point (i,j) against the tile `m` that corner_mask_for()
  * already fetched for this shape, at the ALREADY-CLAMPED radius `rad` it
  * already wrote back -- callers must pass that one, not the radius they
  * originally asked for, or the clamp and the tile disagree on where the
  * straight bands end. */
-static int corner_cov(int i, int j, int w, int h, int rad, const unsigned char *m)
-{
-    if (rad <= 0) return 255;
-    int cx = -1, cy = -1;
-    if (i < rad)            cx = i;
-    else if (i >= w - rad)  cx = w - 1 - i;
-    if (j < rad)            cy = j;
-    else if (j >= h - rad)  cy = h - 1 - j;
-    if (cx < 0 || cy < 0) return 255;       /* in one of the straight bands */
-
-    if (!m) {
-        /* Radius past GFX_MASK_MAX: the old boolean point sample, i.e. THE
-         * STAIRCASE this whole function exists to remove -- kept as the
-         * fallback here rather than dropping the corner altogether, because a
-         * missing pixel is worse than a sharp one. THIS is the ACCEPTABLE
-         * half of gfx_mask_corner's contract (see its comment in
-         * gfx_mask.c): complete, no geometry dropped, and no longer silent --
-         * every refusal is counted the instant gfx_mask_corner returns NULL
-         * (mrefuse / gfx_mask_refused() there), so a run where the desktop
-         * chrome keeps hitting this fallback is a number someone can read,
-         * not a guess from a screenshot. What this function does NOT do is
-         * grow its own buffer to avoid the fallback the way aui.c's BIG_MASK
-         * tile does for the toolkit's shapes: that buffer would be KERNEL
-         * .bss (this file is compiled into the kernel -- see gfx.h's top
-         * comment), and GFX_MASK_MAX was sized deliberately small for
-         * exactly that reason. A bigger kernel buffer is a real, measured
-         * cost paid by every boot; a corner that is occasionally a staircase
-         * on an oversized window-manager shape is not. */
-        int dx = rad - cx, dy = rad - cy;
-        return dx * dx + dy * dy <= rad * rad ? 255 : 0;
-    }
-    return m[(long)cy * rad + cx];
-}
 
 /* Blend `color` over the target at (x,y) by coverage `a` (0..255). The three
  * hand-written copies of this arithmetic that used to sit in the loops below
  * are now one place, which is also the only place the rounding is decided. */
-static void blend_cov(struct ol_display *ctx, int x, int y, uint32_t color, int a)
-{
-    if (a <= 0) return;
-    if (a >= 255) { ol_display_put(ctx, x, y, color); return; }
-    int cr, cg, cb, br, bg, bb;
-    unpack(ctx, color, &cr, &cg, &cb);
-    unpack(ctx, display_get(ctx, x, y), &br, &bg, &bb);
-    ol_display_put(ctx, x, y, ol_display_rgb(ctx, (uint8_t)((cr * a + br * (255 - a)) / 255),
-                        (uint8_t)((cg * a + bg * (255 - a)) / 255),
-                        (uint8_t)((cb * a + bb * (255 - a)) / 255)));
-}
 
 /* A circle is a rounded rect whose corner radius is half its side, so this is
  * the same coverage the corners use and the two cannot drift apart. It matters
@@ -585,16 +500,6 @@ void ol_display_shadow(struct ol_display *ctx, int x, int y, int w, int h, int r
 }
 
 /* Linear interpolate two packed colors: a*(den-num)/den + b*num/den. */
-static uint32_t color_lerp(struct ol_display *ctx, uint32_t a, uint32_t b, int num, int den)
-{
-    int ar, ag, ab, br, bg, bb;
-    unpack(ctx, a, &ar, &ag, &ab);
-    unpack(ctx, b, &br, &bg, &bb);
-    int r = ar + (br - ar) * num / den;
-    int g = ag + (bg - ag) * num / den;
-    int bl = ab + (bb - ab) * num / den;
-    return ol_display_rgb(ctx, (uint8_t)r, (uint8_t)g, (uint8_t)bl);
-}
 
 /* Lighten (delta>0) or darken (delta<0) a packed color by delta per channel. */
 uint32_t ol_display_shade(struct ol_display *ctx, uint32_t c, int delta)
@@ -790,6 +695,7 @@ void ol_display_destroy(struct ol_display *ctx)
     display_free(ctx,blur_scratch);display_free(ctx,glass_buf);display_free(ctx,glass_line);
     blur_scratch=0;glass_buf=0;glass_line=0;
     blur_scratch_n=glass_buf_n=glass_line_n=0;
+    for(int i=0;i<OL_DS_N;i++){display_free(ctx,ctx->scratch[i]);ctx->scratch[i]=0;ctx->scratch_n[i]=0;}
 }
 
 int ol_display_pack_argb(struct ol_display *ctx, uint32_t *out, const unsigned char *rgba, unsigned n)
