@@ -57,7 +57,9 @@ def main():
   g=runtime.Guest(b,disk,out,a.mode,a.ram);g.wait(b'AGENTD_READY',180);g.wait(b'LogitOS shell',60)
   if a.no_ui:command('/bin/mkdir /docs/Community')
   else:
-   pos,W,H=frame(g,'Finder');click(750,23);click(295,24);g.type('Community');g.key('ret');time.sleep(1)
+   # Finder-local clicks: +Project (630,23), work field (820,128), Open in TextEdit
+   # (832,338). Each moved 120 left when Finder went from 1120 to 1000 wide (2026-10-26).
+   pos,W,H=frame(g,'Finder');click(630,23);click(295,24);g.type('Community');g.key('ret');time.sleep(1)
   project=identity('/docs/Community');check('empty directory is already a Project','tasks=0' in command('/bin/agentctl project /docs/Community'))
   command('/bin/cp /docs/source.md /docs/Community/source.md')
   if a.no_ui:check('Finder creates task','TASK_CREATED id=1' in command('/bin/agentctl create "Summarize the source with exact citations" /docs/Community /docs/Community/source.md'))
@@ -65,13 +67,13 @@ def main():
    # Source.md precedes the newly created directory in the actual directory list.
    move(g,*pos(310,90));button(g,True,'right');button(g,False,'right');click(332,102)
    g.wait(rb'PROJECT_VIEW path=/docs/Community tasks=0',30);time.sleep(.3)
-   click(940,128);g.type('Write a concise report with exact source citations.');g.key('ret');time.sleep(1)
+   click(820,128);g.type('Write a concise report with exact source citations.');g.key('ret');time.sleep(1)
   g.complete(1);initial=command('/bin/agentctl document 1');check('report contains source facts and citations','4200' in initial.replace(',','') and '[S1:' in initial)
   doc=identity('/docs/Community/report-1.md');check('Project owns the created task','PROJECT_TASK id=1' in command('/bin/agentctl project /docs/Community'))
   check('disk bytes match report','DOCUMENT_VERIFIED' in command('/bin/agentctl verify 1'))
   if not a.no_ui:
    g.wait(rb'PROJECT_VIEW path=/docs/Community tasks=1 first=1 phase=6',30);time.sleep(.5)
-   gate.screenshot(g,'finder-report');click(952,338);time.sleep(1)
+   gate.screenshot(g,'finder-report');click(832,338);time.sleep(1)
    pos,W,H=frame(g,'/docs/Community/report-1.md');time.sleep(2)
    check('Finder opens TextEdit with the same task',gate.work(g)[5]==1)
    click(100,170);g.key('ctrl','end');g.type('\nhuman note keep this sentence\n');time.sleep(2)

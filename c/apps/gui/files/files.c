@@ -34,16 +34,24 @@
  *                        place that answers it.
  */
 
-#define WINW       1120
+/* 1120 x 660 until 2026-10-26: at 1280x800 the boot Finder then filled the
+ * whole work area edge to edge, so the first thing a person saw of the desktop
+ * was one window and no wallpaper (release tour). 1000 x 580 leaves the
+ * wallpaper showing on every side at the boot cascade slot (110,70). The
+ * project column keeps its 320; the file list gives up the 120.
+ * tests/boot/run-agent-session.py, run-project-work.py and tests/qmp/
+ * qmp_files.py click window-local points in the toolbar and project column,
+ * and moved with it. */
+#define WINW       1000
 #define PROJECT_W  320
 #define CONTENT_RIGHT (WINW - PROJECT_W)
 /* WINH was the constant 660. The WM now fits a new window inside the work area
  * (wm.c win_fit_work_area), and at 1280x800 that is 670 points tall INCLUDING
  * the titlebar -- so Finder opened 20 points shorter than it drew, and the
  * "Ask Logit" footer was cut in half (release tour, 2026-10-26). The height is
- * the window's real one now, taken from EV_RESIZE; 660 is only what is asked
+ * the window's real one now, taken from EV_RESIZE; WINH0 is only what is asked
  * for. The width stays fixed: the three columns are laid out against WINW. */
-#define WINH0      660
+#define WINH0      580
 static int win_h = WINH0;
 #define WINH       win_h
 #define SIDEBAR_W  168

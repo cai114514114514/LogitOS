@@ -63,7 +63,7 @@ def main(default_run=False):
                 ui.move(guest, *position(x, y)); ui.button(guest, True); ui.button(guest, False)
             guest.wait(rb'PROJECT_VIEW path=/docs tasks=0', 30)
             click(310, 62)  # select the actual source row, then the work field
-            click(940, 128)
+            click(820, 128)  # the work field; Finder is 1000 wide since 2026-10-26 (was 940)
             guest.type('Summarize Project Cedar with the budget and book count. Cite sources.')
             guest.key('ret')
             guest.wait(rb'AGENT_WORKER task=1 ', 60)
@@ -81,7 +81,7 @@ def main(default_run=False):
         if default_run:
             guest.wait(rb'PROJECT_VIEW path=/docs tasks=1 first=1 phase=6', 30)
             ui.gate.screenshot(guest, 'finder-sent')
-            click(952, 338)  # Finder's native Open in TextEdit action
+            click(832, 338)  # Finder's native Open in TextEdit action (was 952 at 1120 wide)
             position, width, height = ui.frame(guest, '/docs/report-1.md')
             time.sleep(1)
             side = min(360, max(290, width*31//100)); left = width-side+24

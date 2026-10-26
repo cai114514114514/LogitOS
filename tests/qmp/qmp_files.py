@@ -146,11 +146,13 @@ if launched == [] and not FOCUS_RE.search(newlog):
 
 # 2. Drive New Folder: click the toolbar "New Folder" button, type a name, Enter.
 #    The boot Finder window sits at cascade 0 -> (110,70), content origin
-#    (110,100). Toolbar "New Folder" is content-local TB_NEW_X=582, y=10,
-#    50x26 -> center screen (110+607, 100+23) = (717,123). A miss is harmless
+#    (110,100). The toolbar's "+Project" (files.c TB_NEW_X = CONTENT_RIGHT -
+#    80 = 600 at WINW 1000, y=10, 72x26) -> center screen (110+636, 100+23) =
+#    (746,123). It read TB_NEW_X=582 / (717,123) from an older layout, which
+#    had been missing the button since before 2026-10-26. A miss is harmless
 #    -- the screenshot still proves the app launched, and the data-correctness
 #    path is covered by run-shell-test.sh.
-goto(717, 123); click(); time.sleep(0.4)        # New Folder toolbar button
+goto(746, 123); click(); time.sleep(0.4)        # +Project toolbar button
 send("qmpdir\n"); time.sleep(0.4)               # type a folder name + Enter
 
 # 3. Inject a right-button to pop the Files context menu over the list area.
