@@ -56,6 +56,7 @@ Usage:
                             [--shots DIR] [--negative] [--bench]
 """
 
+import atexit
 import os
 import re
 import shutil
@@ -244,6 +245,10 @@ def build_negative():
     One line in wm.c, flipped by substitution rather than by a patch file, so it
     cannot silently stop applying when the code around it moves."""
     tmp = tempfile.mkdtemp(prefix="logit-wnegctl-")
+    # The copy is ~13 GB once the tree has build outputs in it, and nothing
+    # removed it: eight runs on 2026-10-26 left 94 GB in $TMPDIR. It goes when
+    # this process does, whichever way that is.
+    atexit.register(shutil.rmtree, tmp, True)
     dst = os.path.join(tmp, "tree")
     print("     copying the tree to %s ..." % dst)
     # The build outputs are skipped at the TOP of the tree only. A pattern
@@ -251,11 +256,13 @@ def build_negative():
     # Makefile includes (jobs.mk, cache.mk, product.mk) -- so from the day that
     # directory appeared the copy could not build and this control failed
     # before its kernel existed (found 2026-10-26).
-    top = {".git", "build", "build-wm", "rust"}
+    # Every top-level build directory -- build/, and the build-<control>/ trees
+    # other gates leave beside it -- is output, never input.
+    top = {".git", "rust", ".claude"}
     def skip(d, names):
         out = {n for n in names if n == "__pycache__" or n.endswith(".pyc")}
         if os.path.abspath(d) == os.path.abspath(ROOT):
-            out |= top & set(names)
+            out |= {n for n in names if n in top or n == "build" or n.startswith("build-")}
         return out
     shutil.copytree(ROOT, dst, ignore=skip)
     src_rust = os.path.join(ROOT, "rust")
