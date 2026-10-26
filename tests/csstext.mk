@@ -180,7 +180,7 @@ test-csstext-negctl:
 # the table and the corpus must come from the SAME UCD or the disagreements are
 # the version gap rather than the code.
 regen-linebreak-tables:
-	@python3 tools/linebreak_gen.py --ucd $(UCD) --out c/apps/gui/browser/layout
+	@python3 tools/linebreak_gen.py --ucd $(UCD) --out c/lib/text
 
 # Both new gates are host-only, need no corpus and no QEMU, and run in about a
 # second each. test-csstext itself is deliberately NOT here: it refuses without

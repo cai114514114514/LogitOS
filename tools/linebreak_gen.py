@@ -27,8 +27,8 @@ Sources (Unicode Character Database, installed on the host as /usr/share/unicode
                                          them in a second .inc would mean a
                                          second generator over the same UCD.
 
-The output is c/apps/gui/browser/layout/linebreak_data.inc: two deduplicated two-stage
-tries (class, flags) plus the class enum itself, so layout_text.c cannot drift
+The output is c/lib/text/linebreak_data.inc: two deduplicated two-stage
+tries (class, flags) plus the class enum itself, so the line breakers (c/lib/text/linebreak.c, browser layout/text.c) cannot drift
 out of order with the generator -- the enum is emitted here, not written by
 hand there.
 
@@ -48,7 +48,7 @@ lb_resolve() in layout_text.c applies them:
     XX -> AL
     CB stays CB and is handled by rules LB20/LB31.
 
-Usage: linebreak_gen.py [--ucd /usr/share/unicode] [--out c/apps/gui/browser]
+Usage: linebreak_gen.py [--ucd /usr/share/unicode] [--out c/lib/text]
 """
 import argparse
 import os
@@ -152,7 +152,7 @@ def trie_bytes(s1, s2):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--ucd", default="/usr/share/unicode")
-    ap.add_argument("--out", default="c/apps/gui/browser/layout")
+    ap.add_argument("--out", default="c/lib/text")
     a = ap.parse_args()
     if not os.path.isdir(a.ucd):
         sys.exit("no UCD at %s" % a.ucd)
