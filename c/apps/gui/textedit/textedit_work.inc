@@ -325,7 +325,10 @@ static void draw(void)
     aui_fill(0,H-28,W,28,AUI_SURFACE_2);aui_hairline(0,H-28,W);
     char status[240];const char *notice=agent_notice?agent_notice:work_error[0]?work_error:0;
     if(notice)snprintf(status,sizeof status,"%s",notice);
-    else snprintf(status,sizeof status,"%d 字节 / 1 MiB · %s%s",tlen,saved?"已保存":"有未保存的编辑",side?"":" · 放大窗口可显示文档工作侧栏");
+    /* The 1 MiB ceiling is enforced and announced when it is hit (agent_notice);
+     * printing it on every frame next to the byte count made the status bar
+     * read like a capacity meter (desktop tour 2026-10-26). */
+    else snprintf(status,sizeof status,"%d 字节 · %s%s",tlen,saved?"已保存":"有未保存的编辑",side?"":" · 放大窗口可显示文档工作侧栏");
     aui_text_ellipsis(20,H-21,W-40,status,notice?AUI_WARNING:AUI_MUTED,12);
     /* The optional monospace face uses the raw run API; include its viewport
      * explicitly. Proportional text is fully tracked by AUI's primitive diff. */

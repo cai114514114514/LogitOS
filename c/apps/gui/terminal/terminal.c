@@ -1948,14 +1948,15 @@ static void paint(void)
 
     gui_clear(P.bg);
 
-    /* top strip: filter/fold state, so a hidden line is never a mystery */
-    gui_rect(0, 0, win_w, TOPBAR, P.panel);
-    {
-        char s[80];
-        scopy(s, errs_only ? "errors only  (^E)" : "^C interrupt   ^E errors   ^L clear   ^V paste",
-              sizeof s);
-        gui_text(PAD, 3, errs_only ? P.err : P.dim, s);
-    }
+    /* top strip: filter/fold state, so a hidden line is never a mystery.
+     * It used to print a key cheat sheet ("^C interrupt  ^E errors  ^L clear
+     * ^V paste") whenever no filter was on -- a permanent banner of help text
+     * that a desktop tour (2026-10-26) read as a debug overlay, and that the
+     * Edit/View/Shell menus now carry as items (tm_publish_menus). The strip keeps its
+     * height (text_y, scrolling and the rich-object clip are laid out against
+     * it) but is plain background unless a filter is hiding lines. */
+    gui_rect(0, 0, win_w, TOPBAR, errs_only ? P.panel : P.bg);
+    if (errs_only) gui_text(PAD, 3, P.err, "errors only  (^E)");
 
     int view = text_h / lh;
     int total = total_rows();

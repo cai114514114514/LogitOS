@@ -2009,18 +2009,22 @@ static int finish_page_load(void)
 static int js_out_shown;
 
 /* Copy the page's first console line into the status bar -- the only channel a
- * headless screenshot test has for "the script ran". */
+ * headless screenshot test has for "the script ran".
+ *
+ * CORRECTION (2026-10-26): no gate in tests/ reads that line (grep for "JS: "
+ * and for the fallbacks finds only tools/wpt_rank.py, which uses "ran script,
+ * no output" as a LABEL, not a match), while every person who opened a page
+ * saw the site's console chatter -- or "loaded (ran script, no output)" -- in
+ * the status bar, which a desktop tour read as a debug build. A page's console
+ * belongs to the developer, not to the chrome. The status line is now cleared
+ * on a finished load; js_out_shown is still recorded so the timer path below
+ * keeps its "nothing new was logged" short-circuit. `fallback` is kept for the
+ * call sites' benefit as documentation of what the old line said. */
 static void status_from_js(const char *fallback)
 {
+    (void)fallback;
     js_out_shown = js_page_output_len();
-    const char *out = js_page_output();
-    if (!out || !out[0]) { set_status(fallback); return; }
-    char st[96]; int p = 0;
-    const char *pre = "JS: ";
-    while (*pre) st[p++] = *pre++;
-    for (int i = 0; out[i] && out[i] != '\n' && p < 92; i++) st[p++] = out[i];
-    st[p] = 0;
-    set_status(st);
+    set_status("");
 }
 
 /* Run the page's scripts.
@@ -5711,15 +5715,10 @@ void app_main(void)
       if (t && t->url[0]) { int i = 0;
           while (t->url[i] && i < (int)sizeof url - 1) { url[i] = t->url[i]; i++; }
           url[i] = 0; ulen = i; addr_sync(); } }
-    if (restored > 0) {
-        char st[96]; int p = 0; const char *pre = "restored ";
-        while (*pre) st[p++] = *pre++;
-        num_append(st, &p, restored);
-        const char *post = " tabs -- Enter loads this one";
-        while (*post) st[p++] = *post++;
-        st[p] = 0;
-        set_status(st);
-    }
+    /* "restored N tabs -- Enter loads this one" stood here: a count with no
+     * plural agreement, phrased for whoever wrote the restore code. The fact a
+     * person needs is only that this page is from last time and not loaded. */
+    if (restored > 0) set_status("From your last session - press Return to load");
 
     redraw(1);
     editing = 1;

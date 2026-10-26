@@ -190,8 +190,10 @@ static void build_cells(void)
         char *c;
         c = cellbuf[r][0]; ustr(c, (unsigned long long)p->pid);
         c = cellbuf[r][1];
-        { int n = scat(c, 0, p->name[0] ? p->name : "(unnamed)");
-          if (p->flags & LOGIT_PROC_SELF) scat(c, n, " *"); }
+        /* No " *" after the Monitor's own row any more: a bare asterisk on a
+         * process name read as a glitch on the 2026-10-26 desktop tour, and the
+         * row already says "Monitor". */
+        scat(c, 0, p->name[0] ? p->name : "(unnamed)");
         c = cellbuf[r][2]; scat(c, 0, (p->flags & LOGIT_PROC_GUI) ? "App" : "CLI");
         c = cellbuf[r][3];
         if (p->flags & LOGIT_PROC_DYING)          scat(c, 0, "Quitting");
