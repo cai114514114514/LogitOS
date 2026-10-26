@@ -25,33 +25,25 @@
 #include <string.h>
 
 #include "layout/text.h"
-#include "linebreak_data.inc"
+/* The UAX #14 class lookup and pair-rule engine live in the shared core (also
+ * used by c/lib/text/linebreak.c).  Included, not linked: this file is on dozens
+ * of host link lines and must not grow a dependency. */
+#include "../../../../lib/text/linebreak_core.inc"
+
+_Static_assert(LBC_BRK_PROHIBITED == LTX_BRK_PROHIBITED &&
+               LBC_BRK_ALLOWED == LTX_BRK_ALLOWED &&
+               LBC_BRK_MANDATORY == LTX_BRK_MANDATORY,
+               "core and text.h break values must agree");
+
+/* LB1's tailorable half, from the CSS options. */
+static int lb_resolve(int c, const struct ltx_lbopt *o)
+{
+    return lb_resolve_cls(c, o && o->ai_is_id,
+                          o && o->line_break == LTX_LB_LOOSE);
+}
 
 /* ------------------------------------------------------------ utf-8 ------- */
 
-/* Decode one code point.  Returns the byte length consumed (>= 1); an
- * ill-formed sequence yields U+FFFD and consumes one byte, which is what the
- * encoding spec requires and, more to the point, is what guarantees this loop
- * terminates on arbitrary bytes off the network. */
-static int u8_next(const char *s, int len, int i, uint32_t *out)
-{
-    unsigned char c = (unsigned char)s[i];
-    int n, k;
-    uint32_t cp;
-    if (c < 0x80)             { *out = c; return 1; }
-    else if ((c & 0xE0) == 0xC0) { n = 2; cp = c & 0x1F; }
-    else if ((c & 0xF0) == 0xE0) { n = 3; cp = c & 0x0F; }
-    else if ((c & 0xF8) == 0xF0) { n = 4; cp = c & 0x07; }
-    else                      { *out = 0xFFFD; return 1; }
-    if (i + n > len)          { *out = 0xFFFD; return 1; }
-    for (k = 1; k < n; k++) {
-        unsigned char t = (unsigned char)s[i + k];
-        if ((t & 0xC0) != 0x80) { *out = 0xFFFD; return 1; }
-        cp = (cp << 6) | (t & 0x3F);
-    }
-    *out = cp;
-    return n;
-}
 
 static int u8_encode(uint32_t cp, char *out)
 {
@@ -70,17 +62,6 @@ static int u8_encode(uint32_t cp, char *out)
 
 /* ---------------------------------------------------- property lookup ----- */
 
-static int lb_raw(uint32_t cp)
-{
-    if (cp > 0x10FFFF) return LB_AL;
-    return lb_cls_s2[(unsigned)lb_cls_s1[cp >> 8] * 256u + (cp & 0xFF)];
-}
-
-static unsigned lb_flags(uint32_t cp)
-{
-    if (cp > 0x10FFFF) return 0;
-    return lb_flg_s2[(unsigned)lb_flg_s1[cp >> 8] * 256u + (cp & 0xFF)];
-}
 
 int ltx_class(uint32_t cp) { return lb_raw(cp); }
 
@@ -88,265 +69,6 @@ const char *ltx_class_name(int cls)
 {
     if (cls < 0 || cls >= LB_COUNT) return "??";
     return lb_class_names[cls];
-}
-
-/* LB1's tailorable half.  SA and SG were already folded by the generator; what
- * is left is the part CSS gets to choose, so it happens here and per character
- * (a page can put `line-break: loose` on one span and not its neighbour). */
-static int lb_resolve(int c, const struct ltx_lbopt *o)
-{
-    switch (c) {
-    case LB_AI: return (o && o->ai_is_id) ? LB_ID : LB_AL;
-    case LB_XX: return LB_AL;
-    case LB_CJ: return (o && o->line_break == LTX_LB_LOOSE) ? LB_ID : LB_NS;
-    default:    return c;
-    }
-}
-
-/* ------------------------------------------------------ the engine -------- */
-
-/* Chain = one base character plus the CM/ZWJ run glued to it by LB9.  Every
- * rule after LB10 is stated over chains, never over code points, which is why
- * building them explicitly is worth an array: it turns "ignore the combining
- * marks" from a condition on forty rules into a preprocessing step. */
-struct chain {
-    int      start;      /* index of the base character */
-    uint32_t cp;         /* the base's code point (LB20a and LB28a name two
-                          * specific characters, U+2010 and U+25CC) */
-    uint8_t  cls;        /* the class every rule sees */
-    uint8_t  flg;        /* Pi / Pf / EastAsian / ExtPict&Cn of the base */
-    uint8_t  end_zwj;    /* the chain's LAST character is a ZWJ (LB8a) */
-};
-
-static int in_set5(int c, int a, int b, int d, int e, int f)
-{ return c == a || c == b || c == d || c == e || c == f; }
-
-/* LB15b's follower set and LB15a's leader set, spelled out once each. */
-static int lb15b_follow(int c)
-{
-    return c == LB_SP || c == LB_GL || c == LB_WJ || c == LB_CL || c == LB_QU ||
-           c == LB_CP || c == LB_EX || c == LB_IS || c == LB_SY || c == LB_BK ||
-           c == LB_CR || c == LB_LF || c == LB_NL || c == LB_ZW;
-}
-static int lb15a_lead(int c)
-{
-    return c == LB_BK || c == LB_CR || c == LB_LF || c == LB_NL || c == LB_OP ||
-           c == LB_QU || c == LB_GL || c == LB_SP || c == LB_ZW;
-}
-static int lb20a_lead(int c)
-{
-    return c == LB_BK || c == LB_CR || c == LB_LF || c == LB_NL || c == LB_SP ||
-           c == LB_ZW || c == LB_CB || c == LB_GL;
-}
-static int is_hangul_jamo(int c)
-{
-    return c == LB_JL || c == LB_JV || c == LB_JT || c == LB_H2 || c == LB_H3;
-}
-/* LB28a's "(AK | [◌] | AS)". */
-static int is_aksara(const struct chain *ch)
-{
-    return ch->cls == LB_AK || ch->cls == LB_AS || ch->cp == 0x25CC;
-}
-static int is_ak_or_dotted(const struct chain *ch)
-{
-    return ch->cls == LB_AK || ch->cp == 0x25CC;
-}
-
-/* Core.  `cls` is the per-character class already through LB1 (so the caller
- * can resolve AI/CJ differently per run); `out` gets n+1 entries; `nontail`,
- * if non-NULL, gets n+1 flags marking the positions whose decision came from a
- * NON-TAILORABLE rule (LB2..LB12).  CSS's `word-break: break-all` is allowed to
- * overrule everything else and nothing else, so that flag is exactly the line
- * between what a tailoring may touch and what it may not. */
-static int lb_engine(const uint32_t *cp, const uint8_t *cls, int n,
-                     unsigned char *out, unsigned char *nontail)
-{
-    struct chain *ch;
-    int nc = 0, i, k;
-    int bcls, bidx;                 /* last non-SP chain, and its index */
-    int numseq = 0, numclose = 0;   /* LB25's NU (SY|IS)* and its CL/CP form  */
-    int rirun = 0;                  /* LB30a's run of regional indicators     */
-
-    for (i = 0; i <= n; i++) out[i] = LTX_BRK_PROHIBITED;
-    if (nontail) for (i = 0; i <= n; i++) nontail[i] = 0;
-    out[n] = LTX_BRK_MANDATORY;                        /* LB3: ! eot */
-    if (nontail) nontail[n] = 1;
-    if (n <= 0) return n + 1;
-    out[0] = LTX_BRK_PROHIBITED;                       /* LB2: sot × */
-    if (nontail) nontail[0] = 1;
-
-    ch = (struct chain *)malloc((size_t)n * sizeof *ch);
-    if (!ch) return n + 1;          /* degrade to "no break opportunities":
-                                     * wrong, but never a wrong CHARACTER */
-
-    /* LB9 + LB10.  A CM or ZWJ glues to the preceding character unless that
-     * character is one of the six that cannot carry a combining sequence, in
-     * which case LB10 makes it a lone AL with U+0041's other properties --
-     * including East_Asian_Width=Na and Extended_Pictographic=N, which LB19a
-     * and LB30b both read, so the flags must be cleared and not inherited. */
-    for (i = 0; i < n; i++) {
-        int c = cls[i];
-        int glue = (c == LB_CM || c == LB_ZWJ) && i > 0 &&
-                   !in_set5(cls[i - 1], LB_BK, LB_CR, LB_LF, LB_NL, LB_SP) &&
-                   cls[i - 1] != LB_ZW;
-        if (glue) {
-            ch[nc - 1].end_zwj = (c == LB_ZWJ);
-            continue;
-        }
-        ch[nc].start   = i;
-        ch[nc].cp      = cp[i];
-        ch[nc].end_zwj = (c == LB_ZWJ);
-        if (c == LB_CM || c == LB_ZWJ) { ch[nc].cls = LB_AL; ch[nc].flg = 0; }
-        else                           { ch[nc].cls = (uint8_t)c;
-                                         ch[nc].flg = (uint8_t)lb_flags(cp[i]); }
-        nc++;
-    }
-
-    bcls = -1; bidx = -1;
-    for (k = 1; k < nc; k++) {
-        const struct chain *A = &ch[k - 1], *B = &ch[k];
-        int a = A->cls, b = B->cls;
-        unsigned af = A->flg, bf = B->flg;
-        int pos = B->start;
-        int r = LTX_BRK_ALLOWED, nt = 0;
-        int nx  = (k + 1 < nc) ? ch[k + 1].cls : -1;    /* one chain lookahead */
-        int nx2 = (k + 2 < nc) ? ch[k + 2].cls : -1;
-
-        /* State that describes the text BEHIND this position, advanced over
-         * chain k-1 before any rule is tested.  Doing it afterwards is an
-         * off-by-one that is invisible on ordinary prose and wrong on every
-         * number: LB25's "NU (SY|IS)* × PO" would see the sequence ending one
-         * chain too early, so "0%" would break between the digit and the sign
-         * while "a.2 3" would refuse to break where it must. */
-        if (a != LB_SP) { bcls = a; bidx = k - 1; }
-        if (a == LB_RI) rirun++; else rirun = 0;
-        {
-            int prev_num = numseq;
-            if (a == LB_NU)                               numseq = 1;
-            else if ((a == LB_SY || a == LB_IS) && numseq) numseq = 1;
-            else                                          numseq = 0;
-            numclose = ((a == LB_CL || a == LB_CP) && prev_num) ? 1 : 0;
-        }
-
-        /* ---- non-tailorable (UAX #14 §6.1) ---- */
-        if (a == LB_BK)                       { r = LTX_BRK_MANDATORY; nt = 1; }
-        else if (a == LB_CR && b == LB_LF)    { r = LTX_BRK_PROHIBITED; nt = 1; }
-        else if (a == LB_CR || a == LB_LF || a == LB_NL)
-                                              { r = LTX_BRK_MANDATORY; nt = 1; }
-        else if (b == LB_BK || b == LB_CR || b == LB_LF || b == LB_NL)
-                                              { r = LTX_BRK_PROHIBITED; nt = 1; }
-        else if (b == LB_SP || b == LB_ZW)    { r = LTX_BRK_PROHIBITED; nt = 1; }
-        else if (bcls == LB_ZW)               { r = LTX_BRK_ALLOWED; nt = 1; }
-        else if (A->end_zwj)                  { r = LTX_BRK_PROHIBITED; nt = 1; }
-        else if (b == LB_WJ || a == LB_WJ)    { r = LTX_BRK_PROHIBITED; nt = 1; }
-        else if (a == LB_GL)                  { r = LTX_BRK_PROHIBITED; nt = 1; }
-        /* ---- tailorable (UAX #14 §6.2) ---- */
-        else if (b == LB_GL && a != LB_SP && a != LB_BA && a != LB_HY)
-                                                r = LTX_BRK_PROHIBITED;   /* 12a */
-        else if (b == LB_CL || b == LB_CP || b == LB_EX || b == LB_SY)
-                                                r = LTX_BRK_PROHIBITED;   /* 13  */
-        else if (bcls == LB_OP)                 r = LTX_BRK_PROHIBITED;   /* 14  */
-        /* LB15a: (sot|BK|CR|LF|NL|OP|QU|GL|SP|ZW) [Pi&QU] SP* × */
-        else if (bcls == LB_QU && (ch[bidx].flg & LBF_PI) &&
-                 (bidx == 0 || lb15a_lead(ch[bidx - 1].cls)))
-                                                r = LTX_BRK_PROHIBITED;
-        /* LB15b: × [Pf&QU] (SP|GL|WJ|CL|QU|CP|EX|IS|SY|BK|CR|LF|NL|ZW|eot) */
-        else if (b == LB_QU && (bf & LBF_PF) && (nx < 0 || lb15b_follow(nx)))
-                                                r = LTX_BRK_PROHIBITED;
-        else if (a == LB_SP && b == LB_IS && nx == LB_NU)
-                                                r = LTX_BRK_ALLOWED;      /* 15c */
-        else if (b == LB_IS)                    r = LTX_BRK_PROHIBITED;   /* 15d */
-        else if ((bcls == LB_CL || bcls == LB_CP) && b == LB_NS)
-                                                r = LTX_BRK_PROHIBITED;   /* 16  */
-        else if (bcls == LB_B2 && b == LB_B2)   r = LTX_BRK_PROHIBITED;   /* 17  */
-        else if (a == LB_SP)                    r = LTX_BRK_ALLOWED;      /* 18  */
-        else if (b == LB_QU && !(bf & LBF_PI))  r = LTX_BRK_PROHIBITED;   /* 19  */
-        else if (a == LB_QU && !(af & LBF_PF))  r = LTX_BRK_PROHIBITED;
-        /* LB19a: unless surrounded by East Asian characters, glue both sides */
-        else if (b == LB_QU && !(af & LBF_EA))  r = LTX_BRK_PROHIBITED;
-        else if (b == LB_QU && (nx < 0 || !(ch[k + 1].flg & LBF_EA)))
-                                                r = LTX_BRK_PROHIBITED;
-        else if (a == LB_QU && !(bf & LBF_EA))  r = LTX_BRK_PROHIBITED;
-        else if (a == LB_QU && (k < 2 || !(ch[k - 2].flg & LBF_EA)))
-                                                r = LTX_BRK_PROHIBITED;
-        else if (b == LB_CB || a == LB_CB)      r = LTX_BRK_ALLOWED;      /* 20  */
-        /* LB20a: (sot|BK|CR|LF|NL|SP|ZW|CB|GL) (HY | U+2010) × AL */
-        else if ((a == LB_HY || A->cp == 0x2010) && b == LB_AL &&
-                 (k < 2 || lb20a_lead(ch[k - 2].cls)))
-                                                r = LTX_BRK_PROHIBITED;
-        else if (b == LB_BA || b == LB_HY || b == LB_NS || a == LB_BB)
-                                                r = LTX_BRK_PROHIBITED;   /* 21  */
-        /* LB21a: HL (HY | [BA - EastAsian]) × [^HL] */
-        else if (k >= 2 && ch[k - 2].cls == LB_HL && b != LB_HL &&
-                 (a == LB_HY || (a == LB_BA && !(af & LBF_EA))))
-                                                r = LTX_BRK_PROHIBITED;
-        else if (a == LB_SY && b == LB_HL)      r = LTX_BRK_PROHIBITED;   /* 21b */
-        else if (b == LB_IN)                    r = LTX_BRK_PROHIBITED;   /* 22  */
-        else if ((a == LB_AL || a == LB_HL) && b == LB_NU)
-                                                r = LTX_BRK_PROHIBITED;   /* 23  */
-        else if (a == LB_NU && (b == LB_AL || b == LB_HL))
-                                                r = LTX_BRK_PROHIBITED;
-        else if (a == LB_PR && (b == LB_ID || b == LB_EB || b == LB_EM))
-                                                r = LTX_BRK_PROHIBITED;   /* 23a */
-        else if ((a == LB_ID || a == LB_EB || a == LB_EM) && b == LB_PO)
-                                                r = LTX_BRK_PROHIBITED;
-        else if ((a == LB_PR || a == LB_PO) && (b == LB_AL || b == LB_HL))
-                                                r = LTX_BRK_PROHIBITED;   /* 24  */
-        else if ((a == LB_AL || a == LB_HL) && (b == LB_PR || b == LB_PO))
-                                                r = LTX_BRK_PROHIBITED;
-        /* LB25, in the order the annex lists its fifteen alternatives. */
-        else if (numclose && (b == LB_PO || b == LB_PR))
-                                                r = LTX_BRK_PROHIBITED;
-        else if (numseq && (b == LB_PO || b == LB_PR || b == LB_NU))
-                                                r = LTX_BRK_PROHIBITED;
-        else if ((a == LB_PO || a == LB_PR) && b == LB_OP &&
-                 (nx == LB_NU || (nx == LB_IS && nx2 == LB_NU)))
-                                                r = LTX_BRK_PROHIBITED;
-        else if ((a == LB_PO || a == LB_PR) && b == LB_NU)
-                                                r = LTX_BRK_PROHIBITED;
-        else if (a == LB_HY && b == LB_NU)      r = LTX_BRK_PROHIBITED;
-        else if (a == LB_IS && b == LB_NU)      r = LTX_BRK_PROHIBITED;
-        else if (a == LB_JL && (b == LB_JL || b == LB_JV || b == LB_H2 ||
-                                b == LB_H3))    r = LTX_BRK_PROHIBITED;   /* 26  */
-        else if ((a == LB_JV || a == LB_H2) && (b == LB_JV || b == LB_JT))
-                                                r = LTX_BRK_PROHIBITED;
-        else if ((a == LB_JT || a == LB_H3) && b == LB_JT)
-                                                r = LTX_BRK_PROHIBITED;
-        else if (is_hangul_jamo(a) && b == LB_PO)
-                                                r = LTX_BRK_PROHIBITED;   /* 27  */
-        else if (a == LB_PR && is_hangul_jamo(b))
-                                                r = LTX_BRK_PROHIBITED;
-        else if ((a == LB_AL || a == LB_HL) && (b == LB_AL || b == LB_HL))
-                                                r = LTX_BRK_PROHIBITED;   /* 28  */
-        /* LB28a: the Brahmic orthographic syllable. */
-        else if (a == LB_AP && (is_aksara(B) || b == LB_AS))
-                                                r = LTX_BRK_PROHIBITED;
-        else if (is_aksara(A) && (b == LB_VF || b == LB_VI))
-                                                r = LTX_BRK_PROHIBITED;
-        else if (k >= 2 && is_aksara(&ch[k - 2]) && a == LB_VI &&
-                 is_ak_or_dotted(B))            r = LTX_BRK_PROHIBITED;
-        else if (is_aksara(A) && is_aksara(B) && nx == LB_VF)
-                                                r = LTX_BRK_PROHIBITED;
-        else if (a == LB_IS && (b == LB_AL || b == LB_HL))
-                                                r = LTX_BRK_PROHIBITED;   /* 29  */
-        else if ((a == LB_AL || a == LB_HL || a == LB_NU) && b == LB_OP &&
-                 !(bf & LBF_EA))                r = LTX_BRK_PROHIBITED;   /* 30  */
-        else if (a == LB_CP && !(af & LBF_EA) &&
-                 (b == LB_AL || b == LB_HL || b == LB_NU))
-                                                r = LTX_BRK_PROHIBITED;
-        else if (a == LB_RI && b == LB_RI && (rirun & 1))
-                                                r = LTX_BRK_PROHIBITED;   /* 30a */
-        else if (a == LB_EB && b == LB_EM)      r = LTX_BRK_PROHIBITED;   /* 30b */
-        else if ((af & LBF_EXTPICT_CN) && b == LB_EM)
-                                                r = LTX_BRK_PROHIBITED;
-        else                                    r = LTX_BRK_ALLOWED;      /* 31  */
-
-        out[pos] = (unsigned char)r;
-        if (nontail) nontail[pos] = (unsigned char)nt;
-    }
-
-    free(ch);
-    return n + 1;
 }
 
 /* ------------------------------------------- CSS tailorings on top -------- */
@@ -440,6 +162,7 @@ int ltx_break_cp(const uint32_t *cp, int n, const struct ltx_lbopt *opt,
 {
     uint8_t *cls;
     unsigned char *nt;
+    struct chain *ch;
     int i, rc;
 
 #ifdef CSSTEXT_BREAK_ON_SPACE_ONLY
@@ -449,13 +172,14 @@ int ltx_break_cp(const uint32_t *cp, int n, const struct ltx_lbopt *opt,
     if (n <= 0) { out[0] = LTX_BRK_MANDATORY; return 1; }
     cls = (uint8_t *)malloc((size_t)n);
     nt  = (unsigned char *)malloc((size_t)n + 1);
-    if (!cls || !nt) { free(cls); free(nt);
+    ch  = (struct chain *)malloc((size_t)n * sizeof *ch);
+    if (!cls || !nt || !ch) { free(cls); free(nt); free(ch);
                        for (i = 0; i <= n; i++) out[i] = LTX_BRK_PROHIBITED;
                        out[n] = LTX_BRK_MANDATORY; return n + 1; }
     for (i = 0; i < n; i++) cls[i] = (uint8_t)lb_resolve(lb_raw(cp[i]), opt);
-    rc = lb_engine(cp, cls, n, out, nt);
+    rc = lb_engine(cp, cls, n, ch, out, nt);
     lb_tailor(cp, cls, n, opt, nt, out);
-    free(cls); free(nt);
+    free(cls); free(nt); free(ch);
     return rc;
 #endif
 }
@@ -1139,6 +863,7 @@ int ltx_layout_runs(const struct ltx_run *runs, int nrun,
         int *offs = NULL;
         uint8_t *cls = NULL;
         unsigned char *nt = NULL, *cb = NULL;
+        struct chain *chn = NULL;
         int n = 0, j;
         if (b.len > 0) {
             cps  = (uint32_t *)malloc((size_t)b.len * sizeof *cps);
@@ -1146,8 +871,10 @@ int ltx_layout_runs(const struct ltx_run *runs, int nrun,
             cls  = (uint8_t *)malloc((size_t)b.len);
             nt   = (unsigned char *)malloc((size_t)b.len + 2);
             cb   = (unsigned char *)malloc((size_t)b.len + 2);
-            if (!cps || !offs || !cls || !nt || !cb) {
-                free(cps); free(offs); free(cls); free(nt); free(cb); goto fail;
+            chn  = (struct chain *)malloc((size_t)b.len * sizeof *chn);
+            if (!cps || !offs || !cls || !nt || !cb || !chn) {
+                free(cps); free(offs); free(cls); free(nt); free(cb); free(chn);
+                goto fail;
             }
             for (i = 0; i < b.len; ) {
                 uint32_t c;
@@ -1172,7 +899,7 @@ int ltx_layout_runs(const struct ltx_run *runs, int nrun,
             memset(nt, 0, (size_t)n + 1);
             lb_naive(cps, n, cb);
 #else
-            lb_engine(cps, cls, n, cb, nt);
+            lb_engine(cps, cls, n, chn, cb, nt);
 #endif
             /* Tailorings are per position, so they run once per run's style
              * over that run's positions only. */
@@ -1199,7 +926,7 @@ int ltx_layout_runs(const struct ltx_run *runs, int nrun,
             /* A preserved newline is a forced break wherever it survived
              * collapsing; UAX #14 already says so (LB4/LB5) and the class
              * table agrees, but `white-space: nowrap` must not turn it off. */
-            free(cps); free(offs); free(cls); free(nt); free(cb);
+            free(cps); free(offs); free(cls); free(nt); free(cb); free(chn);
         } else {
             b.brk[0] = LTX_BRK_MANDATORY;
         }
