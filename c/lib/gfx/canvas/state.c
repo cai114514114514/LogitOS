@@ -23,6 +23,7 @@ int ol_canvas_save(struct ol_canvas *canvas)
     if (!canvas || canvas->depth == OL_CANVAS_STACK)
         return invalid(canvas, OL_LIMIT);
     canvas->saved[canvas->depth++] = canvas->state;
+    canvas->state.arena_own = 0; /* the pushes of this level start afresh */
     return OL_OK;
 }
 
@@ -30,7 +31,9 @@ int ol_canvas_restore(struct ol_canvas *canvas)
 {
     if (!canvas || !canvas->depth)
         return invalid(canvas, OL_STATE);
+    struct ol_canvas_state popped = canvas->state;
     canvas->state = canvas->saved[--canvas->depth];
+    ol_canvas_clip_pop(canvas, &popped);
     return OL_OK;
 }
 
