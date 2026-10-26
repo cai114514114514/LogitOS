@@ -289,7 +289,13 @@ static void draw(void)
         if(H>=720){
             const char *hint=work.proposal?"请查看两个版本，再决定是否应用。":!agent_task?"关闭窗口后，已开始的工作仍会保留。":work.task.phase==AG_WAIT_MODEL?"连接恢复后可继续，当前进度已保存。":"任务进度会保留，你可以随时接管。";
             side_text(x,sy+59,rw,hint,AUI_MUTED,13,2);}
-        int by=H-146;
+        /* The status block is anchored to the top and the buttons to the
+         * bottom; below ~700 points of content they met, and the release tour
+         * (2026-10-26) showed "等待你的要求" sitting on the 继续工作 button once
+         * the WM fitted TextEdit into a 670-point work area. The buttons now
+         * never rise above the status line; the space they give up at the
+         * bottom is the margin above the composer. */
+        int by=H-146;if(by<sy+56)by=sy+56;
         if(work.proposal){
             if(aui_button_ex(x,by,rw,38,"应用修改",AUI_V_PRIMARY,proposal_text&&work_available&&!agent_dirty))work_decide(1);
             if(aui_button_ex(x,by+42,rw,28,"保留当前版本",AUI_V_GHOST,work_available))work_decide(0);

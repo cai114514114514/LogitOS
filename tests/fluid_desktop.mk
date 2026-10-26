@@ -66,7 +66,30 @@ test-close-anim-negctl: $(DISK)
 test-close-anim: test-close-anim-negctl $(ISO) $(DISK)
 	@python3 tests/qmp/qmp_snapclose.py --iso $(ISO) --disk $(DISK) --only close
 
-ci-boot: test-snap test-close-anim
+# ---- the work area: windows the WM places stay inside it ----
+# test-desktop-place: TextEdit, Code Studio, Settings, Terminal and the Browser
+# are opened from the dock; each one's settled `[wm] win N frame` must lie inside
+# the work area its `[wm] place` line reports (menu bar to dock). Before
+# win_fit_work_area() (2026-10-26) two of them ran off the right edge and three
+# had their bottom rows under the dock. The control kernel
+# (-DWM_PLACE_NEGCTL_NO_FIT) places windows the old way and must fail a frame check.
+ifeq ($(PLACENEGCTL),1)
+CFLAGS += -DWM_PLACE_NEGCTL_NO_FIT
+endif
+PLACE_CTL_BUILD := $(BUILD)-placenegctl
+.PHONY: test-desktop-place test-desktop-place-negctl
+test-desktop-place-negctl: $(DISK)
+	@$(MAKE) --no-print-directory BUILD=$(PLACE_CTL_BUILD) PLACENEGCTL=1 \
+		$(PLACE_CTL_BUILD)/logit.iso > $(BUILD)/place_ctl_build.log 2>&1
+	@rc=0; python3 tests/qmp/qmp_snapclose.py --iso $(PLACE_CTL_BUILD)/logit.iso --disk $(DISK) \
+		--only place > $(BUILD)/place_ctl.log 2>&1 || rc=$$?; cat $(BUILD)/place_ctl.log; \
+		if [ $$rc -eq 1 ] && grep -q 'FAIL  .*lies inside the work area' $(BUILD)/place_ctl.log; then \
+			echo "negative control ok: the old placement leaves a window outside the work area"; \
+		else echo "NEGATIVE CONTROL FAILED"; exit 1; fi
+test-desktop-place: test-desktop-place-negctl $(ISO) $(DISK)
+	@python3 tests/qmp/qmp_snapclose.py --iso $(ISO) --disk $(DISK) --only place
+
+ci-boot: test-snap test-close-anim test-desktop-place
 
 # ---- P4: Spotlight ----
 # /sbin/spotlight.aex: a panel app (WINS_SET_PANEL) the window manager starts

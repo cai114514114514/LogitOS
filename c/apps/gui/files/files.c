@@ -37,7 +37,15 @@
 #define WINW       1120
 #define PROJECT_W  320
 #define CONTENT_RIGHT (WINW - PROJECT_W)
-#define WINH       660
+/* WINH was the constant 660. The WM now fits a new window inside the work area
+ * (wm.c win_fit_work_area), and at 1280x800 that is 670 points tall INCLUDING
+ * the titlebar -- so Finder opened 20 points shorter than it drew, and the
+ * "Ask Logit" footer was cut in half (release tour, 2026-10-26). The height is
+ * the window's real one now, taken from EV_RESIZE; 660 is only what is asked
+ * for. The width stays fixed: the three columns are laid out against WINW. */
+#define WINH0      660
+static int win_h = WINH0;
+#define WINH       win_h
 #define SIDEBAR_W  168
 #define TOOLBAR_H  46
 #define FOOTER_H   34
@@ -1021,6 +1029,7 @@ void app_main(void)
          * Double-click timing uses the monotonic clock, not event arrival. */
         if (e.type == EV_MOUSE_MOVE) continue;
         if (e.type == EV_CLOSE) app_exit(0);
+        if (e.type == EV_RESIZE) { win_h = (int)e.b; aui_set_size(WINW, win_h); }
 
         shift_held = (e.mods & EV_MOD_SHIFT) != 0;
         ctrl_held  = (e.mods & EV_MOD_CTRL) != 0;

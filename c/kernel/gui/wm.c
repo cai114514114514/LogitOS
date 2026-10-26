@@ -1384,6 +1384,56 @@ static void zoom_rect(int *x, int *y, int *ww, int *wh)
     if (*wh < TBH + S(MIN_CONTENT_H_PT)) *wh = H - MBH;   /* a dock taller than the screen */
 }
 
+/* Keep a window the WM PLACES inside the work area -- zoom_rect(): below the
+ * menu bar, above the dock, inside the screen.
+ *
+ * Only for placement the WM does on its own (a new window, and a window an app
+ * has just grown with SYS_GUI_WIN_MIN). A window a person drags is theirs to put
+ * half under the dock or off the edge, as on macOS, so win_set_frame() and the
+ * gestures do not call this.
+ *
+ * Why it exists (found by a desktop tour on the macOS dev host, 2026-10-26):
+ * creation clamped against the whole screen, not the dock, and SYS_GUI_WIN_MIN
+ * grew a window IN PLACE. TextEdit and Code Studio declare minimums wider than
+ * the space right of their cascade slot, so they opened running off the right
+ * edge; Settings, Terminal and the Browser opened with their bottom rows --
+ * Settings' Apply button among them -- permanently behind the dock glass.
+ *
+ * With `resize` a frame larger than the area is shrunk to it (both callers pass
+ * 1; 0 moves only, which is what creation first did -- it left TextEdit and Code
+ * Studio taller than the area, see SYS_GUI_CREATE), except that
+ * win_set_frame() never goes below the app's declared minimum; such
+ * a window is pinned to the area's top-left corner and overflows right/down,
+ * which is the least bad of the choices. Every placement is logged as
+ * "[wm] place" with the area, so the gate reads the WM's own numbers.
+ * -DWM_PLACE_NEGCTL_NO_FIT restores the old behaviour for the control. */
+static void win_fit_work_area(struct win *w, int resize)
+{
+    int ax, ay, aw, ah;
+    zoom_rect(&ax, &ay, &aw, &ah);
+#ifndef WM_PLACE_NEGCTL_NO_FIT
+    if (!w->panel) {
+        int x = w->x, y = w->y, ww = w->w, wh = w->h;
+        if (resize && ww > aw) ww = aw;
+        if (resize && wh > ah) wh = ah;
+        /* A window that does not fit at its cascade slot is CENTRED in the
+         * area, not pushed flush against the far edge: the first version did
+         * the latter, and the 2026-10-26 release tour showed TextEdit, Code
+         * Studio and the Browser all glued to the screen's right edge with a
+         * 160-point gutter on the left. Centring is what macOS does with a
+         * window too big for its cascade position. */
+        if (x + ww > ax + aw) x = ax + (aw - ww) / 2;
+        if (y + wh > ay + ah) y = ay + (ah - wh) / 2;
+        if (x < ax) x = ax;
+        if (y < ay) y = ay;
+        if (resize) win_set_frame(w, x, y, ww, wh);
+        else { w->x = x; w->y = y; }
+    }
+#endif
+    kprintf("[wm] place win=%d frame %d %d %d %d work %d %d %d %d\n",
+            (int)(w - wins), w->x, w->y, w->w, w->h, ax, ay, aw, ah);
+}
+
 static void win_set_zoom(struct win *w, int on)
 {
     on = on ? 1 : 0;
@@ -2680,9 +2730,10 @@ static long wm_gui_dispatch(long num, long a, long b, long c)
         w->w = cw; w->h = win_tbh(w) + ch;
         w->x = S(110 + cascade * 28); w->y = S(70 + cascade * 28);
         cascade = (cascade + 1) % 6;
-        { int SW = (int)fb_width(), SH = (int)fb_height();   /* keep big windows on-screen */
-          if (w->x + w->w > SW) w->x = SW - w->w; if (w->x < 0) w->x = 0;
-          if (w->y + w->h > SH - S(4)) w->y = SH - S(4) - w->h; if (w->y < MBH) w->y = MBH; }
+        /* A clamp against the whole screen (bottom at SH - 4) stood here, so a
+         * window could open with its last rows under the dock. The work area
+         * is the bound now, applied below once the reset list has run; see
+         * win_fit_work_area(). */
         scopy(w->title, title, sizeof w->title);
         w->surf.w = cw; w->surf.h = ch;
         w->surf.clip_on = 0;             /* fresh canvas: a reused slot must not inherit a clip */
@@ -2724,6 +2775,17 @@ static long wm_gui_dispatch(long num, long a, long b, long c)
          * the previous tenant, damaging a region neither of them occupies. */
         w->min_t0 = 0; w->min_dir = 0; w->min_slot = 0;
         w->anim_prev.x0 = w->anim_prev.y0 = w->anim_prev.x1 = w->anim_prev.y1 = 0;
+        /* HERE and not where the frame is first computed: the fit reads `panel`
+         * and win_set_frame() reads min_w_pt/min_h_pt, and before the list
+         * above those are the PREVIOUS TENANT'S. A first attempt fitted early
+         * with move-only and left TextEdit (690) and Code Studio (730) taller
+         * than the 670-point area: they ask for that much content and declare
+         * no minimum, so the only correct fix is to shrink them. The canvas
+         * stays at the requested size; wm_apply_sizes() reshapes it to the
+         * frame on the next WM pass and sends EV_RESIZE, the same path a
+         * person's resize drag takes. Before the sx/sy/sw/sh seed, which must
+         * describe the frame the window really opens at. */
+        win_fit_work_area(w, 1);
         w->sx = w->x; w->sy = w->y; w->sw = w->w; w->sh = w->h;
         w->open_t0 = anim_stamp();       /* trigger open pop */
         /* The following open frames need a real previous extent just like
@@ -3175,7 +3237,12 @@ static long wm_gui_dispatch(long num, long a, long b, long c)
          * from this instant, and the WM is the only thing that can fix it. */
         int fw, fh;
         win_min_frame(w, &fw, &fh);
-        if (w->w < fw || w->h < fh) win_set_frame(w, w->x, w->y, w->w, w->h);
+        if (w->w < fw || w->h < fh) {
+            win_set_frame(w, w->x, w->y, w->w, w->h);
+            /* Growing in place is what ran TextEdit off the right edge: bring
+             * the grown frame back into the work area. */
+            win_fit_work_area(w, 1);
+        }
         return 0;
     }
     case SYS_GUI_WIN_STATE: {
@@ -3474,6 +3541,15 @@ static int ghost_geom(const struct ghost *g, int *dx, int *dy, int *dw, int *dh,
     *dw = g->w * sc / 256; *dh = g->h * sc / 256;
     *dx = g->x + (g->w - *dw) / 2; *dy = g->y + (g->h - *dh) / 2;
     *alpha = 255 - 255 * k / 256;
+#ifdef WM_CLOSE_DAMAGE_LIE
+    /* The control must leave something for the missing damage to strand. The
+     * quadratic ease reaches k = 256 at p >= 241, so a last tick that lands in
+     * the final 6% of CLOSE_MS draws alpha 0 -- nothing -- and the lie passed
+     * the round trip (2026-10-26: TextEdit's fitted frame changed the frame
+     * timing and the control ended at p 242). A floor makes every drawn frame
+     * visible, so the control fails whatever tick ends the fade. */
+    if (*alpha < 64) *alpha = 64;
+#endif
     return p;
 }
 

@@ -14,11 +14,22 @@ exactly the frame the zone means (a half, or the zoom). Then a half-snapped
 window is dragged back into the middle, and `[wm] unsnap` must give back the
 size it had before its first snap.
 
-  --only close|snap   run one scene
-  --negctl            a control kernel: WM_CLOSE_DAMAGE_LIE (with --only close)
-                      or WM_SNAP_NEGCTL (with --only snap); the scene must fail
+PLACE. The five apps a desktop tour found opening outside the work area --
+TextEdit and Code Studio off the right edge, Settings, Terminal and the Browser
+with their bottom rows under the dock -- are opened from the dock one at a
+time. For each, the guest's own numbers decide: the `[wm] place` line names the
+window and the work area (below the menu bar, above the dock), and the LAST
+`[wm] win N frame` line for that window -- printed once its geometry has been
+quiet for 150 ms, so after any SYS_GUI_WIN_MIN growth -- must lie inside it.
+The frame line is the referee rather than the place line because it is what
+the compositor ends up drawing, whatever path moved the window last.
 
-Usage: qmp_snapclose.py --iso ISO [--disk DISK] [--only close|snap] [--negctl]
+  --only close|snap|place   run one scene
+  --negctl            a control kernel: WM_CLOSE_DAMAGE_LIE (with --only close),
+                      WM_SNAP_NEGCTL (with --only snap) or
+                      WM_PLACE_NEGCTL_NO_FIT (with --only place); the scene must fail
+
+Usage: qmp_snapclose.py --iso ISO [--disk DISK] [--only close|snap|place] [--negctl]
 """
 import os
 import re
@@ -158,6 +169,29 @@ def main(argv):
                     m = re.search(r"\[wm\] snap win=\d+ zone=top frame (-?\d+) (\d+) (\d+) (\d+)", log)
                     ck(m is not None and int(m.group(1)) == 0 and int(m.group(3)) == XRES,
                        "dragging into the menu bar zooms it (%s)" % (m.group(0) if m else None))
+
+        if only in (None, "place"):
+            print("place: every window the WM opens lies inside the work area")
+            place_re = re.compile(r"\[wm\] place win=(\d+) frame -?\d+ -?\d+ \d+ \d+ "
+                                  r"work (\d+) (\d+) (\d+) (\d+)")
+            for name in ("textedit", "studio", "settings", "terminal", "browser"):
+                mark = len(ui.serial_text())
+                ui.launch_app(name, probe=probe, timeout=120.0)
+                time.sleep(5.0)              # SYS_GUI_WIN_MIN growth, then 150 ms of quiet
+                log = ui.serial_text()[mark:]
+                places = place_re.findall(log)
+                ck(bool(places), "%s: the WM reported placing its window" % name)
+                if places:
+                    win = places[-1][0]
+                    ax, ay, aw, ah = (int(v) for v in places[-1][1:])
+                    frames = re.findall(r"\[wm\] win %s frame (-?\d+) (-?\d+) (\d+) (\d+) " % win, log)
+                    ck(bool(frames), "%s: window %s reported a settled frame" % (name, win))
+                    if frames:
+                        x, y, w, h = (int(v) for v in frames[-1])
+                        ck(x >= ax and y >= ay and x + w <= ax + aw and y + h <= ay + ah,
+                           "%s: frame %d %d %d %d lies inside the work area %d %d %d %d"
+                           % (name, x, y, w, h, ax, ay, aw, ah))
+                ui.key_mods(("meta_l",), "w", settle=2.0)
         _ = log0
     finally:
         qemu.kill()
