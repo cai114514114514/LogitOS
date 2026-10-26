@@ -149,3 +149,97 @@ void ol_sw_backdrop(struct gfx_surface *t,struct gfx_rect r,int radius,unsigned 
     for(int y=r.y;y<r.y+r.h;y++)for(int x=r.x;x<r.x+r.w;x++)
         gfx_over(t->px+(unsigned long)y*t->stride+x*4,GFX_R(rgb),GFX_G(rgb),GFX_B(rgb),opacity,255);
 }
+
+/* ---- rounded / multi-pass backdrop (ol_cmd_backdrop_rrect) ----------------
+ * passes==3 runs three box blurs of radius ceil(r/3); each pass reads the
+ * previous one's replace-output, so the snapshot ping-pongs between two
+ * buffers. Transparent beyond the read rect: a pass corrupts at most one
+ * radius of band per pass, and the read rect is the full reach, so the output
+ * rect itself is never contaminated. */
+static int pass_radius(int radius,int passes){return passes>=3?(radius+2)/3:radius;}
+int ol_sw_backdrop_reach(int radius,int passes)
+{
+    return passes>=3?3*pass_radius(radius,3):radius;
+}
+static int all_square(const int corner[4])
+{
+#ifdef OL_BACKDROP_IGNORE_RADIUS
+    (void)corner;return 1;
+#else
+    return !(corner[0]|corner[1]|corner[2]|corner[3]);
+#endif
+}
+unsigned long ol_sw_backdrop_rrect_size(struct gfx_rect r,const int corner[4],int radius,int passes,int w,int h)
+{
+    int reach=ol_sw_backdrop_reach(radius,passes);
+    if(passes<=1&&all_square(corner))return ol_sw_backdrop_size(r,radius,w,h);
+    struct gfx_rect read=ol_sw_effect_bounds(r,reach,w,h);
+    if(!read.w||!read.h)return 0;
+    int p=pass_radius(radius,passes);
+    unsigned long snap=((unsigned long)read.w*read.h*4+7)&~7ul;
+    return 2*snap+(p?(unsigned long)(read.w+2*p)*sizeof(struct accum):0);
+}
+/* Coverage 0..255 of pixel (tx,ty) of the top-left corner tile of radius r (arc
+ * centred at (r,r)). gfx_mask_corner's rasteriser is too coarse here (up to
+ * 18/255 off at r=16), so this is analytic: pixels wholly inside or outside the
+ * circle are decided in integers; the thin band on the arc integrates the exact
+ * covered height over 32 sub-columns in 1/256 px units (height error < 1/256). */
+static int corner_cov(int r,int tx,int ty)
+{
+    long ix=r-tx,iy=r-ty,ox=r-tx-1,oy=r-ty-1;
+    if(ix*ix+iy*iy<=(long)r*r)return 255;
+    if(ox*ox+oy*oy>=(long)r*r)return 0;
+    unsigned long long R=(unsigned long long)r*256,c=R;
+    unsigned long long bottom=(unsigned long long)(ty+1)*256,top=(unsigned long long)ty*256,sum=0;
+    for(int i=0;i<32;i++) {
+        long long dx=(long long)c-((long long)tx*256+8*i+4);
+        unsigned long long h=dx>=(long long)R?0:gfx_isqrt(R*R-(unsigned long long)(dx*dx));
+        long long edge=(long long)c-(long long)h;        /* covered from here down */
+        long long lo=edge<(long long)top?(long long)top:edge;
+        if((long long)bottom>lo)sum+=bottom-lo;
+    }
+    return (int)((sum*255+16ull*256)/(32ull*256));
+}
+static int rr_cov(const int cr[4],int w,int h,int x,int y)
+{
+    int c=-1,tx=x,ty=y;
+    if(x<cr[0]&&y<cr[0]){c=0;}
+    else if(x>=w-cr[1]&&y<cr[1]){c=1;tx=w-1-x;}
+    else if(x>=w-cr[2]&&y>=h-cr[2]){c=2;tx=w-1-x;ty=h-1-y;}
+    else if(x<cr[3]&&y>=h-cr[3]){c=3;ty=h-1-y;}
+    if(c<0)return 255;
+    return corner_cov(cr[c],tx,ty);
+}
+void ol_sw_backdrop_rrect(struct gfx_surface *t,struct gfx_rect r,const int corner[4],int radius,
+                           int passes,unsigned rgb,int opacity,void *scratch)
+{
+    if(passes<=1&&all_square(corner)){ol_sw_backdrop(t,r,radius,rgb,opacity,scratch);return;}
+    int reach=ol_sw_backdrop_reach(radius,passes),p=pass_radius(radius,passes);
+    struct gfx_rect read=ol_sw_effect_bounds(r,reach,t->w,t->h);
+    if(!read.w||!read.h)return;
+    unsigned long snap=((unsigned long)read.w*read.h*4+7)&~7ul;
+    struct gfx_surface a={scratch,read.w,read.h,read.w*4};
+    struct gfx_surface b={(unsigned char *)scratch+snap,read.w,read.h,read.w*4};
+    void *cols=(unsigned char *)scratch+2*snap;
+    for(int y=0;y<read.h;y++)for(int x=0;x<read.w*4;x++)
+        a.px[(unsigned long)y*a.stride+x]=t->px[(unsigned long)(read.y+y)*t->stride+read.x*4+x];
+    struct gfx_surface *src=&a,*dst=&b;
+    if(p)for(int i=0;i<(passes>=3?3:1);i++) {
+        struct gfx_rect all={0,0,read.w,read.h};
+        filtered(dst,src,all,all,p,0,255,0,0,1,cols);
+        struct gfx_surface *tmp=src;src=dst;dst=tmp;
+    }
+    int cr[4],ignore=all_square(corner);
+    for(int i=0;i<4;i++)cr[i]=ignore?0:corner[i];
+    struct gfx_rect o=ol_sw_effect_bounds(r,0,t->w,t->h);
+    for(int y=o.y;y<o.y+o.h;y++)for(int x=o.x;x<o.x+o.w;x++) {
+        int cov=rr_cov(cr,r.w,r.h,x-r.x,y-r.y);
+        if(!cov)continue;
+        unsigned char n[4],*d=t->px+(unsigned long)y*t->stride+x*4;
+        const unsigned char *s=src->px+(unsigned long)(y-read.y)*src->stride+(x-read.x)*4;
+        for(int k=0;k<4;k++)n[k]=s[k];
+        gfx_over(n,GFX_R(rgb),GFX_G(rgb),GFX_B(rgb),opacity,255);
+        if(cov==255){for(int k=0;k<4;k++)d[k]=n[k];}
+        else for(int k=0;k<4;k++)d[k]=(unsigned char)((d[k]*(255-cov)+n[k]*cov+127)/255);
+    }
+}

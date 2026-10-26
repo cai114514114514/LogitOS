@@ -9,7 +9,7 @@
  *                 7.5 and 7.5 without; SNAP edges equal the legacy S() idiom
  *   router        OL_UNSUPPORTED per number, OL_ARGUMENT for a wrong size,
  *                 INFO(0/1/2); no handler touches a pixel
- *   fb-clip       fb_clip_push is OL_UNSUPPORTED, depth 0, clip untouched
+ *   fb-clip       fb_clip_push is OL_OK, depth 1, clip intersected; pop restores it
  *   wm-switch     every new number is in wm.c's wm_domain_call, and the
  *                 pixel-writing ones (only those) in is_draw_call
  *   as-layout     every layout gen_abi wrote into fsroot/as/lib/abi.as fits
@@ -384,14 +384,15 @@ static void test_fb_clip(void)
     surf.clip_on = 1; surf.clx0 = 2; surf.cly0 = 3; surf.clx1 = 40; surf.cly1 = 30;
     fb_target(&surf);
     if (fb_clip_depth() != 0) bad++;
-    if (fb_clip_push(5, 5, 10, 10) != OL_UNSUPPORTED) bad++;
-    if (fb_clip_depth() != 0) bad++;
+    if (fb_clip_push(5, 5, 10, 10) != OL_OK) bad++;
+    if (fb_clip_depth() != 1) bad++;
+    if (!surf.clip_on || surf.clx0 != 5 || surf.cly0 != 5 || surf.clx1 != 10 || surf.cly1 != 10) bad++;
     fb_clip_pop();
     if (fb_clip_depth() != 0) bad++;
     if (!surf.clip_on || surf.clx0 != 2 || surf.cly0 != 3 || surf.clx1 != 40 || surf.cly1 != 30) bad++;
     fb_target(NULL);
     surf.clip_on = 0;
-    check_fails("fb-clip", bad, "fb_clip_push OL_UNSUPPORTED, depth 0, clip unchanged");
+    check_fails("fb-clip", bad, "fb_clip_push OL_OK, depth 1, clip intersected, pop restores");
 }
 
 /* ---- static check over wm.c's switches --------------------------------- */

@@ -160,9 +160,128 @@ void gfx_corner_shadow(unsigned char *m, int w, int h, int r)
  * vanish this way and the straight edges either side kept drawing, so the
  * missing arc read as a bug in whatever was UNDER the control, not in this
  * cache. */
+/* ------------------------------------------------------------ big arena --
+ * Tiles past GFX_MASK_MAX (a 180 px panel corner, a 400 px hero card) cannot
+ * live in the fixed slots: sixteen 512 x 512 slots would be 4 MiB per context.
+ * They come from a caller-supplied byte arena instead (gfx_mask_set_arena),
+ * one per drawing context, managed as a small LRU table. Entries are carved
+ * first-fit out of the arena; when no gap fits, the least recently used entry
+ * is evicted and the search repeats, so the live bytes never exceed the budget.
+ *
+ * A tile this big is O(r^2) to rasterize, so unlike the small cache the whole
+ * point of keeping it is to not do that twice in a frame. The returned pointer
+ * is valid until the NEXT gfx_mask_corner call on the same context, exactly as
+ * for the small cache.
+ *
+ * gfx_mask_flush_all bumps a generation instead of touching other contexts'
+ * tables (a band worker may be mid-blit from its arena); each context drops its
+ * entries lazily at its next request. */
+#define NBIG 16
+struct gfx_marena {
+    unsigned char *buf;
+    unsigned long bytes;
+    unsigned gen;
+    int n;                                   /* live entries */
+    struct {
+        int kind, w, h, param;
+        unsigned long off, size, stamp;      /* stamp 0 = free */
+    } e[NBIG];
+    unsigned long clock;
+} g_marena[GFX_NCTX];
+static volatile unsigned g_marena_gen;
+static int marefuse_big;
+
+void gfx_mask_set_arena(void *buf, unsigned long bytes)
+{
+    struct gfx_marena *a = &g_marena[gfx_ctx()];
+    for (int i = 0; i < NBIG; i++) a->e[i].stamp = 0;
+    a->n = 0; a->clock = 0;
+    a->buf = (unsigned char *)buf;
+    a->bytes = buf ? bytes : 0;
+    a->gen = g_marena_gen;
+}
+
+void gfx_mask_flush_all(void) { __atomic_fetch_add(&g_marena_gen, 1, __ATOMIC_RELEASE); }
+
+unsigned long gfx_mask_arena_used(void)
+{
+    struct gfx_marena *a = &g_marena[gfx_ctx()];
+    unsigned long u = 0;
+    for (int i = 0; i < NBIG; i++) if (a->e[i].stamp) u += a->e[i].size;
+    return u;
+}
+
+int gfx_mask_big_refused(void) { return marefuse_big; }
+
+/* First offset where `size` bytes fit between live entries, or -1. */
+static long big_find_gap(struct gfx_marena *a, unsigned long size)
+{
+    unsigned long cand = 0;
+    for (;;) {
+        unsigned long next_conflict = 0; int hit = 0;
+        for (int i = 0; i < NBIG; i++) {
+            if (!a->e[i].stamp) continue;
+            unsigned long s = a->e[i].off, e = s + a->e[i].size;
+            if (cand < e && cand + size > s) {          /* overlaps */
+                if (!hit || e > next_conflict) next_conflict = e;
+                hit = 1;
+            }
+        }
+        if (!hit) return cand + size <= a->bytes ? (long)cand : -1;
+        cand = (next_conflict + 15) & ~15UL;
+        if (cand + size > a->bytes) return -1;
+    }
+}
+
+static __attribute__((unused)) const unsigned char *big_corner(int kind, int w, int h, int param)
+{
+    struct gfx_marena *a = &g_marena[gfx_ctx()];
+    unsigned g = __atomic_load_n(&g_marena_gen, __ATOMIC_ACQUIRE);
+    if (a->gen != g) {
+        for (int i = 0; i < NBIG; i++) a->e[i].stamp = 0;
+        a->gen = g;
+    }
+    unsigned long size = (unsigned long)w * h;
+    if (!a->buf || size > a->bytes) { mrefuse++; marefuse_big++; return 0; }
+    for (int i = 0; i < NBIG; i++)
+        if (a->e[i].stamp && a->e[i].kind == kind && a->e[i].w == w &&
+            a->e[i].h == h && a->e[i].param == param) {
+            a->e[i].stamp = ++a->clock;
+            mhit++;
+            return a->buf + a->e[i].off;
+        }
+    long off;
+    int slot = -1;
+    for (;;) {
+        off = big_find_gap(a, size);
+        for (int i = 0; i < NBIG && slot < 0; i++) if (!a->e[i].stamp) slot = i;
+        if (off >= 0 && slot >= 0) break;
+        int lru = -1;                                   /* evict the oldest */
+        for (int i = 0; i < NBIG; i++)
+            if (a->e[i].stamp && (lru < 0 || a->e[i].stamp < a->e[lru].stamp)) lru = i;
+        if (lru < 0) { mrefuse++; marefuse_big++; return 0; }
+        a->e[lru].stamp = 0;
+        slot = -1;
+    }
+    mmiss++;
+    a->e[slot].kind = kind; a->e[slot].w = w; a->e[slot].h = h; a->e[slot].param = param;
+    a->e[slot].off = (unsigned long)off; a->e[slot].size = size;
+    a->e[slot].stamp = ++a->clock;
+    unsigned char *m = a->buf + off;
+    if (kind == GFX_MASK_FILL)      gfx_corner_fill(m, w, h);
+    else if (kind == GFX_MASK_RING) gfx_corner_ring(m, w, h, param);
+    else                            gfx_corner_shadow(m, w, h, param);
+    return m;
+}
+
 const unsigned char *gfx_mask_corner(int kind, int w, int h, int param)
 {
-    if (w <= 0 || h <= 0 || w > GFX_MASK_MAX || h > GFX_MASK_MAX) { mrefuse++; return 0; }
+    if (w <= 0 || h <= 0) { mrefuse++; return 0; }
+#ifndef GFX_MASK_LEGACY_CAP
+    if ((w > GFX_MASK_MAX || h > GFX_MASK_MAX) && w <= GFX_MASK_BIG && h <= GFX_MASK_BIG)
+        return big_corner(kind, w, h, param);
+#endif
+    if (w > GFX_MASK_MAX || h > GFX_MASK_MAX) { mrefuse++; return 0; }
     for (int i = 0; i < NMASK; i++)
         if (mkind[i] == kind && mkw[i] == w && mkh[i] == h && mkp[i] == param) {
             mhit++;
