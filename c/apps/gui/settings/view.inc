@@ -203,7 +203,7 @@ static void frame(void)
     if (previous != tab) aui_anim_reset();
     aim("navigation", 70, 114);
     aui_text_sz(20, height - 36, "Personalise your space", AUI_MUTED, AUI_FS_CAPTION);
-    aui_fill(4, 4, 6, 6, probe_rgb[tab]);
+    if (qmp_probes_on()) aui_fill(4, 4, 6, 6, probe_rgb[tab]);   /* see qmp_probe.h */
     const char *const descriptions[] = {"Make this space your own", "Your wallpaper and workspace",
         "Manage your connection", "How your applications appear", "Make your pointer feel right",
         "Your menu-bar clock", "Search and inspect your preferences", "About this computer"};

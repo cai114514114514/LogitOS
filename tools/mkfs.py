@@ -2,7 +2,8 @@
 """Build an LogitFS v4 disk image: a hierarchical, inode-based filesystem with a
 free-block bitmap, subdirectories, and a write-ahead log (Unix-style).
 
-Usage: mkfs.py [--preserve /root --snapshot-helper lfs_snapshot] <out.img>
+Usage: mkfs.py [--preserve /root --snapshot-helper lfs_snapshot]
+               [--exclude /dest/glob ...] <out.img>
                <host[:/dest/path] | host | dir[:/dest]> ...
   host                -> placed at /<basename(host)>
   host:/docs/note.txt -> placed at that absolute path (dirs auto-created)
@@ -16,7 +17,14 @@ preservation root is copied opaquely from a validated/recovered private image;
 it cannot overlap packaged files. 2026-09-10: --preserve-merge explicitly
 allows configuration directories such as /etc to overlap defaults; existing
 bytes/metadata win, new packaged siblings are retained, type changes fail.
-No roots means a fresh filesystem. Every
+No roots means a fresh filesystem.
+
+--exclude (2026-10-26) drops every destination that matches an fnmatch glob,
+or lies under a directory that does: the release image (Makefile,
+$(RELEASE_DISK)) is the development image's spec list minus the test
+fixtures, so the two cannot drift apart by one of them forgetting a new app.
+A glob that matches nothing is an error, not a no-op -- a renamed fixture
+would otherwise slip back onto the release disk with nobody told. Every
 write uses the shared lifecycle guard (host lsof required) and an atomic rename.
 
 Layout (4 KiB blocks = 8 x 512B sectors):
@@ -55,6 +63,7 @@ import os
 import struct
 import time
 import argparse
+import fnmatch
 
 SECTOR = 512
 BS = 4096                       # block size
@@ -220,6 +229,19 @@ class Builder:
         self.children = {}                        # ino -> list[(name, child_ino)]
         self.next_ino = 0
         self.root = self.alloc_inode(T_DIR)       # ino 0
+        self.exclude = {}                         # --exclude glob -> times matched
+
+    def excluded(self, dest):
+        """True if `dest` or any directory above it matches an --exclude glob."""
+        parts = [p for p in dest.split("/") if p]
+        hit = False
+        for i in range(1, len(parts) + 1):
+            path = "/" + "/".join(parts[:i])
+            for pat in self.exclude:
+                if fnmatch.fnmatchcase(path, pat):
+                    self.exclude[pat] += 1
+                    hit = True
+        return hit
 
     def alloc_inode(self, t):
         ino = self.next_ino
@@ -291,6 +313,8 @@ class Builder:
         parts = [p for p in dest.split("/") if p]
         if not parts:
             sys.exit("mkfs: empty destination path")
+        if self.excluded(dest):
+            return False
         parent = self.get_or_make_dir(parts[:-1])
         leaf = parts[-1]
         if self.lookup(parent, leaf) is not None:
@@ -302,6 +326,7 @@ class Builder:
         self.children[parent].append((leaf, ino))
         if self.is_program(dest):
             self.xmode[ino] = MODE_SET | 0o755
+        return True
 
     # --- add_tree: pack a DIRECTORY, the way an install prefix is packed ------
     #
@@ -351,6 +376,8 @@ class Builder:
         stack = [(src_dir, dest_root)]
         while stack:
             sdir, ddir = stack.pop()
+            if self.excluded(ddir):
+                continue
             self._check_path(ddir)
             self.get_or_make_dir([p for p in ddir.split("/") if p])
             ndirs += 1
@@ -371,8 +398,7 @@ class Builder:
                     sys.exit(f"mkfs: not a regular file (fifo/socket/device?): {spath}")
                 self._check_path(dpath)
                 with open(spath, "rb") as f:
-                    self.add_file(dpath, f.read())
-                nfiles += 1
+                    nfiles += 1 if self.add_file(dpath, f.read()) else 0
             for name in reversed(entries):
                 spath = os.path.join(sdir, name)
                 if not os.path.islink(spath) and os.path.isdir(spath):
@@ -536,8 +562,7 @@ def add_spec(b, spec):
     if os.path.isdir(host):
         return b.add_tree(host, dest)
     with open(host, "rb") as f:
-        b.add_file(dest, f.read())
-    return 1, 0
+        return (1 if b.add_file(dest, f.read()) else 0), 0
 
 
 def main():
@@ -547,6 +572,7 @@ def main():
     parser.add_argument("--preserve", action="append", default=[])
     parser.add_argument("--preserve-merge", action="append", default=[])
     parser.add_argument("--snapshot-helper")
+    parser.add_argument("--exclude", action="append", default=[])
     parser.add_argument("out")
     parser.add_argument("spec", nargs="*")
     args = parser.parse_args()
@@ -555,9 +581,15 @@ def main():
     # before building/reading state when a VM owns it, then replace atomically.
     with image_guard(out):
         b = Builder()
+        b.exclude = {pat: 0 for pat in args.exclude}
         nfiles = 0
         for spec in args.spec:
             nfiles += add_spec(b, spec)[0]
+        unused = [pat for pat, n in b.exclude.items() if not n]
+        if unused:
+            raise ValueError("--exclude matched nothing: " + " ".join(unused))
+        # Preserved user state is the user's, not the packager's: no exclusion.
+        b.exclude = {}
         kept = preserve(b, out, args.preserve, args.snapshot_helper, args.preserve_merge)
         img, used = b.serialize(compact=True)
         # The compact buffer covers every allocated block. The remaining disk

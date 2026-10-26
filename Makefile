@@ -1896,6 +1896,71 @@ MODEL_LM_ON_DISK := $(if $(MODEL_LM),$(MODEL_LM):/model.lm,)
 # added, and nested .studio recovery slots/empty folders retain their metadata.
 # The packer validates and recovers a private copy, then replaces atomically; disk_guard rejects an
 # image held by QEMU. A same-image reboot test alone cannot catch this failure.
+# ONE PACK LIST, TWO IMAGES (2026-10-26). The list below was the body of the
+# $(DISK) recipe; it is a variable now so $(RELEASE_DISK) packs the same files
+# minus RELEASE_EXCLUDE instead of keeping a second list that would forget the
+# next app. Recursively expanded (`=`) on purpose: tests/*.mk append to
+# FS_FILES, ROOT_AEX_PACK and friends BELOW this point, and the recipe must see
+# those appends -- the same run-time expansion the old recipe relied on.
+MKFS_PROFILE = --preserve /browser --preserve /state --preserve-merge /docs --preserve-merge /etc --preserve /home --preserve /download --snapshot-helper $(BUILD)/lfs_snapshot
+DISK_PACK = \
+    $(FS_SPECS) $(FS_FILES) \
+    $(BUILD)/hello.lpk:/pkg/hello.lpk $(BUILD)/tampered.lpk:/pkg/tampered.lpk \
+    $(BUILD)/foreign.lpk:/pkg/foreign.lpk \
+    $(BUILD)/pkgverify.aex:/bin/pkgverify \
+    $(BUILD)/login.aex:/bin/login \
+    $(BUILD)/as-typed-capture.aex:/bin/native-capture \
+    $(BUILD)/sshd.aex:/bin/sshd \
+    examples/browser/signed-report.html:/www/signed-report.html \
+    $(GREETER_AEX):/sbin/greeter.aex \
+    fsroot/fonts/ui.ttf:/fonts/ui.ttf fsroot/fonts/mono.ttf:/fonts/mono.ttf \
+    fsroot/fonts/ui-bold.ttf:/fonts/ui-bold.ttf \
+    fsroot/fonts/mono-bold.ttf:/fonts/mono-bold.ttf \
+    $(FONT_TEXT):/fonts/text.ttf \
+    LICENSE:/licenses/README.txt LICENSING.md:/licenses/Logit-LICENSING.md \
+    LICENSES/GPL-3.0-or-later.txt:/licenses/GPL-3.0-or-later.txt \
+    LICENSES/MIT.txt:/licenses/MIT.txt THIRD_PARTY.md:/licenses/THIRD_PARTY.md \
+    LICENSES/MPL-2.0.txt:/licenses/MPL-2.0.txt \
+    third_party/fonts/OFL-NotoSansSC.txt:/licenses/fonts/OFL-NotoSansSC.txt \
+    third_party/fonts/OFL-NotoSansMono.txt:/licenses/fonts/OFL-NotoSansMono.txt \
+    third_party/fonts/README.md:/licenses/fonts/SOURCES.md \
+    third_party/fonts/LICENSE-DejaVu.txt:/licenses/fonts/LICENSE-DejaVu.txt \
+    third_party/quickjs/LICENSE:/licenses/third_party/quickjs-LICENSE.txt \
+    third_party/css/libcss/COPYING:/licenses/third_party/libcss-COPYING.txt \
+    third_party/libm/COPYRIGHT:/licenses/third_party/musl-libm-COPYRIGHT.txt \
+    $(ROOT_AEX_PACK) \
+    $(foreach c,$(CLI),$(BUILD)/$(c).aex:/bin/$(c)) $(BUILD)/as.aex:/bin/as $(BUILD)/libctest.aex:/bin/libctest \
+    $(BUILD)/closefull.aex:/bin/closefull \
+    $(BUILD)/vidcheck.aex:/bin/vidcheck $(BUILD)/h2check.aex:/bin/h2check \
+    $(BUILD)/audiocheck.aex:/bin/audiocheck \
+    $(BUILD)/imgcheck.aex:/bin/imgcheck \
+    $(BUILD)/asnative.aex:/bin/asnative \
+    $(BUILD)/lm.aex:/bin/lm $(MODEL_LM_ON_DISK) \
+    $(IMG_FIXTURES_ON_DISK) \
+    $(JSBENCH_PACK) \
+    $(JSSEM_PACK) \
+    $(CH_PACK) \
+    tests/fixtures/video/sample.h264:/media/sample.h264 \
+    $(BUILD)/dot.png:/media/dot.png \
+    tests/fixtures/audio/sample.mp3:/media/sample.mp3 \
+    tests/fixtures/audio/sample.flac:/media/sample.flac \
+    tests/fixtures/audio/sample.wav:/media/sample.wav \
+    $(foreach e,$(AS_EXAMPLES),$(e):/usr/as/examples/$(notdir $(e))) \
+    $(AS_NATIVE_EXAMPLE_PACK) \
+    $(foreach s,$(AS_LIB_SRCS),$(s):/usr/as/lib/$(notdir $(s))) \
+    $(BUILD)/sysroot:/ $(BUILD)/tcc/tcc.aex:/bin/tcc
+# Development-only files: on $(DISK), which every gate boots, never on the
+# release image. /etc/qmp-probes switches on the 6x6 colour probes Monitor and
+# Preview paint for tests/qmp/*.py to find a window's content origin (see
+# c/apps/gui/monitor/monitor.c); a desktop tour found them on screen as stray
+# magenta dots. The file is written here rather than kept under tests/: new
+# files there stay local (.gitignore, /tests/), and a checkout without it could
+# not build $(DISK) at all. Only its existence is read.
+DEV_ONLY_PACK = $(BUILD)/qmp-probes:/etc/qmp-probes
+$(BUILD)/qmp-probes:
+	@mkdir -p $(BUILD)
+	@echo "Switches on the QMP colour probes (c/apps/gui/qmp_probe.h). Dev disk only." > $@
+$(DISK): $(BUILD)/qmp-probes
 $(DISK): $(FS_BASE_HOSTS) $(AS_EXAMPLES) $(FONTS) $(FONT_TEXT) $(RELEASE_NOTICES) $(AEX) $(BUILD)/libctest.aex $(BUILD)/closefull.aex $(BUILD)/vidcheck.aex $(BUILD)/audiocheck.aex $(BUILD)/h2check.aex $(BUILD)/dot.png tools/mkfs.py $(BUILD)/imgcheck.aex $(IMG_FIXTURES) $(BUILD)/asnative.aex $(LPK_FIXTURES) $(GREETER_AEX) $(CH_AEX) $(BUILD)/lm.aex $(MODEL_LM) $(BUILD)/tcc/tcc.aex
 	@mkdir -p $(BUILD)
 	@if [ -n "$(MODEL_LM)" ]; then \
@@ -1904,51 +1969,56 @@ $(DISK): $(FS_BASE_HOSTS) $(AS_EXAMPLES) $(FONTS) $(FONT_TEXT) $(RELEASE_NOTICES
 	else \
 	    echo "disk: build/model.lm not present -- packing without /model.lm (run build/lmtrain to add it, see tools/lmtrain.md)"; \
 	fi
-	python3 tools/mkfs.py --preserve /browser --preserve /state --preserve-merge /docs --preserve-merge /etc --preserve /home --preserve /download --snapshot-helper $(BUILD)/lfs_snapshot $(DISK) $(FS_SPECS) $(FS_FILES) \
-	    $(BUILD)/hello.lpk:/pkg/hello.lpk $(BUILD)/tampered.lpk:/pkg/tampered.lpk \
-	    $(BUILD)/foreign.lpk:/pkg/foreign.lpk \
-	    $(BUILD)/pkgverify.aex:/bin/pkgverify \
-	    $(BUILD)/login.aex:/bin/login \
-	    $(BUILD)/as-typed-capture.aex:/bin/native-capture \
-	    $(BUILD)/sshd.aex:/bin/sshd \
-	    examples/browser/signed-report.html:/www/signed-report.html \
-	    $(GREETER_AEX):/sbin/greeter.aex \
-	    fsroot/fonts/ui.ttf:/fonts/ui.ttf fsroot/fonts/mono.ttf:/fonts/mono.ttf \
-	    fsroot/fonts/ui-bold.ttf:/fonts/ui-bold.ttf \
-	    fsroot/fonts/mono-bold.ttf:/fonts/mono-bold.ttf \
-	    $(FONT_TEXT):/fonts/text.ttf \
-	    LICENSE:/licenses/README.txt LICENSING.md:/licenses/Logit-LICENSING.md \
-	    LICENSES/GPL-3.0-or-later.txt:/licenses/GPL-3.0-or-later.txt \
-	    LICENSES/MIT.txt:/licenses/MIT.txt THIRD_PARTY.md:/licenses/THIRD_PARTY.md \
-	    LICENSES/MPL-2.0.txt:/licenses/MPL-2.0.txt \
-	    third_party/fonts/OFL-NotoSansSC.txt:/licenses/fonts/OFL-NotoSansSC.txt \
-	    third_party/fonts/OFL-NotoSansMono.txt:/licenses/fonts/OFL-NotoSansMono.txt \
-	    third_party/fonts/README.md:/licenses/fonts/SOURCES.md \
-	    third_party/fonts/LICENSE-DejaVu.txt:/licenses/fonts/LICENSE-DejaVu.txt \
-	    third_party/quickjs/LICENSE:/licenses/third_party/quickjs-LICENSE.txt \
-	    third_party/css/libcss/COPYING:/licenses/third_party/libcss-COPYING.txt \
-	    third_party/libm/COPYRIGHT:/licenses/third_party/musl-libm-COPYRIGHT.txt \
-	    $(ROOT_AEX_PACK) \
-	    $(foreach c,$(CLI),$(BUILD)/$(c).aex:/bin/$(c)) $(BUILD)/as.aex:/bin/as $(BUILD)/libctest.aex:/bin/libctest \
-	    $(BUILD)/closefull.aex:/bin/closefull \
-	    $(BUILD)/vidcheck.aex:/bin/vidcheck $(BUILD)/h2check.aex:/bin/h2check \
-	    $(BUILD)/audiocheck.aex:/bin/audiocheck \
-	    $(BUILD)/imgcheck.aex:/bin/imgcheck \
-	    $(BUILD)/asnative.aex:/bin/asnative \
-	    $(BUILD)/lm.aex:/bin/lm $(MODEL_LM_ON_DISK) \
-	    $(IMG_FIXTURES_ON_DISK) \
-	    $(JSBENCH_PACK) \
-	    $(JSSEM_PACK) \
-	    $(CH_PACK) \
-	    tests/fixtures/video/sample.h264:/media/sample.h264 \
-	    $(BUILD)/dot.png:/media/dot.png \
-	    tests/fixtures/audio/sample.mp3:/media/sample.mp3 \
-	    tests/fixtures/audio/sample.flac:/media/sample.flac \
-	    tests/fixtures/audio/sample.wav:/media/sample.wav \
-	    $(foreach e,$(AS_EXAMPLES),$(e):/usr/as/examples/$(notdir $(e))) \
-	    $(AS_NATIVE_EXAMPLE_PACK) \
-	    $(foreach s,$(AS_LIB_SRCS),$(s):/usr/as/lib/$(notdir $(s))) \
-	    $(BUILD)/sysroot:/ $(BUILD)/tcc/tcc.aex:/bin/tcc
+	python3 tools/mkfs.py $(MKFS_PROFILE) $(DISK) $(DISK_PACK) $(DEV_ONLY_PACK)
+
+# ---- the release image: what a person who is not running the gates sees ----
+#
+# Why it exists (desktop tour on the macOS dev host, 2026-10-26, "why does this
+# OS look like a toy?"): `make run` booted $(DISK), and $(DISK) is the TEST
+# disk. `ls /bin` printed libctest, vidcheck, smptest, polltest-nopoll...;
+# Preview's library was the codec fixtures (clip-laced.mkv, dot.png); Files
+# opened on shaping.txt; and the Browser restored a tab some gate had left in
+# /browser, because every harness that boots $(DISK) in place writes its
+# profile there. None of that is a bug in a test disk. It is a bug to show it.
+#
+# So: the same DISK_PACK (one list -- see above), minus RELEASE_EXCLUDE, plus
+# an original wallpaper, into its OWN image with its OWN preserved profile.
+# Nothing a gate does can reach this file; nothing here changes what a gate
+# boots. It depends on $(DISK) only to inherit every prerequisite the
+# fragments attach to $(DISK) -- a second prerequisite list would drift.
+# mkfs.py fails on an exclusion that matches nothing, so a renamed fixture
+# cannot quietly come back.
+#
+# The /bin and /usr/as names are the programs whose only caller is a gate
+# (each was checked against its .as header comment or its tests/*.mk owner);
+# readcore, execinfo, entropy and the SDK demos stay because a person can use
+# them.
+RELEASE_DISK := $(BUILD)/release.img
+RELEASE_EXCLUDE_AS := argvlimit barriers capcheck crashme durcheck elfspin \
+    elfstat events evqstat mempress monotonic oomhog oomsmall pcachecheck \
+    pcachefill ports ptracee ptracer setcheck storchild storgate storprobe
+RELEASE_EXCLUDE := \
+    /docs/shaping.txt /pkg /tu /jsperf /jssem /jscallee \
+    /media/img /media/mse /media/vidbench /media/dot.png /media/clip* \
+    /media/pcm.mov /media/aac.m4a /media/sample.flac /media/sample.h264 \
+    /media/sample.h265 /media/sample.mp3 /media/sample.wav \
+    /www/signed-report.html \
+    /bin/asnative /bin/audiocheck /bin/closefull /bin/crash /bin/demuxcheck \
+    /bin/h2check /bin/imgcheck /bin/jsbench /bin/jssem /bin/libctest \
+    /bin/libctest2 /bin/libmcheck /bin/msecheck /bin/native-capture \
+    /bin/polltest /bin/previewnegctl /bin/previewplay \
+    /bin/schedtest /bin/secprobe /bin/smptest /bin/sndtest /bin/socktest \
+    /bin/thrtest /bin/vidbench /bin/vidcheck /bin/vidcheck265 \
+    $(foreach t,$(RELEASE_EXCLUDE_AS),/usr/as/bin/$(t).aex /usr/as/examples/$(t).as)
+$(BUILD)/wallpaper.png: tools/mkwallpaper.py
+	@mkdir -p $(BUILD)
+	python3 tools/mkwallpaper.py $@
+$(RELEASE_DISK): $(DISK) $(BUILD)/wallpaper.png tools/mkfs.py
+	@echo "release: packing $(RELEASE_DISK) without $(words $(RELEASE_EXCLUDE)) test paths"
+	@python3 tools/mkfs.py $(MKFS_PROFILE) $(foreach p,$(RELEASE_EXCLUDE),--exclude '$(p)') \
+	    $(RELEASE_DISK) $(DISK_PACK) $(BUILD)/wallpaper.png:/wallpaper.png
+release-disk: $(RELEASE_DISK)
+.PHONY: release-disk
 
 QEMU_DISK := -drive file=$(DISK),format=raw,if=none,id=hd0 -device virtio-blk-pci,drive=hd0 -boot d
 # 1 GiB, and THAT NUMBER IS A CEILING RATHER THAN A PREFERENCE. Do not raise
@@ -2104,9 +2174,24 @@ QEMU_DISP := $(if $(DISP),-display $(DISP),)
 # The ordinary desktop must start the same model session as run-agent. Keep
 # its QEMU device arguments intact; acceptance overrides only this argument
 # list to attach private serial/QMP sockets to the real `make run` recipe.
-QEMU_RUN_ARGS = -cdrom $(ISO) $(QEMU_DISK) $(QEMU_RAM) $(QEMU_SMP) $(QEMU_CPU) $(QEMU_RTC) $(QEMU_GPU) $(QEMU_NET) $(QEMU_DISP) $(QEMU_SND) -serial stdio -no-reboot -qmp unix:/tmp/logit-qmp.sock,server,nowait
-run: $(ISO) $(DISK)
-	$(AGENT_SESSION_LAUNCH) --optional-env --disk $(DISK) -- $(QEMU) $(QEMU_RUN_ARGS)
+QEMU_RUN_ARGS = -cdrom $(ISO) $(QEMU_RUN_DISK) $(QEMU_RAM) $(QEMU_SMP) $(QEMU_CPU) $(QEMU_RTC) $(QEMU_GPU) $(QEMU_NET) $(QEMU_DISP) $(QEMU_SND) -serial stdio -no-reboot -qmp unix:/tmp/logit-qmp.sock,server,nowait
+#
+# `make run` boots the RELEASE image (see $(RELEASE_DISK)); `make run-dev`
+# boots $(DISK), the one the gates use, test programs and probes included.
+# A caller that names DISK= on the command line has chosen its disk and gets
+# it: tests/boot/run-default-session.py drives this very recipe that way with
+# a prepared fixture and `-o` it, and must not be handed a repacked image.
+ifeq ($(origin DISK),command line)
+RUN_DISK ?= $(DISK)
+else
+RUN_DISK ?= $(RELEASE_DISK)
+endif
+QEMU_RUN_DISK = -drive file=$(RUN_DISK),format=raw,if=none,id=hd0 -device virtio-blk-pci,drive=hd0 -boot d
+run: $(ISO) $(RUN_DISK)
+	$(AGENT_SESSION_LAUNCH) --optional-env --disk $(RUN_DISK) -- $(QEMU) $(QEMU_RUN_ARGS)
+run-dev:
+	@$(MAKE) --no-print-directory run RUN_DISK=$(DISK)
+.PHONY: run-dev
 
 # What is the guest ACTUALLY drawing? Boots headless, screendumps over QMP and
 # writes a PNG. This is the check that separates "the OS is broken" from "the
@@ -5866,6 +5951,7 @@ include tests/cookie_clock_rewrite.mk
 include tests/xhr_progress.mk
 include tests/runtime_diagnostics.mk
 include tests/disk_profile.mk
+-include tests/release_disk.mk
 include tests/document_referrer.mk
 
 -include tests/browser_context.mk

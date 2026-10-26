@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "aui.h"
+#include "../qmp_probe.h"
 
 /* ============================================================================
  * Activity Monitor -- a task manager, not a text dump.
@@ -475,8 +476,9 @@ static void frame(void)
      * window-local (4,4) in a colour unique to the current tab. It gives the
      * QMP driver the window's content origin without hard-coding anything
      * about the compositor, and tells it which view is showing. Two facts one
-     * cheap rect can carry, and it sits in the margin left of the heading. */
-    {
+     * cheap rect can carry, and it sits in the margin left of the heading.
+     * Only on a disk that asks for it: qmp_probe.h. */
+    if (qmp_probes_on()) {
         static const unsigned probe[NTAB] = { 0xFF0080u, 0x00FF80u, 0xFFC800u };
         aui_fill(4, 4, 6, 6, probe[tab]);
     }

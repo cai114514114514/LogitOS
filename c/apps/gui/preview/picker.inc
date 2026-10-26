@@ -148,8 +148,9 @@ static void pick_frame(const int *items, int count, int selected, int top, int f
     }
     gui_rect(184, WINH - 44, WINW - 204, 1, ui_line);
     label(188, WINH - 28, 11, ui_muted, "Click to open   /   Arrow keys to select   /   Enter to open");
-    /* List-only probe: never paint an instrument over the viewed artwork. */
-    gui_rect(0, 0, 6, 6, 0xFF0080);
+    /* List-only probe: never paint an instrument over the viewed artwork.
+     * Only on a disk that asks for it: qmp_probe.h. */
+    if (qmp_probes_on()) gui_rect(0, 0, 6, 6, 0xFF0080);
     gui_flush();
 }
 static int pick_from_media(char *out, int outmax)

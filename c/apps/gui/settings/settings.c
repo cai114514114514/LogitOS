@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "aui.h"
+#include "../qmp_probe.h"
 #include "model.h"
 
 /* The old single-file UI claimed that four tabs and batched writes solved the

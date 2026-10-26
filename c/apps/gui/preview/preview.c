@@ -53,6 +53,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "logit.h"
+#include "../qmp_probe.h"
 #include "logit_sniff.h"
 #include "img.h"
 #include "h264.h"
