@@ -24,11 +24,21 @@ def render(data):
             raise ValueError(f"invalid or repeated MIBenum: {mib}")
         seen.add(mib)
         name = (row["Preferred MIME Name"] or row["Name"]).strip()
+        # The Aliases cell is one alias per line, except that it may also carry
+        # a parenthesised note with a reference. Amiga-1251 (2104) has "(Aliases
+        # are provided for historical reasons and should not be used)
+        # [Malyshev]", and taking every line made that sentence an alias that
+        # same_label() -- which ignores spaces and punctuation -- would match.
+        # No registered alias contains whitespace, so a note line is skipped and
+        # any other whitespace is refused rather than guessed at.
+        lines = [line.strip() for line in row["Aliases"].splitlines()]
         aliases = list(dict.fromkeys(
-            alias.strip() for alias in [row["Name"], *row["Aliases"].splitlines()]
-            if alias.strip() and alias.strip() != name))
+            alias for alias in [row["Name"].strip(), *lines]
+            if alias and not alias.startswith("(") and alias != name))
         if any("|" in alias for alias in aliases):
             raise ValueError("an alias contains the output separator")
+        if any(len(alias.split()) != 1 for alias in aliases):
+            raise ValueError(f"MIBenum {mib}: an alias contains whitespace: {aliases}")
         records.append((mib, name, "|".join(aliases)))
     if len(records) < 200:
         raise ValueError("the input is not a complete IANA charset registry")
