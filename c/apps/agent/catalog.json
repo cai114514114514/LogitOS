@@ -123,6 +123,18 @@
     ]
   },
   {
+    "name": "chmod",
+    "id": "os.logit.chmod",
+    "path": "/bin/chmod",
+    "source": "c/apps/coreutils/text/chmod.c",
+    "kind": "cli",
+    "domain": "chmod: analyze explicitly supplied input in this application domain and draft a textual result. Access to files, devices, the network and command execution is not granted.",
+    "actions": [
+      "analyze_context",
+      "draft_text"
+    ]
+  },
+  {
     "name": "clear",
     "id": "os.logit.clear",
     "path": "/bin/clear",
@@ -183,6 +195,18 @@
     ]
   },
   {
+    "name": "cut",
+    "id": "os.logit.cut",
+    "path": "/bin/cut",
+    "source": "c/apps/coreutils/text/cut.c",
+    "kind": "cli",
+    "domain": "cut: analyze explicitly supplied input in this application domain and draft a textual result. Access to files, devices, the network and command execution is not granted.",
+    "actions": [
+      "analyze_context",
+      "draft_text"
+    ]
+  },
+  {
     "name": "demuxcheck",
     "id": "os.logit.demuxcheck",
     "path": "/bin/demuxcheck",
@@ -195,12 +219,48 @@
     ]
   },
   {
+    "name": "df",
+    "id": "os.logit.df",
+    "path": "/bin/df",
+    "source": "c/apps/coreutils/text/df.c",
+    "kind": "cli",
+    "domain": "df: analyze explicitly supplied input in this application domain and draft a textual result. Access to files, devices, the network and command execution is not granted.",
+    "actions": [
+      "analyze_context",
+      "draft_text"
+    ]
+  },
+  {
+    "name": "diff",
+    "id": "os.logit.diff",
+    "path": "/bin/diff",
+    "source": "c/apps/coreutils/text/diff.c",
+    "kind": "cli",
+    "domain": "diff: analyze explicitly supplied input in this application domain and draft a textual result. Access to files, devices, the network and command execution is not granted.",
+    "actions": [
+      "analyze_context",
+      "draft_text"
+    ]
+  },
+  {
     "name": "dir",
     "id": "os.logit.dir",
     "path": "/bin/dir",
     "source": "c/apps/coreutils/dir.c",
     "kind": "cli",
     "domain": "dir: analyze explicitly supplied input in this application domain and draft a textual result. Access to files, devices, the network and command execution is not granted.",
+    "actions": [
+      "analyze_context",
+      "draft_text"
+    ]
+  },
+  {
+    "name": "du",
+    "id": "os.logit.du",
+    "path": "/bin/du",
+    "source": "c/apps/coreutils/text/du.c",
+    "kind": "cli",
+    "domain": "du: analyze explicitly supplied input in this application domain and draft a textual result. Access to files, devices, the network and command execution is not granted.",
     "actions": [
       "analyze_context",
       "draft_text"
@@ -255,6 +315,18 @@
     ]
   },
   {
+    "name": "find",
+    "id": "os.logit.find",
+    "path": "/bin/find",
+    "source": "c/apps/coreutils/text/find.c",
+    "kind": "cli",
+    "domain": "find: analyze explicitly supplied input in this application domain and draft a textual result. Access to files, devices, the network and command execution is not granted.",
+    "actions": [
+      "analyze_context",
+      "draft_text"
+    ]
+  },
+  {
     "name": "free",
     "id": "os.logit.free",
     "path": "/bin/free",
@@ -285,6 +357,18 @@
     "source": "c/apps/gui/greeter/greeter.c",
     "kind": "gui",
     "domain": "Sign in: explain the sign-in workflow. Passwords and authentication tokens are never application context.",
+    "actions": [
+      "analyze_context",
+      "draft_text"
+    ]
+  },
+  {
+    "name": "grep",
+    "id": "os.logit.grep",
+    "path": "/bin/grep",
+    "source": "c/apps/coreutils/text/grep.c",
+    "kind": "cli",
+    "domain": "grep: analyze explicitly supplied input in this application domain and draft a textual result. Access to files, devices, the network and command execution is not granted.",
     "actions": [
       "analyze_context",
       "draft_text"
@@ -327,12 +411,36 @@
     ]
   },
   {
+    "name": "kill",
+    "id": "os.logit.kill",
+    "path": "/bin/kill",
+    "source": "c/apps/coreutils/text/kill.c",
+    "kind": "cli",
+    "domain": "kill: analyze explicitly supplied input in this application domain and draft a textual result. Access to files, devices, the network and command execution is not granted.",
+    "actions": [
+      "analyze_context",
+      "draft_text"
+    ]
+  },
+  {
     "name": "lm",
     "id": "os.logit.lm",
     "path": "/bin/lm",
     "source": "c/apps/lm/lm.c",
     "kind": "cli",
     "domain": "lm: analyze explicitly supplied input in this application domain and draft a textual result. Access to files, devices, the network and command execution is not granted.",
+    "actions": [
+      "analyze_context",
+      "draft_text"
+    ]
+  },
+  {
+    "name": "ln",
+    "id": "os.logit.ln",
+    "path": "/bin/ln",
+    "source": "c/apps/coreutils/text/ln.c",
+    "kind": "cli",
+    "domain": "ln: analyze explicitly supplied input in this application domain and draft a textual result. Access to files, devices, the network and command execution is not granted.",
     "actions": [
       "analyze_context",
       "draft_text"
@@ -627,6 +735,18 @@
     ]
   },
   {
+    "name": "sed",
+    "id": "os.logit.sed",
+    "path": "/bin/sed",
+    "source": "c/apps/coreutils/text/sed.c",
+    "kind": "cli",
+    "domain": "sed: analyze explicitly supplied input in this application domain and draft a textual result. Access to files, devices, the network and command execution is not granted.",
+    "actions": [
+      "analyze_context",
+      "draft_text"
+    ]
+  },
+  {
     "name": "settings",
     "id": "os.logit.settings",
     "path": "/settings.aex",
@@ -723,6 +843,30 @@
     ]
   },
   {
+    "name": "sort",
+    "id": "os.logit.sort",
+    "path": "/bin/sort",
+    "source": "c/apps/coreutils/text/sort.c",
+    "kind": "cli",
+    "domain": "sort: analyze explicitly supplied input in this application domain and draft a textual result. Access to files, devices, the network and command execution is not granted.",
+    "actions": [
+      "analyze_context",
+      "draft_text"
+    ]
+  },
+  {
+    "name": "spotlight",
+    "id": "os.logit.spotlight",
+    "path": "/sbin/spotlight.aex",
+    "source": "c/apps/gui/spotlight/spotlight.c",
+    "kind": "gui",
+    "domain": "spotlight: analyze explicitly supplied input in this application domain and draft a textual result. Access to files, devices, the network and command execution is not granted.",
+    "actions": [
+      "analyze_context",
+      "draft_text"
+    ]
+  },
+  {
     "name": "sshd",
     "id": "os.logit.sshd",
     "path": "/bin/sshd",
@@ -771,6 +915,18 @@
     ]
   },
   {
+    "name": "tail",
+    "id": "os.logit.tail",
+    "path": "/bin/tail",
+    "source": "c/apps/coreutils/text/tail.c",
+    "kind": "cli",
+    "domain": "tail: analyze explicitly supplied input in this application domain and draft a textual result. Access to files, devices, the network and command execution is not granted.",
+    "actions": [
+      "analyze_context",
+      "draft_text"
+    ]
+  },
+  {
     "name": "terminal",
     "id": "os.logit.terminal",
     "path": "/terminal.aex",
@@ -807,6 +963,18 @@
     ]
   },
   {
+    "name": "tr",
+    "id": "os.logit.tr",
+    "path": "/bin/tr",
+    "source": "c/apps/coreutils/text/tr.c",
+    "kind": "cli",
+    "domain": "tr: analyze explicitly supplied input in this application domain and draft a textual result. Access to files, devices, the network and command execution is not granted.",
+    "actions": [
+      "analyze_context",
+      "draft_text"
+    ]
+  },
+  {
     "name": "true",
     "id": "os.logit.true",
     "path": "/bin/true",
@@ -825,6 +993,18 @@
     "source": "c/apps/coreutils/uname.c",
     "kind": "cli",
     "domain": "uname: analyze explicitly supplied input in this application domain and draft a textual result. Access to files, devices, the network and command execution is not granted.",
+    "actions": [
+      "analyze_context",
+      "draft_text"
+    ]
+  },
+  {
+    "name": "uniq",
+    "id": "os.logit.uniq",
+    "path": "/bin/uniq",
+    "source": "c/apps/coreutils/text/uniq.c",
+    "kind": "cli",
+    "domain": "uniq: analyze explicitly supplied input in this application domain and draft a textual result. Access to files, devices, the network and command execution is not granted.",
     "actions": [
       "analyze_context",
       "draft_text"

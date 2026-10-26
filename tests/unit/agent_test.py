@@ -22,9 +22,23 @@ def main():
     r=run('',a.build.resolve());print(r.stdout+r.stderr,end='');r.check_returncode()
     sys.path.insert(0,str(ROOT/'tools'));from agent_catalog import entries
     catalog=entries();registered={x['source'] for x in catalog}
-    for p in (ROOT/'c/apps').rglob('*.c'):
-        if 'browser' in p.parts or 'libc' in p.parts:continue
-        if re.search(r'\b(?:int|void)\s+(?:main|app_main)\s*\(',p.read_text(errors='replace')):
-            assert str(p.relative_to(ROOT)) in registered, f'missing owned app: {p}'
+    # SDK tools are not catalogue apps. lslcc.c and olscc.c have a main() under
+    # c/apps/coreutils, but tests/openlogit_sdk.mk builds them as native ELF files
+    # that reach the disk through the sysroot ($(BUILD)/sysroot:/ puts them at
+    # /bin/lslcc), and nothing builds a $(BUILD)/<name>.aex for them. Registering
+    # them would make test-agent-catalog-build and run-agent.py's catalogue boot
+    # demand an .aex that does not exist, so they stay absent. The set is read
+    # from the SDK's own rules rather than listed here: a new SDK tool is exempt
+    # because of the rule that builds it, and only that.
+    sdk=set(re.findall(r'^\$\(BUILD\)/sdk/[\w-]+\.o:\s*(c/apps/\S+\.c)',(ROOT/'tests/openlogit_sdk.mk').read_text(),re.M))
+    # Every unregistered entry point is reported, not just the first. On
+    # 2026-10-26 seventeen had accumulated (the coreutils/text tools, spotlight
+    # and the two SDK compilers) while this assertion named only lslcc.c.
+    missing=[]
+    for p in sorted((ROOT/'c/apps').rglob('*.c')):
+        rel=str(p.relative_to(ROOT))
+        if 'browser' in p.parts or 'libc' in p.parts or rel in sdk:continue
+        if re.search(r'\b(?:int|void)\s+(?:main|app_main)\s*\(',p.read_text(errors='replace')) and rel not in registered:missing.append(rel)
+    assert not missing, 'missing owned apps: '+', '.join(missing)
     print(f'AGENT_CATALOG_OK owned_entrypoints={len(catalog)}')
 if __name__=='__main__':main()
