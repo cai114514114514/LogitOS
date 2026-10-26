@@ -58,6 +58,12 @@ void text_draw_sz(int x, int y, const char *s, int px, uint32_t c)
 { (void)x; (void)y; (void)s; (void)px; (void)c; }
 int  text_width_sz(const char *s, int px) { (void)s; (void)px; return 0; }
 int  text_line_height(int px) { return px; }
+struct ol_display;
+int  text_draw_run(int x, int y, const char *s, int len, int px, int face, uint32_t color)
+{ (void)x; (void)y; (void)s; (void)px; (void)face; (void)color; return len; }
+int  text_draw_run_a(struct ol_display *d, int x, int y, const char *s, int len,
+                     int px, unsigned face, uint32_t rgb, int alpha)
+{ (void)d; (void)alpha; return text_draw_run(x, y, s, len, px, (int)face, rgb); }
 
 /* ---- layout (LP64): the numbers tools/gen_abi.py also asserts ---------- */
 #define OFF(t, f, n) _Static_assert(offsetof(struct t, f) == (n), #t "." #f)
@@ -272,7 +278,7 @@ static int expect(long got, long want, const char *what)
 
 /* One struct-taking number: right size -> UNSUPPORTED, wrong sizes, NULL and
  * a copyin fault -> ARGUMENT. */
-static int struct_call(struct wm2_env *e, long num, const char *name, void *buf, unsigned size)
+static int struct_call_w(struct wm2_env *e, long num, const char *name, void *buf, unsigned size, long want)
 {
     int bad = 0;
     char what[96];
@@ -280,7 +286,7 @@ static int struct_call(struct wm2_env *e, long num, const char *name, void *buf,
     memset(buf, 0, size);
     *sz = size;
     snprintf(what, sizeof what, "%s(size=%u)", name, size);
-    bad += expect(wm2_dispatch(num, e, (long)buf, 0, 0), OL_UNSUPPORTED, what);
+    bad += expect(wm2_dispatch(num, e, (long)buf, 0, 0), want, what);
     const unsigned wrong[] = { 0, size - 4, size + 4, size + 1, 0xFFFFFFFFu };
     for (unsigned i = 0; i < sizeof wrong / sizeof wrong[0]; i++) {
         *sz = wrong[i];
@@ -297,6 +303,9 @@ static int struct_call(struct wm2_env *e, long num, const char *name, void *buf,
     return bad;
 }
 
+static int struct_call(struct wm2_env *e, long num, const char *name, void *buf, unsigned size)
+{ return struct_call_w(e, num, name, buf, size, OL_UNSUPPORTED); }
+
 static void test_router(void)
 {
     int bad = 0;
@@ -311,7 +320,7 @@ static void test_router(void)
     }
     uint32_t before = crc_surface();
 
-    bad += expect(wm2_dispatch(SYS_GUI2_INFO, &e, 0, 0, 0), (long)LOGIT_GUI2_VERSION << 16, "INFO(0)");
+    bad += expect(wm2_dispatch(SYS_GUI2_INFO, &e, 0, 0, 0), ((long)LOGIT_GUI2_VERSION << 16) | LOGIT_GUI2_F_TEXT_RUN2, "INFO(0)");
     bad += expect(wm2_dispatch(SYS_GUI2_INFO, &e, 1, 0, 0), 0, "INFO(1)");
     bad += expect(wm2_dispatch(SYS_GUI2_INFO, &e, 2, 0, 0), OL_ARGUMENT, "INFO(2)");
     bad += expect(wm2_dispatch(SYS_GUI2_INFO, &e, -1, 0, 0), OL_ARGUMENT, "INFO(-1)");
@@ -323,7 +332,8 @@ static void test_router(void)
     bad += struct_call(&e, SYS_GUI_CLIP_PUSH, "CLIP_PUSH", &u, sizeof(struct logit_clip2));
     bad += struct_call(&e, SYS_GUI_GROUP_BEGIN, "GROUP_BEGIN", &u, sizeof(struct logit_group2));
     bad += struct_call(&e, SYS_GUI_BLIT2, "BLIT2", &u, sizeof(struct logit_blit2));
-    bad += struct_call(&e, SYS_GUI_TEXT_RUN2, "TEXT_RUN2", &u, sizeof(struct logit_run2));
+    /* implemented (text-kernel-alpha): a zeroed run has len 0 -> ARGUMENT */
+    bad += struct_call_w(&e, SYS_GUI_TEXT_RUN2, "TEXT_RUN2", &u, sizeof(struct logit_run2), OL_ARGUMENT);
     bad += struct_call(&e, SYS_GUI_SHADOW2, "SHADOW2", &u, sizeof(struct logit_shadow2));
     bad += struct_call(&e, SYS_GUI_GLASS2, "GLASS2", &u, sizeof(struct logit_glass2));
     bad += struct_call(&e, SYS_GUI_BACKDROP, "BACKDROP", &u, sizeof(struct logit_backdrop2));
