@@ -32,6 +32,28 @@ static void prepare_style(struct glass_style *style, const struct glass_panel *p
         }
     }
 
+    /* SYMMETRIC: a ring lit by edge distance alone. Grazing incidence near
+     * the outline reflects more (Fresnel), so the outer two pixels share the
+     * peak and the next few fall off quadratically. Two equal outer levels
+     * matter: straight runs place depth 0 on the half-covered pixel while a
+     * corner can cover a depth-0 pixel fully, and a single-pixel peak would
+     * make corners brighter than sides. The width follows the edge so the
+     * ring keeps its proportion at 125% and 150%. reflect_gain and mean are
+     * measured from the blurred halo by glass_render. */
+    style->symmetric = glass_rim_symmetric(panel->mat);
+    style->reflect_gain = 0;
+    style->mean = (struct glass_color){0, 0, 0};
+    if (style->symmetric) {
+        int ring_width = glass_clamp(edge_width / 4, 2, 6);
+        int falloff = (ring_width - 1) * (ring_width - 1);
+        for (int depth = 0; depth <= GLASS_E_MAX; depth++) {
+            int span = ring_width - depth;
+            if (depth <= 1) style->ring[depth] = GLASS_RING_PEAK;
+            else if (span > 0) style->ring[depth] = GLASS_RING_PEAK * span * span / falloff;
+            else style->ring[depth] = 0;
+        }
+    }
+
 #ifndef GLASS_STATIC_TINT
     int low = tint.red < tint.green ? tint.red : tint.green;
     int high = tint.red > tint.green ? tint.red : tint.green;
@@ -67,6 +89,17 @@ static inline struct glass_light lighting(const struct glass_style *style,
                                           struct glass_field field)
 {
     int depth = glass_clamp(field.depth, 0, GLASS_E_MAX);
+    if (style->symmetric) {
+        /* No facing/opposite split and no shadow: the normal only steers
+         * refraction and the reflected sample. Over a flat backdrop the gain
+         * is zero, so the rim is the tinted backdrop plus the ring. */
+        return (struct glass_light){
+            .environment = style->mean,
+            .reflection = style->fres[depth] * style->reflect_gain / 256,
+            .highlight = style->ring[depth],
+            .shadow = 0,
+        };
+    }
     int band = style->band[depth];
     int facing = (-154 * field.normal_x - 205 * field.normal_y) / 256;
     facing = glass_clamp(facing, 0, 256);
