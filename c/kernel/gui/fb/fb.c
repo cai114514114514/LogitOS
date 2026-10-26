@@ -335,6 +335,17 @@ static struct ol_display *fb_sdk(void)
     return &c->disp;
 }
 uint64_t fb_openlogit_batches(void) {return sdk_draw_calls;}
+struct ol_display *fb_display_cur(void) { return fb_sdk(); }
+
+/* Clip stack: STUBS until fb-clip-stack replaces these bodies (and only
+ * these). No state, so no per-context copies yet; see fb.h. */
+int fb_clip_push(int x0, int y0, int x1, int y1)
+{
+    (void)x0; (void)y0; (void)x1; (void)y1;
+    return OL_UNSUPPORTED;
+}
+void fb_clip_pop(void) {}
+int fb_clip_depth(void) { return 0; }
 
 /* 2026-09-13: normal drawing is owned by OpenLogit. These ABI
  * adapters preserve the existing target/clip and contain no pixel loops. */

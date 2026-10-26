@@ -11,6 +11,11 @@
 #include "spinlock.h"
 #include "logit_abi.h"   /* LOGIT_FACE_MONO / LOGIT_FACE_BOLD -- see face_font() */
 
+/* SYS_GUI2_INFO feature bit for the SYS_TEXT_MEASURE carets query
+ * (LOGIT_TEXT_CARETS_QUERY). 0 until text-kernel-carets answers it here;
+ * declared in wm_draw2.h, ORed into SYS_GUI2_INFO(0) by wm_draw2.c. */
+const unsigned wm2_carets_info = 0;
+
 void *memcpy(void *, const void *, size_t);
 
 /* Loaded fonts, in fallback order after whichever one was asked for.

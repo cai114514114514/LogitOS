@@ -46,6 +46,7 @@ static struct desktop_preferences desktop_prefs = {LOGIT_DESKTOP_PREFS(PREF_DEFA
  * Writing it down found a real disagreement: SYS_GUI_GLASS's radius is 8 bits,
  * which the comment's `(radius<<32)|...` never said. */
 #include "logit_pack.h"
+#include "wm_draw2.h"    /* GUI ABI v2: router, handlers, struct drect */
 #include "ktime.h"
 #include "evq.h"
 #include "input_queue.h"
@@ -78,6 +79,9 @@ static struct desktop_preferences desktop_prefs = {LOGIT_DESKTOP_PREFS(PREF_DEFA
  * make the IME quietly stop working in the highest-numbered windows, because
  * ime_ui_key() bounds-checks and reports the key as not-consumed. */
 _Static_assert(IME_UI_MAXWIN >= MAXWIN, "ime_ui.h IME_UI_MAXWIN < wm.c MAXWIN");
+/* The v2 handlers keep per-window side tables indexed by this file's slot
+ * numbers (wm_draw2.h); a larger MAXWIN would index past them. */
+_Static_assert(MAXWIN == WM2_MAX_WINDOWS, "wm_draw2.h WM2_MAX_WINDOWS != wm.c MAXWIN");
 /* ---- units ----------------------------------------------------------------
  * Every geometry constant in this file is in POINTS; `struct win`'s x/y/w/h and
  * everything that touches a pixel are in DEVICE pixels. S() converts one to the
@@ -211,11 +215,10 @@ void *memcpy(void *, const void *, size_t);
  * primitives. See net/{dom,css,layout}.c (compiled into browser.aex) and L1 plan. */
 
 /* ---------- windows + apps ---------- */
-/* Declared HERE rather than down in the damage section it belongs to, because
- * `struct win` now stores one (see anim_prev) and a member cannot have an
- * incomplete type. The damage machinery that owns it is still the only thing
- * that manipulates it; this is a forward move, not a second home. */
-struct drect { int x0, y0, x1, y1; };          /* half-open, DEVICE pixels */
+/* struct drect (half-open, DEVICE pixels) is defined in wm_draw2.h, included
+ * above, so wm_backdrop.c and wm_cover.h share this one definition. It has to
+ * be complete before `struct win`, which stores one (see anim_prev). The damage
+ * machinery that owns it is still the only thing here that manipulates it. */
 
 /* WK_BUILDING is the state a slot is in between the moment SYS_GUI_CREATE
  * CLAIMS it and the moment it is finished. It exists because the claim has
@@ -2049,6 +2052,9 @@ static void win_apply_size(struct win *w)
      * and a stale one is the "white Terminal" bug (see fb.h) with a different
      * cause. The app is about to redraw from scratch regardless. */
     w->surf.clip_on = 0;
+    /* ...and the same for the GUI ABI v2 state: open clip/group levels and
+     * backdrop regions were in the old canvas's device pixels. */
+    wm2_win_reset((int)(w - wins));
     w->cw_pt = PT(cw);
     w->ch_pt = PT(ch);
     enqueue(w, EV_RESIZE, w->cw_pt, w->ch_pt);
@@ -2611,6 +2617,12 @@ static int is_draw_call(long num)
     case SYS_GUI_CLEAR: case SYS_GUI_RECT: case SYS_GUI_RRECT:
     case SYS_GUI_TEXT:  case SYS_GUI_TEXT_MONO: case SYS_GUI_ICON:
     case SYS_GUI_GLASS: case SYS_GUI_TEXT_RUN:  case SYS_GUI_BLIT:
+    /* GUI ABI v2: the calls that put pixels into the canvas. INFO, CLIP_PUSH,
+     * CLIP_POP, GROUP_BEGIN and BACKDROP_CLEAR are absent for the reason
+     * SYS_GUI_CLIP is: they change state, not pixels. */
+    case SYS_GUI_PATH: case SYS_GUI_GROUP_END: case SYS_GUI_BLIT2:
+    case SYS_GUI_TEXT_RUN2: case SYS_GUI_SHADOW2: case SYS_GUI_GLASS2:
+    case SYS_GUI_BACKDROP:
         return 1;
     }
     return 0;
@@ -2633,6 +2645,46 @@ static void wm_frame_boundary(long num)
         dw->draw_t0 = time_mono_ms();
     }
 }
+/* ---- GUI ABI v2 (wm_draw2.h) --------------------------------------------
+ * The handlers see the window only through a struct wm2_env. These thunks
+ * adapt the kernel services to the env's signatures. */
+static int wm2_copyin(void *dst, const void *src, unsigned long n)
+{ return user_copy_from(dst, src, (uint64_t)n) ? -1 : 0; }
+/* Until fb-clip-stack these return OL_UNSUPPORTED (fb.c) and handlers that
+ * need a clip propagate it. */
+static int wm2_clip_push_fb(void *opaque, int x0, int y0, int x1, int y1)
+{ (void)opaque; return fb_clip_push(x0, y0, x1, y1); }
+static void wm2_clip_pop_fb(void *opaque) { (void)opaque; fb_clip_pop(); }
+static void *wm2_alloc(unsigned long n) { return kmalloc((size_t)n); }
+static void wm2_release(void *p) { kfree(p); }
+/* The caller has already done fb_target(&w->surf), so fb_display_cur() is the
+ * display bound to this window's canvas, and undoes it with fb_target(NULL). */
+static void wm2_env_for(struct win *w, struct wm2_env *e)
+{
+    e->d = fb_display_cur();
+    e->scale_pct = fb_scale();
+    e->surf_w = w->surf.w;
+    e->surf_h = w->surf.h;
+    e->slot = (int)(w - wins);
+    e->copyin = wm2_copyin;
+    e->clip_push = wm2_clip_push_fb;
+    e->clip_pop = wm2_clip_pop_fb;
+    e->alloc = wm2_alloc;
+    e->release = wm2_release;
+    e->opaque = w;
+}
+/* SYS_GUI_FLUSH / SYS_GUI_FLUSH_RECT: let the v2 state close whatever the
+ * frame left open, BEFORE the present reports the canvas. */
+static void wm2_flush_win(struct win *w)
+{
+    if (!w->surf.px) return;
+    fb_target(&w->surf);
+    struct wm2_env e;
+    wm2_env_for(w, &e);
+    wm2_win_flush(&e);
+    fb_target(NULL);
+}
+
 static long wm_gui_dispatch(long num, long a, long b, long c)
 {
     struct app *ap = cur_app();
@@ -2770,6 +2822,9 @@ static long wm_gui_dispatch(long num, long a, long b, long c)
          * would say why. */
         w->min_w_pt = w->min_h_pt = 0;
         w->zoomed = w->minimized = 0;
+        /* ...nor its GUI ABI v2 state: clip/group stacks, arenas and
+         * backdrop regions are keyed on the slot (wm_draw2.h). */
+        wm2_win_reset(wi);
         /* ...and the same for what P2-P5 added, which this list missed until
          * 2026-09-24: a slot whose last tenant was Spotlight would open its
          * next window as a titlebar-less PANEL that hides on focus loss. */
@@ -2931,7 +2986,8 @@ static long wm_gui_dispatch(long num, long a, long b, long c)
          * move the window, resize it or change its focus, so it cannot have
          * changed one pixel of the shadow. See dirty_win_content(). */
         struct win *w = app_window(ap);
-        if (w) dirty_win_content(w); else dirty_full(FULL_FLUSH_NO_WINDOW);
+        if (w) { wm2_flush_win(w); dirty_win_content(w); }
+        else dirty_full(FULL_FLUSH_NO_WINDOW);
         return 0;
     }
     case SYS_GUI_FLUSH_RECT: {
@@ -2940,6 +2996,7 @@ static long wm_gui_dispatch(long num, long a, long b, long c)
          * dirty_win_content_rect() just above this switch's function. */
         struct win *w = app_window(ap);
         if (!w) return -1;
+        wm2_flush_win(w);
 #ifdef GUI_FLUSHRECT_DISABLE
         /* THE CONTROL. Built with -DGUI_FLUSHRECT_DISABLE, this number keeps
          * its ABI contract (still returns 0, still a valid call) but performs
@@ -3209,6 +3266,22 @@ static long wm_gui_dispatch(long num, long a, long b, long c)
         fb_target(NULL);
         return rc;
     }
+    /* GUI ABI v2: one case for all twelve numbers. Target the canvas, hand
+     * the router an env, untarget -- the same bracket every legacy draw case
+     * uses, so a v2 draw lands on this window's surface and nowhere else. */
+    case SYS_GUI2_INFO: case SYS_GUI_PATH: case SYS_GUI_CLIP_PUSH:
+    case SYS_GUI_CLIP_POP: case SYS_GUI_GROUP_BEGIN: case SYS_GUI_GROUP_END:
+    case SYS_GUI_BLIT2: case SYS_GUI_TEXT_RUN2: case SYS_GUI_SHADOW2:
+    case SYS_GUI_GLASS2: case SYS_GUI_BACKDROP: case SYS_GUI_BACKDROP_CLEAR: {
+        struct win *w = app_window(ap);
+        if (!w || !w->surf.px) return OL_STATE;
+        fb_target(&w->surf);
+        struct wm2_env e;
+        wm2_env_for(w, &e);
+        long rc = wm2_dispatch(num, &e, a, b, c);
+        fb_target(NULL);
+        return rc;
+    }
     case SYS_GUI_CLIP: {
         struct win *w = app_window(ap); if (!w) return -1;
         int x = S(LOGIT_GUI_CLIP_A_X(a)), y = S(LOGIT_GUI_CLIP_A_Y(a));
@@ -3361,6 +3434,11 @@ static int wm_domain_call(long num)
     case SYS_GUI_FLUSH_RECT: case SYS_GUI_WIN_MIN: case SYS_GUI_WIN_STATE:
     case SYS_UI_DARK: case SYS_OPEN_PATH: case SYS_OPEN_PATH_ARG: case SYS_GET_ARG: case SYS_SYSINFO:
     case SYS_GUI_MENU_SET:
+    /* GUI ABI v2: every number, pixels or not -- each one reads the window. */
+    case SYS_GUI2_INFO: case SYS_GUI_PATH: case SYS_GUI_CLIP_PUSH:
+    case SYS_GUI_CLIP_POP: case SYS_GUI_GROUP_BEGIN: case SYS_GUI_GROUP_END:
+    case SYS_GUI_BLIT2: case SYS_GUI_TEXT_RUN2: case SYS_GUI_SHADOW2:
+    case SYS_GUI_GLASS2: case SYS_GUI_BACKDROP: case SYS_GUI_BACKDROP_CLEAR:
         return 1;
     }
     return 0;
@@ -3627,6 +3705,7 @@ static void reap(void)
                 wins[wi].surf.px = 0;
                 wins[wi].surf.w = wins[wi].surf.h = 0;
                 wins[wi].surf_cap = 0;   /* ...and the capacity that block held */
+                wm2_win_reset(wi);       /* ...and the v2 state keyed on the slot */
                 if (wins[wi].menus) { kfree(wins[wi].menus); wins[wi].menus = 0; }
                 wins[wi].menus_gen = 0;
                 wins[wi].used = 0;
