@@ -347,6 +347,197 @@ Itimer = layout("logit_itimer", 16, [
     ["interval_ms", 8, 8, "i"]
 ])
 
+Path2 = layout("logit_path2", 64, [
+    ["size", 0, 4, "u"],
+    ["verbs", 8, 8, "p"],
+    ["xy", 16, 8, "p"],
+    ["nverb", 24, 4, "u"],
+    ["nxy", 28, 4, "u"],
+    ["rule", 32, 4, "i"],
+    ["m_0", 36, 4, "i"],
+    ["m_1", 40, 4, "i"],
+    ["m_2", 44, 4, "i"],
+    ["m_3", 48, 4, "i"],
+    ["m_4", 52, 4, "i"],
+    ["m_5", 56, 4, "i"],
+    ["flags", 60, 4, "u"]
+])
+
+Paint2 = layout("logit_paint2", 64, [
+    ["size", 0, 4, "u"],
+    ["kind", 4, 1, "u"],
+    ["op", 5, 1, "u"],
+    ["spread", 6, 1, "u"],
+    ["nstop", 7, 1, "u"],
+    ["argb", 8, 4, "u"],
+    ["x0", 12, 4, "i"],
+    ["y0", 16, 4, "i"],
+    ["x1", 20, 4, "i"],
+    ["y1", 24, 4, "i"],
+    ["r0", 28, 4, "i"],
+    ["r1", 32, 4, "i"],
+    ["stop_pos", 40, 8, "p"],
+    ["stop_argb", 48, 8, "p"],
+    ["flags", 56, 4, "u"]
+])
+
+Stroke2 = layout("logit_stroke2", 52, [
+    ["size", 0, 4, "u"],
+    ["width", 4, 4, "i"],
+    ["cap", 8, 1, "u"],
+    ["join", 9, 1, "u"],
+    ["ndash", 10, 1, "u"],
+    ["pad", 11, 1, "u"],
+    ["miter", 12, 4, "i"],
+    ["dash_0", 16, 4, "i"],
+    ["dash_1", 20, 4, "i"],
+    ["dash_2", 24, 4, "i"],
+    ["dash_3", 28, 4, "i"],
+    ["dash_4", 32, 4, "i"],
+    ["dash_5", 36, 4, "i"],
+    ["dash_6", 40, 4, "i"],
+    ["dash_7", 44, 4, "i"],
+    ["dash_phase", 48, 4, "i"]
+])
+
+Clip2 = layout("logit_clip2", 40, [
+    ["size", 0, 4, "u"],
+    ["x", 4, 4, "i"],
+    ["y", 8, 4, "i"],
+    ["w", 12, 4, "i"],
+    ["h", 16, 4, "i"],
+    ["radius_0", 20, 4, "i"],
+    ["radius_1", 24, 4, "i"],
+    ["radius_2", 28, 4, "i"],
+    ["radius_3", 32, 4, "i"],
+    ["flags", 36, 4, "u"]
+])
+
+Group2 = layout("logit_group2", 44, [
+    ["size", 0, 4, "u"],
+    ["x", 4, 4, "i"],
+    ["y", 8, 4, "i"],
+    ["w", 12, 4, "i"],
+    ["h", 16, 4, "i"],
+    ["radius_0", 20, 4, "i"],
+    ["radius_1", 24, 4, "i"],
+    ["radius_2", 28, 4, "i"],
+    ["radius_3", 32, 4, "i"],
+    ["opacity", 36, 4, "i"],
+    ["flags", 40, 4, "u"]
+])
+
+Blit2 = layout("logit_blit2", 72, [
+    ["size", 0, 4, "u"],
+    ["rgba", 8, 8, "p"],
+    ["sw", 16, 4, "i"],
+    ["sh", 20, 4, "i"],
+    ["sstride", 24, 4, "i"],
+    ["src_x", 28, 4, "i"],
+    ["src_y", 32, 4, "i"],
+    ["src_w", 36, 4, "i"],
+    ["src_h", 40, 4, "i"],
+    ["x", 44, 4, "i"],
+    ["y", 48, 4, "i"],
+    ["w", 52, 4, "i"],
+    ["h", 56, 4, "i"],
+    ["opacity", 60, 4, "i"],
+    ["filter", 64, 4, "i"],
+    ["flags", 68, 4, "u"]
+])
+
+Run2 = layout("logit_run2", 48, [
+    ["size", 0, 4, "u"],
+    ["x", 4, 4, "i"],
+    ["y", 8, 4, "i"],
+    ["px", 12, 4, "i"],
+    ["face", 16, 4, "i"],
+    ["color", 20, 4, "u"],
+    ["s", 24, 8, "p"],
+    ["len", 32, 4, "i"],
+    ["alpha", 36, 4, "i"],
+    ["weight", 40, 4, "i"],
+    ["flags", 44, 4, "u"]
+])
+
+Shadow2 = layout("logit_shadow2", 60, [
+    ["size", 0, 4, "u"],
+    ["x", 4, 4, "i"],
+    ["y", 8, 4, "i"],
+    ["w", 12, 4, "i"],
+    ["h", 16, 4, "i"],
+    ["radius_0", 20, 4, "i"],
+    ["radius_1", 24, 4, "i"],
+    ["radius_2", 28, 4, "i"],
+    ["radius_3", 32, 4, "i"],
+    ["dx", 36, 4, "i"],
+    ["dy", 40, 4, "i"],
+    ["blur", 44, 4, "i"],
+    ["spread", 48, 4, "i"],
+    ["argb", 52, 4, "u"],
+    ["flags", 56, 4, "u"]
+])
+
+Glass2 = layout("logit_glass2", 76, [
+    ["size", 0, 4, "u"],
+    ["x", 4, 4, "i"],
+    ["y", 8, 4, "i"],
+    ["w", 12, 4, "i"],
+    ["h", 16, 4, "i"],
+    ["radius_0", 20, 4, "i"],
+    ["radius_1", 24, 4, "i"],
+    ["radius_2", 28, 4, "i"],
+    ["radius_3", 32, 4, "i"],
+    ["cut", 36, 4, "u"],
+    ["tint_argb", 40, 4, "u"],
+    ["opacity", 44, 4, "i"],
+    ["tone", 48, 4, "i"],
+    ["blur_level", 52, 4, "i"],
+    ["rim", 56, 4, "i"],
+    ["fg_rgb", 60, 4, "u"],
+    ["flags", 64, 4, "u"],
+    ["reserved_0", 68, 4, "i"],
+    ["reserved_1", 72, 4, "i"]
+])
+
+Backdrop2 = layout("logit_backdrop2", 84, [
+    ["size", 0, 4, "u"],
+    ["id", 4, 4, "i"],
+    ["x", 8, 4, "i"],
+    ["y", 12, 4, "i"],
+    ["w", 16, 4, "i"],
+    ["h", 20, 4, "i"],
+    ["radius_0", 24, 4, "i"],
+    ["radius_1", 28, 4, "i"],
+    ["radius_2", 32, 4, "i"],
+    ["radius_3", 36, 4, "i"],
+    ["tint_argb", 40, 4, "u"],
+    ["opacity", 44, 4, "i"],
+    ["tone", 48, 4, "i"],
+    ["blur_level", 52, 4, "i"],
+    ["rim", 56, 4, "i"],
+    ["fill_rgb", 60, 4, "u"],
+    ["flags", 64, 4, "u"],
+    ["reserved_0", 68, 4, "i"],
+    ["reserved_1", 72, 4, "i"],
+    ["reserved_2", 76, 4, "i"],
+    ["reserved_3", 80, 4, "i"]
+])
+
+Text_carets_query = layout("logit_text_carets_query", 64, [
+    ["size", 0, 4, "u"],
+    ["version", 4, 4, "u"],
+    ["s", 8, 8, "p"],
+    ["len", 16, 4, "i"],
+    ["px", 20, 4, "i"],
+    ["face", 24, 4, "i"],
+    ["flags", 28, 4, "i"],
+    ["off", 32, 8, "p"],
+    ["x24_8", 40, 8, "p"],
+    ["max", 48, 4, "i"],
+    ["count_out", 56, 8, "p"]
+])
+
 # ---- native argument ownership ----
 # A3 str may be an interior view with no trailing NUL. A named Bytes temporary
 # keeps each marshalled argument rooted across later argument allocations.
@@ -462,6 +653,58 @@ def get_time(t: Time) -> i64:
 def monotonic_ms() -> i64:
     unsafe:
         return syscall(SYS_MONOTONIC_MS)
+
+def gui2_info(what: i64) -> i64:
+    unsafe:
+        return syscall(SYS_GUI2_INFO, what)
+
+def gui_path_fill(p: Path2, pt: Paint2) -> i64:
+    unsafe:
+        return syscall(SYS_GUI_PATH, addr(p), addr(pt), 0)
+
+def gui_path_stroke(p: Path2, pt: Paint2, st: Stroke2) -> i64:
+    unsafe:
+        return syscall(SYS_GUI_PATH, addr(p), addr(pt), addr(st))
+
+def gui_clip_push(clip: Clip2) -> i64:
+    unsafe:
+        return syscall(SYS_GUI_CLIP_PUSH, addr(clip))
+
+def gui_clip_pop() -> i64:
+    unsafe:
+        return syscall(SYS_GUI_CLIP_POP)
+
+def gui_group_begin(grp: Group2) -> i64:
+    unsafe:
+        return syscall(SYS_GUI_GROUP_BEGIN, addr(grp))
+
+def gui_group_end() -> i64:
+    unsafe:
+        return syscall(SYS_GUI_GROUP_END)
+
+def gui_blit2(bl: Blit2) -> i64:
+    unsafe:
+        return syscall(SYS_GUI_BLIT2, addr(bl))
+
+def gui_text_run2(run: Run2) -> i64:
+    unsafe:
+        return syscall(SYS_GUI_TEXT_RUN2, addr(run))
+
+def gui_shadow2(sh: Shadow2) -> i64:
+    unsafe:
+        return syscall(SYS_GUI_SHADOW2, addr(sh))
+
+def gui_glass2(gl: Glass2) -> i64:
+    unsafe:
+        return syscall(SYS_GUI_GLASS2, addr(gl))
+
+def gui_backdrop(bd: Backdrop2) -> i64:
+    unsafe:
+        return syscall(SYS_GUI_BACKDROP, addr(bd))
+
+def gui_backdrop_clear(region: i64) -> i64:
+    unsafe:
+        return syscall(SYS_GUI_BACKDROP_CLEAR, region)
 
 def io_write[B0: ByteStorage](fd: i64, b: B0, len: i64) -> i64:
     _check_size(b, len)

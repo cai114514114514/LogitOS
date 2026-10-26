@@ -118,6 +118,16 @@ void fb_target(struct surface *s);
 void fb_set_clip(int x, int y, int w, int h);
 void fb_clear_clip(void);
 
+/* A clip STACK on the current target, for the GUI ABI v2 clip/group calls
+ * (c/kernel/gui/wm_draw2.h). fb_clip_push intersects the target's clip with
+ * the half-open device rect (x0,y0)-(x1,y1) and remembers the previous one;
+ * fb_clip_pop restores it; fb_clip_depth is how many pushes are open.
+ * STUBS until fb-clip-stack: push returns OL_UNSUPPORTED and changes
+ * nothing, pop is a no-op, depth is 0. */
+int  fb_clip_push(int x0, int y0, int x1, int y1);
+void fb_clip_pop(void);
+int  fb_clip_depth(void);
+
 /* Copy `src` into the current target at (dx,dy), clipped. */
 void fb_blit_surface(int dx, int dy, const struct surface *src);
 
@@ -225,6 +235,13 @@ void fb_round_rect_vgrad(int x, int y, int w, int h, int radius, uint32_t top, u
 uint32_t fb_shade(uint32_t c, int delta);
 
 int fb_blit_user_rgba(int dx, int dy, int dw, int dh, const uint8_t *rgba, int sw, int sh);
+
+/* The OpenLogit display bound to the CURRENT drawing target of this drawing
+ * context (it is fb_sdk(): binding is refreshed first). Per context, and
+ * valid only until the next fb_target, fb_set_clip/fb_clear_clip or clip
+ * push/pop -- re-fetch it after any of those. For the v2 handlers, which
+ * draw through ol_display_* on the window surface wm.c targeted. */
+struct ol_display *fb_display_cur(void);
 
 /* Kernel raster scratch ownership, shared with the image decoder wrapper. */
 uint64_t fb_openlogit_batches(void); /* SDK draw batches, not displayed frames */
