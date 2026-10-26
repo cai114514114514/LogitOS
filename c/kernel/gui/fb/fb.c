@@ -118,6 +118,21 @@ static struct fb_ctx g_fbctx[GFX_NCTX];
 static uint64_t sdk_draw_calls;
 #define FBC (&g_fbctx[gfx_ctx()])
 
+/* ---- big corner-mask arenas ------------------------------------------
+ * gfx_mask_corner serves radii past GFX_MASK_MAX (72 device px) up to
+ * GFX_MASK_BIG (512) from a per-context byte arena. Each drawing context gets
+ * FB_MASK_ARENA_BYTES (1 MiB, kmalloc'd once, never freed -- four contexts is
+ * 4 MiB of kernel heap; 1 MiB holds four 512x512 tiles or ~200 of 72..180 px).
+ * No lock: an arena is only ever touched by its own context (gfx_ctx()), and
+ * gfx_mask_flush_all merely bumps a generation. If kmalloc fails the context
+ * simply has no arena and big radii are refused (counted), as before. */
+#define FB_MASK_ARENA_BYTES (1024UL * 1024UL)
+static void fb_mask_arena_init(void)
+{
+    void *buf = kmalloc(FB_MASK_ARENA_BYTES);
+    if (buf) gfx_mask_set_arena(buf, FB_MASK_ARENA_BYTES);
+}
+
 #if GFX_NCTX > 1
 /* WHICH CONTEXT A THREAD DRAWS WITH -- by THREAD, not by core.
  *
@@ -141,6 +156,10 @@ int fb_ctx_register(int ctx)
 {
     if (ctx < 1 || ctx >= GFX_NCTX) return -1;
     g_ctx_thread[ctx] = sched_current_thread();
+    /* AFTER the line above: only now does gfx_ctx() return `ctx`, so the arena
+     * lands on this context and not on context 0. Once per context. */
+    static volatile unsigned char arena_done[GFX_NCTX];
+    if (!arena_done[ctx]) { arena_done[ctx] = 1; fb_mask_arena_init(); }
     return 0;
 }
 #else
@@ -180,6 +199,7 @@ void fb_set_scale(int pct)
 {
     if (pct < 100) pct = 100;          /* the UI is authored at 1x; never shrink it */
     if (pct > 400) pct = 400;
+    if (ui_scale != pct) gfx_mask_flush_all();   /* big tiles are keyed by device size */
     ui_scale = pct;
 }
 int fb_scale(void) { return ui_scale; }
@@ -244,6 +264,7 @@ uint32_t fb_rgb(uint8_t r, uint8_t g, uint8_t b)
 
 int fb_init(uint64_t mb_info_addr)
 {
+    { static int arena0; if (!arena0) { arena0 = 1; fb_mask_arena_init(); } }   /* ctx 0 */
     for (int i = 0; i < GFX_NCTX; i++) g_fbctx[i].dirty = 1;
     boot_lfb_addr = boot_lfb_bytes = 0;
     /* Prefer virtio-gpu: a normal-RAM framebuffer (fast CPU writes) presented by
