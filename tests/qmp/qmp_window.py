@@ -102,7 +102,14 @@ def windows(serial):
 
 
 def win_by_title(serial, title):
+    # "" means "the window this driver opened". When this was written the
+    # desktop booted with no window, so the lowest slot was always it; the
+    # boot Finder now holds slot 0, and every edge drag went to the Finder's
+    # frame while TextEdit lay on top of it -- the right edge's grab point
+    # was inside TextEdit, so the first drag never moved (found 2026-10-26).
     for w in windows(serial).values():
+        if title == "" and w["title"] == "Finder":
+            continue
         if w["title"].startswith(title):
             return w
     return None
@@ -470,6 +477,13 @@ def main(argv):
         TERMINAL_SLOT = slot_of(app_files, "terminal")
         if TEXTEDIT_SLOT < 0 or TERMINAL_SLOT < 0:
             print("FAIL textedit/terminal not on the dock"); return 1
+        # This driver was written for a desktop that booted with no window:
+        # its own TextEdit and Terminal were the only two, which is what makes
+        # Cmd+Tab and Cmd+Shift+Tab exact inverses below. The boot Finder is a
+        # third (2026-10-26), and Cmd+Shift+Tab then went to it. Close it.
+        if win_by_title(serial, "Finder"):
+            cmd_key(ui, "w")
+            time.sleep(2.0 * slow)
 
         def click_at(x, y, hold=0.12):
             aim(ui, P, x, y)
@@ -532,6 +546,20 @@ def main(argv):
         print("     %s frame=%r content=%dx%d pt"
               % (w["title"], frame_of(w), w["cw"], w["ch"]))
         shot("00-opened")
+
+        # Make room first. TextEdit opens fitted to the work area (wm.c
+        # win_fit_work_area, 2026-10-26): its right edge then has nowhere to be
+        # dragged OUT to, its bottom drag ends on the dock, and its top edge is
+        # un-grabbable under the menu bar. Shrink it from the bottom-right
+        # corner (down to whatever minimum it declares) and lower it by its
+        # titlebar, so each edge below has space on both sides of it.
+        f0 = frame_of(w)
+        drag(ui, P, f0[0] + f0[2], f0[1] + f0[3], f0[0] + pt(760), f0[1] + pt(470))
+        time.sleep(1.2 * slow)
+        f0 = frame_of(win_by_title(serial, ""))
+        drag(ui, P, f0[0] + pt(240), f0[1] + pt(12), f0[0] + pt(240), f0[1] + pt(12) + pt(70))
+        time.sleep(1.2 * slow)
+        print("     made room: frame=%r" % (frame_of(win_by_title(serial, "")),))
 
         # -- 1. every edge and every corner -------------------------------
         print("\n=== 1. drag each edge and each corner ===")
@@ -729,6 +757,11 @@ def main(argv):
         click_at(*dock_icon(TERMINAL_SLOT, napps))
         time.sleep(4.0 * slow)
         if win_by_title(serial, "Terminal"):
+            # Something to clear first: a Terminal that has printed nothing
+            # but its prompt has no scrollback, so Cmd+K (Clear Scrollback)
+            # correctly changes nothing and could not show it arrived.
+            ui.typ("echo one; echo two; echo three\n")
+            time.sleep(2.0 * slow)
             base = shot("term-idle")
             cmd_key(ui, "k", settle=1.2)
             time.sleep(1.5 * slow)

@@ -215,6 +215,7 @@ APP_TITLES = {
     "terminal": "Terminal", "widgets": "Widgets", "files": "Finder",
     "preview": "Preview", "studio": "Code Studio", "browser": "Browser",
     "gallery": "Gallery", "settings": "Settings",
+    "assistant": "Tasks",          # tests/agent.mk: mkaex.py ... Tasks
 }
 
 LAUNCH_RE = re.compile(r"\[wm\] launched (.+)")
