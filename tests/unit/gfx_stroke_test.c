@@ -1056,13 +1056,13 @@ int main(void)
     }
 
     /* ---------------------------------------------- the closure convention -- */
-    printf("\n-- what marks a subpath closed (and the gfx_path_rect trap) --\n");
+    printf("\n-- what marks a subpath closed --\n");
     {
         /* Same three vertices, twice: without the repeated first point it is
          * an open polyline with two caps, with it a closed contour with three
-         * joins. The stroker has nothing else to go on -- gfx_close() emits
-         * no point and sets no flag -- so this is the whole distinction, and
-         * it is asserted here so it cannot drift silently. */
+         * joins. gfx_close() emits no point but records the closed bit in
+         * sub[], which the stroker honours, so both spellings give the same
+         * two-contour (outline + hole) result; asserted so it cannot drift. */
         src_begin(&src);
         gfx_move_to(&src, GFX_PX(12), GFX_PX(10));
         gfx_line_to(&src, GFX_PX(52), GFX_PX(20));
@@ -1084,18 +1084,13 @@ int main(void)
         snprintf(d, sizeof d, "gfx_close() -> %d src points, %d contours; "
                               "repeated point -> %d contours",
                  npt_closed_call, nsub_after_close, out.nsub);
-        ck(npt_closed_call == 3 && nsub_after_close == 1 && out.nsub == 2,
-           "closure is the repeated first point; gfx_close() alone is invisible here", d);
+        ck(npt_closed_call == 3 && nsub_after_close == 2 && out.nsub == 2,
+           "gfx_close() alone now closes the subpath (sub[] closed bit), same as a repeated first point", d);
 
-        /* THE CONSEQUENCE, asserted rather than only described, because a
-         * comment nobody runs is a comment nobody believes. gfx_path_rrect /
-         * ellipse / circle end their last curve exactly on their first point,
-         * so they carry the marker and stroke closed. gfx_path_rect stops at
-         * the fourth corner and leaves the fourth side to gfx_close(), so it
-         * does NOT, and its stroke gets two caps at the top-left instead of a
-         * join. When gfx_path.c grows the closing line_to (or struct gfx_path
-         * grows a closure bit) this assertion FAILS -- which is the point:
-         * the fix should have to come here and delete it. */
+        /* THE CONSEQUENCE, asserted rather than only described. All shape
+         * builders end with gfx_close(), so gfx_path_rect carries the closed
+         * bit like rrect / ellipse / circle and strokes with a join at the
+         * top-left instead of two caps (two contours: outline + hole). */
         src_begin(&src);
         gfx_path_rrect(&src, GFX_PX(6), GFX_PX(6), GFX_PX(40), GFX_PX(30), GFX_PX(8));
         int rr_closed = src.pt[0] == src.pt[(src.npt - 1) * 2] &&
@@ -1106,11 +1101,11 @@ int main(void)
                           src.pt[1] == src.pt[(src.npt - 1) * 2 + 1];
         out_begin(&out);
         gfx_stroke_path(&out, &src, &st);
-        snprintf(d, sizeof d, "rrect carries it (%d), rect does not (%d) -> "
+        snprintf(d, sizeof d, "rrect endpoints equal (%d), rect endpoints equal (%d) -> "
                               "%d contour(s) for the rect",
                  rr_closed, rect_closed, out.nsub);
-        ck(rr_closed == 1 && rect_closed == 0 && out.nsub == 1,
-           "KNOWN GAP: gfx_path_rect strokes OPEN; the curved sugar strokes closed", d);
+        ck(rr_closed == 1 && out.nsub == 2,
+           "gfx_path_rect strokes CLOSED (closed bit), like the curved sugar", d);
     }
 
     printf("\n%d checks, %d failed\n", checks, fails);
