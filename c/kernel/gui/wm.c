@@ -1434,6 +1434,14 @@ static void win_fit_work_area(struct win *w, int resize)
             (int)(w - wins), w->x, w->y, w->w, w->h, ax, ay, aw, ah);
 }
 
+/* A ZOOM reaches the bottom of the screen: a zoomed frontmost window hides the
+ * dock (see DOCK AUTOHIDE), so there is nothing to stop above. zoom_rect()
+ * stays the work area for placement and for the halves, which leave the dock up. */
+static void zoom_full_rect(int *x, int *y, int *ww, int *wh)
+{
+    *x = 0; *y = MBH; *ww = W; *wh = H - MBH;
+}
+
 static void win_set_zoom(struct win *w, int on)
 {
     on = on ? 1 : 0;
@@ -1442,7 +1450,7 @@ static void win_set_zoom(struct win *w, int on)
     if (on) {
         w->sx = w->x; w->sy = w->y; w->sw = w->w; w->sh = w->h;
         int x, y, ww, wh;
-        zoom_rect(&x, &y, &ww, &wh);
+        zoom_full_rect(&x, &y, &ww, &wh);
         w->zoomed = 1;
         win_set_frame(w, x, y, ww, wh);
     } else {
@@ -1493,6 +1501,7 @@ static int g_snap_zone;
 
 static void snap_frame(int zone, int *x, int *y, int *ww, int *wh)
 {
+    if (zone == SNAP_TOP) { zoom_full_rect(x, y, ww, wh); return; }   /* the preview IS the zoom */
     zoom_rect(x, y, ww, wh);
     if (zone == SNAP_LEFT || zone == SNAP_RIGHT) {
         int half = *ww / 2;
@@ -3979,6 +3988,11 @@ static int dock_x0, dock_y0, dock_isz = DOCK_ISZ_PT, dock_gap = DOCK_GAP_PT;
  * to decide whether this frame touches it -- and asking a global that the
  * skipped draw would have written is a loop. One function computes it. */
 static int dock_hover_at(int x, int y);         /* body below, with the drawing */
+static int dock_slide_px(void);
+
+/* Where the dock is DRAWN, hit and damaged: its resting place, lowered by the
+ * autohide slide (dock_slide_px, 0 while shown). Every dock box in this file
+ * derives from here, so the picture, the click and the damage move together. */
 static void dock_geom(int *x0, int *y0, int *dw, int *dh)
 {
     int n = nreg < 1 ? 1 : nreg;
@@ -3986,7 +4000,7 @@ static void dock_geom(int *x0, int *y0, int *dw, int *dh)
     *dw = gap + n * (isz + gap);
     *dh = isz + 2 * S(DOCK_PAD_PT);
     *x0 = (W - *dw) / 2;
-    *y0 = H - *dh - S(12);
+    *y0 = H - *dh - S(12) + dock_slide_px();
 }
 
 /* ONE dock icon's tile, in device pixels -- the target a minimised window flies
@@ -4059,6 +4073,73 @@ static void dock_box_hov(int hov, struct drect *r)
 }
 static void dock_box(struct drect *r) { dock_box_hov(dock_hover_at(mx, my), r); }
 
+/* ---- DOCK AUTOHIDE (2026-10-26) ---------------------------------------------
+ *
+ * While the frontmost window is zoomed the dock slides below the bottom edge and
+ * the zoom reaches the bottom of the screen (zoom_full_rect). A zoomed window
+ * used to stop above the dock, leaving a band of wallpaper under a full-width
+ * window with the dock floating in it -- "especially after full screen, very
+ * awkward", from the owner's own desktop. Touching the bottom edge brings the
+ * dock back OVER the window; it stays while the pointer is on it (or its
+ * tooltip) and leaves when the pointer does. Any other state shows it. */
+#define DOCK_SLIDE_MS 220
+static int g_dock_hide_to;            /* the target: 0 shown, 256 hidden       */
+static int g_dock_hide_from;          /* progress when the current slide began */
+static uint64_t g_dock_hide_t0;       /* the slide's start; 0 = at rest        */
+
+static int dock_hide_progress(void)
+{
+    if (!g_dock_hide_t0) return g_dock_hide_to;
+    uint64_t e = anim_elapsed(g_dock_hide_t0);
+    if (wm_reduce_motion || e >= DOCK_SLIDE_MS) return g_dock_hide_to;
+    int k = ease_out((int)(e * 256 / DOCK_SLIDE_MS));
+    return g_dock_hide_from + (g_dock_hide_to - g_dock_hide_from) * k / 256;
+}
+
+/* Far enough that the panel AND its shadow (DOCKSH_DY + DOCKSH_BLUR) clear the
+ * bottom edge when hidden. */
+static int dock_slide_px(void)
+{
+    int dh = S(DOCK_ISZ_PT) + 2 * S(DOCK_PAD_PT);
+    return dock_hide_progress() * (dh + S(12) + DOCKSH_DY + DOCKSH_BLUR + S(2)) / 256;
+}
+
+/* The band the dock can occupy anywhere along its slide, tooltip included. */
+static void dirty_dock_band(void)
+{
+    int dh = S(DOCK_ISZ_PT) + 2 * S(DOCK_PAD_PT);
+    int top = H - dh - S(12) - S(30);
+    dirty_rect(0, top, W, H - top);
+}
+
+static void wm_dock_autohide_tick(void)
+{
+    int top = g_locked ? -1 : top_visible();
+    int want = 0;
+    if (top >= 0 && wins[top].used && wins[top].kind == WK_APP &&
+        wins[top].zoomed && !wins[top].minimized && !ex_on) {
+        int dw = 0, x0, dh = S(DOCK_ISZ_PT) + 2 * S(DOCK_PAD_PT);
+        { int n = nreg < 1 ? 1 : nreg; dw = S(DOCK_GAP_PT) + n * (S(DOCK_ISZ_PT) + S(DOCK_GAP_PT)); }
+        x0 = (W - dw) / 2;
+        int rest_y0 = H - dh - S(12);
+        int reveal = my >= H - S(3);
+        int on_it = g_dock_hide_to == 0 && my >= rest_y0 - S(30) &&
+                    mx >= x0 - DOCKSH_BLUR && mx < x0 + dw + DOCKSH_BLUR;
+        want = !(reveal || on_it);
+    }
+    int to = want ? 256 : 0;
+    if (to != g_dock_hide_to) {
+        g_dock_hide_from = dock_hide_progress();
+        g_dock_hide_to = to;
+        g_dock_hide_t0 = anim_stamp();
+        kprintf("[wm] dock %s\n", want ? "hide" : "show");
+    }
+    if (g_dock_hide_t0) {
+        dirty_dock_band();
+        if (wm_reduce_motion || anim_elapsed(g_dock_hide_t0) >= DOCK_SLIDE_MS) g_dock_hide_t0 = 0;
+    }
+}
+
 /* Damage the dock as it is about to be drawn. A hover CHANGE has to damage the
  * outgoing tooltip as well -- the icon the pointer just left still has one on
  * screen, and it is nowhere near the icon it moved to. */
@@ -4124,6 +4205,7 @@ static void draw_dock(void)
     int dw, dh;
     dock_isz = S(DOCK_ISZ_PT); dock_gap = S(DOCK_GAP_PT);   /* device px, for the click path */
     dock_geom(&dock_x0, &dock_y0, &dw, &dh);
+    if (dock_y0 >= H) return;             /* autohidden: entirely below the screen */
     /* Called "soft drop shadow" and it was neither: a solid black rounded slab
      * at a flat alpha 50, offset down S(7), with no falloff anywhere -- a hard
      * edge all the way round, under a panel translucent enough to show it. */
@@ -4941,11 +5023,16 @@ static void draw_frame_body(int x, int y, int ww, int wh, const char *title, int
 static void draw_frame(struct win *w, int focused)
 {
     int x = w->x, y = w->y, ww = w->w, wh = w->h;
-    fb_shadow(x, y, ww, wh, S(10), WSH_DY(focused), WSH_BLUR(focused), WSH_ALPHA(focused));
+    if (!w->zoomed)                       /* a zoom fills the desktop: nothing to cast on */
+        fb_shadow(x, y, ww, wh, S(10), WSH_DY(focused), WSH_BLUR(focused), WSH_ALPHA(focused));
     if (w->panel) return;                 /* a panel is its canvas and its shadow */
     uint8_t a = focused ? (g_ui_dark ? 150 : 104) : (g_ui_dark ? 180 : 140);
-    if (g_ui_dark) profiled_glass(x, y, ww, TBH + S(10), S(TITLE_GLASS_PT), 30, 30, 40, a);
-    else           profiled_glass(x, y, ww, TBH + S(10), S(TITLE_GLASS_PT), 250, 250, 255, a);
+    /* Zoomed, the titlebar runs on from the menu bar edge to edge, so its top,
+     * left and right are CUT like the menu bar's own (no bevel, square): two
+     * rounded bars stacked one under the other read as a doubled header. */
+    unsigned cut = w->zoomed ? (GLASS_CUT_TOP | GLASS_CUT_LEFT | GLASS_CUT_RIGHT) : 0;
+    if (g_ui_dark) profiled_glass_cut(x, y, ww, TBH + S(10), S(TITLE_GLASS_PT), 30, 30, 40, a, cut);
+    else           profiled_glass_cut(x, y, ww, TBH + S(10), S(TITLE_GLASS_PT), 250, 250, 255, a, cut);
     /* NOT the separator -- see draw_titlebar_sep above; the caller draws it
      * after blit_content, or it is covered before it is ever seen. */
     uint32_t off = g_ui_dark ? rgb(80, 80, 90) : rgb(205, 205, 210);
@@ -7927,6 +8014,7 @@ void wm_run(void)
          * this line, requests no damage, and goes back to sleep on the hlt. */
         wm_hotcorner_tick();
         sw_tick();                /* Cmd+Tab switcher: reveal after a hold, never strand it open */
+        wm_dock_autohide_tick();  /* a zoomed front window hides the dock; the bottom edge calls it */
         menu_model_sync();        /* the top window changed some other way (reap, launch): follow it */
         wm_anim_tick();
         /* Animation/hot-corner changes can transfer keyboard ownership without
