@@ -47,6 +47,9 @@ static struct desktop_preferences desktop_prefs = {LOGIT_DESKTOP_PREFS(PREF_DEFA
  * which the comment's `(radius<<32)|...` never said. */
 #include "logit_pack.h"
 #include "wm_draw2.h"    /* GUI ABI v2: router, handlers, struct drect */
+#include "wm_cover.h"    /* wm_cover_ok: the cover predicate, pure */
+#include "openlogit_display_group.h"  /* rounded content: opacity-255 corner groups */
+#include "openlogit_display_blit.h"   /* wallpaper: BOX-filtered bake */
 #include "ktime.h"
 #include "evq.h"
 #include "input_queue.h"
@@ -2093,6 +2096,79 @@ static void blit_content(struct win *w, int dx, int dy, int cw, int ch)
     else fb_blit_surface_scaled(dx, dy, cw, ch, &w->surf);
 }
 
+/* ---- THE WINDOW IS A ROUNDED SHAPE, AND SO IS ITS CONTENT -------------------
+ * The frame is a rounded rect (S(10)), but the canvas is a rectangle: copied
+ * square it covered the frame's bottom corners (and a panel's top ones), so the
+ * rounding was drawn and then overpainted by the app's pixels. The content blit
+ * therefore runs inside an opacity-255 snapshot group (openlogit_display_group.h):
+ * begin saves ONLY the four radius x radius corner tiles, the blit draws as it
+ * always did, end blends each corner pixel back toward the snapshot by its
+ * outside-the-arc coverage. Everything inside the arc, and everything not in a
+ * corner tile, is the plain blit, bit for bit.
+ *
+ * SURFACE CLIP, NOT DISPLAY CLIP: the group's rect is installed with
+ * fb_clip_push, because fb_sdk() rebinds the display from the surface clip
+ * whenever the fb context is dirty. Between begin and end this file changes no
+ * clip at all (the blit and anim_blit_fade only read it), so the display's clip
+ * is still the one begin installed when end runs.
+ *
+ * SCRATCH: snap == NULL is display_scratch(OL_DS_GROUP) of the display of the
+ * CURRENT fb context, g_fbctx[gfx_ctx()].disp, so each par_render band worker
+ * has its own and none is shared. The group is begun and ended in one call.
+ *
+ * Radius is 0 (no group, the old square blit) for a zoomed window, which is
+ * the desktop's edge, and under -DWM_SQUARE_CONTENT, the guest negative control. */
+static inline int win_corner_r(const struct win *w)
+{
+#ifdef WM_SQUARE_CONTENT
+    (void)w; return 0;
+#else
+    return w->zoomed ? 0 : S(10);
+#endif
+}
+/* A panel has no title bar, so its canvas owns the top corners as well. */
+static inline unsigned win_cover_flags(const struct win *w)
+{
+    return w->panel ? WM_COVER_TOP_ROUND : 0;
+}
+
+/* Open the corner group over the content rect (x, y, cw, ch). 1 if open: the
+ * caller must call content_group_end after the draw and nothing else changes
+ * the surface clip in between. */
+static int content_group_begin(struct ol_display_group *g, int x, int y, int cw, int ch,
+                               int r, unsigned flags)
+{
+    int top = (flags & WM_COVER_TOP_ROUND) ? r : 0;
+    int rad[4] = { top, top, r, r };      /* TL, TR, BR, BL */
+    if (cw <= 0 || ch <= 0) return 0;
+    if (fb_clip_push(x, y, x + cw, y + ch) != OL_OK) return 0;
+    if (ol_display_group_begin(fb_display_cur(), g, x, y, cw, ch, rad, 255, NULL, 0) != OL_OK) {
+        fb_clip_pop();
+        return 0;
+    }
+    return 1;
+}
+static void content_group_end(struct ol_display_group *g)
+{
+    ol_display_group_end(fb_display_cur(), g);
+    fb_clip_pop();
+}
+
+/* blit_content for a window at its own frame (x, y, ww, wh), clipped to the
+ * damage rect R: a rect that is inside the canvas and clear of every corner
+ * square (wm_cover_ok) needs no group and takes the plain blit. */
+static void blit_content_rounded(const struct drect *R, struct win *w, int x, int y, int ww, int wh)
+{
+    int tbh = win_tbh(w), r = win_corner_r(w);
+    unsigned fl = win_cover_flags(w);
+    struct ol_display_group g;
+    int open = 0;
+    if (r > 0 && w->surf.px && !wm_cover_ok(R, x, y, ww, wh, tbh, r, fl))
+        open = content_group_begin(&g, x, y + tbh, ww, wh - tbh, r, fl);
+    blit_content(w, x, y + tbh, ww, wh - tbh);
+    if (open) content_group_end(&g);
+}
+
 static int greeter_win(void)
 {
     if (g_greeter_ai < 0) return -1;
@@ -3826,7 +3902,13 @@ static int draw_wallpaper(void)
     int ok = (n > 0 && kernel_img_decode(file, n, &im) == 0);
     kfree(file);
     if (!ok) return 0;
-    fb_blit_rgba(0, 0, W, H, im.rgba, im.w, im.h);          /* scale to fill */
+    /* Scale to fill, baked ONCE into the cached `bg` (draw_background runs at
+     * init and on a mode or size change). A 5K photo shrunk onto a 1280x800
+     * screen with the old point sampler aliased; the exact area average (BOX)
+     * is paid here, not per frame. Destination is 24.8: W<<8 x H<<8. */
+    if (ol_display_blit_rgba_ex(fb_display_cur(), im.rgba, im.w, im.h, im.w * 4,
+                                0, 0, im.w, im.h, 0, 0, W << 8, H << 8, 255, OL_FILTER_BOX) != OL_OK)
+        fb_blit_rgba(0, 0, W, H, im.rgba, im.w, im.h);      /* scratch alloc failed: point-sampled */
     img_free(&im);
     return 1;
 }
@@ -5746,8 +5828,7 @@ static int opaque_content_start(const struct drect *R)
             !win_drawn_direct(w, x, y, ww, wh, alpha) ||
             w->surf.w != ww || w->surf.h != wh - win_tbh(w))
             continue;
-        if (R->x0 >= x && R->x1 <= x + ww &&
-            R->y0 >= y + win_tbh(w) && R->y1 <= y + wh)
+        if (wm_cover_ok(R, x, y, ww, wh, win_tbh(w), win_corner_r(w), win_cover_flags(w)))
             return i;
     }
     return -1;
@@ -5817,7 +5898,7 @@ static void render_layers(const struct drect *R)
             /* The proof above says this canvas overwrites every pixel in R.
              * Its shadow and glass are under that opaque copy; the separator
              * is on top of the first content row, so it still goes last. */
-            blit_content(w, dx, dy + win_tbh(w), dw, dh - win_tbh(w));
+            blit_content_rounded(R, w, dx, dy, dw, dh);
             if (!w->panel) draw_titlebar_sep(dx, dy + TBH, dw);
             continue;
         }
@@ -5831,7 +5912,7 @@ static void render_layers(const struct drect *R)
             /* The canvas is allowed to be a size behind the frame mid-drag, so
              * the content is stretched rather than left as a hole -- see
              * blit_content and RESIZE_APPLY_MS. */
-            blit_content(w, w->x, w->y + win_tbh(w), w->w, w->h - win_tbh(w));
+            blit_content_rounded(R, w, w->x, w->y, w->w, w->h);
             if (!w->panel) draw_titlebar_sep(w->x, w->y + TBH, w->w);  /* after the blit -- see draw_titlebar_sep */
             continue;
         }
@@ -5874,7 +5955,16 @@ static void render_layers(const struct drect *R)
         }
         if (w->surf.px && dh - tbh_s > 0) {
             if (alpha >= 255) wm_scaled_blit(dx, dy + tbh_s, dw, dh - tbh_s, &w->surf);
-            else              anim_blit_fade(R, dx, dy + tbh_s, dw, dh - tbh_s, &w->surf, alpha);
+            else {
+                /* The faded canvas gets the same corner group; the radius is
+                 * the thumbnail's own (rad), as the shadow's is. */
+                struct ol_display_group g;
+                int gr = win_corner_r(w) ? rad : 0, open = 0;
+                if (gr > 0 && !wm_cover_ok(R, dx, dy + tbh_s, dw, dh - tbh_s, 0, gr, win_cover_flags(w)))
+                    open = content_group_begin(&g, dx, dy + tbh_s, dw, dh - tbh_s, gr, win_cover_flags(w));
+                anim_blit_fade(R, dx, dy + tbh_s, dw, dh - tbh_s, &w->surf, alpha);
+                if (open) content_group_end(&g);
+            }
             if (w->drawing) __atomic_fetch_add(&perf_torn, 1, __ATOMIC_RELAXED);   /* counted at every path that shows a canvas */
         }
         /* The hairline, only while opaque: one row at a third of an alpha on a
