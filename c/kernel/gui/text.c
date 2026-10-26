@@ -5,6 +5,8 @@
 #include "script.h"
 #include "bidi.h"
 #include "fb.h"
+#include "openlogit_display.h"
+#include "openlogit_display_blit.h"
 #include "vfs.h"
 #include "kheap.h"
 #include "kprintf.h"
@@ -164,13 +166,18 @@ static uint8_t  tl_bidi[32 * 1024];
  * the set index straight to the glyph cache rasterizes the right glyph id out
  * of the wrong font, which renders as nothing at all when that font is a
  * 97-glyph subset. */
-struct emit_ctx { int base, px; uint32_t color; const int *map; };
+struct emit_ctx { int base, px; uint32_t color; const int *map; struct ol_display *d; int alpha; };
 
 static void emit_blit(void *ud, int fidx, int gid, int x, int y_off)
 {
     struct emit_ctx *e = (struct emit_ctx *)ud;
     struct gentry *g = glyph_get(e->map[fidx], gid, e->px);
-    if (g->cov)
+    if (!g->cov) return;
+    /* alpha < 255 goes through the caller's display; 255 is the legacy path. */
+    if (e->d && e->alpha < 255)
+        ol_display_blit_glyph_a(e->d, x + g->ox, e->base - y_off - g->oy, g->cov,
+                                g->w, g->h, g->w, e->color, e->alpha);
+    else
         fb_blit_glyph(x + g->ox, e->base - y_off - g->oy, g->cov, g->w, g->h, e->color);
 }
 
@@ -318,7 +325,8 @@ static spinlock_t text_lock = SPINLOCK_INIT;
 
 /* The one layout entry point. `draw` = 0 measures, 1 draws. Returns end x. */
 static int layout_locked(int x, int y, const char *s, int len, int face, int px,
-                         int cell, uint32_t color, int draw)
+                         int cell, uint32_t color, int draw,
+                         struct ol_display *d, int alpha)
 {
     if (!font_ok[F_UI] && !font_ok[F_MONO] && !font_ok[F_TEXT]) return x;
     if (len <= 0) return x;
@@ -334,13 +342,14 @@ static int layout_locked(int x, int y, const char *s, int len, int face, int px,
 
     if (!draw) return shape_line(&fs, s, len, px, cell, x, 0, &sc);
 
-    struct emit_ctx ec = { y + ascent_px(map[0], px), px, color, map };
+    struct emit_ctx ec = { y + ascent_px(map[0], px), px, color, map, d, alpha };
     struct shape_emit em = { emit_blit, &ec };
     return shape_line(&fs, s, len, px, cell, x, &em, &sc);
 }
 
-static int layout(int x, int y, const char *s, int len, int face, int px,
-                  int cell, uint32_t color, int draw)
+static int layout_a(int x, int y, const char *s, int len, int face, int px,
+                    int cell, uint32_t color, int draw,
+                    struct ol_display *d, int alpha)
 {
     /* IRQSAVE, NOT THE BARE FORM, and the reason changed under this file.
      *
@@ -360,10 +369,14 @@ static int layout(int x, int y, const char *s, int len, int face, int px,
      * that already has IF off." Text used to be in the second category by
      * virtue of the BKL. It is in the first now. */
     unsigned long tf = spin_lock_irqsave(&text_lock);
-    int r = layout_locked(x, y, s, len, face, px, cell, color, draw);
+    int r = layout_locked(x, y, s, len, face, px, cell, color, draw, d, alpha);
     spin_unlock_irqrestore(&text_lock, tf);
     return r;
 }
+
+static int layout(int x, int y, const char *s, int len, int face, int px,
+                  int cell, uint32_t color, int draw)
+{ return layout_a(x, y, s, len, face, px, cell, color, draw, 0, 255); }
 
 static int slen(const char *s) { int n = 0; while (s && s[n]) n++; return n; }
 
@@ -405,6 +418,22 @@ int text_measure(const char *s, int len, int px, int face)
  * `px`, returning the end x. For the layout engine's display list. */
 int text_draw_run(int x, int y, const char *s, int len, int px, int face, uint32_t color)
 { return layout(x, y, s, len, face, px, 0, color, 1); }
+
+/* text_draw_run with a global alpha 0..255 on display `d` (the caller's bound
+ * target). alpha >= 255 (or d == NULL) is exactly text_draw_run: same code
+ * path through the fb_blit_glyph emit, `d` unused, so text.c gains no fb_*
+ * call and the host links need no new stub. alpha <= 0 draws nothing but still
+ * returns the end x. Same text_lock as every other draw; no new state. */
+int text_draw_run_a(struct ol_display *d, int x, int y, const char *s, int len,
+                    int px, unsigned face, uint32_t rgb, int alpha)
+{
+#ifdef TEXT_ALPHA_IGNORED
+    alpha = 255;
+#endif
+    if (alpha > 255) alpha = 255;
+    if (alpha <= 0) return layout(x, y, s, len, (int)face, px, 0, 0, 0);
+    return layout_a(x, y, s, len, (int)face, px, 0, rgb, 1, d, alpha);
+}
 
 int text_measure_run_metrics(const char *s, int len, int px, int face,
                              struct logit_text_metrics *out)

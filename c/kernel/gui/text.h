@@ -9,6 +9,8 @@
  * gfx_path and Open Logit rasterizes it, like everything else that draws. */
 #include "glyphras.h"
 
+struct ol_display;
+
 #define TEXT_UI_PX 16                 /* default UI pixel size */
 
 /* --- text engine (kernel/text.c) --- */
@@ -30,6 +32,10 @@ int  text_width_sz(const char *utf8, int px);
  * fail, it overflows its own box: text off the right edge of every heading. */
 int  text_measure(const char *s, int len, int px, int face);  /* length-delimited run */
 int  text_draw_run(int x, int y, const char *s, int len, int px, int face, uint32_t color);
+/* text_draw_run with a global alpha 0..255 drawn on display d. alpha 255 is
+ * text_draw_run exactly (d unused); alpha < 255 uses ol_display_blit_glyph_a. */
+int  text_draw_run_a(struct ol_display *d, int x, int y, const char *s, int len,
+                     int px, unsigned face, uint32_t rgb, int alpha);
 int  text_line_height(int px);
 /* Device-pixel result; the WM fills the display scale before usercopy. */
 struct logit_text_metrics;
