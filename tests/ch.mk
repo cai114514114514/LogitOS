@@ -63,12 +63,12 @@ $(CH_OBJ): $(BUILD)/apps/%.o: c/apps/gui/ch/%.c
 	$(COMPILE) $(UCFLAGS) -c $< -o $@
 
 $(BUILD)/ch.elf: $(CH_OBJ) $(APPDIR)/crt0.asm \
-                 $(BUILD)/apps/aui.o $(GFX_OBJ) $(CH_H1OBJ) $(LIBC_OBJS)
+                 $(AUI_OBJ) $(GFX_OBJ) $(CH_H1OBJ) $(LIBC_OBJS)
 	@mkdir -p $(BUILD)/apps
 	$(ASM) -f elf64 $(APPDIR)/crt0.asm -o $(BUILD)/apps/ch.crt0.o
 	$(LD) -nostdlib -e _start -Ttext=0x44000000 -o $@ --start-group \
 	    $(BUILD)/apps/ch.crt0.o $(CH_OBJ) \
-	    $(BUILD)/apps/aui.o $(GFX_OBJ) $(CH_H1OBJ) $(LIBC_OBJS) --end-group
+	    $(AUI_OBJ) $(GFX_OBJ) $(CH_H1OBJ) $(LIBC_OBJS) --end-group
 
 $(CH_AEX): $(BUILD)/ch.elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/ch.elf $@ Chat - '@' 120 180 220

@@ -102,10 +102,10 @@ endif
 $(BUILD)/spotlight/spotlight.o: $(SPOTLIGHT_DIR)/spotlight.c $(SPOTLIGHT_DIR)/sl_rank.h c/apps/gui/aui.h
 	@mkdir -p $(dir $@)
 	$(COMPILE) $(UCFLAGS) $(SPOTLIGHT_CFLAGS) -c $< -o $@
-$(BUILD)/spotlight.elf: $(BUILD)/spotlight/spotlight.o $(BUILD)/apps/crt0.o $(BUILD)/apps/aui.o \
+$(BUILD)/spotlight.elf: $(BUILD)/spotlight/spotlight.o $(BUILD)/apps/crt0.o $(AUI_OBJ) \
   $(GFX_OBJ) $(LIBC_OBJS)
 	$(LD) -nostdlib -e _start -Ttext=0x4E000000 -o $@ --start-group \
-	    $(BUILD)/apps/crt0.o $(BUILD)/spotlight/spotlight.o $(BUILD)/apps/aui.o $(GFX_OBJ) \
+	    $(BUILD)/apps/crt0.o $(BUILD)/spotlight/spotlight.o $(AUI_OBJ) $(GFX_OBJ) \
 	    $(LIBC_OBJS) --end-group
 $(BUILD)/spotlight.aex: $(BUILD)/spotlight.elf tools/mkaex.py
 	python3 tools/mkaex.py $< $@ Spotlight - S 90 90 110

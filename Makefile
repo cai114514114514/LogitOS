@@ -567,7 +567,7 @@ RING3_NET := c/net/http/cookies.c c/net/http/http1.c c/net/http/hpool.c \
 # directory out of the kernel, including files added by later SDK revisions.
 # The independent CSS support libraries allocate with the userland runtime;
 # their location under c/lib does not make them kernel translation units.
-C_SRC   := $(filter-out $(addsuffix /%,$(CSS_SUPPORT_DIRS)) c/lib/gfx3d/% c/lib/image/inflate.c c/lib/image/png.c c/lib/image/svg.c $(wildcard c/lib/video/*.c) $(wildcard c/lib/audio/*.c) $(wildcard c/lib/media/*.c) $(wildcard c/lib/nn/*.c) $(wildcard c/lib/agent/*.c) $(RING3_NET),$(shell find c/kernel c/drivers c/lib c/fs c/net c/crypto -name '*.c'))
+C_SRC   := $(filter-out $(addsuffix /%,$(CSS_SUPPORT_DIRS)) c/lib/gfx3d/% c/lib/image/inflate.c c/lib/image/png.c c/lib/image/svg.c c/lib/text/linebreak.c c/lib/text/para.c $(wildcard c/lib/video/*.c) $(wildcard c/lib/audio/*.c) $(wildcard c/lib/media/*.c) $(wildcard c/lib/nn/*.c) $(wildcard c/lib/agent/*.c) $(RING3_NET),$(shell find c/kernel c/drivers c/lib c/fs c/net c/crypto -name '*.c'))
 ASM_SRC := $(wildcard c/boot/*.asm)
 # uACPI is kept outside c/: its generic io.h/types.h names must not enter the
 # kernel's recursive include search. Only the interpreter and its adapter see
@@ -715,7 +715,40 @@ $(BUILD)/apps/gfx_%.o: c/lib/gfx/%.c
 	$(COMPILE) $(UCFLAGS) -c $< -o $@
 
 # the aui widget toolkit (immediate-mode), compiled once + linked into every GUI app
-$(BUILD)/apps/aui.o: $(GUIDIR)/aui.c $(GUIDIR)/aui.h $(APPDIR)/logit.h c/lib/gfx/include/gfx.h
+# --- aui link wiring ----------------------------------------------------------
+# Every link of aui.o (or a variant aui*.o) goes through $(AUI_OBJ) / carries
+# $(AUI_LIBS); tools/aui_link_check.py (make test-aui-link) enforces it. The
+# UAX#14 text library (linebreak.c, para.c) is ring-3 only: it is filtered out of
+# the kernel C_SRC and reaches apps as libtl.a. Both are empty until those files
+# exist, so today nothing changes.
+AUI_INC_SRC := $(sort $(wildcard $(GUIDIR)/aui_*.inc $(GUIDIR)/aui_paint.h $(GUIDIR)/aui_text.h $(GUIDIR)/aui_motion.h))
+AUI_TL_SRC  := $(sort $(wildcard c/lib/text/linebreak.c c/lib/text/para.c))
+AUI_LIBS    := $(if $(AUI_TL_SRC),$(BUILD)/apps/libtl.a)
+AUI_OBJ     := $(BUILD)/apps/aui.o $(AUI_LIBS)
+# Host tools that are not on PATH on the Mac (same discovery as SYSROOT_AR).
+LLVM_OBJCOPY := $(firstword $(shell which llvm-objcopy 2>/dev/null) $(wildcard /opt/homebrew/opt/llvm/bin/llvm-objcopy /usr/local/opt/llvm/bin/llvm-objcopy))
+LLVM_SIZE    := $(firstword $(shell which llvm-size 2>/dev/null) $(wildcard /opt/homebrew/opt/llvm/bin/llvm-size /usr/local/opt/llvm/bin/llvm-size))
+AUI_TL_OBJ  := $(patsubst c/lib/text/%.c,$(BUILD)/apps/tl_%.o,$(AUI_TL_SRC))
+$(BUILD)/apps/tl_%.o: c/lib/text/%.c
+	@mkdir -p $(dir $@)
+	$(COMPILE) $(UCFLAGS) -Ic/lib/text -c $< -o $@
+$(BUILD)/apps/libtl.a: $(AUI_TL_OBJ)
+	@mkdir -p $(dir $@)
+	rm -f $@
+	$(SYSROOT_AR) rcsD --format=gnu $@ $^
+
+.PHONY: test-aui-link test-aui-link-negctl
+test-aui-link: test-aui-link-negctl
+	python3 tools/aui_link_check.py
+# NEGATIVE CONTROL: two synthetic bypassing sites must be reported, exactly two.
+test-aui-link-negctl:
+	@out=$$(python3 tools/aui_link_check.py --inject $$'$$(BUILD)/x.elf: $$(BUILD)/apps/aui.o\n$$(BUILD)/y.elf: $$(BUILD)/y/aui_cost.o' 2>&1); rc=$$?; \
+	n=$$(printf '%s\n' "$$out" | grep -c '^FAIL bypass'); \
+	if [ $$rc -eq 0 ] || [ "$$n" != 2 ]; then echo "$$out"; echo "test-aui-link-negctl: expected exit!=0 and exactly 2 FAIL bypass lines (rc=$$rc n=$$n)"; exit 1; fi; \
+	echo "test-aui-link-negctl: ok ($$n FAIL bypass lines, as intended)"
+ci-host: test-aui-link
+
+$(BUILD)/apps/aui.o: $(GUIDIR)/aui.c $(GUIDIR)/aui.h $(APPDIR)/logit.h c/lib/gfx/include/gfx.h $(AUI_INC_SRC)
 	@mkdir -p $(BUILD)/apps
 	$(COMPILE) $(UCFLAGS) -c $(GUIDIR)/aui.c -o $@
 
@@ -741,10 +774,10 @@ APP_OBJECTS += $(BUILD)/apps/$(1).o
 $(BUILD)/apps/$(1).o: $(GUIDIR)/$(1)/$(1).c $(APPDIR)/logit.h $(GUIDIR)/aui.h
 	@mkdir -p $(BUILD)/apps
 	$$(COMPILE) $$(UCFLAGS) -c $(GUIDIR)/$(1)/$(1).c -o $(BUILD)/apps/$(1).o
-$(BUILD)/$(1).elf: $(BUILD)/apps/$(1).o $(APPDIR)/crt0.asm $(BUILD)/apps/aui.o $(GFX_OBJ)
+$(BUILD)/$(1).elf: $(BUILD)/apps/$(1).o $(APPDIR)/crt0.asm $(AUI_OBJ) $(GFX_OBJ)
 	@mkdir -p $(BUILD)/apps
 	$(ASM) -f elf64 $(APPDIR)/crt0.asm -o $(BUILD)/apps/$(1).crt0.o
-	$$(LD) -nostdlib -e _start -Ttext=$(strip $(2)) -o $$@ $(BUILD)/apps/$(1).crt0.o $(BUILD)/apps/$(1).o $(BUILD)/apps/aui.o $(GFX_OBJ)
+	$$(LD) -nostdlib -e _start -Ttext=$(strip $(2)) -o $$@ $(BUILD)/apps/$(1).crt0.o $(BUILD)/apps/$(1).o $(AUI_OBJ) $(GFX_OBJ)
 $(BUILD)/$(1).aex: $(BUILD)/$(1).elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/$(1).elf $$@ '$(3)' $(4) '$(5)' $(6) $(7) $(8)
 endef
@@ -838,8 +871,8 @@ $(BUILD)/studio.elf: $(BUILD)/apps/as/common/version.o
 $(BUILD)/apps/studio.o: $(GUIDIR)/studio/studio.c
 	@mkdir -p $(BUILD)/apps
 	$(COMPILE) $(UCFLAGS) -c $< -o $@ -Ic/apps/as
-$(BUILD)/studio.elf: $(BUILD)/apps/studio.o $(BUILD)/apps/crt0.o $(BUILD)/apps/aui.o $(GFX_OBJ) $(BUILD)/apps/studio-engine.a $(BUILD)/apps/as/editor/completion.o
-	$(LD) -nostdlib -e _start -Ttext=0x49000000 -o $@ $(BUILD)/apps/crt0.o $(BUILD)/apps/studio.o $(BUILD)/apps/aui.o $(GFX_OBJ) $(BUILD)/apps/studio-engine.a $(BUILD)/apps/as/editor/completion.o $(BUILD)/apps/as/common/version.o
+$(BUILD)/studio.elf: $(BUILD)/apps/studio.o $(BUILD)/apps/crt0.o $(AUI_OBJ) $(GFX_OBJ) $(BUILD)/apps/studio-engine.a $(BUILD)/apps/as/editor/completion.o
+	$(LD) -nostdlib -e _start -Ttext=0x49000000 -o $@ $(BUILD)/apps/crt0.o $(BUILD)/apps/studio.o $(AUI_OBJ) $(GFX_OBJ) $(BUILD)/apps/studio-engine.a $(BUILD)/apps/as/editor/completion.o $(BUILD)/apps/as/common/version.o
 $(BUILD)/studio.aex: $(BUILD)/studio.elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/studio.elf $@ 'Code Studio' as '{' 200 160 250
 
@@ -1107,11 +1140,11 @@ $(BUILD)/greeterobj/%.o: %.c c/apps/coreutils/accounts.h c/apps/gui/aui.h $(LOGI
 	@mkdir -p $(dir $@)
 	$(COMPILE) $(LOGIN_CFLAGS) -c $< -o $@
 
-$(BUILD)/greeter.elf: $(GREETER_OBJ) $(APPDIR)/crt0.asm $(BUILD)/apps/aui.o $(GFX_OBJ)
+$(BUILD)/greeter.elf: $(GREETER_OBJ) $(APPDIR)/crt0.asm $(AUI_OBJ) $(GFX_OBJ)
 	@mkdir -p $(BUILD)/apps
 	$(ASM) -f elf64 $(APPDIR)/crt0.asm -o $(BUILD)/apps/greeter.crt0.o
 	$(LD) -nostdlib -e _start -Ttext=0x4C000000 -o $@ $(BUILD)/apps/greeter.crt0.o \
-	    $(GREETER_OBJ) $(BUILD)/apps/aui.o $(GFX_OBJ)
+	    $(GREETER_OBJ) $(AUI_OBJ) $(GFX_OBJ)
 $(BUILD)/greeter.aex: $(BUILD)/greeter.elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/greeter.elf $@ 'Sign in' - 'L' 90 140 240
 
@@ -1808,10 +1841,10 @@ $(BUILD)/apps/terminal.o: $(GUIDIR)/terminal/terminal.c
 	@mkdir -p $(BUILD)/apps
 	$(COMPILE) $(UCFLAGS) -c $< -o $@
 $(BUILD)/terminal.elf: $(BUILD)/apps/terminal.o $(BUILD)/apps/crt0.o \
-  $(BUILD)/apps/aui.o $(GFX_OBJ) $(VID_OBJ) $(AUD_OBJ) $(IMGCHK_OBJ) \
+  $(AUI_OBJ) $(GFX_OBJ) $(VID_OBJ) $(AUD_OBJ) $(IMGCHK_OBJ) \
   $(RUST_LIB) $(LIBM_OBJ) $(LIBC_OBJS)
 	$(LD) -nostdlib -e _start -Ttext=0x43000000 -o $@ --start-group \
-	    $(BUILD)/apps/crt0.o $(BUILD)/apps/terminal.o $(BUILD)/apps/aui.o $(GFX_OBJ) \
+	    $(BUILD)/apps/crt0.o $(BUILD)/apps/terminal.o $(AUI_OBJ) $(GFX_OBJ) \
 	    $(VID_OBJ) $(AUD_OBJ) $(IMGCHK_OBJ) $(RUST_LIB) $(LIBM_OBJ) $(LIBC_OBJS) --end-group
 $(BUILD)/terminal.aex: $(BUILD)/terminal.elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/terminal.elf $@ Terminal - '>' 70 80 100
@@ -5303,7 +5336,7 @@ clean-scratch:
 test-aui-mask:
 	@mkdir -p $(BUILD)
 	$(CC) -O1 -g -Wall -Wextra -Ic/apps/gui -Ic/apps $(GFX_INC) -Iinclude -Iinclude/abi \
-	    -o $(BUILD)/aui_mask_test tests/unit/aui_mask_test.c $(GFX_SRC) -lm
+	    -o $(BUILD)/aui_mask_test tests/unit/aui_mask_test.c $(GFX_SRC) $(AUI_TL_SRC) -lm
 	$(BUILD)/aui_mask_test
 
 # --- the glass rim's refraction table ----------------------------------------
@@ -5362,17 +5395,17 @@ test-aui: $(ISO) $(BUILD)/gallery.aex
 	$(MAKE) DISK=$(BUILD)/disk_gallery.img GALLERY_AEX=$(BUILD)/gallery.aex $(BUILD)/disk_gallery.img
 	bash tests/boot/run-aui-test.sh $(ISO) $(BUILD)/disk_gallery.img
 
-$(BUILD)/apps/aui_noaa.o: $(GUIDIR)/aui.c $(GUIDIR)/aui.h $(APPDIR)/logit.h c/lib/gfx/include/gfx.h
+$(BUILD)/apps/aui_noaa.o: $(GUIDIR)/aui.c $(GUIDIR)/aui.h $(APPDIR)/logit.h c/lib/gfx/include/gfx.h $(AUI_INC_SRC)
 	@mkdir -p $(BUILD)/apps
 	$(CC) $(UCFLAGS) -DAUI_NO_AA -c $(GUIDIR)/aui.c -o $@
 
 $(BUILD)/gallery_noaa.elf: $(GUIDIR)/gallery/gallery.c $(APPDIR)/crt0.asm $(APPDIR)/logit.h \
-                           $(GUIDIR)/aui.h $(BUILD)/apps/aui_noaa.o $(GFX_OBJ)
+                           $(GUIDIR)/aui.h $(BUILD)/apps/aui_noaa.o $(AUI_LIBS) $(GFX_OBJ)
 	@mkdir -p $(BUILD)/apps
 	$(ASM) -f elf64 $(APPDIR)/crt0.asm -o $(BUILD)/apps/gallery_noaa.crt0.o
 	$(CC) $(UCFLAGS) -c $(GUIDIR)/gallery/gallery.c -o $(BUILD)/apps/gallery_noaa.o
 	$(LD) -nostdlib -e _start -Ttext=0x4A000000 -o $@ $(BUILD)/apps/gallery_noaa.crt0.o \
-	    $(BUILD)/apps/gallery_noaa.o $(BUILD)/apps/aui_noaa.o $(GFX_OBJ)
+	    $(BUILD)/apps/gallery_noaa.o $(BUILD)/apps/aui_noaa.o $(AUI_LIBS) $(GFX_OBJ)
 $(BUILD)/gallery_noaa.aex: $(BUILD)/gallery_noaa.elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/gallery_noaa.elf $@ 'Gallery' - 'G' 120 140 250
 
@@ -5398,12 +5431,12 @@ test-monitor: $(ISO) $(DISK)
 # refused, so the refusal assertion and all three "it is gone" assertions fail.
 # The target succeeds when the test fails.
 $(BUILD)/monitor_negctl.elf: $(GUIDIR)/monitor/monitor.c $(APPDIR)/crt0.asm $(APPDIR)/logit.h \
-                             $(GUIDIR)/aui.h $(BUILD)/apps/aui.o $(GFX_OBJ)
+                             $(GUIDIR)/aui.h $(AUI_OBJ) $(GFX_OBJ)
 	@mkdir -p $(BUILD)/apps
 	$(ASM) -f elf64 $(APPDIR)/crt0.asm -o $(BUILD)/apps/monitor_negctl.crt0.o
 	$(CC) $(UCFLAGS) -DMONITOR_NEGCTL -c $(GUIDIR)/monitor/monitor.c -o $(BUILD)/apps/monitor_negctl.o
 	$(LD) -nostdlib -e _start -Ttext=0x42000000 -o $@ $(BUILD)/apps/monitor_negctl.crt0.o \
-	    $(BUILD)/apps/monitor_negctl.o $(BUILD)/apps/aui.o $(GFX_OBJ)
+	    $(BUILD)/apps/monitor_negctl.o $(AUI_OBJ) $(GFX_OBJ)
 $(BUILD)/monitor_negctl.aex: $(BUILD)/monitor_negctl.elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/monitor_negctl.elf $@ 'Monitor' - 'M' 255 100 100
 
@@ -5820,6 +5853,67 @@ $(BUILD)/lm.aex: $(BUILD)/lm.elf tools/mkaex.py
 -include tests/worker_blob.mk
 -include tests/framefetch.mk
 -include tests/cache.mk
+# Graphics-library backlog (v3): one literal include per planned fragment, so no
+# item has to edit this Makefile to wire its tests/<id>.mk. A missing file is a
+# no-op; test-mk-wired only reports fragments that exist but are unreachable.
+-include tests/aui-host-harness.mk
+-include tests/perf-budget-harness.mk
+-include tests/gfx-header-split.mk
+-include tests/ol-core-split.mk
+-include tests/display-internals.mk
+-include tests/gui-abi-v2.mk
+-include tests/aui-split.mk
+-include tests/gfx-path-closed-bit.mk
+-include tests/gfx-arc-shapes.mk
+-include tests/ol-canvas-clip-stack.mk
+-include tests/display-snapshot-group.mk
+-include tests/display-blit-ex.mk
+-include tests/display-path-paint.mk
+-include tests/glass-material-tiers.mk
+-include tests/display-shadow-ex.mk
+-include tests/display-rrect-fast.mk
+-include tests/fb-clip-stack.mk
+-include tests/text-linebreak-lift.mk
+-include tests/text-kernel-carets.mk
+-include tests/anim-easing-catalog.mk
+-include tests/anim-motion-fixed.mk
+-include tests/font-ui-kerning.mk
+-include tests/wm-draw2-path.mk
+-include tests/wm-draw2-state.mk
+-include tests/text-kernel-alpha.mk
+-include tests/wm-rounded-content.mk
+-include tests/icons-symbols-a.mk
+-include tests/app-icons-filtered.mk
+-include tests/gfx-blend-ops.mk
+-include tests/glass-symmetric-rim.mk
+-include tests/text-paragraph.mk
+-include tests/canvas-ext.mk
+-include tests/gfx-mask-large-radius.mk
+-include tests/ol-backdrop-rounded.mk
+-include tests/ol-ui-fixes.mk
+-include tests/aui-shapes-native.mk
+-include tests/aui-text-adopt.mk
+-include tests/aui-motion-adopt.mk
+-include tests/wm-backdrop-regions.mk
+-include tests/wm-draw2-effects.mk
+-include tests/gfx-gradient-conic.mk
+-include tests/icons-symbols-b.mk
+-include tests/canvas-path-ctm.mk
+-include tests/font-weights.mk
+-include tests/glass-adaptive-tint.mk
+-include tests/ol-status-unify.mk
+-include tests/aui-clip-group-adopt.mk
+-include tests/aui-shadow-adopt.mk
+-include tests/wm-shadow-adopt.mk
+-include tests/ol-image-pattern.mk
+-include tests/text-glyph-cap.mk
+-include tests/scene2d-ext.mk
+-include tests/aui-glass-controls.mk
+-include tests/gfx-gradient-focal-matrix.mk
+-include tests/text-subpixel-gamma.mk
+-include tests/gui-legacy-signed.mk
+-include tests/gfx3d-raster-state.mk
+-include tests/gfx3d-tex-mipmaps.mk
 
 .PHONY: test-mk-wired
 test-mk-wired:

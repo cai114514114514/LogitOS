@@ -8,9 +8,9 @@ CLOCK_UI_HEADERS := $(wildcard c/apps/gui/clock/*.h) c/apps/gui/aui.h c/apps/gui
 $(BUILD)/apps/gui/clock/%.o: c/apps/gui/clock/%.c
 	@mkdir -p $(dir $@)
 	$(COMPILE) $(UCFLAGS) -c $< -o $@
-$(BUILD)/clock.elf: $(CLOCK_UI_OBJ) $(BUILD)/apps/aui.o $(GFX_OBJ) c/apps/crt0.asm tests/clock_ui.mk
+$(BUILD)/clock.elf: $(CLOCK_UI_OBJ) $(AUI_OBJ) $(GFX_OBJ) c/apps/crt0.asm tests/clock_ui.mk
 	$(ASM) -f elf64 c/apps/crt0.asm -o $(BUILD)/apps/clock.crt0.o
-	$(LD) -nostdlib -e _start -Ttext=0x40000000 -o $@ $(BUILD)/apps/clock.crt0.o $(CLOCK_UI_OBJ) $(BUILD)/apps/aui.o $(GFX_OBJ)
+	$(LD) -nostdlib -e _start -Ttext=0x40000000 -o $@ $(BUILD)/apps/clock.crt0.o $(CLOCK_UI_OBJ) $(AUI_OBJ) $(GFX_OBJ)
 $(BUILD)/clock.aex: $(BUILD)/clock.elf tools/mkaex.py
 	python3 tools/mkaex.py $< $@ Clock - C 100 160 255
 CLOCK_UI_TEST_SRC := tests/unit/clock_ui_test.c c/apps/gui/clock/model.c c/apps/gui/clock/layout.c c/apps/gui/clock/motion.c $(GFX_SRC)
