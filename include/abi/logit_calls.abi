@@ -72,6 +72,27 @@ call get_time       SYS_GET_TIME       record(t,Time)
 # comment and then use it anyway. Granularity is 10 ms (100 Hz tick), not 1 ms.
 call monotonic_ms   SYS_MONOTONIC_MS
 
+# ---- GUI ABI v2 (see "GUI ABI v2" in logit_abi.h) ----
+# Every v2 call takes size-prefixed structs and answers an ol_status (0, or a
+# negative OL_* code), never a packed long: coordinates are 24.8 points, which
+# a 16-bit pack field cannot carry. A feature bit from gui2_info(0) says which
+# calls are implemented; an unimplemented one returns OL_UNSUPPORTED (-3).
+# SYS_GUI_PATH's third argument is the stroke, or 0 to fill -- two wrappers,
+# because a record argument here is never null.
+call gui2_info          SYS_GUI2_INFO          int(what)
+call gui_path_fill      SYS_GUI_PATH           record(p,Path2) record(pt,Paint2) lit(0)
+call gui_path_stroke    SYS_GUI_PATH           record(p,Path2) record(pt,Paint2) record(st,Stroke2)
+call gui_clip_push      SYS_GUI_CLIP_PUSH      record(clip,Clip2)
+call gui_clip_pop       SYS_GUI_CLIP_POP
+call gui_group_begin    SYS_GUI_GROUP_BEGIN    record(grp,Group2)
+call gui_group_end      SYS_GUI_GROUP_END
+call gui_blit2          SYS_GUI_BLIT2          record(bl,Blit2)
+call gui_text_run2      SYS_GUI_TEXT_RUN2      record(run,Run2)
+call gui_shadow2        SYS_GUI_SHADOW2        record(sh,Shadow2)
+call gui_glass2         SYS_GUI_GLASS2         record(gl,Glass2)
+call gui_backdrop       SYS_GUI_BACKDROP       record(bd,Backdrop2)
+call gui_backdrop_clear SYS_GUI_BACKDROP_CLEAR int(region)
+
 # ---- io / basics ----
 call io_write       SYS_WRITE          int(fd) inbuf(b,len) int(len)
 call proc_exit      SYS_EXIT           int(code)

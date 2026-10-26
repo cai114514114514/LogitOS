@@ -37,4 +37,6 @@ static inline void ol_window_flush(void)
 static inline void ol_window_flush_rect(int x, int y, int w, int h)
 { _sys(SYS_GUI_FLUSH_RECT, ((long)(x & 0xFFFF) << 16) | (y & 0xFFFF),
        ((long)(w & 0xFFFF) << 16) | (h & 0xFFFF), 0); }
+/* GUI ABI v2: size-prefixed structs, status returns. */
+#include "openlogit_wire2.h"
 #endif

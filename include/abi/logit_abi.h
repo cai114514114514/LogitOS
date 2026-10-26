@@ -2966,6 +2966,249 @@ struct logit_itimer {
 #define SCHED_NICE_LO (-20)
 #define SCHED_NICE_HI   19
 
+/* ---- GUI ABI v2 (210-221): int32 / 24.8 structs with status returns -------
+ *
+ * WHY A SECOND DRAWING ABI. The legacy calls pack 16-bit integer points into
+ * shifted longs and answer -1/0, so they can express neither a fractional
+ * edge nor a reason for a refusal. Every v2 call takes a struct whose FIRST
+ * FIELD is `unsigned size` (sizeof the struct the caller compiled against; a
+ * wrong size returns OL_ARGUMENT before anything else is read), and returns a
+ * `long` status from enum ol_status (c/lib/gfx/include/openlogit.h):
+ * OL_OK 0, OL_ARGUMENT -1, OL_UNSUPPORTED -3, OL_LIMIT -4, OL_STATE -5.
+ * The legacy numbers are untouched and keep their byte-identical output.
+ *
+ * Rules every struct below follows (so tools/gen_abi.py can lay it out and
+ * assert it: scalars, pointers and fixed arrays only, nothing nested):
+ *   - all coordinates are window-local LOGICAL POINTS in 24.8 fixed point
+ *     (256 = one point); the kernel converts to device pixels at the window's
+ *     scale (c/kernel/gui/wm2_scale.h);
+ *   - matrices are `int m[6]`: a,b,c,d in 16.16, e,f in 24.8 points. No gfx.h
+ *     struct is ever embedded in an ABI struct;
+ *   - undefined flag bits must be 0;
+ *   - LOGIT_RECT_SNAP (clip, group, blit, shadow, glass) converts each edge
+ *     with the legacy integer rule -- the device edge is floored, so the
+ *     result has crisp device edges and, for whole-point input, exactly the
+ *     pixels SYS_GUI_RECT would cover. Without it the edges keep their 24.8
+ *     fractions and are drawn with AA.
+ *
+ * DISCOVERY. SYS_GUI2_INFO(0) returns (LOGIT_GUI2_VERSION << 16) | features.
+ * A feature bit is set ONLY by a handler that is implemented, so an app tests
+ * the bit and never probes a call to see whether it fails. Until a bit is
+ * set the matching call returns OL_UNSUPPORTED for every well-formed input.
+ * SYS_GUI2_INFO(1) returns the caller window's count of clip/group levels the
+ * kernel had to auto-close at a flush (an unbalanced frame); any other
+ * argument returns OL_ARGUMENT.
+ *
+ * 210-221 were free when claimed: no SYS_* in include/, c/, tools/ or
+ * fsroot/as names any of them (LOGIT_SET_KVLINE 210 is a buffer size, not a
+ * syscall), and all sit below KB_NSYS (256, c/kernel/sched/kbench.h). */
+#define SYS_GUI2_INFO          210 /* (what) -> see DISCOVERY above */
+#define SYS_GUI_PATH           211 /* (logit_path2*, logit_paint2*, logit_stroke2* or 0 = fill) -> status */
+#define SYS_GUI_CLIP_PUSH      212 /* (logit_clip2*) -> status; intersects the current clip */
+#define SYS_GUI_CLIP_POP       213 /* () -> status */
+#define SYS_GUI_GROUP_BEGIN    214 /* (logit_group2*) -> status; an opacity layer */
+#define SYS_GUI_GROUP_END      215 /* () -> status; composites the layer */
+#define SYS_GUI_BLIT2          216 /* (logit_blit2*) -> status */
+#define SYS_GUI_TEXT_RUN2      217 /* (logit_run2*) -> status */
+#define SYS_GUI_SHADOW2        218 /* (logit_shadow2*) -> status */
+#define SYS_GUI_GLASS2         219 /* (logit_glass2*) -> status */
+#define SYS_GUI_BACKDROP       220 /* (logit_backdrop2*) -> status; see BACKDROP below */
+#define SYS_GUI_BACKDROP_CLEAR 221 /* (id 0..7, or -1 = all) -> status */
+
+#define LOGIT_GUI2_VERSION 1
+#define LOGIT_GUI2_F_PATH      (1u << 0)  /* SYS_GUI_PATH: solid/linear/radial, <= 8 stops */
+#define LOGIT_GUI2_F_PATH_EXT  (1u << 1)  /* ...plus conic, spread modes, 16 stops, op != 0 */
+#define LOGIT_GUI2_F_CLIP      (1u << 2)  /* SYS_GUI_CLIP_PUSH/POP */
+#define LOGIT_GUI2_F_GROUP     (1u << 3)  /* SYS_GUI_GROUP_BEGIN/END */
+#define LOGIT_GUI2_F_BLIT2     (1u << 4)
+#define LOGIT_GUI2_F_TEXT_RUN2 (1u << 5)
+#define LOGIT_GUI2_F_SHADOW2   (1u << 6)
+#define LOGIT_GUI2_F_GLASS2    (1u << 7)
+#define LOGIT_GUI2_F_BACKDROP  (1u << 8)  /* SYS_GUI_BACKDROP/BACKDROP_CLEAR */
+#define LOGIT_GUI2_F_CARETS    (1u << 9)  /* SYS_TEXT_MEASURE carets query */
+
+/* Shared flag bit: see LOGIT_RECT_SNAP in the rules above. */
+#define LOGIT_RECT_SNAP (1u << 0)
+
+/* SYS_GUI_PATH. verbs[nverb] are LOGIT_VERB_*; xy[nxy] are 24.8 point
+ * coordinates, two per point (M and L take one point, Q two, C three, Z
+ * none). `m` is used iff flags has LOGIT_PATH_MATRIX. */
+#define LOGIT_VERB_M 0
+#define LOGIT_VERB_L 1
+#define LOGIT_VERB_Q 2
+#define LOGIT_VERB_C 3
+#define LOGIT_VERB_Z 4
+#define LOGIT_PATH2_MAX_VERBS 4096
+#define LOGIT_PATH2_MAX_XY    8192
+#define LOGIT_PATH2_NONZERO 0
+#define LOGIT_PATH2_EVENODD 1
+#define LOGIT_PATH_MATRIX (1u << 0)
+struct logit_path2 {
+    unsigned size;
+    const unsigned char *verbs;
+    const int *xy;
+    unsigned nverb, nxy;
+    int rule;
+    int m[6];          /* a,b,c,d 16.16; e,f 24.8 pt; used iff LOGIT_PATH_MATRIX */
+    unsigned flags;
+};
+/* The paint. stop_pos is 0..65536 along the gradient; the first `nstop`
+ * entries of stop_pos/stop_argb are read. x0..r1 are 24.8 points in the
+ * path's own space. Until the engine work lands the kernel rejects
+ * CONIC, op != 0, spread != 0 and nstop > 8 with OL_UNSUPPORTED and leaves
+ * LOGIT_GUI2_F_PATH_EXT clear. */
+#define LOGIT_PAINT2_SOLID  0
+#define LOGIT_PAINT2_LINEAR 1
+#define LOGIT_PAINT2_RADIAL 2
+#define LOGIT_PAINT2_CONIC  3
+#define LOGIT_PAINT2_MAX_STOPS 16
+struct logit_paint2 {
+    unsigned size;
+    unsigned char kind, op, spread, nstop;
+    unsigned argb;
+    int x0, y0, x1, y1, r0, r1;
+    unsigned stop_pos[16];
+    unsigned stop_argb[16];
+    unsigned flags;
+};
+/* Present (SYS_GUI_PATH's third argument) = stroke the path instead of
+ * filling it. width and dash[] are 24.8 points; miter is a 16.16 limit. */
+#define LOGIT_STROKE2_CAP_BUTT    0
+#define LOGIT_STROKE2_CAP_ROUND   1
+#define LOGIT_STROKE2_CAP_SQUARE  2
+#define LOGIT_STROKE2_JOIN_MITER  0
+#define LOGIT_STROKE2_JOIN_ROUND  1
+#define LOGIT_STROKE2_JOIN_BEVEL  2
+struct logit_stroke2 {
+    unsigned size;
+    int width;
+    unsigned char cap, join, ndash, pad;
+    int miter;
+    int dash[8];
+    int dash_phase;
+};
+/* SYS_GUI_CLIP_PUSH: a rounded-rect clip intersected with the current one.
+ * radius[] is top-left, top-right, bottom-right, bottom-left, 24.8 points. */
+struct logit_clip2 {
+    unsigned size;
+    int x, y, w, h;
+    int radius[4];
+    unsigned flags;    /* LOGIT_RECT_SNAP */
+};
+/* SYS_GUI_GROUP_BEGIN: draws until GROUP_END land in a layer composited at
+ * `opacity` (0..255), clipped to the rounded rect. */
+struct logit_group2 {
+    unsigned size;
+    int x, y, w, h;
+    int radius[4];
+    int opacity;
+    unsigned flags;    /* LOGIT_RECT_SNAP */
+};
+/* SYS_GUI_BLIT2: the (src_x,src_y,src_w,src_h) pixel rectangle of an sw x sh
+ * RGBA image with row stride `sstride` BYTES, drawn into (x,y,w,h) points at
+ * `opacity` (0..255). */
+#define LOGIT_FILTER_NEAREST  0
+#define LOGIT_FILTER_BILINEAR 1
+#define LOGIT_FILTER_BOX      2
+#define LOGIT_BLIT2_PREMUL (1u << 1)  /* rgba is premultiplied */
+struct logit_blit2 {
+    unsigned size;
+    const unsigned char *rgba;
+    int sw, sh, sstride, src_x, src_y, src_w, src_h;
+    int x, y, w, h;
+    int opacity;
+    int filter;        /* LOGIT_FILTER_NEAREST, _BILINEAR, _BOX */
+    unsigned flags;    /* LOGIT_RECT_SNAP | LOGIT_BLIT2_PREMUL */
+};
+/* SYS_GUI_TEXT_RUN2: struct logit_run with 24.8 placement, an alpha
+ * (0..255) and a weight. `px` is 24.8 points; `face` is LOGIT_FACE_* bits. */
+struct logit_run2 {
+    unsigned size;
+    int x, y, px, face;
+    unsigned color;
+    const char *s;
+    int len;
+    int alpha;
+    int weight;        /* 0 = take bold from face bits, else a CSS weight 100..900 */
+    unsigned flags;
+};
+/* SYS_GUI_SHADOW2: a rounded-rect box shadow. blur is a 24.8-point sigma. */
+#define LOGIT_SHADOW2_INSET (1u << 1)
+struct logit_shadow2 {
+    unsigned size;
+    int x, y, w, h;
+    int radius[4];
+    int dx, dy, blur, spread;
+    unsigned argb;
+    unsigned flags;    /* LOGIT_RECT_SNAP | LOGIT_SHADOW2_INSET */
+};
+/* SYS_GUI_GLASS2: the liquid-glass material over the window's own content.
+ * `cut` is OL_GLASS_CUT_* (openlogit_display.h). */
+struct logit_glass2 {
+    unsigned size;
+    int x, y, w, h;
+    int radius[4];
+    unsigned cut, tint_argb;
+    int opacity, tone, blur_level, rim;
+    unsigned fg_rgb, flags;  /* flags: LOGIT_RECT_SNAP */
+    int reserved[2];         /* must be 0 */
+};
+
+/* BACKDROP: glass that shows the DESKTOP BEHIND the window (a sidebar), not
+ * the window's own content.
+ *
+ * FOREGROUND SEPARATION IS A MARKER-BYTE INK MASK. Window surfaces are packed
+ * 32-bit pixels whose high byte is otherwise unused. SYS_GUI_BACKDROP records
+ * the region (rounded rect + material, at most LOGIT_BACKDROP_MAX per window,
+ * id 0..7) and fills its pixels with fill_rgb and high byte
+ * LOGIT_BACKDROP_MARK. Any later app draw rewrites the pixels it touches
+ * with high byte 0. At composite time a MARKED pixel shows the material over
+ * the desktop behind the window; an unmarked one shows the app's pixel. So
+ * app ink drawn over a backdrop stays on top with no second buffer.
+ *
+ * Only the backdrop handler may write MARK. Every path that stores raw app
+ * values into a surface must mask them with & 0xFFFFFF (see the audit in
+ * c/kernel/gui/wm_draw2.h).
+ *
+ * Limitation: anti-aliased fringes of app ink inside a region are blended
+ * against fill_rgb, not against the live material.
+ *
+ * LOGIT_BACKDROP_ALPHA_LAYER (a true per-pixel alpha layer) is RESERVED and
+ * returns OL_UNSUPPORTED; reserved[] is kept for its parameters. */
+#define LOGIT_BACKDROP_MARK 0x01
+#define LOGIT_BACKDROP_MAX  8
+#define LOGIT_BACKDROP_ALPHA_LAYER (1u << 1)
+struct logit_backdrop2 {
+    unsigned size;
+    int id;            /* 0..7 */
+    int x, y, w, h;
+    int radius[4];
+    unsigned tint_argb;
+    int opacity, tone, blur_level, rim;
+    unsigned fill_rgb, flags;
+    int reserved[4];   /* must be 0 */
+};
+
+/* CARETS: a second versioned query through SYS_TEXT_MEASURE, shaped like
+ * LOGIT_TEXT_METRICS_QUERY: SYS_TEXT_MEASURE(&q, LOGIT_TEXT_CARETS_QUERY, 0).
+ * Fills up to `max` caret stops (byte offset off[i], device 24.8 position
+ * x24_8[i] relative to the run origin) and writes the count to *count_out.
+ * Returns 1 on success and 0 while unsupported -- which it is until
+ * LOGIT_GUI2_F_CARETS is set (a kernel without the branch already returns 0
+ * for any negative len). */
+#define LOGIT_TEXT_CARETS_QUERY (-2)
+#define LOGIT_TEXT_CARETS_VERSION 1
+struct logit_text_carets_query {
+    unsigned size, version;
+    const char *s;
+    int len, px, face, flags;
+    unsigned short *off;
+    int *x24_8;
+    int max;
+    int *count_out;
+};
+
+
 #endif /* LOGIT_ABI_H */
 
 /* --- recovered from stash@{0} (branch rescue-1845) ---------------------
