@@ -105,6 +105,20 @@ static void test_not_bss(void)
        (unsigned long long)ARENA_BSS_BYTES,
        (unsigned long long)ARENA_BUILD_SIZE >> 20);
 
+    /* The reservation is made by the first allocation (malloc.c's
+     * arena_reserve()), and nothing in this file has allocated yet. On Linux
+     * that never showed: glibc's printf allocates stdout's buffer through
+     * malloc, the executable's malloc interposes on it, and the first printf
+     * reserved the arena as a side effect (measured with glibc 2.39: 0 MiB
+     * before any stdio, 256 MiB after the first printf). macOS's printf never
+     * reaches this malloc, so both checks below read an untouched allocator
+     * and the gate printed "usable arena is 0 MiB". Allocate once, on purpose,
+     * so the checks see a reservation this test asked for. The pointer goes
+     * through a volatile because clang deletes an unused malloc/free pair at
+     * -O2: the first version of this fix, a bare free(malloc(1)), still
+     * printed "usable arena is 0 MiB". */
+    void *volatile first = malloc(1);
+    free(first);
     ck(!malloc_arena_failed, "the reservation succeeded");
     ck(malloc_arena_size() >= (1u << 20), "usable arena is %zu MiB",
        malloc_arena_size() >> 20);

@@ -85,6 +85,14 @@ def after(value: Missing) -> None:
     assert not report["ok"], report
     codes = [item["code"] for item in report["diagnostics"]]
     assert sorted(codes) == ["AS3200", "AS3600"], ("capacity-recovery", codes)
+    # The codes alone stopped seeing the regression once top-level statements
+    # became an implicit main(): with recover() in place of recover_declaration()
+    # the suite of too_late DOES become module-level code, but silently -- it
+    # surfaces as a synthesized `main` symbol while the codes stay exactly
+    # [AS3200, AS3600] (measured 2026-10-26, which is how the parser.c control
+    # below came to "accept" its own mutant). The symbol is the observable.
+    symbols = sorted(item["name"] for item in report.get("symbols", []))
+    assert "main" not in symbols, ("capacity-recovery", "suite became module-level code", symbols[-5:])
     assert not report.get("truncated"), report
 
 

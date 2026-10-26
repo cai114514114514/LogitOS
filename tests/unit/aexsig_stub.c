@@ -46,6 +46,13 @@ static void unreached(const char *who)
 }
 
 uint64_t pmm_alloc(void) { unreached("pmm_alloc"); return 0; }
+/* place_page() has allocated with pmm_alloc_any() since the mm split
+ * (fa6fbc790, 2026-09-15). This list still named only pmm_alloc, so the test
+ * stopped LINKING ("_pmm_alloc_any ... not found") and test-aex-sig was red
+ * for a reason that had nothing to do with signatures. Same contract as its
+ * neighbours: unreachable from aex_parse(), so abort rather than hand out a
+ * frame. */
+uint64_t pmm_alloc_any(void) { unreached("pmm_alloc_any"); return 0; }
 void pmm_free(uint64_t phys) { (void)phys; unreached("pmm_free"); }
 void vmm_map_page(uint64_t virt, uint64_t phys, uint64_t flags)
 { (void)virt; (void)phys; (void)flags; unreached("vmm_map_page"); }

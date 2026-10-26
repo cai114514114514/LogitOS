@@ -51,7 +51,12 @@
 #include <string.h>
 #include <math.h>
 
-#include "css.h"          /* ci_ease_*, struct anim_spec/trans_spec, parsers */
+/* css.h became css/style.h when the browser was organised by subsystem
+ * (c8f412493, 2026-09-22). This line kept the old name, so from that day
+ * neither the checker nor its control compiled -- the control's red was a
+ * missing header, not a failed easing. Found by a host sweep on 2026-10-26.
+ * BROWSER_INC is the browser root, so the subsystem path resolves. */
+#include "css/style.h"    /* ci_ease_*, struct anim_spec/trans_spec, parsers */
 
 static int g_fail;
 static int g_run;

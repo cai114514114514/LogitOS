@@ -62,10 +62,33 @@ def mutant(source, out):
     command[command.index('c/apps/agent/agentd.c')] = str(variant)
     # Relative includes in agentd.c resolve from its real source directory.
     command += ['-iquote', str(ROOT/'c/apps/agent')]
+    # ORDER MATTERS. This used to compile the variant and then ask make for
+    # agentd.aex, but the private BUILD starts with no .config stamps, so the
+    # build-config check called every output changed and recompiled all 77
+    # objects -- agentd.o from the REAL agentd.c among them. The variant was
+    # overwritten before it was linked, the "fatal" agentd.aex came out
+    # byte-identical to the original, and the control reported "startup control
+    # unexpectedly ready" against a broker it had never changed (found on the
+    # macOS dev host, 2026-10-26). So: let make settle the private build first,
+    # then drop the variant object in, then relink -- with the stamps current and
+    # agentd.o newer than agentd.c, the second make only links.
+    aex = build/'agentd.aex'
     with (out/'build.log').open('w') as log:
-        subprocess.run(command, cwd=ROOT, check=True, stdout=log, stderr=subprocess.STDOUT)
-        subprocess.run(['make', f'BUILD={build}', str(build/'agentd.aex')],
+        subprocess.run(['make', f'BUILD={build}', str(aex)],
                        cwd=ROOT, check=True, stdout=log, stderr=subprocess.STDOUT)
+        settled = aex.read_bytes()
+        subprocess.run(command, cwd=ROOT, check=True, stdout=log, stderr=subprocess.STDOUT)
+        # The second trap: macOS's make (3.81) compares whole seconds. The
+        # variant, compiled through ccache, landed 63 ms after the first link,
+        # in the same second, and make called agentd.aex "up to date". Remove
+        # the linked outputs so the relink cannot be skipped on a timestamp.
+        for linked in (build/'agentd.elf', aex):
+            linked.unlink()
+        subprocess.run(['make', f'BUILD={build}', str(aex)],
+                       cwd=ROOT, check=True, stdout=log, stderr=subprocess.STDOUT)
+    # A control whose mutation never reached the binary measures nothing; say so.
+    if aex.read_bytes() == settled:
+        raise RuntimeError('startup control SETUP FAILED: the fatal variant did not change agentd.aex')
     return build
 
 

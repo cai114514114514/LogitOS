@@ -22,6 +22,23 @@ ACOMMIT=33554432
 
 WARN="-Wall -Wextra -Wno-unused-parameter"
 
+# Zero-fill bytes of an object file, printed only when the object was understood.
+# ELF names the section .bss and GNU `size -A` lists it. Mach-O, the macOS dev
+# host's format, calls it __DATA,__bss (plus __common for tentative
+# definitions), and Apple's size lists sections only with -m. Measured on
+# 2026-10-26 with Apple size: malloc.o's __bss is 288 B real and 268435752 B
+# under -DARENA_NO_MMAP, so the Mach-O reading separates the builds as well as
+# the ELF one does.
+bss_bytes() {
+    if out=$(size -A "$1" 2>/dev/null); then
+        printf '%s\n' "$out" | awk '$1==".bss"{s+=$2} END{print s+0}'
+    elif out=$(size -m "$1" 2>/dev/null); then
+        printf '%s\n' "$out" | awk '/^[[:space:]]*Section \(/{seen=1}
+            /Section \(__DATA, __(bss|common)\):/{sub(/.*\): */, ""); s+=$1}
+            END{if (seen) print s+0}'
+    fi
+}
+
 # $1 = tag, $2 = extra -D flags, $3 = "pass" or "fail"
 run_case() {
     tag="$1"; extra="$2"; want="$3"
@@ -31,9 +48,16 @@ run_case() {
     $CC -O2 -g $WARN -DARENA_SIZE=${ASIZE}u -DARENA_COMMIT=${ACOMMIT}u $extra \
         -c c/apps/libc/src/malloc.c -o "$obj"
 
-    # .bss of the object, from the object. `size -A` names the section.
-    bss=$(size -A "$obj" | awk '$1==".bss"{print $2}')
-    [ -n "$bss" ] || bss=0
+    # .bss of the object, from the object. This used to be `size -A` with
+    # `[ -n "$bss" ] || bss=0` behind it. Apple's size has no -A, so on macOS
+    # the measurement failed, the fallback said 0 -- exactly the passing value
+    # -- and the .bss assertion could not fail on the host this tree is
+    # developed on. A size nobody could read is an error now, never a 0.
+    bss=$(bss_bytes "$obj")
+    if [ -z "$bss" ]; then
+        echo "arena_run: cannot read the .bss of $obj with GNU 'size -A' or Apple 'size -m'; refusing to assume 0" >&2
+        exit 1
+    fi
 
     $CC -O2 -g $WARN -DARENA_BSS_BYTES=${bss}ull -DARENA_BUILD_SIZE=${ASIZE}ull \
         -o "$bin" tests/unit/arena_mem_test.c "$obj"
