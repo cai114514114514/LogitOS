@@ -184,19 +184,16 @@ int ol_canvas_transform(struct ol_canvas *canvas, const struct gfx_matrix *matri
     if (b->e < -GFX_PX(32768) || b->e > GFX_PX(32768) || b->f < -GFX_PX(32768) ||
         b->f > GFX_PX(32768))
         return invalid(canvas, OL_LIMIT);
-    long long values[] = {((long long)a->a * b->a + (long long)a->c * b->b) / GFX_MONE,
-                          ((long long)a->b * b->a + (long long)a->d * b->b) / GFX_MONE,
-                          ((long long)a->a * b->c + (long long)a->c * b->d) / GFX_MONE,
-                          ((long long)a->b * b->c + (long long)a->d * b->d) / GFX_MONE,
-                          ((long long)a->a * b->e + (long long)a->c * b->f) / GFX_MONE + a->e,
-                          ((long long)a->b * b->e + (long long)a->d * b->f) / GFX_MONE + a->f};
+    /* Operands are bounded above, so the products fit gfx_m_mul's int results. */
+    struct gfx_matrix m;
+    gfx_m_mul(&m, a, b);
+    const int values[] = {m.a, m.b, m.c, m.d, m.e, m.f};
     for (unsigned i = 0; i < 6; i++) {
         long long limit = i < 4 ? 64 * GFX_MONE : GFX_PX(32768);
         if (values[i] < -limit || values[i] > limit)
             return invalid(canvas, OL_LIMIT);
     }
-    canvas->state.transform =
-        (struct gfx_matrix){values[0], values[1], values[2], values[3], values[4], values[5]};
+    canvas->state.transform = m;
     return OL_OK;
 }
 
@@ -247,12 +244,48 @@ static struct ol_fill_options options(const struct ol_canvas *canvas)
                                     .samples = canvas->state.samples};
 }
 
+int ol_canvas_path_begin(struct ol_canvas *canvas, struct gfx_path *path)
+{
+    if (!canvas || !path)
+        return OL_ARGUMENT;
+    if (path->npt > 0 || path->open)
+        return invalid(canvas, OL_STATE);
+#ifdef OL_CANVAS_POST_FLATTEN
+    /* Negative control: leave the path in user space; the fill transforms the
+     * flattened points, so a curve under a large scale turns polygonal. */
+    return OL_OK;
+#else
+    const struct gfx_matrix *ctm = &canvas->state.transform;
+    int base = path->tol;
+    int scale = gfx_m_scale_of(ctm);
+    gfx_path_matrix(path, ctm);
+    if (scale > GFX_MONE)
+        gfx_path_tolerance(path, (int)((long long)base * GFX_MONE / scale));
+    canvas->device_path = path;
+    return OL_OK;
+#endif
+}
+
+int ol_canvas_path_is_device(const struct ol_canvas *canvas, const struct gfx_path *path)
+{
+    if (!canvas || !path || path != canvas->device_path)
+        return 0;
+    const struct gfx_matrix *a = &path->m, *b = &canvas->state.transform;
+    return a->a == b->a && a->b == b->b && a->c == b->c && a->d == b->d && a->e == b->e &&
+           a->f == b->f;
+}
+
 int ol_canvas_fill(struct ol_canvas *canvas, const struct gfx_path *path, int rule,
                    const struct gfx_paint *paint)
 {
     if (!canvas)
         return OL_ARGUMENT;
     struct ol_fill_options fill = options(canvas);
+    struct gfx_matrix identity;
+    if (ol_canvas_path_is_device(canvas, path)) {
+        gfx_m_identity(&identity);
+        fill.transform = &identity;
+    }
     return ol_cmd_fill_ex(canvas->list, path, rule, paint, &fill);
 }
 

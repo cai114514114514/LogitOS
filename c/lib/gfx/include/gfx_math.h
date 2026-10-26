@@ -36,6 +36,8 @@ struct gfx_matrix { int a, b, c, d, e, f; };
 
 void gfx_m_identity(struct gfx_matrix *m);
 void gfx_m_set(struct gfx_matrix *m, int a, int b, int c, int d, int e, int f);
+/* v / 65536 rounded half away from zero; the rounding gfx_m_mul uses. */
+int  gfx_m_mulfix(long long v);
 /* o = l * r  (apply r first, then l -- the usual CTM composition order). */
 void gfx_m_mul(struct gfx_matrix *o, const struct gfx_matrix *l, const struct gfx_matrix *r);
 void gfx_m_translate(struct gfx_matrix *m, int dx, int dy);    /* 24.8   */
