@@ -16,7 +16,7 @@ test-shebang-host-negctl:
 	@mkdir -p $(BUILD)
 	@$(CC) -O2 -Wall -Wextra -DSHEBANG_NEGCTL_NO_TRIM $(SHEBANG_INC) \
 		-o $(BUILD)/shebang_negctl tests/unit/shebang_test.c
-	@if ./$(BUILD)/shebang_negctl > $(BUILD)/shebang_negctl.log 2>&1; then \
+	@if $(BUILD)/shebang_negctl > $(BUILD)/shebang_negctl.log 2>&1; then \
 		cat $(BUILD)/shebang_negctl.log; \
 		echo "NEGATIVE CONTROL FAILED: the suite passes with a CR in the interpreter"; exit 1; \
 	else \
@@ -25,7 +25,7 @@ test-shebang-host-negctl:
 
 test-shebang-host: test-shebang-host-negctl
 	@$(CC) -O2 -Wall -Wextra $(SHEBANG_INC) -o $(BUILD)/shebang_test tests/unit/shebang_test.c
-	@./$(BUILD)/shebang_test
+	@$(BUILD)/shebang_test
 
 ci-host: test-shebang-host
 
@@ -50,11 +50,11 @@ test-as-version-shebang-negctl:
 	@mkdir -p $(BUILD)
 	@$(CC) -O2 -Wall -Wextra -DAS_VERSION_NEGCTL_NO_SHEBANG -Ic/apps/as/common \
 		-o $(BUILD)/as_ver_sb_negctl $(AS_VER_SRC)
-	@if ./$(BUILD)/as_ver_sb_negctl > $(BUILD)/as_ver_sb_negctl.log 2>&1; then \
+	@if $(BUILD)/as_ver_sb_negctl > $(BUILD)/as_ver_sb_negctl.log 2>&1; then \
 		echo "NEGATIVE CONTROL FAILED: the suite passes without the #! skip"; exit 1; \
 	else echo "negative control ok: $$(grep -c '^FAIL' $(BUILD)/as_ver_sb_negctl.log) checks fail without the skip"; fi
 test-as-version-shebang: test-as-version-shebang-negctl
 	@$(CC) -O2 -Wall -Wextra -Ic/apps/as/common -o $(BUILD)/as_ver_sb $(AS_VER_SRC)
-	@./$(BUILD)/as_ver_sb
+	@$(BUILD)/as_ver_sb
 test-shebang-host: test-as-version-shebang
 .PHONY: test-as-version-shebang test-as-version-shebang-negctl

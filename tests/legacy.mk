@@ -76,10 +76,10 @@ $(LEGACY_CORPUS)/CASES: tools/genlegacy.py
 
 test-legacy: $(BUILD)/legacy_test $(LEGACY_CORPUS)/CASES
 	@for c in $(LEGACY_GATE); do \
-	    ./$(BUILD)/legacy_test $(LEGACY_CORPUS) $$c || exit 1; \
+	    $(BUILD)/legacy_test $(LEGACY_CORPUS) $$c || exit 1; \
 	 done
 	@for c in $(LEGACY_CORRUPT); do \
-	    ./$(BUILD)/legacy_test $(LEGACY_CORPUS) $$c || exit 1; \
+	    $(BUILD)/legacy_test $(LEGACY_CORPUS) $$c || exit 1; \
 	 done
 	@echo "LEGACY-OK $(words $(LEGACY_GATE)) case(s) bit-exact, $(words $(LEGACY_CORRUPT)) corrupt fixture(s) refused"
 
@@ -90,7 +90,7 @@ test-legacy: $(BUILD)/legacy_test $(LEGACY_CORPUS)/CASES
 # same reason: a report that fails is a report nobody runs.
 test-legacy-diff: $(BUILD)/legacy_test $(LEGACY_CORPUS)/CASES
 	@for c in $(LEGACY_GATE) $(LEGACY_CORRUPT); do \
-	    ./$(BUILD)/legacy_test --diff $(LEGACY_CORPUS) $$c; \
+	    $(BUILD)/legacy_test --diff $(LEGACY_CORPUS) $$c; \
 	 done
 
 # --- negative controls: one real historical bug per codec, on a -D switch --
@@ -122,7 +122,7 @@ test-legacy-negctl: $(BUILD)/legacy_test_cinctl $(BUILD)/legacy_test_msvctl \
 	@# is the gray/48x32-shaped cases and not every case -- 2 of 6.
 	@n=0; for c in cinepak-rgb24-16x16 cinepak-gray-16x16 cinepak-rgb24-32x32 \
 	    cinepak-gray-32x32 cinepak-rgb24-48x32 cinepak-gray-48x32; do \
-	    ./$(BUILD)/legacy_test_cinctl $(LEGACY_CORPUS) $$c >/dev/null 2>&1 || n=$$((n+1)); \
+	    $(BUILD)/legacy_test_cinctl $(LEGACY_CORPUS) $$c >/dev/null 2>&1 || n=$$((n+1)); \
 	 done; \
 	 if [ $$n != 2 ]; then echo "CINEPAK-CONTROL-FAIL: $$n/6 reddened, want 2"; exit 1; fi; \
 	 echo "CINEPAK-CONTROL-OK: 2/6 reddened (multi-strip cases only)"
@@ -131,7 +131,7 @@ test-legacy-negctl: $(BUILD)/legacy_test_cinctl $(BUILD)/legacy_test_msvctl \
 	@# case here uses 2- or 8-color blocks, so all 4 redden.
 	@n=0; for c in msvideo1-16bit-16x16 msvideo1-16bit-32x32 msvideo1-16bit-48x32 \
 	    msvideo1-8bit-16x16; do \
-	    ./$(BUILD)/legacy_test_msvctl $(LEGACY_CORPUS) $$c >/dev/null 2>&1 || n=$$((n+1)); \
+	    $(BUILD)/legacy_test_msvctl $(LEGACY_CORPUS) $$c >/dev/null 2>&1 || n=$$((n+1)); \
 	 done; \
 	 if [ $$n != 4 ]; then echo "MSVIDEO1-CONTROL-FAIL: $$n/4 reddened, want 4"; exit 1; fi; \
 	 echo "MSVIDEO1-CONTROL-OK: 4/4 reddened"
@@ -141,7 +141,7 @@ test-legacy-negctl: $(BUILD)/legacy_test_cinctl $(BUILD)/legacy_test_msvctl \
 	@# chose the 4-color opcode for the other three cases' content,
 	@# measured before this case was added) exercises that path: 1 of 4.
 	@n=0; for c in rpza-16x16 rpza-32x32 rpza-48x32 rpza-4color-4x4; do \
-	    ./$(BUILD)/legacy_test_rpzactl $(LEGACY_CORPUS) $$c >/dev/null 2>&1 || n=$$((n+1)); \
+	    $(BUILD)/legacy_test_rpzactl $(LEGACY_CORPUS) $$c >/dev/null 2>&1 || n=$$((n+1)); \
 	 done; \
 	 if [ $$n != 1 ]; then echo "RPZA-CONTROL-FAIL: $$n/4 reddened, want 1"; exit 1; fi; \
 	 echo "RPZA-CONTROL-OK: 1/4 reddened (the hand-authored 4-color case)"
@@ -150,7 +150,7 @@ test-legacy-negctl: $(BUILD)/legacy_test_cinctl $(BUILD)/legacy_test_msvctl \
 	@# It touches ONLY dec_1bpp, so exactly the three qtrle-1bit-* sizes
 	@# redden and nothing else -- 3 of 24 (all non-negctl qtrle cases).
 	@n=0; for c in $$(echo "$(LEGACY_GATE)" | tr ' ' '\n' | grep '^qtrle-'); do \
-	    ./$(BUILD)/legacy_test_qtrctl $(LEGACY_CORPUS) $$c >/dev/null 2>&1 || n=$$((n+1)); \
+	    $(BUILD)/legacy_test_qtrctl $(LEGACY_CORPUS) $$c >/dev/null 2>&1 || n=$$((n+1)); \
 	 done; \
 	 if [ $$n != 3 ]; then echo "QTRLE-CONTROL-FAIL: $$n/24 reddened, want 3"; exit 1; fi; \
 	 echo "QTRLE-CONTROL-OK: 3/24 reddened (the three qtrle-1bit-* sizes only)"
@@ -180,7 +180,7 @@ test-legacy-asan:
 	@$(MAKE) $(LEGACY_CORPUS)/CASES
 	@rc=0; for c in $(LEGACY_GATE) $(LEGACY_CORRUPT); do \
 	    out=`ASAN_OPTIONS=detect_leaks=0 UBSAN_OPTIONS=print_stacktrace=1 \
-	         ./$(BUILD)/legacy_test_asan $(LEGACY_CORPUS) $$c 2>&1`; \
+	         $(BUILD)/legacy_test_asan $(LEGACY_CORPUS) $$c 2>&1`; \
 	    if echo "$$out" | grep -q 'runtime error\|AddressSanitizer'; then \
 	        echo "SANITIZER: $$c"; echo "$$out" | head -12; rc=1; \
 	    fi; \

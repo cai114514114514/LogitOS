@@ -223,7 +223,7 @@ static void t_qknorm_order(void)
         memcpy(t, base, sizeof t);
         double before = 0.0, after = 0.0;
         for (int i = 0; i < HD; i++) before += (double)t[i] * t[i];
-        for (int h = 0; h < NH; h++) nn_rope(t + h * HD, HD, POS, 10000.0f);
+        for (int h = 0; h < NH; h++) nn_rope(t + h * HD, HD, POS, 10000.0f, NN_ROPE_INTERLEAVED);
         for (int i = 0; i < HD; i++) after += (double)t[i] * t[i];
         printf("      head 0 sum of squares: %.9g before RoPE, %.9g after\n", before, after);
         near_("RoPE preserves a head's sum of squares (why the orders collide)",
@@ -235,10 +235,10 @@ static void t_qknorm_order(void)
     /* Uniform gain -- the trap. */
     memcpy(a, base, sizeof a);
     lm_qk_norm(a, g1, NH, HD, LM_EPS);
-    for (int h = 0; h < NH; h++) nn_rope(a + h * HD, HD, POS, 10000.0f);
+    for (int h = 0; h < NH; h++) nn_rope(a + h * HD, HD, POS, 10000.0f, NN_ROPE_INTERLEAVED);
 
     memcpy(b, base, sizeof b);
-    for (int h = 0; h < NH; h++) nn_rope(b + h * HD, HD, POS, 10000.0f);
+    for (int h = 0; h < NH; h++) nn_rope(b + h * HD, HD, POS, 10000.0f, NN_ROPE_INTERLEAVED);
     lm_qk_norm(b, g1, NH, HD, LM_EPS);
 
     /* THE FIRST VERSION OF THIS CHECK ASSERTED memcmp == 0 AND FAILED, and
@@ -275,10 +275,10 @@ static void t_qknorm_order(void)
     /* Non-uniform gain -- where the order becomes visible. */
     memcpy(a, base, sizeof a);
     lm_qk_norm(a, gv, NH, HD, LM_EPS);
-    for (int h = 0; h < NH; h++) nn_rope(a + h * HD, HD, POS, 10000.0f);
+    for (int h = 0; h < NH; h++) nn_rope(a + h * HD, HD, POS, 10000.0f, NN_ROPE_INTERLEAVED);
 
     memcpy(b, base, sizeof b);
-    for (int h = 0; h < NH; h++) nn_rope(b + h * HD, HD, POS, 10000.0f);
+    for (int h = 0; h < NH; h++) nn_rope(b + h * HD, HD, POS, 10000.0f, NN_ROPE_INTERLEAVED);
     lm_qk_norm(b, gv, NH, HD, LM_EPS);
 
     double worst = 0.0, mag = 0.0;
@@ -650,10 +650,13 @@ static void t_format(void)
         (unsigned long long)lm_expected_size(&hw), 0ULL);
 }
 
-/* An explicit head_dim opens, and infer.c REFUSES to run it -- loudly, with a
- * NULL, rather than attending over the wrong stride. That refusal is the
- * current state of the hookup and is pinned here so that whoever wires
- * infer.c sees this check turn from "refuses" into a real forward pass. */
+/* An explicit head_dim opens AND RUNS. This used to pin the opposite -- that
+ * infer.c refused it with a NULL until it derived hd from the header -- as a
+ * marker for whoever wired it. infer.c does (hd = h->head_dim), so the marker
+ * became a false statement that the feature does not exist; it is now the
+ * positive check: a forward pass over the decoupled shape returns finite logits.
+ * That they are the RIGHT logits is lm_infer_test's decoupled-shape case, against
+ * a double reference; this file only owns the shape arithmetic. */
 static void t_headdim_open(void)
 {
     /* dim 8, 2 query heads of 6, 1 kv head: q_dim 12, kv_dim 6, and dim/n_heads
@@ -675,8 +678,12 @@ static void t_headdim_open(void)
     eqi("explicit head_dim: wo is [dim, q_dim]", m.layer[0].wo.dim[1], 12);
     struct lm_state s;
     if (lm_state_new(&s, &m) == 0) {
-        eqi("explicit head_dim: lm_forward REFUSES until infer.c derives hd "
-            "from the header", (long)(lm_forward(&m, &s, 0, 0) == NULL), 1);
+        const float *lg = lm_forward(&m, &s, 0, 0);
+        eqi("explicit head_dim: lm_forward runs it (infer.c derives hd from the header)",
+            (long)(lg != NULL), 1);
+        int finite = lg != NULL;
+        for (int i = 0; lg && i < c.vocab; i++) if (!(lg[i] - lg[i] == 0.0f)) finite = 0;
+        eqi("explicit head_dim: every logit is finite", finite, 1);
         lm_state_free(&s);
     } else {
         ok_("explicit head_dim: lm_state_new refuses it (also a loud refusal)");

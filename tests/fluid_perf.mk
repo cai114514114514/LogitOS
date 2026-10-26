@@ -48,14 +48,14 @@ test-wm-bands-negctl:
 	@mkdir -p $(BUILD)
 	@$(CC) -O2 -Wall -Wextra -DWM_BANDS_NEGCTL_IGNORE_GLASS -Ic/kernel/gui \
 		-o $(BUILD)/wm_bands_negctl tests/unit/wm_bands_test.c
-	@if ./$(BUILD)/wm_bands_negctl > $(BUILD)/wm_bands_negctl.log 2>&1; then \
+	@if $(BUILD)/wm_bands_negctl > $(BUILD)/wm_bands_negctl.log 2>&1; then \
 		echo "NEGATIVE CONTROL FAILED: the splitter passes while cutting through glass"; exit 1; \
 	elif grep -q '^FAIL NO-CUT' $(BUILD)/wm_bands_negctl.log; then \
 		echo "negative control ok: cutting through glass breaks NO-CUT"; \
 	else cat $(BUILD)/wm_bands_negctl.log; echo "NEGATIVE CONTROL FAILED FOR THE WRONG REASON"; exit 1; fi
 test-wm-bands: test-wm-bands-negctl
 	@$(CC) -O2 -Wall -Wextra -Ic/kernel/gui -o $(BUILD)/wm_bands_test tests/unit/wm_bands_test.c
-	@./$(BUILD)/wm_bands_test
+	@$(BUILD)/wm_bands_test
 ci-host: test-wm-bands
 
 # ---- P1: band-parallel composition, on the machine ----

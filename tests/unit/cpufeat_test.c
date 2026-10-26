@@ -216,7 +216,13 @@ static const struct namemap procmap[] = {
     { CPU_LZCNT, "abm" }, { CPU_PREFETCHW, "3dnowprefetch" },
     { CPU_NX, "nx" }, { CPU_PDPE1GB, "pdpe1gb" }, { CPU_RDTSCP, "rdtscp" },
     { CPU_LM, "lm" },
-    { CPU_INVARIANT_TSC, "constant_tsc" },
+    /* NOT "constant_tsc": that is a Linux SYNTHETIC flag, also set from the CPU
+     * family/model when CPUID.80000007H:EDX[8] is clear (every virtualised CPU
+     * that hides the bit but looks like a modern Intel part). The flag that
+     * mirrors the CPUID bit is "nonstop_tsc". Comparing against constant_tsc
+     * reported cpufeat.c wrong on such a machine when it was right: the bit
+     * read 0 straight from CPUID, and nonstop_tsc was absent too. */
+    { CPU_INVARIANT_TSC, "nonstop_tsc" },
 };
 
 static char *read_flags_line(void)

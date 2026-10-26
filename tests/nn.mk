@@ -40,7 +40,14 @@ NN_CF  = -Ic/lib/nn -Ic/apps/coreutils -O2 -w
 # nine times is nine chances to disagree. Skipping names what is missing and
 # the command that would settle it, and exits 0 -- never passes silently.
 # test-qwen-logits already skipped correctly; the rest now match it.
-NN_SIMD_OK := $(shell printf '\#include <emmintrin.h>\nint main(void){return 0;}\n' \
+# The '#' is spelled through a variable on purpose. `\#` INSIDE $(shell ...) is
+# unescaped to '#' by GNU Make 3.81 (macOS) but kept AS `\#` by Make 4.3+ (every
+# current Linux, and Homebrew's gmake), which turned the probe's C source into
+# `\#include`, made the probe fail on a perfectly good x86_64 compiler, and
+# silently marked the whole nn/lm family UNMEASURED. A top-level `\#` is a literal
+# '#' in both versions.
+NN_HASH := \#
+NN_SIMD_OK := $(shell printf '$(NN_HASH)include <emmintrin.h>\nint main(void){return 0;}\n' \
                  | $(CC) -x c - -o /dev/null >/dev/null 2>&1 && echo yes)
 NN_SKIP_TEXT = $@ SKIPPED: this compiler has no working <emmintrin.h>.\n\
   c/lib/nn is SSE2-only by design -- matmul.c has no scalar path because its\n\

@@ -15,7 +15,11 @@
 #define PATH_MAX   256
 #endif
 #ifndef NAME_MAX
-#define NAME_MAX    63
+#define NAME_MAX    59        /* LFS_NAME_MAX (60, the dirent's name field) minus its NUL:
+                               * VFS_NAME_MAX in c/fs/vfs/vfs_path.h, which
+                               * tests/unit/libc_name_max_test.c pins this to. It was
+                               * 63 and this comment promised it matched what the
+                               * filesystem accepts; a 60-character name is refused. */
 #endif
 #ifndef LINK_MAX
 #define LINK_MAX     1        /* LogitFS has no hard links */
@@ -35,9 +39,13 @@
 #ifndef SSIZE_MAX
 #define SSIZE_MAX LONG_MAX
 #endif
-#ifndef MB_LEN_MAX
+/* UNCONDITIONAL, and that is the fix. clang's <limits.h> (pulled in above)
+ * already defines MB_LEN_MAX as 1, so the `#ifndef` form this used to be never
+ * took effect: programs saw 1 while MB_CUR_MAX is 4, and the standard idiom
+ * `char b[MB_LEN_MAX]; wcrtomb(b, wc, &st);` overran b by up to three bytes on
+ * any non-ASCII character. The standard requires MB_LEN_MAX >= MB_CUR_MAX. */
+#undef MB_LEN_MAX
 #define MB_LEN_MAX 4          /* UTF-8; see <wchar.h> */
-#endif
 #ifndef NZERO
 #define NZERO 20
 #endif

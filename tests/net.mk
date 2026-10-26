@@ -37,7 +37,7 @@ test-raw-host:
 	@mkdir -p $(BUILD)
 	@$(CC) -O2 -Wall -Wextra -DLOGIT_NET_HOST -o $(BUILD)/raw_test \
 		tests/unit/raw_test.c $(RAW_INC)
-	@./$(BUILD)/raw_test
+	@$(BUILD)/raw_test
 
 # Negative control: RAW_NEGCTL_FIRST_ONLY delivers an inbound message to only
 # the FIRST open raw socket instead of every one of them -- as if the table
@@ -48,7 +48,7 @@ test-raw-negctl:
 	@mkdir -p $(BUILD)
 	@$(CC) -O2 -w -DLOGIT_NET_HOST -DRAW_NEGCTL_FIRST_ONLY -o $(BUILD)/raw_test_negctl \
 		tests/unit/raw_test.c $(RAW_INC)
-	@if ./$(BUILD)/raw_test_negctl >$(BUILD)/raw_negctl.log 2>&1; then \
+	@if $(BUILD)/raw_test_negctl >$(BUILD)/raw_negctl.log 2>&1; then \
 		echo "NEGATIVE CONTROL FAILED: the suite passes when only the first raw socket gets delivery"; \
 		exit 1; \
 	elif ! grep -q "every open raw socket should receive its own identical copy" $(BUILD)/raw_negctl.log; then \
@@ -123,7 +123,7 @@ test-dns: test-dns-negctl
 	@mkdir -p $(BUILD)
 	@$(CC) -O2 -Wall -Wextra -DLOGIT_NET_HOST -o $(BUILD)/dns_test \
 		tests/unit/dns_test.c $(DNS_INC)
-	@./$(BUILD)/dns_test
+	@$(BUILD)/dns_test
 
 # Negative control: DNS_NO_NAME_MATCH restores the pre-fix behaviour --
 # accept an A/AAAA record regardless of whose name it is for. It must redden
@@ -137,7 +137,7 @@ test-dns-negctl:
 	@mkdir -p $(BUILD)
 	@$(CC) -O2 -w -DLOGIT_NET_HOST -DDNS_NO_NAME_MATCH \
 		-o $(BUILD)/dns_negctl tests/unit/dns_test.c $(DNS_INC)
-	@if ./$(BUILD)/dns_negctl >$(BUILD)/dns_negctl.log 2>&1; then \
+	@if $(BUILD)/dns_negctl >$(BUILD)/dns_negctl.log 2>&1; then \
 		echo "NEGATIVE CONTROL FAILED: the suite passes without owner-name matching"; \
 		exit 1; \
 	elif [ "$$(grep -c '^FAIL' $(BUILD)/dns_negctl.log)" != "1" ]; then \
@@ -699,7 +699,7 @@ test-tcp-probe-ack-negctl:
 	@mkdir -p $(BUILD)
 	@$(CC) -O2 -w -DTCP_PROBE_ACK_NEGCTL -o $(BUILD)/tcp_test_probeack tests/unit/tcp_test.c \
 		-Itests/unit/tcpstub -Ic/net/transport
-	@rc=0; ./$(BUILD)/tcp_test_probeack > $(BUILD)/tcp_probeack_negctl.log 2>&1 || rc=$$?; \
+	@rc=0; $(BUILD)/tcp_test_probeack > $(BUILD)/tcp_probeack_negctl.log 2>&1 || rc=$$?; \
 	 if [ $$rc -eq 0 ]; then \
 	     echo "test-tcp-probe-ack-negctl: FAILED -- the suite passes with the old snd_nxt bound"; exit 1; fi; \
 	 if ! grep -q "zwp: the probe's ACK reopened the window" $(BUILD)/tcp_probeack_negctl.log; then \

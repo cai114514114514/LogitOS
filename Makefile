@@ -3101,7 +3101,7 @@ bench-launch: $(ISO) $(DISK)
 test-tcp-host:
 	@mkdir -p $(BUILD)
 	@$(CC) -O2 -Wall -Wextra -o $(BUILD)/tcp_test tests/unit/tcp_test.c -Itests/unit/tcpstub -Ic/net/transport
-	@./$(BUILD)/tcp_test
+	@$(BUILD)/tcp_test
 
 # The negative control for the congestion-control assertions. Builds the SAME
 # test with the controller's response to loss neutralised (in the test file --
@@ -3111,7 +3111,7 @@ test-tcp-negctl:
 	@mkdir -p $(BUILD)
 	@$(CC) -O2 -w -DTCP_NEGATIVE_CONTROL -o $(BUILD)/tcp_test_negctl tests/unit/tcp_test.c \
 		-Itests/unit/tcpstub -Ic/net/transport
-	@if ./$(BUILD)/tcp_test_negctl >$(BUILD)/tcp_negctl.log 2>&1; then \
+	@if $(BUILD)/tcp_test_negctl >$(BUILD)/tcp_negctl.log 2>&1; then \
 		echo "NEGATIVE CONTROL FAILED: the suite passes without congestion control"; \
 		exit 1; \
 	else \
@@ -3135,7 +3135,7 @@ test-net-proto:
 		c/net/ip/ip6_addr.c \
 		-Ic/net/core -Ic/net/link -Ic/net/ip -Ic/net/transport -Ic/net/dns \
 		-Ic/drivers/timer $(KCORE_INC)
-	@./$(BUILD)/net_proto_test
+	@$(BUILD)/net_proto_test
 
 # ---- IPv6 -----------------------------------------------------------------
 #
@@ -3148,7 +3148,7 @@ test-ip6-host:
 	@mkdir -p $(BUILD)
 	@$(CC) -O2 -Wall -Wextra -DLOGIT_NET_HOST -o $(BUILD)/ip6_addr_test \
 		tests/unit/ip6_addr_test.c -Ic/net/ip -Ic/net/link
-	@./$(BUILD)/ip6_addr_test
+	@$(BUILD)/ip6_addr_test
 
 # Negative control for the claim the whole dual-stack story rests on: a
 # destination with no USABLE source must sort below IPv4. ip6_select_source
@@ -3161,7 +3161,7 @@ test-ip6-negctl:
 	@mkdir -p $(BUILD)
 	@$(CC) -O2 -w -DLOGIT_NET_HOST -DIP6_NEGCTL_NO_SCOPE_GUARD \
 		-o $(BUILD)/ip6_addr_negctl tests/unit/ip6_addr_test.c -Ic/net/ip -Ic/net/link
-	@if ./$(BUILD)/ip6_addr_negctl >$(BUILD)/ip6_negctl.log 2>&1; then \
+	@if $(BUILD)/ip6_addr_negctl >$(BUILD)/ip6_negctl.log 2>&1; then \
 		echo "NEGATIVE CONTROL FAILED: the suite passes without the source-scope guard"; \
 		exit 1; \
 	else \
@@ -3176,7 +3176,7 @@ test-nd-host:
 	@$(CC) -O2 -Wall -Wextra -DLOGIT_NET_HOST -o $(BUILD)/nd_test tests/unit/nd_test.c \
 		-Ic/net/ip -Ic/net/link -Ic/net/core -Ic/net/transport -Ic/net/dns \
 		-Ic/drivers/timer $(KCORE_INC)
-	@./$(BUILD)/nd_test
+	@$(BUILD)/nd_test
 
 # Negative control for Duplicate Address Detection. The easy way to write DAD
 # is to send the probe and then assign the address regardless of who answers --
@@ -3187,7 +3187,7 @@ test-nd-negctl:
 	@$(CC) -O2 -w -DLOGIT_NET_HOST -DIP6_NEGCTL_NO_DAD -o $(BUILD)/nd_negctl \
 		tests/unit/nd_test.c -Ic/net/ip -Ic/net/link -Ic/net/core \
 		-Ic/net/transport -Ic/net/dns -Ic/drivers/timer $(KCORE_INC)
-	@if ./$(BUILD)/nd_negctl >$(BUILD)/nd_negctl.log 2>&1; then \
+	@if $(BUILD)/nd_negctl >$(BUILD)/nd_negctl.log 2>&1; then \
 		echo "NEGATIVE CONTROL FAILED: the suite passes with DAD ignoring a defence"; \
 		exit 1; \
 	else \
@@ -3205,7 +3205,7 @@ test-ip6-fallback:
 		-Itests/unit -Ic/net/core -Ic/net/ip -Ic/net/link -Ic/net/transport \
 		-Ic/net/dns -Ic/net/tls -Ic/net/http -Ic/drivers/timer -Ic/drivers/char \
 		$(KCORE_INC) -Iinclude/abi
-	@if ./$(BUILD)/sock_phase_negctl >$(BUILD)/sock_phase_negctl.log 2>&1; then \
+	@if $(BUILD)/sock_phase_negctl >$(BUILD)/sock_phase_negctl.log 2>&1; then \
 		echo "NEGATIVE CONTROL FAILED: one-phase-per-poll still passed the warm-open gate"; \
 		exit 1; \
 	else \
@@ -3217,7 +3217,7 @@ test-ip6-fallback:
 		tests/unit/ip6_fallback_test.c -Itests/unit -Ic/net/core -Ic/net/ip \
 		-Ic/net/link -Ic/net/transport -Ic/net/dns -Ic/net/tls -Ic/net/http \
 		-Ic/drivers/timer -Ic/drivers/char $(KCORE_INC) -Iinclude/abi
-	@./$(BUILD)/ip6_fallback_test
+	@$(BUILD)/ip6_fallback_test
 
 # Negative control for the fallback itself: SOCK_NEGCTL_NO_FALLBACK makes a
 # failed destination fail the socket instead of advancing to the next one --
@@ -3230,7 +3230,7 @@ test-ip6-fallback-negctl:
 		-Itests/unit -Ic/net/core -Ic/net/ip -Ic/net/link -Ic/net/transport \
 		-Ic/net/dns -Ic/net/tls -Ic/net/http -Ic/drivers/timer -Ic/drivers/char \
 		$(KCORE_INC) -Iinclude/abi
-	@if ./$(BUILD)/ip6_fallback_negctl >$(BUILD)/ip6_fb_negctl.log 2>&1; then \
+	@if $(BUILD)/ip6_fallback_negctl >$(BUILD)/ip6_fb_negctl.log 2>&1; then \
 		echo "NEGATIVE CONTROL FAILED: the suite passes with no fallback at all"; \
 		exit 1; \
 	else \
@@ -3247,7 +3247,7 @@ test-ip6-dns:
 	@$(CC) -O2 -Wall -Wextra -DLOGIT_NET_HOST -o $(BUILD)/ip6_dns_test \
 		tests/unit/ip6_dns_test.c -Ic/net/dns -Ic/net/ip -Ic/net/link \
 		-Ic/net/core -Ic/net/transport -Ic/drivers/timer $(KCORE_INC)
-	@./$(BUILD)/ip6_dns_test
+	@$(BUILD)/ip6_dns_test
 
 # Negative control for the one claim that protects every existing IPv4 test in
 # this tree: on a network with no usable IPv6, not one extra byte goes on the
@@ -3258,7 +3258,7 @@ test-ip6-dns-negctl:
 		-o $(BUILD)/ip6_dns_negctl tests/unit/ip6_dns_test.c -Ic/net/dns \
 		-Ic/net/ip -Ic/net/link -Ic/net/core -Ic/net/transport \
 		-Ic/drivers/timer $(KCORE_INC)
-	@if ./$(BUILD)/ip6_dns_negctl >$(BUILD)/ip6_dns_negctl.log 2>&1; then \
+	@if $(BUILD)/ip6_dns_negctl >$(BUILD)/ip6_dns_negctl.log 2>&1; then \
 		echo "NEGATIVE CONTROL FAILED: the suite passes with AAAA asked for unconditionally"; \
 		exit 1; \
 	else \
@@ -3285,7 +3285,7 @@ test-term-proto:
 	@mkdir -p $(BUILD)
 	@$(CC) -O2 -Wall -Wextra -o $(BUILD)/term_proto_test tests/unit/term_proto_test.c \
 		-Ic/apps/coreutils -Ic/apps -Iinclude/abi
-	@./$(BUILD)/term_proto_test
+	@$(BUILD)/term_proto_test
 
 # /bin/sh itself. The test #includes sh.c and links it against a pipe model with
 # honest reader/writer refcounts (tests/unit/sh_hoststub.h), so the job-control
@@ -3294,7 +3294,7 @@ test-sh:
 	@mkdir -p $(BUILD)
 	@$(CC) -O2 -Wall -Wextra -o $(BUILD)/sh_edit_test tests/unit/sh_edit_test.c \
 		-Itests/unit -Ic/apps/coreutils -Ic/apps -Iinclude/abi
-	@./$(BUILD)/sh_edit_test
+	@$(BUILD)/sh_edit_test
 
 # Negative control: rebuild the SAME test with the shell's environment filter
 # bypassed (the naive "give every child the rich channel" design) and REQUIRE it
@@ -3304,7 +3304,7 @@ test-sh-negctl:
 	@mkdir -p $(BUILD)
 	@$(CC) -O2 -w -DSH_NEGATIVE_CONTROL -o $(BUILD)/sh_edit_negctl tests/unit/sh_edit_test.c \
 		-Itests/unit -Ic/apps/coreutils -Ic/apps -Iinclude/abi
-	@if ./$(BUILD)/sh_edit_negctl >$(BUILD)/sh_negctl.log 2>&1; then \
+	@if $(BUILD)/sh_edit_negctl >$(BUILD)/sh_negctl.log 2>&1; then \
 		echo "NEGATIVE CONTROL FAILED: the suite passes with the rich-channel filter removed"; \
 		exit 1; \
 	else \
@@ -3321,7 +3321,7 @@ test-sniff:
 	@mkdir -p $(BUILD)
 	@$(CC) -O2 -Wall -Wextra -o $(BUILD)/sniff_test tests/unit/sniff_test.c \
 		-Ic/apps/coreutils -Ic/apps -Iinclude/abi
-	@./$(BUILD)/sniff_test
+	@$(BUILD)/sniff_test
 
 # Negative control: the SAME suite with the guard's latch compiled out
 # (-DSNIFF_NEGATIVE_CONTROL, i.e. the old "print whatever arrives" behaviour)
@@ -3330,7 +3330,7 @@ test-sniff-negctl:
 	@mkdir -p $(BUILD)
 	@$(CC) -O2 -w -DSNIFF_NEGATIVE_CONTROL -o $(BUILD)/sniff_negctl tests/unit/sniff_test.c \
 		-Ic/apps/coreutils -Ic/apps -Iinclude/abi
-	@if ./$(BUILD)/sniff_negctl >$(BUILD)/sniff_negctl.log 2>&1; then \
+	@if $(BUILD)/sniff_negctl >$(BUILD)/sniff_negctl.log 2>&1; then \
 		echo "NEGATIVE CONTROL FAILED: the suite passes with the binary guard removed"; \
 		exit 1; \
 	else \
@@ -3350,7 +3350,7 @@ test-sniff-audio-negctl:
 	@mkdir -p $(BUILD)
 	@$(CC) -O2 -w -DSNIFF_AUDIO_NEGCTL -o $(BUILD)/sniff_audio_negctl tests/unit/sniff_test.c \
 		-Ic/apps/coreutils -Ic/apps -Iinclude/abi
-	@if ./$(BUILD)/sniff_audio_negctl >$(BUILD)/sniff_audio_negctl.log 2>&1; then \
+	@if $(BUILD)/sniff_audio_negctl >$(BUILD)/sniff_audio_negctl.log 2>&1; then \
 		echo "NEGATIVE CONTROL FAILED: the suite passes with audio classification removed"; \
 		exit 1; \
 	else \
@@ -3386,7 +3386,7 @@ test-cells:
 	@mkdir -p $(BUILD)
 	@$(CC) -O2 -Wall -Wextra -o $(BUILD)/cells_test tests/unit/cells_test.c \
 		$(CELLS_TEXT) -Ic/apps/coreutils -Ic/lib/text
-	@./$(BUILD)/cells_test $(CELLS_ARGS)
+	@$(BUILD)/cells_test $(CELLS_ARGS)
 
 # Negative control: CELLS_NEGATIVE_CONTROL puts the header back to what /bin/sh
 # and the Terminal did before it existed -- one cell per BYTE, an identity
@@ -3397,7 +3397,7 @@ test-cells-negctl:
 	@mkdir -p $(BUILD)
 	@$(CC) -O2 -w -DCELLS_NEGATIVE_CONTROL -o $(BUILD)/cells_negctl \
 		tests/unit/cells_test.c $(CELLS_TEXT) -Ic/apps/coreutils -Ic/lib/text
-	@if ./$(BUILD)/cells_negctl $(CELLS_ARGS) >$(BUILD)/cells_negctl.log 2>&1; then \
+	@if $(BUILD)/cells_negctl $(CELLS_ARGS) >$(BUILD)/cells_negctl.log 2>&1; then \
 		echo "NEGATIVE CONTROL FAILED: the suite passes with one cell per byte"; \
 		exit 1; \
 	else \

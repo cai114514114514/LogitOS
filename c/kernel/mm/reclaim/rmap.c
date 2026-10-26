@@ -251,7 +251,9 @@ int rmap_next(struct rmap_iter *it,uint64_t *cr3,uint64_t *va)
     spin_unlock_irqrestore(&rmap_lock,f);
     if (!found) { it->ended=1; return 0; }
     it->last_cr3=bc; it->last_va=bv;
-    if (cr3) *cr3=bc; if (va) *va=bv; return 1;
+    if (cr3) *cr3=bc;
+    if (va) *va=bv;
+    return 1;
 }
 
 /* --- the check ----------------------------------------------------------- */

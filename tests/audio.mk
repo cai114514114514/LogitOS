@@ -62,7 +62,7 @@ test-audio-pcm:
 	@$(CC) -O2 -g -Wall -Wextra -o $(BUILD)/audio_pcm_test \
 	    tests/unit/audio_pcm_test.c c/kernel/audio/pcm.c \
 	    -Ic/kernel/audio -Iinclude/abi -lm
-	@./$(BUILD)/audio_pcm_test
+	@$(BUILD)/audio_pcm_test
 
 # NEGATIVE CONTROL for the host suite. Replaces the saturating clamp with a bare
 # int16 truncation -- the single most audible mixer bug there is, and one that
@@ -75,7 +75,7 @@ test-audio-pcm-negctl:
 	@cp c/kernel/audio/snd.h $(BUILD)/audioneg/
 	@$(CC) -O2 -w -o $(BUILD)/audio_pcm_negctl tests/unit/audio_pcm_test.c \
 	    $(BUILD)/audioneg/pcm.c -I$(BUILD)/audioneg -Iinclude/abi -lm
-	@if ./$(BUILD)/audio_pcm_negctl >$(BUILD)/audioneg/out.txt 2>&1; then \
+	@if $(BUILD)/audio_pcm_negctl >$(BUILD)/audioneg/out.txt 2>&1; then \
 	    echo "FAIL: with the mix clamp removed the suite still PASSED --"; \
 	    echo "      the clamp assertions cannot fail, so they prove nothing."; \
 	    exit 1; \
@@ -118,7 +118,7 @@ test-hda-capture-graph:
 	@mkdir -p $(BUILD)
 	@$(CC) -O2 -g -Wall -Wextra -o $(BUILD)/hda_capture_graph_test \
 	    tests/unit/hda_capture_graph_test.c
-	@./$(BUILD)/hda_capture_graph_test
+	@$(BUILD)/hda_capture_graph_test
 
 # NEGATIVE CONTROL, watched to fail exactly twice: reinstates the "guess the
 # first ADC and the first pin" fallback find_output_path uses on the OUTPUT
@@ -132,7 +132,7 @@ test-hda-capture-graph-negctl:
 	@mkdir -p $(BUILD)
 	@$(CC) -O2 -w -DHDA_CAP_NEGCTL_GUESS -o $(BUILD)/hda_capture_graph_negctl \
 	    tests/unit/hda_capture_graph_test.c
-	@if ./$(BUILD)/hda_capture_graph_negctl >$(BUILD)/hda_capture_graph_negctl.out 2>&1; then \
+	@if $(BUILD)/hda_capture_graph_negctl >$(BUILD)/hda_capture_graph_negctl.out 2>&1; then \
 	    echo "FAIL: with the guess-fallback reinstated the suite still PASSED -- it cannot see the bug"; \
 	    exit 1; \
 	 else \

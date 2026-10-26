@@ -97,7 +97,9 @@ def update_stamp(path: Path, content: bytes) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
+    # "@FILE" reads one argument per line. The Makefile cannot pass every group on the
+    # command line (Linux caps one argument at 128 KiB), so it writes them to a file.
+    parser = argparse.ArgumentParser(description=__doc__, fromfile_prefix_chars="@")
     parser.add_argument("--directory", required=True, type=Path)
     parser.add_argument("--group", action="append", default=[])
     parser.add_argument("--tool", action="append", default=[])

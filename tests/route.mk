@@ -52,7 +52,7 @@ test-route: test-route-negctl
 	@mkdir -p $(BUILD)
 	@$(CC) -std=c11 -O1 -g -fsanitize=address,undefined -Wall -Wextra \
 		-o $(BUILD)/route_test tests/unit/route_test.c -Ic/net/core
-	@./$(BUILD)/route_test
+	@$(BUILD)/route_test
 
 # Negative control: ROUTE_FIRST_MATCH removes the RANKING from route_lookup and
 # nothing else. Every route still matches, every field is still carried out --
@@ -72,7 +72,7 @@ test-route-negctl:
 	@mkdir -p $(BUILD)
 	@$(CC) -std=c11 -O1 -w -DROUTE_FIRST_MATCH \
 		-o $(BUILD)/route_negctl tests/unit/route_test.c -Ic/net/core
-	@if ./$(BUILD)/route_negctl >$(BUILD)/route_negctl.log 2>&1; then \
+	@if $(BUILD)/route_negctl >$(BUILD)/route_negctl.log 2>&1; then \
 		echo "NEGATIVE CONTROL FAILED: the suite passes without longest-prefix ranking"; \
 		exit 1; \
 	else \
@@ -87,7 +87,7 @@ test-ip-route: test-ip-route-negctl
 	@$(CC) -std=c11 -O1 -g -fsanitize=address,undefined -Wall -Wextra \
 		-DLOGIT_NET_HOST -o $(BUILD)/ip_route_test tests/unit/ip_route_test.c \
 		$(ROUTE_INC)
-	@./$(BUILD)/ip_route_test
+	@$(BUILD)/ip_route_test
 
 # Negative control: IP_NEGCTL_TERNARY restores the routing decision this change
 # replaced -- verbatim, not a broken version of it. It is the code that ran on
@@ -100,7 +100,7 @@ test-ip-route-negctl:
 	@mkdir -p $(BUILD)
 	@$(CC) -std=c11 -O1 -w -DLOGIT_NET_HOST -DIP_NEGCTL_TERNARY \
 		-o $(BUILD)/ip_route_negctl tests/unit/ip_route_test.c $(ROUTE_INC)
-	@if ./$(BUILD)/ip_route_negctl >$(BUILD)/ip_route_negctl.log 2>&1; then \
+	@if $(BUILD)/ip_route_negctl >$(BUILD)/ip_route_negctl.log 2>&1; then \
 		echo "NEGATIVE CONTROL FAILED: the suite passes with the old on-subnet ternary"; \
 		exit 1; \
 	else \
@@ -123,7 +123,7 @@ test-netif: test-netif-negctl test-netif-irq-negctl
 		-o $(BUILD)/netif_test tests/unit/netif_test.c \
 		-Ic/drivers/net -Ic/drivers/core -Ic/net/core -Ic/kernel/pci \
 		-Itests/unit/pcistub
-	@./$(BUILD)/netif_test
+	@$(BUILD)/netif_test
 
 # Negative control: NETIF_NEGCTL_SINGLE puts back the `return 0;` that stopped
 # netdev_init at the first bound card. Note what it does NOT break -- 36 of the
@@ -137,7 +137,7 @@ test-netif-negctl:
 		-o $(BUILD)/netif_negctl tests/unit/netif_test.c \
 		-Ic/drivers/net -Ic/drivers/core -Ic/net/core -Ic/kernel/pci \
 		-Itests/unit/pcistub
-	@if ./$(BUILD)/netif_negctl >$(BUILD)/netif_negctl.log 2>&1; then \
+	@if $(BUILD)/netif_negctl >$(BUILD)/netif_negctl.log 2>&1; then \
 		echo "NEGATIVE CONTROL FAILED: the suite passes when only the first NIC binds"; \
 		exit 1; \
 	else \
@@ -154,7 +154,7 @@ test-netif-irq-negctl:
 		-o $(BUILD)/netif_irq_negctl tests/unit/netif_test.c \
 		-Ic/drivers/net -Ic/drivers/core -Ic/net/core -Ic/kernel/pci \
 		-Itests/unit/pcistub
-	@if ./$(BUILD)/netif_irq_negctl >$(BUILD)/netif_irq_negctl.log 2>&1; then \
+	@if $(BUILD)/netif_irq_negctl >$(BUILD)/netif_irq_negctl.log 2>&1; then \
 		echo "NEGATIVE CONTROL FAILED: only the primary NIC gets an IRQ and the test passed"; exit 1; \
 	fi
 	@grep -q '^FAIL every bound interrupt NIC uses device-model registration' $(BUILD)/netif_irq_negctl.log

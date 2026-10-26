@@ -122,7 +122,7 @@ $(BUILD)/mpeg4_idct_test: tests/unit/mpeg4_idct_test.c tests/unit/mpeg4_idct_ref
 # samples x {put,add} = 342,784 samples total. Measured 2026-08-25:
 # 0/342,784 wrong. Bit-exact, not "close".
 test-mpeg4-idct: $(BUILD)/mpeg4_idct_test
-	@./$(BUILD)/mpeg4_idct_test
+	@$(BUILD)/mpeg4_idct_test
 
 # The negative control: MPEG4_IDCT_CONTROL_W4_16384 uses 16384 -- the value
 # the cosine formula cos(4*pi/16)*sqrt(2)*2^14 actually rounds to, and the
@@ -151,7 +151,7 @@ $(BUILD)/mpeg4_idct_test_ctl: tests/unit/mpeg4_idct_test.c tests/unit/mpeg4_idct
 	    tests/unit/mpeg4_idct_ref.c $(MPEG4_IDCT_SRC) $(MPEG4_INC)
 
 test-mpeg4-idct-negctl: $(BUILD)/mpeg4_idct_test_ctl
-	@out=`./$(BUILD)/mpeg4_idct_test_ctl 2>&1 || true`; \
+	@out=`$(BUILD)/mpeg4_idct_test_ctl 2>&1 || true`; \
 	 echo "$$out"; \
 	 put=`echo "$$out" | sed -n 's/.*put: \([0-9]*\)\/.*/\1/p'`; \
 	 add=`echo "$$out" | sed -n 's/.*add: \([0-9]*\)\/.*/\1/p'`; \
@@ -177,7 +177,7 @@ $(BUILD)/mpeg4_mc_test: tests/unit/mpeg4_mc_test.c $(MPEG4_MC_SRC) c/lib/video/m
 	@$(CC) -O2 -Wall -Wextra -o $@ tests/unit/mpeg4_mc_test.c $(MPEG4_MC_SRC) $(MPEG4_INC)
 
 test-mpeg4-mc: $(BUILD)/mpeg4_mc_test
-	@./$(BUILD)/mpeg4_mc_test
+	@$(BUILD)/mpeg4_mc_test
 
 # The negative control: MPEG4_HPEL_CONTROL_NO_ROUND drops the rounding_type
 # bit's effect on half-pel interpolation entirely -- mpeg4_mc.c's own header
@@ -199,7 +199,7 @@ $(BUILD)/mpeg4_mc_test_ctl: tests/unit/mpeg4_mc_test.c $(MPEG4_MC_SRC) c/lib/vid
 	    $(MPEG4_MC_SRC) $(MPEG4_INC)
 
 test-mpeg4-mc-negctl: $(BUILD)/mpeg4_mc_test_ctl
-	@out=`./$(BUILD)/mpeg4_mc_test_ctl 2>&1 || true`; \
+	@out=`$(BUILD)/mpeg4_mc_test_ctl 2>&1 || true`; \
 	 echo "$$out"; \
 	 n=`echo "$$out" | sed -n 's/.*luma): \([0-9]*\)\/.*/\1/p'`; \
 	 if [ "$$n" != "506" ]; then \
@@ -216,7 +216,7 @@ test-mpeg4-units-asan:
 	@$(CC) -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -w \
 	    -o $(BUILD)/mpeg4_idct_test_asan tests/unit/mpeg4_idct_test.c \
 	    tests/unit/mpeg4_idct_ref.c $(MPEG4_IDCT_SRC) $(MPEG4_INC)
-	@UBSAN_OPTIONS=halt_on_error=1 ./$(BUILD)/mpeg4_idct_test_asan
+	@UBSAN_OPTIONS=halt_on_error=1 $(BUILD)/mpeg4_idct_test_asan
 	@$(CC) -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -w \
 	    -o $(BUILD)/mpeg4_mc_test_asan tests/unit/mpeg4_mc_test.c $(MPEG4_MC_SRC) $(MPEG4_INC)
-	@UBSAN_OPTIONS=halt_on_error=1 ./$(BUILD)/mpeg4_mc_test_asan
+	@UBSAN_OPTIONS=halt_on_error=1 $(BUILD)/mpeg4_mc_test_asan

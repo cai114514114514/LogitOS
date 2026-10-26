@@ -24,8 +24,25 @@ typedef __WCHAR_TYPE__ wchar_t;
 
 typedef int wint_t;
 #define WEOF ((wint_t)-1)
-#define WCHAR_MIN 0
-#define WCHAR_MAX 0x7fffffff
+/* The limits of wchar_t ITSELF. It is __WCHAR_TYPE__, which is a SIGNED 32-bit
+ * int on this target, so WCHAR_MIN is INT_MIN: the old `#define WCHAR_MIN 0`
+ * contradicted the type (`(wchar_t)-1 < 0` and `WCHAR_MIN < 0` disagreed) and,
+ * being unguarded, fought the compiler's own <stdint.h> -- the value a program
+ * saw depended on which of the two headers it included last. */
+#ifndef WCHAR_MAX
+# ifdef __WCHAR_MAX__
+#  define WCHAR_MAX __WCHAR_MAX__
+# else
+#  define WCHAR_MAX 0x7fffffff
+# endif
+#endif
+#ifndef WCHAR_MIN
+# ifdef __WCHAR_UNSIGNED__
+#  define WCHAR_MIN 0
+# else
+#  define WCHAR_MIN (-WCHAR_MAX - 1)
+# endif
+#endif
 
 /* mbstate_t is a real conversion state: mbrtowc can be handed one byte of a
  * four-byte character at a time and must remember. */

@@ -52,7 +52,7 @@ JSPROBE_SRC := tests/unit/jsprobe_test.c c/apps/gui/browser/js/runtime/probe.c $
 test-jsprobe-negctl:
 	@mkdir -p $(BUILD)
 	@$(CC) -O1 -w $(JSPROBE_CF) -DPROBE_NEGCTL_NO_WALK -o $(BUILD)/jsprobe_negctl $(JSPROBE_SRC) -lm
-	@rc=0; ./$(BUILD)/jsprobe_negctl > $(BUILD)/jsprobe_negctl.log 2>&1 || rc=$$?; \
+	@rc=0; $(BUILD)/jsprobe_negctl > $(BUILD)/jsprobe_negctl.log 2>&1 || rc=$$?; \
 	if [ $$rc -ne 0 ] && grep -q '^FAIL a miss on an INSTANCE is attributed' $(BUILD)/jsprobe_negctl.log && \
 	   [ "$$(grep -c '^FAIL' $(BUILD)/jsprobe_negctl.log)" = 1 ]; then \
 		echo "negative control ok: without the prototype walk only the instance attribution fails"; \
@@ -62,6 +62,6 @@ test-jsprobe: test-jsprobe-negctl
 	@$(CC) -fsyntax-only -Wall -Wextra -Werror -Wno-unused-parameter -DJS_PROBE_TRACE \
 		-isystem third_party/quickjs -Ic/apps/gui/browser \
 		c/apps/gui/browser/js/runtime/probe.c tests/unit/jsprobe_test.c
-	@rc=0; ./$(BUILD)/jsprobe_test > $(BUILD)/jsprobe_test.log 2>&1 || rc=$$?; \
+	@rc=0; $(BUILD)/jsprobe_test > $(BUILD)/jsprobe_test.log 2>&1 || rc=$$?; \
 		grep -E '^(FAIL|jsprobe:)' $(BUILD)/jsprobe_test.log; exit $$rc
 ci-host: test-jsprobe

@@ -95,12 +95,12 @@ $(DISK): $(BUILD)/spotlight.aex tests/fluid_desktop.mk
 test-spotlight-rank-negctl:
 	@mkdir -p $(BUILD)
 	@$(CC) -O2 -w -DSL_RANK_NEGCTL -I$(SPOTLIGHT_DIR) -o $(BUILD)/sl_rank_negctl tests/unit/sl_rank_test.c
-	@if ./$(BUILD)/sl_rank_negctl > $(BUILD)/sl_rank_negctl.log 2>&1; then \
+	@if $(BUILD)/sl_rank_negctl > $(BUILD)/sl_rank_negctl.log 2>&1; then \
 		echo "NEGATIVE CONTROL FAILED: substring-only ranking passes"; exit 1; \
 	else echo "negative control ok: $$(grep -c '^FAIL' $(BUILD)/sl_rank_negctl.log) orderings wrong without the prefix/word tiers"; fi
 test-spotlight-rank: test-spotlight-rank-negctl
 	@$(CC) -O2 -Wall -Wextra -I$(SPOTLIGHT_DIR) -o $(BUILD)/sl_rank_test tests/unit/sl_rank_test.c
-	@./$(BUILD)/sl_rank_test
+	@$(BUILD)/sl_rank_test
 ci-host: test-spotlight-rank
 
 # test-spotlight (QMP): Cmd+Space starts the panel; "term" launches Terminal;
@@ -136,7 +136,7 @@ MENU_BLOB_DIR := c/kernel/gui
 test-menu-blob-negctl:
 	@mkdir -p $(BUILD)
 	@$(CC) -std=c11 -O1 -w -DMB_PARSE_NEGCTL -I$(MENU_BLOB_DIR) -o $(BUILD)/menu_blob_negctl tests/unit/menu_blob_test.c
-	@if ./$(BUILD)/menu_blob_negctl > $(BUILD)/menu_blob_negctl.log 2>&1; then \
+	@if $(BUILD)/menu_blob_negctl > $(BUILD)/menu_blob_negctl.log 2>&1; then \
 		echo "NEGATIVE CONTROL FAILED: a truncating parser passes"; exit 1; \
 	elif grep -q 'FAIL CORPUS: a 25-byte title is refused, not truncated' $(BUILD)/menu_blob_negctl.log; then \
 		echo "negative control ok: the truncating parser is caught at the title rule"; \
@@ -144,7 +144,7 @@ test-menu-blob-negctl:
 test-menu-blob: test-menu-blob-negctl
 	@$(CC) -std=c11 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined -fno-sanitize-recover=all \
 		-I$(MENU_BLOB_DIR) -o $(BUILD)/menu_blob_test tests/unit/menu_blob_test.c
-	@ASAN_OPTIONS=detect_leaks=0 ./$(BUILD)/menu_blob_test
+	@ASAN_OPTIONS=detect_leaks=0 $(BUILD)/menu_blob_test
 ci-host: test-menu-blob
 
 # test-appmenu (QMP): the Finder's and TextEdit's published menus appear on

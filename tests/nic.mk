@@ -73,7 +73,7 @@ test-nic-82540-ids-negctl:
 	@$(CC) -O1 -g -Wall -Wextra -DLOGIT_HOST_TEST -DNET_IDS_NEGCTL_DROP_82540_VARIANTS \
 		-o $(BUILD)/net_drv_82540_negctl tests/unit/net_drv_test.c c/drivers/core/device.c \
 		-Ic/drivers/net -Ic/drivers/core -Ic/kernel/pci -Itests/unit/pcistub
-	@out=$$(./$(BUILD)/net_drv_82540_negctl 2>&1); rc=$$?; \
+	@out=$$($(BUILD)/net_drv_82540_negctl 2>&1); rc=$$?; \
 	 n=$$(printf '%s\n' "$$out" | grep -c '^FAIL '); \
 	 if [ $$rc -eq 0 ]; then \
 	   echo "NEGCTL FAIL: dropping four 82540 IDs still passes"; exit 1; \
@@ -89,7 +89,7 @@ test-nic-drv: test-nic-82540-ids-negctl
 	@$(CC) -O1 -g -fsanitize=address,undefined -Wall -Wextra -DLOGIT_HOST_TEST \
 		-o $(BUILD)/net_drv_test tests/unit/net_drv_test.c c/drivers/core/device.c \
 		-Ic/drivers/net -Ic/drivers/core -Ic/kernel/pci -Itests/unit/pcistub
-	@./$(BUILD)/net_drv_test
+	@$(BUILD)/net_drv_test
 
 # The e1000 statistics accumulator and link-status decode, host-side, against a
 # MODEL of a read-to-clear register file -- two models, because the 8254x manual
@@ -104,7 +104,7 @@ test-e1000-stats: test-e1000-stats-negctl test-e1000-linkmask-negctl
 	@mkdir -p $(BUILD)
 	@$(CC) -O1 -g -fsanitize=address,undefined -Wall -Wextra \
 		-o $(BUILD)/e1000_stats_test tests/unit/e1000_stats_test.c -Ic/drivers/net
-	@./$(BUILD)/e1000_stats_test
+	@$(BUILD)/e1000_stats_test
 
 # NEGATIVE CONTROL. -DE1000_STATS_NO_ACC compiles `sw = hw1` (the naive read of
 # THE FIRST of the two back-to-back reads e1000_stat_acc_auto() now takes) in
@@ -127,7 +127,7 @@ test-e1000-stats-negctl:
 	@mkdir -p $(BUILD)
 	@$(CC) -O1 -g -Wall -Wextra -DE1000_STATS_NO_ACC \
 		-o $(BUILD)/e1000_stats_negctl tests/unit/e1000_stats_test.c -Ic/drivers/net
-	@out=$$(./$(BUILD)/e1000_stats_negctl 2>&1); rc=$$?; \
+	@out=$$($(BUILD)/e1000_stats_negctl 2>&1); rc=$$?; \
 	 n=$$(printf '%s\n' "$$out" | grep -c '^FAIL '); \
 	 if [ $$rc -eq 0 ]; then \
 	   echo "NEGCTL FAIL: -DE1000_STATS_NO_ACC still passes -- the gate proves nothing"; \
@@ -154,7 +154,7 @@ test-e1000-linkmask-negctl:
 	@mkdir -p $(BUILD)
 	@$(CC) -O1 -g -Wall -Wextra -DE1000_LINK_NEGCTL \
 		-o $(BUILD)/e1000_link_negctl tests/unit/e1000_stats_test.c -Ic/drivers/net
-	@out=$$(./$(BUILD)/e1000_link_negctl 2>&1); rc=$$?; \
+	@out=$$($(BUILD)/e1000_link_negctl 2>&1); rc=$$?; \
 	 n=$$(printf '%s\n' "$$out" | grep -c '^FAIL '); \
 	 if [ $$rc -eq 0 ]; then \
 	   echo "NEGCTL FAIL: -DE1000_LINK_NEGCTL still passes -- the mask proves nothing"; \

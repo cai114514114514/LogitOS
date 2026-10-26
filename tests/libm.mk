@@ -117,3 +117,35 @@ test-libm-cli: $(ISO) $(DISK) $(BUILD)/libmhost/ref
 else
 $(warning tests/libm.mk: $(LIBMCHK_SRC) is missing -- /bin/libmcheck will not be built)
 endif
+
+# ilogb(NaN) and ilogb(Inf) were the same number: the mini-libc header defined
+# FP_ILOGBNAN as INT_MAX, which is also what ilogb returns for an infinity. No
+# test mentioned ilogb. The gate builds the real third_party/libm/ilogb.c against
+# the mini-libc headers and diffs it against glibc; the control re-injects the old
+# INT_MAX into a scratch copy of math.h, and the same test must then fail on the
+# NaN-vs-Inf assertion.
+LIBM_ILOGB_RES := $(shell $(CC) -print-resource-dir)/include
+define LIBM_ILOGB_BUILD
+	@mkdir -p $(1)
+	@$(CC) -O1 -w -ffreestanding -Dhidden= -nostdinc -isystem $(LIBM_ILOGB_RES) $(2) \
+	    -Ic/apps/libc/include/uonly -Ic/apps/libc/include -Ithird_party/libm \
+	    -Dilogb=mini_ilogb -c third_party/libm/ilogb.c -o $(1)/ilogb.o
+	@$(CC) -O1 -w -ffreestanding -nostdinc -isystem $(LIBM_ILOGB_RES) $(2) \
+	    -Ic/apps/libc/include/uonly -Ic/apps/libc/include \
+	    -c tests/unit/libm_ilogb_mini.c -o $(1)/mini.o
+	@$(CC) -O1 -w tests/unit/libm_ilogb_test.c $(1)/ilogb.o $(1)/mini.o -lm -o $(1)/test
+endef
+.PHONY: test-libm-ilogb test-libm-ilogb-negctl
+test-libm-ilogb-negctl:
+	@mkdir -p $(BUILD)/libm-ilogb-neg/inc
+	@sed 's/^#define FP_ILOGBNAN .*/#define FP_ILOGBNAN 2147483647/' c/apps/libc/include/math.h > $(BUILD)/libm-ilogb-neg/inc/math.h
+	$(call LIBM_ILOGB_BUILD,$(BUILD)/libm-ilogb-neg,-I$(BUILD)/libm-ilogb-neg/inc)
+	@if $(BUILD)/libm-ilogb-neg/test > $(BUILD)/libm-ilogb-neg/log 2>&1; then \
+	    echo "NEGATIVE CONTROL FAILED: FP_ILOGBNAN == INT_MAX passed"; exit 1; fi; \
+	 grep -q 'ilogb(NaN)==ilogb(Inf)' $(BUILD)/libm-ilogb-neg/log || \
+	    { echo "NEGATIVE CONTROL FAILED: not on the NaN-vs-Inf assertion"; cat $(BUILD)/libm-ilogb-neg/log; exit 1; }; \
+	 echo "negative control ok: FP_ILOGBNAN == INT_MAX makes NaN and Inf indistinguishable"
+test-libm-ilogb: test-libm-ilogb-negctl
+	$(call LIBM_ILOGB_BUILD,$(BUILD)/libm-ilogb,)
+	$(BUILD)/libm-ilogb/test
+ci-host: test-libm-ilogb

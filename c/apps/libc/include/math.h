@@ -20,7 +20,12 @@ typedef float  float_t;
 #define FP_NORMAL    4
 
 #define FP_ILOGB0   (-2147483647 - 1)
-#define FP_ILOGBNAN 2147483647
+/* INT_MIN, not INT_MAX: ilogb(+-Inf) returns INT_MAX, so a NaN marker of INT_MAX
+ * made ilogb(NaN) and ilogb(Inf) the SAME number and `ilogb(x) == FP_ILOGBNAN`
+ * classified every infinity as a NaN. musl's ilogb.c returns FP_ILOGBNAN for a
+ * NaN and INT_MAX for an infinity on the strength of this header; glibc and
+ * musl both define it as INT_MIN. */
+#define FP_ILOGBNAN (-2147483647 - 1)
 
 #define fpclassify(x) __builtin_fpclassify(FP_NAN,FP_INFINITE,FP_NORMAL,FP_SUBNORMAL,FP_ZERO,(x))
 #define isnan(x)    __builtin_isnan(x)

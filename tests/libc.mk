@@ -328,3 +328,64 @@ test-libc2: $(ISO) $(DISK)
 else
 $(warning tests/libc.mk: $(LIBC2_SRC) is missing -- /bin/libctest2 will not be built, and test-libc2 cannot run)
 endif
+
+# WCHAR_MIN / WCHAR_MAX describe wchar_t. The header said `WCHAR_MIN 0` for a
+# SIGNED 32-bit wchar_t and fought the compiler's <stdint.h>. A property of the
+# header is a compile-time fact, so the gate is -fsyntax-only over _Static_asserts.
+# The control re-injects the old definition into a scratch copy of the header and
+# the same file must then FAIL to compile -- on the assertion, not on anything else.
+LIBC_WCHAR_CC := $(CC) --target=x86_64-elf -ffreestanding -fsyntax-only
+.PHONY: test-libc-wchar-limits test-libc-wchar-limits-negctl
+test-libc-wchar-limits-negctl:
+	@d=$(BUILD)/wchar-limits-neg; mkdir -p $$d; \
+	 sed 's/^typedef int wint_t;/typedef int wint_t;\n#define WCHAR_MIN 0/' c/apps/libc/include/wchar.h > $$d/wchar.h; \
+	 if $(LIBC_WCHAR_CC) -I$$d -Ic/apps/libc/include/uonly -Ic/apps/libc/include \
+	      tests/unit/libc_wchar_limits_test.c > $$d/log 2>&1; then \
+	     echo "NEGATIVE CONTROL FAILED: WCHAR_MIN 0 on a signed wchar_t compiled"; exit 1; fi; \
+	 grep -q 'WCHAR_MIN disagrees with the signedness' $$d/log || \
+	     { echo "NEGATIVE CONTROL FAILED: it failed, but not on the signedness assertion"; cat $$d/log; exit 1; }; \
+	 echo "negative control ok: the old WCHAR_MIN 0 is rejected"
+test-libc-wchar-limits: test-libc-wchar-limits-negctl
+	$(LIBC_WCHAR_CC) -Ic/apps/libc/include/uonly -Ic/apps/libc/include tests/unit/libc_wchar_limits_test.c
+	@echo "libc wchar limits: ok"
+ci-host: test-libc-wchar-limits
+
+# MB_LEN_MAX was 1 -- clang's <limits.h> defines it first and the mini-libc value
+# sat behind #ifndef -- while MB_CUR_MAX is 4. Control: re-inject the #ifndef form
+# into a scratch copy of limits.h; the same file must fail on the named assertion.
+.PHONY: test-libc-mb-len-max test-libc-mb-len-max-negctl
+test-libc-mb-len-max-negctl:
+	@d=$(BUILD)/mb-len-max-neg; mkdir -p $$d; \
+	 sed -e 's/^#undef MB_LEN_MAX$$/#ifndef MB_LEN_MAX/' -e 's/^#define MB_LEN_MAX 4 .*/#define MB_LEN_MAX 4\n#endif/' \
+	     -e 's|#include_next <limits.h>|#include "'"$$($(CC) -print-resource-dir)"'/include/limits.h"|' \
+	     c/apps/libc/include/limits.h > $$d/limits.h; \
+	 if $(LIBC_WCHAR_CC) -I$$d -Ic/apps/libc/include/uonly -Ic/apps/libc/include \
+	      tests/unit/libc_mb_len_max_test.c > $$d/log 2>&1; then \
+	     echo "NEGATIVE CONTROL FAILED: the #ifndef form compiled"; exit 1; fi; \
+	 grep -q 'MB_LEN_MAX is smaller than MB_CUR_MAX' $$d/log || \
+	     { echo "NEGATIVE CONTROL FAILED: not on the MB_CUR_MAX assertion"; cat $$d/log; exit 1; }; \
+	 echo "negative control ok: the #ifndef form leaves MB_LEN_MAX at clang's 1"
+test-libc-mb-len-max: test-libc-mb-len-max-negctl
+	$(LIBC_WCHAR_CC) -Ic/apps/libc/include/uonly -Ic/apps/libc/include tests/unit/libc_mb_len_max_test.c
+	@echo "libc MB_LEN_MAX: ok"
+ci-host: test-libc-mb-len-max
+
+# NAME_MAX said 63; the filesystem refuses a 60-character name (59 is the limit).
+# The control puts 63 back in a scratch copy of limits.h and the named assertion
+# must be what fails.
+.PHONY: test-libc-name-max test-libc-name-max-negctl
+LIBC_NAME_INC := -Ic/apps/libc/include/uonly -Ic/apps/libc/include -Ic/fs/vfs -Ic/fs/logitfs
+test-libc-name-max-negctl:
+	@d=$(BUILD)/name-max-neg; mkdir -p $$d; \
+	 sed -e 's/^#define NAME_MAX    59 /#define NAME_MAX    63 /' \
+	     -e 's|#include_next <limits.h>|#include "'"$$($(CC) -print-resource-dir)"'/include/limits.h"|' \
+	     c/apps/libc/include/limits.h > $$d/limits.h; \
+	 if $(LIBC_WCHAR_CC) -I$$d $(LIBC_NAME_INC) tests/unit/libc_name_max_test.c > $$d/log 2>&1; then \
+	     echo "NEGATIVE CONTROL FAILED: NAME_MAX 63 compiled"; exit 1; fi; \
+	 grep -q 'libc NAME_MAX differs' $$d/log || \
+	     { echo "NEGATIVE CONTROL FAILED: not on the NAME_MAX assertion"; cat $$d/log; exit 1; }; \
+	 echo "negative control ok: NAME_MAX 63 is rejected"
+test-libc-name-max: test-libc-name-max-negctl
+	$(LIBC_WCHAR_CC) $(LIBC_NAME_INC) tests/unit/libc_name_max_test.c
+	@echo "libc NAME_MAX/PATH_MAX: ok"
+ci-host: test-libc-name-max

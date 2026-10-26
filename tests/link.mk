@@ -35,7 +35,7 @@ test-arp-host:
 	@mkdir -p $(BUILD)
 	@$(CC) -O1 -g -fsanitize=address,undefined -Wall -Wextra -DLOGIT_NET_HOST \
 		-o $(BUILD)/arp_test tests/unit/arp_test.c $(LINK_INC)
-	@./$(BUILD)/arp_test
+	@$(BUILD)/arp_test
 
 # Negative control for the property the whole rewrite exists for: an
 # unsolicited frame may not replace a binding we already hold, and a frame that
@@ -47,7 +47,7 @@ test-arp-negctl:
 	@mkdir -p $(BUILD)
 	@$(CC) -O1 -w -DLOGIT_NET_HOST -DARP_NEGCTL_TRUST_ANY \
 		-o $(BUILD)/arp_negctl tests/unit/arp_test.c $(LINK_INC)
-	@if ./$(BUILD)/arp_negctl >$(BUILD)/arp_negctl.log 2>&1; then \
+	@if $(BUILD)/arp_negctl >$(BUILD)/arp_negctl.log 2>&1; then \
 		echo "NEGATIVE CONTROL FAILED: the suite passes while believing any ARP sender"; \
 		exit 1; \
 	else \
@@ -61,7 +61,7 @@ test-eth-host:
 	@mkdir -p $(BUILD)
 	@$(CC) -O1 -g -fsanitize=address,undefined -Wall -Wextra -Wno-address \
 		-DLOGIT_NET_HOST -o $(BUILD)/eth_test tests/unit/eth_test.c $(LINK_INC)
-	@./$(BUILD)/eth_test
+	@$(BUILD)/eth_test
 
 # Negative control: ETH_NEGCTL_LEGACY restores the three things the 47-line
 # version did -- no pad, no destination filter, no VLAN. The suite MUST fail,
@@ -71,7 +71,7 @@ test-eth-negctl:
 	@mkdir -p $(BUILD)
 	@$(CC) -O1 -w -DLOGIT_NET_HOST -DETH_NEGCTL_LEGACY \
 		-o $(BUILD)/eth_negctl tests/unit/eth_test.c $(LINK_INC)
-	@if ./$(BUILD)/eth_negctl >$(BUILD)/eth_negctl.log 2>&1; then \
+	@if $(BUILD)/eth_negctl >$(BUILD)/eth_negctl.log 2>&1; then \
 		echo "NEGATIVE CONTROL FAILED: the suite passes without framing, filtering or VLAN"; \
 		exit 1; \
 	else \
@@ -104,7 +104,7 @@ test-ip-arp-host:
 	@$(CC) -O1 -g -fsanitize=address,undefined -Wall -Wextra -DLOGIT_NET_HOST \
 		-o $(BUILD)/ip_arp_test tests/unit/ip_arp_test.c c/net/core/route.c \
 		$(LINK_INC) -Ic/net/ip
-	@./$(BUILD)/ip_arp_test
+	@$(BUILD)/ip_arp_test
 
 # Negative control: IP_NEGCTL_ARP_DROP restores the old `if (arp_resolve(...)
 # != 0) return -1;`, and the suite MUST fail. Five checks go red, and the one
@@ -115,7 +115,7 @@ test-ip-arp-negctl:
 	@$(CC) -O1 -w -DLOGIT_NET_HOST -DIP_NEGCTL_ARP_DROP \
 		-o $(BUILD)/ip_arp_negctl tests/unit/ip_arp_test.c c/net/core/route.c \
 		$(LINK_INC) -Ic/net/ip
-	@if ./$(BUILD)/ip_arp_negctl >$(BUILD)/ip_arp_negctl.log 2>&1; then \
+	@if $(BUILD)/ip_arp_negctl >$(BUILD)/ip_arp_negctl.log 2>&1; then \
 		echo "NEGATIVE CONTROL FAILED: the suite passes while ip.c drops on an ARP miss"; \
 		exit 1; \
 	else \

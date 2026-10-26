@@ -233,10 +233,18 @@ def cross_make_case(programs: list[str]) -> None:
         # The private target writes snapshots only; it never requests a product
         # object, archive or disk, even when the caller is building one nearby.
         overlay = directory / "snapshot.mk"
+        # The groups go through the same per-group append + @file path the real
+        # build-config-update uses: $(BUILD_CONFIG_ARGS) on ONE recipe line is
+        # ~175 KB, and Linux refuses a single argument over 128 KiB (E2BIG).
         overlay.write_text(".PHONY: config-test-snapshot\nconfig-test-snapshot:\n"
+                           "\t@mkdir -p $(call build_quote,$(BUILD)/.config) && "
+                           ": > $(call build_quote,$(BUILD_CONFIG_ARGFILE))\n"
+                           "\t$(foreach group,$(BUILD_CONFIG_GROUPS),"
+                           "$(call build_config_append_group,$(group)))\n"
                            "\t@python3 $(call build_quote,$(BUILD_CONFIG_HELPER)) "
                            "--directory=$(call build_quote,$(CONFIG_TEST_SNAPSHOT)) "
-                           "$(BUILD_CONFIG_ARGS)\n")
+                           "$(call build_quote,@$(BUILD_CONFIG_ARGFILE)); rc=$$?; "
+                           "rm -f $(call build_quote,$(BUILD_CONFIG_ARGFILE)); exit $$rc\n")
         expected = None
         for index, make in enumerate(programs):
             destination = directory / f"snapshot-{index}"

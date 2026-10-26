@@ -17,7 +17,7 @@ test-term-wrap-negctl:
 	@mkdir -p $(BUILD)
 	@$(CC) -O2 -Wall -Wextra -DTERM_WRAP_NEGCTL $(TERM_WRAP_INC) \
 		-o $(BUILD)/term_wrap_negctl tests/unit/term_wrap_test.c
-	@if ./$(BUILD)/term_wrap_negctl > $(BUILD)/term_wrap_negctl.log 2>&1; then \
+	@if $(BUILD)/term_wrap_negctl > $(BUILD)/term_wrap_negctl.log 2>&1; then \
 		cat $(BUILD)/term_wrap_negctl.log; \
 		echo "NEGATIVE CONTROL FAILED: the suite passes with one column per byte"; exit 1; \
 	else \
@@ -27,6 +27,6 @@ test-term-wrap-negctl:
 test-term-wrap: test-term-wrap-negctl
 	@$(CC) -O2 -Wall -Wextra $(TERM_WRAP_INC) \
 		-o $(BUILD)/term_wrap_test tests/unit/term_wrap_test.c
-	@./$(BUILD)/term_wrap_test
+	@$(BUILD)/term_wrap_test
 
 ci-host: test-term-wrap

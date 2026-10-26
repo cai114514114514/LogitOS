@@ -23,7 +23,7 @@ test-tcp-server:
 	@mkdir -p $(BUILD)
 	@$(CC) -O2 -Wall -Wextra -o $(BUILD)/tcp_test tests/unit/tcp_test.c \
 		-Itests/unit/tcpstub -Ic/net/transport
-	@./$(BUILD)/tcp_test
+	@$(BUILD)/tcp_test
 
 # THE NEGATIVE CONTROL, and it is not "remove listen" -- that fails everything
 # and proves nothing. This builds a stack that ACCEPTS the connection but
@@ -36,7 +36,7 @@ test-tcp-server-negctl:
 	@mkdir -p $(BUILD)
 	@$(CC) -O2 -w -DTCP_ACCEPT_NEGCTL -o $(BUILD)/tcp_test_srv_negctl \
 		tests/unit/tcp_test.c -Itests/unit/tcpstub -Ic/net/transport
-	@if ./$(BUILD)/tcp_test_srv_negctl >$(BUILD)/tcp_srv_negctl.log 2>&1; then \
+	@if $(BUILD)/tcp_test_srv_negctl >$(BUILD)/tcp_srv_negctl.log 2>&1; then \
 		echo "NEGATIVE CONTROL FAILED: the suite passes with one shared connection block"; \
 		exit 1; \
 	elif ! grep -q "two conns:" $(BUILD)/tcp_srv_negctl.log; then \

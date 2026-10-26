@@ -11,10 +11,10 @@ test-dns-class: test-dns-class-negctl
 	@mkdir -p $(BUILD)
 	@$(CC) -O2 $(DNS_CLASS_FLAGS) tests/unit/dns_class_test.c \
 		-o $(BUILD)/dns_class_test
-	@./$(BUILD)/dns_class_test
+	@$(BUILD)/dns_class_test
 	@$(CC) -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer \
 		$(DNS_CLASS_FLAGS) tests/unit/dns_class_test.c -o $(BUILD)/dns_class_sanitize
-	@./$(BUILD)/dns_class_sanitize
+	@$(BUILD)/dns_class_sanitize
 
 # Watch the original bug fail in both address families, alias traversal, and
 # the public async API. Compilation or an unrelated crash is not a control.
@@ -22,7 +22,7 @@ test-dns-class-negctl:
 	@mkdir -p $(BUILD)
 	@$(CC) -O2 $(DNS_CLASS_FLAGS) -DDNS_NO_CLASS_MATCH \
 		tests/unit/dns_class_test.c -o $(BUILD)/dns_class_negctl
-	@status=0; ./$(BUILD)/dns_class_negctl >$(BUILD)/dns_class_negctl.log 2>&1 || status=$$?; \
+	@status=0; $(BUILD)/dns_class_negctl >$(BUILD)/dns_class_negctl.log 2>&1 || status=$$?; \
 	if [ "$$status" -ne 1 ] || \
 	   ! grep -q 'non-IN address refused (type 1 class 3)' $(BUILD)/dns_class_negctl.log || \
 	   ! grep -q 'non-IN address refused (type 28 class 3)' $(BUILD)/dns_class_negctl.log || \

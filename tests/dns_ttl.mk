@@ -20,10 +20,10 @@ DNS_TTL_ORACLE_age := received TTL at expiry sends a new query
 test-dns-ttl: test-dns-ttl-negctl
 	@mkdir -p $(BUILD)
 	@$(CC) -O2 $(DNS_TTL_FLAGS) tests/unit/dns_ttl_test.c -o $(BUILD)/dns_ttl_test
-	@./$(BUILD)/dns_ttl_test
+	@$(BUILD)/dns_ttl_test
 	@$(CC) -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer \
 		$(DNS_TTL_FLAGS) tests/unit/dns_ttl_test.c -o $(BUILD)/dns_ttl_sanitize
-	@./$(BUILD)/dns_ttl_sanitize
+	@$(BUILD)/dns_ttl_sanitize
 
 test-dns-ttl-negctl: $(DNS_TTL_TARGETS)
 
@@ -34,7 +34,7 @@ $(DNS_TTL_TARGETS): test-dns-ttl-%-negctl:
 	@$(CC) -O2 $(DNS_TTL_FLAGS) -D$(DNS_TTL_MACRO_$*) \
 		tests/unit/dns_ttl_test.c -o $(BUILD)/dns_ttl_$*_negctl
 	@control_rc=0; \
-	./$(BUILD)/dns_ttl_$*_negctl >$(BUILD)/dns_ttl_$*_negctl.log 2>&1 || control_rc=$$?; \
+	$(BUILD)/dns_ttl_$*_negctl >$(BUILD)/dns_ttl_$*_negctl.log 2>&1 || control_rc=$$?; \
 	if [ "$$control_rc" -ne 1 ] || \
 	   ! grep -Fq '$(DNS_TTL_ORACLE_$*)' $(BUILD)/dns_ttl_$*_negctl.log; then \
 		cat $(BUILD)/dns_ttl_$*_negctl.log; \
