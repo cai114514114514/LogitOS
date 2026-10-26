@@ -71,8 +71,13 @@ def negative_control(compiler, work):
     assert result.returncode == 0, result
     result = invoke([broken, source_file(work), "proof"])
     assert result.returncode != 7 and "argument 1 proof" not in result.stdout, result
-    assert "cannot run in the A2 VM" in result.stdout + result.stderr, result
-    print("PASS CLI control: removed native routing sends the existing launcher to a refusing VM")
+    # This used to require "cannot run in the A2 VM". The A2 engine was removed
+    # (4fcc6e6cb, 2026-09-16) and the non-native route now ends in main.c's A3
+    # refusal. The control still proves what it always did -- without native
+    # routing the launcher refuses instead of running the program -- but the
+    # old string made it fail for a reason unrelated to routing.
+    assert "is not an A3 program" in result.stdout + result.stderr, result
+    print("PASS CLI control: removed native routing sends the existing launcher to a refusal")
 
 
 if __name__ == "__main__":

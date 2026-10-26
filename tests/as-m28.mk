@@ -36,49 +36,25 @@
 # process died rather than that an assertion noticed, which is the distinction
 # the whole discipline exists to keep.
 
-.PHONY: test-as-cap test-as-cap-negctl test-as-region-negctl test-as-m28 test-as-cap-os
+# RETIRED WITH THE A2 ENGINE (2026-09-16), and missed by the change that
+# tombstoned test-as and its siblings in the Makefile: the host battery above --
+# test-as-cap (run twice, the second time under -DAS_GC_STRESS), its two
+# controls test-as-region-negctl and test-as-cap-negctl, and the test-as-m28
+# umbrella over the three. tests/unit/as_cap_test.c #included legacy/vm.h and
+# drove as_caps_set()/as_cap_attenuate() on the A2 VM's own objects; both died
+# with the VM, so from that day every one of these targets failed at #include
+# before a single assertion ran -- reported by a host sweep on the macOS dev
+# host, 2026-10-26. The 2026-08-14 watched-failing numbers above stay as the
+# record of what the battery once proved.
+#
+# The capability claim itself lives on where A3 can answer it: test-as-cap-os
+# below cross-compiles the original example and checks three real kernel grants
+# in each build mode. A3 has no in-process attenuation API for a C battery to
+# drive, so the lattice sweep is not rebuilt speculatively here.
+# tests/unit/as_cap_test.c was deleted in the same change -- a red gate that
+# cannot compile is not coverage.
 
-AS_CAP_SRC := tests/unit/as_cap_test.c
-
-# The positive gate. Attenuation is checked over the WHOLE six-bit lattice --
-# 64 x 64 ordered (held, requested) pairs -- rather than a handful of hand-picked
-# ones, so there is no interesting case left to have overlooked, plus the prefix
-# boundary cases where a substring test would let scope("/usr") reach "/usrx".
-test-as-cap: check-abi
-	@mkdir -p $(BUILD)
-	@$(CC) -O2 -Wall -Wextra -o $(BUILD)/as_cap_test $(AS_CAP_SRC) $(AS_CORE) \
-	    -Ic/apps/as -Iinclude/abi -lm
-	@$(BUILD)/as_cap_test
-	@$(CC) -O2 -w -DAS_GC_STRESS -o $(BUILD)/as_cap_gc $(AS_CAP_SRC) $(AS_CORE) \
-	    -Ic/apps/as -Iinclude/abi -lm
-	@$(BUILD)/as_cap_gc
-	@echo "  (and again under -DAS_GC_STRESS -- a slice holds its parent alive)"
-
-# A slice is a VIEW, so the collector must not free the buffer it points into
-# while the slice is live. That is the one M28 object relationship GC stress can
-# break, and it is why the positive gate runs twice.
-
-define AS_M28_NEGCTL
-test-as-$(1)-negctl: check-abi
-	@mkdir -p $$(BUILD)
-	@$$(CC) -O2 -w -D$(2) -o $$(BUILD)/as_cap_$(1)_negctl $$(AS_CAP_SRC) $$(AS_CORE) \
-	    -Ic/apps/as -Iinclude/abi -lm
-	@if $$(BUILD)/as_cap_$(1)_negctl > $$(BUILD)/as_cap_$(1).log 2>&1; then \
-	    echo "FAIL: the M28 battery passed with -D$(2) -- $(3) is not load-bearing"; \
-	    exit 1; \
-	 elif [ $$$$? -gt 1 ]; then \
-	    echo "FAIL: -D$(2) CRASHED the battery (exit $$$$?) instead of failing an assertion."; \
-	    echo "      A dead process is not evidence that a check was missed; see this file's header."; \
-	    tail -3 $$(BUILD)/as_cap_$(1).log; exit 1; \
-	 else \
-	    echo "negative control ok: without $(3) the battery fails --"; \
-	    grep -a "^FAIL" $$(BUILD)/as_cap_$(1).log | head -8; \
-	    tail -1 $$(BUILD)/as_cap_$(1).log; \
-	 fi
-endef
-
-$(eval $(call AS_M28_NEGCTL,region,AS_REGION_NO_BOUNDS,the region bounds check))
-$(eval $(call AS_M28_NEGCTL,cap,AS_CAP_NO_CHECK,the capability check))
+.PHONY: test-as-cap-os
 
 # --- on target: a script denied CAP_FS provably cannot read /etc --------------
 #
@@ -97,7 +73,3 @@ $(eval $(call AS_M28_NEGCTL,cap,AS_CAP_NO_CHECK,the capability check))
 # checks three real kernel grants in each build mode. The standalone shell
 # entry still accepts an existing ISO/disk and validates its installed AEX.
 test-as-cap-os: test-as-capcheck-guest
-
-# Everything M28 can currently prove, in one target.
-test-as-m28: test-as-cap test-as-region-negctl test-as-cap-negctl
-	@echo "PASS: M28 -- capabilities, bounded regions and slices, with both controls watched failing"

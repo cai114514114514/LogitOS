@@ -3,7 +3,6 @@
 # tools/audit_tests.py: recorded debt, gated on GROWTH.
 # The fix for one entry is a single line: make it a
 # prerequisite of its positive counterpart.
-test-as-crosscheck-negctl
 test-asview-negctl
 test-aui-negctl
 test-glass-negctl

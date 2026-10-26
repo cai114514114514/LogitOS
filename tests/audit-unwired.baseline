@@ -17,13 +17,8 @@ test-as-asan
 test-as-bcstable
 test-as-cap
 test-as-cap-os
-test-as-crosscheck
-test-as-diag
-test-as-diag-negctl-guard
-test-as-diag-negctl-line
 test-as-fast
 test-as-gcstress
-test-as-m28
 test-as-os
 test-as-shipped
 test-as-shipped-all

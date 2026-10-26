@@ -15,6 +15,10 @@
 # a held set the test itself installed through as_caps_set(); only this boot
 # proves the set a script runs under is the one the KERNEL granted
 # (SYS_CAP_QUERY -> install_kernel_grant() in c/apps/as/cli/main.c).
+# Correction (2026-10-26, kept beside the original): those 4152 host checks no
+# longer run. tests/unit/as_cap_test.c linked legacy/vm.h and retired with the
+# A2 engine (2026-09-16); tests/as-m28.mk records it. The kernel-grant evidence
+# this boot supplies is now the capability claim's only gate.
 # =============================================================================
 #
 # WHY TWO RUNS OF THE SAME SCRIPT. A single run showing "denied" is equally
