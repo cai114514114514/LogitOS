@@ -25,6 +25,7 @@ headers = [root / 'c/lib/gfx/include/gfx.h',
            root / 'c/apps/text_metrics_wiring.inc']
 headers += sorted((root / 'c/lib/gfx3d/include').glob('openlogit*.h'))
 headers += [h for h in (root / 'c/lib/gfx/include').glob('openlogit*.h') if h.name != 'openlogit_sw.h']
+headers += sorted(h for h in (root / 'c/lib/gfx/include').glob('gfx_*.h') if h.name != 'gfx_ctx.h')
 headers += list((root / 'include/abi').glob('*.h'))
 # A public header's quoted includes are part of the installed ABI too, even
 # when named .inc. The host's broad -I set hid a missing text-metrics include;
