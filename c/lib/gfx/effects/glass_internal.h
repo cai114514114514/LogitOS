@@ -10,6 +10,12 @@ enum { GLASS_BLUR_RADIUS = 6, GLASS_REFLECT_OFFSET = 6,
 /* Widest single box pass any blur tier uses. The reciprocal table and the
  * per-column stack rings in glass_blur.c are sized for it. */
 enum { GLASS_BLUR_RADIUS_MAX = 20 };
+/* SYMMETRIC rim: the ring's peak brightening (of 256, as glass_light's
+ * highlight), and the luma variance of the blurred rim band below which the
+ * reflection is off and at which it reaches full strength (2 and 20 levels
+ * standard deviation). Sampling stops near GLASS_RIM_SAMPLES pixels. */
+enum { GLASS_RING_PEAK = 64, GLASS_RIM_VARIANCE_FLOOR = 4,
+       GLASS_RIM_VARIANCE_FULL = 400, GLASS_RIM_SAMPLES = 4096 };
 
 /* Shape coordinates remain relative to the visible panel. The sample box is
  * separate: blur and refraction need neighbouring backdrop pixels, while only
@@ -56,6 +62,15 @@ struct glass_style {
     int band[GLASS_E_MAX + 1];
     int tilt[GLASS_E_MAX + 1];
     const unsigned char *fres;    /* panel->lut->fres, for lighting() */
+    /* OL_GLASS_RIM_SYMMETRIC only (symmetric == 0 leaves them unread):
+     * ring[] is the view-independent rim brightening by depth, reflect_gain
+     * (0..256) scales the Fresnel reflection by the variance of the blurred
+     * backdrop around the rim, and mean is that backdrop's average colour,
+     * the environment the reflection blends toward. */
+    int symmetric;
+    int reflect_gain;
+    struct glass_color mean;
+    int ring[GLASS_E_MAX + 1];
 };
 
 struct glass_light {
@@ -76,10 +91,26 @@ static inline int glass_clamp(int value, int low, int high)
     return value;
 }
 
+/* NULL and DIRECTIONAL (and any unknown value) render the directional rim.
+ * The negative control forces it for every material. */
+static inline int glass_rim_symmetric(const struct ol_glass_material *mat)
+{
+#ifdef GLASS_RIM_FORCE_DIRECTIONAL
+    (void)mat;
+    return 0;
+#else
+    return mat && mat->rim == OL_GLASS_RIM_SYMMETRIC;
+#endif
+}
+
 void glass_blur(struct glass_panel *panel);
 /* Summed pass radii of the material's blur tier (6 for NULL/REGULAR). */
 int glass_blur_support(const struct ol_glass_material *mat);
 void glass_copy_backdrop(struct glass_panel *panel);
+/* Optical edge width of a panel: min(radius, 22, short side / 2), floored at
+ * 4px, or at 2px for a SYMMETRIC panel whose short side is under 40px. */
+int glass_panel_edge_width(int width, int height, int radius,
+                           const struct ol_glass_material *mat);
 void glass_render(struct glass_panel *panel, struct glass_color tint, int opacity);
 void glass_render_solid(struct glass_panel *panel, struct glass_color tint);
 

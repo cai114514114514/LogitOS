@@ -45,6 +45,7 @@ static const uint32_t *sample_row(const struct glass_panel *panel,
 }
 
 static inline void reflect_neighbour(const struct glass_panel *panel,
+                                     const struct glass_style *style,
                                      int column, int row, struct glass_field field,
                                      struct glass_light *light)
 {
@@ -58,6 +59,19 @@ static inline void reflect_neighbour(const struct glass_panel *panel,
     struct glass_color nearby = read_color(panel->display,
         panel->display->glass_buf[(long)y * panel->sample_width + x]);
     int weight = GLASS_REFLECT_BAND - field.depth;
+
+    if (style->symmetric) {
+        /* The environment slides from the rim's mean backdrop to the content
+         * just outside. Both are real backdrop colours, so the blend stays in
+         * range without the directional rim's 32-level bound. */
+        light->environment.red += (nearby.red - light->environment.red)
+                                  * weight / GLASS_REFLECT_BAND;
+        light->environment.green += (nearby.green - light->environment.green)
+                                    * weight / GLASS_REFLECT_BAND;
+        light->environment.blue += (nearby.blue - light->environment.blue)
+                                   * weight / GLASS_REFLECT_BAND;
+        return;
+    }
 
     /* The old uniform-gray environment could not reflect content just beyond
      * the rim: black and white outside an identical panel produced the same
@@ -94,7 +108,7 @@ static void draw_span(const struct glass_panel *panel, const struct glass_style 
         for (int column = span.start; column < span.end; column++) {
             struct glass_color color = read_color(display, red_row[column]);
             struct glass_light lit = light;
-            reflect_neighbour(panel, column, row, field, &lit);
+            reflect_neighbour(panel, style, column, row, field, &lit);
             color = shade_color(color, style, lit);
             store_pixel(display, &destination[column], color, field.coverage);
         }
@@ -106,7 +120,7 @@ static void draw_span(const struct glass_panel *panel, const struct glass_style 
                 (blue_row[column] >> display->bpos) & 255,
             };
             struct glass_light lit = light;
-            reflect_neighbour(panel, column, row, field, &lit);
+            reflect_neighbour(panel, style, column, row, field, &lit);
             color = shade_color(color, style, lit);
             store_pixel(display, &destination[column], color, field.coverage);
         }
@@ -129,7 +143,7 @@ static void draw_edge(const struct glass_panel *panel, const struct glass_style 
 
         struct glass_color color = sample_color(panel, column, row, field);
         struct glass_light light = lighting(style, field);
-        reflect_neighbour(panel, column, row, field, &light);
+        reflect_neighbour(panel, style, column, row, field, &light);
         color = shade_color(color, style, light);
         store_pixel(display, &destination[column], color, field.coverage);
     }
@@ -146,7 +160,7 @@ static void draw_square_edge(const struct glass_panel *panel,
         struct glass_field field = square_field(panel, column, row);
         struct glass_color color = sample_color(panel, column, row, field);
         struct glass_light light = lighting(style, field);
-        reflect_neighbour(panel, column, row, field, &light);
+        reflect_neighbour(panel, style, column, row, field, &light);
         color = shade_color(color, style, light);
         store_pixel(display, &destination[column], color, 255);
     }
@@ -174,12 +188,72 @@ static void render_square(struct glass_panel *panel, const struct glass_style *s
     }
 }
 
+/* SYMMETRIC: mean and luma variance of the already-blurred halo over the rim
+ * band, from the reflected sample just outside the outline to the inner end
+ * of the bevel. The band is the shape's rectangle widened by the reflection
+ * offset minus its interior shrunk by the edge width; rounded corners do not
+ * need an exact outline for a statistic. The sample box is the whole halo even
+ * under a partial write clip, so a damage repaint measures the same value as
+ * a full frame. A flat backdrop has zero variance and turns the reflection
+ * off; busy content brings it back. */
+static void measure_rim_backdrop(const struct glass_panel *panel,
+                                 struct glass_style *style)
+{
+    const struct ol_display *display = panel->display;
+    int width = panel->sample_width, height = panel->sample_height;
+    int left = panel->x + panel->shape_left - panel->sample_x;
+    int top = panel->y + panel->shape_top - panel->sample_y;
+    int right = panel->x + panel->shape_right - panel->sample_x;
+    int bottom = panel->y + panel->shape_bottom - panel->sample_y;
+    int edge = panel->edge_width;
+    int outer_left = glass_clamp(left - GLASS_REFLECT_OFFSET, 0, width);
+    int outer_right = glass_clamp(right + GLASS_REFLECT_OFFSET, outer_left, width);
+    int outer_top = glass_clamp(top - GLASS_REFLECT_OFFSET, 0, height);
+    int outer_bottom = glass_clamp(bottom + GLASS_REFLECT_OFFSET, outer_top, height);
+    int inner_left = glass_clamp(left + edge, outer_left, outer_right);
+    int inner_right = glass_clamp(right - edge, inner_left, outer_right);
+    int inner_top = glass_clamp(top + edge, outer_top, outer_bottom);
+    int inner_bottom = glass_clamp(bottom - edge, inner_top, outer_bottom);
+    long area = (long)(outer_right - outer_left) * (outer_bottom - outer_top)
+              - (long)(inner_right - inner_left) * (inner_bottom - inner_top);
+    int step = 1;
+    while (area / ((long)step * step) > GLASS_RIM_SAMPLES) step++;
+
+    long long count = 0, red = 0, green = 0, blue = 0, luma = 0, squares = 0;
+    for (int y = outer_top; y < outer_bottom; y += step) {
+        const uint32_t *line = display->glass_buf + (long)y * width;
+        int inner_row = y >= inner_top && y < inner_bottom;
+        for (int x = outer_left; x < outer_right; x += step) {
+            if (inner_row && x >= inner_left && x < inner_right) {
+                x += (inner_right - x + step - 1) / step * step - step;
+                continue;
+            }
+            struct glass_color color = read_color(panel->display, line[x]);
+            int tone = color_luma(color);
+            red += color.red;
+            green += color.green;
+            blue += color.blue;
+            luma += tone;
+            squares += tone * tone;
+            count++;
+        }
+    }
+    if (!count) return;
+    style->mean = (struct glass_color){(int)(red / count), (int)(green / count),
+                                       (int)(blue / count)};
+    long long variance = (count * squares - luma * luma) / (count * count);
+    long long gain = (variance - GLASS_RIM_VARIANCE_FLOOR) * 256
+                   / (GLASS_RIM_VARIANCE_FULL - GLASS_RIM_VARIANCE_FLOOR);
+    style->reflect_gain = gain < 0 ? 0 : gain > 256 ? 256 : (int)gain;
+}
+
 void glass_render(struct glass_panel *panel, struct glass_color tint, int opacity)
 {
     int refraction = panel->edge_width < 18 ? panel->edge_width : 18;
     panel->lut = glass_lut_get(panel->edge_width, refraction, &panel->lut_own);
     struct glass_style style;
     prepare_style(&style, panel, tint, opacity);
+    if (style.symmetric) measure_rim_backdrop(panel, &style);
 
     if (panel->radius == 0) {
         render_square(panel, &style);

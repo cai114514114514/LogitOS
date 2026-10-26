@@ -3,13 +3,18 @@
  * The optical lookup tables remain in openlogit_glass.c. */
 #include "glass_internal.h"
 
-static int panel_edge_width(int width, int height, int radius)
+int glass_panel_edge_width(int width, int height, int radius,
+                           const struct ol_glass_material *mat)
 {
     int short_side = width < height ? width : height;
     if (radius > short_side / 2) radius = short_side / 2;
     int edge = radius < 22 ? radius : 22;
     if (edge > short_side / 2) edge = short_side / 2;
-    return edge < 4 ? 4 : edge;
+    /* A 4px bevel is a third of a 12px chip. The directional rim keeps it
+     * (its output is fixed); the symmetric ring has no dark side to hide in a
+     * wider band, so small SYMMETRIC panels may use a 2px lens. */
+    int least = glass_rim_symmetric(mat) && short_side < 40 ? 2 : 4;
+    return edge < least ? least : edge;
 }
 
 int ol_display_glass_sample_halo_ex(int width, int height, int radius,
@@ -20,7 +25,7 @@ int ol_display_glass_sample_halo_ex(int width, int height, int radius,
     /* Negative control: a panel-local blur ignores its neighbouring scene. */
     return 0;
 #else
-    int edge = panel_edge_width(width, height, radius);
+    int edge = glass_panel_edge_width(width, height, radius, mat);
     int refract = edge < 18 ? edge : 18;
     /* The blue channel's ±4% fan can round one pixel beyond refract (19 when
      * refract is 18). The LUT test checks every reachable edge geometry against
@@ -40,7 +45,7 @@ int ol_display_glass_sample_halo(int width, int height, int radius)
 
 static int prepare_panel(struct glass_panel *panel, struct ol_display *display,
                          int x, int y, int width, int height, int radius,
-                         unsigned cut)
+                         unsigned cut, const struct ol_glass_material *mat)
 {
     const struct ol_pixel_target *target = &display->target;
     if (!target->px || width <= 0 || height <= 0 || radius < 0) return 0;
@@ -101,6 +106,7 @@ static int prepare_panel(struct glass_panel *panel, struct ol_display *display,
         .inner_y = shape_height / 2 - radius,
         .radius = radius,
         .cut = cut,
+        .mat = mat,
     };
 
     if (target->clip_on) {
@@ -114,7 +120,7 @@ static int prepare_panel(struct glass_panel *panel, struct ol_display *display,
 
     /* A fixed 22px bevel overwhelmed 1px sidebars and 10px buttons. Bound
      * optical thickness by the corner; the dock keeps its wider lens. */
-    panel->edge_width = panel_edge_width(shape_width, shape_height, radius);
+    panel->edge_width = glass_panel_edge_width(shape_width, shape_height, radius, mat);
     return 1;
 }
 
@@ -162,8 +168,7 @@ static void liquid_glass_impl(struct ol_display *display,
                               const struct ol_glass_material *mat)
 {
     struct glass_panel panel;
-    if (!prepare_panel(&panel, display, x, y, width, height, radius, cut)) return;
-    panel.mat = mat;
+    if (!prepare_panel(&panel, display, x, y, width, height, radius, cut, mat)) return;
 
 #ifndef GLASS_IGNORE_REDUCE_TRANSPARENCY
     if (display->reduce_transparency) {
