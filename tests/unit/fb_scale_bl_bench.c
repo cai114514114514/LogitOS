@@ -60,6 +60,8 @@ int  text_line_height(int px) { return px; }
  * exercised. */
 const unsigned char *gfx_mask_corner(int kind, int w, int h, int param)
 { (void)kind; (void)w; (void)h; (void)param; return NULL; }
+void gfx_mask_set_arena(void *buf, unsigned long bytes) { (void)buf; (void)bytes; }
+void gfx_mask_flush_all(void) {}
 int gfx_shadow_falloff(long d256, long blur256) { (void)d256; (void)blur256; return 0; }
 void glass_build_lut(int E, int refract) { (void)E; (void)refract; }
 unsigned gl_isqrt(unsigned long v) { (void)v; return 0; }
