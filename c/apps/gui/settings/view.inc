@@ -38,14 +38,14 @@ static void page_appearance(struct aui_rect body)
     for (int dark = 0; dark < 2; dark++) {
         int x = preview.x + dark * (half + 12);
         if (preview_draw(x, preview.y, half, dark))
-            aui_text_sz(x + 12, preview.y + 36, "Preview unavailable", AUI_MUTED, AUI_FS_CAPTION);
+            aui_text_sz(x + 12, preview.y + 36, "无法预览", AUI_MUTED, AUI_FS_CAPTION);
         aui_stroke(x, preview.y, half, 88, 8, v_dark == dark ? 2 : 1,
                    v_dark == dark ? AUI_ACCENT : AUI_BORDER);
-        aui_badge(x + 10, preview.y + 8, dark ? "Dark" : "Light", dark ? 0xCAD7EA : 0x55749A);
+        aui_badge(x + 10, preview.y + 8, dark ? "深色" : "浅色", dark ? 0xCAD7EA : 0x55749A);
     }
     struct aui_rect row = group(&body, 60);
-    aui_label(row.x, row.y, "Dark appearance", AUI_TEXT);
-    aui_text_sz(row.x, row.y + 22, "Changes your desktop immediately", AUI_MUTED, AUI_FS_CAPTION);
+    aui_label(row.x, row.y, "深色外观", AUI_TEXT);
+    aui_text_sz(row.x, row.y + 22, "立即更改你的桌面", AUI_MUTED, AUI_FS_CAPTION);
     aim("dark", row.x + row.w - 24, row.y + 14);
     if (aui_toggle(row.x + row.w - 46, row.y + 2, &v_dark, 1)) {
         /* Do not acknowledge a concurrent change merely because our own theme
@@ -55,10 +55,10 @@ static void page_appearance(struct aui_rect body)
         aui_set_dark(v_dark);
         if (changed_elsewhere && edited) conflict = 1;
         else last_gen = setting_gen();
-        notice("Appearance updated immediately", 0);
+        notice("外观已更新", 0);
     }
     row = group(&body, 154);
-    aui_label(row.x, row.y, "Accent colour", AUI_TEXT);
+    aui_label(row.x, row.y, "强调色", AUI_TEXT);
     static const unsigned colours[] = {0x5088F2, 0x249E91, 0x8D6ADB, 0xD88535, 0xD76C91};
     for (int i = 0; i < 5; i++) {
         int x = row.x + row.w - 5 * 34 + i * 34;
@@ -68,7 +68,7 @@ static void page_appearance(struct aui_rect body)
         }
         aui_circle(x + 14, row.y + 9, 8, colours[i]);
     }
-    const char *const labels[] = {"Hue", "Saturation", "Lightness"};
+    const char *const labels[] = {"色相", "饱和度", "亮度"};
     int *const values[] = {&v_accent_h, &v_accent_s, &v_accent_l};
     for (int i = 0; i < 3; i++) {
         int y = row.y + 34 + i * 30;
@@ -86,21 +86,21 @@ static void page_appearance(struct aui_rect body)
     struct aui_rect motion = {row.x, row.y, half_row, row.h};
     struct aui_rect transparency = {row.x + half_row, row.y,
                                     row.w - half_row, row.h};
-    toggle_row(motion, "Reduce motion", "Fewer animations", &v_reduce_motion, F_MOTION);
+    toggle_row(motion, "减弱动态效果", "减少动画", &v_reduce_motion, F_MOTION);
     aim("motion", motion.x + motion.w - 24, motion.y + 14);
-    toggle_row(transparency, "Reduce transparency", "Solid glass panels",
+    toggle_row(transparency, "降低透明度", "玻璃面板改为不透明",
                &v_reduce_transparency, F_TRANSPARENCY);
     aim("transparency", transparency.x + transparency.w - 24, transparency.y + 14);
 }
 static void page_desktop(struct aui_rect body)
 {
     struct aui_rect row = group(&body, 126);
-    aui_label(row.x, row.y, "Wallpaper", AUI_TEXT);
-    aui_text_sz(row.x, row.y + 24, "Your selection takes effect after restarting.", AUI_MUTED, AUI_FS_CAPTION);
+    aui_label(row.x, row.y, "壁纸", AUI_TEXT);
+    aui_text_sz(row.x, row.y + 24, "所选壁纸将在重新启动后生效。", AUI_MUTED, AUI_FS_CAPTION);
     if (aui_select(row.x, row.y + 52, row.w, wp_labels, NWP, &wp_sel)) change(F_WALLPAPER);
-    if (wp_sel < 0) aui_text_sz(row.x, row.y + 86, "Custom wallpaper is preserved until you choose another.", AUI_MUTED, AUI_FS_CAPTION);
+    if (wp_sel < 0) aui_text_sz(row.x, row.y + 86, "自定壁纸会一直保留，直到你选择其他壁纸。", AUI_MUTED, AUI_FS_CAPTION);
     row = group(&body, 72);
-    toggle_row(row, "Reopen windows on login", "Restore your previous workspace", &v_restore, F_RESTORE);
+    toggle_row(row, "登录时重新打开窗口", "恢复上次的工作区", &v_restore, F_RESTORE);
     aim("restore", row.x + row.w - 24, row.y + 14);
     /* Keep the animation harness's established serial contract. */
     static int anim_x, anim_y;
@@ -114,20 +114,20 @@ static void page_desktop(struct aui_rect body)
     int count = 0;
     for (int i = 0; i < nkv; i++) if (!strncmp(kv_key[i], "win.", 4)) count++;
     char text[64];
-    snprintf(text, sizeof text, "%d saved window positions", count);
+    snprintf(text, sizeof text, "已存储 %d 个窗口位置", count);
     aui_label(row.x, row.y, text, AUI_TEXT);
-    aui_text_sz(row.x, row.y + 28, "Inspect stored preferences in All settings.", AUI_MUTED, AUI_FS_CAPTION);
+    aui_text_sz(row.x, row.y + 28, "可在“所有设置”中查看已存储的偏好设置。", AUI_MUTED, AUI_FS_CAPTION);
     row = group(&body, 72);
-    toggle_row(row, "Restore browser tabs", "Reopen the previous tabs when Browser starts", &preferences.browser_restore, F_browser_restore);
+    toggle_row(row, "恢复浏览器标签页", "Browser 启动时重新打开上次的标签页", &preferences.browser_restore, F_browser_restore);
 }
 static void page_network(struct aui_rect body)
 {
     struct aui_rect row = group(&body, 74);
-    toggle_row(row, "Automatic configuration", "DHCP chooses your address at the next startup", &v_dhcp, F_DHCP);
+    toggle_row(row, "自动配置", "下次启动时由 DHCP 分配地址", &v_dhcp, F_DHCP);
     aim("dhcp", row.x + row.w - 24, row.y + 14);
     row = group(&body, 228);
-    aui_label(row.x, row.y, "Manual IPv4 configuration", AUI_TEXT);
-    const char *const labels[] = {"IP address", "Subnet mask", "Router", "DNS server"};
+    aui_label(row.x, row.y, "手动配置 IPv4", AUI_TEXT);
+    const char *const labels[] = {"IP 地址", "子网掩码", "路由器", "DNS 服务器"};
     const char *const ids[] = {"ip", "mask", "router", "dns"};
     char *const values[] = {v_ip, v_mask, v_gw, v_dns};
     for (int i = 0; i < 4; i++) {
@@ -137,7 +137,7 @@ static void page_network(struct aui_rect body)
             change((enum setting_field)(F_IP + i));
         aim(ids[i], row.x + 190, y + 14);
     }
-    aui_text_sz(body.x, body.y + 4, "Network changes take effect after restarting.", AUI_MUTED, AUI_FS_CAPTION);
+    aui_text_sz(body.x, body.y + 4, "网络更改将在重新启动后生效。", AUI_MUTED, AUI_FS_CAPTION);
 }
 #include "desktop.inc"
 
@@ -159,7 +159,7 @@ static int contains(const char *text, const char *query)
 }
 static void page_all(struct aui_rect body)
 {
-    if (aui_textfield_ex(body.x, body.y, body.w, filter, sizeof filter, "Search keys or values", 1))
+    if (aui_textfield_ex(body.x, body.y, body.w, filter, sizeof filter, "搜索键或值", 1))
         all_scroll = all_sel = 0;
     aim("search", body.x + 100, body.y + 14);
     aui_cut_top(&body, 42);
@@ -172,18 +172,18 @@ static void page_all(struct aui_rect body)
         cells[count * 3 + 2] = kv_src[i];
         count++;
     }
-    static const char *const columns[] = {"Key", "Value", "Source"};
+    static const char *const columns[] = {"键", "值", "来源"};
     int widths[] = {(body.w - 100) / 2, (body.w - 100) / 2, 80};
     aui_table(body.x, body.y, body.w, body.h - 66, columns, widths, 3, cells, count, &all_sel, &all_scroll);
-    if (!count) aui_label(body.x + 16, body.y + 48, "No matching settings", AUI_MUTED);
-    aui_text_sz(body.x, body.y + body.h - 56, "stored = saved value   default = built in   rejected = ignored",
+    if (!count) aui_label(body.x + 16, body.y + 48, "没有匹配的设置", AUI_MUTED);
+    aui_text_sz(body.x, body.y + body.h - 56, "stored = 已存储的值   default = 内建默认值   rejected = 已忽略",
                 AUI_MUTED, AUI_FS_CAPTION);
     if (setting_diag() & ~LOGIT_SETD_NOFILE)
-        aui_text_sz(body.x, body.y + body.h - 36, "Some settings could not be loaded. Review rejected values.", AUI_WARNING, AUI_FS_CAPTION);
+        aui_text_sz(body.x, body.y + body.h - 36, "部分设置无法载入，请检查被忽略的值。", AUI_WARNING, AUI_FS_CAPTION);
     else if (nkv == MAXKV)
-        aui_text_sz(body.x, body.y + body.h - 36, "Display limit reached; additional keys may be omitted.", AUI_WARNING, AUI_FS_CAPTION);
+        aui_text_sz(body.x, body.y + body.h - 36, "已达到显示上限，其余的键可能未列出。", AUI_WARNING, AUI_FS_CAPTION);
     if (aui_button_ex(body.x + body.w - 142, body.y + body.h - 30, 142, 28,
-                      "Reset all settings...", AUI_V_DANGER, 1)) reset_pending = 1;
+                      "重置所有设置…", AUI_V_DANGER, 1)) reset_pending = 1;
 }
 static void frame(void)
 {
@@ -202,11 +202,11 @@ static void frame(void)
     aui_list(12, 100, 152, 236, tabs, NTAB, &tab, &nav_scroll);
     if (previous != tab) aui_anim_reset();
     aim("navigation", 70, 114);
-    aui_text_sz(20, height - 36, "Personalise your space", AUI_MUTED, AUI_FS_CAPTION);
+    aui_text_sz(20, height - 36, "打造你的工作空间", AUI_MUTED, AUI_FS_CAPTION);
     if (qmp_probes_on()) aui_fill(4, 4, 6, 6, probe_rgb[tab]);   /* see qmp_probe.h */
-    const char *const descriptions[] = {"Make this space your own", "Your wallpaper and workspace",
-        "Manage your connection", "How your applications appear", "Make your pointer feel right",
-        "Your menu-bar clock", "Search and inspect your preferences", "About this computer"};
+    const char *const descriptions[] = {"让这里更像你自己的空间", "壁纸与工作区",
+        "管理网络连接", "应用在程序坞中的显示方式", "让指针用起来更顺手",
+        "菜单栏时钟", "搜索并查看偏好设置", "关于这台电脑"};
     aui_heading(204, 20, tabs[tab], AUI_TEXT);
     aui_text_sz(204, 54, descriptions[tab], AUI_MUTED, AUI_FS_CAPTION);
     struct aui_rect body = aui_r(204, 88, width - 232, height - 158);
@@ -222,19 +222,19 @@ static void frame(void)
     }
     int footer = height - 64;
     aui_hairline(192, footer, width - 208);
-    const char *status = message[0] ? message : edited ? "Unsaved changes" : "Up to date";
+    const char *status = message[0] ? message : edited ? "有未存储的更改" : "已是最新";
     aui_text_sz(204, footer + 7, status, message_error ? AUI_ERROR : AUI_MUTED, AUI_FS_CAPTION);
-    if (aui_button_ex(width - 116, footer + 30, 88, 28, "Apply", AUI_V_PRIMARY, edited && !conflict)) apply_all();
+    if (aui_button_ex(width - 116, footer + 30, 88, 28, "应用", AUI_V_PRIMARY, edited && !conflict)) apply_all();
     aim("apply", width - 72, footer + 44);
-    if (aui_button_ex(width - 212, footer + 30, 88, 28, "Revert", AUI_V_SECONDARY, edited || conflict)) {
+    if (aui_button_ex(width - 212, footer + 30, 88, 28, "还原", AUI_V_SECONDARY, edited || conflict)) {
         /* Drafts were never pushed to the store. Reloading the disk here would
          * erase another process's uncommitted live values, so just read it. */
-        load_all(); notice("Draft discarded", 0);
+        load_all(); notice("已放弃草稿", 0);
     }
     aim("revert", width - 168, footer + 44);
-    if (close_pending && aui_dialog_begin("Unsaved changes", 420, 170)) {
-        aui_label(20, 54, "Save your changes before closing?", AUI_TEXT);
-        const char *const actions[] = {"Save", "Discard", "Cancel"};
+    if (close_pending && aui_dialog_begin("有未存储的更改", 420, 170)) {
+        aui_label(20, 54, "关闭前要存储更改吗？", AUI_TEXT);
+        const char *const actions[] = {"存储", "不存储", "取消"};
         int action = aui_dialog_buttons(actions, 3);
         if (action == 0) {
             if (apply_all()) app_exit(0);
@@ -244,17 +244,17 @@ static void frame(void)
         if (action == 2) close_pending = 0;
         aui_dialog_end();
     }
-    if (reset_pending && aui_dialog_begin("Reset all settings?", 450, 190)) {
-        aui_label(20, 54, "This also removes saved application preferences.", AUI_TEXT);
-        aui_text_sz(20, 82, "Your current draft will be discarded.", AUI_MUTED, AUI_FS_CAPTION);
+    if (reset_pending && aui_dialog_begin("要重置所有设置吗？", 450, 190)) {
+        aui_label(20, 54, "这也会移除已存储的应用偏好设置。", AUI_TEXT);
+        aui_text_sz(20, 82, "当前草稿将被放弃。", AUI_MUTED, AUI_FS_CAPTION);
         /* Escape chooses the last button in AUI; keep Cancel last as well as
          * the default, by handling destructive confirmation with explicit buttons. */
-        if (aui_button_ex(234, 138, 90, 28, "Reset", AUI_V_DANGER, 1)) {
-            if (setting_reset() < 0) notice("Could not reset settings", 1);
-            else { load_all(); sys_ui_dark(setting_int("ui.dark", 0)); load_all(); notice("Settings reset", 0); }
+        if (aui_button_ex(234, 138, 90, 28, "重置", AUI_V_DANGER, 1)) {
+            if (setting_reset() < 0) notice("无法重置设置", 1);
+            else { load_all(); sys_ui_dark(setting_int("ui.dark", 0)); load_all(); notice("设置已重置", 0); }
             reset_pending = 0;
         }
-        if (aui_button_ex(334, 138, 90, 28, "Cancel", AUI_V_SECONDARY, 1)) reset_pending = 0;
+        if (aui_button_ex(334, 138, 90, 28, "取消", AUI_V_SECONDARY, 1)) reset_pending = 0;
         aui_dialog_end();
     }
     /* GFX preview blits bypass AUI's damage tracking. Include the content area

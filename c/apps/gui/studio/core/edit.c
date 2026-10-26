@@ -4,7 +4,7 @@
 int st_engine_insert(StEngine *e,const char *text,int bytes)
 {
     StDocument *d=st_current(e);if(!d)return -1;
-    if(st_replace(d,text,bytes)<0){st_engine_notice(e,"Edit rejected: invalid UTF-8, document limit or allocation failure");return -1;}
+    if(st_replace(d,text,bytes)<0){st_engine_notice(e,"编辑被拒绝：UTF-8 无效、超出文档上限或内存分配失败");return -1;}
     st_changed(e);return 0;
 }
 int st_engine_undo(StEngine *e,int redo)
@@ -36,7 +36,7 @@ int st_engine_newline(StEngine *e)
 int st_engine_find(StEngine *e,const char *query)
 {
     StDocument *d=st_current(e);if(!d)return -1;int p=st_find(d,query,d->caret);
-    if(p<0){st_engine_notice(e,"Text not found");return -1;}
+    if(p<0){st_engine_notice(e,"未找到文本");return -1;}
     return st_engine_select(e,p+(int)strlen(query),p);
 }
 int st_engine_replace_found(StEngine *e,const char *query,const char *replacement)

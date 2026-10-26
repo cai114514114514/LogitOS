@@ -140,7 +140,7 @@ int st_engine_select_problem(StEngine *e, int index)
     if (tab < 0 || tab >= e->state.count ||
         e->state.docs[tab].revision != e->state.problem_revision ||
         !st_runner_imports_current(&e->state.runner, e->state.docs, e->state.count)) {
-        st_engine_notice(e, "Diagnostics belong to an older version. Check again.");
+        st_engine_notice(e, "诊断属于旧版本，请重新检查。");
         return -1;
     }
     if (index < 0 || index >= e->state.problem_count) {
@@ -155,7 +155,7 @@ int st_engine_select_problem(StEngine *e, int index)
     StDocument *document = st_current(e);
     if (document->length != p->source_length ||
         st_hash(document->text, (size_t)document->length) != p->source_checksum) {
-        st_engine_notice(e, "This source changed after the check. Check again.");
+        st_engine_notice(e, "检查之后源代码已更改，请重新检查。");
         return -1;
     }
     return st_engine_select(e, p->start, p->end);

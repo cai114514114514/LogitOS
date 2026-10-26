@@ -59,6 +59,7 @@ void ag_document_free(struct ag_document *);
 int ag_utf8(const char *, uint32_t);
 uint32_t ag_checksum(const void *, size_t);
 const char *ag_phase_name(unsigned);
+const char *ag_phase_label(unsigned);
 int ag_citations_valid(const struct ag_task *,const char *);
 int ag_manual_preserved(const char *base,const char *edited,const char *candidate);
 /* Slots contain state AND document, so a receipt and its effect share the

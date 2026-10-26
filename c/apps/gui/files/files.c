@@ -8,7 +8,7 @@
 
 /* Logit Files -- a macOS-Finder-style file manager (ring-3, aui toolkit).
  *
- * Layout: a sectioned SIDEBAR (我的 Project / 系统位置 / 位置) on the left, a
+ * Layout: a sectioned SIDEBAR (我的项目 / 系统位置 / 位置) on the left, a
  * TOOLBAR (back + folder title + Grid/List toggle + New) across the top of the
  * main area, a content view that is either an ICON GRID or a LIST, and the
  * Project pane on the right. Multi-select (plain/shift/ctrl), right-click
@@ -507,7 +507,7 @@ static void commit_newfolder(void)
     char np[PMAX];
     pjoin(np, cwd, editbuf, PMAX);
     if (make_dir(np) < 0) {
-        scpy(agent_notice, "Project 未创建，请检查名称和权限", sizeof agent_notice);
+        scpy(agent_notice, "项目未创建，请检查名称和权限", sizeof agent_notice);
         return;
     }
     agent_notice[0] = 0;
@@ -530,19 +530,19 @@ static void do_get_info(void)
     if (item_path(idx, path, PMAX) < 0) return;
 
     char num[24]; int oi = 0;
-    append(info_text, &oi, (int)sizeof info_text, "Name: ");
+    append(info_text, &oi, (int)sizeof info_text, "名称：");
     append(info_text, &oi, (int)sizeof info_text, ent[idx].name);
     append(info_text, &oi, (int)sizeof info_text, "\n");
-    append(info_text, &oi, (int)sizeof info_text, ent[idx].is_dir ? "Type: Project\n" : "Type: File\n");
+    append(info_text, &oi, (int)sizeof info_text, ent[idx].is_dir ? "类型：项目\n" : "类型：文件\n");
     if (ent[idx].is_dir) {
         itoa_(dir_count(path), num);
-        append(info_text, &oi, (int)sizeof info_text, "Items: ");
+        append(info_text, &oi, (int)sizeof info_text, "项目数：");
         append(info_text, &oi, (int)sizeof info_text, num);
     } else {
         itoa_(ent[idx].size, num);
-        append(info_text, &oi, (int)sizeof info_text, "Size: ");
+        append(info_text, &oi, (int)sizeof info_text, "大小：");
         append(info_text, &oi, (int)sizeof info_text, num);
-        append(info_text, &oi, (int)sizeof info_text, " bytes");
+        append(info_text, &oi, (int)sizeof info_text, " 字节");
     }
     info_open = 1;
 }
@@ -578,14 +578,14 @@ static void mi_open(void)   { if (sel_count == 1) do_open(find_ent(sel[0])); }
 static void mi_copy(void)   { do_copy(0); }
 static void mi_cut(void)    { do_copy(1); }
 static const struct menu_item MENU[] = {
-    { "Open",        mi_open },
-    { "New Project", start_newfolder },
-    { "Rename",      start_rename },
-    { "Delete",      do_delete },
-    { "Copy",        mi_copy },
-    { "Cut",         mi_cut },
-    { "Paste",       do_paste },
-    { "Get Info",    do_get_info },
+    { "打开",        mi_open },
+    { "新建项目", start_newfolder },
+    { "重命名",      start_rename },
+    { "删除",      do_delete },
+    { "复制",        mi_copy },
+    { "剪切",         mi_cut },
+    { "粘贴",       do_paste },
+    { "显示简介",    do_get_info },
 };
 #define MENU_N (int)(sizeof MENU / sizeof MENU[0])
 
@@ -603,20 +603,20 @@ struct bar_item { const char *menu, *label; char key; void (*run)(void); int (*c
 static int ck_hidden(void) { return show_hidden; }
 static int ck_icons(void)  { return view_mode == 0; }   /* 0 = icon grid */
 static const struct bar_item BAR[] = {
-    { "File", "New Project",       'N', start_newfolder, 0 },
-    { "File", "Open",              'O', mi_open,         0 },
-    { "File", 0,                    0,  0,               0 },
-    { "File", "Get Info",          'I', do_get_info,     0 },
-    { "File", "Rename",             0,  start_rename,    0 },
-    { "File", 0,                    0,  0,               0 },
-    { "File", "Delete",             0,  do_delete,       0 },
-    { "Edit", "Cut",               'X', mi_cut,          0 },
-    { "Edit", "Copy",              'C', mi_copy,         0 },
-    { "Edit", "Paste",             'V', do_paste,        0 },
-    { "View", "as Icons",           0,  mb_view,         ck_icons },
-    { "View", "Show Hidden Files",  0,  mb_hidden,       ck_hidden },
-    { "Go",   "Enclosing Folder",  '[', mb_up,           0 },
-    { "Go",   "Ask Logit...",      'L', mb_ask,          0 },
+    { "文件", "新建项目",       'N', start_newfolder, 0 },
+    { "文件", "打开",              'O', mi_open,         0 },
+    { "文件", 0,                    0,  0,               0 },
+    { "文件", "显示简介",          'I', do_get_info,     0 },
+    { "文件", "重命名",             0,  start_rename,    0 },
+    { "文件", 0,                    0,  0,               0 },
+    { "文件", "删除",             0,  do_delete,       0 },
+    { "编辑", "剪切",               'X', mi_cut,          0 },
+    { "编辑", "复制",              'C', mi_copy,         0 },
+    { "编辑", "粘贴",             'V', do_paste,        0 },
+    { "显示", "以图标显示",           0,  mb_view,         ck_icons },
+    { "显示", "显示隐藏文件",  0,  mb_hidden,       ck_hidden },
+    { "前往", "上层文件夹",  '[', mb_up,           0 },
+    { "前往", "询问 Logit…",      'L', mb_ask,          0 },
 };
 #define BAR_N (int)(sizeof BAR / sizeof BAR[0])
 static struct mb_builder bar_blob;
@@ -721,7 +721,7 @@ static void fit_label(const char *s, int maxpx, char *out, int omax)
  * painter. */
 struct side { const char *label; const char *path; int icon; int header; int apps; };
 static const struct side SIDE[] = {
-    { "我的 Project", 0, 0, 1, 0 },
+    { "我的项目", 0, 0, 1, 0 },
     { "文稿",        "/docs",  GICON_DOC,      0, 0 },
     { "系统位置",     0, 0, 1, 0 },
     { "字体",        "/fonts", GICON_FOLDER,   0, 0 },
@@ -792,8 +792,8 @@ static void draw_toolbar(void)
         else                    leaf_of(cwd, title, sizeof title);
         aui_heading(CX + 48, 12, title, AUI_TEXT);
     }
-    glass_btn(TB_VIEW_X, TB_BTN_Y, TB_VIEW_W, TB_BTN_H, view_mode ? "Icons" : "List");
-    glass_btn(TB_NEW_X, TB_BTN_Y, TB_NEW_W, TB_BTN_H, "+Project");
+    glass_btn(TB_VIEW_X, TB_BTN_Y, TB_VIEW_W, TB_BTN_H, view_mode ? "图标" : "列表");
+    glass_btn(TB_NEW_X, TB_BTN_Y, TB_NEW_W, TB_BTN_H, "新建项目");
 }
 
 /* One draw pass for both views. The two used to be separate functions that
@@ -854,7 +854,7 @@ static void draw_info(void)
     int pw = 248, ph = 104, px = CX + (CWID - pw) / 2, py = CY + (CHGT - ph) / 2;
     gui_rect(px - 1, py - 1, pw + 2, ph + 2, AUI_BORDER);
     gui_rect(px, py, pw, ph, AUI_SURFACE);
-    aui_label(px + 12, py + 10, "Get Info", AUI_TEXT);
+    aui_label(px + 12, py + 10, "简介", AUI_TEXT);
     int ly = py + 34; char line[128]; int li = 0;
     for (int i = 0; ; i++) {
         char ch = info_text[i];
@@ -863,7 +863,7 @@ static void draw_info(void)
             if (ch == 0) break;
         } else if (li < 120) line[li++] = ch;
     }
-    if (aui_button(px + pw - 60, py + ph - 28, 50, 22, "OK")) info_open = 0;
+    if (aui_button(px + pw - 60, py + ph - 28, 50, 22, "好")) info_open = 0;
 }
 
 static void draw_menu(void)
@@ -895,7 +895,7 @@ static void frame(void)
     draw_project();
     if (info_open) draw_info();
     if (menu_open) draw_menu();
-    if (aui_button(CONTENT_RIGHT - 118, WINH - 30, 108, 24, "Ask Logit")) ask_logit();
+    if (aui_button(CONTENT_RIGHT - 118, WINH - 30, 108, 24, "询问 Logit")) ask_logit();
     if (agent_notice[0]) aui_label(CX + 8, WINH - 27, agent_notice, AUI_MUTED);
 
     /* The rectangle covers the sidebar AND the content area, because both are

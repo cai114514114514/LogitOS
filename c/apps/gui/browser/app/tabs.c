@@ -87,7 +87,7 @@ int tabs_new(const char *url)
         g_tab[i].used = 1;
         g_tab[i].hcur = -1; g_tab[i].htop = -1;
         sncpy(g_tab[i].url, url ? url : "", TAB_URL);
-        sncpy(g_tab[i].title, "New Tab", TAB_TITLE);
+        sncpy(g_tab[i].title, "新标签页", TAB_TITLE);
         if (g_active < 0) g_active = i;
         return i;
     }

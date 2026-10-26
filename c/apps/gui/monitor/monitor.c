@@ -120,10 +120,10 @@ static int sless(const char *a, const char *b)
 /* ---- state -------------------------------------------------------------- */
 
 enum { T_PROC = 0, T_MEM, T_SYS, NTAB };
-static const char *const tabs[NTAB] = { "Processes", "Memory", "System" };
+static const char *const tabs[NTAB] = { "进程", "内存", "系统" };
 
 enum { S_PID = 0, S_NAME, S_FILES, NSORT };
-static const char *const sorts[NSORT] = { "PID", "Name", "Files" };
+static const char *const sorts[NSORT] = { "PID", "名称", "文件数" };
 
 static struct logit_procinfo pr[MAXPROC];
 static int npr;
@@ -152,7 +152,7 @@ static unsigned long long t0_mono, t0_rtc;   /* baselines for the uptime check *
  * for the call, so the strings live in a static block rebuilt each refresh. */
 static char  cellbuf[MAXPROC][NCOL][28];
 static const char *cells[MAXPROC * NCOL];
-static const char *cols[NCOL]  = { "PID", "Process", "Kind", "State", "Parent", "Files" };
+static const char *cols[NCOL]  = { "PID", "进程", "类型", "状态", "父进程", "文件数" };
 static const int   colw[NCOL]  = { 54, 190, 74, 84, 68, 60 };
 
 /* ---- data --------------------------------------------------------------- */
@@ -193,12 +193,12 @@ static void build_cells(void)
         /* No " *" after the Monitor's own row any more: a bare asterisk on a
          * process name read as a glitch on the 2026-10-26 desktop tour, and the
          * row already says "Monitor". */
-        scat(c, 0, p->name[0] ? p->name : "(unnamed)");
-        c = cellbuf[r][2]; scat(c, 0, (p->flags & LOGIT_PROC_GUI) ? "App" : "CLI");
+        scat(c, 0, p->name[0] ? p->name : "(未命名)");
+        c = cellbuf[r][2]; scat(c, 0, (p->flags & LOGIT_PROC_GUI) ? "应用" : "命令行");
         c = cellbuf[r][3];
-        if (p->flags & LOGIT_PROC_DYING)          scat(c, 0, "Quitting");
-        else if (p->state == LOGIT_PROC_ZOMBIE)   scat(c, 0, "Zombie");
-        else                                      scat(c, 0, "Running");
+        if (p->flags & LOGIT_PROC_DYING)          scat(c, 0, "正在退出");
+        else if (p->state == LOGIT_PROC_ZOMBIE)   scat(c, 0, "僵尸");
+        else                                      scat(c, 0, "运行中");
         c = cellbuf[r][4]; ustr(c, (unsigned long long)p->ppid);
         c = cellbuf[r][5]; ustr(c, (unsigned long long)p->nfds);
         for (int k = 0; k < NCOL; k++) cells[r * NCOL + k] = cellbuf[r][k];
@@ -264,17 +264,17 @@ static void do_kill(int pid)
     last_result_ms = monotonic_ms();
     int n;
     if (rc == LOGIT_KILL_OK) {
-        n = scat(last_msg, 0, "Force quit sent to pid ");
+        n = scat(last_msg, 0, "已向 pid ");
         n += ustr(last_msg + n, (unsigned long long)pid);
-        scat(last_msg, n, " -- it exits at its next system call");
+        scat(last_msg, n, " 发送强制退出，它会在下一次系统调用时退出");
     } else if (rc == LOGIT_KILL_PROTECTED) {
-        n = scat(last_msg, 0, "Refused: pid ");
+        n = scat(last_msg, 0, "已拒绝：pid ");
         n += ustr(last_msg + n, (unsigned long long)pid);
-        scat(last_msg, n, " is protected (the console shell / the compositor)");
+        scat(last_msg, n, " 受保护（控制台 shell / 合成器）");
     } else if (rc == LOGIT_KILL_ZOMBIE) {
-        scat(last_msg, 0, "Already exited; waiting to be reaped");
+        scat(last_msg, 0, "已退出，等待回收");
     } else {
-        n = scat(last_msg, 0, "No process with pid ");
+        n = scat(last_msg, 0, "没有这个 pid 的进程：");
         ustr(last_msg + n, (unsigned long long)pid);
     }
     refresh();
@@ -284,12 +284,12 @@ static void do_kill(int pid)
 
 static void view_processes(int x, int y, int w)
 {
-    aui_text_sz(x, y, "Sort by", AUI_MUTED, AUI_FS_LABEL);
+    aui_text_sz(x, y, "排序方式", AUI_MUTED, AUI_FS_LABEL);
     int seg_w = 210;
     int before = sortkey;
     aui_segmented(x + 56, y - 6, seg_w, AUI_H_SM, sorts, NSORT, &sortkey);
     int d = sortdesc;
-    aui_checkbox(x + 56 + seg_w + AUI_SP(4), y - 4, "Descending", &sortdesc);
+    aui_checkbox(x + 56 + seg_w + AUI_SP(4), y - 4, "降序", &sortdesc);
     if (before != sortkey || d != sortdesc) { resort(); build_cells();
         tsel = -1;
         for (int r = 0; r < npr; r++) if (pr[order[r]].pid == selpid) { tsel = r; break; } }
@@ -315,18 +315,18 @@ static void view_memory(int x, int y, int w)
 
     aui_card(x, y, w, 118, AUI_ELEV_1);
     int cy = y + 14;
-    aui_text_sz(x + 16, cy, "Physical memory", AUI_TEXT, AUI_FS_TITLE);
+    aui_text_sz(x + 16, cy, "物理内存", AUI_TEXT, AUI_FS_TITLE);
     cy += 30;
 
     /* The headline pair: the same quantity rounded and exact. */
     ubytes(a, used); ugroup(b, used);
-    int n = scat(line, 0, a); n = scat(line, n, "  (");
-    n = scat(line, n, b); scat(line, n, " bytes) in use");
+    int n = scat(line, 0, a); n = scat(line, n, "（");
+    n = scat(line, n, b); scat(line, n, " 字节）已使用");
     aui_text_sz(x + 16, cy, line, AUI_TEXT, AUI_FS_BODY);
     cy += 24;
     ubytes(a, total); ugroup(b, total);
-    n = scat(line, 0, "of "); n = scat(line, n, a); n = scat(line, n, "  (");
-    n = scat(line, n, b); scat(line, n, " bytes) installed");
+    n = scat(line, 0, "共 "); n = scat(line, n, a); n = scat(line, n, "（");
+    n = scat(line, n, b); scat(line, n, " 字节）已安装");
     aui_text_sz(x + 16, cy, line, AUI_MUTED, AUI_FS_LABEL);
     cy += 22;
     {
@@ -337,36 +337,36 @@ static void view_memory(int x, int y, int w)
     y += 132;
     aui_card(x, y, w, 150, AUI_ELEV_1);
     int ly = y + 14, lx = x + 16;
-    aui_text_sz(lx, ly, "Frames", AUI_TEXT, AUI_FS_TITLE); ly += 28;
+    aui_text_sz(lx, ly, "页帧", AUI_TEXT, AUI_FS_TITLE); ly += 28;
 
     /* The qualifier goes in the KEY, not the value: a value column that
      * sometimes carries a sentence runs into the next column, which is exactly
      * what it did. */
-    ugroup(a, mi.frames_total);  kv(lx, &ly, "Total", a, AUI_TEXT);
-    ugroup(a, mi.frames_free);   kv(lx, &ly, "Free", a, AUI_TEXT);
-    ugroup(a, mi.frames_shared); kv(lx, &ly, "Shared (>1 ref)", a, AUI_TEXT);
-    ugroup(a, mi.frames_pinned); kv(lx, &ly, "Pinned (never freed)", a, AUI_TEXT);
+    ugroup(a, mi.frames_total);  kv(lx, &ly, "总计", a, AUI_TEXT);
+    ugroup(a, mi.frames_free);   kv(lx, &ly, "空闲", a, AUI_TEXT);
+    ugroup(a, mi.frames_shared); kv(lx, &ly, "共享（>1 引用）", a, AUI_TEXT);
+    ugroup(a, mi.frames_pinned); kv(lx, &ly, "固定（从不释放）", a, AUI_TEXT);
 
     int rx = x + w / 2 + 20; ly = y + 42;
-    ugroup(a, mi.cow_pages);  kv(rx, &ly, "Copy-on-write", a, AUI_TEXT);
-    ugroup(a, mi.cow_faults); kv(rx, &ly, "CoW copies", a, AUI_TEXT);
-    ugroup(a, mi.cow_reuse);  kv(rx, &ly, "CoW reuses", a, AUI_TEXT);
+    ugroup(a, mi.cow_pages);  kv(rx, &ly, "写时复制", a, AUI_TEXT);
+    ugroup(a, mi.cow_faults); kv(rx, &ly, "写时复制次数", a, AUI_TEXT);
+    ugroup(a, mi.cow_reuse);  kv(rx, &ly, "写时复用次数", a, AUI_TEXT);
     ugroup(a, mi.mm_bugs);
-    kv(rx, &ly, "Allocator bugs", a, mi.mm_bugs ? AUI_ERROR : AUI_SUCCESS);
+    kv(rx, &ly, "分配器错误", a, mi.mm_bugs ? AUI_ERROR : AUI_SUCCESS);
 
     /* The absent column, named in the UI rather than quietly omitted. */
     y += 162;
-    aui_text_sz(x, y, "Per-process memory is not shown because the kernel does not"
-                      " account it: nothing sums", AUI_MUTED, AUI_FS_CAPTION);
-    aui_text_sz(x, y + 15, "frames per address space yet. These totals are"
-                           " machine-wide and exact.", AUI_MUTED, AUI_FS_CAPTION);
+    aui_text_sz(x, y, "不显示每个进程的内存：内核尚未按地址空间"
+                      "统计页帧。", AUI_MUTED, AUI_FS_CAPTION);
+    aui_text_sz(x, y + 15, "以上总数是整机范围的"
+                           "精确值。", AUI_MUTED, AUI_FS_CAPTION);
 }
 
 static void view_system(int x, int y, int w)
 {
     aui_card(x, y, w, 250, AUI_ELEV_1);
     int ly = y + 14, lx = x + 16;
-    aui_text_sz(lx, ly, "Kernel report", AUI_TEXT, AUI_FS_TITLE);
+    aui_text_sz(lx, ly, "内核报告", AUI_TEXT, AUI_FS_TITLE);
     ly += 30;
     /* SYS_SYSINFO's own text, one line per row. It is the kernel's report and
      * it is rendered as the kernel wrote it -- reformatting it here would mean
@@ -398,9 +398,9 @@ static void view_system(int x, int y, int w)
      * kernel as total-minus-free. Two independently maintained counters; if
      * they ever disagree by more than rounding, one of them is wrong. */
     ly += 6;
-    aui_text_sz(lx, ly, "The Memory tab derives its total from a different kernel"
-                        " counter than the line above.", AUI_MUTED, AUI_FS_CAPTION);
-    aui_text_sz(lx, ly + 15, "They are meant to agree to within MiB rounding.",
+    aui_text_sz(lx, ly, "“内存”标签页的总数来自另一个内核计数器，"
+                        "与上面这一行不同。", AUI_MUTED, AUI_FS_CAPTION);
+    aui_text_sz(lx, ly + 15, "两者应在 MiB 取整误差内一致。",
                 AUI_MUTED, AUI_FS_CAPTION);
     (void)w;
 }
@@ -418,13 +418,13 @@ static void footer(int x, int y, int w)
      * string that can reach it, which is a full-length cwd. */
     char line[256];
     if (s) {
-        int n = scat(line, 0, "Selected: ");
-        n = scat(line, n, s->name[0] ? s->name : "(unnamed)");
+        int n = scat(line, 0, "已选择：");
+        n = scat(line, n, s->name[0] ? s->name : "(未命名)");
         n = scat(line, n, "  pid ");
         n += ustr(line + n, (unsigned long long)s->pid);
-        if (s->cwd[0]) { n = scat(line, n, "  in "); scat(line, n, s->cwd); }
+        if (s->cwd[0]) { n = scat(line, n, "  位于 "); scat(line, n, s->cwd); }
     } else {
-        scat(line, 0, "No process selected -- choose one in the Processes tab");
+        scat(line, 0, "未选择进程，请在“进程”标签页中选择一个");
     }
     aui_text_ellipsis(x, y + 6, w - 150, line, s ? AUI_TEXT : AUI_MUTED, AUI_FS_LABEL);
 
@@ -433,14 +433,14 @@ static void footer(int x, int y, int w)
      * the kernel's own answer, not a rule re-derived here -- see the flag's
      * definition in logit_abi.h. */
     int can = killable();
-    if (aui_button_ex(x + w - 132, y, 132, AUI_H_CTL, "Force Quit",
+    if (aui_button_ex(x + w - 132, y, 132, AUI_H_CTL, "强制退出",
                       AUI_V_DANGER, can))
         confirm_open = 1;
     if (s && !can)
         aui_tooltip((s->flags & LOGIT_PROC_PROTECTED)
-                        ? "Protected: the console shell (init)"
-                        : (s->flags & LOGIT_PROC_DYING) ? "Already quitting"
-                                                        : "Already exited");
+                        ? "受保护：控制台 shell（init）"
+                        : (s->flags & LOGIT_PROC_DYING) ? "正在退出"
+                                                        : "已退出");
 }
 
 static void confirm_dialog(void)
@@ -449,17 +449,17 @@ static void confirm_dialog(void)
     if (!s) { confirm_open = 0; return; }
     /* Escape maps to the LAST button and Enter to the first, so Cancel is last:
      * of the two, Escape-cancels is the one that must not be got wrong. */
-    static const char *const btn[2] = { "Force Quit", "Cancel" };
-    if (aui_dialog_begin("Force Quit Process", 380, 150)) {
+    static const char *const btn[2] = { "强制退出", "取消" };
+    if (aui_dialog_begin("强制退出进程", 380, 150)) {
         char line[128];
-        int n = scat(line, 0, s->name[0] ? s->name : "(unnamed)");
+        int n = scat(line, 0, s->name[0] ? s->name : "(未命名)");
         n = scat(line, n, "  (pid ");
         n += ustr(line + n, (unsigned long long)s->pid);
         scat(line, n, ")");
         aui_text_sz(20, 16, line, AUI_TEXT, AUI_FS_BODY);
-        aui_text_sz(20, 42, "The process is ended without being asked to save.",
+        aui_text_sz(20, 42, "进程会被直接结束，不会先请它存储。",
                     AUI_MUTED, AUI_FS_LABEL);
-        aui_text_sz(20, 60, "Unsaved work in it is lost.", AUI_MUTED, AUI_FS_LABEL);
+        aui_text_sz(20, 60, "其中未存储的工作会丢失。", AUI_MUTED, AUI_FS_LABEL);
         int p = aui_dialog_buttons(btn, 2);
         aui_dialog_end();
         if (p == 0) { do_kill(s->pid); confirm_open = 0; }
@@ -489,7 +489,7 @@ static void frame(void)
     {
         char sub[64];
         int n = ustr(sub, (unsigned long long)npr);
-        scat(sub, n, npr == 1 ? " process" : " processes");
+        scat(sub, n, npr == 1 ? " 个进程" : " 个进程");
         aui_text_sz(AUI_PAD + aui_text_w("Activity Monitor", AUI_FS_TITLE) + 12, 16,
                     sub, AUI_MUTED, AUI_FS_LABEL);
     }

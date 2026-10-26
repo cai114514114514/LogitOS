@@ -17,11 +17,11 @@
  * The inspector also reports truncation rather than silently hiding rows. */
 #define MAXKV 256
 #define NWP 3
-static const char *const tabs[] = {"Appearance", "Desktop", "Network", "Dock", "Mouse & scrolling",
-                                 "Date & time", "All settings", "System"};
+static const char *const tabs[] = {"外观", "桌面", "网络", "程序坞", "鼠标与滚动",
+                                 "日期与时间", "所有设置", "系统"};
 #define NTAB ((int)(sizeof tabs / sizeof tabs[0]))
 static const char *const wp_paths[] = {"/wallpaper.png", "/media/dot.png", "(none)"};
-static const char *const wp_labels[] = {"LogitOS wallpaper", "Dots", "System gradient"};
+static const char *const wp_labels[] = {"LogitOS 壁纸", "圆点", "系统渐变"};
 static const unsigned probe_rgb[] = {0xFF0080, 0x00FF80, 0xFFC800, 0xB000FF,
                                     0x00D0D0, 0xFF6000, 0x00A0FF, 0xA0FF20};
 static struct desktop_preferences preferences;
@@ -87,8 +87,8 @@ static void load_all(void)
 static int valid_network(void)
 {
     const char *const values[] = {v_ip, v_mask, v_gw, v_dns};
-    const char *const errors[] = {"Enter a valid IPv4 address.", "Enter a contiguous IPv4 subnet mask.",
-                                  "Enter a valid router address.", "Enter a valid DNS address."};
+    const char *const errors[] = {"请输入有效的 IPv4 地址。", "请输入连续的 IPv4 子网掩码。",
+                                  "请输入有效的路由器地址。", "请输入有效的 DNS 地址。"};
     for (int i = 0; i < 4; i++) {
         if (v_dhcp && !(edited & (1u << (F_IP + i)))) continue;
         int ok = i == 1 ? settings_mask(values[i]) : settings_ipv4(values[i], 0);
@@ -100,7 +100,7 @@ static int apply_all(void)
 {
     if (conflict || setting_gen() != last_gen) {
         conflict = 1;
-        notice("Settings changed elsewhere. Revert to reload before applying.", 1);
+        notice("设置已在别处更改。请先还原以重新载入，再应用。", 1);
         return 0;
     }
     if (!valid_network()) return 0;
@@ -121,11 +121,11 @@ static int apply_all(void)
         /* The ABI has no transaction for the live table. An error can leave
          * earlier writes in RAM; retain the draft and report the failure. */
         last_gen = setting_gen();
-        notice("Save failed. Changes may be active but are not safely saved.", 1);
+        notice("存储失败。更改可能已生效，但未安全存储。", 1);
         return 0;
     }
     load_all();
-    notice("Changes saved", 0);
+    notice("更改已存储", 0);
     return 1;
 }
 #include "preview.inc"
@@ -170,7 +170,7 @@ void app_main(void)
         if (now - last_poll >= 250000000ull) {
             last_poll = now;
             if (setting_gen() != last_gen && !conflict) {
-                if (edited) { conflict = 1; notice("Settings changed elsewhere. Revert to reload.", 1); }
+                if (edited) { conflict = 1; notice("设置已在别处更改。请还原以重新载入。", 1); }
                 else load_all();
                 frame(); drew = 1;
             }

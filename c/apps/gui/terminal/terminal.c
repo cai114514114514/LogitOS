@@ -724,7 +724,7 @@ static void binary_update(int stream)
     sappend(l->t, &n, MAXCOLS + 1, sniff_name(sniff_guard_kind(g)));
     sappend(l->t, &n, MAXCOLS + 1, " -- ");
     sappend(l->t, &n, MAXCOLS + 1, num);
-    sappend(l->t, &n, MAXCOLS + 1, " bytes not printed: ");
+    sappend(l->t, &n, MAXCOLS + 1, " 字节未显示：");
     sappend(l->t, &n, MAXCOLS + 1, hex);
     sappend(l->t, &n, MAXCOLS + 1, " ...]");
     l->len = (short)n;
@@ -1031,7 +1031,7 @@ static int vid_pull(struct vidobj *v, struct vframe *f)
         while (v->off < v->len && guard++ < 4096) {
             int used = h265_decode((h265dec *)v->dec, v->data + v->off,
                                    (int)(v->len - v->off), &fr, &got);
-            if (used < 0) { scopy(v->err, "corrupt stream", sizeof v->err); return -1; }
+            if (used < 0) { scopy(v->err, "视频流已损坏", sizeof v->err); return -1; }
             v->off += used;
             if (got) break;
             if (used == 0) break;                   /* no progress: treat as end */
@@ -1045,7 +1045,7 @@ static int vid_pull(struct vidobj *v, struct vframe *f)
     while (v->off < v->len && guard++ < 4096) {
         int used = h264_decode((h264dec *)v->dec, v->data + v->off,
                                (int)(v->len - v->off), &fr, &got);
-        if (used < 0) { scopy(v->err, "corrupt stream", sizeof v->err); return -1; }
+        if (used < 0) { scopy(v->err, "视频流已损坏", sizeof v->err); return -1; }
         v->off += used;
         if (got) break;
         if (used == 0) break;
@@ -1134,7 +1134,7 @@ static int vid_step(struct vidobj *v)
         if (dh < 1) dh = 1;
         v->dw = dw; v->dh = dh;
         v->rgba = (unsigned char *)malloc((unsigned long)dw * dh * 4);
-        if (!v->rgba) { scopy(v->err, "out of memory", sizeof v->err); v->ok = 0; return 0; }
+        if (!v->rgba) { scopy(v->err, "内存不足", sizeof v->err); v->ok = 0; return 0; }
         v->have = 1;
         v->ms_first = monotonic_ms() - v->t0;
     }
@@ -1177,14 +1177,14 @@ static void handle_video(struct rt_rd *r)
     v->t0 = monotonic_ms();
 
     int fd = sys_open(path, O_RDONLY);
-    if (fd < 0) { scopy(v->err, "cannot open", sizeof v->err); }
+    if (fd < 0) { scopy(v->err, "无法打开", sizeof v->err); }
     else {
         long n = sys_lseek(fd, 0, SEEK_END);
         sys_lseek(fd, 0, SEEK_SET);
-        if (n <= 0 || n > VID_MAXBYTES) scopy(v->err, "stream too large", sizeof v->err);
+        if (n <= 0 || n > VID_MAXBYTES) scopy(v->err, "视频流过大", sizeof v->err);
         else {
             v->data = (unsigned char *)malloc((unsigned long)n);
-            if (!v->data) scopy(v->err, "out of memory", sizeof v->err);
+            if (!v->data) scopy(v->err, "内存不足", sizeof v->err);
             else {
                 long got = 0;
                 while (got < n) {
@@ -1193,7 +1193,7 @@ static void handle_video(struct rt_rd *r)
                     got += k;
                 }
                 v->len = got;
-                if (got < n) scopy(v->err, "short read", sizeof v->err);
+                if (got < n) scopy(v->err, "读取不完整", sizeof v->err);
             }
         }
         sys_close(fd);
@@ -1202,10 +1202,10 @@ static void handle_video(struct rt_rd *r)
     if (!v->err[0]) {
         v->codec = sniff_id(v->data, v->len < SNIFF_PREFIX ? (int)v->len : SNIFF_PREFIX);
         if (v->codec != SN_H264 && v->codec != SN_H265)
-            scopy(v->err, "not an Annex-B video stream", sizeof v->err);
+            scopy(v->err, "不是 Annex-B 视频流", sizeof v->err);
         else {
             v->dec = (v->codec == SN_H265) ? (void *)h265_open() : (void *)h264_open();
-            if (!v->dec) scopy(v->err, "decoder init failed", sizeof v->err);
+            if (!v->dec) scopy(v->err, "解码器初始化失败", sizeof v->err);
             else v->ok = 1;
         }
     }
@@ -1302,11 +1302,11 @@ static int naud;
 static const char *aud_errname(int e)
 {
     switch (e) {
-    case AUDIO_ERR_CORRUPT:     return "corrupt audio file";
-    case AUDIO_ERR_UNSUPPORTED: return "unsupported audio format";
-    case AUDIO_ERR_OOM:         return "out of memory";
-    case AUDIO_ERR_RANGE:       return "audio header out of range";
-    default:                    return "could not decode audio";
+    case AUDIO_ERR_CORRUPT:     return "音频文件已损坏";
+    case AUDIO_ERR_UNSUPPORTED: return "不支持的音频格式";
+    case AUDIO_ERR_OOM:         return "内存不足";
+    case AUDIO_ERR_RANGE:       return "音频头字段超出范围";
+    default:                    return "无法解码音频";
     }
 }
 
@@ -1386,7 +1386,7 @@ static void aud_start(struct audobj *a)
     f.rate = (unsigned)a->rate; f.channels = (unsigned short)a->channels;
     f.format = SND_FMT_S16; f.buffer_ms = 0; f.flags = SND_F_NONBLOCK;
     int h = snd_open(&f);
-    if (h < 0) { scopy(a->err, "audio device busy", sizeof a->err); return; }
+    if (h < 0) { scopy(a->err, "音频设备正忙", sizeof a->err); return; }
     a->snd_h = h;
     a->playing = 1;
     a->pend_frames = 0; a->pend_off = 0;
@@ -1404,21 +1404,21 @@ static void aud_step(struct audobj *a)
     if (a->pend_frames > 0) {
         int total = a->pend_frames * a->channels * 2;
         int w = snd_write(a->snd_h, (unsigned char *)a->pend + a->pend_off, total - a->pend_off);
-        if (w < 0) { scopy(a->err, "audio device went away", sizeof a->err); aud_stop(a); return; }
+        if (w < 0) { scopy(a->err, "音频设备已断开", sizeof a->err); aud_stop(a); return; }
         a->pend_off += w;
         if (a->pend_off < total) return;          /* still owed; try again next tick */
         a->pend_frames = 0; a->pend_off = 0;
     }
 
     int avail = snd_avail(a->snd_h);
-    if (avail < 0) { scopy(a->err, "audio device went away", sizeof a->err); aud_stop(a); return; }
+    if (avail < 0) { scopy(a->err, "音频设备已断开", sizeof a->err); aud_stop(a); return; }
     int room = avail / (a->channels * 2);
     if (room <= 0) return;                        /* ring full this tick */
     int cap = room < AUD_CHUNK_FRAMES ? room : AUD_CHUNK_FRAMES;
 
     long got = adec_read(a->dec, a->pend, cap);
     if (got < 0) {
-        scopy(a->err, "corrupt audio stream", sizeof a->err);
+        scopy(a->err, "音频流已损坏", sizeof a->err);
         aud_stop(a); a->ended = 1;
         return;
     }
@@ -1431,7 +1431,7 @@ static void aud_step(struct audobj *a)
     }
     int bytes = (int)got * a->channels * 2;
     int w = snd_write(a->snd_h, a->pend, bytes);
-    if (w < 0) { scopy(a->err, "audio device went away", sizeof a->err); aud_stop(a); return; }
+    if (w < 0) { scopy(a->err, "音频设备已断开", sizeof a->err); aud_stop(a); return; }
     if (w < bytes) { a->pend_frames = (int)got; a->pend_off = w; }
 }
 
@@ -1462,14 +1462,14 @@ static void handle_audio(struct rt_rd *r)
     a->have_device = snd_info(&si) != 0;
 
     int fd = sys_open(path, O_RDONLY);
-    if (fd < 0) { scopy(a->err, "cannot open", sizeof a->err); }
+    if (fd < 0) { scopy(a->err, "无法打开", sizeof a->err); }
     else {
         long n = sys_lseek(fd, 0, SEEK_END);
         sys_lseek(fd, 0, SEEK_SET);
-        if (n <= 0 || n > AUD_MAXBYTES) scopy(a->err, "audio file too large", sizeof a->err);
+        if (n <= 0 || n > AUD_MAXBYTES) scopy(a->err, "音频文件过大", sizeof a->err);
         else {
             a->data = (unsigned char *)malloc((unsigned long)n);
-            if (!a->data) scopy(a->err, "out of memory", sizeof a->err);
+            if (!a->data) scopy(a->err, "内存不足", sizeof a->err);
             else {
                 long got = 0;
                 while (got < n) {
@@ -1478,7 +1478,7 @@ static void handle_audio(struct rt_rd *r)
                     got += k;
                 }
                 a->len = got;
-                if (got < n) scopy(a->err, "short read", sizeof a->err);
+                if (got < n) scopy(a->err, "读取不完整", sizeof a->err);
             }
         }
         sys_close(fd);
@@ -1493,7 +1493,7 @@ static void handle_audio(struct rt_rd *r)
             a->fmt = adec_format(a->dec);
             a->total_frames = adec_duration_frames(a->dec);
             if (a->rate > 0 && a->channels > 0 && a->channels <= AUDIO_MAX_CHANNELS) a->ok = 1;
-            else scopy(a->err, "corrupt audio file", sizeof a->err);
+            else scopy(a->err, "音频文件已损坏", sizeof a->err);
         }
     }
 
@@ -1512,7 +1512,7 @@ static void handle_audio(struct rt_rd *r)
     if (a->err[0]) sappend(l->t, &n, MAXCOLS + 1, a->err);
     else {
         sappend(l->t, &n, MAXCOLS + 1, audio_format_name(a->fmt));
-        if (!a->have_device) sappend(l->t, &n, MAXCOLS + 1, ", no audio device");
+        if (!a->have_device) sappend(l->t, &n, MAXCOLS + 1, "，没有音频设备");
     }
     l->len = (short)n;
 }
@@ -1757,7 +1757,7 @@ static void draw_image_obj(int x, int y, int w, struct robj *o)
 {
     struct imgobj *im = &imgs[o->idx];
     (void)w;
-    if (!im->ok) { draw_text(x, y, P.err, "[image could not be decoded]"); return; }
+    if (!im->ok) { draw_text(x, y, P.err, "[无法解码图像]"); return; }
     gui_rect(x - 1, y - 1, im->dw + 2, im->dh + 2, P.rule);
     gui_blit(x, y, im->dw, im->dh, thumb[o->idx], im->tw, im->th);
 }
@@ -1771,7 +1771,7 @@ static void draw_video_obj(int x, int y, int w, struct robj *o)
     struct vidobj *v = &vids[o->idx];
     (void)w;
     if (!v->ok || !v->have) {
-        draw_text(x, y, P.err, v->err[0] ? v->err : "[video could not be decoded]");
+        draw_text(x, y, P.err, v->err[0] ? v->err : "[无法解码视频]");
         v->px = v->py = -1;
         return;
     }
@@ -1807,8 +1807,8 @@ static void draw_audio_obj(int x, int y, int w, struct robj *o)
     const char *label; unsigned btncol;
     int usable = a->ok && !a->err[0] && a->have_device;
     if (!usable)         { label = " N/A ";  btncol = P.panel; }
-    else if (a->playing) { label = " Stop "; btncol = P.accent; }
-    else                 { label = " Play "; btncol = P.ok; }
+    else if (a->playing) { label = " 停止 "; btncol = P.accent; }
+    else                 { label = " 播放 "; btncol = P.ok; }
 
     int bw = 6 * cell;
     gui_rrect(x, y, bw, lh - 4, 5, btncol);
@@ -1824,9 +1824,9 @@ static void draw_audio_obj(int x, int y, int w, struct robj *o)
         sappend(meta, &n, sizeof meta, audio_format_name(a->fmt));
         sappend(meta, &n, sizeof meta, ", ");
         sappend(meta, &n, sizeof meta, dur);
-        if (!a->have_device)  sappend(meta, &n, sizeof meta, "  -- no audio device");
-        else if (a->playing)  sappend(meta, &n, sizeof meta, "  -- playing");
-        else if (a->ended)    sappend(meta, &n, sizeof meta, "  -- finished");
+        if (!a->have_device)  sappend(meta, &n, sizeof meta, "  —— 没有音频设备");
+        else if (a->playing)  sappend(meta, &n, sizeof meta, "  —— 正在播放");
+        else if (a->ended)    sappend(meta, &n, sizeof meta, "  —— 已播完");
     }
     draw_text(x + bw + cell, y + 2, usable ? P.fg : P.dim, meta);
     draw_text(x, y + lh, P.dim, a->path);
@@ -1878,17 +1878,17 @@ static void draw_table_obj(int x, int y, int w, struct robj *o)
      * is on screen is not the answer to the question that was asked. */
     if (tb->wire_rows > tb->nrows || tb->wire_cols > tb->ncols) {
         char m[96]; int n = 0; char num[12];
-        sappend(m, &n, (int)sizeof m, "[truncated: showing ");
+        sappend(m, &n, (int)sizeof m, "[已截断：显示 ");
         utoa((unsigned)tb->nrows, num);     sappend(m, &n, (int)sizeof m, num);
-        sappend(m, &n, (int)sizeof m, " of ");
+        sappend(m, &n, (int)sizeof m, " / ");
         utoa((unsigned)tb->wire_rows, num); sappend(m, &n, (int)sizeof m, num);
-        sappend(m, &n, (int)sizeof m, " rows");
+        sappend(m, &n, (int)sizeof m, " 行");
         if (tb->wire_cols > tb->ncols) {
-            sappend(m, &n, (int)sizeof m, ", ");
+            sappend(m, &n, (int)sizeof m, "，");
             utoa((unsigned)tb->ncols, num);     sappend(m, &n, (int)sizeof m, num);
-            sappend(m, &n, (int)sizeof m, " of ");
+            sappend(m, &n, (int)sizeof m, " / ");
             utoa((unsigned)tb->wire_cols, num); sappend(m, &n, (int)sizeof m, num);
-            sappend(m, &n, (int)sizeof m, " columns");
+            sappend(m, &n, (int)sizeof m, " 列");
         }
         sappend(m, &n, (int)sizeof m, "]");
         draw_text(x, hy + lh + 6 + tb->nrows * lh, P.err, m);
@@ -1956,7 +1956,7 @@ static void paint(void)
      * height (text_y, scrolling and the rich-object clip are laid out against
      * it) but is plain background unless a filter is hiding lines. */
     gui_rect(0, 0, win_w, TOPBAR, errs_only ? P.panel : P.bg);
-    if (errs_only) gui_text(PAD, 3, P.err, "errors only  (^E)");
+    if (errs_only) gui_text(PAD, 3, P.err, "仅显示错误  (^E)");
 
     int view = text_h / lh;
     int total = total_rows();
@@ -2053,7 +2053,7 @@ static void paint(void)
     int iy = win_h - lh - 6;
     gui_rect(0, iy - 5, win_w, lh + 11, P.panel);
     if (!alive) {
-        draw_text(PAD, iy, P.dim, "[shell exited]");
+        draw_text(PAD, iy, P.dim, "[shell 已退出]");
     } else if (have_input) {
         int px = PAD;
         draw_text(px, iy, P.prompt, in_prompt);
@@ -2080,10 +2080,10 @@ static void paint(void)
         int cx = px + (poff + v.caret_cell) * cell;
         gui_rect(cx, iy, 2, lh - 2, P.prompt);
     } else {
-        draw_text(PAD, iy, P.dim, "starting shell...");
+        draw_text(PAD, iy, P.dim, "正在启动 shell…");
     }
     if (scroll < total - view) {
-        const char *s = "^ scrolled back -- End to follow";
+        const char *s = "^ 已向上滚动 —— 按 End 回到底部";
         draw_text(win_w - PAD - SBW - (slen(s) + 1) * cell, iy, P.dim, s);
     }
     /* WHAT CHANGED THIS FRAME -- see the flush-rectangle section above
@@ -2623,16 +2623,16 @@ static void tm_publish_menus(void)
 {
     struct mb_builder *b = &tm_menus;
     mb_begin(b);
-    mb_menu(b, "Edit");
-    mb_item(b, 3 | TM_SHIFT, 0, 'C', "Copy");
-    mb_item(b, 22, 0, 'V', "Paste");
+    mb_menu(b, "编辑");
+    mb_item(b, 3 | TM_SHIFT, 0, 'C', "复制");
+    mb_item(b, 22, 0, 'V', "粘贴");
     mb_sep(b);
-    mb_item(b, 12, 0, 'K', "Clear Scrollback");
-    mb_menu(b, "View");
-    mb_item(b, 5, errs_only ? MB_CHECKED : 0, 0, "Errors Only");
+    mb_item(b, 12, 0, 'K', "清除回滚");
+    mb_menu(b, "显示");
+    mb_item(b, 5, errs_only ? MB_CHECKED : 0, 0, "仅显示错误");
     mb_menu(b, "Shell");
-    mb_item(b, 3, alive ? 0 : MB_DISABLED, 0, "Interrupt (Ctrl+C)");
-    mb_item(b, 4, alive ? 0 : MB_DISABLED, 0, "End of Input (Ctrl+D)");
+    mb_item(b, 3, alive ? 0 : MB_DISABLED, 0, "中断 (Ctrl+C)");
+    mb_item(b, 4, alive ? 0 : MB_DISABLED, 0, "结束输入 (Ctrl+D)");
     int n = mb_end(b);
     if (n > 0) gui_menu_set(b->buf, n);
 }
@@ -2659,7 +2659,7 @@ void app_main(void)
     rt_reset(&enc);
 
     if (spawn_shell() < 0) {
-        put_text(S_ERR, "terminal: cannot start /bin/sh");
+        put_text(S_ERR, "终端：无法启动 /bin/sh");
         alive = 0;
     } else {
         send_size();
@@ -2741,7 +2741,7 @@ void app_main(void)
             if (a1 < 0 && a2 <= 0) {
                 alive = 0;
                 if (in_w >= 0) { sys_close(in_w); in_w = -1; }
-                put_text(S_SYS, "[shell exited]");
+                put_text(S_SYS, "[shell 已退出]");
                 redraw = 1;
                 tm_publish_menus();     /* the Shell items go grey */
             }

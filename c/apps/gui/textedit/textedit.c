@@ -485,18 +485,18 @@ static void te_publish_menus(void)
 {
     struct mb_builder *b = &te_menus;
     mb_begin(b);
-    mb_menu(b, "File");
-    mb_item(b, CTRL_S, 0, 'S', "Save");
-    mb_menu(b, "Edit");
-    mb_item(b, 26, 0, 'Z', "Undo");
+    mb_menu(b, "文件");
+    mb_item(b, CTRL_S, 0, 'S', "存储");
+    mb_menu(b, "编辑");
+    mb_item(b, 26, 0, 'Z', "撤销");
     mb_sep(b);
-    mb_item(b, 24, 0, 'X', "Cut");
-    mb_item(b, 3, 0, 'C', "Copy");
-    mb_item(b, 22, 0, 'V', "Paste");
+    mb_item(b, 24, 0, 'X', "剪切");
+    mb_item(b, 3, 0, 'C', "复制");
+    mb_item(b, 22, 0, 'V', "粘贴");
     mb_sep(b);
-    mb_item(b, 1, 0, 'A', "Select All");
-    mb_menu(b, "Assistant");
-    mb_item(b, 12, 0, 'L', "Ask Logit...");
+    mb_item(b, 1, 0, 'A', "全选");
+    mb_menu(b, "助手");
+    mb_item(b, 12, 0, 'L', "询问 Logit…");
     int n = mb_end(b);
     if (n > 0) gui_menu_set(b->buf, n);
 }
@@ -521,15 +521,15 @@ void app_main(void)
         size_t len=strlen(fname);if(len+2>sizeof absolute)app_exit(1);
         memcpy(absolute+1,fname,len+1);memcpy(fname,absolute,len+2);}
     struct stat st;
-    if(stat(fname,&st)==0&&(uint64_t)st.st_size>MAXT){load_refused=1;agent_notice="Document exceeds 1 MiB; file not opened";}
+    if(stat(fname,&st)==0&&(uint64_t)st.st_size>MAXT){load_refused=1;agent_notice="文档超过 1 MiB，未打开文件";}
     else {
         struct ag_message m={.type=AG_DOCUMENT,.bytes=(uint32_t)strlen(fname)};void *doc=0;
         int r=ag_call(&m,fname,&doc);
         if(!r&&m.bytes<=MAXT){if(m.bytes)memcpy(text,doc,m.bytes);tlen=(int)m.bytes;agent_task=m.task;agent_revision=m.revision;}
         else {r=load_file();if(r<0){load_refused=1;agent_notice=r==-2?
-            "Document exceeds 1 MiB; file not opened":"Document read failed; file not opened";}}
+            "文档超过 1 MiB，未打开文件":"读取文档失败，未打开文件";}}
         free(doc);text[tlen]=0;
-        if(!ag_utf8(text,(uint32_t)tlen)){tlen=0;text[0]=0;load_refused=1;agent_notice="Document is not valid UTF-8; file not opened";}
+        if(!ag_utf8(text,(uint32_t)tlen)){tlen=0;text[0]=0;load_refused=1;agent_notice="文档不是有效的 UTF-8，未打开文件";}
     }
     saved = 1;caret=anchor=tlen;editor_focus=tlen==0;follow_caret=tlen==0;work_refresh(1);
     draw();
@@ -547,7 +547,7 @@ void app_main(void)
                 aui_feed(&e);draw();aui_feed_done();continue;}
             if (e.type == EV_CLOSE) {
                 agent_sync();
-                if(agent_task&&agent_dirty){agent_notice="Keep this window open: edits are not synchronized";changed=1;continue;}
+                if(agent_task&&agent_dirty){agent_notice="请保持此窗口打开：编辑尚未同步";changed=1;continue;}
                 /* Commit here, not per-resize -- see geom_dirty's comment
                  * above. A session that never touched the window size never
                  * touches the disk for this at all. */
@@ -576,7 +576,7 @@ void app_main(void)
                 int wrote = 0;
                 if (te_apply_key(e.a,e.mods, &wrote)) changed = 1;
                 if(previous!=tlen){agent_dirty=agent_task!=0;agent_notice=0;}
-                else if(e.a>=32&&(unsigned)tlen>=MAXT-3)agent_notice="Document limit: 1 MiB";
+                else if(e.a>=32&&(unsigned)tlen>=MAXT-3)agent_notice="文档上限为 1 MiB";
                 if (wrote) { if (save_document() >= 0) saved = 1; changed = 1; }
             }
         }

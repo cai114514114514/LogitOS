@@ -66,7 +66,7 @@ static void pick_build(void)
 static int pick_kind[PICK_MAX], pick_ready[PICK_MAX];
 static long pick_bytes[PICK_MAX];
 static const char *pick_format[PICK_MAX];
-static const char *const pick_groups[] = {"All media", "Images", "Audio", "Video & containers", "Other files"};
+static const char *const pick_groups[] = {"所有媒体", "图像", "音频", "视频与容器", "其他文件"};
 static const unsigned pick_colors[] = {0x658EFF, 0x568DF0, 0xA37DE8, 0xD89B54, 0x8C98AB};
 
 static void pick_metadata(void)
@@ -76,7 +76,7 @@ static void pick_metadata(void)
         char path[192]; unsigned char bytes[SNIFF_PREFIX];
         snprintf(path, sizeof path, "/media/%s", pick_names[i]);
         FILE *file = fopen(path, "rb");
-        pick_format[i] = "Unavailable"; pick_kind[i] = 4;
+        pick_format[i] = "不可用"; pick_kind[i] = 4;
         if (!file) continue;
         fseek(file, 0, SEEK_END); pick_bytes[i] = ftell(file); rewind(file);
         int n = (int)fread(bytes, 1, sizeof bytes, file);
@@ -109,20 +109,20 @@ static void pick_frame(const int *items, int count, int selected, int top, int f
     if (gui_app_icon("preview.aex", 16, 18, 36) < 0)
         gui_icon(GICON_IMAGE, 20, 24, 26, ui_accent);
     label(60, 23, 20, ui_text, "Preview");
-    label(20, 76, 10, ui_muted, "LIBRARY");
+    label(20, 76, 10, ui_muted, "资料库");
     for (int group = 0; group < 5; group++) {
         int y = 102 + group * 42;
         if (group == filter) gui_rrect(10, y, 144, 34, 8, view_dark ? 0x344365 : 0xE4ECFE);
         clipped_label(22, y + 10, 132, 12, group == filter ? ui_accent : ui_text, pick_groups[group]);
     }
-    label(20, WINH - 50, 11, ui_muted, "Local collection");
+    label(20, WINH - 50, 11, ui_muted, "本机收藏");
     label(20, WINH - 30, 11, ui_muted, "/media");
     label(188, 25, 24, ui_text, pick_groups[filter]);
     char info[96];
-    snprintf(info, sizeof info, "%d files   /   Select a file to open", count);
+    snprintf(info, sizeof info, "%d 个文件   /   选择一个文件打开", count);
     label(188, 59, 12, ui_muted, info);
-    label(204, 91, 10, ui_muted, "NAME");
-    label(WINW - 144, 91, 10, ui_muted, "FORMAT / SIZE");
+    label(204, 91, 10, ui_muted, "名称");
+    label(WINW - 144, 91, 10, ui_muted, "格式 / 大小");
     plog("preview: library filter=%d top=%d rows=%d count=%d\n", filter, top, PICK_ROWS, count);
     for (int row = 0; row < PICK_ROWS && top + row < count; row++) {
         int idx = items[top + row], y = PICK_Y0 + row * PICK_DY;
@@ -137,8 +137,8 @@ static void pick_frame(const int *items, int count, int selected, int top, int f
         plog("preview: row %d %d %d %d %d\n", idx, 184, y, WINW - 204, 34);
     }
     if (!count) {
-        label(212, 180, 19, ui_text, "No files in this category");
-        label(212, 218, 12, ui_muted, "Choose All media to browse the collection.");
+        label(212, 180, 19, ui_text, "此类别中没有文件");
+        label(212, 218, 12, ui_muted, "选择“所有媒体”浏览全部收藏。");
     }
     if (count > PICK_ROWS) {
         int h = PICK_ROWS * PICK_DY;
@@ -147,7 +147,7 @@ static void pick_frame(const int *items, int count, int selected, int top, int f
         gui_rrect(WINW - 12, PICK_Y0 + (h - thumb) * top / (count - PICK_ROWS), 4, thumb, 2, ui_accent);
     }
     gui_rect(184, WINH - 44, WINW - 204, 1, ui_line);
-    label(188, WINH - 28, 11, ui_muted, "Click to open   /   Arrow keys to select   /   Enter to open");
+    label(188, WINH - 28, 11, ui_muted, "点按打开   /   方向键选择   /   回车打开");
     /* List-only probe: never paint an instrument over the viewed artwork.
      * Only on a disk that asks for it: qmp_probe.h. */
     if (qmp_probes_on()) gui_rect(0, 0, 6, 6, 0xFF0080);

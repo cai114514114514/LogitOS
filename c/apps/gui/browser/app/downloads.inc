@@ -39,11 +39,15 @@ static int download_same_origin(const char *a,const char *b)
 static void download_show_record(int id)
 {
     const struct download *d=download_at(id);char st[96];int p=0;
-    const char *prefix=d&&d->ok?"Downloaded: ":"Download failed: ";
+    /* The status bar speaks Chinese; the serial line keeps its English words,
+     * which tests/qmp/download_keys_guest.py waits for ("Downloaded: /download/..."). */
+    const char *prefix=d&&d->ok?"已下载：":"下载失败：";
+    const char *said=d&&d->ok?"Downloaded: ":"Download failed: ";
+    const char *path=d?d->path:DOWNLOAD_DIR;
     while(*prefix)st[p++]=*prefix++;
-    for(const char *s=d?d->path:DOWNLOAD_DIR;*s&&p<(int)sizeof st-1;s++)st[p++]=*s;
+    for(const char *s=path;*s&&p<(int)sizeof st-1;s++)st[p++]=*s;
     st[p]=0;set_status(st);
-    printf("[download] %s bytes=%d\n",st,d?d->len:-1);
+    printf("[download] %s%s bytes=%d\n",said,path,d?d->len:-1);
 }
 /* 0: continue with staged document; 1: download or failed fetch, preserve page. */
 static int download_stage_navigation(const char *u,const char *initiator)
@@ -54,7 +58,7 @@ static int download_stage_navigation(const char *u,const char *initiator)
     g_prog_what="fetching";g_prog_total=0;g_prog_done=0;g_prog_last=0;
     bfetch_reset_stats();
     int id=bfetch_start_nav_from(u,initiator);
-    if(id<0){set_status("load failed: invalid URL");return 1;}
+    if(id<0){set_status("载入失败：URL 无效");return 1;}
     bfetch_wait(id,load_tick);
     if(bfetch_state(id)!=BF_DONE){
         printf("[browser] page fetch failed: %s (%s)\n",bfetch_error(id),bfetch_url(id));
@@ -72,7 +76,7 @@ static int download_stage_navigation(const char *u,const char *initiator)
         int len=0;const unsigned char *body=bfetch_body(id,&len);
         if(status>=200&&status<300&&status!=206&&len>=0)
             download_show_record(download_record_as(final,cd,hint,body,len));
-        else set_status("Download failed: incomplete or unsuccessful HTTP response");
+        else set_status("下载失败：HTTP 响应不完整或未成功");
         bfetch_release(id);
         const char *back=committed_page_url();if(back&&*back){
             int i=0;while(back[i]&&i<599){url[i]=back[i];i++;}url[i]=0;ulen=i;addr_sync();
@@ -87,7 +91,7 @@ static int download_stage_navigation(const char *u,const char *initiator)
     if(csp&&strlen(csp)<sizeof download_document_csp)strcpy(download_document_csp,csp);
     else if(csp)download_document_policy_known=0;
     download_document_status=status;download_document_len=bfetch_take(id,&download_document);
-    if(download_document_len<0){set_status("load failed: response unavailable");return 1;}
+    if(download_document_len<0){set_status("载入失败：没有可用的响应");return 1;}
     if(download_document_len>BROWSER_BUFFERED_BODY_MAX){free(download_document);download_document=NULL;set_status("load failed: document exceeds size limit");return 1;}
     return 0;
 }
@@ -101,7 +105,7 @@ static int download_pump_jobs(void)
         download_forced=1;memcpy(download_hint,j.name,sizeof download_hint);
         if(!download_stage_navigation(j.url,j.initiator)){
             free(download_document);download_document=NULL;
-            set_status("Download refused: redirected response is a page");
+            set_status("已拒绝下载：重定向后的响应是网页");
         }
     }
     return 1;
@@ -116,13 +120,13 @@ static int download_activate_anchor(struct node *node)
         if(JS_IsFunction(ctx,fn)){
             JSValue arg=js_dom_node_value(ctx,node),result=JS_Call(ctx,fn,global,1,&arg);
             int handled=!JS_IsException(result)&&JS_ToBool(ctx,result)>0;
-            if(JS_IsException(result)){JSValue e=JS_GetException(ctx);JS_FreeValue(ctx,e);set_status("Download could not be queued");handled=1;}
+            if(JS_IsException(result)){JSValue e=JS_GetException(ctx);JS_FreeValue(ctx,e);set_status("无法加入下载队列");handled=1;}
             JS_FreeValue(ctx,result);JS_FreeValue(ctx,arg);JS_FreeValue(ctx,fn);JS_FreeValue(ctx,global);return handled;
         }
         JS_FreeValue(ctx,fn);JS_FreeValue(ctx,global);
     }
     const char *href=dom_attr(node,"href");char abs[600];
     if(!href||bfetch_resolve(navigation_base(),href,abs,sizeof abs)||!download_same_origin(navigation_base(),abs))return 0;
-    if(download_queue(abs,dom_attr(node,"download"),NULL,-1)<0)set_status("Download queue is full");
+    if(download_queue(abs,dom_attr(node,"download"),NULL,-1)<0)set_status("下载队列已满");
     return 1;
 }

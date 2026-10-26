@@ -84,13 +84,13 @@ def main(argv):
         probe = os.path.join(tmp, "probe.ppm")
 
         print("1. the Finder's menus")
-        ck(wait_for(ui, 0, r"\[wm\] menus win=\d+ n=6 LogitOS File Edit View Go Window", 30) is not None,
+        ck(wait_for(ui, 0, r"\[wm\] menus win=\d+ n=6 LogitOS 文件 编辑 显示 前往 窗口", 30) is not None,
            "the Finder published File/Edit/View/Go, framed by LogitOS and Window")
 
         print("2. TextEdit's menus follow it to the top")
         mark = len(ui.serial_text())
         ui.launch_app("textedit", probe=probe)
-        m = wait_for(ui, mark, r"\[wm\] menus win=(\d+) n=5 LogitOS File Edit Assistant Window", 30)
+        m = wait_for(ui, mark, r"\[wm\] menus win=(\d+) n=5 LogitOS 文件 编辑 助手 窗口", 30)
         ck(m is not None, "the bar now reads LogitOS File Edit Assistant Window")
         win = m.group(1) if m else r"\d+"
         time.sleep(2.0)
@@ -98,20 +98,20 @@ def main(argv):
         print("3. type, then Edit > Select All by clicking")
         ui.typ("hello world")
         time.sleep(1.0)
-        t = last_title(ui.serial_text(), "Edit")
+        t = last_title(ui.serial_text(), "编辑")
         ck(t is not None, "the guest reported where \"Edit\" is")
         if t:
             mark = len(ui.serial_text())
             ui.click_at_confirmed(probe, (t[0] + t[2]) // 2, (t[1] + t[3]) // 2)
             o = wait_for(ui, mark, r"\[wm\] menu open \d+ x0 (\d+) y0 \d+ x1 (\d+)", 10)
-            r = wait_for(ui, mark, r"\[wm\] menu row \d+ 'Select All' y0 (\d+) y1 (\d+)", 10)
+            r = wait_for(ui, mark, r"\[wm\] menu row \d+ '全选' y0 (\d+) y1 (\d+)", 10)
             ck(o is not None and r is not None, "Edit opened and listed a \"Select All\" row")
             if o and r:
                 x = (int(o.group(1)) + int(o.group(2))) // 2
                 y = (int(r.group(1)) + int(r.group(2))) // 2
                 mark = len(ui.serial_text())
                 ui.click_at_confirmed(probe, x, y)
-                ck(wait_for(ui, mark, r"\[wm\] menu fire win=%s id=1 'Select All'" % win, 10) is not None,
+                ck(wait_for(ui, mark, r"\[wm\] menu fire win=%s id=1 '全选'" % win, 10) is not None,
                    "clicking the row chose Select All (id 1, TextEdit's Ctrl+A code)")
         time.sleep(0.8)
         ui.typ("Z")
@@ -120,7 +120,7 @@ def main(argv):
         print("4. Cmd+S reaches the Save item")
         mark = len(ui.serial_text())
         ui.key_mods(("meta_l",), "s", settle=0.5)
-        ck(wait_for(ui, mark, r"\[wm\] menu key win=%s id=19 'Save'" % win, 10) is not None,
+        ck(wait_for(ui, mark, r"\[wm\] menu key win=%s id=19 '存储'" % win, 10) is not None,
            "Cmd+S was routed to TextEdit's Save (id 19)")
         time.sleep(4.0)                           # the write and its journal commit
     finally:

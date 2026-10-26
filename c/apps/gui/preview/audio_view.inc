@@ -24,10 +24,10 @@ static void draw_audio_ui(aplay *a, const char *name, const char *what,
     gui_rrect(x, y, width, WINH - 168, 18, ui_panel);
     gui_rrect(x + 28, y + 24, 58, 58, 15, 0x745CB5);
     gui_icon(GICON_DOC, x + 45, y + 41, 24, 0xFFFFFF);
-    label(x + 106, y + 27, 12, ui_muted, "AUDIO PLAYBACK");
+    label(x + 106, y + 27, 12, ui_muted, "音频播放");
     clipped_label(x + 106, y + 52, width - 136, 20, ui_text, name);
     snprintf(line, sizeof line, "%s   /   %d Hz   /   %s", what, a->rate,
-             a->ch == 1 ? "Mono" : "Stereo");
+             a->ch == 1 ? "单声道" : "立体声");
     label(x + 28, y + 106, 13, ui_muted, line);
 
     long long p = pos_ns < 0 ? 0 : pos_ns;
@@ -45,7 +45,7 @@ static void draw_audio_ui(aplay *a, const char *name, const char *what,
         gui_rrect(x + 28, y + 199, (int)((long long)bw * p / total_ns), 6, 3, ui_accent);
 
     int level_y = WINH - 178;
-    label(x + 28, level_y, 10, ui_muted, "OUTPUT LEVEL");
+    label(x + 28, level_y, 10, ui_muted, "输出电平");
     label(x + 28, level_y + 24, 11, ui_muted, a->ch > 1 ? "L" : "M");
     meter_bar(x + 52, level_y + 26, width - 80, 8, a->peak[0]);
     if (a->ch > 1) {

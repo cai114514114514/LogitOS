@@ -205,11 +205,11 @@ static int is_image_magic(const unsigned char *b, long n)
 static const char *audio_err_name(int e)
 {
     switch (e) {
-    case AUDIO_ERR_CORRUPT:     return "the bytes are not a valid stream";
-    case AUDIO_ERR_UNSUPPORTED: return "a feature this decoder does not do";
-    case AUDIO_ERR_OOM:         return "out of memory";
-    case AUDIO_ERR_RANGE:       return "a header field that cannot be true";
-    default:                    return "unknown error";
+    case AUDIO_ERR_CORRUPT:     return "数据不是有效的流";
+    case AUDIO_ERR_UNSUPPORTED: return "此解码器不支持该特性";
+    case AUDIO_ERR_OOM:         return "内存不足";
+    case AUDIO_ERR_RANGE:       return "头字段的值不可能成立";
+    default:                    return "未知错误";
     }
 }
 
@@ -397,20 +397,20 @@ static int aplay_assemble(aplay *a, mdemux *m, int ti, const media_track *t)
 {
     int obj = 2, fi = 4, cc = 2;
     if (t->codec == MEDIA_CODEC_AAC) {
-        if (t->extradata_len < 2) { a->why = "AAC with no configuration"; return -1; }
+        if (t->extradata_len < 2) { a->why = "AAC 缺少配置"; return -1; }
         if (asc_parse(t->extradata, t->extradata_len, &obj, &fi, &cc) != 0 || obj != 2) {
             snprintf(a->whybuf, sizeof a->whybuf,
-                     "AAC object type %d -- only AAC-LC here", obj);
+                     "AAC 对象类型 %d —— 这里只支持 AAC-LC", obj);
             a->why = a->whybuf;
             return -1;
         }
-        if (cc == 0) { a->why = "AAC with a program config element"; return -1; }
+        if (cc == 0) { a->why = "AAC 带有节目配置元素"; return -1; }
     }
     int per;
     long need = es_size(m, ti, t, &per);
-    if (need <= 0) { a->why = "the audio track is empty"; return -1; }
+    if (need <= 0) { a->why = "音轨是空的"; return -1; }
     a->es = malloc((unsigned long)need + 1);
-    if (!a->es) { a->why = "out of memory"; return -1; }
+    if (!a->es) { a->why = "内存不足"; return -1; }
     a->src = a->es;
 
     long at = 0;
@@ -462,7 +462,7 @@ static void aplay_start(aplay *a)
     }
     a->fmt = fmt_name(adec_format(a->dec));
     if (adec_info(a->dec, &a->rate, &a->ch) != AUDIO_OK || a->rate <= 0) {
-        a->why = "the audio header does not state a rate";
+        a->why = "音频头没有给出采样率";
         adec_close(a->dec); a->dec = 0; return;
     }
     /* The play buffer is ABUF_FRAMES * 2 and adec_read writes the decoder's
@@ -472,7 +472,7 @@ static void aplay_start(aplay *a)
      * A downmix would be a second playback path. */
     if (a->ch < 1 || a->ch > 2) {
         snprintf(a->whybuf, sizeof a->whybuf,
-                 "audio is %d channels -- only mono and stereo play here", a->ch);
+                 "音频有 %d 个声道 —— 这里只能播放单声道和立体声", a->ch);
         a->why = a->whybuf;
         adec_close(a->dec); a->dec = 0;
         return;
@@ -480,9 +480,9 @@ static void aplay_start(aplay *a)
     a->total_frames = adec_duration_frames(a->dec);
 
     struct logit_sndinfo si;
-    if (snd_info(&si) != 1) { a->why = "no sound card"; return; }
+    if (snd_info(&si) != 1) { a->why = "没有声卡"; return; }
     a->handle = snd_open_s16((unsigned)a->rate, (unsigned)a->ch);
-    if (a->handle < 0) a->why = "the sound device would not open";
+    if (a->handle < 0) a->why = "无法打开声音设备";
 }
 
 /* A track out of a container. */
@@ -491,7 +491,7 @@ static void aplay_open_track(aplay *a, mdemux *m, int ti)
     memset(a, 0, sizeof *a);
     a->handle = -1;
     a->total_frames = -1;
-    if (ti < 0) { a->why = "no audio track"; return; }
+    if (ti < 0) { a->why = "没有音轨"; return; }
     const media_track *t = media_track_info(m, ti);
     switch (t->codec) {
     case MEDIA_CODEC_MP3: case MEDIA_CODEC_FLAC: case MEDIA_CODEC_AAC:
@@ -502,7 +502,7 @@ static void aplay_open_track(aplay *a, mdemux *m, int ti)
          * system (c/lib/audio is WAV/FLAC/MP3/AAC) and saying which one it is
          * beats a silent clip. */
         snprintf(a->whybuf, sizeof a->whybuf,
-                 "audio is %s -- no decoder for it here", t->codec_name);
+                 "音频为 %s —— 没有可用的解码器", t->codec_name);
         a->why = a->whybuf;
         return;
     }
@@ -624,7 +624,7 @@ static int hold_audio_ui(aplay *a, const char *name, const char *what,
      * still being output while this screen waits for navigation. */
     a->peak[0] = a->peak[1] = 0;
     draw_audio_ui(a, name, what, total_ns, total_ns);
-    snprintf(line, sizeof line, "finished -- %s", hint());
+    snprintf(line, sizeof line, "已播完 —— %s", hint());
     status(line);
     gui_flush();
     if (g_one_loop) return PUMP_QUIT;
@@ -646,7 +646,7 @@ static int play_container(unsigned char *data, long len, const char *name)
     int err = 0;
     mdemux *m = media_open(data, len, &err);
     if (!m) {
-        snprintf(line, sizeof line, "%s: cannot open this container (%s)",
+        snprintf(line, sizeof line, "%s：无法打开此容器（%s）",
                  name, media_strerror(err));
         return fail_with(line);
     }
@@ -655,7 +655,7 @@ static int play_container(unsigned char *data, long len, const char *name)
     int ai = media_find_track(m, MEDIA_TRACK_AUDIO);
     if (vi < 0 && ai < 0) {
         media_close(m);
-        return fail_with("this file has no video and no audio track");
+        return fail_with("此文件既没有视频也没有音轨");
     }
 
     const media_track *vt = vi >= 0 ? media_track_info(m, vi) : 0;
@@ -663,7 +663,7 @@ static int play_container(unsigned char *data, long len, const char *name)
     char vwhy[96];
     vwhy[0] = 0;
     if (vt && !vplay)
-        snprintf(vwhy, sizeof vwhy, "video is %s -- no decoder for it here",
+        snprintf(vwhy, sizeof vwhy, "视频为 %s —— 没有可用的解码器",
                  vt->codec_name);
 
     aplay au;
@@ -679,7 +679,7 @@ static int play_container(unsigned char *data, long len, const char *name)
      * on a file that also has no audio decoder is half an answer. */
     if (!vplay && au.handle < 0 && !au.dec) {
         snprintf(line, sizeof line, "%s: %s%s%s", name,
-                 vwhy[0] ? vwhy : "no video track",
+                 vwhy[0] ? vwhy : "没有视频轨",
                  au.why ? "; " : "", au.why ? au.why : "");
         aplay_close(&au);
         media_close(m);
@@ -712,7 +712,7 @@ static int play_container(unsigned char *data, long len, const char *name)
 
     if (!vdec_open(&v, vt->codec == MEDIA_CODEC_H265)) {
         aplay_close(&au); media_close(m);
-        return fail_with("out of memory opening the video decoder");
+        return fail_with("打开视频解码器时内存不足");
     }
     /* The parameter sets, once, before anything else: MP4 and Matroska
      * both hoist them out of the samples into the sample description. */
@@ -746,7 +746,7 @@ static int play_container(unsigned char *data, long len, const char *name)
             got = vdec_pump(&v, nalbuf, pend_len, &pend_off);
             if (got < 0) {
                 snprintf(line, sizeof line,
-                         "%s: the %s decoder refused this stream (%d) at sample %ld",
+                         "%s：%s 解码器在第 %ld 个样本拒绝了此流（%d）",
                          name, vt->codec_name, got, sample);
                 vdec_close(&v); aplay_close(&au); media_close(m);
                 return fail_with(line);
@@ -757,7 +757,7 @@ static int play_container(unsigned char *data, long len, const char *name)
             if (media_get_sample(m, vi, sample, &s) == 1) {
                 long n = media_to_annexb(m, &s, nalbuf, (long)sizeof nalbuf);
                 if (n < 0) {
-                    snprintf(line, sizeof line, "%s: corrupt sample %ld", name, sample);
+                    snprintf(line, sizeof line, "%s：第 %ld 个样本已损坏", name, sample);
                     vdec_close(&v); aplay_close(&au); media_close(m);
                     return fail_with(line);
                 }
@@ -802,7 +802,7 @@ static int play_container(unsigned char *data, long len, const char *name)
         if (what == AV_DROP) continue;
 
         if (v.w > MAXW || v.h > MAXH) {
-            snprintf(line, sizeof line, "%dx%d is larger than this viewer handles",
+            snprintf(line, sizeof line, "%dx%d 超出了此查看器能处理的大小",
                      v.w, v.h);
             vdec_close(&v); aplay_close(&au); media_close(m);
             return fail_with(line);
@@ -862,7 +862,7 @@ static int play_annexb(const unsigned char *data, long len, const char *name)
 
     for (;;) {
         vdec v;
-        if (!vdec_open(&v, is265)) return fail_with("out of memory");
+        if (!vdec_open(&v, is265)) return fail_with("内存不足");
         long off = 0;
         int frames = 0;
         for (;;) {
@@ -887,7 +887,7 @@ static int play_annexb(const unsigned char *data, long len, const char *name)
                     got = g;
                 }
                 if (used < 0) {
-                    snprintf(line, sizeof line, "%s: corrupt stream at byte %ld", name, off);
+                    snprintf(line, sizeof line, "%s：流在第 %ld 字节处损坏", name, off);
                     vdec_close(&v);
                     return fail_with(line);
                 }
@@ -902,7 +902,7 @@ static int play_annexb(const unsigned char *data, long len, const char *name)
 
             if (v.w > MAXW || v.h > MAXH) {
                 vdec_close(&v);
-                return fail_with("this picture is larger than the viewer handles");
+                return fail_with("此图片超出了查看器能处理的大小");
             }
             yuv420_to_rgba(v.y, v.u, v.v, v.sy, v.sc, v.w, v.h, rgba);
             frames++;
@@ -916,7 +916,7 @@ static int play_annexb(const unsigned char *data, long len, const char *name)
             if (p) { vdec_close(&v); return p; }
         }
         vdec_close(&v);
-        if (frames == 0) return fail_with("no frames in this stream");
+        if (frames == 0) return fail_with("此流中没有画面");
         plog("preview: stream %s frames=%d\n", name, frames);
     }
 }
@@ -933,14 +933,14 @@ static int play_image(const unsigned char *data, long len, const char *name)
     if (img_decode_anim(data, (int)len, &a) != 0) {
         int k = sniff_id(data, len < SNIFF_PREFIX ? (int)len : SNIFF_PREFIX);
         snprintf(line, sizeof line,
-                 "%s: %s, and the decoder refused it -- corrupt, or a variant "
-                 "this build does not do (progressive JPEG, 16-bit PNG)",
+                 "%s：%s，但解码器拒绝了它 —— 文件已损坏，或是此版本"
+                 "不支持的变体（渐进式 JPEG、16 位 PNG）",
                  name, is_ico(data, len) ? "ICO/CUR icon" : sniff_name(k));
         return fail_with(line);
     }
     if (a.nframes <= 0 || !a.frames || a.w <= 0 || a.h <= 0) {
         img_anim_free(&a);
-        return fail_with("that image decoded to nothing");
+        return fail_with("该图像解码后为空");
     }
 
     long long declared = 0;
@@ -1062,7 +1062,7 @@ static int play_audio_file(unsigned char *data, long len, const char *name)
     aplay_open_file(&a, data, len);
     if (!a.dec) {
         char line[192];
-        snprintf(line, sizeof line, "%s: %s", name, a.why ? a.why : "cannot decode");
+        snprintf(line, sizeof line, "%s: %s", name, a.why ? a.why : "无法解码");
         aplay_close(&a);
         return fail_with(line);
     }
@@ -1084,7 +1084,7 @@ static int open_path(const char *path, const char *name)
     plog("preview: reading %s\n", path);
     unsigned char *data = read_all(path, &len);
     if (!data) {
-        snprintf(line, sizeof line, "%s: cannot read this file", name);
+        snprintf(line, sizeof line, "%s：无法读取此文件", name);
         return fail_with(line);
     }
     int kind = sniff_id(data, len < SNIFF_PREFIX ? (int)len : SNIFF_PREFIX);
@@ -1099,7 +1099,7 @@ static int open_path(const char *path, const char *name)
         char hex[40];
         sniff_hex(data, len < 8 ? (int)len : 8, hex, (int)sizeof hex);
         snprintf(line, sizeof line,
-                 "%s: %s -- no decoder in this system reads it (starts %s)",
+                 "%s：%s —— 系统中没有能读取它的解码器（开头为 %s）",
                  name, sniff_name(kind), hex);
         p = fail_with(line);
     }

@@ -159,32 +159,32 @@ void st_finished_job(StEngine *engine)
     engine->runner_seen = 1;
     if (runner->cancelled || runner->io_error) {
         st_engine_notice(engine, runner->cancelled
-                                     ? "Process stopped"
-                                     : "Process I/O failed; output may be incomplete");
+                                     ? "进程已停止"
+                                     : "进程输入输出失败，输出可能不完整");
         return;
     }
     int exit_code = WIFEXITED(runner->status) ? WEXITSTATUS(runner->status) : -1;
     if (!runner->mode) {
-        snprintf(engine->state.notice, sizeof engine->state.notice, "Process finished: %s %d%s",
-                 exit_code < 0 ? "signal" : "exit",
+        snprintf(engine->state.notice, sizeof engine->state.notice, "进程已结束：%s %d%s",
+                 exit_code < 0 ? "信号" : "退出码",
                  exit_code < 0 ? WTERMSIG(runner->status) : exit_code,
-                 runner->truncated ? "; output limit reached" : "");
+                 runner->truncated ? "；已达到输出上限" : "");
         return;
     }
     if (runner->tab < 0 || runner->tab >= engine->state.count ||
         !st_runner_current(runner, &engine->state.docs[runner->tab], runner->tab) ||
         !st_runner_imports_current(runner, engine->state.docs, engine->state.count)) {
-        st_engine_notice(engine, "Check finished for an older version; current edits are kept.");
+        st_engine_notice(engine, "检查针对的是旧版本，当前编辑已保留。");
         return;
     }
     if (runner->truncated) {
         st_engine_notice(engine,
-                         "Compiler diagnostics exceeded the output limit; result rejected.");
+                         "编译器诊断超出输出上限，结果已拒绝。");
         return;
     }
     struct ag_json json;
     if (ag_json_parse(&json, runner->text, (size_t)runner->length) < 0) {
-        st_engine_notice(engine, "Compiler did not return structured diagnostics. Check /bin/as.");
+        st_engine_notice(engine, "编译器没有返回结构化诊断，请检查 /bin/as。");
         return;
     }
     int version, language, bytes;
@@ -223,10 +223,10 @@ void st_finished_job(StEngine *engine)
         engine->state.problem_tab = runner->tab;
         engine->state.problem_revision = runner->revision;
         snprintf(engine->state.notice, sizeof engine->state.notice,
-                 count ? "%d compiler problems" : "A3 project check passed", count);
+                 count ? "%d 个编译器问题" : "A3 项目检查通过", count);
     } else {
         st_engine_notice(engine,
-                         "Invalid or outdated compiler result; diagnostics were not attached.");
+                         "编译器结果无效或已过时，未附加诊断。");
     }
     ag_json_free(&json);
 }

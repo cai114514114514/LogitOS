@@ -45,7 +45,7 @@ StEngine *st_engine_create(const StHost *host)
     strcpy(e->modules, modules);
     e->state.problem_tab = -1;
     strcpy(e->state.project, "/docs");
-    st_engine_notice(e, "Ready");
+    st_engine_notice(e, "就绪");
     st_runner_init(&e->state.runner);
     st_runner_init(&e->completion_runner);
     return e;
@@ -71,7 +71,7 @@ void st_changed(StEngine *e)
     e->check_due = now + 850;
     e->check_pending = 1;
     st_engine_dismiss_completion(e);
-    st_engine_notice(e, "Unsaved changes");
+    st_engine_notice(e, "有未存储的更改");
 }
 
 void st_engine_activate(StEngine *e, int index)
@@ -90,7 +90,7 @@ int st_engine_close(StEngine *e, int index)
         return -1;
     }
     if (st_runner_busy(&e->state.runner)) {
-        st_engine_notice(e, "Stop the running process before closing a tab.");
+        st_engine_notice(e, "关闭标签页前请先停止正在运行的进程。");
         return -1;
     }
     StDocument *d = &e->state.docs[index];
@@ -98,7 +98,7 @@ int st_engine_close(StEngine *e, int index)
     /* Clean tabs only need a cursor bookmark. A removed/read-only parent must
      * not trap them open; dirty source still requires a successful checkpoint. */
     if (st_checkpoint(d) < 0 && st_dirty(d)) {
-        st_engine_notice(e, "Draft could not be saved. Tab remains open.");
+        st_engine_notice(e, "草稿无法存储，标签页保持打开。");
         return -1;
     }
     st_dispose(d);
@@ -128,7 +128,7 @@ int st_engine_shutdown(StEngine *e)
         }
     }
     if (!ok) {
-        st_engine_notice(e, "Could not preserve all drafts. Window remains open.");
+        st_engine_notice(e, "无法保留所有草稿，窗口保持打开。");
         return -1;
     }
     st_session_save(e);
@@ -149,7 +149,7 @@ int st_engine_tick(StEngine *e)
         for (int i = 0; i < e->state.count; i++) {
             if (e->state.docs[i].revision != e->state.docs[i].checkpoint &&
                 st_checkpoint(&e->state.docs[i]) < 0) {
-                st_engine_notice(e, "Draft checkpoint failed. Keep this window open.");
+                st_engine_notice(e, "草稿检查点失败，请保持此窗口打开。");
                 changed = 1;
             }
         }

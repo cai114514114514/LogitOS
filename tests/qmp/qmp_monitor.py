@@ -64,7 +64,11 @@ TAB_Y = 44 + 17                   # the tab strip's vertical centre
 # read off a rendered frame. Every click on them is verified by the probe
 # colour afterwards, so a font change fails loudly here rather than silently
 # testing the wrong view.
-TAB_X = (61, 146, 221)
+# Since 2026-10-26 the labels are 进程 / 内存 / 系统: two em each at 15 px,
+# so every tab is 30 + AUI_SP(6) = 54 points wide from x = 16. (The English
+# labels gave 61 / 146 / 221; the same formula reproduces those to within the
+# rasteriser's rounding.)
+TAB_X = (43, 97, 151)
 TABLE_X, TABLE_Y = 16, 96 + 26    # aui_table's origin on the Processes tab
 ROW_H = 26                        # list_body row pitch (aui.c)
 HDR_H = 26                        # the table's header band

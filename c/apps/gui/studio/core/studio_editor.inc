@@ -46,10 +46,10 @@ static void key_event(int key,unsigned mods)
     if(key==26||key==25){st_engine_undo(engine,key==25||(mods&EV_MOD_SHIFT));reveal(d);return;}
     int lo=d->caret<d->anchor?d->caret:d->anchor,hi=d->caret>d->anchor?d->caret:d->anchor;
     if(key==3||key==24){if(hi>lo){int r=clip_set(CLIP_F_TEXT,d->text+lo,hi-lo);
-        if(r<0)set_notice("Clipboard rejected the selection");else if(key==24)insert_text("",0);}return;}
-    if(key==22){char *clip=malloc(ST_DOCUMENT_LIMIT+1);if(!clip){set_notice("Paste allocation failed");return;}
+        if(r<0)set_notice("剪贴板拒绝了所选内容");else if(key==24)insert_text("",0);}return;}
+    if(key==22){char *clip=malloc(ST_DOCUMENT_LIMIT+1);if(!clip){set_notice("粘贴时内存分配失败");return;}
         int expected=clip_len(CLIP_F_TEXT),n=clip_get(CLIP_F_TEXT,clip,ST_DOCUMENT_LIMIT+1);
-        if(n>0&&n==expected&&n<=ST_DOCUMENT_LIMIT)insert_text(clip,n);else if(n!=expected)set_notice("Paste rejected: clipboard could not be read completely");
+        if(n>0&&n==expected&&n<=ST_DOCUMENT_LIMIT)insert_text(clip,n);else if(n!=expected)set_notice("粘贴被拒绝：剪贴板无法完整读取");
         free(clip);st_engine_dismiss_completion(engine);return;}
     if((key==0||key==' ')&&(mods&EV_MOD_CTRL)){complete();return;}
     if(key==8||key==127){if(key==8)st_engine_backspace(engine);else st_engine_delete(engine,1);reveal(d);return;}

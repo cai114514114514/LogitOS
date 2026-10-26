@@ -37,7 +37,7 @@ static void project_create(void)
     uint64_t context;int rc=ag_publish_selection(paths,n,cwd,&context);
     if(!rc){struct ag_create req={.context=context};scpy(req.goal,project_goal,sizeof req.goal);scpy(req.output,cwd,sizeof req.output);
         struct ag_message m={.type=AG_CREATE,.bytes=sizeof req};void *p=0;rc=ag_call(&m,&req,&p);free(p);}
-    if(!rc){project_goal[0]=0;scpy(agent_notice,"已开始，报告保存在当前 Project",sizeof agent_notice);project_refresh(1);}
+    if(!rc){project_goal[0]=0;scpy(agent_notice,"已开始，报告将保存在当前项目",sizeof agent_notice);project_refresh(1);}
     else snprintf(agent_notice,sizeof agent_notice,"未能开始（%d），资料和要求已保留",rc);
 }
 static void project_control(unsigned phase)
@@ -55,9 +55,9 @@ static void draw_project(void)
     int x=CONTENT_RIGHT+20,w=PROJECT_W-40;
     gui_rect(CONTENT_RIGHT,0,PROJECT_W,WINH,AUI_SURFACE);
     gui_rect(CONTENT_RIGHT,0,1,WINH,AUI_BORDER);
-    aui_heading(x,22,"这个 Project 的工作",AUI_TEXT);
+    aui_heading(x,22,"此项目的工作",AUI_TEXT);
     project_line(x,54,cwd,AUI_MUTED);
-    aui_label(x,88,sel_count?"使用选中的资料":"使用当前 Project 的资料",AUI_TEXT);
+    aui_label(x,88,sel_count?"使用选中的资料":"使用当前项目的资料",AUI_TEXT);
     if(aui_textfield_ex(x,114,w,project_goal,sizeof project_goal,"让应用做什么…",1))project_create();
     if(aui_button(x,150,w,28,"整理资料，生成报告"))project_create();
     if(project_rc){aui_label(x,204,"任务服务暂不可用",AUI_MUTED);return;}
@@ -67,7 +67,7 @@ static void draw_project(void)
     if(first&&aui_button(x+w-60,196,26,24,"<")){project_selected-=4;return;}
     if(last<project_view.count&&aui_button(x+w-30,196,26,24,">")){project_selected=(int)last;return;}
     for(unsigned i=first;i<last;i++){
-        char label[96];snprintf(label,sizeof label,"%llu · %s",(unsigned long long)project_view.tasks[i].id,ag_phase_name(project_view.tasks[i].phase));
+        char label[96];snprintf(label,sizeof label,"%llu · %s",(unsigned long long)project_view.tasks[i].id,ag_phase_label(project_view.tasks[i].phase));
         if(aui_button(x,228+(int)(i-first)*30,w,26,label))project_selected=(int)i;
     }
     if(project_selected>=(int)project_view.count)project_selected=0;

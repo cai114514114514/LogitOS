@@ -85,7 +85,7 @@ int main(int argc,char **argv)
     st_engine_insert(e,"1",1);CHECK("stale-navigation",st_engine_select_problem(e,0)<0);
     replace(e,"# aether: 3.0\ndef main() -> None:\n    print(1)\n");st_engine_start(e,1);settle(e);CHECK("valid-check",v->problem_count==0);
     replace(e,"# aether: 3.0\nx =\n");st_engine_start(e,1);st_engine_insert(e," ",1);st_engine_undo(e,0);settle(e);
-    CHECK("stale-diagnostics",v->problem_count==0&&strstr(v->notice,"older version"));
+    CHECK("stale-diagnostics",v->problem_count==0&&strstr(v->notice,"旧版本"));
     replace(e,"# aether: 3.0\ndef main() -> None:\n    print(42)\n");st_engine_start(e,0);settle(e);
     CHECK("real-run-output",!v->runner.mode&&WIFEXITED(v->runner.status)&&WEXITSTATUS(v->runner.status)==0&&strstr(v->runner.text,"42"));
     st_engine_tick(e);CHECK("run-output-retained",!v->runner.mode);
@@ -170,7 +170,7 @@ int main(int argc,char **argv)
     st_engine_start(e,1);
     st_engine_activate(e,1);st_engine_insert(e," ",1);st_engine_undo(e,0);
     st_engine_activate(e,0);settle(e);
-    CHECK("stale-import-diagnostics",v->problem_count==0&&strstr(v->notice,"older version"));
+    CHECK("stale-import-diagnostics",v->problem_count==0&&strstr(v->notice,"旧版本"));
     st_engine_activate(e,1);
     replace(e,"# aether: 3.0\ndef unsaved_symbol() -> i64:\n    return 8\ndef _hidden() -> i64:\n    return 1\n");
     st_engine_activate(e,0);

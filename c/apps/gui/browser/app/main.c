@@ -663,7 +663,7 @@ static int addr_infer_scheme(void)
         addr_sync();
         return 1;
     }
-    set_status("not a URL -- no search engine is configured here; type a full address");
+    set_status("这不是 URL —— 这里没有配置搜索引擎，请输入完整地址");
     return 0;
 }
 
@@ -835,7 +835,7 @@ static void tab_retitle(void)
     int done = 0;
     if (g_root) title_of(g_root, title, (int)sizeof title, &done);
     if (!done || !title[0]) url_label(url, title, (int)sizeof title);
-    if (!title[0]) { const char *b = "Untitled"; int i = 0; while (b[i]) { title[i] = b[i]; i++; } title[i] = 0; }
+    if (!title[0]) { const char *b = "无标题"; int i = 0; while (b[i]) { title[i] = b[i]; i++; } title[i] = 0; }
     int i = 0; while (title[i] && i < TAB_TITLE - 1) { t->title[i] = title[i]; i++; }
     t->title[i] = 0;
 }
@@ -1814,7 +1814,7 @@ static int javascript_url_execute(const char *typed)
     static const char HEX[] = "0123456789abcdef";
     if (!typed || !starts_ci(typed, "javascript:")) return 0;
     if (!g_root || !js_page_live()) {
-        set_status("javascript URL needs a live page");
+        set_status("javascript URL 需要一个已载入的网页");
         return 1;
     }
 
@@ -1841,8 +1841,8 @@ static int javascript_url_execute(const char *typed)
 
     printf("[browser] javascript URL: %d bytes\n", n);
     int ok = js_page_eval(src, n, "<javascript URL>", 0);
-    if (ok) set_status("javascript URL executed");
-    else set_status("javascript URL threw; see console");
+    if (ok) set_status("javascript URL 已执行");
+    else set_status("javascript URL 抛出了异常，请查看控制台");
 
     /* The address field held source code while the committed document did
      * not change. Put its actual address back. A location write made by the
@@ -2626,7 +2626,7 @@ static void load_from(const char *u, const char *initiator)
         cur[4] == 't' && cur[5] == ':' && cur[6] == 't' && cur[7] == 'e' &&
         cur[8] == 'x' && cur[9] == 't' && cur[10] == 0) {
         browser_paint_text_dump();
-        set_status("painted text dumped to the serial console");
+        set_status("已将绘制的文本输出到串口控制台");
         return;
     }
     /* about:boxes -- the display list, one line per item, through the same
@@ -2673,7 +2673,7 @@ static void load_from(const char *u, const char *initiator)
             shown++;
         }
         printf("[dl] ---8<--- end boxes (%d shown of %d)\n", shown, n);
-        set_status("display list dumped to the serial console");
+        set_status("已将显示列表输出到串口控制台");
         return;
     }
     /* On-demand diagnostics only: no per-frame census or normal-load scan.
@@ -2693,13 +2693,13 @@ static void load_from(const char *u, const char *initiator)
          * absent tail as zero images; this on-demand marker adds no scan to
          * normal rendering and changes neither fetch state nor page content. */
         printf("[images] end state\n");
-        set_status("image state dumped to the serial console");return;
+        set_status("已将图像状态输出到串口控制台");return;
     }
     if (str_eq(cur,"about:input")) {
         g_input_trace_budget = 64;
         g_input_trace_needs_frame = 0;
         input_trace("armed",0,0,0,-1,-1);
-        set_status("native input trace armed (64 points; no typed content)");
+        set_status("已开启原生输入跟踪（64 个点，不含键入内容）");
 #ifndef BROWSER_INPUT_TRACE_NAVIGATES
         return;
 #endif
@@ -2751,7 +2751,7 @@ static void load_from(const char *u, const char *initiator)
         }
         origin[oi] = 0;
         if (hops >= NAV_MAX_HOPS) {
-            set_status("stopped: too many redirects");
+            set_status("已停止：重定向次数过多");
             redraw(0);
             return;
         }
@@ -2881,7 +2881,7 @@ static void load_once_impl(const char *u, const char *initiator)
     if(staged_stop){hist_pending_kind=0;hist_pending_tab=NULL;return;}
     hist_commit();
     image_requests_reset();
-    set_status(g_hydrating ? "restoring tab..." : "loading...");
+    set_status(g_hydrating ? "正在恢复标签页…" : "正在载入…");
     /* The animation clock's entries point into the document that is about
      * to be freed, and unlike the JS wrappers they have no teardown hook
      * of their own -- dropped here, before dom_free, for the same reason
@@ -2988,7 +2988,7 @@ static void load_once_impl(const char *u, const char *initiator)
          * the DOM borrows text straight out of whatever we hand dom_parse. */
         blen = ht->srclen;
         g_page_src = malloc((size_t)blen + 1);
-        if (!g_page_src) { set_status("restore failed: out of memory"); return; }
+        if (!g_page_src) { set_status("恢复失败：内存不足"); return; }
         for (int i = 0; i < blen; i++) g_page_src[i] = ht->src[i];
         g_page_src[blen] = 0;
         { const char *f = ht->base[0] ? ht->base : u; int i = 0;
@@ -3020,11 +3020,11 @@ static void load_once_impl(const char *u, const char *initiator)
         set_status(st);
         if (blen <= 0) return;                       /* still render an error body */
     }
-    if (blen <= 0) { set_status("error: empty response"); return; }
+    if (blen <= 0) { set_status("错误：响应为空"); return; }
     load_profile_step(&lp, "document");
     g_root = dom_parse((const char *)g_page_src, blen);
     load_close_checkpoint();
-    if (!g_root) { set_status("error: parse failed"); return; }
+    if (!g_root) { set_status("错误：解析失败"); return; }
     /* Previously hydration supplied known=0, disabling every network frame
      * after a tab round-trip. Replay the policy captured with THIS document;
      * never reuse another tab's staged response or invent a known empty CSP. */
@@ -3084,7 +3084,7 @@ static void load_once_impl(const char *u, const char *initiator)
     load_close_checkpoint();
     browser_style_layout("first");
     ph = layout_height(); g_page_width = browser_content_width(g_root, win_w); g_hbar = max_scroll_x() > 0 ? 12 : 0;
-    set_status(ht ? "restoring tab..." : "loaded -- fetching stylesheets...");
+    set_status(ht ? "正在恢复标签页…" : "已载入 —— 正在获取样式表…");
     redraw(0);                       /* first paint: HTML + inline CSS, before slow CDN fetches */
     g_load_frame_committed=1;
     load_close_checkpoint();
@@ -3468,7 +3468,7 @@ static void tab_switch_to(int i)
     if (!tab_hydrate()) {
         struct tab *t = tab_cur();
         if (t && t->url[0]) load(url);     /* restored-but-never-loaded: fetch it */
-        else { set_status("new tab -- type a URL and press Enter"); redraw(1); }
+        else { set_status("新标签页 —— 输入 URL 后按回车"); redraw(1); }
     }
     session_save();
 }
@@ -3681,7 +3681,7 @@ static void draw_tab_strip(void)
          * the only rate that matters -- repaints, of which it causes none. */
         if (on) gui_rect(x + 6, TABH - 4, w - 12, 2, rgb(90, 150, 240));
         char lab[64];
-        tab_label(t->title[0] ? t->title : "New Tab", w - (on ? 32 : 16), lab, (int)sizeof lab);
+        tab_label(t->title[0] ? t->title : "新标签页", w - (on ? 32 : 16), lab, (int)sizeof lab);
         gui_text(x + 8, 8, on ? rgb(25, 25, 35) : rgb(105, 105, 118), lab);
         if (on && w >= TAB_MINW) {
             /* the close box, on the active tab only -- see the note above */
@@ -3947,8 +3947,8 @@ static void draw_devtools_panel(void)
     if (dh > win_h - VIEW_Y - 18) dh = win_h - VIEW_Y - 18;
     int px = 0, pw = win_w, py = win_h - 18 - dh, phh = dh;
     gui_glass(px, py, pw, phh, 0, 20, 22, 28, 245);
-    gui_text(px + 14, py + 8, rgb(230, 230, 235), "DevTools -- the rendering chain");
-    gui_text(px + pw - 210, py + 8, rgb(150, 150, 160), "F12 / Cmd+Alt+I closes");
+    gui_text(px + 14, py + 8, rgb(230, 230, 235), "开发者工具 —— 渲染链");
+    gui_text(px + pw - 210, py + 8, rgb(150, 150, 160), "F12 / Cmd+Alt+I 关闭");
     struct ch_link links[DT_MAXROWS];
     int n = devtools_chain(links, DT_MAXROWS);
     int y = py + 32;
@@ -3984,7 +3984,7 @@ static void draw_panel(void)
     gui_text(px + 14, py + 8, rgb(30, 30, 40), name);
     if (g_panel == PANEL_HISTORY) {
         gui_glass(px + 110, py + 6, pw - 130, 20, 6, 255, 255, 255, 200);
-        gui_text(px + 116, py + 8, rgb(60, 60, 72), g_findlen ? g_find : "type to search");
+        gui_text(px + 116, py + 8, rgb(60, 60, 72), g_findlen ? g_find : "输入以搜索");
         gui_rect(px + 116 + g_findlen * 8, py + 8, 8, 16, rgb(90, 150, 240));
     }
     int rows[HISTORY_MAX];
@@ -5105,7 +5105,7 @@ static int form_submit_ex(struct node *form, struct node *submitter, int fire_ev
         js_form_encode(js_page_ctx(),form,submitter,g_submit_buf,(int)sizeof g_submit_buf):-2;
     if (n==-2) n=fc_encode(form,submitter,g_submit_buf,(int)sizeof g_submit_buf);
     if (form->serial!=serial||!fc_connected(form)) return 0;
-    if (n < 0) { set_status("form is too large to submit"); return 0; }
+    if (n < 0) { set_status("表单过大，无法提交"); return 0; }
 
     char target[700];
     int o = 0;
@@ -5119,7 +5119,7 @@ static int form_submit_ex(struct node *form, struct node *submitter, int fire_ev
     const char *fragment=strchr(address,'#');
     while (address[o] && address[o]!='?' && address[o]!='#') {
         if (o >= (int)sizeof target - 1) {
-            set_status("form URL is too large to submit");return 0;
+            set_status("表单 URL 过长，无法提交");return 0;
         }
         target[o]=address[o];o++;
     }
@@ -5128,14 +5128,14 @@ static int form_submit_ex(struct node *form, struct node *submitter, int fire_ev
     const char *method=submitter?dom_attr(submitter,"formmethod"):NULL;
     if (!method) method=dom_attr(form,"method");
     if (fc__ieq(method,"dialog")) {
-        set_status("dialog form submission is not wired yet");
+        set_status("尚不支持提交对话框表单");
         return 0;
     }
     if (fc__ieq(method,"post")) {
         /* Deliberately loud rather than silently wrong. See the comment above:
          * the payload is built and correct, the network path is not this
          * line's file. */
-        set_status("POST form: payload built, but POST is not wired yet");
+        set_status("POST 表单：已生成数据，但尚不支持 POST");
         printf("[browser] FORM-POST unsupported=1 bytes=%d\n", n);
         return 0;
     }
@@ -5149,7 +5149,7 @@ static int form_submit_ex(struct node *form, struct node *submitter, int fire_ev
 #endif
 #ifndef BROWSER_FORM_GET_TRUNCATE
         if (n > (int)sizeof target - q - 2) {
-            set_status("form URL is too large to submit");return 0;
+            set_status("表单 URL 过长，无法提交");return 0;
         }
 #endif
         target[q++] = '?';
@@ -5163,7 +5163,7 @@ static int form_submit_ex(struct node *form, struct node *submitter, int fire_ev
         int length=(int)strlen(fragment);
         if (length >= (int)sizeof target - q) {
 #ifndef BROWSER_FORM_GET_TRUNCATE
-            set_status("form URL is too large to submit");return 0;
+            set_status("表单 URL 过长，无法提交");return 0;
 #endif
         } else {
             memcpy(target+q,fragment,(size_t)length+1);
@@ -5186,7 +5186,7 @@ static int form_submit_ex(struct node *form, struct node *submitter, int fire_ev
         url_resolve(&base,target,absolute,sizeof absolute)!=0 ||
         !LOGIT_HAVE(js_webapi_request_navigation) ||
         !js_webapi_request_navigation(absolute)) {
-        set_status("cannot schedule form navigation");return 0;
+        set_status("无法安排表单导航");return 0;
     }
     return 1;
 #endif
@@ -5718,7 +5718,7 @@ void app_main(void)
     /* "restored N tabs -- Enter loads this one" stood here: a count with no
      * plural agreement, phrased for whoever wrote the restore code. The fact a
      * person needs is only that this page is from last time and not loaded. */
-    if (restored > 0) set_status("From your last session - press Return to load");
+    if (restored > 0) set_status("来自上次的会话 —— 按回车载入");
 
     redraw(1);
     editing = 1;
@@ -5892,7 +5892,7 @@ void app_main(void)
                      * answers that `changed px` cannot. */
                     if (c == 'd' && (e.mods & EV_MOD_ALT)) {
                         browser_paint_text_dump();
-                        set_status("painted text dumped to the serial console");
+                        set_status("已将绘制的文本输出到串口控制台");
                         handled = 1;
                     } else if (c == 'i' && (e.mods & EV_MOD_ALT)) {
                         /* Cmd+Alt+I: DevTools. A SECOND accelerator next to
@@ -5912,9 +5912,9 @@ void app_main(void)
                         int n = tabs_new("");
                         if (n >= 0) { tab_dehydrate(); tabs_select(n);
                             url[0] = 0; ulen = 0; editing = 1; addr_sync();
-                            set_status("new tab -- type a URL and press Enter");
+                            set_status("新标签页 —— 输入 URL 后按回车");
                             session_save(); }
-                        else set_status("too many tabs");
+                        else set_status("标签页过多");
                         handled = 1;
                     } else if (c == 'w') {                       /* close tab */
                         int cur = tabs_active();
@@ -5926,7 +5926,7 @@ void app_main(void)
                             struct tab *t = tab_cur();
                             if (t && t->url[0]) { load(url); navigated = 1; }
                             else { url[0] = 0; ulen = 0; editing = 1; addr_sync();
-                                   set_status("new tab -- type a URL and press Enter"); }
+                                   set_status("新标签页 —— 输入 URL 后按回车"); }
                         }
                         session_save();
                         handled = 1;
@@ -5958,8 +5958,8 @@ void app_main(void)
                     } else if (c == 'd') {                       /* bookmark this page */
                         struct tab *t = tab_cur();
                         int at = bookmark_find(url);
-                        if (at >= 0) { bookmark_remove(at); set_status("bookmark removed"); }
-                        else { bookmark_add(url, t ? t->title : url); set_status("bookmarked"); }
+                        if (at >= 0) { bookmark_remove(at); set_status("已移除书签"); }
+                        else { bookmark_add(url, t ? t->title : url); set_status("已添加书签"); }
                         bookmarks_save();
                         handled = 1;
                     } else if (c == 'y' || c == 'h') {           /* history */
@@ -6059,9 +6059,9 @@ void app_main(void)
                         g_finding = !g_finding;
                         if (g_finding) {
                             g_pfqlen = 0; g_pfq[0] = 0; editing = 0;
-                            set_status("find (on screen): type, Enter = count, Esc = close");
+                            set_status("查找（屏幕上）：输入内容，回车计数，Esc 关闭");
                         } else {
-                            set_status("ready");
+                            set_status("就绪");
                         }
                         handled = 1;
                     }
@@ -6117,7 +6117,7 @@ void app_main(void)
                  * which is exactly the duplicate traversal this was built to
                  * avoid. */
                 if (g_finding) {
-                    if (k == 0x1b) { g_finding = 0; set_status("ready"); }
+                    if (k == 0x1b) { g_finding = 0; set_status("就绪"); }
                     else if (k == '\b') { if (g_pfqlen > 0) g_pfq[--g_pfqlen] = 0; }
                     else if (k == '\n') {
                         if (g_pfqlen > 0) {
@@ -6465,7 +6465,7 @@ void app_main(void)
                         int n = tabs_new("");
                         if (n >= 0) { tab_dehydrate(); tabs_select(n);
                             url[0] = 0; ulen = 0; editing = 1; addr_sync();
-                            set_status("new tab -- type a URL and press Enter");
+                            set_status("新标签页 —— 输入 URL 后按回车");
                             session_save(); }
                     } else if (hit >= 0 && close) {
                         int cur = tabs_active();
@@ -6476,7 +6476,7 @@ void app_main(void)
                             struct tab *t = tab_cur();
                             if (t && t->url[0]) { load(url); navigated = 1; }
                             else { url[0] = 0; ulen = 0; editing = 1; addr_sync();
-                                   set_status("new tab -- type a URL and press Enter"); }
+                                   set_status("新标签页 —— 输入 URL 后按回车"); }
                         }
                         session_save();
                     } else if (hit >= 0 && hit != tabs_active()) {

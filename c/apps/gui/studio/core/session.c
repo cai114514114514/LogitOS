@@ -15,7 +15,7 @@ int st_engine_project(StEngine *e,const char *path)
 {
     struct stat st;
     if(!path||strlen(path)>=sizeof e->state.project||stat(path,&st)<0||!S_ISDIR(st.st_mode)){
-        st_engine_notice(e,"Project directory is not available");return -1;
+        st_engine_notice(e,"项目目录不可用");return -1;
     }
     if(strcmp(e->state.project,path))e->expanded_count=0;
     snprintf(e->state.project,sizeof e->state.project,"%s",path);st_engine_refresh(e);st_session_save(e);return 0;
@@ -24,7 +24,7 @@ void st_engine_restore(StEngine *e,const char *launch_path)
 {
     if(launch_path&&*launch_path){
         char path[128];int n=snprintf(path,sizeof path,"%s%s",launch_path[0]=='/'?"":"/",launch_path);
-        if(n<0||n>=(int)sizeof path){st_engine_notice(e,"Path is too long");return;}
+        if(n<0||n>=(int)sizeof path){st_engine_notice(e,"路径过长");return;}
         struct stat st;
         if(stat(path,&st)==0&&S_ISDIR(st.st_mode)){st_engine_project(e,path);return;}
         char parent[128];strcpy(parent,path);char *slash=strrchr(parent,'/');
@@ -47,7 +47,7 @@ void st_engine_restore(StEngine *e,const char *launch_path)
         /* Also commit when every saved path disappeared: activate() is a no-op
          * for an empty session, which otherwise retries those ghosts forever. */
         st_session_save(e);
-        if(missing)st_engine_notice(e,"Unavailable files were removed from the saved tabs.");
+        if(missing)st_engine_notice(e,"已从存储的标签页中移除不可用的文件。");
     }
     st_engine_refresh(e);
 }

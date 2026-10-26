@@ -12,7 +12,7 @@ void st_engine_start(StEngine *e, int check)
         if (check) {
             e->check_pending = 1;
         } else {
-            st_engine_notice(e, "Stop the running process before starting another.");
+            st_engine_notice(e, "启动新进程前请先停止正在运行的进程。");
         }
         return;
     }
@@ -22,8 +22,8 @@ void st_engine_start(StEngine *e, int check)
                 int r = st_save_document(&e->state.docs[i]);
                 if (r < 0) {
                     e->state.active = i;
-                    st_engine_notice(e, r == -2 ? "Run stopped: a file changed on disk."
-                                                : "Run stopped: a document could not be saved.");
+                    st_engine_notice(e, r == -2 ? "运行已停止：磁盘上的文件已更改。"
+                                                : "运行已停止：有文档无法存储。");
                     return;
                 }
             }
@@ -31,7 +31,7 @@ void st_engine_start(StEngine *e, int check)
     }
     if (st_runner_start(&e->state.runner, e->state.docs, e->state.count, e->state.active, check,
                         e->compiler, e->state.project) < 0) {
-        st_engine_notice(e, "Could not start the compiler process.");
+        st_engine_notice(e, "无法启动编译器进程。");
         e->check_pending = 0;
         return;
     }
@@ -43,5 +43,5 @@ void st_engine_start(StEngine *e, int check)
     if (!check) {
         st_engine_dismiss_completion(e);
     }
-    st_engine_notice(e, check ? "Checking the A3 project snapshot..." : "Running /bin/as...");
+    st_engine_notice(e, check ? "正在检查 A3 项目快照…" : "正在运行 /bin/as…");
 }

@@ -289,7 +289,7 @@ static void bar_row(int item, char *out) {
             const char *hint = " PgUp/PgDn"; while (*hint) out[n++] = *hint++;
         }
     } else if (!page_items()) {
-        const char *hint = "Enter: keep spelling"; while (*hint) out[n++] = *hint++;
+        const char *hint = "回车：保留拼写"; while (*hint) out[n++] = *hint++;
     } else {
         const struct ime_candidate *c = &g_st.cand[g_st.page * IME_PAGE_SIZE + item];
         out[n++] = (char)('1' + item); out[n++] = ' ';

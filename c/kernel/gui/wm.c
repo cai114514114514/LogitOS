@@ -4202,12 +4202,13 @@ static void draw_dock(void)
 static int fmt2(char *b, int v) { b[0] = '0' + (v / 10) % 10; b[1] = '0' + v % 10; return 2; }
 static void draw_clock(void)
 {
-    static const char *wd[7] = { "Sun","Mon","Tue","Wed","Thu","Fri","Sat" };
+    static const char *wd[7] = { "周日","周一","周二","周三","周四","周五","周六" };
     struct rtc_time t; frame_rtc(&t);
     char b[48]; int p = 0;
     const char *w = wd[t.weekday % 7];
     if (desktop_prefs.clock_weekday) {
-        b[p++] = w[0]; b[p++] = w[1]; b[p++] = w[2]; b[p++] = ' ';
+        while (*w) b[p++] = *w++;          /* UTF-8: "周一" is six bytes */
+        b[p++] = ' ';
     }
     if (desktop_prefs.clock_date) {
         b[p++] = '0' + (t.year / 1000) % 10;
@@ -4379,16 +4380,16 @@ static void overlay_open(int kind)
  * `key` column is the Cmd shortcut drawn at the right. */
 struct kmi { const char *label; uint16_t id; uint8_t flags; char key; };
 static const struct kmi KM_LOGO[] = {
-    { "About This Machine", 0, 0, 0 }, { "Settings...", 1, 0, ',' }, { "", 2, MB_SEP, 0 },
-    { "Shut Down...", 3, 0, 0 }, { "Restart...", 4, 0, 0 },
+    { "关于本机", 0, 0, 0 }, { "设置…", 1, 0, ',' }, { "", 2, MB_SEP, 0 },
+    { "关机…", 3, 0, 0 }, { "重新启动…", 4, 0, 0 },
 };
 /* File/View (no app menus) and Window (after them) share ids: 0 close,
  * 1 minimise, 2 Expose -- one switch in menu_item_fire serves all three. */
-static const struct kmi KM_FILE[] = { { "Close Window", 0, 0, 'W' }, { "Minimize", 1, 0, 'M' } };
-static const struct kmi KM_VIEW[] = { { "Show All Windows", 2, 0, 'E' } };
+static const struct kmi KM_FILE[] = { { "关闭窗口", 0, 0, 'W' }, { "最小化", 1, 0, 'M' } };
+static const struct kmi KM_VIEW[] = { { "显示所有窗口", 2, 0, 'E' } };
 static const struct kmi KM_WINDOW[] = {
-    { "Minimize", 1, 0, 'M' }, { "Close Window", 0, 0, 'W' }, { "", 2, MB_SEP, 0 },
-    { "Show All Windows", 2, 0, 'E' },
+    { "最小化", 1, 0, 'M' }, { "关闭窗口", 0, 0, 'W' }, { "", 2, MB_SEP, 0 },
+    { "显示所有窗口", 2, 0, 'E' },
 };
 
 static void menu_add_kernel(int kind, const char *title, const struct kmi *t, int n)
@@ -4434,10 +4435,10 @@ static void menu_model_sync(void)
                 r->id = it->id; r->flags = it->flags; r->key = it->key;
             }
         }
-        menu_add_kernel(MK_WINDOW, "Window", KM_WINDOW, (int)(sizeof KM_WINDOW / sizeof KM_WINDOW[0]));
+        menu_add_kernel(MK_WINDOW, "窗口", KM_WINDOW, (int)(sizeof KM_WINDOW / sizeof KM_WINDOW[0]));
     } else {
-        menu_add_kernel(MK_FILE, "File", KM_FILE, (int)(sizeof KM_FILE / sizeof KM_FILE[0]));
-        menu_add_kernel(MK_VIEW, "View", KM_VIEW, (int)(sizeof KM_VIEW / sizeof KM_VIEW[0]));
+        menu_add_kernel(MK_FILE, "文件", KM_FILE, (int)(sizeof KM_FILE / sizeof KM_FILE[0]));
+        menu_add_kernel(MK_VIEW, "显示", KM_VIEW, (int)(sizeof KM_VIEW / sizeof KM_VIEW[0]));
     }
     int first = g_menu_src == -2;
     g_menu_src = src; g_menu_src_gen = ms ? gen : 0;
@@ -4715,38 +4716,38 @@ static void draw_overlay_panel(void)
         fb_fill_circle(tx + S(7), ty + S(7), S(14), rgb(94, 150, 255));
         fb_text(tx + S(34), ty + S(2), "LogitOS", ink);
         ty += S(34);
-        fb_text(tx, ty, "About This Machine", ink); ty += S(26);
+        fb_text(tx, ty, "关于本机", ink); ty += S(26);
         char line[64]; int n;
-        fb_text(tx, ty, "Version: M27", dim); ty += S(20);
-        n = str_copy(line, "Memory: ");
+        fb_text(tx, ty, "版本：M27", dim); ty += S(20);
+        n = str_copy(line, "内存：");
         n += fmt_u(line + n, (unsigned long)(pmm_total_bytes() / (1024 * 1024)));
         n += str_copy(line + n, " MB"); line[n] = 0;
         fb_text(tx, ty, line, dim); ty += S(20);
-        n = str_copy(line, "Resolution: ");
+        n = str_copy(line, "分辨率：");
         n += fmt_u(line + n, (unsigned long)W);
         n += str_copy(line + n, " x ");
         n += fmt_u(line + n, (unsigned long)H); line[n] = 0;
         fb_text(tx, ty, line, dim); ty += S(20);
-        n = str_copy(line, "Processors: ");
+        n = str_copy(line, "处理器：");
         n += fmt_u(line + n, (unsigned long)smp_cpu_count()); line[n] = 0;
         fb_text(tx, ty, line, dim);
         return;
     }
 
-    const char *msg = g_overlay == OV_CONFIRM_SHUTDOWN ? "Shut Down the machine now?"
-                                                         : "Restart the machine now?";
+    const char *msg = g_overlay == OV_CONFIRM_SHUTDOWN ? "现在关机吗？"
+                                                         : "现在重新启动吗？";
     fb_text(p.x0 + (w - fb_text_width(msg)) / 2, p.y0 + S(30), msg, ink);
     struct drect c, o; overlay_buttons(&c, &o);
     int hb = g_overlay_btn_hov;
     uint32_t cbg = hb == 0 ? (g_ui_dark ? rgb(72, 72, 82) : rgb(220, 220, 226))
                            : (g_ui_dark ? rgb(56, 56, 64) : rgb(236, 236, 240));
     fb_round_rect(c.x0, c.y0, c.x1 - c.x0, c.y1 - c.y0, S(7), cbg);
-    int ctw = fb_text_width("Cancel");
-    fb_text(c.x0 + ((c.x1 - c.x0) - ctw) / 2, c.y0 + S(7), "Cancel", ink);
+    int ctw = fb_text_width("取消");
+    fb_text(c.x0 + ((c.x1 - c.x0) - ctw) / 2, c.y0 + S(7), "取消", ink);
 
     uint32_t okbg = hb == 1 ? rgb(255, 82, 72) : rgb(230, 60, 52);
     fb_round_rect(o.x0, o.y0, o.x1 - o.x0, o.y1 - o.y0, S(7), okbg);
-    const char *olabel = g_overlay == OV_CONFIRM_SHUTDOWN ? "Shut Down" : "Restart";
+    const char *olabel = g_overlay == OV_CONFIRM_SHUTDOWN ? "关机" : "重新启动";
     int otw = fb_text_width(olabel);
     fb_text(o.x0 + ((o.x1 - o.x0) - otw) / 2, o.y0 + S(7), olabel, rgb(255, 255, 255));
 }

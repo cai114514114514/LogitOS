@@ -151,9 +151,9 @@ static void paint(int W, int H)
     int tw = text_measure_px(t, slen(t), AUI_FS_HEADING, 0);
     gui_text_run(cx + (cw - tw) / 2, cy + 26, AUI_FS_HEADING, 0, AUI_TEXT, t, slen(t));
 
-    const char *sub = checking ? "Checking..."
-                    : denied   ? "Incorrect user name or password"
-                               : "Sign in to continue";
+    const char *sub = checking ? "正在验证…"
+                    : denied   ? "用户名或密码不正确"
+                               : "登录以继续";
     int sw = text_measure_px(sub, slen(sub), AUI_FS_LABEL, 0);
     gui_text_run(cx + (cw - sw) / 2, cy + 62, AUI_FS_LABEL, 0,
                  denied ? AUI_ERROR : AUI_MUTED, sub, slen(sub));
@@ -161,7 +161,7 @@ static void paint(int W, int H)
     int fx = cx + 28, fw = cw - 56, fh = AUI_H_LG;
 
     /* name */
-    aui_label(fx, cy + 96, "User", AUI_MUTED);
+    aui_label(fx, cy + 96, "用户", AUI_MUTED);
     gui_rrect(fx, cy + 114, fw, fh, AUI_R_MD,
               field == F_NAME ? AUI_FOCUS : AUI_BORDER);
     gui_rrect(fx + 2, cy + 116, fw - 4, fh - 4, AUI_R_MD, AUI_SURFACE);
@@ -169,7 +169,7 @@ static void paint(int W, int H)
 
     /* password -- MASKED IN THE FIELD, and unlike the serial console there is
      * no echo to race: nothing ever draws the character. */
-    aui_label(fx, cy + 160, "Password", AUI_MUTED);
+    aui_label(fx, cy + 160, "密码", AUI_MUTED);
     gui_rrect(fx, cy + 178, fw, fh, AUI_R_MD,
               field == F_PW ? AUI_FOCUS : AUI_BORDER);
     gui_rrect(fx + 2, cy + 180, fw - 4, fh - 4, AUI_R_MD, AUI_SURFACE);
@@ -181,7 +181,7 @@ static void paint(int W, int H)
         if (n) gui_text_run(fx + 12, cy + 186, AUI_FS_BODY, 0, AUI_TEXT, dots, n);
     }
 
-    const char *hint = "Tab switches fields  -  Enter signs in";
+    const char *hint = "Tab 切换栏位  -  回车登录";
     int hw = text_measure_px(hint, slen(hint), AUI_FS_CAPTION, 0);
     gui_text_run(cx + (cw - hw) / 2, cy + ch - 26, AUI_FS_CAPTION, 0, AUI_MUTED,
                  hint, slen(hint));

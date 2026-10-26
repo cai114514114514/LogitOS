@@ -60,6 +60,14 @@ const char *ag_phase_name(unsigned p)
         "paused","cancelled","done","document conflict","reconciliation required","budget exhausted"};
     return p < sizeof names/sizeof *names ? names[p] : "invalid";
 }
+/* The same phases for a person to read (Finder, Logit Assistant). Separate
+ * from ag_phase_name, whose English words agentctl prints and the gates match. */
+const char *ag_phase_label(unsigned p)
+{
+    static const char *names[]={"无效","排队中","进行中","等待模型",
+        "已暂停","已取消","已完成","文档冲突","需要合并","预算已用完"};
+    return p < sizeof names/sizeof *names ? names[p] : "无效";
+}
 void ag_task_init(struct ag_task *t, uint64_t id, const char *goal, const char *out)
 {
     memset(t,0,sizeof *t); t->id=id; t->version=AG_TASK_VERSION;

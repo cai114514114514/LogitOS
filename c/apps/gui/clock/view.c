@@ -17,9 +17,9 @@ enum clock_action clock_view(struct clock_ui *ui, const struct clock_state *app,
     struct clock_layout layout = clock_layout(w, h, aui_scale());
     if (refresh) {
         aui_begin(AUI_BG);
-        aui_text_sz(24, 20, "Local time", AUI_TEXT, 23);
+        aui_text_sz(24, 20, "本地时间", AUI_TEXT, 23);
         if (w >= 520)
-            aui_text_sz(w - 170, 27, "System clock", AUI_MUTED, 13);
+            aui_text_sz(w - 170, 27, "系统时钟", AUI_MUTED, 13);
         aui_round(16, 58, w - 32, h - 122, 18, AUI_SURFACE);
     }
     int active;
@@ -45,15 +45,15 @@ enum clock_action clock_view(struct clock_ui *ui, const struct clock_state *app,
     clock_hm(hm, time->hour, time->minute, app->hour24);
     centered(x, y, width, hm, AUI_TEXT, size);
     if (app->seconds)
-        snprintf(detail, sizeof detail, "%02d seconds  /  %s", time->second,
-                 app->hour24       ? "24-hour"
-                 : time->hour < 12 ? "AM"
-                                   : "PM");
+        snprintf(detail, sizeof detail, "%02d 秒  /  %s", time->second,
+                 app->hour24       ? "24 小时制"
+                 : time->hour < 12 ? "上午"
+                                   : "下午");
     else
         snprintf(detail, sizeof detail, "%s",
-                 app->hour24       ? "24-hour time"
-                 : time->hour < 12 ? "AM"
-                                   : "PM");
+                 app->hour24       ? "24 小时制"
+                 : time->hour < 12 ? "上午"
+                                   : "下午");
     centered(x, y + size + 8, width, detail, AUI_MUTED, 13);
     snprintf(date, sizeof date, "%04d / %02d / %02d", time->year, time->month, time->day);
     centered(x, y + size + 34, width, date, AUI_MUTED, 15);
@@ -61,12 +61,12 @@ enum clock_action clock_view(struct clock_ui *ui, const struct clock_state *app,
     if (button_w > 170)
         button_w = 170;
     int left = (w - button_w * 2 - gap) / 2;
-    if (aui_button_ex(left, layout.footer_y, button_w, 34, app->hour24 ? "24-hour" : "12-hour",
+    if (aui_button_ex(left, layout.footer_y, button_w, 34, app->hour24 ? "24 小时制" : "12 小时制",
                       AUI_V_SECONDARY, 1)) {
         action = CLOCK_TOGGLE_FORMAT;
     }
     if (aui_button_ex(left + button_w + gap, layout.footer_y, button_w, 34,
-                      app->seconds ? "Seconds on" : "Seconds off",
+                      app->seconds ? "显示秒" : "不显示秒",
                       app->seconds ? AUI_V_PRIMARY : AUI_V_SECONDARY, 1)) {
         action = CLOCK_TOGGLE_SECONDS;
     }

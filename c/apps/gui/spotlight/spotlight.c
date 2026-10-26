@@ -42,10 +42,12 @@ static struct item *files;
 static int nfiles, files_built;
 #define FILES_MAX 3000
 
-static const struct { const char *name, *key; } toggles[] = {
-    { "Dark appearance", "ui.dark" },
-    { "Reduce motion", "ui.reduce_motion" },
-    { "Reduce transparency", "ui.reduce_transparency" },
+/* `name` is what the row shows; `alias` is the English name it had until
+ * 2026-10-26, still matched so "dark" keeps finding the switch. */
+static const struct { const char *name, *alias, *key; } toggles[] = {
+    { "深色外观", "Dark appearance", "ui.dark" },
+    { "减弱动态效果", "Reduce motion", "ui.reduce_motion" },
+    { "降低透明度", "Reduce transparency", "ui.reduce_transparency" },
 };
 
 static char query[128];
@@ -125,9 +127,9 @@ static void build_files(void)
 
 /* ---------------------------------------------------------------- results -- */
 
-static void consider(const struct item *it, int *best, int *score)
+static void consider_named(const struct item *it, const char *match, int *best, int *score)
 {
-    int sc = sl_score(query, it->name);
+    int sc = sl_score(query, match);
     if (sc <= 0) return;
     /* insertion into the top NSHOW by score; apps first among equals */
     if (it->kind == K_APP) sc += 1;
@@ -139,6 +141,9 @@ static void consider(const struct item *it, int *best, int *score)
     shown[at] = *it; score[at] = sc; best[at] = 1;
     if (nshown < NSHOW) nshown++;
 }
+
+static void consider(const struct item *it, int *best, int *score)
+{ consider_named(it, it->name, best, score); }
 
 static void search(void)
 {
@@ -153,7 +158,9 @@ static void search(void)
     for (unsigned i = 0; i < sizeof toggles / sizeof toggles[0]; i++) {
         struct item t = { K_TOGGLE, "", "", toggles[i].key };
         snprintf(t.name, sizeof t.name, "%s", toggles[i].name);
-        consider(&t, best, score);
+        const char *m = sl_score(query, toggles[i].alias) > sl_score(query, toggles[i].name)
+                        ? toggles[i].alias : toggles[i].name;
+        consider_named(&t, m, best, score);
     }
     { struct item t = { K_SET, "Settings", "/settings.aex", 0 }; consider(&t, best, score); }
     build_files();
@@ -162,7 +169,7 @@ static void search(void)
     if (nshown == NSHOW) nshown--;
     struct item *a = &shown[nshown++];
     a->kind = K_ASK;
-    snprintf(a->name, sizeof a->name, "Ask Assistant: %s", query);
+    snprintf(a->name, sizeof a->name, "询问助手：%s", query);
     a->path[0] = 0;
     if (sel >= nshown) sel = nshown - 1;
 }
@@ -198,8 +205,8 @@ static void activate(int i)
 
 static const char *kind_name(int k)
 {
-    return k == K_APP ? "Application" : k == K_FILE ? "File" : k == K_TOGGLE ? "Toggle"
-         : k == K_SET ? "Settings" : "Assistant";
+    return k == K_APP ? "应用程序" : k == K_FILE ? "文件" : k == K_TOGGLE ? "开关"
+         : k == K_SET ? "设置" : "助手";
 }
 
 static void draw(void)
@@ -212,7 +219,7 @@ static void draw(void)
     aui_stroke(24, 20, 16, 16, 8, 2, AUI_MUTED);
     for (int k = 0; k < 5; k++) aui_circle(38 + k, 34 + k, 1, AUI_MUTED);
     if (qlen) aui_text_sz(54, 17, query, AUI_TEXT, 22);
-    else      aui_text_sz(54, 17, "Spotlight Search", AUI_MUTED, 22);
+    else      aui_text_sz(54, 17, "聚焦搜索", AUI_MUTED, 22);
     int cx = 54 + (qlen ? aui_text_w(query, 22) : 0) + 2;
     aui_fill(cx, 18, 2, 24, AUI_ACCENT);                            /* caret */
     for (int i = 0; i < nshown; i++) {

@@ -29,7 +29,7 @@ static int expanded_at(StEngine *e,const char *path)
 void st_engine_refresh(StEngine *e)
 {
     StListing list;e->state.tree_count=e->state.tree_limited=0;
-    if(st_list_directory(e->state.project,&list)<0){st_engine_notice(e,"Could not read the project folder");return;}
+    if(st_list_directory(e->state.project,&list)<0){st_engine_notice(e,"无法读取项目文件夹");return;}
     memcpy(e->state.files,list.files,(size_t)list.count*sizeof(StFile));
     e->state.tree_count=list.count;e->state.tree_limited=list.limited;
     for(int i=0;i<e->state.tree_count;i++){
@@ -48,7 +48,7 @@ int st_engine_toggle_folder(StEngine *e,int index)
     if(index<0||index>=e->state.tree_count||!e->state.files[index].directory)return -1;
     int at=expanded_at(e,e->state.files[index].path);
     if(at>=0){memmove(e->expanded[at],e->expanded[at+1],(size_t)(e->expanded_count-at-1)*sizeof e->expanded[0]);e->expanded_count--;}
-    else {if(e->expanded_count==ST_FILES){st_engine_notice(e,"Close another folder before expanding more");return -1;}
+    else {if(e->expanded_count==ST_FILES){st_engine_notice(e,"请先收起其他文件夹再展开");return -1;}
         strcpy(e->expanded[e->expanded_count++],e->state.files[index].path);}
     st_engine_refresh(e);return 0;
 }
@@ -56,28 +56,28 @@ int st_engine_create_entry(StEngine *e,const char *parent,const char *name,int d
 {
     int n=name?(int)strlen(name):0;
     if(!n||n>=64||!st_utf8(name,n)||strchr(name,'/')||strchr(name,'\\')||!strcmp(name,".")||!strcmp(name,"..")){
-        st_engine_notice(e,"Enter a file or folder name without path separators");return -1;}
-    for(int i=0;i<n;i++)if((unsigned char)name[i]<32){st_engine_notice(e,"Names cannot contain control characters");return -1;}
+        st_engine_notice(e,"请输入不含路径分隔符的文件或文件夹名称");return -1;}
+    for(int i=0;i<n;i++)if((unsigned char)name[i]<32){st_engine_notice(e,"名称不能包含控制字符");return -1;}
     char path[128];int len=snprintf(path,sizeof path,"%s%s%s",parent,strcmp(parent,"/")?"/":"",name);
-    if(len<0||len>=(int)sizeof path){st_engine_notice(e,"Path is too long");return -1;}
-    if(!directory&&e->state.count==ST_TABS){st_engine_notice(e,"Close a tab before creating another file");return -1;}
+    if(len<0||len>=(int)sizeof path){st_engine_notice(e,"路径过长");return -1;}
+    if(!directory&&e->state.count==ST_TABS){st_engine_notice(e,"请先关闭一个标签页再新建文件");return -1;}
     int r;
     if(directory)r=mkdir(path,0755);
     else {int fd=open(path,O_WRONLY|O_CREAT|O_EXCL,0644);r=fd<0?-1:close(fd);}
-    if(r<0){char message[256];snprintf(message,sizeof message,"Could not create %s: %s",name,strerror(errno));st_engine_notice(e,message);return -1;}
+    if(r<0){char message[256];snprintf(message,sizeof message,"无法创建 %s：%s",name,strerror(errno));st_engine_notice(e,message);return -1;}
     if(strcmp(parent,e->state.project)&&expanded_at(e,parent)<0&&e->expanded_count<ST_FILES)strcpy(e->expanded[e->expanded_count++],parent);
     st_engine_refresh(e);
     if(!directory)return st_engine_open(e,path);
-    st_engine_notice(e,"Folder created");return 0;
+    st_engine_notice(e,"文件夹已创建");return 0;
 }
 
 int st_engine_remove_entry(StEngine *e,const char *path)
 {
     char target[128];int index=-1;
     for(int i=0;i<e->state.tree_count;i++)if(!strcmp(e->state.files[i].path,path)){index=i;break;}
-    if(index<0){st_engine_notice(e,"Select a file or folder in the project tree");return -1;}
+    if(index<0){st_engine_notice(e,"请在项目目录树中选择文件或文件夹");return -1;}
     strcpy(target,e->state.files[index].path);
-    if(st_runner_busy(&e->state.runner)){st_engine_notice(e,"Stop the running process before deleting a file");return -1;}
+    if(st_runner_busy(&e->state.runner)){st_engine_notice(e,"删除文件前请先停止正在运行的进程");return -1;}
     struct stat st;int present=stat(target,&st)==0;
     if(!present&&errno!=ENOENT)goto failed;
     if(present&&S_ISDIR(st.st_mode)){
@@ -98,24 +98,24 @@ int st_engine_remove_entry(StEngine *e,const char *path)
         }
     }
     e->state.problem_tab=-1;e->state.problem_count=0;st_engine_dismiss_completion(e);
-    e->check_pending=0;st_engine_refresh(e);st_session_save(e);st_engine_notice(e,"Deleted");return 0;
+    e->check_pending=0;st_engine_refresh(e);st_session_save(e);st_engine_notice(e,"已删除");return 0;
 failed:
     for(int i=0;i<e->state.count;i++)if(!strcmp(e->state.docs[i].path,target))e->state.docs[i].checkpoint=0;
     e->checkpoint_due=st_now(e)+500;
-    {char message[256];snprintf(message,sizeof message,"Could not delete: %s (folders must be empty)",strerror(errno));st_engine_notice(e,message);}
+    {char message[256];snprintf(message,sizeof message,"无法删除：%s（文件夹必须为空）",strerror(errno));st_engine_notice(e,message);}
     return -1;
 }
 
 int st_engine_open(StEngine *e,const char *path)
 {
-    if(strlen(path)>=sizeof e->state.docs[0].path){st_engine_notice(e,"Path is too long");return -1;}
+    if(strlen(path)>=sizeof e->state.docs[0].path){st_engine_notice(e,"路径过长");return -1;}
     for(int i=0;i<e->state.count;i++)if(!strcmp(e->state.docs[i].path,path)){e->state.active=i;st_engine_dismiss_completion(e);return 0;}
     struct stat st;if(stat(path,&st)==0&&S_ISDIR(st.st_mode)){return st_engine_project(e,path);}
-    if(e->state.count==ST_TABS){st_engine_notice(e,"Eight documents are open. Close a tab before opening another.");return -1;}
-    int r=st_open_document(&e->state.docs[e->state.count],path);if(r<0){st_engine_notice(e,r==-2?"File no longer exists and has no unsaved recovery draft.":"Could not open complete UTF-8 text (limit 1 MiB). No file was changed.");return -1;}
+    if(e->state.count==ST_TABS){st_engine_notice(e,"已打开八个文档，请先关闭一个标签页。");return -1;}
+    int r=st_open_document(&e->state.docs[e->state.count],path);if(r<0){st_engine_notice(e,r==-2?"文件已不存在，也没有未存储的恢复草稿。":"无法打开完整的 UTF-8 文本（上限 1 MiB），没有更改任何文件。");return -1;}
     e->state.active=e->state.count++;st_engine_dismiss_completion(e);e->check_due=st_now(e)+850;e->check_pending=1;
-    st_engine_notice(e,r?"Recovered unsaved draft. Save checks the original file for conflicts.":"Document opened");st_session_save(e);return 0;
+    st_engine_notice(e,r?"已恢复未存储的草稿。存储时会检查原文件是否有冲突。":"文档已打开");st_session_save(e);return 0;
 }
 
 int st_engine_save(StEngine *e)
-{StDocument *d=st_current(e);if(!d)return 0;int r=st_save_document(d);st_engine_notice(e,r==-2?"File changed outside Studio. Your draft is retained.":r<0?"Save failed. Keep this tab open; the draft is retained.":"Saved");if(!r)st_engine_refresh(e);return r;}
+{StDocument *d=st_current(e);if(!d)return 0;int r=st_save_document(d);st_engine_notice(e,r==-2?"文件已在 Studio 之外更改，你的草稿已保留。":r<0?"存储失败。请保持此标签页打开，草稿已保留。":"已存储");if(!r)st_engine_refresh(e);return r;}

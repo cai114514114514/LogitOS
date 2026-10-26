@@ -56,7 +56,7 @@ static void blit_fit_src(const unsigned char *src, int iw, int ih)
 static void blit_fit(int iw, int ih) { blit_fit_src(rgba, iw, ih); }
 
 static const char *hint(void)
-{ return g_from_picker ? "Back to library with Esc" : "Esc to close"; }
+{ return g_from_picker ? "按 Esc 返回资料库" : "按 Esc 关闭"; }
 
 static void status(const char *text)
 {
@@ -65,11 +65,11 @@ static void status(const char *text)
     /* A chrome-only anchor for the direct-open association gate. The stage
      * keeps the decoded pixels untouched, including transparent corners. */
     gui_rect(0, 0, 6, 6, 0xFD0181);
-    button(16, 15, 76, g_from_picker ? "< Library" : "Close", 0);
+    button(16, 15, 76, g_from_picker ? "< 资料库" : "关闭", 0);
     clipped_label(110, 13, WINW - 290, 17, ui_text, view_name[0] ? view_name : "Preview");
-    label(110, 36, 11, ui_muted, view_image ? "Image viewer" : "Media viewer");
+    label(110, 36, 11, ui_muted, view_image ? "图像查看器" : "媒体查看器");
     if (view_image) {
-        button(WINW - 154, 15, 62, "Fit", !view_actual);
+        button(WINW - 154, 15, 62, "适合", !view_actual);
         button(WINW - 84, 15, 68, "100%", view_actual);
     }
     gui_rect(0, WINH - 48, WINW, 48, ui_bg);
@@ -114,7 +114,7 @@ static void message_frame(const char *text)
     view_clear();
     int x = 48, y = 116, w = WINW - 96;
     gui_rrect(x, y, w, WINH - 232, 16, ui_panel);
-    label(x + 28, y + 28, 22, ui_text, "Preview information");
+    label(x + 28, y + 28, 22, ui_text, "预览信息");
     /* Wrap by measured glyph width. Decoder refusals often exceed a line;
      * clipping the old single line hid the reason at the right window edge. */
     char line[256];

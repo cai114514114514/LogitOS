@@ -398,18 +398,18 @@ def main(argv):
         ui.key_mods(("ctrl",), "a")
         ui.typ("999.2.3.4")
         click_control("apply")
-        ck("status error=1 Enter a valid IPv4 address." in open(serial).read(),
+        ck("status error=1 请输入有效的 IPv4 地址。" in open(serial).read(),
            "Apply rejects an invalid address in the running app")
         ui.screendump(shot)
         ppm_to_png(shot, base_out + "-validation.png")
         click_control("revert")
-        ck("status error=0 Draft discarded" in open(serial).read(),
+        ck("status error=0 已放弃草稿" in open(serial).read(),
            "Revert discards the invalid local draft")
 
         navigate(0)
         click_control("motion")
         click_control("apply")
-        ck("status error=0 Changes saved" in open(serial).read(),
+        ck("status error=0 更改已存储" in open(serial).read(),
            "an edited preference reaches the save path")
         park()
         ui.screendump(shot, settle=1.5 * slow)
