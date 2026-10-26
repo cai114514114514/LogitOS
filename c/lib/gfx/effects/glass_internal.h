@@ -3,9 +3,13 @@
 
 #include "../adapters/display_pixels.h"
 #include "openlogit_glass.h"
+#include "openlogit_glass_material.h"
 
 enum { GLASS_BLUR_RADIUS = 6, GLASS_REFLECT_OFFSET = 6,
        GLASS_REFLECT_BAND = 4 };
+/* Widest single box pass any blur tier uses. The reciprocal table and the
+ * per-column stack rings in glass_blur.c are sized for it. */
+enum { GLASS_BLUR_RADIUS_MAX = 20 };
 
 /* Shape coordinates remain relative to the visible panel. The sample box is
  * separate: blur and refraction need neighbouring backdrop pixels, while only
@@ -28,6 +32,10 @@ struct glass_panel {
      * cores rendering two panels cannot see each other's tables. */
     const struct glass_lut *lut;
     struct glass_lut lut_own;
+    /* NULL = legacy defaults (REGULAR blur, directional rim). Set only by
+     * ol_display_liquid_glass_ex; later passes read rim, flags and fg_rgb
+     * from here. */
+    const struct ol_glass_material *mat;
 };
 
 struct glass_color {
@@ -69,6 +77,8 @@ static inline int glass_clamp(int value, int low, int high)
 }
 
 void glass_blur(struct glass_panel *panel);
+/* Summed pass radii of the material's blur tier (6 for NULL/REGULAR). */
+int glass_blur_support(const struct ol_glass_material *mat);
 void glass_copy_backdrop(struct glass_panel *panel);
 void glass_render(struct glass_panel *panel, struct glass_color tint, int opacity);
 void glass_render_solid(struct glass_panel *panel, struct glass_color tint);

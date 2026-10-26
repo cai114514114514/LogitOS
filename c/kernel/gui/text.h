@@ -36,5 +36,11 @@ struct logit_text_metrics;
 int text_measure_run_metrics(const char *s, int len, int px, int face,
                              struct logit_text_metrics *out);
 
+/* Caret stops of one run at grapheme-cluster boundaries, logical order, byte
+ * offsets 0..len, device 24.8 x relative to the run origin. Returns the count,
+ * or -1 on bad arguments or when more than  stops are needed. Kernel
+ * buffers only: the syscall branch stages and copies out after the lock. */
+int text_measure_carets(const char *s, int len, int px, unsigned face,
+                        unsigned short *byte_off, int *x24_8, int max);
 
 #endif /* LOGIT_TEXT_H */

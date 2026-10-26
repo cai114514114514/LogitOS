@@ -25,7 +25,12 @@ scored against an independent oracle by `make test-glyph-agree`; a sheared
 glyph is by construction a mismatch against that oracle, so the one instrument
 that says the rasteriser is correct would have to be turned off to ship it.
 
-Usage: mkfont.py [--ui-src FONT] [--mono-src FONT]
+LAYOUT TABLES.  The UI faces keep GPOS pruned to the `kern` feature (plus
+GDEF) so Latin pairs such as AV and To kern through c/lib/text/otlayout.c;
+GSUB, BASE and every other GPOS feature are dropped.  Mono drops all of them.
+`--drop-layout` builds the UI faces without GPOS/GDEF (negative control only).
+
+Usage: mkfont.py [--drop-layout] [--ui-src FONT] [--mono-src FONT]
                  <ui.ttf> <mono.ttf> <ui-bold.ttf> <mono-bold.ttf>
 """
 import argparse
@@ -128,7 +133,7 @@ def _set_weight(font, style, weight_class):
 
 
 def subset(src, face, unicodes, out, family, style, weight_class,
-           source_family, axes):
+           source_family, axes, keep_kern=False):
     if not os.path.exists(src):
         raise SystemExit(
             f"ERROR: source font not found: {src}\n"
@@ -156,14 +161,27 @@ def subset(src, face, unicodes, out, family, style, weight_class,
     opt = Options()
     opt.glyph_names = False
     opt.recalc_bounds = True
+    # keep_kern (UI faces): GPOS survives restricted to the `kern` feature,
+    # and GDEF with it (glyph classes the pair lookups' flags may consult).
+    # GSUB and BASE are always dropped; every other GPOS feature is pruned by
+    # layout_features.  Mono keeps dropping all layout tables.
     opt.drop_tables += [
-        "BASE", "GDEF", "GPOS", "GSUB", "DSIG", "HVAR", "MVAR", "STAT",
+        "BASE", "GSUB", "DSIG", "HVAR", "MVAR", "STAT",
         "avar", "feat", "fvar", "gvar", "kerx", "morx", "vhea", "vmtx",
     ]
+    if keep_kern:
+        opt.layout_features = ["kern"]
+    else:
+        opt.drop_tables += ["GDEF", "GPOS"]
     opt.name_IDs = []
     ss = Subsetter(options=opt)
     ss.populate(unicodes=sorted(unicodes))
     ss.subset(f)
+    if keep_kern and "GPOS" in f:
+        feats = sorted({fr.FeatureTag for fr in
+                        f["GPOS"].table.FeatureList.FeatureRecord})
+        if feats != ["kern"]:
+            raise SystemExit(f"ERROR: GPOS features {feats}, expected ['kern']")
     if "glyf" not in f:
         raise SystemExit(
             f"ERROR: {src} face {face} is not glyf-based (CFF/OTF unsupported)"
@@ -198,6 +216,9 @@ def main():
         "--mono-face", type=int,
         default=int(os.environ.get("MKFONT_MONO_FACE", "0"))
     )
+    parser.add_argument(
+        "--drop-layout", action="store_true",
+        help="negative-control build: drop GPOS/GDEF from the UI faces too")
     parser.add_argument("out_ui")
     parser.add_argument("out_mono")
     parser.add_argument("out_ui_bold")
@@ -222,7 +243,8 @@ def main():
          {"wght": 700, "wdth": 100}),
     ]
     for src, face, cps, out, family, style, wc, source, axes in outs:
-        subset(src, face, cps, out, family, style, wc, source, axes)
+        subset(src, face, cps, out, family, style, wc, source, axes,
+               keep_kern=(family == "Logit UI" and not args.drop_layout))
         print(f"{family} {style}: {out}  {os.path.getsize(out)//1024} KiB"
               f"  ({len(cps)} codepoints)", file=sys.stderr)
 

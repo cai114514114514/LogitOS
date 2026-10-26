@@ -1,4 +1,5 @@
 #include "openlogit_anim.h"
+#include "gfx_ctx.h"
 
 static int finite(double x)
 {
@@ -43,11 +44,6 @@ static float decay(float x)
         sum *= sum;
     return sum;
 }
-static float bez(float a, float b, float t)
-{
-    float s = 1 - t;
-    return 3 * s * s * t * a + 3 * s * t * t * b + t * t * t;
-}
 float ol_ease(const struct ol_easing *e, float t)
 {
     if (t <= 0)
@@ -65,17 +61,8 @@ float ol_ease(const struct ol_easing *e, float t)
         return t * t;
     case OL_EASE_INOUT:
         return t < .5f ? 2 * t * t : 1 - 2 * (1 - t) * (1 - t);
-    case OL_CUBIC_BEZIER: {
-        float lo = 0, hi = 1;
-        for (int i = 0; i < 24; i++) {
-            float m = (lo + hi) * .5f;
-            if (bez(e->x1, e->x2, m) < t)
-                lo = m;
-            else
-                hi = m;
-        }
-        return bez(e->y1, e->y2, (lo + hi) * .5f);
-    }
+    case OL_CUBIC_BEZIER:
+        return (float)ol_ease_bezier(e->x1, e->y1, e->x2, e->y2, t);
     case OL_STEPS:
         if (e->steps) {
             unsigned n = (unsigned)(t * e->steps) + (e->step_start != 0);
@@ -86,23 +73,122 @@ float ol_ease(const struct ol_easing *e, float t)
         return t;
     }
 }
-int ol_ease256(int curve, int t)
+unsigned ol_ease_unknown[GFX_NCTX];
+unsigned ol_ease_unknown_total(void)
+{
+    unsigned n = 0;
+    for (int i = 0; i < GFX_NCTX; i++)
+        n += ol_ease_unknown[i];
+    return n;
+}
+/* 2^-y for y >= 0 in 16.16, Taylor series of exp(-y ln2) on the fraction. */
+static long long pow2neg16(long long y)
+{
+    int n = (int)(y >> 16);
+    if (n >= 20)
+        return 0;
+    long long z = ((y & 0xFFFF) * 45426) >> 16, term = 65536, sum = 65536;
+    for (int k = 1; k <= 8; k++) {
+        term = -((term * z) >> 16) / k;
+        sum += term;
+    }
+    return sum >> n;
+}
+static int fx_to_256(long long v)
+{
+    return (int)((v + 128) >> 8);
+}
+int ol_ease256_ex(enum ol_curve curve, int t, const struct ol_bezier *b, int steps)
 {
     if (t < 0)
         t = 0;
     if (t > 256)
         t = 256;
-    if (curve == OL_EASE_OUT)
+    (void)b;
+    long long x = (long long)t << 8, one = 65536, v;
+    const long long c1 = 111514, c3 = c1 + 65536, c2 = 170059; /* 1.70158, 2.70158, 1.70158*1.525 */
+    switch ((int)curve) {
+    case OL_LINEAR:
+        return t;
+    case OL_EASE_OUT:
         return gfx_ease_out(t);
-    if (curve == OL_EASE_INOUT)
+    case OL_EASE_INOUT:
         return gfx_ease_inout(t);
-    if (curve == OL_EASE_OUT_CUBIC) {
+    case OL_EASE_OUT_CUBIC: {
         int inv = 256 - t;
         return 256 - inv * inv * inv / (256 * 256);
     }
-    if (curve == OL_EASE_IN)
+    case OL_EASE_IN:
         return t * t / 256;
-    return t;
+    case OL_CUBIC_BEZIER:
+#ifdef OPENLOGIT_EASE256_LINEAR_FALLBACK
+        return t;
+#else
+        if (!b)
+            return t;
+        return fx_to_256(ol_ease_bezier_fx(b->x1, b->y1, b->x2, b->y2, (int)x));
+#endif
+    case OL_STEPS: {
+        int n = steps < 0 ? -steps : steps;
+        if (!n)
+            return t;
+        if (steps > 0) {
+            if (t >= 256)
+                return 256;
+            return (int)(((long long)(t * n >> 8) * 256 + n / 2) / n);
+        }
+        long long k = (long long)(t * n >> 8) + 1;
+        if (k > n)
+            k = n;
+        return (int)((k * 256 + n / 2) / n);
+    }
+    case OL_EASE_IN_CUBIC:
+        return fx_to_256((((x * x) >> 16) * x) >> 16);
+    case OL_EASE_INOUT_CUBIC:
+        if (x < one / 2)
+            return fx_to_256(4 * ((((x * x) >> 16) * x) >> 16));
+        v = 2 * one - 2 * x; /* -2x+2 */
+        return fx_to_256(one - ((((v * v) >> 16) * v) >> 16) / 2);
+    case OL_EASE_OUT_QUART:
+        v = one - x;
+        v = (v * v) >> 16;
+        return fx_to_256(one - ((v * v) >> 16));
+    case OL_EASE_OUT_EXPO:
+        if (t >= 256)
+            return 256;
+        return fx_to_256(one - pow2neg16(10 * x));
+    case OL_EASE_OUT_BACK: {
+#ifdef OPENLOGIT_EASE256_LINEAR_FALLBACK
+        return t;
+#endif
+        if (t >= 256)
+            return 256;
+        long long w = x - one, w2 = (w * w) >> 16, w3 = (w2 * w) >> 16;
+        return fx_to_256(one + ((c3 * w3) >> 16) + ((c1 * w2) >> 16));
+    }
+    case OL_EASE_INOUT_BACK: {
+#ifdef OPENLOGIT_EASE256_LINEAR_FALLBACK
+        return t;
+#endif
+        long long w = 2 * x;
+        if (t >= 256)
+            return 256;
+        if (x < one / 2) {
+            long long w2 = (w * w) >> 16;
+            return fx_to_256((w2 * (((c2 + one) * w >> 16) - c2) >> 16) / 2);
+        }
+        w -= 2 * one;
+        long long w2 = (w * w) >> 16;
+        return fx_to_256((((w2 * (((c2 + one) * w >> 16) + c2)) >> 16) + 2 * one) / 2);
+    }
+    default:
+        ol_ease_unknown[gfx_ctx()]++;
+        return t;
+    }
+}
+int ol_ease256(int curve, int t)
+{
+    return ol_ease256_ex((enum ol_curve)curve, t, 0, 0);
 }
 int ol_transition256(int from, int to, uint64_t elapsed, uint64_t duration, int curve, int reduced)
 {

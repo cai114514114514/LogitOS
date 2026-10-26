@@ -12,9 +12,9 @@
 #include "logit_abi.h"   /* LOGIT_FACE_MONO / LOGIT_FACE_BOLD -- see face_font() */
 
 /* SYS_GUI2_INFO feature bit for the SYS_TEXT_MEASURE carets query
- * (LOGIT_TEXT_CARETS_QUERY). 0 until text-kernel-carets answers it here;
+ * (LOGIT_TEXT_CARETS_QUERY), answered below by text_measure_carets();
  * declared in wm_draw2.h, ORed into SYS_GUI2_INFO(0) by wm_draw2.c. */
-const unsigned wm2_carets_info = 0;
+const unsigned wm2_carets_info = LOGIT_GUI2_F_CARETS;
 
 void *memcpy(void *, const void *, size_t);
 
@@ -432,6 +432,189 @@ int text_measure_run_metrics(const char *s, int len, int px, int face,
     spin_unlock(&text_lock);
     *out = r;
     return 1;
+}
+
+/* ------------------------------------------------------------- carets --
+ *
+ * LOGIT_TEXT_CARETS_QUERY: caret stops for one run, from ONE pass over the same
+ * pipeline shape_line() runs (decode, bidi, script/font runs, shape_run, the
+ * same sc_scale rounding), so the pen the stops are read from is the pen
+ * text_measure() returns. shape_line() itself hands its emit callback no
+ * cluster, which is the one thing a caret needs, so the loop is repeated here
+ * rather than guessed from glyph positions; tests/unit/text_carets_test.c holds
+ * the two to byte equality.
+ *
+ * LOCKING: serialised by text_lock like every other shaping entry. The caller
+ * (text_measure_dispatch.inc) kmallocs the output staging BEFORE the lock and
+ * does the user_copy_to AFTER it; this function touches kernel memory only.
+ * The extra scratch below is file scope and covered by that same lock. */
+
+static uint16_t tl_cb[TL_CP + 1];   /* byte offset of code point i; [n] = end */
+static int      tl_cx[TL_CP + 1];   /* device 24.8 caret x of boundary i */
+static uint8_t  tl_cst[TL_CP + 1];  /* 1 = grapheme-cluster boundary */
+static int      tl_chi[TL_CP];      /* per-cluster right edge (left edge reuses tl_order) */
+
+static int tl_scale(int v, int px, int upem)
+{ return upem <= 0 ? 0 : (int)(((long)v * (long)px) / (long)upem); }
+
+static int tl_fsel(uint32_t cp, void *ud)
+{
+    const struct shape_font_set *fs = (const struct shape_font_set *)ud;
+    for (int i = 0; i < fs->n && i < SHAPE_MAX_FONTS; i++)
+        if (fs->f[i] && ttf_glyph_id(fs->f[i], cp) > 0) return i;
+    return 0;
+}
+
+/* Does `cp` continue the grapheme before it? Marks (Bidi_Class NSM covers Mn of
+ * every script), joiners, variation selectors, emoji modifiers, tags, CR LF.
+ * Spacing combining marks (Mc) and Hangul jamo sequences are not recognised. */
+static int cp_extends(uint32_t cp, uint32_t prev)
+{
+    if (prev == 0x200D || cp == 0x200D || cp == 0x200C) return 1;
+    if (prev == 0x0D && cp == 0x0A) return 1;
+    if ((cp >= 0xFE00 && cp <= 0xFE0F) || (cp >= 0x1F3FB && cp <= 0x1F3FF) ||
+        (cp >= 0xE0020 && cp <= 0xE007F) || (cp >= 0xE0100 && cp <= 0xE01EF)) return 1;
+    return bidi_class(cp) == BIDI_NSM;
+}
+
+static int carets_locked(const char *s, int len, int px, int face,
+                         unsigned short *off, int *xs, int max)
+{
+    struct shape_font_set fs;
+    int map[SHAPE_MAX_FONTS];
+    tl_fonts(&fs, face_font(face), face, map);
+    if (fs.n == 0) return -1;
+    struct shape_scratch sc;
+    tl_scratch(&sc);
+
+    int n = 0;
+    const char *p = s, *e = s + len;
+    while (p < e && n < TL_CP) {
+        uint32_t cp; const char *q = utf8_next(p, &cp);
+        if (q <= p || !cp) break;
+        tl_cb[n] = (uint16_t)(p - s); tl_cps[n++] = cp; p = q;
+    }
+    tl_cb[n] = (uint16_t)(p - s);
+    int total = (int)(p - s);
+    for (int i = 0; i <= n; i++) { tl_cx[i] = 0; tl_cst[i] = 0; }
+    tl_cst[0] = 1; tl_cst[n] = 1;
+
+    if (n > 0) {
+        if (bidi_is_trivial(tl_cps, n)) {
+            for (int i = 0; i < n; i++) tl_levels[i] = 0;
+        } else if (bidi_resolve(tl_cps, n, BIDI_DIR_AUTO, tl_levels, tl_bidi,
+                                (int)sizeof tl_bidi) < 0) {
+            for (int i = 0; i < n; i++) tl_levels[i] = 0;
+        }
+        int nrun = script_runs(tl_cps, n, tl_levels, tl_fsel, &fs, tl_runs, TL_RUN);
+        if (nrun > TL_RUN) nrun = TL_RUN;
+        bidi_reorder(tl_levels, n, tl_order);
+        for (int k = 0; k < nrun; k++) tl_runs[k].vis = n;
+        for (int vi = 0; vi < n; vi++) {
+            int ci = tl_order[vi];
+            for (int k = 0; k < nrun; k++)
+                if (ci >= tl_runs[k].start && ci < tl_runs[k].start + tl_runs[k].len) {
+                    if (vi < tl_runs[k].vis) tl_runs[k].vis = vi;
+                    break;
+                }
+        }
+        int *clo = tl_order;     /* tl_order is dead once the run keys are set */
+        int pen = 0, last = -1, lastx = 0;
+        for (int done = 0; done < nrun; done++) {
+            int best = -1;
+            for (int k = 0; k < nrun; k++)
+                if (tl_runs[k].vis > last && (best < 0 || tl_runs[k].vis < tl_runs[best].vis))
+                    best = k;
+            if (best < 0) break;
+            last = tl_runs[best].vis;
+            const struct text_run *r = &tl_runs[best];
+            const struct ttf_font *f = fs.f[r->font];
+            if (!f) continue;
+            int ng = shape_run(f, tl_cps + r->start, r->len, r->script, r->rtl,
+                               tl_glyphs, TL_GLYPH);
+            if (ng < 0) continue;
+            for (int j = r->start; j < r->start + r->len; j++) { clo[j] = 0x7fffffff; tl_chi[j] = -0x7fffffff; }
+            int run0 = pen;
+            for (int g = 0; g < ng; g++) {
+                int c = r->start + tl_glyphs[g].cluster;
+                if (tl_glyphs[g].cluster < 0 || tl_glyphs[g].cluster >= r->len) c = r->start;
+                int w = tl_scale(tl_glyphs[g].x_advance, px, f->units_per_em);
+                int a = pen, b = pen + w;
+                if (b < a) { int t = a; a = b; b = t; }
+                if (a < clo[c]) clo[c] = a;
+                if (b > tl_chi[c]) tl_chi[c] = b;
+                pen += w;
+            }
+            /* Walk the run's code points in logical order. A cluster head owns
+             * every following code point that has no glyph cluster of its own;
+             * its interval is split evenly among the grapheme starts inside. */
+            int j = r->start, end = r->start + r->len;
+            while (j < end) {
+                int h = j, k = j + 1;
+                if (clo[h] > tl_chi[h]) { clo[h] = tl_chi[h] = (j == r->start) ? run0 : lastx; }
+                while (k < end && clo[k] > tl_chi[k]) k++;
+                int lead = r->rtl ? tl_chi[h] : clo[h], trail = r->rtl ? clo[h] : tl_chi[h];
+                int m = 0;
+                for (int q = h; q < k; q++)
+                    if (q == 0 || !cp_extends(tl_cps[q], tl_cps[q - 1])) m++;
+                if (m == 0) m = 1;
+                int idx = 0;
+                for (int q = h; q < k; q++) {
+                    int start = (q == 0 || !cp_extends(tl_cps[q], tl_cps[q - 1]));
+                    if (q == h && !start) tl_cx[q] = lead * 256;
+                    else if (start) {
+                        tl_cx[q] = lead * 256 + (int)((long)(trail - lead) * 256 * idx / m);
+                        tl_cst[q] = 1; idx++;
+                    } else tl_cx[q] = tl_cx[q - 1];
+                }
+                lastx = trail;
+                j = k;
+            }
+        }
+        /* Final caret = trailing edge of the logically last code point. */
+        {
+            int lr = -1;
+            for (int k = 0; k < nrun; k++)
+                if (tl_runs[k].start + tl_runs[k].len == n) lr = k;
+            if (lr >= 0) {
+                int q = n - 1;
+                int ch = q;     /* head of the final cluster: walk back over headless cps */
+                while (ch > tl_runs[lr].start && clo[ch] > tl_chi[ch]) ch--;
+                tl_cx[n] = (tl_runs[lr].rtl ? clo[ch] : tl_chi[ch]) * 256;
+            }
+        }
+    }
+
+    int cnt = 0;
+#ifdef TEXT_CARETS_BYTEWISE
+    /* Negative control: a stop at every byte, including inside sequences. */
+    for (int b = 0; b <= total; b++) {
+        int i = 0;
+        while (i < n && tl_cb[i + 1] <= b) i++;
+        if (cnt >= max) return -1;
+        off[cnt] = (unsigned short)b; xs[cnt] = tl_cx[i]; cnt++;
+    }
+#else
+    for (int i = 0; i <= n; i++) {
+        if (!tl_cst[i]) continue;
+        if (cnt >= max) return -1;
+        off[cnt] = tl_cb[i]; xs[cnt] = tl_cx[i]; cnt++;
+    }
+    (void)total;
+#endif
+    return cnt;
+}
+
+int text_measure_carets(const char *s, int len, int px, unsigned face,
+                        unsigned short *byte_off, int *x24_8, int max)
+{
+    if (len < 0 || len > LOGIT_TEXT_METRICS_MAX_BYTES || px < 1 || px > 512 ||
+        (face & ~3u) || max < 1 || max > 1024 || !byte_off || !x24_8 ||
+        (len && !s)) return -1;
+    unsigned long tf = spin_lock_irqsave(&text_lock);
+    int r = carets_locked(s, len, px, (int)face, byte_off, x24_8, max);
+    spin_unlock_irqrestore(&text_lock, tf);
+    return r;
 }
 
 int text_line_height(int px)
