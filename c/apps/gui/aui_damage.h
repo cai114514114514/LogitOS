@@ -77,4 +77,84 @@ static inline void ad_set_add(struct ad_set *s, int x0, int y0, int x1, int y1)
     s->r[s->n++] = n;
 }
 
+/* ------------------------------------------------------------------ halos --
+ * A primitive can write pixels OUTSIDE its logical rect (a shadow's offset,
+ * spread and blur; a stroke's half width; a glass panel's backdrop reach).
+ * Reporting only the logical rect under-reports, and the stale halo pixels
+ * stay on screen. ad_add_halo() adds the rect grown by a per-side margin; the
+ * ad_halo_*() helpers compute that margin as out[4] = { left, top, right,
+ * bottom } in DEVICE pixels, always rounding UP. Every helper is an upper
+ * bound of what the real primitive touches (tests/unit/aui_damage_test.c,
+ * make test-aui-damage-halo, draws the real ones and checks each pixel).
+ *
+ * AD_HALO_NEGCTL_ZERO is the control: every halo is 0, so only the logical
+ * rect is reported; make test-aui-damage-halo-negctl requires the coverage
+ * property to fail. */
+
+static inline void ad_add_halo(struct ad_set *s, int x, int y, int w, int h,
+                               int left, int top, int right, int bottom)
+{
+    if (w <= 0 || h <= 0) return;
+    if (left < 0) left = 0;
+    if (top < 0) top = 0;
+    if (right < 0) right = 0;
+    if (bottom < 0) bottom = 0;
+#ifdef AD_HALO_NEGCTL_ZERO
+    left = top = right = bottom = 0;
+#endif
+    ad_set_add(s, x - left, y - top, x + w + right, y + h + bottom);
+}
+
+/* ol_display_shadow_ex: the gaussian is cut where alpha*(1-cdf) < 0.5 level,
+ * at most ~2.9 sigma (alpha 255) plus 2 px of its own rounding (reach_px in
+ * display_shadow_ex.c), measured from the offset, grown shape. dx,dy are the
+ * offset in px (round AWAY from zero), blur the sigma in px (round up), spread
+ * the growth in px (a negative spread shrinks the shape and adds nothing). */
+static inline void ad_halo_shadow(int dx, int dy, int blur, int spread, int out[4])
+{
+    int reach = 3 * (blur < 0 ? 0 : blur) + 2 + (spread > 0 ? spread : 0);
+#ifdef AD_HALO_NEGCTL_ZERO
+    reach = 0; dx = dy = 0;
+#endif
+    out[0] = reach + (dx < 0 ? -dx : 0);
+    out[1] = reach + (dy < 0 ? -dy : 0);
+    out[2] = reach + (dx > 0 ? dx : 0);
+    out[3] = reach + (dy > 0 ? dy : 0);
+}
+
+/* A stroke is centred on its path: half the width falls outside the path's
+ * rect on every side (miter, round and square-cap extents of an axis-aligned
+ * rect or rounded rect stay within the same half width). Width in px. */
+static inline int ad_halo_stroke(int width)
+{
+#ifdef AD_HALO_NEGCTL_ZERO
+    (void)width; return 0;
+#else
+    return width > 0 ? (width + 1) / 2 : 0;
+#endif
+}
+
+/* Glass: mirrors ol_display_glass_sample_halo_ex (openlogit_material.c). The
+ * panel itself only writes inside its rect; the halo is how far the backdrop
+ * it SAMPLES reaches, so damage in the scene behind it must redraw the panel.
+ * tier is OL_GLASS_BLUR_*: 0 REGULAR, 1 THIN, 2 THICK, 3 ULTRA (anything else
+ * is REGULAR). Blur support is the sum of the three pass radii. */
+static inline int ad_halo_glass(int w, int h, int radius, int tier)
+{
+#ifdef AD_HALO_NEGCTL_ZERO
+    (void)w; (void)h; (void)radius; (void)tier; return 0;
+#else
+    static const int support[4] = { 6, 2 + 2 + 3, 11 * 3, 18 + 18 + 19 };
+    if (w <= 0 || h <= 0 || radius < 0) return 0;
+    int side = w < h ? w : h;
+    if (radius > side / 2) radius = side / 2;
+    int edge = radius < 22 ? radius : 22;
+    if (edge > side / 2) edge = side / 2;
+    if (edge < 4) edge = 4;
+    int disp = (edge < 18 ? edge : 18) + 1;
+    if (disp < 6) disp = 6;
+    return support[tier >= 0 && tier <= 3 ? tier : 0] + disp;
+#endif
+}
+
 #endif

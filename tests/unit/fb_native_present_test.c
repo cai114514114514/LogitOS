@@ -45,6 +45,8 @@ int text_line_height(int px) { return px; }
  * this link faithful without fabricating an exercised graphics capability. */
 const unsigned char *gfx_mask_corner(int k,int w,int h,int p)
 { (void)k;(void)w;(void)h;(void)p;return NULL; }
+void gfx_mask_set_arena(void *buf, unsigned long bytes) { (void)buf; (void)bytes; }
+void gfx_mask_flush_all(void) {}
 int gfx_shadow_falloff(long d,long b) { (void)d;(void)b;return 0; }
 void glass_build_lut(int e,int r) { (void)e;(void)r; }
 unsigned gl_isqrt(unsigned long v) { (void)v;return 0; }
