@@ -89,6 +89,18 @@ run_one() {
     printf '%-8s %4ds  %s\n' "$st" "$((e-s))" "$t"
 }
 
+# --- scope ------------------------------------------------------------------
+# A host-only sweep records its scope BEFORE it runs anything. dev.txt used to
+# be emptied only after the host phase, so a host-only sweep interrupted part
+# way left the whole device list behind, and sweep-resume.sh -- which runs
+# host.txt + dev.txt minus what is recorded -- then queued a QEMU boot for every
+# device target the run was never meant to touch (2026-10-26: 350 device
+# targets behind the 1479 host ones still to go).
+if [ "${SWEEP_HOST_ONLY:-0}" = "1" ]; then
+    echo "sweep: skipping $(grep -c . "$LOGDIR/dev.txt") device targets (SWEEP_HOST_ONLY=1)"
+    : > "$LOGDIR/dev.txt"
+fi
+
 # --- host targets, JOBS at a time ------------------------------------------
 # Serialised through a fifo rather than `xargs -P`: every worker shares one
 # build/ directory, and two makes racing to build the same object is a
@@ -106,10 +118,6 @@ done < "$LOGDIR/host.txt"
 wait
 
 # --- device targets, one at a time -----------------------------------------
-if [ "${SWEEP_HOST_ONLY:-0}" = "1" ]; then
-    echo "sweep: skipping $(grep -c . "$LOGDIR/dev.txt") device targets (SWEEP_HOST_ONLY=1)"
-    : > "$LOGDIR/dev.txt"
-fi
 echo "sweep: device targets (sequential -- two QEMUs contend)"
 while read -r t; do
     [ -n "$t" ] || continue

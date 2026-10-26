@@ -17,6 +17,11 @@
 #                                file (for a sweep that predates the rule)
 #   make test-sweep-host         the 353 host targets only -- minutes, not hours
 #
+# Correction (2026-10-26, kept beside the original): host.txt listed 1739
+# targets on the macOS dev host, and the first 260 took 30 minutes at
+# SWEEP_JOBS=6 -- the host half is now hours, not minutes. The 353 dates from
+# when the sweep was written; the tree has grown under it.
+#
 # SWEEP_JOBS bounds the parallel phase; SWEEP_TMO is the per-target timeout.
 # Results land in $(BUILD)/sweep/all.res as "STATUS<TAB>seconds<TAB>target",
 # with each target's output in $(BUILD)/sweep/sweeplogs/.

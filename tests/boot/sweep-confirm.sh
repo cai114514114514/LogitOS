@@ -46,4 +46,8 @@ done < "$LOGDIR/recheck.txt"
 echo "--- confirmed summary ---"
 cut -f1 "$OUT" | sort | uniq -c | sort -rn
 echo "--- still not passing ---"
-grep -v -E "^PASS	" "$OUT" | sort | sed "s/\t/  /g"
+# The same exemptions as the recheck list above and as tests/sweep.mk's
+# SWEEP_VERDICT. This listed every non-PASS row, so a host sweep's 79 AGGREGATE
+# umbrellas (each "0 s", run by nobody) were printed as "still not passing"
+# above the 32 real failures, by the script whose job is to stop false entries.
+grep -v -E "^(PASS|NOTARGET|NEEDSARGS|AGGREGATE)	" "$OUT" | sort | sed "s/\t/  /g"
