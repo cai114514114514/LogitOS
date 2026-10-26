@@ -12,7 +12,8 @@ static int panel_edge_width(int width, int height, int radius)
     return edge < 4 ? 4 : edge;
 }
 
-int ol_display_glass_sample_halo(int width, int height, int radius)
+int ol_display_glass_sample_halo_ex(int width, int height, int radius,
+                                    const struct ol_glass_material *mat)
 {
     if (width <= 0 || height <= 0 || radius < 0) return 0;
 #ifdef GLASS_PANEL_ONLY_SAMPLE
@@ -28,8 +29,13 @@ int ol_display_glass_sample_halo(int width, int height, int radius)
     int displacement = refract + 1;
     if (displacement < GLASS_REFLECT_OFFSET)
         displacement = GLASS_REFLECT_OFFSET;
-    return GLASS_BLUR_RADIUS + displacement;
+    return glass_blur_support(mat) + displacement;
 #endif
+}
+
+int ol_display_glass_sample_halo(int width, int height, int radius)
+{
+    return ol_display_glass_sample_halo_ex(width, height, radius, 0);
 }
 
 static int prepare_panel(struct glass_panel *panel, struct ol_display *display,
@@ -115,9 +121,9 @@ static int prepare_panel(struct glass_panel *panel, struct ol_display *display,
 static void prepare_samples(struct glass_panel *panel)
 {
     const struct ol_pixel_target *target = &panel->display->target;
-    int halo = ol_display_glass_sample_halo(panel->shape_right - panel->shape_left,
-                                            panel->shape_bottom - panel->shape_top,
-                                            panel->radius);
+    int halo = ol_display_glass_sample_halo_ex(panel->shape_right - panel->shape_left,
+                                               panel->shape_bottom - panel->shape_top,
+                                               panel->radius, panel->mat);
     int right = panel->x + panel->width + halo;
     int bottom = panel->y + panel->height + halo;
     panel->sample_x = panel->x > halo ? panel->x - halo : 0;
@@ -148,13 +154,16 @@ static int reserve_scratch(struct glass_panel *panel)
     return display->glass_buf && display->glass_line;
 }
 
-void ol_display_liquid_glass_cut(struct ol_display *display,
-                                int x, int y, int width, int height, int radius,
-                                uint8_t red, uint8_t green, uint8_t blue,
-                                uint8_t opacity, unsigned cut)
+/* The one renderer behind the legacy entry points (mat NULL) and _ex. */
+static void liquid_glass_impl(struct ol_display *display,
+                              int x, int y, int width, int height, int radius,
+                              uint8_t red, uint8_t green, uint8_t blue,
+                              uint8_t opacity, unsigned cut,
+                              const struct ol_glass_material *mat)
 {
     struct glass_panel panel;
     if (!prepare_panel(&panel, display, x, y, width, height, radius, cut)) return;
+    panel.mat = mat;
 
 #ifndef GLASS_IGNORE_REDUCE_TRANSPARENCY
     if (display->reduce_transparency) {
@@ -200,6 +209,27 @@ void ol_display_liquid_glass_cut(struct ol_display *display,
     glass_blur(&panel);
 #endif
     glass_render(&panel, (struct glass_color){red, green, blue}, opacity);
+}
+
+void ol_display_liquid_glass_cut(struct ol_display *display,
+                                int x, int y, int width, int height, int radius,
+                                uint8_t red, uint8_t green, uint8_t blue,
+                                uint8_t opacity, unsigned cut)
+{
+    /* A NULL material is the zeroed one: REGULAR blur, directional rim. */
+    liquid_glass_impl(display, x, y, width, height, radius,
+                      red, green, blue, opacity, cut, 0);
+}
+
+void ol_display_liquid_glass_ex(struct ol_display *display,
+                                int x, int y, int width, int height, int radius,
+                                unsigned cut, const struct ol_glass_material *mat)
+{
+    static const struct ol_glass_material zero;
+    if (!mat) mat = &zero;
+    liquid_glass_impl(display, x, y, width, height, radius,
+                      (uint8_t)(mat->tint >> 16), (uint8_t)(mat->tint >> 8),
+                      (uint8_t)mat->tint, mat->opacity, cut, mat);
 }
 
 void ol_display_liquid_glass(struct ol_display *display,
