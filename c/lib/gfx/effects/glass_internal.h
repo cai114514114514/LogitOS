@@ -103,6 +103,13 @@ static inline int glass_rim_symmetric(const struct ol_glass_material *mat)
 #endif
 }
 
+#ifdef GLASS_RIM_TEST_GAIN
+/* Host tests only: when >= 0, replaces the measured SYMMETRIC reflect_gain
+ * so a test can compare the variance-gated output with a fixed gain. Defined
+ * by the test; never compiled into the kernel or apps. */
+extern int glass_rim_gain_override;
+#endif
+
 void glass_blur(struct glass_panel *panel);
 /* Summed pass radii of the material's blur tier (6 for NULL/REGULAR). */
 int glass_blur_support(const struct ol_glass_material *mat);

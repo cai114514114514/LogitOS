@@ -254,6 +254,10 @@ void glass_render(struct glass_panel *panel, struct glass_color tint, int opacit
     struct glass_style style;
     prepare_style(&style, panel, tint, opacity);
     if (style.symmetric) measure_rim_backdrop(panel, &style);
+#ifdef GLASS_RIM_TEST_GAIN
+    if (style.symmetric && glass_rim_gain_override >= 0)
+        style.reflect_gain = glass_rim_gain_override;
+#endif
 
     if (panel->radius == 0) {
         render_square(panel, &style);

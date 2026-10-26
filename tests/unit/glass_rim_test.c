@@ -21,6 +21,8 @@
 #include <string.h>
 
 int (*gfx_ctx_hook)(void);
+/* -DGLASS_RIM_TEST_GAIN: -1 keeps the measured reflect_gain. */
+int glass_rim_gain_override = -1;
 
 static int checks, failures;
 
@@ -213,6 +215,55 @@ static void test_uniform(const char *label, int w, int h, int r)
            label, lowest, highest, spread, darkest, luma(0x2C2C30));
     snprintf(name, sizeof name, "rim-uniform %s dark", label);
     check(spread <= 6, name);
+    snprintf(name, sizeof name, "rim-dark %s dark", label);
+    check(darkest >= luma(0x2C2C30) - 4, name);
+}
+
+static int render_gain(uint32_t *px, const uint32_t *source, const struct scene *s, int gain)
+{
+    glass_rim_gain_override = gain;
+    memcpy(px, source, sizeof backdrop);
+    render_ex(px, s, OL_GLASS_RIM_SYMMETRIC, 0);
+    glass_rim_gain_override = -1;
+    int changed = 0;
+    for (int i = 0; i < SW * SH; i++) changed += px[i] != source[i];
+    return changed;
+}
+
+static int count_diff(const uint32_t *p, const uint32_t *q)
+{
+    int n = 0;
+    for (int i = 0; i < SW * SH; i++) n += p[i] != q[i];
+    return n;
+}
+
+/* The environment reflection is gated by the variance of the blurred rim
+ * band: off over a flat backdrop (the measured render equals the gain-0
+ * render bit for bit), on over busy content (it differs from gain 0 and is
+ * closer to the gain-256 render than gain 0 is). */
+static void test_variance_gate(void)
+{
+    struct scene s = {(SW - 80) / 2, (SH - 28) / 2, 80, 28, 14, 0, 0xFFFFFF, 50, 0};
+    static uint32_t zero[SW * SH], full[SW * SH];
+
+    flat(backdrop, 0xECECEC);
+    render_gain(a, backdrop, &s, -1);
+    render_gain(zero, backdrop, &s, 0);
+    render_gain(full, backdrop, &s, 256);
+    int flat_zero = count_diff(a, zero), flat_full = count_diff(a, full);
+    printf("rim gain flat: measured vs gain0 %d px, vs gain256 %d px\n", flat_zero, flat_full);
+    check(flat_zero == 0, "rim-gain-flat-off");
+
+    stripes(backdrop, 0xECECEC, 0x303030, 12);
+    render_gain(a, backdrop, &s, -1);
+    render_gain(zero, backdrop, &s, 0);
+    render_gain(full, backdrop, &s, 256);
+    int busy_zero = count_diff(a, zero), busy_full = count_diff(a, full);
+    int full_zero = count_diff(full, zero);
+    printf("rim gain busy: measured vs gain0 %d px, vs gain256 %d px, gain256 vs gain0 %d px\n",
+           busy_zero, busy_full, full_zero);
+    check(busy_zero > 0, "rim-gain-busy-on");
+    check(full_zero > 0 && busy_full < full_zero, "rim-gain-busy-strong");
 }
 
 static void test_striped(void)
@@ -379,6 +430,7 @@ int main(void)
     test_uniform("100x35 r17 (125%)", 100, 35, 17);
     test_uniform("120x42 r21 (150%)", 120, 42, 21);
     test_striped();
+    test_variance_gate();
     test_edge_floor();
     test_reduce_transparency();
     test_clip_repaint();
