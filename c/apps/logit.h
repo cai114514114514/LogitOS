@@ -25,7 +25,16 @@
  * on a non-x86 host it becomes a definition that exists to be linkable and
  * TRAPS if anybody ever does call it. A stub that quietly returned 0 would be
  * worse: a host test would then believe a syscall had succeeded. */
-#if defined(__x86_64__) || defined(__i386__)
+/* LOGIT_SYS_HOOK: a host test defines it to the name of a function and every
+ * gui_* wrapper then routes its syscall there instead of trapping. Ring-3 builds
+ * never define it, so app ELFs are unchanged. */
+#if defined(LOGIT_SYS_HOOK)
+long LOGIT_SYS_HOOK(long n, long a, long b, long c);
+static inline long _sys(long n, long a, long b, long c)
+{
+    return LOGIT_SYS_HOOK(n, a, b, c);
+}
+#elif defined(__x86_64__) || defined(__i386__)
 static inline long _sys(long n, long a, long b, long c)
 {
     long r;

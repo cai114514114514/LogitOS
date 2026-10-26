@@ -28,9 +28,9 @@ $(AGENT_DIR)/libc.a: $(AGENT_LIBC_OBJ) tools/agent_archive.py
 $(AGENT_TARGETS): $(AGENT_DIR)/entry.o $(AGENT_DIR)/sdk.a $(AGENT_DIR)/libc.a tools/agent_link.py
 $(AGENT_TARGETS): LD = python3 tools/agent_link.py $(BUILD) $(AGENT_REAL_LD)
 
-$(BUILD)/assistant.elf: c/apps/gui/assistant/assistant.c $(AGENT_DIR)/c/apps/gui/assistant/assistant.o $(BUILD)/apps/aui.o $(GFX_OBJ) c/apps/crt0_cli.asm
+$(BUILD)/assistant.elf: c/apps/gui/assistant/assistant.c $(AGENT_DIR)/c/apps/gui/assistant/assistant.o $(AUI_OBJ) $(GFX_OBJ) c/apps/crt0_cli.asm
 	$(ASM) -f elf64 c/apps/crt0_cli.asm -o $(AGENT_DIR)/assistant-crt.o
-	$(LD) -nostdlib -e _start -Ttext=0x4D000000 -o $@ $(AGENT_DIR)/assistant-crt.o $(AGENT_DIR)/c/apps/gui/assistant/assistant.o $(BUILD)/apps/aui.o $(GFX_OBJ)
+	$(LD) -nostdlib -e _start -Ttext=0x4D000000 -o $@ $(AGENT_DIR)/assistant-crt.o $(AGENT_DIR)/c/apps/gui/assistant/assistant.o $(AUI_OBJ) $(GFX_OBJ)
 $(BUILD)/assistant.aex: $(BUILD)/assistant.elf tools/mkaex.py
 	python3 tools/mkaex.py $< $@ Tasks - A 80 160 240 --gui
 $(BUILD)/agentd.elf: $(AGENT_DIR)/c/apps/agent/agentd.o $(AGENT_DIR)/c/apps/agent/userfs.o $(AGENT_DIR)/c/lib/agent/model.o $(AGENT_DIR)/c/lib/agent/model_config.o $(AGENT_DIR)/c/net/http/http1.o c/apps/crt0_cli.asm

@@ -215,17 +215,17 @@ bench-gfx-frame: $(ISO) $(BUILD)/gallery_cost.aex
 	    $(BUILD)/disk_gfxcost.img
 	bash tests/boot/run-gfx-bench.sh $(ISO) $(BUILD)/disk_gfxcost.img
 
-$(BUILD)/apps/aui_cost.o: $(GUIDIR)/aui.c $(GUIDIR)/aui.h $(APPDIR)/logit.h c/lib/gfx/include/gfx.h
+$(BUILD)/apps/aui_cost.o: $(GUIDIR)/aui.c $(GUIDIR)/aui.h $(APPDIR)/logit.h c/lib/gfx/include/gfx.h $(AUI_INC_SRC)
 	@mkdir -p $(BUILD)/apps
 	$(CC) $(UCFLAGS) -DAUI_COST -c $(GUIDIR)/aui.c -o $@
 
 $(BUILD)/gallery_cost.elf: $(GUIDIR)/gallery/gallery.c $(APPDIR)/crt0.asm $(APPDIR)/logit.h \
-                           $(GUIDIR)/aui.h $(BUILD)/apps/aui_cost.o $(GFX_OBJ)
+                           $(GUIDIR)/aui.h $(BUILD)/apps/aui_cost.o $(AUI_LIBS) $(GFX_OBJ)
 	@mkdir -p $(BUILD)/apps
 	$(ASM) -f elf64 $(APPDIR)/crt0.asm -o $(BUILD)/apps/gallery_cost.crt0.o
 	$(CC) $(UCFLAGS) -c $(GUIDIR)/gallery/gallery.c -o $(BUILD)/apps/gallery_cost.o
 	$(LD) -nostdlib -e _start -Ttext=0x4A000000 -o $@ $(BUILD)/apps/gallery_cost.crt0.o \
-	    $(BUILD)/apps/gallery_cost.o $(BUILD)/apps/aui_cost.o $(GFX_OBJ)
+	    $(BUILD)/apps/gallery_cost.o $(BUILD)/apps/aui_cost.o $(AUI_LIBS) $(GFX_OBJ)
 $(BUILD)/gallery_cost.aex: $(BUILD)/gallery_cost.elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/gallery_cost.elf $@ 'Gallery' - 'G' 120 140 250
 

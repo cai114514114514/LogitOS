@@ -35,12 +35,12 @@ $(BUILD)/scroll/fixture.o: tests/fixtures/openlogit_scroll.c c/apps/gui/aui.h
 $(BUILD)/scroll/crt0.o: c/apps/crt0.asm
 	@mkdir -p $(dir $@)
 	$(ASM) -f elf64 $< -o $@
-$(BUILD)/scroll/aui_instant.o: $(OL_SCROLL_GUEST_DEPS)
+$(BUILD)/scroll/aui_instant.o: $(OL_SCROLL_GUEST_DEPS) $(AUI_INC_SRC)
 	@mkdir -p $(dir $@)
 	$(CC) $(UCFLAGS) -DAUI_SCROLL_INSTANT -c c/apps/gui/aui.c -o $@
-$(BUILD)/scroll/scroll.elf: $(BUILD)/scroll/crt0.o $(BUILD)/scroll/fixture.o $(BUILD)/apps/aui.o $(GFX_OBJ)
+$(BUILD)/scroll/scroll.elf: $(BUILD)/scroll/crt0.o $(BUILD)/scroll/fixture.o $(AUI_OBJ) $(GFX_OBJ)
 	$(LD) -nostdlib -e _start -Ttext=0x66000000 -o $@ $^
-$(BUILD)/scroll/instant.elf: $(BUILD)/scroll/crt0.o $(BUILD)/scroll/fixture.o $(BUILD)/scroll/aui_instant.o $(GFX_OBJ)
+$(BUILD)/scroll/instant.elf: $(BUILD)/scroll/crt0.o $(BUILD)/scroll/fixture.o $(BUILD)/scroll/aui_instant.o $(AUI_LIBS) $(GFX_OBJ)
 	$(LD) -nostdlib -e _start -Ttext=0x66000000 -o $@ $^
 $(BUILD)/scroll/installed.stamp: $(BUILD)/scroll/scroll.elf $(BUILD)/scroll/instant.elf $(BUILD)/sdk/installed.stamp
 	@mkdir -p $(SYSROOT)/bin
