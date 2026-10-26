@@ -122,8 +122,14 @@ void fb_clear_clip(void);
  * (c/kernel/gui/wm_draw2.h). fb_clip_push intersects the target's clip with
  * the half-open device rect (x0,y0)-(x1,y1) and remembers the previous one;
  * fb_clip_pop restores it; fb_clip_depth is how many pushes are open.
- * STUBS until fb-clip-stack: push returns OL_UNSUPPORTED and changes
- * nothing, pop is a no-op, depth is 0. */
+ * The previous clip is kept on a 16-deep stack in the per-context fb state,
+ * and the new clip is written to the target surface itself (so it survives
+ * the display rebind in fb_sdk) and the context is marked dirty. push returns
+ * OL_OK, or OL_LIMIT when 16 pushes are already open (nothing changes). An
+ * empty intersection clips everything. pop restores the previous clip exactly
+ * and is a no-op at depth 0. Pushes must be popped before fb_target() changes
+ * the target (FB_DEBUG builds trap otherwise); fb_set_backbuffer resets the
+ * stack. */
 int  fb_clip_push(int x0, int y0, int x1, int y1);
 void fb_clip_pop(void);
 int  fb_clip_depth(void);

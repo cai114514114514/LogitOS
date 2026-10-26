@@ -95,6 +95,8 @@ void fb_dma_test_release_writer(void) { fb_front_release(); }
 #endif
 
 
+#define FB_CLIP_DEPTH 16
+
 /* PER DRAWING CONTEXT (gfx_ctx.h), because the compositor renders bands of
  * one frame on several cores at once (wm.c, wm_bands.h): each core draws with
  * its own target, its own clip -- which lives ON the target surface, so each
@@ -107,6 +109,10 @@ struct fb_ctx {
     struct surface *T;            /* current draw target (defaults to screen) */
     int dirty;                    /* the display must rebind before drawing */
     struct ol_display disp;
+    /* fb_clip_push/pop: the clip each push replaced, on the TARGET surface.
+     * Per context, so band workers keep independent stacks. */
+    struct { int on, x0, y0, x1, y1; } clipstk[FB_CLIP_DEPTH];
+    int clipdepth;
 };
 static struct fb_ctx g_fbctx[GFX_NCTX];
 static uint64_t sdk_draw_calls;
@@ -337,15 +343,76 @@ static struct ol_display *fb_sdk(void)
 uint64_t fb_openlogit_batches(void) {return sdk_draw_calls;}
 struct ol_display *fb_display_cur(void) { return fb_sdk(); }
 
-/* Clip stack: STUBS until fb-clip-stack replaces these bodies (and only
- * these). No state, so no per-context copies yet; see fb.h. */
+/* Clip stack on the current target, per context (struct fb_ctx). The clip
+ * lives on the target surface, which fb_sdk() re-reads on every rebind, so the
+ * push writes the surface (not just the bound display) and survives a rebind.
+ * The stack belongs to the context, not the surface: a push/pop pair must not
+ * straddle fb_target(), which asserts that in FB_DEBUG builds. */
 int fb_clip_push(int x0, int y0, int x1, int y1)
 {
-    (void)x0; (void)y0; (void)x1; (void)y1;
-    return OL_UNSUPPORTED;
+    struct fb_ctx *c = FBC;
+    struct surface *s = c->T ? c->T : &c->screen;
+    if (c->clipdepth >= FB_CLIP_DEPTH) return OL_LIMIT;
+    if (x1 < x0) x1 = x0;
+    if (y1 < y0) y1 = y0;
+#ifdef FB_CLIP_STACK_NEGCTL_DISPLAY_ONLY
+    /* Control: write only the bound display's target, as a group that never
+     * touches the surface would. A rebind then forgets the clip. */
+    struct ol_pixel_target *dt = &fb_sdk()->target;
+    s = NULL;
+    c->clipstk[c->clipdepth].on = dt->clip_on;
+    c->clipstk[c->clipdepth].x0 = dt->clx0; c->clipstk[c->clipdepth].y0 = dt->cly0;
+    c->clipstk[c->clipdepth].x1 = dt->clx1; c->clipstk[c->clipdepth].y1 = dt->cly1;
+    c->clipdepth++;
+    if (dt->clip_on) {
+        if (x0 < dt->clx0) x0 = dt->clx0;
+        if (y0 < dt->cly0) y0 = dt->cly0;
+        if (x1 > dt->clx1) x1 = dt->clx1;
+        if (y1 > dt->cly1) y1 = dt->cly1;
+    }
+    if (x1 < x0) x1 = x0;
+    if (y1 < y0) y1 = y0;
+    dt->clip_on = 1; dt->clx0 = x0; dt->cly0 = y0; dt->clx1 = x1; dt->cly1 = y1;
+    (void)s;
+    return OL_OK;
+#else
+    c->clipstk[c->clipdepth].on = s->clip_on;
+    c->clipstk[c->clipdepth].x0 = s->clx0; c->clipstk[c->clipdepth].y0 = s->cly0;
+    c->clipstk[c->clipdepth].x1 = s->clx1; c->clipstk[c->clipdepth].y1 = s->cly1;
+    c->clipdepth++;
+    if (s->clip_on) {                       /* set_clip semantics: intersect */
+        if (x0 < s->clx0) x0 = s->clx0;
+        if (y0 < s->cly0) y0 = s->cly0;
+        if (x1 > s->clx1) x1 = s->clx1;
+        if (y1 > s->cly1) y1 = s->cly1;
+    }
+    if (x1 < x0) x1 = x0;                   /* empty stays empty */
+    if (y1 < y0) y1 = y0;
+    s->clip_on = 1; s->clx0 = x0; s->cly0 = y0; s->clx1 = x1; s->cly1 = y1;
+    c->dirty = 1;
+    return OL_OK;
+#endif
 }
-void fb_clip_pop(void) {}
-int fb_clip_depth(void) { return 0; }
+void fb_clip_pop(void)
+{
+    struct fb_ctx *c = FBC;
+    struct surface *s = c->T ? c->T : &c->screen;
+    if (c->clipdepth <= 0) return;
+    c->clipdepth--;
+#ifdef FB_CLIP_STACK_NEGCTL_DISPLAY_ONLY
+    struct ol_pixel_target *dt = &fb_sdk()->target;
+    dt->clip_on = c->clipstk[c->clipdepth].on;
+    dt->clx0 = c->clipstk[c->clipdepth].x0; dt->cly0 = c->clipstk[c->clipdepth].y0;
+    dt->clx1 = c->clipstk[c->clipdepth].x1; dt->cly1 = c->clipstk[c->clipdepth].y1;
+    (void)s;
+#else
+    s->clip_on = c->clipstk[c->clipdepth].on;
+    s->clx0 = c->clipstk[c->clipdepth].x0; s->cly0 = c->clipstk[c->clipdepth].y0;
+    s->clx1 = c->clipstk[c->clipdepth].x1; s->cly1 = c->clipstk[c->clipdepth].y1;
+    c->dirty = 1;
+#endif
+}
+int fb_clip_depth(void) { return FBC->clipdepth; }
 
 /* 2026-09-13: normal drawing is owned by OpenLogit. These ABI
  * adapters preserve the existing target/clip and contain no pixel loops. */
@@ -364,13 +431,20 @@ void fb_set_backbuffer(uint32_t *buf)
         c->screen.clip_on = 0;
         c->T = &c->screen;
         c->dirty = 1;
+        c->clipdepth = 0;
     }
 }
 
 void fb_target(struct surface *s)
 {
     struct fb_ctx *c = FBC;
-    c->T = s ? s : &c->screen;
+    struct surface *n = s ? s : &c->screen;
+#ifdef FB_DEBUG
+    /* An open clip push belongs to the old target: popping it later would
+     * restore a clip onto the wrong surface. */
+    if (n != (c->T ? c->T : &c->screen) && c->clipdepth) __builtin_trap();
+#endif
+    c->T = n;
     c->dirty=1;
 }
 
