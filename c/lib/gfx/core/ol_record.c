@@ -332,3 +332,18 @@ int ol_cmd_backdrop(struct ol_list *l,struct gfx_rect r,int radius,unsigned rgb,
     struct command *c=record(l,CMD_BACKDROP,0);if(!c)return record_error(l);
     c->rect=r;c->layer.blur_radius=radius;c->rgb=rgb;c->alpha=opacity;return OL_OK;
 }
+int ol_cmd_backdrop_rrect(struct ol_list *l,struct gfx_rect r,const int corner[4],int blur_radius,
+                           int passes,unsigned rgb,int opacity)
+{
+    if(!corner||!rect_ok(r)||blur_radius<0||blur_radius>OL_MAX_BLUR_RADIUS||
+       (passes!=1&&passes!=3)||opacity<0||opacity>255)return fail(l,OL_ARGUMENT);
+    int cap=(r.w<r.h?r.w:r.h)/2,k[4];
+    for(int i=0;i<4;i++) {
+        if(corner[i]<0)return fail(l,OL_ARGUMENT);
+        k[i]=corner[i]<cap?corner[i]:cap;
+    }
+    struct command *c=record(l,CMD_BACKDROP,0);if(!c)return record_error(l);
+    c->rect=r;c->layer.blur_radius=blur_radius;c->rgb=rgb;c->alpha=opacity;c->passes=passes;
+    for(int i=0;i<4;i++)c->corner[i]=k[i];
+    return OL_OK;
+}
