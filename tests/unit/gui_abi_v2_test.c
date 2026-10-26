@@ -7,7 +7,8 @@
  *   pt24-floor    wm2_pt24 floors like fb_pt, fraction kept
  *   rect24        abutting 5-pt columns at 150% are 7 and 8 px with SNAP,
  *                 7.5 and 7.5 without; SNAP edges equal the legacy S() idiom
- *   router        OL_UNSUPPORTED per number, OL_ARGUMENT for a wrong size,
+ *   router        OL_UNSUPPORTED per stub number (the implemented ones their
+ *                 status for a zeroed struct), OL_ARGUMENT for a wrong size,
  *                 INFO(0/1/2); no handler touches a pixel
  *   fb-clip       fb_clip_push is OL_OK, depth 1, clip intersected; pop restores it
  *   wm-switch     every new number is in wm.c's wm_domain_call, and the
@@ -320,7 +321,8 @@ static void test_router(void)
     }
     uint32_t before = crc_surface();
 
-    bad += expect(wm2_dispatch(SYS_GUI2_INFO, &e, 0, 0, 0), ((long)LOGIT_GUI2_VERSION << 16) | LOGIT_GUI2_F_TEXT_RUN2, "INFO(0)");
+    bad += expect(wm2_dispatch(SYS_GUI2_INFO, &e, 0, 0, 0), ((long)LOGIT_GUI2_VERSION << 16) | LOGIT_GUI2_F_TEXT_RUN2 |
+                  LOGIT_GUI2_F_CLIP | LOGIT_GUI2_F_GROUP | LOGIT_GUI2_F_BLIT2, "INFO(0)");
     bad += expect(wm2_dispatch(SYS_GUI2_INFO, &e, 1, 0, 0), 0, "INFO(1)");
     bad += expect(wm2_dispatch(SYS_GUI2_INFO, &e, 2, 0, 0), OL_ARGUMENT, "INFO(2)");
     bad += expect(wm2_dispatch(SYS_GUI2_INFO, &e, -1, 0, 0), OL_ARGUMENT, "INFO(-1)");
@@ -329,9 +331,12 @@ static void test_router(void)
             struct logit_clip2 c; struct logit_group2 g; struct logit_blit2 b;
             struct logit_run2 r; struct logit_shadow2 sh; struct logit_glass2 gl;
             struct logit_backdrop2 bd; char pad[256]; } u;
-    bad += struct_call(&e, SYS_GUI_CLIP_PUSH, "CLIP_PUSH", &u, sizeof(struct logit_clip2));
-    bad += struct_call(&e, SYS_GUI_GROUP_BEGIN, "GROUP_BEGIN", &u, sizeof(struct logit_group2));
-    bad += struct_call(&e, SYS_GUI_BLIT2, "BLIT2", &u, sizeof(struct logit_blit2));
+    /* implemented (wm-draw2-state): a zeroed clip is an empty clip (pushed,
+     * OL_OK), a zeroed group an empty opacity-0 layer (OL_OK, nothing to
+     * snapshot), a zeroed blit has sw = 0 (OL_ARGUMENT) */
+    bad += struct_call_w(&e, SYS_GUI_CLIP_PUSH, "CLIP_PUSH", &u, sizeof(struct logit_clip2), OL_OK);
+    bad += struct_call_w(&e, SYS_GUI_GROUP_BEGIN, "GROUP_BEGIN", &u, sizeof(struct logit_group2), OL_OK);
+    bad += struct_call_w(&e, SYS_GUI_BLIT2, "BLIT2", &u, sizeof(struct logit_blit2), OL_ARGUMENT);
     /* implemented (text-kernel-alpha): a zeroed run has len 0 -> ARGUMENT */
     bad += struct_call_w(&e, SYS_GUI_TEXT_RUN2, "TEXT_RUN2", &u, sizeof(struct logit_run2), OL_ARGUMENT);
     bad += struct_call(&e, SYS_GUI_SHADOW2, "SHADOW2", &u, sizeof(struct logit_shadow2));
@@ -355,8 +360,10 @@ static void test_router(void)
     bad += expect(wm2_dispatch(SYS_GUI_PATH, &e, (long)&p, (long)&q, (long)&s), OL_ARGUMENT, "PATH stroke.size=0");
     bad += expect(wm2_dispatch(SYS_GUI_PATH, &e, (long)&p, 0, 0), OL_ARGUMENT, "PATH paint NULL");
 
-    bad += expect(wm2_dispatch(SYS_GUI_CLIP_POP, &e, 0, 0, 0), OL_UNSUPPORTED, "CLIP_POP");
-    bad += expect(wm2_dispatch(SYS_GUI_GROUP_END, &e, 0, 0, 0), OL_UNSUPPORTED, "GROUP_END");
+    /* LIFO: the group is on top, so CLIP_POP is OL_STATE and GROUP_END closes
+     * it; the clip below stays open until the reset + flush below */
+    bad += expect(wm2_dispatch(SYS_GUI_CLIP_POP, &e, 0, 0, 0), OL_STATE, "CLIP_POP over a group");
+    bad += expect(wm2_dispatch(SYS_GUI_GROUP_END, &e, 0, 0, 0), OL_OK, "GROUP_END");
     for (long id = -1; id < LOGIT_BACKDROP_MAX; id++)
         bad += expect(wm2_dispatch(SYS_GUI_BACKDROP_CLEAR, &e, id, 0, 0), OL_UNSUPPORTED, "BACKDROP_CLEAR(id)");
     bad += expect(wm2_dispatch(SYS_GUI_BACKDROP_CLEAR, &e, LOGIT_BACKDROP_MAX, 0, 0), OL_ARGUMENT, "BACKDROP_CLEAR(8)");
@@ -370,9 +377,12 @@ static void test_router(void)
     bad += expect(wm2_dispatch(SYS_GUI2_INFO, &e, 0, 0, 0), OL_STATE, "slot -1");
     e.slot = 3;
 
-    /* hooks and compositor queries are callable no-ops */
+    /* hooks and compositor queries are callable; the reset orphans the open
+     * clip's fb push and the flush reclaims it (fb depth back to 0, which
+     * test_fb_clip below relies on); a reset level is not an auto-close */
     for (int i = -1; i <= WM2_MAX_WINDOWS; i++) wm2_win_reset(i);
     wm2_win_flush(&e);
+    bad += expect(fb_clip_depth(), 0, "fb_clip_depth after reset + flush");
     bad += expect(wm2_state_err_count(3), 0, "wm2_state_err_count");
     struct wm2_region rg[LOGIT_BACKDROP_MAX];
     bad += expect(wm_backdrop_regions(3, rg, LOGIT_BACKDROP_MAX), 0, "wm_backdrop_regions");
