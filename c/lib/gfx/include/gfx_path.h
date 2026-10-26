@@ -25,7 +25,9 @@
 struct gfx_path {
     int *pt;             /* x,y interleaved, 24.8 DEVICE                     */
     int  npt, ptcap;
-    int *sub;            /* point index where each subpath starts            */
+    int *sub;            /* point index where each subpath starts; bit 30
+                          * (GFX_SUB_CLOSED) = gfx_close() ended it. ALWAYS
+                          * read through gfx_path_sub_start()                */
     int  nsub, subcap;
     int  overflow;       /* storage ran out, OR gfx_path_matrix() was called
                           * mid-path (see its declaration below) -- either way
@@ -37,6 +39,23 @@ struct gfx_path {
     int  open;
     int  tol;            /* flattening tolerance, 24.8 device px             */
 };
+
+/* A subpath that gfx_close() ended carries GFX_SUB_CLOSED in its sub[] entry.
+ * gfx_close() still emits no point (a fill closes every subpath anyway), so
+ * the bit is the only record of the pen having been lifted by a close. Fills
+ * ignore it; the stroker uses it to join the seam instead of capping it.
+ * Every reader of sub[] must mask it: use gfx_path_sub_start(). */
+#define GFX_SUB_CLOSED 0x40000000
+#define GFX_SUB_START(v) ((v) & ~GFX_SUB_CLOSED)
+
+static inline int gfx_path_sub_start(const struct gfx_path *p, int s)
+{
+    return GFX_SUB_START(p->sub[s]);
+}
+static inline int gfx_path_sub_closed(const struct gfx_path *p, int s)
+{
+    return (p->sub[s] & GFX_SUB_CLOSED) != 0;
+}
 
 void gfx_path_init(struct gfx_path *p, int *ptbuf, int ptcap, int *subbuf, int subcap);
 void gfx_path_reset(struct gfx_path *p);          /* keeps the matrix + tolerance */

@@ -105,6 +105,8 @@ void gfx_close(struct gfx_path *p)
     /* A fill closes every subpath implicitly, so close() only has to put the
      * pen back -- it must NOT emit the closing point, or a closed subpath grows
      * a zero-length edge that the winding walk then counts. */
+    if (p->open && p->nsub > 0)
+        p->sub[p->nsub - 1] |= GFX_SUB_CLOSED;     /* record closure for the stroker */
     p->cx = p->sx; p->cy = p->sy;
     p->open = 0;
 }

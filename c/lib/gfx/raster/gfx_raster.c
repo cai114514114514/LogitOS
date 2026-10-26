@@ -216,8 +216,8 @@ static int build_edges(struct gfx_raster_workspace *ws, const struct gfx_path *p
 {
     int n = 0;
     for (int s = 0; s < p->nsub; s++) {
-        int a = p->sub[s];
-        int b = (s + 1 < p->nsub) ? p->sub[s + 1] : p->npt;
+        int a = gfx_path_sub_start(p, s);
+        int b = (s + 1 < p->nsub) ? gfx_path_sub_start(p, s + 1) : p->npt;
         if (b - a < 2) continue;
         for (int i = a; i < b - 1; i++) {
             n = add_edge(ws, n, p->pt[i * 2], p->pt[i * 2 + 1],
