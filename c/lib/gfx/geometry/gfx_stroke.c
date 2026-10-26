@@ -25,30 +25,16 @@
  * the NEAR side of the reversed polyline, so walk_side() runs twice over an
  * index mapping and the opposite winding falls out by construction.
  *
- * WHICH SUBPATHS ARE CLOSED -- READ THIS BEFORE USING IT. `struct gfx_path`
- * does not record closure. gfx_close() emits no point (a fill closes every
- * subpath implicitly, so recording one would add a zero-length edge the
- * winding walk then has to ignore) and it sets no flag, so nothing in the
- * stored path distinguishes the closed triangle A,B,C,close() from the open
- * polyline A,B,C. A FILL does not care -- it closes both. A STROKE cannot not
- * care: one has a join at A, the other has two caps there. So this file uses
- * the only evidence that survives into the storage: a subpath whose LAST
- * POINT EQUALS ITS FIRST is stroked closed, and the duplicate is dropped.
- * That is the ordinary convention for a flattened contour and it costs
- * nothing, but it has one consequence worth knowing before you trust it:
- *
- *   gfx_path_rrect / rrect4 / ellipse / circle all END their last curve
- *   exactly on their first point, so they stroke closed, correctly.
- *   gfx_path_rect does NOT -- it stops at the fourth corner and leaves the
- *   fourth side to gfx_close() -- so a plain rect strokes as an OPEN
- *   four-point polyline, with two caps at its top-left corner instead of a
- *   join. A caller that needs it today writes the closing gfx_line_to itself
- *   (move_to + four line_to's back to the start).
- *
- * The real fix is one line in gfx_path.c or a closure bit in struct gfx_path;
- * both are outside this milestone's files, so it is REPORTED rather than
- * guessed at here. Guessing -- "a 4-point subpath is probably a rect" -- is
- * how a stroker starts drawing plausible wrong pictures.
+ * WHICH SUBPATHS ARE CLOSED. gfx_close() emits no point (a fill closes every
+ * subpath implicitly, and a recorded one would be a zero-length edge the
+ * winding walk has to ignore) but it sets GFX_SUB_CLOSED in the subpath's
+ * sub[] entry (gfx_path.h). A subpath is stroked closed -- a join at the seam,
+ * no caps -- if that bit is set OR, as before, its LAST POINT EQUALS ITS FIRST
+ * (the duplicate is then dropped). The second rule is what a hand-built
+ * "move_to + line_to back to the start" and the curve builders (rrect, ellipse,
+ * circle) rely on, and it is kept so paths without the bit stroke as they
+ * always did. Fewer than three distinct points never counts as closed: that is
+ * a line or a dot, not a contour.
  *
  * NO LIBC, NO MALLOC, NO STATICS. Everything is caller storage or stack. The
  * dash walker in particular does NOT copy each on-run into a scratch
@@ -546,6 +532,10 @@ static void dash_walk(struct gfx_path *o, const int *pt, int n, int closed,
     int idx = 0, on = 1, remain, s;
     int run_first = 0, hx = pt[0], hy = pt[1];
     long long ph;
+    /* Closed subpath whose pattern is "on" at the seam: the first on-run is
+     * HELD BACK (fm points, ending at (ftx,fty)) and joined onto the last
+     * run at the end, so the seam gets a join, not two caps. */
+    int defer, have_first = 0, fm = 0, ftx = 0, fty = 0, toggled = 0;
 
     /* Advance the pattern by the phase. A negative phase is a legal offset
      * backwards through the pattern, so it is brought into range rather than
@@ -564,6 +554,8 @@ static void dash_walk(struct gfx_path *o, const int *pt, int n, int closed,
             ph = 0;
         }
     }
+
+    defer = closed && on;
 
     for (s = 0; s < nseg; s++) {
         int a = s, b = s + 1, ax, ay, bx, by, dx, dy, L, pos = 0;
@@ -591,12 +583,17 @@ static void dash_walk(struct gfx_path *o, const int *pt, int n, int closed,
                  * wrong point of the outline. */
                 if (pos == 0) { q.m = s - run_first + 1; q.tx = ax; q.ty = ay; }
                 else          { q.m = s - run_first + 2; q.tx = px; q.ty = py; }
-                stroke_run(o, &q, h, st, miter_limit, tol, st->cap, st->cap);
-                if (o->overflow) return;
+                if (defer && !have_first) {
+                    have_first = 1; fm = q.m; ftx = q.tx; fty = q.ty;
+                } else {
+                    stroke_run(o, &q, h, st, miter_limit, tol, st->cap, st->cap);
+                    if (o->overflow) return;
+                }
             } else {
                 run_first = s; hx = px; hy = py;
             }
             on = !on;
+            toggled = 1;
             idx = (idx + 1) % st->ndash;
             remain = st->dash[idx];
         }
@@ -612,14 +609,26 @@ static void dash_walk(struct gfx_path *o, const int *pt, int n, int closed,
         q.m = nseg - run_first + 1;
         q.tx = pt[(closed ? 0 : n - 1) * 2];
         q.ty = pt[(closed ? 0 : n - 1) * 2 + 1];
+        if (defer && have_first) {
+            /* Last run + held-back first run = one run across the seam. */
+            q.m = n - run_first + fm;
+            q.tx = ftx; q.ty = fty;
+        } else if (defer && !toggled) {
+            /* The pattern never turned off: the whole contour is one dash. */
+            q.first = 0; q.m = n; q.closed = 1;
+            q.hx = pt[0]; q.hy = pt[1];
+            q.tx = pt[(n - 1) * 2]; q.ty = pt[(n - 1) * 2 + 1];
+        }
+        stroke_run(o, &q, h, st, miter_limit, tol, st->cap, st->cap);
+    } else if (have_first) {
+        struct ply q;
+        q.pt = pt; q.nsrc = n; q.wrap = closed;
+        q.closed = 0;
+        q.first = 0; q.m = fm;
+        q.hx = pt[0]; q.hy = pt[1];
+        q.tx = ftx; q.ty = fty;
         stroke_run(o, &q, h, st, miter_limit, tol, st->cap, st->cap);
     }
-    /* A dashed CLOSED subpath whose pattern is "on" across the seam gets a cap
-     * at the start point rather than a join between the last run and the
-     * first. Merging them means carrying the first run's geometry until the
-     * walk comes back round; it is a known, visible simplification (a dashed
-     * circle shows one seam) and it is written down rather than left to be
-     * discovered. */
 }
 
 /* ---------------------------------------------------------------- entry -- */
@@ -655,8 +664,8 @@ int gfx_stroke_path(struct gfx_path *out, const struct gfx_path *src,
     if (miter_limit > MITER_MAX) miter_limit = MITER_MAX;
 
     for (s = 0; s < src->nsub; s++) {
-        int a = src->sub[s];
-        int b = (s + 1 < src->nsub) ? src->sub[s + 1] : src->npt;
+        int a = gfx_path_sub_start(src, s);
+        int b = (s + 1 < src->nsub) ? gfx_path_sub_start(src, s + 1) : src->npt;
         int n = b - a, closed = 0;
         const int *pt = &src->pt[a * 2];
         struct ply q;
@@ -669,6 +678,14 @@ int gfx_stroke_path(struct gfx_path *out, const struct gfx_path *src,
             closed = 1;
             n--;
         }
+#ifndef GFX_STROKE_IGNORE_CLOSED_BIT
+        /* NEGATIVE CONTROL (-DGFX_STROKE_IGNORE_CLOSED_BIT) compiles this out:
+         * the stroker then sees a gfx_close()d rect as the open polyline it
+         * used to, and the rect-join / dashed-seam checks must fail. */
+        else if (n >= 3 && gfx_path_sub_closed(src, s)) {
+            closed = 1;                     /* the seam edge is implicit */
+        }
+#endif
 
         if (n == 1) {
             /* A dash pattern has no length here to divide into runs, so the

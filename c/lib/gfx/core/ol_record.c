@@ -106,11 +106,16 @@ static int path_ok(const struct gfx_path *p)
         return 0;
     if (!p->npt)
         return p->nsub == 0;
-    if (!p->pt || !p->sub || !p->nsub || p->sub[0] != 0)
+    if (!p->pt || !p->sub || !p->nsub || gfx_path_sub_start(p, 0) != 0)
         return 0;
-    for (int i = 0; i < p->nsub; i++)
-        if (p->sub[i] < 0 || p->sub[i] >= p->npt || (i && p->sub[i] <= p->sub[i - 1]))
+    for (int i = 0; i < p->nsub; i++) {
+        /* The closed bit is the only flag allowed above the index; any other
+         * high bit or a negative entry is corrupt. */
+        if (p->sub[i] < 0 || (p->sub[i] & ~(GFX_SUB_CLOSED | (GFX_SUB_CLOSED - 1))) ||
+            gfx_path_sub_start(p, i) >= p->npt ||
+            (i && gfx_path_sub_start(p, i) <= gfx_path_sub_start(p, i - 1)))
             return 0;
+    }
     for (int i = 0; i < 2 * p->npt; i++)
         if (p->pt[i] < -GFX_PX(32768) || p->pt[i] > GFX_PX(32768))
             return 0;

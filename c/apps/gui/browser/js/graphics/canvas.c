@@ -1958,8 +1958,8 @@ static int point_hit(const struct gfx_path *path, int rule, long long qx, long l
      * independently of, the crossing count below. */
     int winding = 0, crossings = 0;
     for (int s = 0; s < path->nsub; s++) {
-        int start = path->sub[s];
-        int end = (s + 1 < path->nsub) ? path->sub[s + 1] : path->npt;
+        int start = gfx_path_sub_start(path, s);
+        int end = (s + 1 < path->nsub) ? gfx_path_sub_start(path, s + 1) : path->npt;
         int n = end - start;
         if (n < 2) continue;
         for (int i = 0; i < n; i++) {
