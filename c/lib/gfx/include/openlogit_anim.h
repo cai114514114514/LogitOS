@@ -5,7 +5,10 @@
 /* No clock, allocator or event loop is hidden in this library. All consumers
  * sample the same caller-supplied monotonic instant, including missed frames.
  * The browser keeps cascade/event semantics; AUI keeps widget identity. */
-enum ol_curve { OL_LINEAR, OL_EASE_OUT, OL_EASE_INOUT, OL_EASE_IN, OL_CUBIC_BEZIER, OL_STEPS, OL_EASE_OUT_CUBIC };
+enum ol_curve { OL_LINEAR, OL_EASE_OUT, OL_EASE_INOUT, OL_EASE_IN, OL_CUBIC_BEZIER, OL_STEPS, OL_EASE_OUT_CUBIC,
+                 /* appended: existing values above are ABI-stable */
+                 OL_EASE_IN_CUBIC, OL_EASE_INOUT_CUBIC, OL_EASE_OUT_QUART, OL_EASE_OUT_EXPO,
+                 OL_EASE_OUT_BACK, OL_EASE_INOUT_BACK };
 enum ol_direction { OL_FORWARD, OL_REVERSE, OL_ALTERNATE, OL_ALTERNATE_REVERSE };
 enum ol_anim_kind { OL_SCALAR = 1, OL_VEC2 = 2, OL_VEC3 = 3, OL_VEC4 = 4, OL_QUATERNION = 5 };
 struct ol_easing {
@@ -42,6 +45,18 @@ float ol_ease(const struct ol_easing *, float progress);
 #include "openlogit_easing.h"
 /* Exact 0..256 legacy easing vocabulary, now shared by AUI and WM. */
 int ol_ease256(int curve, int progress);
+/* CSS cubic-bezier control points in 16.16 (65536 = 1.0); OL_FX(0.25) etc. */
+#define OL_FX(x) ((int)((x) * 65536.0 + ((x) < 0 ? -0.5 : 0.5)))
+struct ol_bezier {
+    int x1, y1, x2, y2;
+};
+/* Integer-only full catalog, progress 0..256 -> 0..256 (back/bezier may leave
+ * that range). b is read for OL_CUBIC_BEZIER (NULL: linear). steps is read for
+ * OL_STEPS: n>0 is steps(n, end), n<0 is steps(-n, start), 0 is linear.
+ * Unknown curves return linear and bump ol_ease_unknown[gfx_ctx()]. */
+int ol_ease256_ex(enum ol_curve curve, int progress, const struct ol_bezier *b, int steps);
+extern unsigned ol_ease_unknown[]; /* [GFX_NCTX], see openlogit_anim.c */
+unsigned ol_ease_unknown_total(void);
 int ol_animation_init(struct ol_timeline *, const struct ol_animation_desc *, uint64_t now);
 int ol_animation_sample(const struct ol_timeline *, uint64_t now, int reduced,
                         struct ol_anim_sample *);
