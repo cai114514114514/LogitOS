@@ -25,7 +25,8 @@ test-display-path-paint: test-display-path-paint-negctl $(BUILD)/display_path_te
 
 ci-host: test-display-path-paint
 
-# Budget: fill_path of a 40x24 r=8 rrect at 100% <= 4x ol_display_blend_round_rect.
+# Budget: fill_path of rrect paths (40x24 r=8 and others) at 100% <= 2.0x gfx_fill into a
+# same-format gfx surface (display adapter overhead). blend_round_rect ratio is info only.
 DPPB_SRC := tests/unit/display_path_bench.c $(GFX_SRC)
 DPPB_FLAGS := -O2 -g -Wall -Wextra -Itests/unit $(GFX_INC)
 

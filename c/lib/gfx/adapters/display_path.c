@@ -34,6 +34,32 @@ static void dp_row(struct ol_display *d, int y, int x0, int x1,
                    const struct gfx_paint *p, unsigned char *rgba)
 {
     uint32_t *drow = d->target.px + (long)y * d->target.w;
+#ifdef OL_DISPLAY_PATH_IGNORE_PAINT
+    /* negctl: every paint becomes a solid of its first colour */
+    struct gfx_paint solid;
+    gfx_paint_solid(&solid, p->kind == GFX_SOLID ? p->color : p->stop[0].color, 255);
+    p = &solid;
+#endif
+    if (p->kind == GFX_SOLID) {
+        /* single pass straight on the packed pixels: no RGBA row round trip */
+        int r = GFX_R(p->color), g = GFX_G(p->color), b = GFX_B(p->color);
+        int a = p->alpha * p->global_alpha / 255;
+        uint32_t full = display_rgb(d, (uint8_t)r, (uint8_t)g, (uint8_t)b);
+        for (int x = x0; x < x1; x++) {
+            int c = cov[x - cx];
+            if (!c) continue;
+            if (a >= 255 && c == 255) { drow[x] = full; continue; }
+            uint32_t px = drow[x];
+            unsigned char q[4];
+            q[0] = (unsigned char)((px >> d->rpos) & 255);
+            q[1] = (unsigned char)((px >> d->gpos) & 255);
+            q[2] = (unsigned char)((px >> d->bpos) & 255);
+            q[3] = 255;
+            gfx_over(q, r, g, b, a, c);
+            drow[x] = display_rgb(d, q[0], q[1], q[2]);
+        }
+        return;
+    }
     int any = 0;
     for (int x = x0; x < x1; x++) {
         if (!cov[x - cx]) continue;
@@ -46,20 +72,7 @@ static void dp_row(struct ol_display *d, int y, int x0, int x1,
         any = 1;
     }
     if (!any) return;
-#ifdef OL_DISPLAY_PATH_IGNORE_PAINT
-    /* negctl: every paint becomes a solid of its first colour */
-    struct gfx_paint solid;
-    gfx_paint_solid(&solid, p->kind == GFX_SOLID ? p->color : p->stop[0].color, 255);
-    p = &solid;
-#endif
-    if (p->kind == GFX_SOLID) {
-        int r = GFX_R(p->color), g = GFX_G(p->color), b = GFX_B(p->color);
-        int a = p->alpha * p->global_alpha / 255;
-        for (int x = x0; x < x1; x++) {
-            int c = cov[x - cx];
-            if (c) gfx_over(rgba + x * 4, r, g, b, a, c);
-        }
-    } else if (p->kind == GFX_LINEAR) {
+    if (p->kind == GFX_LINEAR) {
         gfx_gradient_linear_row(p, rgba, y, x0, x1, cov, cx);
     } else if (p->kind == GFX_RADIAL) {
         gfx_gradient_radial_row(p, rgba, y, x0, x1, cov, cx);
