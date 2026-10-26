@@ -19,7 +19,11 @@ fixture='# 中文高亮\ndef square(x):\n    return x * x\n\nmessage = "你好�
 app=a.before.resolve() if a.before else b/'studio.aex'
 files=[f'{base}/{n}.aex:/bin/{n}' for n in ('login','sh','cat','echo','pref')]
 files += [f'{ROOT}/fsroot/fonts/{n}.ttf:/fonts/{n}.ttf' for n in ('ui','mono','ui-bold','mono-bold')]
-files += [f'{ROOT}/third_party/fonts/DejaVuSans.ttf:/fonts/text.ttf',f'{app}:/studio.aex',f'{out}/demo.as:/docs/demo.as',f'{out}/nested.as:/docs/src/nested.as',f'{out}/settings.conf:/etc/settings.conf',f'{out}/nested.as:/state/fixture',f'{b}/as.aex:/bin/as',f'{b}/asc.la:/usr/as/lib/asc.la',f'{b}/aslex.la:/usr/as/lib/aslex.la']
+files += [f'{ROOT}/third_party/fonts/DejaVuSans.ttf:/fonts/text.ttf',f'{app}:/studio.aex',f'{out}/demo.as:/docs/demo.as',f'{out}/nested.as:/docs/src/nested.as',f'{out}/settings.conf:/etc/settings.conf',f'{out}/nested.as:/state/fixture',f'{b}/as.aex:/bin/as']
+# The library as the product disk ships it (Makefile AS_LIB_SRCS): A3 source.
+# asc.la and aslex.la stood here, A2 bytecode that no build has made since the
+# A2 engine left, so mkfs failed before the gate booted (2026-10-26).
+files += [f'{p}:/usr/as/lib/{p.name}' for p in sorted((ROOT/'fsroot/as/lib').glob('*.as'))]
 subprocess.run(['python3','tools/mkfs.py',str(out/'disk.img'),*files],cwd=ROOT,check=True,stdout=(out/'mkfs.log').open('w'))
 checks=[];g=None
 report={'studio_sha256':hashlib.sha256(app.read_bytes()).hexdigest(),'kernel_sha256':hashlib.sha256((base/'logit.iso').read_bytes()).hexdigest(),'checks':checks}

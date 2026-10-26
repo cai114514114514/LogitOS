@@ -2,7 +2,10 @@
 # host adapter supplies only the OS entropy and base64 Web API boundaries.
 WEB_KEYS_SRC = c/apps/gui/browser/js/crypto/subtle.c $(BROWSER_DIGEST_SRC) $(BROWSER_CRYPTO_OPS_SRC) $(QJS_SRC) tests/unit/web_crypto_keys_test.c
 WEB_KEYS_DEPS = $(WEB_KEYS_SRC) c/apps/gui/browser/js/crypto/crypto_keys.inc c/apps/gui/browser/js/crypto/crypto_keys_script.inc c/apps/gui/browser/js/crypto/crypto_ops.inc c/apps/gui/browser/js/crypto/digest.inc c/apps/gui/browser/js/crypto/entropy.h
-WEB_KEYS_CF = -O1 -g -w -DWEBAPI_HOST -DCONFIG_VERSION='"host"' -Ithird_party/quickjs -Iinclude -Ic/apps -Ic/crypto $(KCPU_INC)
+# $(BROWSER_INC): subtle.c includes "js/runtime/platform.h" from the browser
+# root, as web_crypto_ops.mk and web_digest.mk already allow; without it neither
+# this build nor its controls compiled (2026-10-26).
+WEB_KEYS_CF = -O1 -g -w -DWEBAPI_HOST -DCONFIG_VERSION='"host"' -Ithird_party/quickjs -Iinclude -Ic/apps -Ic/crypto $(BROWSER_INC) $(KCPU_INC)
 $(BUILD)/web_crypto_keys: $(WEB_KEYS_DEPS)
 	@mkdir -p $(BUILD)
 	$(CC) $(WEB_KEYS_CF) $(WEB_KEYS_SRC) -lm -o $@
