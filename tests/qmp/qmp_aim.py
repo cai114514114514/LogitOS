@@ -46,7 +46,7 @@ def parse_aims(text):
 
 
 def aim_lines(text):
-    """Every aim line in order, verbatim (for failure messages)."""
+    """Every aim line in order, verbatim (for error text)."""
     return [m.group(0) for line in text.splitlines()
             for m in AIM_RE.finditer(line)]
 
