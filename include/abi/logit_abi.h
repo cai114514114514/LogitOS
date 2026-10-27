@@ -3058,9 +3058,10 @@ struct logit_path2 {
  * layouts are capped at 32 fields and gen_abi expands scalar arrays one
  * field per element, so two inline [16] arrays would make Paint2 46 fields
  * and break every lib/abi.as importer (AS3811). x0..r1 are 24.8 points in the
- * path's own space. Until the engine work lands the kernel rejects
- * CONIC, op != 0, spread != 0 and nstop > 8 with OL_UNSUPPORTED and leaves
- * LOGIT_GUI2_F_PATH_EXT clear. */
+ * path's own space. The kernel accepts CONIC, spread modes (pad, repeat,
+ * reflect) and nstop <= 16, and advertises them with LOGIT_GUI2_F_PATH_EXT.
+ * op != 0 (and a radial paint with r0 != 0) is still rejected with
+ * OL_UNSUPPORTED. */
 #define LOGIT_PAINT2_SOLID  0
 #define LOGIT_PAINT2_LINEAR 1
 #define LOGIT_PAINT2_RADIAL 2
