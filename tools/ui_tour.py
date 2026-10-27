@@ -603,6 +603,9 @@ class Tour:
             if self.theme != t:
                 self.stage = "setup"
                 self.step("theme-" + t, self.toggle_theme)
+                # the first pass closed the boot Finder; the second pass starts
+                # from the same one-window desktop
+                self.step("reopen-finder", lambda: self.launch("files", 5))
             self.run_stages()
         self.write_manifest()
         # every requested stage must have produced a shot in every theme
