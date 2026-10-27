@@ -1259,6 +1259,29 @@ static void draw_tip(void)
     aui_text_sz(x + pad, y + pad - 1, tip_last_text, aui_mix(bg, rgb(250, 250, 252), t), px);
 }
 
+/* The checkmark of an 18-point box at (x,y): one 2-point stroked polyline with
+ * round caps and joins, which stays sharp at any scale (the bars it replaces
+ * are 3-point rounded rects that fatten at 150%). 0 when the kernel has no
+ * SYS_GUI_PATH, so the caller draws the bars. */
+static int draw_tick(int x, int y, unsigned color)
+{
+    static const unsigned char verbs[3] = { LOGIT_VERB_M, LOGIT_VERB_L, LOGIT_VERB_L };
+    struct logit_path2 pa;
+    struct logit_paint2 pt;
+    struct logit_stroke2 st;
+    int xy[6];
+    if (!path_ok()) return 0;
+    xy[0] = x * 256 + 1152; xy[1] = y * 256 + 2304;      /* (4.5, 9)    */
+    xy[2] = x * 256 + 1920; xy[3] = y * 256 + 3072;      /* (7.5, 12)   */
+    xy[4] = x * 256 + 3456; xy[5] = y * 256 + 1536;      /* (13.5, 6)   */
+    gfx_zero(&pa, sizeof pa); gfx_zero(&pt, sizeof pt); gfx_zero(&st, sizeof st);
+    pa.verbs = verbs; pa.xy = xy; pa.nverb = 3; pa.nxy = 6;
+    pt.kind = LOGIT_PAINT2_SOLID; pt.argb = 0xFF000000u | (color & 0xFFFFFFu);
+    st.width = 2 * 256; st.cap = LOGIT_STROKE2_CAP_ROUND; st.join = LOGIT_STROKE2_JOIN_ROUND;
+    st.miter = 4 * 65536;
+    return aui_path(&pa, &pt, &st) == 0;
+}
+
 int aui_checkbox_ex(int x, int y, const char *label, int *state, int enabled)
 {
     int id = ++id_ctr, box = 18, lw = label ? tw(label) : 0;
@@ -1286,11 +1309,14 @@ int aui_checkbox_ex(int x, int y, const char *label, int *state, int enabled)
         /* The tick is three anti-aliased rounded bars, not a bitmap: it has to
          * stay sharp at 2x like the text next to it. */
         unsigned c = AUI_ACCENT_TEXT;
-        aui_round(x + 4,  y + box / 2 - 1, 5, 3, 1, c);
-        aui_round(x + 6,  y + box / 2 + 1, 3, 3, 1, c);
-        aui_round(x + 8,  y + box / 2 - 1, 3, 3, 1, c);
-        aui_round(x + 10, y + box / 2 - 3, 3, 3, 1, c);
-        aui_round(x + 12, y + 5,           3, 3, 1, c);
+        if (!draw_tick(x, y, c)) {
+            /* No SYS_GUI_PATH: the three-bar tick */
+            aui_round(x + 4,  y + box / 2 - 1, 5, 3, 1, c);
+            aui_round(x + 6,  y + box / 2 + 1, 3, 3, 1, c);
+            aui_round(x + 8,  y + box / 2 - 1, 3, 3, 1, c);
+            aui_round(x + 10, y + box / 2 - 3, 3, 3, 1, c);
+            aui_round(x + 12, y + 5,           3, 3, 1, c);
+        }
     }
     if (label) txt(x + box + AUI_SP(2), y + (box - PX) / 2 - 1,
                    (r.st & AUI_OFF) ? AUI_DISABLED_TX : AUI_TEXT, label);
@@ -1461,15 +1487,23 @@ void aui_progress(int x, int y, int w, int pct)
 void aui_spinner(int cx, int cy, int r)
 {
     aui_ring(cx, cy, r, 2, AUI_TRACK);
-    /* Eight fading dots around the ring: no trigonometry, a fixed unit circle
-     * in eighths scaled by r (integer only, like everything else here). */
-    static const int ux[8] = { 0, 181, 256, 181, 0, -181, -256, -181 };
-    static const int uy[8] = { -256, -181, 0, 181, 256, 181, 0, -181 };
     /* aui_anim_loop() rather than frame_ms: same value, plus the wake that
      * makes it advance in an app that is otherwise asleep. Read aui.h's price
      * for this before putting a spinner in a large window -- a loop repaints
      * the WHOLE canvas at AUI_ANIM_TICK_LOOP, forever. */
-    unsigned phase = (aui_anim_loop() / 100) % 8;
+    unsigned t = aui_anim_loop();
+    if (path_ok()) {
+        /* A 100-degree round-capped arc on the track, one revolution per 900
+         * ms. The arc is one path record whose box is the spinner's own, so
+         * the frame's damage is that box and nothing else. */
+        aui_arc(cx, cy, r - 1, (int)(t % 900) * 360 / 900 - 90, 100, 2, ap_argb(AUI_ACCENT, 255));
+        return;
+    }
+    /* Eight fading dots around the ring: no trigonometry, a fixed unit circle
+     * in eighths scaled by r (integer only, like everything else here). */
+    static const int ux[8] = { 0, 181, 256, 181, 0, -181, -256, -181 };
+    static const int uy[8] = { -256, -181, 0, 181, 256, 181, 0, -181 };
+    unsigned phase = (t / 100) % 8;
     for (int i = 0; i < 8; i++) {
         int a = 40 + (int)((i + 8 - phase) % 8) * 27;
         aui_round_a(cx + ux[i] * r / 256 - 2, cy + uy[i] * r / 256 - 2, 4, 4, 2, AUI_ACCENT, a);
@@ -1984,8 +2018,7 @@ int aui_select(int x, int y, int w, const char *const *items, int n, int *sel)
     aui_text_ellipsis(x + AUI_SP(2), y + (h - PX) / 2 - 1, w - AUI_SP(9), cur, AUI_TEXT, PX);
     /* chevron */
     int ax = x + w - AUI_SP(5), ay = y + h / 2 - 1;
-    for (int i = 0; i < 4; i++) aui_fill(ax + i, ay - 2 + i, 2, 2, AUI_MUTED);
-    for (int i = 0; i < 4; i++) aui_fill(ax + 7 - i, ay - 2 + i, 2, 2, AUI_MUTED);
+    gui_icon(GICON_CHEVRON_D, ax - 1, ay - 5, 12, AUI_MUTED);
 
     if (r.clicked && pop.kind == 0) {
         pop.kind = 1; pop.owner = id; pop.x = X_(x); pop.y = Y_(y) + h + 4; pop.w = w;
