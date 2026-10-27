@@ -222,7 +222,7 @@ def main(argv):
         REST = (pt(30), pt(120))               # wallpaper, far from everything
 
         ui.screendump(os.path.join(tmp, "t.ppm"), settle=0.8 * slow)
-        box = PPM(os.path.join(tmp, "t.ppm")).find_color(CLOSE_RGB)
+        box = PPM(os.path.join(tmp, "t.ppm")).find_above_dock(CLOSE_RGB)
         if box is None:
             print("FAIL no focused window on screen")
             return 1

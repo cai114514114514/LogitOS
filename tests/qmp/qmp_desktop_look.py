@@ -407,8 +407,14 @@ def titlebar_height(win, p, x_off=190):
 TRAFFIC = dict(close=(255, 95, 86), minimize=(254, 188, 46), zoom=(40, 200, 64))
 
 
-def traffic_lights(p):
-    boxes = {name: p.find_color(rgb) for name, rgb in TRAFFIC.items()}
+def traffic_lights(p, win):
+    """Exact-colour boxes of the three buttons, searched in the window's own
+    title bar band (TITLEBAR_H 30, design 8). A whole-screen search stopped
+    being sound in design 3.7.4: the 浏览器 Dock icon draws its compass
+    needle in exactly #FF5F56, the close-button fill."""
+    x0, y0, x1, _ = win
+    band = (x0, y0, x1, y0 + 30)
+    boxes = {name: p.find_color(rgb, band) for name, rgb in TRAFFIC.items()}
     if any(b is None for b in boxes.values()):
         return None
     centres = {name: ((b[0] + b[2]) / 2.0, (b[1] + b[3]) / 2.0) for name, b in boxes.items()}
@@ -598,7 +604,7 @@ def main():
         # ---- proportions ------------------------------------------------
         mbh = menubar_height(p)
         tbh = titlebar_height(win, p)
-        lights = traffic_lights(p)
+        lights = traffic_lights(p, win)
         rad = corner_radius(p, win)
         pitch = dock_pitch(p)
         x0, y0, dw, dh, gap = dock_panel_box()

@@ -51,7 +51,7 @@ import tempfile
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from qmp_ui import PPM, Session, configure, pt              # noqa: E402
+from qmp_ui import PPM, Session, configure, dock_band_top, pt  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -404,7 +404,8 @@ def t_focus(g, shots, W, H):
     # (win.x + S(16), win.y + S(15)) -- so its bounding box locates the window.
     # TextEdit draws its text at window-local (10, 8) points, below the S(30)
     # titlebar (c/apps/gui/textedit/textedit.c redraw()).
-    n, cb = find_in(base, CLOSE_RGB, (0, 0, W, H))
+    # Above the Dock: the 浏览器 icon's needle is exactly CLOSE_RGB (design 3.7.4).
+    n, cb = find_in(base, CLOSE_RGB, (0, 0, W, dock_band_top()))
     assert cb is not None, "no focused window on screen -- TextEdit did not open"
     wx = (cb[0] + cb[2]) // 2 - pt(16)
     wy = (cb[1] + cb[3]) // 2 - pt(15)
@@ -438,7 +439,7 @@ def t_focus(g, shots, W, H):
 
     # ...and it is still the focused window, in the same place: the close button
     # is where it was. A notification that had taken focus would have moved it.
-    n2, cb2 = find_in(two, CLOSE_RGB, (0, 0, W, H))
+    n2, cb2 = find_in(two, CLOSE_RGB, (0, 0, W, dock_band_top()))
     assert cb2 == cb, "the focused window changed (%r -> %r)" % (cb, cb2)
     print("     the window still owns focus")
 

@@ -217,11 +217,19 @@ def main(argv):
         ix, iy = ui.dock_icon_of("settings")
         icon_pixels = [f.p.at(x, y) for y in range(iy - pt(20), iy + pt(20))
                        for x in range(ix - pt(20), ix + pt(20))]
-        blue = sum(r < 100 and g < 180 and b > 120 for r, g, b in icon_pixels)
-        light = sum(min(r, g, b) > 110 and max(r, g, b) - min(r, g, b) < 40
-                    for r, g, b in icon_pixels)
-        ck(blue > pt(10) ** 2 and light > pt(8) ** 2,
-           "the Dock paints the blue tile and light gear", "blue=%d light=%d" % (blue, light))
+        # design_language.md 3.7.4: the 设置 tile is the 2-stop gradient
+        # #9A9AA6 -> #4A4A55 with a white gear (it was a blue raster). A tile
+        # pixel is one within 12 per channel of some point on that gradient;
+        # a gear pixel is near-white. The old blue tile matches neither.
+        top, bot = (154, 154, 166), (74, 74, 85)
+        ramp = [tuple(top[c] + (bot[c] - top[c]) * k // 32 for c in range(3))
+                for k in range(33)]
+        tile = sum(any(max(abs(r - s[0]), abs(g - s[1]), abs(b - s[2])) <= 12
+                       for s in ramp) for r, g, b in icon_pixels)
+        gear = sum(min(r, g, b) > 200 for r, g, b in icon_pixels)
+        ck(tile > pt(10) ** 2 and gear > pt(8) ** 2,
+           "the Dock paints the grey gradient tile and white gear (design 3.7.4)",
+           "tile=%d gear=%d" % (tile, gear))
 
         # ---- LIGHT THEME ----------------------------------------------------
         light_bg = f.mean(300, 40, 60, 12)      # header strip, no widget on it

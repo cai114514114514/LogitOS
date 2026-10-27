@@ -49,7 +49,7 @@ def titlebar_grab(ui, tmp):
     found from the red close light only the focused window paints."""
     shot = os.path.join(tmp, "tb.ppm")
     ui.screendump(shot)
-    box = PPM(shot).find_color(CLOSE_RGB)
+    box = PPM(shot).find_above_dock(CLOSE_RGB)
     if not box:
         return None
     x0, y0, x1, y1 = box

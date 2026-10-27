@@ -67,6 +67,14 @@ def pt(v):
     return v * SCALE // 100
 
 
+def dock_band_top():
+    """First device row the Dock can paint at this mode: the panel top
+    (dock_icon()'s y0) less S(16) for the launch bounce and the 1.3x hover
+    tile (wm_dock.c dock damage, y0 - S(16)), plus S(4) of margin."""
+    isz = pt(DOCK_ISZ_PT)
+    return SCREEN_H - (isz + pt(20)) - pt(12) - pt(20)
+
+
 def dock_icon(i, n):
     """Centre of dock icon `i` (0-based) in DEVICE pixels, matching draw_dock().
 
@@ -850,36 +858,50 @@ class PPM:
         o = (y * self.w + x) * 3
         return (self.px[o], self.px[o + 1], self.px[o + 2])
 
-    def find_color(self, rgb):
+    def find_color(self, rgb, box=None):
         """Bounding box of every pixel exactly equal to `rgb`, or None.
 
         Exact match on a deliberately odd colour is the point: it cannot be
-        confused with the wallpaper gradient, the glass chrome or an icon."""
+        confused with the wallpaper gradient, the glass chrome or an icon.
+        `box` = (x0, y0, x1, y1), inclusive, limits the search; None is the
+        whole screen."""
         r, g, b = rgb
         target = bytes((r, g, b))
+        bx0, by0, bx1, by1 = box if box is not None else (0, 0, self.w - 1, self.h - 1)
+        bx0, by0 = max(bx0, 0), max(by0, 0)
+        bx1, by1 = min(bx1, self.w - 1), min(by1, self.h - 1)
         x0 = y0 = 1 << 30
         x1 = y1 = -1
         row = self.w * 3
-        for y in range(self.h):
+        for y in range(by0, by1 + 1):
             base = y * row
-            start = 0
+            lo, hi = base + bx0 * 3, base + (bx1 + 1) * 3
+            start = lo
             while True:
-                k = self.px.find(target, base + start, base + row)
+                k = self.px.find(target, start, hi)
                 if k < 0:
                     break
                 off = k - base
                 if off % 3:                    # a straddling match, not a pixel
-                    start = off + 1
+                    start = k + 1
                     continue
                 x = off // 3
                 if x < x0: x0 = x
                 if x > x1: x1 = x
                 if y < y0: y0 = y
                 if y > y1: y1 = y
-                start = off + 3
+                start = k + 3
         if x1 < 0:
             return None
         return (x0, y0, x1, y1)
+
+    def find_above_dock(self, rgb):
+        """find_color over the rows above the Dock (dock_band_top()).
+
+        A window's close light is found this way, never over the whole
+        screen: since design_language.md 3.7.4 the 浏览器 Dock icon draws its
+        compass needle in exactly #FF5F56, the close-button fill."""
+        return self.find_color(rgb, (0, 0, self.w - 1, dock_band_top() - 1))
 
     def dark_pixels(self, box, thresh=90):
         """Count near-black pixels inside `box` -- i.e. how much TEXT is there.

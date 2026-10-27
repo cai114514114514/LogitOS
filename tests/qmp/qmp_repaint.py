@@ -265,7 +265,7 @@ def focused_titlebar(ui, tmp):
     """A point on the focused window's titlebar, right of its traffic lights."""
     p = os.path.join(tmp, "title.ppm")
     ui.screendump(p, settle=0.6)
-    box = PPM(p).find_color(CLOSE_RGB)
+    box = PPM(p).find_above_dock(CLOSE_RGB)
     if box is None:
         return None
     x0, y0, x1, y1 = box
