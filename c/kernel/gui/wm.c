@@ -1,84 +1,24 @@
-#include "openlogit_draw.h"
-#include "openlogit_bitmap.h"
-#include <stdint.h>
-#include <stddef.h>
-#include "wm.h"
-#include "gui_sync.h"
-#include "fb.h"
-#include "text.h"
-#include "icons.h"
-#include "logit_desktop_prefs.h"
-#include "logit_app_icon.h"
+/* wm.c -- the window manager and compositor: the damage list and the
+ * frame (dmg_expand, the band-parallel render), the window list and its
+ * geometry, input dispatch, the GUI system calls, launching apps, the
+ * pointer and the main loop. The surfaces it composites live in their own
+ * files (wm_menubar.c, wm_dock.c, ... -- see wm_internal.h). */
+#include "wm_internal.h"
+
+static int wm_keyboard_focus(void);
+static void wm_sync_focus(void);
+static void wm_process_key_up(int c, int mods);
+static void wm_process_mouse(const struct inputq_event *in);
+static void wm_process_key(int c, int mods);
+static void wm_process_mods(int mods);
+static void device_shifts(int *rs, int *gs, int *bs);
+static void wm_render_locked_inner(void);
 
 /* Defaults come from the same list as the settings schema. Refreshed on the
  * existing half-second desktop wake; no new timer or IRQ-side store lookup. */
 #define PREF_DEFAULT(field, key, label, low, high, value) .field = value,
-static struct desktop_preferences desktop_prefs = {LOGIT_DESKTOP_PREFS(PREF_DEFAULT)};
+struct desktop_preferences wm_desktop_prefs = {LOGIT_DESKTOP_PREFS(PREF_DEFAULT)};
 #undef PREF_DEFAULT
-#include "pmm.h"
-#include "vmm.h"
-#include "kheap.h"
-#include "pit.h"
-#include "serial.h"
-#include "sched.h"
-#include "mmguard.h"
-#include "vfs.h"
-#include "settings.h"   /* settings line: theme + wallpaper are persisted */
-#include "rtc.h"
-#include "aex.h"
-#include "elf.h"        /* struct elf_image: wm_launch reports what the loader did */
-#include "pcache.h"     /* the app's own file, so two instances share their text */
-#include "blkdev.h"
-#include "img.h"
-#include "syscall.h" /* kernel_img_decode: all kernel codec users share ownership */
-#include "gfx.h"        /* Open Logit: build_arrow's fill+stroke, below */
-#include "openlogit_anim.h"
-/* The byte identifier /bin/show, the Terminal's output guard and Preview all
- * already share. Pure inline, no libc, no allocation -- see its header. */
-#include "logit_sniff.h"
-#include "logit_abi.h"
-#include "prot.h"       /* cpu_prot_nx_usable() + PTE_NX for the app stack below */
-#include "vma.h"        /* vma_reserve_fixed(): a GUI app's stack is a reservation */
-/* Generated from include/abi/logit_calls.abi, which is where the packed syscall
- * arguments are described. Unpacking them by hand here meant the convention was
- * stated once in a logit_abi.h comment, once in the caller's packing, and once
- * here -- three copies of `(x<<16)|y` that nothing checked against each other.
- * Writing it down found a real disagreement: SYS_GUI_GLASS's radius is 8 bits,
- * which the comment's `(radius<<32)|...` never said. */
-#include "logit_pack.h"
-#include "wm_draw2.h"    /* GUI ABI v2: router, handlers, struct drect */
-#include "wm_cover.h"    /* wm_cover_ok: the cover predicate, pure */
-#include "wm_shadow.h"   /* shadow presets + extent rule, pure */
-#include "openlogit_display_shadow.h"  /* ol_display_shadow_ex: key + ambient layers */
-#include "openlogit_display_group.h"  /* rounded content: opacity-255 corner groups */
-#include "openlogit_display_blit.h"   /* wallpaper: BOX-filtered bake */
-#include "ktime.h"
-#include "evq.h"
-#include "input_queue.h"
-#include "notify.h"     /* WM-HOOK 1/6: the notification overlay (see notify.h) */
-#include "ime_ui.h"     /* IME-HOOK 1/4: the pinyin candidate bar (see ime_ui.h) */
-#include "keyboard.h"
-#include "menu_blob.h"  /* SYS_GUI_MENU_SET: an app's own menus ("Fluid" P5) */
-#include "wm_bands.h"   /* the band splitter: see par_render */
-#include "gfx_ctx.h"    /* GFX_NCTX: how many band workers there can be */
-#include "smp.h"        /* smp_kick_others, smp_cpu_count */
-#include "spinlock.h"
-#include "net.h"
-#include "http.h"
-#include "kprintf.h"
-#include "usercopy.h"
-#include "proc.h"
-#include "file.h"
-#include "smp.h"
-#include "percpu.h"
-#include "spinlock.h"
-#include "vfs_cred.h"   /* vfs_cred_session(): who, if anyone, has logged in */
-/* Path-qualified for the same reason syscall.c and file.c are: mini-libc
- * ships a sys/wait.h that sorts first in INCDIRS. */
-#include "kernel/sync/wait.h"   /* SYS_WAIT_EVENT: an idle app sleeps */
-#include "power.h"      /* kernel_poweroff/kernel_reboot -- the LogitOS menu's Shut Down/Restart */
-
-#define MAXWIN     16
 /* The input method keeps one small parked record per window index (ime_ui.c);
  * sizing that table smaller than this one would not fail to build, it would
  * make the IME quietly stop working in the highest-numbered windows, because
@@ -87,24 +27,6 @@ _Static_assert(IME_UI_MAXWIN >= MAXWIN, "ime_ui.h IME_UI_MAXWIN < wm.c MAXWIN");
 /* The v2 handlers keep per-window side tables indexed by this file's slot
  * numbers (wm_draw2.h); a larger MAXWIN would index past them. */
 _Static_assert(MAXWIN == WM2_MAX_WINDOWS, "wm_draw2.h WM2_MAX_WINDOWS != wm.c MAXWIN");
-/* ---- units ----------------------------------------------------------------
- * Every geometry constant in this file is in POINTS; `struct win`'s x/y/w/h and
- * everything that touches a pixel are in DEVICE pixels. S() converts one to the
- * other and is the boundary between the two worlds.
- *
- * The surfaces are allocated at DEVICE size, and that single choice is the whole
- * difference between a sharp desktop and a magnified one. Allocating a window's
- * canvas at its logical size and scaling the blit at composite time would be far
- * less code -- and would produce exactly the blurry upscale this work exists to
- * avoid, because the glyphs would have been rasterized once at 1x. Instead the
- * app's draw calls are scaled on the way in, so text and vector icons are
- * rasterized AT the device size and the blit is 1:1.
- *
- * The other half is symmetry: what goes down as points*scale must come back up
- * as pixels/scale. A scaled UI with unscaled hit-testing is worse than no
- * scaling at all -- every click lands at a fraction of where it was aimed -- so
- * every enqueue_input() below routes its window-local coordinates through PT().
- */
 /* ---- the mid-frame guard ---------------------------------------------------
  *
  * A window has ONE canvas. The app draws straight into the buffer the
@@ -161,44 +83,9 @@ _Static_assert(MAXWIN == WM2_MAX_WINDOWS, "wm_draw2.h WM2_MAX_WINDOWS != wm.c MA
  * Every time the deadline fires is counted (`late`), so "the deadline never
  * fires" stays a reading rather than an assumption. */
 #define WM_MIDFRAME_MAX_MS 400
-
-#define S(v)       fb_pt(v)          /* points -> device pixels */
-#define PT(v)      fb_dev2pt(v)      /* device pixels -> points */
-#define MENUBAR_H  24                /* points */
-#define TITLEBAR_H 30                /* points */
-#define MBH        S(MENUBAR_H)
-#define TBH        S(TITLEBAR_H)
-#define FW         LOGIT_FONT_W
-#define FH         LOGIT_FONT_H
 #define USER_PATH_MAX 128
 #define USER_URL_MAX  384
 #define USER_TEXT_MAX 1024
-
-/* ---- resize ----------------------------------------------------------------
- *
- * The grab band STRADDLES the frame edge -- RESIZE_OUT_PT of empty space
- * outside it and RESIZE_IN_PT of the window inside. A band that lived purely
- * outside would be unhittable in the one case that matters most (a window
- * against the screen edge), and one purely inside would steal that many points
- * from a scrollbar without giving anything back. Straddling costs the app the
- * outermost 4 points of its own content on each edge, which is the trade every
- * desktop makes and the reason a scrollbar is never flush to the frame.
- *
- * The floor is a WINDOW MANAGER floor, not a suggestion: an app may raise it
- * (SYS_GUI_WIN_MIN) and may not lower it. A window narrower than its own
- * titlebar controls is a window that cannot be closed or dragged, and "the app
- * asked for it" is not a defence when the user is the one who cannot get out. */
-#define RESIZE_OUT_PT    4
-#define RESIZE_IN_PT     4
-#define RESIZE_CORNER_PT 16          /* along each edge, from the corner */
-#define MIN_CONTENT_W_PT 180         /* the WM floor: room for the three lights */
-#define MIN_CONTENT_H_PT 60
-
-/* Which edges a grab is pulling. */
-#define RZ_L 1
-#define RZ_R 2
-#define RZ_T 4
-#define RZ_B 8
 
 /* How often the CANVAS may be reallocated (and EV_RESIZE delivered) while a
  * drag is in flight. The frame itself follows the pointer with no throttle at
@@ -212,49 +99,6 @@ _Static_assert(MAXWIN == WM2_MAX_WINDOWS, "wm_draw2.h WM2_MAX_WINDOWS != wm.c MA
  * unbounded. At 120 ms the app repaints ~8 times a second during a drag and the
  * frame still tracks the hand exactly, because the frame was never the cost. */
 #define RESIZE_APPLY_MS 120
-
-void *memcpy(void *, const void *, size_t);
-
-/* The render pipeline (DOM/CSS/layout/paint) and <style>/<script> collection now
- * live in the ring-3 browser app; the kernel only provides fetch + draw + font
- * primitives. See net/{dom,css,layout}.c (compiled into browser.aex) and L1 plan. */
-
-/* ---------- windows + apps ---------- */
-/* struct drect (half-open, DEVICE pixels) is defined in wm_draw2.h, included
- * above, so wm_backdrop.c and wm_cover.h share this one definition. It has to
- * be complete before `struct win`, which stores one (see anim_prev). The damage
- * machinery that owns it is still the only thing here that manipulates it. */
-
-/* WK_BUILDING is the state a slot is in between the moment SYS_GUI_CREATE
- * CLAIMS it and the moment it is finished. It exists because the claim has
- * to publish `used = 1` under win_lock -- two apps creating a window at once
- * otherwise take the same slot -- and `used` alone is what several scans
- * filter on. wm_apply_sizes() (the ONLY reallocator of a window surface)
- * walks wins[] by `used && kind == WK_APP`, and a reused slot still carries
- * the PREVIOUS tenant's kind, so a half-built window passed that filter and
- * win_apply_size() ran against surf.px == NULL.
- *
- * MEASURED, because it is the opposite of what it looks like: publishing
- * surf.px = NULL at the claim is the SAFER-looking move and it is what broke
- * the desktop -- with the old garbage pointer every `if (px)` check passed
- * and the read was silently wrong pixels; with NULL the same code faulted and
- * took the WM thread with it, so no window appeared at all. Bisected: the
- * peel was innocent, `used = 1` alone was innocent, zeroing the pointer was
- * not. The pointer SHOULD be NULL; what was missing is a state that keeps
- * the scanners away until the window is whole.
- *
- * All sixteen kind comparisons in this file are `== WK_APP`, `== WK_FINDER`
- * or `!= WK_APP`; none is `!= WK_FINDER`, so a third value is excluded by
- * every one of them without touching any of them. Checked, not assumed. */
-enum wkind { WK_FINDER, WK_APP, WK_BUILDING };
-
-struct app {
-    int  used, alive, id;
-    char name[32];
-    char arg[64];
-    uint64_t base;
-    int  win;                 /* window index, -1 until the app creates one */
-};
 
 /* A GUI domain lock replaces implicit entry serialization. It owns app/window
  * slots, geometry and canvas lifetime; no network, filesystem-only or event
@@ -378,91 +222,10 @@ static void wm_lock_report_emit(void)
     }
 }
 
-struct win {
-    int  used;
-    int  x, y, w, h;          /* outer rectangle */
-    char title[40];
-    enum wkind kind;
-    struct app *app;          /* owner (NULL for builtin) */
-    struct surface surf;      /* content canvas (w x (h-TITLEBAR_H)) for apps */
-    struct evq ev;            /* SYS_POLL_EVENT ring (coalesces motion -- see evq.h) */
-    /* Whoever is blocked in SYS_WAIT_EVENT on this window. One queue per
-     * window, not one for the machine: waking every app because one of them
-     * got a keystroke is the same waste as polling, moved into the kernel. */
-    struct waitq evwq;
-    unsigned wait_refs; /* a parked syscall pins this slot until it returns */
-    int  wants_close;
-    int  focus_notified;     /* last EV_WINDOW_FOCUS value; -1 before first delivery */
-    int  want_keyup;         /* WINS_WANT_KEYUP: deliver EV_KEY_UP + modifier keys */
-    int  panel;              /* WINS_SET_PANEL: no titlebar, hides when it loses focus */
-    struct mb_set *menus;     /* SYS_GUI_MENU_SET: the app's menus, NULL if it published none */
-    unsigned menus_gen;       /* unique per publish (g_menus_gen), so the menu bar knows to rebuild */
-    int  cw_pt, ch_pt;        /* content size in POINTS -- what the app CURRENTLY has */
-    char cwd[128];            /* Finder: current directory path */
-    uint64_t open_t0;         /* monotonic ms when the open pop began (0 = settled) */
-    /* ---- resize / zoom / minimise -----------------------------------------
-     * `w`,`h` above are the AUTHORITATIVE outer frame and they change the
-     * instant the pointer moves. surf.w/surf.h is the canvas that has actually
-     * been allocated, and the two are allowed to DISAGREE mid-drag -- see
-     * blit_content(), which stretches the old canvas into the new frame until
-     * the app has repainted at the new size. Keeping the frame live while the
-     * canvas lags is what makes a resize feel attached to the hand without
-     * paying for a full app repaint per pointer sample. */
-    int  min_w_pt, min_h_pt;  /* app-declared minimum CONTENT size, in points */
-    int  zoomed;              /* filling the desktop (see zoom_rect) */
-    int  snapped;             /* SNAP_LEFT / SNAP_RIGHT half, 0 if not (see win_snap) */
-    int  minimized;           /* hidden: not composited, not hit-tested */
-    /* ---- the dock fly (minimise / restore) --------------------------------
-     * `minimized` is set the INSTANT the gesture starts, not when the flight
-     * lands: focus, hit-testing and the keyboard must stop treating the window
-     * as present the moment the user asks for that, and only the PICTURE is
-     * allowed to take 180 ms to agree. win_draw_rect below reads min_t0 first
-     * for exactly that reason -- a window in flight is hidden by state and
-     * visible by animation at the same time, and that is not a contradiction.
-     *
-     * THE APP KEEPS RUNNING. This is not process freezing and there is nothing
-     * here that stops a thread: a minimised app still gets its timer slice,
-     * still draws into its retained canvas, still has its network sockets. The
-     * only thing that changed is that the compositor stops putting that canvas
-     * on the screen. Freezing a process because its window is hidden would
-     * silently break every app that does work in the background, and this WM
-     * has no business making that decision for them. */
-    uint64_t min_t0;          /* monotonic ms when the dock fly began (0 = settled) */
-    int  min_dir;             /* 1 = flying to the dock, 0 = flying back out */
-    int  min_slot;            /* dock icon index the flight is aimed at */
-    /* The on-screen box this window occupied on the previous animated frame.
-     * An animation's damage is (where it was | where it now is), and the first
-     * half of that is not derivable from the current tick -- so it is kept.
-     * Seeded when an animation STARTS; a zeroed one would union in the origin
-     * and quietly turn every animated frame into a top-left-anchored repaint. */
-    struct drect anim_prev;
-    struct drect anim_from;   /* previous box used by the most recent damage call */
-    struct drect anim_sent;   /* exact union submitted by that call */
-    int  sx, sy, sw, sh;      /* the frame to restore to; only valid while zoomed */
-    /* Pixels the canvas ALLOCATION holds, which is >= surf.w * surf.h. The
-     * canvas is reshaped inside this block whenever the new size fits, so a
-     * drag does not hand the kernel heap a differently-sized multi-megabyte
-     * request eight times a second -- see win_apply_size. */
-    int  surf_cap;
-    /* Is this canvas half drawn RIGHT NOW? 1 from the app's first drawing
-     * syscall after a flush until the next flush -- see the mid-frame guard
-     * note near the top of this file. There is no ABI call that says "I am
-     * starting a frame" and there does not need to be: the first draw after a
-     * flush IS the start of one, which is true of every app in the tree and of
-     * any app that has not been written yet. */
-    int  drawing;
-    uint64_t draw_t0;         /* time_mono_ms() when this frame's drawing began */
-};
-
 static struct app apps[MAXWIN];
-static struct win wins[MAXWIN];
-/* A window's titlebar height: TBH, or 0 for a panel (WINS_SET_PANEL), whose
- * canvas starts at its top edge. Every per-window use of the titlebar height
- * goes through this, so a panel is placed, hit-tested and composited without
- * a strip nobody draws in. */
-static inline int win_tbh(const struct win *w) { return w->panel ? 0 : TBH; }
+struct win wm_wins[MAXWIN];
 static struct input_queue inq = INPUT_QUEUE_INIT;
-static int order[MAXWIN], norder;      /* z-order; order[norder-1] is on top */
+int wm_order[MAXWIN], wm_norder;             /* z-order; order[norder-1] is on top */
 
 /* ===========================================================================
  * THE LOCK -- the desktop does not come up until somebody has authenticated.
@@ -500,7 +263,7 @@ static int order[MAXWIN], norder;      /* z-order; order[norder-1] is on top */
  * check becomes per-seat.
  * ======================================================================== */
 #define GREETER_AEX "/sbin/greeter.aex"
-static int g_locked;                   /* 1 = nobody has authenticated yet   */
+int g_locked;                          /* 1 = nobody has authenticated yet   */
 static int g_greeter_ai = -1;          /* apps[] slot of the greeter, or -1  */
 static int g_desktop_started;          /* files.aex has been launched (once) */
 
@@ -508,7 +271,6 @@ static int g_desktop_started;          /* files.aex has been launched (once) */
  * cached: a window index outlives the window that owned it (the slot is reused
  * by the next SYS_GUI_CREATE), and a stale one here would composite whatever
  * opened next full-screen with no chrome. */
-static int greeter_win(void);
 
 static int mx, my, mleft, mright, mmiddle;
 static int dragging = -1, drag_dx, drag_dy;
@@ -525,10 +287,19 @@ static int mouse_capture = -1;
  * the size it started at when the hand returns to where it started. */
 static int rz_win = -1, rz_edge, rz_x0, rz_y0, rz_x1, rz_y1, rz_mx, rz_my;
 static uint64_t rz_apply_ms;             /* time_mono_ms of the last canvas apply */
+/* The pointer, for the surfaces in other files that ask about it but must not
+ * change it (the dock's hover and autohide, Expose's hot corner and entry).
+ * The state itself stays here, with the one path that writes it. */
+int wm_pointer_x(void) { return mx; }
+int wm_pointer_y(void) { return my; }
+int wm_pointer_buttons(void) { return mleft || mright || mmiddle; }   /* any held */
+/* A titlebar drag, a resize grab or an app's capture owns the pointer. */
+int wm_pointer_owned(void) { return dragging >= 0 || rz_win >= 0 || mouse_capture >= 0; }
 static volatile int dirty = 1;           /* the next frame needs a full recomposite */
 
 static uint32_t *back, *bg;
-static int W, H;
+int wm_W, wm_H;
+static struct wm_target wm_screen_target(void) { return (struct wm_target){ back, wm_W }; }
 
 /* ---- damage ---------------------------------------------------------------
  *
@@ -573,55 +344,14 @@ static int W, H;
 static struct drect dmg[NDMG];
 static int ndmg;
 static int dirty_all = 1;                      /* next frame is the whole screen */
-
-/* WHY A FULL FRAME HAPPENED, retained until that frame is consumed.  The
- * compositor's old `full` counter answered only how many; it could not tell a
- * necessary theme flip from an accidental escalation, so the expensive tail
- * was unactionable.  Bits are used rather than one last-writer string because
- * several requests can coalesce before the WM gets the graphics mutex, and
- * losing the earlier request would make the trace confidently wrong.
- *
- * The initial bit is seeded beside dirty_all above.  FULL_EMPTY is not passed
- * by a caller: wm_render_locked records it if `dirty` was somehow armed with
- * neither dirty_all nor a rectangle, the apparatus failure dirty_rect's empty
- * rectangle guard is specifically written to prevent. */
-enum full_reason {
-    FULL_INITIAL           = 1u << 0,
-    FULL_DAMAGE_THRESHOLD  = 1u << 1,
-    FULL_EXTERNAL_OVERFLOW = 1u << 2,
-    FULL_EXPOSE_ENTER      = 1u << 3,
-    FULL_EXPOSE_LEAVE      = 1u << 4,
-    FULL_FOCUS_EXISTING    = 1u << 5,
-    FULL_WINDOW_CREATE     = 1u << 6,
-    FULL_FLUSH_NO_WINDOW   = 1u << 7,
-    FULL_THEME             = 1u << 8,
-    FULL_EXPOSE_TERMINAL   = 1u << 9,
-    FULL_ZORDER_SYSTEM     = 1u << 10,
-    FULL_ZORDER_APP        = 1u << 11,
-    FULL_LOCKED_CURSOR     = 1u << 12,
-    FULL_UNLOCK            = 1u << 13,
-    FULL_EMPTY             = 1u << 14,
-    FULL_APP_EXIT          = 1u << 15,
-};
 static unsigned dirty_full_reasons = FULL_INITIAL;
 
-static int rect_hit(const struct drect *a, const struct drect *b)
-{ return a->x0 < b->x1 && b->x0 < a->x1 && a->y0 < b->y1 && b->y0 < a->y1; }
-static int rect_in(const struct drect *inner, const struct drect *outer)
-{ return inner->x0 >= outer->x0 && inner->y0 >= outer->y0 &&
-         inner->x1 <= outer->x1 && inner->y1 <= outer->y1; }
-static void rect_or(struct drect *a, const struct drect *b)
+void dirty_full(enum full_reason why)
 {
-    if (b->x0 < a->x0) a->x0 = b->x0;
-    if (b->y0 < a->y0) a->y0 = b->y0;
-    if (b->x1 > a->x1) a->x1 = b->x1;
-    if (b->y1 > a->y1) a->y1 = b->y1;
-}
-static long rect_area(const struct drect *r)
-{ return (long)(r->x1 - r->x0) * (long)(r->y1 - r->y0); }
-
-static void dirty_full(enum full_reason why)
-{
+    /* REVEAL HOOK: while the 日夜 reveal (wm_reveal.c) owns the front buffer,
+     * a whole-screen change is news to it as well; the bookkeeping below is
+     * the same either way. Never active today. */
+    if (wm_reveal_active()) wm_reveal_note_flush(NULL);
     dirty_full_reasons |= (unsigned)why;
     dirty_all = 1;
     ndmg = 0;
@@ -677,18 +407,18 @@ static void dmg_add(struct drect n)
      * threshold with no shadow margin anywhere near it. */
     long total = 0;
     for (int i = 0; i < ndmg; i++) total += rect_area(&dmg[i]);
-    if (ndmg > 1 && total * 4 > (long)W * (long)H * 3)
+    if (ndmg > 1 && total * 4 > (long)wm_W * (long)wm_H * 3)
         dirty_full(FULL_DAMAGE_THRESHOLD);
 }
 
-static void dirty_rect(int x, int y, int w, int h)
+void dirty_rect(int x, int y, int w, int h)
 {
     if (dirty_all) { dirty = 1; return; }
     struct drect r = { x, y, x + w, y + h };
     if (r.x0 < 0) r.x0 = 0;
     if (r.y0 < 0) r.y0 = 0;
-    if (r.x1 > W) r.x1 = W;
-    if (r.y1 > H) r.y1 = H;
+    if (r.x1 > wm_W) r.x1 = wm_W;
+    if (r.y1 > wm_H) r.y1 = wm_H;
     /* Nothing on screen changed, so do not ask for a frame. Setting `dirty`
      * here and then adding no rectangle would leave wm_render with an empty
      * damage list, which it can only read as "repaint everything" -- a window
@@ -731,152 +461,11 @@ static void wm_external_damage(void)
         dirty_rect(local[i].x0, local[i].y0, local[i].x1-local[i].x0, local[i].y1-local[i].y0);
 }
 
-/* ===========================================================================
- * MOTION -- Expose, and the dock fly.
- *
- * THE ONE RULE THIS WHOLE SECTION IS BUILT ON: a window that is not where its
- * frame says it is must still have exactly ONE answer to "where are you on
- * screen", and every reader has to get that same answer. There are three
- * readers and they fail in three different ways when they disagree:
- *
- *   win_box()      -> dirty_win() -> the damage list.  Disagreeing here leaves
- *                     the window's previous position standing on the wallpaper.
- *   rect_blocked() -> the mid-frame guard.  Disagreeing here holds back the
- *                     wrong rectangle, or fails to hold back the right one.
- *   render_region()-> the pixels.  Disagreeing here is the picture itself.
- *
- * So win_draw_rect() below is the single definition site, in the same spirit
- * as WSH_* (one shadow geometry) and dock_geom() (one dock position). The
- * animations do not each carry their own copy of "and also damage this" --
- * they move a rectangle, and the rest of the file follows it for free.
- *
- * WHY MONOTONIC MILLISECONDS. An animation is elapsed time, so it uses the
- * clock that keeps advancing while interrupts are masked. timer_ticks() is an
- * IRQ0 delivery count: one long compositor/BKL hold can coalesce PIT edges and
- * leave that count unchanged. In production that once pinned an open pop at
- * p=0 for minutes, continuously redrawing the same frame and making the whole
- * desktop look hung. time_mono_ms() is TSC-backed when available, cannot run
- * backwards, and gives every animation a bounded wall-clock lifetime even
- * through a missed tick.
- *
- * NO FLOATS ANYWHERE. The kernel builds -msse2 now, but the easing is integer
- * because these curves are evaluated per window per frame and a fixed-point
- * quadratic is exact, reproducible, and diffable in a screenshot test. */
-
-/* Long enough to read as motion rather than a cut, short
- * enough that it never becomes the thing you are waiting for. */
-#define EX_DUR_MS       180
-#define MINFLY_MS       180
-#define OPEN_DUR_MS     160      /* the open pop, as it always was */
-
-/* Animation timestamps use 0 as the inactive sentinel. Store start+1 so an
- * animation begun during the first monotonic millisecond is still active,
- * then decode before subtracting. The guarded subtraction also makes the
- * progress functions safe during an early clocksource rebase. */
-static int wm_reduce_motion;
+/* The ui.reduce_motion and ui.reduce_transparency settings: read at boot, at
+ * the unlock and on the prefs tick (wm_run). Every animation and every glass
+ * path in the window manager's files honours them. */
+int wm_reduce_motion;
 static int wm_reduce_transparency;
-static uint64_t anim_stamp(void) { return time_mono_ms() + 1; }
-static uint64_t anim_elapsed_at(uint64_t stamp, uint64_t now)
-{
-    if (!stamp) return 0;
-    uint64_t start = stamp - 1;
-    return now >= start ? now - start : 0;
-}
-/* ONE INSTANT PER FRAME. While a frame is being composited, every animation
- * reads the time the frame began, not the time it happens to be drawn: a frame
- * is now drawn by several cores in bands (par_render), and a bouncing dock
- * icon or a ticking clock must not be at two different moments in one
- * picture. It is also what lets WM_PAR_VERIFY re-render a rectangle and expect
- * the same pixels. Outside a frame (input, hit tests) it is the live clock. */
-static uint64_t g_frame_ms;            /* 0 = not inside a frame */
-static struct rtc_time g_frame_rtc;
-static uint64_t anim_now(void) { return g_frame_ms ? g_frame_ms : time_mono_ms(); }
-static void frame_rtc(struct rtc_time *t) { if (g_frame_ms) *t = g_frame_rtc; else rtc_now(t); }
-static uint64_t anim_elapsed(uint64_t stamp)
-{
-    return anim_elapsed_at(stamp, anim_now());
-}
-
-#define EX_GUTTER_PT    26      /* between cells, and to the screen edge */
-#define EX_TITLE_PT     20      /* reserved under each cell for the title */
-/* How dark the desktop goes behind the grid. The windows have to read as THE
- * CONTENT and the wallpaper as backdrop; at this depth a photograph is still
- * legible underneath, which is what says "your desktop is still there" rather
- * than "you are in a different application". */
-#define EX_DIM_ALPHA    120
-/* THE HOT CORNER, in points from the top-right. Reachable without aiming --
- * the pointer clamps at (W-1, 0), so shoving it up and right always lands
- * inside -- and 18pt is small enough that crossing the corner on the way to
- * somewhere else does not sit in it. */
-#define EX_CORNER_PT    18
-#define EX_DWELL_MS     150      /* parked before it fires */
-
-/* Quadratic ease-out over 0..256: fast out of the gate, settling into the end.
- * Same curve family as gfx_shadow_falloff, and the same reason -- deceleration
- * is what makes a moving rectangle look like it has mass instead of being
- * teleported in equal steps.
- *
- * THE BODY MOVED TO c/lib/gfx (gfx_ease_out), and this is now a call, because
- * the widget toolkit needed the identical curve in ring 3. Two copies would
- * have been one jar with two doors on the two numbers a person sees side by
- * side: a control sliding inside a window while the window itself minimises.
- * c/lib/gfx is the only library both rings link, and wm.c already includes
- * gfx.h. Do not re-inline this; the duration constants above are the other
- * half of the same contract and are mirrored by AUI_T_BASE in aui.h. */
-static int ease_out(int t) { return ol_ease256(OL_EASE_OUT,t); }
-
-/* ---- Expose ---------------------------------------------------------------
- *
- * `ex_on` is the INTENT (the mode is up, or is being entered); `ex_t0` is the
- * transition in flight. Both together, because leaving is a state where the
- * intent is already "off" while the pixels are still on their way home --
- * ex_state() is the question every other reader actually wants to ask. */
-static int ex_on;                      /* the picker is up (or arriving)      */
-static uint64_t ex_t0;                 /* monotonic ms transition start; 0 = still */
-/* Leaving is not complete until the click that selected a thumbnail comes
- * back UP.  A slow full-screen landing frame can outlive the emulated mouse's
- * button-up packet; dropping ex_state() on the timer alone then lets a queued
- * down-state motion start a titlebar drag in the ordinary desktop underneath.
- * Keep modal pointer ownership after the pixels have landed, without keeping
- * the animation or its damage loop running. */
-static int ex_wait_release;
-static int ex_hov = -1;                /* grid slot under the pointer, or -1  */
-static int ex_n;                       /* windows in the grid                 */
-static int ex_wi[MAXWIN];              /* wins[] index per grid slot          */
-static struct drect ex_cell[MAXWIN];   /* the settled thumbnail rect per slot */
-
-static int ex_state(void) { return ex_on || ex_t0 != 0; }
-
-/* THE TRIGGER. Two of them, and the reasoning for each is the input machinery
- * that already exists rather than a preference.
- *
- * A HOT CORNER, because the WM already tracks the pointer continuously and
- * already runs a per-pass tick (the dock's launch bounce is driven from it), so
- * "has the pointer been parked in the top-right for 150 ms" costs one compare
- * per loop pass and no new machinery at all. Top-RIGHT specifically: the menu
- * bar's left end is the app menu region and its right end is the clock, which
- * is text -- nothing there is clickable, so a pointer resting in that corner is
- * not on its way to anything. The dwell is what stops a pointer merely CROSSING
- * the corner from firing it, and `armed` is what stops it re-firing while the
- * pointer stays parked after the mode is dismissed.
- *
- * AND Cmd+E, because wm_shortcut already owns a closed, documented list of Cmd
- * chords (W/Q/M/Tab/`) and E was free -- so this costs one case label and takes
- * no keystroke away from any app. A gesture that only exists as a hot corner is
- * one a keyboard cannot reach. */
-static uint64_t ex_corner_t0;          /* monotonic ms when pointer parked */
-static int ex_corner_armed = 1;        /* leave the corner to re-arm the trigger */
-
-/* Where a window IS on screen this frame -- position, size and opacity -- or 0
- * if it is not on screen at all. PURE: it reads the clock, it never expires a
- * timer. (win_box calls it from the input path, and an animation that advanced
- * itself because somebody asked where a window was would be a timer nobody can
- * reason about. wm_anim_tick() is the one place a timer ends.) */
-static int win_draw_rect(const struct win *w, int *ox, int *oy, int *ow, int *oh, int *oa);
-/* "Is this window stationary, full size and opaque this frame" -- the one
- * predicate dmg_expand and the renderer already share. dirty_win_content()
- * below is the third asker and needs it 500 lines before its definition. */
-static int win_drawn_direct(const struct win *w, int x, int y, int ww, int wh, int a);
 
 /* THE DROP SHADOW'S GEOMETRY, defined once.
  *
@@ -904,20 +493,18 @@ static int win_drawn_direct(const struct win *w, int x, int y, int ww, int wh, i
  * ol_display_shadow itself is unchanged and still clamps for its other users.
  * -DWM_SHADOW_LEGACY (tests/wm-shadow-adopt.mk guest control) restores the
  * clamped fb_shadow call so the 200% check can be seen to fail. */
-static int wm_sh_ext(int kind)
+int wm_sh_ext(int kind)
 {
     int e[4];
     wm_shadow_extent(kind, fb_scale(), e);
     return e[0];
 }
-#define WSH_EXT(f)  wm_sh_ext((f) ? WMSH_WIN_FOCUSED : WMSH_WIN_UNFOCUSED)
 
-static int g_ui_dark;   /* tentative: defined with the theme state below */
 
 /* Cast the two-layer shadow of `kind` under a box. `scale256` is the thumbnail
  * scale (256 = full size) and `alpha` a 0..255 fade, both used by the animated
  * path. Legacy mode draws the old single clamped fb_shadow instead. */
-static void wm_cast_shadow(int kind, int x, int y, int w, int h, int rad, int scale256, int alpha)
+void wm_cast_shadow(int kind, int x, int y, int w, int h, int rad, int scale256, int alpha)
 {
     int pct = fb_scale();
 #ifdef WM_SHADOW_LEGACY
@@ -954,7 +541,7 @@ static void wm_cast_shadow(int kind, int x, int y, int w, int h, int rad, int sc
  * on the floor by design (see its "nothing on screen changed" guard); the
  * frames where that transition happens are damaged explicitly by the animation
  * that caused it, in wm_anim_tick, and not left to this function to infer. */
-static void win_box(const struct win *w, struct drect *r)
+void win_box(const struct win *w, struct drect *r)
 {
     int b = WSH_EXT(1), dy = 0;          /* the extent already includes the offset */
     int x, y, ww, wh, a;
@@ -1003,7 +590,7 @@ static int win_anim_tbh(const struct win *w, int dw, int dh)
 static int win_bd_place(const struct win *w, struct wm_bd_place *pl)
 {
     int x, y, ww, wh, a;
-    if (!w->used || !w->surf.px || !wm_backdrop_any((int)(w - wins))) return 0;
+    if (!w->used || !w->surf.px || !wm_backdrop_any((int)(w - wm_wins))) return 0;
     if (!win_draw_rect(w, &x, &y, &ww, &wh, &a)) return 0;
     if (win_drawn_direct(w, x, y, ww, wh, a)) {
         int tbh = win_tbh(w);
@@ -1019,7 +606,7 @@ static int win_bd_place(const struct win *w, struct wm_bd_place *pl)
     return 1;
 }
 
-static void dirty_win(const struct win *w)
+void dirty_win(const struct win *w)
 {
     struct drect r; win_box(w, &r);
     /* A backdrop region's material samples a halo around it that can reach
@@ -1029,7 +616,7 @@ static void dirty_win(const struct win *w)
     struct wm_bd_place bpl;
     struct drect bx;
     if (win_bd_place(w, &bpl) &&
-        wm_backdrop_extent((int)(w - wins), &bpl, wm_reduce_transparency, &bx))
+        wm_backdrop_extent((int)(w - wm_wins), &bpl, wm_reduce_transparency, &bx))
         rect_or(&r, &bx);
 #if WM_DAMAGE_LIE
     r.x1 = r.x0 + (r.x1 - r.x0) / 2;
@@ -1107,7 +694,7 @@ static void dirty_win_content(const struct win *w)
      * -- which is the real fix and belongs to whoever owns that branch -- the
      * honest answer here is the whole screen. It costs one full frame per
      * greeter flush on a screen that has exactly one window and no dock. */
-    if (g_locked) { dirty_rect(0, 0, W, H); return; }
+    if (g_locked) { dirty_rect(0, 0, wm_W, wm_H); return; }
 
     int x, y, ww, wh, a;
     if (!win_draw_rect(w, &x, &y, &ww, &wh, &a)) return;   /* not on screen */
@@ -1138,7 +725,7 @@ static void dirty_win_content(const struct win *w)
  * contract), not repeated here. */
 static void dirty_win_content_rect(const struct win *w, int rx, int ry, int rw, int rh)
 {
-    if (g_locked) { dirty_rect(0, 0, W, H); return; }
+    if (g_locked) { dirty_rect(0, 0, wm_W, wm_H); return; }
     int x, y, ww, wh, a;
     if (!win_draw_rect(w, &x, &y, &ww, &wh, &a)) return;   /* not on screen */
     if (!win_drawn_direct(w, x, y, ww, wh, a)) { dirty_win(w); return; }
@@ -1162,6 +749,19 @@ static void dirty_win_content_rect(const struct win *w, int rx, int ry, int rw, 
  * tests/qmp/qmp_window.py --negative in a throwaway copy of the tree, whose
  * pixel checks must then fail. */
 #define WM_RESIZE_DAMAGE_LIE 0
+
+/* Where a window WAS, before win_set_frame (wm_place.c) moves it. The frame
+ * code moved to its own file; this half of it stays here because
+ * tests/qmp/qmp_window.py --negative builds its control by flipping the
+ * define above in THIS file, and the #if that reads it has to be beside it. */
+void wm_resize_damage_old(const struct win *w)
+{
+#if !WM_RESIZE_DAMAGE_LIE
+    dirty_win(w);                             /* where it was */
+#else
+    (void)w;
+#endif
+}
 
 static int next_app_id = 1;
 
@@ -1202,17 +802,6 @@ static uint64_t perf_cursor_moves, perf_cursor_ns;   /* host-plane cursor update
  * composite total cannot answer and which was asked directly. */
 static uint64_t perf_cpx, perf_present_ns, perf_full, perf_rects;
 static uint64_t perf_bgskip;               /* wallpaper pixels hidden by opaque app content */
-/* Exact phase attribution for the rare full frame.  Timing the compositor's
- * glass calls here avoids fb.c's app-surface calls and therefore answers the
- * question being asked: live-backdrop glass during this frame, not every use
- * of the drawing API in the machine.  `glass_px` is work pixels (one panel
- * drawn twice counts twice), deliberately: that is the quantity proportional
- * to CPU cost.  The base and present pixel counts remain W*H for a full frame.
- *
- * The trace is printed only after wm_render drops graphics_lock.  Printing it
- * inside wm_render_locked would add serial latency to the very hold time this
- * instrument exists to measure, a silent self-measurement failure. */
-static uint64_t frame_glass_ns, frame_glass_px;
 struct full_frame_trace {
     int pending;
     uint64_t seq, total_ns, ordinary_px, glass_ns, glass_px;
@@ -1239,17 +828,11 @@ static uint64_t perf_torn, perf_defer, perf_late, perf_drawmax;
 
 /* System light/dark theme. The kernel-drawn chrome (menu bar, dock, window
  * frames) reads this directly; ring-3 apps query it via SYS_UI_DARK and follow. */
-static int g_ui_dark;
+int g_ui_dark;
 /* WM-HOOK 3/6: so kernel chrome drawn from another file follows the system
  * theme instead of carrying its own idea of it. Declared in wm.h. */
 int wm_dark(void) { return __atomic_load_n(&g_ui_dark, __ATOMIC_ACQUIRE); }
-static void wm_set_dark(int on);
-static int top_visible(void);   /* fwd: wm_ime_anchor, immediately below */
-static int wm_keyboard_focus(void);
-static void wm_sync_focus(void);
-static void menu_model_sync(void);   /* fwd: the menu bar follows the top window */
 static unsigned g_menus_gen;         /* SYS_GUI_MENU_SET stamps; never reused, unlike a slot */
-static void panel_show(struct win *w, int show);
 
 /* IME-HOOK (the one call in the other direction; declared in wm.h). The
  * FOCUSED window, not the top of the z-order -- top_visible() already draws
@@ -1258,62 +841,23 @@ static void panel_show(struct win *w, int show);
 int wm_ime_anchor(int *wi, int *x, int *y, int *w, int *h)
 {
     int i = top_visible();
-    if (i < 0 || !wins[i].used || wins[i].kind != WK_APP) return 0;
-    *wi = i; *x = wins[i].x; *y = wins[i].y; *w = wins[i].w; *h = TBH;
+    if (i < 0 || !wm_wins[i].used || wm_wins[i].kind != WK_APP) return 0;
+    *wi = i; *x = wm_wins[i].x; *y = wm_wins[i].y; *w = wm_wins[i].w; *h = TBH;
     return 1;
 }
-static int cascade;
-
-/* app registry built by scanning the disk for *.aex
- *
- * `hidden` is AEX_CAT_TEST, and only that -- "built for a harness, not for a
- * person" (aex.h). An app tagged this way still gets a slot (scan_apps still
- * counts it into nreg) and is still PAINTED (draw_dock does not consult
- * `hidden` at all): dock_geom() centres the whole strip on nreg and every
- * other icon's x is `slot * (isz + gap)` from that centre, so on a disk that
- * packs one, dropping the slot -- or leaving a blank gap where it was --
- * would shift every OTHER icon's position. What `hidden` removes is
- * INTERACTION: dock_hover_at() will never return this slot (no magnify, no
- * tooltip) and the click test below will never launch it. A tile nothing can
- * hover or click is exactly as unlaunchable as a missing one, without moving
- * a pixel anything else measures.
- *
- * STATUS, DATED. This used to matter on $(DISK) itself: until 2026-09-02
- * Gallery shipped AEX_CAT_TEST specifically so BROWSER_SLOT/GALLERY_SLOT/
- * SETTINGS_SLOT (three hand-maintained constants that lived in qmp_ui.py at
- * the time) would not have to move and qmp_desktop_look.py's dock_pitch/rim
- * checks -- which back then counted a hardcoded ELEVEN evenly spaced, filled
- * tiles -- would not read a blanked slot as a structural defect. Both of
- * those reasons are gone now: qmp_ui.py derives every slot and the app count
- * from THIS file's own dock_publish() line rather than restating them, and
- * qmp_desktop_look.py counts whatever that line says (DOCK_N) rather than a
- * constant. So Task E's Widgets and Gallery removal (see the APPS/APP_RULE
- * comments in the Makefile) could just DROP both apps from the pack list
- * outright, and did -- the product disk carries no AEX_CAT_TEST app and no
- * `hidden` token at all today. This field and the mechanism above it are kept
- * because they are still correct, general machinery: anything that DOES want
- * a Dock tile a harness can see but nothing can click still has a one-line
- * way to ask for it (mkaex.py --category test), unrelated to whether it is
- * also on $(DISK) by default. */
-struct regent { char file[48], name[32], ext[8]; char icon; uint32_t color; int hidden; };
-static struct regent reg[MAXWIN];
-static int nreg;
-static uint64_t reg_bounce[MAXWIN];    /* monotonic ms a launch bounce started (0 = none) */
-
-static uint32_t rgb(uint8_t r, uint8_t g, uint8_t b) { return fb_rgb(r, g, b); }
-static int lerp(int a, int b, int n, int d) { return a + (b - a) * n / d; }
-static void blit(uint32_t *d, const uint32_t *s, int n) { for (int i = 0; i < n; i++) d[i] = s[i]; }
-
-static int streq(const char *a, const char *b) { while (*a && *a == *b) { a++; b++; } return *a == *b; }
-static void scopy(char *d, const char *s, int max) { int i = 0; for (; i < max - 1 && s[i]; i++) d[i] = s[i]; d[i] = 0; }
-static int ends_aex(const char *s) {
-    int n = 0; while (s[n]) n++;
-    return n >= 4 && s[n-4]=='.' && s[n-3]=='a' && s[n-2]=='e' && s[n-1]=='x';
-}
-static const char *ext_of(const char *s) {
-    const char *dot = 0;
-    for (const char *p = s; *p; p++) if (*p == '.') dot = p;
-    return dot ? dot + 1 : "";
+/* "/sbin/greeter.aex" -> "greeter": the basename without its .aex, for
+ * struct app's stem. A CLI process adopting a window has no .aex; its process
+ * name goes through the same cut. */
+static void aex_stem(char *d, const char *path, int max)
+{
+    const char *b = path;
+    for (const char *p = path; *p; p++) if (*p == '/') b = p + 1;
+    int n = 0;
+    while (b[n]) n++;
+    if (ends_aex(b)) n -= 4;
+    if (n > max - 1) n = max - 1;
+    for (int i = 0; i < n; i++) d[i] = b[i];
+    d[n] = 0;
 }
 
 /* ---------- z-order helpers ---------- */
@@ -1358,24 +902,24 @@ static spinlock_t win_lock = SPINLOCK_INIT;
  * irqsave anyway: the obvious fix for the unsnapshotted window list is to take
  * it in render_region, and that fix would put this lock straight into the
  * freeze text_lock has just come out of. */
-static void raise_win(int wi)
+void raise_win(int wi)
 {
     uint64_t wf = spin_lock_irqsave(&win_lock);
     int at = -1;
-    for (int i = 0; i < norder; i++) if (order[i] == wi) at = i;
-    if (at < 0) { order[norder++] = wi; spin_unlock_irqrestore(&win_lock, wf); return; }
-    for (int j = at; j < norder - 1; j++) order[j] = order[j + 1];
-    order[norder - 1] = wi;
+    for (int i = 0; i < wm_norder; i++) if (wm_order[i] == wi) at = i;
+    if (at < 0) { wm_order[wm_norder++] = wi; spin_unlock_irqrestore(&win_lock, wf); return; }
+    for (int j = at; j < wm_norder - 1; j++) wm_order[j] = wm_order[j + 1];
+    wm_order[wm_norder - 1] = wi;
     spin_unlock_irqrestore(&win_lock, wf);
 }
 static void remove_win(int wi)
 {
     uint64_t wf = spin_lock_irqsave(&win_lock);
     int at = -1;
-    for (int i = 0; i < norder; i++) if (order[i] == wi) at = i;
+    for (int i = 0; i < wm_norder; i++) if (wm_order[i] == wi) at = i;
     if (at < 0) { spin_unlock_irqrestore(&win_lock, wf); return; }
-    for (int j = at; j < norder - 1; j++) order[j] = order[j + 1];
-    norder--;
+    for (int j = at; j < wm_norder - 1; j++) wm_order[j] = wm_order[j + 1];
+    wm_norder--;
     spin_unlock_irqrestore(&win_lock, wf);
 }
 
@@ -1384,426 +928,41 @@ static void remove_win(int wi)
  * un-minimising restores where they were) but must not be focused, hit-tested
  * or handed a keystroke, which is why "the top of the stack" and "the focused
  * window" stopped being the same expression. */
-static int top_visible(void)
+int top_visible(void)
 {
-    for (int i = norder - 1; i >= 0; i--) {
-        struct win *w = &wins[order[i]];
-        if (w->used && !w->minimized) return order[i];
+    for (int i = wm_norder - 1; i >= 0; i--) {
+        struct win *w = &wm_wins[wm_order[i]];
+        if (w->used && !w->minimized) return wm_order[i];
     }
     return -1;
 }
 
-/* ---------- resize, zoom, minimise ----------
- *
- * Geometry lives here, in device pixels, and nowhere else. Every gesture --
- * an edge drag, the green light, a double-click, Cmd+M -- funnels into
- * win_set_frame(), so there is exactly one place that clamps, exactly one that
- * reports damage, and no way to add a fifth gesture that forgets either. */
-static void dock_geom(int *x0, int *y0, int *dw, int *dh);   /* body with the dock */
-static void dock_icon_box(int slot, struct drect *r);        /* ditto: one icon's tile */
-static void dirty_dock(void);
-static int in_rect(int px, int py, int x, int y, int w, int h);
-static void enqueue(struct win *w, int type, int a, int b);
-static void raise_win(int wi);
-static int win_open_scale(const struct win *w);
-
-/* The smallest OUTER frame this window may have: the WM's floor, raised by
- * whatever the app asked for, plus the titlebar the app does not own. */
-static void win_min_frame(const struct win *w, int *mw, int *mh)
-{
-    int cw = w->min_w_pt > MIN_CONTENT_W_PT ? w->min_w_pt : MIN_CONTENT_W_PT;
-    int ch = w->min_h_pt > MIN_CONTENT_H_PT ? w->min_h_pt : MIN_CONTENT_H_PT;
-    *mw = S(cw);
-    *mh = TBH + S(ch);
-}
-
-/* Move and/or resize a window, damaging BOTH the region it left and the region
- * it now occupies.
- *
- * Reporting only the destination is the whole failure mode of a partial
- * compositor, and a resize is where it is easiest to commit: when a window
- * SHRINKS the two boxes are nested, the new one is entirely inside the old,
- * and every counter-based check still passes while a band of the previous
- * frame stays on screen untouched. WM_RESIZE_DAMAGE_LIE above makes exactly
- * that mistake on purpose. */
-static void win_set_frame(struct win *w, int x, int y, int ww, int wh)
-{
-    int mw, mh;
-    win_min_frame(w, &mw, &mh);
-    if (ww < mw) ww = mw;
-    if (wh < mh) wh = mh;
-    /* The canvas is allocated at the frame's size, so a frame larger than the
-     * display would allocate more than the screen -- and w*h*4 is the one
-     * multiplication in this file that a user's hand controls directly. */
-    if (ww > W) ww = W;
-    if (wh > H) wh = H;
-    if (y < MBH) y = MBH;                     /* never under the menu bar */
-    if (w->x == x && w->y == y && w->w == ww && w->h == wh) return;
-#if !WM_RESIZE_DAMAGE_LIE
-    dirty_win(w);                             /* where it was */
-#endif
-    w->x = x; w->y = y; w->w = ww; w->h = wh;
-    dirty_win(w);                             /* where it now is */
-}
-
-/* The rectangle a zoomed window fills.
- *
- * "Maximize" here means FILL THE DESKTOP, not full-screen, and the two are
- * different products. A full-screen mode hides the menu bar, and this desktop
- * has no reveal gesture to get it back -- the clock and the dark-mode switch
- * would simply be gone, with the keyboard offering no way to return. The dock
- * is the same argument from the other end: it is composited on top and windows
- * already slide under it, so a window that filled to the bottom edge would put
- * its last 70 points permanently behind glass. Stopping above the dock is what
- * macOS's zoom does with the Dock pinned, and it is the honest answer for a
- * dock that cannot auto-hide. */
-static void zoom_rect(int *x, int *y, int *ww, int *wh)
-{
-    int dx0, dy0, dw, dh;
-    dock_geom(&dx0, &dy0, &dw, &dh);
-    (void)dx0; (void)dw; (void)dh;
-    *x = 0;
-    *y = MBH;
-    *ww = W;
-    *wh = dy0 - S(8) - MBH;
-    if (*wh < TBH + S(MIN_CONTENT_H_PT)) *wh = H - MBH;   /* a dock taller than the screen */
-}
-
-/* Keep a window the WM PLACES inside the work area -- zoom_rect(): below the
- * menu bar, above the dock, inside the screen.
- *
- * Only for placement the WM does on its own (a new window, and a window an app
- * has just grown with SYS_GUI_WIN_MIN). A window a person drags is theirs to put
- * half under the dock or off the edge, as on macOS, so win_set_frame() and the
- * gestures do not call this.
- *
- * Why it exists (found by a desktop tour on the macOS dev host, 2026-10-26):
- * creation clamped against the whole screen, not the dock, and SYS_GUI_WIN_MIN
- * grew a window IN PLACE. TextEdit and Code Studio declare minimums wider than
- * the space right of their cascade slot, so they opened running off the right
- * edge; Settings, Terminal and the Browser opened with their bottom rows --
- * Settings' Apply button among them -- permanently behind the dock glass.
- *
- * With `resize` a frame larger than the area is shrunk to it (both callers pass
- * 1; 0 moves only, which is what creation first did -- it left TextEdit and Code
- * Studio taller than the area, see SYS_GUI_CREATE), except that
- * win_set_frame() never goes below the app's declared minimum; such
- * a window is pinned to the area's top-left corner and overflows right/down,
- * which is the least bad of the choices. Every placement is logged as
- * "[wm] place" with the area, so the gate reads the WM's own numbers.
- * -DWM_PLACE_NEGCTL_NO_FIT restores the old behaviour for the control. */
-static void win_fit_work_area(struct win *w, int resize)
-{
-    int ax, ay, aw, ah;
-    zoom_rect(&ax, &ay, &aw, &ah);
-#ifndef WM_PLACE_NEGCTL_NO_FIT
-    if (!w->panel) {
-        int x = w->x, y = w->y, ww = w->w, wh = w->h;
-        if (resize && ww > aw) ww = aw;
-        if (resize && wh > ah) wh = ah;
-        /* A window that does not fit at its cascade slot is CENTRED in the
-         * area, not pushed flush against the far edge: the first version did
-         * the latter, and the 2026-10-26 release tour showed TextEdit, Code
-         * Studio and the Browser all glued to the screen's right edge with a
-         * 160-point gutter on the left. Centring is what macOS does with a
-         * window too big for its cascade position. */
-        if (x + ww > ax + aw) x = ax + (aw - ww) / 2;
-        if (y + wh > ay + ah) y = ay + (ah - wh) / 2;
-        if (x < ax) x = ax;
-        if (y < ay) y = ay;
-        if (resize) win_set_frame(w, x, y, ww, wh);
-        else { w->x = x; w->y = y; }
-    }
-#endif
-    kprintf("[wm] place win=%d frame %d %d %d %d work %d %d %d %d\n",
-            (int)(w - wins), w->x, w->y, w->w, w->h, ax, ay, aw, ah);
-}
-
-/* A ZOOM reaches the bottom of the screen: a zoomed frontmost window hides the
- * dock (see DOCK AUTOHIDE), so there is nothing to stop above. zoom_rect()
- * stays the work area for placement and for the halves, which leave the dock up. */
-static void zoom_full_rect(int *x, int *y, int *ww, int *wh)
-{
-    *x = 0; *y = MBH; *ww = W; *wh = H - MBH;
-}
-
-static void win_set_zoom(struct win *w, int on)
-{
-    on = on ? 1 : 0;
-    if (on == w->zoomed) return;
-    w->snapped = 0;
-    if (on) {
-        w->sx = w->x; w->sy = w->y; w->sw = w->w; w->sh = w->h;
-        int x, y, ww, wh;
-        zoom_full_rect(&x, &y, &ww, &wh);
-        w->zoomed = 1;
-        win_set_frame(w, x, y, ww, wh);
-    } else {
-        w->zoomed = 0;
-        /* EXACTLY the frame it had. Not "roughly where it was" and not
-         * re-derived from the app's original gui_create() size -- a window the
-         * user had already dragged and resized before zooming would land
-         * somewhere it has never been, which reads as the machine losing the
-         * window rather than restoring it. */
-        win_set_frame(w, w->sx, w->sy, w->sw, w->sh);
-    }
-}
-
-/* A manual drag or resize of a zoomed window un-zooms it and FORGETS the saved
- * frame. Keeping the frame would mean the green light later teleports the
- * window back to a position the user has since deliberately moved it away
- * from; a zoom the user has begun editing is no longer a zoom.
- *
- * CALLED ON MOVEMENT, NEVER ON THE PRESS. Calling it when the button goes down
- * broke double-click-to-restore in a way that looked like the double-click not
- * being detected at all: the FIRST click of the pair took the drag branch and
- * silently cleared `zoomed` while leaving the frame where it was, so the second
- * click's toggle read "not zoomed" and zoomed a window that was already filling
- * the screen. Nothing moved, twice. Touching a titlebar is not editing a zoom;
- * moving the window is. */
-static void win_break_zoom(struct win *w)
-{
-    if (!w->zoomed) return;
-    w->zoomed = 0;
-    w->sx = w->x; w->sy = w->y; w->sw = w->w; w->sh = w->h;
-}
-
 /* ===========================================================================
- * SNAPPING ("Fluid" P3): drag a window to the left or right edge of the
- * screen and it takes that half of the desktop; drag it into the menu bar and
- * it fills the desktop (the zoom). A translucent preview shows where it will
- * land while the pointer is in a zone; letting go applies it. Dragging a
- * snapped window away gives it back the size it had, with the pointer at the
- * same place along its titlebar -- the half-screen size is where it was put,
- * not what it is.
+ * WHERE A WINDOW IS -- Expose, the dock fly and the open pop all move it.
  *
- * The halves are cut from zoom_rect, so they stop above the dock for the same
- * reason the zoom does. The preview is deliberately NOT glass: its damage is
- * its own box and nothing it covers has to be re-frosted.
- * ======================================================================== */
-enum { SNAP_NONE, SNAP_LEFT, SNAP_RIGHT, SNAP_TOP };
-static int g_snap_zone;
-
-static void snap_frame(int zone, int *x, int *y, int *ww, int *wh)
-{
-    if (zone == SNAP_TOP) { zoom_full_rect(x, y, ww, wh); return; }   /* the preview IS the zoom */
-    zoom_rect(x, y, ww, wh);
-    if (zone == SNAP_LEFT || zone == SNAP_RIGHT) {
-        int half = *ww / 2;
-        if (zone == SNAP_RIGHT) *x += *ww - half;
-        *ww = half;
-    }
-}
-
-static void snap_box(struct drect *r)
-{
-    if (!g_snap_zone) { r->x0 = r->y0 = r->x1 = r->y1 = 0; return; }
-    int x, y, ww, wh;
-    snap_frame(g_snap_zone, &x, &y, &ww, &wh);
-    r->x0 = x + S(6); r->y0 = y + S(6); r->x1 = x + ww - S(6); r->y1 = y + wh - S(6);
-}
-
-static void snap_set(int zone)
-{
-    if (zone == g_snap_zone) return;
-    struct drect r;
-    snap_box(&r); if (r.x1 > r.x0) dirty_rect(r.x0, r.y0, r.x1 - r.x0, r.y1 - r.y0);
-    g_snap_zone = zone;
-    snap_box(&r); if (r.x1 > r.x0) dirty_rect(r.x0, r.y0, r.x1 - r.x0, r.y1 - r.y0);
-}
-
-static int snap_zone_at(int px, int py)
-{
-    if (py < MBH) return SNAP_TOP;
-    if (px <= S(1)) return SNAP_LEFT;
-    if (px >= W - 1 - S(1)) return SNAP_RIGHT;
-    return SNAP_NONE;
-}
-
-static void draw_snap_preview(void)
-{
-    struct drect r; snap_box(&r);
-    int w = r.x1 - r.x0, h = r.y1 - r.y0;
-    if (w <= 0 || h <= 0) return;
-    fb_blend_round_rect(r.x0, r.y0, w, h, S(12), 94, 150, 255, 60);
-    fb_blend_round_rect(r.x0, r.y0, w, S(3), S(2), 94, 150, 255, 140);
-}
-
-static void win_snap(struct win *w, int zone)
-{
-    const char *name = zone == SNAP_LEFT ? "left" : zone == SNAP_RIGHT ? "right" : "top";
-    if (zone == SNAP_TOP) {
-        w->snapped = 0;
-        win_set_zoom(w, 1);
-    } else {
-        /* Remember the size to give back; the position is wherever the drag
-         * that snapped it started, and the drag that un-snaps it decides the
-         * next one. */
-        if (!w->snapped) { w->sw = w->w; w->sh = w->h; }
-        w->zoomed = 0;
-        w->snapped = zone;
-        int x, y, ww, wh;
-        snap_frame(zone, &x, &y, &ww, &wh);
-        win_set_frame(w, x, y, ww, wh);
-    }
-    kprintf("[wm] snap win=%d zone=%s frame %d %d %d %d was %d %d\n", (int)(w - wins), name,
-            w->x, w->y, w->w, w->h, w->sw, w->sh);
-}
-
-/* ===========================================================================
- * THE DOCK FLY -- minimise and restore, as motion.
+ * THE ONE RULE THIS WHOLE SECTION IS BUILT ON: a window that is not where its
+ * frame says it is must still have exactly ONE answer to "where are you on
+ * screen", and every reader has to get that same answer. There are three
+ * readers and they fail in three different ways when they disagree:
  *
- * WHAT THIS IS NOT, said here because it is the first thing anyone will look
- * for: it is NOT the genie. The genie warp bends a window around a curve by
- * resampling every COLUMN of it independently against a different vertical
- * scale and a different horizontal offset -- a per-column resample. This
- * compositor has no primitive for that and building one is a rasterizer, not
- * an animation: fb.c's scaled blits map a destination pixel to exactly one
- * source pixel through a single affine ratio, which is the wrong shape of
- * arithmetic entirely. What is built here is a scale-with-fade, which is what
- * macOS itself ships as the OTHER option in System Settings ("Minimise windows
- * using: Scale effect"), and calling it that is more honest than calling a
- * shrink a genie. If the warp is ever wanted, the thing to ask for is a
- * column-wise resample in c/lib/gfx or fb.c, not more code in this file.
- * ======================================================================== */
-
-/* Which dock icon this window's app owns. Matched by the aex header NAME, the
- * same key wm_launch's single-instance branch and the running-dot indicator
- * both use -- not by file path, which reg[] and apps[] spell differently.
- * A window with no dock icon (none exists today, but a WK_FINDER or a future
- * app launched by path would be one) flies to the middle of the dock rather
- * than to slot 0, which reads as "into the dock" instead of as "into Clock". */
-static int dock_slot_for(const struct win *w)
-{
-    if (w->app)
-        for (int i = 0; i < nreg; i++)
-            if (streq(reg[i].name, w->app->name)) return i;
-    return nreg > 0 ? nreg / 2 : 0;
-}
-
-/* Progress of the dock fly, 0..256, where 0 is the window's own frame and 256
- * is its dock icon. Settled windows answer from `minimized` alone, which is
- * what makes this safe to call on every window every frame. */
-static int min_prog(const struct win *w)
-{
-    if (!w->min_t0 || wm_reduce_motion) return w->minimized ? 256 : 0;
-    uint64_t e = anim_elapsed(w->min_t0);
-    if (e >= MINFLY_MS) return w->min_dir ? 256 : 0;
-    int eased = ease_out((int)(e * 256 / MINFLY_MS));
-    return w->min_dir ? eased : 256 - eased;
-}
-
-/* The whole area a fly sweeps, end to end: the window's frame box unioned with
- * its dock icon box, both taken at the FOCUSED shadow extent. Used once, on the
- * frame the flight lands, to re-lay the entire path in a single rectangle --
- * see wm_anim_tick for why a per-frame union is not sufficient on its own. */
-static void win_fly_sweep(const struct win *w, struct drect *r)
-{
-    int b = WSH_EXT(1), dy = 0;
-    struct drect ic;
-    dock_icon_box(w->min_slot, &ic);
-    r->x0 = w->x - b;             r->y0 = w->y - b;
-    r->x1 = w->x + w->w + b;      r->y1 = w->y + w->h + b + dy;
-    if (ic.x0 - b < r->x0) r->x0 = ic.x0 - b;
-    if (ic.y0 - b < r->y0) r->y0 = ic.y0 - b;
-    if (ic.x1 + b > r->x1) r->x1 = ic.x1 + b;
-    if (ic.y1 + b + dy > r->y1) r->y1 = ic.y1 + b + dy;
-}
-
-/* ---- Expose: the grid ----------------------------------------------------
+ *   win_box()      -> dirty_win() -> the damage list.  Disagreeing here leaves
+ *                     the window's previous position standing on the wallpaper.
+ *   rect_blocked() -> the mid-frame guard.  Disagreeing here holds back the
+ *                     wrong rectangle, or fails to hold back the right one.
+ *   render_region()-> the pixels.  Disagreeing here is the picture itself.
  *
- * Rebuilt at the moment the gesture starts and then held FIXED for the life of
- * the mode. Not recomputed per frame, and deliberately not recomputed when the
- * user picks a window: the grid somebody is looking at is the grid the windows
- * have to fly home from, and a layout that re-flowed under the pointer at the
- * instant of the click would move the target out from under the click that
- * chose it. */
-static void ex_layout(void)
-{
-    ex_n = 0;
-    /* Back-to-front, so slot order matches stacking order: the window you last
-     * used lands in the last cell, and that stays true from one invocation to
-     * the next as long as you have not restacked anything. A picker whose
-     * items move for no reason the user can see is a picker you have to read
-     * every time instead of aiming at. */
-    for (int i = 0; i < norder && ex_n < MAXWIN; i++)
-        if (wins[order[i]].used && !wins[order[i]].panel) ex_wi[ex_n++] = order[i];
-    if (!ex_n) return;
+ * So win_draw_rect() below is the single definition site, in the same spirit
+ * as WSH_* (one shadow geometry) and dock_geom() (one dock position). The
+ * animations do not each carry their own copy of "and also damage this" --
+ * they move a rectangle, and the rest of the file follows it for free. */
 
-    /* rows = ceil(sqrt(N)). This machine's world is NAPPS ~ 11 and one window
-     * per app, so N is single digits and the packing question that a real
-     * Expose has to answer (longest-side-first bin packing, so a wide window
-     * and a tall one do not both get a square cell) does not arise: at N <= 9
-     * a uniform grid wastes cell area, never legibility. The aspect fit below
-     * is what actually makes a 16:9 browser and a square clock both readable. */
-    int cols = 1;
-    while (cols * cols < ex_n) cols++;
-    int rows = (ex_n + cols - 1) / cols;
-
-    int g = S(EX_GUTTER_PT), th = S(EX_TITLE_PT);
-    int dx0, dy0, dw, dh;
-    dock_geom(&dx0, &dy0, &dw, &dh);
-    (void)dx0; (void)dw;
-    int ax0 = g, ay0 = MBH + g, ax1 = W - g, ay1 = dy0 - g;
-    if (ay1 - ay0 < S(120)) ay1 = H - g;         /* a dock taller than the screen */
-
-    int cw = (ax1 - ax0) / cols, ch = (ay1 - ay0) / rows;
-    for (int k = 0; k < ex_n; k++) {
-        struct win *w = &wins[ex_wi[k]];
-        int r = k / cols, c = k - r * cols;
-        /* The LAST row is CENTRED. Seven windows in a 3x3 leave two holes, and
-         * a hole on the right of the bottom row reads as a layout bug rather
-         * than as a count -- the grid should look built for what is in it. */
-        int inrow = (r == rows - 1) ? ex_n - r * cols : cols;
-        int rowx = ax0 + (ax1 - ax0 - inrow * cw) / 2;
-        int bx = rowx + c * cw, by = ay0 + r * ch;
-        int fitw = cw - g, fith = ch - g - th;
-        if (fitw < 1) fitw = 1;
-        if (fith < 1) fith = 1;
-        /* PRESERVE ASPECT, and never magnify past 1:1. A 200x120 utility window
-         * blown up to fill a 400x300 cell is a blurred lie about its own size,
-         * and the single thing a picker must get right is which window is
-         * which -- size is half of how that is recognised. */
-        int s = 256;
-        if (w->w > 0 && fitw * 256 / w->w < s) s = fitw * 256 / w->w;
-        if (w->h > 0 && fith * 256 / w->h < s) s = fith * 256 / w->h;
-        if (s > 256) s = 256;
-        if (s < 16) s = 16;
-        int tw = w->w * s / 256, thh = w->h * s / 256;
-        if (tw < 1) tw = 1;
-        if (thh < 1) thh = 1;
-        int cx = bx + cw / 2, cy = by + (ch - th) / 2;
-        ex_cell[k].x0 = cx - tw / 2;
-        ex_cell[k].y0 = cy - thh / 2;
-        ex_cell[k].x1 = ex_cell[k].x0 + tw;
-        ex_cell[k].y1 = ex_cell[k].y0 + thh;
-    }
-}
-
-/* Grid slot of a wins[] index, or -1. Answers -1 whenever the mode is down, so
- * every caller can ask unconditionally. */
-static int ex_slot(int wi)
-{
-    if (!ex_state()) return -1;
-    for (int k = 0; k < ex_n; k++) if (ex_wi[k] == wi) return k;
-    return -1;
-}
-
-/* Eased progress of the Expose transition: 0 = windows at their own frames,
- * 256 = windows in their cells. Leaving runs the same curve backwards, so a
- * cancelled gesture retraces the path it came in on rather than taking a
- * second, different route home. */
-static int ex_prog(void)
-{
-    if (!ex_t0 || wm_reduce_motion) return ex_on ? 256 : 0;
-    uint64_t e = anim_elapsed(ex_t0);
-    if (e >= EX_DUR_MS) return ex_on ? 256 : 0;
-    int eased = ease_out((int)(e * 256 / EX_DUR_MS));
-    return ex_on ? eased : 256 - eased;
-}
-
-/* THE SINGLE DEFINITION SITE. See the block comment above win_box. */
-static int win_draw_rect(const struct win *w, int *ox, int *oy, int *ow, int *oh, int *oa)
+/* Where a window IS on screen this frame -- position, size and opacity -- or 0
+ * if it is not on screen at all. PURE: it reads the clock, it never expires a
+ * timer. (win_box calls it from the input path, and an animation that advanced
+ * itself because somebody asked where a window was would be a timer nobody can
+ * reason about. wm_anim_tick() is the one place a timer ends.) THE SINGLE
+ * DEFINITION SITE; see also the block comment above win_box. */
+int win_draw_rect(const struct win *w, int *ox, int *oy, int *ow, int *oh, int *oa)
 {
     int x = w->x, y = w->y, ww = w->w, wh = w->h, a = 255;
     int p, k;
@@ -1827,7 +986,7 @@ static int win_draw_rect(const struct win *w, int *ox, int *oy, int *ow, int *oh
          * expects: the window shrinks, and vanishes as it arrives. */
         a = p <= 128 ? 255 : 255 - 255 * (p - 128) / 128;
         if (a < 0) a = 0;
-    } else if ((k = ex_slot((int)(w - wins))) >= 0) {
+    } else if ((k = ex_slot((int)(w - wm_wins))) >= 0) {
         /* In the picker. A MINIMISED window is shown too, dimmer -- it is a
          * window you own and cannot otherwise see, which is precisely what a
          * window picker is for -- and it flies out of its DOCK ICON rather than
@@ -1869,188 +1028,10 @@ static int win_draw_rect(const struct win *w, int *ox, int *oy, int *ow, int *oh
  * claiming glass at a full-width frame it is not occupying would grow every
  * rectangle near it and turn the per-window damage list back into a
  * full-screen repaint, invisibly. */
-static int win_drawn_direct(const struct win *w, int x, int y, int ww, int wh, int a)
+int win_drawn_direct(const struct win *w, int x, int y, int ww, int wh, int a)
 {
     return x == w->x && y == w->y && ww == w->w && wh == w->h && a >= 255
-           && ex_slot((int)(w - wins)) < 0;
-}
-
-/* The glass titlebar panel dmg_expand must contain whole, or 0 if this window
- * has no glass on screen this frame. */
-static int win_glass_box(const struct win *w, struct drect *p)
-{
-    int x, y, ww, wh, a;
-    if (!w->used) return 0;
-    if (!win_draw_rect(w, &x, &y, &ww, &wh, &a)) return 0;
-    if (!win_drawn_direct(w, x, y, ww, wh, a)) return 0;
-    if (w->panel) return 0;                           /* no titlebar, no glass */
-    p->x0 = x; p->y0 = y;
-    p->x1 = x + ww; p->y1 = y + TBH + S(10);
-    return 1;
-}
-
-/* Minimise / restore. The state flips NOW and the picture takes MINFLY_MS
- * to agree -- see the comment on min_t0 in struct win. */
-static void win_set_min(struct win *w, int on)
-{
-    on = on ? 1 : 0;
-    if (on == w->minimized && !w->min_t0) return;
-    dirty_win(w);                    /* wherever it is at this instant */
-    w->minimized = on;
-    w->min_dir = on;
-    w->min_slot = dock_slot_for(w);
-    w->min_t0 = anim_stamp();
-    if (!on) raise_win((int)(w - wins));
-    win_box(w, &w->anim_prev);       /* seed the per-frame damage union */
-    dirty_win(w);
-}
-
-/* Put a window where the fly would have left it, immediately. Used when a
- * second gesture arrives on top of a running one: two animations moving the
- * same rectangle would each believe they own its position, and the damage
- * union would be computed against whichever of them wrote anim_prev last. */
-static void win_fly_settle(struct win *w)
-{
-    if (!w->min_t0) return;
-    struct drect s;
-    win_fly_sweep(w, &s);
-    w->min_t0 = 0;
-    dirty_rect(s.x0, s.y0, s.x1 - s.x0, s.y1 - s.y0);
-}
-
-/* Damage one grid slot -- its thumbnail, its shadow and its title, via the same
- * win_box every other damage path uses. */
-static void ex_dirty_slot(int k)
-{
-    if (k < 0 || k >= ex_n) return;
-    struct drect r;
-    win_box(&wins[ex_wi[k]], &r);
-    dirty_rect(r.x0, r.y0, r.x1 - r.x0, r.y1 - r.y0);
-}
-
-/* The grid slot under a point, or -1. Only while the grid is STILL: hit-testing
- * a moving target is how a click lands on the window that happened to be
- * passing through, and the mode is only pickable once it has settled anyway. */
-static int ex_hover_at(int x, int y)
-{
-    if (!ex_on || ex_t0) return -1;
-    for (int k = ex_n - 1; k >= 0; k--) {
-        const struct drect *c = &ex_cell[k];
-        if (x >= c->x0 && x < c->x1 && y >= c->y0 && y < c->y1) return k;
-    }
-    return -1;
-}
-
-static void ex_enter(void)
-{
-    if (ex_state()) return;
-    /* Do not transfer pointer ownership in the middle of another gesture.
-     * Expose deliberately consumes every release while it owns the pointer;
-     * entering during a titlebar drag, resize, or app capture would therefore
-     * strand that old owner in its pressed state when the picker later closes.
-     * Once the hand comes up, a later shortcut or hot-corner dwell may enter. */
-    if (mleft || mright || mmiddle || dragging >= 0 ||
-        rz_win >= 0 || mouse_capture >= 0) return;
-    /* A dock fly still running would be a second animation moving the same
-     * rectangle; land it first rather than interleave two owners. */
-    for (int i = 0; i < MAXWIN; i++) if (wins[i].used) win_fly_settle(&wins[i]);
-    ex_layout();
-    if (ex_n == 0) return;                 /* nothing to pick between */
-    ex_on = 1;
-    ex_t0 = anim_stamp();
-    ex_wait_release = 0;
-    ex_hov = -1;
-    for (int k = 0; k < ex_n; k++) win_box(&wins[ex_wi[k]], &wins[ex_wi[k]].anim_prev);
-    /* ONE full-screen frame, for the dim -- which lands everywhere at once and
-     * is honestly whole-screen damage. Everything after this frame pays only
-     * for the windows that move; see wm_anim_tick. */
-    dirty_full(FULL_EXPOSE_ENTER);
-    /* The grid itself, once: a harness can then assert that a mid-flight rect
-     * lies strictly BETWEEN the window's own frame and the cell it is aimed at,
-     * which is the actual claim "it animated" makes. Without the destination
-     * printed, an intermediate rectangle is just an unexplained number. */
-    kprintf("[wm] expose on n=%d\n", ex_n);
-    for (int k = 0; k < ex_n; k++)
-        kprintf("[wm] expose cell %d win %d rect %d %d %d %d\n", k, ex_wi[k],
-                ex_cell[k].x0, ex_cell[k].y0,
-                ex_cell[k].x1 - ex_cell[k].x0, ex_cell[k].y1 - ex_cell[k].y0);
-}
-
-/* Leave the picker. `pick` is a wins[] index to bring to the front, or -1 to
- * leave the stacking exactly as it was. */
-static void ex_leave(int pick)
-{
-    if (!ex_on) return;
-    if (pick >= 0 && wins[pick].used) {
-        struct win *w = &wins[pick];
-        /* Picking a minimised window un-minimises it, and does so WITHOUT a
-         * dock fly: it is already on screen, in a cell, in front of the user.
-         * Flying it to the dock and back out again would animate a journey it
-         * is not making. */
-        w->minimized = 0;
-        w->min_t0 = 0;
-        raise_win(pick);
-    }
-    ex_on = 0;
-    ex_t0 = anim_stamp();
-    ex_wait_release = 0;
-    ex_hov = -1;
-    for (int k = 0; k < ex_n; k++) win_box(&wins[ex_wi[k]], &wins[ex_wi[k]].anim_prev);
-    dirty_full(FULL_EXPOSE_LEAVE); /* the raise re-stacks every overlap on screen */
-    kprintf("[wm] expose off pick=%d\n", pick);
-}
-
-/* Which edges of `w` the point (x,y) grabs, or 0 for "not a resize".
- *
- * A corner is a longer stretch of BOTH edges rather than the intersection of
- * two bands: the intersection is RESIZE_IN+RESIZE_OUT points square, which is
- * a target nobody hits on purpose. RESIZE_CORNER_PT along each edge is the
- * target people actually aim at. */
-static int resize_edge_at(const struct win *w, int x, int y)
-{
-    if (w->minimized) return 0;
-    int out = S(RESIZE_OUT_PT), in = S(RESIZE_IN_PT), corner = S(RESIZE_CORNER_PT);
-    int x0 = w->x, y0 = w->y, x1 = w->x + w->w, y1 = w->y + w->h;
-    if (x < x0 - out || x > x1 + out || y < y0 - out || y > y1 + out) return 0;
-    int e = 0;
-    if (x >= x0 - out && x <= x0 + in) e |= RZ_L;
-    if (x <= x1 + out && x >= x1 - in) e |= RZ_R;
-    if (y >= y0 - out && y <= y0 + in) e |= RZ_T;
-    if (y <= y1 + out && y >= y1 - in) e |= RZ_B;
-    if (!e) return 0;
-    /* Extend whichever edges were hit along the perpendicular, so the last
-     * `corner` points of a side resize both axes. */
-    if (e & (RZ_L | RZ_R)) {
-        if (y <= y0 + corner) e |= RZ_T;
-        else if (y >= y1 - corner) e |= RZ_B;
-    }
-    if (e & (RZ_T | RZ_B)) {
-        if (x <= x0 + corner) e |= RZ_L;
-        else if (x >= x1 - corner) e |= RZ_R;
-    }
-    /* A window pinned under the menu bar cannot be pulled further up, and
-     * offering the grab anyway gives a cursor that promises something the
-     * clamp will refuse. */
-    if ((e & RZ_T) && w->y <= MBH) e &= ~RZ_T;
-    return e;
-}
-
-/* The topmost window offering a resize grab at (x,y), and the edges. The
- * front-to-back walk matters: a window's outer band overhangs whatever is
- * behind it, and the one you can see is the one that must win. */
-static int resize_hit(int x, int y, int *edge)
-{
-    for (int i = norder - 1; i >= 0; i--) {
-        struct win *w = &wins[order[i]];
-        if (!w->used || w->minimized) continue;
-        int e = resize_edge_at(w, x, y);
-        if (e) { *edge = e; return order[i]; }
-        /* Stop at the first window that CONTAINS the point: a window behind it
-         * may have an edge running under this one, and a grab that reaches
-         * through an opaque window is a grab aimed at something invisible. */
-        if (in_rect(x, y, w->x, w->y, w->w, w->h)) return -1;
-    }
-    return -1;
+           && ex_slot((int)(w - wm_wins)) < 0;
 }
 
 /* Reallocate a window's canvas to match its frame, and tell the app.
@@ -2100,7 +1081,7 @@ static void win_apply_size(struct win *w)
     uint64_t px = (uint64_t)cw * (uint64_t)ch;
     if ((int64_t)px > (int64_t)w->surf_cap) {
         uint64_t want = px + px / 2;
-        uint64_t ceil_px = (uint64_t)W * (uint64_t)H;
+        uint64_t ceil_px = (uint64_t)wm_W * (uint64_t)wm_H;
         if (want > ceil_px) want = ceil_px;
         if (want < px) want = px;
         uint32_t *nb = (uint32_t *)kmalloc((size_t)(want * 4));
@@ -2136,10 +1117,10 @@ static void win_apply_size(struct win *w)
     w->surf.clip_on = 0;
     /* ...and the same for the GUI ABI v2 state: open clip/group levels and
      * backdrop regions were in the old canvas's device pixels. */
-    wm2_win_reset((int)(w - wins));
+    wm2_win_reset((int)(w - wm_wins));
     w->cw_pt = PT(cw);
     w->ch_pt = PT(ch);
-    enqueue(w, EV_RESIZE, w->cw_pt, w->ch_pt);
+    wm_enqueue(w, EV_RESIZE, w->cw_pt, w->ch_pt);
     dirty_win(w);
 }
 
@@ -2157,7 +1138,7 @@ static void wm_apply_sizes(void)
         rz_apply_ms = now;
     }
     for (int i = 0; i < MAXWIN; i++)
-        if (wins[i].used && wins[i].kind == WK_APP) win_apply_size(&wins[i]);
+        if (wm_wins[i].used && wm_wins[i].kind == WK_APP) win_apply_size(&wm_wins[i]);
 }
 
 /* Draw a window's content, stretching if the canvas has not caught up with the
@@ -2173,64 +1154,6 @@ static void blit_content(struct win *w, int dx, int dy, int cw, int ch)
     if (w->drawing) __atomic_fetch_add(&perf_torn, 1, __ATOMIC_RELAXED);
     if (w->surf.w == cw && w->surf.h == ch) fb_blit_surface(dx, dy, &w->surf);
     else fb_blit_surface_scaled(dx, dy, cw, ch, &w->surf);
-}
-
-/* ---- THE WINDOW IS A ROUNDED SHAPE, AND SO IS ITS CONTENT -------------------
- * The frame is a rounded rect (S(10)), but the canvas is a rectangle: copied
- * square it covered the frame's bottom corners (and a panel's top ones), so the
- * rounding was drawn and then overpainted by the app's pixels. The content blit
- * therefore runs inside an opacity-255 snapshot group (openlogit_display_group.h):
- * begin saves ONLY the four radius x radius corner tiles, the blit draws as it
- * always did, end blends each corner pixel back toward the snapshot by its
- * outside-the-arc coverage. Everything inside the arc, and everything not in a
- * corner tile, is the plain blit, bit for bit.
- *
- * SURFACE CLIP, NOT DISPLAY CLIP: the group's rect is installed with
- * fb_clip_push, because fb_sdk() rebinds the display from the surface clip
- * whenever the fb context is dirty. Between begin and end this file changes no
- * clip at all (the blit and anim_blit_fade only read it), so the display's clip
- * is still the one begin installed when end runs.
- *
- * SCRATCH: snap == NULL is display_scratch(OL_DS_GROUP) of the display of the
- * CURRENT fb context, g_fbctx[gfx_ctx()].disp, so each par_render band worker
- * has its own and none is shared. The group is begun and ended in one call.
- *
- * Radius is 0 (no group, the old square blit) for a zoomed window, which is
- * the desktop's edge, and under -DWM_SQUARE_CONTENT, the guest negative control. */
-static inline int win_corner_r(const struct win *w)
-{
-#ifdef WM_SQUARE_CONTENT
-    (void)w; return 0;
-#else
-    return w->zoomed ? 0 : S(10);
-#endif
-}
-/* A panel has no title bar, so its canvas owns the top corners as well. */
-static inline unsigned win_cover_flags(const struct win *w)
-{
-    return w->panel ? WM_COVER_TOP_ROUND : 0;
-}
-
-/* Open the corner group over the content rect (x, y, cw, ch). 1 if open: the
- * caller must call content_group_end after the draw and nothing else changes
- * the surface clip in between. */
-static int content_group_begin(struct ol_display_group *g, int x, int y, int cw, int ch,
-                               int r, unsigned flags)
-{
-    int top = (flags & WM_COVER_TOP_ROUND) ? r : 0;
-    int rad[4] = { top, top, r, r };      /* TL, TR, BR, BL */
-    if (cw <= 0 || ch <= 0) return 0;
-    if (fb_clip_push(x, y, x + cw, y + ch) != OL_OK) return 0;
-    if (ol_display_group_begin(fb_display_cur(), g, x, y, cw, ch, rad, 255, NULL, 0) != OL_OK) {
-        fb_clip_pop();
-        return 0;
-    }
-    return 1;
-}
-static void content_group_end(struct ol_display_group *g)
-{
-    ol_display_group_end(fb_display_cur(), g);
-    fb_clip_pop();
 }
 
 /* blit_content for a window at its own frame (x, y, ww, wh), clipped to the
@@ -2255,7 +1178,7 @@ static void blit_content_rounded(const struct drect *R, struct win *w, int x, in
     if (bd) {
         if (w->drawing) __atomic_fetch_add(&perf_torn, 1, __ATOMIC_RELAXED);   /* as blit_content */
         struct ol_pixel_target src = { .px = w->surf.px, .w = w->surf.w, .h = w->surf.h };
-        int slot = (int)(w - wins);
+        int slot = (int)(w - wm_wins);
         wm_backdrop_composite_at(R, slot, &pl, fb_display_cur());
         wm_backdrop_blit_content(R, slot, x, y + tbh, fb_display_cur(), &src);
     } else {
@@ -2273,7 +1196,7 @@ static int greeter_win(void)
 }
 
 /* ---------- launching apps ---------- */
-static struct app *find_live_app(const char *name)
+struct app *find_live_app(const char *name)
 {
     for (int i = 0; i < MAXWIN; i++)
         if (apps[i].used && apps[i].alive && streq(apps[i].name, name))
@@ -2326,15 +1249,13 @@ void wm_launch_locked(const char *aex_file, const char *arg)
          * launcher's single-instance branch "focuses" a window that is not on
          * screen. That is the only way back for a minimised window besides
          * Cmd+Tab, so it is not an optional nicety. */
-        if (exist->win >= 0) { win_set_min(&wins[exist->win], 0); raise_win(exist->win); }
+        if (exist->win >= 0) { win_set_min(&wm_wins[exist->win], 0); raise_win(exist->win); }
         dirty_full(FULL_FOCUS_EXISTING);
         kfree(img);                         /* image not needed -- app already running */
         return;
     }
 
-    /* kick off the dock launch bounce for this app's icon */
-    for (int i = 0; i < nreg; i++)
-        if (streq(reg[i].file, aex_file)) { reg_bounce[i] = anim_stamp(); break; }
+    dock_launch_bounce(aex_file);          /* kick off the dock launch bounce for this app's icon */
 
     wm_state_unlock();
 
@@ -2490,7 +1411,7 @@ void wm_launch_locked(const char *aex_file, const char *arg)
      * GUI lock across the loader; the loser discards only unpublished state. */
     exist = find_live_app(name);
     if (exist) {
-        if (exist->win >= 0) { win_set_min(&wins[exist->win], 0); raise_win(exist->win); }
+        if (exist->win >= 0) { win_set_min(&wm_wins[exist->win], 0); raise_win(exist->win); }
         dirty_full(FULL_FOCUS_EXISTING);
         wm_state_unlock();
         vmm_free_space(space);
@@ -2508,6 +1429,7 @@ void wm_launch_locked(const char *aex_file, const char *arg)
     ap->win = -1;
     scopy(ap->name, name, sizeof ap->name);
     scopy(ap->arg, arg ? arg : "", sizeof ap->arg);
+    aex_stem(ap->stem, aex_file, sizeof ap->stem);
     /* Remembered by SLOT, from the path that was launched -- not by the app's
      * display name, which comes out of the .aex header and is a string anybody
      * packing a disk could reuse. */
@@ -2655,13 +1577,10 @@ static int opens_in_preview(const char *path, const char *ext)
 
 static void launch_for_ext(const char *ext, const char *file)
 {
-    /* Markdown uses the text document handler, including task-produced reports.
-     * Prefer an explicitly registered Markdown handler when one exists. */
-    for (int i = 0; i < nreg; i++)
-        if (reg[i].ext[0] && streq(reg[i].ext, ext)) { wm_launch(reg[i].file, file); return; }
-    if (streq(ext, "md"))
-        for (int i = 0; i < nreg; i++)
-            if (streq(reg[i].ext, "txt")) { wm_launch(reg[i].file, file); return; }
+    /* A registered handler first (dock_file_for_ext, wm_dock.c, which also
+     * sends Markdown to the text handler when nothing registered "md"). */
+    const char *handler = dock_file_for_ext(ext);
+    if (handler) { wm_launch(handler, file); return; }
     /* Anything Preview can decode opens in Preview, decided by content. */
     if (opens_in_preview(file, ext)) { wm_launch("preview.aex", file); return; }
     /* No registered handler -> open it in the Terminal (it runs `as <file>` for
@@ -2764,7 +1683,7 @@ static int sysinfo_text(char *buf, int max)
 #define HTTP_FETCH_CAP_TICKS 1500
 static struct win *app_window(struct app *ap)
 {
-    return (ap && ap->win >= 0) ? &wins[ap->win] : NULL;
+    return (ap && ap->win >= 0) ? &wm_wins[ap->win] : NULL;
 }
 
 /* The running thread's window-owning app, via its process. A CLI/forked process
@@ -2799,7 +1718,6 @@ static int is_draw_call(long num)
     return 0;
 }
 
-static int wm_domain_call(long num);
 static void wm_frame_boundary(long num)
 {
     struct app *ap = cur_app();
@@ -2836,7 +1754,7 @@ static void wm2_env_for(struct win *w, struct wm2_env *e)
     e->scale_pct = fb_scale();
     e->surf_w = w->surf.w;
     e->surf_h = w->surf.h;
-    e->slot = (int)(w - wins);
+    e->slot = (int)(w - wm_wins);
     e->copyin = wm2_copyin;
     e->clip_push = wm2_clip_push_fb;
     e->clip_pop = wm2_clip_pop_fb;
@@ -2898,6 +1816,7 @@ static long wm_gui_dispatch(long num, long a, long b, long c)
         ap->win = -1;
         scopy(ap->name, p->name, sizeof ap->name);
         ap->arg[0] = 0;
+        aex_stem(ap->stem, p->name, sizeof ap->stem);
         p->gui = ap;
     }
 
@@ -2924,11 +1843,11 @@ static long wm_gui_dispatch(long num, long a, long b, long c)
         int wi = -1;
         uint64_t cf = spin_lock_irqsave(&win_lock);
         for (int i = 0; i < MAXWIN; i++)
-            if (!wins[i].used) {
+            if (!wm_wins[i].used) {
                 wi = i;
-                wins[i].used = 1;          /* claimed: no other core may take it */
-                wins[i].kind = WK_BUILDING; /* ...and no scan may act on it yet */
-                wins[i].surf.px = 0;        /* never the previous tenant's pointer */
+                wm_wins[i].used = 1;          /* claimed: no other core may take it */
+                wm_wins[i].kind = WK_BUILDING; /* ...and no scan may act on it yet */
+                wm_wins[i].surf.px = 0;        /* never the previous tenant's pointer */
                 break;
             }
         spin_unlock_irqrestore(&win_lock, cf);
@@ -2943,14 +1862,14 @@ static long wm_gui_dispatch(long num, long a, long b, long c)
         /* Every failure path from here MUST release the claim: the slot was
          * marked used by the scan above, and a bare `return -1` would leak it
          * for the life of the boot. */
-        if (cw_pt <= 0 || ch_pt <= 0) { wins[wi].used = 0; return -1; }
+        if (cw_pt <= 0 || ch_pt <= 0) { wm_wins[wi].used = 0; return -1; }
         int cw = S(cw_pt), ch = S(ch_pt);
         /* cw,ch are each up to 65535 -- cw*ch*4 overflows int. A window larger
          * than the screen is meaningless, so cap to the framebuffer; do the size
          * math in 64-bit. */
-        if (cw > (int)fb_width() || ch > (int)fb_height()) { wins[wi].used = 0; return -1; }
+        if (cw > (int)fb_width() || ch > (int)fb_height()) { wm_wins[wi].used = 0; return -1; }
         uint64_t pxcount = (uint64_t)cw * (uint64_t)ch;
-        struct win *w = &wins[wi];
+        struct win *w = &wm_wins[wi];
         /* NOT `kind = WK_APP` yet. The slot stays WK_BUILDING until the
          * buffer below exists, because wm_apply_sizes() runs on the WM
          * thread against `used && kind == WK_APP` and would otherwise see
@@ -2960,8 +1879,7 @@ static long wm_gui_dispatch(long num, long a, long b, long c)
         w->used = 1; w->app = ap;
         w->cw_pt = cw_pt; w->ch_pt = ch_pt;
         w->w = cw; w->h = win_tbh(w) + ch;
-        w->x = S(110 + cascade * 28); w->y = S(70 + cascade * 28);
-        cascade = (cascade + 1) % 6;
+        wm_place_cascade(w);             /* the next cascade slot (wm_place.c) */
         /* A clamp against the whole screen (bottom at SH - 4) stood here, so a
          * window could open with its last rows under the dock. The work area
          * is the bound now, applied below once the reset list has run; see
@@ -3049,8 +1967,8 @@ static long wm_gui_dispatch(long num, long a, long b, long c)
          * render_region still rebuilds each damaged pixel wallpaper-up, so no
          * app flush can interleave and no new tearing mechanism is needed. */
         dirty_win(w);
-        if (prev_top >= 0 && prev_top != wi && wins[prev_top].used)
-            dirty_win(&wins[prev_top]);
+        if (prev_top >= 0 && prev_top != wi && wm_wins[prev_top].used)
+            dirty_win(&wm_wins[prev_top]);
 #endif
         return 0;
     }
@@ -3145,7 +2063,7 @@ static long wm_gui_dispatch(long num, long a, long b, long c)
         int radius = S(LOGIT_GUI_GLASS_C_RADIUS(c));
         uint8_t tr = (uint8_t)LOGIT_GUI_GLASS_C_TR(c), tg = (uint8_t)LOGIT_GUI_GLASS_C_TG(c),
                 tb = (uint8_t)LOGIT_GUI_GLASS_C_TB(c), ta = (uint8_t)LOGIT_GUI_GLASS_C_TA(c);
-        fb_target(&w->surf); fb_liquid_glass(x, y, gw, gh, radius, tr, tg, tb, ta); fb_target(NULL);
+        fb_target(&w->surf); wm_glass_app(x, y, gw, gh, radius, tr, tg, tb, ta); fb_target(NULL);
         return 0;
     }
     case SYS_GUI_FLUSH: {
@@ -3164,7 +2082,7 @@ static long wm_gui_dispatch(long num, long a, long b, long c)
          * move the window, resize it or change its focus, so it cannot have
          * changed one pixel of the shadow. See dirty_win_content(). */
         struct win *w = app_window(ap);
-        if (w) { wm2_flush_win(w); dirty_win_content(w); }
+        if (w) { wm2_flush_win(w); wm_reveal_note_flush(w); dirty_win_content(w); }
         else dirty_full(FULL_FLUSH_NO_WINDOW);
         return 0;
     }
@@ -3175,6 +2093,7 @@ static long wm_gui_dispatch(long num, long a, long b, long c)
         struct win *w = app_window(ap);
         if (!w) return -1;
         wm2_flush_win(w);
+        wm_reveal_note_flush(w);         /* a late repaint the reveal may patch in */
 #ifdef GUI_FLUSHRECT_DISABLE
         /* THE CONTROL. Built with -DGUI_FLUSHRECT_DISABLE, this number keeps
          * its ABI contract (still returns 0, still a valid call) but performs
@@ -3247,7 +2166,7 @@ static long wm_gui_dispatch(long num, long a, long b, long c)
         return user_copy_to((void *)a, tmp, (unsigned)n + 1) < 0 ? -1 : n;
     }
     case SYS_UI_DARK:                       /* a<0 query; else set system dark mode */
-        if ((int)a >= 0) wm_set_dark((int)a);
+        if ((int)a >= 0) wm_set_dark((int)a, -1, -1);   /* no trigger point on screen */
         return g_ui_dark;
     case SYS_FILE_COUNT:
         return vfs_count("/");
@@ -3528,8 +2447,8 @@ static long wm_gui_dispatch(long num, long a, long b, long c)
                 w->panel = 1;
                 int ch = w->h - TBH;
                 w->h = ch > 1 ? ch : 1;
-                w->x = (W - w->w) / 2;
-                w->y = H / 4 - S(40);
+                w->x = (wm_W - w->w) / 2;
+                w->y = wm_H / 4 - S(40);
                 if (w->y < MBH + S(8)) w->y = MBH + S(8);
                 dirty_full(FULL_WINDOW_CREATE);
                 kprintf("[wm] panel win=%d '%s' %d %d %d %d\n", ap->win, w->title, w->x, w->y, w->w, w->h);
@@ -3711,7 +2630,7 @@ void wm_app_exit(void)
     if (ap) {
         __atomic_store_n(&ap->alive, 0, __ATOMIC_RELEASE);
         int wi = __atomic_load_n(&ap->win, __ATOMIC_ACQUIRE);
-        if (wi >= 0 && wi < MAXWIN) waitq_wake_all(&wins[wi].evwq);
+        if (wi >= 0 && wi < MAXWIN) waitq_wake_all(&wm_wins[wi].evwq);
     }
     /* A CLI/forked process has ap == NULL and changed no desktop pixel.  The
      * old unconditional store nevertheless forced W*H composition plus every
@@ -3734,7 +2653,7 @@ void wm_app_exit(void)
 /* The plain form: a window-level event with no button and no wheel (EV_KEY,
  * EV_CLOSE, EV_THEME). Everything mouse-shaped goes through enqueue_input so
  * `mods`/`button`/`wheel` are filled in one place rather than at each call. */
-static void enqueue(struct win *w, int type, int a, int b)
+void wm_enqueue(struct win *w, int type, int a, int b)
 {
     struct logit_event e = { type, a, b, 0, EV_BTN_NONE, 0 };
     int result = evq_push(&w->ev, &e);
@@ -3753,126 +2672,45 @@ static void enqueue_input(struct win *w, int type, int a, int b, int mods, int b
 }
 
 /* Flip the system theme: kernel chrome follows immediately (redrawn each frame);
- * apps are nudged with EV_THEME so they re-query SYS_UI_DARK and repaint. */
-static void wm_set_dark(int on)
+ * apps are nudged with EV_THEME so they re-query SYS_UI_DARK and repaint.
+ * (cx, cy) is where the flip was asked for on screen -- the menu-bar switch's
+ * centre -- or (-1, -1) when it came from no point (SYS_UI_DARK). The 日夜
+ * reveal (wm_reveal.c, design 5.10) is offered the flip FIRST, before
+ * g_ui_dark changes: it returns 0 today, which is the instant path below. */
+void wm_set_dark(int on, int cx, int cy)
 {
     on = on ? 1 : 0;
     if (on == g_ui_dark) return;
+    if (wm_reveal_begin(cx, cy)) return;    /* the reveal owns the swap */
     __atomic_store_n(&g_ui_dark, on, __ATOMIC_RELEASE);
+    g_wallpaper_gen++;                      /* the theme's picture changed */
     /* --- settings line: remember it. Committed immediately (the 1), because
      * the user flipping the theme is exactly the change they will expect to
      * still be there after a power cut, and one whole-file write is one
      * LogitFS transaction -- atomic, ~8 KiB, and it happens once per click. */
     settings_set_int("ui.dark", on, 1);
     for (int i = 0; i < MAXWIN; i++)
-        if (wins[i].used && wins[i].kind == WK_APP) enqueue(&wins[i], EV_THEME, 0, 0);
+        if (wm_wins[i].used && wm_wins[i].kind == WK_APP) wm_enqueue(&wm_wins[i], EV_THEME, 0, 0);
     /* Every pixel of chrome changes colour and every app is about to repaint:
      * a full-screen repaint is the CORRECT answer here, and this is the case
      * the damage tracking has to be shown still producing one. */
     dirty_full(FULL_THEME);
+    wm_theme_refresh();
 }
 
 /* ---------- reaping dead apps ---------- */
-/* ===========================================================================
- * THE CLOSE ANIMATION ("Fluid" P3): a closed window does not vanish in one
- * frame; its last picture shrinks to 0.92 and fades out over CLOSE_MS, the
- * way an opened one pops in. The window itself is gone the moment it closes --
- * its slot is free, focus has moved -- and what remains is a GHOST that owns
- * the window's last canvas and nothing else, so reusing the slot is safe.
- *
- * Drawn after the windows, as a solid titlebar strip plus the canvas, both
- * through anim_blit_fade/fb_blend (no shared scratch, so safe in a parallel
- * band). Damage is the window's original frame, which contains every shrunk
- * frame; the terminal tick damages it once more AFTER the ghost is gone, which
- * is what leaves no residue (-DWM_CLOSE_DAMAGE_LIE skips that last report and
- * make test-close-anim must then fail its round trip).
- * ======================================================================== */
-#define CLOSE_MS 150
-#define NGHOST 4
-static struct ghost {
-    int used;
-    struct surface surf;
-    int x, y, w, h, dark, tbh;
-    uint64_t t0;
-} g_ghost[NGHOST];
-static int g_nghost;
-
-static void ghost_box(const struct ghost *g, struct drect *r)
-{ r->x0 = g->x; r->y0 = g->y; r->x1 = g->x + g->w; r->y1 = g->y + g->h; }
-
-static int ghost_geom(const struct ghost *g, int *dx, int *dy, int *dw, int *dh, int *alpha)
-{
-    uint64_t e = anim_elapsed(g->t0);
-    int p = e >= CLOSE_MS ? 256 : (int)(e * 256 / CLOSE_MS);
-    int k = ease_out(p);
-    int sc = 256 - k * 20 / 256;                      /* 1.00 -> 0.92 */
-    *dw = g->w * sc / 256; *dh = g->h * sc / 256;
-    *dx = g->x + (g->w - *dw) / 2; *dy = g->y + (g->h - *dh) / 2;
-    *alpha = 255 - 255 * k / 256;
-#ifdef WM_CLOSE_DAMAGE_LIE
-    /* The control must leave something for the missing damage to strand. The
-     * quadratic ease reaches k = 256 at p >= 241, so a last tick that lands in
-     * the final 6% of CLOSE_MS draws alpha 0 -- nothing -- and the lie passed
-     * the round trip (2026-10-26: TextEdit's fitted frame changed the frame
-     * timing and the control ended at p 242). A floor makes every drawn frame
-     * visible, so the control fails whatever tick ends the fade. */
-    if (*alpha < 64) *alpha = 64;
-#endif
-    return p;
-}
-
-static void anim_blit_fade(const struct drect *clip,int dx,int dy,int dw,int dh,
-                           const struct surface *src,int alpha);
-static void draw_ghost(const struct drect *R, const struct ghost *g)
-{
-    int dx, dy, dw, dh, a;
-    ghost_geom(g, &dx, &dy, &dw, &dh, &a);
-    if (a <= 0 || dw <= 0 || dh <= 0) return;
-    int tbh = g->tbh * dw / (g->w ? g->w : 1);
-    if (tbh > dh) tbh = dh;
-    if (tbh > 0) {
-        if (g->dark) fb_blend_round_rect(dx, dy, dw, tbh + S(10), S(10), 44, 44, 52, a);
-        else         fb_blend_round_rect(dx, dy, dw, tbh + S(10), S(10), 236, 236, 240, a);
-    }
-    if (g->surf.px && dh - tbh > 0) anim_blit_fade(R, dx, dy + tbh, dw, dh - tbh, &g->surf, a);
-}
-
-/* Take window wi's canvas for a ghost. 1 if taken (the caller must not free
- * it), 0 if this close should just vanish (reduce motion, locked screen, a
- * window not drawn the ordinary way, or no free ghost). */
-static int ghost_take(int wi)
-{
-    struct win *w = &wins[wi];
-    int x, y, ww, wh, a;
-    if (wm_reduce_motion || g_locked || w->minimized || !w->surf.px) return 0;
-    if (!win_draw_rect(w, &x, &y, &ww, &wh, &a) || !win_drawn_direct(w, x, y, ww, wh, a)) return 0;
-    for (int k = 0; k < NGHOST; k++) {
-        struct ghost *g = &g_ghost[k];
-        if (g->used) continue;
-        g->surf = w->surf;
-        g->x = w->x; g->y = w->y; g->w = w->w; g->h = w->h;
-        g->dark = g_ui_dark;
-        g->tbh = win_tbh(w);
-        g->t0 = anim_stamp();
-        g->used = 1;
-        g_nghost++;
-        return 1;
-    }
-    return 0;
-}
-
 static void reap(void)
 {
     for (int i = 0; i < MAXWIN; i++) {
         if (apps[i].used && !__atomic_load_n(&apps[i].alive, __ATOMIC_ACQUIRE)) {
             int wi = apps[i].win;
-            if (wi >= 0 && wins[wi].used) {
-                __atomic_store_n(&wins[wi].wants_close, 1, __ATOMIC_RELEASE);
-                waitq_wake_all(&wins[wi].evwq);
-                if (__atomic_load_n(&wins[wi].wait_refs, __ATOMIC_ACQUIRE)) continue;
+            if (wi >= 0 && wm_wins[wi].used) {
+                __atomic_store_n(&wm_wins[wi].wants_close, 1, __ATOMIC_RELEASE);
+                waitq_wake_all(&wm_wins[wi].evwq);
+                if (__atomic_load_n(&wm_wins[wi].wait_refs, __ATOMIC_ACQUIRE)) continue;
                 /* The canvas either becomes the close animation's ghost (which
                  * then owns it) or is freed here, as before. */
-                if (wins[wi].surf.px && !ghost_take(wi)) kfree(wins[wi].surf.px);
+                if (wm_wins[wi].surf.px && !ghost_take(wi)) kfree(wm_wins[wi].surf.px);
                 /* Clear the pointer, do not merely free what it pointed at.
                  * The slot is reused by the next SYS_GUI_CREATE, and until that
                  * call installs a new buffer the field is a dangling pointer into
@@ -3883,13 +2721,13 @@ static void reap(void)
                  * somewhere else entirely, later, which is precisely the failure
                  * mode the frame poison map exists to stop. Two stores make the
                  * invariant local to the code that ends the surface's life. */
-                wins[wi].surf.px = 0;
-                wins[wi].surf.w = wins[wi].surf.h = 0;
-                wins[wi].surf_cap = 0;   /* ...and the capacity that block held */
+                wm_wins[wi].surf.px = 0;
+                wm_wins[wi].surf.w = wm_wins[wi].surf.h = 0;
+                wm_wins[wi].surf_cap = 0;   /* ...and the capacity that block held */
                 wm2_win_reset(wi);       /* ...and the v2 state keyed on the slot */
-                if (wins[wi].menus) { kfree(wins[wi].menus); wins[wi].menus = 0; }
-                wins[wi].menus_gen = 0;
-                wins[wi].used = 0;
+                if (wm_wins[wi].menus) { kfree(wm_wins[wi].menus); wm_wins[wi].menus = 0; }
+                wm_wins[wi].menus_gen = 0;
+                wm_wins[wi].used = 0;
                 remove_win(wi);
                 if (dragging == wi) dragging = -1;   /* don't drag a reaped (soon reused) slot */
                 if (mouse_capture == wi) mouse_capture = -1;   /* ...nor deliver its drag to the slot's next tenant */
@@ -3923,8 +2761,6 @@ static void reap(void)
 /* `mods` is sampled in the IRQ, not when the WM drains: it describes the
  * instant of the click/key. input_queue.c owns the short multi-producer lock,
  * motion coalescing, release priority and the per-pass fairness bound. */
-static void wm_process_mouse(const struct inputq_event *e);   /* fwd: bodies below */
-static void wm_process_key(int c, int mods);
 /* The IRQ entry points (called from mouse.c / keyboard.c) now ONLY enqueue. */
 void wm_mouse_event(int x, int y, int left, int right, int middle, int wheel)
 {
@@ -3942,8 +2778,6 @@ void wm_mods_changed(void)
 {
     inputq_push_typed(&inq, INPUTQ_MODS, 0, kbd_mods());
 }
-static void wm_process_key_up(int c, int mods);
-static void wm_process_mods(int mods);
 /* At most one fixed batch per desktop pass. Returning backlog lets wm_run skip
  * hlt and start another pass, but every batch still reaches resize, network,
  * animation, composite and scheduler work before the next sixteen events. */
@@ -3964,631 +2798,6 @@ static int wm_drain_input(void)
     return inputq_pending(&inq);
 }
 
-/* ---------- desktop chrome ---------- */
-/* The frosted menu bar + dock now blur the live backdrop per-frame via
- * fb_blur_rect (a fast separable box blur, see fb.c) instead of a baked-once
- * O(r^2) box blur -- so windows slid under them read as true frosted glass. */
-
-/* Dusk wallpaper: a soft lavender -> mauve -> warm-sand vertical gradient
- * (a macOS-Tahoe-ish dusk sky). Cached once into `bg`. */
-static uint32_t bg_color(int x, int y)
-{
-    (void)x;
-    int t = y * 1000 / H;
-    uint8_t r, g, b;
-    if (t < 550) {
-        r = (uint8_t)lerp(140, 198, t, 550); g = (uint8_t)lerp(150, 168, t, 550); b = (uint8_t)lerp(198, 184, t, 550);
-    } else {
-        int u = t - 550;
-        r = (uint8_t)lerp(198, 228, u, 450); g = (uint8_t)lerp(168, 192, u, 450); b = (uint8_t)lerp(184, 162, u, 450);
-    }
-    return rgb(r, g, b);
-}
-
-/* Load /wallpaper.png (Apple Desktop Picture, packed at build), decode via the
- * kernel image codec, and scale-blit it to fill the screen. 0 if absent/bad so
- * the caller falls back to the gradient. */
-static int draw_wallpaper(void)
-{
-    /* --- settings line: the user's wallpaper, /wallpaper.png if they have not
-     * chosen one. A path naming a file that does not exist, or one that is not
-     * a decodable image, falls through to the gradient below exactly as a
-     * missing /wallpaper.png always did -- so there is no wallpaper setting
-     * that can produce a broken desktop, only a plain one. */
-    char wallpaper_path[SET_VALLEN];
-    settings_copy_str("ui.wallpaper", "/wallpaper.png", wallpaper_path, sizeof wallpaper_path);
-    const char *wp = wallpaper_path;
-    int sz = vfs_size(wp);
-    if (sz <= 0) return 0;
-    uint8_t *file = (uint8_t *)kmalloc((unsigned)sz);
-    if (!file) return 0;
-    int n = vfs_read(wp, file, sz);
-    struct image im;
-    int ok = (n > 0 && kernel_img_decode(file, n, &im) == 0);
-    kfree(file);
-    if (!ok) return 0;
-    /* Scale to fill, baked ONCE into the cached `bg` (draw_background runs at
-     * init and on a mode or size change). A 5K photo shrunk onto a 1280x800
-     * screen with the old point sampler aliased; the exact area average (BOX)
-     * is paid here, not per frame. Destination is 24.8: W<<8 x H<<8. */
-    if (ol_display_blit_rgba_ex(fb_display_cur(), im.rgba, im.w, im.h, im.w * 4,
-                                0, 0, im.w, im.h, 0, 0, W << 8, H << 8, 255, OL_FILTER_BOX) != OL_OK)
-        fb_blit_rgba(0, 0, W, H, im.rgba, im.w, im.h);      /* scratch alloc failed: point-sampled */
-    img_free(&im);
-    return 1;
-}
-
-/* The wallpaper only -- baked once into `bg`. The menu bar and dock are now
- * composited per-frame on TOP of the windows (draw_menubar/draw_dock) so their
- * real-time blur frosts the live content behind them (true vibrancy), and a
- * window can slide *under* the dock instead of covering it. */
-static void draw_background(void)
-{
-    if (!draw_wallpaper())
-        for (int y = 0; y < H; y++)
-            for (int x = 0; x < W; x++) fb_put(x, y, bg_color(x, y));
-}
-
-/* Frosted menu bar, composited per-frame on top of the windows: real-time blur
- * of whatever is behind it (wallpaper or a window slid up under it). */
-static void draw_clock(void);
-/* These radii are used by both the painter and damage's sample reach. A
- * separately guessed damage radius would leave an invisible stale-glass ring
- * when UI scale changes. Values are logical points, converted at each call. */
-enum {
-    MENU_GLASS_PT = 2,
-    DOCK_GLASS_PT = 28,
-    DROPDOWN_GLASS_PT = 10,
-    OVERLAY_GLASS_PT = 14,
-    TITLE_GLASS_PT = 10,
-};
-/* The menu bar is a GLASS PANEL: it frosts whatever is behind it, so it is one
- * of the two things a damage rectangle may not cut in half (see dmg_expand). */
-static void menubar_box(struct drect *r) { r->x0 = 0; r->y0 = 0; r->x1 = W; r->y1 = MBH; }
-/* The clock is the only thing on an idle desktop that changes, and it changes
- * twice a second. That used to be a full-screen recomposite; it is now this. */
-static void dirty_menubar(void) { dirty_rect(0, 0, W, MBH); }
-
-static void profiled_glass(int x, int y, int w, int h, int radius,
-                           uint8_t tr, uint8_t tg, uint8_t tb, uint8_t ta)
-{
-    uint64_t t = time_mono_ns();
-    fb_liquid_glass(x, y, w, h, radius, tr, tg, tb, ta);
-    __atomic_fetch_add(&frame_glass_ns, time_mono_ns() - t, __ATOMIC_RELAXED);
-    __atomic_fetch_add(&frame_glass_px, (uint64_t)w * (uint64_t)h, __ATOMIC_RELAXED);
-}
-
-static void profiled_glass_cut(int x, int y, int w, int h, int radius,
-                               uint8_t tr, uint8_t tg, uint8_t tb, uint8_t ta,
-                               unsigned cut)
-{
-    uint64_t t = time_mono_ns();
-    fb_liquid_glass_cut(x, y, w, h, radius, tr, tg, tb, ta, cut);
-    __atomic_fetch_add(&frame_glass_ns, time_mono_ns() - t, __ATOMIC_RELAXED);
-    __atomic_fetch_add(&frame_glass_px, (uint64_t)w * (uint64_t)h, __ATOMIC_RELAXED);
-}
-/* WM-HOOK (out): see wm.h. The IME's indicator lives in the bar and ime_ui.c
- * must be able to say "it changed" without knowing MBH. */
-void wm_damage_menubar(void) { wm_damage(0, 0, W, MBH); }
-static int menu_tog_x, menu_tog_y, menu_tog_w = 38, menu_tog_h = 18;   /* dark-mode switch */
-static int menu_ime_x, menu_ime_w; /* drawn label geometry, also the toggle hit target */
-/* menu_tog_* are DEVICE pixels: they are written here and read by the click
- * handler, which sees device mouse coordinates. Keeping the stored rect in the
- * same space as the thing it is tested against is the whole trick -- the
- * alternative (store points, convert at every comparison) is where a scaled UI
- * with unscaled hit-testing comes from. */
-
-/* ============================================================================
- * THE MENU BAR COMES ALIVE.
- *
- * "LogitOS  File  View" used to be three fb_text calls and nothing else --
- * paint of a menu bar, not one. This section is the machinery: hit rects for
- * the titles, a dropdown panel drawn like the dock (fresh from state every
- * time it is asked for, never a retained surface), and the handful of real
- * actions the WM can actually perform. The rest of it -- the dropdown's
- * items, the About/Shut Down/Restart panel -- lives further down, after
- * draw_clock; only the TITLE layout has to live here, because draw_menubar()
- * below is the one thing that paints it.
- *
- * "Edit" is gone on purpose. The WM cannot reach inside an app -- it has no
- * text buffer to cut or paste -- so a Cut/Copy/Paste menu here would be three
- * items that do nothing, which is worse than no menu: it teaches a user this
- * desktop's chrome is decoration. File and View both survive because both
- * gained something real: File routes to the close button and the minimise
- * gesture the traffic lights already perform; View is the on-screen home for
- * Expose, which otherwise has no menu presence at all (hot corner + Cmd+E,
- * neither of them discoverable by looking at the screen).
- *
- * ONE FUNCTION SAYS WHERE A TITLE IS -- same discipline win_draw_rect enforces
- * for a window's footprint. menu_bar_layout() publishes g_menu_tx/g_menu_tw;
- * draw_menubar() (paint) and menu_title_hit() (click + hover) both read them,
- * so a click and the word it lands on cannot disagree about where the word is.
- * Valid only after the first draw_menubar() -- the same "not on screen yet
- * either" caveat dock_hover_at documents for dock_x0/dock_y0. */
-/* THE MODEL. Correction 2026-09-24 ("Fluid" P5): the titles used to be three
- * constants -- { "LogitOS", "File", "View" } -- and no app could put a command
- * on the menu bar. Now the bar is the kernel's LogitOS menu, then the menus the
- * top window published with SYS_GUI_MENU_SET followed by the kernel's Window
- * menu; a window that published nothing gets the old File and View, unchanged.
- * menu_model_sync() rebuilds it, and never while a menu is open, so a dropdown
- * cannot change shape under the pointer that is choosing from it. */
-enum { MK_LOGO, MK_FILE, MK_VIEW, MK_WINDOW, MK_APP };
-#define NMENU_MAX (MB_MAX_MENUS + 2)
-struct mrow { char label[MB_LABEL_MAX + 1]; uint16_t id; uint8_t flags; char key; };
-static int g_nmenu;
-static uint8_t g_menu_kind[NMENU_MAX];
-static char g_menu_title[NMENU_MAX][MB_TITLE_MAX + 1];
-static struct mrow g_menu_rows[NMENU_MAX][MB_MAX_ITEMS];
-static int g_menu_nitems[NMENU_MAX];
-static int g_menu_src = -2;              /* window whose menus these are, -1 none, -2 never built */
-static unsigned g_menu_src_gen;
-static int g_menu_reported;              /* menu_bar_layout's report, once per model */
-static int g_menu_tx[NMENU_MAX], g_menu_tw[NMENU_MAX];   /* device px, published each frame */
-
-static void menu_title_hit(int i, struct drect *r)
-{
-    r->y0 = 0; r->y1 = MBH;
-    r->x0 = (i == 0) ? S(8) : g_menu_tx[i] - S(14);   /* item 0's box also covers the logo dot */
-    r->x1 = g_menu_tx[i] + g_menu_tw[i] + S(14);
-}
-
-/* Reported once per model, the first time its geometry is computed -- same
- * reasoning as "[wm] win N frame ..." and "[wm] expose cell ...": a test
- * driver has no business re-deriving AA-font text width in Python to find
- * where "File" is clickable, and a driver that guessed a pixel offset here is
- * exactly the kind of thing that rots silently the day the font or the title
- * text changes. Since P5 the titles change with focus, so the report does. */
-static void menu_bar_layout(void)
-{
-    int x = S(32);                            /* unchanged from the old hardcoded "LogitOS" x */
-    for (int i = 0; i < g_nmenu; i++) {
-        g_menu_tx[i] = x;
-        g_menu_tw[i] = fb_text_width(g_menu_title[i]);
-        x += g_menu_tw[i] + S(44);            /* the old File-Edit gap, kept for the same rhythm */
-    }
-    if (!g_menu_reported) {
-        g_menu_reported = 1;
-        for (int i = 0; i < g_nmenu; i++) {
-            struct drect t; menu_title_hit(i, &t);
-            kprintf("[wm] menu title %d %s x0 %d y0 %d x1 %d y1 %d\n",
-                    i, g_menu_title[i], t.x0, t.y0, t.x1, t.y1);
-        }
-    }
-}
-
-static void draw_menubar(void)
-{
-    /* Liquid Glass menu bar (thin -> adaptive edge band) */
-    /* Top/left/right are SCREEN edges -- the slab is cut there, not ended, so
-     * no bevel (see fb_liquid_glass_cut in fb.h; this call is why it exists).
-     * The bottom edge keeps its rim: that hairline is the menu bar's only
-     * separation from the wallpaper below it. */
-    unsigned mbcut = GLASS_CUT_TOP | GLASS_CUT_LEFT | GLASS_CUT_RIGHT;
-    if (g_ui_dark) profiled_glass_cut(0, 0, W, MBH, S(MENU_GLASS_PT), 24, 24, 32, 150, mbcut);
-    else           profiled_glass_cut(0, 0, W, MBH, S(MENU_GLASS_PT), 255, 255, 255, 110, mbcut);
-    fb_blend_rect(0, MBH - S(1), W, S(1), 0, 0, 0, g_ui_dark ? 70 : 28);  /* hairline */
-    uint32_t ink = g_ui_dark ? rgb(232, 233, 238) : rgb(40, 40, 48);
-    fb_fill_circle(S(16), MBH / 2, S(6), ink);
-    menu_bar_layout();                        /* publishes g_menu_tx/tw for the click path */
-    for (int i = 0; i < g_nmenu; i++) fb_text(g_menu_tx[i], S(4), g_menu_title[i], ink);
-    /* dark-mode toggle switch: track + knob (knob right = dark) */
-    menu_tog_w = S(38); menu_tog_h = S(18);
-    /* W - 210 until 2026-10-26: the default clock ("周一 2026-10-26  19:22:22")
-     * is ~177 points from the right edge, and the switch's end at W - 172 ran
-     * into its first letter. 240 leaves ~25 points to the default clock. The
-     * QMP gates that click the switch (qmp_damage, qmp_monitor, qmp_repaint,
-     * qmp_window) name the same constant. */
-    menu_tog_x = W - S(240); menu_tog_y = (MBH - menu_tog_h) / 2;
-    if (g_ui_dark) fb_round_rect(menu_tog_x, menu_tog_y, menu_tog_w, menu_tog_h, menu_tog_h / 2, rgb(94, 150, 255));
-    else           fb_round_rect(menu_tog_x, menu_tog_y, menu_tog_w, menu_tog_h, menu_tog_h / 2, rgb(198, 200, 208));
-    int kr = menu_tog_h / 2 - S(2);
-    int kx = g_ui_dark ? menu_tog_x + menu_tog_w - kr - S(3) : menu_tog_x + kr + S(3);
-    fb_fill_circle(kx, menu_tog_y + menu_tog_h / 2, kr, rgb(255, 255, 255));
-    /* What the switch is FOR, drawn in its knob: a sun while light, a crescent
-     * moon while dark. A bare track and knob beside the clock said nothing
-     * about what it would change (release tour, 2026-10-26). The crescent is a
-     * disc with a second, offset disc in the knob's own white over it. */
-    {
-        int cy = menu_tog_y + menu_tog_h / 2, gr = kr * 5 / 8;
-        if (gr < 2) gr = 2;
-        if (g_ui_dark) {
-            fb_fill_circle(kx, cy, gr, rgb(70, 120, 230));
-            fb_fill_circle(kx + gr / 2 + 1, cy - gr / 2, gr - 1, rgb(255, 255, 255));
-        } else {
-            fb_fill_circle(kx, cy, gr, rgb(242, 164, 36));
-        }
-    }
-    /* THE IME INDICATOR, and it exists because of a measurement rather than a
-     * taste. Before it, the toggle changed NOTHING a user could see: the state
-     * line goes to the serial console, and the candidate bar does not exist
-     * until a composition is open (bar_layout returns 0x0 otherwise). Measured
-     * 2026-08-28 by injecting the chord over QMP and screendumping either side
-     * -- 175 changed pixels of 2,304,000, every one of them the clock.
-     *
-     * That silence is what made the binding unknowable from inside the machine.
-     * The owner reported being certain the toggle was Ctrl+Space; the guest is
-     * inert to Ctrl+Space in BOTH states (probed, 0 serial lines and 0 pixels),
-     * and what answered was the HOST's own input-source switcher, with an
-     * animation. The only key that replied was the wrong one.
-     *
-     * Drawn from top_visible() because the IME is PER WINDOW (g_on[wi]), so the
-     * indicator has to name the window that would receive the next keystroke,
-     * not a machine-wide mode this kernel does not have. */
-    if (ime_ui_available()) {
-        int on = ime_ui_enabled(top_visible());
-        const char *tag = on ? "\xe4\xb8\xad" : "EN";   /* U+4E2D; ui.ttf is GB2312 */
-        int tw = fb_text_width(tag);
-        menu_ime_x = menu_tog_x - S(18) - tw - S(4);
-        menu_ime_w = tw + S(8);
-        fb_text(menu_ime_x + S(4), S(4), tag,
-                on ? (g_ui_dark ? rgb(150, 195, 255) : rgb(24,  86, 200))
-                   : (g_ui_dark ? rgb(146, 148, 158) : rgb(122, 124, 134)));
-    }
-    draw_clock();
-}
-
-/* Points; DOCK_ISZ/DOCK_GAP are the device-pixel values draw_dock() derives from
- * them each frame and the click handler tests against. */
-#define DOCK_ISZ_PT 50
-#define DOCK_GAP_PT 14
-/* Vertical breathing room, top AND bottom, between an icon and the panel edge.
- * RETUNED (unit F): this used to be a bare `S(20)` / `S(10)` split three ways
- * across dock_geom, dock_hover_at and the click hit-test in the mouse handler
- * below, with no name tying them together -- exactly the trap the WSH_ and
- * DOCKSH_ single-definition macros elsewhere in this file exist to avoid, and
- * the reason the icons visibly crowded the top/bottom edges was that all
- * three copies agreed with EACH OTHER, just not with what "enough padding"
- * should have been. One constant: isz=50 in a dh=isz+2*DOCK_PAD_PT panel now
- * leaves 18pt each side instead of 10 (a panel 50/86=58% icon by height
- * instead of 50/70=71%), close to a real macOS dock's proportion instead of
- * the icons nearly touching the rim. */
-#define DOCK_PAD_PT 18
-static int dock_x0, dock_y0, dock_isz = DOCK_ISZ_PT, dock_gap = DOCK_GAP_PT;
-
-/* The dock's geometry, derived rather than remembered.
- *
- * draw_dock used to be the only thing that knew where the dock was, and it
- * published its answer into the globals above on the way past. That is fine
- * while the dock is drawn every frame; it stops being fine the moment a frame
- * may skip it, because the DAMAGE path has to know where the dock is in order
- * to decide whether this frame touches it -- and asking a global that the
- * skipped draw would have written is a loop. One function computes it. */
-static int dock_hover_at(int x, int y);         /* body below, with the drawing */
-static int dock_slide_px(void);
-
-/* Where the dock is DRAWN, hit and damaged: its resting place, lowered by the
- * autohide slide (dock_slide_px, 0 while shown). Every dock box in this file
- * derives from here, so the picture, the click and the damage move together. */
-static void dock_geom(int *x0, int *y0, int *dw, int *dh)
-{
-    int n = nreg < 1 ? 1 : nreg;
-    int isz = S(DOCK_ISZ_PT), gap = S(DOCK_GAP_PT);
-    *dw = gap + n * (isz + gap);
-    *dh = isz + 2 * S(DOCK_PAD_PT);
-    *x0 = (W - *dw) / 2;
-    *y0 = H - *dh - S(12) + dock_slide_px();
-}
-
-/* ONE dock icon's tile, in device pixels -- the target a minimised window flies
- * into and out of.
- *
- * Derived from dock_geom() and S(DOCK_PAD_PT), which is the same arithmetic
- * draw_dock() places the icon with and the same the click hit-test uses. That
- * is not tidiness: this file has already been bitten once by three copies of
- * the dock's vertical padding agreeing with each other and not with the
- * drawing (see DOCK_PAD_PT's comment), and a fly that lands next to the icon
- * instead of on it is that bug in its most visible possible form. */
-static void dock_icon_box(int slot, struct drect *r)
-{
-    int x0, y0, dw, dh;
-    dock_geom(&x0, &y0, &dw, &dh);
-    (void)dw; (void)dh;
-    int isz = S(DOCK_ISZ_PT), gap = S(DOCK_GAP_PT);
-    if (slot < 0) slot = 0;
-    if (nreg > 0 && slot >= nreg) slot = nreg - 1;
-    r->x0 = x0 + gap + slot * (isz + gap);
-    r->y0 = y0 + S(DOCK_PAD_PT);
-    r->x1 = r->x0 + isz;
-    r->y1 = r->y0 + isz;
-}
-
-/* The GLASS PANEL: the rounded slab whose frost samples the live backdrop. This
- * is the rectangle a damage rectangle may not cut in half (see dmg_expand); the
- * rest of the dock's footprint is ordinary read-modify-write drawing that clips
- * exactly and needs no such promise. */
-/* Same single-definition rule as WSH_* above: the dock's shadow is painted in
- * draw_dock and its extent is declared here, and if the two disagree a damage
- * rectangle clips the shadow in half. */
-#define DOCKSH_DY   0                       /* wm_shadow_extent includes the offset */
-#define DOCKSH_BLUR wm_sh_ext(WMSH_DOCK)
-
-static void dock_panel_box(struct drect *r)
-{
-    int x0, y0, dw, dh;
-    dock_geom(&x0, &y0, &dw, &dh);
-    int b = DOCKSH_BLUR;
-    r->x0 = x0 - b;          r->y0 = y0 - b;
-    r->x1 = x0 + dw + b;     r->y1 = y0 + dh + b + DOCKSH_DY;   /* + the drop shadow */
-}
-
-/* The dock's whole footprint, for a given hovered icon (-1 = none): the panel,
- * plus the launch bounce that lifts an icon S(14) out of the top, plus the
- * magnified hover tile, plus the tooltip above it.
- *
- * The tooltip is centred on the icon and as wide as the app's NAME, so it can
- * overhang the panel -- but its extent is EXACTLY KNOWABLE, and asking for it
- * is worth the four lines. The first version damaged the full screen width to
- * cover it, and because the Terminal's window reaches down into the dock, every
- * repaint of that window then grew to a full-width band: 82% of the screen for
- * a keystroke. Being vague about damage is not free; it is paid for by every
- * unrelated rectangle that happens to touch the vague one. */
-static void dock_box_hov(int hov, struct drect *r)
-{
-    int x0, y0, dw, dh;
-    dock_geom(&x0, &y0, &dw, &dh);
-    dock_panel_box(r);
-    if (y0 - S(16) < r->y0) r->y0 = y0 - S(16);        /* bounce + 1.3x hover tile */
-    if (hov >= 0 && hov < nreg) {
-        int isz = S(DOCK_ISZ_PT), gap = S(DOCK_GAP_PT);
-        int ccx = x0 + gap + hov * (isz + gap) + isz / 2;
-        int tw = fb_text_width(reg[hov].name);
-        struct drect t = { ccx - tw / 2 - S(10), y0 - S(30),
-                           ccx + tw / 2 + tw % 2 + S(10), y0 };
-        rect_or(r, &t);
-    }
-}
-static void dock_box(struct drect *r) { dock_box_hov(dock_hover_at(mx, my), r); }
-
-/* ---- DOCK AUTOHIDE (2026-10-26) ---------------------------------------------
- *
- * While the frontmost window is zoomed the dock slides below the bottom edge and
- * the zoom reaches the bottom of the screen (zoom_full_rect). A zoomed window
- * used to stop above the dock, leaving a band of wallpaper under a full-width
- * window with the dock floating in it -- "especially after full screen, very
- * awkward", from the owner's own desktop. Touching the bottom edge brings the
- * dock back OVER the window; it stays while the pointer is on it (or its
- * tooltip) and leaves when the pointer does. Any other state shows it. */
-#define DOCK_SLIDE_MS 220
-static int g_dock_hide_to;            /* the target: 0 shown, 256 hidden       */
-static int g_dock_hide_from;          /* progress when the current slide began */
-static uint64_t g_dock_hide_t0;       /* the slide's start; 0 = at rest        */
-
-static int dock_hide_progress(void)
-{
-    if (!g_dock_hide_t0) return g_dock_hide_to;
-    uint64_t e = anim_elapsed(g_dock_hide_t0);
-    if (wm_reduce_motion || e >= DOCK_SLIDE_MS) return g_dock_hide_to;
-    int k = ease_out((int)(e * 256 / DOCK_SLIDE_MS));
-    return g_dock_hide_from + (g_dock_hide_to - g_dock_hide_from) * k / 256;
-}
-
-/* Far enough that the panel AND its shadow (DOCKSH_DY + DOCKSH_BLUR) clear the
- * bottom edge when hidden. */
-static int dock_slide_px(void)
-{
-    int dh = S(DOCK_ISZ_PT) + 2 * S(DOCK_PAD_PT);
-    return dock_hide_progress() * (dh + S(12) + DOCKSH_DY + DOCKSH_BLUR + S(2)) / 256;
-}
-
-/* The band the dock can occupy anywhere along its slide, tooltip included. */
-static void dirty_dock_band(void)
-{
-    int dh = S(DOCK_ISZ_PT) + 2 * S(DOCK_PAD_PT);
-    int top = H - dh - S(12) - S(30);
-    dirty_rect(0, top, W, H - top);
-}
-
-static void wm_dock_autohide_tick(void)
-{
-    int top = g_locked ? -1 : top_visible();
-    int want = 0;
-    if (top >= 0 && wins[top].used && wins[top].kind == WK_APP &&
-        wins[top].zoomed && !wins[top].minimized && !ex_on) {
-        int dw = 0, x0, dh = S(DOCK_ISZ_PT) + 2 * S(DOCK_PAD_PT);
-        { int n = nreg < 1 ? 1 : nreg; dw = S(DOCK_GAP_PT) + n * (S(DOCK_ISZ_PT) + S(DOCK_GAP_PT)); }
-        x0 = (W - dw) / 2;
-        int rest_y0 = H - dh - S(12);
-        int reveal = my >= H - S(3);
-        int on_it = g_dock_hide_to == 0 && my >= rest_y0 - S(30) &&
-                    mx >= x0 - DOCKSH_BLUR && mx < x0 + dw + DOCKSH_BLUR;
-        want = !(reveal || on_it);
-    }
-    int to = want ? 256 : 0;
-    if (to != g_dock_hide_to) {
-        g_dock_hide_from = dock_hide_progress();
-        g_dock_hide_to = to;
-        g_dock_hide_t0 = anim_stamp();
-        kprintf("[wm] dock %s\n", want ? "hide" : "show");
-    }
-    if (g_dock_hide_t0) {
-        dirty_dock_band();
-        if (wm_reduce_motion || anim_elapsed(g_dock_hide_t0) >= DOCK_SLIDE_MS) g_dock_hide_t0 = 0;
-    }
-}
-
-/* Damage the dock as it is about to be drawn. A hover CHANGE has to damage the
- * outgoing tooltip as well -- the icon the pointer just left still has one on
- * screen, and it is nowhere near the icon it moved to. */
-static void dirty_dock_hov(int hov)
-{ struct drect r; dock_box_hov(hov, &r); dirty_rect(r.x0, r.y0, r.x1 - r.x0, r.y1 - r.y0); }
-static void dirty_dock(void) { dirty_dock_hov(dock_hover_at(mx, my)); }
-
-/* Draw one dock tile of side `sz` centered at (cx,cy): glossy gradient + sheen +
- * the app's vector icon (or its letter). Used at base size and, for the hovered
- * icon, magnified -- the corner radius and icon scale track `sz`. */
-static void dock_tile(int i, int cx, int cy, int sz)
-{
-    int x = cx - sz / 2, y = cy - sz / 2, rad = sz * 12 / 50;
-    /* Raster icons contain their own tile and alpha corners; painting the old
-     * coloured square underneath would put a second, mismatched frame on them. */
-    if (app_icon_draw(reg[i].file, x, y, sz)) return;
-    fb_round_rect_vgrad(x, y, sz, sz, rad, fb_shade(reg[i].color, 38), fb_shade(reg[i].color, -26));
-    fb_blend_round_rect(x, y, sz, sz / 2, rad, 255, 255, 255, 32);
-    int ic = icon_for_app(reg[i].file, reg[i].ext);
-    if (ic >= 0) { int isz = sz * 62 / 100; icon_draw(ic, cx - isz / 2, cy - isz / 2, isz, rgb(255, 255, 255)); }
-    else { char ch[2] = { reg[i].icon, 0 }; fb_text(cx - S(FW) / 2, cy - S(FH) / 2, ch, rgb(255, 255, 255)); }
-}
-
-/* Upward pixel offset of dock icon `i`'s launch bounce (two decaying parabolic
- * hops over ~0.55s). Clears the timer when finished. Integer-only. */
-static int dock_bounce_off(int i)
-{
-    uint64_t t0 = reg_bounce[i];
-    if (!t0) return 0;
-    uint64_t e = anim_elapsed(t0), DUR = 550, half = DUR / 2;
-    if (wm_reduce_motion || !desktop_prefs.dock_bounce || e >= DUR) { reg_bounce[i] = 0; return 0; }
-    int hop = (e < half) ? 0 : 1, H = S(hop ? 7 : 14);
-    int u = (int)(e - (uint64_t)hop * half), d = (int)half;   /* 0..d within the arc */
-    return H * 4 * u * (d - u) / (d * d);                      /* parabola, peak mid-arc */
-}
-
-/* Which dock icon a device-pixel point hovers, or -1.
- *
- * Split out of draw_dock because the INPUT path has to ask it too. With the
- * pointer on a display plane, plain motion no longer repaints anything -- but
- * the dock magnifies the icon under the cursor, so the one kind of motion that
- * genuinely does change the picture is motion that crosses an icon boundary.
- * The compositor and the input path have to agree about where those boundaries
- * are, and the way to guarantee that is to have one function say so.
- *
- * Valid only after the first draw_dock() has published dock_x0/dock_y0/isz/gap;
- * before that they are the point-valued defaults and this returns -1 for the
- * whole screen, which is correct -- there is no dock on screen yet either. */
-static int dock_hover_at(int x, int y)
-{
-    int dh = dock_isz + 2 * S(DOCK_PAD_PT);
-    if (y < dock_y0 || y >= dock_y0 + dh) return -1;
-    for (int i = 0; i < nreg; i++) {
-        if (reg[i].hidden) continue;   /* no hover, no tooltip, no magnify -- see struct regent */
-        int ix = dock_x0 + dock_gap + i * (dock_isz + dock_gap);
-        if (x >= ix && x < ix + dock_isz) return i;
-    }
-    return -1;
-}
-
-static void draw_dock(void)
-{
-    int dw, dh;
-    dock_isz = S(DOCK_ISZ_PT); dock_gap = S(DOCK_GAP_PT);   /* device px, for the click path */
-    dock_geom(&dock_x0, &dock_y0, &dw, &dh);
-    if (dock_y0 >= H) return;             /* autohidden: entirely below the screen */
-    /* Called "soft drop shadow" and it was neither: a solid black rounded slab
-     * at a flat alpha 50, offset down S(7), with no falloff anywhere -- a hard
-     * edge all the way round, under a panel translucent enough to show it. */
-    wm_cast_shadow(WMSH_DOCK, dock_x0, dock_y0, dw, dh, S(28), 256, 255);
-    /* Liquid Glass: frost + rim refraction + specular highlight + body tint */
-    if (g_ui_dark) profiled_glass(dock_x0, dock_y0, dw, dh, S(DOCK_GLASS_PT), 26, 26, 34, 104);
-    /* Light: not white. A white tint is "light glass" to the material's adaptive
-     * tint (glass_shading.h prepare_style), which raises opacity until the
-     * result is at least luma 176 so dark text on it stays legible. The menu
-     * bar needs that; the dock carries no text. Over the release wallpaper's
-     * dark foreground (37,33,73) white/44 came out an opaque grey slab
-     * (180,177,191) -- release tour, 2026-10-26. A neutral tint of luma ~203
-     * is outside the adaptive range by the material's own rule (a tone between
-     * 64 and 224 is left alone), so the dock is translucent over a dark
-     * wallpaper and a faint grey lift over a light one. */
-    else           profiled_glass(dock_x0, dock_y0, dw, dh, S(DOCK_GLASS_PT), 200, 202, 216, 92);
-
-    /* Live hover magnification: the icon under the cursor grows in place (kept
-     * inside the panel + gap so it never overlaps a neighbour) and shows its name
-     * as a tooltip. Re-evaluated every frame; the input path asks dock_hover_at()
-     * the same question and requests a frame when the answer changes, which is
-     * what still animates this as the cursor sweeps the dock now that plain
-     * motion no longer repaints anything. */
-    int ccy = dock_y0 + S(DOCK_PAD_PT) + dock_isz / 2, animating = 0;
-    int hov = dock_hover_at(mx, my);
-    for (int i = 0; i < nreg; i++) {
-        if (i == hov) continue;                            /* hovered tile drawn last, on top */
-        /* Hidden (AEX_CAT_TEST) tiles are still PAINTED, deliberately -- only
-         * dock_hover_at() and the click test below treat them differently.
-         * Blanking the tile would have been the more literal "not launchable",
-         * but tests/qmp/qmp_desktop_look.py's dock_pitch()/rim checks measure
-         * the row as eleven filled, evenly-pitched icons and would read a
-         * blank slot as a structural asymmetry that has nothing to do with
-         * glass. A tile nothing can hover, tooltip or click is exactly as
-         * unlaunchable as a missing one, at zero risk to that gate. */
-        int b = dock_bounce_off(i); if (b) animating = 1;  /* launch bounce lifts the icon */
-        int ccx = dock_x0 + dock_gap + i * (dock_isz + dock_gap) + dock_isz / 2;
-        dock_tile(i, ccx, ccy - b, dock_isz);
-    }
-    /* RUNNING-APP INDICATOR: a small dot under each app that has a live
-     * process -- the cheapest recognisable macOS dock trait there is, and the
-     * WM already has the answer for free (find_live_app is the exact check
-     * wm_launch makes to decide "focus the existing window" vs. "start a new
-     * one", keyed the same way: by the aex header NAME reg[] and apps[] both
-     * carry, not by file path). Anchored to the panel's own bottom edge and
-     * the BASE (non-magnified, non-bounced) icon column -- not `ccy - b` and
-     * not the 1.3x hover size -- so the dot sits still while the icon above
-     * it bounces or magnifies.
-     *
-     * DRAWN BEFORE THE MAGNIFIED HOVER TILE, and the order is the fix for a
-     * measured overlap: the enlarged tile's bottom edge (ccy + 0.65*isz)
-     * clears the dot row (dh - S(8)) by only S(8) - 0.15*isz -- under one
-     * point at today's icon size, negative past isz = 53pt. An earlier
-     * version drew the dots last and CLAIMED 2.5pt of clearance in this very
-     * comment; the adversarial pass measured the dot punched into the icon.
-     * Painting the icon over the dot instead makes the near-miss harmless at
-     * every icon size, and matches what the eye expects: the icon in front,
-     * the indicator behind it. */
-    for (int i = 0; i < nreg; i++) {
-        if (!desktop_prefs.dock_dots || !find_live_app(reg[i].name)) continue;
-        int ccx = dock_x0 + dock_gap + i * (dock_isz + dock_gap) + dock_isz / 2;
-        fb_fill_circle(ccx, dock_y0 + dh - S(8), S(2), g_ui_dark ? rgb(235, 236, 240) : rgb(58, 58, 64));
-    }
-    if (hov >= 0) {
-        int b = dock_bounce_off(hov); if (b) animating = 1;
-        int ccx = dock_x0 + dock_gap + hov * (dock_isz + dock_gap) + dock_isz / 2;
-        dock_tile(hov, ccx, ccy - b, dock_isz * (desktop_prefs.dock_magnify ? 130 : 100) / 100);
-        const char *nm = reg[hov].name;                    /* tooltip above the dock */
-        int tw = fb_text_width(nm), tx = ccx - tw / 2;     /* already device px (scaled font) */
-        fb_blend_round_rect(tx - S(9), dock_y0 - S(28), tw + S(18), S(23), S(7), 28, 28, 34, 225);
-        fb_text(tx, dock_y0 - S(25), nm, rgb(244, 244, 248));
-    }
-    if (animating) dirty_dock();                           /* keep compositing while a bounce runs */
-}
-
-static int fmt2(char *b, int v) { b[0] = '0' + (v / 10) % 10; b[1] = '0' + v % 10; return 2; }
-static void draw_clock(void)
-{
-    static const char *wd[7] = { "周日","周一","周二","周三","周四","周五","周六" };
-    struct rtc_time t; frame_rtc(&t);
-    char b[48]; int p = 0;
-    const char *w = wd[t.weekday % 7];
-    if (desktop_prefs.clock_weekday) {
-        while (*w) b[p++] = *w++;          /* UTF-8: "周一" is six bytes */
-        b[p++] = ' ';
-    }
-    if (desktop_prefs.clock_date) {
-        b[p++] = '0' + (t.year / 1000) % 10;
-        b[p++] = '0' + (t.year / 100) % 10;
-        b[p++] = '0' + (t.year / 10) % 10;
-        b[p++] = '0' + t.year % 10;
-        b[p++] = '-'; p += fmt2(b + p, t.month);
-        b[p++] = '-'; p += fmt2(b + p, t.day);
-        b[p++] = ' '; b[p++] = ' ';
-    }
-    int hour = desktop_prefs.clock_24h ? t.hour : (t.hour % 12 ? t.hour % 12 : 12);
-    p += fmt2(b + p, hour); b[p++] = ':'; p += fmt2(b + p, t.minute);
-    if (desktop_prefs.clock_seconds) { b[p++] = ':'; p += fmt2(b + p, t.second); }
-    if (!desktop_prefs.clock_24h) { b[p++] = ' '; b[p++] = t.hour < 12 ? 'A' : 'P'; b[p++] = 'M'; }
-    b[p] = 0;
-    fb_text(W - fb_text_width(b) - S(12), S(4), b, g_ui_dark ? rgb(228, 229, 235) : rgb(40, 40, 46));
-}
-
-/* -1 = closed; else an index into g_menu_title[]/g_menu_rows[]. */
-static int g_menu_open = -1;
-static int g_menu_item_hov = -1;
-
-/* ---- the "About" / "Shut Down" / "Restart" modal panel -------------------
- * A second, independent overlay rather than a fourth menu-item kind, because
- * it needs its own input capture the way Expose does: once it is up, a click
- * is either a button or a dismissal, never a window or dock click that leaks
- * through. Mutually exclusive with an open menu -- every path that opens one
- * closes the other first. */
-enum { OV_NONE, OV_ABOUT, OV_CONFIRM_SHUTDOWN, OV_CONFIRM_RESTART };
-static int g_overlay = OV_NONE;
-static int g_overlay_btn_hov = -1;   /* -1 none, 0 cancel, 1 the destructive action */
-
 /* This is keyboard ownership, not merely the highest painted window. Keep the
  * query, event producer, key router and IME on one answer: system chrome can
  * take the keyboard without raising a window, while the locked greeter is the
@@ -4600,35 +2809,6 @@ static int wm_keyboard_focus(void)
     return top_visible();
 }
 
-/* MOST RECENTLY USED, for the Cmd+Tab switcher: the focused window moves to
- * the front every time focus is published. Closed windows are filtered out
- * when the list is read, not here -- a slot can be reused, and `used` at read
- * time is the only honest answer to "is this still that window". */
-static int g_mru[MAXWIN], g_nmru;
-static void mru_touch(int wi)
-{
-    int k = 0;
-    while (k < g_nmru && g_mru[k] != wi) k++;
-    if (k == g_nmru && g_nmru < MAXWIN) g_nmru++;
-    if (k >= g_nmru) k = g_nmru - 1;
-    for (; k > 0; k--) g_mru[k] = g_mru[k - 1];
-    g_mru[0] = wi;
-}
-
-/* A panel is shown and hidden, not minimised: the same `minimized` state every
- * hit test, focus rule and compositor path already honours, but set without
- * the flight to the dock -- a panel has no dock icon to fly to. */
-static void panel_show(struct win *w, int show)
-{
-    if (!w->panel || w->minimized == !show) return;
-    dirty_win(w);
-    w->minimized = !show;
-    w->min_t0 = 0;
-    if (show) raise_win((int)(w - wins));
-    dirty_full(FULL_ZORDER_SYSTEM);
-    kprintf("[wm] panel %s win=%d\n", show ? "show" : "hide", (int)(w - wins));
-}
-
 static void wm_sync_focus(void)
 {
     int wi = wm_keyboard_focus();
@@ -4637,677 +2817,23 @@ static void wm_sync_focus(void)
      * never focused is not hidden on creation. */
     static int prev_focus = -1;
     if (prev_focus >= 0 && prev_focus != wi && prev_focus < MAXWIN &&
-        wins[prev_focus].used && wins[prev_focus].panel && !wins[prev_focus].minimized)
-        panel_show(&wins[prev_focus], 0);
+        wm_wins[prev_focus].used && wm_wins[prev_focus].panel && !wm_wins[prev_focus].minimized)
+        panel_show(&wm_wins[prev_focus], 0);
     prev_focus = wi = wm_keyboard_focus();
     if (wi >= 0 && (g_nmru == 0 || g_mru[0] != wi)) mru_touch(wi);
     for (int i = 0; i < MAXWIN; i++) {
-        struct win *w = &wins[i];
+        struct win *w = &wm_wins[i];
         if (!w->used || w->kind != WK_APP) continue;
         int focused = i == wi;
         if (w->focus_notified == focused) continue;
         w->focus_notified = focused;
         /* enqueue also wakes the per-window waiter. Focus must reach an app
          * sleeping in SYS_WAIT_EVENT(0) without a timer or another keystroke. */
-        enqueue(w, EV_WINDOW_FOCUS, focused, 0);
+        wm_enqueue(w, EV_WINDOW_FOCUS, focused, 0);
     }
     /* Preserve the locked-screen IME policy; the greeter still receives keys. */
     ime_ui_focus(g_locked ? -1 : wi);
     menu_model_sync();
-}
-
-#define AB_W S(320)
-#define AB_H S(190)
-#define CF_W S(300)
-#define CF_H S(130)
-
-static void overlay_box(struct drect *r)
-{
-    int w, h;
-    switch (g_overlay) {
-    case OV_ABOUT:                      w = AB_W; h = AB_H; break;
-    case OV_CONFIRM_SHUTDOWN:
-    case OV_CONFIRM_RESTART:            w = CF_W; h = CF_H; break;
-    default: r->x0 = r->y0 = r->x1 = r->y1 = 0; return;
-    }
-    r->x0 = (W - w) / 2; r->y0 = (H - h) / 2;
-    r->x1 = r->x0 + w;   r->y1 = r->y0 + h;
-}
-
-static void overlay_buttons(struct drect *cancel, struct drect *ok)
-{
-    struct drect p; overlay_box(&p);
-    int bw = S(112), bh = S(30), gap = S(14);
-    int by = p.y1 - bh - S(16);
-    ok->x1 = p.x1 - S(16); ok->x0 = ok->x1 - bw; ok->y0 = by; ok->y1 = by + bh;
-    cancel->x1 = ok->x0 - gap; cancel->x0 = cancel->x1 - bw; cancel->y0 = by; cancel->y1 = by + bh;
-}
-
-static int overlay_button_at(int x, int y)
-{
-    if (g_overlay != OV_CONFIRM_SHUTDOWN && g_overlay != OV_CONFIRM_RESTART) return -1;
-    struct drect c, o; overlay_buttons(&c, &o);
-    if (in_rect(x, y, c.x0, c.y0, c.x1 - c.x0, c.y1 - c.y0)) return 0;
-    if (in_rect(x, y, o.x0, o.y0, o.x1 - o.x0, o.y1 - o.y0)) return 1;
-    return -1;
-}
-
-/* Dirty wherever it IS, THEN change state -- the same order win_set_min uses
- * and for the same reason: the box a moment ago cannot be re-derived once
- * g_overlay has already moved on. */
-/* The panel's shadow is part of what it paints, so it is part of what opening
- * and closing must repaint -- see dirty_menu_dropdown() for what leaving it
- * out did to the menus. */
-#define OVERLAY_SH_DY   0
-#define OVERLAY_SH_BLUR wm_sh_ext(WMSH_OVERLAY)
-static void dirty_overlay(void)
-{
-    struct drect p; overlay_box(&p);
-    dirty_rect(p.x0 - OVERLAY_SH_BLUR, p.y0 - OVERLAY_SH_BLUR + OVERLAY_SH_DY,
-               p.x1 - p.x0 + 2 * OVERLAY_SH_BLUR, p.y1 - p.y0 + 2 * OVERLAY_SH_BLUR);
-}
-
-static void overlay_close(void)
-{
-    if (g_overlay == OV_NONE) return;
-    dirty_overlay();
-    g_overlay = OV_NONE; g_overlay_btn_hov = -1;
-}
-
-static void overlay_open(int kind)
-{
-    g_overlay = kind; g_overlay_btn_hov = -1;
-    dirty_overlay();
-}
-
-/* ---- the dropdown's items -------------------------------------------------
- * One row array per menu (g_menu_rows), walked by both the painter and the
- * hit-tester below so a row's picture and its hitbox are the same
- * computation. MB_SEP is a separator: drawn as a hairline, never hit-tested.
- * The kernel's own menus are these tables; an app's come from its blob. The
- * `key` column is the Cmd shortcut drawn at the right. */
-struct kmi { const char *label; uint16_t id; uint8_t flags; char key; };
-static const struct kmi KM_LOGO[] = {
-    { "关于本机", 0, 0, 0 }, { "设置…", 1, 0, ',' }, { "", 2, MB_SEP, 0 },
-    { "关机…", 3, 0, 0 }, { "重新启动…", 4, 0, 0 },
-};
-/* File/View (no app menus) and Window (after them) share ids: 0 close,
- * 1 minimise, 2 Expose -- one switch in menu_item_fire serves all three. */
-static const struct kmi KM_FILE[] = { { "关闭窗口", 0, 0, 'W' }, { "最小化", 1, 0, 'M' } };
-static const struct kmi KM_VIEW[] = { { "显示所有窗口", 2, 0, 'E' } };
-static const struct kmi KM_WINDOW[] = {
-    { "最小化", 1, 0, 'M' }, { "关闭窗口", 0, 0, 'W' }, { "", 2, MB_SEP, 0 },
-    { "显示所有窗口", 2, 0, 'E' },
-};
-
-static void menu_add_kernel(int kind, const char *title, const struct kmi *t, int n)
-{
-    int m = g_nmenu++;
-    g_menu_kind[m] = (uint8_t)kind;
-    scopy(g_menu_title[m], title, sizeof g_menu_title[m]);
-    g_menu_nitems[m] = n;
-    for (int i = 0; i < n; i++) {
-        struct mrow *r = &g_menu_rows[m][i];
-        scopy(r->label, t[i].label, sizeof r->label);
-        r->id = t[i].id; r->flags = t[i].flags; r->key = t[i].key;
-    }
-}
-
-/* Rebuild the bar for whatever window is on top, if that changed or it
- * published new menus. Cheap when nothing changed (two compares), so it is
- * called from wm_sync_focus, after a publish, and once per desktop pass. */
-static void menu_model_sync(void)
-{
-    if (g_menu_open >= 0) return;
-    int src = g_locked ? -1 : top_visible();
-    if (src >= 0 && (!wins[src].used || wins[src].kind != WK_APP)) src = -1;
-    unsigned gen = src >= 0 ? wins[src].menus_gen : 0;
-    if (src == g_menu_src && gen == g_menu_src_gen) return;
-    int had_app = g_menu_src >= 0 && g_menu_src_gen != 0;
-    g_nmenu = 0;
-    menu_add_kernel(MK_LOGO, "LogitOS", KM_LOGO, (int)(sizeof KM_LOGO / sizeof KM_LOGO[0]));
-    const struct mb_set *ms = src >= 0 ? wins[src].menus : 0;
-#ifdef WM_MENU_NEGCTL_IGNORE_APP
-    ms = 0;                               /* the control: a bar that never shows the app's menus */
-#endif
-    if (ms) {
-        for (int k = 0; k < ms->n; k++) {
-            int m = g_nmenu++;
-            g_menu_kind[m] = MK_APP;
-            scopy(g_menu_title[m], ms->m[k].title, sizeof g_menu_title[m]);
-            g_menu_nitems[m] = ms->m[k].n;
-            for (int i = 0; i < ms->m[k].n; i++) {
-                struct mrow *r = &g_menu_rows[m][i];
-                const struct mb_item *it = &ms->m[k].it[i];
-                scopy(r->label, it->label, sizeof r->label);
-                r->id = it->id; r->flags = it->flags; r->key = it->key;
-            }
-        }
-        menu_add_kernel(MK_WINDOW, "窗口", KM_WINDOW, (int)(sizeof KM_WINDOW / sizeof KM_WINDOW[0]));
-    } else {
-        menu_add_kernel(MK_FILE, "文件", KM_FILE, (int)(sizeof KM_FILE / sizeof KM_FILE[0]));
-        menu_add_kernel(MK_VIEW, "显示", KM_VIEW, (int)(sizeof KM_VIEW / sizeof KM_VIEW[0]));
-    }
-    int first = g_menu_src == -2;
-    g_menu_src = src; g_menu_src_gen = ms ? gen : 0;
-    if (first || had_app || ms) {
-        /* Only a change of TITLES repaints the bar or re-reports it: focus
-         * moving between two apps that both use File/View changes nothing a
-         * person can see. */
-        g_menu_reported = 0;
-        if (!first) wm_damage_menubar();
-        kprintf("[wm] menus win=%d n=%d", src, g_nmenu);
-        for (int i = 0; i < g_nmenu; i++) kprintf(" %s", g_menu_title[i]);
-        kprintf("\n");
-    }
-}
-
-#define MI_ROW_H S(22)
-#define MI_SEP_H S(9)
-#define MI_PAD_X S(14)
-#define MI_PAD_Y S(6)
-#define MI_CHECK_W S(16)                  /* the tick column, only in a menu that has a checked row */
-#define MI_KEY_GAP S(28)                  /* label to shortcut, at least */
-static int menu_row_h(const struct mrow *it) { return (it->flags & MB_SEP) ? MI_SEP_H : MI_ROW_H; }
-static int menu_has_check(int m)
-{
-    for (int i = 0; i < g_menu_nitems[m]; i++) if (g_menu_rows[m][i].flags & MB_CHECKED) return 1;
-    return 0;
-}
-/* "⌘S" -- the glyph comes from /fonts/text.ttf through the shaper's fallback
- * chain; ui.ttf does not carry U+2318. */
-static void menu_key_text(char key, char out[8])
-{
-    out[0] = (char)0xE2; out[1] = (char)0x8C; out[2] = (char)0x98;
-    out[3] = key; out[4] = 0;
-}
-
-/* Same discipline as menu_title_hit: the dropdown's geometry is computed once
- * here and read by the painter, the hit-tester and dmg_expand, so none of the
- * three can disagree about where the panel is. */
-static void menu_dropdown_box(struct drect *r)
-{
-    if (g_menu_open < 0) { r->x0 = r->y0 = r->x1 = r->y1 = 0; return; }
-    const struct mrow *items = g_menu_rows[g_menu_open];
-    int n = g_menu_nitems[g_menu_open], maxw = 0;
-    for (int i = 0; i < n; i++) {
-        if (items[i].flags & MB_SEP) continue;
-        int w = fb_text_width(items[i].label);
-        if (items[i].key) { char k[8]; menu_key_text(items[i].key, k); w += MI_KEY_GAP + fb_text_width(k); }
-        if (w > maxw) maxw = w;
-    }
-    int panel_w = maxw + 2 * MI_PAD_X + (menu_has_check(g_menu_open) ? MI_CHECK_W : 0);
-    if (panel_w < S(170)) panel_w = S(170);
-    int panel_h = 2 * MI_PAD_Y;
-    for (int i = 0; i < n; i++) panel_h += menu_row_h(&items[i]);
-    int x0 = g_menu_tx[g_menu_open] - S(10);
-    if (x0 < 0) x0 = 0;
-    if (x0 + panel_w > W) x0 = W - panel_w;
-    r->x0 = x0; r->y0 = MBH;
-    r->x1 = x0 + panel_w; r->y1 = MBH + panel_h;
-}
-
-/* The dropdown's drop shadow, and the box it paints: the panel grown by the
- * blur on every side and by the offset below. Damage for opening, switching
- * and closing a menu is THIS box, not menu_dropdown_box() -- the panel alone
- * left each closed menu's shadow on the desktop as a dark streak under its
- * title (reported from `make run`, 2026-10-26). Same rule as sw_box(). */
-#define MENU_SH_DY   0
-#define MENU_SH_BLUR wm_sh_ext(WMSH_MENU)
-static void dirty_menu_dropdown(void)
-{
-    struct drect p; menu_dropdown_box(&p);
-    if (p.x1 <= p.x0) return;
-#ifdef WM_MENU_SHADOW_NEGCTL
-    dirty_rect(p.x0, p.y0, p.x1 - p.x0, p.y1 - p.y0);   /* the control: the panel only */
-#else
-    dirty_rect(p.x0 - MENU_SH_BLUR, p.y0 - MENU_SH_BLUR + MENU_SH_DY,
-               p.x1 - p.x0 + 2 * MENU_SH_BLUR, p.y1 - p.y0 + 2 * MENU_SH_BLUR);
-#endif
-}
-
-/* One report, one call site each for "just opened" and "just switched" (see
- * both callers below) -- same "ask the guest, don't re-derive its geometry in
- * Python" reasoning as menu_bar_layout()'s report above: the panel's exact
- * pixel box depends on font metrics a test driver has no business computing.
- * Each row follows, so a driver can click "Select All" by name. */
-static void menu_report_open(void)
-{
-    struct drect p; menu_dropdown_box(&p);
-    kprintf("[wm] menu open %d x0 %d y0 %d x1 %d y1 %d\n", g_menu_open, p.x0, p.y0, p.x1, p.y1);
-    int y = p.y0 + MI_PAD_Y;
-    for (int i = 0; i < g_menu_nitems[g_menu_open]; i++) {
-        const struct mrow *it = &g_menu_rows[g_menu_open][i];
-        int h = menu_row_h(it);
-        if (!(it->flags & MB_SEP))
-            kprintf("[wm] menu row %d '%s' y0 %d y1 %d\n", i, it->label, y, y + h);
-        y += h;
-    }
-}
-
-/* The item under (px,py) in menu `mi`, or -1 (outside the panel, or a
- * separator). `*out_row` (if given) comes back as that row's own rect, which
- * is what the hover highlight paints. */
-static int menu_item_at(int mi, int px, int py, struct drect *out_row)
-{
-    if (mi < 0 || mi != g_menu_open) return -1;
-    struct drect p; menu_dropdown_box(&p);
-    if (px < p.x0 || px >= p.x1 || py < p.y0 || py >= p.y1) return -1;
-    int y = p.y0 + MI_PAD_Y;
-    const struct mrow *items = g_menu_rows[mi];
-    int n = g_menu_nitems[mi];
-    for (int i = 0; i < n; i++) {
-        int h = menu_row_h(&items[i]);
-        if (!(items[i].flags & MB_SEP) && py >= y && py < y + h) {
-            if (out_row) { out_row->x0 = p.x0; out_row->x1 = p.x1; out_row->y0 = y; out_row->y1 = y + h; }
-            return i;
-        }
-        y += h;
-    }
-    return -1;
-}
-
-/* Close and Minimize need a real focused app window; an app's own item is
- * enabled unless it said otherwise; everything else is always available
- * (Expose is claimed even with zero windows -- see wm_shortcut). */
-static int menu_item_enabled(int mi, int idx)
-{
-    const struct mrow *r = &g_menu_rows[mi][idx];
-    if (r->flags & (MB_SEP | MB_DISABLED)) return 0;
-    int k = g_menu_kind[mi];
-    if ((k == MK_FILE || k == MK_WINDOW) && r->id <= 1) {
-        int wi = top_visible();
-        return wi >= 0 && wins[wi].used && wins[wi].kind == WK_APP;
-    }
-    return 1;
-}
-
-static void menu_close(void)
-{
-    if (g_menu_open < 0) return;
-    dirty_menu_dropdown();
-    g_menu_open = -1; g_menu_item_hov = -1;
-    kprintf("[wm] menu closed\n");        /* a test syncs on this rather than guessing a delay */
-}
-
-/* An app's item, chosen: EV_MENU to the window that published it -- if it is
- * still that window. The slot can have been reaped and reused since the model
- * was built; menus_gen is never reused, so it tells the two tenants apart. */
-static void menu_send_app(int mi, int idx, const char *how)
-{
-    int wi = g_menu_src;
-    if (wi < 0 || !wins[wi].used || wins[wi].kind != WK_APP ||
-        !wins[wi].menus || wins[wi].menus_gen != g_menu_src_gen) return;
-    const struct mrow *r = &g_menu_rows[mi][idx];
-    kprintf("[wm] menu %s win=%d id=%d '%s'\n", how, wi, r->id, r->label);
-#ifndef WM_MENU_NEGCTL_DROP_EVENT
-    enqueue(&wins[wi], EV_MENU, r->id, mi - 1);   /* b: the menu's index in the app's blob */
-#endif
-}
-
-/* The one place a menu item's action actually happens. Closes the menu on
- * every reachable path -- a fired action always dismisses, exactly like a
- * real menu -- so no caller has to remember to. */
-static void menu_item_fire(int mi, int idx)
-{
-    int kind = g_menu_kind[mi], id = g_menu_rows[mi][idx].id;
-    if (kind == MK_LOGO) {
-        switch (id) {
-        case 0: menu_close(); overlay_open(OV_ABOUT); return;
-        case 1: menu_close(); wm_launch("settings.aex", ""); return;
-        case 3: menu_close(); overlay_open(OV_CONFIRM_SHUTDOWN); return;
-        case 4: menu_close(); overlay_open(OV_CONFIRM_RESTART); return;
-        default: menu_close(); return;                    /* the separator: unreachable, but safe */
-        }
-    } else if (kind == MK_APP) {
-        menu_close();
-        menu_send_app(mi, idx, "fire");
-    } else {                                               /* File, View, Window */
-        int wi = top_visible();
-        menu_close();
-        if (id == 2) { ex_enter(); return; }
-        if (wi < 0 || !wins[wi].used || wins[wi].kind != WK_APP) return;
-        struct win *w = &wins[wi];
-        if (id == 0) enqueue(w, EV_CLOSE, 0, 0);           /* same event the traffic light sends */
-        else if (id == 1) win_set_min(w, 1);
-    }
-}
-
-/* Cmd+<key> with no system meaning, and the top window published an item
- * with that shortcut: the same EV_MENU a click on it sends. This is what makes
- * the hint drawn beside the label TRUE -- an app's shortcuts are the ones in
- * its menus, and the app handles each command once, as a menu id. */
-static int menu_key(int c)
-{
-    menu_model_sync();
-    if (c >= 'a' && c <= 'z') c = c - 'a' + 'A';
-    for (int m = 0; m < g_nmenu; m++) {
-        if (g_menu_kind[m] != MK_APP) continue;
-        for (int i = 0; i < g_menu_nitems[m]; i++) {
-            const struct mrow *r = &g_menu_rows[m][i];
-            int k = r->key;
-            if (k >= 'a' && k <= 'z') k = k - 'a' + 'A';
-            if (!k || k != c || !menu_item_enabled(m, i)) continue;
-            menu_send_app(m, i, "key");
-            return 1;
-        }
-    }
-    return 0;
-}
-
-static void draw_menu_dropdown(void)
-{
-    struct drect p; menu_dropdown_box(&p);
-    int w = p.x1 - p.x0, h = p.y1 - p.y0;
-    wm_cast_shadow(WMSH_MENU, p.x0, p.y0, w, h, S(10), 256, 255);
-    if (g_ui_dark) profiled_glass(p.x0, p.y0, w, h, S(DROPDOWN_GLASS_PT), 30, 30, 38, 165);
-    else           profiled_glass(p.x0, p.y0, w, h, S(DROPDOWN_GLASS_PT), 250, 250, 255, 190);
-
-    unsigned ac = settings_get_color("ui.accent", 0x5E96FF);
-    uint8_t ar = (uint8_t)(ac >> 16), ag = (uint8_t)(ac >> 8), ab = (uint8_t)ac;
-
-    const struct mrow *items = g_menu_rows[g_menu_open];
-    int n = g_menu_nitems[g_menu_open];
-    int lx = p.x0 + MI_PAD_X + (menu_has_check(g_menu_open) ? MI_CHECK_W : 0);
-    int y = p.y0 + MI_PAD_Y;
-    for (int i = 0; i < n; i++) {
-        int rh = menu_row_h(&items[i]);
-        if (items[i].flags & MB_SEP) {
-            fb_fill_rect(p.x0 + S(8), y + rh / 2, w - S(16), S(1),
-                         g_ui_dark ? rgb(70, 70, 80) : rgb(214, 214, 220));
-        } else {
-            int enabled = menu_item_enabled(g_menu_open, i);
-            int hov = enabled && i == g_menu_item_hov;
-            if (hov) fb_blend_round_rect(p.x0 + S(4), y, w - S(8), rh, S(6), ar, ag, ab, 200);
-            uint32_t ink;
-            if (!enabled) ink = g_ui_dark ? rgb(112, 112, 120) : rgb(180, 180, 186);
-            else if (hov)  ink = rgb(255, 255, 255);
-            else           ink = g_ui_dark ? rgb(228, 229, 235) : rgb(40, 40, 48);
-            if (items[i].flags & MB_CHECKED) fb_text(p.x0 + MI_PAD_X - S(2), y + S(3), "\xe2\x9c\x93", ink);
-            fb_text(lx, y + S(3), items[i].label, ink);
-            if (items[i].key) {
-                char k[8]; menu_key_text(items[i].key, k);
-                uint32_t kink = hov ? ink : (g_ui_dark ? rgb(150, 150, 160) : rgb(130, 130, 138));
-                if (!enabled) kink = ink;
-                fb_text(p.x1 - MI_PAD_X - fb_text_width(k), y + S(3), k, kink);
-            }
-        }
-        y += rh;
-    }
-}
-
-/* ---- decimal formatting for the About panel -------------------------------
- * No printf in the kernel's draw path; two tiny helpers, same spirit as fmt2
- * above but unbounded (a frame count or a byte total is not two digits). */
-static int str_copy(char *d, const char *s) { int i = 0; while (s[i]) { d[i] = s[i]; i++; } return i; }
-static int fmt_u(char *d, unsigned long v)
-{
-    char tmp[24]; int n = 0;
-    if (v == 0) { d[0] = '0'; return 1; }
-    while (v) { tmp[n++] = (char)('0' + (int)(v % 10)); v /= 10; }
-    for (int i = 0; i < n; i++) d[i] = tmp[n - 1 - i];
-    return n;
-}
-
-static void draw_overlay_panel(void)
-{
-    struct drect p; overlay_box(&p);
-    int w = p.x1 - p.x0, h = p.y1 - p.y0;
-    wm_cast_shadow(WMSH_OVERLAY, p.x0, p.y0, w, h, S(14), 256, 255);
-    if (g_ui_dark) profiled_glass(p.x0, p.y0, w, h, S(OVERLAY_GLASS_PT), 28, 28, 36, 195);
-    else           profiled_glass(p.x0, p.y0, w, h, S(OVERLAY_GLASS_PT), 250, 250, 255, 210);
-    uint32_t ink = g_ui_dark ? rgb(232, 233, 238) : rgb(40, 40, 48);
-    uint32_t dim = g_ui_dark ? rgb(172, 173, 182) : rgb(96, 96, 104);
-
-    if (g_overlay == OV_ABOUT) {
-        int tx = p.x0 + S(24), ty = p.y0 + S(20);
-        fb_fill_circle(tx + S(7), ty + S(7), S(14), rgb(94, 150, 255));
-        fb_text(tx + S(34), ty + S(2), "LogitOS", ink);
-        ty += S(34);
-        fb_text(tx, ty, "关于本机", ink); ty += S(26);
-        char line[64]; int n;
-        fb_text(tx, ty, "版本：M27", dim); ty += S(20);
-        n = str_copy(line, "内存：");
-        n += fmt_u(line + n, (unsigned long)(pmm_total_bytes() / (1024 * 1024)));
-        n += str_copy(line + n, " MB"); line[n] = 0;
-        fb_text(tx, ty, line, dim); ty += S(20);
-        n = str_copy(line, "分辨率：");
-        n += fmt_u(line + n, (unsigned long)W);
-        n += str_copy(line + n, " x ");
-        n += fmt_u(line + n, (unsigned long)H); line[n] = 0;
-        fb_text(tx, ty, line, dim); ty += S(20);
-        n = str_copy(line, "处理器：");
-        n += fmt_u(line + n, (unsigned long)smp_cpu_count()); line[n] = 0;
-        fb_text(tx, ty, line, dim);
-        return;
-    }
-
-    const char *msg = g_overlay == OV_CONFIRM_SHUTDOWN ? "现在关机吗？"
-                                                         : "现在重新启动吗？";
-    fb_text(p.x0 + (w - fb_text_width(msg)) / 2, p.y0 + S(30), msg, ink);
-    struct drect c, o; overlay_buttons(&c, &o);
-    int hb = g_overlay_btn_hov;
-    uint32_t cbg = hb == 0 ? (g_ui_dark ? rgb(72, 72, 82) : rgb(220, 220, 226))
-                           : (g_ui_dark ? rgb(56, 56, 64) : rgb(236, 236, 240));
-    fb_round_rect(c.x0, c.y0, c.x1 - c.x0, c.y1 - c.y0, S(7), cbg);
-    int ctw = fb_text_width("取消");
-    fb_text(c.x0 + ((c.x1 - c.x0) - ctw) / 2, c.y0 + S(7), "取消", ink);
-
-    uint32_t okbg = hb == 1 ? rgb(255, 82, 72) : rgb(230, 60, 52);
-    fb_round_rect(o.x0, o.y0, o.x1 - o.x0, o.y1 - o.y0, S(7), okbg);
-    const char *olabel = g_overlay == OV_CONFIRM_SHUTDOWN ? "关机" : "重新启动";
-    int otw = fb_text_width(olabel);
-    fb_text(o.x0 + ((o.x1 - o.x0) - otw) / 2, o.y0 + S(7), olabel, rgb(255, 255, 255));
-}
-
-/* ===========================================================================
- * THE Cmd+Tab SWITCHER ("Fluid" P2)
- *
- * Hold Cmd, press Tab: a panel of the open windows in most-recently-used
- * order, the second one selected; Tab / Shift+Tab move the selection; letting
- * go of Cmd switches to it; Escape cancels. A quick Cmd+Tab -- released before
- * SW_SHOW_MS -- switches without ever drawing the panel, which is what makes
- * one tap flip between the two most recent windows.
- *
- * It needed an event this machine did not have: the RELEASE of Cmd. The
- * keyboard driver dropped every release until key-up existed (wm_key_up,
- * wm_mods_changed), which is why Cmd+Tab used to rotate the z-order one step
- * per press with nothing on screen. The WM loop also re-reads kbd_mods() every
- * pass while the panel is open, so a lost release cannot strand it.
- * ======================================================================== */
-#define SW_SHOW_MS 150
-static struct { int open, shown, n, sel; int list[MAXWIN]; uint64_t t0; } g_sw;
-
-static void sw_geom(int *cell, int *x0, int *y0, int *w, int *h)
-{
-    int c = S(100), maxw = W - S(80);
-    if (g_sw.n > 0 && g_sw.n * c + S(24) > maxw) c = (maxw - S(24)) / g_sw.n;
-    *cell = c;
-    *w = g_sw.n * c + S(24);
-    *h = c + S(40);
-    *x0 = (W - *w) / 2;
-    *y0 = (H - *h) / 2;
-}
-
-static void sw_box(struct drect *r)
-{
-    if (!g_sw.shown) { r->x0 = r->y0 = r->x1 = r->y1 = 0; return; }
-    int c, x0, y0, w, h;
-    sw_geom(&c, &x0, &y0, &w, &h);
-    int eb = wm_sh_ext(WMSH_OVERLAY);                    /* the shadow too */
-    r->x0 = x0 - eb; r->y0 = y0 - eb;
-    r->x1 = x0 + w + eb; r->y1 = y0 + h + eb;
-}
-static void sw_glass_box(struct drect *r)
-{
-    int c, x0, y0, w, h;
-    sw_geom(&c, &x0, &y0, &w, &h);
-    r->x0 = x0; r->y0 = y0; r->x1 = x0 + w; r->y1 = y0 + h;
-}
-static void dirty_switcher(void)
-{ struct drect r; sw_box(&r); if (r.x1 > r.x0) dirty_rect(r.x0, r.y0, r.x1 - r.x0, r.y1 - r.y0); }
-
-static void draw_switcher(void)
-{
-    int cell, x0, y0, w, h;
-    sw_geom(&cell, &x0, &y0, &w, &h);
-    wm_cast_shadow(WMSH_OVERLAY, x0, y0, w, h, S(18), 256, 255);
-    if (g_ui_dark) profiled_glass(x0, y0, w, h, S(OVERLAY_GLASS_PT), 28, 28, 36, 195);
-    else           profiled_glass(x0, y0, w, h, S(OVERLAY_GLASS_PT), 250, 250, 255, 210);
-    int isz = cell * 64 / 100;
-    for (int i = 0; i < g_sw.n; i++) {
-        int cx = x0 + S(12) + i * cell + cell / 2, cy = y0 + S(12) + cell / 2 - S(6);
-        if (i == g_sw.sel)
-            fb_blend_round_rect(x0 + S(12) + i * cell + S(4), y0 + S(8), cell - S(8), cell - S(2), S(14),
-                                g_ui_dark ? 255 : 0, g_ui_dark ? 255 : 0, g_ui_dark ? 255 : 0, g_ui_dark ? 40 : 28);
-        struct win *sw = &wins[g_sw.list[i]];
-        if (nreg > 0) dock_tile(dock_slot_for(sw), cx, cy, isz);
-        else fb_fill_circle(cx, cy, isz / 2, rgb(94, 150, 255));
-    }
-    const char *t = wins[g_sw.list[g_sw.sel]].title;
-    int tw = fb_text_width(t);
-    fb_text(x0 + (w - tw) / 2, y0 + h - S(30), t, g_ui_dark ? rgb(232, 233, 238) : rgb(40, 40, 48));
-}
-
-static void sw_close(void)
-{
-    if (g_sw.shown) dirty_switcher();
-    g_sw.open = g_sw.shown = 0;
-}
-
-static void sw_open(int dir)
-{
-    int n = 0, seen[MAXWIN] = {0};
-    for (int k = 0; k < g_nmru; k++) {
-        int wi = g_mru[k];
-        if (wi < 0 || wi >= MAXWIN || seen[wi] || !wins[wi].used || wins[wi].kind != WK_APP || wins[wi].panel) continue;
-        seen[wi] = 1; g_sw.list[n++] = wi;
-    }
-    for (int k = norder - 1; k >= 0; k--) {            /* never focused yet: z-order */
-        int wi = order[k];
-        if (seen[wi] || !wins[wi].used || wins[wi].kind != WK_APP || wins[wi].panel) continue;
-        seen[wi] = 1; g_sw.list[n++] = wi;
-    }
-    if (n < 2) return;
-    g_sw.n = n;
-    g_sw.sel = dir < 0 ? n - 1 : 1;
-    g_sw.open = 1; g_sw.shown = 0;
-    g_sw.t0 = anim_stamp();
-    kprintf("[wm] switcher open n=%d sel=%d\n", n, g_sw.sel);
-}
-
-static void sw_step(int dir)
-{
-    g_sw.sel = (g_sw.sel + (dir < 0 ? g_sw.n - 1 : 1)) % g_sw.n;
-    if (g_sw.shown) dirty_switcher();
-    kprintf("[wm] switcher step sel=%d\n", g_sw.sel);
-}
-
-static void sw_commit(void)
-{
-    int wi = g_sw.list[g_sw.sel];
-    sw_close();
-    if (wi < 0 || wi >= MAXWIN || !wins[wi].used) return;
-    win_set_min(&wins[wi], 0);
-    raise_win(wi);
-    dirty_full(FULL_ZORDER_SYSTEM);
-    kprintf("[wm] switcher commit win=%d '%s'\n", wi, wins[wi].title);
-}
-
-static void sw_cancel(void)
-{
-    sw_close();
-    kprintf("[wm] switcher cancel\n");
-}
-
-/* Called every WM pass: reveal the panel once it has been held long enough to
- * be a browse rather than a tap, and never leave it open without Cmd. */
-static void sw_tick(void)
-{
-    if (!g_sw.open) return;
-    if (!(kbd_mods() & EV_MOD_SUPER)) { sw_commit(); return; }
-    if (!g_sw.shown && (anim_elapsed(g_sw.t0) >= SW_SHOW_MS || wm_reduce_motion)) {
-        g_sw.shown = 1;
-        dirty_switcher();
-    }
-}
-
-/* The file browser is now the ring-3 Finder app (src/apps/gui/files.c), launched
- * at boot below; the old in-kernel WK_FINDER window was folded into it. */
-
-/* ---------- window frame + compositing ---------- */
-/* The three nested constant-alpha bands that used to be the window shadow are
- * gone; fb_shadow() is the one shadow in the system now, and it keeps the
- * perimeter-only property those bands existed for -- see the comment on it in
- * fb.c, which carries their reasoning forward. */
-
-/* THE TITLEBAR/CONTENT SEAM (unit F, item 5). Both draw_frame_body and
- * draw_frame used to fill this hairline THEMSELVES, before their caller's
- * blit_content -- which starts at the exact same row, y+TBH, and is opaque.
- * The hairline was therefore painted and immediately overpainted, every
- * frame, and had never once reached the screen: what actually drew the
- * boundary was the raw jump from the titlebar's glass/gradient to the
- * content surface's flat fill, an accidental edge rather than a deliberate
- * one, and a vibrant material meeting a flat one with literally nothing
- * between them is exactly the "hard step" this item names. One function, and
- * BOTH call sites now invoke it AFTER blit_content -- on top of the
- * content's own first row, which is the only way to draw a pixel that a
- * same-frame full-opacity blit will not immediately erase -- so the pixel
- * that was always intended to be there finally is. */
-static void draw_titlebar_sep(int x, int y, int ww)
-{
-    fb_fill_rect(x, y, ww, S(1), g_ui_dark ? rgb(60, 60, 70) : rgb(214, 214, 220));
-}
-
-/* The window body (rounded bg + gradient titlebar + traffic lights + title) drawn
- * at an explicit rect, so it can be rendered into an off-screen surface at origin
- * for the open-pop scale animation as well as straight into `back`. */
-static void draw_frame_body(int x, int y, int ww, int wh, const char *title, int focused)
-{
-    fb_round_rect(x, y, ww, wh, S(10), g_ui_dark ? rgb(30, 30, 36) : rgb(250, 250, 252));
-    uint32_t tbtop, tbbot;
-    if (g_ui_dark) { tbtop = focused ? rgb(60, 60, 70) : rgb(40, 40, 48); tbbot = focused ? rgb(44, 44, 52) : rgb(34, 34, 40); }
-    else           { tbtop = focused ? rgb(246, 246, 250) : rgb(250, 250, 252); tbbot = focused ? rgb(226, 227, 234) : rgb(240, 240, 244); }
-    fb_round_rect_vgrad(x, y, ww, TBH, S(10), tbtop, tbbot);
-    /* NOT the separator -- see draw_titlebar_sep above; the caller draws it
-     * after blit_content, or it is covered before it is ever seen. */
-    uint32_t off = g_ui_dark ? rgb(80, 80, 90) : rgb(205, 205, 210);
-    fb_fill_circle(x + S(16), y + S(15), S(6), focused ? rgb(255, 95, 86) : off);  /* close */
-    fb_fill_circle(x + S(34), y + S(15), S(6), focused ? rgb(254, 188, 46) : off);
-    fb_fill_circle(x + S(52), y + S(15), S(6), focused ? rgb(40, 200, 64) : off);
-    int tw = fb_text_width(title);
-    fb_text(x + (ww - tw) / 2, y + S(7), title, g_ui_dark ? rgb(210, 211, 218) : rgb(70, 70, 78));
-}
-
-/* Normal (non-animating) window frame: a LIQUID GLASS titlebar that frosts +
- * refracts the live backdrop behind the window's top. Drawn while `back` still
- * holds the backdrop (the app's content surface is blitted afterwards and covers
- * the body), so the glass samples real content, not the window's own fill. The
- * glass strip runs TITLEBAR_H+10 tall so its rounded bottom corners hide under
- * the content surface; the top corners round the window. (draw_frame_body, with a
- * solid gradient titlebar, is used only by the open-pop temp render, which has no
- * backdrop to sample.) */
-static void draw_frame(struct win *w, int focused)
-{
-    int x = w->x, y = w->y, ww = w->w, wh = w->h;
-    if (!w->zoomed)                       /* a zoom fills the desktop: nothing to cast on */
-        wm_cast_shadow(focused ? WMSH_WIN_FOCUSED : WMSH_WIN_UNFOCUSED, x, y, ww, wh, S(10), 256, 255);
-    if (w->panel) return;                 /* a panel is its canvas and its shadow */
-    uint8_t a = focused ? (g_ui_dark ? 150 : 104) : (g_ui_dark ? 180 : 140);
-    /* Zoomed, the titlebar runs on from the menu bar edge to edge, so its top,
-     * left and right are CUT like the menu bar's own (no bevel, square): two
-     * rounded bars stacked one under the other read as a doubled header. */
-    unsigned cut = w->zoomed ? (GLASS_CUT_TOP | GLASS_CUT_LEFT | GLASS_CUT_RIGHT) : 0;
-    if (g_ui_dark) profiled_glass_cut(x, y, ww, TBH + S(10), S(TITLE_GLASS_PT), 30, 30, 40, a, cut);
-    else           profiled_glass_cut(x, y, ww, TBH + S(10), S(TITLE_GLASS_PT), 250, 250, 255, a, cut);
-    /* NOT the separator -- see draw_titlebar_sep above; the caller draws it
-     * after blit_content, or it is covered before it is ever seen. */
-    uint32_t off = g_ui_dark ? rgb(80, 80, 90) : rgb(205, 205, 210);
-    fb_fill_circle(x + S(16), y + S(15), S(6), focused ? rgb(255, 95, 86) : off);  /* close */
-    fb_fill_circle(x + S(34), y + S(15), S(6), focused ? rgb(254, 188, 46) : off);
-    fb_fill_circle(x + S(52), y + S(15), S(6), focused ? rgb(40, 200, 64) : off);
-    int tw = fb_text_width(w->title);
-    fb_text(x + (ww - tw) / 2, y + S(7), w->title, g_ui_dark ? rgb(210, 211, 218) : rgb(70, 70, 78));
 }
 
 static const char *cursor_bmp[] = {
@@ -5353,7 +2879,6 @@ static int cursor_box[CUR_NSHAPES][2];   /* w,h actually used, from the hotspot 
 
 /* Cursor pixels use the framebuffer's device-native byte lanes. The helper
  * lives beside the unpack path below, but the OpenLogit builders call it first. */
-static void device_shifts(int *rs, int *gs, int *bs);
 static int cur_shape = CUR_ARROW;
 
 /* Scratch surface for build_arrow(), reused across all four calls (they run
@@ -5378,7 +2903,6 @@ static unsigned char arrow_scratch[CUR_PLANE * CUR_PLANE * 4];
  * scale step -- turning the test inside out like this is what makes the
  * shape a path instead of a bespoke rasterizer, and it is why the diagonals
  * still cost nothing extra over the axis-aligned pair. */
-static void device_shifts(int *rs,int *gs,int *bs);
 static void build_arrow(uint32_t *dst, int ux, int uy)
 {
     const int c = CUR_PLANE / 2;
@@ -5584,10 +3108,10 @@ static void device_shifts(int *rs, int *gs, int *bs)
  * and device_shifts() above is what makes unpacking it possible without one.
  * Full alpha keeps the cheap direct fb_put -- no read, no blend math -- since
  * that is still the overwhelming common case (the shape's solid interior). */
-static void draw_cursor_back(int x, int y)
+static void draw_cursor_back(const struct wm_target *t, int x, int y)
 {
     struct ol_display draw={0};
-    struct ol_pixel_target target={.px=back,.w=W,.h=H};
+    struct ol_pixel_target target={.px=t->px,.w=t->stride,.h=wm_H};
     int rs,gs,bs;device_shifts(&rs,&gs,&bs);
     if(ol_display_bind(&draw,&target,rs,gs,bs)!=OL_OK)return;
     ol_display_blit_argb(&draw,x-cursor_hot[cur_shape][0],y-cursor_hot[cur_shape][1],
@@ -5622,22 +3146,6 @@ static int cursor_for_edge(int e)
         return ((e & RZ_L) && (e & RZ_T)) || ((e & RZ_R) && (e & RZ_B))
                ? CUR_NWSE : CUR_NESW;
     return horiz ? CUR_EW : CUR_NS;
-}
-
-/* Open "pop" animation: 0.85 -> 1.0 scale over ~0.14s (easeOutCubic). Returns the
- * scale in /256 (256 = full), or 0 when settled / not animating. */
-static uint32_t *anim_buf;
-static int anim_buf_n;
-/* PURE NOW -- it used to clear open_t0 on the frame it expired, which made
- * "where is this window" a question that changed the answer to the next one.
- * wm_anim_tick() owns every timer's end; see the note on win_draw_rect. */
-static int win_open_scale(const struct win *w)
-{
-    if (!w->open_t0 || wm_reduce_motion) return 0;
-    uint64_t e = anim_elapsed(w->open_t0);
-    if (e >= OPEN_DUR_MS) return 0;
-    int eased = ol_ease256(OL_EASE_OUT_CUBIC, (int)(e * 256 / OPEN_DUR_MS));
-    return 216 + (256 - 216) * eased / 256;            /* 0.84x -> 1.0x over ~0.16s */
 }
 
 /* ---- WHY THE ANIMATED PATH IS BILINEAR ------------------------------------
@@ -5682,86 +3190,15 @@ static int win_open_scale(const struct win *w)
  * one machine whose framebuffer disagrees. Three calls, once, at first use. */
 /* Correction (2026-09-13): the original private compositing loop above has
  * moved into OpenLogit; this adapter supplies the existing damage rectangle. */
-static void anim_blit_fade(const struct drect *clip,int dx,int dy,int dw,int dh,
+void anim_blit_fade(const struct wm_target *t,const struct drect *clip,int dx,int dy,int dw,int dh,
                            const struct surface *src,int alpha)
 {
     struct ol_display draw={0};
-    struct ol_pixel_target target={back,W,H,1,clip->x0,clip->y0,clip->x1,clip->y1};
+    struct ol_pixel_target target={t->px,t->stride,wm_H,1,clip->x0,clip->y0,clip->x1,clip->y1};
     struct ol_pixel_target source={.px=src->px,.w=src->w,.h=src->h};
     int rs,gs,bs;device_shifts(&rs,&gs,&bs);
     if(ol_display_bind(&draw,&target,rs,gs,bs)!=OL_OK)return;
     ol_display_blit_surface_alpha(&draw,dx,dy,dw,dh,&source,alpha);
-}
-
-/* The scratch surface every animated window is rendered into at FULL size
- * before being scaled down. Grown, never shrunk: the alternative is a
- * multi-megabyte kmalloc/kfree pair per frame of every animation. */
-static struct surface *anim_scratch(int w, int h)
-{
-    static struct surface s;
-    int need = w * h;
-    if (need <= 0) return NULL;
-    if (need > anim_buf_n) {
-        if (anim_buf) kfree(anim_buf);
-        anim_buf = kmalloc((unsigned)need * 4);
-        anim_buf_n = anim_buf ? need : 0;
-    }
-    if (!anim_buf) return NULL;
-    s.px = anim_buf; s.w = w; s.h = h;
-    s.clip_on = 0;                       /* scratch is unclipped -- see fb.h */
-    return &s;
-}
-
-/* ---- an animated window is drawn in the TWO PIECES it is made of -----------
- *
- * The obvious implementation -- render the whole window into a scratch surface
- * at full size, then scale that down -- is what the open pop did, and it is
- * affordable there because the pop scales ONE window by 16% for a sixth of a
- * second. Expose moves EVERY window at once, to a quarter of its size, and
- * paying full window area TWICE per window per frame (once to compose the
- * scratch, once to copy the app's canvas into it) made a single animated frame
- * cost more than the compositor's entire steady-state frame.
- *
- * That is not a theory. Measured on this machine, at 1280x800 with four
- * windows, the whole-window version presented THREE of the flight's eighteen
- * frames: the geometry was provably correct on the wire and nobody could see
- * it move. So:
- *
- *   THE CONTENT is the app's retained canvas, and it is scaled STRAIGHT from
- *   there into the destination. There is no intermediate copy to pay for, and
- *   the cost is the destination rectangle -- which is the thing being drawn.
- *   This is also the honest reading of "the surface IS the content": nobody
- *   asks the app to redraw, and nobody copies its pixels twice to avoid it.
- *
- *   THE CHROME is ours, and it is the only part that has to be composed. Only
- *   the TITLEBAR is ever visible (the content covers everything below it, in
- *   the animated path exactly as in the ordinary one), so only a w x TBH strip
- *   is rendered at full size and minified. That is what keeps a thumbnail's
- *   titlebar text the REAL text resampled, instead of the UI font
- *   re-rasterized at four points -- which is the whole reason to compose it at
- *   full size rather than draw it small.
- *
- * Cost per window per frame: from 2*W*H to (dest area + W*TBH). For the
- * Terminal at 900x590 scaled into a 400x260 cell, 1.06 M pixels to 131 K.
- *
- * TBH IS TALL ENOUGH to contain the rounded top corners -- radius S(10) against
- * a S(30) titlebar -- so nothing of the window's outline is lost by cutting the
- * strip there. If TITLEBAR_H ever drops below the corner radius, this strip has
- * to grow with it. */
-static struct surface *win_chrome_strip(struct win *w, int focused)
-{
-    int sh = win_tbh(w);
-    if (sh > w->h) sh = w->h;
-    if (sh < 1) return NULL;
-    struct surface *tmp = anim_scratch(w->w, sh);
-    if (!tmp) return NULL;
-    fb_target(tmp);
-    /* The whole body is asked for and the scratch's own height clips it to the
-     * strip: the rounded top corners, the titlebar gradient, the three lights
-     * and the title are exactly what survives, and they are exactly what shows. */
-    draw_frame_body(0, 0, w->w, w->h, w->title, focused);
-    fb_target(NULL);
-    return tmp;
 }
 
 /* Grow each damage rectangle until every GLASS PANEL it touches is contained
@@ -5811,8 +3248,8 @@ static void rect_or_onscreen(struct drect *r, struct drect p, int *grew)
 {
     if (p.x0 < 0) p.x0 = 0;
     if (p.y0 < 0) p.y0 = 0;
-    if (p.x1 > W) p.x1 = W;
-    if (p.y1 > H) p.y1 = H;
+    if (p.x1 > wm_W) p.x1 = wm_W;
+    if (p.y1 > wm_H) p.y1 = wm_H;
     if (p.x0 >= p.x1 || p.y0 >= p.y1) return;      /* entirely off screen */
     if (rect_hit(r, &p) && !rect_in(&p, r)) { rect_or(r, &p); *grew = 1; }
 }
@@ -5837,44 +3274,31 @@ static void rect_or_glass_input(struct drect *r, struct drect panel,
 
 static int dmg_expand(struct drect *r, int n)
 {
+    /* The chrome glass on screen this frame, asked once: the menu bar, the
+     * dock SLAB (not its whole footprint), the open dropdown, the About /
+     * Shut Down / Restart panel, the Cmd+Tab switcher and each window's glass
+     * titlebar -- see wm_glass_regions (wm_glass.c). A titlebar is asked of
+     * win_glass_box, not of w->x/w->w: a window being flown or scaled has NO
+     * glass this frame (it is rendered through a scratch surface), and
+     * protecting a panel that is not being drawn would grow this rectangle
+     * to a frame the window is not occupying. See win_drawn_direct. Nothing
+     * below changes any of them, so the list holds for every pass. */
+    struct wm_glass_region gl[WM_GLASS_REGIONS_MAX];
+    int ngl = wm_glass_regions(gl, WM_GLASS_REGIONS_MAX);
     int grew = 1;
     for (int pass = 0; pass < 8 && grew; pass++) {
         grew = 0;
         for (int i = 0; i < n; i++) {
-            struct drect p;
-            menubar_box(&p);
-            rect_or_glass_input(&r[i], p, S(MENU_GLASS_PT), &grew);
-            dock_panel_box(&p);          /* the SLAB, not the whole footprint */
-            rect_or_glass_input(&r[i], p, S(DOCK_GLASS_PT), &grew);
-            if (g_menu_open >= 0) {                       /* the open dropdown -- also glass */
-                menu_dropdown_box(&p);
-                rect_or_glass_input(&r[i], p, S(DROPDOWN_GLASS_PT), &grew);
-            }
-            if (g_overlay != OV_NONE) {                   /* About / Shut Down / Restart panel */
-                overlay_box(&p);
-                rect_or_glass_input(&r[i], p, S(OVERLAY_GLASS_PT), &grew);
-            }
-            if (g_sw.shown) {                             /* the Cmd+Tab switcher */
-                sw_glass_box(&p);
-                rect_or_glass_input(&r[i], p, S(OVERLAY_GLASS_PT), &grew);
-            }
-            for (int k = 0; k < norder; k++) {           /* each window's glass titlebar */
-                /* Asked of win_glass_box, not of w->x/w->w: a window being
-                 * flown or scaled has NO glass this frame (it is rendered
-                 * through a scratch surface), and protecting a panel that is
-                 * not being drawn would grow this rectangle to a frame the
-                 * window is not occupying. See win_drawn_direct. */
-                if (!win_glass_box(&wins[order[k]], &p)) continue;
-                rect_or_glass_input(&r[i], p, S(TITLE_GLASS_PT), &grew);
-            }
-            for (int k = 0; k < norder; k++) {           /* each window's backdrop regions */
+            for (int g = 0; g < ngl; g++)
+                rect_or_glass_input(&r[i], gl[g].r, gl[g].radius, &grew);
+            for (int k = 0; k < wm_norder; k++) {           /* each window's backdrop regions */
                 /* The same rule as every panel above: a region frosts the
                  * layers beneath its window, so a rectangle touching its
                  * sample box grows to the whole region plus halo
                  * (ol_display_glass_sample_halo_ex of its material). */
                 struct wm_bd_place bpl;
-                if (win_bd_place(&wins[order[k]], &bpl) &&
-                    wm_backdrop_dmg_grow(&r[i], order[k], &bpl, wm_reduce_transparency, W, H))
+                if (win_bd_place(&wm_wins[wm_order[k]], &bpl) &&
+                    wm_backdrop_dmg_grow(&r[i], wm_order[k], &bpl, wm_reduce_transparency, wm_W, wm_H))
                     grew = 1;
             }
         }
@@ -5907,8 +3331,8 @@ static int dmg_expand(struct drect *r, int n)
 #if WM_MIDFRAME_GUARD
 static int rect_blocked(const struct drect *R, uint64_t now, int *late)
 {
-    for (int i = 0; i < norder; i++) {
-        struct win *w = &wins[order[i]];
+    for (int i = 0; i < wm_norder; i++) {
+        struct win *w = &wm_wins[wm_order[i]];
         if (!w->used || w->minimized || !w->drawing || !w->surf.px) continue;
         struct drect b; win_box(w, &b);
         if (!rect_hit(&b, R)) continue;
@@ -5936,8 +3360,8 @@ static int opaque_content_start(const struct drect *R)
     (void)R;
     return -1;
 #else
-    for (int i = norder - 1; i >= 0; i--) {
-        struct win *w = &wins[order[i]];
+    for (int i = wm_norder - 1; i >= 0; i--) {
+        struct win *w = &wm_wins[wm_order[i]];
         int x, y, ww, wh, alpha;
         if (!w->used || !w->surf.px ||
             !win_draw_rect(w, &x, &y, &ww, &wh, &alpha) ||
@@ -5948,7 +3372,7 @@ static int opaque_content_start(const struct drect *R)
          * is drawn from the layers beneath (wm_cover.h). */
         struct wm_bd_place bpl;
         if (wm_cover_ok(R, x, y, ww, wh, win_tbh(w), win_corner_r(w), win_cover_flags(w)) &&
-            (!win_bd_place(w, &bpl) || wm_backdrop_cover_ok(R, order[i], &bpl)))
+            (!win_bd_place(w, &bpl) || wm_backdrop_cover_ok(R, wm_order[i], &bpl)))
             return i;
     }
     return -1;
@@ -5968,13 +3392,13 @@ static int opaque_content_start(const struct drect *R)
  * band splitter never cuts (wm_bands.h). That is what lets several cores run
  * this on disjoint bands of one frame at once (par_render below). The caller
  * has set the clip to R. Not for the locked screen. */
-static void render_layers(const struct drect *R)
+static void render_layers(const struct wm_target *t, const struct drect *R)
 {
     int rw = R->x1 - R->x0, rh = R->y1 - R->y0;
     int first = opaque_content_start(R);
     if (first < 0) {
         for (int y = R->y0; y < R->y1; y++)    /* wallpaper (baked in bg) */
-            blit(back + (long)y * W + R->x0, bg + (long)y * W + R->x0, rw);
+            blit(t->px + (long)y * t->stride + R->x0, bg + (long)y * wm_W + R->x0, rw);
     } else {
         __atomic_fetch_add(&perf_bgskip, (uint64_t)rw * (uint64_t)rh, __ATOMIC_RELAXED);
     }
@@ -5996,12 +3420,12 @@ static void render_layers(const struct drect *R)
      * ITSELF (y < MBH), and dimming that would darken the bar rather than the
      * desktop. The dock's glass does sample dimmed pixels, and should -- it is
      * sitting on a dimmed desktop. */
-    if (first < 0 && ex_state()) fb_blend_rect(0, MBH, W, H - MBH, 0, 0, 0, EX_DIM_ALPHA);
+    if (first < 0 && ex_state()) fb_blend_rect(0, MBH, wm_W, wm_H - MBH, 0, 0, 0, EX_DIM_ALPHA);
 
     int focus_wi = top_visible();          /* NOT order[norder-1]: that may be minimised */
     int exp = ex_prog();
-    for (int i = first < 0 ? 0 : first; i < norder; i++) { /* windows, back-to-front */
-        struct win *w = &wins[order[i]];
+    for (int i = first < 0 ? 0 : first; i < wm_norder; i++) { /* windows, back-to-front */
+        struct win *w = &wm_wins[wm_order[i]];
         if (!w->used) continue;
         /* WHERE IT IS, asked once, of the one function that knows -- and that
          * the damage list and the mid-frame guard asked the same question of.
@@ -6011,8 +3435,8 @@ static void render_layers(const struct drect *R)
         if (!win_draw_rect(w, &dx, &dy, &dw, &dh, &alpha)) continue;
         struct drect b; win_box(w, &b);
         if (!rect_hit(&b, R)) continue;    /* nothing of this window is in the rect */
-        int focused = (order[i] == focus_wi);
-        int k = ex_slot(order[i]);
+        int focused = (wm_order[i] == focus_wi);
+        int k = ex_slot(wm_order[i]);
 
         if (i == first) {
             /* The proof above says this canvas overwrites every pixel in R.
@@ -6065,7 +3489,7 @@ static void render_layers(const struct drect *R)
         struct surface *cs = win_chrome_strip(w, focused);
         if (cs) {
             if (alpha >= 255) wm_scaled_blit(dx, dy, dw, tbh_s, cs);
-            else              anim_blit_fade(R, dx, dy, dw, tbh_s, cs, alpha);
+            else              anim_blit_fade(t, R, dx, dy, dw, tbh_s, cs, alpha);
         }
         if (w->surf.px && dh - tbh_s > 0) {
             if (alpha >= 255) wm_scaled_blit(dx, dy + tbh_s, dw, dh - tbh_s, &w->surf);
@@ -6081,8 +3505,8 @@ static void render_layers(const struct drect *R)
                  * marker (a documented limitation, wm_backdrop.c). */
                 struct wm_bd_place bpl;
                 if (win_bd_place(w, &bpl))
-                    wm_backdrop_composite_at(R, order[i], &bpl, fb_display_cur());
-                anim_blit_fade(R, dx, dy + tbh_s, dw, dh - tbh_s, &w->surf, alpha);
+                    wm_backdrop_composite_at(R, wm_order[i], &bpl, fb_display_cur());
+                anim_blit_fade(t, R, dx, dy + tbh_s, dw, dh - tbh_s, &w->surf, alpha);
                 if (open) content_group_end(&g);
             }
             if (w->drawing) __atomic_fetch_add(&perf_torn, 1, __ATOMIC_RELAXED);   /* counted at every path that shows a canvas */
@@ -6106,7 +3530,7 @@ static void render_layers(const struct drect *R)
     for (int k = 0; g_nghost && k < NGHOST; k++) {      /* closing windows, fading */
         if (!g_ghost[k].used) continue;
         struct drect p; ghost_box(&g_ghost[k], &p);
-        if (rect_hit(&p, R)) draw_ghost(R, &g_ghost[k]);
+        if (rect_hit(&p, R)) draw_ghost(t, R, &g_ghost[k]);
     }
     if (g_snap_zone) { struct drect p; snap_box(&p);     /* where a snap would land */
       if (rect_hit(&p, R)) draw_snap_preview(); }
@@ -6130,7 +3554,7 @@ static void render_layers(const struct drect *R)
  * notification cards, and a composited cursor. Drawn last, so doing it after
  * a parallel layer pass gives the same pixels as doing it inline. Kept off the
  * band workers because their compose functions advance their own state. */
-static void render_top(void)
+static void render_top(const struct wm_target *t)
 {
     /* WM-HOOK 4/6: the notification overlay -- above every window, below the
      * pointer. No rect_hit guard: the fb clip is already this rectangle and
@@ -6144,19 +3568,24 @@ static void render_top(void)
      * when nothing is being composed. */
     ime_ui_compose();
     notify_compose();
-    if (!hw_cursor) draw_cursor_back(mx, my);   /* no plane: arrow into the composite */
+    if (!hw_cursor) draw_cursor_back(t, mx, my);   /* no plane: arrow into the composite */
 }
 
 static void render_present(const struct drect *R)
 {
     int rw = R->x1 - R->x0, rh = R->y1 - R->y0;
     uint64_t t_pres = time_mono_ns();
-    fb_present_rect(R->x0, R->y0, rw, rh);
+    /* REVEAL HOOK: while the 日夜 reveal owns the front buffer it presents
+     * the screen itself, annulus by annulus (wm_reveal_present). Never
+     * active today. */
+    if (!wm_reveal_active())
+        fb_present_rect(R->x0, R->y0, rw, rh);
     perf_present_ns += time_mono_ns() - t_pres;
     perf_cpx += (uint64_t)rw * (uint64_t)rh;
 }
 
-static void render_region(const struct drect *R)
+/* Compose one rectangle into t, without presenting it. */
+static void render_compose(const struct wm_target *t, const struct drect *R)
 {
     int rw = R->x1 - R->x0, rh = R->y1 - R->y0;
     fb_target(NULL);
@@ -6169,14 +3598,19 @@ static void render_region(const struct drect *R)
      * wm_launch()'s refusal is the half that matters. */
     if (g_locked) {
         int gw = greeter_win();
-        if (gw >= 0 && wins[gw].used && wins[gw].surf.px)
-            blit_content(&wins[gw], 0, 0, W, H);
-        if (!hw_cursor) draw_cursor_back(mx, my);
+        if (gw >= 0 && wm_wins[gw].used && wm_wins[gw].surf.px)
+            blit_content(&wm_wins[gw], 0, 0, wm_W, wm_H);
+        if (!hw_cursor) draw_cursor_back(t, mx, my);
     } else {
-        render_layers(R);
-        render_top();
+        render_layers(t, R);
+        render_top(t);
     }
     fb_clear_clip();
+}
+
+static void render_region(const struct wm_target *t, const struct drect *R)
+{
+    render_compose(t, R);
     render_present(R);
 }
 
@@ -6221,6 +3655,7 @@ static struct {
     int state[PAR_MAXB];          /* 0 free, 1 claimed, 2 done */
     int n, done;
     unsigned gen;
+    struct wm_target tgt;         /* where this frame's bands are composed */
 } g_par;
 static spinlock_t par_lock = SPINLOCK_INIT;
 static struct thread *par_thr[PAR_NW > 0 ? PAR_NW : 1];
@@ -6236,7 +3671,7 @@ static void par_band(int i)
     const struct drect *R = &g_par.band[i];
     fb_target(NULL);
     fb_set_clip(R->x0, R->y0, R->x1 - R->x0, R->y1 - R->y0);
-    render_layers(R);
+    render_layers(&g_par.tgt, R);
     fb_clear_clip();
 }
 
@@ -6314,24 +3749,19 @@ static void par_start(void)
 static int par_nocut(const struct drect *R, struct wm_yrange *nc, int max)
 {
     int n = 0;
-    struct drect p;
-#define PAR_ADD(radius) do { \
-        int halo_ = wm_reduce_transparency ? 0 : \
-            ol_display_glass_sample_halo(p.x1 - p.x0, p.y1 - p.y0, (radius)); \
-        n = wm_bands_nocut_add(nc, n, max, p.x0, p.y0, p.x1, p.y1, halo_, \
-                               R->x0, R->y0, R->x1, R->y1); } while (0)
-    menubar_box(&p);        PAR_ADD(S(MENU_GLASS_PT));
-    dock_panel_box(&p);     PAR_ADD(S(DOCK_GLASS_PT));
-    if (g_menu_open >= 0) { menu_dropdown_box(&p); PAR_ADD(S(DROPDOWN_GLASS_PT)); }
-    if (g_overlay != OV_NONE) { overlay_box(&p); PAR_ADD(S(OVERLAY_GLASS_PT)); }
-    if (g_sw.shown) { sw_glass_box(&p); PAR_ADD(S(OVERLAY_GLASS_PT)); }
-    for (int k = 0; k < norder; k++)
-        if (win_glass_box(&wins[order[k]], &p)) PAR_ADD(S(TITLE_GLASS_PT));
-#undef PAR_ADD
-    for (int k = 0; k < norder; k++) {
+    struct wm_glass_region gl[WM_GLASS_REGIONS_MAX];
+    int ngl = wm_glass_regions(gl, WM_GLASS_REGIONS_MAX);
+    for (int g = 0; g < ngl; g++) {
+        const struct drect *p = &gl[g].r;
+        int halo = wm_reduce_transparency ? 0 :
+            ol_display_glass_sample_halo(p->x1 - p->x0, p->y1 - p->y0, gl[g].radius);
+        n = wm_bands_nocut_add(nc, n, max, p->x0, p->y0, p->x1, p->y1, halo,
+                               R->x0, R->y0, R->x1, R->y1);
+    }
+    for (int k = 0; k < wm_norder; k++) {
         struct wm_bd_place bpl;
-        if (win_bd_place(&wins[order[k]], &bpl))
-            n = wm_backdrop_nocut(order[k], &bpl, wm_reduce_transparency, R, nc, n, max);
+        if (win_bd_place(&wm_wins[wm_order[k]], &bpl))
+            n = wm_backdrop_nocut(wm_order[k], &bpl, wm_reduce_transparency, R, nc, n, max);
     }
     return n;
 }
@@ -6343,8 +3773,8 @@ static int par_frame_ok(void)
     return 0;
 #else
     if (g_locked || !par_nw || ex_state()) return 0;
-    for (int k = 0; k < norder; k++) {
-        struct win *w = &wins[order[k]];
+    for (int k = 0; k < wm_norder; k++) {
+        struct win *w = &wm_wins[wm_order[k]];
         int x, y, ww, wh, a;
         if (!w->used || !win_draw_rect(w, &x, &y, &ww, &wh, &a)) continue;
         if (!win_drawn_direct(w, x, y, ww, wh, a)) return 0;   /* animating: anim_scratch */
@@ -6359,7 +3789,7 @@ static int par_frame_ok(void)
  * rectangle is always rebuilt from the wallpaper up. */
 static uint32_t *par_copy;
 static long par_copy_n;
-static void par_verify(const struct drect *R)
+static void par_verify(const struct wm_target *t, const struct drect *R)
 {
     long w = R->x1 - R->x0, h = R->y1 - R->y0;
     if (w * h > par_copy_n) {
@@ -6369,16 +3799,16 @@ static void par_verify(const struct drect *R)
         if (!par_copy) return;
     }
     for (long y = 0; y < h; y++)
-        for (long x = 0; x < w; x++) par_copy[y * w + x] = back[(R->y0 + y) * W + R->x0 + x];
+        for (long x = 0; x < w; x++) par_copy[y * w + x] = t->px[(R->y0 + y) * t->stride + R->x0 + x];
     fb_target(NULL);
     fb_set_clip(R->x0, R->y0, (int)w, (int)h);
-    render_layers(R);
+    render_layers(t, R);
     fb_clear_clip();
     uint64_t bad = 0;
     long bx0 = w, by0 = h, bx1 = -1, by1 = -1;
     for (long y = 0; y < h; y++)
         for (long x = 0; x < w; x++)
-            if (par_copy[y * w + x] != back[(R->y0 + y) * W + R->x0 + x]) {
+            if (par_copy[y * w + x] != t->px[(R->y0 + y) * t->stride + R->x0 + x]) {
                 bad++;
                 if (x < bx0) bx0 = x; if (x > bx1) bx1 = x;
                 if (y < by0) by0 = y; if (y > by1) by1 = y;
@@ -6400,7 +3830,7 @@ static void par_verify(const struct drect *R)
  * layers split across cores where that is allowed. Returns 1 if it did the
  * work (including the top and the present), 0 if the caller should render
  * serially. */
-static int par_render(const struct drect *r, int n)
+static int par_render(const struct wm_target *t, const struct drect *r, int n)
 {
     if (!par_frame_ok()) return 0;
     /* Twice as many bands as participants: a band is claimed whole, so with
@@ -6429,6 +3859,7 @@ static int par_render(const struct drect *r, int n)
     }
     if (nb < 2) return 0;
     g_par.n = nb;
+    g_par.tgt = *t;
     __atomic_store_n(&g_par.done, 0, __ATOMIC_RELEASE);
 
     uint64_t f = spin_lock_irqsave(&par_lock);
@@ -6449,11 +3880,11 @@ static int par_render(const struct drect *r, int n)
 
     for (int k = 0; k < n; k++) {
 #ifdef WM_PAR_VERIFY
-        par_verify(&r[k]);
+        par_verify(t, &r[k]);
 #endif
         fb_target(NULL);
         fb_set_clip(r[k].x0, r[k].y0, r[k].x1 - r[k].x0, r[k].y1 - r[k].y0);
-        render_top();
+        render_top(t);
         fb_clear_clip();
         render_present(&r[k]);
     }
@@ -6522,7 +3953,7 @@ static int par_render(const struct drect *r, int n)
  * fourth would otherwise be free to forget half of it. The test mutation
  * deliberately reports no animation damage, leaving the guest trace moving
  * while the scanout does not. */
-static void anim_damage(struct win *w)
+void anim_damage(struct win *w)
 {
     struct drect cur, u;
     win_box(w, &cur);
@@ -6540,145 +3971,29 @@ static void anim_damage(struct win *w)
 #endif
 }
 
-static void anim_trace(const char *what, int wi, const struct win *w, int p)
+/* The fly's landing frame re-lays its whole sweep once (wm_anim.c's
+ * wm_anim_fly_tick hands the box here). Here rather than there because
+ * tests/qmp/qmp_motion.py --negative builds its control by flipping
+ * WM_ANIM_DAMAGE_LIE in THIS file. */
+void wm_anim_sweep_damage(const struct drect *s)
 {
-    int x, y, ww, wh, a;
-    if (!win_draw_rect(w, &x, &y, &ww, &wh, &a)) return;
-    kprintf("[wm] anim %s win %d p %d rect %d %d %d %d alpha %d home %d %d %d %d"
-            " damage from %d %d %d %d cur %d %d %d %d sent %d %d %d %d\n",
-            what, wi, p, x, y, ww, wh, a, w->x, w->y, w->w, w->h,
-            w->anim_from.x0, w->anim_from.y0, w->anim_from.x1, w->anim_from.y1,
-            w->anim_prev.x0, w->anim_prev.y0, w->anim_prev.x1, w->anim_prev.y1,
-            w->anim_sent.x0, w->anim_sent.y0, w->anim_sent.x1, w->anim_sent.y1);
+#if !WM_ANIM_DAMAGE_LIE
+    dirty_rect(s->x0, s->y0, s->x1 - s->x0, s->y1 - s->y0);
+#else
+    (void)s;
+#endif
 }
 
+/* One pass of every animation, at one instant: each feature's part lives with
+ * the feature (wm_anim.c: the open pop, the close fade and the dock fly;
+ * wm_expose.c: Expose), in the order they have always run. */
 static void wm_anim_tick(void)
 {
     uint64_t t = time_mono_ms();
-
-    /* 1. THE OPEN POP -- the first frame is full because adding a new topmost
-     *    window changes focus and stacking. Every frame after that is only
-     *    (where the scaled window was | where it is), the same damage contract
-     *    minimise and Expose use below. The old path forced all 2,304,000
-     *    pixels at 1920x1200 for every tick of a 0.84x -> 1.0x window whose
-     *    complete swept box is under half that area. That spent most of the
-     *    animation redrawing untouched wallpaper, menu bar and dock, reducing
-     *    the number of distinct positions that could land before 160 ms elapsed.
-     *
-     * Clearing open_t0 BEFORE anim_damage() is the terminal-frame contract:
-     * win_box() then returns the ordinary full-size frame and unions it with
-     * anim_prev, so the exact endpoint is painted once and no near-final scale
-     * is left on screen. The growing rectangles are nested, but the union keeps
-     * this correct if the curve or anchor changes later. */
-    for (int i = 0; i < MAXWIN; i++) {
-        struct win *w = &wins[i];
-        if (!w->used || !w->open_t0) continue;
-        uint64_t e = anim_elapsed_at(w->open_t0, t);
-        if (wm_reduce_motion || e >= OPEN_DUR_MS) w->open_t0 = 0;
-        anim_damage(w);
-        if (w->open_t0)
-            anim_trace("open", i, w, (int)(e * 256 / OPEN_DUR_MS));
-    }
-
-    /* 1b. THE CLOSE FADE. Damage the whole original frame every tick; on the
-     *     last one the ghost is freed FIRST and then damaged, so the frame
-     *     that follows paints what was under it. */
-    for (int k = 0; g_nghost && k < NGHOST; k++) {
-        struct ghost *g = &g_ghost[k];
-        if (!g->used) continue;
-        struct drect b; ghost_box(g, &b);
-        uint64_t e = anim_elapsed_at(g->t0, t);
-        if (e >= CLOSE_MS || wm_reduce_motion) {
-            if (g->surf.px) kfree(g->surf.px);
-            g->surf.px = 0;
-            g->used = 0;
-            g_nghost--;
-            kprintf("[wm] anim close ghost %d done\n", k);
-#ifndef WM_CLOSE_DAMAGE_LIE
-            dirty_rect(b.x0, b.y0, b.x1 - b.x0, b.y1 - b.y0);
-#endif
-            continue;
-        }
-        kprintf("[wm] anim close ghost %d p %d\n", k, (int)(e * 256 / CLOSE_MS));
-        dirty_rect(b.x0, b.y0, b.x1 - b.x0, b.y1 - b.y0);
-    }
-
-    /* 2. THE DOCK FLY. */
-    for (int i = 0; i < MAXWIN; i++) {
-        struct win *w = &wins[i];
-        if (!w->used || !w->min_t0) continue;
-        if (wm_reduce_motion || anim_elapsed_at(w->min_t0, t) >= MINFLY_MS) {
-            struct drect s;
-            win_fly_sweep(w, &s);
-            w->min_t0 = 0;
-#if !WM_ANIM_DAMAGE_LIE
-            dirty_rect(s.x0, s.y0, s.x1 - s.x0, s.y1 - s.y0);
-#endif
-            dirty_dock();          /* a running dot's window arrived, or left */
-            continue;
-        }
-        anim_damage(w);
-        anim_trace(w->min_dir ? "min" : "restore", i, w, min_prog(w));
-    }
-
-    /* A window closing while the picker is up leaves a hole in the grid, which
-     * is harmless. ALL of them closing leaves a dimmed desktop with nothing to
-     * pick, the pointer still captured by wm_expose_mouse and the keyboard
-     * still swallowed -- recoverable by clicking, but a state the machine
-     * should not sit in waiting to be rescued. */
-    if (ex_on && !ex_t0) {
-        int alive = 0;
-        for (int k = 0; k < ex_n; k++) if (wins[ex_wi[k]].used) { alive = 1; break; }
-        if (!alive) ex_leave(-1);
-    }
-
-    /* 3. EXPOSE. The dim is constant while the mode is up (see render_region),
-     *    so every frame between the two full ones pays for the windows that
-     *    moved and for nothing else. */
-    if (ex_t0) {
-        if (wm_reduce_motion || anim_elapsed_at(ex_t0, t) >= EX_DUR_MS) {
-            if (!ex_on && (mleft || mright || mmiddle)) {
-                /* The windows have reached home, but the selecting press still
-                 * belongs to Expose. Draw that exact terminal frame once and
-                 * retain ex_t0 solely as the modal-capture bit. The first
-                 * all-up packet is consumed by wm_expose_mouse; the next tick
-                 * clears the mode below. */
-                if (!ex_wait_release) {
-                    ex_wait_release = 1;
-                    dirty_full(FULL_EXPOSE_TERMINAL);
-                }
-            } else {
-                ex_t0 = 0;
-                ex_wait_release = 0;
-                dirty_full(FULL_EXPOSE_TERMINAL); /* entering: the swept area. leaving: the dim. */
-            }
-        } else {
-            for (int k = 0; k < ex_n; k++) {
-                struct win *w = &wins[ex_wi[k]];
-                if (!w->used) continue;
-                anim_damage(w);
-                anim_trace(ex_on ? "expose" : "unexpose", ex_wi[k], w, ex_prog());
-            }
-        }
-    }
-}
-
-/* Has the pointer been parked in the hot corner long enough? See the comment on
- * ex_corner_t0 for why this corner and why a dwell. */
-static void wm_hotcorner_tick(void)
-{
-    if (!desktop_prefs.hot_corner || g_locked || ex_state()) { ex_corner_t0 = 0; return; }
-    int inside = (mx >= W - S(EX_CORNER_PT)) && (my < S(EX_CORNER_PT));
-    if (!inside) { ex_corner_t0 = 0; ex_corner_armed = 1; return; }
-    if (!ex_corner_armed) return;              /* fired already; leave to re-arm */
-    if (!ex_corner_t0) {
-        ex_corner_t0 = anim_stamp();
-        return;
-    }
-    if (anim_elapsed(ex_corner_t0) < EX_DWELL_MS) return;
-    ex_corner_armed = 0;
-    ex_corner_t0 = 0;
-    ex_enter();
+    wm_anim_open_tick(t);       /* 1.  the open pop */
+    wm_anim_close_tick(t);      /* 1b. the close fade */
+    wm_anim_fly_tick(t);        /* 2.  the dock fly */
+    wm_expose_anim_tick(t);     /* 3.  Expose (and an emptied grid) */
 }
 
 /* Composite the damage -- background + windows + frosted chrome + the cursor --
@@ -6689,7 +4004,6 @@ static void wm_hotcorner_tick(void)
  * `back` is a correct composite of the ENTIRE screen when this returns -- see
  * the invariant at the top of the file. Nothing else in here is allowed to be
  * true only sometimes. */
-static void wm_render_locked_inner(void);
 static void wm_render_locked(void)
 {
     g_frame_ms = time_mono_ms();
@@ -6714,7 +4028,7 @@ static void wm_render_locked_inner(void)
         nr = dmg_expand(r, ndmg);
         if (nr < 0) full = 1;
     }
-    if (full) { r[0].x0 = 0; r[0].y0 = 0; r[0].x1 = W; r[0].y1 = H; nr = 1; }
+    if (full) { r[0].x0 = 0; r[0].y0 = 0; r[0].x1 = wm_W; r[0].y1 = wm_H; nr = 1; }
     /* Clear BEFORE drawing: damage recorded from here on (a dock bounce still
      * running, an app flushing from another thread) belongs to the NEXT frame,
      * not to the one being composited. */
@@ -6771,8 +4085,8 @@ static void wm_render_locked_inner(void)
     uint64_t cpx_start = perf_cpx;
     uint64_t present_start = perf_present_ns;
     uint64_t present_px_start = fb_present_px();
-    frame_glass_ns = 0;
-    frame_glass_px = 0;
+    wm_frame_glass_ns = 0;
+    wm_frame_glass_px = 0;
     /* ---- ORIGIN/MAIN PEELED THE BKL HERE. THIS BRANCH HAS NO BKL TO PEEL. ----
      *
      * The merge of 2026-09-15 brought in ~95 lines from origin/main that
@@ -6799,11 +4113,13 @@ static void wm_render_locked_inner(void)
      * to ask is not "is the peel correct" but "does this kernel still have a
      * big lock" -- and the way to answer it is to grep for a DECLARATION
      * (`spinlock_t g_bkl` or an extern of it), never for the name. */
-    if (!par_render(r, draw_n)) {
+    struct wm_target scr = wm_screen_target();
+    if (!par_render(&scr, r, draw_n)) {
         if (!g_locked) perf_serialframes++;
         for (int k = 0; k < draw_n; k++)
-            render_region(&r[k]);
+            render_region(&scr, &r[k]);
     }
+    wm_reveal_present();          /* REVEAL HOOK: after the frame's presents */
     /* origin/main re-armed a full frame here while a window's open pop was
      * still running, off a flag its render_region() returned. That flag has
      * no source on this side: render_region() is void here and
@@ -6838,8 +4154,8 @@ static void wm_render_locked_inner(void)
         full_trace.seq++;
         full_trace.total_ns = dt;
         full_trace.ordinary_px = perf_cpx - cpx_start;
-        full_trace.glass_ns = frame_glass_ns;
-        full_trace.glass_px = frame_glass_px;
+        full_trace.glass_ns = wm_frame_glass_ns;
+        full_trace.glass_px = wm_frame_glass_px;
         full_trace.present_ns = perf_present_ns - present_start;
         full_trace.present_px = fb_present_px() - present_px_start;
         full_trace.reasons = full_reasons;
@@ -6875,9 +4191,36 @@ void wm_render(void)
     }
 }
 
+/* THE WHOLE SCREEN, COMPOSED INTO SOMEWHERE ELSE -- unused until the 日夜
+ * reveal (design 5.10) needs its `new` picture off-screen. Exactly what the
+ * next full frame would put in `back` -- the layers and the top of the stack,
+ * at one frame instant -- written into dst, and nothing presented. The same
+ * locks as wm_render, in the same order.
+ *
+ * dst is W x H with stride == W: fb's screen surface has no pitch of its own
+ * and the fb-drawn layers reach a target only through it (fb_set_backbuffer),
+ * so anything else is refused. Serial, never banded: the band workers draw
+ * through that same per-context surface. Returns 0, or -1 when refused. */
+int wm_render_full_into(uint32_t *dst, int stride)
+{
+    if (!dst || stride != wm_W || !back || !bg) return -1;
+    fb_graphics_lock();
+    wm_state_lock(WM_LOCK_FRAME_PASS);
+    struct wm_target t = { dst, stride };
+    struct drect R = { 0, 0, wm_W, wm_H };
+    g_frame_ms = time_mono_ms();
+    rtc_now(&g_frame_rtc);
+    if (!g_frame_ms) g_frame_ms = 1;
+    fb_set_backbuffer(dst);
+    render_compose(&t, &R);
+    fb_set_backbuffer(back);
+    g_frame_ms = 0;
+    wm_state_unlock();
+    fb_graphics_unlock();
+    return 0;
+}
+
 /* ---------- input ---------- */
-static int in_rect(int px, int py, int x, int y, int w, int h)
-{ return px >= x && px < x + w && py >= y && py < y + h; }
 
 /* ---- system shortcuts ------------------------------------------------------
  *
@@ -6916,7 +4259,7 @@ static int in_rect(int px, int py, int x, int y, int w, int h)
 static int wm_shortcut(int c, int mods)
 {
     int wi = top_visible();
-    struct win *w = wi >= 0 ? &wins[wi] : NULL;
+    struct win *w = wi >= 0 ? &wm_wins[wi] : NULL;
     if (c >= 'A' && c <= 'Z') c = c - 'A' + 'a';      /* Cmd+Shift+W is still close */
 
     switch (c) {
@@ -6924,7 +4267,7 @@ static int wm_shortcut(int c, int mods)
         /* Spotlight ("Fluid" P4): show the running one, or start it. The
          * assistant is its last row now, one Enter away. */
         for (int k = 0; k < MAXWIN; k++) {
-            struct win *sw = &wins[k];
+            struct win *sw = &wm_wins[k];
             if (sw->used && sw->panel && sw->app && streq(sw->app->name, "Spotlight")) {
                 /* The chord toggles: open and focused, it puts Spotlight away. */
                 panel_show(sw, sw->minimized || wm_keyboard_focus() != k);
@@ -6936,14 +4279,14 @@ static int wm_shortcut(int c, int mods)
         return 1;
     }
     case 'w':
-        if (w && w->kind == WK_APP) { enqueue(w, EV_CLOSE, 0, 0); return 1; }
+        if (w && w->kind == WK_APP) { wm_enqueue(w, EV_CLOSE, 0, 0); return 1; }
         return 1;                                     /* claimed even with no window */
     case 'q':
         if (w && w->app) {
             struct app *ap = w->app;
             for (int i = 0; i < MAXWIN; i++)
-                if (wins[i].used && wins[i].kind == WK_APP && wins[i].app == ap)
-                    enqueue(&wins[i], EV_CLOSE, 0, 0);
+                if (wm_wins[i].used && wm_wins[i].kind == WK_APP && wm_wins[i].app == ap)
+                    wm_enqueue(&wm_wins[i], EV_CLOSE, 0, 0);
         }
         return 1;
     case 'm':
@@ -6972,11 +4315,11 @@ static int wm_shortcut(int c, int mods)
          * the model changes, which is a bug nobody goes looking for. */
         if (w && w->app) {
             struct app *ap = w->app;
-            for (int i = 0; i < norder; i++) {
-                struct win *cw = &wins[order[i]];
-                if (cw->used && cw->app == ap && order[i] != wi) {
+            for (int i = 0; i < wm_norder; i++) {
+                struct win *cw = &wm_wins[wm_order[i]];
+                if (cw->used && cw->app == ap && wm_order[i] != wi) {
                     win_set_min(cw, 0);
-                    raise_win(order[i]);
+                    raise_win(wm_order[i]);
                     dirty_full(FULL_ZORDER_APP);
                     return 1;
                 }
@@ -7035,7 +4378,7 @@ static void wm_process_key(int c, int mods)
     if (!g_locked && (mods & EV_MOD_SUPER) && menu_key(c)) return;
     int wi = wm_keyboard_focus();
     if (wi < 0) return;
-    struct win *w = &wins[wi];
+    struct win *w = &wm_wins[wi];
     if (w->kind == WK_APP) {
         /* IME-HOOK 3/4: the input method, and it is the LAST thing between a
          * key and the app rather than the first, so every rule above -- the
@@ -7095,7 +4438,7 @@ static void wm_process_key_up(int c, int mods)
 {
     int wi = wm_keyboard_focus();
     if (wi < 0) return;
-    struct win *w = &wins[wi];
+    struct win *w = &wm_wins[wi];
     if (w->kind == WK_APP && w->want_keyup)
         enqueue_input(w, EV_KEY_UP, c, 0, mods, EV_BTN_NONE, 0);
 }
@@ -7106,7 +4449,7 @@ static void wm_process_mods(int mods)
     if (g_sw.open && !(mods & EV_MOD_SUPER)) sw_commit();
     int wi = wm_keyboard_focus();
     if (wi < 0) return;
-    struct win *w = &wins[wi];
+    struct win *w = &wm_wins[wi];
     if (w->kind != WK_APP || !w->want_keyup) return;
     static const struct { int bit, key; } m[4] = {
         { EV_MOD_SHIFT, KEY_SHIFT }, { EV_MOD_CTRL, KEY_CTRL },
@@ -7123,10 +4466,21 @@ static void wm_process_mods(int mods)
  * :hover work on a background window the way it does everywhere else. */
 static int win_content_at(int x, int y)
 {
-    for (int i = norder - 1; i >= 0; i--) {
-        struct win *w = &wins[order[i]];
+    for (int i = wm_norder - 1; i >= 0; i--) {
+        struct win *w = &wm_wins[wm_order[i]];
         if (!w->used || w->minimized || w->kind != WK_APP) continue;
-        if (in_rect(x, y, w->x, w->y + win_tbh(w), w->w, w->h - win_tbh(w))) return order[i];
+        if (in_rect(x, y, w->x, w->y + win_tbh(w), w->w, w->h - win_tbh(w))) return wm_order[i];
+    }
+    return -1;
+}
+
+/* Topmost visible window whose FRAME contains (x,y), or -1 -- the window a
+ * left press would raise. */
+static int win_frame_at(int x, int y)
+{
+    for (int i = wm_norder - 1; i >= 0; i--) {
+        struct win *w = &wm_wins[wm_order[i]];
+        if (w->used && !w->minimized && in_rect(x, y, w->x, w->y, w->w, w->h)) return wm_order[i];
     }
     return -1;
 }
@@ -7142,27 +4496,6 @@ static void update_cursor_shape(int x, int y)
     int e = 0;
     int wi = resize_hit(x, y, &e);
     set_cursor(wi >= 0 ? cursor_for_edge(e) : CUR_ARROW);
-}
-
-/* Two presses on the SAME window's titlebar, close together in time and in
- * space. The space test earns its place as much as the time one: a fast hand
- * clicking two different controls is not double-clicking either of them.
- *
- * A third click does not read as a second double-click -- the state is cleared
- * on a hit -- because otherwise holding a key down on a mouse and clicking four
- * times would zoom, restore, zoom, restore. */
-static int titlebar_double_click(int wi, int x, int y)
-{
-    static int last_wi = -1, last_x, last_y;
-    static uint64_t last_ms;
-    uint64_t now = time_mono_ms();
-    int slop = S(6);
-    int hit = (last_wi == wi && now - last_ms <= (unsigned)desktop_prefs.double_click &&
-               x - last_x <= slop && last_x - x <= slop &&
-               y - last_y <= slop && last_y - y <= slop);
-    last_wi = hit ? -1 : wi;
-    last_x = x; last_y = y; last_ms = now;
-    return hit;
 }
 
 /* LOCKED: the pointer belongs to the greeter and to nothing else.
@@ -7186,8 +4519,8 @@ static void wm_locked_mouse(const struct inputq_event *in)
     if (moved) perf_motions++;
 
     int gw = greeter_win();
-    if (gw >= 0 && wins[gw].used && wins[gw].kind == WK_APP) {
-        struct win *w = &wins[gw];
+    if (gw >= 0 && wm_wins[gw].used && wm_wins[gw].kind == WK_APP) {
+        struct win *w = &wm_wins[gw];
         if (in->left && !mleft) enqueue_input(w, EV_MOUSE,    PT(x), PT(y), in->mods, EV_BTN_LEFT, 0);
         if (!in->left && mleft) enqueue_input(w, EV_MOUSE_UP, PT(x), PT(y), in->mods, EV_BTN_LEFT, 0);
         if (moved)           enqueue_input(w, EV_MOUSE_MOVE, PT(x), PT(y), in->mods, EV_BTN_NONE, 0);
@@ -7197,6 +4530,26 @@ static void wm_locked_mouse(const struct inputq_event *in)
     /* Without a cursor plane the arrow lives in the composite, so a moved
      * pointer is damage -- exactly as on the unlocked path. */
     if (moved && !hw_cursor) dirty_full(FULL_LOCKED_CURSOR);
+}
+
+/* THE CAPTURES' SHARED EDGES. A modal surface (Expose, the About / power
+ * panel, an open menu) owns the pointer whole while it is up, and every one of
+ * them starts and ends an event the same way: record where the pointer went,
+ * then -- after the surface's own hover and click -- take the button levels
+ * and put the arrow back. The surface's part lives with the surface
+ * (wm_expose.c, wm_overlay.c, wm_menu.c); the pointer state stays here. */
+static int pointer_move_to(const struct inputq_event *in, int *omx, int *omy)
+{
+    int moved = (in->x != mx || in->y != my);
+    *omx = mx; *omy = my;
+    mx = in->x; my = in->y;
+    if (moved) perf_motions++;
+    return moved;
+}
+static void pointer_capture_end(const struct inputq_event *in)
+{
+    mleft = in->left; mright = in->right; mmiddle = in->middle;
+    set_cursor(CUR_ARROW);
 }
 
 /* EXPOSE: the pointer belongs to the picker and to nothing else.
@@ -7212,133 +4565,56 @@ static void wm_locked_mouse(const struct inputq_event *in)
  * motion. An app has no idea Expose exists and its window is not where the app
  * thinks it is, so a click delivered in window-local coordinates would land on
  * whatever is a quarter of the way across its canvas. */
-static void wm_expose_mouse(const struct inputq_event *in)
+static void wm_expose_capture(const struct inputq_event *in)
 {
-    int x = in->x, y = in->y;
-    int moved = (x != mx || y != my);
-    int omx = mx, omy = my;
-    mx = x; my = y;
-    if (moved) perf_motions++;
-
+    int x = in->x, y = in->y, omx, omy;
+    int moved = pointer_move_to(in, &omx, &omy);
     if (moved) {
-        int h = ex_hover_at(x, y);
-        if (h != ex_hov) {                 /* same idiom as the dock's hover: */
-            ex_dirty_slot(ex_hov);         /* damage the one being left...    */
-            ex_hov = h;
-            ex_dirty_slot(h);              /* ...and the one being entered    */
-        }
+        wm_expose_pointer(x, y);           /* the hovered thumbnail */
         if (!hw_cursor) { dirty_cursor(omx, omy); dirty_cursor(x, y); }
     }
-    if (in->left && !mleft) {
-        int h = ex_hover_at(x, y);
-        /* A window: bring it to the front and leave. Anywhere else -- the dimmed
-         * wallpaper, the dock, the menu bar -- leave with the stacking exactly
-         * as it was. Dismissing is the safe answer for every pixel that is not
-         * a thumbnail, because the mode covers the whole screen and there is no
-         * "somewhere else" for a click to usefully mean anything else. */
-        ex_leave(h >= 0 ? ex_wi[h] : -1);
-    }
-    mleft = in->left; mright = in->right; mmiddle = in->middle;
-    set_cursor(CUR_ARROW);
+    if (in->left && !mleft) wm_expose_click(x, y, EV_BTN_LEFT);
+    pointer_capture_end(in);
 }
 
 /* THE ABOUT / SHUT DOWN / RESTART PANEL owns the pointer while it is up, same
  * capture idiom as Expose: a click is a button, or it is a dismissal, and
  * nothing under the panel ever sees it. */
-static void wm_overlay_mouse(const struct inputq_event *in)
+static void wm_overlay_capture(const struct inputq_event *in)
 {
-    int x = in->x, y = in->y;
-    int moved = (x != mx || y != my);
-    int omx = mx, omy = my;
-    mx = x; my = y;
-    if (moved) perf_motions++;
+    int x = in->x, y = in->y, omx, omy;
+    int moved = pointer_move_to(in, &omx, &omy);
     if (moved && !hw_cursor) { dirty_cursor(omx, omy); dirty_cursor(x, y); }
-
-    if (moved && (g_overlay == OV_CONFIRM_SHUTDOWN || g_overlay == OV_CONFIRM_RESTART)) {
-        int hb = overlay_button_at(x, y);
-        if (hb != g_overlay_btn_hov) {
-            g_overlay_btn_hov = hb;
-            struct drect p; overlay_box(&p);
-            dirty_rect(p.x0, p.y0, p.x1 - p.x0, p.y1 - p.y0);
-        }
-    }
-    if (in->left && !mleft) {
-        if (g_overlay == OV_ABOUT) {
-            overlay_close();                    /* an About box has nothing to click but "away" */
-        } else {
-            int hb = overlay_button_at(x, y);
-            int shutdown = (g_overlay == OV_CONFIRM_SHUTDOWN);
-            overlay_close();                    /* dirty + clear state BEFORE the noreturn call */
-            if (hb == 1) { if (shutdown) kernel_poweroff(); else kernel_reboot(); }
-            /* hb==0 (Cancel) or hb==-1 (click outside): already dismissed above. */
-        }
-    }
-    mleft = in->left; mright = in->right; mmiddle = in->middle;
-    set_cursor(CUR_ARROW);
+    if (moved) wm_overlay_pointer(x, y);   /* the hovered button */
+    if (in->left && !mleft) wm_overlay_click(x, y, EV_BTN_LEFT);
+    pointer_capture_end(in);
 }
 
 /* THE OPEN MENU owns the pointer, same capture idiom. A click is a title (close
- * the one that was open, or -- via the hover switch below -- land on the new
- * one that is already showing), an item, or "away", and nothing else can be
- * clicked while a menu covers it. */
-static void wm_menu_mouse(const struct inputq_event *in)
+ * the one that was open, or -- via the hover switch -- land on the new one that
+ * is already showing), an item, or "away", and nothing else can be clicked
+ * while a menu covers it. wm_menu_pointer runs on EVERY event, moved or not, as
+ * it always has: it is also what notices the title under a stationary click. */
+static void wm_menu_capture(const struct inputq_event *in)
 {
-    int x = in->x, y = in->y;
-    int moved = (x != mx || y != my);
-    int omx = mx, omy = my;
-    int was_open = g_menu_open;                /* the title open at the START of this event */
-    mx = x; my = y;
-    if (moved) perf_motions++;
+    int x = in->x, y = in->y, omx, omy;
+    int moved = pointer_move_to(in, &omx, &omy);
     if (moved && !hw_cursor) { dirty_cursor(omx, omy); dirty_cursor(x, y); }
-
-    /* Hovering a DIFFERENT title switches menus live -- the detail that makes
-     * a menu bar read as one system instead of four separate buttons. */
-    int hit_title = -1;
-    for (int i = 0; i < g_nmenu; i++) {
-        struct drect t; menu_title_hit(i, &t);
-        if (in_rect(x, y, t.x0, t.y0, t.x1 - t.x0, t.y1 - t.y0)) { hit_title = i; break; }
-    }
-    if (hit_title >= 0 && hit_title != g_menu_open) {
-        dirty_menu_dropdown();                    /* the old panel and its shadow */
-        g_menu_open = hit_title; g_menu_item_hov = -1;
-        dirty_menu_dropdown();                    /* the new one */
-        menu_report_open();   /* hover switch */
-    }
-
-    struct drect row;
-    int hov = menu_item_at(g_menu_open, x, y, &row);
-    if (hov != g_menu_item_hov) {
-        g_menu_item_hov = hov;
-        struct drect p; menu_dropdown_box(&p);      /* whole panel -- it is small, see file header */
-        dirty_rect(p.x0, p.y0, p.x1 - p.x0, p.y1 - p.y0);
-    }
-
-    if (in->left && !mleft) {
-        if (hit_title >= 0 && hit_title == was_open) {
-            menu_close();                            /* the OPEN title, clicked again: toggle off */
-        } else if (hit_title >= 0) {
-            /* a different title: the hover switch above already did the work */
-        } else {
-            int idx = menu_item_at(g_menu_open, x, y, NULL);
-            if (idx >= 0 && menu_item_enabled(g_menu_open, idx)) menu_item_fire(g_menu_open, idx);
-            else menu_close();                       /* not a title, not a live item: dismiss */
-        }
-    }
-    mleft = in->left; mright = in->right; mmiddle = in->middle;
-    set_cursor(CUR_ARROW);
+    wm_menu_pointer(x, y);                 /* title switch + item hover */
+    if (in->left && !mleft) wm_menu_click(x, y, EV_BTN_LEFT);
+    pointer_capture_end(in);
 }
 
 static void wm_process_mouse(const struct inputq_event *in)
 {
     if (g_locked) { wm_locked_mouse(in); return; }
-    if (ex_state()) { wm_expose_mouse(in); return; }
-    if (g_overlay != OV_NONE) { wm_overlay_mouse(in); return; }
-    if (g_menu_open >= 0) { wm_menu_mouse(in); return; }
+    if (ex_state()) { wm_expose_capture(in); return; }
+    if (g_overlay != OV_NONE) { wm_overlay_capture(in); return; }
+    if (g_menu_open >= 0) { wm_menu_capture(in); return; }
     int x = in->x, y = in->y, left = in->left, right = in->right, middle = in->middle;
     int mods = in->mods;
     int moved = (x != mx || y != my);
-    int old_hov = dock_hover_at(mx, my);   /* before the pointer moves */
-    int omx = mx, omy = my;                /* ...and where the arrow was */
+    int omx = mx, omy = my;                /* where the arrow was (and the dock hover) */
     mx = x; my = y;
     if (moved) perf_motions++;
     /* "Parked" in the hot corner means PARKED. Restarting the dwell on every
@@ -7346,26 +4622,14 @@ static void wm_process_mouse(const struct inputq_event *in)
      * way somewhere else from opening the picker behind it. */
     if (moved) ex_corner_t0 = 0;
 
-    if (left && !mleft && in_rect(x, y, menu_tog_x, menu_tog_y, menu_tog_w, menu_tog_h)) {
-        wm_set_dark(!g_ui_dark);             /* menu-bar dark-mode switch (on top of all) */
+    /* THE MENU BAR is chrome drawn on top of everything, so it wins a press
+     * first: the dark-mode switch, then a CLOSED menu title (an OPEN one is
+     * handled above -- wm_menu_capture takes every event once g_menu_open >=
+     * 0 -- so this only ever fires the closed -> open transition). See
+     * wm_menubar_click (wm_menubar.c). */
+    if (left && !mleft && wm_menubar_click(x, y, EV_BTN_LEFT)) {
         mleft = left; mright = right; mmiddle = middle;
         return;
-    }
-    /* A CLOSED menu title, clicked: open it. (An OPEN one is handled above --
-     * wm_menu_mouse captures every click once g_menu_open >= 0 -- so this only
-     * ever fires the closed -> open transition.) Same idiom as the dark-mode
-     * switch just above: the menu bar is chrome drawn on top, so it must win
-     * the click before the dock or a window gets a chance to. */
-    if (left && !mleft) {
-        for (int i = 0; i < g_nmenu; i++) {
-            struct drect t; menu_title_hit(i, &t);
-            if (!in_rect(x, y, t.x0, t.y0, t.x1 - t.x0, t.y1 - t.y0)) continue;
-            g_menu_open = i; g_menu_item_hov = -1;
-            dirty_menu_dropdown();
-            menu_report_open();
-            mleft = left; mright = right; mmiddle = middle;
-            return;
-        }
     }
     /* WM-HOOK 6/6: a notification is chrome drawn on top of everything, so like
      * the switch above it must win the click -- otherwise the window under it
@@ -7384,19 +4648,19 @@ static void wm_process_mouse(const struct inputq_event *in)
     }
     if (left && !mleft) {
         int wi = top_visible();
-        if (wi >= 0 && wins[wi].kind == WK_APP) {
+        if (wi >= 0 && wm_wins[wi].kind == WK_APP) {
             uint32_t cps[IME_UI_MAXCP];
             int nc;
-            if (ime_ui_available() && in_rect(x, y, menu_ime_x, 0, menu_ime_w, MBH)) {
+            if (ime_ui_available() && wm_menubar_ime_hit(x, y)) {
                 /* Clicking 中/EN is an accessible alternative to a host-
                  * intercepted keyboard chord. The same IME policy handles both. */
                 nc = ime_ui_key(wi, ' ', IME_TOGGLE_MOD, cps, IME_UI_MAXCP);
             } else nc = ime_ui_click(wi, x, y, cps, IME_UI_MAXCP);
             if (nc >= 0) {
                 for (int i = 0; i < nc; i++)
-                    enqueue_input(&wins[wi], EV_KEY, (int)cps[i], 0, 0, EV_BTN_NONE, 0);
+                    enqueue_input(&wm_wins[wi], EV_KEY, (int)cps[i], 0, 0, EV_BTN_NONE, 0);
 #ifdef WM_KEY_PREDIRTY
-                if (nc) dirty_win_content(&wins[wi]);
+                if (nc) dirty_win_content(&wm_wins[wi]);
 #endif
                 ime_mouse_capture = 1;
                 mleft = left; mright = right; mmiddle = middle;
@@ -7410,23 +4674,7 @@ static void wm_process_mouse(const struct inputq_event *in)
          * checking windows first lets a tall window (e.g. Code Studio, whose
          * bottom edge reaches into the dock strip) silently SWALLOW dock clicks
          * as content clicks -- the icon you see is not the icon you hit. */
-        int docked = 0;
-        for (int i = 0; i < nreg; i++) {
-            /* iy used to be the bare literal `+ 10` -- correct only because it
-             * happened to equal the old S(10) top padding at 1x scale, and
-             * silently wrong (a dead icon-height strip at the top of the hit
-             * box, at scale > 100%) the day either drifted from the other.
-             * S(DOCK_PAD_PT) is the same padding draw_dock() actually placed
-             * the icon with, so a click and the pixel it lands on agree at
-             * every backing scale, not just this one. */
-            if (reg[i].hidden) continue;   /* AEX_CAT_TEST: painted, but no hit box and no launch */
-            int ix = dock_x0 + dock_gap + i * (dock_isz + dock_gap), iy = dock_y0 + S(DOCK_PAD_PT);
-            if (in_rect(x, y, ix, iy, dock_isz, dock_isz)) {
-                wm_launch(reg[i].file, "");
-                dirty_dock();            /* the launch bounce starts in the dock */
-                docked = 1; break;
-            }
-        }
+        int docked = wm_dock_click(x, y, EV_BTN_LEFT);   /* an icon: launch it */
         /* A RESIZE GRAB OUTRANKS EVERYTHING BELOW IT, including the titlebar
          * drag and the app's own content, because the band overlaps both. It
          * loses to the dock and the menu-bar switch above for the same reason
@@ -7434,12 +4682,12 @@ static void wm_process_mouse(const struct inputq_event *in)
          * is the thing you must hit. */
         int rz_e = 0, rz_hit = docked ? -1 : resize_hit(x, y, &rz_e);
         if (rz_hit >= 0) {
-            struct win *w = &wins[rz_hit];
+            struct win *w = &wm_wins[rz_hit];
             int prev_top = top_visible();
             raise_win(rz_hit);
             dirty_win(w);
-            if (prev_top >= 0 && prev_top != rz_hit && wins[prev_top].used)
-                dirty_win(&wins[prev_top]);
+            if (prev_top >= 0 && prev_top != rz_hit && wm_wins[prev_top].used)
+                dirty_win(&wm_wins[prev_top]);
             rz_win = rz_hit; rz_edge = rz_e;
             rz_x0 = w->x; rz_y0 = w->y; rz_x1 = w->x + w->w; rz_y1 = w->y + w->h;
             rz_mx = x; rz_my = y;
@@ -7448,13 +4696,13 @@ static void wm_process_mouse(const struct inputq_event *in)
         }
         if (!docked) {
         int hitorder = -1;
-        for (int i = norder - 1; i >= 0; i--) {
-            struct win *w = &wins[order[i]];
+        for (int i = wm_norder - 1; i >= 0; i--) {
+            struct win *w = &wm_wins[wm_order[i]];
             if (w->used && !w->minimized && in_rect(x, y, w->x, w->y, w->w, w->h)) { hitorder = i; break; }
         }
         if (hitorder >= 0) {
-            int wi = order[hitorder];
-            struct win *w = &wins[wi];
+            int wi = wm_order[hitorder];
+            struct win *w = &wm_wins[wi];
             /* Raising repaints BOTH windows, and forgetting the second one is
              * the classic partial-render bug: the window that just lost focus
              * still shows its coloured traffic lights, in its own titlebar,
@@ -7462,30 +4710,13 @@ static void wm_process_mouse(const struct inputq_event *in)
             int prev_top = top_visible();
             raise_win(wi);
             dirty_win(w);
-            if (prev_top >= 0 && prev_top != wi && wins[prev_top].used)
-                dirty_win(&wins[prev_top]);
+            if (prev_top >= 0 && prev_top != wi && wm_wins[prev_top].used)
+                dirty_win(&wm_wins[prev_top]);
             int cx = x - w->x, cy = y - w->y;
             if (cy < win_tbh(w)) {
-                /* The three lights, at last all three doing something. The
-                 * yellow and green ones have been drawn since M8 and have been
-                 * decoration for as long -- which is worse than absent, because
-                 * a control that looks like a control and does nothing teaches
-                 * a user that this desktop's chrome is a picture of a desktop. */
-                int r2 = S(8) * S(8);
-                int dyc = cy - S(15);
-                if ((cx - S(16)) * (cx - S(16)) + dyc * dyc <= r2) {
-                    if (w->kind == WK_APP) enqueue(w, EV_CLOSE, 0, 0);  /* close */
-                } else if ((cx - S(34)) * (cx - S(34)) + dyc * dyc <= r2) {
-                    win_set_min(w, 1);                                  /* minimise */
-                } else if ((cx - S(52)) * (cx - S(52)) + dyc * dyc <= r2) {
-                    win_set_zoom(w, !w->zoomed);                        /* zoom */
-                } else if (titlebar_double_click(wi, x, y)) {
-                    /* Double-click the titlebar: the same toggle as the green
-                     * light. Two ways in for one action, because the light is
-                     * discoverable and the double-click is what a hand already
-                     * trained on another desktop will try first. */
-                    win_set_zoom(w, !w->zoomed);
-                } else {
+                /* The titlebar's controls (wm_chrome.c): the three lights and
+                 * the double-click. A press on none of them is a drag. */
+                if (!wm_chrome_click(wi, x, y, EV_BTN_LEFT)) {
                     dragging = wi; drag_dx = cx; drag_dy = cy;
                 }
             } else if (w->kind == WK_APP) {
@@ -7496,21 +4727,25 @@ static void wm_process_mouse(const struct inputq_event *in)
         }
     }
     if (right && !mright) {
-        for (int i = norder - 1; i >= 0; i--) {
-            struct win *w = &wins[order[i]];
+        int on_window = 0;
+        for (int i = wm_norder - 1; i >= 0; i--) {
+            struct win *w = &wm_wins[wm_order[i]];
             if (!w->used || !in_rect(x, y, w->x, w->y, w->w, w->h)) continue;
+            on_window = 1;
             int cx = x - w->x, cy = y - w->y;
             if (cy >= win_tbh(w) && w->kind == WK_APP) {
-                int prev_top = norder ? order[norder - 1] : -1;
-                raise_win(order[i]);    /* focus + bring to front (like left-click) so the menu shows on top */
+                int prev_top = wm_norder ? wm_order[wm_norder - 1] : -1;
+                raise_win(wm_order[i]);    /* focus + bring to front (like left-click) so the menu shows on top */
                 dirty_win(w);
-                if (prev_top >= 0 && prev_top != order[i] && wins[prev_top].used)
-                    dirty_win(&wins[prev_top]);
+                if (prev_top >= 0 && prev_top != wm_order[i] && wm_wins[prev_top].used)
+                    dirty_win(&wm_wins[prev_top]);
                 enqueue_input(w, EV_MOUSE_R, PT(cx), PT(cy - win_tbh(w)), mods, EV_BTN_RIGHT, 0);
-                mouse_capture = order[i];
+                mouse_capture = wm_order[i];
             }
             break;
         }
+        /* No window under it: the desktop's own menu (wm_wallpaper.c). */
+        if (!on_window) wm_desktop_context(x, y);
     }
     /* Middle press. It does NOT raise the window: a middle click is "do the
      * thing under the pointer" (paste, open-in-background), and raising would
@@ -7519,7 +4754,7 @@ static void wm_process_mouse(const struct inputq_event *in)
     if (middle && !mmiddle) {
         int wi = win_content_at(x, y);
         if (wi >= 0) {
-            struct win *w = &wins[wi];
+            struct win *w = &wm_wins[wi];
             enqueue_input(w, EV_MOUSE, PT(x - w->x), PT(y - w->y - win_tbh(w)), mods, EV_BTN_MIDDLE, 0);
             mouse_capture = wi;
             /* No damage: a middle press deliberately does not raise, so the WM
@@ -7543,8 +4778,8 @@ static void wm_process_mouse(const struct inputq_event *in)
         for (int k = 0; k < 3; k++) {
             if (!was[k] || now[k]) continue;
             int wi = mouse_capture >= 0 ? mouse_capture : win_content_at(x, y);
-            if (wi < 0 || !wins[wi].used || wins[wi].kind != WK_APP) continue;
-            struct win *w = &wins[wi];
+            if (wi < 0 || !wm_wins[wi].used || wm_wins[wi].kind != WK_APP) continue;
+            struct win *w = &wm_wins[wi];
             enqueue_input(w, EV_MOUSE_UP, PT(x - w->x), PT(y - w->y - win_tbh(w)), mods, id[k], 0);
         }
     }
@@ -7554,7 +4789,7 @@ static void wm_process_mouse(const struct inputq_event *in)
 #ifndef WM_SNAP_NEGCTL
         /* THE CONTROL (make test-snap-negctl) leaves this out: the preview
          * shows, the release does nothing, and every frame check must fail. */
-        if (dragging >= 0 && g_snap_zone && wins[dragging].used) win_snap(&wins[dragging], g_snap_zone);
+        if (dragging >= 0 && g_snap_zone && wm_wins[dragging].used) win_snap(&wm_wins[dragging], g_snap_zone);
 #endif
         snap_set(SNAP_NONE);
         dragging = -1;
@@ -7568,7 +4803,7 @@ static void wm_process_mouse(const struct inputq_event *in)
      * trailing behind the drag, and it is the single most visible way to get
      * damage tracking wrong. */
     if (dragging >= 0 && left) {
-        struct win *w = &wins[dragging];
+        struct win *w = &wm_wins[dragging];
         int nx = x - drag_dx, ny = y - drag_dy;
         if ((nx != w->x || ny != w->y) && w->snapped) {
             /* Leaving a half: back to the remembered size, the pointer at the
@@ -7596,8 +4831,8 @@ static void wm_process_mouse(const struct inputq_event *in)
      * as well: clamping the width alone while dragging the left edge would pin
      * x and grow the window to the RIGHT, which is the opposite of the edge
      * under the hand. */
-    if (rz_win >= 0 && left && wins[rz_win].used) {
-        struct win *w = &wins[rz_win];
+    if (rz_win >= 0 && left && wm_wins[rz_win].used) {
+        struct win *w = &wm_wins[rz_win];
         int nx0 = rz_x0, ny0 = rz_y0, nx1 = rz_x1, ny1 = rz_y1;
         if (rz_edge & RZ_L) nx0 = rz_x0 + (x - rz_mx);
         if (rz_edge & RZ_R) nx1 = rz_x1 + (x - rz_mx);
@@ -7612,7 +4847,7 @@ static void wm_process_mouse(const struct inputq_event *in)
             win_break_zoom(w);        /* movement, not the press -- see win_break_zoom */
         win_set_frame(w, nx0, ny0, nx1 - nx0, ny1 - ny0);
     }
-    if (rz_win >= 0 && (!wins[rz_win].used || !left)) { rz_win = -1; rz_edge = 0; }
+    if (rz_win >= 0 && (!wm_wins[rz_win].used || !left)) { rz_win = -1; rz_edge = 0; }
 
     /* Motion. Goes to the capture target while a button is held, else to
      * whatever window is visibly under the pointer -- including an unfocused
@@ -7625,10 +4860,19 @@ static void wm_process_mouse(const struct inputq_event *in)
      * bound on how far apart those two rates can drift. evq_push merges
      * consecutive moves, so motion occupies at most ONE slot and can never evict
      * a queued click. */
-    if (moved && dragging < 0 && rz_win < 0) {
+    /* Hover on WM chrome comes first and may keep the motion for itself
+     * ('handled'): the menu bar, a window's titlebar, a panel. None takes it
+     * today. The dock's hover is damage, not delivery -- see the end. */
+    int chrome_took = 0;
+    if (moved) {
+        chrome_took |= wm_menubar_pointer(x, y);
+        chrome_took |= wm_chrome_pointer(win_frame_at(x, y), x, y);
+        chrome_took |= wm_panel_pointer(x, y);
+    }
+    if (moved && !chrome_took && dragging < 0 && rz_win < 0) {
         int wi = mouse_capture >= 0 ? mouse_capture : win_content_at(x, y);
-        if (wi >= 0 && wins[wi].used && wins[wi].kind == WK_APP) {
-            struct win *w = &wins[wi];
+        if (wi >= 0 && wm_wins[wi].used && wm_wins[wi].kind == WK_APP) {
+            struct win *w = &wm_wins[wi];
             enqueue_input(w, EV_MOUSE_MOVE, PT(x - w->x), PT(y - w->y - win_tbh(w)), mods, EV_BTN_NONE, 0);
         }
     }
@@ -7638,10 +4882,10 @@ static void wm_process_mouse(const struct inputq_event *in)
      * silently shorten the scroll. */
     if (in->wheel) {
         int wi = mouse_capture >= 0 ? mouse_capture : win_content_at(x, y);
-        if (wi >= 0 && wins[wi].used && wins[wi].kind == WK_APP) {
-            struct win *w = &wins[wi];
+        if (wi >= 0 && wm_wins[wi].used && wm_wins[wi].kind == WK_APP) {
+            struct win *w = &wm_wins[wi];
             enqueue_input(w, EV_WHEEL, PT(x - w->x), PT(y - w->y - win_tbh(w)), mods, EV_BTN_NONE,
-                          desktop_prefs.natural_scroll ? -in->wheel : in->wheel);
+                          wm_desktop_prefs.natural_scroll ? -in->wheel : in->wheel);
             /* Same as the middle press: the scroll is the app's to draw. */
         }
     }
@@ -7667,10 +4911,7 @@ static void wm_process_mouse(const struct inputq_event *in)
      * so motion still means a recomposite -- the old behaviour, unchanged. */
     if (moved) {
         if (!hw_cursor) { dirty_cursor(omx, omy); dirty_cursor(x, y); }
-        else {
-            int hov = dock_hover_at(x, y);
-            if (hov != old_hov) { dirty_dock_hov(old_hov); dirty_dock_hov(hov); }
-        }
+        else wm_dock_pointer(x, y, omx, omy);   /* the hovered icon, old and new */
     }
     /* Last, and after the drag state above has settled, because the shape is a
      * function of that state: asking before the release has been processed
@@ -7681,129 +4922,12 @@ static void wm_process_mouse(const struct inputq_event *in)
     update_cursor_shape(x, y);
 }
 
-/* ---------- registry + init ---------- */
-
-/* WHERE THIS MACHINE'S APPS ARE, said out loud, exactly once.
- *
- * The dock's slot order is `reg[]`, built by scan_apps() below off the disk it
- * booted from, and until this line existed the machine never published it.
- * Ten places outside the kernel spelled it instead -- NAPPS, BROWSER_SLOT,
- * GALLERY_SLOT, SETTINGS_SLOT and a name->index dict in qmp_launch_click.py,
- * plus a scatter of bare integers -- which is CLAUDE.md rule 3 (one jar, two
- * doors) at ten doors, and it has already gone wrong the way that rule
- * predicts: NAPPS went stale the day a settings app was packed (10 -> 11).
- * The dock is CENTRED, so one more app moves EVERY icon half a slot; a stale
- * coordinate lands on the wallpaper, which does nothing at all and looks
- * exactly like the app failing to open.
- *
- * A constant maintained in step with a disk image by hand is not a fact, it is
- * a hope. This is the fact, printed by the ONE function that builds the
- * registry -- called from inside scan_apps(), not after it, so a second caller
- * cannot acquire a dock the outside world was never told about.
- *
- * THE FORMAT IS CHOSEN FOR THE READER, and the reader is Python in
- * tests/qmp/ (qmp_ui.py:parse_dock -- keep the two in step):
- *
- *   [wm] dock 9 apps: 0=clock.aex,shown 1=textedit.aex,shown ... 8=settings.aex,shown
- *
- * one line; one whitespace-separated token per slot; each token is
- * `slot=file,visibility` in that fixed order; no field can contain a space
- * (the file is a LogitFS root name, and the visibility is one of exactly two
- * words). `shown`/`hidden` is spelled rather than 0/1 because the line is read
- * by people on a serial log as well as by a parser, and because it answers a
- * question a driver otherwise diagnoses as a slow launch: an AEX_CAT_TEST tile
- * is painted but can never be hovered or clicked, so a click on it does
- * nothing, forever, and looks identical to an app that is merely slow.
- * (Nothing ships AEX_CAT_TEST on $(DISK) as of Task E, 2026-09-02 -- see
- * struct regent's comment below -- so `hidden` is expected to read `shown` on
- * every token of the product's own line; the field stays general for any
- * disk that packs one.) */
-static void dock_publish(void)
-{
-#ifdef DOCK_NEGCTL_PUBLISH_STALE
-    /* NEGATIVE CONTROL for test-dock-map (tests/dock.mk: test-dock-map-negctl,
-     * driven by tests/qmp/qmp_dock_negctl.py). Print ONE APP FEWER than nreg
-     * actually holds: the header number and the token count still agree with
-     * EACH OTHER (n, not nreg), so the line parses as a perfectly ordinary,
-     * self-consistent dock -- it is simply short by exactly the kind of lie a
-     * hand-maintained NAPPS used to tell. scan_apps() is untouched, so the
-     * dropped app is still in reg[], still drawn by draw_dock() at its real,
-     * nreg-wide centred position, and still fully clickable -- only the
-     * REPORT is wrong. A harness that clicks every slot the line names and
-     * calls it done never notices; one that also checks whether a REAL tile
-     * exists one slot past the line's own count catches it. That is exactly
-     * what the count check has to do, and this is how it is proven to. */
-    int n = nreg > 0 ? nreg - 1 : 0;
-    kprintf("[wm] dock %d apps:", n);
-    for (int i = 0; i < n; i++)
-        kprintf(" %d=%s,%s", i, reg[i].file, reg[i].hidden ? "hidden" : "shown");
-    kprintf("\n");
-#else
-    kprintf("[wm] dock %d apps:", nreg);
-    for (int i = 0; i < nreg; i++)
-        kprintf(" %d=%s,%s", i, reg[i].file, reg[i].hidden ? "hidden" : "shown");
-    kprintf("\n");
-#endif
-}
-
-static void scan_apps(void)
-{
-    int n = vfs_count("/");
-    for (int i = 0; i < n && nreg < MAXWIN; i++) {
-        char nm[64];
-        scopy(nm, vfs_ent_name("/", i), sizeof nm);
-        if (!ends_aex(nm)) continue;
-        /* THE 64 BYTES, AND ONLY THE 64 BYTES.
-         *
-         * This used to kmalloc the whole file and read it whole, because
-         * logitfs's vfs_read is all-or-nothing (a buffer smaller than the file
-         * is an ERROR, not a short read) and there was no partial read in the
-         * VFS at all. So the Dock scan -- which runs at boot, before anything
-         * else has allocated -- took a contiguous kmalloc the size of the
-         * largest .aex in the root, to look at its first 64 bytes. That is what
-         * put "never put a big binary in the root" in CLAUDE.md.
-         *
-         * vfs_pread() exists now (c/fs/vfs.c), so the workaround is unnecessary
-         * and so is the advice: 64 bytes on the stack, one read, no allocation
-         * on the boot path at all. `sz` is still taken because the fixed header
-         * carries no length and a file shorter than one is not a program. */
-        int sz = vfs_size(nm);
-        if (sz < AEX_HDR_SIZE) continue;    /* aex_info reads the 64-byte header */
-        struct aex_header hb;
-        if (vfs_pread(nm, &hb, AEX_HDR_SIZE, 0) != AEX_HDR_SIZE) continue;
-        char name[32], ext[8];
-        if (aex_info(&hb, name, ext) == 0) {
-            struct aex_header *h = &hb;
-            scopy(reg[nreg].file, nm, sizeof reg[nreg].file);
-            scopy(reg[nreg].name, name, sizeof reg[nreg].name);
-            scopy(reg[nreg].ext, ext, sizeof reg[nreg].ext);
-            reg[nreg].icon = h->icon ? (char)h->icon : reg[nreg].name[0];
-            static const uint8_t pal[7][3] = {
-                {80,140,255},{55,200,120},{255,92,92},{255,170,40},
-                {170,110,255},{40,200,220},{255,120,170} };
-            reg[nreg].color = (h->icon_r || h->icon_g || h->icon_b)
-                ? rgb(h->icon_r, h->icon_g, h->icon_b)
-                : rgb(pal[nreg % 7][0], pal[nreg % 7][1], pal[nreg % 7][2]);
-            /* AEX_CAT_TEST apps keep their slot and their tile's ink but lose
-             * the ability to be hovered or clicked -- see the comment on
-             * `struct regent`. Nothing on the shipped disk is tagged this way
-             * as of Task E (2026-09-02: Gallery no longer ships at all rather
-             * than shipping hidden -- see the Makefile); the mechanism stays
-             * general for whatever next asks for a harness-only tile.
-             * h->category is read straight off the raw header already sitting
-             * in `hb`; aex_info() does not surface it. */
-            reg[nreg].hidden = (h->category == AEX_CAT_TEST);
-            nreg++;
-        }
-    }
-    dock_publish();
-}
-
+/* ---------- init ---------- */
 void wm_init(void)
 {
-    W = (int)fb_width();
-    H = (int)fb_height();
-    int count = W * H;
+    wm_W = (int)fb_width();
+    wm_H = (int)fb_height();
+    int count = wm_W * wm_H;
     uint64_t pages = ((uint64_t)count * 4 + 4095) / 4096;
     back = (uint32_t *)pmm_alloc_contig(pages);
     bg   = (uint32_t *)pmm_alloc_contig(pages);
@@ -7816,7 +4940,7 @@ void wm_init(void)
         return;
     }
     fb_set_backbuffer(back);
-    mx = W / 2; my = H / 2;
+    mx = wm_W / 2; my = wm_H / 2;
 
     /* --- settings line: the theme the user last chose ----------------------
      * Set directly, not through wm_set_dark(): there are no windows yet to be
@@ -7932,7 +5056,7 @@ static void wm_geom_report(void)
     static uint64_t quiet_ms;
     int changed = 0;
     for (int i = 0; i < MAXWIN; i++) {
-        struct win *w = &wins[i];
+        struct win *w = &wm_wins[i];
         struct gsnap c = { w->used ? w->x : -1, w->used ? w->y : -1,
                            w->used ? w->w : -1, w->used ? w->h : -1,
                            w->zoomed, w->minimized, w->cw_pt, w->ch_pt };
@@ -7968,7 +5092,7 @@ static void wm_geom_report(void)
     if (!pending || time_mono_ms() - quiet_ms < 150) return;
     pending = 0;
     for (int i = 0; i < MAXWIN; i++) {
-        struct win *w = &wins[i];
+        struct win *w = &wm_wins[i];
         if (seen[i].x == said[i].x && seen[i].y == said[i].y &&
             seen[i].w == said[i].w && seen[i].h == said[i].h &&
             seen[i].z == said[i].z && seen[i].m == said[i].m &&
@@ -7984,6 +5108,11 @@ static void wm_geom_report(void)
          * convert with the wrong scale. */
         kprintf("[wm] win %d frame %d %d %d %d content %d %d pt zoom %d min %d %s\n",
                 i, x, y, ww, wh, w->cw_pt, w->ch_pt, z, m, w->title);
+        /* WHICH PROGRAM, by file: the title above is the app's to change (and
+         * the overhaul localises every one), so a driver that has to find "the
+         * Finder" keys on this line instead. Its own line, after the frame
+         * line, so no parser of the frame line sees a new field. */
+        kprintf("[wm] win %d app %s\n", i, w->app ? w->app->stem : "-");
     }
 }
 
@@ -8130,7 +5259,7 @@ static void wm_check_unlock(void)
     wm_reduce_transparency = settings_get_int("ui.reduce_transparency", 0) != 0;
     fb_set_reduce_transparency(wm_reduce_transparency);
     draw_background();
-    { int count = W * H; blit(bg, back, count); }
+    { int count = wm_W * wm_H; blit(bg, back, count); }
 
     wm_desktop_start();
     dirty_full(FULL_UNLOCK);
@@ -8214,7 +5343,7 @@ void wm_run(void)
 
     wm_state_unlock();
     kernel_power_start();
-    uint64_t last = 0;
+    uint64_t clock_wake = 50;     /* timer_ticks(): the first half-second, as `last = 0` was */
     for (;;) {
         /* Input metadata needs only wm_lock.  Keeping graphics_lock around the
          * whole pass would move launch latency into the compositor domain.
@@ -8237,7 +5366,7 @@ void wm_run(void)
                 snext = tnow + 4;           /* ~40ms/step */
                 int k = sk++ % 3;
                 struct app *liv = find_live_app(NAME[k]);   /* match by NAME, not filename */
-                if (liv && liv->win >= 0) enqueue(&wins[liv->win], EV_CLOSE, 0, 0);
+                if (liv && liv->win >= 0) wm_enqueue(&wm_wins[liv->win], EV_CLOSE, 0, 0);
                 else if (!liv) wm_launch(FILE[k], "");
                 if ((++scnt & 31) == 0) serial_puts("[s]\n");
             }
@@ -8276,12 +5405,12 @@ void wm_run(void)
          * therefore repaints a 24-point strip twice a second instead of the
          * whole screen, and there is no periodic full repaint left to quietly
          * cover for a caller that under-reported its damage. */
-        if (now - last >= 50) {
-            last = now; dirty_menubar();
+        if (now >= clock_wake) {
+            clock_wake = wm_menubar_next_wake(now);   /* the clock moved: damage the bar */
             static unsigned preferences_gen = (unsigned)-1;
             unsigned current_gen = settings_gen();
             if (current_gen != preferences_gen) {
-                desktop_prefs = desktop_preferences_read(settings_get_int);
+                wm_desktop_prefs = desktop_preferences_read(settings_get_int);
                 preferences_gen = current_gen;
                 dirty_dock();
             }
@@ -8296,23 +5425,40 @@ void wm_run(void)
                 wm_reduce_transparency = solid;
                 fb_set_reduce_transparency(solid);
                 for (int i = 0; i < MAXWIN; i++)
-                    if (wins[i].used) enqueue(&wins[i], EV_THEME, g_ui_dark, 0);
+                    if (wm_wins[i].used) wm_enqueue(&wm_wins[i], EV_THEME, g_ui_dark, 0);
                 /* App glass lives in its own surface and is redrawn on
                  * EV_THEME; desktop chrome needs whole-panel damage now. */
                 if (material_changed) dirty_full(FULL_THEME);
                 else dirty_dock();
             }
+            wm_theme_refresh();       /* the prefs tick: re-derive theme state (none yet) */
         }
         /* Animations advance HERE, before the frame that shows them, and they
          * are what asks for that frame -- exactly the shape of the dock bounce
          * this loop already ran (draw_dock re-dirties itself while a bounce is
          * live). Nothing polls; an idle desktop with nothing moving reaches
          * this line, requests no damage, and goes back to sleep on the hlt. */
-        wm_hotcorner_tick();
-        sw_tick();                /* Cmd+Tab switcher: reveal after a hold, never strand it open */
-        wm_dock_autohide_tick();  /* a zoomed front window hides the dock; the bottom edge calls it */
+        /* Each surface's per-pass work, as `int wm_<m>_tick(now)` (monotonic
+         * ms): non-zero asks for a frame its own damage did not already
+         * request -- which then has to be a whole one, there being no
+         * rectangle to say otherwise. Every one returns 0 today: the hot
+         * corner, the switcher and the dock slide ask for their frames by
+         * damaging what they change, and the rest have nothing to do yet. */
+        uint64_t tick_ms = time_mono_ms();
+        int tick_frame = 0;
+        tick_frame |= wm_expose_tick(tick_ms);   /* the hot corner's dwell */
+        tick_frame |= wm_overlay_tick(tick_ms);  /* Cmd+Tab switcher: reveal after a hold, never strand it open */
+        tick_frame |= wm_dock_tick(tick_ms);     /* a zoomed front window hides the dock; the bottom edge calls it */
         menu_model_sync();        /* the top window changed some other way (reap, launch): follow it */
         wm_anim_tick();
+        tick_frame |= wm_menubar_tick(tick_ms);
+        tick_frame |= wm_menu_tick(tick_ms);
+        tick_frame |= wm_chrome_tick(tick_ms);
+        tick_frame |= wm_panel_tick(tick_ms);
+        tick_frame |= wm_reveal_tick(tick_ms);
+        tick_frame |= wm_wallpaper_tick(tick_ms);
+        tick_frame |= wm_glass_tick(tick_ms);
+        if (tick_frame) dirty_full(FULL_TICK);
         /* Animation/hot-corner changes can transfer keyboard ownership without
          * an input event. Notify apps and settle IME before damage is captured. */
         wm_sync_focus();
