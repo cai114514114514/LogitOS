@@ -3,6 +3,7 @@
 #include "aui_damage.h"
 #include "gfx.h"
 #include "openlogit_anim.h"
+#include "openlogit_glass_material.h"
 #include "aui_scroll_motion.h"
 
 /* ============================================================================
@@ -352,6 +353,34 @@ static void ad_union(int *any, int x0, int y0, int x1, int y1)
  * agree on its shape instead of two that could drift. */
 static int g_ad_result_valid;
 
+/* The glass control panels drawn this frame (ad_note_glass2). A panel SAMPLES
+ * the backdrop within its halo, so a changed pixel there changes the panel's own
+ * pixels although its call is byte-identical: ad_finish grows the flush set to
+ * contain the whole panel when a changed rectangle reaches its halo. */
+#define AD_GLMAX 16
+struct ad_gl { int x, y, w, h, halo; };
+static struct ad_gl g_ad_gl[AD_GLMAX];
+static int g_ad_gl_n;
+
+static void ad_grow_glass(int *any)
+{
+    for (int pass = 0; pass < 2 && *any; pass++) {
+        int grew = 0;
+        for (int i = 0; i < g_ad_gl_n; i++) {
+            const struct ad_gl *g = &g_ad_gl[i];
+            int hit = 0, covered = 0;
+            for (int k = 0; k < g_ad_nr; k++) {
+                const struct ad_rect *r = &g_ad_r[k];
+                if (r->x1 > g->x - g->halo && r->x0 < g->x + g->w + g->halo &&
+                    r->y1 > g->y - g->halo && r->y0 < g->y + g->h + g->halo) hit = 1;
+                if (r->x0 <= g->x && r->y0 <= g->y && r->x1 >= g->x + g->w && r->y1 >= g->y + g->h) covered = 1;
+            }
+            if (hit && !covered) { ad_union(any, g->x, g->y, g->x + g->w, g->y + g->h); grew = 1; }
+        }
+        if (!grew) break;
+    }
+}
+
 static void ad_finish(void)
 {
     int can_diff = g_ad_have_prev && !g_ad_overflow &&
@@ -395,6 +424,7 @@ static void ad_finish(void)
             any = 1;
         }
     }
+    if (can_diff && any) ad_grow_glass(&any);
     if (g_ad_extra_have)
         ad_union(&any, g_ad_ex0, g_ad_ey0, g_ad_ex1, g_ad_ey1);
 
@@ -426,6 +456,7 @@ static void ad_finish(void)
     g_ad_prev_w = win_w; g_ad_prev_h = win_h;
     g_ad_have_prev = 1;
     g_ad_overflow = 0;
+    g_ad_gl_n = 0;
     g_ad_extra_have = 0;
 }
 
@@ -1047,9 +1078,98 @@ static unsigned face_for(int st)
  * This face is symmetric by construction: a vertical gradient from near the
  * surface colour down to the control face, and one uniform border. `base` is
  * face_for()'s answer, so hover and press keep their colours. */
+/* ---------------------------------------------------------------------------
+ * Glass control faces (GUI ABI v2 SYS_GUI_GLASS2).
+ *
+ * Buttons, the segmented pill and the toggle track are ONE glass2 call with the
+ * SYMMETRIC rim and the THIN blur whenever the kernel reports GLASS2 and the
+ * user has not asked for reduced transparency (ui.reduce_transparency, read
+ * once per frame in aui_begin). The DIRECTIONAL rim is right for the dock,
+ * which refracts a wallpaper; on a control it paints two grey crescents (see
+ * button_face), the SYMMETRIC rim lights every rim pixel alike. The face colour
+ * the gradient used to carry is the material TINT, so hover, press and the
+ * disabled tone still read. Without the capability, or with reduced
+ * transparency, the gradient face is drawn exactly as before. There is no
+ * setting of its own. -DAUI_GLASS_DIRECTIONAL (the negative control) asks for
+ * the directional rim. */
+#if defined(AUI_NO_AA)
+#define glass_ctl_ok() 0
+#else
+static int glass_caps = -1;               /* -1 not asked yet, 0 no, 1 yes */
+static int glass_reduced;                 /* ui.reduce_transparency, this frame */
+static int glass_ctl_ok(void)
+{
+    if (glass_caps < 0) {
+        long i = ol_gui2_info(0);
+        glass_caps = (i > 0 && (i & LOGIT_GUI2_F_GLASS2)) ? 1 : 0;
+    }
+    return glass_caps && !glass_reduced;
+}
+#endif
+
+#ifdef AUI_GLASS_DIRECTIONAL
+#define GLASS_CTL_RIM OL_GLASS_RIM_DIRECTIONAL
+#else
+#define GLASS_CTL_RIM OL_GLASS_RIM_SYMMETRIC
+#endif
+
+/* The damage note: the panel's rect grown by ad_halo_glass() (how far the
+ * backdrop it samples reaches), computed in DEVICE pixels and converted back to
+ * points rounding up, like ad_note_shadow2. */
+static void ad_note_glass2(int x, int y, int w, int h, int r, unsigned tint, int opacity)
+{
+    int pct = aui_scale();
+    int hd = ad_halo_glass(aui_dev(w), aui_dev(h), aui_dev(r), OL_GLASS_BLUR_THIN);
+    int hp = sh_up100(hd, pct) + 1;
+    unsigned sig = 2166136261u;
+    struct ad_set s;
+    AD_MIX(sig, r); AD_MIX(sig, tint); AD_MIX(sig, opacity); AD_MIX(sig, 0x6c55u);
+    s.n = 0;
+    ad_add_halo(&s, x, y, w, h, hp, hp, hp, hp);
+    if (s.n) ad_record(s.r[0].x0, s.r[0].y0, s.r[0].x1 - s.r[0].x0, s.r[0].y1 - s.r[0].y0, sig);
+    if (g_ad_gl_n < AD_GLMAX) {
+        struct ad_gl *g = &g_ad_gl[g_ad_gl_n++];
+        g->x = x; g->y = y; g->w = w; g->h = h; g->halo = hp;
+    } else g_ad_overflow = 1;
+}
+
+/* One glass control face; 1 when the kernel drew it, 0 when the caller must
+ * draw the gradient face. Rect and radius are decided in device pixels the way
+ * shadow2_emit does. */
+static int glass_face(int x, int y, int w, int h, int r, unsigned tint, int opacity)
+{
+#ifdef AUI_NO_AA
+    (void)x; (void)y; (void)w; (void)h; (void)r; (void)tint; (void)opacity;
+    return 0;
+#else
+    struct logit_glass2 g;
+    long long x0, x1, y0, y1;
+    int k, rr;
+    if (w <= 0 || h <= 0 || !glass_ctl_ok()) return 0;
+    r = clamp_radius(w, h, r);
+    x0 = dev_ceil_pt24((long long)aui_dev(X_(x)) * 256); x1 = dev_ceil_pt24((long long)aui_dev(X_(x + w)) * 256);
+    y0 = dev_ceil_pt24((long long)aui_dev(Y_(y)) * 256); y1 = dev_ceil_pt24((long long)aui_dev(Y_(y + h)) * 256);
+    rr = (int)dev_ceil_pt24((long long)imax(0, aui_dev(r)) * 256);
+    gfx_zero(&g, sizeof g);
+    g.x = (int)x0; g.y = (int)y0; g.w = (int)(x1 - x0); g.h = (int)(y1 - y0);
+    for (k = 0; k < 4; k++) g.radius[k] = rr;
+    g.tint_argb = tint & 0xFFFFFFu;
+    g.opacity = opacity; g.tone = 0;
+    g.blur_level = OL_GLASS_BLUR_THIN; g.rim = GLASS_CTL_RIM;
+    g.flags = LOGIT_RECT_SNAP;
+    if (ol_window_glass2(&g) != 0) return 0;
+    ad_note_glass2(x, y, w, h, r, tint, opacity);
+    return 1;
+#endif
+}
+
+#define GLASS_BTN_OPACITY 176
+#define GLASS_TRACK_OPACITY 208
+
 static void button_face(int x, int y, int w, int h, int rad, unsigned base)
 {
     unsigned top, bot;
+    if (glass_face(x, y, w, h, rad, base, GLASS_BTN_OPACITY)) return;
     if (theme_dark) { top = aui_shade(base, 8); bot = base; }
     else { top = aui_mix(AUI_SURFACE, base, 64); bot = aui_mix(AUI_SURFACE, base, 220); }
     aui_vgrad_round(x, y, w, h, rad, top, bot);
@@ -1088,6 +1208,9 @@ void aui_begin(unsigned bg)
     aui_ensure();
     frame_ms = (unsigned)monotonic_ms();
     anim_reduced = setting_int("ui.reduce_motion",0) != 0;
+#ifndef AUI_NO_AA
+    glass_reduced = setting_int("ui.reduce_transparency",0) != 0;
+#endif
     /* Last frame's clipped rectangles pick the innermost eligible scroller.
      * Both ancestors and descendants used to consume the same wheel event.
      * Resolve before any slot is touched in this frame; no live state pointer
@@ -1584,7 +1707,7 @@ int aui_toggle(int x, int y, int *state, int enabled)
     if (r.st & AUI_OFF) track = AUI_DISABLED;
     else if (r.st & AUI_HOVER) track = aui_shade(track, *state ? 14 : -8);
     focus_ring(r.st & AUI_FOCUSED, x, y, w, h, h / 2);
-    aui_round(x, y, w, h, h / 2, track);
+    if (!glass_face(x, y, w, h, h / 2, track, GLASS_TRACK_OPACITY)) aui_round(x, y, w, h, h / 2, track);
     int kx = x + 2 + (w - h) * t / 255;        /* t=0 -> x+2; t=255 -> x+w-h+2 */
     aui_shadow_ex(kx, y + 2, h - 4, h - 4, (h - 4) / 2, 1, 3, 70);
     aui_circle(kx + (h - 4) / 2, y + h / 2, (h - 4) / 2, (r.st & AUI_OFF) ? AUI_DISABLED_TX : rgb(255, 255, 255));
@@ -2186,7 +2309,8 @@ int aui_segmented(int x, int y, int w, int h, const char *const *items, int n, i
     int pt = aui_anim(AUI_AK_VALUE, iclamp(*sel, 0, n - 1) * seg * 255 / imax(1, w), AUI_T_BASE, AUI_EASE_INOUT);
     int px = x + pt * w / 255 + 2;
     aui_shadow_ex(px, y + 2, seg - 4, h - 4, AUI_R_SM, 1, 3, 60);
-    aui_round(px, y + 2, seg - 4, h - 4, AUI_R_SM, AUI_SURFACE);
+    if (!glass_face(px, y + 2, seg - 4, h - 4, AUI_R_SM, AUI_SURFACE, GLASS_BTN_OPACITY))
+        aui_round(px, y + 2, seg - 4, h - 4, AUI_R_SM, AUI_SURFACE);
     for (int i = 0; i < n; i++) {
         int sx = x + i * seg;
         int over = input_ok(X_(sx), Y_(y), seg, h);
