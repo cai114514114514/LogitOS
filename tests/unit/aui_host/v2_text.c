@@ -1,7 +1,11 @@
 /* v2_text.c -- the host harness's answer to GUI ABI v2 text (aui-text-adopt).
  *
  *   SYS_GUI_TEXT_RUN2        the same box glyphs as SYS_GUI_TEXT_RUN, blended with
- *                            the run's alpha, at 24.8-point placement
+ *                            the run's alpha, at 24.8-point placement; a weight
+ *                            (ui-aui-text-api) draws as stroke thickness: each
+ *                            box is 1 device px wider per baked slot above 400
+ *                            (500 +1, 600 +2, 700 +3). Weight 0 (and 400) boxes
+ *                            are byte-identical to what they were.
  *   SYS_TEXT_MEASURE b = -2  the carets query, consistent with the box-glyph
  *                            advances: stop i sits at aui_host_text_advance of the
  *                            first off[i] bytes, in device 24.8
@@ -108,13 +112,17 @@ static long text_run2(struct aui_host *h, long a, long b, long c)
     int x = dev24(r->x, pct), y = dev24(r->y, pct);
     int base = y + (80 * px + 50) / 100, ht = (70 * px + 50) / 100, cur = 0;
     if (ht < 1) ht = 1;
+    /* the kernel's slot rule (text.c text_weight_slot): nearest of 400..700, ties up */
+    int wt = r->weight <= 0 ? 0 : r->weight < 100 ? 100 : r->weight > 900 ? 900 : r->weight;
+    int thick = wt < 450 ? 0 : wt < 550 ? 1 : wt < 650 ? 2 : 3;
     const unsigned char *p = (const unsigned char *)r->s, *e = p + len, *st;
     while (p < e) {
         st = p;
         unsigned cp = u8next(&p, e);
         int adv = aui_host_text_advance((const char *)st, (int)(p - st), px);
         if (cp > 0x20 && cp != 0x7F) {
-            int gap = adv / 6, bw = adv - gap;
+            int gap = adv / 6, bw = adv - gap + thick;
+            if (bw > adv) bw = adv;
             if (bw < 1) bw = 1;
             for (int j = 0; j < ht; j++)
                 for (int i = 0; i < bw; i++) blend(h, x + cur + i, base - ht + j, r->color & 0xFFFFFF, r->alpha);
