@@ -322,7 +322,8 @@ static void test_router(void)
     uint32_t before = crc_surface();
 
     bad += expect(wm2_dispatch(SYS_GUI2_INFO, &e, 0, 0, 0), ((long)LOGIT_GUI2_VERSION << 16) | LOGIT_GUI2_F_PATH | LOGIT_GUI2_F_TEXT_RUN2 |
-                  LOGIT_GUI2_F_CLIP | LOGIT_GUI2_F_GROUP | LOGIT_GUI2_F_BLIT2, "INFO(0)");
+                  LOGIT_GUI2_F_CLIP | LOGIT_GUI2_F_GROUP | LOGIT_GUI2_F_BLIT2 |
+                  LOGIT_GUI2_F_SHADOW2 | LOGIT_GUI2_F_GLASS2, "INFO(0)");
     bad += expect(wm2_dispatch(SYS_GUI2_INFO, &e, 1, 0, 0), 0, "INFO(1)");
     bad += expect(wm2_dispatch(SYS_GUI2_INFO, &e, 2, 0, 0), OL_ARGUMENT, "INFO(2)");
     bad += expect(wm2_dispatch(SYS_GUI2_INFO, &e, -1, 0, 0), OL_ARGUMENT, "INFO(-1)");
@@ -339,8 +340,9 @@ static void test_router(void)
     bad += struct_call_w(&e, SYS_GUI_BLIT2, "BLIT2", &u, sizeof(struct logit_blit2), OL_ARGUMENT);
     /* implemented (text-kernel-alpha): a zeroed run has len 0 -> ARGUMENT */
     bad += struct_call_w(&e, SYS_GUI_TEXT_RUN2, "TEXT_RUN2", &u, sizeof(struct logit_run2), OL_ARGUMENT);
-    bad += struct_call(&e, SYS_GUI_SHADOW2, "SHADOW2", &u, sizeof(struct logit_shadow2));
-    bad += struct_call(&e, SYS_GUI_GLASS2, "GLASS2", &u, sizeof(struct logit_glass2));
+    /* implemented (wm-draw2-effects): a zeroed rect draws nothing, OL_OK */
+    bad += struct_call_w(&e, SYS_GUI_SHADOW2, "SHADOW2", &u, sizeof(struct logit_shadow2), OL_OK);
+    bad += struct_call_w(&e, SYS_GUI_GLASS2, "GLASS2", &u, sizeof(struct logit_glass2), OL_OK);
     bad += struct_call(&e, SYS_GUI_BACKDROP, "BACKDROP", &u, sizeof(struct logit_backdrop2));
 
     /* PATH: three structs, each size-checked; c = 0 means fill. */
