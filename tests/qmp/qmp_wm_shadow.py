@@ -137,7 +137,7 @@ try:
         time.sleep(1.5)
         fw = win_by_title(str(serial), 'Finder')
         others = [o['title'] for o in windows(str(serial)).values()
-                  if o['title'] != 'Finder' and not o['min']]
+                  if not qmp_ui.title_matches(o['title'], 'files') and not o['min']]
         pct = qmp_ui.SCALE
         ext, _ = oracle(pct, 1)
         print(f'Finder at {fw["x"]},{fw["y"]} {fw["w"]}x{fw["h"]}, scale {pct}%, extent {ext}px, '
