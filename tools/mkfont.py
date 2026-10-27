@@ -30,8 +30,15 @@ GDEF) so Latin pairs such as AV and To kern through c/lib/text/otlayout.c;
 GSUB, BASE and every other GPOS feature are dropped.  Mono drops all of them.
 `--drop-layout` builds the UI faces without GPOS/GDEF (negative control only).
 
+INTERMEDIATE WEIGHTS.  Two more UI instances of the same vendored source are
+baked when their output paths are given: Medium (wght 500) and SemiBold
+(wght 600), same subset, same kern-only GPOS policy.  c/kernel/gui/text.c maps
+a CSS weight 100..900 to the nearest of the four baked UI slots
+(400, 500, 600, 700; ties go up).  Mono has no intermediate faces.
+
 Usage: mkfont.py [--drop-layout] [--ui-src FONT] [--mono-src FONT]
                  <ui.ttf> <mono.ttf> <ui-bold.ttf> <mono-bold.ttf>
+                 [<ui-medium.ttf> <ui-semibold.ttf>]
 """
 import argparse
 import os
@@ -223,6 +230,8 @@ def main():
     parser.add_argument("out_mono")
     parser.add_argument("out_ui_bold")
     parser.add_argument("out_mono_bold")
+    parser.add_argument("out_ui_medium", nargs="?")
+    parser.add_argument("out_ui_semibold", nargs="?")
     args = parser.parse_args()
 
     # BOTH WEIGHTS SUBSET TO THE SAME CODEPOINTS, on purpose. A bold face that
@@ -242,6 +251,15 @@ def main():
          "Logit Mono", "Bold", 700, "Noto Sans Mono",
          {"wght": 700, "wdth": 100}),
     ]
+    if bool(args.out_ui_medium) != bool(args.out_ui_semibold):
+        parser.error("give both out_ui_medium and out_ui_semibold, or neither")
+    if args.out_ui_medium:
+        outs += [
+            (args.ui_src, args.ui_face, ui_set, args.out_ui_medium, "Logit UI",
+             "Medium", 500, "Noto Sans SC", {"wght": 500}),
+            (args.ui_src, args.ui_face, ui_set, args.out_ui_semibold, "Logit UI",
+             "SemiBold", 600, "Noto Sans SC", {"wght": 600}),
+        ]
     for src, face, cps, out, family, style, wc, source, axes in outs:
         subset(src, face, cps, out, family, style, wc, source, axes,
                keep_kern=(family == "Logit UI" and not args.drop_layout))
