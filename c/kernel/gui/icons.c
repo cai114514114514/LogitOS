@@ -158,6 +158,79 @@ static const struct ic_cmd ic_gear[] = {         /* ring + eight round-capped te
     STK(8),
 };
 
+/* --- set B: toolbar/sidebar/menu symbols. Same conventions as set A: stroked
+ * parts sit between SB and STK (round caps/joins, weight-2 width w, +-2 units
+ * per weight step), filled parts are plain subpaths (nonzero, a reverse-wound
+ * subpath is a hole). Ink stays inside 10..90 at weight 2. Arrow pairs are
+ * exact mirrors (x -> 100-x, y -> 100-y). A stroke and a fill that overlap are
+ * wound the same way (checked in tests/unit/icons_b_test.c as "union"). */
+static const struct ic_cmd ic_share[] = {        /* tray + arrow leaving it */
+    SB, MV(34,44), LN(24,44), LN(24,82), LN(76,82), LN(76,44), LN(66,44),
+        MV(50,60), LN(50,18), MV(34,34), LN(50,18), LN(66,34), STK(7),
+};
+static const struct ic_cmd ic_play[] = {         /* filled triangle */
+    MV(30,18), LN(82,50), LN(30,82), CL,
+};
+static const struct ic_cmd ic_pause[] = {        /* two bars */
+    MV(28,20), LN(44,20), LN(44,80), LN(28,80), CL,
+    MV(56,20), LN(72,20), LN(72,80), LN(56,80), CL,
+};
+static const struct ic_cmd ic_trash[] = {        /* lid + handle + tapered bin + two slots */
+    SB, MV(18,28), LN(82,28), MV(40,28), LN(40,18), LN(60,18), LN(60,28),
+        MV(26,34), LN(30,82), LN(70,82), LN(74,34),
+        MV(42,46), LN(42,68), MV(58,46), LN(58,68), STK(7),
+};
+static const struct ic_cmd ic_arrow_r[] = { SB, MV(18,50), LN(82,50), MV(56,24), LN(82,50), LN(56,76), STK(9) };
+static const struct ic_cmd ic_arrow_l[] = { SB, MV(82,50), LN(18,50), MV(44,24), LN(18,50), LN(44,76), STK(9) };
+static const struct ic_cmd ic_arrow_d[] = { SB, MV(50,18), LN(50,82), MV(24,56), LN(50,82), LN(76,56), STK(9) };
+static const struct ic_cmd ic_arrow_u[] = { SB, MV(50,82), LN(50,18), MV(24,44), LN(50,18), LN(76,44), STK(9) };
+static const struct ic_cmd ic_info[] = {         /* ring + dot + stem */
+    SB, AR(50,50,36,0,360), CL, STK(7),
+    AR(50,30,5,0,360), CL,
+    MV(45,43), LN(55,43), LN(55,70), LN(45,70), CL,
+};
+static const struct ic_cmd ic_warning[] = {      /* triangle + exclamation */
+    SB, MV(50,18), LN(84,80), LN(16,80), CL, STK(7),
+    MV(46,40), LN(54,40), LN(54,60), LN(46,60), CL,
+    AR(50,69,5,0,360), CL,
+};
+static const struct ic_cmd ic_download[] = {     /* arrow into a tray */
+    SB, MV(50,16), LN(50,60), MV(30,42), LN(50,62), LN(70,42),
+        MV(20,68), LN(20,82), LN(80,82), LN(80,68), STK(8),
+};
+static const struct ic_cmd ic_refresh[] = {      /* 280-degree arc + filled head */
+    SB, AR(50,50,28,40,280), STK(8),
+    MV(78,40), LN(78,23), LN(62,38), CL,
+};
+static const struct ic_cmd ic_star[] = {         /* five-point filled star */
+    MV(50,12), LN(60,38), LN(88,40), LN(66,57), LN(74,84),
+    LN(50,69), LN(26,84), LN(34,57), LN(12,40), LN(40,38), CL,
+};
+static const struct ic_cmd ic_lock[] = {         /* body with keyhole + shackle */
+    MV(22,46), LN(78,46), LN(78,86), LN(22,86), CL,
+    MV(46,58), LN(46,74), LN(54,74), LN(54,58), CL,                  /* hole (reverse) */
+    SB, MV(34,46), LN(34,34), CB(34,16,66,16,66,34), LN(66,46), STK(8),
+};
+static const struct ic_cmd ic_home[] = {         /* roof, walls, door */
+    SB, MV(14,48), LN(50,16), LN(86,48), MV(24,40), LN(24,84), LN(76,84), LN(76,40),
+        MV(42,84), LN(42,60), LN(58,60), LN(58,84), STK(7),
+};
+static const struct ic_cmd ic_link[] = {         /* two interlocked capsules */
+    SB, MV(28,36), LN(42,36), CB(50,36,56,42,56,50), CB(56,58,50,64,42,64), LN(28,64),
+        CB(20,64,14,58,14,50), CB(14,42,20,36,28,36), CL,
+        MV(58,36), LN(72,36), CB(80,36,86,42,86,50), CB(86,58,80,64,72,64), LN(58,64),
+        CB(50,64,44,58,44,50), CB(44,42,50,36,58,36), CL, STK(7),
+};
+static const struct ic_cmd ic_eye[] = {          /* almond outline + pupil */
+    SB, MV(14,50), CB(30,24,70,24,86,50), CB(70,76,30,76,14,50), CL, STK(7),
+    AR(50,50,12,0,360), CL,
+};
+static const struct ic_cmd ic_bell[] = {         /* filled bell, knob and clapper */
+    MV(22,70), CB(28,64,30,60,30,46), CB(30,30,38,22,50,22), CB(62,22,70,30,70,46),
+    CB(70,60,72,64,78,70), CL,
+    AR(50,16,5,0,360), CL, AR(50,81,7,0,360), CL,
+};
+
 static const struct { const struct ic_cmd *c; int n; } TBL[ICON_COUNT] = {
     [ICON_FOLDER]   = { ic_folder,   sizeof ic_folder   / sizeof(struct ic_cmd) },
     [ICON_DOC]      = { ic_doc,      sizeof ic_doc      / sizeof(struct ic_cmd) },
@@ -182,6 +255,24 @@ static const struct { const struct ic_cmd *c; int n; } TBL[ICON_COUNT] = {
     [ICON_SIDEBAR] = { ic_sidebar, sizeof ic_sidebar / sizeof(struct ic_cmd) },
     [ICON_ELLIPSIS] = { ic_ellipsis, sizeof ic_ellipsis / sizeof(struct ic_cmd) },
     [ICON_GEAR] = { ic_gear, sizeof ic_gear / sizeof(struct ic_cmd) },
+    [ICON_SHARE] = { ic_share, sizeof ic_share / sizeof(struct ic_cmd) },
+    [ICON_PLAY] = { ic_play, sizeof ic_play / sizeof(struct ic_cmd) },
+    [ICON_PAUSE] = { ic_pause, sizeof ic_pause / sizeof(struct ic_cmd) },
+    [ICON_TRASH] = { ic_trash, sizeof ic_trash / sizeof(struct ic_cmd) },
+    [ICON_ARROW_L] = { ic_arrow_l, sizeof ic_arrow_l / sizeof(struct ic_cmd) },
+    [ICON_ARROW_R] = { ic_arrow_r, sizeof ic_arrow_r / sizeof(struct ic_cmd) },
+    [ICON_ARROW_U] = { ic_arrow_u, sizeof ic_arrow_u / sizeof(struct ic_cmd) },
+    [ICON_ARROW_D] = { ic_arrow_d, sizeof ic_arrow_d / sizeof(struct ic_cmd) },
+    [ICON_INFO] = { ic_info, sizeof ic_info / sizeof(struct ic_cmd) },
+    [ICON_WARNING] = { ic_warning, sizeof ic_warning / sizeof(struct ic_cmd) },
+    [ICON_DOWNLOAD] = { ic_download, sizeof ic_download / sizeof(struct ic_cmd) },
+    [ICON_REFRESH] = { ic_refresh, sizeof ic_refresh / sizeof(struct ic_cmd) },
+    [ICON_STAR] = { ic_star, sizeof ic_star / sizeof(struct ic_cmd) },
+    [ICON_LOCK] = { ic_lock, sizeof ic_lock / sizeof(struct ic_cmd) },
+    [ICON_HOME] = { ic_home, sizeof ic_home / sizeof(struct ic_cmd) },
+    [ICON_LINK] = { ic_link, sizeof ic_link / sizeof(struct ic_cmd) },
+    [ICON_EYE] = { ic_eye, sizeof ic_eye / sizeof(struct ic_cmd) },
+    [ICON_BELL] = { ic_bell, sizeof ic_bell / sizeof(struct ic_cmd) },
 };
 
 /* Cache: a 64-entry LRU keyed by (id, px, weight). px is DEVICE pixels, so a
@@ -293,6 +384,10 @@ static int icon_build(int id, int px, int weight)
             gfx_path_init(&ic_spath, ic_spt, IC_SMAXPT, ic_ssub, IC_SMAXSUB);
             t = &ic_spath; break;
         case IC_STROKE: {
+#ifdef ICON_TABLE_NEGCTL
+            /* test control: drop the stroke ops of the set-B icons */
+            if (id >= ICON_SHARE) { t = &ic_path; break; }
+#endif
             struct gfx_stroke st = { 0 };
             int w = c->x[0] + (weight - 2) * 2;
             st.width = SX(w); st.cap = GFX_CAP_ROUND; st.join = GFX_JOIN_ROUND;
