@@ -275,11 +275,34 @@ int ol_canvas_path_is_device(const struct ol_canvas *canvas, const struct gfx_pa
            a->f == b->f;
 }
 
+/* A gradient is written in the canvas's user space, so a fill recorded under a CTM carries
+ * that CTM as the paint matrix (composed after any pmat the caller set): the gradient then
+ * rotates and scales with the shape. An identity CTM records the paint untouched. Image
+ * paints are not touched (they carry their own matrix). `*copy` is scratch for the result. */
+static const struct gfx_paint *paint_in_ctm(const struct ol_canvas *canvas,
+                                            const struct gfx_paint *paint, struct gfx_paint *out)
+{
+    if (!paint || paint->kind < GFX_LINEAR || paint->kind == GFX_IMAGE)
+        return paint;
+    const struct gfx_matrix *m = &canvas->state.transform;
+    if (m->a == GFX_MONE && m->b == 0 && m->c == 0 && m->d == GFX_MONE && m->e == 0 && m->f == 0)
+        return paint;
+    copy(out, paint, sizeof *out);
+    if (paint->flags & GFX_PAINT_HAS_PMAT)
+        gfx_m_mul(&out->pmat, m, &paint->pmat);
+    else
+        out->pmat = *m;
+    out->flags |= GFX_PAINT_HAS_PMAT;
+    return out;
+}
+
 int ol_canvas_fill(struct ol_canvas *canvas, const struct gfx_path *path, int rule,
                    const struct gfx_paint *paint)
 {
     if (!canvas)
         return OL_ARGUMENT;
+    struct gfx_paint in_ctm;
+    paint = paint_in_ctm(canvas, paint, &in_ctm);
     struct ol_fill_options fill = options(canvas);
     struct gfx_matrix identity;
     if (ol_canvas_path_is_device(canvas, path)) {
