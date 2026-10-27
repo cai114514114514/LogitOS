@@ -367,16 +367,28 @@ def parse_args(where, lineno, toks):
     return args
 
 
+class PackField(tuple):
+    """(name, shift, width) with a `signed` flag. It stays a 3-tuple so that
+    tools/abi_native.py, which unpacks fields as triples, needs no change."""
+    def __new__(cls, name, shift, width, signed=False):
+        self = super().__new__(cls, (name, shift, width))
+        self.signed = signed
+        return self
+
+
 def parse_packed_fields(where, lineno, body):
     fields = []
     for spelling in body.split(","):
-        match = re.fullmatch(r"\s*([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(\d+)\s*:\s*(\d+)\s*", spelling)
+        match = re.fullmatch(r"\s*([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(\d+)\s*:\s*(\d+)(s?)\s*", spelling)
         if not match:
-            raise Unsupported(f"{where}:{lineno}: pack field {spelling!r} is not name:shift:width")
+            raise Unsupported(f"{where}:{lineno}: pack field {spelling!r} is not name:shift:width[s]")
         name, shift, width = match.group(1), int(match.group(2)), int(match.group(3))
+        signed = match.group(4) == "s"      # trailing `s`: two's complement on read
         if width == 0 or shift + width > 64:
             raise Unsupported(f"{where}:{lineno}: field {name} has an invalid bit range")
-        fields.append((name, shift, width))
+        if signed and width < 2:
+            raise Unsupported(f"{where}:{lineno}: signed field {name} needs at least 2 bits")
+        fields.append(PackField(name, shift, width, signed))
 
     # Overlap silently changes both fields; the generator must reject it rather
     # than leave each native caller to discover the corrupted packed argument.
@@ -456,12 +468,21 @@ def render_pack(entries):
             if kind != "pack":
                 continue
             c.append("")
-            desc = " | ".join("%s<<%d" % (f, sh) if sh else f
-                              for f, sh, _ in sorted(body, key=lambda t: -t[1]))
+            desc = " | ".join(("%s<<%d" % (f, sh) if sh else f) + (" (signed)" if sg else "")
+                              for (f, sh, _), sg in ((t, t.signed) for t in sorted(body, key=lambda t: -t[1])))
             c.append("/* %s arg %s: %s */" % (sym, letters[i], desc))
-            for fname, sh, w in sorted(body, key=lambda t: -t[1]):
-                c.append("#define %s_%s_%s(v) ((int)(((unsigned long long)(v) >> %d) & 0x%XULL))"
-                         % (sym.replace("SYS_", "LOGIT_"), letters[i].upper(), fname.upper(), sh, (1 << w) - 1))
+            for field in sorted(body, key=lambda t: -t[1]):
+                fname, sh, w = field
+                sg = field.signed
+                macro = "%s_%s_%s" % (sym.replace("SYS_", "LOGIT_"), letters[i].upper(), fname.upper())
+                if sg:
+                    # Sign-extend by xor/subtract of the sign bit: no shift of a
+                    # negative value, so it is defined behaviour in C.
+                    c.append("#define %s(v) ((int)((((long long)(((unsigned long long)(v) >> %d) & 0x%XULL)) ^ 0x%XLL) - 0x%XLL))"
+                             % (macro, sh, (1 << w) - 1, 1 << (w - 1), 1 << (w - 1)))
+                else:
+                    c.append("#define %s(v) ((int)(((unsigned long long)(v) >> %d) & 0x%XULL))"
+                             % (macro, sh, (1 << w) - 1))
     c.append("")
     c.append("#endif /* LOGIT_PACK_H */")
     c.append("")

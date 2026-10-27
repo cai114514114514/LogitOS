@@ -39,22 +39,22 @@
 # ---- window + drawing (fsroot/as/lib/gui.as is a thin wrapper over these) ----
 call gui_create     SYS_GUI_CREATE     str(title) pack(w:16:16, h:0:16)
 call gui_clear      SYS_GUI_CLEAR      int(color)
-call gui_rect       SYS_GUI_RECT       pack(x:16:16, y:0:16) pack(w:16:16, h:0:16) int(color)
-call gui_text       SYS_GUI_TEXT       pack(x:16:16, y:0:16) int(color) str(s)
-call gui_text_mono  SYS_GUI_TEXT_MONO  pack(x:16:16, y:0:16) pack(cell:24:8, color:0:24) str(s)
-call gui_icon       SYS_GUI_ICON       pack(x:16:16, y:0:16) pack(id:16:16, px:0:16) int(color)
-call gui_rrect      SYS_GUI_RRECT      pack(x:16:16, y:0:16) pack(w:16:16, h:0:16) pack(radius:24:8, color:0:24)
+call gui_rect       SYS_GUI_RECT       pack(x:16:16s, y:0:16s) pack(w:16:16, h:0:16) int(color)
+call gui_text       SYS_GUI_TEXT       pack(x:16:16s, y:0:16s) int(color) str(s)
+call gui_text_mono  SYS_GUI_TEXT_MONO  pack(x:16:16s, y:0:16s) pack(cell:24:8, color:0:24) str(s)
+call gui_icon       SYS_GUI_ICON       pack(x:16:16s, y:0:16s) pack(id:16:16, px:0:16) int(color)
+call gui_rrect      SYS_GUI_RRECT      pack(x:16:16s, y:0:16s) pack(w:16:16, h:0:16) pack(radius:24:8, color:0:24)
 # radius is 8 bits, not the 32 the header comment's `(radius<<32)|...` suggests:
 # c/kernel/gui/wm.c reads it as (c >> 32) & 0xFF. Writing the convention down is
 # what surfaced that -- a shift with no width is exactly the kind of thing a
 # comment can leave unsaid and a caller can get wrong.
-call gui_glass      SYS_GUI_GLASS      pack(x:16:16, y:0:16) pack(w:16:16, h:0:16) pack(radius:32:8, tr:24:8, tg:16:8, tb:8:8, ta:0:8)
-call gui_clip       SYS_GUI_CLIP       pack(x:16:16, y:0:16) pack(w:16:16, h:0:16)
+call gui_glass      SYS_GUI_GLASS      pack(x:16:16s, y:0:16s) pack(w:16:16, h:0:16) pack(radius:32:8, tr:24:8, tg:16:8, tb:8:8, ta:0:8)
+call gui_clip       SYS_GUI_CLIP       pack(x:16:16s, y:0:16s) pack(w:16:16, h:0:16)
 call gui_flush      SYS_GUI_FLUSH
 # Sub-rectangle flush. x,y,w,h are CONTENT-LOCAL POINTS, same origin as
 # gui_rect's. w<=0 or h<=0 (including the all-zero call) means "the whole
 # canvas" -- see the contract comment on SYS_GUI_FLUSH_RECT in logit_abi.h.
-call gui_flush_rect SYS_GUI_FLUSH_RECT pack(x:16:16, y:0:16) pack(w:16:16, h:0:16)
+call gui_flush_rect SYS_GUI_FLUSH_RECT pack(x:16:16s, y:0:16s) pack(w:16:16, h:0:16)
 # The window's minimum CONTENT size, in points -- same packing as gui_create's,
 # because it is the same pair of numbers and a second convention for the same
 # fields is how the two drift.

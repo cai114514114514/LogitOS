@@ -3,7 +3,10 @@
 /* Window command transport, included by logit.h after _sys is declared.
  * Coordinates here are window-local logical points; the kernel validates
  * arguments, copies user buffers and invokes OpenLogit's display backend.
- * Drawing changes the window backing store; flush publishes one frame. */
+ * Drawing changes the window backing store; flush publishes one frame.
+ * The x and y of every packed call below are signed 16-bit (include/abi/
+ * logit_calls.abi, `x:16:16s`): the (v & 0xFFFF) masks are the two's-complement
+ * encoding and the kernel sign-extends, so -5 reaches it as -5, not 65531. */
 static inline void ol_window_clear(unsigned color)
 { _sys(SYS_GUI_CLEAR, color, 0, 0); }
 static inline void ol_window_rect(int x, int y, int w, int h, unsigned color)
