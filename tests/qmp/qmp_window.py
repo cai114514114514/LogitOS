@@ -67,7 +67,7 @@ import time
 import zlib
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from qmp_ui import PPM, Session, configure, dock_icon, pt   # noqa: E402
+from qmp_ui import PPM, Session, configure, dock_icon, pt, titles_of, window_of, parse_windows   # noqa: E402
 from qmp_repaint import CLOSE_RGB, boot, perf_samples       # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -83,23 +83,10 @@ WIN_RE = re.compile(
 
 
 def windows(serial):
-    """The latest reported state of every window, keyed by slot."""
-    out = {}
+    """The latest reported state of every window, keyed by slot (qmp_ui's
+    parser, so the optional `[wm] win N app <stem>` line is honoured)."""
     with open(serial, errors="replace") as fh:
-        for line in fh:
-            m = WIN_RE.search(line)
-            if m:
-                g = m.groups()
-                out[int(g[0])] = dict(
-                    x=int(g[1]), y=int(g[2]), w=int(g[3]), h=int(g[4]),
-                    cw=int(g[5]), ch=int(g[6]),
-                    zoom=int(g[7]), min=int(g[8]), title=g[9].strip())
-            elif "[wm] win " in line and " gone" in line:
-                try:
-                    out.pop(int(line.split("[wm] win ")[1].split()[0]), None)
-                except (IndexError, ValueError):
-                    pass
-    return out
+        return parse_windows(fh.read())
 
 
 def win_by_title(serial, title):
@@ -108,10 +95,21 @@ def win_by_title(serial, title):
     # boot Finder now holds slot 0, and every edge drag went to the Finder's
     # frame while TextEdit lay on top of it -- the right edge's grab point
     # was inside TextEdit, so the first drag never moved (found 2026-10-26).
-    for w in windows(serial).values():
-        if title == "" and w["title"] == "Finder":
-            continue
-        if w["title"].startswith(title):
+    #
+    # `title` may be ANY name of an app (Finder / 文件管理): qmp_ui.window_of
+    # matches every element of APP_TITLES, so an app item can rename its
+    # window without this driver noticing (design P13).
+    wins = windows(serial)
+    if title == "":
+        return window_of_first_not(wins, "files")
+    return window_of(title, wins)
+
+
+def window_of_first_not(wins, skip_app):
+    """The lowest-slot window that is not an app `skip_app` window."""
+    skipped = titles_of(skip_app)
+    for w in wins.values():
+        if w["title"] not in skipped:
             return w
     return None
 

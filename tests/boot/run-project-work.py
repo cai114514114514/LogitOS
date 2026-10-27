@@ -29,7 +29,7 @@ def button(g,down,name='left'):
 def frame(g,title):
  # Finder can be created before the WM's initial geometry snapshot. Move its
  # actual logged animation frame to cause the ordinary settled-geometry report.
- if title=='Finder' and not re.search(rb'\[wm\] win .* pt zoom 0 min 0 Finder',bytes(g.log)):
+ if title in ('Finder','文件管理') and not re.search(rb'\[wm\] win .* pt zoom 0 min 0 (?:Finder|\xe6\x96\x87\xe4\xbb\xb6\xe7\xae\xa1\xe7\x90\x86)',bytes(g.log)):
   g.wait(rb'\[wm\] anim open win 0 .* home (\d+) (\d+) (\d+) (\d+)',30)
   m=re.findall(rb'\[wm\] anim open win 0 .* home (\d+) (\d+) (\d+) (\d+)',bytes(g.log))[-1]
   x,y,w,h=map(int,m);time.sleep(1);move(g,x+w//2,y+14);button(g,True);move(g,x+w//2+8,y+18);button(g,False);time.sleep(1)

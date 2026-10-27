@@ -30,7 +30,7 @@ import tempfile
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from qmp_ui import PPM, Session, configure                      # noqa: E402
+from qmp_ui import PPM, Session, configure, title_matches       # noqa: E402
 from qmp_repaint import boot                                    # noqa: E402
 
 XRES, YRES = 1280, 800
@@ -104,7 +104,8 @@ def main(argv):
         m = re.search(r"\[wm\] switcher commit win=\d+ '([^']*)'", log)
         ck(m is not None, "releasing Cmd committed the choice")
         if m:
-            ck(m.group(1) not in ("Terminal", "/untitled.txt"),
+            ck(not title_matches(m.group(1), "terminal")
+               and m.group(1) not in ("/untitled.txt", "未命名"),
                "...to the third most recent window, not Terminal or TextEdit (got %r)" % m.group(1))
         if negctl:
             return 1 if fails else 0
@@ -114,7 +115,7 @@ def main(argv):
         ui.key_mods(("meta_l",), "tab", settle=0.8)
         log = ui.serial_text()[mark:]
         m = re.search(r"\[wm\] switcher commit win=\d+ '([^']*)'", log)
-        ck(m is not None and m.group(1) == "Terminal",
+        ck(m is not None and title_matches(m.group(1), "terminal"),
            "a quick Cmd+Tab flips back to the previous window, Terminal (got %r)" % (m.group(1) if m else None))
 
         print("3. cancel: hold Cmd, Tab, Escape, release")
