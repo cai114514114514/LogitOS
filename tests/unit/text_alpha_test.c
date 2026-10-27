@@ -3,7 +3,10 @@
  * stubbed to draw onto the SAME display through ol_display_blit_glyph_a at
  * alpha 255, so the legacy path and the alpha path are comparable pixel for
  * pixel. Prints "FAIL <name>" per failing check; exits 1 on any failure.
- * TEXT_ALPHA_IGNORED (the control) makes text.c drop alpha: "alpha128" fails. */
+ * TEXT_ALPHA_IGNORED (the control) makes text.c drop alpha: "alpha128" fails.
+ * struct logit_run2 carries x, y and px in 24.8 POINTS (logit_abi.h), so every
+ * run below is built with whole points times 256 (P24); the checks themselves
+ * are the ones this file always made. */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -62,11 +65,13 @@ static long run2(struct logit_run2 *r, int pct)
     e.d = &D; e.scale_pct = pct; e.surf_w = W; e.surf_h = H; e.copyin = copyin;
     return wm2_text_run2(&e, (long)r, 0, 0);
 }
-static void mkrun(struct logit_run2 *r, const char *s, int x, int y, int px, int face,
+/* x24, y24 and px24 are 24.8 points, as the ABI defines them. */
+#define P24(v) ((v) * 256)
+static void mkrun(struct logit_run2 *r, const char *s, int x24, int y24, int px24, int face,
                   unsigned color, int alpha, int weight)
 {
     memset(r, 0, sizeof *r);
-    r->size = sizeof *r; r->x = x; r->y = y; r->px = px; r->face = face;
+    r->size = sizeof *r; r->x = x24; r->y = y24; r->px = px24; r->face = face;
     r->color = color; r->s = s; r->len = (int)strlen(s); r->alpha = alpha; r->weight = weight;
 }
 static uint32_t *snap(void) { uint32_t *c = malloc(sizeof PX); memcpy(c, PX, sizeof PX); return c; }
@@ -130,7 +135,7 @@ int main(int argc, char **argv)
         text_draw_run(5 * p / 100, 4 * p / 100, str, (int)strlen(str), 12 * p / 100, LOGIT_FACE_BOLD, FG);
         uint32_t *want = snap();
         fill(BG);
-        struct logit_run2 r; mkrun(&r, str, 5, 4, 12, LOGIT_FACE_BOLD, FG, 255, 0);
+        struct logit_run2 r; mkrun(&r, str, P24(5), P24(4), P24(12), LOGIT_FACE_BOLD, FG, 255, 0);
         long rc = run2(&r, p);
         snprintf(nm, sizeof nm, "run2-places-like-legacy-%d", p);
         CHECK(rc == OL_OK && memcmp(want, PX, sizeof PX) == 0, nm);
@@ -141,10 +146,10 @@ int main(int argc, char **argv)
     {
         struct logit_run2 r; uint32_t *a, *b;
         fill(BG); text_draw_run(5, 5, str, (int)strlen(str), 16, LOGIT_FACE_BOLD, FG); a = snap();
-        fill(BG); mkrun(&r, str, 5, 5, 16, 0, FG, 255, 700); run2(&r, 100); b = snap();
+        fill(BG); mkrun(&r, str, P24(5), P24(5), P24(16), 0, FG, 255, 700); run2(&r, 100); b = snap();
         CHECK(memcmp(a, b, sizeof PX) == 0, "weight700-is-bold"); free(a); free(b);
         fill(BG); text_draw_run(5, 5, str, (int)strlen(str), 16, 0, FG); a = snap();
-        fill(BG); mkrun(&r, str, 5, 5, 16, LOGIT_FACE_BOLD, FG, 255, 400); run2(&r, 100); b = snap();
+        fill(BG); mkrun(&r, str, P24(5), P24(5), P24(16), LOGIT_FACE_BOLD, FG, 255, 400); run2(&r, 100); b = snap();
         CHECK(memcmp(a, b, sizeof PX) == 0, "weight400-overrides-bold"); free(a); free(b);
     }
 
@@ -153,15 +158,15 @@ int main(int argc, char **argv)
         struct logit_run2 r;
         char big[1100]; memset(big, 'a', sizeof big - 1); big[sizeof big - 1] = 0;
         fill(BG);
-        mkrun(&r, str, 5, 5, 16, 0, FG, 255, 0); r.len = -1;
+        mkrun(&r, str, P24(5), P24(5), P24(16), 0, FG, 255, 0); r.len = -1;
         CHECK(run2(&r, 100) == OL_ARGUMENT, "bad-len-negative");
-        mkrun(&r, big, 5, 5, 16, 0, FG, 255, 0);
+        mkrun(&r, big, P24(5), P24(5), P24(16), 0, FG, 255, 0);
         CHECK(run2(&r, 100) == OL_ARGUMENT, "bad-len-too-long");
-        mkrun(&r, str, 5, 5, 0, 0, FG, 255, 0);
+        mkrun(&r, str, P24(5), P24(5), P24(0), 0, FG, 255, 0);
         CHECK(run2(&r, 100) == OL_ARGUMENT, "bad-px-zero");
-        mkrun(&r, str, 5, 5, 513, 0, FG, 255, 0);
+        mkrun(&r, str, P24(5), P24(5), P24(513), 0, FG, 255, 0);
         CHECK(run2(&r, 100) == OL_ARGUMENT, "bad-px-huge");
-        mkrun(&r, str, 5, 5, 16, 0, FG, 255, 0); r.size = 4;
+        mkrun(&r, str, P24(5), P24(5), P24(16), 0, FG, 255, 0); r.size = 4;
         CHECK(run2(&r, 100) == OL_ARGUMENT, "bad-size");
         int untouched = 1; for (int i = 0; i < W * H; i++) if (PX[i] != BG) untouched = 0;
         CHECK(untouched, "invalid-draws-nothing");
