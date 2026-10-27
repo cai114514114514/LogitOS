@@ -5,6 +5,7 @@
  * reach it automatically. Do not compile on its own. */
 
 #include "../../lib/text/para.h"   /* tl_para_layout; libtl.a via $(AUI_LIBS) */
+#include "../../include/ui/logit_tokens.h"   /* 3.6: font metrics, type styles */
 
 /* ------------------------------------------------------------------ text */
 
@@ -15,7 +16,7 @@ static int twn(const char *s, int n) { return n <= 0 ? 0 : text_measure_px(s, n,
 static void txt(int x, int y, unsigned c, const char *s)
 { gui_text_run(X_(x), Y_(y), PX, 0, c, s, slen(s)); }
 
-int  aui_text_w(const char *s, int px) { return text_measure_px(s, slen(s), px, 0); }
+int  (aui_text_w)(const char *s, int px) { return text_measure_px(s, slen(s), px, 0); }
 void aui_text_sz(int x, int y, const char *s, unsigned color, int px)
 { gui_text_run(X_(x), Y_(y), px, 0, color, s, slen(s)); }
 /* A SLICE of a buffer, not a NUL-terminated string. Every text view that
@@ -99,16 +100,30 @@ static int tx_metrics(int px, int face, int *asc, int *dsc)
     return 1;
 }
 
-/* ------------------------------------------------------ run2 + layout */
+/* ------------------------------------------------ run2, weights (P1) */
 
-/* One run at 24.8 WINDOW points. `alpha` 255 is opaque. Damage is noted at the
- * run's nominal box exactly as gui_text_run does. */
+/* A CSS weight as the run2 field carries it: 0 stays 0 (the legacy call, bold
+ * from the face bits), anything else is clamped to 100..900. */
+static int tx_wnorm(int w) { return w <= 0 ? 0 : w < 100 ? 100 : w > 900 ? 900 : w; }
+/* The face bit a weight resolves to where no weight can travel: the legacy
+ * SYS_GUI_TEXT_RUN, the measure syscall, the metrics and the carets queries
+ * (which take face bits only). >= 600 is bold, anything lighter regular. */
+static int tx_wface(int w) { return w >= 600 ? LOGIT_FACE_BOLD : 0; }
+/* The weight's part of a damage record's key (0 for weight 0: a legacy run
+ * keys exactly as before). */
+static unsigned tx_wkey(int w) { return w > 0 ? (unsigned)((tx_wnorm(w) + 50) / 100) << 16 : 0u; }
+
+/* One run at 24.8 WINDOW points. `alpha` 255 is opaque; `weight` 0 takes bold
+ * from the face bits. Damage is noted at the run's nominal box exactly as
+ * gui_text_run does. */
 static void tx_run2(int x24, int y24, int px, int face, unsigned argb,
-                    const char *s, int len, int alpha)
+                    const char *s, int len, int alpha, int weight)
 {
     if (len <= 0) return;
-    struct logit_run2 r = { 0, x24, y24, px * 256, face & 3, argb, s, len, alpha, 0, 0 };
-    ad_note_text(tx_fdiv(x24, 256), tx_fdiv(y24, 256), px, (face & 3) | (alpha << 8), argb, s, len);
+    weight = tx_wnorm(weight);
+    struct logit_run2 r = { 0, x24, y24, px * 256, face & 3, argb, s, len, alpha, weight, 0 };
+    ad_note_text(tx_fdiv(x24, 256), tx_fdiv(y24, 256), px, (face & 3) | (alpha << 8) | tx_wkey(weight),
+                 argb, s, len);
     ol_window_text_run2(&r);
 }
 
@@ -120,6 +135,31 @@ static void tx_run1(int x, int y, int px, int face, unsigned color, const char *
     ad_note_text(x, y, px, face & 3, color, s, len);
     gui_text_run_w(x, y, px, face & 1, color, s, len, (face >> 1) & 1);
 }
+
+/* A run at whole window points with a weight: TEXT_RUN2 when the weight is set
+ * and the kernel has it, else the legacy run with the resolved face bit
+ * (`face` already carries it). Weight 0 is exactly tx_run1. */
+static void tx_runw(int x, int y, int px, int face, unsigned color, const char *s, int len, int weight)
+{
+    if (weight > 0 && tx_has_run2()) { tx_run2(x * 256, y * 256, px, face, color, s, len, 255, weight); return; }
+    tx_run1(x, y, px, face, color, s, len);
+}
+
+/* aui_text_sz / aui_text_n with a weight (container points). Weight 0 is the
+ * plain gui_text_run aui_text_sz makes, an empty run included. */
+static void tx_text_w(int x, int y, int px, int weight, unsigned color, const char *s, int n)
+{
+    if (weight <= 0) { gui_text_run(X_(x), Y_(y), px, 0, color, s, n); return; }
+    tx_runw(X_(x), Y_(y), px, tx_wface(weight), color, s, n, weight);
+}
+
+void aui_text_draw_w(int x, int y, int px, int weight, unsigned color, const char *s)
+{ tx_text_w(x, y, px, weight, color, s, slen(s)); }
+
+int aui_text_measure_w(const char *s, int px, int weight)
+{ return text_measure_px(s, slen(s), px, tx_wface(weight)); }
+
+/* ---------------------------------------------------------------- layout */
 
 /* The one carets query (SYS_TEXT_MEASURE b = -2). Positions are DEVICE 24.8. */
 static int tx_carets_cb(void *ctx, const char *s, int len, int px, unsigned face,
@@ -162,7 +202,7 @@ static int tx_layout(const char *s, int len, int px, int face, int wdev, int max
 /* Draw one laid-out line (the text pieces and U+2026 composed into ONE run so
  * the shaper sees the real string) at 24.8 window points x24, y24. */
 static void tx_draw_line(const char *s, const struct tl_line *L, int x24, int y24,
-                         int px, int face, unsigned argb, int alpha)
+                         int px, int face, unsigned argb, int alpha, int weight)
 {
     int n = 0;
     if (!L->ellipsis) {
@@ -179,7 +219,7 @@ static void tx_draw_line(const char *s, const struct tl_line *L, int x24, int y2
     }
     int pct = aui_scale();
     x24 += (int)(((long long)L->x_off24_8 * 100 + pct - 1) / pct);   /* device 24.8 -> point 24.8, up */
-    tx_run2(x24, y24, px, face, argb, tx_buf, n, alpha);
+    tx_run2(x24, y24, px, face, argb, tx_buf, n, alpha, weight);
 }
 
 /* ---------------------------------------------------- baseline alignment */
@@ -189,14 +229,15 @@ static void tx_draw_line(const char *s, const struct tl_line *L, int x24, int y2
  * Metrics come from the query (ascent, descent in device px); a text too tall for
  * the rect is shifted to fit instead. Falls back to the old estimate when the
  * query is unsupported. */
-void aui_text_in(struct aui_rect r, const char *s, unsigned color, int px, int align)
+static void tx_in(struct aui_rect r, const char *s, unsigned color, int px, int align, int weight)
 {
-    int w = aui_text_w(s, px);
+    int face = tx_wface(weight);
+    int w = text_measure_px(s, slen(s), px, face);       /* weight 0: aui_text_w(s, px) */
     int x = r.x;
     if (align == AUI_ALIGN_CENTER) x = r.x + (r.w - w) / 2;
     else if (align == AUI_ALIGN_RIGHT) x = r.x + r.w - w;
     int asc, dsc, rasc, rdsc, n = slen(s);
-    if (n > 0 && tx_metrics(px, 0, &asc, &dsc) && tx_metrics(PX, 0, &rasc, &rdsc)) {
+    if (n > 0 && tx_metrics(px, face, &asc, &dsc) && tx_metrics(PX, 0, &rasc, &rdsc)) {
         int pct = aui_scale();
         int top = aui_dev(Y_(r.y)), hh = aui_dev(Y_(r.y + r.h)) - top;
         int ty = (2 * top + hh + rasc - rdsc) / 2 - asc;
@@ -206,14 +247,19 @@ void aui_text_in(struct aui_rect r, const char *s, unsigned color, int px, int a
         }
         if (tx_has_run2()) {
             int y24 = (int)(((long long)ty * 25600 + pct - 1) / pct);   /* round up: S(y) lands on ty */
-            tx_run2(X_(x) * 256, y24, px, 0, color, s, n, 255);
+            tx_run2(X_(x) * 256, y24, px, face, color, s, n, 255, weight);
         } else {
-            gui_text_run(X_(x), tx_fdiv(ty * 100 + pct / 2, pct), px, 0, color, s, n);
+            tx_run1(X_(x), tx_fdiv(ty * 100 + pct / 2, pct), px, face, color, s, n);
         }
         return;
     }
-    aui_text_sz(x, r.y + (r.h - px) / 2 - 1, s, color, px);
+    tx_text_w(x, r.y + (r.h - px) / 2 - 1, px, weight, color, s, n);
 }
+
+void aui_text_in(struct aui_rect r, const char *s, unsigned color, int px, int align)
+{ tx_in(r, s, color, px, align, 0); }
+void aui_text_in_w(struct aui_rect r, const char *s, int px, int weight, unsigned color, int align)
+{ tx_in(r, s, color, px, align, weight); }
 
 /* ------------------------------------------------------------ alpha text */
 
@@ -222,7 +268,7 @@ void aui_text_a(int x, int y, const char *s, unsigned color, int px, int alpha)
     int n = slen(s);
     if (n <= 0 || alpha <= 0) return;
     if (alpha >= 255) { aui_text_sz(x, y, s, color, px); return; }
-    if (tx_has_run2()) { tx_run2(X_(x) * 256, Y_(y) * 256, px, 0, color, s, n, alpha); return; }
+    if (tx_has_run2()) { tx_run2(X_(x) * 256, Y_(y) * 256, px, 0, color, s, n, alpha, 0); return; }
     aui_text_sz(x, y, s, aui_mix(AUI_BG, color, alpha), px);      /* no TEXT_RUN2: approximate */
 }
 
@@ -232,9 +278,10 @@ void aui_text_a(int x, int y, const char *s, unsigned color, int px, int alpha)
  * at a code point, never inside one (a CJK or emoji string used to leave a stray
  * lead byte before the dots). -DAUI_TEXT_LEGACY_ELLIPSIS keeps the byte cut:
  * tests/aui-text-adopt.mk's negative control. */
-static void tx_ell_legacy(int x, int y, int maxw, const char *s, int n, unsigned color, int px, int face)
+static void tx_ell_legacy(int x, int y, int maxw, const char *s, int n, unsigned color, int px, int face,
+                          int weight)
 {
-    if (text_measure_px(s, n, px, face) <= maxw) { tx_run1(X_(x), Y_(y), px, face, color, s, n); return; }
+    if (text_measure_px(s, n, px, face) <= maxw) { tx_runw(X_(x), Y_(y), px, face, color, s, n, weight); return; }
     int ew = text_measure_px("...", 3, px, face);
     int lo = 0, hi = n;
     while (lo < hi) {                                  /* binary search, not a scan:
@@ -245,11 +292,11 @@ static void tx_ell_legacy(int x, int y, int maxw, const char *s, int n, unsigned
 #ifndef AUI_TEXT_LEGACY_ELLIPSIS
     while (lo > 0 && lo < n && tx_cont(s[lo])) lo--;
 #endif
-    tx_run1(X_(x), Y_(y), px, face, color, s, lo);
+    tx_runw(X_(x), Y_(y), px, face, color, s, lo, weight);
 #ifdef AUI_SPLIT_NEGCTL            /* tests/aui-split.mk: must change the object hash */
-    tx_run1(X_(x) + text_measure_px(s, lo, px, face), Y_(y), px, face, color, "..", 2);
+    tx_runw(X_(x) + text_measure_px(s, lo, px, face), Y_(y), px, face, color, "..", 2, weight);
 #else
-    tx_run1(X_(x) + text_measure_px(s, lo, px, face), Y_(y), px, face, color, "...", 3);
+    tx_runw(X_(x) + text_measure_px(s, lo, px, face), Y_(y), px, face, color, "...", 3, weight);
 #endif
 }
 
@@ -257,25 +304,32 @@ static void tx_ell_legacy(int x, int y, int maxw, const char *s, int n, unsigned
  * tl_para_layout from ONE carets query (a second only for U+2026 when a cut
  * happens), at cluster boundaries, with a real U+2026; mode picks which part is
  * elided. Otherwise the legacy cut, which only knows the tail. */
-void aui_text_ellipsis_ex(int x, int y, int maxw, const char *s, unsigned color, int px, int mode)
+static void tx_ellipsis(int x, int y, int maxw, const char *s, unsigned color, int px, int mode, int weight)
 {
-    int n = slen(s);
+    int n = slen(s), face = tx_wface(weight);
 #ifndef AUI_TEXT_LEGACY_ELLIPSIS
     if (n > 0 && n <= TX_MAX && tx_has_layout()) {
-        if (tx_layout(s, n, px, 0, aui_dev(maxw), 1, AUI_ALIGN_LEFT, mode, 0) == 1) {
-            if (!tx_ln[0].ellipsis) aui_text_sz(x, y, s, color, px);
-            else tx_draw_line(s, &tx_ln[0], X_(x) * 256, Y_(y) * 256, px, 0, color, 255);
+        if (tx_layout(s, n, px, face, aui_dev(maxw), 1, AUI_ALIGN_LEFT, mode, 0) == 1) {
+            if (!tx_ln[0].ellipsis) tx_text_w(x, y, px, weight, color, s, n);   /* weight 0: aui_text_sz */
+            else tx_draw_line(s, &tx_ln[0], X_(x) * 256, Y_(y) * 256, px, face, color, 255, weight);
             return;
         }
     }
 #else
     (void)mode;
 #endif
-    tx_ell_legacy(x, y, maxw, s, n, color, px, 0);
+    tx_ell_legacy(x, y, maxw, s, n, color, px, face, weight);
 }
+
+void aui_text_ellipsis_ex(int x, int y, int maxw, const char *s, unsigned color, int px, int mode)
+{ tx_ellipsis(x, y, maxw, s, color, px, mode, 0); }
 
 void aui_text_ellipsis(int x, int y, int maxw, const char *s, unsigned color, int px)
 { aui_text_ellipsis_ex(x, y, maxw, s, color, px, AUI_TRUNC_TAIL); }
+
+void aui_text_ellipsis_w(int x, int y, int maxw, const char *s, int px, int weight,
+                         unsigned color, int mode)
+{ tx_ellipsis(x, y, maxw, s, color, px, mode, weight); }
 
 /* ------------------------------------------------------------------ wrap */
 
@@ -296,7 +350,7 @@ static int tx_fit(const char *s, int len, int a, int b, int px, int face, int wp
 }
 
 static int tx_wrap_fb(struct aui_rect r, const char *s, int len, int px, int face,
-                      unsigned argb, int line_h, int limit, int align, int trunc, int draw)
+                      unsigned argb, int line_h, int limit, int align, int trunc, int draw, int weight)
 {
     int cur = 0, nl = 0;
     while (cur < len && nl < limit) {
@@ -314,13 +368,13 @@ static int tx_wrap_fb(struct aui_rect r, const char *s, int len, int px, int fac
         if (draw) {
             int y = r.y + nl * line_h;
             if (nl == limit - 1 && next < len && trunc != AUI_TRUNC_NONE)
-                tx_ell_legacy(r.x, y, r.w, s + cur, he - cur, argb, px, face);
+                tx_ell_legacy(r.x, y, r.w, s + cur, he - cur, argb, px, face, weight);
             else {
                 while (e > cur && s[e - 1] == ' ') e--;
                 int lw = e > cur ? text_measure_px(s + cur, e - cur, px, face) : 0;
                 int x = align == AUI_ALIGN_CENTER ? r.x + (r.w - lw) / 2
                       : align == AUI_ALIGN_RIGHT ? r.x + r.w - lw : r.x;
-                tx_run1(X_(x), Y_(y), px, face, argb, s + cur, e - cur);
+                tx_runw(X_(x), Y_(y), px, face, argb, s + cur, e - cur, weight);
             }
         }
         nl++; cur = next;
@@ -329,7 +383,7 @@ static int tx_wrap_fb(struct aui_rect r, const char *s, int len, int px, int fac
 }
 
 static int tx_wrap(struct aui_rect r, const char *s, int len, int px, unsigned face,
-                   unsigned argb, int line_h, int max_lines, int align, int trunc, int draw)
+                   unsigned argb, int line_h, int max_lines, int align, int trunc, int draw, int weight)
 {
     if (!s) return 0;
     if (len < 0) len = slen(s);
@@ -344,11 +398,11 @@ static int tx_wrap(struct aui_rect r, const char *s, int len, int px, unsigned f
         if (nl >= 0) {
             for (int i = 0; draw && i < nl; i++)
                 tx_draw_line(s, &tx_ln[i], X_(r.x) * 256, (Y_(r.y) + i * line_h) * 256,
-                             px, (int)face, argb, 255);
+                             px, (int)face, argb, 255, weight);
             return nl;
         }
     }
-    return tx_wrap_fb(r, s, len, px, (int)face & 3, argb, line_h, limit, align, trunc, draw);
+    return tx_wrap_fb(r, s, len, px, (int)face & 3, argb, line_h, limit, align, trunc, draw, weight);
 }
 
 /* Wrap `s` (len < 0: NUL-terminated) into rect r, line_h points apart, at most
@@ -356,7 +410,7 @@ static int tx_wrap(struct aui_rect r, const char *s, int len, int px, unsigned f
  * line is cut per `trunc`. Text past 1023 bytes is not drawn. Returns lines drawn. */
 int aui_text_wrap(struct aui_rect r, const char *s, int len, int px, unsigned face,
                   unsigned argb, int line_h, int max_lines, int align, int trunc)
-{ return tx_wrap(r, s, len, px, face, argb, line_h, max_lines, align, trunc, 1); }
+{ return tx_wrap(r, s, len, px, face, argb, line_h, max_lines, align, trunc, 1, 0); }
 
 /* The height in points aui_text_wrap would use for a box w points wide
  * (lines * line_h); max_lines <= 0 means up to 64 lines. */
@@ -365,5 +419,197 @@ int aui_text_measure_wrap(int w, const char *s, int len, int px, unsigned face,
 {
     struct aui_rect r = { 0, 0, w, 0 };
     if (line_h <= 0) line_h = px + px / 4;
-    return tx_wrap(r, s, len, px, face, 0, line_h, max_lines, AUI_ALIGN_LEFT, AUI_TRUNC_NONE, 0) * line_h;
+    return tx_wrap(r, s, len, px, face, 0, line_h, max_lines, AUI_ALIGN_LEFT, AUI_TRUNC_NONE, 0, 0) * line_h;
+}
+
+/* ------------------------------------------ explicit line heights (3.6) */
+
+/* The 3.6 line height of the (first non-mono) type style with this px; a size
+ * outside the closed set gets round(px * 10 / 7), the body ratio. */
+int aui_text_line_h(int px)
+{
+    for (int i = 0; i < LOGIT_TS_COUNT; i++)
+        if (LOGIT_TYPE[i].px == px && LOGIT_TYPE[i].line && !(LOGIT_TYPE[i].flags & LOGIT_TS_F_MONO))
+            return LOGIT_TYPE[i].line;
+    return px <= 0 ? 1 : (px * 10 + 3) / 7;
+}
+static int tx_lh(int px, int line_h) { return line_h > 0 ? line_h : aui_text_line_h(px); }
+
+int aui_text_wrap_lh(struct aui_rect r, const char *s, int len, int px, int weight,
+                     unsigned argb, int line_h, int max_lines, int align, int trunc)
+{
+    return tx_wrap(r, s, len, px, (unsigned)tx_wface(weight), argb, tx_lh(px, line_h), max_lines,
+                   align, trunc, 1, weight);
+}
+
+int aui_text_measure_wrap_lh(int w, const char *s, int len, int px, int weight,
+                             int line_h, int max_lines)
+{
+    struct aui_rect r = { 0, 0, w, 0 };
+    line_h = tx_lh(px, line_h);
+    return tx_wrap(r, s, len, px, (unsigned)tx_wface(weight), 0, line_h, max_lines,
+                   AUI_ALIGN_LEFT, AUI_TRUNC_NONE, 0, weight) * line_h;
+}
+
+/* ---------------------------------------- metric vertical centring (3.6) */
+
+/* floor(a / b) for b > 0, 64-bit */
+static long long tx_fdivl(long long a, long long b) { return a >= 0 ? a / b : -((-a + b - 1) / b); }
+
+/* top + (h - (A - D)/U px) / 2 + A/U px  ==  top + h/2 + px (A + D) / 2U, with
+ * ONE rounding (half up) at the end. logit_text_baseline24 rounds the span,
+ * the half and the ascent separately and can land 1/256 pt off. */
+int aui_text_baseline24(int top24, int h24, int px)
+{
+    long long u = LOGIT_FONT_UPEM;
+    long long num = 2 * u * top24 + u * h24 + (long long)px * 256 * (LOGIT_FONT_ASCENT + LOGIT_FONT_DESCENT);
+    return (int)tx_fdivl(num + u, 2 * u);
+}
+/* The ascent in 24.8 points: a run's y is its top, the kernel puts the
+ * baseline at y + ascent. */
+static int tx_asc24(int px)
+{ return (int)tx_fdivl((long long)px * 256 * LOGIT_FONT_ASCENT + LOGIT_FONT_UPEM / 2, LOGIT_FONT_UPEM); }
+
+void aui_text_vc(struct aui_rect r, const char *s, int px, int weight, unsigned color, int align)
+{
+    int n = slen(s);
+    if (n <= 0) return;
+    int face = tx_wface(weight);
+    int w = text_measure_px(s, n, px, face), x = r.x;
+    if (align == AUI_ALIGN_CENTER) x = r.x + (r.w - w) / 2;
+    else if (align == AUI_ALIGN_RIGHT) x = r.x + r.w - w;
+    int y24 = aui_text_baseline24(Y_(r.y) * 256, r.h * 256, px) - tx_asc24(px);
+    if (tx_has_run2()) tx_run2(X_(x) * 256, y24, px, face, color, s, n, 255, weight);
+    else tx_run1(X_(x), tx_fdiv(y24 + 128, 256), px, face, color, s, n);
+}
+
+/* ---------------------------------------------------- tabular digits (P2) */
+
+/* Digit advances and the cell (the widest) in 24.8 POINTS, per (px, weight,
+ * scale_percent, source). With CARETS + TEXT_RUN2 one carets query over
+ * "0123456789" gives device 24.8 advances; otherwise ten measure syscalls give
+ * whole points. A scale change re-keys, so it misses. */
+struct tx_tn { int px, weight, pct, mode, ok, cell, adv[10]; };
+static struct tx_tn tx_tc[8];
+static unsigned tx_tc_n;
+
+/* device 24.8 -> point 24.8, rounded */
+static int tx_d2p24(int v, int pct) { return (int)tx_fdivl((long long)v * 100 + pct / 2, pct); }
+
+static const struct tx_tn *tx_tnum_cells(int px, int weight)
+{
+    int pct = aui_scale(), mode = tx_has_layout() ? 1 : 0, face = tx_wface(weight);
+    for (int i = 0; i < 8; i++) {
+        struct tx_tn *e = &tx_tc[i];
+        if (e->ok && e->px == px && e->weight == weight && e->pct == pct && e->mode == mode) return e;
+    }
+    static const char dg[] = "0123456789";
+    struct tx_tn *e = &tx_tc[tx_tc_n++ & 7u];
+    e->px = px; e->weight = weight; e->pct = pct; e->mode = mode; e->ok = 1;
+    int got = 0;
+    if (mode && tx_carets_cb(0, dg, 10, px, (unsigned)face, tx_off, tx_x, TX_MAX + 1) == 11) {
+        got = 1;
+        for (int d = 0; d < 10; d++) {
+            if (tx_off[d] != d) got = 0;
+            e->adv[d] = tx_d2p24(tx_x[d + 1], pct) - tx_d2p24(tx_x[d], pct);
+        }
+    }
+    if (!got)
+        for (int d = 0; d < 10; d++) e->adv[d] = text_measure_px(dg + d, 1, px, face) * 256;
+    e->cell = 0;
+    for (int d = 0; d < 10; d++) if (e->adv[d] > e->cell) e->cell = e->adv[d];
+    return e;
+}
+
+/* One run of the laid-out string: bytes [start, start + len) drawn naturally
+ * from x (24.8 points from the string's origin), w its natural width. */
+struct tx_piece { int start, len, x, w; };
+#define TX_PIECES 128
+static struct tx_piece tx_pc[TX_PIECES];
+
+static int tx_isdig(const char *s, int a, int b) { return b - a == 1 && s[a] >= '0' && s[a] <= '9'; }
+
+/* Lay s[0..n) out with digit cells into tx_pc[]. A piece grows while each
+ * next unit starts where the piece's natural pen ends, so a digit as wide as
+ * its cell (every digit, in a tabular font) costs no extra run. *total is the
+ * width; *anchor the right edge of the last digit's cell (the width when there
+ * is no digit). Returns the piece count. */
+static int tx_tnum_layout(const char *s, int n, int px, int weight, int *total, int *anchor)
+{
+    const struct tx_tn *c = tx_tnum_cells(px, weight);
+    int face = tx_wface(weight), pct = aui_scale(), np = 0, pen = 0, last = -1, ncar = -1;
+    int alldig = 1;
+    for (int i = 0; i < n; i++) if (s[i] < '0' || s[i] > '9') { alldig = 0; break; }
+    if (!alldig && c->mode) {
+        ncar = tx_carets_cb(0, s, n, px, (unsigned)face, tx_off, tx_x, TX_MAX + 1);
+        if (ncar < 2 || tx_off[ncar - 1] != n) ncar = -1;
+    }
+    int k = 0, a = 0;
+    while (a < n) {
+        int b, nat;
+        if (ncar > 0) {                                  /* one carets cluster */
+            b = tx_off[k + 1];
+            nat = tx_d2p24(tx_x[k + 1] - tx_x[k], pct);   /* per cluster: the same char, the same width */
+            k++;
+        } else if (s[a] >= '0' && s[a] <= '9') {         /* one digit */
+            b = a + 1; nat = c->adv[s[a] - '0'];
+        } else {                                         /* a run of non-digits */
+            b = a;
+            while (b < n && (s[b] < '0' || s[b] > '9')) b++;
+            nat = text_measure_px(s + a, b - a, px, face) * 256;
+        }
+        int gx = pen, step = nat, w = nat;
+        if (tx_isdig(s, a, b)) {
+            w = c->adv[s[a] - '0'];
+#ifdef UI_TEXT_API_NEGCTL            /* tests/ui-aui-text-api.mk: natural advances, no cells */
+            step = w;
+#else
+            gx = pen + (c->cell - w) / 2; step = c->cell;
+#endif
+        }
+        struct tx_piece *p = np ? &tx_pc[np - 1] : 0;
+        if (p && (p->x + p->w == gx || np == TX_PIECES)) { p->len = b - p->start; p->w = gx + w - p->x; }
+        else { p = &tx_pc[np++]; p->start = a; p->len = b - a; p->x = gx; p->w = w; }
+        pen += step;
+        if (tx_isdig(s, a, b)) last = pen;
+        a = b;
+    }
+    *total = pen; *anchor = last >= 0 ? last : pen;
+    return np;
+}
+
+void aui_text_tnum(int x, int y, int px, int weight, unsigned color, const char *s, int align)
+{
+    int n = slen(s);
+    if (n <= 0) return;
+    if (n > TX_MAX) n = tx_u8_cut(s, TX_MAX);
+    weight = tx_wnorm(weight);
+    int total, anchor, np = tx_tnum_layout(s, n, px, weight, &total, &anchor);
+    int x24 = X_(x) * 256 - (align == AUI_ALIGN_RIGHT ? anchor : align == AUI_ALIGN_CENTER ? anchor / 2 : 0);
+    int yy = Y_(y), face = tx_wface(weight), run2 = tx_has_run2();
+    /* ONE damage record for the whole string (its pieces are one draw call to
+     * the diff), keyed apart from a plain run of the same text. */
+    ad_note_text(tx_fdiv(x24, 256), yy, px, face | tx_wkey(weight) | (1u << 24), color, s, n);
+    for (int i = 0; i < np; i++) {
+        const struct tx_piece *p = &tx_pc[i];
+        if (run2) {
+            struct logit_run2 r = { 0, x24 + p->x, yy * 256, px * 256, face, color, s + p->start, p->len,
+                                    255, weight, 0 };
+            ol_window_text_run2(&r);
+        } else {
+            int xp = tx_fdiv(x24 + p->x + 128, 256);
+            if (face) gui_text_run_w(xp, yy, px, 0, color, s + p->start, p->len, 1);
+            else (gui_text_run)(xp, yy, px, 0, color, s + p->start, p->len);
+        }
+    }
+}
+
+int aui_text_tnum_width(const char *s, int px, int weight)
+{
+    int n = slen(s);
+    if (n <= 0) return 0;
+    if (n > TX_MAX) n = tx_u8_cut(s, TX_MAX);
+    int total, anchor;
+    tx_tnum_layout(s, n, px, tx_wnorm(weight), &total, &anchor);
+    return (total + 255) / 256;
 }

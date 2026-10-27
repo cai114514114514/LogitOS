@@ -14,7 +14,11 @@ void aui_text_sz(int x, int y, const char *s, unsigned color, int px);
  * which takes WINDOW coordinates and therefore ignores aui_scroll_begin's
  * translation -- see the note at its definition. */
 void aui_text_n(int x, int y, const char *s, int len, unsigned color, int px);
-int  aui_text_w(const char *s, int px);      /* measured width at size px        */
+/* measured width at size px. The name is also the 6-argument weighted draw
+ * (aui_text_w(x, y, px, weight, color, s), below): the macro after the
+ * prototypes picks by argument count, and the parentheses keep this
+ * declaration (and the definition) out of the macro's reach. */
+int  (aui_text_w)(const char *s, int px);
 /* Centred / right-aligned inside a rect. Vertically the text sits on a BASELINE
  * derived from the font's ascent and descent (the metrics query), the same for
  * every size in the same rect, so mixed sizes in one row share a baseline. The
@@ -53,5 +57,64 @@ int aui_text_measure_wrap(int w, const char *s, int len, int px, unsigned face,
 /* Text with an alpha 0..255 (255 is opaque), through SYS_GUI_TEXT_RUN2. A kernel
  * without it draws the colour mixed toward the background instead. */
 void aui_text_a(int x, int y, const char *s, unsigned color, int px, int alpha);
+
+/* ------------------------------------------- weights (design 3.6, P1) ----
+ * The weighted forms take a CSS weight: AUI_W_* (400 / 500 / 600 / 700) or 0.
+ * With TEXT_RUN2 the weight travels in logit_run2.weight and the kernel picks
+ * the baked face (ui, ui-medium, ui-semibold, ui-bold). Without it, weight
+ * >= 600 draws the bold face bit and 500 the regular face. Measurement and the
+ * carets query use that same resolved face bit: the carets query takes face
+ * bits only (no weight), so a 500 is measured regular and a 600 bold.
+ * Weight 0 is the legacy call, byte for byte (same syscalls, same arguments).
+ * Argument order everywhere: ..., px, weight, color, ... */
+#define AUI_W_REGULAR  400
+#define AUI_W_MEDIUM   500
+#define AUI_W_SEMIBOLD 600
+#define AUI_W_BOLD     700
+
+void aui_text_draw_w(int x, int y, int px, int weight, unsigned color, const char *s);
+#define AUI_TW_PICK_(a1, a2, a3, a4, a5, a6, name, ...) name
+#define aui_text_w(...) AUI_TW_PICK_(__VA_ARGS__, aui_text_draw_w, aui_text_w_takes_2_or_6_args, \
+                                     aui_text_w_takes_2_or_6_args, aui_text_w_takes_2_or_6_args, \
+                                     (aui_text_w), aui_text_w_takes_2_or_6_args)(__VA_ARGS__)
+int  aui_text_measure_w(const char *s, int px, int weight);         /* points */
+/* aui_text_in with a weight; the same baseline rule as aui_text_in. */
+void aui_text_in_w(struct aui_rect r, const char *s, int px, int weight, unsigned color, int align);
+/* aui_text_ellipsis_ex with a weight; mode is AUI_TRUNC_TAIL/MIDDLE/HEAD. */
+void aui_text_ellipsis_w(int x, int y, int maxw, const char *s, int px, int weight,
+                         unsigned color, int mode);
+
+/* --------------------------------------------- tabular digits (P2) --------
+ * Each ASCII digit sits centred in a cell as wide as the widest of '0'..'9'
+ * at (px, weight); every other character keeps its natural advance. The cells
+ * are cached per (px, weight, scale_percent) in 8 entries, so a scale change
+ * re-keys. `align` is AUI_ALIGN_*, anchored on the RIGHT EDGE OF THE LAST
+ * DIGIT'S CELL (trailing units hang past x for RIGHT): LEFT starts at x,
+ * RIGHT puts that edge at x, CENTER puts x halfway to it. y is the top, as
+ * aui_text_sz. aui_text_tnum_width is the whole string's width in points,
+ * rounded up. */
+void aui_text_tnum(int x, int y, int px, int weight, unsigned color, const char *s, int align);
+int  aui_text_tnum_width(const char *s, int px, int weight);
+
+/* --------------------------------------- metric vertical centring (3.6) ---
+ * baseline = top + (h - 1.448 px) / 2 + 1.160 px from the ui*.ttf metrics in
+ * logit_tokens.h (ascent 1160, descent -288, upem 1000), top and h in 24.8
+ * points, px an integer size; one rounding, so it is within 1/2 of 1/256 pt
+ * of the exact value. aui_text_vc draws `s` in r on that baseline, aligned
+ * horizontally per AUI_ALIGN_*. aui_text_in keeps its own (legacy) rule. */
+int  aui_text_baseline24(int top24, int h24, int px);
+void aui_text_vc(struct aui_rect r, const char *s, int px, int weight, unsigned color, int align);
+
+/* ------------------------------------------ explicit line heights (3.6) ---
+ * aui_text_wrap / aui_text_measure_wrap with a weight in place of the face
+ * bits and the design's line height: line_h > 0 is used as given; line_h <= 0
+ * takes the 3.6 line height of the type style with that px (body 14 -> 20,
+ * callout 13 -> 18, ...), never the 5/4 default. aui_text_line_h is that
+ * lookup. */
+int aui_text_line_h(int px);
+int aui_text_wrap_lh(struct aui_rect r, const char *s, int len, int px, int weight,
+                     unsigned argb, int line_h, int max_lines, int align, int trunc);
+int aui_text_measure_wrap_lh(int w, const char *s, int len, int px, int weight,
+                             int line_h, int max_lines);
 
 #endif /* AUI_TEXT_H */
