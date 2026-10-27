@@ -326,6 +326,22 @@ void aui_scroll_begin_round(int x, int y, int w, int h, int *off, int content_h,
     ox_ = wx; oy_ = wy - *off;
 }
 
+/* Added by ui-aui-core: a query of the slot table above, nothing more. A
+ * container opened THIS frame (gen == anim_gen) wins over a slot that held the
+ * same order last frame and has not been reopened yet. */
+int aui_scroll_offset(int id)
+{
+    const struct scroll_slot *last = 0;
+    if (id <= 0) return 0;
+    for (int i = 0; i < SCROLL_SLOTS; i++) {
+        const struct scroll_slot *s = &scroll_slots[i];
+        if (!s->owner || s->order != (unsigned)id) continue;
+        if (s->gen == anim_gen) return s->motion.current;
+        if (s->gen + 1 == anim_gen) last = s;
+    }
+    return last ? last->motion.current : 0;
+}
+
 void aui_scroll_end(void)
 {
     if (scr_skip) { scr_skip--; return; }

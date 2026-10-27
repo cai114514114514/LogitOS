@@ -34,5 +34,10 @@ void aui_scroll_begin(int x, int y, int w, int h, int *off, int content_h);
  * side that carries the scrollbar stays square). Up to 8 containers nest. */
 void aui_scroll_begin_round(int x, int y, int w, int h, int *off, int content_h, int radius);
 void aui_scroll_end(void);
+/* The displayed offset (points) of scroll container `id`: the id-th
+ * aui_scroll_begin of the frame, counting from 1. Read-only. Before that
+ * container has been opened in the current frame (a toolbar drawn above its
+ * content) it answers last frame's value; 0 for an id no container had. */
+int aui_scroll_offset(int id);
 
 #endif /* AUI_FIELDS_H */
