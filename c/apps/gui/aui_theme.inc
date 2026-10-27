@@ -9,6 +9,8 @@
 static int theme_dark, theme_inited;
 static int theme_override = -1;
 struct aui_theme aui_t;
+/* The 「澄」 token set behind aui_tok() and the appended aui_t roles. */
+static struct logit_tokens tok_cur;
 
 /* The channel lerp lives in the engine (gfx_mix): a gradient strip built by
  * gfx and a two-tone token blended here have to land on the same byte, or a
@@ -77,6 +79,39 @@ static void load_dark(void)
     aui_t.selection   = rgb(46, 86, 152);
 }
 
+/* The new roles (added by ui-aui-core): the mode's table, then the accent
+ * roles derived from the CURRENT aui_t.accent, then the appended aui_t fields.
+ * The table is copied a word at a time through a volatile pointer: a struct
+ * assignment may lower to a memcpy call, and aui.o links no libc. */
+static void tok_refresh(void)
+{
+    const uint32_t *src = (const uint32_t *)logit_tok(theme_dark);
+    volatile uint32_t *dst = (volatile uint32_t *)&tok_cur;
+    for (unsigned i = 0; i < sizeof tok_cur / sizeof(uint32_t); i++) dst[i] = src[i];
+    logit_tokens_derive(aui_t.accent, theme_dark, &tok_cur);
+    const struct logit_tokens *k = &tok_cur;
+    aui_t.bg_window = k->bg_window;       aui_t.bg_content = k->bg_content;
+    aui_t.bg_card = k->bg_card;           aui_t.bg_sidebar = k->bg_sidebar;
+    aui_t.bg_inspector = k->bg_inspector; aui_t.bg_toolbar = k->bg_toolbar;
+    aui_t.bg_raised = k->bg_raised;       aui_t.bg_sunken = k->bg_sunken;
+    aui_t.bg_stage = k->bg_stage;
+    aui_t.fill_control = k->fill_control; aui_t.fill_hover = k->fill_hover;
+    aui_t.fill_pressed = k->fill_pressed; aui_t.fill_zebra = k->fill_zebra;
+    aui_t.fill_inactive_sel = k->fill_inactive_sel;
+    aui_t.label_primary = k->label_primary;       aui_t.label_secondary = k->label_secondary;
+    aui_t.label_tertiary = k->label_tertiary;     aui_t.label_quaternary = k->label_quaternary;
+    aui_t.label_on_accent = k->label_on_accent;
+    aui_t.sep_hairline = k->sep_hairline; aui_t.sep_opaque = k->sep_opaque;
+    aui_t.sep_strong = k->sep_strong;
+    aui_t.accent_hover = k->accent_hover; aui_t.accent_pressed = k->accent_pressed;
+    aui_t.accent_ink = k->accent_ink;     aui_t.accent_tint = k->accent_tint;
+    aui_t.accent_focus_ring = k->accent_focus_ring;
+    aui_t.accent_sel_text = k->accent_sel_text;
+    aui_t.success_ink = k->success_ink;   aui_t.warning_ink = k->warning_ink;
+    aui_t.error_ink = k->error_ink;       aui_t.destructive_fill = k->destructive_fill;
+    aui_t.shadow_ink = k->shadow_ink;
+}
+
 /* First use: adopt the current SYSTEM theme (SYS_UI_DARK) so even the first token
  * read / window clear matches a desktop that is already dark. */
 void aui_ensure(void)
@@ -85,6 +120,7 @@ void aui_ensure(void)
         theme_dark = sys_ui_dark(-1) > 0;
         theme_dark ? load_dark() : load_light();
         theme_inited = 1;
+        tok_refresh();
     }
 }
 
@@ -92,7 +128,10 @@ void aui_set_dark(int on)
 {
     theme_dark = on; theme_inited = 1;
     if (on) load_dark(); else load_light();
+    tok_refresh();
 }
+
+const struct logit_tokens *aui_tok(void) { aui_ensure(); return &tok_cur; }
 int aui_is_dark(void) { return theme_dark; }
 void aui_theme_override(int mode)
 {
@@ -125,4 +164,8 @@ unsigned aui_hsl(int h, int s, int l)
                iclamp((b1 + m) * 255 / 100, 0, 255));
 }
 
-void aui_set_accent(unsigned color) { aui_ensure(); aui_t.accent = color; aui_t.focus = color; }
+void aui_set_accent(unsigned color)
+{
+    aui_ensure(); aui_t.accent = color; aui_t.focus = color;
+    tok_refresh();                      /* the derived accent roles follow (added) */
+}

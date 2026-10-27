@@ -1,6 +1,12 @@
 #ifndef AUI_H
 #define AUI_H
 #include "logit.h"
+/* The 「澄」 tokens (design_language.md 3, appendix A): colours, materials and
+ * the elevation ladder, one freestanding source for aui, the WM and apps. Named
+ * relative to this header so every build that compiles aui (ring 3 and each
+ * host harness) finds them without another -I. */
+#include "../../include/ui/logit_tokens.h"
+#include "../../include/ui/logit_elevation.h"
 
 /* ============================================================================
  * aui -- the Logit immediate-mode UI toolkit, layered on the gui_* syscalls.
@@ -92,6 +98,25 @@ struct aui_theme {
     unsigned scrim;       /* the dimming behind a modal      */
     unsigned shadow;      /* drop-shadow colour (alpha comes from elevation) */
     unsigned selection;   /* text-selection fill             */
+    /* --- appended (ui-aui-core): the 「澄」 roles of design 3.1, named as in
+     * appendix A, from logit_tokens for the current mode. The accent roles are
+     * logit_tokens_derive() of the CURRENT `accent` above, so aui_set_accent()
+     * moves them too. The roles appendix A shares with a legacy field (accent,
+     * success, warning, error) are not repeated: the legacy fields keep their
+     * pre-「澄」 values until ui-aui-theme maps them, and the token values are
+     * aui_tok()->accent etc. Fields marked ARGB carry alpha in the high byte;
+     * the rest are opaque 0xRRGGBB. */
+    unsigned bg_window, bg_content, bg_card, bg_sidebar, bg_inspector,
+             bg_toolbar, bg_raised, bg_sunken, bg_stage;
+    unsigned fill_control, fill_hover /*ARGB*/, fill_pressed /*ARGB*/,
+             fill_zebra, fill_inactive_sel;
+    unsigned label_primary, label_secondary, label_tertiary,
+             label_quaternary, label_on_accent;
+    unsigned sep_hairline /*ARGB*/, sep_opaque, sep_strong /*ARGB*/;
+    unsigned accent_hover, accent_pressed, accent_ink,
+             accent_tint /*ARGB*/, accent_focus_ring /*ARGB*/, accent_sel_text /*ARGB*/;
+    unsigned success_ink, warning_ink, error_ink, destructive_fill;
+    unsigned shadow_ink;
 };
 
 extern struct aui_theme aui_t;        /* the active theme (follows the system) */
@@ -105,6 +130,10 @@ unsigned aui_hsl(int h, int s, int l);   /* h:0..359 s,l:0..100 -> packed rgb */
 void     aui_set_accent(unsigned color); /* recolor the accent + focus tokens   */
 unsigned aui_mix(unsigned a, unsigned b, int t);  /* lerp, t = 0..255 -> b      */
 unsigned aui_shade(unsigned c, int delta);        /* lighten/darken per channel */
+/* The full token set for the current mode, accent roles derived from the
+ * current accent (logit_tokens_derive). Recomputed by aui_set_dark,
+ * aui_theme_override and aui_set_accent; never NULL. */
+const struct logit_tokens *aui_tok(void);
 
 /* Each token lazy-inits the theme (comma operator) before reading, so even the
  * very first `aui_begin(AUI_BG)` -- whose argument is evaluated at the call site
