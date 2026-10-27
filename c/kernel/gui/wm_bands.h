@@ -53,6 +53,26 @@ static inline int wm_band_cut_ok(const struct wm_yrange *nocut, int nn, int y)
 #endif
 }
 
+/* Append the no-cut rows of one GLASS INPUT BOX -- the panel (x0,y0)-(x1,y1)
+ * grown by the material's sample halo -- if that box meets the rectangle
+ * (rx0,ry0)-(rx1,ry1) being split. This is the one rule for every glass the
+ * compositor draws: the WM's own panels (wm.c, par_nocut) and the backdrop
+ * regions behind app windows (wm_backdrop.c, wm_backdrop_nocut). A region
+ * frosts the layers beneath its window, so a band boundary through its sample
+ * extent would frost pixels another core has not drawn yet -- exactly the
+ * WM-glass case. Returns the new count; a full list (n == max) is unchanged. */
+static inline int wm_bands_nocut_add(struct wm_yrange *nc, int n, int max,
+                                     int x0, int y0, int x1, int y1, int halo,
+                                     int rx0, int ry0, int rx1, int ry1)
+{
+    if (x1 + halo > rx0 && x0 - halo < rx1 && y1 + halo > ry0 && y0 - halo < ry1 && n < max) {
+        nc[n].y0 = y0 - halo;
+        nc[n].y1 = y1 + halo;
+        n++;
+    }
+    return n;
+}
+
 /* Split rows [y0, y1) into at most `want` bands (<= WM_BAND_MAX). `nocut`
  * are the rows no boundary may fall strictly inside; `glass` the rows that
  * cost more. Returns the band count; 1 means "render it serially". */
