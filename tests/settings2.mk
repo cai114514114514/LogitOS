@@ -92,14 +92,36 @@ test-settings-draft-negctl:
 	@python3 tests/unit/settings_model_test.py --negative
 
 # Runtime artwork is packaged with the OS, never loaded from a host-only path.
-APP_ICON_FILES := $(wildcard fsroot/icons/*.png)
+#
+# ui-art-assets (design_language.md 3.7.4, 3.7.5): the application icons are GENERATED, not
+# tracked. tools/mkicons draws the 13 masters (12 apps plus the Logit mark tile) from the SVG
+# path data in tools/mkicons/glyphs_svg.inc with c/lib/gfx and the in-tree PNG encoder, into
+# $(BUILD)/icons/<stem>.png; they are packed as /icons/<stem>.png, the names the Dock, Finder and
+# Settings already load. fsroot/icons/settings.png and preview.png were removed with this change
+# (mkfs.py aborts on a duplicate path). Gallery and Widgets get an icon too: test-only APPS, but
+# the Dock and Finder draw them wherever they run.
+MKICONS := $(BUILD)/tools/mkicons
+MKICONS_SRC := tools/mkicons/mkicons.c tools/mkicons/svgpath.c tools/mkicons/glyphs_svg.inc c/include/ui/logit_apps.h
+APP_ICON_STEMS := files settings browser clock monitor preview studio assistant terminal textedit gallery widgets logit
+APP_ICON_FILES := $(addprefix $(BUILD)/icons/,$(addsuffix .png,$(APP_ICON_STEMS)))
+# A host tool: it links c/lib/gfx (the coverage rasteriser the OS draws with) and the Rust PNG
+# encoder (tests/pngenc.mk checks it). -ffp-contract=off keeps the art byte-identical per host.
+$(MKICONS): $(MKICONS_SRC) $(GFX_SRC) $(GFX_HEADERS) tests/unit/rust_host_shim.c $(RUST_LIB_HOST)
+	@mkdir -p $(dir $@)
+	$(CC) -O2 -ffp-contract=off -Wall -Wextra -Wno-missing-field-initializers -Ic/include $(GFX_INC) -Itools/mkicons \
+	    tools/mkicons/mkicons.c $(GFX_SRC) tests/unit/rust_host_shim.c $(RUST_LIB_HOST) -lm -o $@
+$(BUILD)/icons/%.png: $(MKICONS)
+	@mkdir -p $(dir $@)
+	$(MKICONS) --only $* $(BUILD)/icons
 FS_FILES += $(foreach icon,$(APP_ICON_FILES),$(icon):/icons/$(notdir $(icon)))
 $(DISK): $(APP_ICON_FILES)
 
 .PHONY: test-app-icons test-app-icons-negctl
-test-app-icons: test-app-icons-negctl
+test-app-icons: test-app-icons-negctl $(APP_ICON_FILES)
 	@python3 tests/unit/app_icon_test.py
-test-app-icons-negctl:
+	@python3 -I tests/unit/ui_art_check.py --icon-set $(BUILD)/icons
+test-app-icons-negctl: $(APP_ICON_FILES)
 	@python3 tests/unit/app_icon_test.py --negative
+	@python3 -I tests/unit/ui_art_check.py --icon-set $(BUILD)/icons --negative
 
 test-settings-ui: test-settings-draft test-app-icons
