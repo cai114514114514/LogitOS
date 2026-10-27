@@ -722,7 +722,7 @@ $(BUILD)/apps/gfx_%.o: c/lib/gfx/%.c
 # UAX#14 text library (linebreak.c, para.c) is ring-3 only: it is filtered out of
 # the kernel C_SRC and reaches apps as libtl.a. Both are empty until those files
 # exist, so today nothing changes.
-AUI_INC_SRC := $(sort $(wildcard $(GUIDIR)/aui_*.inc $(GUIDIR)/aui_paint.h $(GUIDIR)/aui_text.h $(GUIDIR)/aui_motion.h))
+AUI_INC_SRC := $(sort $(wildcard $(GUIDIR)/aui_*.inc $(GUIDIR)/aui_*.h $(GUIDIR)/ui_aim.h))
 AUI_TL_SRC  := $(sort $(wildcard c/lib/text/linebreak.c c/lib/text/para.c))
 AUI_LIBS    := $(if $(AUI_TL_SRC),$(BUILD)/apps/libtl.a)
 AUI_OBJ     := $(BUILD)/apps/aui.o $(AUI_LIBS)
@@ -2047,13 +2047,19 @@ RELEASE_EXCLUDE := \
     /bin/schedtest /bin/secprobe /bin/smptest /bin/sndtest /bin/socktest \
     /bin/thrtest /bin/vidbench /bin/vidcheck /bin/vidcheck265 \
     $(foreach t,$(RELEASE_EXCLUDE_AS),/usr/as/bin/$(t).aex /usr/as/examples/$(t).as)
+# UI overhaul asset hook (recipe-side): fragments append mkfs specs to UI_DISK_PACK
+# and UI_RELEASE_PACK. Do NOT add $(UI_...) prerequisite hooks here: prerequisite
+# lists expand when make reads the line, before the fragments are included, so
+# they would always be empty. Each fragment writes its own $(DISK): / $(RELEASE_DISK):
+# prerequisite lines for the files it packs.
+DISK_PACK += $(UI_DISK_PACK)
 $(BUILD)/wallpaper.png: tools/mkwallpaper.py
 	@mkdir -p $(BUILD)
 	python3 tools/mkwallpaper.py $@
 $(RELEASE_DISK): $(DISK) $(BUILD)/wallpaper.png tools/mkfs.py
 	@echo "release: packing $(RELEASE_DISK) without $(words $(RELEASE_EXCLUDE)) test paths"
 	@python3 tools/mkfs.py $(MKFS_PROFILE) $(foreach p,$(RELEASE_EXCLUDE),--exclude '$(p)') \
-	    $(RELEASE_DISK) $(DISK_PACK) $(BUILD)/wallpaper.png:/wallpaper.png
+	    $(RELEASE_DISK) $(DISK_PACK) $(BUILD)/wallpaper.png:/wallpaper.png $(UI_RELEASE_PACK)
 release-disk: $(RELEASE_DISK)
 .PHONY: release-disk
 
@@ -5902,6 +5908,66 @@ $(BUILD)/lm.aex: $(BUILD)/lm.elf tools/mkaex.py
 -include tests/wm-draw2-effects.mk
 -include tests/gfx-gradient-conic.mk
 -include tests/icons-symbols-b.mk
+
+# UI overhaul (design_language.md)
+-include tests/ui-prewire.mk
+-include tests/ui-tokens-headers.mk
+-include tests/ui-qmp-kit.mk
+-include tests/ui-run2-units.mk
+-include tests/ui-wm-split.mk
+-include tests/ui-aui-core.mk
+-include tests/ui-aui-text-api.mk
+-include tests/ui-aui-motion-api.mk
+-include tests/ui-art-assets.mk
+-include tests/ui-bench-frame-fix.mk
+-include tests/ui-aui-theme.mk
+-include tests/ui-aui-buttons.mk
+-include tests/ui-aui-controls.mk
+-include tests/ui-aui-fields.mk
+-include tests/ui-aui-lists.mk
+-include tests/ui-aui-overlays.mk
+-include tests/ui-aui-nav.mk
+-include tests/ui-aui-form-data.mk
+-include tests/ui-kernel-text.mk
+-include tests/ui-wm-abi.mk
+-include tests/ui-glass-adapt.mk
+-include tests/ui-aims-a.mk
+-include tests/ui-aims-b.mk
+-include tests/ui-aims-c.mk
+-include tests/ui-wm-glass.mk
+-include tests/ui-wm-menubar.mk
+-include tests/ui-wm-dock.mk
+-include tests/ui-wm-chrome.mk
+-include tests/ui-wm-motion.mk
+-include tests/ui-wm-overlays.mk
+-include tests/ui-wm-wallpaper-reveal.mk
+-include tests/ui-notify.mk
+-include tests/ui-spotlight.mk
+-include tests/ui-aui-icons.mk
+-include tests/ui-ime-chrome.mk
+-include tests/ui-wm-glass-c2.mk
+-include tests/ui-gallery.mk
+-include tests/ui-app-finder.mk
+-include tests/ui-app-settings-a.mk
+-include tests/ui-app-settings-b.mk
+-include tests/ui-app-clock.mk
+-include tests/ui-app-monitor.mk
+-include tests/ui-desktop-look.mk
+-include tests/ui-budget-gate.mk
+-include tests/ui-app-preview.mk
+-include tests/ui-app-browser.mk
+-include tests/ui-app-terminal.mk
+-include tests/ui-app-textedit.mk
+-include tests/ui-app-studio.mk
+-include tests/ui-app-assistant.mk
+-include tests/ui-app-greeter.mk
+-include tests/ui-app-chat.mk
+-include tests/ui-app-widgets.mk
+-include tests/ui-modeb-core.mk
+-include tests/ui-polish-defaults.mk
+-include tests/ui-modeb-apps-a.mk
+-include tests/ui-modeb-apps-b.mk
+-include tests/ui-polish-review.mk
 -include tests/canvas-path-ctm.mk
 -include tests/font-weights.mk
 -include tests/glass-adaptive-tint.mk
