@@ -24,6 +24,7 @@ static void draw_popup(void)
     int t = aui_anim(AUI_AK_EXTRA, pop.kind == 1 ? 255 : 0, AUI_T_FAST, AUI_EASE_OUT);
     id_ctr = saved_id;
     if (t <= 0) { pop_prev.w = 0; return; }
+    int aim_ok = pop.kind == 1 && t >= 255;     /* popup-<i> once fully faded in (added) */
 
     int h = pop.n * pop.itemh + AUI_SP(2);
     int x = pop.x, y = pop.y;
@@ -68,11 +69,15 @@ static void draw_popup(void)
         if (i == pop.hi) aui_round_a(x + 3, iy, pop.w - 6, pop.itemh, AUI_R_SM, AUI_ACCENT, t);
         aui_text_ellipsis(x + AUI_SP(2), iy + (pop.itemh - PX) / 2 - 1, pop.w - AUI_SP(5),
                           pop.items[i], aui_mix(AUI_SURFACE_2, i == pop.hi ? AUI_ACCENT_TEXT : AUI_TEXT, t), PX);
+        if (aim_ok) aim_fixed_i("popup", i, X_(x + pop.w / 2), Y_(iy + pop.itemh / 2));
     }
     fade_close();
-    if (pop.kind == 1 && in.ev == EV_MOUSE) {
+    /* A click anywhere closes it -- except the click that OPENED it this very
+     * frame (fixed by ui-aui-core): aui_select / aui_menubar open the popup on
+     * the press, and this used to close it again before it was ever shown. */
+    if (pop.kind == 1 && in.ev == EV_MOUSE && pop_gen != anim_gen) {
         if (hit >= 0) { *pop.sel = hit; pop_changed_id = pop.owner; }
-        pop.kind = 0;                       /* a click anywhere closes it */
+        pop.kind = 0;
     }
 }
 
@@ -97,6 +102,7 @@ int aui_menubar(int x, int y, int w, const char *const *titles,
         if (open_menu == i && pop.kind == 0) {
             int cnt = 0; while (items[i][cnt]) cnt++;
             pop.kind = 1; pop.owner = -2 - i; pop.x = X_(cx); pop.y = Y_(y) + h;
+            pop_gen = anim_gen;
             pop.w = 160; pop.itemh = ROWH; pop.n = cnt;
             pop.items = items[i]; pop.sel = ii; pop.hi = -1;
         }
@@ -135,6 +141,7 @@ static struct { int x, y, w, h; } dlg;
 static unsigned dlg_last_gen;   /* anim_gen this ran at, last time; 0 = never */
 static unsigned dlg_t0;         /* frame_ms when the CURRENT entrance began   */
 static int dlg_fade;            /* aui_dialog_begin opened a fade level that aui_dialog_end closes */
+static int dlg_settled;         /* the entrance has finished: the buttons publish aims (ui-aui-core) */
 
 int aui_dialog_begin(const char *title, int w, int h)
 {
@@ -149,6 +156,7 @@ int aui_dialog_begin(const char *title, int w, int h)
     unsigned el = frame_ms - dlg_t0;
     int e = anim_reduced || (int)el >= AUI_T_SLOW ? 256 : ol_ease256(OL_EASE_OUT,(int)(el * 256u / AUI_T_SLOW));
     if (e < 256) anim_live++;      /* keep the wake contract awake for the rest of the entrance */
+    dlg_settled = e >= 256;
     int scrim_a = 110 * e / 256;
     int rise = 12 * (256 - e) / 256;
 
@@ -185,6 +193,14 @@ int aui_dialog_buttons(const char *const *labels, int n)
         x -= bw;
         if (aui_button_ex(x, y, bw, bh, labels[i],
                           i == 0 ? AUI_V_PRIMARY : AUI_V_SECONDARY, 1)) pressed = i;
+        /* The sheet's aims (added): every button by index, Enter's and
+         * Escape's by role. Only inside a settled dialog. */
+        if (in_dialog && dlg_settled) {
+            int ax = X_(x + bw / 2), ay = Y_(y + bh / 2);
+            aim_fixed_i("dialog", i, ax, ay);
+            if (i == 0) aim_fixed("dialog-confirm", ax, ay);
+            if (i == n - 1 && n > 1) aim_fixed("dialog-cancel", ax, ay);
+        }
         x -= gap;
     }
     if (in.ev == EV_KEY && !in.key_used) {

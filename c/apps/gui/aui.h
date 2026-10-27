@@ -259,6 +259,32 @@ int  aui_height(void);
 #include "aui_text.h"
 
 
+/* ------------------------------------------------------------------- aims --
+ * Test geometry over serial (design P13, ui_aim.h). An app names itself once
+ * with ui_aim_set_app("monitor") and aims hand-drawn controls with ui_aim();
+ * controls that an aui WIDGET draws get their aims from the widget, and only
+ * from it (one emitter per name):
+ *
+ *     aui_aim_prefix("tab");          aui_tabs(...);      // tab-0, tab-1, ...
+ *     aui_aim_names(names, 3);        aui_segmented(...); // names[i] per segment
+ *
+ * The prefix or name list arms the NEXT aims-aware widget call of the frame:
+ * aui_tabs, aui_segmented, aui_list and aui_table (one aim per VISIBLE row),
+ * aui_select (the control itself: the prefix, or names[0]). The open popup of
+ * a select or menu always publishes `popup-<i>` per row, and aui_dialog_buttons
+ * always publishes `dialog-<i>`, `dialog-confirm` (item 0, Enter) and, with
+ * more than one button, `dialog-cancel` (the last, Escape) -- as soon as the
+ * app has called ui_aim_set_app, with or without a prefix.
+ *
+ * An aim is published after layout, at the item's centre in window-local
+ * points, only for items inside the visible clip, and never while the widget
+ * is moving (a tab underline or segmented thumb in flight, a list whose scroll
+ * is still easing, a popup or sheet still fading in): the next settled frame
+ * publishes it. aui_begin() disarms a prefix no widget consumed. */
+#include "ui_aim.h"
+void aui_aim_prefix(const char *prefix);
+void aui_aim_names(const char *const *names, int n);
+
 /* ---------------------------------------------------------------- widgets --
  * Every widget returns its interaction (1 on activate, or the new value), and
  * every one takes its state by pointer -- the app owns the state, the toolkit

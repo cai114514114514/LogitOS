@@ -693,6 +693,71 @@ static int clip_has(int x, int y)
     return x >= r.x && y >= r.y && x < r.x + r.w && y < r.y + r.h;
 }
 
+/* ---- widget-level aims (aui.h "aims", ui_aim.h; added by ui-aui-core) ----
+ * aui_aim_prefix / aui_aim_names ARM the next aims-aware widget; the widget
+ * takes the arming with aim_take() (which disarms it) and publishes each of
+ * its items with aim_item() once its layout is final. Only window-local points
+ * that the current clip and the window contain are published: an item scrolled
+ * or clipped out of view has no aim, so a driver can never click it blind. */
+#define AIM_PFX_MAX 20
+#define AIM_ITEMS_MAX 32      /* items per widget that get an aim (tabs keep their centres) */
+struct aim_ctx { char pfx[AIM_PFX_MAX]; const char *const *names; int n, on; };
+static struct aim_ctx aim_arm;
+
+void aui_aim_prefix(const char *p)
+{
+    int i = 0;
+    for (; p && p[i] && i < AIM_PFX_MAX - 1; i++) aim_arm.pfx[i] = p[i];
+    aim_arm.pfx[i] = 0;
+    aim_arm.names = 0; aim_arm.n = 0;
+    aim_arm.on = i > 0;
+}
+void aui_aim_names(const char *const *names, int n)
+{
+    aim_arm.pfx[0] = 0;
+    aim_arm.names = names; aim_arm.n = n;
+    aim_arm.on = names && n > 0;
+}
+/* The arming for THIS widget call into *c (disarmed for the next one). Off
+ * unless the app has named itself. Field by field: a struct copy may lower to
+ * a memcpy call, and aui.o links no libc. */
+static void aim_take(struct aim_ctx *c)
+{
+    int i = 0;
+    for (; aim_arm.pfx[i] && i < AIM_PFX_MAX - 1; i++) c->pfx[i] = aim_arm.pfx[i];
+    c->pfx[i] = 0;
+    c->names = aim_arm.names; c->n = aim_arm.n;
+    c->on = aim_arm.on && ui_aim_on();
+    aim_arm.on = 0;
+}
+static int aim_visible(int wx, int wy)
+{
+    return wx >= 0 && wy >= 0 && wx < win_w && wy < win_h && clip_has(wx, wy);
+}
+/* Item i of an armed widget at window-local (wx, wy). */
+static void aim_item(const struct aim_ctx *c, int i, int wx, int wy)
+{
+    if (!c->on || !aim_visible(wx, wy)) return;
+    if (c->names) { if (i >= 0 && i < c->n && c->names[i]) ui_aim(c->names[i], wx, wy); }
+    else ui_aim_i(c->pfx, i, wx, wy);
+}
+/* A widget that is ONE control (select): the prefix itself, or names[0]. */
+static void aim_one(const struct aim_ctx *c, int wx, int wy)
+{
+    if (!c->on || !aim_visible(wx, wy)) return;
+    if (c->names) { if (c->names[0]) ui_aim(c->names[0], wx, wy); }
+    else ui_aim(c->pfx, wx, wy);
+}
+/* The names aui publishes on its own (popup-<i>, dialog-*): no arming. */
+static void aim_fixed_i(const char *pfx, int i, int wx, int wy)
+{
+    if (ui_aim_on() && aim_visible(wx, wy)) ui_aim_i(pfx, i, wx, wy);
+}
+static void aim_fixed(const char *name, int wx, int wy)
+{
+    if (ui_aim_on() && aim_visible(wx, wy)) ui_aim(name, wx, wy);
+}
+
 /* input */
 static struct {
     int ev, a, b, mods, button, wheel;
@@ -729,6 +794,7 @@ static struct {
     int *sel;
 } pop;
 static int pop_changed_id;
+static unsigned pop_gen;      /* anim_gen of the frame that opened the popup */
 
 static const char *tip_text;
 static int tip_x, tip_y;
@@ -1038,6 +1104,7 @@ void aui_begin(unsigned bg)
     id_ctr = 0; foc_n = 0; clipn = 0; clip_over = 0; ox_ = oy_ = 0;
     in_dialog = 0; in_popup = 0; dlg_open_now = 0;
     in.hot = 0;
+    aim_arm.on = 0;                     /* an arming no widget took dies with its frame */
     wbb_next = aui_r(0, 0, 0, 0);
     tip_text = 0;
     /* Reset THIS frame's flush-diff recording (section 5a-flush). g_ad_prev /

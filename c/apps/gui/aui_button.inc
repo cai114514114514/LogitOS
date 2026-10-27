@@ -168,6 +168,8 @@ int aui_icon_button(int x, int y, int size, int icon, int enabled)
 int aui_select(int x, int y, int w, const char *const *items, int n, int *sel)
 {
     int id = ++id_ctr, h = AUI_H_CTL;
+    struct aim_ctx aim;
+    aim_take(&aim);
     struct wres r = wpoll(id, X_(x), Y_(y), w, h, 1, 1);
     unsigned fill = face_for(r.st);
     aui_vgrad_round(x, y, w, h, AUI_R_MD, aui_shade(fill, 10), aui_shade(fill, -10));
@@ -178,9 +180,11 @@ int aui_select(int x, int y, int w, const char *const *items, int n, int *sel)
     /* chevron */
     int ax = x + w - AUI_SP(5), ay = y + h / 2 - 1;
     gui_icon(GICON_CHEVRON_D, ax - 1, ay - 5, 12, AUI_MUTED);
+    aim_one(&aim, X_(x + w / 2), Y_(y + h / 2));    /* the control (added) */
 
     if (r.clicked && pop.kind == 0) {
         pop.kind = 1; pop.owner = id; pop.x = X_(x); pop.y = Y_(y) + h + 4; pop.w = w;
+        pop_gen = anim_gen;
         pop.itemh = ROWH; pop.n = n; pop.items = items; pop.sel = sel; pop.hi = *sel;
     }
     if ((focus_id == id) && in.ev == EV_KEY && !in.key_used &&

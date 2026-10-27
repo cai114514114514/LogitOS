@@ -256,6 +256,7 @@ int aui_scrollbar(int x, int y, int h, int *off, int content, int view)
 static struct {
     int x, y, w, h, sx, sy, state, show_bar;
     int *off, content;
+    int moving;               /* the offset is still easing: rows publish no aims (ui-aui-core) */
 } scr[8];
 static int scrn, scr_skip;
 
@@ -311,6 +312,7 @@ void aui_scroll_begin_round(int x, int y, int w, int h, int *off, int content_h,
     scr[scrn].sx = ox_; scr[scrn].sy = oy_; scr[scrn].off = off;
     scr[scrn].content = content_h; scr[scrn].state = state;
     scr[scrn].show_bar = show_bar;
+    scr[scrn].moving = s->motion.running;
     scrn++;
     /* Wheel hit testing includes the gutter; content clipping excludes it. */
     s->viewport = clip_intersect(aui_r(wx, wy, w, h));
