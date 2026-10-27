@@ -1047,6 +1047,12 @@ static int glass_ctl_ok(void)
 #define GLASS_CTL_RIM OL_GLASS_RIM_SYMMETRIC
 #endif
 
+/* The 「澄」 paint API (aui_material, aui_backdrop, aui_image, aui_elev): after
+ * the probe above, which aui_material shares. */
+#define AUI_PAINT_API2
+#include "aui_paint.inc"
+#undef AUI_PAINT_API2
+
 
 /* Two concentric RINGS, never a filled halo: a filled rounded rect behind the
  * control is drawn over it by the control itself, and drawn after it washes the
