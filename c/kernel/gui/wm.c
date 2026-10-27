@@ -48,6 +48,8 @@ static struct desktop_preferences desktop_prefs = {LOGIT_DESKTOP_PREFS(PREF_DEFA
 #include "logit_pack.h"
 #include "wm_draw2.h"    /* GUI ABI v2: router, handlers, struct drect */
 #include "wm_cover.h"    /* wm_cover_ok: the cover predicate, pure */
+#include "wm_shadow.h"   /* shadow presets + extent rule, pure */
+#include "openlogit_display_shadow.h"  /* ol_display_shadow_ex: key + ambient layers */
 #include "openlogit_display_group.h"  /* rounded content: opacity-255 corner groups */
 #include "openlogit_display_blit.h"   /* wallpaper: BOX-filtered bake */
 #include "ktime.h"
@@ -887,28 +889,57 @@ static int win_drawn_direct(const struct win *w, int x, int y, int ww, int wh, i
  *
  * An unfocused window sits lower: less offset, less blur, less opacity. That is
  * the whole depth cue, and it is why focus is legible from across the room. */
-/* RETUNED (unit F, "the geometry the numbers indict"): the gate measured the
- * old constants (DY 8/2, BLUR 18/9, ALPHA 130-62/90-40) at 14px of falloff and
- * ~21% peak darkening on a FOCUSED window -- tight and shallow next to a real
- * macOS window shadow, which reads as noticeably wider, deeper and lower-
- * offset. The ceiling on BLUR is not taste: fb_shadow's corner tile is
- * `blur + radius` on a side, radius here is the window's own S(10) corner, and
- * gfx_mask_corner refuses any tile past GFX_MASK_MAX=72 device px (fb.c
- * pre-clamps rather than refuse, silently tightening the shadow past the
- * ceiling -- see fb_shadow's own comment in fb.c). And S() SCALES: 32+10 = 42
- * device px at 100%, 63 at 150% -- inside the ceiling -- but 84 at 200%, PAST
- * it, where fb_shadow's pre-clamp tightens the focused blur to an effective
- * ~26pt. That degradation is deliberate, consistent (the corner tile and the
- * edge strips clamp together inside fb_shadow, so no seam) and COUNTED
- * (fb_shadow_clamp_count in fb.h); shrinking the 100% shadow to protect a
- * 200% ceiling would be backwards. If HiDPI shadows ever matter more than
- * this, the ceiling itself (GFX_MASK_MAX) is the thing to raise.
- * DY is kept strictly less than BLUR on both sides so the top
- * edge (the blur-dy rows that clear the offset, see win_box below) never
- * closes to nothing the way it would if DY caught up to BLUR. */
-#define WSH_DY(f)    ((f) ? S(14) : S(3))
-#define WSH_BLUR(f)  ((f) ? S(32) : S(14))
-#define WSH_ALPHA(f) ((f) ? (g_ui_dark ? 165 : 95) : (g_ui_dark ? 90 : 40))
+/* THE WINDOW SHADOW IS TWO ol_display_shadow_ex LAYERS (wm_shadow.h): a key
+ * shadow (offset down, small sigma) and an ambient one (no offset, larger
+ * sigma, low alpha), sigma and offset scaled by S(). The presets and the
+ * footprint rule (3 sigma + |offset| + spread per side, wm_shadow_extent) live
+ * in that pure header; draw and damage both read it.
+ *
+ * HISTORY: this block used to explain a 72 px ceiling. That clamp was never in
+ * this file: it lives inside the legacy ol_display_shadow (corner tile
+ * blur+radius refused past GFX_MASK_MAX=72 device px, so fb_shadow silently
+ * tightened the 200% focused blur to ~26 pt). The WM now draws with
+ * ol_display_shadow_ex, whose analytic bands have no mask-budget clamp by
+ * construction, so a 200% shadow is the 100% one scaled by 2.
+ * ol_display_shadow itself is unchanged and still clamps for its other users.
+ * -DWM_SHADOW_LEGACY (tests/wm-shadow-adopt.mk guest control) restores the
+ * clamped fb_shadow call so the 200% check can be seen to fail. */
+static int wm_sh_ext(int kind)
+{
+    int e[4];
+    wm_shadow_extent(kind, fb_scale(), e);
+    return e[0];
+}
+#define WSH_EXT(f)  wm_sh_ext((f) ? WMSH_WIN_FOCUSED : WMSH_WIN_UNFOCUSED)
+
+static int g_ui_dark;   /* tentative: defined with the theme state below */
+
+/* Cast the two-layer shadow of `kind` under a box. `scale256` is the thumbnail
+ * scale (256 = full size) and `alpha` a 0..255 fade, both used by the animated
+ * path. Legacy mode draws the old single clamped fb_shadow instead. */
+static void wm_cast_shadow(int kind, int x, int y, int w, int h, int rad, int scale256, int alpha)
+{
+    int pct = fb_scale();
+#ifdef WM_SHADOW_LEGACY
+    const struct wm_shadow_layer *k = &wm_shadow_preset[kind][0], *am = &wm_shadow_preset[kind][1];
+    int sdy = wm_shadow_px(k->dy_pt, pct) * scale256 / 256, sbl = wm_shadow_px(2 * am->sigma_pt, pct) * scale256 / 256;
+    if (sbl < S(4)) sbl = S(4);
+    if (sdy < 1) sdy = 1;
+    if (sdy >= sbl) sdy = sbl - 1;
+    fb_shadow(x, y, w, h, rad, sdy, sbl,
+              (uint8_t)((g_ui_dark ? k->a_dark : k->a_light) * alpha / 255));
+#else
+    int r4[4] = { rad, rad, rad, rad };
+    for (int i = 0; i < WMSH_NLAYER; i++) {
+        const struct wm_shadow_layer *l = &wm_shadow_preset[kind][i];
+        int dy24, sig24, spr24;
+        wm_shadow_dev(l, pct, scale256, &dy24, &sig24, &spr24);
+        int a = (g_ui_dark ? l->a_dark : l->a_light) * alpha / 255;
+        if (a > 0)
+            ol_display_shadow_ex(fb_display_cur(), x, y, w, h, r4, 0, dy24, sig24, spr24, 0x000000, a, 0);
+    }
+#endif
+}
 
 /* A window's real footprint: its rectangle PLUS the drop shadow, taken at the
  * FOCUSED extent always -- a window that loses focus while moving must not
@@ -925,7 +956,7 @@ static int win_drawn_direct(const struct win *w, int x, int y, int ww, int wh, i
  * that caused it, in wm_anim_tick, and not left to this function to infer. */
 static void win_box(const struct win *w, struct drect *r)
 {
-    int b = WSH_BLUR(1) + 1, dy = WSH_DY(1);
+    int b = WSH_EXT(1), dy = 0;          /* the extent already includes the offset */
     int x, y, ww, wh, a;
     if (!win_draw_rect(w, &x, &y, &ww, &wh, &a)) { r->x0 = r->y0 = r->x1 = r->y1 = 0; return; }
     r->x0 = x - b;            r->y0 = y - b;
@@ -1010,7 +1041,7 @@ static void dirty_win(const struct win *w)
 /* THE SAME WINDOW, WITHOUT ITS SHADOW -- for the case where only its CONTENT
  * changed.
  *
- * win_box() inflates by WSH_BLUR(1)+1 on every side and WSH_DY(1) more at the
+ * win_box() inflates by wm_shadow_extent (WSH_EXT(1)) on every side, which already includes the offset, at the
  * bottom, and that inflation is REQUIRED whenever the window MOVES, RESIZES or
  * changes FOCUS: the shadow travels with the frame (or changes depth), so the
  * pixels it used to occupy have to be re-laid. It is required for NONE of that
@@ -1059,7 +1090,7 @@ static void dirty_win_content(const struct win *w)
      * greeter.c asks for a window as tall as the screen so the clamp always
      * fires.
      *
-     * win_box hid that: MBH - (WSH_BLUR(1) + 1) is negative at every UI scale,
+     * win_box hid that: MBH - WSH_EXT(1) is negative at every UI scale,
      * dirty_rect clamped it to 0, and the top strip was re-laid on every flush
      * by accident. Reporting the frame box honestly -- which is the whole point
      * of this function -- stops re-laying rows 0..MBH, and NOTHING repaints
@@ -1668,7 +1699,7 @@ static int min_prog(const struct win *w)
  * see wm_anim_tick for why a per-frame union is not sufficient on its own. */
 static void win_fly_sweep(const struct win *w, struct drect *r)
 {
-    int b = WSH_BLUR(1) + 1, dy = WSH_DY(1);
+    int b = WSH_EXT(1), dy = 0;
     struct drect ic;
     dock_icon_box(w->min_slot, &ic);
     r->x0 = w->x - b;             r->y0 = w->y - b;
@@ -4261,14 +4292,14 @@ static void dock_icon_box(int slot, struct drect *r)
 /* Same single-definition rule as WSH_* above: the dock's shadow is painted in
  * draw_dock and its extent is declared here, and if the two disagree a damage
  * rectangle clips the shadow in half. */
-#define DOCKSH_DY   S(6)
-#define DOCKSH_BLUR S(16)
+#define DOCKSH_DY   0                       /* wm_shadow_extent includes the offset */
+#define DOCKSH_BLUR wm_sh_ext(WMSH_DOCK)
 
 static void dock_panel_box(struct drect *r)
 {
     int x0, y0, dw, dh;
     dock_geom(&x0, &y0, &dw, &dh);
-    int b = DOCKSH_BLUR + 1;
+    int b = DOCKSH_BLUR;
     r->x0 = x0 - b;          r->y0 = y0 - b;
     r->x1 = x0 + dw + b;     r->y1 = y0 + dh + b + DOCKSH_DY;   /* + the drop shadow */
 }
@@ -4437,7 +4468,7 @@ static void draw_dock(void)
     /* Called "soft drop shadow" and it was neither: a solid black rounded slab
      * at a flat alpha 50, offset down S(7), with no falloff anywhere -- a hard
      * edge all the way round, under a panel translucent enough to show it. */
-    fb_shadow(dock_x0, dock_y0, dw, dh, S(28), DOCKSH_DY, DOCKSH_BLUR, 56);
+    wm_cast_shadow(WMSH_DOCK, dock_x0, dock_y0, dw, dh, S(28), 256, 255);
     /* Liquid Glass: frost + rim refraction + specular highlight + body tint */
     if (g_ui_dark) profiled_glass(dock_x0, dock_y0, dw, dh, S(DOCK_GLASS_PT), 26, 26, 34, 104);
     /* Light: not white. A white tint is "light glass" to the material's adaptive
@@ -4660,8 +4691,8 @@ static int overlay_button_at(int x, int y)
 /* The panel's shadow is part of what it paints, so it is part of what opening
  * and closing must repaint -- see dirty_menu_dropdown() for what leaving it
  * out did to the menus. */
-#define OVERLAY_SH_DY   S(10)
-#define OVERLAY_SH_BLUR S(28)
+#define OVERLAY_SH_DY   0
+#define OVERLAY_SH_BLUR wm_sh_ext(WMSH_OVERLAY)
 static void dirty_overlay(void)
 {
     struct drect p; overlay_box(&p);
@@ -4814,8 +4845,8 @@ static void menu_dropdown_box(struct drect *r)
  * and closing a menu is THIS box, not menu_dropdown_box() -- the panel alone
  * left each closed menu's shadow on the desktop as a dark streak under its
  * title (reported from `make run`, 2026-10-26). Same rule as sw_box(). */
-#define MENU_SH_DY   S(6)
-#define MENU_SH_BLUR S(16)
+#define MENU_SH_DY   0
+#define MENU_SH_BLUR wm_sh_ext(WMSH_MENU)
 static void dirty_menu_dropdown(void)
 {
     struct drect p; menu_dropdown_box(&p);
@@ -4961,7 +4992,7 @@ static void draw_menu_dropdown(void)
 {
     struct drect p; menu_dropdown_box(&p);
     int w = p.x1 - p.x0, h = p.y1 - p.y0;
-    fb_shadow(p.x0, p.y0, w, h, S(10), MENU_SH_DY, MENU_SH_BLUR, g_ui_dark ? 150 : 70);
+    wm_cast_shadow(WMSH_MENU, p.x0, p.y0, w, h, S(10), 256, 255);
     if (g_ui_dark) profiled_glass(p.x0, p.y0, w, h, S(DROPDOWN_GLASS_PT), 30, 30, 38, 165);
     else           profiled_glass(p.x0, p.y0, w, h, S(DROPDOWN_GLASS_PT), 250, 250, 255, 190);
 
@@ -5015,7 +5046,7 @@ static void draw_overlay_panel(void)
 {
     struct drect p; overlay_box(&p);
     int w = p.x1 - p.x0, h = p.y1 - p.y0;
-    fb_shadow(p.x0, p.y0, w, h, S(14), OVERLAY_SH_DY, OVERLAY_SH_BLUR, g_ui_dark ? 170 : 90);
+    wm_cast_shadow(WMSH_OVERLAY, p.x0, p.y0, w, h, S(14), 256, 255);
     if (g_ui_dark) profiled_glass(p.x0, p.y0, w, h, S(OVERLAY_GLASS_PT), 28, 28, 36, 195);
     else           profiled_glass(p.x0, p.y0, w, h, S(OVERLAY_GLASS_PT), 250, 250, 255, 210);
     uint32_t ink = g_ui_dark ? rgb(232, 233, 238) : rgb(40, 40, 48);
@@ -5096,8 +5127,9 @@ static void sw_box(struct drect *r)
     if (!g_sw.shown) { r->x0 = r->y0 = r->x1 = r->y1 = 0; return; }
     int c, x0, y0, w, h;
     sw_geom(&c, &x0, &y0, &w, &h);
-    r->x0 = x0 - S(40); r->y0 = y0 - S(40);            /* the shadow too */
-    r->x1 = x0 + w + S(40); r->y1 = y0 + h + S(40);
+    int eb = wm_sh_ext(WMSH_OVERLAY);                    /* the shadow too */
+    r->x0 = x0 - eb; r->y0 = y0 - eb;
+    r->x1 = x0 + w + eb; r->y1 = y0 + h + eb;
 }
 static void sw_glass_box(struct drect *r)
 {
@@ -5112,7 +5144,7 @@ static void draw_switcher(void)
 {
     int cell, x0, y0, w, h;
     sw_geom(&cell, &x0, &y0, &w, &h);
-    fb_shadow(x0, y0, w, h, S(18), S(10), S(28), g_ui_dark ? 170 : 90);
+    wm_cast_shadow(WMSH_OVERLAY, x0, y0, w, h, S(18), 256, 255);
     if (g_ui_dark) profiled_glass(x0, y0, w, h, S(OVERLAY_GLASS_PT), 28, 28, 36, 195);
     else           profiled_glass(x0, y0, w, h, S(OVERLAY_GLASS_PT), 250, 250, 255, 210);
     int isz = cell * 64 / 100;
@@ -5252,7 +5284,7 @@ static void draw_frame(struct win *w, int focused)
 {
     int x = w->x, y = w->y, ww = w->w, wh = w->h;
     if (!w->zoomed)                       /* a zoom fills the desktop: nothing to cast on */
-        fb_shadow(x, y, ww, wh, S(10), WSH_DY(focused), WSH_BLUR(focused), WSH_ALPHA(focused));
+        wm_cast_shadow(focused ? WMSH_WIN_FOCUSED : WMSH_WIN_UNFOCUSED, x, y, ww, wh, S(10), 256, 255);
     if (w->panel) return;                 /* a panel is its canvas and its shadow */
     uint8_t a = focused ? (g_ui_dark ? 150 : 104) : (g_ui_dark ? 180 : 140);
     /* Zoomed, the titlebar runs on from the menu bar edge to edge, so its top,
@@ -6014,11 +6046,7 @@ static void render_layers(const struct drect *R)
          * a quarter-size window is a smudge the width of the window itself.
          * win_box still declares the FULL-SIZE extent, so the damage is a
          * superset of what is painted -- over-reporting is only slow. */
-        int sdy = WSH_DY(focused) * sr / 256, sbl = WSH_BLUR(focused) * sr / 256;
-        if (sbl < S(4)) sbl = S(4);
-        if (sdy < 1) sdy = 1;
-        if (sdy >= sbl) sdy = sbl - 1;
-        fb_shadow(dx, dy, dw, dh, rad, sdy, sbl, (uint8_t)(WSH_ALPHA(focused) * alpha / 255));
+        wm_cast_shadow(focused ? WMSH_WIN_FOCUSED : WMSH_WIN_UNFOCUSED, dx, dy, dw, dh, rad, sr, alpha);
 
         /* Chrome strip, then content -- the same order draw_frame and
          * blit_content use, and for the same reason: the content owns every
