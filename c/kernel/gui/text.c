@@ -39,7 +39,9 @@ void *memcpy(void *, const void *, size_t);
  * font with Arabic and Hebrew, and we do not ship a second copy of it. Bold
  * Arabic therefore falls through to regular DejaVu, which is the same glyphs
  * at the wrong weight rather than no glyphs at all. */
-enum { F_UI = 0, F_MONO = 1, F_TEXT = 2, F_UI_B = 3, F_MONO_B = 4, NFONT = 5 };
+enum { F_UI = 0, F_MONO = 1, F_TEXT = 2, F_UI_B = 3, F_MONO_B = 4,
+       F_UI_M = 5, F_UI_S = 6, NFONT = 7 };   /* M = wght 500, S = wght 600 */
+/* fonts[] and font_ok[] are written only by text_init and read under text_lock. */
 static struct ttf_font fonts[NFONT];
 static int font_ok[NFONT];
 
@@ -81,6 +83,52 @@ void text_init(void)
     load_font("/fonts/ui-bold.ttf", F_UI_B);
     load_font("/fonts/mono-bold.ttf", F_MONO_B);
 #endif
+    /* Intermediate weights: same absence rule as the bold faces (a missing
+     * file just shortens the fallback chain, see tl_fonts). */
+    load_font("/fonts/ui-medium.ttf", F_UI_M);
+    load_font("/fonts/ui-semibold.ttf", F_UI_S);
+}
+
+/* --- CSS weight -> baked face slot ------------------------------------------
+ * The UI family is baked at 400, 500, 600 and 700. A weight 100..900 resolves
+ * to the nearest baked slot, ties going UP (450 -> 500, 550 -> 600, 650 -> 700;
+ * 100..449 -> 400, >= 650 -> 700). The resolved slot travels in the `face`
+ * mask: LOGIT_FACE_BOLD (slot 700), or a 2-bit field at TEXT_FACE_WSHIFT
+ * (1 = medium, 2 = semibold). Legacy callers pass 0..3 and never set the field,
+ * so their font set is unchanged. Mono is baked at 400 and 700 only. Italic is
+ * not offered (no ital axis in the vendored source).
+ *
+ * -DTEXT_WEIGHT_BOOL is the negative control's sabotage: any weight > 400 is
+ * simply bold, i.e. the old two-instance behaviour. */
+#define TEXT_FACE_WSHIFT 8
+#define TEXT_FACE_WMASK  (3u << TEXT_FACE_WSHIFT)
+
+int text_weight_slot(int weight)
+{
+    if (weight < 100) weight = 100;
+    if (weight > 900) weight = 900;
+#ifdef TEXT_WEIGHT_BOOL
+    return weight > 400 ? 700 : 400;
+#else
+    if (weight < 450) return 400;
+    if (weight < 550) return 500;
+    if (weight < 650) return 600;
+    return 700;
+#endif
+}
+
+/* Face mask for a (face, weight) pair; weight 0 keeps `face` (legacy run). */
+unsigned text_face_for_weight(unsigned face, int weight)
+{
+    if (weight <= 0) return face;
+    face &= LOGIT_FACE_MONO;
+    int slot = text_weight_slot(weight);
+    if (slot >= 700) return face | LOGIT_FACE_BOLD;
+    if (face & LOGIT_FACE_MONO)               /* mono: 400 or 700 only */
+        return slot >= 600 ? (face | LOGIT_FACE_BOLD) : face;
+    if (slot == 600) return face | (2u << TEXT_FACE_WSHIFT);
+    if (slot == 500) return face | (1u << TEXT_FACE_WSHIFT);
+    return face;
 }
 
 /* --- glyph cache (open addressing with hash-slot eviction) --- */
@@ -246,10 +294,13 @@ static void tl_fonts(struct shape_font_set *fs, int prefer, int face, int *map)
     static const int order_reg[3]       = { F_UI, F_TEXT, F_MONO };
     static const int order_bold[5]      = { F_UI_B, F_UI, F_TEXT, F_MONO_B, F_MONO };
     static const int order_bold_mono[5] = { F_MONO_B, F_MONO, F_UI_B, F_UI, F_TEXT };
+    static const int order_med[4]       = { F_UI_M, F_UI, F_TEXT, F_MONO };
+    static const int order_semi[4]      = { F_UI_S, F_UI_M, F_UI, F_TEXT };
     int bold = (face & LOGIT_FACE_BOLD) != 0;
-    const int *order = !bold ? order_reg
-                     : (face & LOGIT_FACE_MONO) ? order_bold_mono : order_bold;
-    int n = bold ? 5 : 3;
+    int ws = (face & LOGIT_FACE_MONO) ? 0 : (int)(((unsigned)face & TEXT_FACE_WMASK) >> TEXT_FACE_WSHIFT);
+    const int *order = bold ? ((face & LOGIT_FACE_MONO) ? order_bold_mono : order_bold)
+                     : ws == 2 ? order_semi : ws == 1 ? order_med : order_reg;
+    int n = bold ? 5 : ws ? 4 : 3;
     fs->n = 0;
     if (font_ok[prefer]) { map[fs->n] = prefer; fs->f[fs->n++] = &fonts[prefer]; }
     for (int i = 0; i < n && fs->n < SHAPE_MAX_FONTS; i++)
@@ -284,7 +335,12 @@ static void tl_fonts(struct shape_font_set *fs, int prefer, int face, int *map)
 static int face_font(int face)
 {
     if (face & LOGIT_FACE_BOLD) return (face & LOGIT_FACE_MONO) ? F_MONO_B : F_UI_B;
-    return (face & LOGIT_FACE_MONO) ? F_MONO : F_UI;
+    if (face & LOGIT_FACE_MONO) return F_MONO;
+    switch (((unsigned)face & TEXT_FACE_WMASK) >> TEXT_FACE_WSHIFT) {
+    case 1: return F_UI_M;
+    case 2: return F_UI_S;
+    default: return F_UI;
+    }
 }
 
 /* THE TEXT LOCK, AND WHY IT IS ONE LOCK AND NOT THREE.
