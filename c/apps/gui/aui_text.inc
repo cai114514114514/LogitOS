@@ -100,9 +100,7 @@ static int tx_metrics(int px, int face, int *asc, int *dsc)
     return 1;
 }
 
-/* ------------------------------------------------------ run2 + layout */
-
-/* ---------------------------------------------------------- weights (P1) */
+/* ------------------------------------------------ run2, weights (P1) */
 
 /* A CSS weight as the run2 field carries it: 0 stays 0 (the legacy call, bold
  * from the face bits), anything else is clamped to 100..900. */
@@ -160,6 +158,8 @@ void aui_text_draw_w(int x, int y, int px, int weight, unsigned color, const cha
 
 int aui_text_measure_w(const char *s, int px, int weight)
 { return text_measure_px(s, slen(s), px, tx_wface(weight)); }
+
+/* ---------------------------------------------------------------- layout */
 
 /* The one carets query (SYS_TEXT_MEASURE b = -2). Positions are DEVICE 24.8. */
 static int tx_carets_cb(void *ctx, const char *s, int len, int px, unsigned face,
