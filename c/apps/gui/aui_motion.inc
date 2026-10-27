@@ -230,39 +230,121 @@ int aui_anim(int key, int target, int ms, int curve)
 /* ---- aui_spring ----------------------------------------------------------
  * Same slot table, key space `key | AUI_KEY_SPRING`. dt is the frame clock's
  * delta (capped, so a window that slept for a minute does not integrate a
- * minute). Critical-ish damping (zeta 0.5): a visible overshoot that settles
- * in a few hundred ms. The slot is `arrived` once ol_spring256_step says
- * settled, which is also what stops it requesting frames. */
-#define AUI_SPRING_STIFF 900u
-#define AUI_SPRING_DAMP  7680u     /* Q8: 30/s, zeta 0.5 at omega 30/s */
+ * minute). The presets are design 3.8's (LOGIT_SPRINGS); aui_spring() is the
+ * snappy one (it replaces the old omega 30 / zeta 0.5, 900 / 7680). The slot is
+ * `arrived` once the spring settles by the DESIGN's rule (|x-target| < 0.25 pt
+ * and |v| < 0.5 pt/s, logit_spring_settled), at which point it snaps to the
+ * target and stops requesting frames. ol_spring256_step's own, stricter
+ * 1/256 rule still applies first, so a spring never settles later than it did. */
 #define AUI_SPRING_DT_MAX_MS 250u
 
-int aui_spring(int id, int target24)
+static void aui_spring_consts(enum aui_spring p, unsigned *k, unsigned *c)
+{
+    if ((unsigned)p >= AUI_SPRING_COUNT) p = AUI_SPRING_DEFAULT;
+    *k = LOGIT_SPRINGS[p].k; *c = LOGIT_SPRINGS[p].c_q8;
+#ifdef UI_MOTION_NEGCTL     /* negative control: bouncy critically damped (zeta 1.0) */
+    if (p == AUI_SPRING_BOUNCY) *c = 2u * 28u * 256u;     /* 2 zeta omega, omega 28 */
+#endif
+}
+
+static int iabs_i(int a) { return a < 0 ? -a : a; }
+
+/* One step of a live spring slot; sets s->arrived on settle. `coarse` widens the
+ * settle band to half a unit and 8 units/s: the press scale is a Q8 factor, so
+ * the design's 0.25 pt band would be a quarter of its last rounding step. */
+static void aui_spring_advance(struct anim_slot *s, int coarse)
+{
+    unsigned dt = frame_ms - s->last_ms;
+    if (dt > AUI_SPRING_DT_MAX_MS) dt = AUI_SPRING_DT_MAX_MS;
+    if (!ol_spring256_step(&s->sp, dt * 1000u)) { s->arrived = 1; return; }
+    /* v is 24.8 per ms; the design's rule is per second */
+    if (coarse ? (iabs_i(s->sp.x - s->sp.target) < 128 && iabs_i(s->sp.v * 1000) < 2048)
+               : logit_spring_settled(s->sp.x - s->sp.target, s->sp.v * 1000)) {
+        s->sp.x = s->sp.target; s->sp.v = 0; s->sp.xf = s->sp.vf = 0;
+        s->arrived = 1;
+    }
+}
+
+int32_t aui_spring_ex(int id, int32_t target24, enum aui_spring preset)
 {
     int wid = id_ctr, fresh = 0;
     struct anim_slot *s;
+    unsigned k, c;
     if (wid <= 0) return target24;
+    aui_spring_consts(preset, &k, &c);
     s = anim_slot_for(wid, id | AUI_KEY_SPRING, &fresh);
     if (fresh || anim_reduced) {
-        ol_spring256_init(&s->sp, target24, AUI_SPRING_STIFF, AUI_SPRING_DAMP);
+        ol_spring256_init(&s->sp, target24, k, c);
         s->arrived = 1; s->last_ms = frame_ms; s->gen = anim_gen;
         s->cur = target24;
         return target24;
     }
     s->gen = anim_gen;
+    s->sp.stiffness = (unsigned short)k; s->sp.damping_q8 = (unsigned short)c;
     if (target24 != s->sp.target) {
         ol_spring256_retarget(&s->sp, target24);
         s->arrived = 0;
     }
-    if (!s->arrived) {
-        unsigned dt = frame_ms - s->last_ms;
-        if (dt > AUI_SPRING_DT_MAX_MS) dt = AUI_SPRING_DT_MAX_MS;
-        if (!ol_spring256_step(&s->sp, dt * 1000u)) s->arrived = 1;
-    }
+    if (!s->arrived) aui_spring_advance(s, 0);
     s->last_ms = frame_ms;
     s->cur = s->sp.x;
     if (!s->arrived) anim_live++;
     return s->sp.x;
+}
+
+int aui_spring(int id, int target24) { return aui_spring_ex(id, target24, AUI_SPRING_DEFAULT); }
+
+/* ---- press scale ---------------------------------------------------------
+ * Key space `key | AUI_KEY_PRESS`. The value is the Q8 scale held in 24.8 (so
+ * the snappy release keeps sub-unit precision). Down: linear over T_PRESS from
+ * wherever the scale is to `down_q8` (s->from carries the start, s->t0 the leg
+ * start; s->to is the pressed flag). Up: snappy spring back to 1.0. Held at the
+ * bottom it asks for no frames. */
+#define AUI_KEY_PRESS 0x4000
+static int aui_press_scale(int id, int pressed, int down_q8)
+{
+    int wid = id_ctr, fresh = 0, rest = 256 << 8;
+    struct anim_slot *s;
+    pressed = pressed != 0;
+    if (wid <= 0) return pressed ? down_q8 : 256;
+    s = anim_slot_for(wid, id | AUI_KEY_PRESS, &fresh);
+    if (fresh || anim_reduced) {
+        ol_spring256_init(&s->sp, pressed ? down_q8 << 8 : rest,
+                          LOGIT_SPRINGS[AUI_SPRING_SNAPPY].k, LOGIT_SPRINGS[AUI_SPRING_SNAPPY].c_q8);
+        s->to = pressed; s->arrived = 1; s->gen = anim_gen; s->last_ms = frame_ms;
+        return pressed ? down_q8 : 256;
+    }
+    s->gen = anim_gen;
+    if (pressed != s->to) {
+        s->to = pressed; s->arrived = 0; s->t0 = frame_ms; s->last_ms = frame_ms;
+        s->from = s->sp.x;           /* where the scale is now, 24.8 */
+        if (!pressed) {              /* release: snappy from here, v = 0 */
+            ol_spring256_init(&s->sp, s->from, LOGIT_SPRINGS[AUI_SPRING_SNAPPY].k,
+                              LOGIT_SPRINGS[AUI_SPRING_SNAPPY].c_q8);
+            ol_spring256_retarget(&s->sp, rest);
+        }
+    }
+    if (!s->arrived) {
+        if (pressed) {
+            unsigned el = frame_ms - s->t0;
+            int to24 = down_q8 << 8;
+            if ((int)el >= T_PRESS) { s->sp.x = to24; s->arrived = 1; }
+            else s->sp.x = s->from + (int)((long long)(to24 - s->from) * (int)el / T_PRESS);
+        } else {
+            aui_spring_advance(s, 1);
+        }
+        s->last_ms = frame_ms;
+    }
+    if (!s->arrived) anim_live++;
+    return (s->sp.x + 128) >> 8;
+}
+int aui_press_scale_q8(int id, int pressed) { return aui_press_scale(id, pressed, LOGIT_PRESS_SCALE_Q8); }
+int aui_press_scale_dock_q8(int id, int pressed) { return aui_press_scale(id, pressed, LOGIT_PRESS_SCALE_DOCK_Q8); }
+
+int aui_stagger_ms(int index, int step_ms)
+{
+    if (anim_reduced || index <= 0 || step_ms <= 0) return 0;
+    return index * step_ms;
 }
 
 /* ---- aui_anim_color -------------------------------------------------------
@@ -296,6 +378,10 @@ uint32_t aui_anim_color(int id, uint32_t from, uint32_t to)
 }
 #else  /* instant, like aui_anim() in this build */
 int aui_spring(int id, int target24) { (void)id; return target24; }
+int32_t aui_spring_ex(int id, int32_t target24, enum aui_spring p) { (void)id; (void)p; return target24; }
+int aui_press_scale_q8(int id, int pressed) { (void)id; return pressed ? LOGIT_PRESS_SCALE_Q8 : 256; }
+int aui_press_scale_dock_q8(int id, int pressed) { (void)id; return pressed ? LOGIT_PRESS_SCALE_DOCK_Q8 : 256; }
+int aui_stagger_ms(int index, int step_ms) { (void)index; (void)step_ms; return 0; }
 uint32_t aui_anim_color(int id, uint32_t from, uint32_t to) { (void)id; (void)from; return to; }
 #endif
 
