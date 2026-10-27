@@ -56,9 +56,13 @@ for name in ('put','clear','fill_rect','fill_circle','round_rect','blit_glyph','
         depth+=(fb[end]=='{')-(fb[end]=='}');end+=1
     body=fb[start:end-1]
     if 'ol_display_' not in body or oldimpl.search(body):violations.append('drawing implementation returned to fb_'+name)
-wm=code((ROOT/'c/kernel/gui/wm.c').read_text())
-if re.search(r'\b(?:drow|back|cursor_plane)\s*\[[^;]*?\]\s*=(?!=)',wm):
-    violations.append('WM writes drawing pixels directly instead of SDK')
+# The window manager is wm.c plus one wm_<surface>.c per piece of chrome
+# (ui-wm-split): the rule holds for every one of them, not only the file that
+# used to hold it all.
+for wmf in sorted((ROOT/'c/kernel/gui').glob('wm*.c')):
+    wm=code(wmf.read_text())
+    if re.search(r'\b(?:drow|back|cursor_plane)\s*\[[^;]*?\]\s*=(?!=)',wm):
+        violations.append(f'{wmf.relative_to(ROOT)}: WM writes drawing pixels directly instead of SDK')
 report={'passed':not violations,'scope':'entry-point fence; not whole-system runtime acceptance',
         'exceptions':['early boot and panic emergency framebuffer output','display driver final pixel transfer'],
         'inventory':inventory,'violations':violations}
