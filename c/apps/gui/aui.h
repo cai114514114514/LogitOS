@@ -255,9 +255,6 @@ int  aui_height(void);
  * A 200x40 pt card with r=8 pushes 4 blits of 8x8 and 5 rects: nine syscalls,
  * ~256 blended pixels. */
 #include "aui_paint.h"
-/* The default button's face without a widget: for a caller that hit-tests
- * its own buttons (Finder's toolbar) and must look like aui_button(). */
-void aui_button_face(int x, int y, int w, int h, int radius);
 
 #include "aui_text.h"
 
@@ -268,34 +265,14 @@ void aui_button_face(int x, int y, int w, int h, int radius);
  * owns the pixels. The four-int (x,y,w,h) signatures of the three original
  * widgets are preserved exactly. */
 
-/* Buttons. aui_button keeps the original signature AND the original look
- * (a glass pill), so no existing app changes appearance. */
-int aui_button(int x, int y, int w, int h, const char *label);
-int aui_button_ex(int x, int y, int w, int h, const char *label,
-                  enum aui_variant v, int enabled);
-int aui_icon_button(int x, int y, int size, int icon, int enabled);
-/* A tooltip that appears next to the widget just drawn, if it is hovered. */
-void aui_tooltip(const char *s);
-
-int aui_checkbox(int x, int y, const char *label, int *state);
-int aui_checkbox_ex(int x, int y, const char *label, int *state, int enabled);
-/* Radio: `value` is this button's value; sets *group to it when chosen. */
-int aui_radio(int x, int y, const char *label, int *group, int value);
-/* An iOS-style switch. Returns 1 when it changed. */
-int aui_toggle(int x, int y, int *state, int enabled);
-
-/* Slider: value in [lo,hi]. Drags, clicks-to-position, and takes arrow keys
- * (and Home/End) when focused. Returns 1 when the value changed. */
-int aui_slider(int x, int y, int w, int *value, int lo, int hi);
-/* A determinate bar; pct 0..100. pct < 0 = indeterminate (animated stripe). */
-void aui_progress(int x, int y, int w, int pct);
-void aui_spinner(int cx, int cy, int radius);          /* animated busy ring */
-
-/* Text field. Full editing: caret, click-to-place, shift-select, drag-select,
- * Home/End/arrows, backspace/delete, and Ctrl+A. Returns 1 on Enter. */
-int aui_textfield(int x, int y, int w, char *buf, int cap);
-int aui_textfield_ex(int x, int y, int w, char *buf, int cap,
-                     const char *placeholder, int enabled);
+#include "aui_button.h"
+#include "aui_controls.h"
+#include "aui_fields.h"
+#include "aui_lists.h"
+#include "aui_overlay.h"
+#include "aui_nav.h"
+#include "aui_form.h"
+#include "aui_data.h"
 
 /* Rounded clips and opacity groups (GUI ABI v2 CLIP / GROUP; both fall back
  * without them). Every push needs its pop in the same frame; aui_end() closes
@@ -317,66 +294,6 @@ int  aui_clip_push_round(struct aui_rect r, int radius);
 void aui_clip_pop(void);
 void aui_fade_begin(struct aui_rect r, int alpha);
 void aui_fade_end(void);
-
-/* Scrollbar. `off` is the scroll offset in content units; returns 1 when the
- * offset changed (drag or click on the trough). Wheel belongs to the container. */
-int aui_scrollbar(int x, int y, int h, int *off, int content, int view);
-
-/* A clipped, scrollable container. Between begin and end, draw in CONTENT
- * coordinates -- aui translates and clips for you. Wheel movement uses the
- * OpenLogit transition sampler; *off always holds the displayed offset, so
- * existing visible-row culling remains valid. Keep off's address stable across
- * frames. Changes to *off and thumb drags take effect immediately.
- * The rightmost 12 points are reserved when an overflowing scrollbar fits.
- * Use aui_anim_due()/aui_anim_wait() in the event loop (as for other widgets).
- * Reduce Motion skips interpolation; inactive/absent containers request no wakes.
- *
- *     static int sc;
- *     aui_scroll_begin(x, y, w, h, &sc, content_h);
- *     for (i...) aui_label(0, i*20, item[i], AUI_TEXT);
- *     aui_scroll_end();
- */
-void aui_scroll_begin(int x, int y, int w, int h, int *off, int content_h);
-/* The same, clipped to the container's rounded corners (`radius` points; the
- * side that carries the scrollbar stays square). Up to 8 containers nest. */
-void aui_scroll_begin_round(int x, int y, int w, int h, int *off, int content_h, int radius);
-void aui_scroll_end(void);
-
-/* Lists and tables. `items` is an array of `n` NUL-terminated strings; `cols`
- * an array of `ncol` header names with `widths` in points. Returns the row
- * index that was activated (clicked or Enter'd), or -1. Arrow keys move the
- * selection when the list has focus. */
-int aui_list(int x, int y, int w, int h, const char *const *items, int n,
-             int *sel, int *scroll);
-int aui_table(int x, int y, int w, int h, const char *const *cols,
-              const int *widths, int ncol,
-              const char *const *cells, int nrow, int *sel, int *scroll);
-
-/* Tabs / segmented control: `*sel` is the chosen index. Returns 1 on change. */
-int aui_tabs(int x, int y, int w, const char *const *items, int n, int *sel);
-int aui_segmented(int x, int y, int w, int h, const char *const *items, int n, int *sel);
-
-/* Dropdown. Draws closed; when open it defers its popup to aui_end() so the
- * list paints over everything else in the frame. Returns 1 on a new choice. */
-int aui_select(int x, int y, int w, const char *const *items, int n, int *sel);
-
-/* A menu bar: `titles` across the top, each opening `items[i]` (a NULL-
- * terminated array of NUL-terminated strings; "-" is a separator). Writes the
- * chosen menu index into *mi and the item index into *ii, and returns 1. */
-int aui_menubar(int x, int y, int w, const char *const *titles,
-                const char *const *const *items, int n, int *mi, int *ii);
-
-/* Modal dialog. Returns 1 while it is open; draw its content between the two
- * calls, in dialog-local coordinates. The scrim swallows clicks behind it. */
-int  aui_dialog_begin(const char *title, int w, int h);
-void aui_dialog_end(void);
-/* The standard footer: buttons right-aligned. Returns the index pressed, or -1.
- * Enter picks item 0 (the default), Escape picks the last one (the cancel). */
-int  aui_dialog_buttons(const char *const *labels, int n);
-
-/* A coloured status pill. */
-void aui_badge(int x, int y, const char *s, unsigned color);
-void aui_separator(int x, int y, int w);
 
 /* ------------------------------------------------------------------ focus --
  * Tab / Shift+Tab walk the focusable widgets in the order they were drawn;

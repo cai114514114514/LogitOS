@@ -403,7 +403,6 @@ void aui_fill_a(int x, int y, int w, int h, unsigned color, int alpha)
 
 void aui_hairline(int x, int y, int w) { aui_fill(x, y, w, 1, AUI_BORDER); }
 void aui_vhairline(int x, int y, int h) { aui_fill(x, y, 1, h, AUI_BORDER); }
-void aui_separator(int x, int y, int w) { aui_hairline(x, y, w); }
 
 static int clamp_radius(int w, int h, int r)
 {
