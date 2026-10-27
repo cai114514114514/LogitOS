@@ -199,6 +199,15 @@ static int g_ad_prev_w, g_ad_prev_h;   /* canvas size the PREV array was built a
  * instead of it, so an app's own hint can never make aui's chrome (a status
  * bar redrawn via aui_fill, say) go unreported. */
 static int g_ad_extra_have, g_ad_ex0, g_ad_ey0, g_ad_ex1, g_ad_ey1;
+/* Opacity groups (aui_fade_begin): the children are drawn at FULL opacity, so
+ * a fade that only moves the group alpha leaves every ad_record() entry
+ * byte-identical. The groups are therefore diffed on their own, rect + alpha,
+ * and a changed one reaches the flush set through ad_add_halo (ad_finish). */
+#define AD_GMAX 8
+struct ad_grp { int x, y, w, h; unsigned sig; };
+static struct ad_grp ad_gbufA[AD_GMAX], ad_gbufB[AD_GMAX];
+static struct ad_grp *g_ad_gprev = ad_gbufA, *g_ad_gcur = ad_gbufB;
+static int g_ad_gprev_n, g_ad_gcur_n;
 
 /* FNV-1a, 32-bit -- the same hash browser_paint.c's pd_item_sig() uses, for
  * the same reason: cheap, and collisions only ever make the diff report a
@@ -225,6 +234,14 @@ static void ad_record(int x, int y, int w, int h, unsigned sig)
     if (g_ad_cur_n >= AD_MAX) { g_ad_overflow = 1; return; }
     struct ad_ent *e = &g_ad_cur[g_ad_cur_n++];
     e->x = x; e->y = y; e->w = w; e->h = h; e->sig = sig;
+}
+
+static void ad_note_group(int x, int y, int w, int h, int alpha)
+{
+    if (w <= 0 || h <= 0) return;
+    if (g_ad_gcur_n >= AD_GMAX) { g_ad_overflow = 1; return; }
+    struct ad_grp *g = &g_ad_gcur[g_ad_gcur_n++];
+    g->x = x; g->y = y; g->w = w; g->h = h; g->sig = (unsigned)alpha;
 }
 
 static void ad_note_clear(unsigned color)
@@ -358,6 +375,26 @@ static void ad_finish(void)
             }
         }
     }
+    if (can_diff) {
+        int gn = g_ad_gprev_n > g_ad_gcur_n ? g_ad_gprev_n : g_ad_gcur_n;
+        int hl[4] = { 0, 0, 0, 0 };
+        hl[0] = hl[1] = hl[2] = hl[3] = ad_halo_stroke(2);       /* the composite's AA edge */
+        for (int i = 0; i < gn; i++) {
+            int inp = i < g_ad_gprev_n, inc = i < g_ad_gcur_n;
+            const struct ad_grp *a = inp ? &g_ad_gprev[i] : 0, *b = inc ? &g_ad_gcur[i] : 0;
+            if (a && b && a->x == b->x && a->y == b->y && a->w == b->w && a->h == b->h &&
+                a->sig == b->sig)
+                continue;
+            int x0 = a ? a->x : b->x, y0 = a ? a->y : b->y;
+            int x1 = a ? a->x + a->w : b->x + b->w, y1 = a ? a->y + a->h : b->y + b->h;
+            if (a && b) {
+                x0 = imin(a->x, b->x); y0 = imin(a->y, b->y);
+                x1 = imax(a->x + a->w, b->x + b->w); y1 = imax(a->y + a->h, b->y + b->h);
+            }
+            ad_add_halo(&g_ad, x0, y0, x1 - x0, y1 - y0, hl[0], hl[1], hl[2], hl[3]);
+            any = 1;
+        }
+    }
     if (g_ad_extra_have)
         ad_union(&any, g_ad_ex0, g_ad_ey0, g_ad_ex1, g_ad_ey1);
 
@@ -384,6 +421,8 @@ static void ad_finish(void)
      * into an actual memcpy() call this file cannot link. */
     struct ad_ent *t = g_ad_prev; g_ad_prev = g_ad_cur; g_ad_cur = t;
     g_ad_prev_n = g_ad_cur_n; g_ad_cur_n = 0;
+    struct ad_grp *gt = g_ad_gprev; g_ad_gprev = g_ad_gcur; g_ad_gcur = gt;
+    g_ad_gprev_n = g_ad_gcur_n; g_ad_gcur_n = 0;
     g_ad_prev_w = win_w; g_ad_prev_h = win_h;
     g_ad_have_prev = 1;
     g_ad_overflow = 0;
@@ -591,10 +630,33 @@ static int ox_, oy_;                          /* current translation, points */
 static unsigned frame_ms;
 
 
-/* clip stack (the kernel has one clip rect per surface, so aui keeps the stack
- * and pushes the intersection) */
-static struct aui_rect clipst[8];
-static int clipn;
+/* clip stack. The kernel has one clip rect per surface, so aui keeps the stack
+ * and pushes the intersection (the local rect also feeds clip_has() and the
+ * scroll viewports). When the kernel reports LOGIT_GUI2_F_CLIP the level is
+ * ALSO a kernel level (SYS_GUI_CLIP_PUSH, which intersects with what is in
+ * force and, with a radius, clips to the rounded rect), and then it is the
+ * ONLY thing that sets the kernel clip: a gui_clip() from inside such a level
+ * would overwrite the rounded layer's clip. A level the kernel refused
+ * (OL_LIMIT) falls back to gui_clip() like a kernel without the call. */
+#define CLIP_MAX 16
+static struct aui_rect clipst[CLIP_MAX];
+static unsigned char clipv2[CLIP_MAX];      /* 1: this level is a kernel CLIP level */
+static int clipn, clip_over;                /* clip_over: pushes refused for depth, popped silently */
+
+/* GUI ABI v2 levels aui has open (clip and group, kernel order). */
+static unsigned char cgs[32];
+static int cgn;
+enum { CG_CLIP = 1, CG_GROUP = 2 };
+static unsigned cg_leaks;                   /* levels found open at a frame boundary */
+static int cg_caps = -1;                    /* -1 not asked this frame */
+static int cg_has(unsigned bits)
+{
+    if (cg_caps < 0) {
+        long i = ol_gui2_info(0);
+        cg_caps = i > 0 ? (int)(i & 0xFFFF) : 0;
+    }
+    return ((unsigned)cg_caps & bits) == bits;
+}
 
 static void clip_apply(void)
 {
@@ -613,13 +675,107 @@ static struct aui_rect clip_intersect(struct aui_rect r)
     }
     return r;
 }
+/* r: absolute window points; rad[4]: TL TR BR BL in points (all 0 = square). */
+static void clip_push_r4(struct aui_rect r, const int rad[4])
+{
+    if (clipn >= CLIP_MAX) { clip_over++; return; }
+    struct aui_rect lr = clip_intersect(r);
+    int v2 = 0;
+    if (cg_has(LOGIT_GUI2_F_CLIP) && cgn < 32 && r.w >= 0 && r.h >= 0) {
+        struct logit_clip2 c;
+        c.x = r.x * 256; c.y = r.y * 256; c.w = r.w * 256; c.h = r.h * 256;
+        for (int k = 0; k < 4; k++) c.radius[k] = (rad[k] > 0 ? rad[k] : 0) * 256;
+        c.flags = 0;
+        if (ol_window_clip_push2(&c) == OL_OK) { v2 = 1; cgs[cgn++] = CG_CLIP; }
+    }
+    clipst[clipn] = lr;
+    clipv2[clipn] = (unsigned char)v2;
+    clipn++;
+    if (!v2) clip_apply();
+}
 static void clip_push(struct aui_rect r)
 {
-    r = clip_intersect(r);
-    if (clipn < 8) clipst[clipn++] = r;
-    clip_apply();
+    static const int sq[4] = { 0, 0, 0, 0 };
+    clip_push_r4(r, sq);
 }
-static void clip_pop(void) { if (clipn) clipn--; clip_apply(); }
+static void clip_pop(void)
+{
+    if (clip_over) { clip_over--; return; }
+    if (!clipn) { clip_apply(); return; }
+    clipn--;
+    if (clipv2[clipn]) {
+        if (cgn > 0 && cgs[cgn - 1] == CG_CLIP) cgn--;
+        ol_window_clip_pop2();
+    } else clip_apply();
+}
+
+/* Opacity groups. aui_fade_begin() opens a kernel group at `alpha` when it can;
+ * otherwise (no GROUP bit, OL_LIMIT, nesting past 8) the level is a LEGACY fade:
+ * fade_leg carries the alpha the widget must apply itself by mixing colours (255
+ * when a real group, or no fade, is in force), which is exactly what the widgets
+ * did before groups existed. -DAUI_FADE_LEGACY_MIX forces that path: the
+ * negative control of tests/aui-clip-group-adopt.mk. */
+#define FADE_MAX 8
+#define AUI_DISABLED_ALPHA 110          /* a disabled control's group opacity */
+static struct { unsigned char kind; int prev_leg; } fadest[FADE_MAX];   /* kind 0 noop 1 group 2 legacy */
+static int faden, fade_over;
+static int fade_leg = 255;
+
+/* Opens a fade over r (absolute window points). Returns 1 when a kernel group
+ * was opened, 0 when the caller must mix (legacy) or nothing is needed. */
+static int fade_open(struct aui_rect r, int alpha, int allow_legacy)
+{
+    if (alpha > 255) alpha = 255;
+    if (alpha < 0) alpha = 0;
+    if (faden >= FADE_MAX) { fade_over++; return 0; }
+    int k = faden++;
+    fadest[k].prev_leg = fade_leg;
+    fadest[k].kind = 0;
+    if (alpha >= 255) return 0;
+#ifdef AUI_FADE_LEGACY_MIX
+    (void)r;
+#else
+    if (cg_has(LOGIT_GUI2_F_GROUP) && cgn < 32 && r.w >= 0 && r.h >= 0) {
+        struct logit_group2 g;
+        g.x = r.x * 256; g.y = r.y * 256; g.w = r.w * 256; g.h = r.h * 256;
+        g.radius[0] = g.radius[1] = g.radius[2] = g.radius[3] = 0;
+        g.opacity = alpha;
+        g.flags = 0;
+        if (ol_window_group_begin2(&g) == OL_OK) {
+            fadest[k].kind = 1;
+            cgs[cgn++] = CG_GROUP;
+            ad_note_group(r.x, r.y, r.w, r.h, alpha);
+            return 1;
+        }
+    }
+#endif
+    if (allow_legacy) { fadest[k].kind = 2; fade_leg = fade_leg * alpha / 255; }
+    return 0;
+}
+static void fade_close(void)
+{
+    if (fade_over) { fade_over--; return; }
+    if (!faden) return;
+    faden--;
+    if (fadest[faden].kind == 1) {
+        if (cgn > 0 && cgs[cgn - 1] == CG_GROUP) cgn--;
+        ol_window_group_end2();
+    }
+    fade_leg = fadest[faden].prev_leg;
+}
+
+/* Close whatever a frame left open, innermost first (the kernel would do the
+ * same at the flush and count it: SYS_GUI2_INFO a=1). `count`: it is a leak. */
+static void cg_close_all(int count)
+{
+    if (count && (clipn || faden || clip_over || fade_over || cgn)) cg_leaks++;
+    while (cgn > 0) {
+        if (cgs[cgn - 1] == CG_GROUP) ol_window_group_end2(); else ol_window_clip_pop2();
+        cgn--;
+    }
+    clipn = 0; clip_over = 0; faden = 0; fade_over = 0; fade_leg = 255;
+}
+
 static int clip_has(int x, int y)
 {
     if (!clipn) return 1;
@@ -691,6 +847,20 @@ static int foc_ids[128], foc_n;
 static int *rg_ptr, rg_lo, rg_hi, rg_lo_a, rg_hi_a;
 
 #include "aui_paint.inc"
+
+/* ---- public clip / fade API (needs X_/Y_ from aui_paint.inc) ---- */
+void aui_clip_pop(void) { clip_pop(); }
+int aui_clip_push_round(struct aui_rect r, int radius)
+{
+    int rad[4];
+    rad[0] = rad[1] = rad[2] = rad[3] = radius > 0 ? radius : 0;
+    int before = cgn;
+    clip_push_r4(aui_r(X_(r.x), Y_(r.y), r.w, r.h), rad);
+    return cgn > before;                /* 1: a rounded kernel clip is in force */
+}
+void aui_fade_begin(struct aui_rect r, int alpha)
+{ fade_open(aui_r(X_(r.x), Y_(r.y), r.w, r.h), alpha, 1); }
+void aui_fade_end(void) { fade_close(); }
 
 #include "aui_text.inc"
 
@@ -942,7 +1112,7 @@ void aui_begin(unsigned bg)
     anim_gen++;
     anim_live = 0; anim_loop_want = 0;
     if (anim_armed) { anim_frames_n++; anim_armed = 0; }
-    id_ctr = 0; foc_n = 0; clipn = 0; ox_ = oy_ = 0;
+    id_ctr = 0; foc_n = 0; clipn = 0; clip_over = 0; ox_ = oy_ = 0;
     in_dialog = 0; in_popup = 0; dlg_open_now = 0;
     in.hot = 0;
     wbb_next = aui_r(0, 0, 0, 0);
@@ -950,7 +1120,9 @@ void aui_begin(unsigned bg)
     /* Reset THIS frame's flush-diff recording (section 5a-flush). g_ad_prev /
      * g_ad_prev_n are last frame's data and must survive into this frame's
      * ad_finish() -- only the CUR side resets. */
-    g_ad_cur_n = 0; g_ad_overflow = 0; g_ad_extra_have = 0;
+    g_ad_cur_n = 0; g_ad_gcur_n = 0; g_ad_overflow = 0; g_ad_extra_have = 0;
+    cg_close_all(0);
+    cg_caps = -1;                       /* the kernel's answer is asked once per frame */
     gui_clip(0, 0, 0, 0);
     gui_clear(bg);
 #ifdef AUI_COST
@@ -1039,6 +1211,7 @@ static void ck_report(void)
  * fully drawn" and "hand it to the compositor". */
 static void ae_common(void)
 {
+    cg_close_all(1);                       /* a frame must balance its levels */
     ox_ = oy_ = 0; clipn = 0; gui_clip(0, 0, 0, 0);
     in_popup = 1;
     draw_popup();
@@ -1154,6 +1327,8 @@ int aui_button_ex(int x, int y, int w, int h, const char *label, enum aui_varian
     struct wres r = wpoll(id, wx, wy, w, h, enabled, 1);
     int rad = imin(h / 2, AUI_R_MD + 3);
     unsigned fill, fg = AUI_TEXT;
+    int off = (r.st & AUI_OFF) != 0;
+    int vst = r.st & ~AUI_OFF;
 
     switch (v) {
     case AUI_V_PRIMARY:
@@ -1172,18 +1347,25 @@ int aui_button_ex(int x, int y, int w, int h, const char *label, enum aui_varian
     case AUI_V_GLASS:
         fill = 0; break;
     default:
-        fill = face_for(r.st); break;
+        fill = face_for(vst); break;
     }
-    if (r.st & AUI_OFF) { fill = AUI_DISABLED; fg = AUI_DISABLED_TX; }
+    /* A disabled control is its ENABLED look drawn in an opacity group
+     * (AUI_DISABLED_ALPHA), so what is behind it shows through. Without groups
+     * it keeps the flat disabled tones. */
+    int dfade = 0;
+    if (off) {
+        dfade = fade_open(aui_r(wx, wy, w, h), AUI_DISABLED_ALPHA, 0);
+        if (!dfade) { fill = AUI_DISABLED; fg = AUI_DISABLED_TX; }
+    }
 
-    if (v == AUI_V_GLASS && !(r.st & AUI_OFF)) {
+    if (v == AUI_V_GLASS && (!off || dfade)) {
         /* Still called GLASS -- every aui_button() caller asks for it -- but
          * drawn as button_face(); see there for why. */
-        button_face(x, y, w, h, imin(h / 2, 11), face_for(r.st));
+        button_face(x, y, w, h, imin(h / 2, 11), face_for(vst));
     } else if (v == AUI_V_GHOST) {
         if (r.st & AUI_ACTIVE)      aui_round_a(x, y, w, h, rad, AUI_ACCENT, 52);
         else if (r.st & AUI_HOVER)  aui_round_a(x, y, w, h, rad, AUI_ACCENT, 26);
-        if (r.st & AUI_OFF) fg = AUI_DISABLED_TX;
+        if (off && !dfade) fg = AUI_DISABLED_TX;
     } else {
         /* A control face is a gradient, not a flat fill: a single flat tone with
          * a hard edge is most of what "1998" looks like. Two steps of tone plus
@@ -1195,6 +1377,7 @@ int aui_button_ex(int x, int y, int w, int h, const char *label, enum aui_varian
 
     int lw = tw(label);
     txt(x + (w - lw) / 2, y + (h - PX) / 2 - 1, fg, label);
+    if (off) fade_close();
     return r.clicked;
 }
 
@@ -1249,14 +1432,20 @@ static void draw_tip(void)
     if (y + h > win_h) y = tip_last_y - h - 6;
     if (x < 2) x = 2;
     if (y < 2) y = 2;
-    /* No alpha channel on aui_shadow/aui_text_sz, so the fade is the same
-     * faux-alpha trick focus_ring uses: mix the drawn colour toward the
-     * background as `t` climbs, which reaches the true colour exactly at
-     * t=255 and is invisible against it at t=0. Geometry never moves. */
+    /* The fade is one opacity group over the tooltip and its shadow when the
+     * kernel has groups (the children are then drawn at full strength). Without
+     * one it is the old faux alpha: fade_leg is `t`, and the colour is mixed
+     * toward the background as it climbs -- true colour exactly at 255, invisible
+     * at 0. Geometry never moves. */
     unsigned bg = aui_is_dark() ? rgb(70, 72, 84) : rgb(48, 50, 60);
-    aui_shadow_ex(x, y, w, h, AUI_R_SM, 3, 10, (aui_is_dark() ? 120 : 55) * t / 255);
-    aui_round_a(x, y, w, h, AUI_R_SM, bg, t);
-    aui_text_sz(x + pad, y + pad - 1, tip_last_text, aui_mix(bg, rgb(250, 250, 252), t), px);
+    int hl[4];
+    ad_halo_shadow(0, 3, 10, 0, hl);
+    fade_open(aui_r(x - hl[0], y - hl[1], w + hl[0] + hl[2], h + hl[1] + hl[3]), t, 1);
+    int tt = fade_leg;
+    aui_shadow_ex(x, y, w, h, AUI_R_SM, 3, 10, (aui_is_dark() ? 120 : 55) * tt / 255);
+    aui_round_a(x, y, w, h, AUI_R_SM, bg, tt);
+    aui_text_sz(x + pad, y + pad - 1, tip_last_text, aui_mix(bg, rgb(250, 250, 252), tt), px);
+    fade_close();
 }
 
 /* The checkmark of an 18-point box at (x,y): one 2-point stroked polyline with
@@ -1763,7 +1952,7 @@ int aui_scrollbar(int x, int y, int h, int *off, int content, int view)
 static struct {
     int x, y, w, h, sx, sy, state, show_bar;
     int *off, content;
-} scr[4];
+} scr[8];
 static int scrn, scr_skip;
 
 static struct scroll_slot *scroll_slot_for(int *off)
@@ -1781,10 +1970,13 @@ static struct scroll_slot *scroll_slot_for(int *off)
 }
 
 void aui_scroll_begin(int x, int y, int w, int h, int *off, int content_h)
+{ aui_scroll_begin_round(x, y, w, h, off, content_h, 0); }
+
+void aui_scroll_begin_round(int x, int y, int w, int h, int *off, int content_h, int radius)
 {
     /* A rejected nested begin still has a matching end. Without this balance
-     * the fifth container used to pop the fourth one's clip and origin. */
-    if (scr_skip || scrn >= 4 || w <= 0 || h <= 0 || !off) { scr_skip++; return; }
+     * the ninth container used to pop the eighth one's clip and origin. */
+    if (scr_skip || scrn >= 8 || w <= 0 || h <= 0 || !off) { scr_skip++; return; }
     int wx = X_(x), wy = Y_(y), maxo = content_h > h ? content_h - h : 0;
     /* Tiny containers still clip and scroll; only the thumb is omitted when
      * its gutter/track cannot fit. Skipping begin would leave child drawing
@@ -1818,7 +2010,13 @@ void aui_scroll_begin(int x, int y, int w, int h, int *off, int content_h)
     scrn++;
     /* Wheel hit testing includes the gutter; content clipping excludes it. */
     s->viewport = clip_intersect(aui_r(wx, wy, w, h));
-    clip_push(aui_r(wx, wy, show_bar ? w - 12 : w, h));
+    {
+        /* The container's own corners; the gutter side stays square when a bar
+         * is there (its thumb is drawn outside the clip). */
+        int rr = radius > 0 ? imin(radius, imin(w, h) / 2) : 0;
+        int rad[4] = { rr, show_bar ? 0 : rr, show_bar ? 0 : rr, rr };
+        clip_push_r4(aui_r(wx, wy, show_bar ? w - 12 : w, h), rad);
+    }
     ox_ = wx; oy_ = wy - *off;
 }
 
@@ -2077,8 +2275,12 @@ static void draw_popup(void)
         }
     }
 
-    /* Same faux-alpha mix as focus_ring/draw_tip for the border, since
-     * aui_stroke has no alpha parameter. */
+    /* One opacity group when the kernel has them; otherwise the same faux-alpha
+     * mix as draw_tip (fade_leg = t), since aui_stroke has no alpha parameter. */
+    int hl[4];
+    ad_halo_shadow(0, 3, 10, 0, hl);
+    fade_open(aui_r(x - hl[0], y - hl[1], pop.w + hl[0] + hl[2], h + hl[1] + hl[3]), t, 1);
+    t = fade_leg;
     aui_shadow_ex(x, y, pop.w, h, AUI_R_MD, 3, 10, (aui_is_dark() ? 120 : 55) * t / 255);
     aui_round_a(x, y, pop.w, h, AUI_R_MD, AUI_SURFACE_2, t);
     aui_stroke(x, y, pop.w, h, AUI_R_MD, 1, aui_mix(AUI_SURFACE_2, AUI_BORDER, t));
@@ -2092,6 +2294,7 @@ static void draw_popup(void)
         aui_text_ellipsis(x + AUI_SP(2), iy + (pop.itemh - PX) / 2 - 1, pop.w - AUI_SP(5),
                           pop.items[i], aui_mix(AUI_SURFACE_2, i == pop.hi ? AUI_ACCENT_TEXT : AUI_TEXT, t), PX);
     }
+    fade_close();
     if (pop.kind == 1 && in.ev == EV_MOUSE) {
         if (hit >= 0) { *pop.sel = hit; pop_changed_id = pop.owner; }
         pop.kind = 0;                       /* a click anywhere closes it */
@@ -2156,6 +2359,7 @@ static struct { int x, y, w, h; } dlg;
  * dossier's DISMISS rule -- so there is nothing to animate on the way out. */
 static unsigned dlg_last_gen;   /* anim_gen this ran at, last time; 0 = never */
 static unsigned dlg_t0;         /* frame_ms when the CURRENT entrance began   */
+static int dlg_fade;            /* aui_dialog_begin opened a fade level that aui_dialog_end closes */
 
 int aui_dialog_begin(const char *title, int w, int h)
 {
@@ -2174,6 +2378,10 @@ int aui_dialog_begin(const char *title, int w, int h)
     int rise = 12 * (256 - e) / 256;
 
     aui_fill_a(0, 0, win_w, win_h, AUI_SCRIM, scrim_a);       /* the scrim */
+    /* The sheet (shadow, panel, title and, until aui_dialog_end, its content)
+     * fades in as one group. Without groups it only rises, as before. */
+    fade_open(aui_r(x - 40, y + rise - 40, w + 80, h + th + 80), 255 * e / 256, 0);
+    dlg_fade = 1;
     aui_shadow(x, y + rise, w, h + th, AUI_R_XL, AUI_ELEV_3);
     aui_round(x, y + rise, w, h + th, AUI_R_XL, AUI_SURFACE_2);
     aui_stroke(x, y + rise, w, h + th, AUI_R_XL, 1, AUI_BORDER);
@@ -2188,6 +2396,7 @@ void aui_dialog_end(void)
 {
     ox_ = 0; oy_ = 0;
     clip_pop();
+    if (dlg_fade) { dlg_fade = 0; fade_close(); }
     in_dialog = 0;
 }
 
