@@ -211,11 +211,24 @@ def dock_icon_of(name, dock):
 # Derived from the same invocations that write the headers (Makefile, APP_RULE
 # and the terminal/preview/browser/gallery_hidden rules):
 APP_TITLES = {
-    "clock": "Clock", "textedit": "TextEdit", "monitor": "Monitor",
-    "terminal": "Terminal", "widgets": "Widgets", "files": "Finder",
-    "preview": "Preview", "studio": "Code Studio", "browser": "Browser",
-    "gallery": "Gallery", "settings": "Settings",
-    "assistant": "Tasks",          # tests/agent.mk: mkaex.py ... Tasks
+    # (identity name printed by `[wm] launched`, [window title if different],
+    #  Chinese display name from c/include/ui/logit_apps.h / design 3.6).
+    # Element 0 is NEVER flipped: it is the mkaex identity that launch_app()
+    # waits for. Window matching accepts EVERY element, which is what lets the
+    # app items rename their windows one at a time (design P13, ui-qmp-kit).
+    "clock": ("Clock", "时钟"),
+    "textedit": ("TextEdit", "文本编辑"),
+    "monitor": ("Monitor", "Activity Monitor", "活动监视器"),
+    "terminal": ("Terminal", "终端"),
+    "widgets": ("Widgets", "小组件"),
+    "files": ("Finder", "文件管理"),
+    "preview": ("Preview", "预览"),
+    "studio": ("Code Studio", "代码工作室"),
+    "browser": ("Browser", "浏览器"),
+    "gallery": ("Gallery", "组件库"),
+    "settings": ("Settings", "设置"),
+    "assistant": ("Tasks", "Logit Assistant", "Logit 助手"),
+    "ch": ("Chat", "对话"),
 }
 
 LAUNCH_RE = re.compile(r"\[wm\] launched (.+)")
@@ -224,17 +237,120 @@ LAUNCH_RE = re.compile(r"\[wm\] launched (.+)")
 FOCUS_RE = re.compile(r"\[wm\] launch: already live, focusing")
 
 
-def title_of(name):
-    """The display name the guest will print when it launches `name`."""
+def _key(name):
     key = name.lower()
     if key.endswith(".aex"):
         key = key[:-4]
+    return key
+
+
+def title_of(name):
+    """The identity name the guest prints when it launches `name` (element 0)."""
+    key = _key(name)
     if key not in APP_TITLES:
         raise AssertionError(
             "no display name for %r in qmp_ui.APP_TITLES -- add the row the "
             "Makefile's mkaex.py call writes (and qmp_dock_map.py clicks it "
             "once, so the row is checked against the machine)" % name)
-    return APP_TITLES[key]
+    return APP_TITLES[key][0]
+
+
+def titles_of(name):
+    """EVERY name a window of app `name` may carry (identity, English, Chinese).
+
+    `name` may be an app stem ("files"), a .aex file, or any one title of a
+    row ("Finder", "文件管理"). An unknown name comes back as a 1-tuple so
+    callers can pass free-form titles ("", "Sign in") straight through."""
+    key = _key(name)
+    if key in APP_TITLES:
+        return tuple(APP_TITLES[key])
+    for row in APP_TITLES.values():
+        if name in row:
+            return tuple(row)
+    return (name,)
+
+
+WINLINE_RE = re.compile(
+    r"\[wm\] win (\d+) frame (-?\d+) (-?\d+) (-?\d+) (-?\d+) "
+    r"content (-?\d+) (-?\d+) pt zoom (\d+) min (\d+) (.*)")
+WINAPP_RE = re.compile(r"\[wm\] win (\d+) app (\S+)")
+
+
+def parse_windows(text):
+    """Latest state of every window from serial text, keyed by slot.
+
+    Entry: x y w h cw ch zoom min title slot seq (log line of the newest report), `app` (stem from an optional
+    `[wm] win N app <stem>` line, else None). `cw ch` are the content origin
+    in screen points (the frame line's `content cx cy pt`)."""
+    out = {}
+    apps = {}
+    for seq, line in enumerate(text.splitlines()):
+        m = WINLINE_RE.search(line)
+        if m:
+            g = m.groups()
+            n = int(g[0])
+            out[n] = dict(x=int(g[1]), y=int(g[2]), w=int(g[3]), h=int(g[4]),
+                          cw=int(g[5]), ch=int(g[6]),
+                          zoom=int(g[7]), min=int(g[8]), title=g[9].strip(),
+                          app=apps.get(n), slot=n, seq=seq)
+            continue
+        m = WINAPP_RE.search(line)
+        if m:
+            n = int(m.group(1))
+            apps[n] = m.group(2)
+            if n in out:
+                out[n]["app"] = m.group(2)
+            continue
+        if "[wm] win " in line and " gone" in line:
+            try:
+                n = int(line.split("[wm] win ")[1].split()[0])
+            except (IndexError, ValueError):
+                continue
+            out.pop(n, None)
+            apps.pop(n, None)
+    return out
+
+
+def _windows_from(source):
+    if isinstance(source, dict):
+        return source
+    if hasattr(source, "serial_text"):
+        return parse_windows(source.serial_text())
+    if isinstance(source, str) and "\n" not in source and os.path.exists(source):
+        with open(source, errors="replace") as fh:
+            return parse_windows(fh.read())
+    return parse_windows(str(source))
+
+
+def window_of(name, source, skip=(), newest=False):
+    """The window belonging to app `name` (lowest slot, or the most recently reported if `newest`).
+
+    `source`: serial-log path, serial text, a Session, or a windows dict.
+    A window belongs to the app when its `[wm] win N app <stem>` line names
+    the stem (preferred; ui-wm-split), else when its title starts with ANY
+    element of titles_of(name). `skip` lists app names whose windows are
+    ignored. Returns None when nothing matches."""
+    wins = _windows_from(source)
+    key = _key(name)
+    names = [t for t in titles_of(name) if t]
+    known = key in APP_TITLES
+    skipped = [t for sk in skip for t in titles_of(sk)]
+    found = None
+    for w in wins.values():
+        hit = any(w["title"].startswith(t) for t in names)
+        if known and w.get("app") is not None:
+            hit = w["app"] == key        # the WM's own account beats the title
+        if hit and not any(w["title"].startswith(t) for t in skipped):
+            if not newest:
+                return w
+            if found is None or w.get("seq", 0) >= found.get("seq", 0):
+                found = w
+    return found
+
+
+def title_matches(title, name):
+    """True when a window title (or switcher entry) belongs to app `name`."""
+    return any(title.startswith(t) for t in titles_of(name) if t)
 
 
 # The cursor's outline colour, from draw_cursor_back() in c/kernel/gui/wm.c. The
@@ -544,6 +660,10 @@ class Session:
     def dock_icon_of(self, name, timeout=30.0):
         """Centre of `name`'s dock tile, slot and app-count both from the guest."""
         return dock_icon_of(name, self.dock(timeout))
+
+    def window_of(self, name, skip=(), newest=False):
+        """window_of(name, <this guest's serial>): see the module function."""
+        return window_of(name, self, skip=skip, newest=newest)
 
     def serial_text(self):
         """The whole serial log so far, or "" if this session has none."""
