@@ -10,6 +10,9 @@ struct ol3d_context {
     int active, error;
     struct ol3d_stats stats;
 };
+int ols_run_lod(const struct ol_shader_program *, const float input[][4], unsigned inputs,
+                const struct ol3d_bindings *, struct ols_output *, const float (*ddx)[4],
+                const float (*ddy)[4]);
 struct vertex {
     float p[4], v[OL3D_MAX_VARYINGS][4];
 };
@@ -205,6 +208,9 @@ static int raster(struct ol3d_context *c, const struct vertex tri[3], const stru
         bottom = c->height;
     int tl0 = top_left(&v[1], &v[2]), tl1 = top_left(&v[2], &v[0]), tl2 = top_left(&v[0], &v[1]);
     double inv_area = 1.0 / (double)area;
+    int want_lod = 0;
+    for (unsigned i = 0; i < draw->bindings.texture_count && draw->bindings.textures; i++)
+        want_lod |= draw->bindings.textures[i].mip_filter != OL3D_MIP_NONE;
     for (int y = top; y < bottom; y++)
         for (int x = left; x < right; x++) {
             int64_t px = x * 256 + 128, py = y * 256 + 128;
@@ -230,9 +236,41 @@ static int raster(struct ol3d_context *c, const struct vertex tri[3], const stru
                     input[j][k] = (wa * v[0].source->v[j][k] + wb * v[1].source->v[j][k] +
                                    wd * v[2].source->v[j][k]) /
                                   den;
+            /* 2x2 quad: varyings at the x+1 / y+1 neighbours (extrapolated outside the
+             * triangle, perspective-correct) give the deltas TEX2D turns into a LOD. */
+            float dx[OL3D_MAX_VARYINGS][4], dy[OL3D_MAX_VARYINGS][4];
+            int have_lod = 0;
+            if (want_lod) {
+                float nb[2][OL3D_MAX_VARYINGS][4];
+                have_lod = 1;
+                for (int n = 0; n < 2 && have_lod; n++) {
+                    int64_t qx = px + (n ? 0 : 256), qy = py + (n ? 256 : 0);
+                    float qa = (float)(edge(&v[1], &v[2], qx, qy) * inv_area),
+                          qb = (float)(edge(&v[2], &v[0], qx, qy) * inv_area),
+                          qd = (float)(edge(&v[0], &v[1], qx, qy) * inv_area);
+                    float qwa = qa * v[0].invw, qwb = qb * v[1].invw, qwd = qd * v[2].invw,
+                          qden = qwa + qwb + qwd;
+                    if (qden <= 0 || !isfinite(qden)) {
+                        have_lod = 0;
+                        break;
+                    }
+                    for (unsigned j = 0; j < draw->pipeline.varying_count; j++)
+                        for (int k = 0; k < 4; k++)
+                            nb[n][j][k] = (qwa * v[0].source->v[j][k] +
+                                           qwb * v[1].source->v[j][k] +
+                                           qwd * v[2].source->v[j][k]) /
+                                          qden;
+                }
+                for (unsigned j = 0; j < draw->pipeline.varying_count && have_lod; j++)
+                    for (int k = 0; k < 4; k++) {
+                        dx[j][k] = nb[0][j][k] - input[j][k];
+                        dy[j][k] = nb[1][j][k] - input[j][k];
+                    }
+            }
             struct ols_output output;
-            int status = ols_run(draw->pipeline.pixel, input, draw->pipeline.varying_count,
-                                 &draw->bindings, &output);
+            int status = ols_run_lod(draw->pipeline.pixel, input, draw->pipeline.varying_count,
+                                     &draw->bindings, &output, have_lod ? dx : 0,
+                                     have_lod ? dy : 0);
             if (status)
                 return status;
             c->stats.shaded_pixels++;
