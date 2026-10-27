@@ -949,9 +949,57 @@ static void win_box(const struct win *w, struct drect *r)
  * never once failed, which is not evidence of anything. */
 #define WM_DAMAGE_LIE 0
 
+/* The title-bar strip of a window drawn scaled into dw x dh (scale dw / w->w):
+ * render_layers' animated path draws the chrome above it and the canvas below. */
+static int win_anim_tbh(const struct win *w, int dw, int dh)
+{
+    int sr = w->w > 0 ? dw * 256 / w->w : 256;      /* thumbnail scale, /256 */
+    int tbh_s = win_tbh(w) * sr / 256;
+    if (tbh_s < 1 && !w->panel) tbh_s = 1;
+    if (tbh_s > dh) tbh_s = dh;
+    return tbh_s;
+}
+
+/* WHERE A WINDOW'S BACKDROP REGIONS ARE DRAWN THIS FRAME (wm_backdrop.c), or 0
+ * when it draws none: no region, not on screen, or a path with no region
+ * composite -- a canvas a size behind its frame (the stretched mid-resize
+ * blit) or an opaque scaled thumbnail. A window at its own frame places its
+ * canvas 1:1 below the title bar; a FADING one (open pop, dock fly, Expose
+ * fade) places it scaled into the thumbnail's content rect. The renderer,
+ * dmg_expand, par_nocut, dirty_win and opaque_content_start all ask this one
+ * function, so what is damaged, kept whole by the band splitter and refused
+ * as cover is exactly what is drawn. */
+static int win_bd_place(const struct win *w, struct wm_bd_place *pl)
+{
+    int x, y, ww, wh, a;
+    if (!w->used || !w->surf.px || !wm_backdrop_any((int)(w - wins))) return 0;
+    if (!win_draw_rect(w, &x, &y, &ww, &wh, &a)) return 0;
+    if (win_drawn_direct(w, x, y, ww, wh, a)) {
+        int tbh = win_tbh(w);
+        if (w->surf.w != w->w || w->surf.h != w->h - tbh) return 0;
+        *pl = (struct wm_bd_place){ w->x, w->y + tbh, w->surf.w, w->surf.h,
+                                    w->surf.w, w->surf.h };
+        return 1;
+    }
+    if (a >= 255) return 0;
+    int tbh_s = win_anim_tbh(w, ww, wh);
+    if (wh - tbh_s <= 0 || ww <= 0) return 0;
+    *pl = (struct wm_bd_place){ x, y + tbh_s, w->surf.w, w->surf.h, ww, wh - tbh_s };
+    return 1;
+}
+
 static void dirty_win(const struct win *w)
 {
     struct drect r; win_box(w, &r);
+    /* A backdrop region's material samples a halo around it that can reach
+     * past the shadow margin (a THICK or ULTRA blur): the footprint is the
+     * window PLUS every region's sample extent, so a move damages the old and
+     * the new extent (win_set_frame calls this before and after). */
+    struct wm_bd_place bpl;
+    struct drect bx;
+    if (win_bd_place(w, &bpl) &&
+        wm_backdrop_extent((int)(w - wins), &bpl, wm_reduce_transparency, &bx))
+        rect_or(&r, &bx);
 #if WM_DAMAGE_LIE
     r.x1 = r.x0 + (r.x1 - r.x0) / 2;
     r.y1 = r.y0 + (r.y1 - r.y0) / 2;
@@ -2157,15 +2205,31 @@ static void content_group_end(struct ol_display_group *g)
 /* blit_content for a window at its own frame (x, y, ww, wh), clipped to the
  * damage rect R: a rect that is inside the canvas and clear of every corner
  * square (wm_cover_ok) needs no group and takes the plain blit. */
+/*
+ * BACKDROP REGIONS (wm_backdrop.c): a window with regions in R draws, inside the
+ * same corner group, first each region's material over the layers already
+ * composited beneath it, then its canvas with the marked pixels skipped -- the
+ * glass behind, the app's ink on top, both clipped to the rounded shape. */
 static void blit_content_rounded(const struct drect *R, struct win *w, int x, int y, int ww, int wh)
 {
     int tbh = win_tbh(w), r = win_corner_r(w);
     unsigned fl = win_cover_flags(w);
     struct ol_display_group g;
     int open = 0;
+    struct wm_bd_place pl;
+    int bd = win_bd_place(w, &pl) && pl.ox == x && pl.oy == y + tbh &&
+             pl.dw == ww && pl.dh == wh - tbh;
     if (r > 0 && w->surf.px && !wm_cover_ok(R, x, y, ww, wh, tbh, r, fl))
         open = content_group_begin(&g, x, y + tbh, ww, wh - tbh, r, fl);
-    blit_content(w, x, y + tbh, ww, wh - tbh);
+    if (bd) {
+        if (w->drawing) __atomic_fetch_add(&perf_torn, 1, __ATOMIC_RELAXED);   /* as blit_content */
+        struct ol_pixel_target src = { .px = w->surf.px, .w = w->surf.w, .h = w->surf.h };
+        int slot = (int)(w - wins);
+        wm_backdrop_composite_at(R, slot, &pl, fb_display_cur());
+        wm_backdrop_blit_content(R, slot, x, y + tbh, fb_display_cur(), &src);
+    } else {
+        blit_content(w, x, y + tbh, ww, wh - tbh);
+    }
     if (open) content_group_end(&g);
 }
 
@@ -2961,7 +3025,10 @@ static long wm_gui_dispatch(long num, long a, long b, long c)
     }
     case SYS_GUI_CLEAR: {
         struct win *w = app_window(ap); if (!w) return -1;
-        fb_target(&w->surf); fb_clear((uint32_t)a); fb_target(NULL);
+        /* & 0xFFFFFF (wm_app_rgb): the high byte is the backdrop ink mask's,
+         * and ol_display_clear stores the value unchanged -- 0x01xxxxxx would
+         * forge LOGIT_BACKDROP_MARK. Same for every raw colour below. */
+        fb_target(&w->surf); fb_clear(wm_app_rgb((uint32_t)a)); fb_target(NULL);
         return 0;
     }
     case SYS_GUI_RECT: {
@@ -2979,7 +3046,7 @@ static long wm_gui_dispatch(long num, long a, long b, long c)
          * freezing the machine for seconds per call. Intersect with the surface. */
         if (rw > w->surf.w - x) rw = w->surf.w - x;
         if (rh > w->surf.h - y) rh = w->surf.h - y;
-        fb_target(&w->surf); fb_fill_rect(x, y, rw, rh, (uint32_t)c); fb_target(NULL);
+        fb_target(&w->surf); fb_fill_rect(x, y, rw, rh, wm_app_rgb((uint32_t)c)); fb_target(NULL);
         return 0;
     }
     case SYS_GUI_RRECT: {
@@ -2992,7 +3059,7 @@ static long wm_gui_dispatch(long num, long a, long b, long c)
          * behind the syscall gate) */
         if (rw > w->surf.w - x) rw = w->surf.w - x;
         if (rh > w->surf.h - y) rh = w->surf.h - y;
-        fb_target(&w->surf); fb_round_rect(x, y, rw, rh, radius, (uint32_t)LOGIT_GUI_RRECT_C_COLOR(c)); fb_target(NULL);
+        fb_target(&w->surf); fb_round_rect(x, y, rw, rh, radius, wm_app_rgb((uint32_t)LOGIT_GUI_RRECT_C_COLOR(c))); fb_target(NULL);
         return 0;
     }
     case SYS_GUI_TEXT: {
@@ -3002,13 +3069,13 @@ static long wm_gui_dispatch(long num, long a, long b, long c)
         if (user_copy_string(text, sizeof text, (const char *)c) < 0) return -1;
         /* fb_text picks up the scaled UI size itself (fb_ui_px), so the glyphs
          * are re-rasterized larger, not blown up. */
-        fb_target(&w->surf); fb_text(x, y, text, (uint32_t)b); fb_target(NULL);
+        fb_target(&w->surf); fb_text(x, y, text, wm_app_rgb((uint32_t)b)); fb_target(NULL);
         return 0;
     }
     case SYS_GUI_TEXT_MONO: {
         struct win *w = app_window(ap); if (!w) return -1;
         int x = S(LOGIT_GUI_TEXT_MONO_A_X(a)), y = S(LOGIT_GUI_TEXT_MONO_A_Y(a));
-        int cell = S(LOGIT_GUI_TEXT_MONO_B_CELL(b)); uint32_t color = (uint32_t)LOGIT_GUI_TEXT_MONO_B_COLOR(b);
+        int cell = S(LOGIT_GUI_TEXT_MONO_B_CELL(b)); uint32_t color = wm_app_rgb((uint32_t)LOGIT_GUI_TEXT_MONO_B_COLOR(b));
         char text[USER_TEXT_MAX];
         if (user_copy_string(text, sizeof text, (const char *)c) < 0) return -1;
         /* The GLYPH size scales with the cell. Scaling only the cell would space
@@ -3032,7 +3099,7 @@ static long wm_gui_dispatch(long num, long a, long b, long c)
         }
         /* Icons are vector paths in a 0..100 box, so a scaled px is a genuinely
          * re-rasterized icon: the one place where "retina" costs nothing at all. */
-        fb_target(&w->surf); icon_draw(id, x, y, px, (uint32_t)c); fb_target(NULL);
+        fb_target(&w->surf); icon_draw(id, x, y, px, wm_app_rgb((uint32_t)c)); fb_target(NULL);
         return 0;
     }
     case SYS_GUI_GLASS: {
@@ -3285,7 +3352,7 @@ static long wm_gui_dispatch(long num, long a, long b, long c)
          * that packed a 2 into it must not smuggle bold in through the field
          * that does not mean bold. */
         int face = (r.mono ? LOGIT_FACE_MONO : 0) | (r.bold ? LOGIT_FACE_BOLD : 0);
-        text_draw_run(S(r.x), S(r.y), tmp, len, S(r.px), face, r.color);
+        text_draw_run(S(r.x), S(r.y), tmp, len, S(r.px), face, wm_app_rgb(r.color));
         fb_target(NULL);
         return 0;
     }
@@ -5761,6 +5828,16 @@ static int dmg_expand(struct drect *r, int n)
                 if (!win_glass_box(&wins[order[k]], &p)) continue;
                 rect_or_glass_input(&r[i], p, S(TITLE_GLASS_PT), &grew);
             }
+            for (int k = 0; k < norder; k++) {           /* each window's backdrop regions */
+                /* The same rule as every panel above: a region frosts the
+                 * layers beneath its window, so a rectangle touching its
+                 * sample box grows to the whole region plus halo
+                 * (ol_display_glass_sample_halo_ex of its material). */
+                struct wm_bd_place bpl;
+                if (win_bd_place(&wins[order[k]], &bpl) &&
+                    wm_backdrop_dmg_grow(&r[i], order[k], &bpl, wm_reduce_transparency, W, H))
+                    grew = 1;
+            }
         }
         for (int i = 0; i < n; i++)
             for (int j = i + 1; j < n; )
@@ -5828,7 +5905,11 @@ static int opaque_content_start(const struct drect *R)
             !win_drawn_direct(w, x, y, ww, wh, alpha) ||
             w->surf.w != ww || w->surf.h != wh - win_tbh(w))
             continue;
-        if (wm_cover_ok(R, x, y, ww, wh, win_tbh(w), win_corner_r(w), win_cover_flags(w)))
+        /* ...and never where it shows a backdrop region: the material there
+         * is drawn from the layers beneath (wm_cover.h). */
+        struct wm_bd_place bpl;
+        if (wm_cover_ok(R, x, y, ww, wh, win_tbh(w), win_corner_r(w), win_cover_flags(w)) &&
+            (!win_bd_place(w, &bpl) || wm_backdrop_cover_ok(R, order[i], &bpl)))
             return i;
     }
     return -1;
@@ -5945,9 +6026,7 @@ static void render_layers(const struct drect *R)
          * rects ABUT and do not overlap, so with a fade every pixel is blended
          * exactly once; overlapping them would blend the seam rows twice and
          * show a darker band that gets darker as the window fades. */
-        int tbh_s = win_tbh(w) * sr / 256;
-        if (tbh_s < 1 && !w->panel) tbh_s = 1;
-        if (tbh_s > dh) tbh_s = dh;
+        int tbh_s = win_anim_tbh(w, dw, dh);
         struct surface *cs = win_chrome_strip(w, focused);
         if (cs) {
             if (alpha >= 255) wm_scaled_blit(dx, dy, dw, tbh_s, cs);
@@ -5962,6 +6041,12 @@ static void render_layers(const struct drect *R)
                 int gr = win_corner_r(w) ? rad : 0, open = 0;
                 if (gr > 0 && !wm_cover_ok(R, dx, dy + tbh_s, dw, dh - tbh_s, 0, gr, win_cover_flags(w)))
                     open = content_group_begin(&g, dx, dy + tbh_s, dw, dh - tbh_s, gr, win_cover_flags(w));
+                /* Backdrop regions, scaled, inside the group. The fade below
+                 * blends the whole canvas over them -- it does not test the
+                 * marker (a documented limitation, wm_backdrop.c). */
+                struct wm_bd_place bpl;
+                if (win_bd_place(w, &bpl))
+                    wm_backdrop_composite_at(R, order[i], &bpl, fb_display_cur());
                 anim_blit_fade(R, dx, dy + tbh_s, dw, dh - tbh_s, &w->surf, alpha);
                 if (open) content_group_end(&g);
             }
@@ -6187,7 +6272,10 @@ static void par_start(void)
 
 /* Glass sample extents (the rows no band boundary may fall inside) for the
  * panels that horizontally meet R -- the same panels and the same halo
- * dmg_expand protects, asked of the same functions. */
+ * dmg_expand protects, asked of the same functions -- and for every window's
+ * backdrop regions, which frost the layers beneath their window exactly as WM
+ * glass does (wm_bands_nocut_add is the one rule for both). */
+#define PAR_NOCUT_MAX (5 + MAXWIN * (1 + LOGIT_BACKDROP_MAX))
 static int par_nocut(const struct drect *R, struct wm_yrange *nc, int max)
 {
     int n = 0;
@@ -6195,9 +6283,8 @@ static int par_nocut(const struct drect *R, struct wm_yrange *nc, int max)
 #define PAR_ADD(radius) do { \
         int halo_ = wm_reduce_transparency ? 0 : \
             ol_display_glass_sample_halo(p.x1 - p.x0, p.y1 - p.y0, (radius)); \
-        if (p.x1 + halo_ > R->x0 && p.x0 - halo_ < R->x1 && \
-            p.y1 + halo_ > R->y0 && p.y0 - halo_ < R->y1 && n < max) { \
-            nc[n].y0 = p.y0 - halo_; nc[n].y1 = p.y1 + halo_; n++; } } while (0)
+        n = wm_bands_nocut_add(nc, n, max, p.x0, p.y0, p.x1, p.y1, halo_, \
+                               R->x0, R->y0, R->x1, R->y1); } while (0)
     menubar_box(&p);        PAR_ADD(S(MENU_GLASS_PT));
     dock_panel_box(&p);     PAR_ADD(S(DOCK_GLASS_PT));
     if (g_menu_open >= 0) { menu_dropdown_box(&p); PAR_ADD(S(DROPDOWN_GLASS_PT)); }
@@ -6206,6 +6293,11 @@ static int par_nocut(const struct drect *R, struct wm_yrange *nc, int max)
     for (int k = 0; k < norder; k++)
         if (win_glass_box(&wins[order[k]], &p)) PAR_ADD(S(TITLE_GLASS_PT));
 #undef PAR_ADD
+    for (int k = 0; k < norder; k++) {
+        struct wm_bd_place bpl;
+        if (win_bd_place(&wins[order[k]], &bpl))
+            n = wm_backdrop_nocut(order[k], &bpl, wm_reduce_transparency, R, nc, n, max);
+    }
     return n;
 }
 
@@ -6281,7 +6373,7 @@ static int par_render(const struct drect *r, int n)
      * dock's glass); finer bands let whoever finishes early take another. */
     int nb = 0, want = 2 * (par_nw + 1);
     for (int k = 0; k < n; k++) {
-        struct wm_yrange nc[4 + MAXWIN];
+        struct wm_yrange nc[PAR_NOCUT_MAX];
         int nn = par_nocut(&r[k], nc, (int)(sizeof nc / sizeof nc[0]));
         struct wm_band b[WM_BAND_MAX];
         int m = (r[k].y1 - r[k].y0 >= 128) ?
