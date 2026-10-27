@@ -135,6 +135,44 @@ int gfx_paint_image(struct gfx_paint *p, const unsigned char *rgba,
 
 /* ------------------------------------------------------------ span paint -- */
 
+/* op != 0: blend modes and Porter-Duff operators (gfx_blend.h). Kept out of the
+ * src-over loops below so op 0 pays one branch per row and nothing per pixel.
+ * A gradient or image row writes src-over onto a transparent staging chunk, which
+ * leaves exactly (paint colour, paint alpha * coverage) per covered pixel; each
+ * of those is then composed onto the real row. The staging pointer is biased so
+ * the row helpers' absolute `drow + x*4` addressing lands inside the chunk. */
+#define GFX_OP_CHUNK 64
+
+static void gfx_paint_row_op(const struct gfx_paint *p, unsigned char *drow, int y,
+                             int x0, int x1, const unsigned char *cov, int cov_ox)
+{
+    enum gfx_op op = (enum gfx_op)p->op;
+    if (p->kind == GFX_SOLID) {
+        int a = p->alpha * p->global_alpha / 255;
+        for (int x = x0; x < x1; x++) {
+            int c = cov[x - cov_ox];
+            /* CLEAR and friends act with a transparent source too, so no a == 0 skip */
+            if (c) gfx_compose(op, drow + x * 4, p->color & 0xFFFFFF, a, c);
+        }
+        return;
+    }
+    unsigned char stage[GFX_OP_CHUNK * 4];
+    for (int cx = x0; cx < x1; cx += GFX_OP_CHUNK) {
+        int ce = cx + GFX_OP_CHUNK < x1 ? cx + GFX_OP_CHUNK : x1;
+        gfx_zero(stage, (ce - cx) * 4);
+        unsigned char *bias = (unsigned char *)((uintptr_t)stage - (uintptr_t)cx * 4);
+        if (p->kind == GFX_LINEAR)      gfx_gradient_linear_row(p, bias, y, cx, ce, cov, cov_ox);
+        else if (p->kind == GFX_RADIAL) gfx_gradient_radial_row(p, bias, y, cx, ce, cov, cov_ox);
+        else if (p->kind == GFX_IMAGE)  gfx_image_row(p, bias, y, cx, ce, cov, cov_ox);
+        else return;
+        for (int x = cx; x < ce; x++) {
+            const unsigned char *q = stage + (x - cx) * 4;
+            if (!cov[x - cov_ox]) continue;
+            gfx_compose(op, drow + x * 4, GFX_RGB(q[0], q[1], q[2]), q[3], 255);
+        }
+    }
+}
+
 void gfx_paint_row(const struct gfx_paint *p, struct gfx_surface *dst, int y,
                    int x0, int x1, const unsigned char *cov, int cov_ox)
 {
@@ -145,6 +183,8 @@ void gfx_paint_row(const struct gfx_paint *p, struct gfx_surface *dst, int y,
     if (x1 <= x0) return;
     unsigned char *drow = dst->px + (long)y * dst->stride;
     int ga = p->global_alpha;
+
+    if (p->op) { gfx_paint_row_op(p, drow, y, x0, x1, cov, cov_ox); return; }
 
     if (p->kind == GFX_SOLID) {
         int r = GFX_R(p->color), g = GFX_G(p->color), b = GFX_B(p->color);

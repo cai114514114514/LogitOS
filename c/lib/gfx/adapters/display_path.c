@@ -28,6 +28,48 @@ static int dp_scissor(const struct ol_display *d, int *x0, int *y0, int *x1, int
     return *x0 < *x1 && *y0 < *y1;
 }
 
+/* op != 0 on an opaque packed target: the destination is read as straight RGBA with
+ * alpha 255 and composed with gfx_compose (gfx_blend.h). Gradients and images are
+ * sampled into a transparent RGBA row first (src-over onto alpha 0 leaves paint
+ * colour and paint alpha * coverage), then each covered pixel is composed. */
+static void dp_row_op(struct ol_display *d, uint32_t *drow, int y, int x0, int x1,
+                      const unsigned char *cov, int cx, const struct gfx_paint *p,
+                      unsigned char *rgba)
+{
+    enum gfx_op op = (enum gfx_op)p->op;
+    int solid = p->kind == GFX_SOLID;
+    int a = p->alpha * p->global_alpha / 255;
+    if (!solid) {
+        int any = 0;
+        for (int x = x0; x < x1; x++) {
+            unsigned char *q = rgba + x * 4;
+            q[0] = q[1] = q[2] = q[3] = 0;
+            if (cov[x - cx]) any = 1;
+        }
+        if (!any) return;
+        if (p->kind == GFX_LINEAR)      gfx_gradient_linear_row(p, rgba, y, x0, x1, cov, cx);
+        else if (p->kind == GFX_RADIAL) gfx_gradient_radial_row(p, rgba, y, x0, x1, cov, cx);
+        else if (p->kind == GFX_IMAGE)  gfx_image_row(p, rgba, y, x0, x1, cov, cx);
+    }
+    for (int x = x0; x < x1; x++) {
+        int c = cov[x - cx];
+        if (!c) continue;
+        uint32_t px = drow[x];
+        unsigned char q[4];
+        q[0] = (unsigned char)((px >> d->rpos) & 255);
+        q[1] = (unsigned char)((px >> d->gpos) & 255);
+        q[2] = (unsigned char)((px >> d->bpos) & 255);
+        q[3] = 255;
+        if (solid) {
+            gfx_compose(op, q, p->color & 0xFFFFFF, a, c);
+        } else {
+            const unsigned char *s = rgba + x * 4;
+            gfx_compose(op, q, GFX_RGB(s[0], s[1], s[2]), s[3], 255);
+        }
+        drow[x] = display_rgb(d, q[0], q[1], q[2]);
+    }
+}
+
 /* Composite one coverage row (cov[0] is display x `cx`) over [x0,x1) of row y. */
 static void dp_row(struct ol_display *d, int y, int x0, int x1,
                    const unsigned char *cov, int cx,
@@ -40,6 +82,7 @@ static void dp_row(struct ol_display *d, int y, int x0, int x1,
     gfx_paint_solid(&solid, p->kind == GFX_SOLID ? p->color : p->stop[0].color, 255);
     p = &solid;
 #endif
+    if (p->op) { dp_row_op(d, drow, y, x0, x1, cov, cx, p, rgba); return; }
     if (p->kind == GFX_SOLID) {
         /* single pass straight on the packed pixels: no RGBA row round trip */
         int r = GFX_R(p->color), g = GFX_G(p->color), b = GFX_B(p->color);
