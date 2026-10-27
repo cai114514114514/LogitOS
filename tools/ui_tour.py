@@ -111,7 +111,7 @@ class Lock:
                 self.held.append(path)
                 return
             except FileExistsError:
-                time.sleep(20)
+                time.sleep(3)
 
     def acquire(self):
         if not self.enabled:
