@@ -4,6 +4,11 @@
 #ifndef AUI_MOTION_H
 #define AUI_MOTION_H
 
+/* The design's motion tokens (design 3.8): spring presets, timed curves, press
+ * scales. A relative include, because the host harnesses that unity-include
+ * aui.c do not all carry -Ic/include. Freestanding, header-only, no float. */
+#include "../../include/ui/logit_motion.h"
+
 /* ==========================================================================
  * MOTION -- the toolkit's animation vocabulary.
  *
@@ -153,6 +158,33 @@ int  aui_anim(int key, int target, int ms, int curve);
  * latches to the target; reduced motion snaps on the first sample. Shares the
  * AUI_ANIM_MAX slots with aui_anim (separate key space). */
 int aui_spring(int id, int target24);
+/* The five spring presets of design 3.8 (P6); the values are LOGIT_SPRINGS in
+ * c/include/ui/logit_motion.h. The enumerators mirror enum logit_spring. */
+enum aui_spring {
+    AUI_SPRING_SNAPPY,   /* switch knob, segmented thumb, pills: ~120 ms, 0.4 % */
+    AUI_SPRING_SMOOTH,   /* popovers, menus, reflow, panels, sheets: ~230 ms, 0 */
+    AUI_SPRING_BOUNCY,   /* window open, Dock, notifications, pops: ~300 ms, 8 %*/
+    AUI_SPRING_GENTLE,   /* zoom, minimise, Expose, thumbnail zoom: ~350 ms, 0  */
+    AUI_SPRING_TICK,     /* the Clock second hand: ~150 ms, ~20 % of a step     */
+    AUI_SPRING_COUNT
+};
+#define AUI_SPRING_DEFAULT AUI_SPRING_SNAPPY   /* what aui_spring() uses */
+/* aui_spring() with a preset. Returns the 24.8 value; a fresh slot latches to
+ * the target; reduced motion snaps on the first sample; once |x-target| < 0.25
+ * pt and |v| < 0.5 pt/s (design 3.8) the slot snaps to the target and stops
+ * requesting frames (aui_anim_due/aui_anim_wait go quiet). Passing a different
+ * preset for a live slot changes its constants in flight, keeping x and v. */
+int32_t aui_spring_ex(int id, int32_t target24, enum aui_spring preset);
+/* Press feedback (T_PRESS): the scale on a pressed button, in Q8 (256 = 1.0).
+ * Pressed goes 256 -> 248 (0.97) linearly over T_PRESS (60 ms); released rides
+ * AUI_SPRING_SNAPPY back to 256. _dock_ is the Dock tile's 0.92 (236).
+ * `id` keys the slot like aui_spring()'s. Reduced motion snaps both ways. */
+int aui_press_scale_q8(int id, int pressed);
+int aui_press_scale_dock_q8(int id, int pressed);
+/* Delay for item `index` of a staggered group, in ms: index * step_ms (the
+ * design uses 14 ms for Spotlight rows and Assistant lines, 8 ms for Finder
+ * cells). Negative indexes count as 0; reduced motion answers 0 (no stagger). */
+int aui_stagger_ms(int index, int step_ms);
 /* A colour tween in premultiplied space (ol_mix_argb_premul): opaque red to
  * transparent passes through half-transparent RED, not dark red. Straight ARGB
  * in and out. The tween runs `from` -> `to` over AUI_T_FAST, linearly; it
