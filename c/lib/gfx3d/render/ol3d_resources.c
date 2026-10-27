@@ -28,6 +28,8 @@ struct ol3d_buffer_view ol3d_buffer_view(const struct ol3d_buffer *b)
 void ol3d_buffer_destroy(struct ol3d_buffer *b){free(b);}
 int ol3d_pipeline_validate(const struct ol3d_pipeline *p,const struct ol3d_bindings *bindings,struct ol_shader_error *e)
 {
+    if(p&&(p->blend_op>=GFX_OP_COUNT||p->depth_func>=OL3D_DEPTH_FUNC_COUNT||p->cull>=OL3D_CULL_COUNT))
+        return diagnostic(e,0,"pipeline raster state out of range");
     if(!p||p->varying_count>OL3D_MAX_VARYINGS||ol_shader_validate(p->vertex,e)||ol_shader_validate(p->pixel,e))return OL_ARGUMENT;
     if(p->vertex->stage!=OLS_VERTEX||p->pixel->stage!=OLS_PIXEL)return diagnostic(e,0,"pipeline requires vertex and pixel stages");
     unsigned written=0;
