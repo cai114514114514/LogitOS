@@ -12,7 +12,7 @@
 #define GFX_MAX_STOPS  16      /* gradient stops (was 8; no ABI struct embeds it) */
 
 /* ----------------------------------------------------------------- paint -- */
-enum { GFX_SOLID = 0, GFX_LINEAR, GFX_RADIAL, GFX_IMAGE, GFX_CONIC };
+enum { GFX_SOLID = 0, GFX_LINEAR, GFX_RADIAL, GFX_IMAGE, GFX_CONIC, GFX_RADIAL2 };
 /* paint->spread: what a gradient does outside its 0..1 ramp. PAD holds the end
  * stops, REPEAT restarts the ramp, REFLECT runs it back and forth. For a conic
  * paint one turn IS the ramp: PAD and REPEAT are the same, and REFLECT runs the
@@ -28,6 +28,19 @@ enum { GFX_FILTER_NEAREST = 0, GFX_FILTER_LINEAR = 1, GFX_FILTER_LINEAR_CLAMP = 
  * inverse matrix shrinks by more than 2x (gfx_m_scale_of(inv) > 2.0); below that the
  * ordinary filter runs, so a 1:1 or magnified image is untouched by the flag. */
 enum { GFX_PAINT_IMG_CLAMP = 1, GFX_PAINT_FILTER_BOX = 2 };
+
+/* paint->flags bits for the gradient kinds (LINEAR, RADIAL, CONIC, RADIAL2). They share the
+ * byte with the image bits above, which a gradient never sets.
+ *   HAS_PMAT  `pmat` maps PAINT space (the space the gradient's x0..y1 / cx,cy,r are written
+ *             in) to device space, 16.16 + 24.8 as everywhere. A row is evaluated by sending
+ *             the device pixel centre through the inverse of pmat, so a gradient follows a
+ *             rotation or a shear instead of staying axis aligned. A singular pmat paints
+ *             nothing. Without the bit the paint coordinates ARE device coordinates (legacy).
+ *   DITHER    a 4x4 Bayer threshold of +-0.5 LSB is added to each colour channel before it is
+ *             quantised to 8 bits, which breaks the long constant runs of a shallow ramp
+ *             into a fine pattern. The mean is zero, and an exactly representable colour is
+ *             unchanged. Alpha is not dithered. */
+enum { GFX_PAINT_HAS_PMAT = 4, GFX_PAINT_DITHER = 8 };
 
 struct gfx_stop { int t; unsigned color; int alpha; };   /* t: 0..65536 */
 
@@ -53,6 +66,9 @@ struct gfx_paint {
      * image is updated. Zero for every constructor; a borrowed image paint without it is
      * still refused by the command list. */
     const void *img_ref;
+    /* Gradient paint-to-device matrix, read only under GFX_PAINT_HAS_PMAT. Trailing, so
+     * every existing initialiser leaves it zero (and unread). */
+    struct gfx_matrix pmat;
 };
 
 void gfx_paint_solid (struct gfx_paint *p, unsigned color, int alpha);
@@ -61,6 +77,15 @@ void gfx_paint_radial(struct gfx_paint *p, int cx, int cy, int r);
 /* Angular sweep round (cx,cy), device 24.8. t runs 0..1 over one full turn,
  * clockwise on screen, starting at `start_deg24_8` (0 = +x axis, 90 = down). */
 void gfx_paint_conic (struct gfx_paint *p, int cx, int cy, int start_deg24_8);
+/* Two-point conical gradient, Skia / CSS semantics: t=0 is the circle (fx,fy,fr) and t=1 the
+ * circle (cx,cy,r); the circle at t has centre and radius interpolated linearly, and a pixel
+ * takes the LARGEST t whose circle passes through it and has a non-negative radius. Where no
+ * such circle exists (a cone that does not cover the plane) the pixel is left unpainted. With
+ * fr = 0 and the focal point inside the end circle this is the familiar focal radial; with
+ * (fx,fy,fr) == (cx,cy,0) it is exactly gfx_paint_radial. Stored in x0,y0 (focal centre), x1
+ * (fr), cx,cy,r. Negative radii are taken as 0. Coordinates in the 24.8 paint space, and
+ * magnitudes beyond +-8192 px are clamped. */
+void gfx_paint_radial2(struct gfx_paint *p, int fx, int fy, int fr, int cx, int cy, int r);
 void gfx_paint_stop  (struct gfx_paint *p, int t, unsigned color, int alpha);
 /* `img2dev` maps image pixels (24.8) to device (24.8); it is inverted here, so
  * a singular matrix is refused with 0 rather than dividing by zero per pixel. */
@@ -80,6 +105,9 @@ unsigned gfx_paint_sample(const struct gfx_paint *p, int t, int *alpha_out);
  * gfx_gradient_linear_row: composites src-over onto the row at drow + x*4. */
 void gfx_gradient_conic_row(const struct gfx_paint *p, unsigned char *drow, int y,
                             int x0, int x1, const unsigned char *cov, int cov_ox);
+
+void gfx_gradient_radial2_row(const struct gfx_paint *p, unsigned char *drow, int y,
+                              int x0, int x1, const unsigned char *cov, int cov_ox);
 
 /* The 1-pixel gradient strip. `n` entries of straight RGBA written to dst; the
  * compositor replicates along the constant axis, so a gradient costs what a
