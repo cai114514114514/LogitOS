@@ -50,6 +50,9 @@ struct command {
     struct ol_image *resource, *mask;
     uint64_t resource_generation, mask_generation;
     int mask_x, mask_y;
+    /* CMD_FILL with a GFX_IMAGE paint: the retained image and its generation. */
+    struct ol_image *paint_image;
+    uint64_t paint_generation;
     struct ol_layer_options layer;
     struct gfx_rect effect_clip;
     /* CMD_BACKDROP from ol_cmd_backdrop_rrect: per-corner radii (TL,TR,BR,BL,

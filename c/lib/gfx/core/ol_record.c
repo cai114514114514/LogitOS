@@ -32,6 +32,7 @@ int ol_list_reset(struct ol_list *l)
         if (c->image) c->image->refs--;
         if (c->resource) c->resource->refs--;
         if (c->mask) c->mask->refs--;
+        if (c->paint_image) c->paint_image->refs--;
         o += c->bytes;
     }
     l->used = align8(sizeof *l);
@@ -123,7 +124,17 @@ static int path_ok(const struct gfx_path *p)
 }
 static int paint_ok(const struct gfx_paint *p)
 {
-    if (!p || p->kind < GFX_SOLID || p->kind > GFX_CONIC || p->kind == GFX_IMAGE ||
+#ifdef OL_IMAGE_PAINT_REJECT
+    /* control only: the legacy paint_ok, which refuses every image paint */
+    if (p && p->kind == GFX_IMAGE)
+        return 0;
+#else
+    if (p && p->kind == GFX_IMAGE &&
+        (!p->img_ref || (p->flags & ~(GFX_PAINT_IMG_CLAMP | GFX_PAINT_FILTER_BOX))))
+        return 0;
+#endif
+    if (!p || p->kind < GFX_SOLID || p->kind > GFX_CONIC ||
+        (p->kind == GFX_IMAGE && p->img_ref == 0) ||
         p->spread > GFX_SPREAD_REFLECT || p->alpha < 0 || p->alpha > 255 ||
         p->global_alpha < 0 || p->global_alpha > 255 || p->nstop < 0 || p->nstop > GFX_MAX_STOPS)
         return 0;
@@ -133,12 +144,28 @@ static int paint_ok(const struct gfx_paint *p)
             return 0;
     return 1;
 }
+/* An image paint is only recordable when it points into a live, same-device RGBA ol_image
+ * (so the command can retain it and detect a later update). */
+static int image_paint_ok(const struct ol_list *l, const struct gfx_paint *p)
+{
+    if (p->kind != GFX_IMAGE)
+        return 1;
+    const struct ol_image *im = p->img_ref;
+    if (!list_ok(l) || !image_ok(im) || im->device != l->device ||
+        im->desc.format != OL_FORMAT_RGBA8_STRAIGHT || !p->img || p->iw <= 0 || p->ih <= 0 ||
+        p->istride < p->iw * 4 || p->iw > GFX_MAX_W || p->ih > GFX_MAX_W)
+        return 0;
+    unsigned long need = image_bytes(p->iw, p->ih, p->istride);
+    return (unsigned long)p->img >= (unsigned long)im->desc.pixels &&
+           (unsigned long)p->img - (unsigned long)im->desc.pixels <= im->desc.bytes &&
+           need <= im->desc.bytes - ((unsigned long)p->img - (unsigned long)im->desc.pixels);
+}
 int ol_cmd_fill(struct ol_list *l, const struct gfx_path *p, int rule,
                 const struct gfx_paint *paint, const struct gfx_rect *clip, int samples)
 {
     if (p && p->overflow)
         return fail(l, OL_LIMIT);
-    if (!path_ok(p) || !paint_ok(paint) || (rule != GFX_NONZERO && rule != GFX_EVENODD) ||
+    if (!path_ok(p) || !paint_ok(paint) || !image_paint_ok(l, paint) || (rule != GFX_NONZERO && rule != GFX_EVENODD) ||
         samples < 1 || samples > GFX_MAX_SUBS || (clip && !rect_ok(*clip)))
         return fail(l, OL_ARGUMENT);
     unsigned long points = (unsigned long)p->npt * 2 * sizeof(int),
@@ -152,6 +179,12 @@ int ol_cmd_fill(struct ol_list *l, const struct gfx_path *p, int rule,
      * use its bounded copy primitive so that link never acquires a libc
      * dependency merely because a paint descriptor grew. */
     copy(&c->paint, paint, sizeof c->paint);
+    if (paint->kind == GFX_IMAGE) {
+        struct ol_image *im = (struct ol_image *)paint->img_ref;
+        c->paint_image = im;
+        c->paint_generation = im->generation;
+        im->refs++;
+    }
     c->rule = rule;
     c->samples = samples;
     c->has_clip = clip != 0;
