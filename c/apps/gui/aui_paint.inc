@@ -787,14 +787,17 @@ static void shadow_edge(int x, int y, int w, int h, int n, int vertical,
  * kernel code and cannot afford this file's BIG_MASK buffers (see fb.c). */
 static unsigned shadow_degraded;
 
-void aui_shadow_ex(int x, int y, int w, int h, int r, int dy, int blur, int alpha)
+/* The mask-tile shadow: four cached corner tiles plus four 1-device-pixel edge
+ * strips. It is the whole implementation on a kernel without
+ * LOGIT_GUI2_F_SHADOW2 and the fallback when the v2 call is refused. `blur` is
+ * the falloff EXTENT in points (not a sigma), `col` is 0xRRGGBB. */
+static void shadow_tiles(int x, int y, int w, int h, int r, int dy, int blur, int alpha, unsigned col)
 {
     if (w <= 0 || h <= 0 || blur <= 0 || alpha <= 0) return;
 #ifdef AUI_NO_AA
-    (void)r; (void)dy;                    /* no shadows without alpha compositing */
+    (void)r; (void)dy; (void)col;         /* no shadows without alpha compositing */
     return;
 #else
-    unsigned col = AUI_SHADOW;
     r = clamp_radius(w, h, r);
     int sx = X_(x), sy = Y_(y) + dy;
     int T = blur + r;                                  /* corner tile edge, points */
@@ -857,6 +860,155 @@ void aui_shadow_ex(int x, int y, int w, int h, int r, int dy, int blur, int alph
     shadow_edge(sx - blur, sy + r, blur, h - 2 * r, bd, 0, 0, col, alpha);
     shadow_edge(sx + w,    sy + r, blur, h - 2 * r, bd, 0, 1, col, alpha);
 #endif
+}
+
+/* ---------------------------------------------------------------------------
+ * GUI ABI v2 shadows (SYS_GUI_SHADOW2).
+ *
+ * When SYS_GUI2_INFO(0) reports LOGIT_GUI2_F_SHADOW2 every shadow here is ONE
+ * ol_window_shadow2: the kernel's analytic gaussian (display_shadow_ex), with a
+ * colour, an offset on both axes, a spread, an inset mode, and NO ceiling on
+ * the blur (the tile path tops out at BIG_MASK and shrinks the shadow past
+ * it). The rect and radii are decided in DEVICE pixels exactly as the tile
+ * path decides them (aui_dev edges, LOGIT_RECT_SNAP) so the caster's edge is
+ * the same pixel at 125/150/200%. Offset, spread and sigma are points; the
+ * kernel scales them. -DAUI_SHADOW_LEGACY (the negative control) pretends the
+ * kernel never reports SHADOW2. */
+#if defined(AUI_NO_AA) || defined(AUI_SHADOW_LEGACY)
+#define shadow2_ok() 0
+#else
+static int shadow2_caps = -1;         /* -1 not asked yet, 0 no, 1 yes */
+static int shadow2_ok(void)
+{
+    if (shadow2_caps < 0) {
+        long i = ol_gui2_info(0);
+        shadow2_caps = (i > 0 && (i & LOGIT_GUI2_F_SHADOW2)) ? 1 : 0;
+    }
+    return shadow2_caps;
+}
+#endif
+
+static int sh_up100(long long v, int pct)       /* ceil(v * 100 / pct) for v >= 0 */
+{ return (int)((v * 100 + pct - 1) / pct); }
+
+/* The damage note: the caster's rect grown by ad_halo_shadow() (3 sigma + 2 px +
+ * spread, plus the offset on the side it moves toward), computed in DEVICE
+ * pixels and converted back to points rounding up. An inset shadow stays
+ * inside its rect. */
+static void ad_note_shadow2(int x, int y, int w, int h, int r, int dx, int dy, int sigma_q8,
+                            int spread, unsigned argb, int inset)
+{
+    int pct = aui_scale(), hl[4] = { 0, 0, 0, 0 }, k;
+    unsigned sig = 2166136261u;
+    if (!inset) {
+        long long vx = (long long)dx * pct, vy = (long long)dy * pct;
+        int dxd = (int)(vx >= 0 ? (vx + 99) / 100 : -((-vx + 99) / 100));
+        int dyd = (int)(vy >= 0 ? (vy + 99) / 100 : -((-vy + 99) / 100));
+        int sgd = (int)(((long long)sigma_q8 * pct + 25599) / 25600);
+        int spd = spread > 0 ? (int)(((long long)spread * pct + 99) / 100) : 0;
+        ad_halo_shadow(dxd, dyd, sgd, spd, hl);
+        for (k = 0; k < 4; k++) hl[k] = sh_up100(hl[k], pct) + 1;
+    }
+    AD_MIX(sig, r); AD_MIX(sig, dx); AD_MIX(sig, dy); AD_MIX(sig, sigma_q8);
+    AD_MIX(sig, spread); AD_MIX(sig, argb); AD_MIX(sig, inset);
+    {
+        struct ad_set s;
+        s.n = 0;
+        ad_add_halo(&s, x, y, w, h, hl[0], hl[1], hl[2], hl[3]);
+        if (s.n) ad_record(s.r[0].x0, s.r[0].y0, s.r[0].x1 - s.r[0].x0, s.r[0].y1 - s.r[0].y0, sig);
+    }
+}
+
+/* One SYS_GUI_SHADOW2. Points in, the kernel's status out (OL_UNSUPPORTED etc.
+ * without the capability; the caller falls back to the tile path). */
+static long shadow2_emit(int x, int y, int w, int h, int r, int dx, int dy, int sigma_q8,
+                         int spread, unsigned argb, int inset)
+{
+    struct logit_shadow2 s;
+    long long x0 = dev_ceil_pt24((long long)aui_dev(X_(x)) * 256), x1 = dev_ceil_pt24((long long)aui_dev(X_(x + w)) * 256);
+    long long y0 = dev_ceil_pt24((long long)aui_dev(Y_(y)) * 256), y1 = dev_ceil_pt24((long long)aui_dev(Y_(y + h)) * 256);
+    int rr = (int)dev_ceil_pt24((long long)imax(0, aui_dev(r)) * 256), k;
+    gfx_zero(&s, sizeof s);
+    s.x = (int)x0; s.y = (int)y0; s.w = (int)(x1 - x0); s.h = (int)(y1 - y0);
+    for (k = 0; k < 4; k++) s.radius[k] = rr;
+    s.dx = dx * 256; s.dy = dy * 256; s.blur = sigma_q8; s.spread = spread * 256;
+    s.argb = argb;
+    s.flags = LOGIT_RECT_SNAP | (inset ? LOGIT_SHADOW2_INSET : 0);
+    ad_note_shadow2(x, y, w, h, r, dx, dy, sigma_q8, spread, argb, inset);
+    return ol_window_shadow2(&s);
+}
+
+static unsigned sh_argb(unsigned col, int alpha)
+{ return ((unsigned)(alpha > 255 ? 255 : alpha) << 24) | (col & 0xFFFFFFu); }
+
+/* aui_shadow_ex keeps its signature: `blur` is the falloff extent in points, and
+ * on a SHADOW2 kernel it becomes a gaussian of sigma = blur / 2 (the CSS
+ * convention), colour AUI_SHADOW, no spread. */
+void aui_shadow_ex(int x, int y, int w, int h, int r, int dy, int blur, int alpha)
+{
+    unsigned col = AUI_SHADOW;
+    if (w <= 0 || h <= 0 || blur <= 0 || alpha <= 0) return;
+#ifndef AUI_NO_AA
+    if (shadow2_ok() &&
+        shadow2_emit(x, y, w, h, clamp_radius(w, h, r), 0, dy, blur * 128, 0, sh_argb(col, alpha), 0) == 0)
+        return;
+#endif
+    shadow_tiles(x, y, w, h, r, dy, blur, alpha, col);
+}
+
+/* A general shadow: offset (dx,dy) and spread in points (spread grows the
+ * shadow's shape, negative shrinks it), `sigma` the gaussian standard deviation
+ * in points (0..64), ARGB colour (alpha is the peak opacity). inset != 0 draws
+ * the shadow INSIDE the rect (the blurred complement of the offset shape).
+ * Without SHADOW2 the tile fallback draws the outer form only (extent 2*sigma,
+ * dx and spread folded into the caster rect) and an inset draws nothing. */
+void aui_shadow2(struct aui_rect rect, int radius, int dx, int dy, int sigma, int spread,
+                 unsigned argb, int inset)
+{
+    int alpha = (int)(argb >> 24);
+    if (rect.w <= 0 || rect.h <= 0 || alpha <= 0 || sigma < 0) return;
+    if (sigma > 64) sigma = 64;
+#ifndef AUI_NO_AA
+    if (shadow2_ok() &&
+        shadow2_emit(rect.x, rect.y, rect.w, rect.h, radius < 0 ? 0 : radius, dx, dy, sigma * 256,
+                     spread, argb, inset) == 0)
+        return;
+#endif
+    if (inset || sigma == 0) return;
+    shadow_tiles(rect.x + dx - spread, rect.y - spread, rect.w + 2 * spread, rect.h + 2 * spread,
+                 radius + spread, dy, 2 * sigma, alpha, argb & 0xFFFFFFu);
+}
+
+/* Elevation presets: an AMBIENT shadow (no offset, wide and faint) drawn first,
+ * then a KEY shadow (offset down, tight, stronger) over it. Points; alpha is
+ * the LIGHT theme value, the dark theme doubles it (clamped to 255). Colour is
+ * AUI_SHADOW. Level 0 draws nothing, levels above 4 are 4.
+ *
+ *   level   key dy / sigma / alpha    ambient sigma / alpha
+ *     1          1 /  2 / 36               4 / 16
+ *     2          2 /  4 / 44               8 / 20
+ *     3          4 /  8 / 52              14 / 24
+ *     4          8 / 14 / 60              24 / 28
+ */
+void aui_elevation(struct aui_rect rect, int radius, int level)
+{
+    static const unsigned char tab[4][5] = {
+        { 1, 2, 36, 4, 16 }, { 2, 4, 44, 8, 20 }, { 4, 8, 52, 14, 24 }, { 8, 14, 60, 24, 28 },
+    };
+    const unsigned char *t;
+    unsigned col = AUI_SHADOW;
+    int mul = aui_is_dark() ? 2 : 1;
+    if (level <= 0) return;
+    t = tab[(level > 4 ? 4 : level) - 1];
+    aui_shadow2(rect, radius, 0, 0, t[3], 0, sh_argb(col, t[4] * mul), 0);
+    aui_shadow2(rect, radius, 0, t[0], t[1], 0, sh_argb(col, t[2] * mul), 0);
+}
+
+/* A glow: a soft halo of `argb` (alpha = peak opacity) around the rect, sigma
+ * 6 pt, spread 1 pt, no offset. */
+void aui_glow(struct aui_rect rect, int radius, unsigned argb)
+{
+    aui_shadow2(rect, radius, 0, 0, 6, 1, argb, 0);
 }
 
 void aui_shadow(int x, int y, int w, int h, int r, int elev)
