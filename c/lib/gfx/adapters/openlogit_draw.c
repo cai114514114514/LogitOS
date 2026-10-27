@@ -26,3 +26,19 @@ int ol_raster_mask_clipped(const struct gfx_path *p, int rule, unsigned char *co
                            int ox, int oy, int samples, const struct gfx_clip_mask *clip)
 { calls++; return clip && ol_sw_raster_mask(0,p,rule,cov,w,h,ox,oy,samples,clip); }
 void ol_raster_clear(struct gfx_surface *s) { calls++; ol_sw_surface_clear(s); }
+
+#ifdef GFX_STATUS_COLLAPSE
+#define OL_RASTER_LIMIT OL_ARGUMENT    /* negative control: one refusal code */
+#else
+#define OL_RASTER_LIMIT OL_LIMIT
+#endif
+int ol_raster_fill_st(struct gfx_surface *s, const struct gfx_path *p, int rule,
+                      const struct gfx_paint *paint, const struct gfx_rect *clip)
+{
+    int x0, y0, x1, y1;
+    if (!s || !p || !paint) return OL_ARGUMENT;
+    if (p->overflow) return OL_ARGUMENT;      /* a truncated path is malformed input */
+    if (gfx_path_bounds(p, &x0, &y0, &x1, &y1) && x1 - x0 > GFX_MAX_W) return OL_RASTER_LIMIT;
+    if (p->npt > GFX_MAX_EDGES) return OL_RASTER_LIMIT;
+    return ol_raster_fill(s, p, rule, paint, clip) ? OL_OK : OL_ARGUMENT;
+}
