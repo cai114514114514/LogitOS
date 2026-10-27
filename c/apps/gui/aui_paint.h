@@ -70,4 +70,38 @@ void aui_panel(int x, int y, int w, int h, unsigned color);
 /* A raised surface with a radius, a hairline and an elevation shadow. */
 void aui_card(int x, int y, int w, int h, int elev);
 
+/* ---- 「澄」 materials, backdrops, images and elevation (design P4, 3.2, 3.3;
+ * added by ui-aui-core) ----
+ * Rects and radii are points in the current drawing coordinates. A radius
+ * r < 0 takes the material's own (design 3.2 "Radius": a capsule is h / 2);
+ * all four corners are equal (GLASS2 needs four equal circular radii), except
+ * that a material with cut sides (the menu bar) squares them. Each widens the
+ * frame's damage through the aui_damage.h halo API: a material or backdrop by
+ * its tier's reach (THIN 3, REGULAR 6, THICK 12, ULTRA 20 device px; a
+ * GLASS2 panel also re-flushes when anything in its sample halo changes), an
+ * elevation by offset + 3 sigma + spread.
+ *
+ * aui_material: ONE SYS_GUI_GLASS2 of the material's tier and per-mode tint
+ *   (alpha = opacity), SYMMETRIC rim, default tone. Reduce Transparency, a
+ *   kernel without GLASS2 or a refused call draw ONE solid rounded rect of
+ *   the material's RT colour instead. Glass blurs the window's own content:
+ *   draw what it floats over first.
+ * aui_backdrop: ONE SYS_GUI_BACKDROP region `id` (0..7) showing the DESKTOP
+ *   behind the window through the material; its fill_rgb (what the WM shows
+ *   while it drags the window, and under Reduce Transparency) is the RT solid.
+ *   Draw the region's ink AFTER it. RT or a kernel without BACKDROP: the solid
+ *   rect, and a region this process registered earlier is cleared. A region
+ *   stays registered until aui_backdrop_clear(id) (-1 = all of them).
+ * aui_image: ONE SYS_GUI_BLIT2 of the whole sw x sh straight-RGBA image into
+ *   dst with filter LOGIT_FILTER_NEAREST / _BILINEAR / _BOX; without BLIT2
+ *   (or refused) the legacy nearest-neighbour gui_blit.
+ * aui_elev: the elevation ladder, EXACTLY two SHADOW2 (key, then ambient) in
+ *   shadow ink with the table's numbers; E0 draws nothing. Without SHADOW2,
+ *   the tile shadow per layer. */
+void aui_material(struct aui_rect rect, int r, enum logit_mat m);
+void aui_backdrop(int id, struct aui_rect rect, int r, enum logit_mat m);
+void aui_backdrop_clear(int id);
+void aui_image(const unsigned char *rgba, int sw, int sh, struct aui_rect dst, int filter);
+void aui_elev(struct aui_rect rect, int r, enum logit_elev e);
+
 #endif /* AUI_PAINT_H */

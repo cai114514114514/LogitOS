@@ -123,7 +123,7 @@ static const unsigned char *corner_mask(int kind, int cw, int ch, int param,
     return big_cov;
 }
 
-#else
+#elif !defined(AUI_PAINT_API2)
 /* ----------------------------------------------- 4. drawing primitives */
 
 #define X_(v) ((v) + ox_)
@@ -403,7 +403,6 @@ void aui_fill_a(int x, int y, int w, int h, unsigned color, int alpha)
 
 void aui_hairline(int x, int y, int w) { aui_fill(x, y, w, 1, AUI_BORDER); }
 void aui_vhairline(int x, int y, int h) { aui_fill(x, y, 1, h, AUI_BORDER); }
-void aui_separator(int x, int y, int w) { aui_hairline(x, y, w); }
 
 static int clamp_radius(int w, int h, int r)
 {
@@ -1038,3 +1037,270 @@ void aui_glass(int x, int y, int w, int h, int radius)
 }
 
 #endif /* AUI_PAINT_MASK */
+
+#ifdef AUI_PAINT_API2
+/* ===========================================================================
+ * 「澄」 materials, backdrops, images and elevation (design P4, 3.2, 3.3; added
+ * by ui-aui-core). aui.c includes this file a THIRD time for these, after the
+ * glass capability probe (glass_ctl_ok / glass_reduced) they share with the
+ * glass control faces. The legacy aui_glass / aui_elevation / aui_shadow above
+ * are untouched: ui-aui-theme remaps them onto these.
+ *
+ * THE CONTROL: -DUI_AUI_CORE_NEGCTL asks the kernel for the DIRECTIONAL rim,
+ * whose upper-left light is the dated Dock glint principle 2 retires; make
+ * test-ui-aui-core-api-negctl must report 'FAIL material-rim'. */
+#ifdef UI_AUI_CORE_NEGCTL
+#define MAT_RIM OL_GLASS_RIM_DIRECTIONAL
+#else
+#define MAT_RIM OL_GLASS_RIM_SYMMETRIC
+#endif
+
+/* How far a material of a tier reaches past its rect, device px, for the
+ * frame's damage (index LOGIT_TIER_*: REGULAR, THIN, THICK, ULTRA). */
+static int mat_halo_dev(int tier)
+{
+    static const unsigned char reach[4] = { 6, 3, 12, 20 };
+    return reach[tier >= 0 && tier <= 3 ? tier : 0];
+}
+
+/* r < 0: the material's own radius (a capsule is half the short side). */
+static int mat_radius(struct aui_rect rc, int r, const struct logit_material *m)
+{
+    if (r < 0) r = m->radius_pt == LOGIT_R_CAPSULE ? imin(rc.w, rc.h) / 2
+                 : m->radius_pt > 0 ? m->radius_pt : 0;
+    return clamp_radius(rc.w, rc.h, r);
+}
+/* TL TR BR BL: a cut side squares both of its corners (the menu bar). */
+static void mat_radii(int r, unsigned cut, int rad[4])
+{
+    rad[0] = (cut & (LOGIT_CUT_TOP | LOGIT_CUT_LEFT)) ? 0 : r;
+    rad[1] = (cut & (LOGIT_CUT_TOP | LOGIT_CUT_RIGHT)) ? 0 : r;
+    rad[2] = (cut & (LOGIT_CUT_BOTTOM | LOGIT_CUT_RIGHT)) ? 0 : r;
+    rad[3] = (cut & (LOGIT_CUT_BOTTOM | LOGIT_CUT_LEFT)) ? 0 : r;
+}
+
+/* The damage note of a material or backdrop drawn at (X, Y, w, h) window
+ * points: the rect grown by its tier's reach (ad_add_halo), the device px
+ * converted back to points rounding up, +1 for the device-edge rounding, as
+ * ad_note_glass2 does. `sample`: a GLASS2 panel blurs the window's own pixels
+ * under it, so it is also registered with its sample halo (ad_halo_glass) and
+ * ad_finish re-flushes the whole panel when anything changes within reach. */
+static void ad_note_mat(int X, int Y, int w, int h, int r, int tier, unsigned sig, int sample)
+{
+    int pct = aui_scale();
+    int hp = sh_up100(mat_halo_dev(tier), pct) + 1;
+    struct ad_set s;
+    s.n = 0;
+    ad_add_halo(&s, X, Y, w, h, hp, hp, hp, hp);
+    if (s.n) ad_record(s.r[0].x0, s.r[0].y0, s.r[0].x1 - s.r[0].x0, s.r[0].y1 - s.r[0].y0, sig);
+    if (sample) {
+        int hs = sh_up100(ad_halo_glass(aui_dev(w), aui_dev(h), aui_dev(r), tier), pct) + 1;
+        if (g_ad_gl_n < AD_GLMAX) {
+            struct ad_gl *g = &g_ad_gl[g_ad_gl_n++];
+            g->x = X; g->y = Y; g->w = w; g->h = h; g->halo = hs;
+        } else g_ad_overflow = 1;
+    }
+}
+
+/* The device-snapped 24.8 rect and the one device radius of a shape at window
+ * points (X, Y, w, h), the way glass_face and shadow2_emit decide theirs. */
+static void mat_geom(int X, int Y, int w, int h, int r, int out[5])
+{
+    out[0] = (int)dev_ceil_pt24((long long)aui_dev(X) * 256);
+    out[1] = (int)dev_ceil_pt24((long long)aui_dev(Y) * 256);
+    out[2] = (int)dev_ceil_pt24((long long)aui_dev(X + w) * 256) - out[0];
+    out[3] = (int)dev_ceil_pt24((long long)aui_dev(Y + h) * 256) - out[1];
+    out[4] = (int)dev_ceil_pt24((long long)imax(0, aui_dev(r)) * 256);
+}
+
+static unsigned mat_sig(unsigned kind, int r, unsigned tint, unsigned fill, int tier)
+{
+    unsigned sig = 2166136261u;
+    AD_MIX(sig, kind); AD_MIX(sig, r); AD_MIX(sig, tint); AD_MIX(sig, fill);
+    AD_MIX(sig, tier); AD_MIX(sig, MAT_RIM);
+    return sig;
+}
+
+/* The Reduce Transparency solid: ONE rounded rect (one SYS_GUI_PATH on a
+ * PATH kernel) of the material's RT colour, which may carry alpha. */
+static void mat_solid(struct aui_rect rc, int r, const struct logit_material *m, int dark)
+{
+    int rad[4];
+    mat_radii(r, m->cut, rad);
+    aui_round4(rc, rad, dark ? m->rt_d : m->rt_l);
+}
+
+#ifndef AUI_NO_AA
+/* One SYS_GUI_GLASS2; 1 when the kernel drew it. */
+static int mat_glass2(struct aui_rect rc, int r, const struct logit_material *m, int dark)
+{
+    struct logit_glass2 g;
+    unsigned tint = dark ? m->tint_d : m->tint_l;
+    int X = X_(rc.x), Y = Y_(rc.y), q[5], k;
+    mat_geom(X, Y, rc.w, rc.h, r, q);
+    gfx_zero(&g, sizeof g);
+    g.x = q[0]; g.y = q[1]; g.w = q[2]; g.h = q[3];
+    for (k = 0; k < 4; k++) g.radius[k] = q[4];
+    g.cut = m->cut;
+    g.tint_argb = tint & 0xFFFFFFu;
+    g.opacity = (int)(tint >> 24); g.tone = 0;
+    g.blur_level = m->tier; g.rim = MAT_RIM;
+    g.flags = LOGIT_RECT_SNAP;
+    if (ol_window_glass2(&g) != 0) return 0;
+    ad_note_mat(X, Y, rc.w, rc.h, r, m->tier, mat_sig(0x6d61u, r, tint, m->cut, m->tier), 1);
+    return 1;
+}
+#endif
+
+void aui_material(struct aui_rect rc, int r, enum logit_mat mat)
+{
+    const struct logit_material *m = logit_material(mat);
+    int dark;
+    if (rc.w <= 0 || rc.h <= 0) return;
+    aui_ensure();
+    dark = theme_dark;
+    r = mat_radius(rc, r, m);
+#ifndef AUI_NO_AA
+    if (glass_ctl_ok() && mat_glass2(rc, r, m, dark)) return;
+#endif
+    mat_solid(rc, r, m, dark);
+}
+
+/* ---- backdrops (SYS_GUI_BACKDROP) ---- */
+#if defined(AUI_NO_AA)
+#define bd_ok() 0
+#else
+static int bd_caps = -1;                  /* -1 not asked yet, 0 no, 1 yes */
+static int bd_ok(void)
+{
+    if (bd_caps < 0) {
+        long i = ol_gui2_info(0);
+        bd_caps = (i > 0 && (i & LOGIT_GUI2_F_BACKDROP)) ? 1 : 0;
+    }
+    return bd_caps && !glass_reduced;
+}
+#endif
+static unsigned bd_live;                  /* regions this process registered, bit per id */
+
+void aui_backdrop_clear(int id)
+{
+    if (id < -1 || id >= LOGIT_BACKDROP_MAX) return;
+    if (id < 0) bd_live = 0; else bd_live &= ~(1u << id);
+    ol_window_backdrop_clear2(id);
+}
+
+void aui_backdrop(int id, struct aui_rect rc, int r, enum logit_mat mat)
+{
+    const struct logit_material *m = logit_material(mat);
+    int dark;
+    if (id < 0 || id >= LOGIT_BACKDROP_MAX || rc.w <= 0 || rc.h <= 0) return;
+    aui_ensure();
+    dark = theme_dark;
+    r = mat_radius(rc, r, m);
+    if (bd_ok()) {
+        struct logit_backdrop2 b;
+        unsigned tint = dark ? m->tint_d : m->tint_l, fill = (dark ? m->rt_d : m->rt_l) & 0xFFFFFFu;
+        int X = X_(rc.x), Y = Y_(rc.y), q[5], rad[4], k;
+        mat_geom(X, Y, rc.w, rc.h, r, q);
+        mat_radii(q[4], m->cut, rad);
+        gfx_zero(&b, sizeof b);
+        b.id = id;
+        b.x = q[0]; b.y = q[1]; b.w = q[2]; b.h = q[3];
+        for (k = 0; k < 4; k++) b.radius[k] = rad[k];
+        b.tint_argb = tint & 0xFFFFFFu;
+        b.opacity = (int)(tint >> 24); b.tone = 0;
+        b.blur_level = m->tier; b.rim = MAT_RIM;
+        b.fill_rgb = fill;
+        b.flags = LOGIT_RECT_SNAP;
+        if (ol_window_backdrop2(&b) == 0) {
+            bd_live |= 1u << id;
+            ad_note_mat(X, Y, rc.w, rc.h, r, m->tier, mat_sig(0x6264u + (unsigned)id, r, tint, fill, m->tier), 0);
+            return;
+        }
+    }
+    /* Solid. A region registered while glass was allowed would keep showing
+     * the desktop through this solid's pixels' neighbours: drop it. */
+    if (bd_live & (1u << id)) aui_backdrop_clear(id);
+    mat_solid(rc, r, m, dark);
+}
+
+/* ---- images (SYS_GUI_BLIT2) ---- */
+static int blit2_caps = -1;
+static int blit2_ok(void)
+{
+    if (blit2_caps < 0) {
+        long i = ol_gui2_info(0);
+        blit2_caps = (i > 0 && (i & LOGIT_GUI2_F_BLIT2)) ? 1 : 0;
+    }
+    return blit2_caps;
+}
+
+void aui_image(const unsigned char *rgba, int sw, int sh, struct aui_rect d, int filter)
+{
+    int X, Y;
+    if (!rgba || sw <= 0 || sh <= 0 || d.w <= 0 || d.h <= 0) return;
+    if (filter < LOGIT_FILTER_NEAREST || filter > LOGIT_FILTER_BOX) filter = LOGIT_FILTER_NEAREST;
+    X = X_(d.x); Y = Y_(d.y);
+    if (blit2_ok()) {
+        struct logit_blit2 b;
+        int q[5];
+        mat_geom(X, Y, d.w, d.h, 0, q);
+        gfx_zero(&b, sizeof b);
+        b.rgba = rgba; b.sw = sw; b.sh = sh; b.sstride = sw * 4;
+        b.src_x = 0; b.src_y = 0; b.src_w = sw; b.src_h = sh;
+        b.x = q[0]; b.y = q[1]; b.w = q[2]; b.h = q[3];
+        b.opacity = 255; b.filter = filter; b.flags = LOGIT_RECT_SNAP;
+        if (ol_window_blit2(&b) == 0) {
+            /* The whole buffer is hashed, as ad_note_blit does: a sampled
+             * hash could miss a change (an under-report). */
+            unsigned sig = 2166136261u;
+            AD_MIX(sig, sw); AD_MIX(sig, sh); AD_MIX(sig, filter);
+            sig = ad_hash_bytes(rgba, (long)sw * sh * 4, sig);
+            ad_record(X, Y, d.w, d.h, sig);
+            return;
+        }
+    }
+    gui_blit(X, Y, d.w, d.h, rgba, sw, sh);
+}
+
+/* ---- elevation (two SHADOW2 per level) ---- */
+static void elev_layer(struct aui_rect rc, int r, const struct logit_shadow_layer *l, unsigned argb)
+{
+    int sp = l->spread / 256, blur;
+#ifndef AUI_NO_AA
+    if (shadow2_ok()) {
+        struct logit_shadow2 s;
+        int X = X_(rc.x), Y = Y_(rc.y), q[5], k;
+        mat_geom(X, Y, rc.w, rc.h, r, q);
+        gfx_zero(&s, sizeof s);
+        s.x = q[0]; s.y = q[1]; s.w = q[2]; s.h = q[3];
+        for (k = 0; k < 4; k++) s.radius[k] = q[4];
+        s.dx = l->dx; s.dy = l->dy; s.blur = l->sigma_pt; s.spread = l->spread;
+        s.argb = argb;
+        s.flags = LOGIT_RECT_SNAP;
+        if (ol_window_shadow2(&s) == 0) {
+            ad_note_shadow2(X, Y, rc.w, rc.h, r, l->dx / 256, l->dy / 256, l->sigma_pt, sp, argb, 0);
+            return;
+        }
+    }
+#endif
+    /* The tile fallback, aui_shadow2's: extent 2 sigma, dx and spread folded
+     * into the caster rect. */
+    blur = (2 * l->sigma_pt + 255) / 256;
+    if (blur <= 0) return;
+    shadow_tiles(rc.x + l->dx / 256 - sp, rc.y - sp, rc.w + 2 * sp, rc.h + 2 * sp, imax(0, r + sp),
+                 l->dy / 256, blur, (int)(argb >> 24), argb & 0xFFFFFFu);
+}
+
+void aui_elev(struct aui_rect rc, int r, enum logit_elev e)
+{
+    const struct logit_elevation *v = logit_elevation(e);
+    int dark;
+    if (rc.w <= 0 || rc.h <= 0 || v->n < 2) return;
+    aui_ensure();
+    dark = theme_dark;
+    r = clamp_radius(rc.w, rc.h, r);
+    elev_layer(rc, r, &v->key, logit_shadow_argb(&v->key, dark));
+    elev_layer(rc, r, &v->ambient, logit_shadow_argb(&v->ambient, dark));
+}
+#endif /* AUI_PAINT_API2 */
