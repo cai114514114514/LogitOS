@@ -25,6 +25,24 @@ void aui_vgrad_round(int x, int y, int w, int h, int radius, unsigned top, unsig
  * small one's. `elev` is AUI_ELEV_*; aui_shadow_ex takes the recipe directly. */
 void aui_shadow(int x, int y, int w, int h, int radius, int elev);
 void aui_shadow_ex(int x, int y, int w, int h, int radius, int dy, int blur, int alpha);
+/* ---- GUI ABI v2 shadows (SYS_GUI_SHADOW2) ----
+ * One ol_window_shadow2 each when the kernel reports LOGIT_GUI2_F_SHADOW2 (no
+ * blur ceiling, coloured, offset, spread, inset); older kernels get the
+ * mask-tile fallback documented per function. aui_shadow and aui_shadow_ex take
+ * the v2 path too (blur extent -> sigma = blur / 2). The damage set is widened
+ * by 3 sigma + 2 px + spread + the offset (ad_halo_shadow).
+ *
+ * aui_shadow2: dx, dy, spread and sigma (the gaussian standard deviation, 0..64)
+ * are points; argb's alpha is the peak opacity; inset shades the INSIDE of the
+ * rect (tile fallback: outer form only, inset draws nothing). */
+void aui_shadow2(struct aui_rect rect, int radius, int dx, int dy, int sigma, int spread,
+                 unsigned argb, int inset);
+/* level 0..4 (0 draws nothing, above 4 is 4): an ambient shadow, then a key
+ * shadow over it; the table of parameters is on the definition in
+ * aui_paint.inc. The dark theme doubles the alphas. */
+void aui_elevation(struct aui_rect rect, int radius, int level);
+/* A soft halo of argb around the rect (sigma 6 pt, spread 1 pt, no offset). */
+void aui_glow(struct aui_rect rect, int radius, unsigned argb);
 /* ---- GUI ABI v2 shapes (SYS_GUI_PATH) ----
  * ARGB colours: alpha is the high byte, 0 draws nothing. Each lowers to ONE
  * ol_window_path2 when the kernel reports LOGIT_GUI2_F_PATH and has a
