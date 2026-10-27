@@ -61,12 +61,35 @@ int ol_shader_compile(const char *text, size_t bytes, struct ol_shader_program *
                       struct ol_shader_error *);
 int ol_shader_validate(const struct ol_shader_program *, struct ol_shader_error *);
 
+/* Mip chain. Level 0 is the base image in ol3d_texture; mips[i] is level i+1, each
+ * max(w>>level,1) by max(h>>level,1). mip_filter picks the level from the screen-space
+ * UV derivatives of the 2x2 quad: NONE (zero, the legacy behaviour) always samples level
+ * 0, NEAREST takes the closest level, LINEAR blends the two nearest (trilinear when
+ * bilinear is set). The chain lives in caller storage; see ol3d_texture_build_mips. */
+enum { OL3D_MIP_NONE = 0, OL3D_MIP_NEAREST, OL3D_MIP_LINEAR, OL3D_MIP_FILTER_COUNT };
+struct ol3d_mip_level {
+    const unsigned char *pixels;
+    unsigned width, height, stride;
+    size_t bytes;
+};
 struct ol3d_texture {
     const unsigned char *pixels;
     unsigned width, height, stride;
     size_t bytes;
     int bilinear, repeat;
+    const struct ol3d_mip_level *mips;
+    unsigned mip_count, mip_filter;
 };
+/* Levels below the base for a w x h image (down to 1x1) and the bytes their tightly
+ * packed RGBA storage needs. Either out pointer may be null. */
+void ol3d_texture_mip_size(unsigned w, unsigned h, unsigned *levels, size_t *bytes);
+/* Box-filters base into levels[0..n) backed by storage. Each texel averages its 2x2
+ * source block (edge texels replicated for odd sizes), rounded half up. max_levels and
+ * storage_bytes bound the caller buffers (OL_LIMIT if too small). On success *count is
+ * the number of levels written and t->mips/mip_count may point at them. */
+int ol3d_texture_build_mips(const struct ol3d_texture *base, struct ol3d_mip_level *levels,
+                            unsigned max_levels, unsigned char *storage, size_t storage_bytes,
+                            unsigned *count);
 struct ol3d_bindings {
     const float (*uniforms)[4];
     unsigned uniform_count;
