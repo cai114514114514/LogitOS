@@ -8,7 +8,8 @@
  *              ('FAIL malformed <case> touched pixels' otherwise)
  *   scale      125/150/200%: coverage equals a device-space reference; an
  *              integer-point rect with SNAP lands on the wm2_rect24 edges
- *   unsupported conic, op, spread, inner radius, 9 stops: OL_UNSUPPORTED, no pixel
+ *   oracle2    conic, spread and 9 stops are pixel-identical to the direct call
+ *   unsupported op, radial inner radius, 16 stops with op: OL_UNSUPPORTED, no pixel
  *   scratch    the copy-in lives in the display's own OL_DS_USER slot
  *
  * Does not link fb.c. THE CONTROL (-DWM_DRAW2_NO_VALIDATE) drops the verb
@@ -169,8 +170,11 @@ static void ref_paint(struct gfx_paint *pa, const struct call *c, int num, int d
     if (q->kind == LOGIT_PAINT2_SOLID) { gfx_paint_solid(pa, q->argb & 0xFFFFFF, q->argb >> 24); return; }
     if (q->kind == LOGIT_PAINT2_LINEAR)
         gfx_paint_linear(pa, q->x0 * num / den, q->y0 * num / den, q->x1 * num / den, q->y1 * num / den);
+    else if (q->kind == LOGIT_PAINT2_CONIC)
+        gfx_paint_conic(pa, q->x0 * num / den, q->y0 * num / den, q->r0);
     else gfx_paint_radial(pa, q->x0 * num / den, q->y0 * num / den, q->r1 * num / den);
     for (unsigned i = 0; i < q->nstop; i++) gfx_paint_stop(pa, (int)c->sp[i], c->sa[i] & 0xFFFFFF, c->sa[i] >> 24);
+    pa->spread = q->spread;
 }
 /* Direct call, at the device scale num/den (coordinates are multiples of 4). */
 static int direct(struct rig *r, const struct call *c, int num, int den)
@@ -216,6 +220,15 @@ static void test_oracle(void)
     check_pair("oracle stroked rect", &c, 100, 0);
     linear(&c); check_pair("oracle stroked rect linear", &c, 100, 0);
     call_init(&c); circle(&c, FX(48), FX(30), FX(30)); linear(&c); check_pair("oracle clipped", &c, 100, 1);
+    /* conic, spread and 9 stops are accepted and paint exactly the direct call */
+    call_init(&c); circle(&c, FX(40), FX(30), FX(24)); radial(&c);
+    c.q.kind = LOGIT_PAINT2_CONIC; c.q.x0 = FX(40); c.q.y0 = FX(30); c.q.r0 = 30 * 256;
+    check_pair("oracle conic", &c, 100, 0);
+    c.q.spread = 2; check_pair("oracle conic reflect", &c, 100, 0);
+    call_init(&c); circle(&c, FX(40), FX(30), FX(24)); linear(&c); c.q.spread = 1; check_pair("oracle linear repeat", &c, 100, 0);
+    c.q.spread = 2; check_pair("oracle linear reflect", &c, 100, 0);
+    call_init(&c); circle(&c, FX(40), FX(30), FX(24)); linear(&c); stops2(&c, 9); check_pair("oracle 9 stops", &c, 100, 0);
+    call_init(&c); circle(&c, FX(40), FX(30), FX(24)); linear(&c); stops2(&c, 16); check_pair("oracle 16 stops", &c, 100, 0);
 
     /* an app matrix: scale 2 and a translation, against gfx_path_matrix directly */
     {
@@ -318,11 +331,9 @@ static void test_malformed(void)
     tri(&c); c.has_s = 1; c.s.width = FX(2); c.s.join = 3; malformed_case("stroke bad join", &c, OL_ARGUMENT, 0, 0);
     tri(&c); c.has_s = 1; c.s.width = FX(2); c.s.ndash = 2; malformed_case("stroke zero dashes", &c, OL_ARGUMENT, 0, 0);
     /* not yet supported: a specific status, still no pixel */
-    tri(&c); linear(&c); c.q.kind = LOGIT_PAINT2_CONIC; malformed_case("conic", &c, OL_UNSUPPORTED, 0, 0);
+    tri(&c); linear(&c); c.q.spread = 3; malformed_case("spread 3", &c, OL_ARGUMENT, 0, 0);
     tri(&c); c.q.op = 1; malformed_case("op != 0", &c, OL_UNSUPPORTED, 0, 0);
-    tri(&c); linear(&c); c.q.spread = 1; malformed_case("spread != 0", &c, OL_UNSUPPORTED, 0, 0);
     tri(&c); radial(&c); c.q.r0 = FX(4); malformed_case("radial inner radius", &c, OL_UNSUPPORTED, 0, 0);
-    tri(&c); linear(&c); stops2(&c, 9); malformed_case("nstop 9", &c, OL_UNSUPPORTED, 0, 0);
     tri(&c); linear(&c); stops2(&c, 16); c.q.op = 2; malformed_case("16 stops with op", &c, OL_UNSUPPORTED, 0, 0);
     /* a null paint or path pointer */
     {
