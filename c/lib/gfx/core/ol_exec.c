@@ -105,9 +105,9 @@ static int submit(struct ol_device *d, const struct ol_list *l, struct ol_surfac
     int result = OL_OK;
     for (unsigned long o = align8(sizeof *l); o < l->used;) {
         const struct command *c = (const void *)((const unsigned char *)l + o);
-        const struct ol_image *sources[2]={c->resource,c->mask};
-        uint64_t versions[2]={c->resource_generation,c->mask_generation};
-        for(int i=0;i<2;i++) if(sources[i]) {
+        const struct ol_image *sources[3]={c->resource,c->mask,c->paint_image};
+        uint64_t versions[3]={c->resource_generation,c->mask_generation,c->paint_generation};
+        for(int i=0;i<3;i++) if(sources[i]) {
             const struct ol_image *im=sources[i];
             if(im->magic!=OL_IMAGE_MAGIC || im->generation!=versions[i]) {result=OL_STALE_RESOURCE;break;}
             if(overlap(im->desc.pixels,im->desc.bytes,s->desc.front,s->desc.front_bytes) ||

@@ -21,6 +21,14 @@ enum { GFX_SOLID = 0, GFX_LINEAR, GFX_RADIAL, GFX_IMAGE, GFX_CONIC };
 enum { GFX_SPREAD_PAD = 0, GFX_SPREAD_REPEAT = 1, GFX_SPREAD_REFLECT = 2 };
 enum { GFX_FILTER_NEAREST = 0, GFX_FILTER_LINEAR = 1, GFX_FILTER_LINEAR_CLAMP = 2 };
 
+/* paint->flags bits for GFX_IMAGE. Flags 0 is the legacy image paint: nearest or bilinear,
+ * TRANSPARENT outside the image. IMG_CLAMP with spread PAD holds the edge texels instead
+ * (CLAMP_EDGE); spread REPEAT and REFLECT tile the image on their own. FILTER_BOX asks for
+ * area averaging (a box over the pixel's footprint in image space, premultiplied) once the
+ * inverse matrix shrinks by more than 2x (gfx_m_scale_of(inv) > 2.0); below that the
+ * ordinary filter runs, so a 1:1 or magnified image is untouched by the flag. */
+enum { GFX_PAINT_IMG_CLAMP = 1, GFX_PAINT_FILTER_BOX = 2 };
+
 struct gfx_stop { int t; unsigned color; int alpha; };   /* t: 0..65536 */
 
 struct gfx_paint {
@@ -40,6 +48,11 @@ struct gfx_paint {
      * is pad, flags 0 is none. Constructors zero-fill, and so does every brace or
      * positional initialiser, so an existing paint composites exactly as before. */
     unsigned char op, spread, flags, reserved0;
+    /* GFX_IMAGE recorded through ol_cmd_fill/ol_cmd_fill_ex: the struct ol_image whose pixel
+     * buffer `img` points into. The command retains it and reports OL_STALE_RESOURCE once the
+     * image is updated. Zero for every constructor; a borrowed image paint without it is
+     * still refused by the command list. */
+    const void *img_ref;
 };
 
 void gfx_paint_solid (struct gfx_paint *p, unsigned color, int alpha);
