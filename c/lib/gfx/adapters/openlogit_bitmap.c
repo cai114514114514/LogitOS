@@ -2,14 +2,35 @@
 #include "openlogit_draw.h"
 static int valid(const struct gfx_surface *s)
 {return s&&s->px&&s->w>0&&s->h>0&&s->w<=GFX_MAX_W&&s->h<=GFX_MAX_W&&s->stride>=s->w*4;}
+/* Status variants: a surface or dimension above GFX_MAX_W is a LIMIT, not a
+ * malformed argument. The legacy wrappers below fold LIMIT back to OL_ARGUMENT,
+ * so their results are exactly what they were. */
+#ifdef GFX_STATUS_COLLAPSE
+#define BMP_LIMIT OL_ARGUMENT          /* negative control: one refusal code */
+#else
+#define BMP_LIMIT OL_LIMIT
+#endif
+#define BMP_OVER(s) ((s) && ((s)->w > GFX_MAX_W || (s)->h > GFX_MAX_W))
+static int bmp_legacy(int r) { return r == OL_LIMIT ? OL_ARGUMENT : r; }
+int ol_bitmap_copy(struct gfx_surface *d,int dx,int dy,const struct gfx_surface *s,int sx,int sy,int w,int h)
+{return bmp_legacy(ol_bitmap_copy_st(d,dx,dy,s,sx,sy,w,h));}
+int ol_bitmap_read(const struct gfx_surface *s,int x,int y,struct gfx_surface *out)
+{return bmp_legacy(ol_bitmap_read_st(s,x,y,out));}
+int ol_bitmap_erase(struct gfx_surface *s,struct gfx_rect r,const struct gfx_clip_mask *m)
+{return bmp_legacy(ol_bitmap_erase_st(s,r,m));}
+int ol_bitmap_composite(struct gfx_surface *dst,const unsigned char *rgba,const unsigned char *mask,int opacity)
+{return bmp_legacy(ol_bitmap_composite_st(dst,rgba,mask,opacity));}
+int ol_bitmap_reshape(uint32_t *dst,int w,int h,const uint32_t *src,int ow,int oh,uint32_t color)
+{return bmp_legacy(ol_bitmap_reshape_st(dst,w,h,src,ow,oh,color));}
 static void move_bytes(unsigned char *d,const unsigned char *s,unsigned long n)
 {
     if((unsigned long)d>(unsigned long)s && (unsigned long)d-(unsigned long)s<n)
         while(n){n--;d[n]=s[n];}
     else for(unsigned long i=0;i<n;i++)d[i]=s[i];
 }
-int ol_bitmap_copy(struct gfx_surface *d,int dx,int dy,const struct gfx_surface *s,int sx,int sy,int w,int h)
+int ol_bitmap_copy_st(struct gfx_surface *d,int dx,int dy,const struct gfx_surface *s,int sx,int sy,int w,int h)
 {
+    if(BMP_OVER(d)||BMP_OVER(s))return BMP_LIMIT;
     if(!valid(d)||!valid(s)||w<0||h<0)return OL_ARGUMENT;
     long x0=0,y0=0,x1=w,y1=h;
     if(dx<0)x0=-(long)dx;if(sx<0&&-(long)sx>x0)x0=-(long)sx;
@@ -25,14 +46,16 @@ int ol_bitmap_copy(struct gfx_surface *d,int dx,int dy,const struct gfx_surface 
     }
     return OL_OK;
 }
-int ol_bitmap_read(const struct gfx_surface *s,int x,int y,struct gfx_surface *out)
+int ol_bitmap_read_st(const struct gfx_surface *s,int x,int y,struct gfx_surface *out)
 {
+    if(BMP_OVER(s)||BMP_OVER(out))return BMP_LIMIT;
     if(!valid(s)||!valid(out)||out->px==s->px)return OL_ARGUMENT;
     ol_raster_clear(out);
-    return ol_bitmap_copy(out,0,0,s,x,y,out->w,out->h);
+    return ol_bitmap_copy_st(out,0,0,s,x,y,out->w,out->h);
 }
-int ol_bitmap_erase(struct gfx_surface *s,struct gfx_rect r,const struct gfx_clip_mask *m)
+int ol_bitmap_erase_st(struct gfx_surface *s,struct gfx_rect r,const struct gfx_clip_mask *m)
 {
+    if(BMP_OVER(s))return BMP_LIMIT;
     if(!valid(s)||(m&&(!m->cov||m->w<=0||m->h<=0)))return OL_ARGUMENT;
     r=ol_damage_move(r,(struct gfx_rect){0},0,s->w,s->h);
     for(int y=r.y;y<r.y+r.h;y++)for(int x=r.x;x<r.x+r.w;x++) {
@@ -46,8 +69,9 @@ int ol_bitmap_erase(struct gfx_surface *s,struct gfx_rect r,const struct gfx_cli
 }
 void ol_mask_multiply(unsigned char *dst,const unsigned char *src,unsigned long n,unsigned ds,unsigned ss)
 {if(!dst||!src||!ds||!ss)return;for(unsigned long i=0;i<n;i++)dst[i*ds]=(dst[i*ds]*src[i*ss]+127)/255;}
-int ol_bitmap_composite(struct gfx_surface *dst,const unsigned char *rgba,const unsigned char *mask,int opacity)
+int ol_bitmap_composite_st(struct gfx_surface *dst,const unsigned char *rgba,const unsigned char *mask,int opacity)
 {
+    if(BMP_OVER(dst))return BMP_LIMIT;
     if(!valid(dst)||!rgba||opacity<0||opacity>256)return OL_ARGUMENT;
     for(int y=0;y<dst->h;y++)for(int x=0;x<dst->w;x++) {
         long i=(long)y*dst->w+x;const unsigned char *s=rgba+i*4;
@@ -63,9 +87,10 @@ void ol_bitmap_fill_padding(uint32_t *p,int w,int h,int cw,int ch,uint32_t color
     if(!p||w<0||h<0||cw<0||ch<0||cw>w||ch>h)return;
     for(int y=0;y<h;y++)for(int x=y<ch?cw:0;x<w;x++)p[(long)y*w+x]=color;
 }
-int ol_bitmap_reshape(uint32_t *dst,int w,int h,const uint32_t *src,int ow,int oh,uint32_t color)
+int ol_bitmap_reshape_st(uint32_t *dst,int w,int h,const uint32_t *src,int ow,int oh,uint32_t color)
 {
-    if(!dst||!src||w<1||h<1||ow<1||oh<1||w>GFX_MAX_W||h>GFX_MAX_W||ow>GFX_MAX_W||oh>GFX_MAX_W)return OL_ARGUMENT;
+    if(!dst||!src||w<1||h<1||ow<1||oh<1)return OL_ARGUMENT;
+    if(w>GFX_MAX_W||h>GFX_MAX_W||ow>GFX_MAX_W||oh>GFX_MAX_W)return BMP_LIMIT;
     int cw=w<ow?w:ow,ch=h<oh?h:oh;
     for(int i=0;i<ch;i++) {
         int y=dst==src&&w>ow?ch-i-1:i;

@@ -24,6 +24,14 @@ int ol_raster_mask_subs(const struct gfx_path *, int, unsigned char *, int w, in
                         int oy, int samples);
 int ol_raster_mask_clipped(const struct gfx_path *, int, unsigned char *, int w, int h,
                            int ox, int oy, int samples, const struct gfx_clip_mask *);
+/* Status variant of ol_raster_fill. OL_OK when the fill ran; OL_ARGUMENT for a
+ * null target, paint or path, a path whose overflow latched while it was built,
+ * or any other refusal of the legacy call; OL_LIMIT when the path is wider than
+ * GFX_MAX_W (4096) device pixels or holds more than GFX_MAX_EDGES (8192) points
+ * (each point adds at most one edge, so the point count bounds the edge count).
+ * The legacy 1/0 functions are unchanged. */
+int ol_raster_fill_st(struct gfx_surface *, const struct gfx_path *, int,
+                      const struct gfx_paint *, const struct gfx_rect *);
 void ol_raster_clear(struct gfx_surface *);
 /* Counts SDK raster invocations in this address space, for runtime path
  * evidence. Neither a submitted-frame counter nor a presentation counter. */

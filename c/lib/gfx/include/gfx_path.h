@@ -22,6 +22,15 @@
  *     gfx_path_init(&p, pts, 256, subs, 16);
  */
 
+/* Why a path refused its last edit. gfx_path_status() reports it; the path
+ * itself behaves exactly as before (a fill of an overflowed path is refused). */
+enum gfx_err {
+    GFX_OK = 0,
+    GFX_E_OVERFLOW,                /* point or subpath storage ran out        */
+    GFX_E_MATRIX_AFTER_POINTS,     /* gfx_path_matrix() after points were built */
+    GFX_E_RANGE                    /* reserved: no path builder raises it     */
+};
+
 struct gfx_path {
     int *pt;             /* x,y interleaved, 24.8 DEVICE                     */
     int  npt, ptcap;
@@ -33,6 +42,7 @@ struct gfx_path {
                           * mid-path (see its declaration below) -- either way
                           * a fill is then refused outright rather than drawn
                           * from a path that cannot be trusted                */
+    int  err;            /* enum gfx_err of the FIRST latched cause, 0 if none */
     struct gfx_matrix m; /* CTM applied as points are recorded               */
     int  cx, cy;         /* current point, device 24.8                       */
     int  sx, sy;         /* start of the open subpath                        */
@@ -74,6 +84,10 @@ void gfx_path_reset(struct gfx_path *p);          /* keeps the matrix + toleranc
  * is the normal case and always allowed. */
 void gfx_path_matrix(struct gfx_path *p, const struct gfx_matrix *m);
 void gfx_path_tolerance(struct gfx_path *p, int tol256);
+/* enum gfx_err for the path: GFX_OK, or the cause that latched `overflow`
+ * (the first one when several occur). A flag set directly by a stroker, with
+ * no cause recorded, reports GFX_E_OVERFLOW. */
+int gfx_path_status(const struct gfx_path *p);
 
 void gfx_move_to (struct gfx_path *p, int x, int y);
 void gfx_line_to (struct gfx_path *p, int x, int y);
