@@ -76,10 +76,23 @@ struct ol3d_bindings {
 struct ol3d_vertex {
     float attribute[OL3D_MAX_ATTRIBUTES][4];
 };
+/* Raster state appended to the pipeline; zero in every new field is the behaviour
+ * before they existed. depth_func compares the fragment z with the stored depth and
+ * passes when the relation holds (LESS is the legacy test). cull selects the face
+ * culled: BACK defers to the legacy cull_back flag, NONE never culls, FRONT culls
+ * counter-clockwise (front) faces whatever cull_back says. */
+enum { OL3D_DEPTH_LESS = 0, OL3D_DEPTH_LEQUAL, OL3D_DEPTH_ALWAYS, OL3D_DEPTH_NEVER,
+       OL3D_DEPTH_GREATER, OL3D_DEPTH_FUNC_COUNT };
+enum { OL3D_CULL_BACK = 0, OL3D_CULL_NONE, OL3D_CULL_FRONT, OL3D_CULL_COUNT };
 struct ol3d_pipeline {
     const struct ol_shader_program *vertex, *pixel;
     unsigned varying_count;
     int cull_back, depth_test, depth_write, blend;
+    /* blend_op is an enum gfx_op (gfx_blend.h). Anything other than GFX_OP_SRC_OVER
+     * composes each fragment with gfx_compose at full coverage and takes precedence
+     * over the legacy blend flag. no_depth_write masks the depth write on top of
+     * depth_write (the effective write is depth_write && !no_depth_write). */
+    unsigned char blend_op, depth_func, no_depth_write, cull;
 };
 struct ol3d_draw {
     struct ol3d_pipeline pipeline;

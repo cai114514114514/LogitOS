@@ -129,6 +129,26 @@ static int top_left(const struct projected *a, const struct projected *b)
 {
     return b->y < a->y || (b->y == a->y && b->x > a->x);
 }
+static int depth_pass(unsigned func, float z, float stored)
+{
+#ifdef OL3D_IGNORE_DEPTH_FUNC
+    (void)func;
+    return z < stored;
+#else
+    switch (func) {
+    case OL3D_DEPTH_LEQUAL:
+        return z <= stored;
+    case OL3D_DEPTH_ALWAYS:
+        return 1;
+    case OL3D_DEPTH_NEVER:
+        return 0;
+    case OL3D_DEPTH_GREATER:
+        return z > stored;
+    default:
+        return z < stored;
+    }
+#endif
+}
 static int raster(struct ol3d_context *c, const struct vertex tri[3], const struct ol3d_draw *draw)
 {
     struct projected v[3];
@@ -142,7 +162,19 @@ static int raster(struct ol3d_context *c, const struct vertex tri[3], const stru
             tri[i].p[2] * inv, inv, &tri[i]};
     }
     int64_t area = edge(&v[0], &v[1], v[2].x, v[2].y);
-    if (!area || (draw->pipeline.cull_back && area >= 0))
+    /* area < 0 is a counter-clockwise (front) face; the viewport y flip is why. */
+    switch (draw->pipeline.cull) {
+    case OL3D_CULL_NONE:
+        break;
+    case OL3D_CULL_FRONT:
+        if (area < 0)
+            return OL_OK;
+        break;
+    default:
+        if (draw->pipeline.cull_back && area >= 0)
+            return OL_OK;
+    }
+    if (!area)
         return OL_OK;
     if (area < 0) {
         struct projected tmp = v[1];
@@ -186,7 +218,7 @@ static int raster(struct ol3d_context *c, const struct vertex tri[3], const stru
             size_t offset = (size_t)y * c->width + x;
             c->stats.fragments++;
 #ifndef OPENLOGIT_DEPTH_DISABLED
-            if (draw->pipeline.depth_test && z >= c->depth[offset])
+            if (draw->pipeline.depth_test && !depth_pass(draw->pipeline.depth_func, z, c->depth[offset]))
                 continue;
 #endif
             float wa = a * v[0].invw, wb = b * v[1].invw, wd = d * v[2].invw, den = wa + wb + wd;
@@ -208,12 +240,16 @@ static int raster(struct ol3d_context *c, const struct vertex tri[3], const stru
             for (int k = 0; k < 4; k++)
                 rgba[k] = (int)(fmin(1, fmax(0, output.color[k])) * 255 + .5f);
             unsigned char *dst = c->work + offset * 4;
-            if (draw->pipeline.blend)
+            if (draw->pipeline.blend_op != GFX_OP_SRC_OVER)
+                gfx_compose((enum gfx_op)draw->pipeline.blend_op, dst,
+                            ((uint32_t)rgba[0] << 16) | ((uint32_t)rgba[1] << 8) | (uint32_t)rgba[2],
+                            rgba[3], 255);
+            else if (draw->pipeline.blend)
                 gfx_over(dst, rgba[0], rgba[1], rgba[2], rgba[3], 255);
             else
                 for (int k = 0; k < 4; k++)
                     dst[k] = (unsigned char)rgba[k];
-            if (draw->pipeline.depth_write)
+            if (draw->pipeline.depth_write && !draw->pipeline.no_depth_write)
                 c->depth[offset] = z;
         }
     return OL_OK;
