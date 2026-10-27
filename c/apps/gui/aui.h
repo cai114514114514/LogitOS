@@ -297,6 +297,27 @@ int aui_textfield(int x, int y, int w, char *buf, int cap);
 int aui_textfield_ex(int x, int y, int w, char *buf, int cap,
                      const char *placeholder, int enabled);
 
+/* Rounded clips and opacity groups (GUI ABI v2 CLIP / GROUP; both fall back
+ * without them). Every push needs its pop in the same frame; aui_end() closes
+ * what was left open. `r` is in the current drawing coordinates.
+ *
+ * aui_clip_push_round(): later drawing is clipped to r with every corner
+ * `radius` points, intersected with the clip in force. Returns 1 when the
+ * kernel is doing the rounding, 0 when only the square clip is (a kernel
+ * without CLIP_PUSH, or a full level stack). aui_clip_pop() undoes the last
+ * push from either this or the scroll/dialog containers.
+ *
+ * aui_fade_begin(): everything drawn until aui_fade_end() is composited over
+ * what was there at `alpha` (0..255) as one layer -- overlapping shapes, text
+ * and shadows fade together, not each by itself. On OL_LIMIT or OL_UNSUPPORTED
+ * no group is made and the fade is the old colour mixing, done by aui's own
+ * widgets; app code between begin and end is then drawn at full strength.
+ * Include any shadow in `r`: the group only changes pixels inside it. */
+int  aui_clip_push_round(struct aui_rect r, int radius);
+void aui_clip_pop(void);
+void aui_fade_begin(struct aui_rect r, int alpha);
+void aui_fade_end(void);
+
 /* Scrollbar. `off` is the scroll offset in content units; returns 1 when the
  * offset changed (drag or click on the trough). Wheel belongs to the container. */
 int aui_scrollbar(int x, int y, int h, int *off, int content, int view);
@@ -316,6 +337,9 @@ int aui_scrollbar(int x, int y, int h, int *off, int content, int view);
  *     aui_scroll_end();
  */
 void aui_scroll_begin(int x, int y, int w, int h, int *off, int content_h);
+/* The same, clipped to the container's rounded corners (`radius` points; the
+ * side that carries the scrollbar stays square). Up to 8 containers nest. */
+void aui_scroll_begin_round(int x, int y, int w, int h, int *off, int content_h, int radius);
 void aui_scroll_end(void);
 
 /* Lists and tables. `items` is an array of `n` NUL-terminated strings; `cols`

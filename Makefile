@@ -116,7 +116,8 @@ AS_NATIVE_EXAMPLE_PACK := $(foreach entry,$(AS_NATIVE_EXAMPLE_AEX),$(entry):/usr
 # There is no italic: neither source carries an `ital` or `slnt` axis. See
 # fsroot/fonts/README.md and tools/mkfont.py's docstring.
 FONTS       := fsroot/fonts/ui.ttf fsroot/fonts/mono.ttf \
-               fsroot/fonts/ui-bold.ttf fsroot/fonts/mono-bold.ttf
+               fsroot/fonts/ui-bold.ttf fsroot/fonts/mono-bold.ttf \
+               fsroot/fonts/ui-medium.ttf fsroot/fonts/ui-semibold.ttf
 # The shaping font. Vendored unmodified (see third_party/fonts/README.md):
 # the Noto subsets above carry no Arabic, no Hebrew and -- because subsetting
 # stripped them -- no GSUB/GPOS at all, so the shaper would have nothing to do.
@@ -1862,7 +1863,8 @@ verify-fonts: verify-font-sources
 regen-fonts: verify-font-sources tools/mkfont.py $(FONT_UI_SRC) $(FONT_MONO_SRC)
 	@mkdir -p fsroot/fonts
 	python3 tools/mkfont.py fsroot/fonts/ui.ttf fsroot/fonts/mono.ttf \
-	    fsroot/fonts/ui-bold.ttf fsroot/fonts/mono-bold.ttf
+	    fsroot/fonts/ui-bold.ttf fsroot/fonts/mono-bold.ttf \
+	    fsroot/fonts/ui-medium.ttf fsroot/fonts/ui-semibold.ttf
 	@cd fsroot/fonts && sha256sum -c SHA256SUMS
 
 $(FONTS):
@@ -1949,6 +1951,8 @@ DISK_PACK = \
     fsroot/fonts/ui.ttf:/fonts/ui.ttf fsroot/fonts/mono.ttf:/fonts/mono.ttf \
     fsroot/fonts/ui-bold.ttf:/fonts/ui-bold.ttf \
     fsroot/fonts/mono-bold.ttf:/fonts/mono-bold.ttf \
+    fsroot/fonts/ui-medium.ttf:/fonts/ui-medium.ttf \
+    fsroot/fonts/ui-semibold.ttf:/fonts/ui-semibold.ttf \
     $(FONT_TEXT):/fonts/text.ttf \
     LICENSE:/licenses/README.txt LICENSING.md:/licenses/Logit-LICENSING.md \
     LICENSES/GPL-3.0-or-later.txt:/licenses/GPL-3.0-or-later.txt \

@@ -11,6 +11,7 @@
 #include "kheap.h"
 #include "kprintf.h"
 #include "spinlock.h"
+#include "glyphras.h"
 #include "logit_abi.h"   /* LOGIT_FACE_MONO / LOGIT_FACE_BOLD -- see face_font() */
 
 /* SYS_GUI2_INFO feature bit for the SYS_TEXT_MEASURE carets query
@@ -39,7 +40,9 @@ void *memcpy(void *, const void *, size_t);
  * font with Arabic and Hebrew, and we do not ship a second copy of it. Bold
  * Arabic therefore falls through to regular DejaVu, which is the same glyphs
  * at the wrong weight rather than no glyphs at all. */
-enum { F_UI = 0, F_MONO = 1, F_TEXT = 2, F_UI_B = 3, F_MONO_B = 4, NFONT = 5 };
+enum { F_UI = 0, F_MONO = 1, F_TEXT = 2, F_UI_B = 3, F_MONO_B = 4,
+       F_UI_M = 5, F_UI_S = 6, NFONT = 7 };   /* M = wght 500, S = wght 600 */
+/* fonts[] and font_ok[] are written only by text_init and read under text_lock. */
 static struct ttf_font fonts[NFONT];
 static int font_ok[NFONT];
 
@@ -81,47 +84,213 @@ void text_init(void)
     load_font("/fonts/ui-bold.ttf", F_UI_B);
     load_font("/fonts/mono-bold.ttf", F_MONO_B);
 #endif
+    /* Intermediate weights: same absence rule as the bold faces (a missing
+     * file just shortens the fallback chain, see tl_fonts). */
+    load_font("/fonts/ui-medium.ttf", F_UI_M);
+    load_font("/fonts/ui-semibold.ttf", F_UI_S);
 }
 
-/* --- glyph cache (open addressing with hash-slot eviction) --- */
-#define CACHE_N 2048
+/* --- CSS weight -> baked face slot ------------------------------------------
+ * The UI family is baked at 400, 500, 600 and 700. A weight 100..900 resolves
+ * to the nearest baked slot, ties going UP (450 -> 500, 550 -> 600, 650 -> 700;
+ * 100..449 -> 400, >= 650 -> 700). The resolved slot travels in the `face`
+ * mask: LOGIT_FACE_BOLD (slot 700), or a 2-bit field at TEXT_FACE_WSHIFT
+ * (1 = medium, 2 = semibold). Legacy callers pass 0..3 and never set the field,
+ * so their font set is unchanged. Mono is baked at 400 and 700 only. Italic is
+ * not offered (no ital axis in the vendored source).
+ *
+ * -DTEXT_WEIGHT_BOOL is the negative control's sabotage: any weight > 400 is
+ * simply bold, i.e. the old two-instance behaviour. */
+#define TEXT_FACE_WSHIFT 8
+#define TEXT_FACE_WMASK  (3u << TEXT_FACE_WSHIFT)
+
+int text_weight_slot(int weight)
+{
+    if (weight < 100) weight = 100;
+    if (weight > 900) weight = 900;
+#ifdef TEXT_WEIGHT_BOOL
+    return weight > 400 ? 700 : 400;
+#else
+    if (weight < 450) return 400;
+    if (weight < 550) return 500;
+    if (weight < 650) return 600;
+    return 700;
+#endif
+}
+
+/* Face mask for a (face, weight) pair; weight 0 keeps `face` (legacy run). */
+unsigned text_face_for_weight(unsigned face, int weight)
+{
+    if (weight <= 0) return face;
+    face &= LOGIT_FACE_MONO;
+    int slot = text_weight_slot(weight);
+    if (slot >= 700) return face | LOGIT_FACE_BOLD;
+    if (face & LOGIT_FACE_MONO)               /* mono: 400 or 700 only */
+        return slot >= 600 ? (face | LOGIT_FACE_BOLD) : face;
+    if (slot == 600) return face | (2u << TEXT_FACE_WSHIFT);
+    if (slot == 500) return face | (1u << TEXT_FACE_WSHIFT);
+    return face;
+}
+
+/* --- glyph cache (open addressing with hash-slot eviction) ---
+ *
+ * rastbuf is the scratch one glyph is rasterised into. It used to be the ONLY
+ * place a glyph could be rasterised, so any glyph whose box exceeded 200*200
+ * (about 190 px) was silently dropped although the syscalls accept px up to
+ * 512. glyph_get now asks text_raster_extent first: a glyph that fits rastbuf
+ * takes the old path unchanged; a larger one is rasterised straight into a
+ * kmalloc'd buffer that is counted against TEXT_GLYPH_BUDGET (older entries are
+ * evicted to make room); and if that allocation fails, or the glyph alone is
+ * over budget, it is rendered UNCACHED in horizontal bands through rastbuf with
+ * text_raster_at. No API change. Everything here runs under text_lock.
+ * -DTEXT_RASTBUF_LEGACY restores the old behaviour (negative control). */
+/* QUARTER-PIXEL POSITIONING. The cache key carries subx (0..3): the glyph's
+ * pen x in 24.8 is split into a whole pixel and a quarter-pixel phase
+ * (round(frac*4)), and the mask for phase k is the outline rasterised
+ * k*64 (24.8) to the right (text_raster_at_sub). A phase-0 entry is
+ * bit-identical to the old integer-pen mask. Four phases quadruple the
+ * distinct masks a string can need, so the entry table doubles (2048 -> 4096)
+ * under the same round-robin eviction and the same byte budget. */
+#define CACHE_N 4096
+#ifndef TEXT_GLYPH_BUDGET
+#define TEXT_GLYPH_BUDGET (4 * 1024 * 1024)     /* bytes of cached coverage */
+#endif
 struct gentry {
-    int used, fidx, gid, px; uint8_t *cov; int w, h, ox, oy, adv;
+    int used, fidx, gid, px, subx; uint8_t *cov; int w, h, ox, oy, adv;
     int ix0, iy0, ix1, iy1; /* tight nonzero coverage, half open; empty is zero */
+    int banded;             /* no cov: draw in bands (only the transient entry) */
 };
 static struct gentry cache[CACHE_N];
+#ifndef TEXT_RASTBUF_LEGACY
+static struct gentry banded_tmp;                /* uncached oversize glyph */
+#endif
+static long cache_bytes;                        /* sum of w*h over cached cov */
+static int  evict_cur;
 static uint8_t rastbuf[200 * 200];             /* scratch for one glyph rasterization */
 
-static struct gentry *glyph_get(int fidx, int gid, int px)
+#ifdef TEXT_GLYPH_CAP_TEST
+long text_gc_bytes(void) { return cache_bytes; }
+#endif
+
+static void cache_drop(struct gentry *e)
 {
-    unsigned h0 = ((unsigned)fidx * 131u + (unsigned)gid * 2654435761u + (unsigned)px * 97u) % CACHE_N;
+    if (e->used && e->cov) { kfree(e->cov); cache_bytes -= (long)e->w * e->h; }
+    e->used = 0; e->cov = 0;
+}
+
+/* Evict (round robin, never slot `keep`) until `need` more bytes fit. */
+static void cache_make_room(long need, unsigned keep)
+{
+    for (int n = 0; cache_bytes + need > TEXT_GLYPH_BUDGET && n < CACHE_N; n++) {
+        evict_cur = (evict_cur + 1) % CACHE_N;
+        if ((unsigned)evict_cur != keep && cache[evict_cur].used && cache[evict_cur].cov)
+            cache_drop(&cache[evict_cur]);
+    }
+}
+
+static void ink_scan(const uint8_t *cov, int w, int h, int yoff,
+                     int *x0, int *y0, int *x1, int *y1)
+{
+    for (int y = 0; y < h; y++) for (int x = 0; x < w; x++)
+        if (cov[y * w + x]) {
+            if (x < *x0) *x0 = x; if (y + yoff < *y0) *y0 = y + yoff;
+            if (x + 1 > *x1) *x1 = x + 1; if (y + yoff + 1 > *y1) *y1 = y + yoff + 1;
+        }
+}
+
+/* text_raster_at with the outline shifted right by subx quarter pixels
+ * (c/lib/text/glyphras.c; glyphras.h is not ours to extend). */
+int text_raster_at_sub(const struct ttf_font *f, int gid, int px, int ox_i, int top_i,
+                       int subx, uint8_t *cov, int w, int h);
+
+/* A glyph that fits rastbuf, at phase subx. Phase 0 is text_raster itself. */
+static int raster_small(int fidx, int gid, int px, int subx,
+                        int *w, int *h, int *ox, int *oy)
+{
+    if (subx == 0)
+        return text_raster(&fonts[fidx], gid, px, rastbuf, (int)sizeof rastbuf, w, h, ox, oy);
+    int bx, bt, bw, bh;
+    if (text_raster_extent(&fonts[fidx], gid, px, &bx, &bt, &bw, &bh) != 0 ||
+        bw <= 0 || bh <= 0) { *w = *h = *ox = *oy = 0; return 0; }     /* blank */
+    if (bw > 768 || (long)bw * bh > (long)sizeof rastbuf) return -1;   /* GR_MAXW */
+    if (text_raster_at_sub(&fonts[fidx], gid, px, bx, bt, subx, rastbuf, bw, bh) != 0)
+        return -1;
+    *w = bw; *h = bh; *ox = bx; *oy = bt;
+    return 0;
+}
+
+static struct gentry *glyph_get(int fidx, int gid, int px, int subx)
+{
+    unsigned h0 = ((unsigned)fidx * 131u + (unsigned)gid * 2654435761u + (unsigned)px * 97u +
+                   (unsigned)subx * 40503u) % CACHE_N;
     for (int probe = 0; probe < 8; probe++) {
         struct gentry *e = &cache[(h0 + probe) % CACHE_N];
-        if (e->used && e->fidx == fidx && e->gid == gid && e->px == px) return e;
+        if (e->used && e->fidx == fidx && e->gid == gid && e->px == px && e->subx == subx) return e;
         if (!e->used) { h0 = (h0 + probe) % CACHE_N; goto fill; }
     }
     h0 = h0 % CACHE_N;                          /* table full at probe window: evict slot */
-    if (cache[h0].used && cache[h0].cov) kfree(cache[h0].cov);
+    cache_drop(&cache[h0]);
 fill: ;
     struct gentry *e = &cache[h0];
-    int w, h, ox, oy;
-    if (text_raster(&fonts[fidx], gid, px, rastbuf, (int)sizeof rastbuf, &w, &h, &ox, &oy) != 0) {
-        w = h = 0; ox = oy = 0;
-    }
+    int w = 0, h = 0, ox = 0, oy = 0;
     uint8_t *cov = 0;
-    if (w > 0 && h > 0) { cov = kmalloc(w * h); if (cov) memcpy(cov, rastbuf, w * h); }
-    e->used = 1; e->fidx = fidx; e->gid = gid; e->px = px;
+    int big = 0;
+#ifndef TEXT_RASTBUF_LEGACY
+    {
+        int bx, bt, bw, bh;
+        if (text_raster_extent(&fonts[fidx], gid, px, &bx, &bt, &bw, &bh) == 0 &&
+            bw > 0 && bh > 0 && (long)bw * bh > (long)sizeof rastbuf) {
+            big = 1;
+            long need = (long)bw * bh;
+            if (need <= TEXT_GLYPH_BUDGET) {
+                cache_make_room(need, h0);
+                cov = kmalloc((unsigned long)need);
+            }
+            if (cov && text_raster_at_sub(&fonts[fidx], gid, px, bx, bt, subx, cov, bw, bh) != 0) {
+                kfree(cov); cov = 0; bw = bh = 0;       /* unrasterisable: blank */
+                w = h = 0; ox = oy = 0;
+            } else if (cov) {
+                w = bw; h = bh; ox = bx; oy = bt;
+                cache_bytes += need;
+            } else {
+                /* No cacheable buffer: uncached banded render. */
+                struct gentry *t = &banded_tmp;
+                t->cov = 0; t->ix0 = t->iy0 = t->ix1 = t->iy1 = 0;
+                t->used = 1; t->banded = 1; t->fidx = fidx; t->gid = gid; t->px = px; t->subx = subx;
+                t->w = bw; t->h = bh; t->ox = bx; t->oy = bt;
+                int x0 = bw, y0 = bh, x1 = 0, y1 = 0;
+                int bandh = (int)sizeof rastbuf / bw;
+                if (bandh < 1) bandh = 1;
+                for (int y = 0; y < bh; y += bandh) {
+                    int n = bh - y < bandh ? bh - y : bandh;
+                    if (text_raster_at_sub(&fonts[fidx], gid, px, bx, bt - y, subx, rastbuf, bw, n) == 0)
+                        ink_scan(rastbuf, bw, n, y, &x0, &y0, &x1, &y1);
+                }
+                if (x1 > x0 && y1 > y0) { t->ix0 = x0; t->iy0 = y0; t->ix1 = x1; t->iy1 = y1; }
+                t->adv = (int)(((long)ttf_advance(&fonts[fidx], gid) * px) / fonts[fidx].units_per_em);
+                return t;
+            }
+        }
+    }
+#endif
+    if (!big) {
+        if (raster_small(fidx, gid, px, subx, &w, &h, &ox, &oy) != 0) {
+            w = h = 0; ox = oy = 0;
+        }
+        if (w > 0 && h > 0) {
+            cache_make_room((long)w * h, h0);
+            cov = kmalloc(w * h);
+            if (cov) { memcpy(cov, rastbuf, w * h); cache_bytes += (long)w * h; }
+        }
+    }
+    e->used = 1; e->fidx = fidx; e->gid = gid; e->px = px; e->subx = subx; e->banded = 0;
     e->cov = cov; e->w = cov ? w : 0; e->h = h; e->ox = ox; e->oy = oy;
     /* Ink is measured from the same cached mask draw uses. Scanning only at
      * cache fill avoids re-rasterizing or re-scanning a label on every query. */
     e->ix0 = e->iy0 = e->ix1 = e->iy1 = 0;
     if (cov) {
         int x0 = w, y0 = h, x1 = 0, y1 = 0;
-        for (int y = 0; y < h; y++) for (int x = 0; x < w; x++)
-            if (cov[y * w + x]) {
-                if (x < x0) x0 = x; if (y < y0) y0 = y;
-                if (x + 1 > x1) x1 = x + 1; if (y + 1 > y1) y1 = y + 1;
-            }
+        ink_scan(cov, w, h, 0, &x0, &y0, &x1, &y1);
         if (x1 > x0 && y1 > y0) {
             e->ix0 = x0; e->iy0 = y0; e->ix1 = x1; e->iy1 = y1;
         }
@@ -166,12 +335,41 @@ static uint8_t  tl_bidi[32 * 1024];
  * the set index straight to the glyph cache rasterizes the right glyph id out
  * of the wrong font, which renders as nothing at all when that font is a
  * 97-glyph subset. */
-struct emit_ctx { int base, px; uint32_t color; const int *map; struct ol_display *d; int alpha; };
+struct emit_ctx { int base, px; uint32_t color; const int *map; struct ol_display *d; int alpha;
+                  int frac; /* 1: shape_line ran at 256x scale, x and y_off are 24.8 */ };
+
+/* An oversize glyph that could not be cached: rasterise and blit it one band
+ * of rastbuf at a time. Same pixels as the one-shot box (text_raster_at shifts
+ * by whole pixels), nothing retained. */
+static void blit_banded(const struct emit_ctx *e, const struct gentry *g, int x, int y_off)
+{
+    int bandh = (int)sizeof rastbuf / g->w;
+    if (bandh < 1) bandh = 1;
+    for (int y = 0; y < g->h; y += bandh) {
+        int n = g->h - y < bandh ? g->h - y : bandh;
+        if (text_raster_at_sub(&fonts[g->fidx], g->gid, g->px, g->ox, g->oy - y,
+                               g->subx, rastbuf, g->w, n) != 0) continue;
+        int dy = e->base - y_off - g->oy + y;
+        if (e->d && e->alpha < 255)
+            ol_display_blit_glyph_a(e->d, x + g->ox, dy, rastbuf, g->w, n, g->w,
+                                    e->color, e->alpha);
+        else
+            fb_blit_glyph(x + g->ox, dy, rastbuf, g->w, n, e->color);
+    }
+}
 
 static void emit_blit(void *ud, int fidx, int gid, int x, int y_off)
 {
     struct emit_ctx *e = (struct emit_ctx *)ud;
-    struct gentry *g = glyph_get(e->map[fidx], gid, e->px);
+    int subx = 0;
+    if (e->frac) {
+        /* 24.8 pen -> whole pixel + nearest quarter-pixel phase. */
+        int q = ((x & 255) + 32) >> 6;                  /* 0..4 */
+        x = (x >> 8) + (q >> 2); subx = q & 3;
+        y_off /= 256;                                   /* truncates like sc_scale */
+    }
+    struct gentry *g = glyph_get(e->map[fidx], gid, e->px, subx);
+    if (g->banded) { blit_banded(e, g, x, y_off); return; }
     if (!g->cov) return;
     /* alpha < 255 goes through the caller's display; 255 is the legacy path. */
     if (e->d && e->alpha < 255)
@@ -185,8 +383,8 @@ struct metrics_ctx { int base, px; const int *map; struct logit_text_metrics *ou
 static void emit_metrics(void *ud, int fidx, int gid, int x, int y_off)
 {
     struct metrics_ctx *e = (struct metrics_ctx *)ud;
-    struct gentry *g = glyph_get(e->map[fidx], gid, e->px);
-    if (!g->cov || g->ix1 <= g->ix0 || g->iy1 <= g->iy0) return;
+    struct gentry *g = glyph_get(e->map[fidx], gid, e->px, 0);
+    if ((!g->cov && !g->banded) || g->ix1 <= g->ix0 || g->iy1 <= g->iy0) return;
     /* Keep placement identical to emit_blit, including fallback glyphs and
      * shaped mark offsets. The bitmap allocation box alone includes padding. */
     int left = x + g->ox + g->ix0, right = x + g->ox + g->ix1;
@@ -246,10 +444,13 @@ static void tl_fonts(struct shape_font_set *fs, int prefer, int face, int *map)
     static const int order_reg[3]       = { F_UI, F_TEXT, F_MONO };
     static const int order_bold[5]      = { F_UI_B, F_UI, F_TEXT, F_MONO_B, F_MONO };
     static const int order_bold_mono[5] = { F_MONO_B, F_MONO, F_UI_B, F_UI, F_TEXT };
+    static const int order_med[4]       = { F_UI_M, F_UI, F_TEXT, F_MONO };
+    static const int order_semi[4]      = { F_UI_S, F_UI_M, F_UI, F_TEXT };
     int bold = (face & LOGIT_FACE_BOLD) != 0;
-    const int *order = !bold ? order_reg
-                     : (face & LOGIT_FACE_MONO) ? order_bold_mono : order_bold;
-    int n = bold ? 5 : 3;
+    int ws = (face & LOGIT_FACE_MONO) ? 0 : (int)(((unsigned)face & TEXT_FACE_WMASK) >> TEXT_FACE_WSHIFT);
+    const int *order = bold ? ((face & LOGIT_FACE_MONO) ? order_bold_mono : order_bold)
+                     : ws == 2 ? order_semi : ws == 1 ? order_med : order_reg;
+    int n = bold ? 5 : ws ? 4 : 3;
     fs->n = 0;
     if (font_ok[prefer]) { map[fs->n] = prefer; fs->f[fs->n++] = &fonts[prefer]; }
     for (int i = 0; i < n && fs->n < SHAPE_MAX_FONTS; i++)
@@ -284,7 +485,12 @@ static void tl_fonts(struct shape_font_set *fs, int prefer, int face, int *map)
 static int face_font(int face)
 {
     if (face & LOGIT_FACE_BOLD) return (face & LOGIT_FACE_MONO) ? F_MONO_B : F_UI_B;
-    return (face & LOGIT_FACE_MONO) ? F_MONO : F_UI;
+    if (face & LOGIT_FACE_MONO) return F_MONO;
+    switch (((unsigned)face & TEXT_FACE_WMASK) >> TEXT_FACE_WSHIFT) {
+    case 1: return F_UI_M;
+    case 2: return F_UI_S;
+    default: return F_UI;
+    }
 }
 
 /* THE TEXT LOCK, AND WHY IT IS ONE LOCK AND NOT THREE.
@@ -342,8 +548,24 @@ static int layout_locked(int x, int y, const char *s, int len, int face, int px,
 
     if (!draw) return shape_line(&fs, s, len, px, cell, x, 0, &sc);
 
-    struct emit_ctx ec = { y + ascent_px(map[0], px), px, color, map, d, alpha };
+    struct emit_ctx ec = { y + ascent_px(map[0], px), px, color, map, d, alpha, 0 };
     struct shape_emit em = { emit_blit, &ec };
+#ifndef TEXT_INTEGER_PEN
+    /* The pen stays in 24.8: shape_line scales every advance and offset by
+     * px/upem with ONE truncation, so running it at px*256 and x*256 yields
+     * the same layout in 1/256 px instead of whole pixels (it reads px only
+     * for that scaling). The cell grid keeps whole-pixel cells (and its
+     * "wide glyph" test compares truncated advances), so it stays integer.
+     * text_measure and the caret query still use the integer pen, and the
+     * value returned stays the measured one (draw == measure is a contract
+     * callers rely on), so the drawn ink can run up to ~0.5 px per glyph past
+     * the returned end. That costs a second, measure-only shaping pass. */
+    if (cell <= 0) {
+        ec.frac = 1;
+        shape_line(&fs, s, len, px * 256, 0, x * 256, &em, &sc);
+        return shape_line(&fs, s, len, px, 0, x, 0, &sc);
+    }
+#endif
     return shape_line(&fs, s, len, px, cell, x, &em, &sc);
 }
 

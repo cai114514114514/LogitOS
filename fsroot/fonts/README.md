@@ -1,20 +1,28 @@
 # Runtime fonts
 
-The disk image uses four checked-in, redistributable font subsets:
+The disk image uses six checked-in, redistributable font subsets:
 
 | File | Internal name | Derived from | Coverage | SHA-256 |
 |---|---|---|---|---|
 | `ui.ttf` | Logit UI Regular | Noto Sans SC `wght=400` | GB2312, ASCII, and selected CJK/fullwidth punctuation | `c26e4469f4209adc9d656492d175a70752e277fae94d2bba5aac98e31284f67c` |
 | `ui-bold.ttf` | Logit UI Bold | Noto Sans SC `wght=700` | identical codepoint set to `ui.ttf` | `88256312b966cd851befca3679f40bf2e27ebab40d365c0adc7cbaf807403116` |
+| `ui-medium.ttf` | Logit UI Medium | Noto Sans SC `wght=500` | identical codepoint set to `ui.ttf` | `8e592c74a3d2969599097a29387e0560de640b608da8cf419339d391a6d0c9a2` |
+| `ui-semibold.ttf` | Logit UI SemiBold | Noto Sans SC `wght=600` | identical codepoint set to `ui.ttf` | `fd5824b0a6dff107023d522dad9d008e4bc8040c6a25038f91231dffbf3da696` |
 | `mono.ttf` | Logit Mono Regular | Noto Sans Mono `wght=400 wdth=100` | printable ASCII plus non-breaking space | `360015a138312fd70b834a5157a7164602ccafa3ccac0ece12327c0bb3b0cd27` |
 | `mono-bold.ttf` | Logit Mono Bold | Noto Sans Mono `wght=700 wdth=100` | identical codepoint set to `mono.ttf` | `fa25e03e0d6ace14132c45cbe31cfe4446a0b435df29294b57bb0865f76beaf8` |
 
-All four are modified font software distributed under SIL Open Font License
+All six are modified font software distributed under SIL Open Font License
 1.1, not under Logit's MIT license. Their internal name tables retain upstream
 copyright and license metadata. The complete notices, exact upstream commit,
 source hashes, and unmodified source fonts are in `third_party/fonts/`.
 The disk image also installs the complete OFL texts and source record under
 `/licenses/fonts/`.
+
+**Medium and SemiBold** are two more instances of the same UI source (`wght=500`
+and `wght=600`, same subset, same kern-only GPOS). `c/kernel/gui/text.c` maps a
+CSS weight 100..900 to the nearest baked UI slot (400, 500, 600, 700; ties go
+up), so 650 is Bold and 550 is SemiBold. Mono has only Regular and Bold.
+Italic is still not provided.
 
 **The Bold pair is an INSTANCE, not a new download.** Both sources are variable
 fonts; the only axes they carry are `wght` (and `wdth` on Mono). So the same

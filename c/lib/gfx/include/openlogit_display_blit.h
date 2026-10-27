@@ -31,4 +31,17 @@ int ol_display_blit_rgba_ex(struct ol_display *ctx, const uint8_t *src,
 void ol_display_blit_glyph_a(struct ol_display *ctx, int x, int y,
                              const uint8_t *cov, int w, int h, int stride,
                              uint32_t color, int alpha);
+
+/* Optional 256-entry coverage LUT for ol_display_blit_glyph_a, per display
+ * (stored in its OL_DS_SPARE scratch slot, so per drawing context; copied, the
+ * caller keeps no pointer). Every glyph coverage byte c is replaced by lut[c]
+ * before the global alpha applies. lut == NULL disables it, and a display that
+ * never set one (the default) blits exactly as without this call. Returns
+ * OL_OK, OL_ARGUMENT (ctx NULL) or OL_LIMIT (no allocator / scratch failed). */
+int ol_display_set_glyph_lut(struct ol_display *ctx, const uint8_t lut[256]);
+
+/* Fill `lut` for text colour `text` over background `bg` (both 0xRRGGBB),
+ * chosen by luma: dark text on a lighter background gets a contrast boost,
+ * light text on a darker one an easing, a near-equal pair the identity. */
+void ol_display_glyph_lut_for(uint8_t lut[256], uint32_t text, uint32_t bg);
 #endif

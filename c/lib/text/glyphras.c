@@ -142,14 +142,14 @@ int glyphras_refused(void)     { return gr_refused; }
  * `long long` and not `long` because this file is host-compiled by the font
  * suites too, and a 32-bit long would overflow at upem 2048 * px 200 * 256. */
 #define FX(v)   ((int)(((long long)(v) * px * 256) / upem))
-#define BX(v)   (FX(v) - ox_i * 256)
+#define BX(v)   (FX(v) - ox_i * 256 + subx * 64)
 #define BY(v)   (top_i * 256 - FX(v))
 
 /* Convert one outline into gr_path, flattened in device space by the engine.
  * Returns 0, or -1 if the point budget ran out (gfx latches ->overflow and
  * would refuse the fill anyway -- this just names the reason earlier). */
 static int build_path(const struct fp_path *path, int px, int upem,
-                      int ox_i, int top_i)
+                      int ox_i, int top_i, int subx)
 {
     gfx_path_init(&gr_path, gr_pt, GR_MAXPT, gr_sub, GR_MAXSUB);
     gfx_path_tolerance(&gr_path, GR_TOL);        /* CTM stays identity: see the
@@ -219,7 +219,7 @@ int text_raster(const struct ttf_font *f, int gid, int px,
     if (w <= 0 || h <= 0) { *wout = 0; *hout = 0; *ox = 0; *oy = 0; return 0; }
     if (w > GR_MAXW || w * h > covcap) return -1;
 
-    if (build_path(&path, px, upem, ox_i, top_i)) return -1;
+    if (build_path(&path, px, upem, ox_i, top_i, 0)) return -1;
     if (!ol_raster_mask_subs(&gr_path, GFX_NONZERO, cov, w, h, 0, 0, GR_SUBS))
         return -1;
 
@@ -227,18 +227,30 @@ int text_raster(const struct ttf_font *f, int gid, int px,
     return 0;
 }
 
-int text_raster_at(const struct ttf_font *f, int gid, int px, int ox_i, int top_i,
-                   uint8_t *cov, int w, int h)
+/* text_raster_at with the outline shifted right by subx quarter pixels
+ * (subx 0..3, i.e. +subx*64 in 24.8). The box (ox_i, top_i, w, h) is the one
+ * text_raster_extent returns for subx 0: path_extent keeps a one-pixel margin
+ * right of ceil(xmax), and a shift of at most 0.75 px stays inside it, so the
+ * same box serves every subx. subx 0 is bit-identical to text_raster_at. */
+int text_raster_at_sub(const struct ttf_font *f, int gid, int px, int ox_i, int top_i,
+                       int subx, uint8_t *cov, int w, int h)
 {
     struct fp_path path;
+    if (subx < 0 || subx > 3) return -1;
     fp_init(&path, gr_cmds, (int)sizeof gr_cmds);
     if (ttf_glyph_path(f, gid, &path, gr_scratch, sizeof gr_scratch)) return -1;
     if (path.n == 0) return -1;
     int upem = f->units_per_em;
     if (upem <= 0 || w <= 0 || h <= 0 || w > GR_MAXW) return -1;
-    if (build_path(&path, px, upem, ox_i, top_i)) return -1;
+    if (build_path(&path, px, upem, ox_i, top_i, subx)) return -1;
     return ol_raster_mask_subs(&gr_path, GFX_NONZERO, cov, w, h, 0, 0, GR_SUBS)
            ? 0 : -1;
+}
+
+int text_raster_at(const struct ttf_font *f, int gid, int px, int ox_i, int top_i,
+                   uint8_t *cov, int w, int h)
+{
+    return text_raster_at_sub(f, gid, px, ox_i, top_i, 0, cov, w, h);
 }
 
 int text_raster_extent(const struct ttf_font *f, int gid, int px,

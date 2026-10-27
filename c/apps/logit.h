@@ -272,7 +272,12 @@ enum { GICON_FOLDER, GICON_DOC, GICON_TERMINAL, GICON_GRID, GICON_GLOBE,
         * match kernel icons.h so gui_icon() passes them straight through. */
        GICON_CHEVRON_L = 11, GICON_CHEVRON_R, GICON_CHEVRON_U, GICON_CHEVRON_D,
        GICON_CLOSE, GICON_PLUS, GICON_MINUS, GICON_CHECK,
-       GICON_SEARCH, GICON_SIDEBAR, GICON_ELLIPSIS, GICON_GEAR };
+       GICON_SEARCH, GICON_SIDEBAR, GICON_ELLIPSIS, GICON_GEAR,
+       /* set B (kernel icons.h ICON_SHARE..ICON_BELL) */
+       GICON_SHARE, GICON_PLAY, GICON_PAUSE, GICON_TRASH,
+       GICON_ARROW_L, GICON_ARROW_R, GICON_ARROW_U, GICON_ARROW_D,
+       GICON_INFO, GICON_WARNING, GICON_DOWNLOAD, GICON_REFRESH,
+       GICON_STAR, GICON_LOCK, GICON_HOME, GICON_LINK, GICON_EYE, GICON_BELL };
 static inline void gui_icon(int id, int x, int y, int px, unsigned color)
 { ol_window_icon(id, x, y, px, color); }
 /* Liquid-glass a region of THIS window over the content already drawn there

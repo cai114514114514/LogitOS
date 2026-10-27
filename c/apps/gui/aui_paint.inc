@@ -129,6 +129,256 @@ static const unsigned char *corner_mask(int kind, int cw, int ch, int param,
 #define X_(v) ((v) + ox_)
 #define Y_(v) ((v) + oy_)
 
+/* ======================================================================
+ * GUI ABI v2 lowering (SYS_GUI_PATH).
+ *
+ * When SYS_GUI2_INFO(0) reports LOGIT_GUI2_F_PATH, the shape primitives below
+ * go out as ONE ol_window_path2 call -- a rounded rect with alpha, a stroke,
+ * an arc -- where the tile path (kept, for older kernels) needs a band per
+ * edge plus four corner blits. Everything else about a shape is decided
+ * exactly as before, in DEVICE pixels: the edges and corner radii are the
+ * aui_dev()/devlen() numbers the tile path uses, converted back to the 24.8
+ * points the wire carries by dev_to_pt24(), so the kernel's pct scaling
+ * returns them to (within 1/256 px of) the same device coordinate and a
+ * shape lands on the same pixels at 125% / 150% as it does at 100%.
+ *
+ * path_ok() asks the kernel once (one cached int: the only state this adds;
+ * a capability bit cannot change under a running app). -DAUI_FORCE_TILE_PATH
+ * is the negative control: it pretends the kernel never reports PATH. */
+#if defined(AUI_NO_AA) || defined(AUI_FORCE_TILE_PATH)
+#define path_ok() 0
+#else
+static int path_caps = -1;            /* -1 not asked yet, 0 no, 1 yes */
+static int path_ok(void)
+{
+    if (path_caps < 0) {
+        long i = ol_gui2_info(0);
+        path_caps = (i > 0 && (i & LOGIT_GUI2_F_PATH)) ? 1 : 0;
+    }
+    return path_caps;
+}
+#endif
+
+static long long ap_fdiv(long long n, long long d)
+{
+    long long q = n / d;
+    return (n % d != 0 && n < 0) ? q - 1 : q;
+}
+static long long ap_abs(long long v) { return v < 0 ? -v : v; }
+
+/* The 24.8 point value p whose kernel conversion floor(p * pct / 100) is
+ * nearest the device 24.8 value d256 (exact whenever one exists: always at
+ * 100%, and at every whole-pixel edge at 125/150/200%). */
+static long long dev_to_pt24(long long d256)
+{
+    long long pct = aui_scale();
+    long long p = -ap_fdiv(-d256 * 100, pct);            /* smallest p with p*pct/100 >= d256 */
+    long long e0 = ap_fdiv(p * pct, 100);
+    if (e0 != d256 && ap_abs(ap_fdiv((p - 1) * pct, 100) - d256) < ap_abs(e0 - d256)) p--;
+    return p;
+}
+
+/* The smallest 24.8 point value whose kernel conversion is >= the device value
+ * d256: what LOGIT_RECT_SNAP wants (it floors each converted edge to a whole
+ * device pixel, so an edge at a whole device pixel d lands on exactly d). */
+static long long dev_ceil_pt24(long long d256) { return -ap_fdiv(-d256 * 100, aui_scale()); }
+
+/* A path under construction. coords are DEVICE 24.8 when .dev is set (and are
+ * converted on the way in), otherwise already the 24.8 points of the wire.
+ * Sized for the largest shape built here (rrect/squircle: 10 verbs, 17 points). */
+#define AP_V  24
+#define AP_XY 64
+struct ap {
+    unsigned char v[AP_V];
+    int xy[AP_XY];
+    int nv, nxy, dev;
+};
+static void ap_begin(struct ap *p, int dev) { p->nv = 0; p->nxy = 0; p->dev = dev; }
+static void ap_pt(struct ap *p, long long x, long long y)
+{
+    if (p->nxy + 2 > AP_XY) return;
+    if (p->dev) { x = dev_to_pt24(x); y = dev_to_pt24(y); }
+    p->xy[p->nxy++] = (int)x; p->xy[p->nxy++] = (int)y;
+}
+static void ap_m(struct ap *p, long long x, long long y)
+{ if (p->nv < AP_V) { p->v[p->nv++] = LOGIT_VERB_M; ap_pt(p, x, y); } }
+static void ap_l(struct ap *p, long long x, long long y)
+{ if (p->nv < AP_V) { p->v[p->nv++] = LOGIT_VERB_L; ap_pt(p, x, y); } }
+static void ap_c(struct ap *p, long long x1, long long y1, long long x2, long long y2, long long x, long long y)
+{
+    if (p->nv < AP_V) {
+        p->v[p->nv++] = LOGIT_VERB_C;
+        ap_pt(p, x1, y1); ap_pt(p, x2, y2); ap_pt(p, x, y);
+    }
+}
+static void ap_z(struct ap *p) { if (p->nv < AP_V) p->v[p->nv++] = LOGIT_VERB_Z; }
+
+/* Rounded rect with per-corner elliptical radii (TL, TR, BR, BL), the corner
+ * arc being the very cubic gfx_corner_fill rasterizes (kappa 36195/65536), so
+ * a path-drawn corner has the tile path's coverage. */
+static void ap_rrect(struct ap *p, long long x0, long long y0, long long x1, long long y1,
+                     const long long rx[4], const long long ry[4])
+{
+#define AP_K(r) (((r) * 36195) >> 16)
+    /* each corner: the line to the arc's start, then the arc (sx,sy)->(ex,ey)
+     * with its two control points */
+#define AP_CORNER(i, sx, sy, c1x, c1y, c2x, c2y, ex, ey)                              \
+    do {                                                                              \
+        ap_l(p, (sx), (sy));                                                          \
+        if (rx[i] > 0 && ry[i] > 0)                                                   \
+            ap_c(p, (c1x), (c1y), (c2x), (c2y), (ex), (ey));                          \
+        else ap_l(p, (ex), (ey));                                                     \
+    } while (0)
+    ap_m(p, x0 + rx[0], y0);
+    AP_CORNER(1, x1 - rx[1], y0, x1 - rx[1] + AP_K(rx[1]), y0, x1, y0 + ry[1] - AP_K(ry[1]), x1, y0 + ry[1]);
+    AP_CORNER(2, x1, y1 - ry[2], x1, y1 - ry[2] + AP_K(ry[2]), x1 - rx[2] + AP_K(rx[2]), y1, x1 - rx[2], y1);
+    AP_CORNER(3, x0 + rx[3], y1, x0 + rx[3] - AP_K(rx[3]), y1, x0, y1 - ry[3] + AP_K(ry[3]), x0, y1 - ry[3]);
+    AP_CORNER(0, x0, y0 + ry[0], x0, y0 + ry[0] - AP_K(ry[0]), x0 + rx[0] - AP_K(rx[0]), y0, x0 + rx[0], y0);
+    ap_z(p);
+#undef AP_CORNER
+#undef AP_K
+}
+
+/* The damage note for a path primitive: its rect grown by the halo (points)
+ * through ad_add_halo, hashed with everything that changes its pixels. */
+static void ad_note_path(int x, int y, int w, int h, int halo, const unsigned char *verbs, int nv,
+                         const int *xy, int nxy, unsigned extra)
+{
+    struct ad_set s;
+    unsigned sig = 2166136261u;
+    s.n = 0;
+    AD_MIX(sig, extra); AD_MIX(sig, nv);
+    sig = ad_hash_bytes(verbs, nv, sig);
+    sig = ad_hash_bytes(xy, (long)nxy * 4, sig);
+    ad_add_halo(&s, x, y, w, h, halo, halo, halo, halo);
+    if (s.n) ad_record(s.r[0].x0, s.r[0].y0, s.r[0].x1 - s.r[0].x0, s.r[0].y1 - s.r[0].y0, sig);
+}
+
+/* Fill (stroke_q8 == 0) or stroke the path in `p` with one solid ARGB colour.
+ * (bx,by,bw,bh) is the shape's rect in window points (translation applied),
+ * halo the extra reach of a stroke, in points. */
+static long path_emit(const struct ap *p, unsigned argb, int snap, int stroke_q8,
+                      int round_stroke, int bx, int by, int bw, int bh, int halo)
+{
+    struct logit_path2 pa;
+    struct logit_paint2 pt;
+    struct logit_stroke2 st;
+    long rc;
+    gfx_zero(&pa, sizeof pa); gfx_zero(&pt, sizeof pt); gfx_zero(&st, sizeof st);
+    pa.verbs = p->v; pa.xy = p->xy; pa.nverb = (unsigned)p->nv; pa.nxy = (unsigned)p->nxy;
+    pa.rule = LOGIT_PATH2_NONZERO;
+    pt.kind = LOGIT_PAINT2_SOLID; pt.argb = argb; pt.flags = snap ? LOGIT_RECT_SNAP : 0;
+    if (stroke_q8 > 0) {
+        st.width = stroke_q8;
+        st.cap = round_stroke ? LOGIT_STROKE2_CAP_ROUND : LOGIT_STROKE2_CAP_BUTT;
+        st.join = round_stroke ? LOGIT_STROKE2_JOIN_ROUND : LOGIT_STROKE2_JOIN_MITER;
+        st.miter = 4 * 65536;
+    }
+    ad_note_path(bx, by, bw, bh, halo, p->v, p->nv, p->xy, p->nxy, argb ^ (unsigned)stroke_q8);
+#ifdef AUI_COST
+    t0_();
+#endif
+    rc = ol_window_path2(&pa, &pt, stroke_q8 > 0 ? &st : 0);
+#ifdef AUI_COST
+    t1_(&ck_shape);
+#endif
+    return rc;
+}
+
+static unsigned ap_argb(unsigned rgb24, int alpha)
+{ return ((unsigned)iclamp(alpha, 0, 255) << 24) | (rgb24 & 0xFFFFFFu); }
+
+/* A rounded rect (stroke_q8 == 0) or its outline, in window points (the
+ * current translation is applied here). r[] are the four corner radii in
+ * points, already clamped; the edges and radii are converted to device pixels
+ * exactly as the tile path does (aui_dev edges, devlen radii). A stroke is
+ * centred on a rect inset by half its device width, so its OUTER edge is the
+ * rect's, like aui_stroke's ring. */
+static long path_rrect(int x, int y, int w, int h, const int r[4], int stroke_q8, unsigned argb)
+{
+    struct ap p;
+    long long rx[4], ry[4];
+    int X = X_(x), Y = Y_(y);
+    long long x0 = (long long)aui_dev(X) * 256, x1 = (long long)aui_dev(X + w) * 256;
+    long long y0 = (long long)aui_dev(Y) * 256, y1 = (long long)aui_dev(Y + h) * 256;
+    long long hw = 0;
+    int ax[4] = { X, X + w - r[1], X + w - r[2], X };
+    int ay[4] = { Y, Y, Y + h - r[2], Y + h - r[3] };
+    if (stroke_q8 > 0) {
+        hw = ap_fdiv((long long)stroke_q8 * aui_scale(), 100) / 2;
+        x0 += hw; y0 += hw; x1 -= hw; y1 -= hw;
+    }
+    for (int i = 0; i < 4; i++) {
+        rx[i] = (long long)devlen(ax[i], r[i]) * 256 - hw;
+        ry[i] = (long long)devlen(ay[i], r[i]) * 256 - hw;
+        if (rx[i] < 0 || ry[i] < 0) rx[i] = ry[i] = 0;
+    }
+    ap_begin(&p, 1);
+    ap_rrect(&p, x0, y0, x1, y1, rx, ry);
+    return path_emit(&p, argb, 0, stroke_q8, 0, X, Y, w, h, stroke_q8 > 0 ? 1 : 0);
+}
+
+/* An axis-aligned rect on whole device pixels (LOGIT_RECT_SNAP floors each
+ * edge, and dev_to_pt24 lands each edge just above its device value), the
+ * alpha twin of gui_rect. */
+static long path_rect_snapped(int x, int y, int w, int h, unsigned argb)
+{
+    struct ap p;
+    int X = X_(x), Y = Y_(y);
+    long long x0 = dev_ceil_pt24((long long)aui_dev(X) * 256), x1 = dev_ceil_pt24((long long)aui_dev(X + w) * 256);
+    long long y0 = dev_ceil_pt24((long long)aui_dev(Y) * 256), y1 = dev_ceil_pt24((long long)aui_dev(Y + h) * 256);
+    ap_begin(&p, 0);
+    ap_m(&p, x0, y0); ap_l(&p, x1, y0); ap_l(&p, x1, y1); ap_l(&p, x0, y1); ap_z(&p);
+    return path_emit(&p, argb, 1, 0, 0, X, Y, w, h, 0);
+}
+
+/* Passthrough for callers that build their own path. The verbs and points are
+ * in the CURRENT origin's window points (24.8), like every aui draw: the
+ * translation is folded into the path matrix. Reports damage from the points'
+ * bounding box (transformed by the matrix) grown by the stroke's reach. The
+ * kernel's status comes back unchanged (OL_UNSUPPORTED on a kernel without
+ * LOGIT_GUI2_F_PATH). */
+long aui_path(const struct logit_path2 *path, const struct logit_paint2 *paint,
+              const struct logit_stroke2 *stroke)
+{
+    struct logit_path2 pa = *path;
+    struct logit_paint2 pt = *paint;
+    struct logit_stroke2 st;
+    long long mnx = 0x7fffffff, mny = 0x7fffffff, mxx = -0x7fffffff, mxy = -0x7fffffff;
+    int a = 65536, b = 0, c = 0, d = 65536, e = 0, f = 0, halo = 1;
+    long rc;
+    gfx_zero(&st, sizeof st);
+    if (stroke) st = *stroke;
+    if (pa.flags & LOGIT_PATH_MATRIX) {
+        a = pa.m[0]; b = pa.m[1]; c = pa.m[2]; d = pa.m[3]; e = pa.m[4]; f = pa.m[5];
+    }
+    e += ox_ * 256; f += oy_ * 256;
+    pa.flags |= LOGIT_PATH_MATRIX;
+    pa.m[0] = a; pa.m[1] = b; pa.m[2] = c; pa.m[3] = d; pa.m[4] = e; pa.m[5] = f;
+    if (pa.xy) {
+        for (unsigned i = 0; i + 1 < pa.nxy; i += 2) {
+            long long x = (((long long)a * pa.xy[i] + (long long)c * pa.xy[i + 1]) >> 16) + e;
+            long long y = (((long long)b * pa.xy[i] + (long long)d * pa.xy[i + 1]) >> 16) + f;
+            if (x < mnx) mnx = x;
+            if (x > mxx) mxx = x;
+            if (y < mny) mny = y;
+            if (y > mxy) mxy = y;
+        }
+    }
+    if (stroke) {
+        long long hw = ((long long)st.width + 255) / 256 / 2 + 1;
+        halo = (int)(st.join == LOGIT_STROKE2_JOIN_MITER ? hw * (st.miter / 65536 > 1 ? st.miter / 65536 : 1)
+                                                         : hw * 2);
+    }
+    if (mnx <= mxx && mny <= mxy)
+        ad_note_path((int)(mnx >> 8), (int)(mny >> 8), (int)((mxx - mnx) >> 8) + 1, (int)((mxy - mny) >> 8) + 1,
+                     halo, pa.verbs, (int)pa.nverb, pa.xy, (int)pa.nxy, pt.argb ^ (unsigned)(pa.m[0] ^ pa.m[3] ^ pa.m[4] ^ pa.m[5]));
+    rc = ol_window_path2(&pa, &pt, stroke ? &st : 0);
+    return rc;
+}
+
+static int abs_i(int v) { return v < 0 ? -v : v; }
+
 void aui_fill(int x, int y, int w, int h, unsigned color)
 {
     if (w <= 0 || h <= 0) return;
@@ -140,6 +390,7 @@ void aui_fill_a(int x, int y, int w, int h, unsigned color, int alpha)
     if (w <= 0 || h <= 0) return;
     if (alpha >= 255) { aui_fill(x, y, w, h, color); return; }
     if (alpha <= 0) return;
+    if (path_ok()) { path_rect_snapped(x, y, w, h, ap_argb(color, alpha)); return; }
     /* One RGBA pixel stretched over the rect: the kernel's blit does the blend,
      * so an alpha fill costs exactly what an opaque fill costs. There is no
      * alpha-rectangle syscall, and this is why none is needed. */
@@ -166,6 +417,17 @@ static void round_impl(int x, int y, int w, int h, int r, unsigned c, int alpha)
     if (w <= 0 || h <= 0) return;
     r = clamp_radius(w, h, r);
     if (r == 0) { aui_fill_a(x, y, w, h, c, alpha); return; }
+    if (path_ok()) {
+        /* Opaque and uniform: the kernel's corner-mask fast path, one legacy
+         * call. Anything with alpha (or a radius past the call's 8 bits) is
+         * one SYS_GUI_PATH. */
+        if (alpha >= 255 && r <= 255) { gui_rrect(X_(x), Y_(y), w, h, r, c); return; }
+        if (alpha > 0) {
+            int rr[4] = { r, r, r, r };
+            path_rrect(x, y, w, h, rr, 0, ap_argb(c, alpha));
+        }
+        return;
+    }
 #ifdef AUI_NO_AA
     /* NEGATIVE CONTROL (make test-aui-negctl). Route every rounded shape back
      * through the kernel's SYS_GUI_RRECT, whose corner test is the boolean
@@ -221,6 +483,12 @@ void aui_stroke(int x, int y, int w, int h, int r, int t, unsigned c)
         aui_fill(x, y + t, t, h - 2 * t, c); aui_fill(x + w - t, y + t, t, h - 2 * t, c);
         return;
     }
+    if (path_ok()) {
+        /* One stroked path; the width is the tile path's: whole device pixels, at least one. */
+        int rr[4] = { r, r, r, r };
+        path_rrect(x, y, w, h, rr, (int)dev_ceil_pt24((long long)imax(1, aui_dev(t)) * 256), ap_argb(c, 255));
+        return;
+    }
 #ifdef AUI_NO_AA
     gui_rrect(X_(x), Y_(y), w, h, r, c);                       /* see round_impl */
     gui_rrect(X_(x + t), Y_(y + t), w - 2 * t, h - 2 * t, r - t, AUI_BG);
@@ -267,6 +535,146 @@ void aui_stroke(int x, int y, int w, int h, int r, int t, unsigned c)
 
 void aui_circle(int cx, int cy, int r, unsigned c) { aui_round(cx - r, cy - r, 2 * r, 2 * r, r, c); }
 void aui_ring(int cx, int cy, int r, int t, unsigned c) { aui_stroke(cx - r, cy - r, 2 * r, 2 * r, r, t, c); }
+
+/* ---- shapes that need the path engine (GUI ABI v2) ----
+ * Colours here are ARGB: alpha is the high byte (0 = nothing drawn). On a
+ * kernel without LOGIT_GUI2_F_PATH each has a best-effort tile-path fallback,
+ * noted per function; none can be exact. */
+
+/* A rounded rect with four independent corner radii (TL, TR, BR, BL), points.
+ * Fallback: one uniform radius, the smallest of the four. */
+void aui_round4(struct aui_rect rc, const int rad[4], unsigned argb)
+{
+    int r[4], m;
+    if (rc.w <= 0 || rc.h <= 0 || (argb >> 24) == 0) return;
+    for (int i = 0; i < 4; i++) r[i] = clamp_radius(rc.w, rc.h, rad[i]);
+    if (path_ok()) { path_rrect(rc.x, rc.y, rc.w, rc.h, r, 0, argb); return; }
+    m = imin(imin(r[0], r[1]), imin(r[2], r[3]));
+    round_impl(rc.x, rc.y, rc.w, rc.h, m, argb & 0xFFFFFFu, (int)(argb >> 24));
+}
+
+/* The outline of a rounded rect, `width_q8` wide (24.8 points: 128 = half a
+ * point), its OUTER edge on the rect's, with alpha. Fallback: aui_stroke, a
+ * whole-point opaque ring (the alpha is dropped). */
+void aui_stroke_a(struct aui_rect rc, int radius, int width_q8, unsigned argb)
+{
+    if (rc.w <= 0 || rc.h <= 0 || width_q8 <= 0 || (argb >> 24) == 0) return;
+    radius = clamp_radius(rc.w, rc.h, radius);
+    if (path_ok()) {
+        int r[4] = { radius, radius, radius, radius };
+        path_rrect(rc.x, rc.y, rc.w, rc.h, r, width_q8, argb);
+        return;
+    }
+    aui_stroke(rc.x, rc.y, rc.w, rc.h, radius, imax(1, (width_q8 + 255) / 256), argb & 0xFFFFFFu);
+}
+
+/* A line of exactly ONE DEVICE pixel at any backing scale, from (x0,y0) to
+ * (x1,y1) in points. A horizontal or vertical one is snapped to the device
+ * grid (LOGIT_RECT_SNAP) and half-open like aui_hairline: it covers
+ * [x0,x1) on the device row (column) the point y0 (x0) lands on, fully. A
+ * diagonal is an anti-aliased one-pixel stroke. Fallback: a one-POINT
+ * aui_fill_a (several device pixels at 150%/200%), axis-aligned lines only. */
+void aui_hairline_dev(int x0, int y0, int x1, int y1, unsigned argb)
+{
+    int horiz = y0 == y1, vert = x0 == x1;
+    if ((argb >> 24) == 0) return;
+    if (!path_ok()) {
+        if (horiz) aui_fill_a(imin(x0, x1), y0, abs_i(x1 - x0), 1, argb & 0xFFFFFFu, (int)(argb >> 24));
+        else if (vert) aui_fill_a(x0, imin(y0, y1), 1, abs_i(y1 - y0), argb & 0xFFFFFFu, (int)(argb >> 24));
+        return;
+    }
+    struct ap p;
+    ap_begin(&p, 0);
+    if (horiz || vert) {
+        if (horiz && x1 < x0) { int t = x0; x0 = x1; x1 = t; }
+        if (vert && y1 < y0) { int t = y0; y0 = y1; y1 = t; }
+        long long dx0 = aui_dev(X_(x0)), dy0 = aui_dev(Y_(y0));
+        long long dx1 = horiz ? aui_dev(X_(x1)) : dx0 + 1, dy1 = horiz ? dy0 + 1 : aui_dev(Y_(y1));
+        if (dx1 <= dx0 || dy1 <= dy0) return;
+        ap_m(&p, dev_ceil_pt24(dx0 * 256), dev_ceil_pt24(dy0 * 256));
+        ap_l(&p, dev_ceil_pt24(dx1 * 256), dev_ceil_pt24(dy0 * 256));
+        ap_l(&p, dev_ceil_pt24(dx1 * 256), dev_ceil_pt24(dy1 * 256));
+        ap_l(&p, dev_ceil_pt24(dx0 * 256), dev_ceil_pt24(dy1 * 256));
+        ap_z(&p);
+        path_emit(&p, argb, 1, 0, 0, X_(imin(x0, x1)), Y_(imin(y0, y1)), imax(1, abs_i(x1 - x0)), imax(1, abs_i(y1 - y0)), 1);
+        return;
+    }
+    ap_m(&p, (long long)X_(x0) * 256, (long long)Y_(y0) * 256);
+    ap_l(&p, (long long)X_(x1) * 256, (long long)Y_(y1) * 256);
+    path_emit(&p, argb, 0, (int)dev_ceil_pt24(256), 0, X_(imin(x0, x1)), Y_(imin(y0, y1)),
+              imax(1, abs_i(x1 - x0)), imax(1, abs_i(y1 - y0)), 2);
+}
+
+/* A continuous-curvature ("squircle") rounded rect: the corner starts a
+ * quarter of the radius sooner on each edge and its curve is flatter at the
+ * ends, so the join into the straight edge has no visible kink. Fallback: the
+ * ordinary circular corner. */
+void aui_squircle(struct aui_rect rc, int radius, unsigned argb)
+{
+    if (rc.w <= 0 || rc.h <= 0 || (argb >> 24) == 0) return;
+    radius = clamp_radius(rc.w, rc.h, radius);
+    if (radius == 0 || !path_ok()) {
+        round_impl(rc.x, rc.y, rc.w, rc.h, radius, argb & 0xFFFFFFu, (int)(argb >> 24));
+        return;
+    }
+    struct ap p;
+    int X = X_(rc.x), Y = Y_(rc.y);
+    long long x0 = (long long)aui_dev(X) * 256, x1 = (long long)aui_dev(X + rc.w) * 256;
+    long long y0 = (long long)aui_dev(Y) * 256, y1 = (long long)aui_dev(Y + rc.h) * 256;
+    long long e = (long long)devlen(X, radius) * 256 * 5 / 4;          /* corner extent */
+    long long cap = imin((int)((x1 - x0) / 512), (int)((y1 - y0) / 512)) * 256LL;
+    if (e > cap) e = cap;
+    long long a = e * 87 / 256;                                        /* handle: 34% of e from the edge's end */
+    ap_begin(&p, 1);
+    ap_m(&p, x0 + e, y0);
+    ap_l(&p, x1 - e, y0);
+    ap_c(&p, x1 - a, y0, x1, y0 + a, x1, y0 + e);
+    ap_l(&p, x1, y1 - e);
+    ap_c(&p, x1, y1 - a, x1 - a, y1, x1 - e, y1);
+    ap_l(&p, x0 + e, y1);
+    ap_c(&p, x0 + a, y1, x0, y1 - a, x0, y1 - e);
+    ap_l(&p, x0, y0 + e);
+    ap_c(&p, x0, y0 + a, x0 + a, y0, x0 + e, y0);
+    ap_z(&p);
+    path_emit(&p, argb, 0, 0, 0, X, Y, rc.w, rc.h, 0);
+}
+
+/* An arc of a circle, stroked `width` points wide with round ends. Angles are
+ * whole degrees, 0 at 3 o'clock, positive clockwise (y is down), so a sweep of
+ * 90 from start 0 runs from 3 o'clock to 6 o'clock. |sweep| is capped at 360.
+ * (cx, cy) and radius are points; the stroke is centred on the circle.
+ * Fallback: a chain of round dots of the stroke's width, one per 6 degrees. */
+void aui_arc(int cx, int cy, int r, int start, int sweep, int width, unsigned argb)
+{
+    if (r <= 0 || width <= 0 || sweep == 0 || (argb >> 24) == 0) return;
+    sweep = iclamp(sweep, -360, 360);
+    if (!path_ok()) {
+        int n = abs_i(sweep) / 6 + 1;
+        for (int i = 0; i <= n; i++) {
+            int ang = (start + sweep * i / n) * 256;
+            int px = cx + (int)(((long long)r * gfx_cos(ang)) >> 16);
+            int py = cy + (int)(((long long)r * gfx_sin(ang)) >> 16);
+            round_impl(px - width / 2, py - width / 2, width, width, width / 2, argb & 0xFFFFFFu, (int)(argb >> 24));
+        }
+        return;
+    }
+    struct ap p;
+    int n = (abs_i(sweep) + 89) / 90, th = sweep * 256 / n;
+    long long R = (long long)r * 256, CX = (long long)X_(cx) * 256, CY = (long long)Y_(cy) * 256;
+    long long k = (long long)gfx_cos(th / 4);
+    k = k ? (long long)gfx_sin(th / 4) * 65536 / k * 4 / 3 : 0;         /* 4/3 tan(th/4), 16.16 */
+    ap_begin(&p, 0);
+    for (int i = 0; i < n; i++) {
+        int a0 = start * 256 + i * th, a1 = a0 + th;
+        long long s0 = gfx_sin(a0), c0 = gfx_cos(a0), s1 = gfx_sin(a1), c1 = gfx_cos(a1);
+        long long x0 = CX + (R * c0 >> 16), y0 = CY + (R * s0 >> 16);
+        long long x3 = CX + (R * c1 >> 16), y3 = CY + (R * s1 >> 16);
+        if (i == 0) ap_m(&p, x0, y0);
+        ap_c(&p, x0 - (R * s0 >> 16) * k / 65536, y0 + (R * c0 >> 16) * k / 65536,
+                 x3 + (R * s1 >> 16) * k / 65536, y3 - (R * c1 >> 16) * k / 65536, x3, y3);
+    }
+    path_emit(&p, argb, 0, width * 256, 1, X_(cx) - r, Y_(cy) - r, 2 * r, 2 * r, (width + 1) / 2 + 1);
+}
 
 void aui_vgrad(int x, int y, int w, int h, unsigned top, unsigned bot)
 {
@@ -379,14 +787,17 @@ static void shadow_edge(int x, int y, int w, int h, int n, int vertical,
  * kernel code and cannot afford this file's BIG_MASK buffers (see fb.c). */
 static unsigned shadow_degraded;
 
-void aui_shadow_ex(int x, int y, int w, int h, int r, int dy, int blur, int alpha)
+/* The mask-tile shadow: four cached corner tiles plus four 1-device-pixel edge
+ * strips. It is the whole implementation on a kernel without
+ * LOGIT_GUI2_F_SHADOW2 and the fallback when the v2 call is refused. `blur` is
+ * the falloff EXTENT in points (not a sigma), `col` is 0xRRGGBB. */
+static void shadow_tiles(int x, int y, int w, int h, int r, int dy, int blur, int alpha, unsigned col)
 {
     if (w <= 0 || h <= 0 || blur <= 0 || alpha <= 0) return;
 #ifdef AUI_NO_AA
-    (void)r; (void)dy;                    /* no shadows without alpha compositing */
+    (void)r; (void)dy; (void)col;         /* no shadows without alpha compositing */
     return;
 #else
-    unsigned col = AUI_SHADOW;
     r = clamp_radius(w, h, r);
     int sx = X_(x), sy = Y_(y) + dy;
     int T = blur + r;                                  /* corner tile edge, points */
@@ -449,6 +860,155 @@ void aui_shadow_ex(int x, int y, int w, int h, int r, int dy, int blur, int alph
     shadow_edge(sx - blur, sy + r, blur, h - 2 * r, bd, 0, 0, col, alpha);
     shadow_edge(sx + w,    sy + r, blur, h - 2 * r, bd, 0, 1, col, alpha);
 #endif
+}
+
+/* ---------------------------------------------------------------------------
+ * GUI ABI v2 shadows (SYS_GUI_SHADOW2).
+ *
+ * When SYS_GUI2_INFO(0) reports LOGIT_GUI2_F_SHADOW2 every shadow here is ONE
+ * ol_window_shadow2: the kernel's analytic gaussian (display_shadow_ex), with a
+ * colour, an offset on both axes, a spread, an inset mode, and NO ceiling on
+ * the blur (the tile path tops out at BIG_MASK and shrinks the shadow past
+ * it). The rect and radii are decided in DEVICE pixels exactly as the tile
+ * path decides them (aui_dev edges, LOGIT_RECT_SNAP) so the caster's edge is
+ * the same pixel at 125/150/200%. Offset, spread and sigma are points; the
+ * kernel scales them. -DAUI_SHADOW_LEGACY (the negative control) pretends the
+ * kernel never reports SHADOW2. */
+#if defined(AUI_NO_AA) || defined(AUI_SHADOW_LEGACY)
+#define shadow2_ok() 0
+#else
+static int shadow2_caps = -1;         /* -1 not asked yet, 0 no, 1 yes */
+static int shadow2_ok(void)
+{
+    if (shadow2_caps < 0) {
+        long i = ol_gui2_info(0);
+        shadow2_caps = (i > 0 && (i & LOGIT_GUI2_F_SHADOW2)) ? 1 : 0;
+    }
+    return shadow2_caps;
+}
+#endif
+
+static int sh_up100(long long v, int pct)       /* ceil(v * 100 / pct) for v >= 0 */
+{ return (int)((v * 100 + pct - 1) / pct); }
+
+/* The damage note: the caster's rect grown by ad_halo_shadow() (3 sigma + 2 px +
+ * spread, plus the offset on the side it moves toward), computed in DEVICE
+ * pixels and converted back to points rounding up. An inset shadow stays
+ * inside its rect. */
+static void ad_note_shadow2(int x, int y, int w, int h, int r, int dx, int dy, int sigma_q8,
+                            int spread, unsigned argb, int inset)
+{
+    int pct = aui_scale(), hl[4] = { 0, 0, 0, 0 }, k;
+    unsigned sig = 2166136261u;
+    if (!inset) {
+        long long vx = (long long)dx * pct, vy = (long long)dy * pct;
+        int dxd = (int)(vx >= 0 ? (vx + 99) / 100 : -((-vx + 99) / 100));
+        int dyd = (int)(vy >= 0 ? (vy + 99) / 100 : -((-vy + 99) / 100));
+        int sgd = (int)(((long long)sigma_q8 * pct + 25599) / 25600);
+        int spd = spread > 0 ? (int)(((long long)spread * pct + 99) / 100) : 0;
+        ad_halo_shadow(dxd, dyd, sgd, spd, hl);
+        for (k = 0; k < 4; k++) hl[k] = sh_up100(hl[k], pct) + 1;
+    }
+    AD_MIX(sig, r); AD_MIX(sig, dx); AD_MIX(sig, dy); AD_MIX(sig, sigma_q8);
+    AD_MIX(sig, spread); AD_MIX(sig, argb); AD_MIX(sig, inset);
+    {
+        struct ad_set s;
+        s.n = 0;
+        ad_add_halo(&s, x, y, w, h, hl[0], hl[1], hl[2], hl[3]);
+        if (s.n) ad_record(s.r[0].x0, s.r[0].y0, s.r[0].x1 - s.r[0].x0, s.r[0].y1 - s.r[0].y0, sig);
+    }
+}
+
+/* One SYS_GUI_SHADOW2. Points in, the kernel's status out (OL_UNSUPPORTED etc.
+ * without the capability; the caller falls back to the tile path). */
+static long shadow2_emit(int x, int y, int w, int h, int r, int dx, int dy, int sigma_q8,
+                         int spread, unsigned argb, int inset)
+{
+    struct logit_shadow2 s;
+    long long x0 = dev_ceil_pt24((long long)aui_dev(X_(x)) * 256), x1 = dev_ceil_pt24((long long)aui_dev(X_(x + w)) * 256);
+    long long y0 = dev_ceil_pt24((long long)aui_dev(Y_(y)) * 256), y1 = dev_ceil_pt24((long long)aui_dev(Y_(y + h)) * 256);
+    int rr = (int)dev_ceil_pt24((long long)imax(0, aui_dev(r)) * 256), k;
+    gfx_zero(&s, sizeof s);
+    s.x = (int)x0; s.y = (int)y0; s.w = (int)(x1 - x0); s.h = (int)(y1 - y0);
+    for (k = 0; k < 4; k++) s.radius[k] = rr;
+    s.dx = dx * 256; s.dy = dy * 256; s.blur = sigma_q8; s.spread = spread * 256;
+    s.argb = argb;
+    s.flags = LOGIT_RECT_SNAP | (inset ? LOGIT_SHADOW2_INSET : 0);
+    ad_note_shadow2(x, y, w, h, r, dx, dy, sigma_q8, spread, argb, inset);
+    return ol_window_shadow2(&s);
+}
+
+static unsigned sh_argb(unsigned col, int alpha)
+{ return ((unsigned)(alpha > 255 ? 255 : alpha) << 24) | (col & 0xFFFFFFu); }
+
+/* aui_shadow_ex keeps its signature: `blur` is the falloff extent in points, and
+ * on a SHADOW2 kernel it becomes a gaussian of sigma = blur / 2 (the CSS
+ * convention), colour AUI_SHADOW, no spread. */
+void aui_shadow_ex(int x, int y, int w, int h, int r, int dy, int blur, int alpha)
+{
+    unsigned col = AUI_SHADOW;
+    if (w <= 0 || h <= 0 || blur <= 0 || alpha <= 0) return;
+#ifndef AUI_NO_AA
+    if (shadow2_ok() &&
+        shadow2_emit(x, y, w, h, clamp_radius(w, h, r), 0, dy, blur * 128, 0, sh_argb(col, alpha), 0) == 0)
+        return;
+#endif
+    shadow_tiles(x, y, w, h, r, dy, blur, alpha, col);
+}
+
+/* A general shadow: offset (dx,dy) and spread in points (spread grows the
+ * shadow's shape, negative shrinks it), `sigma` the gaussian standard deviation
+ * in points (0..64), ARGB colour (alpha is the peak opacity). inset != 0 draws
+ * the shadow INSIDE the rect (the blurred complement of the offset shape).
+ * Without SHADOW2 the tile fallback draws the outer form only (extent 2*sigma,
+ * dx and spread folded into the caster rect) and an inset draws nothing. */
+void aui_shadow2(struct aui_rect rect, int radius, int dx, int dy, int sigma, int spread,
+                 unsigned argb, int inset)
+{
+    int alpha = (int)(argb >> 24);
+    if (rect.w <= 0 || rect.h <= 0 || alpha <= 0 || sigma < 0) return;
+    if (sigma > 64) sigma = 64;
+#ifndef AUI_NO_AA
+    if (shadow2_ok() &&
+        shadow2_emit(rect.x, rect.y, rect.w, rect.h, radius < 0 ? 0 : radius, dx, dy, sigma * 256,
+                     spread, argb, inset) == 0)
+        return;
+#endif
+    if (inset || sigma == 0) return;
+    shadow_tiles(rect.x + dx - spread, rect.y - spread, rect.w + 2 * spread, rect.h + 2 * spread,
+                 radius + spread, dy, 2 * sigma, alpha, argb & 0xFFFFFFu);
+}
+
+/* Elevation presets: an AMBIENT shadow (no offset, wide and faint) drawn first,
+ * then a KEY shadow (offset down, tight, stronger) over it. Points; alpha is
+ * the LIGHT theme value, the dark theme doubles it (clamped to 255). Colour is
+ * AUI_SHADOW. Level 0 draws nothing, levels above 4 are 4.
+ *
+ *   level   key dy / sigma / alpha    ambient sigma / alpha
+ *     1          1 /  2 / 36               4 / 16
+ *     2          2 /  4 / 44               8 / 20
+ *     3          4 /  8 / 52              14 / 24
+ *     4          8 / 14 / 60              24 / 28
+ */
+void aui_elevation(struct aui_rect rect, int radius, int level)
+{
+    static const unsigned char tab[4][5] = {
+        { 1, 2, 36, 4, 16 }, { 2, 4, 44, 8, 20 }, { 4, 8, 52, 14, 24 }, { 8, 14, 60, 24, 28 },
+    };
+    const unsigned char *t;
+    unsigned col = AUI_SHADOW;
+    int mul = aui_is_dark() ? 2 : 1;
+    if (level <= 0) return;
+    t = tab[(level > 4 ? 4 : level) - 1];
+    aui_shadow2(rect, radius, 0, 0, t[3], 0, sh_argb(col, t[4] * mul), 0);
+    aui_shadow2(rect, radius, 0, t[0], t[1], 0, sh_argb(col, t[2] * mul), 0);
+}
+
+/* A glow: a soft halo of `argb` (alpha = peak opacity) around the rect, sigma
+ * 6 pt, spread 1 pt, no offset. */
+void aui_glow(struct aui_rect rect, int radius, unsigned argb)
+{
+    aui_shadow2(rect, radius, 0, 0, 6, 1, argb, 0);
 }
 
 void aui_shadow(int x, int y, int w, int h, int r, int elev)

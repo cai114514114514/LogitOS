@@ -1,6 +1,7 @@
 #include "ols_util.h"
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 /* Straight-line vec4 execution and texture sampling; no source parser is linked by this file. */
 static void texel(const struct ol3d_texture *t, int x, int y, float out[4])
 {
@@ -25,7 +26,7 @@ static void texel(const struct ol3d_texture *t, int x, int y, float out[4])
     for (int k = 0; k < 4; k++)
         out[k] = p[k] / 255.0f;
 }
-static int texture(const struct ol3d_texture *t, float u, float v, float out[4])
+static int sample_level(const struct ol3d_texture *t, float u, float v, float out[4])
 {
     if (!t || !t->pixels || !t->width || !t->height || t->width > 4096 || t->height > 4096 ||
         t->stride < t->width * 4 || t->bytes < (size_t)(t->height - 1) * t->stride + t->width * 4 ||
@@ -53,8 +54,78 @@ static int texture(const struct ol3d_texture *t, float u, float v, float out[4])
         out[k] = (a[k] + (b[k] - a[k]) * fx) * (1 - fy) + (c[k] + (d[k] - c[k]) * fx) * fy;
     return OL_OK;
 }
-int ols_run(const struct ol_shader_program *p, const float input[][4], unsigned inputs,
-            const struct ol3d_bindings *b, struct ols_output *out)
+/* UV deltas to the neighbours at x+1 and y+1 for one TEX2D, or null for LOD 0. */
+struct uv_delta {
+    float dx[2], dy[2];
+};
+#ifndef OL3D_MIP_FORCE_LOD0
+static int level_view(const struct ol3d_texture *t, unsigned level, struct ol3d_texture *v)
+{
+    *v = *t;
+    v->mips = 0;
+    v->mip_count = 0;
+    v->mip_filter = 0;
+    if (!level)
+        return 0;
+    const struct ol3d_mip_level *m = &t->mips[level - 1];
+    unsigned w = t->width >> level, h = t->height >> level;
+    if (!m->pixels || m->width != (w ? w : 1) || m->height != (h ? h : 1) ||
+        m->stride < m->width * 4 || m->bytes < (size_t)(m->height - 1) * m->stride + m->width * 4)
+        return -1;
+    v->pixels = m->pixels;
+    v->width = m->width;
+    v->height = m->height;
+    v->stride = m->stride;
+    v->bytes = m->bytes;
+    return 0;
+}
+#endif
+static int texture(const struct ol3d_texture *t, float u, float v, const struct uv_delta *d,
+                   float out[4])
+{
+#ifndef OL3D_MIP_FORCE_LOD0
+    if (t && t->mip_filter) {
+        if (t->mip_filter >= OL3D_MIP_FILTER_COUNT || !t->mips || !t->mip_count ||
+            t->mip_count > 15 || !t->width || !t->height || t->width > 4096 || t->height > 4096)
+            return OL_ARGUMENT;
+        float lod = 0;
+        if (d) {
+            float ax = d->dx[0] * t->width, bx = d->dx[1] * t->height, ay = d->dy[0] * t->width,
+                  by = d->dy[1] * t->height;
+            float rho = fmax(sqrtf(ax * ax + bx * bx), sqrtf(ay * ay + by * by));
+            if (isfinite(rho) && rho > 1)
+                lod = (float)log2(rho);
+            else if (!isfinite(rho))
+                lod = (float)t->mip_count;
+        }
+        if (lod > (float)t->mip_count)
+            lod = (float)t->mip_count;
+        if (t->mip_filter == OL3D_MIP_NEAREST || lod >= (float)t->mip_count) {
+            struct ol3d_texture lv;
+            if (level_view(t, (unsigned)(lod + .5f), &lv))
+                return OL_ARGUMENT;
+            return sample_level(&lv, u, v, out);
+        }
+        unsigned l0 = (unsigned)lod;
+        float f = lod - l0, a[4], c[4];
+        struct ol3d_texture v0, v1;
+        if (level_view(t, l0, &v0) || level_view(t, l0 + 1, &v1) ||
+            sample_level(&v0, u, v, a) || sample_level(&v1, u, v, c))
+            return OL_ARGUMENT;
+        for (int k = 0; k < 4; k++)
+            out[k] = a[k] + (c[k] - a[k]) * f;
+        return OL_OK;
+    }
+#else
+    (void)d;
+#endif
+    return sample_level(t, u, v, out);
+}
+/* rec records each TEX2D coordinate by instruction (probe pass); uvx/uvy hold the probe
+ * coordinates at the x+1 / y+1 neighbours and turn into per-instruction deltas. */
+static int run(const struct ol_shader_program *p, const float input[][4], unsigned inputs,
+               const struct ol3d_bindings *b, struct ols_output *out, float (*rec)[2],
+               float (*const uvx)[2], float (*const uvy)[2])
 {
     float regs[OLS_REGISTERS][4];
     memset(out, 0, sizeof *out);
@@ -87,8 +158,20 @@ int ols_run(const struct ol_shader_program *p, const float input[][4], unsigned 
         case OLS_TEX2D:
             if (!b->textures || c->b >= b->texture_count)
                 return OL_ARGUMENT;
-            if (texture(&b->textures[c->b], a[0], a[1], v))
+        {
+            struct uv_delta d, *dp = 0;
+            if (rec) {
+                rec[i][0] = a[0];
+                rec[i][1] = a[1];
+            }
+            if (uvx) {
+                d = (struct uv_delta){{uvx[i][0] - a[0], uvx[i][1] - a[1]},
+                                      {uvy[i][0] - a[0], uvy[i][1] - a[1]}};
+                dp = &d;
+            }
+            if (texture(&b->textures[c->b], a[0], a[1], dp, v))
                 return OL_ARGUMENT;
+        }
             break;
         case OLS_POSITION:
             memcpy(out->position, a, sizeof v);
@@ -168,4 +251,37 @@ int ols_run(const struct ol_shader_program *p, const float input[][4], unsigned 
         out->color[k] = 0;
 #endif
     return OL_OK;
+}
+int ols_run(const struct ol_shader_program *p, const float input[][4], unsigned inputs,
+            const struct ol3d_bindings *b, struct ols_output *out)
+{
+    return run(p, input, inputs, b, out, 0, 0, 0);
+}
+/* Quad LOD: the pixel shader runs at the pixel and at its x+1 and y+1 neighbours (inputs
+ * advanced by ddx / ddy), the neighbours only to capture each TEX2D coordinate. Skipped
+ * unless a bound texture asks for mips, so legacy draws run exactly once. */
+int ols_run_lod(const struct ol_shader_program *p, const float input[][4], unsigned inputs,
+                const struct ol3d_bindings *b, struct ols_output *out, const float (*ddx)[4],
+                const float (*ddy)[4])
+{
+    int mips = 0;
+    if (ddx && ddy && b && b->textures && inputs <= OL3D_MAX_VARYINGS)
+        for (unsigned i = 0; i < b->texture_count; i++)
+            mips |= b->textures[i].mip_filter != OL3D_MIP_NONE;
+    if (!mips)
+        return run(p, input, inputs, b, out, 0, 0, 0);
+    float nx[OL3D_MAX_VARYINGS][4], ny[OL3D_MAX_VARYINGS][4];
+    float rx[OLS_INSTRUCTIONS][2] = {{0}}, ry[OLS_INSTRUCTIONS][2] = {{0}};
+    struct ols_output scratch;
+    for (unsigned j = 0; j < inputs; j++)
+        for (int k = 0; k < 4; k++) {
+            nx[j][k] = input[j][k] + ddx[j][k];
+            ny[j][k] = input[j][k] + ddy[j][k];
+        }
+    int r = run(p, nx, inputs, b, &scratch, rx, 0, 0);
+    if (!r)
+        r = run(p, ny, inputs, b, &scratch, ry, 0, 0);
+    if (r)
+        return r;
+    return run(p, input, inputs, b, out, 0, rx, ry);
 }

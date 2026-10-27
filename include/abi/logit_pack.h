@@ -13,37 +13,37 @@
 #define LOGIT_GUI_CREATE_B_W(v) ((int)(((unsigned long long)(v) >> 16) & 0xFFFFULL))
 #define LOGIT_GUI_CREATE_B_H(v) ((int)(((unsigned long long)(v) >> 0) & 0xFFFFULL))
 
-/* SYS_GUI_RECT arg a: x<<16 | y */
-#define LOGIT_GUI_RECT_A_X(v) ((int)(((unsigned long long)(v) >> 16) & 0xFFFFULL))
-#define LOGIT_GUI_RECT_A_Y(v) ((int)(((unsigned long long)(v) >> 0) & 0xFFFFULL))
+/* SYS_GUI_RECT arg a: x<<16 (signed) | y (signed) */
+#define LOGIT_GUI_RECT_A_X(v) ((int)((((long long)(((unsigned long long)(v) >> 16) & 0xFFFFULL)) ^ 0x8000LL) - 0x8000LL))
+#define LOGIT_GUI_RECT_A_Y(v) ((int)((((long long)(((unsigned long long)(v) >> 0) & 0xFFFFULL)) ^ 0x8000LL) - 0x8000LL))
 
 /* SYS_GUI_RECT arg b: w<<16 | h */
 #define LOGIT_GUI_RECT_B_W(v) ((int)(((unsigned long long)(v) >> 16) & 0xFFFFULL))
 #define LOGIT_GUI_RECT_B_H(v) ((int)(((unsigned long long)(v) >> 0) & 0xFFFFULL))
 
-/* SYS_GUI_TEXT arg a: x<<16 | y */
-#define LOGIT_GUI_TEXT_A_X(v) ((int)(((unsigned long long)(v) >> 16) & 0xFFFFULL))
-#define LOGIT_GUI_TEXT_A_Y(v) ((int)(((unsigned long long)(v) >> 0) & 0xFFFFULL))
+/* SYS_GUI_TEXT arg a: x<<16 (signed) | y (signed) */
+#define LOGIT_GUI_TEXT_A_X(v) ((int)((((long long)(((unsigned long long)(v) >> 16) & 0xFFFFULL)) ^ 0x8000LL) - 0x8000LL))
+#define LOGIT_GUI_TEXT_A_Y(v) ((int)((((long long)(((unsigned long long)(v) >> 0) & 0xFFFFULL)) ^ 0x8000LL) - 0x8000LL))
 
-/* SYS_GUI_TEXT_MONO arg a: x<<16 | y */
-#define LOGIT_GUI_TEXT_MONO_A_X(v) ((int)(((unsigned long long)(v) >> 16) & 0xFFFFULL))
-#define LOGIT_GUI_TEXT_MONO_A_Y(v) ((int)(((unsigned long long)(v) >> 0) & 0xFFFFULL))
+/* SYS_GUI_TEXT_MONO arg a: x<<16 (signed) | y (signed) */
+#define LOGIT_GUI_TEXT_MONO_A_X(v) ((int)((((long long)(((unsigned long long)(v) >> 16) & 0xFFFFULL)) ^ 0x8000LL) - 0x8000LL))
+#define LOGIT_GUI_TEXT_MONO_A_Y(v) ((int)((((long long)(((unsigned long long)(v) >> 0) & 0xFFFFULL)) ^ 0x8000LL) - 0x8000LL))
 
 /* SYS_GUI_TEXT_MONO arg b: cell<<24 | color */
 #define LOGIT_GUI_TEXT_MONO_B_CELL(v) ((int)(((unsigned long long)(v) >> 24) & 0xFFULL))
 #define LOGIT_GUI_TEXT_MONO_B_COLOR(v) ((int)(((unsigned long long)(v) >> 0) & 0xFFFFFFULL))
 
-/* SYS_GUI_ICON arg a: x<<16 | y */
-#define LOGIT_GUI_ICON_A_X(v) ((int)(((unsigned long long)(v) >> 16) & 0xFFFFULL))
-#define LOGIT_GUI_ICON_A_Y(v) ((int)(((unsigned long long)(v) >> 0) & 0xFFFFULL))
+/* SYS_GUI_ICON arg a: x<<16 (signed) | y (signed) */
+#define LOGIT_GUI_ICON_A_X(v) ((int)((((long long)(((unsigned long long)(v) >> 16) & 0xFFFFULL)) ^ 0x8000LL) - 0x8000LL))
+#define LOGIT_GUI_ICON_A_Y(v) ((int)((((long long)(((unsigned long long)(v) >> 0) & 0xFFFFULL)) ^ 0x8000LL) - 0x8000LL))
 
 /* SYS_GUI_ICON arg b: id<<16 | px */
 #define LOGIT_GUI_ICON_B_ID(v) ((int)(((unsigned long long)(v) >> 16) & 0xFFFFULL))
 #define LOGIT_GUI_ICON_B_PX(v) ((int)(((unsigned long long)(v) >> 0) & 0xFFFFULL))
 
-/* SYS_GUI_RRECT arg a: x<<16 | y */
-#define LOGIT_GUI_RRECT_A_X(v) ((int)(((unsigned long long)(v) >> 16) & 0xFFFFULL))
-#define LOGIT_GUI_RRECT_A_Y(v) ((int)(((unsigned long long)(v) >> 0) & 0xFFFFULL))
+/* SYS_GUI_RRECT arg a: x<<16 (signed) | y (signed) */
+#define LOGIT_GUI_RRECT_A_X(v) ((int)((((long long)(((unsigned long long)(v) >> 16) & 0xFFFFULL)) ^ 0x8000LL) - 0x8000LL))
+#define LOGIT_GUI_RRECT_A_Y(v) ((int)((((long long)(((unsigned long long)(v) >> 0) & 0xFFFFULL)) ^ 0x8000LL) - 0x8000LL))
 
 /* SYS_GUI_RRECT arg b: w<<16 | h */
 #define LOGIT_GUI_RRECT_B_W(v) ((int)(((unsigned long long)(v) >> 16) & 0xFFFFULL))
@@ -53,9 +53,9 @@
 #define LOGIT_GUI_RRECT_C_RADIUS(v) ((int)(((unsigned long long)(v) >> 24) & 0xFFULL))
 #define LOGIT_GUI_RRECT_C_COLOR(v) ((int)(((unsigned long long)(v) >> 0) & 0xFFFFFFULL))
 
-/* SYS_GUI_GLASS arg a: x<<16 | y */
-#define LOGIT_GUI_GLASS_A_X(v) ((int)(((unsigned long long)(v) >> 16) & 0xFFFFULL))
-#define LOGIT_GUI_GLASS_A_Y(v) ((int)(((unsigned long long)(v) >> 0) & 0xFFFFULL))
+/* SYS_GUI_GLASS arg a: x<<16 (signed) | y (signed) */
+#define LOGIT_GUI_GLASS_A_X(v) ((int)((((long long)(((unsigned long long)(v) >> 16) & 0xFFFFULL)) ^ 0x8000LL) - 0x8000LL))
+#define LOGIT_GUI_GLASS_A_Y(v) ((int)((((long long)(((unsigned long long)(v) >> 0) & 0xFFFFULL)) ^ 0x8000LL) - 0x8000LL))
 
 /* SYS_GUI_GLASS arg b: w<<16 | h */
 #define LOGIT_GUI_GLASS_B_W(v) ((int)(((unsigned long long)(v) >> 16) & 0xFFFFULL))
@@ -68,17 +68,17 @@
 #define LOGIT_GUI_GLASS_C_TB(v) ((int)(((unsigned long long)(v) >> 8) & 0xFFULL))
 #define LOGIT_GUI_GLASS_C_TA(v) ((int)(((unsigned long long)(v) >> 0) & 0xFFULL))
 
-/* SYS_GUI_CLIP arg a: x<<16 | y */
-#define LOGIT_GUI_CLIP_A_X(v) ((int)(((unsigned long long)(v) >> 16) & 0xFFFFULL))
-#define LOGIT_GUI_CLIP_A_Y(v) ((int)(((unsigned long long)(v) >> 0) & 0xFFFFULL))
+/* SYS_GUI_CLIP arg a: x<<16 (signed) | y (signed) */
+#define LOGIT_GUI_CLIP_A_X(v) ((int)((((long long)(((unsigned long long)(v) >> 16) & 0xFFFFULL)) ^ 0x8000LL) - 0x8000LL))
+#define LOGIT_GUI_CLIP_A_Y(v) ((int)((((long long)(((unsigned long long)(v) >> 0) & 0xFFFFULL)) ^ 0x8000LL) - 0x8000LL))
 
 /* SYS_GUI_CLIP arg b: w<<16 | h */
 #define LOGIT_GUI_CLIP_B_W(v) ((int)(((unsigned long long)(v) >> 16) & 0xFFFFULL))
 #define LOGIT_GUI_CLIP_B_H(v) ((int)(((unsigned long long)(v) >> 0) & 0xFFFFULL))
 
-/* SYS_GUI_FLUSH_RECT arg a: x<<16 | y */
-#define LOGIT_GUI_FLUSH_RECT_A_X(v) ((int)(((unsigned long long)(v) >> 16) & 0xFFFFULL))
-#define LOGIT_GUI_FLUSH_RECT_A_Y(v) ((int)(((unsigned long long)(v) >> 0) & 0xFFFFULL))
+/* SYS_GUI_FLUSH_RECT arg a: x<<16 (signed) | y (signed) */
+#define LOGIT_GUI_FLUSH_RECT_A_X(v) ((int)((((long long)(((unsigned long long)(v) >> 16) & 0xFFFFULL)) ^ 0x8000LL) - 0x8000LL))
+#define LOGIT_GUI_FLUSH_RECT_A_Y(v) ((int)((((long long)(((unsigned long long)(v) >> 0) & 0xFFFFULL)) ^ 0x8000LL) - 0x8000LL))
 
 /* SYS_GUI_FLUSH_RECT arg b: w<<16 | h */
 #define LOGIT_GUI_FLUSH_RECT_B_W(v) ((int)(((unsigned long long)(v) >> 16) & 0xFFFFULL))

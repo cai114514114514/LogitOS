@@ -23,11 +23,19 @@
  * 24.8 step at r = 256 px, so no arc in this system can show it. */
 #define KAPPA 36195           /* 0.5522847498 in 16.16 */
 
+/* Latches the overflow flag and records its cause. The FIRST cause wins: a path
+ * that ran out of storage and later saw a matrix change still reports the
+ * storage cause. Behaviour is the flag alone; `err` only names it. */
+static void latch(struct gfx_path *p, int cause)
+{
+    if (!p->overflow) { p->overflow = 1; p->err = cause; }
+}
+
 void gfx_path_init(struct gfx_path *p, int *ptbuf, int ptcap, int *subbuf, int subcap)
 {
     p->pt = ptbuf; p->ptcap = ptcap; p->npt = 0;
     p->sub = subbuf; p->subcap = subcap; p->nsub = 0;
-    p->overflow = 0;
+    p->overflow = 0; p->err = GFX_OK;
     p->cx = p->cy = p->sx = p->sy = 0;
     p->open = 0;
     p->tol = GFX_ONE / 32;                 /* 1/32 device pixel */
@@ -36,7 +44,7 @@ void gfx_path_init(struct gfx_path *p, int *ptbuf, int ptcap, int *subbuf, int s
 
 void gfx_path_reset(struct gfx_path *p)
 {
-    p->npt = 0; p->nsub = 0; p->overflow = 0; p->open = 0;
+    p->npt = 0; p->nsub = 0; p->overflow = 0; p->err = GFX_OK; p->open = 0;
     p->cx = p->cy = p->sx = p->sy = 0;
 }
 
@@ -52,7 +60,7 @@ void gfx_path_reset(struct gfx_path *p)
  * subpath, since the earlier points are still flattened under the old matrix. */
 void gfx_path_matrix(struct gfx_path *p, const struct gfx_matrix *m)
 {
-    if (p->npt > 0) { p->overflow = 1; return; }
+    if (p->npt > 0) { latch(p, GFX_E_MATRIX_AFTER_POINTS); return; }
     p->m = *m;
 }
 void gfx_path_tolerance(struct gfx_path *p, int tol256) { p->tol = tol256 > 0 ? tol256 : 1; }
@@ -61,14 +69,14 @@ void gfx_path_tolerance(struct gfx_path *p, int tol256) { p->tol = tol256 > 0 ? 
 
 static void push_pt(struct gfx_path *p, int x, int y)
 {
-    if (p->npt >= p->ptcap) { p->overflow = 1; return; }
+    if (p->npt >= p->ptcap) { latch(p, GFX_E_OVERFLOW); return; }
     p->pt[p->npt * 2] = x; p->pt[p->npt * 2 + 1] = y;
     p->npt++;
 }
 
 static void start_sub(struct gfx_path *p, int x, int y)
 {
-    if (p->nsub >= p->subcap) { p->overflow = 1; return; }
+    if (p->nsub >= p->subcap) { latch(p, GFX_E_OVERFLOW); return; }
     p->sub[p->nsub++] = p->npt;
     push_pt(p, x, y);
     p->open = 1;
@@ -258,4 +266,16 @@ int gfx_path_bounds(const struct gfx_path *p, int *x0, int *y0, int *x1, int *y1
     if (x1) *x1 = (bx + 255) >> 8;
     if (y1) *y1 = (by + 255) >> 8;
     return 1;
+}
+
+/* ---- status ---- */
+int gfx_path_status(const struct gfx_path *p)
+{
+#ifdef GFX_STATUS_COLLAPSE
+    /* negative control: every refusal reports the storage cause */
+    return p->overflow ? GFX_E_OVERFLOW : GFX_OK;
+#else
+    if (!p->overflow) return GFX_OK;
+    return p->err ? p->err : GFX_E_OVERFLOW;
+#endif
 }

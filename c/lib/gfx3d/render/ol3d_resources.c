@@ -28,6 +28,8 @@ struct ol3d_buffer_view ol3d_buffer_view(const struct ol3d_buffer *b)
 void ol3d_buffer_destroy(struct ol3d_buffer *b){free(b);}
 int ol3d_pipeline_validate(const struct ol3d_pipeline *p,const struct ol3d_bindings *bindings,struct ol_shader_error *e)
 {
+    if(p&&(p->blend_op>=GFX_OP_COUNT||p->depth_func>=OL3D_DEPTH_FUNC_COUNT||p->cull>=OL3D_CULL_COUNT))
+        return diagnostic(e,0,"pipeline raster state out of range");
     if(!p||p->varying_count>OL3D_MAX_VARYINGS||ol_shader_validate(p->vertex,e)||ol_shader_validate(p->pixel,e))return OL_ARGUMENT;
     if(p->vertex->stage!=OLS_VERTEX||p->pixel->stage!=OLS_PIXEL)return diagnostic(e,0,"pipeline requires vertex and pixel stages");
     unsigned written=0;
@@ -66,4 +68,61 @@ int ol3d_draw_buffers(struct ol3d_context *c,const struct ol3d_pipeline_object *
     struct ol3d_draw draw={p->state,*bindings,(const struct ol3d_vertex *)v.buffer->data,v.buffer->count,
                             (const uint32_t *)ix.buffer->data+first,count};
     return ol3d_draw_indexed(c,&draw);
+}
+void ol3d_texture_mip_size(unsigned w, unsigned h, unsigned *levels, size_t *bytes)
+{
+    unsigned n = 0;
+    size_t total = 0;
+    while (w > 1 || h > 1) {
+        w = w > 1 ? w >> 1 : 1;
+        h = h > 1 ? h >> 1 : 1;
+        total += (size_t)w * h * 4;
+        n++;
+    }
+    if (levels)
+        *levels = n;
+    if (bytes)
+        *bytes = total;
+}
+int ol3d_texture_build_mips(const struct ol3d_texture *t, struct ol3d_mip_level *levels,
+                            unsigned max_levels, unsigned char *storage, size_t storage_bytes,
+                            unsigned *count)
+{
+    if (count)
+        *count = 0;
+    if (!t || !t->pixels || !levels || !storage || !count || !t->width || !t->height ||
+        t->width > 4096 || t->height > 4096 || t->stride < t->width * 4 ||
+        t->bytes < (size_t)(t->height - 1) * t->stride + t->width * 4)
+        return OL_ARGUMENT;
+    unsigned n;
+    size_t need;
+    ol3d_texture_mip_size(t->width, t->height, &n, &need);
+    if (n > max_levels || need > storage_bytes)
+        return OL_LIMIT;
+    const unsigned char *src = t->pixels;
+    unsigned sw = t->width, sh = t->height, sstride = t->stride;
+    unsigned char *dst = storage;
+    for (unsigned l = 0; l < n; l++) {
+        unsigned dw = sw > 1 ? sw >> 1 : 1, dh = sh > 1 ? sh >> 1 : 1;
+        for (unsigned y = 0; y < dh; y++)
+            for (unsigned x = 0; x < dw; x++) {
+                unsigned x1 = 2 * x + 1 < sw ? 2 * x + 1 : sw - 1,
+                         y1 = 2 * y + 1 < sh ? 2 * y + 1 : sh - 1;
+                const unsigned char *p00 = src + (size_t)(2 * y) * sstride + 2 * x * 4,
+                                    *p10 = src + (size_t)(2 * y) * sstride + x1 * 4,
+                                    *p01 = src + (size_t)y1 * sstride + 2 * x * 4,
+                                    *p11 = src + (size_t)y1 * sstride + x1 * 4;
+                for (int k = 0; k < 4; k++)
+                    dst[((size_t)y * dw + x) * 4 + k] =
+                        (unsigned char)((p00[k] + p10[k] + p01[k] + p11[k] + 2) >> 2);
+            }
+        levels[l] = (struct ol3d_mip_level){dst, dw, dh, dw * 4, (size_t)dw * dh * 4};
+        src = dst;
+        sw = dw;
+        sh = dh;
+        sstride = dw * 4;
+        dst += (size_t)dw * dh * 4;
+    }
+    *count = n;
+    return OL_OK;
 }

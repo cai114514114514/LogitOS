@@ -293,6 +293,51 @@ int ol_display_blit_rgba_ex(struct ol_display *ctx, const uint8_t *src,
     return OL_OK;
 }
 
+/* Glyph coverage LUT. Stored per display in the OL_DS_SPARE scratch slot
+ * (per drawing context, freed by ol_display_destroy): bytes 0..255 are the
+ * table, byte 256 is the enable flag. A display that never called
+ * ol_display_set_glyph_lut has no slot and blits exactly as before. */
+#define GLUT_BYTES 257
+int ol_display_set_glyph_lut(struct ol_display *ctx, const uint8_t lut[256])
+{
+    if (!ctx) return OL_ARGUMENT;
+    if (!lut) {
+        if (ctx->scratch[OL_DS_SPARE] && ctx->scratch_n[OL_DS_SPARE] >= GLUT_BYTES)
+            ((uint8_t *)ctx->scratch[OL_DS_SPARE])[256] = 0;
+        return OL_OK;
+    }
+    uint8_t *mem = display_scratch(ctx, OL_DS_SPARE, GLUT_BYTES);
+    if (!mem) return OL_LIMIT;
+    for (int i = 0; i < 256; i++) mem[i] = lut[i];
+    mem[256] = 1;
+    return OL_OK;
+}
+
+static const uint8_t *glyph_lut(const struct ol_display *ctx)
+{
+    const uint8_t *m = ctx->scratch[OL_DS_SPARE];
+    return (m && ctx->scratch_n[OL_DS_SPARE] >= GLUT_BYTES && m[256]) ? m : 0;
+}
+
+static int glut_luma(uint32_t c) { return (int)((((c >> 16) & 255) * 54 + ((c >> 8) & 255) * 183 + (c & 255) * 19) >> 8); }
+
+/* Build the contrast table for text of colour `text` (0xRRGGBB) on `bg`.
+ * Chosen by luma: dark text on a lighter background is boosted (thin dark
+ * stems look lighter than their coverage says), light text on a darker one is
+ * eased (it blooms). A quadratic bump a*(255-a) keeps 0 and 255 fixed and the
+ * table monotonic; |luma difference| < 24 is the identity. */
+void ol_display_glyph_lut_for(uint8_t lut[256], uint32_t text, uint32_t bg)
+{
+    int d = glut_luma(text) - glut_luma(bg);
+    for (int a = 0; a < 256; a++) {
+        int bump = (a * (255 - a) * 3) / 2040;           /* peak 23 at 127 */
+        int v = a;
+        if (d <= -24) v = a + bump;
+        else if (d >= 24) v = a - bump;
+        lut[a] = (uint8_t)(v < 0 ? 0 : v > 255 ? 255 : v);
+    }
+}
+
 void ol_display_blit_glyph_a(struct ol_display *ctx, int x, int y,
                              const uint8_t *cov, int w, int h, int stride,
                              uint32_t color, int alpha)
@@ -303,11 +348,13 @@ void ol_display_blit_glyph_a(struct ol_display *ctx, int x, int y,
     int i0, j0, i1, j1;
     if (!clip_ij(ctx, x, y, w, h, &i0, &j0, &i1, &j1)) return;
     struct ol_pixel_target *s = &ctx->target;
+    const uint8_t *lut = glyph_lut(ctx);
     for (int j = j0; j < j1; j++) {
         const uint8_t *crow = cov + (long)j * stride;
         uint32_t *drow = s->px + (long)(y + j) * s->w + x;
         for (int i = i0; i < i1; i++) {
             int a = crow[i];
+            if (lut) a = lut[a];
             if (alpha < 255) a = (a * alpha + 127) / 255;
             if (!a) continue;
             if (a >= 255) { drow[i] = color; continue; }

@@ -65,6 +65,10 @@ int  text_draw_run(int x, int y, const char *s, int len, int px, int face, uint3
 int  text_draw_run_a(struct ol_display *d, int x, int y, const char *s, int len,
                      int px, unsigned face, uint32_t rgb, int alpha)
 { (void)d; (void)alpha; return text_draw_run(x, y, s, len, px, (int)face, rgb); }
+/* text.c's weight -> face-slot resolver (font-weights), used by
+ * wm_draw2_text.c; text.c is not linked and text_draw_run_a is a stub, so
+ * the face it picks is never observed here. */
+unsigned text_face_for_weight(unsigned face, int weight) { (void)weight; return face; }
 
 /* ---- layout (LP64): the numbers tools/gen_abi.py also asserts ---------- */
 #define OFF(t, f, n) _Static_assert(offsetof(struct t, f) == (n), #t "." #f)
@@ -322,7 +326,8 @@ static void test_router(void)
     uint32_t before = crc_surface();
 
     bad += expect(wm2_dispatch(SYS_GUI2_INFO, &e, 0, 0, 0), ((long)LOGIT_GUI2_VERSION << 16) | LOGIT_GUI2_F_PATH | LOGIT_GUI2_F_PATH_EXT | LOGIT_GUI2_F_TEXT_RUN2 |
-                  LOGIT_GUI2_F_CLIP | LOGIT_GUI2_F_GROUP | LOGIT_GUI2_F_BLIT2, "INFO(0)");
+                  LOGIT_GUI2_F_CLIP | LOGIT_GUI2_F_GROUP | LOGIT_GUI2_F_BLIT2 |
+                  LOGIT_GUI2_F_SHADOW2 | LOGIT_GUI2_F_GLASS2 | LOGIT_GUI2_F_BACKDROP, "INFO(0)");
     bad += expect(wm2_dispatch(SYS_GUI2_INFO, &e, 1, 0, 0), 0, "INFO(1)");
     bad += expect(wm2_dispatch(SYS_GUI2_INFO, &e, 2, 0, 0), OL_ARGUMENT, "INFO(2)");
     bad += expect(wm2_dispatch(SYS_GUI2_INFO, &e, -1, 0, 0), OL_ARGUMENT, "INFO(-1)");
@@ -339,9 +344,12 @@ static void test_router(void)
     bad += struct_call_w(&e, SYS_GUI_BLIT2, "BLIT2", &u, sizeof(struct logit_blit2), OL_ARGUMENT);
     /* implemented (text-kernel-alpha): a zeroed run has len 0 -> ARGUMENT */
     bad += struct_call_w(&e, SYS_GUI_TEXT_RUN2, "TEXT_RUN2", &u, sizeof(struct logit_run2), OL_ARGUMENT);
-    bad += struct_call(&e, SYS_GUI_SHADOW2, "SHADOW2", &u, sizeof(struct logit_shadow2));
-    bad += struct_call(&e, SYS_GUI_GLASS2, "GLASS2", &u, sizeof(struct logit_glass2));
-    bad += struct_call(&e, SYS_GUI_BACKDROP, "BACKDROP", &u, sizeof(struct logit_backdrop2));
+    /* implemented (wm-draw2-effects): a zeroed rect draws nothing, OL_OK */
+    bad += struct_call_w(&e, SYS_GUI_SHADOW2, "SHADOW2", &u, sizeof(struct logit_shadow2), OL_OK);
+    bad += struct_call_w(&e, SYS_GUI_GLASS2, "GLASS2", &u, sizeof(struct logit_glass2), OL_OK);
+    /* implemented (wm-backdrop-regions): a zeroed backdrop is an empty
+     * region, OL_OK, nothing recorded and no pixel written */
+    bad += struct_call_w(&e, SYS_GUI_BACKDROP, "BACKDROP", &u, sizeof(struct logit_backdrop2), OL_OK);
 
     /* PATH: three structs, each size-checked; c = 0 means fill. */
     struct logit_path2 p; struct logit_paint2 q; struct logit_stroke2 s;
@@ -367,7 +375,7 @@ static void test_router(void)
     bad += expect(wm2_dispatch(SYS_GUI_CLIP_POP, &e, 0, 0, 0), OL_STATE, "CLIP_POP over a group");
     bad += expect(wm2_dispatch(SYS_GUI_GROUP_END, &e, 0, 0, 0), OL_OK, "GROUP_END");
     for (long id = -1; id < LOGIT_BACKDROP_MAX; id++)
-        bad += expect(wm2_dispatch(SYS_GUI_BACKDROP_CLEAR, &e, id, 0, 0), OL_UNSUPPORTED, "BACKDROP_CLEAR(id)");
+        bad += expect(wm2_dispatch(SYS_GUI_BACKDROP_CLEAR, &e, id, 0, 0), OL_OK, "BACKDROP_CLEAR(id)");
     bad += expect(wm2_dispatch(SYS_GUI_BACKDROP_CLEAR, &e, LOGIT_BACKDROP_MAX, 0, 0), OL_ARGUMENT, "BACKDROP_CLEAR(8)");
     bad += expect(wm2_dispatch(SYS_GUI_BACKDROP_CLEAR, &e, -2, 0, 0), OL_ARGUMENT, "BACKDROP_CLEAR(-2)");
 

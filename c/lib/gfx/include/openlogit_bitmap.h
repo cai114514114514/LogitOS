@@ -20,4 +20,16 @@ int ol_bitmap_reshape(uint32_t *dst,int width,int height,const uint32_t *src,
                        int old_width,int old_height,uint32_t background);
 void ol_bitmap_tint_row(unsigned char *rgba,const unsigned char *mask,int count,
                          unsigned color,int opacity,int flip);
+/* Status variants. OL_OK on success; OL_ARGUMENT for a null or malformed
+ * argument; OL_LIMIT when a surface or dimension exceeds GFX_MAX_W. The legacy
+ * functions above return the same codes, except that OL_LIMIT reads as
+ * OL_ARGUMENT there, so their results are unchanged. */
+int ol_bitmap_copy_st(struct gfx_surface *dst,int dx,int dy,const struct gfx_surface *src,
+                       int sx,int sy,int width,int height);
+int ol_bitmap_read_st(const struct gfx_surface *src,int x,int y,struct gfx_surface *out);
+int ol_bitmap_erase_st(struct gfx_surface *,struct gfx_rect,const struct gfx_clip_mask *);
+int ol_bitmap_composite_st(struct gfx_surface *,const unsigned char *rgba,
+                            const unsigned char *rgba_mask,int opacity256);
+int ol_bitmap_reshape_st(uint32_t *dst,int width,int height,const uint32_t *src,
+                          int old_width,int old_height,uint32_t background);
 #endif

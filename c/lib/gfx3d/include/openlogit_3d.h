@@ -61,12 +61,35 @@ int ol_shader_compile(const char *text, size_t bytes, struct ol_shader_program *
                       struct ol_shader_error *);
 int ol_shader_validate(const struct ol_shader_program *, struct ol_shader_error *);
 
+/* Mip chain. Level 0 is the base image in ol3d_texture; mips[i] is level i+1, each
+ * max(w>>level,1) by max(h>>level,1). mip_filter picks the level from the screen-space
+ * UV derivatives of the 2x2 quad: NONE (zero, the legacy behaviour) always samples level
+ * 0, NEAREST takes the closest level, LINEAR blends the two nearest (trilinear when
+ * bilinear is set). The chain lives in caller storage; see ol3d_texture_build_mips. */
+enum { OL3D_MIP_NONE = 0, OL3D_MIP_NEAREST, OL3D_MIP_LINEAR, OL3D_MIP_FILTER_COUNT };
+struct ol3d_mip_level {
+    const unsigned char *pixels;
+    unsigned width, height, stride;
+    size_t bytes;
+};
 struct ol3d_texture {
     const unsigned char *pixels;
     unsigned width, height, stride;
     size_t bytes;
     int bilinear, repeat;
+    const struct ol3d_mip_level *mips;
+    unsigned mip_count, mip_filter;
 };
+/* Levels below the base for a w x h image (down to 1x1) and the bytes their tightly
+ * packed RGBA storage needs. Either out pointer may be null. */
+void ol3d_texture_mip_size(unsigned w, unsigned h, unsigned *levels, size_t *bytes);
+/* Box-filters base into levels[0..n) backed by storage. Each texel averages its 2x2
+ * source block (edge texels replicated for odd sizes), rounded half up. max_levels and
+ * storage_bytes bound the caller buffers (OL_LIMIT if too small). On success *count is
+ * the number of levels written and t->mips/mip_count may point at them. */
+int ol3d_texture_build_mips(const struct ol3d_texture *base, struct ol3d_mip_level *levels,
+                            unsigned max_levels, unsigned char *storage, size_t storage_bytes,
+                            unsigned *count);
 struct ol3d_bindings {
     const float (*uniforms)[4];
     unsigned uniform_count;
@@ -76,10 +99,23 @@ struct ol3d_bindings {
 struct ol3d_vertex {
     float attribute[OL3D_MAX_ATTRIBUTES][4];
 };
+/* Raster state appended to the pipeline; zero in every new field is the behaviour
+ * before they existed. depth_func compares the fragment z with the stored depth and
+ * passes when the relation holds (LESS is the legacy test). cull selects the face
+ * culled: BACK defers to the legacy cull_back flag, NONE never culls, FRONT culls
+ * counter-clockwise (front) faces whatever cull_back says. */
+enum { OL3D_DEPTH_LESS = 0, OL3D_DEPTH_LEQUAL, OL3D_DEPTH_ALWAYS, OL3D_DEPTH_NEVER,
+       OL3D_DEPTH_GREATER, OL3D_DEPTH_FUNC_COUNT };
+enum { OL3D_CULL_BACK = 0, OL3D_CULL_NONE, OL3D_CULL_FRONT, OL3D_CULL_COUNT };
 struct ol3d_pipeline {
     const struct ol_shader_program *vertex, *pixel;
     unsigned varying_count;
     int cull_back, depth_test, depth_write, blend;
+    /* blend_op is an enum gfx_op (gfx_blend.h). Anything other than GFX_OP_SRC_OVER
+     * composes each fragment with gfx_compose at full coverage and takes precedence
+     * over the legacy blend flag. no_depth_write masks the depth write on top of
+     * depth_write (the effective write is depth_write && !no_depth_write). */
+    unsigned char blend_op, depth_func, no_depth_write, cull;
 };
 struct ol3d_draw {
     struct ol3d_pipeline pipeline;
