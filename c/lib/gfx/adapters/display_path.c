@@ -49,6 +49,7 @@ static void dp_row_op(struct ol_display *d, uint32_t *drow, int y, int x0, int x
         if (!any) return;
         if (p->kind == GFX_LINEAR)      gfx_gradient_linear_row(p, rgba, y, x0, x1, cov, cx);
         else if (p->kind == GFX_RADIAL) gfx_gradient_radial_row(p, rgba, y, x0, x1, cov, cx);
+        else if (p->kind == GFX_CONIC)  gfx_gradient_conic_row(p, rgba, y, x0, x1, cov, cx);
         else if (p->kind == GFX_IMAGE)  gfx_image_row(p, rgba, y, x0, x1, cov, cx);
     }
     for (int x = x0; x < x1; x++) {
@@ -119,6 +120,8 @@ static void dp_row(struct ol_display *d, int y, int x0, int x1,
         gfx_gradient_linear_row(p, rgba, y, x0, x1, cov, cx);
     } else if (p->kind == GFX_RADIAL) {
         gfx_gradient_radial_row(p, rgba, y, x0, x1, cov, cx);
+    } else if (p->kind == GFX_CONIC) {
+        gfx_gradient_conic_row(p, rgba, y, x0, x1, cov, cx);
     } else if (p->kind == GFX_IMAGE) {
         gfx_image_row(p, rgba, y, x0, x1, cov, cx);
     }

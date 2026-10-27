@@ -102,6 +102,13 @@ void gfx_paint_radial(struct gfx_paint *p, int cx, int cy, int r)
     p->cx = cx; p->cy = cy; p->r = r > 0 ? r : 1;
 }
 
+void gfx_paint_conic(struct gfx_paint *p, int cx, int cy, int start_deg24_8)
+{
+    paint_base(p);
+    p->kind = GFX_CONIC;
+    p->cx = cx; p->cy = cy; p->r = start_deg24_8;
+}
+
 /* Stops are kept sorted by position. A caller adding them out of order is not
  * an error worth refusing -- CSS lets a later stop sit before an earlier one and
  * requires it be clamped up -- so they are inserted in place. */
@@ -163,6 +170,7 @@ static void gfx_paint_row_op(const struct gfx_paint *p, unsigned char *drow, int
         unsigned char *bias = (unsigned char *)((uintptr_t)stage - (uintptr_t)cx * 4);
         if (p->kind == GFX_LINEAR)      gfx_gradient_linear_row(p, bias, y, cx, ce, cov, cov_ox);
         else if (p->kind == GFX_RADIAL) gfx_gradient_radial_row(p, bias, y, cx, ce, cov, cov_ox);
+        else if (p->kind == GFX_CONIC)  gfx_gradient_conic_row(p, bias, y, cx, ce, cov, cov_ox);
         else if (p->kind == GFX_IMAGE)  gfx_image_row(p, bias, y, cx, ce, cov, cov_ox);
         else return;
         for (int x = cx; x < ce; x++) {
@@ -202,6 +210,11 @@ void gfx_paint_row(const struct gfx_paint *p, struct gfx_surface *dst, int y,
 
     if (p->kind == GFX_RADIAL) {
         gfx_gradient_radial_row(p, drow, y, x0, x1, cov, cov_ox);
+        return;
+    }
+
+    if (p->kind == GFX_CONIC) {
+        gfx_gradient_conic_row(p, drow, y, x0, x1, cov, cov_ox);
         return;
     }
 
