@@ -30,9 +30,22 @@ enum {
     OL_GLASS_RIM_SYMMETRIC   = 1,
 };
 
-/* tint is 0xRRGGBB (high byte ignored). flags and fg_rgb are reserved for
- * glass-adaptive-tint; tone is reserved. A zeroed struct is REGULAR blur with a
- * directional rim. */
+/* ol_glass_material.flags. 0 renders the long-standing adaptive tint
+ * (hard thresholds on the tint's tone, spread and opacity).
+ * SMOOTH: the adaptive strength ramps continuously with the tint's tone and
+ * distance from neutral instead of switching on thresholds.
+ * FG: fg_rgb (0xRRGGBB, high byte ignored; 0 is black text) is the colour
+ * drawn over the panel. The tinted backdrop is pushed (tint darkened or
+ * lightened as needed, opacity raised per backdrop luminance) until fg has a
+ * WCAG contrast of at least 4.5:1 against the panel interior; an opaque
+ * (255) tint is left alone. FG takes precedence over SMOOTH. */
+enum {
+    OL_GLASS_ADAPT_SMOOTH = 1,
+    OL_GLASS_ADAPT_FG     = 2,
+};
+
+/* tint is 0xRRGGBB (high byte ignored). flags and fg_rgb are described above;
+ * tone is reserved. A zeroed struct is REGULAR blur with a directional rim. */
 struct ol_glass_material {
     uint32_t tint;
     uint8_t opacity, tone, blur, rim, flags, reserved;
