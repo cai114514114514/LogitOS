@@ -3069,6 +3069,10 @@ static long wm_gui_dispatch(long num, long a, long b, long c)
          * 5-point columns are 7 and 8 pixels wide, and converting each width on
          * its own would make them 7 and 7 and leave a seam that moves as the
          * app scrolls. Same idiom in every rect-shaped call below. */
+        /* x and y are SIGNED 16-bit (logit_pack.h sign-extends them): a view
+         * scrolled up-left of its origin draws at a negative corner. w and h
+         * stay unsigned. The clamps below only bound the far edge; fb_* clips
+         * the negative side itself. */
         int x = S(LOGIT_GUI_RECT_A_X(a)), y = S(LOGIT_GUI_RECT_A_Y(a));
         int rw = S(LOGIT_GUI_RECT_A_X(a) + LOGIT_GUI_RECT_B_W(b)) - x;
         int rh = S(LOGIT_GUI_RECT_A_Y(a) + LOGIT_GUI_RECT_B_H(b)) - y;
@@ -3460,6 +3464,9 @@ static long wm_gui_dispatch(long num, long a, long b, long c)
         struct win *w = app_window(ap); if (!w) return -1;
         int x = S(LOGIT_GUI_CLIP_A_X(a)), y = S(LOGIT_GUI_CLIP_A_Y(a));
         int cw2 = LOGIT_GUI_CLIP_B_W(b), ch2 = LOGIT_GUI_CLIP_B_H(b);
+        /* x,y are signed (a clip in a scrolled view starts negative). w == h == 0
+         * is the reset; a rectangle with exactly one zero extent is a real,
+         * EMPTY clip (see ol_window_clip_region). */
         /* The clip is stored ON the window surface, so target it first; this is
          * why a clip set here can't bleed into another app's surface draws. */
         fb_target(&w->surf);

@@ -62,9 +62,22 @@ static inline int ol_window_present_region(struct gfx_rect region)
     return (long)_sys(SYS_GUI_FLUSH_RECT,((long)region.x<<16)|region.y,
                        ((long)region.w<<16)|region.h,0)<0 ? OL_BACKEND_FAILED : OL_OK;
 }
-static inline void ol_window_clip_region(struct gfx_rect region)
+/* Restrict later drawing to `region` (window-local logical points). x and y
+ * are signed 16-bit on the wire, so a view scrolled past the origin may clip
+ * at a negative corner; w and h are unsigned 16-bit. An EMPTY region (w or h
+ * of 0) is a real clip that admits no pixel, and is NOT a reset: the wire
+ * reserves w == h == 0 for ol_window_reset_clip(), so an empty region is sent
+ * as w x 1 or 0 x h, never 0 x 0. Returns OL_OK, OL_ARGUMENT for a region the
+ * wire cannot carry, or OL_BACKEND_FAILED when the syscall fails. */
+static inline int ol_window_clip_region(struct gfx_rect region)
 {
-    _sys(SYS_GUI_CLIP,((long)region.x<<16)|region.y,((long)region.w<<16)|region.h,0);
+    if (region.w < 0 || region.h < 0 || region.w > 65535 || region.h > 65535 ||
+        region.x < -32768 || region.x > 32767 || region.y < -32768 || region.y > 32767)
+        return OL_ARGUMENT;
+    long w = region.w, h = region.h;
+    if (!w && !h) h = 1;
+    return (long)_sys(SYS_GUI_CLIP,((long)(region.x & 0xFFFF)<<16)|(region.y & 0xFFFF),
+                      (w<<16)|h,0)<0 ? OL_BACKEND_FAILED : OL_OK;
 }
 static inline void ol_window_reset_clip(void)
 {
