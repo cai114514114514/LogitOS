@@ -24,8 +24,10 @@
  * STATUS. OL_ARGUMENT: wrong size, copy fault, malformed verbs/points/stops/
  * stroke, undefined flag bits. OL_LIMIT: more than LOGIT_PATH2_MAX_VERBS /
  * _MAX_XY, a matrix outside canvas/state.c's bounds, or the path/stroker ran
- * out of its fixed storage. OL_UNSUPPORTED: conic, op != 0, spread != 0,
- * radial r0 != 0 and 9..16 stops (lifted by later items). A path with no
+ * out of its fixed storage. OL_UNSUPPORTED: op != 0 and radial r0 != 0
+ * (lifted by later items). Conic (centre x0,y0; start angle in r0, 24.8
+ * degrees, turned by the matrix's x-axis rotation), spread 0..2 and up to 16
+ * stops are drawn; spread > 2 is OL_ARGUMENT. A path with no
  * verbs draws nothing and returns OL_OK.
  *
  * -DWM_DRAW2_NO_VALIDATE (the negative control) skips the count limits and the
@@ -36,13 +38,13 @@
 #include "openlogit_display_path.h"
 #include "display_pixels.h"
 
-const unsigned wm2_path_info = LOGIT_GUI2_F_PATH;
+const unsigned wm2_path_info = LOGIT_GUI2_F_PATH | LOGIT_GUI2_F_PATH_EXT;
 
 #define WP_PT_CAP      8192     /* flattened points of the fill path */
 #define WP_SUB_CAP     4096
 #define WP_OUT_PT_CAP  16384    /* stroke outline */
 #define WP_OUT_SUB_CAP 8192
-#define WP_MAX_STOPS   8
+#define WP_MAX_STOPS   16
 #define WP_COORD_MAX   (32768 * 256)       /* +-32768 pt, 24.8 */
 #define WP_DEV_MAX     (1 << 30)
 
@@ -186,9 +188,9 @@ long wm2_path(struct wm2_env *e, long a, long b, long c)
     if (paint.flags & ~LOGIT_RECT_SNAP) return OL_ARGUMENT;
     if (path.rule != LOGIT_PATH2_NONZERO && path.rule != LOGIT_PATH2_EVENODD) return OL_ARGUMENT;
     if (paint.kind > LOGIT_PAINT2_CONIC || paint.nstop > LOGIT_PAINT2_MAX_STOPS) return OL_ARGUMENT;
-    /* Not yet: conic, blend ops, spread modes, 9..16 stops, an inner radius. */
-    if (paint.kind == LOGIT_PAINT2_CONIC || paint.op || paint.spread ||
-        paint.nstop > WP_MAX_STOPS || (paint.kind == LOGIT_PAINT2_RADIAL && paint.r0))
+    if (paint.spread > GFX_SPREAD_REFLECT) return OL_ARGUMENT;
+    /* Not yet: blend ops, an inner radius. */
+    if (paint.op || (paint.kind == LOGIT_PAINT2_RADIAL && paint.r0))
         return OL_UNSUPPORTED;
     if (c && (rc = check_stroke(&st)) != OL_OK) return rc;
 
@@ -271,6 +273,11 @@ long wm2_path(struct wm2_env *e, long a, long b, long c)
         if (kind == LOGIT_PAINT2_LINEAR) {
             gfx_m_apply(&t.dev, paint.x1, paint.y1, &x1, &y1);
             gfx_paint_linear(&pa, x0, y0, x1, y1);
+        } else if (kind == LOGIT_PAINT2_CONIC) {
+            /* The paint turns with the matrix: its start angle gains the
+             * rotation of the transformed x axis (0 for the identity). */
+            long long st = (long long)paint.r0 + gfx_atan2(t.dev.b, t.dev.a);
+            gfx_paint_conic(&pa, x0, y0, (int)(st % (360 * 256)));
         } else {
             long long s = gfx_m_scale_of(&t.dev);
             long long r = ((long long)paint.r1 * s + GFX_MONE / 2) / GFX_MONE;
@@ -279,6 +286,7 @@ long wm2_path(struct wm2_env *e, long a, long b, long c)
         }
         for (unsigned i = 0; i < paint.nstop; i++)
             gfx_paint_stop(&pa, (int)stop_pos[i], stop_argb[i] & 0xFFFFFFu, (int)(stop_argb[i] >> 24));
+        pa.spread = paint.spread;
     }
 
     if (!c)

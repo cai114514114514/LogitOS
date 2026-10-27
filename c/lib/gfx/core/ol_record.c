@@ -123,7 +123,8 @@ static int path_ok(const struct gfx_path *p)
 }
 static int paint_ok(const struct gfx_paint *p)
 {
-    if (!p || p->kind < GFX_SOLID || p->kind > GFX_RADIAL || p->alpha < 0 || p->alpha > 255 ||
+    if (!p || p->kind < GFX_SOLID || p->kind > GFX_CONIC || p->kind == GFX_IMAGE ||
+        p->spread > GFX_SPREAD_REFLECT || p->alpha < 0 || p->alpha > 255 ||
         p->global_alpha < 0 || p->global_alpha > 255 || p->nstop < 0 || p->nstop > GFX_MAX_STOPS)
         return 0;
     for (int i = 0; i < p->nstop; i++)
