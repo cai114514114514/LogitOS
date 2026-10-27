@@ -320,7 +320,7 @@ static void test_router(void)
     }
     uint32_t before = crc_surface();
 
-    bad += expect(wm2_dispatch(SYS_GUI2_INFO, &e, 0, 0, 0), ((long)LOGIT_GUI2_VERSION << 16) | LOGIT_GUI2_F_TEXT_RUN2, "INFO(0)");
+    bad += expect(wm2_dispatch(SYS_GUI2_INFO, &e, 0, 0, 0), ((long)LOGIT_GUI2_VERSION << 16) | LOGIT_GUI2_F_PATH | LOGIT_GUI2_F_TEXT_RUN2, "INFO(0)");
     bad += expect(wm2_dispatch(SYS_GUI2_INFO, &e, 1, 0, 0), 0, "INFO(1)");
     bad += expect(wm2_dispatch(SYS_GUI2_INFO, &e, 2, 0, 0), OL_ARGUMENT, "INFO(2)");
     bad += expect(wm2_dispatch(SYS_GUI2_INFO, &e, -1, 0, 0), OL_ARGUMENT, "INFO(-1)");
@@ -342,8 +342,10 @@ static void test_router(void)
     struct logit_path2 p; struct logit_paint2 q; struct logit_stroke2 s;
     memset(&p, 0, sizeof p); memset(&q, 0, sizeof q); memset(&s, 0, sizeof s);
     p.size = sizeof p; q.size = sizeof q; s.size = sizeof s;
-    bad += expect(wm2_dispatch(SYS_GUI_PATH, &e, (long)&p, (long)&q, 0), OL_UNSUPPORTED, "PATH fill");
-    bad += expect(wm2_dispatch(SYS_GUI_PATH, &e, (long)&p, (long)&q, (long)&s), OL_UNSUPPORTED, "PATH stroke");
+    /* implemented (wm-draw2-path): an empty path draws nothing and is OK; a
+     * zero-width stroke is malformed. tests/unit/wm_draw2_path_test.c has the rest. */
+    bad += expect(wm2_dispatch(SYS_GUI_PATH, &e, (long)&p, (long)&q, 0), OL_OK, "PATH fill (empty)");
+    bad += expect(wm2_dispatch(SYS_GUI_PATH, &e, (long)&p, (long)&q, (long)&s), OL_ARGUMENT, "PATH stroke width 0");
     q.kind = LOGIT_PAINT2_CONIC; q.nstop = 16; q.op = 1; q.spread = 1;
     bad += expect(wm2_dispatch(SYS_GUI_PATH, &e, (long)&p, (long)&q, 0), OL_UNSUPPORTED, "PATH conic/op/spread/16 stops");
     q.kind = 0; q.nstop = 0; q.op = 0; q.spread = 0;
