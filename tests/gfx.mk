@@ -219,13 +219,18 @@ $(BUILD)/apps/aui_cost.o: $(GUIDIR)/aui.c $(GUIDIR)/aui.h $(APPDIR)/logit.h c/li
 	@mkdir -p $(BUILD)/apps
 	$(CC) $(UCFLAGS) -DAUI_COST -c $(GUIDIR)/aui.c -o $@
 
+# ui-bench-frame-fix (tests/ui-bench-frame-fix.mk): gallery_cost is not in the agent
+# catalogue, so tools/agent_link.py adds no libc to its link and ld.lld fails on memcpy,
+# memset and snprintf. Link the same agent libc.a that gallery.elf gets. UI_BFF_NEGCTL=1
+# (the negative control, own BUILD dir) drops it so the link must fail on memset.
+BFF_LIBC := $(if $(UI_BFF_NEGCTL),,$(BUILD)/agent/libc.a)
 $(BUILD)/gallery_cost.elf: $(GUIDIR)/gallery/gallery.c $(APPDIR)/crt0.asm $(APPDIR)/logit.h \
-                           $(GUIDIR)/aui.h $(BUILD)/apps/aui_cost.o $(AUI_LIBS) $(GFX_OBJ)
+                           $(GUIDIR)/aui.h $(BUILD)/apps/aui_cost.o $(AUI_LIBS) $(GFX_OBJ) $(BFF_LIBC)
 	@mkdir -p $(BUILD)/apps
 	$(ASM) -f elf64 $(APPDIR)/crt0.asm -o $(BUILD)/apps/gallery_cost.crt0.o
 	$(CC) $(UCFLAGS) -c $(GUIDIR)/gallery/gallery.c -o $(BUILD)/apps/gallery_cost.o
 	$(LD) -nostdlib -e _start -Ttext=0x4A000000 -o $@ $(BUILD)/apps/gallery_cost.crt0.o \
-	    $(BUILD)/apps/gallery_cost.o $(BUILD)/apps/aui_cost.o $(AUI_LIBS) $(GFX_OBJ)
+	    $(BUILD)/apps/gallery_cost.o $(BUILD)/apps/aui_cost.o $(AUI_LIBS) $(GFX_OBJ) $(BFF_LIBC)
 $(BUILD)/gallery_cost.aex: $(BUILD)/gallery_cost.elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/gallery_cost.elf $@ 'Gallery' - 'G' 120 140 250
 
