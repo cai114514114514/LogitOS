@@ -51,7 +51,9 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 SWATCH_ERR_PT = (252, 250, 18, 18)     # hstack(AUI_PAD=16, 250, gap=28), 3rd item
 SWATCH_ERR_RGB = (255, 69, 58)         # AUI_ERROR, light theme
 CHECKBOX_PT = (20, 116, 16, 16)        # aui_checkbox("Fancy mode")
-ACCENT_RGB = (64, 130, 246)            # AUI_ACCENT: the CHECKED checkbox fill
+# AUI_ACCENT, light theme: the CHECKED checkbox fill. 靛 indigo #5E5CE6 since the
+# 「澄」 theme flip (design 3.1.4 and 8: accent (64,130,246) -> (94,92,230)).
+ACCENT_RGB = (94, 92, 230)
 
 
 def count_color(ppm, box, rgb):
