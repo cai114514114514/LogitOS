@@ -524,6 +524,17 @@ Backdrop2 = layout("logit_backdrop2", 84, [
     ["reserved_3", 80, 4, "i"]
 ])
 
+Icon2 = layout("logit_icon2", 32, [
+    ["size", 0, 4, "u"],
+    ["id", 4, 4, "i"],
+    ["x", 8, 4, "i"],
+    ["y", 12, 4, "i"],
+    ["px", 16, 4, "i"],
+    ["color", 20, 4, "u"],
+    ["weight", 24, 4, "i"],
+    ["flags", 28, 4, "u"]
+])
+
 Text_carets_query = layout("logit_text_carets_query", 64, [
     ["size", 0, 4, "u"],
     ["version", 4, 4, "u"],
@@ -642,6 +653,10 @@ def ui_dark_set(on: i64) -> i64:
     unsafe:
         return syscall(SYS_UI_DARK, on)
 
+def ui_dark_at(on: i64, x: i64, y: i64) -> i64:
+    unsafe:
+        return syscall(SYS_UI_DARK_AT, on, x, y)
+
 def sys_yield() -> i64:
     unsafe:
         return syscall(SYS_YIELD)
@@ -705,6 +720,10 @@ def gui_backdrop(bd: Backdrop2) -> i64:
 def gui_backdrop_clear(region: i64) -> i64:
     unsafe:
         return syscall(SYS_GUI_BACKDROP_CLEAR, region)
+
+def gui_icon2(ic: Icon2) -> i64:
+    unsafe:
+        return syscall(SYS_GUI_ICON2, addr(ic))
 
 def io_write[B0: ByteStorage](fd: i64, b: B0, len: i64) -> i64:
     _check_size(b, len)

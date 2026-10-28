@@ -6,7 +6,7 @@
 static unsigned wm2_features(void)
 {
     return wm2_path_info | wm2_state_info | wm2_text_info |
-           wm2_fx_info | wm2_backdrop_info | wm2_carets_info;
+           wm2_fx_info | wm2_backdrop_info | wm2_carets_info | wm2_icon2_info;
 }
 
 static long wm2_info(struct wm2_env *e, long a)
@@ -34,6 +34,7 @@ long wm2_dispatch(long num, struct wm2_env *e, long a, long b, long c)
     case SYS_GUI_GLASS2:         return wm2_glass2(e, a, b, c);
     case SYS_GUI_BACKDROP:       return wm2_backdrop(e, a, b, c);
     case SYS_GUI_BACKDROP_CLEAR: return wm2_backdrop_clear(e, a, b, c);
+    case SYS_GUI_ICON2:          return wm2_icon2(e, a, b, c);
     }
     return OL_ARGUMENT;
 }

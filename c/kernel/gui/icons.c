@@ -33,7 +33,8 @@ static int seq(const char *a, const char *b) { while (*a && *a == *b) { a++; b++
 enum { IC_MOVE, IC_LINE, IC_QUAD, IC_CUBIC, IC_CLOSE,
        IC_ARC,      /* gfx_arc: pt0=centre, x[1]=radius, x[2]=start deg, y[2]=sweep deg */
        IC_SBEGIN,   /* following ops build STROKE source geometry ...             */
-       IC_STROKE }; /* ... stroked with width x[0] (box units, weight 2) and appended */
+       IC_STROKE,   /* ... stroked with width x[0] (box units, weight 2) and appended */
+       IC_ARCL };   /* IC_ARC that CONTINUES the subpath (a line to its start point) */
 struct ic_cmd { unsigned char op; short x[3], y[3]; };
 
 #define MV(a,b)               { IC_MOVE,  {(short)(a)},                 {(short)(b)} }
@@ -44,6 +45,13 @@ struct ic_cmd { unsigned char op; short x[3], y[3]; };
 #define AR(cx,cy,r,st,sw)     { IC_ARC,   {(short)(cx),(short)(r),(short)(st)}, {(short)(cy),0,(short)(sw)} }
 #define SB                    { IC_SBEGIN, {0}, {0} }
 #define STK(w)                { IC_STROKE, {(short)(w)}, {0} }
+#define ARL(cx,cy,r,st,sw)    { IC_ARCL,  {(short)(cx),(short)(r),(short)(st)}, {(short)(cy),0,(short)(sw)} }
+/* A rounded rectangle, one subpath, clockwise (quadratic corners: the same
+ * shape at every size, and two points per corner instead of an arc's four). */
+#define RR(x0,y0,x1,y1,r) \
+    MV((x0)+(r),y0), LN((x1)-(r),y0), QD(x1,y0,x1,(y0)+(r)), LN(x1,(y1)-(r)), \
+    QD(x1,y1,(x1)-(r),y1), LN((x0)+(r),y1), QD(x0,y1,x0,(y1)-(r)), LN(x0,(y0)+(r)), \
+    QD(x0,y0,(x0)+(r),y0), CL
 
 /* --- the icons --- */
 static const struct ic_cmd ic_folder[] = {       /* filled folder w/ tab */
@@ -231,6 +239,136 @@ static const struct ic_cmd ic_bell[] = {         /* filled bell, knob and clappe
     AR(50,16,5,0,360), CL, AR(50,81,7,0,360), CL,
 };
 
+/* --- set C (design 3.7.1, P7): the shell's and the apps' remaining symbols.
+ * Same conventions as A and B: stroked parts between SB and STK (round caps
+ * and joins, weight-2 width w, +-2 units per weight step), filled parts plain
+ * subpaths. Ink stays inside 10..90 at every weight, so the bitmap border is
+ * clear down to 12 px (tests/unit/ui_wm_abi_icons_test.c "in-box"). Pairs
+ * with a set-A/B sibling (SIDEBAR_R / SIDEBAR) are exact mirrors. */
+static const struct ic_cmd ic_sun[] = {          /* disc outline and eight rays */
+    SB, AR(50,50,14,0,360), CL,
+        MV(76,50), LN(86,50), MV(24,50), LN(14,50), MV(50,76), LN(50,86), MV(50,24), LN(50,14),
+        MV(68,68), LN(75,75), MV(32,68), LN(25,75), MV(32,32), LN(25,25), MV(68,32), LN(75,25),
+    STK(7),
+};
+static const struct ic_cmd ic_moon[] = {         /* crescent: the lit arc, then the cut arc back */
+    SB, AR(50,50,34,14,250), ARL(66,36,28,225,-172), CL, STK(7),
+};
+static const struct ic_cmd ic_wifi[] = {         /* two arcs over a dot */
+    SB, AR(50,70,40,225,90), AR(50,70,22,225,90), STK(8),
+    AR(50,70,7,0,360), CL,
+};
+static const struct ic_cmd ic_disk[] = {         /* drive body, a slot and its light */
+    SB, RR(14,32,86,68,8), MV(26,50), LN(46,50), STK(7),
+    AR(72,50,5,0,360), CL,
+};
+static const struct ic_cmd ic_apps[] = {         /* 2 x 2 rounded squares, outlined */
+    SB, RR(16,16,44,44,7), RR(56,16,84,44,7), RR(16,56,44,84,7), RR(56,56,84,84,7), STK(7),
+};
+static const struct ic_cmd ic_list[] = {         /* three bullets and their lines */
+    SB, MV(38,28), LN(84,28), MV(38,50), LN(84,50), MV(38,72), LN(84,72), STK(8),
+    AR(20,28,6,0,360), CL, AR(20,50,6,0,360), CL, AR(20,72,6,0,360), CL,
+};
+static const struct ic_cmd ic_sort[] = {         /* an up arrow beside a down arrow */
+    SB, MV(34,82), LN(34,18), MV(20,32), LN(34,18), LN(48,32),
+        MV(66,18), LN(66,82), MV(52,68), LN(66,82), LN(80,68), STK(8),
+};
+static const struct ic_cmd ic_stop[] = {         /* filled rounded square */
+    RR(24,24,76,76,9),
+};
+static const struct ic_cmd ic_xmark_oct[] = {    /* octagon outline with an X */
+    SB, MV(36,14), LN(64,14), LN(86,36), LN(86,64), LN(64,86), LN(36,86), LN(14,64), LN(14,36), CL,
+        MV(38,38), LN(62,62), MV(62,38), LN(38,62), STK(7),
+};
+static const struct ic_cmd ic_sparkles[] = {     /* one large and two small four-point stars */
+    MV(42,26), QD(46,54,74,58), QD(46,62,42,90), QD(38,62,10,58), QD(38,54,42,26), CL,
+    MV(74,12), QD(75,25,88,26), QD(75,27,74,40), QD(73,27,60,26), QD(73,25,74,12), CL,
+    MV(80,62), QD(81,69,88,70), QD(81,71,80,78), QD(79,71,72,70), QD(79,69,80,62), CL,
+};
+static const struct ic_cmd ic_sidebar_r[] = {    /* ICON_SIDEBAR mirrored */
+    SB, MV(86,22), LN(14,22), LN(14,78), LN(86,78), CL, MV(62,22), LN(62,78), STK(7),
+};
+static const struct ic_cmd ic_music[] = {        /* eighth note: head, stem, flag */
+    SB, MV(52,70), LN(52,16), CB(58,30,76,32,74,50), STK(8),
+    AR(40,70,13,0,360), CL,
+};
+static const struct ic_cmd ic_film[] = {         /* frame, two rails, perforations */
+    SB, RR(18,14,82,86,8), MV(34,14), LN(34,86), MV(66,14), LN(66,86),
+        MV(18,38), LN(34,38), MV(18,62), LN(34,62), MV(66,38), LN(82,38), MV(66,62), LN(82,62),
+    STK(7),
+};
+static const struct ic_cmd ic_waveform[] = {     /* five level bars */
+    SB, MV(18,42), LN(18,58), MV(34,28), LN(34,72), MV(50,16), LN(50,84),
+        MV(66,32), LN(66,68), MV(82,44), LN(82,56), STK(8),
+};
+static const struct ic_cmd ic_cpu[] = {          /* package, three pins a side, filled die */
+    SB, RR(26,26,74,74,7),
+        MV(38,26), LN(38,14), MV(50,26), LN(50,14), MV(62,26), LN(62,14),
+        MV(38,74), LN(38,86), MV(50,74), LN(50,86), MV(62,74), LN(62,86),
+        MV(26,38), LN(14,38), MV(26,50), LN(14,50), MV(26,62), LN(14,62),
+        MV(74,38), LN(86,38), MV(74,50), LN(86,50), MV(74,62), LN(86,62), STK(7),
+    RR(40,40,60,60,3),
+};
+static const struct ic_cmd ic_memory[] = {       /* module with two chips and four legs */
+    SB, RR(14,27,86,59,6), MV(26,59), LN(26,73), MV(42,59), LN(42,73),
+        MV(58,59), LN(58,73), MV(74,59), LN(74,73), STK(7),
+    RR(24,36,44,50,2), RR(56,36,76,50,2),
+};
+static const struct ic_cmd ic_palette[] = {      /* palette with a thumb notch and four paints */
+    SB, AR(50,50,36,80,300), QD(60,62,56,85), CL, STK(7),
+    AR(34,40,6,0,360), CL, AR(51,29,6,0,360), CL, AR(68,40,6,0,360), CL, AR(32,59,6,0,360), CL,
+};
+static const struct ic_cmd ic_cursor[] = {       /* the arrow pointer */
+    SB, MV(30,14), LN(30,78), LN(45,64), LN(56,86), LN(65,82), LN(54,60), LN(74,60), CL, STK(7),
+};
+static const struct ic_cmd ic_keyboard[] = {     /* case, two rows of keys, the space bar */
+    SB, RR(14,26,86,74,8), MV(34,62), LN(66,62), STK(7),
+    AR(26,39,4,0,360), CL, AR(38,39,4,0,360), CL, AR(50,39,4,0,360), CL,
+    AR(62,39,4,0,360), CL, AR(74,39,4,0,360), CL,
+    AR(26,50,4,0,360), CL, AR(38,50,4,0,360), CL, AR(50,50,4,0,360), CL,
+    AR(62,50,4,0,360), CL, AR(74,50,4,0,360), CL,
+};
+static const struct ic_cmd ic_power[] = {        /* ring open at the top, and the bar */
+    SB, AR(50,54,30,300,300), MV(50,14), LN(50,48), STK(8),
+};
+static const struct ic_cmd ic_restart[] = {      /* clockwise arc ending in a chevron head */
+    SB, AR(50,54,30,330,300), MV(44,14), LN(56,24), LN(44,34), STK(8),
+};
+static const struct ic_cmd ic_bold[] = {         /* a heavy B, one stroke */
+    SB, MV(32,50), LN(56,50), CB(80,50,80,82,56,82), LN(32,82), LN(32,18), LN(52,18),
+        CB(74,18,74,50,52,50), STK(11),
+};
+static const struct ic_cmd ic_italic[] = {       /* slanted I with its two serifs */
+    SB, MV(44,18), LN(72,18), MV(28,82), LN(56,82), MV(58,18), LN(42,82), STK(8),
+};
+static const struct ic_cmd ic_text_size[] = {    /* a large A beside a small A */
+    SB, MV(14,80), LN(35,22), LN(56,80), MV(22,60), LN(48,60),
+        MV(62,80), LN(74,48), LN(86,80), MV(66,70), LN(82,70), STK(7),
+};
+static const struct ic_cmd ic_copy[] = {         /* a page behind a page */
+    SB, MV(62,22), QD(62,14,54,14), LN(28,14), QD(20,14,20,22), LN(20,56), QD(20,64,28,64),
+        RR(38,32,82,84,7), STK(7),
+};
+static const struct ic_cmd ic_person[] = {       /* head and shoulders */
+    SB, AR(50,30,14,0,360), CL,
+        MV(20,84), CB(20,65,33,57,50,57), CB(67,57,80,65,80,84), CL, STK(7),
+};
+static const struct ic_cmd ic_dock[] = {         /* a screen with the Dock along its bottom */
+    SB, RR(14,20,86,80,8), MV(32,67), LN(68,67), STK(7),
+};
+/* The Logit mark (3.7.5): the logistic sigmoid -- the inverse of "logit" --
+ * as two cubics through the centre, inflecting there, inside a circle. The
+ * curve runs from (0.10, 0.82) to (0.90, 0.18) of its own box, which is the
+ * circle's inner square scaled to 48 units so that the round caps keep a
+ * clear gap from the ring at every weight; flat at both ends, steepest at the
+ * centre (controls at 0.38 and (0.46, 0.64) of that box: long flats, so the
+ * S still reads at the menu bar's 14 pt), point-symmetric about it. Strokes 1.5 : 1.25 (curve : ring), the
+ * design's ratio. Monochrome here; the gradient tile is the caller's. */
+static const struct ic_cmd ic_logit[] = {
+    SB, AR(50,50,37,0,360), CL, STK(7),
+    SB, MV(31,65), CB(44,65,48,57,50,50), CB(52,43,56,35,69,35), STK(9),
+};
+
 static const struct { const struct ic_cmd *c; int n; } TBL[ICON_COUNT] = {
     [ICON_FOLDER]   = { ic_folder,   sizeof ic_folder   / sizeof(struct ic_cmd) },
     [ICON_DOC]      = { ic_doc,      sizeof ic_doc      / sizeof(struct ic_cmd) },
@@ -273,6 +411,41 @@ static const struct { const struct ic_cmd *c; int n; } TBL[ICON_COUNT] = {
     [ICON_LINK] = { ic_link, sizeof ic_link / sizeof(struct ic_cmd) },
     [ICON_EYE] = { ic_eye, sizeof ic_eye / sizeof(struct ic_cmd) },
     [ICON_BELL] = { ic_bell, sizeof ic_bell / sizeof(struct ic_cmd) },
+    [ICON_SUN] = { ic_sun, sizeof ic_sun / sizeof(struct ic_cmd) },
+    [ICON_MOON] = { ic_moon, sizeof ic_moon / sizeof(struct ic_cmd) },
+    [ICON_WIFI] = { ic_wifi, sizeof ic_wifi / sizeof(struct ic_cmd) },
+    [ICON_DISK] = { ic_disk, sizeof ic_disk / sizeof(struct ic_cmd) },
+    [ICON_APPS] = { ic_apps, sizeof ic_apps / sizeof(struct ic_cmd) },
+    [ICON_LIST] = { ic_list, sizeof ic_list / sizeof(struct ic_cmd) },
+    [ICON_SORT] = { ic_sort, sizeof ic_sort / sizeof(struct ic_cmd) },
+    [ICON_STOP] = { ic_stop, sizeof ic_stop / sizeof(struct ic_cmd) },
+    [ICON_XMARK_OCTAGON] = { ic_xmark_oct, sizeof ic_xmark_oct / sizeof(struct ic_cmd) },
+    [ICON_SIDEBAR_R] = { ic_sidebar_r, sizeof ic_sidebar_r / sizeof(struct ic_cmd) },
+    [ICON_MUSIC] = { ic_music, sizeof ic_music / sizeof(struct ic_cmd) },
+    [ICON_FILM] = { ic_film, sizeof ic_film / sizeof(struct ic_cmd) },
+    [ICON_WAVEFORM] = { ic_waveform, sizeof ic_waveform / sizeof(struct ic_cmd) },
+    [ICON_CPU] = { ic_cpu, sizeof ic_cpu / sizeof(struct ic_cmd) },
+    [ICON_MEMORY] = { ic_memory, sizeof ic_memory / sizeof(struct ic_cmd) },
+    [ICON_PALETTE] = { ic_palette, sizeof ic_palette / sizeof(struct ic_cmd) },
+    [ICON_CURSOR] = { ic_cursor, sizeof ic_cursor / sizeof(struct ic_cmd) },
+    [ICON_KEYBOARD] = { ic_keyboard, sizeof ic_keyboard / sizeof(struct ic_cmd) },
+    [ICON_POWER] = { ic_power, sizeof ic_power / sizeof(struct ic_cmd) },
+    [ICON_RESTART] = { ic_restart, sizeof ic_restart / sizeof(struct ic_cmd) },
+    [ICON_BOLD] = { ic_bold, sizeof ic_bold / sizeof(struct ic_cmd) },
+    [ICON_ITALIC] = { ic_italic, sizeof ic_italic / sizeof(struct ic_cmd) },
+    [ICON_TEXT_SIZE] = { ic_text_size, sizeof ic_text_size / sizeof(struct ic_cmd) },
+    [ICON_COPY] = { ic_copy, sizeof ic_copy / sizeof(struct ic_cmd) },
+    [ICON_PERSON] = { ic_person, sizeof ic_person / sizeof(struct ic_cmd) },
+    [ICON_DOCK] = { ic_dock, sizeof ic_dock / sizeof(struct ic_cmd) },
+    [ICON_LOGIT] = { ic_logit, sizeof ic_logit / sizeof(struct ic_cmd) },
+#ifdef UI_ICONS_NEGCTL
+    /* THE CONTROL of test-ui-wm-abi-icons: SPARKLES has its table but no
+     * commands, so it rasterises to nothing and the gate must log
+     * 'FAIL icon-nonempty SPARKLES'. */
+    [ICON_SPARKLES] = { ic_sparkles, 0 },
+#else
+    [ICON_SPARKLES] = { ic_sparkles, sizeof ic_sparkles / sizeof(struct ic_cmd) },
+#endif
 };
 
 /* Cache: a 64-entry LRU keyed by (id, px, weight). px is DEVICE pixels, so a
@@ -300,7 +473,7 @@ static int ic_pt[IC_MAXPT * 2];
 static int ic_sub[IC_MAXSUB];
 static struct gfx_path ic_path;
 /* Stroke source (between SB and STK) and its storage; same lock as ic_path. */
-#define IC_SMAXPT  512
+#define IC_SMAXPT  1024
 #define IC_SMAXSUB 16
 static int ic_spt[IC_SMAXPT * 2];
 static int ic_ssub[IC_SMAXSUB];
@@ -380,13 +553,15 @@ static int icon_build(int id, int px, int weight)
         case IC_CLOSE: gfx_close   (t); break;
         case IC_ARC:   gfx_arc(t, SX(c->x[0]), SX(c->y[0]), SX(c->x[1]), SX(c->x[1]),
                                c->x[2] * 256, c->y[2] * 256, 0); break;
+        case IC_ARCL:  gfx_arc(t, SX(c->x[0]), SX(c->y[0]), SX(c->x[1]), SX(c->x[1]),
+                               c->x[2] * 256, c->y[2] * 256, 1); break;
         case IC_SBEGIN:
             gfx_path_init(&ic_spath, ic_spt, IC_SMAXPT, ic_ssub, IC_SMAXSUB);
             t = &ic_spath; break;
         case IC_STROKE: {
 #ifdef ICON_TABLE_NEGCTL
             /* test control: drop the stroke ops of the set-B icons */
-            if (id >= ICON_SHARE) { t = &ic_path; break; }
+            if (id >= ICON_SHARE && id <= ICON_BELL) { t = &ic_path; break; }
 #endif
             struct gfx_stroke st = { 0 };
             int w = c->x[0] + (weight - 2) * 2;

@@ -831,6 +831,24 @@ struct logit_mmap_file_req {
 #define WINS_SET_PANEL  9  /* make this window a PANEL: no titlebar, centred, out of Cmd+Tab and
                             * Expose, hidden when it loses focus (Spotlight). One way. -> 1 */
 #define WINS_SET_HIDDEN 10 /* panels only: arg 1 hide, 0 show -> 1 if now hidden */
+/* Titlebar mode A (design P10, 5.1): arg = 0xRRGGBB | TB_* flags, the app's
+ * header colour for the WM's 30 pt titlebar, so the chrome and the app's own
+ * toolbar read as one surface. The content origin does not move. Bits 27..31
+ * are undefined and must be 0 (-> -1). -> 0. The WM keeps the value per
+ * window and prints `[wm] win N app <stem> tb <8 hex digits>` when it changes. */
+#define WINS_SET_TITLEBAR 11
+#define TB_NO_SEP    (1u << 24)  /* no hairline under the titlebar */
+#define TB_NO_TITLE  (1u << 25)  /* the centred title is not drawn */
+#define TB_INK_LIGHT (1u << 26)  /* the title is drawn white (a dark header) */
+#define TB_RGB_MASK  0xFFFFFFu
+#define TB_FLAGS_MASK (TB_NO_SEP | TB_NO_TITLE | TB_INK_LIGHT)
+/* Panels only (WINS_SET_PANEL; anything else -> -1): arg = (w << 16) | h, the
+ * new CONTENT size in points, 1..0xFFFF each and clamped to the screen. The WM
+ * reallocates the canvas, re-centres the panel the way WINS_SET_PANEL placed
+ * it (horizontally centred, top edge kept), damages the old and the new
+ * footprint including the panel's shadow, and sends EV_RESIZE (design P11).
+ * -> 0. */
+#define WINS_SET_SIZE 12
 
 /* logit_procinfo.state -- mirrors enum proc_state in c/kernel/exec/proc.h. */
 #define LOGIT_PROC_RUNNING   1
@@ -3014,6 +3032,18 @@ struct logit_itimer {
 #define SYS_GUI_GLASS2         219 /* (logit_glass2*) -> status */
 #define SYS_GUI_BACKDROP       220 /* (logit_backdrop2*) -> status; see BACKDROP below */
 #define SYS_GUI_BACKDROP_CLEAR 221 /* (id 0..7, or -1 = all) -> status */
+/* 222 and 223 were free when claimed (ui-wm-abi): no SYS_* in include/, c/,
+ * tools/ or fsroot/as names either. */
+#define SYS_GUI_ICON2          222 /* (logit_icon2*) -> status; see ICON2 below */
+/* (on, x, y) -> the theme in force (0/1); on < 0 only queries. SYS_UI_DARK
+ * with a trigger point: (x, y) are the caller window's content POINTS (plain
+ * ints, not 24.8 -- the point is a control centre, never fractional), which
+ * the WM turns into the screen point the 日夜 reveal (design 5.10) grows
+ * from. A new number rather than a wider SYS_UI_DARK: that call's b and c are
+ * unused today and garbage in existing callers, so they cannot start to mean
+ * a position. Like SYS_UI_DARK it is a GUI process's call; one that has no
+ * window yet flips the theme with no point (the reveal's (-1, -1)). */
+#define SYS_UI_DARK_AT         223
 
 #define LOGIT_GUI2_VERSION 1
 #define LOGIT_GUI2_F_PATH      (1u << 0)  /* SYS_GUI_PATH: solid/linear/radial, <= 8 stops */
@@ -3026,9 +3056,24 @@ struct logit_itimer {
 #define LOGIT_GUI2_F_GLASS2    (1u << 7)
 #define LOGIT_GUI2_F_BACKDROP  (1u << 8)  /* SYS_GUI_BACKDROP/BACKDROP_CLEAR */
 #define LOGIT_GUI2_F_CARETS    (1u << 9)  /* SYS_TEXT_MEASURE carets query */
+#define LOGIT_GUI2_F_ICON2     (1u << 10) /* SYS_GUI_ICON2 */
+/* RESERVED: the WM keeps a per-panel blurred-backdrop cache (design P9 C2),
+ * so glass/backdrop panels are cheap enough to use for persistent chrome.
+ * Advertised only once that cache exists (ui-wm-glass-c2); apps choose glass
+ * sidebars only when it is set. Not a call: no OL_UNSUPPORTED number. */
+#define LOGIT_GUI2_F_BACKDROP_CACHE (1u << 11)
 
 /* Shared flag bit: see LOGIT_RECT_SNAP in the rules above. */
 #define LOGIT_RECT_SNAP (1u << 0)
+/* Glass flags, shared by struct logit_glass2 and struct logit_backdrop2 (bit 0
+ * is LOGIT_RECT_SNAP in both; bits 1..7 are reserved for the material and no
+ * other flag of either struct may use them). Design P16: the adaptive tint
+ * (ADAPT_SMOOTH: the tint follows the backdrop's mean luma, smoothed) and the
+ * foreground-contrast guarantee (ADAPT_FG: the tint is pushed until fg_rgb /
+ * fill_rgb ink keeps 4.5:1 over the region). The kernel copies them into the
+ * material's OL_GLASS_ADAPT_* flags; reduce transparency still wins. */
+#define LOGIT_GLASS2_F_ADAPT_SMOOTH (1u << 1)
+#define LOGIT_GLASS2_F_ADAPT_FG     (1u << 2)
 
 /* SYS_GUI_PATH. verbs[nverb] are LOGIT_VERB_*; xy[nxy] are 24.8 point
  * coordinates, two per point (M and L take one point, Q two, C three, Z
@@ -3155,7 +3200,7 @@ struct logit_glass2 {
     int radius[4];
     unsigned cut, tint_argb;
     int opacity, tone, blur_level, rim;
-    unsigned fg_rgb, flags;  /* flags: LOGIT_RECT_SNAP */
+    unsigned fg_rgb, flags;  /* flags: LOGIT_RECT_SNAP | LOGIT_GLASS2_F_* */
     int reserved[2];         /* must be 0 */
 };
 
@@ -3182,7 +3227,11 @@ struct logit_glass2 {
  * returns OL_UNSUPPORTED; reserved[] is kept for its parameters. */
 #define LOGIT_BACKDROP_MARK 0x01
 #define LOGIT_BACKDROP_MAX  8
-#define LOGIT_BACKDROP_ALPHA_LAYER (1u << 1)
+/* Bit 8, clear of the glass flags (bits 1..7, LOGIT_GLASS2_F_*), which the
+ * backdrop flags word shares. It sat at bit 1 until ui-wm-abi gave bits 1..2
+ * to ADAPT_SMOOTH / ADAPT_FG; it was never implemented (always
+ * OL_UNSUPPORTED), so no caller can have relied on its value. */
+#define LOGIT_BACKDROP_ALPHA_LAYER (1u << 8)
 struct logit_backdrop2 {
     unsigned size;
     int id;            /* 0..7 */
@@ -3190,8 +3239,26 @@ struct logit_backdrop2 {
     int radius[4];
     unsigned tint_argb;
     int opacity, tone, blur_level, rim;
-    unsigned fill_rgb, flags;
+    unsigned fill_rgb, flags;  /* LOGIT_RECT_SNAP | LOGIT_GLASS2_F_* | LOGIT_BACKDROP_ALPHA_LAYER */
     int reserved[4];   /* must be 0 */
+};
+
+/* ICON2: one symbol of the kernel's vector set (c/kernel/gui/icons.h, the
+ * GICON_* values in c/apps/logit.h) at a stroke weight. x, y (top-left) and
+ * px (the square's side) are 24.8 points; the kernel converts them to device
+ * pixels with the v2 floor rule (px at least 1 device pixel, at most 512) and
+ * rasterises at the device size, so a 125 % or 150 % window gets a genuinely
+ * re-rasterised symbol. color is 0xRRGGBB (the high byte is ignored). weight
+ * is 1 (thin), 2 (regular) or 3 (bold), 0 = 2; fill-only symbols ignore it.
+ * flags must be 0. An unknown id, LOGIT_ICON_APP (app icons stay on
+ * SYS_GUI_ICON, which takes their name) or a bad size -> OL_ARGUMENT. */
+struct logit_icon2 {
+    unsigned size;
+    int id;
+    int x, y, px;      /* 24.8 points */
+    unsigned color;
+    int weight;        /* 0 or 1..3 */
+    unsigned flags;    /* must be 0 */
 };
 
 /* CARETS: a second versioned query through SYS_TEXT_MEASURE, shaped like

@@ -64,6 +64,9 @@ call gui_poll_event SYS_POLL_EVENT     record(ev,Event)
 call gui_wait_event SYS_WAIT_EVENT     record(ev,Event) int(ms)
 call ui_dark_query  SYS_UI_DARK        lit(-1)
 call ui_dark_set    SYS_UI_DARK        int(on)
+# The same switch from a point of the caller's window (content points): the
+# theme reveal grows from there. on < 0 queries.
+call ui_dark_at     SYS_UI_DARK_AT     int(on) int(x) int(y)
 call sys_yield      SYS_YIELD
 call get_time       SYS_GET_TIME       record(t,Time)
 # The monotonic clock, in milliseconds since boot. Distinct from get_time, which
@@ -92,6 +95,7 @@ call gui_shadow2        SYS_GUI_SHADOW2        record(sh,Shadow2)
 call gui_glass2         SYS_GUI_GLASS2         record(gl,Glass2)
 call gui_backdrop       SYS_GUI_BACKDROP       record(bd,Backdrop2)
 call gui_backdrop_clear SYS_GUI_BACKDROP_CLEAR int(region)
+call gui_icon2          SYS_GUI_ICON2          record(ic,Icon2)
 
 # ---- io / basics ----
 call io_write       SYS_WRITE          int(fd) inbuf(b,len) int(len)

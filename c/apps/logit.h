@@ -123,6 +123,10 @@ static inline int  sys_fork(void) { return (int)_sys(SYS_FORK, 0, 0, 0); }
 static inline int  sys_getpid(void) { return (int)_sys(SYS_GETPID, 0, 0, 0); }
 static inline int  sys_cpu_index(void) { return (int)_sys(SYS_CPU_INDEX, 0, 0, 0); }   /* SMP: running core's index */
 static inline int  sys_ui_dark(int set) { return (int)_sys(SYS_UI_DARK, set, 0, 0); }  /* set<0 query; system dark mode 0/1 */
+/* sys_ui_dark(on) from a point: (x, y) is the control that asked, in this
+ * window's content points; the WM grows the 日夜 reveal (design 5.10) from
+ * there. on < 0 queries. -> the theme now in force (0/1). */
+static inline int  ui_set_dark_at(int on, int x, int y) { return (int)_sys(SYS_UI_DARK_AT, on, x, y); }
 static inline long sys_kheap_stress(long iters, int size, unsigned long seed) { return _sys(SYS_KHEAP_STRESS, iters, size, (long)seed); }  /* BKL-free concurrent kmalloc stress -> corruption count */
 static inline int  sys_waitpid(int pid, int *status) { return (int)_sys(SYS_WAITPID, pid, (long)status, 0); }
 static inline int  sys_execve(const char *p, char *const argv[], char *const envp[]) { return (int)_sys(SYS_EXECVE, (long)p, (long)argv, (long)envp); }
@@ -268,8 +272,9 @@ static inline int gui_app_icon(const char *name, int x, int y, int px)
                    ((long)LOGIT_ICON_APP << 16) | (px & 65535), (long)name); }
 enum { GICON_FOLDER, GICON_DOC, GICON_TERMINAL, GICON_GRID, GICON_GLOBE,
        GICON_CODE, GICON_CHART, GICON_CLOCK, GICON_IMAGE,
-       /* ICON_PHOTOS/ICON_SLIDERS (9,10) have no GICON twin; the values below
-        * match kernel icons.h so gui_icon() passes them straight through. */
+       /* Every value below matches kernel icons.h, so gui_icon() and
+        * gui_icon2() pass them straight through. */
+       GICON_PHOTOS = 9, GICON_SLIDERS = 10,
        GICON_CHEVRON_L = 11, GICON_CHEVRON_R, GICON_CHEVRON_U, GICON_CHEVRON_D,
        GICON_CLOSE, GICON_PLUS, GICON_MINUS, GICON_CHECK,
        GICON_SEARCH, GICON_SIDEBAR, GICON_ELLIPSIS, GICON_GEAR,
@@ -277,9 +282,36 @@ enum { GICON_FOLDER, GICON_DOC, GICON_TERMINAL, GICON_GRID, GICON_GLOBE,
        GICON_SHARE, GICON_PLAY, GICON_PAUSE, GICON_TRASH,
        GICON_ARROW_L, GICON_ARROW_R, GICON_ARROW_U, GICON_ARROW_D,
        GICON_INFO, GICON_WARNING, GICON_DOWNLOAD, GICON_REFRESH,
-       GICON_STAR, GICON_LOCK, GICON_HOME, GICON_LINK, GICON_EYE, GICON_BELL };
+       GICON_STAR, GICON_LOCK, GICON_HOME, GICON_LINK, GICON_EYE, GICON_BELL,
+       /* set C (kernel icons.h ICON_SUN..ICON_LOGIT, design 3.7.1 / P7); the
+        * trash can P7 lists again is set B's GICON_TRASH */
+       GICON_SUN, GICON_MOON, GICON_WIFI, GICON_DISK, GICON_APPS, GICON_LIST,
+       GICON_SORT, GICON_STOP, GICON_XMARK_OCTAGON, GICON_SPARKLES, GICON_SIDEBAR_R,
+       GICON_MUSIC, GICON_FILM, GICON_WAVEFORM, GICON_CPU, GICON_MEMORY,
+       GICON_PALETTE, GICON_CURSOR, GICON_KEYBOARD, GICON_POWER, GICON_RESTART,
+       GICON_BOLD, GICON_ITALIC, GICON_TEXT_SIZE, GICON_COPY, GICON_PERSON, GICON_DOCK,
+       GICON_LOGIT,    /* the Logit mark (3.7.5): sigmoid in a circle */
+       GICON_COUNT };
 static inline void gui_icon(int id, int x, int y, int px, unsigned color)
 { ol_window_icon(id, x, y, px, color); }
+/* SYS_GUI_ICON2 (GUI ABI v2): symbol `id` with its top-left at (x24, y24) and
+ * px24 square, all 24.8 points (16 pt = 16 << 8), in `color` (0xRRGGBB) at
+ * stroke weight 1..3 (thin / regular / bold; 0 = regular). 0, or a negative
+ * OL_* status; available when ol_gui2_info(0) has LOGIT_GUI2_F_ICON2, else
+ * OL_UNSUPPORTED. Design 3.7.1 gives the size/weight pairs per use. */
+static inline long gui_icon2(int id, int x24, int y24, int px24, unsigned color, int weight)
+{
+    struct logit_icon2 ic = { sizeof ic, id, x24, y24, px24, color, weight, 0 };
+    return _sys(SYS_GUI_ICON2, (long)&ic, 0, 0);
+}
+/* WINS_SET_TITLEBAR (logit_abi.h): the header colour and TB_* flags the WM's
+ * titlebar should take for this window. 0, or -1 for undefined flag bits. */
+static inline int gui_set_titlebar(unsigned rgb_and_flags)
+{ return (int)_sys(SYS_GUI_WIN_STATE, WINS_SET_TITLEBAR, (long)rgb_and_flags, 0); }
+/* WINS_SET_SIZE: a panel's (WINS_SET_PANEL) new content size in points; the
+ * WM re-centres it and sends EV_RESIZE. 0, or -1 (not a panel, bad size). */
+static inline int gui_panel_size(int w, int h)
+{ return (int)_sys(SYS_GUI_WIN_STATE, WINS_SET_SIZE, ((long)(w & 0xFFFF) << 16) | (h & 0xFFFF), 0); }
 /* Liquid-glass a region of THIS window over the content already drawn there
  * (frost + rim refraction + specular highlight + body tint). Radius 0 draws a
  * square panel; a negative radius is invalid in the shared renderer. */
