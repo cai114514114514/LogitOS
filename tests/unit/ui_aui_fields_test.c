@@ -468,6 +468,22 @@ static void t_editing(void)
     struct logit_event en = ev_key('\n', 0);
     ms += 5; step(ms, &en);
     check(f1_ret == 1, "field-enter %s: Enter returned %d", mode(), f1_ret);
+    /* widths come from the carets query where the kernel has it, the legacy
+     * measure otherwise; a click lands on the nearest caret stop either way */
+    { int c = 0; check(tf_carets_ok(f1, 2, &c) == g_v2, "field-carets %s: carets query used = %d", mode(), tf_carets_ok(f1, 2, &c)); }
+    strcpy(f1, "abcdef");
+    int w3 = tfw(f1, 3);
+    struct logit_event c1 = ev_mouse(FX + TF_PAD + w3 + 1, FY + 14), c2 = ev_mouse(FX + TF_PAD + w3 - 1, FY + 14);
+    ms += 5; step(ms, &c1);
+    check(tf_caret == 3, "field-click %s: a click 1 pt right of stop 3 put the caret at %d", mode(), tf_caret);
+    struct logit_event u1 = ev_up(FX + TF_PAD + w3 + 1, FY + 14);
+    ms += 5; step(ms, &u1);
+    ms += 5; step(ms, &c2);
+    check(tf_caret == 3, "field-click %s: a click 1 pt left of stop 3 put the caret at %d", mode(), tf_caret);
+    check(tfw(f1, 6) > tfw(f1, 3) && tfw(f1, 3) > tfw(f1, 1) && tfw(f1, 1) > 0, "field-width %s: prefix widths do not grow", mode());
+    struct logit_event u2 = ev_up(FX + TF_PAD + w3 - 1, FY + 14);
+    ms += 5; step(ms, &u2);
+    strcpy(f1, "ab");
     /* a long value scrolls so the caret stays in the box */
     for (int i = 0; i < 40; i++) { struct logit_event e = ev_key('m', 0); ms += 5; step(ms, &e); }
     int vw = FW - 2 * TF_PAD, cx = tfw(f1, (int)strlen(f1));
