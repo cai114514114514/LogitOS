@@ -36,7 +36,23 @@ int main(void)
     struct desktop_preferences initial = desktop_preferences_read(defaults);
     struct desktop_preferences bounded = desktop_preferences_read(broken_values);
     CHECK(initial.dock_magnify == 1 && initial.clock_24h == 1 && initial.natural_scroll == 0);
-    CHECK(bounded.double_click == 400 && bounded.clock_seconds == 1);
+    /* design 5.2: the menu-bar clock shows no seconds by default */
+    CHECK(initial.clock_seconds == 0);
+    CHECK(bounded.double_click == 400 && bounded.clock_seconds == 0);
+    /* design P12 (ui-wm-wallpaper-reveal reads these): the night wallpaper
+     * follows the theme by default; ui.wallpaper_dark is a string pref, "" */
+    CHECK(initial.wallpaper_follow_theme == 1 && bounded.wallpaper_follow_theme == 1);
+    CHECK(!strcmp(field_keys[F_wallpaper_follow_theme], "ui.wallpaper_follow_theme"));
+    CHECK(F_COUNT <= 32);   /* `edited` is a 32-bit mask */
+    {
+        int n = 0;
+#define STR_PREF(field, key, label, value) \
+        CHECK(!strcmp(key, "ui.wallpaper_dark") && !strcmp(value, "")); n++;
+        LOGIT_DESKTOP_STR_PREFS(STR_PREF)
+#undef STR_PREF
+        CHECK(n == 1);
+        CHECK(!strcmp(LOGIT_PREF_WALLPAPER_DARK, "ui.wallpaper_dark") && !strcmp(LOGIT_PREF_WALLPAPER_DARK_DEFAULT, ""));
+    }
     values[F_clock_seconds] = "0";
     writes = 0;
     CHECK(settings_write(1u << F_clock_seconds, values, record) == 0);
