@@ -87,34 +87,41 @@ int aui_menu_width(const char *const *items, int n)
 static unsigned ov_c(unsigned c)       /* a colour, mixed toward the plate when a fade is a legacy mix */
 { return fade_leg >= 255 ? c : aui_mix(aui_tok()->bg_raised, c, fade_leg); }
 
-/* The damage reach of an elevation, points, for the opacity group around a panel. */
-static struct aui_rect ov_group_rect(struct aui_rect rc, enum logit_elev el)
+/* The opacity group of a panel: the plate and its ink, +2 pt for the rim. The
+ * shadow is NOT in it -- it is drawn before the group at the fade's alpha
+ * (ov_elev), so a fading panel has no rectangular edge where a group would cut
+ * a shadow tail, and the group's snapshot stays the size of the panel. */
+static struct aui_rect ov_group_rect(struct aui_rect rc)
 {
-    /* 3 sigma is the damage reach (aui_elev widens the flush by it); the group
-     * only has to hold the part of the shadow that is visible while it fades:
-     * past 40 pt the tail of even E6's widest layer (sigma 30, peak alpha 41)
-     * is under 3 % alpha, which fading cannot make visible. The snapshot of a
-     * group costs w * h * 4 bytes of the kernel's per-window arena (8 bytes per
-     * surface pixel), and the old sheet's margin was 40 too, so it is capped. */
-    int g = (int)(logit_elevation_reach24(el) >> 8) + 2;
-    if (g > 40) g = 40;
-    int x0 = imax(0, rc.x - g), y0 = imax(0, rc.y - g);
-    int x1 = rc.x + rc.w + g, y1 = rc.y + rc.h + g;
+    int x0 = imax(0, rc.x - 2), y0 = imax(0, rc.y - 2);
+    int x1 = rc.x + rc.w + 2, y1 = rc.y + rc.h + 2;
     if (win_w > 0) x1 = imin(win_w, x1);        /* (win_w is 0 until the app calls aui_set_size) */
     if (win_h > 0) y1 = imin(win_h, y1);
-    return aui_r(x0, y0, imax(0, x1 - x0), imax(0, y1 - y0));    /* inside the window: the kernel refuses a group that is not */
+    return aui_r(x0, y0, imax(0, x1 - x0), imax(0, y1 - y0));
 }
 
-/* The plate of a menu or popover: elevation, then the material, then its inner
- * 1-device-pixel edge. THE SNAPSHOT RULE: the material (one GLASS2, or the RT
+/* An elevation (two SHADOW2, design 3.3) with its ink alpha scaled by a / 255. */
+static void ov_elev(struct aui_rect rc, int r, enum logit_elev el, int a)
+{
+    const struct logit_elevation *v = logit_elevation(el);
+    unsigned k0, k1;
+    if (a <= 0 || rc.w <= 0 || rc.h <= 0 || v->n < 2) return;
+    r = clamp_radius(rc.w, rc.h, r);
+    k0 = logit_shadow_argb(&v->key, theme_dark);
+    k1 = logit_shadow_argb(&v->ambient, theme_dark);
+    elev_layer(rc, r, &v->key, (k0 & 0xFFFFFFu) | ((unsigned)((k0 >> 24) * (unsigned)iclamp(a, 0, 255) / 255) << 24));
+    elev_layer(rc, r, &v->ambient, (k1 & 0xFFFFFFu) | ((unsigned)((k1 >> 24) * (unsigned)iclamp(a, 0, 255) / 255) << 24));
+}
+
+/* The plate of a menu or popover: the material, then its inner 1-device-pixel
+ * edge (the caller draws the elevation first, ov_elev). THE SNAPSHOT RULE: the material (one GLASS2, or the RT
  * solid) is issued only for a panel at rest (`settled`); while it animates the
  * plate is the 3.2 solid inside the caller's opacity group, so an animation
  * frame costs no blur. -DUI_OVERLAYS_NEGCTL re-materialises every frame, which
  * make test-ui-aui-overlays-negctl must report as 'FAIL menu-snapshot'. */
-static void ov_plate(struct aui_rect rc, int r, enum logit_mat mat, enum logit_elev el, int settled)
+static void ov_plate(struct aui_rect rc, int r, enum logit_mat mat, int settled)
 {
     const struct logit_material *m = logit_material(mat);
-    aui_elev(rc, r, el);
 #ifdef UI_OVERLAYS_NEGCTL
     settled = 1;
 #endif
@@ -170,7 +177,8 @@ static void ov_rows(int x, int y, int w, const char *const *items, int n, int hi
 void aui_menu_panel(int x, int y, int w, const char *const *items, int n, int hi)
 {
     struct aui_rect rc = aui_r(X_(x), Y_(y), w, aui_menu_height(items, n));
-    ov_plate(rc, OV_R, LOGIT_MAT_MENU, LOGIT_E3, 1);
+    ov_elev(rc, OV_R, LOGIT_E3, 255);
+    ov_plate(rc, OV_R, LOGIT_MAT_MENU, 1);
     ov_rows(rc.x, rc.y, w, items, n, hi, -1);
 }
 
@@ -261,8 +269,9 @@ static void draw_popup_menu(void)
         id_ctr = saved_id;
     }
 
-    fade_open(ov_group_rect(rc, LOGIT_E3), t, 1);
-    ov_plate(rc, OV_R, LOGIT_MAT_MENU, LOGIT_E3, settled);
+    ov_elev(rc, OV_R, LOGIT_E3, t);
+    fade_open(ov_group_rect(rc), t, 1);
+    ov_plate(rc, OV_R, LOGIT_MAT_MENU, settled);
     ov_rows(rc.x, rc.y, w, pop.items, pop.n, pop.kind == 1 ? pop.hi : -1, pill);
     fade_close();
     /* A click closes it -- except the click that OPENED it this very frame
@@ -301,6 +310,9 @@ int aui_menubar(int x, int y, int w, const char *const *titles,
     static int open_menu = -1;
     const struct logit_tokens *k = aui_tok();
     int h = 28, chosen = 0;
+    /* The panel closed since the last frame (Escape, a click elsewhere): the
+     * title it came from is no longer open, or the next frame would reopen it. */
+    if (pop.kind == 0 && open_menu >= 0 && pop_changed_id > -2) open_menu = -1;
     aui_fill(x, y, w, h, k->bg_toolbar);
     aui_hairline(x, y + h - 1, w);
     int cx = x + AUI_SP(2);
@@ -433,9 +445,9 @@ int aui_dialog_begin(const char *title, int w, int h)
     ov_scrim(e);
     /* The sheet (shadow, plate, rim, title and, until aui_dialog_end, its
      * content) fades in as one group. Without groups it only rises. */
-    fade_open(ov_group_rect(rc, LOGIT_E6), 255 * e / 256, 0);
+    ov_elev(rc, 18, LOGIT_E6, e > 255 ? 255 : e);
+    fade_open(ov_group_rect(rc), 255 * e / 256, 0);
     dlg_fade = 1;
-    aui_elev(rc, 18, LOGIT_E6);
     aui_squircle(rc, 18, 0xFF000000u | k->bg_raised);
     ov_rim(rc, 18);
     aui_text_vc(aui_r(x + 20, y + rise + 10, w - 40, 24), title, 17, AUI_W_SEMIBOLD, k->label_primary, AUI_ALIGN_LEFT);
@@ -526,8 +538,8 @@ int aui_alert(int icon, const char *title, const char *message,
     rc = aui_r(x, y + rise, W, H);
 
     ov_scrim(e);
-    fade_open(ov_group_rect(rc, LOGIT_E6), 255 * e / 256, 0);
-    aui_elev(rc, 18, LOGIT_E6);
+    ov_elev(rc, 18, LOGIT_E6, e > 255 ? 255 : e);
+    fade_open(ov_group_rect(rc), 255 * e / 256, 0);
     aui_squircle(rc, 18, 0xFF000000u | k->bg_raised);
     ov_rim(rc, 18);
     ty = rc.y + pad;
@@ -624,9 +636,10 @@ int aui_popover_begin(struct aui_rect anchor, int w, int h, int edge)
     }
     ov_pov_rect = aui_r(px, py, w, h); ov_pov_gen = anim_gen;
 
-    fade_open(ov_group_rect(rc, LOGIT_E3), 255 * e1 / 256, 1);
+    ov_elev(rc, 14, LOGIT_E3, e1 > 255 ? 255 : e1);
+    fade_open(ov_group_rect(rc), 255 * e1 / 256, 1);
     pov_fade = 1;
-    ov_plate(rc, 14, LOGIT_MAT_POPOVER, LOGIT_E3, settled);
+    ov_plate(rc, 14, LOGIT_MAT_POPOVER, settled);
     {   /* the arrow, 16 x 8 with a rounded tip, pointing at the anchor */
         struct ap p;
         static const int pu[6] = { -8, -2, -1, 1, 2, 8 };    /* along the edge, points */
