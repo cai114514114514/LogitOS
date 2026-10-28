@@ -14,6 +14,7 @@ void app_main(void)
      * usable after an ordinary resize all the way to the size limit. */
     _sys(SYS_GUI_WIN_MIN, ((long)CLOCK_MIN_WIDTH << 16) | CLOCK_MIN_HEIGHT, 0, 0);
     aui_set_size(620, 400);
+    ui_aim_set_app("clock");            /* [clock] aim <name> x y (P13): view.c */
     if (clock_dial_init()) {
         printf("CLOCK ERROR graphics initialization\n");
         app_exit(1);

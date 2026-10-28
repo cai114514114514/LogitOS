@@ -123,6 +123,10 @@ enum { T_PROC = 0, T_MEM, T_SYS, NTAB };
 static const char *const tabs[NTAB] = { "进程", "内存", "系统" };
 
 enum { S_PID = 0, S_NAME, S_FILES, NSORT };
+/* Aim names (P13): aui publishes the widget-drawn ones (tabs, sort segments, table rows,
+ * dialog buttons); the checkbox and Force Quit are drawn here, so ui_aim publishes those. */
+static const char *const tab_aims[NTAB] = { "tab-processes", "tab-memory", "tab-system" };
+static const char *const sort_aims[3] = { "sort-pid", "sort-name", "sort-files" };
 static const char *const sorts[NSORT] = { "PID", "名称", "文件数" };
 
 static struct logit_procinfo pr[MAXPROC];
@@ -287,13 +291,16 @@ static void view_processes(int x, int y, int w)
     aui_text_sz(x, y, "排序方式", AUI_MUTED, AUI_FS_LABEL);
     int seg_w = 210;
     int before = sortkey;
+    aui_aim_names(sort_aims, NSORT);
     aui_segmented(x + 56, y - 6, seg_w, AUI_H_SM, sorts, NSORT, &sortkey);
     int d = sortdesc;
+    ui_aim("sort-desc", x + 56 + seg_w + AUI_SP(4) + 9, y - 4 + 9);
     aui_checkbox(x + 56 + seg_w + AUI_SP(4), y - 4, "降序", &sortdesc);
     if (before != sortkey || d != sortdesc) { resort(); build_cells();
         tsel = -1;
         for (int r = 0; r < npr; r++) if (pr[order[r]].pid == selpid) { tsel = r; break; } }
 
+    aui_aim_prefix("row");
     int act = aui_table(x, y + 26, w, 236, cols, colw, NCOL, cells, npr, &tsel, &tscroll);
     (void)act;
     if (tsel >= 0 && tsel < npr) selpid = pr[order[tsel]].pid;
@@ -433,6 +440,7 @@ static void footer(int x, int y, int w)
      * the kernel's own answer, not a rule re-derived here -- see the flag's
      * definition in logit_abi.h. */
     int can = killable();
+    ui_aim_rect("force-quit", x + w - 132, y, 132, AUI_H_CTL);
     if (aui_button_ex(x + w - 132, y, 132, AUI_H_CTL, "强制退出",
                       AUI_V_DANGER, can))
         confirm_open = 1;
@@ -493,6 +501,7 @@ static void frame(void)
         aui_text_sz(AUI_PAD + aui_text_w("Activity Monitor", AUI_FS_TITLE) + 12, 16,
                     sub, AUI_MUTED, AUI_FS_LABEL);
     }
+    aui_aim_names(tab_aims, NTAB);
     aui_tabs(AUI_PAD, 44, WINW - 2 * AUI_PAD, tabs, NTAB, &tab);
 
     int x = AUI_PAD, y = 96, w = WINW - 2 * AUI_PAD;
@@ -519,6 +528,7 @@ void app_main(void)
 {
     gui_create("Activity Monitor", WINW, WINH);
     aui_set_size(WINW, WINH);
+    ui_aim_set_app("monitor");          /* [monitor] aim <name> x y (P13) */
     self_pid = sys_getpid();
     t0_mono = monotonic_ms();
     t0_rtc = rtc_secs();

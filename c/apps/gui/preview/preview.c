@@ -54,6 +54,7 @@
 #include <string.h>
 #include "logit.h"
 #include "../qmp_probe.h"
+#include "../ui_aim.h"      /* [preview] aim <name> x y (P13): view.inc, picker.inc */
 #include "logit_sniff.h"
 #include "img.h"
 #include "h264.h"
@@ -1133,6 +1134,7 @@ void app_main(void)
 {
     gui_create("Preview", WINW, WINH);
     _sys(SYS_GUI_WIN_MIN, ((long)640 << 16) | 480, 0, 0);
+    ui_aim_set_app("preview");
 
     char path[192];
     if (get_arg(path, sizeof path) > 0 && path[0]) {

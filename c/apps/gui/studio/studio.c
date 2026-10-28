@@ -142,6 +142,7 @@ void app_main(void)
     state = st_engine_state(engine);
     gui_create("Code Studio", 1120, 700);
     aui_set_size(1120, 700);
+    ui_aim_set_app("studio");           /* [studio] aim <name> x y (P13): studio_view.inc, studio_project.inc */
     studio_theme();
     trace_paint = setting_int("app.studio.trace_paint", 0);
     char arg[128] = {0};

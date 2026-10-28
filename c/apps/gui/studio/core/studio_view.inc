@@ -6,6 +6,12 @@ static void draw(void)
     if(w<680||h<420){aui_label(20,30,"放大 Code Studio 窗口以继续编辑",AUI_TEXT);aui_end_rect(0,0,w,h);return;}
     edit_x=196;edit_y=76;out_y=h-180;work_x=work_open&&w>=940?w-248:w;edit_w=work_x-edit_x;edit_h=out_y-edit_y;
     gui_rect(0,0,w,40,AUI_SURFACE);
+    /* Aims (P13, ui_aim.h): every control here is hand-drawn or an aui_button (which publishes
+     * none), so this app is the single emitter. Window-local points at each centre. */
+    ui_aim_rect("open",8,6,58,28);ui_aim_rect("save",72,6,58,28);ui_aim_rect("check",136,6,64,28);
+    ui_aim_rect("run",206,6,58,28);ui_aim_rect("find",334,6,58,28);
+    ui_aim_rect("new-file",8,76,84,26);ui_aim_rect("new-folder",98,76,90,26);
+    ui_aim_rect("editor",edit_x,edit_y,edit_w,ST_ROW);
     if(aui_button(8,6,58,28,"打开"))open_picker();
     if(aui_button(72,6,58,28,"存储"))save_current();
     if(aui_button(136,6,64,28,"检查"))start_job(1);
@@ -21,6 +27,7 @@ static void draw(void)
     if(aui_button(98,76,90,26,"新建文件夹"))new_entry(1);
     for(int i=tree_top,y=ST_TREE_Y;i<state->tree_count&&y<h-48;i++,y+=ST_ROW){
         if(i==tree_selected||(document()&&!strcmp(state->files[i].path,document()->path)))gui_rect(4,y,edit_x-8,ST_ROW,AUI_SELECTION);
+        ui_aim_i("tree-row",i,4+(edit_x-8)/2,y+ST_ROW/2);
         char label[80];snprintf(label,sizeof label,"%s%s",state->files[i].directory?(state->files[i].expanded?"v ":"> "):"",state->files[i].name);
         aui_text_ellipsis(12+state->files[i].depth*10,y+3,edit_x-22-state->files[i].depth*10,label,state->files[i].directory?AUI_MUTED:AUI_TEXT,14);
     }
@@ -28,6 +35,7 @@ static void draw(void)
     gui_rect(edit_x,42,edit_w,30,AUI_SURFACE);
     int tabw=state->count?edit_w/state->count:180;if(tabw>180)tabw=180;
     for(int i=0;i<state->count;i++){int x=edit_x+i*tabw;char title[160];snprintf(title,sizeof title,"%s%s",st_dirty(&state->docs[i])?"* ":"",basename_(state->docs[i].path));
+        ui_aim_i("tab",i,x+tabw/2,57);
         if(i==state->active){gui_rect(x,42,tabw,30,AUI_BG);gui_rect(x,70,tabw,2,AUI_ACCENT);}
         aui_text_ellipsis(x+9,50,tabw-32,title,AUI_TEXT,13);aui_text_sz(x+tabw-16,50,"x",AUI_MUTED,13);}
     if(document())draw_code(document());else{aui_heading(edit_x+32,120,"Code Studio",AUI_TEXT);aui_label(edit_x+32,159,"点按“打开”选择文件夹，或点按“新建文件”开始编辑。",AUI_MUTED);}
@@ -63,7 +71,8 @@ static void draw(void)
     gui_rect(0,h-28,w,28,AUI_SURFACE_2);aui_text_ellipsis(12,h-20,w-240,state->notice,AUI_TEXT,12);
     if(document()){const StDocument *d=document();int row=st_caret_line(d),col=1;for(int p=st_line_start(d,row);p<d->caret;p=st_next(d->text,p,d->length))col++;
         char status[96];snprintf(status,sizeof status,"UTF-8   %d:%d   %d 字节",row+1,col,d->length);aui_text_sz(w-222,h-20,status,AUI_MUTED,12);}
-    if(context_open){gui_rect(4,ST_TREE_Y,188,96,AUI_SURFACE_2);aui_label(14,ST_TREE_Y+8,"新建文件",AUI_TEXT);aui_label(14,ST_TREE_Y+40,"新建文件夹",AUI_TEXT);aui_label(14,ST_TREE_Y+72,"删除…",AUI_ERROR);}
+    if(context_open){for(int i=0;i<3;i++)ui_aim_i("context",i,4+94,ST_TREE_Y+16+32*i);
+        gui_rect(4,ST_TREE_Y,188,96,AUI_SURFACE_2);aui_label(14,ST_TREE_Y+8,"新建文件",AUI_TEXT);aui_label(14,ST_TREE_Y+40,"新建文件夹",AUI_TEXT);aui_label(14,ST_TREE_Y+72,"删除…",AUI_ERROR);}
     /* Raw gui_* source/selection/tree rectangles are not in aui.c's private
      * draw-call diff. The old aui_end() could flush only the changed status
      * label while leaving stale code/popup pixels in the compositor. Full UI
