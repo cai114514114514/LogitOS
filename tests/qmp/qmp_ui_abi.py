@@ -117,6 +117,39 @@ def lines(prefix):
     return [l for l in log().splitlines() if prefix in l]
 
 
+LINE_RE = re.compile(r'UIABI [a-z0-9 =-]+')
+
+
+def whole(line, prefix, keys):
+    """A probe line that arrived in one piece: only the probe's alphabet,
+    the prefix first, every expected key with a value (`info` 8 hex digits)."""
+    line = line.strip()
+    if not line.startswith(prefix) or not LINE_RE.fullmatch(line):
+        return False
+    if 'info' in keys and not re.search(r'\binfo=[0-9a-f]{8}$', line):
+        return False
+    return all(kv(line, k) is not None for k in keys)
+
+
+def answer(prefix, keys, since=0, tries=4, seconds=20):
+    """The newest WHOLE probe line starting with `prefix` after line `since`
+    of the log. The serial console interleaves the probe's write with kernel
+    kprintfs from other CPUs, so a line can arrive torn; every probe frame
+    re-prints every answer, so a missing or torn one is asked for again with
+    the r key (the probe has focus)."""
+    for i in range(tries):
+        got = poll_for(lambda: [l.strip() for l in log().splitlines()[since:]
+                                if whole(l, prefix, keys)], seconds)
+        if got:
+            return got[-1]
+        key('r')
+    raise TimeoutError('no whole line ' + repr(prefix))
+
+
+def nlines():
+    return len(log().splitlines())
+
+
 def kv(line, k):
     m = re.search(r'\b' + k + r'=(-?\w+)', line)
     return m.group(1) if m else None
@@ -148,32 +181,32 @@ def focus(w):
 
 def sheet():
     send(args.probe)
-    wait(lambda: lines('UIABI icon2'), 'sheet probe first frame')
     w = wait(lambda: win_by_title(str(serial), 'UI ABI Probe'), 'sheet probe window')
     time.sleep(1.5)
+    focus(w)
     slot = w['slot']
     top = w['y'] + w['h'] - pt(w['ch'])          # content origin, device px
     print(f'sheet window slot {slot} at {w["x"]},{w["y"]} {w["w"]}x{w["h"]}, content top {top}', flush=True)
 
     # gui2-info
-    info = int(kv(lines('UIABI info=')[-1], 'info'), 16)
+    info = int(kv(answer('UIABI info=', ['info']), 'info'), 16)
     verdict(bool(info & (1 << 10)) and not info & (1 << 11), 'gui2-info',
             f'SYS_GUI2_INFO(0) = {info:#x} (ICON2 bit 10 {"set" if info & 1024 else "CLEAR"}, '
             f'BACKDROP_CACHE bit 11 {"SET" if info & 2048 else "clear"})')
 
     # titlebar
-    tb = lines('UIABI tb ')[-1]
+    tb = answer('UIABI tb ', ['rc', 'bad'])
     reads = [m for m in (re.search(r'\[wm\] win (\d+) app (\S+) tb ([0-9a-f]{8})', l) for l in log().splitlines()) if m]
     mine = [m for m in reads if int(m.group(1)) == slot]
     verdict(kv(tb, 'rc') == '0' and kv(tb, 'bad') == '-1' and len(mine) == 1 and mine[0].group(3) == '01f2f2f6',
             'titlebar', f'probe says "{tb.strip()}", WM read-back for win {slot}: '
             f'{[(m.group(2), m.group(3)) for m in mine]}')
 
-    sz = lines('UIABI size-normal')[-1]
+    sz = answer('UIABI size-normal', ['rc'])
     verdict(kv(sz, 'rc') == '-1', 'size-refused', f'WINS_SET_SIZE on a normal window: rc {kv(sz, "rc")}')
 
     # icon2-weight
-    ic = lines('UIABI icon2')[-1]
+    ic = answer('UIABI icon2', ['rc1', 'rc3'])
     im = shot('sheet-light')
     x0 = w['x']
     i1 = ink(im, x0 + pt(W1_X), top + pt(WP_Y), pt(WP_PX))
@@ -183,10 +216,10 @@ def sheet():
             f'({(i3 / i1 if i1 else 0):.2f}x, want >= 1.20x)')
 
     # dark-at
-    focus(w)
     n_theme = len(lines('UIABI theme '))
+    mark = nlines()
     key('d')
-    da = wait(lambda: lines('UIABI dark-at on=1'), 'dark-at reply', 60)[-1]
+    da = answer('UIABI dark-at on=1', ['on', 'rc'], since=mark, seconds=30)
     org = wait(lambda: [m for m in (re.search(r'\[wm\] ui dark 1 at (-?\d+) (-?\d+)', l) for l in log().splitlines()) if m],
                'dark-at origin', 30)[-1]
     th = poll_for(lambda: [l for l in lines('UIABI theme ')[n_theme:] if 'dark=1' in l], 30)
@@ -196,12 +229,14 @@ def sheet():
     time.sleep(2.0)
     shot('sheet-dark')
     n_dark = len(lines('[wm] ui dark '))
+    mark = nlines()
     key('q')
-    dq = wait(lambda: lines('UIABI dark-query'), 'dark query', 30)[-1]
+    dq = answer('UIABI dark-query', ['rc'], since=mark)
     q_ok = kv(dq, 'rc') == '1' and len(lines('[wm] ui dark ')) == n_dark
     n_theme = len(lines('UIABI theme '))
+    mark = nlines()
     key('l')
-    db = wait(lambda: lines('UIABI dark-at on=0'), 'dark-at back', 60)[-1]
+    db = answer('UIABI dark-at on=0', ['on', 'rc'], since=mark, seconds=30)
     back = poll_for(lambda: [l for l in lines('UIABI theme ')[n_theme:] if 'dark=0' in l], 30)
     verdict(ok_on and q_ok and kv(db, 'rc') == '0' and bool(back), 'dark-at',
             f'on: rc {kv(da, "rc")}, EV_THEME {"yes" if th else "NO"}, origin ({ox},{oy}) want ({ex},{ey}); '
@@ -221,7 +256,7 @@ def frame_of(name):
 def panel():
     W = args.xres
     send(args.panel)
-    wait(lambda: lines('UIABI panel frame'), 'panel first frame')
+    wait(lambda: lines('UIABI panel ready'), 'panel probe started')
     first = wait(lambda: (lambda f: f if f and f[2] == pt(PANEL1[0]) and f[3] == pt(PANEL1[1]) else None)(frame_of('UI ABI Panel')),
                  'panel placed', 60)
     time.sleep(2.0)
@@ -231,7 +266,7 @@ def panel():
         bad.append(f'small panel not centred: x {first[0]}, want {(W - first[2]) // 2}')
 
     key('g')
-    wait(lambda: lines('UIABI panel grow'), 'grow reply', 60)
+    poll_for(lambda: lines('UIABI panel grow'), 20)
     want = (pt(PANEL2[0]), pt(PANEL2[1]))
     big = poll_for(lambda: (lambda f: f if f and (f[2], f[3]) == want else None)(frame_of('UI ABI Panel')), 20)
     if not big:
@@ -245,7 +280,7 @@ def panel():
     shot('panel-grown')
 
     key('s')
-    wait(lambda: lines('UIABI panel shrink'), 'shrink reply', 60)
+    poll_for(lambda: lines('UIABI panel shrink'), 20)
     back = poll_for(lambda: (lambda f: f if f and f[2:] == first[2:] else None)(frame_of('UI ABI Panel')), 20)
     if not back:
         bad.append(f'shrink: frame {frame_of("UI ABI Panel")}, want {first}')

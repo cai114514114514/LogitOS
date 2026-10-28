@@ -26,6 +26,10 @@
  *
  * All drawing is deterministic (no clock, no animation), so two frames of the
  * same size are identical pixels: the driver's stale-pixel diff relies on it.
+ * Every frame re-prints every result line so far (key r asks for a frame):
+ * the serial console interleaves an app's write with the kernel's kprintf
+ * from another CPU, so any single line can arrive torn and the driver asks
+ * again rather than mistaking a torn line for an answer.
  * Keys: Esc / close exits. */
 #include "logit.h"
 
@@ -79,6 +83,8 @@ static void say(const char *tag, const char *k1, long v1, const char *k2, long v
 #define WP_PX    64
 
 static int g_dark;
+static int g_tb, g_tb_bad, g_size_normal;
+static int g_da_on = -1, g_da_rc, g_dq_rc = -9;
 
 static void rrect(int x, int y, int w, int h, int r, unsigned c)
 {
@@ -163,26 +169,33 @@ static void frame(void)
     put_s(b, &n, "UIABI info="); put_hex(b, &n, info); b[n++] = '\n';
     sys_write(1, b, n);
     say("icon2", "rc1", rc1, "rc3", rc3);
+    say("tb", "rc", g_tb, "bad", g_tb_bad);
+    say("size-normal", "rc", g_size_normal, 0, 0);
+    if (g_da_on >= 0) say("dark-at", "on", g_da_on, "rc", g_da_rc);
+    if (g_dq_rc != -9) say("dark-query", "rc", g_dq_rc, 0, 0);
 }
 
 void app_main(void)
 {
     gui_create("UI ABI Probe", SW, SH);
     g_dark = sys_ui_dark(-1);
-    int tb = gui_set_titlebar(0xF2F2F6u | TB_NO_SEP);
-    int bad = gui_set_titlebar(0xF2F2F6u | (1u << 27));
-    say("tb", "rc", tb, "bad", bad);
-    say("size-normal", "rc", gui_panel_size(400, 300), 0, 0);
+    g_tb = gui_set_titlebar(0xF2F2F6u | TB_NO_SEP);
+    g_tb_bad = gui_set_titlebar(0xF2F2F6u | (1u << 27));
+    g_size_normal = gui_panel_size(400, 300);
     frame();
     struct logit_event e;
     for (;;) {
         while (poll_event(&e)) {
             if (e.type == EV_CLOSE || (e.type == EV_KEY && e.a == 27)) app_exit(0);
             if (e.type == EV_KEY && (e.a == 'd' || e.a == 'l')) {
-                int on = e.a == 'd';
-                say("dark-at", "on", on, "rc", ui_set_dark_at(on, 200, 100));
+                g_da_on = e.a == 'd';
+                g_da_rc = ui_set_dark_at(g_da_on, 200, 100);
+                say("dark-at", "on", g_da_on, "rc", g_da_rc);
             }
-            if (e.type == EV_KEY && e.a == 'q') say("dark-query", "rc", ui_set_dark_at(-1, 0, 0), 0, 0);
+            if (e.type == EV_KEY && e.a == 'q') {
+                g_dq_rc = ui_set_dark_at(-1, 0, 0);
+                say("dark-query", "rc", g_dq_rc, 0, 0);
+            }
             if (e.type == EV_KEY && e.a == 'r') frame();
             if (e.type == EV_THEME) { g_dark = sys_ui_dark(-1); say("theme", "dark", g_dark, 0, 0); frame(); }
             if (e.type == EV_RESIZE) frame();
@@ -233,6 +246,7 @@ void app_main(void)
     for (;;) {
         while (poll_event(&e)) {
             if (e.type == EV_CLOSE || (e.type == EV_KEY && e.a == 27)) app_exit(0);
+            if (e.type == EV_KEY && e.a == 'r') frame();
             if (e.type == EV_KEY && e.a == 'g') say("panel grow", "rc", resize(PW2, PH2), 0, 0);
             if (e.type == EV_KEY && e.a == 's') say("panel shrink", "rc", resize(PW1, PH1), 0, 0);
             if (e.type == EV_RESIZE) { cw = e.a; ch = e.b; frame(); }
