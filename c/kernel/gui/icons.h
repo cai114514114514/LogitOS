@@ -17,6 +17,17 @@ enum {
     ICON_ARROW_L, ICON_ARROW_R, ICON_ARROW_U, ICON_ARROW_D,
     ICON_INFO, ICON_WARNING, ICON_DOWNLOAD, ICON_REFRESH,
     ICON_STAR, ICON_LOCK, ICON_HOME, ICON_LINK, ICON_EYE, ICON_BELL,
+    /* set C (design 3.7.1, P7): the shell's and the apps' remaining symbols,
+     * same stroke style as A/B (round caps and joins, weight 1..3). Twins
+     * GICON_SUN..GICON_LOGIT in c/apps/logit.h hold the same values. TRASH,
+     * which P7's list repeats, is set B's ICON_TRASH. */
+    ICON_SUN, ICON_MOON, ICON_WIFI, ICON_DISK, ICON_APPS, ICON_LIST,
+    ICON_SORT, ICON_STOP, ICON_XMARK_OCTAGON, ICON_SPARKLES, ICON_SIDEBAR_R,
+    ICON_MUSIC, ICON_FILM, ICON_WAVEFORM, ICON_CPU, ICON_MEMORY,
+    ICON_PALETTE, ICON_CURSOR, ICON_KEYBOARD, ICON_POWER, ICON_RESTART,
+    ICON_BOLD, ICON_ITALIC, ICON_TEXT_SIZE, ICON_COPY, ICON_PERSON, ICON_DOCK,
+    /* The Logit mark (3.7.5): a sigmoid inside a circle, monochrome. */
+    ICON_LOGIT,
     ICON_COUNT
 };
 
