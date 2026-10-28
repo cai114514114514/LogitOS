@@ -42,6 +42,19 @@ def click(x,y,right=False):
  for down in (True,False):
   g.qmp('input-send-event',{'events':[{'type':'btn','data':{'button':'right' if right else 'left','down':down}}]});time.sleep(.15)
  time.sleep(.3)
+def aim(name,settle=0):
+ # Where Studio says control `name` is: its own `[studio] aim <name> x y` (window-local content
+ # points, design P13). The latest line wins; an unchanged aim is not re-printed. A dialog button is
+ # published only once the sheet has settled, so a dialog name waits `settle` s first, otherwise the
+ # latest line could still be an earlier dialog's.
+ time.sleep(settle);until=time.monotonic()+10
+ while True:
+  m=re.findall(rb'\[studio\] aim '+re.escape(name.encode())+rb' (-?\d+) (-?\d+)',bytes(g.log))
+  if m:return int(m[-1][0]),int(m[-1][1])
+  if time.monotonic()>until:raise AssertionError('no [studio] aim '+name)
+  time.sleep(.1)
+def aclick(name,right=False,settle=0):
+ x,y=aim(name,settle);click(x,y,right)
 def saved(path,expected):
  # Observe completion rather than treating a fixed host sleep as guest I/O.
  # fsync may still be running when the last key's QMP acknowledgement arrives.
@@ -85,7 +98,8 @@ try:
   check('missing demo removed from session',g.capture('/bin/pref read app.studio.tab.0').strip()=='/docs/demo.as' and g.capture('/bin/pref read app.studio.tab.1').strip()=='unset' and g.last_capture_exit==1)
  # Identical edit workload for the recorded baseline and new implementation.
  bench_start=len(g.log)
- click(390,100);g.key('ctrl','end');g.key('ret');g.type('hello');g.key('spc');g.type('world');g.key('spc');time.sleep(.4)
+ # --before drives a recorded OLD binary that predates the aims, so it keeps the one literal point.
+ (click(390,100) if a.before else aclick('editor'));g.key('ctrl','end');g.key('ret');g.type('hello');g.key('spc');g.type('world');g.key('spc');time.sleep(.4)
  shot('edited')
  if not a.before:
   # Repaint by hovering the toolbar without editing or moving the caret.
@@ -102,21 +116,21 @@ try:
   g.key('ctrl','z');compare_repaint('undo-lines-repaint')
   g.key('right')
   # Open native chooser, browse Root -> docs, then select current folder.
-  click(36,20);shot('picker')
+  aclick('open');shot('picker')
   # Dialog at x=290,y=70,title=40 for a 1120x700 window.
-  click(416,136);click(380,110+80+28+13);shot('picker-root')
+  aclick('picker-root',settle=.6);aclick('picker-row-1',settle=.3);shot('picker-root')
   g.key('ret');time.sleep(.4)
   check('folder selected by picker', '/docs' in g.capture('/bin/pref read app.studio.project'))
   # Explicit toolbar creation is relative to project root with no selection.
-  click(140,89);g.type('assets');g.key('ret');time.sleep(.6);shot('new-folder')
+  aclick('new-folder');g.type('assets');g.key('ret');time.sleep(.6);shot('new-folder')
   check('folder created by UI',read('/docs/assets') is not None)
   # Sorted folders: assets, src. Expand src then collapse without switching root.
-  click(45,139);shot('expanded');click(45,139);shot('collapsed')
+  aclick('tree-row-1');shot('expanded');aclick('tree-row-1');shot('collapsed')
   from PIL import ImageChops
   crop=(X+4,Y+150,X+192,Y+195)
   check('collapse removes child rows',ImageChops.difference(Image.open(out/'expanded.png').crop(crop),Image.open(out/'collapsed.png').crop(crop)).getbbox() is not None)
   # Select assets; right-click exposes creation menu. Its first item creates file.
-  click(45,118);click(45,118,True);shot('context-menu');click(50,122)
+  aclick('tree-row-0');aclick('tree-row-0',True);shot('context-menu');aclick('context-0')
   g.type('main.as');g.key('ret');time.sleep(.6);shot('new-file')
   check('file created in selected folder',read('/docs/assets/main.as')=='')
   g.type('print');g.key('esc');g.key('shift','9');g.type('42');g.key('shift','0');g.key('ret');g.key('ctrl','s');time.sleep(.5)
@@ -130,7 +144,7 @@ try:
   g.key('ctrl','z');g.key('ctrl','z');g.key('ctrl','z');g.key('ctrl','z');g.key('ctrl','z');g.key('ctrl','z');g.key('ctrl','s');time.sleep(.2)
   check('paired typing undo',saved('/docs/assets/main.as','print(42)\n'))
   # A duplicate name is rejected without changing the existing file.
-  click(50,89);g.type('main.as');g.key('ret');time.sleep(.3);shot('duplicate-refused');g.key('esc')
+  aclick('new-file');g.type('main.as');g.key('ret');time.sleep(.3);shot('duplicate-refused');g.key('esc')
   check('duplicate preserved bytes',saved('/docs/assets/main.as','print(42)\n') and read('/docs/main.as') is None)
   g.command('/bin/pref write ui.dark 1');g.command('/bin/pref write ui.dark 0');time.sleep(.3);shot('black-theme')
   check('black after system theme switch',Image.open(out/'black-theme.png').convert('RGB').getpixel((X+800,Y+350))==(0,0,0))
@@ -141,16 +155,16 @@ try:
   check('native program outputs 42',report['native_output'].strip()=='42' and g.last_capture_exit==0)
   # Create a disposable file through the GUI, checkpoint dirty text, cancel
   # deletion once, then confirm. Recreating its name must not revive the draft.
-  click(50,89);g.type('delete-me.as');g.key('ret');time.sleep(.4)
+  aclick('new-file');g.type('delete-me.as');g.key('ret');time.sleep(.4)
   g.type('unsaved');time.sleep(1.2)
-  click(45,142,True);click(50,182);shot('delete-dialog');g.key('esc')
+  aclick('tree-row-1',True);aclick('context-2');shot('delete-dialog');g.key('esc')
   check('cancel deletion retains file',read('/docs/assets/delete-me.as')=='')
-  click(45,142,True);click(50,182);click(742,366);time.sleep(.5)
+  aclick('tree-row-1',True);aclick('context-2');aclick('dialog-1',settle=.6);time.sleep(.5)
   check('delete removes file',read('/docs/assets/delete-me.as') is None)
   check('delete removes saved tab',g.capture('/bin/pref read app.studio.tab.2').strip()=='unset' and g.last_capture_exit==1)
-  click(45,142);click(50,89);g.type('delete-me.as');g.key('ret');time.sleep(.4);g.key('ctrl','s')
+  aclick('tree-row-1');aclick('new-file');g.type('delete-me.as');g.key('ret');time.sleep(.4);g.key('ctrl','s')
   check('deleted draft does not revive',saved('/docs/assets/delete-me.as',''))
-  click(45,142,True);click(50,182);click(742,366);time.sleep(.5)
+  aclick('tree-row-1',True);aclick('context-2');aclick('dialog-1',settle=.6);time.sleep(.5)
   check('recreated file deletes again',read('/docs/assets/delete-me.as') is None)
  if a.rebuild:
   # Create an actual unsaved draft through the GUI, then rebuild the same

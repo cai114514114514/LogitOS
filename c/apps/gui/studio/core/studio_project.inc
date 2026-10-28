@@ -66,6 +66,11 @@ static void draw_project_dialog(void)
             if(aui_button(266,12,70,28,"Home"))browse("/home");
             aui_text_ellipsis(16,52,504,picker.path,AUI_TEXT,14);
             int rows=(height-154)/28;
+            /* picker-row-<j>: the dialog sheet is centred by aui_dialog_begin (x centred, a third down,
+             * 40 pt title strip); its content origin plus the row's local centre is window-local. */
+            int dlg_x=(aui_width()-540)/2,dlg_y=(aui_height()-height-40)/3;if(dlg_y<12)dlg_y=12;
+            ui_aim("picker-root",dlg_x+90+35,dlg_y+40+12+14);
+            for(int j=0;j<rows&&picker_top+j<picker.count;j++)ui_aim_i("picker-row",j,dlg_x+16+252,dlg_y+40+80+j*28+13);
             for(int j=0;j<rows&&picker_top+j<picker.count;j++){
                 StFile *f=&picker.files[picker_top+j];char label[80];snprintf(label,sizeof label,"%s  %s",f->directory?">":" ",f->name);
                 if(aui_button(16,80+j*28,504,26,label)){

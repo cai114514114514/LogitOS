@@ -44,6 +44,7 @@ import zlib
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from qmp_ui import Session, configure, pt, PPM  # noqa: E402
+import qmp_aim  # noqa: E402
 
 # MONITOR_SLOT = 2 and CLOCK_SLOT = 0 used to live here -- scan_apps order as a
 # pair of hand-maintained integers. The dock's layout is read from the guest
@@ -59,23 +60,15 @@ PROBES = {
 
 # Window-local points out of c/apps/gui/monitor/monitor.c.
 WINW, WINH = 660, 470
-TAB_Y = 44 + 17                   # the tab strip's vertical centre
-# Tab centres. aui_tabs lays tabs out by TEXT WIDTH (tw(item) + AUI_SP(6)), so
-# these are not evenly spaced and cannot be computed from an index -- they are
-# read off a rendered frame. Every click on them is verified by the probe
-# colour afterwards, so a font change fails loudly here rather than silently
-# testing the wrong view.
-# Since 2026-10-26 the labels are 进程 / 内存 / 系统: two em each at 15 px,
-# so every tab is 30 + AUI_SP(6) = 54 points wide from x = 16. (The English
-# labels gave 61 / 146 / 221; the same formula reproduces those to within the
-# rasteriser's rounding.)
-TAB_X = (43, 97, 151)
-TABLE_X, TABLE_Y = 16, 96 + 26    # aui_table's origin on the Processes tab
+# Every control this driver clicks is read from the guest: the Monitor prints
+# `[monitor] aim <name> x y` (window-local content points, design P13) from the
+# code that draws it -- tab-processes/-memory/-system and row-<i> from aui_tabs
+# and aui_table, sort-desc and force-quit from monitor.c, dialog-confirm from
+# aui_dialog_buttons. The TAB_X / TABLE_Y / KILL_X / DESC_X constants that stood
+# here were a second copy of the layout; the layout can now move without them.
+# Only ROW_H (aui_table's row pitch, to turn a row's centre into its band) stays.
 ROW_H = 26                        # list_body row pitch (aui.c)
-HDR_H = 26                        # the table's header band
-KILL_X, KILL_Y = 16 + (660 - 32) - 132 + 66, WINH - 50 + 14   # Force Quit centre
-# The "Descending" checkbox, monitor.c view_processes(): x = 16+56+210+16.
-DESC_X, DESC_Y = 16 + 56 + 210 + 16 + 9, 96 - 4 + 9
+TAB_AIMS = ("tab-processes", "tab-memory", "tab-system")
 
 
 def ppm_to_png(src, dst):
@@ -185,6 +178,26 @@ def main(argv):
     def log():
         return open(serial, errors="replace").read() if os.path.exists(serial) else ""
 
+    def aim(name, timeout=20):
+        """Window-local (x, y) of the Monitor's control `name`; latest line wins."""
+        deadline = time.time() + timeout
+        while True:
+            got = qmp_aim.parse_aims(log()).get(("monitor", name))
+            if got is not None:
+                return got
+            if time.time() >= deadline:
+                raise Fatal("no [monitor] aim %s within %ds; last: %s"
+                            % (name, timeout, qmp_aim.aim_lines(log())[-5:]))
+            time.sleep(0.2)
+
+    def click_aim(frame, name):
+        ax, ay = aim(name)
+        ui.click_at_confirmed(probe, frame.ox + pt(ax), frame.oy + pt(ay))
+
+    def row_top(i):
+        """Top of table row `i` in window points, from its own `row-<i>` aim."""
+        return aim("row-%d" % i)[1] - ROW_H // 2
+
     try:
         deadline = time.time() + 240
         while time.time() < deadline:
@@ -236,12 +249,12 @@ def main(argv):
 
         # The table must actually have rows: dark text under the header band.
         f = Frame(shot)
-        ink = f.dark(TABLE_X, TABLE_Y + HDR_H, 620, ROW_H * 4, 120)
+        ink = f.dark(16, row_top(0), 620, ROW_H * 4, 120)
         ck(ink > 60, "the process table has rows of real text", "dark px = %d" % ink)
 
         # --- the other two views ---------------------------------------------
         for idx, want in ((1, "memory"), (2, "system")):
-            ui.click_at_confirmed(probe, f.ox + pt(TAB_X[idx]), f.oy + pt(TAB_Y))
+            click_aim(f, TAB_AIMS[idx])
             time.sleep(1.6 * slow)
             ui.screendump(shot, settle=1.2 * slow)
             g = Frame(shot)
@@ -253,7 +266,7 @@ def main(argv):
                 ppm_to_png(shot, base_out + "-" + want + ".png")
 
         # Back to Processes.
-        ui.click_at_confirmed(probe, f.ox + pt(TAB_X[0]), f.oy + pt(TAB_Y))
+        click_aim(f, TAB_AIMS[0])
         time.sleep(1.6 * slow)
         ui.screendump(shot, settle=1.2 * slow)
         f = Frame(shot)
@@ -280,7 +293,7 @@ def main(argv):
                "luma %d -> %d" % (luma(light_bg), luma(dark_bg)))
             ppm_to_png(shot, base_out + "-processes-dark.png")
             for idx, want in ((1, "memory"), (2, "system")):
-                ui.click_at_confirmed(probe, d.ox + pt(TAB_X[idx]), d.oy + pt(TAB_Y))
+                click_aim(d, TAB_AIMS[idx])
                 time.sleep(1.6 * slow)
                 ui.screendump(shot, settle=1.2 * slow)
                 g = Frame(shot)
@@ -288,7 +301,7 @@ def main(argv):
                     park(g)
                     ui.screendump(shot, settle=1.0 * slow)
                     ppm_to_png(shot, base_out + "-" + want + "-dark.png")
-            ui.click_at_confirmed(probe, d.ox + pt(TAB_X[0]), d.oy + pt(TAB_Y))
+            click_aim(d, TAB_AIMS[0])
             time.sleep(1.6 * slow)
         # Back to light for the kill sequence (the screenshots read better).
         ui.click_at_confirmed(probe, DARK_X, DARK_Y)
@@ -358,20 +371,19 @@ def main(argv):
         # and row 0 becomes Clock deterministically. That beats hunting for its
         # name, because the cells are anti-aliased glyphs and this driver does
         # not do OCR.
-        ui.click_at_confirmed(probe, f.ox + pt(DESC_X), f.oy + pt(DESC_Y))
+        click_aim(f, "sort-desc")
         time.sleep(1.5 * slow)
         ui.screendump(shot, settle=1.2 * slow)
         f = Frame(shot)
         ck(f.ok(), "the Descending control is reachable")
 
-        ui.click_at_confirmed(probe, f.ox + pt(300),
-                              f.oy + pt(TABLE_Y + HDR_H + ROW_H // 2))
+        click_aim(f, "row-0")
         time.sleep(1.5 * slow)
         park(f)
         ui.screendump(shot, settle=1.0 * slow)
         f = Frame(shot)
         ppm_to_png(shot, base_out + "-selected.png")
-        ck(f.dark(16, WINH - 50 + 2, 320, 20, 120) > 20,
+        ck(f.dark(16, aim("force-quit")[1] - 12, 320, 20, 120) > 20,
            "selecting a row names it in the footer")
 
         # --- the REFUSAL, before the kill --------------------------------------
@@ -380,10 +392,9 @@ def main(argv):
         # button out from the LOGIT_PROC_PROTECTED flag the kernel publishes.
         # Sorting ascending puts it near the top; sh is the CLI process with no
         # parent. Row 1 is it (Finder=1, sh=2, Monitor=3, Clock=4 ascending).
-        ui.click_at_confirmed(probe, f.ox + pt(DESC_X), f.oy + pt(DESC_Y))
+        click_aim(f, "sort-desc")
         time.sleep(1.5 * slow)
-        ui.click_at_confirmed(probe, f.ox + pt(300),
-                              f.oy + pt(TABLE_Y + HDR_H + ROW_H + ROW_H // 2))
+        click_aim(f, "row-1")
         time.sleep(1.5 * slow)
         park(f)
         ui.screendump(shot, settle=1.0 * slow)
@@ -394,14 +405,14 @@ def main(argv):
         # REDNESS (r - b), not luma: the danger red's luma lands within a
         # rounding error of any threshold worth picking, which made a luma test
         # read 0 for both states. Sample left of centre, clear of the label.
+        KILL_X, KILL_Y = aim("force-quit")      # Force Quit's centre
         shell_px = g.at(KILL_X - 55, KILL_Y)
         shell_red = shell_px[0] - shell_px[2]
 
         # Now select Clock again (descending, row 0) and compare.
-        ui.click_at_confirmed(probe, g.ox + pt(DESC_X), g.oy + pt(DESC_Y))
+        click_aim(g, "sort-desc")
         time.sleep(1.5 * slow)
-        ui.click_at_confirmed(probe, g.ox + pt(300),
-                              g.oy + pt(TABLE_Y + HDR_H + ROW_H // 2))
+        click_aim(g, "row-0")
         time.sleep(1.5 * slow)
         park(g)
         ui.screendump(shot, settle=1.0 * slow)
@@ -420,11 +431,11 @@ def main(argv):
         # confounded by the selected row's accent fill, which changes the dark
         # pixel count without any row leaving -- that is exactly why the
         # negative control passed this assertion when it should not have.
-        ROW3_Y = TABLE_Y + HDR_H + 3 * ROW_H
-        before_row3 = f.dark(TABLE_X, ROW3_Y, 620, ROW_H, 120)
+        ROW3_Y = row_top(3)
+        before_row3 = f.dark(16, ROW3_Y, 620, ROW_H, 120)
 
         pre = log()
-        ui.click_at_confirmed(probe, f.ox + pt(KILL_X), f.oy + pt(KILL_Y))
+        click_aim(f, "force-quit")
         time.sleep(1.8 * slow)
         ui.screendump(shot, settle=1.0 * slow)
         ppm_to_png(shot, base_out + "-confirm.png")
@@ -438,8 +449,9 @@ def main(argv):
            "the confirmation dims the window behind it",
            "luma %d -> %d" % (luma(before_px), luma(after_px)))
 
-        # Press Enter: the dialog's default is Force Quit (index 0).
-        ui.key("ret")
+        # Click the dialog's confirm button: aui_dialog_buttons publishes
+        # `dialog-confirm` (item 0, "强制退出"; Enter's target) once the sheet has settled.
+        click_aim(f, "dialog-confirm")
         time.sleep(2.5 * slow)
         ui.screendump(shot, settle=1.2 * slow)
         ppm_to_png(shot, base_out + "-after-kill.png")

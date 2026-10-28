@@ -112,6 +112,7 @@ static void pick_frame(const int *items, int count, int selected, int top, int f
     label(20, 76, 10, ui_muted, "资料库");
     for (int group = 0; group < 5; group++) {
         int y = 102 + group * 42;
+        ui_aim_i("group", group, 10 + 72, y + 17);
         if (group == filter) gui_rrect(10, y, 144, 34, 8, view_dark ? 0x344365 : 0xE4ECFE);
         clipped_label(22, y + 10, 132, 12, group == filter ? ui_accent : ui_text, pick_groups[group]);
     }
@@ -126,6 +127,7 @@ static void pick_frame(const int *items, int count, int selected, int top, int f
     plog("preview: library filter=%d top=%d rows=%d count=%d\n", filter, top, PICK_ROWS, count);
     for (int row = 0; row < PICK_ROWS && top + row < count; row++) {
         int idx = items[top + row], y = PICK_Y0 + row * PICK_DY;
+        ui_aim_i("cell", idx, 184 + (WINW - 204) / 2, y + 17);   /* P13: a visible row's centre; idx = pick index */
         if (top + row == selected)
             gui_rrect(184, y, WINW - 204, 34, 7, view_dark ? 0x344365 : 0xE4ECFE);
         else if (row % 2 == 0) gui_rrect(184, y, WINW - 204, 34, 7, ui_panel);

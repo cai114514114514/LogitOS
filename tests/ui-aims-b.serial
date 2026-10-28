@@ -1,0 +1,77 @@
+# tests/ui-aims-b.serial -- the `[monitor]`, `[clock]`, `[studio]` and `[preview]` aim lines and `[wm] win` lines of REAL boots
+# of the test images built from this tree (latest line per name; Clock: its first, default 620x400 layout; Studio: the
+# run-studio-ui.py boot; Preview: the library, then the dot.png viewer; Monitor: the qmp_monitor.py boot). Window slots are
+# renumbered (11 Monitor, 12 Clock, 13 Studio, 14 Preview) so the lines of different boots do not collide.
+[wm] win 11 frame 138 98 660 500 content 660 470 pt zoom 0 min 0 Activity Monitor
+[wm] win 11 app monitor
+[monitor] aim tab-processes 43 61
+[monitor] aim tab-memory 97 61
+[monitor] aim tab-system 151 61
+[monitor] aim sort-pid 107 101
+[monitor] aim sort-name 177 101
+[monitor] aim sort-files 247 101
+[monitor] aim sort-desc 307 101
+[monitor] aim row-0 330 162
+[monitor] aim row-1 330 188
+[monitor] aim row-2 330 214
+[monitor] aim row-3 330 240
+[monitor] aim force-quit 578 434
+[monitor] aim row-4 330 266
+[monitor] aim dialog-1 462 251
+[monitor] aim dialog-cancel 462 251
+[monitor] aim dialog-0 366 251
+[monitor] aim dialog-confirm 366 251
+[wm] win 12 frame 138 98 620 430 content 620 400 pt zoom 0 min 0 Clock
+[wm] win 12 app clock
+[clock] aim clock-24h 220 365
+[clock] aim clock-seconds 400 365
+[wm] win 13 frame 110 24 1120 670 content 1120 640 pt zoom 0 min 0 Code Studio
+[wm] win 13 app studio
+[studio] aim open 37 20
+[studio] aim save 101 20
+[studio] aim check 168 20
+[studio] aim run 235 20
+[studio] aim find 363 20
+[studio] aim new-file 50 89
+[studio] aim new-folder 143 89
+[studio] aim editor 658 88
+[studio] aim tree-row-0 98 120
+[studio] aim tree-row-1 98 144
+[studio] aim tab-0 286 57
+[studio] aim picker-root 415 116
+[studio] aim picker-row-0 558 183
+[studio] aim picker-row-1 558 211
+[studio] aim dialog-1 742 348
+[studio] aim dialog-cancel 742 348
+[studio] aim dialog-0 650 348
+[studio] aim dialog-confirm 650 348
+[studio] aim picker-row-2 558 239
+[studio] aim picker-row-3 558 267
+[studio] aim tree-row-2 98 168
+[studio] aim tree-row-3 98 192
+[studio] aim context-0 98 124
+[studio] aim context-1 98 156
+[studio] aim context-2 98 188
+[studio] aim tab-1 466 57
+[studio] aim tree-row-4 98 216
+[studio] aim tab-2 646 57
+[wm] win 14 frame 138 98 760 590 content 760 560 pt zoom 0 min 0 Preview
+[wm] win 14 app preview
+[preview] aim group-0 82 119
+[preview] aim group-1 82 161
+[preview] aim group-2 82 203
+[preview] aim group-3 82 245
+[preview] aim group-4 82 287
+[preview] aim cell-0 462 129
+[preview] aim cell-1 462 129
+[preview] aim cell-2 462 165
+[preview] aim cell-3 462 201
+[preview] aim cell-4 462 237
+[preview] aim cell-5 462 273
+[preview] aim cell-6 462 309
+[preview] aim cell-7 462 345
+[preview] aim cell-8 462 381
+[preview] aim cell-9 462 417
+[preview] aim back 54 30
+[preview] aim fit 637 30
+[preview] aim actual-size 710 30

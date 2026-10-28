@@ -63,6 +63,9 @@ enum clock_action clock_view(struct clock_ui *ui, const struct clock_state *app,
     if (button_w > 170)
         button_w = 170;
     int left = (w - button_w * 2 - gap) / 2;
+    /* Aims (P13): the two buttons are drawn by aui_button_ex, which publishes none. */
+    ui_aim_rect("clock-24h", left, layout.footer_y, button_w, 34);
+    ui_aim_rect("clock-seconds", left + button_w + gap, layout.footer_y, button_w, 34);
     if (aui_button_ex(left, layout.footer_y, button_w, 34, app->hour24 ? "24 小时制" : "12 小时制",
                       AUI_V_SECONDARY, 1)) {
         action = CLOCK_TOGGLE_FORMAT;
