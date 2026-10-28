@@ -75,6 +75,13 @@ def point(x, y):
     w = window()
     return w['x'] + pt(x), w['y'] + w['h'] - pt(w['ch']) + pt(y)
 
+def aim_point(name):
+    """Screen px of Clock's control `name`, from its own `[clock] aim <name> x y` line
+    (content points, design P13). Latest line wins; no layout constant lives here."""
+    found = wait(lambda: (re.findall(r'\[clock\] aim %s (-?\d+) (-?\d+)' % re.escape(name), log())
+                          or [None])[-1], 'Clock aim ' + name)
+    return point(int(found[0]), int(found[1]))
+
 def shot(name):
     path = out / (name + '.ppm')
     ui.screendump(str(path), settle=.1)
@@ -141,7 +148,7 @@ try:
         twelve = stable('twelve-hour')
         check(changed(readout(stopped), readout(twelve)), '12-hour action changes actual readout and AM/PM')
         # The pointer route returns the same semantic action as the H shortcut.
-        ui.click_at_confirmed(str(out / 'pointer.ppm'), *point(222, 365))
+        ui.click_at_confirmed(str(out / 'pointer.ppm'), *aim_point('clock-24h'))
         wait(lambda: frames()[-1][6] == 1, 'format button')
         stable('format-restored')
         check(True, 'mouse format button reaches the application state owner')

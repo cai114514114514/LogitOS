@@ -90,6 +90,19 @@ def main():
             guest.pointer[1] += dy
             time.sleep(.03)
 
+    def aim(name):
+        """Window-local points of Studio's `[studio] aim <name> x y` (design P13); the latest line
+        wins. Waits for the first line: an aim is printed when it appears or moves."""
+        deadline = time.monotonic() + 10
+        while True:
+            found = re.findall(rb"\[studio\] aim " + re.escape(name.encode()) + rb" (-?\d+) (-?\d+)",
+                               bytes(guest.log))
+            if found:
+                return int(found[-1][0]), int(found[-1][1])
+            if time.monotonic() > deadline:
+                raise AssertionError("no [studio] aim " + name)
+            time.sleep(.1)
+
     def click(x, y):
         move(x, y)
         for down in (True, False):
@@ -146,7 +159,10 @@ def main():
         guest.key("ctrl", "a")
         guest.type("pri")
         time.sleep(.4)
-        click(x + 800, y + 350)
+        # Outside the popup, inside the editor: the old (800, 350), now 142 right of and 262 below
+        # the editor aim (the first text row's centre), so it follows the editor if the layout moves.
+        ex, ey = aim("editor")
+        click(x + ex + 142, y + ey + 262)
         time.sleep(2)
         outside = shot("completion-dismissed-outside")
         check("outside click closes and stays closed", selection not in outside.crop(area).getdata())
@@ -162,7 +178,8 @@ def main():
         # Edit the imported module through the actual editor, leaving it
         # unsaved. Disk-only completion would suggest `disk`, which cannot
         # satisfy the saved-source assertion below.
-        click(x + 50, y + 144)
+        tx, ty = aim("tree-row-1")
+        click(x + tx, y + ty)
         guest.key("ctrl", "home")
         guest.key("down")
         guest.key("home")
@@ -173,7 +190,8 @@ def main():
         # Let the final character settle before a mouse event switches tabs.
         time.sleep(1)
         shot("unsaved-module")
-        click(x + 50, y + 168)
+        tx, ty = aim("tree-row-2")
+        click(x + tx, y + ty)
         time.sleep(.5)
         guest.key("ctrl", "end")
         guest.type("tools.")
@@ -205,7 +223,8 @@ def main():
         dismissed = shot("native-completion-dismissed")
         check("native reply stays dismissed",
               selection not in dismissed.crop(module_area).getdata())
-        click(x + 50, y + 192)
+        tx, ty = aim("tree-row-3")
+        click(x + tx, y + ty)
         time.sleep(.5)
         guest.key("ctrl", "end")
         guest.type("box.re")

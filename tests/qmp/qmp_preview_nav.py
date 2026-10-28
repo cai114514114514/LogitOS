@@ -47,7 +47,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from qmp_ui import Session, configure, pt, PPM            # noqa: E402
 from qmp_preview import (PICK_PROBE,                      # noqa: E402
-                          distinct_colours, ppm_to_png)
+                          click_preview_cell, distinct_colours, ppm_to_png)
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -162,8 +162,7 @@ def main(argv):
         ppm_to_png(shot, os.path.join(outdir, "00-list.png"))
 
         def click_row(idx):
-            from preview_helpers import click_preview_row
-            click_preview_row(ui, serial, origin, shot, idx)
+            click_preview_cell(ui, serial, origin, shot, idx)
 
         def open_entry(name):
             """Click `name` in the CURRENT list. Returns (mark, matched open line)."""

@@ -328,6 +328,43 @@ def read(path):
         return ""
 
 
+# Aims (design P13): Preview prints `[preview] aim <name> x y` (window-local content points) for every
+# hand-drawn control, from the code that draws it, whenever the control appears or moves. The latest
+# line wins, so a control that is visible now is always at its latest aim.
+def preview_aim(serial, name, timeout=10.0):
+    import qmp_aim
+    deadline = time.time() + timeout
+    while True:
+        got = qmp_aim.parse_aims(read(serial)).get(("preview", name))
+        if got is not None:
+            return got
+        if time.time() >= deadline:
+            raise AssertionError("no [preview] aim %s within %.0fs" % (name, timeout))
+        time.sleep(0.1)
+
+
+def click_preview_aim(ui, serial, origin, probe, name):
+    """Click Preview's control `name`; `origin` is the device-pixel content origin."""
+    x, y = preview_aim(serial, name)
+    ui.click_at_confirmed(probe, origin[0] + pt(x), origin[1] + pt(y))
+
+
+def click_preview_cell(ui, serial, origin, probe, index):
+    """Click library row `index` through its `cell-<index>` aim, paging until the row is on screen.
+    A scrolled-off row keeps its last aim, so visibility comes from the frame's own `preview: row`
+    line; a row that is on screen is always at its latest aim."""
+    ui.key("home", settle=0.8)
+    for _ in range(8):
+        text = read(serial)
+        current = text[text.rfind("preview: library "):]
+        if re.search(r"preview: row %d " % index, current):
+            click_preview_aim(ui, serial, origin, probe, "cell-%d" % index)
+            time.sleep(0.4)
+            return
+        ui.key("pgdn", settle=0.8)
+    raise AssertionError("Preview did not expose row %d after paging" % index)
+
+
 def main(argv):
     iso = os.environ.get("LOGIT_ISO", os.path.join(ROOT, "build", "logit.iso"))
     disk = os.environ.get("LOGIT_DISK", os.path.join(ROOT, "build", "disk.img"))
@@ -601,7 +638,7 @@ def main(argv):
 
         before_filter = PPM(shot).px
         mark = len(read(serial))
-        ui.click_at_confirmed(shot, origin[0] + pt(80), origin[1] + pt(160))
+        click_preview_aim(ui, serial, origin, shot, "group-1")
         filtered = wait_for(r"preview: library filter=1 .*count=(\d+)", mark, 20)
         ck(filtered is not None and 0 < int(filtered.group(1)) < len(picks),
            "Images category filters the collection")
@@ -609,7 +646,7 @@ def main(argv):
         ui.screendump(shot)
         ck(PPM(shot).px != before_filter, "category selection changes the visible library")
         ppm_to_png(shot, os.path.join(outdir, "00-images.png"))
-        ui.click_at_confirmed(shot, origin[0] + pt(80), origin[1] + pt(118))
+        click_preview_aim(ui, serial, origin, shot, "group-0")
         time.sleep(0.8)
         # The desktop switch is drawn at W-240, width 38 (wm.c). Verify the
         # app's own surface follows its theme event, not just the menu bar.
@@ -626,8 +663,7 @@ def main(argv):
 
 
         def click_row(idx):
-            from preview_helpers import click_preview_row
-            click_preview_row(ui, serial, origin, shot, idx)
+            click_preview_cell(ui, serial, origin, shot, idx)
 
         def open_entry(name):
             """Click `name` in the list. Returns (log mark, the console line).
@@ -730,7 +766,7 @@ def main(argv):
                        % (name, label), det)
                     if name == "dot.png":
                         fitted = ppm.px
-                        ui.click_at_confirmed(shot, origin[0] + pt(WINW - 50), origin[1] + pt(30))
+                        click_preview_aim(ui, serial, origin, shot, "actual-size")
                         time.sleep(1.0)
                         ui.screendump(shot)
                         actual = PPM(shot)
@@ -751,7 +787,7 @@ def main(argv):
 
             if name == "dot.png":
                 back_mark = len(read(serial))
-                ui.click_at_confirmed(shot, origin[0] + pt(54), origin[1] + pt(30))
+                click_preview_aim(ui, serial, origin, shot, "back")
                 returned = wait_for(r"preview: pick 0 ", back_mark, 20)
                 time.sleep(0.8)
                 ui.screendump(shot)
