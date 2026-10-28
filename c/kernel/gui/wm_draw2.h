@@ -2,7 +2,7 @@
 #define LOGIT_WM_DRAW2_H
 /* GUI ABI v2, kernel side: the router (wm_draw2.c), the per-module handlers
  * (wm_draw2_path.c, wm_draw2_state.c, wm_draw2_text.c, wm_draw2_fx.c,
- * wm_backdrop.c) and the hooks wm.c calls. The ABI itself -- numbers, structs,
+ * wm_backdrop.c, wm_draw2_icon.c) and the hooks wm.c calls. The ABI itself -- numbers, structs,
  * feature bits -- is include/abi/logit_abi.h, "GUI ABI v2".
  *
  * SHAPE. wm.c's SYS_GUI_* case for a v2 number finds the caller's window,
@@ -109,6 +109,7 @@ long wm2_shadow2(struct wm2_env *e, long a, long b, long c);       /* wm_draw2_f
 long wm2_glass2(struct wm2_env *e, long a, long b, long c);
 long wm2_backdrop(struct wm2_env *e, long a, long b, long c);      /* wm_backdrop.c */
 long wm2_backdrop_clear(struct wm2_env *e, long a, long b, long c);
+long wm2_icon2(struct wm2_env *e, long a, long b, long c);         /* wm_draw2_icon.c */
 
 /* Router hooks, called by wm.c.
  *   wm2_win_reset: window create, destroy and surface resize -- the slot's
@@ -127,7 +128,8 @@ unsigned wm2_state_err_count(int slot);
 
 /* Feature bits, one constant per module (see FEATURE BITS above). */
 extern const unsigned wm2_path_info, wm2_state_info, wm2_text_info,
-                      wm2_fx_info, wm2_backdrop_info, wm2_carets_info;
+                      wm2_fx_info, wm2_backdrop_info, wm2_carets_info,
+                      wm2_icon2_info;
 
 /* Backdrop regions, for the compositor (wm-backdrop-regions). `r` is in
  * window-surface DEVICE pixels; radius[] in device pixels, TL TR BR BL. */

@@ -31,6 +31,8 @@
 #include "text.h"
 #include "icons.h"
 #include "logit_desktop_prefs.h"
+#include "logit_apps.h"   /* launch-argument formats (wm_launch_app) */
+#include "logit_tokens.h" /* the design's token tables (wm_tok, wm_theme.c) */
 #include "logit_app_icon.h"
 #include "pmm.h"
 #include "vmm.h"
@@ -271,6 +273,11 @@ struct win {
      * any app that has not been written yet. */
     int  drawing;
     uint64_t draw_t0;         /* time_mono_ms() when this frame's drawing began */
+    /* WINS_SET_TITLEBAR (titlebar mode A, design P10): the app's header colour
+     * and TB_* flags, kept for the chrome to paint the unified header with.
+     * tb_set is 0 until the app sets one (the WM's own titlebar look). */
+    unsigned tb_rgb, tb_flags;
+    int  tb_set;
 };
 
 /* WHERE A COMPOSITE GOES: the pixels and their row pitch in pixels. Every
@@ -402,6 +409,13 @@ struct app *find_live_app(const char *name);
 void wm_enqueue(struct win *w, int type, int a, int b);
 /* Flip the theme; (cx, cy) is where it was asked for, or (-1, -1). */
 void wm_set_dark(int on, int cx, int cy);
+/* Launch an app by its stem ("settings") with an argument in logit_apps.h's
+ * formats; wm_launch_pane opens Settings on a pane (enum logit_pane). */
+void wm_launch_app(const char *stem, const char *arg);
+void wm_launch_pane(int pane);
+/* Reallocate a window's canvas to its frame now and send EV_RESIZE (no-op
+ * when they already agree). Caller holds graphics_lock and wm_lock. */
+void win_apply_size(struct win *w);
 
 /* The pointer, read-only (the state is wm.c's). */
 int wm_pointer_x(void);

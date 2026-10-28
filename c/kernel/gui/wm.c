@@ -1052,7 +1052,7 @@ int win_drawn_direct(const struct win *w, int x, int y, int ww, int wh, int a)
  * the compositor goes on stretching the canvas it already has (blit_content),
  * which is exactly what it does mid-drag anyway. Refusing the resize instead
  * would make a window's geometry depend on heap pressure. */
-static void win_apply_size(struct win *w)
+void win_apply_size(struct win *w)
 {
     int cw = w->w, ch = w->h - win_tbh(w);
     if (cw < 1) cw = 1;
@@ -1491,6 +1491,39 @@ void wm_launch(const char *aex_file, const char *arg)
     if (!had_state) wm_state_unlock();
 }
 
+/* LAUNCH ARGUMENTS FROM INSIDE THE WM (design 5.2, 5.9; logit_apps.h).
+ *
+ * Every launch path already carries wm_launch's `arg` to the app, which reads
+ * it back with SYS_GET_ARG (ap->arg): the Dock (wm_dock.c, "" today), the
+ * menu-bar menus (wm_menu.c, ""), Spotlight and any app through
+ * SYS_OPEN_PATH_ARG, and the file associations (launch_for_ext, the path).
+ * What was missing is a door for a WM-internal caller that knows an app by
+ * its STEM and wants one of logit_apps.h's structured arguments: About's
+ * "更多信息…" -> wm_launch_app("settings", "--pane=system"), the desktop
+ * menu's "更改墙纸…" -> "--pane=desktop" (wm_launch_pane below builds those
+ * with logit_app_arg_pane, never by hand).
+ *
+ * An app that is ALREADY RUNNING is focused, not relaunched (wm_launch's
+ * single-instance rule), and does not see the new argument: no event carries
+ * one to a live app yet. */
+void wm_launch_app(const char *stem, const char *arg)
+{
+    char file[40];
+    int n = 0;
+    if (!stem) return;
+    while (stem[n] && n < (int)sizeof file - 5) { file[n] = stem[n]; n++; }
+    if (n == 0 || stem[n]) { kprintf("[wm] launch: bad stem\n"); return; }
+    file[n++] = '.'; file[n++] = 'a'; file[n++] = 'e'; file[n++] = 'x'; file[n] = 0;
+    wm_launch(file, arg ? arg : "");
+}
+
+void wm_launch_pane(int pane)
+{
+    char arg[32];
+    if (logit_app_arg_pane(arg, (int)sizeof arg, pane) < 0) return;
+    wm_launch_app("settings", arg);
+}
+
 /* THE FILE ASSOCIATION, AND WHY IT ASKS THE BYTES.
  *
  * An .aex header carries ONE `ext` (aex.h), so an app that opens a dozen
@@ -1712,7 +1745,7 @@ static int is_draw_call(long num)
      * SYS_GUI_CLIP is: they change state, not pixels. */
     case SYS_GUI_PATH: case SYS_GUI_GROUP_END: case SYS_GUI_BLIT2:
     case SYS_GUI_TEXT_RUN2: case SYS_GUI_SHADOW2: case SYS_GUI_GLASS2:
-    case SYS_GUI_BACKDROP:
+    case SYS_GUI_BACKDROP: case SYS_GUI_ICON2:
         return 1;
     }
     return 0;
@@ -1918,6 +1951,7 @@ static long wm_gui_dispatch(long num, long a, long b, long c)
          * 2026-09-24: a slot whose last tenant was Spotlight would open its
          * next window as a titlebar-less PANEL that hides on focus loss. */
         w->want_keyup = w->panel = w->snapped = 0;
+        w->tb_rgb = w->tb_flags = 0; w->tb_set = 0;   /* nor a stranger's titlebar colour */
         if (w->menus) { kfree(w->menus); w->menus = 0; }
         w->menus_gen = 0;
         /* ...and that now includes the dock fly. A slot whose last occupant was
@@ -2168,6 +2202,25 @@ static long wm_gui_dispatch(long num, long a, long b, long c)
     case SYS_UI_DARK:                       /* a<0 query; else set system dark mode */
         if ((int)a >= 0) wm_set_dark((int)a, -1, -1);   /* no trigger point on screen */
         return g_ui_dark;
+    case SYS_UI_DARK_AT: {                  /* SYS_UI_DARK from a point (design 5.10) */
+        if ((int)a < 0) return g_ui_dark;
+        int cx = -1, cy = -1;
+        struct win *w = app_window(ap);
+        if (w && w->used) {
+            /* Window-local content points -> the screen point, device px,
+             * clamped onto the screen: the reveal is centred on the control
+             * that asked, wherever its window is. */
+            cx = w->x + S((int)b);
+            cy = w->y + win_tbh(w) + S((int)c);
+            if (cx < 0) cx = 0;
+            if (cx > wm_W - 1) cx = wm_W - 1;
+            if (cy < 0) cy = 0;
+            if (cy > wm_H - 1) cy = wm_H - 1;
+        }
+        kprintf("[wm] ui dark %d at %d %d\n", (int)a ? 1 : 0, cx, cy);
+        wm_set_dark((int)a, cx, cy);
+        return g_ui_dark;
+    }
     case SYS_FILE_COUNT:
         return vfs_count("/");
     case SYS_FILE_NAME: {
@@ -2369,7 +2422,8 @@ static long wm_gui_dispatch(long num, long a, long b, long c)
     case SYS_GUI2_INFO: case SYS_GUI_PATH: case SYS_GUI_CLIP_PUSH:
     case SYS_GUI_CLIP_POP: case SYS_GUI_GROUP_BEGIN: case SYS_GUI_GROUP_END:
     case SYS_GUI_BLIT2: case SYS_GUI_TEXT_RUN2: case SYS_GUI_SHADOW2:
-    case SYS_GUI_GLASS2: case SYS_GUI_BACKDROP: case SYS_GUI_BACKDROP_CLEAR: {
+    case SYS_GUI_GLASS2: case SYS_GUI_BACKDROP: case SYS_GUI_BACKDROP_CLEAR:
+    case SYS_GUI_ICON2: {
         struct win *w = app_window(ap);
         if (!w || !w->surf.px) return OL_STATE;
         fb_target(&w->surf);
@@ -2447,9 +2501,7 @@ static long wm_gui_dispatch(long num, long a, long b, long c)
                 w->panel = 1;
                 int ch = w->h - TBH;
                 w->h = ch > 1 ? ch : 1;
-                w->x = (wm_W - w->w) / 2;
-                w->y = wm_H / 4 - S(40);
-                if (w->y < MBH + S(8)) w->y = MBH + S(8);
+                panel_place(w);
                 dirty_full(FULL_WINDOW_CREATE);
                 kprintf("[wm] panel win=%d '%s' %d %d %d %d\n", ap->win, w->title, w->x, w->y, w->w, w->h);
             }
@@ -2458,6 +2510,21 @@ static long wm_gui_dispatch(long num, long a, long b, long c)
             if (!w->panel) return -1;
             panel_show(w, (int)b == 0);
             return w->minimized;
+        case WINS_SET_SIZE:
+            return panel_set_size(w, (int)(((unsigned long)b >> 16) & 0xFFFF), (int)(b & 0xFFFF));
+        case WINS_SET_TITLEBAR: {
+            /* Titlebar mode A (P10): stored, not painted yet -- the chrome
+             * reads tb_* when it draws the unified header (ui-wm-chrome). */
+            unsigned long v = (unsigned long)b;
+            if (v & ~(unsigned long)(TB_RGB_MASK | TB_FLAGS_MASK)) return -1;
+            unsigned rgbv = (unsigned)v & TB_RGB_MASK, fl = (unsigned)v & TB_FLAGS_MASK;
+            if (!w->tb_set || w->tb_rgb != rgbv || w->tb_flags != fl) {
+                w->tb_rgb = rgbv; w->tb_flags = fl; w->tb_set = 1;
+                kprintf("[wm] win %d app %s tb %08x\n", ap->win,
+                        w->app && w->app->stem[0] ? w->app->stem : "-", (unsigned)v);
+            }
+            return 0;
+        }
         case WINS_SET_ZOOM:
             win_set_zoom(w, (int)b < 0 ? !w->zoomed : ((int)b != 0));
             return w->zoomed;
@@ -2533,12 +2600,13 @@ static int wm_domain_call(long num)
     case SYS_GUI_BLIT: case SYS_GUI_CLIP: case SYS_GUI_FLUSH:
     case SYS_GUI_FLUSH_RECT: case SYS_GUI_WIN_MIN: case SYS_GUI_WIN_STATE:
     case SYS_UI_DARK: case SYS_OPEN_PATH: case SYS_OPEN_PATH_ARG: case SYS_GET_ARG: case SYS_SYSINFO:
-    case SYS_GUI_MENU_SET:
+    case SYS_GUI_MENU_SET: case SYS_UI_DARK_AT:
     /* GUI ABI v2: every number, pixels or not -- each one reads the window. */
     case SYS_GUI2_INFO: case SYS_GUI_PATH: case SYS_GUI_CLIP_PUSH:
     case SYS_GUI_CLIP_POP: case SYS_GUI_GROUP_BEGIN: case SYS_GUI_GROUP_END:
     case SYS_GUI_BLIT2: case SYS_GUI_TEXT_RUN2: case SYS_GUI_SHADOW2:
     case SYS_GUI_GLASS2: case SYS_GUI_BACKDROP: case SYS_GUI_BACKDROP_CLEAR:
+    case SYS_GUI_ICON2:
         return 1;
     }
     return 0;
