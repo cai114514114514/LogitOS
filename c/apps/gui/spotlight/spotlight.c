@@ -212,7 +212,7 @@ static const char *kind_name(int k)
 static void draw(void)
 {
     aui_begin(AUI_BG);
-    aui_round(10, 10, WIN_W - 20, FIELD_H - 16, 12, AUI_SURFACE);
+    aui_round(10, 10, WIN_W - 20, FIELD_H - 16, 12, AUI_SURFACE_RAISED);   /* above the panel in dark too */
     /* The magnifier, drawn: a ring (aui_stroke on a round rect whose radius is
      * half its side) and a short handle of overlapping dots. The shipped fonts
      * have no search glyph -- U+2315 fell back to .notdef and sat on the text. */

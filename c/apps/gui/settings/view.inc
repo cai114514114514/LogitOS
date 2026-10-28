@@ -19,8 +19,9 @@ static void aim(const char *name, int x, int y)
 static struct aui_rect group(struct aui_rect *body, int height)
 {
     struct aui_rect box = aui_cut_top(body, height);
-    aui_round(box.x, box.y, box.w, box.h, 12, AUI_SURFACE);
-    aui_stroke(box.x, box.y, box.w, box.h, 12, 1, AUI_BORDER);
+    /* A form group (design 4.16): bg.card r 12, E1 in light, the dark rim in
+     * dark -- #26262D on the #1E1E24 window, never bg.content below it. */
+    aui_card(box.x, box.y, box.w, box.h, AUI_ELEV_1);
     aui_cut_top(body, 12);
     return aui_inset(box, 16, 12);
 }
@@ -207,8 +208,10 @@ static void frame(void)
     const char *const descriptions[] = {"让这里更像你自己的空间", "壁纸与工作区",
         "管理网络连接", "应用在程序坞中的显示方式", "让指针用起来更顺手",
         "菜单栏时钟", "搜索并查看偏好设置", "关于这台电脑"};
+    /* Page heading title1 22 / 600, its description callout label.secondary
+     * 34 below the heading top (design 7.2: heading y 14, description y 48). */
     aui_heading(204, 20, tabs[tab], AUI_TEXT);
-    aui_text_sz(204, 54, descriptions[tab], AUI_MUTED, AUI_FS_CAPTION);
+    aui_text_sz(204, 54, descriptions[tab], AUI_MUTED, AUI_FS_LABEL);
     struct aui_rect body = aui_r(204, 88, width - 232, height - 158);
     switch (tab) {
     case 0: page_appearance(body); break;
@@ -244,18 +247,19 @@ static void frame(void)
         if (action == 2) close_pending = 0;
         aui_dialog_end();
     }
-    if (reset_pending && aui_dialog_begin("要重置所有设置吗？", 450, 190)) {
-        aui_label(20, 54, "这也会移除已存储的应用偏好设置。", AUI_TEXT);
-        aui_text_sz(20, 82, "当前草稿将被放弃。", AUI_MUTED, AUI_FS_CAPTION);
-        /* Escape chooses the last button in AUI; keep Cancel last as well as
-         * the default, by handling destructive confirmation with explicit buttons. */
-        if (aui_button_ex(234, 138, 90, 28, "重置", AUI_V_DANGER, 1)) {
+    if (reset_pending) {
+        /* A destructive confirm is an alert (design 4.10, 7.2): 取消 Secondary
+         * on the left, 重置 on destructive.fill on the right, laid out from the
+         * measured message; Enter and Escape both choose 取消. */
+        static const char *const reset_buttons[2] = {"重置", "取消"};
+        int action = aui_alert(GICON_WARNING, "要重置所有设置吗？",
+                               "这也会移除已存储的应用偏好设置。当前草稿将被放弃。",
+                               reset_buttons, 2, AUI_ALERT_DESTRUCTIVE | AUI_ALERT_WARNING);
+        if (action == 0) {
             if (setting_reset() < 0) notice("无法重置设置", 1);
             else { load_all(); sys_ui_dark(setting_int("ui.dark", 0)); load_all(); notice("设置已重置", 0); }
             reset_pending = 0;
-        }
-        if (aui_button_ex(334, 138, 90, 28, "取消", AUI_V_SECONDARY, 1)) reset_pending = 0;
-        aui_dialog_end();
+        } else if (action == 1) reset_pending = 0;
     }
     /* GFX preview blits bypass AUI's damage tracking. Include the content area
      * so a new accent is actually presented even when other widgets are idle. */

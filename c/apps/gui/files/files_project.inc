@@ -55,7 +55,7 @@ static void draw_project(void)
     int x=CONTENT_RIGHT+20,w=PROJECT_W-40;
     gui_rect(CONTENT_RIGHT,0,PROJECT_W,WINH,AUI_SURFACE);
     gui_rect(CONTENT_RIGHT,0,1,WINH,AUI_BORDER);
-    aui_heading(x,22,"此项目的工作",AUI_TEXT);
+    aui_title(x,22,"此项目的工作",AUI_TEXT);
     project_line(x,54,cwd,AUI_MUTED);
     aui_label(x,88,sel_count?"使用选中的资料":"使用当前项目的资料",AUI_TEXT);
     if(aui_textfield_ex(x,114,w,project_goal,sizeof project_goal,"让应用做什么…",1))project_create();

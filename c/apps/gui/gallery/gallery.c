@@ -190,7 +190,7 @@ static void page_shapes(int x, int y, int w)
     for (int e = 0; e <= 3; e++) {
         int cx = x + 300 + e * 100;
         aui_shadow(cx, y + 6, 76, 58, AUI_R_LG, e);
-        aui_round(cx, y + 6, 76, 58, AUI_R_LG, AUI_SURFACE);
+        aui_round(cx, y + 6, 76, 58, AUI_R_LG, AUI_SURFACE_RAISED);
         aui_stroke(cx, y + 6, 76, 58, AUI_R_LG, 1, AUI_BORDER);
         char nb[8]; itoa_(e, nb);
         aui_text_in(aui_r(cx, y + 6, 76, 58), nb, AUI_TEXT, AUI_FS_TITLE, AUI_ALIGN_CENTER);
@@ -252,7 +252,9 @@ static void page_overlay(int x, int y, int w)
     }
 
     if (dlg_open) {
-        aui_dialog_begin("Delete the volume?", 380, 170);
+        /* Height from the content (design 4.10): two lines from y 12 (to ~52),
+         * a 20 gap, the 28 footer and its 20 inset -- no dead band. */
+        aui_dialog_begin("Delete the volume?", 380, 120);
         aui_text_sz(AUI_SP(5), AUI_SP(3), "This cannot be undone. The scrim behind",
                     AUI_TEXT, AUI_FS_LABEL);
         aui_text_sz(AUI_SP(5), AUI_SP(3) + 20, "this sheet swallows clicks meant for the page.",
@@ -299,8 +301,8 @@ static void frame(void)
 {
     unsigned long long t0 = monotonic_ns();
     aui_begin(AUI_BG);
-    aui_heading(AUI_PAD, 10, "aui gallery", AUI_TEXT);
-    aui_text_sz(AUI_PAD + aui_text_w("aui gallery", AUI_FS_TITLE) + 12, 16,
+    int title_w = aui_title(AUI_PAD, 10, "aui gallery", AUI_TEXT);   /* title2, measured at 600 */
+    aui_text_sz(AUI_PAD + title_w + 12, 16,
                 "immediate-mode widgets over gui_*", AUI_MUTED, AUI_FS_LABEL);
     aui_aim_prefix("tab");              /* [gallery] aim tab-<i> (P13): the strip is centred and sized by its labels */
     aui_tabs(AUI_PAD, 44, WINW - 2 * AUI_PAD, tabs, NTAB, &tab);

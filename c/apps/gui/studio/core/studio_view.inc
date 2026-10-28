@@ -38,7 +38,7 @@ static void draw(void)
         ui_aim_i("tab",i,x+tabw/2,57);
         if(i==state->active){gui_rect(x,42,tabw,30,AUI_BG);gui_rect(x,70,tabw,2,AUI_ACCENT);}
         aui_text_ellipsis(x+9,50,tabw-32,title,AUI_TEXT,13);aui_text_sz(x+tabw-16,50,"x",AUI_MUTED,13);}
-    if(document())draw_code(document());else{aui_heading(edit_x+32,120,"Code Studio",AUI_TEXT);aui_label(edit_x+32,159,"点按“打开”选择文件夹，或点按“新建文件”开始编辑。",AUI_MUTED);}
+    if(document())draw_code(document());else{aui_title(edit_x+32,120,"Code Studio",AUI_TEXT);aui_label(edit_x+32,159,"点按“打开”选择文件夹，或点按“新建文件”开始编辑。",AUI_MUTED);}
     gui_rect(edit_x,out_y,edit_w,h-out_y-28,AUI_SURFACE);gui_rect(edit_x,out_y,edit_w,1,AUI_BORDER);
     aui_text_sz(edit_x+12,out_y+10,state->runner.mode?"问题 / 语法检查":"程序输出",AUI_MUTED,12);
     if(state->runner.mode){for(int i=output_top,y=out_y+35;i<state->problem_count&&y<h-30;i++,y+=ST_ROW){char line[360];
@@ -48,7 +48,7 @@ static void draw(void)
         for(int y=out_y+35;p<state->runner.length&&y<h-30;y+=ST_ROW){int end=p;while(end<state->runner.length&&state->runner.text[end]!='\n')end++;
             int n=end-p;if(n>4096)n=4096;char line[4097];memcpy(line,state->runner.text+p,(size_t)n);line[n]=0;
             aui_text_ellipsis(edit_x+12,y,edit_w-24,line,AUI_TEXT,13);p=end+1;}}
-    if(work_x<w){gui_rect(work_x,41,w-work_x,h-69,AUI_SURFACE_2);aui_heading(work_x+16,58,"工作区",AUI_TEXT);
+    if(work_x<w){gui_rect(work_x,41,w-work_x,h-69,AUI_SURFACE_2);aui_title(work_x+16,58,"工作区",AUI_TEXT);
         aui_label(work_x+16,98,"编译器：/bin/as",AUI_TEXT);
         aui_text_sz(work_x+16,129,"本地语法检查与虚拟机运行",AUI_MUTED,12);
         aui_text_sz(work_x+16,154,"原生主机构建：不可用",AUI_MUTED,12);

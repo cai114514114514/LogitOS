@@ -4,23 +4,23 @@
 # renumbered (11 Monitor, 12 Clock, 13 Studio, 14 Preview) so the lines of different boots do not collide.
 [wm] win 11 frame 138 98 660 500 content 660 470 pt zoom 0 min 0 Activity Monitor
 [wm] win 11 app monitor
-[monitor] aim tab-processes 43 61
-[monitor] aim tab-memory 97 61
-[monitor] aim tab-system 151 61
-[monitor] aim sort-pid 107 101
-[monitor] aim sort-name 177 101
-[monitor] aim sort-files 247 101
+[monitor] aim tab-processes 280 58
+[monitor] aim tab-memory 330 58
+[monitor] aim tab-system 380 58
+[monitor] aim sort-pid 108 102
+[monitor] aim sort-name 176 102
+[monitor] aim sort-files 244 102
 [monitor] aim sort-desc 307 101
-[monitor] aim row-0 330 162
-[monitor] aim row-1 330 188
-[monitor] aim row-2 330 214
-[monitor] aim row-3 330 240
+[monitor] aim row-0 330 164
+[monitor] aim row-1 330 192
+[monitor] aim row-2 330 220
+[monitor] aim row-3 330 248
 [monitor] aim force-quit 578 434
-[monitor] aim row-4 330 266
-[monitor] aim dialog-1 462 251
-[monitor] aim dialog-cancel 462 251
-[monitor] aim dialog-0 366 251
-[monitor] aim dialog-confirm 366 251
+[monitor] aim row-4 330 276
+[monitor] aim alert-0 397 270
+[monitor] aim alert-confirm 397 270
+[monitor] aim alert-1 263 270
+[monitor] aim alert-cancel 263 270
 [wm] win 12 frame 138 98 620 430 content 620 400 pt zoom 0 min 0 Clock
 [wm] win 12 app clock
 [clock] aim clock-24h 220 365

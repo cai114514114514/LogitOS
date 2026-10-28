@@ -11,7 +11,8 @@ from this tree), for every aim a migrated driver resolves:
   2. it maps to a point inside the 1280x800 screen through the WM's window frame line (the driver's
      own click path, qmp_aim.Aims.screen)
        FAIL aim-offscreen <app> <name> <x> <y>
-  3. the app source (or aui, for the `dialog-*` names aui_dialog_buttons owns) publishes that name,
+  3. the app source (or aui, for the `dialog-*` / `alert-*` names aui_dialog_buttons / aui_alert
+     own) publishes that name,
      so the fixture cannot go stale
        FAIL aim-unpublished <app> <name>
   4. no driver spells a click with a numeric screen literal; what is left is design-pinned (addendum
@@ -117,6 +118,10 @@ def main():
             stem = re.sub(r"-\d+$", "", name)
             if name.startswith("dialog-"):
                 ok = '"dialog-confirm"' in aui and '"dialog"' in aui
+            elif name.startswith("alert-"):
+                # aui_alert owns these (design 4.10, addendum I): a destructive
+                # confirm such as Monitor's Force Quit is an alert, not a sheet.
+                ok = '"alert-confirm"' in aui and '"alert"' in aui
             elif name.startswith("row-"):
                 ok = 'aui_aim_prefix("row")' in src[app]
             else:

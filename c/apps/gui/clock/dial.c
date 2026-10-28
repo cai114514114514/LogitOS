@@ -100,7 +100,7 @@ static int cache_background(void)
     struct gfx_path path;
     gfx_path_init(&path, points, CLOCK_PATH_CAP, contours, 64);
     ol_list_reset(list);
-    ol_cmd_clear(list, AUI_SURFACE, 255);
+    ol_cmd_clear(list, AUI_SURFACE_RAISED, 255);   /* the card the dial sits on (view.c) */
     int radius = (width < height ? width : height) / 2;
     clock_face_path(&path, width / 2, height / 2, radius, 0);
     struct gfx_paint paint;
@@ -119,7 +119,7 @@ static int cache_background(void)
     }
     int status = publish(&background);
     if (!status) {
-        palette[0] = AUI_SURFACE;
+        palette[0] = AUI_SURFACE_RAISED;
         palette[1] = AUI_TEXT;
         palette[2] = AUI_ACCENT;
         invalid = 0;
@@ -149,7 +149,7 @@ int clock_dial_draw(struct clock_layout layout, const struct logit_time *time, i
         invalid = 1;
     }
     int redraw =
-        invalid || palette[0] != AUI_SURFACE || palette[1] != AUI_TEXT || palette[2] != AUI_ACCENT;
+        invalid || palette[0] != AUI_SURFACE_RAISED || palette[1] != AUI_TEXT || palette[2] != AUI_ACCENT;
     if (redraw) {
         int status = cache_background();
         if (status)

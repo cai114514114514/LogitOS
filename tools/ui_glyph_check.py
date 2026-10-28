@@ -38,7 +38,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # Calls whose string arguments are shown to the user.
 TEXT_CALLS = re.compile(
-    r"^(aui_text\w*|aui_label|aui_heading|aui_button\w*|aui_sidebar_row|"
+    r"^(aui_text\w*|aui_label|aui_heading|aui_title|aui_button\w*|aui_sidebar_row|"
     r"aui_tb_title|aui_alert|aui_empty_state|gui_text\w*|gui_create|"
     r"gui_menu_set|wm_text\w*)$")
 

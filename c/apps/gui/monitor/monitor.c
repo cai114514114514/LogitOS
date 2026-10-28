@@ -455,24 +455,20 @@ static void confirm_dialog(void)
 {
     const struct logit_procinfo *s = selected();
     if (!s) { confirm_open = 0; return; }
-    /* Escape maps to the LAST button and Enter to the first, so Cancel is last:
-     * of the two, Escape-cancels is the one that must not be got wrong. */
+    /* Force Quit is a destructive alert (design 7.5, 4.10): "要强制退出「name」吗？"
+     * / "未存储的更改将会丢失。", 取消 Secondary on the left and 强制退出 on
+     * destructive.fill on the right. aui keeps the order; Escape and Enter
+     * both choose 取消 (the default of a destructive confirm). Aims
+     * alert-confirm (强制退出) and alert-cancel come from aui_alert. */
     static const char *const btn[2] = { "强制退出", "取消" };
-    if (aui_dialog_begin("强制退出进程", 380, 150)) {
-        char line[128];
-        int n = scat(line, 0, s->name[0] ? s->name : "(未命名)");
-        n = scat(line, n, "  (pid ");
-        n += ustr(line + n, (unsigned long long)s->pid);
-        scat(line, n, ")");
-        aui_text_sz(20, 16, line, AUI_TEXT, AUI_FS_BODY);
-        aui_text_sz(20, 42, "进程会被直接结束，不会先请它存储。",
-                    AUI_MUTED, AUI_FS_LABEL);
-        aui_text_sz(20, 60, "其中未存储的工作会丢失。", AUI_MUTED, AUI_FS_LABEL);
-        int p = aui_dialog_buttons(btn, 2);
-        aui_dialog_end();
-        if (p == 0) { do_kill(s->pid); confirm_open = 0; }
-        else if (p == 1) confirm_open = 0;
-    }
+    char title[128];
+    int n = scat(title, 0, "要强制退出「");
+    n = scat(title, n, s->name[0] ? s->name : "(未命名)");
+    scat(title, n, "」吗？");
+    int p = aui_alert(GICON_WARNING, title, "未存储的更改将会丢失。", btn, 2,
+                      AUI_ALERT_DESTRUCTIVE | AUI_ALERT_WARNING);
+    if (p == 0) { do_kill(s->pid); confirm_open = 0; }
+    else if (p == 1) confirm_open = 0;
 }
 
 /* ---- frame -------------------------------------------------------------- */
@@ -493,13 +489,14 @@ static void frame(void)
         aui_fill(4, 4, 6, 6, probe[tab]);
     }
 
-    aui_heading(AUI_PAD, 10, "Activity Monitor", AUI_TEXT);
+    /* A toolbar title (design 3.6 title2 17 / 600); the subtitle is placed by
+     * the width aui_title drew at 600, not by a 400-weight measure. */
+    int title_w = aui_title(AUI_PAD, 10, "Activity Monitor", AUI_TEXT);
     {
         char sub[64];
         int n = ustr(sub, (unsigned long long)npr);
         scat(sub, n, npr == 1 ? " 个进程" : " 个进程");
-        aui_text_sz(AUI_PAD + aui_text_w("Activity Monitor", AUI_FS_TITLE) + 12, 16,
-                    sub, AUI_MUTED, AUI_FS_LABEL);
+        aui_text_sz(AUI_PAD + title_w + 12, 16, sub, AUI_MUTED, AUI_FS_LABEL);
     }
     aui_aim_names(tab_aims, NTAB);
     aui_tabs(AUI_PAD, 44, WINW - 2 * AUI_PAD, tabs, NTAB, &tab);
@@ -554,14 +551,9 @@ void app_main(void)
              * Answering the dialog here, before the event reaches aui at all,
              * keeps Enter/Escape working without forking the toolkit. */
             if (confirm_open && e.type == EV_KEY) {
-                if (e.a == '\n') {
-                    const struct logit_procinfo *s = selected();
-                    if (s) do_kill(s->pid);
-                    confirm_open = 0;
-                    frame(); drew = 1;
-                    continue;
-                }
-                if (e.a == 27) { confirm_open = 0; frame(); drew = 1; continue; }
+                /* A destructive confirm defaults to Cancel (design 4.10): Enter
+                 * and Escape both dismiss; only the 强制退出 button kills. */
+                if (e.a == '\n' || e.a == 27) { confirm_open = 0; frame(); drew = 1; continue; }
             }
 
             /* Delete / Backspace is the Windows habit; it opens the same

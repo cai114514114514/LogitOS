@@ -32,7 +32,7 @@ static void swatch(int x, int y, unsigned c, const char *s)
 static void frame(void)
 {
     aui_begin(AUI_BG);
-    aui_heading(AUI_PAD, 12, "Widget Toolkit", AUI_TEXT);     /* title-size type */
+    aui_title(AUI_PAD, 12, "Widget Toolkit", AUI_TEXT);       /* title-size type */
     aui_label(AUI_PAD, 40, "immediate-mode UI over gui_*", AUI_MUTED);
 
     char nb[12]; itoa_(count, nb);

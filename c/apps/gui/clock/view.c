@@ -20,7 +20,7 @@ enum clock_action clock_view(struct clock_ui *ui, const struct clock_state *app,
         aui_text_sz(24, 20, "本地时间", AUI_TEXT, 23);
         if (w >= 520)
             aui_text_sz(w - 170, 27, "系统时钟", AUI_MUTED, 13);
-        aui_round(16, 58, w - 32, h - 122, 18, AUI_SURFACE);
+        aui_round(16, 58, w - 32, h - 122, 18, AUI_SURFACE_RAISED);   /* bg.card: above the window in dark */
     }
     int active;
     int second = clock_second(&ui->motion, time->second, now, reduced || !app->seconds, &active);

@@ -790,7 +790,7 @@ static void draw_toolbar(void)
         if (apps_view)          scpy(title, "应用程序", sizeof title);
         else if (streq(cwd, "/")) scpy(title, "LogitOS HD", sizeof title);
         else                    leaf_of(cwd, title, sizeof title);
-        aui_heading(CX + 48, 12, title, AUI_TEXT);
+        aui_title(CX + 48, 12, title, AUI_TEXT);          /* toolbar title, title2 */
     }
     glass_btn(TB_VIEW_X, TB_BTN_Y, TB_VIEW_W, TB_BTN_H, view_mode ? "图标" : "列表");
     glass_btn(TB_NEW_X, TB_BTN_Y, TB_NEW_W, TB_BTN_H, "新建项目");

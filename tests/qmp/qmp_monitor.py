@@ -63,8 +63,8 @@ WINW, WINH = 660, 470
 # Every control this driver clicks is read from the guest: the Monitor prints
 # `[monitor] aim <name> x y` (window-local content points, design P13) from the
 # code that draws it -- tab-processes/-memory/-system and row-<i> from aui_tabs
-# and aui_table, sort-desc and force-quit from monitor.c, dialog-confirm from
-# aui_dialog_buttons. The TAB_X / TABLE_Y / KILL_X / DESC_X constants that stood
+# and aui_table, sort-desc and force-quit from monitor.c, alert-confirm from
+# aui_alert. The TAB_X / TABLE_Y / KILL_X / DESC_X constants that stood
 # here were a second copy of the layout; the layout can now move without them.
 # Only ROW_H (aui_table's row pitch, to turn a row's centre into its band) stays.
 ROW_H = 26                        # list_body row pitch (aui.c)
@@ -466,9 +466,11 @@ def main(argv):
            "the confirmation dims the window behind it",
            "luma %d -> %d" % (luma(before_px), luma(after_px)))
 
-        # Click the dialog's confirm button: aui_dialog_buttons publishes
-        # `dialog-confirm` (item 0, "强制退出"; Enter's target) once the sheet has settled.
-        click_aim(f, "dialog-confirm")
+        # Click the alert's confirm button: Force Quit is a destructive alert
+        # (design 7.5 / 4.10), and aui_alert publishes `alert-confirm` (item 0,
+        # "强制退出" on destructive.fill; Enter and Escape choose 取消) once it
+        # has settled -- the sheet's `dialog-confirm` name moved with it (§I).
+        click_aim(f, "alert-confirm")
         time.sleep(2.5 * slow)
         ui.screendump(shot, settle=1.2 * slow)
         ppm_to_png(shot, base_out + "-after-kill.png")
