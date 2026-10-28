@@ -62,9 +62,14 @@ static void status(const char *text)
 {
     gui_rect(0, 0, WINW, 60, ui_bg);
     gui_rect(0, 59, WINW, 1, ui_line);
-    /* A chrome-only anchor for the direct-open association gate. The stage
-     * keeps the decoded pixels untouched, including transparent corners. */
-    gui_rect(0, 0, 6, 6, 0xFD0181);
+    /* A chrome-only anchor for the direct-open association gate (design P14: it
+     * used to be painted on every disk, a pink square in every viewer's corner).
+     * Only on a disk that asks for it, like the picker's probe: qmp_probe.h. The
+     * stage keeps the decoded pixels untouched, including transparent corners. */
+    if (qmp_probes_on()) gui_rect(0, 0, 6, 6, 0xFD0181);
+    /* Aims (P13): this viewer's controls are hand-drawn, so this is their only emitter. */
+    ui_aim_rect("back", 16, 15, 76, 30);
+    if (view_image) { ui_aim_rect("fit", WINW - 154, 15, 62, 30); ui_aim_rect("actual-size", WINW - 84, 15, 68, 30); }
     button(16, 15, 76, g_from_picker ? "< 资料库" : "关闭", 0);
     clipped_label(110, 13, WINW - 290, 17, ui_text, view_name[0] ? view_name : "Preview");
     label(110, 36, 11, ui_muted, view_image ? "图像查看器" : "媒体查看器");
