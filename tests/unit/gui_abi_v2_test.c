@@ -10,9 +10,12 @@
  *   router        OL_UNSUPPORTED per stub number (the implemented ones their
  *                 status for a zeroed struct), OL_ARGUMENT for a wrong size,
  *                 INFO(0/1/2); no handler touches a pixel
+ *   icon2         SYS_GUI_ICON2 (ui-wm-abi): bounds, weight, the 24.8 floor
+ *                 at 100 % and 150 %, the colour mask, routed to icon_draw_w
  *   fb-clip       fb_clip_push is OL_OK, depth 1, clip intersected; pop restores it
  *   wm-switch     every new number is in wm.c's wm_domain_call, and the
- *                 pixel-writing ones (only those) in is_draw_call
+ *                 pixel-writing ones (only those) in is_draw_call; the same
+ *                 for SYS_UI_DARK_AT (state only)
  *   as-layout     every layout gen_abi wrote into fsroot/as/lib/abi.as fits
  *                 AetherScript's rules (<= 32 fields, each inside the record),
  *                 so lib/abi.as importers still compile (AS3811); neither
@@ -20,7 +23,8 @@
  *
  * Linked host-side with fb.c, glass.c, $(GFX_SRC), wm_draw2*.c and
  * wm_backdrop.c, like test-fb-clip. text.c is NOT linked, so this file
- * defines the carets INFO constant text.c owns in the kernel.
+ * defines the carets INFO constant text.c owns in the kernel; icons.c is NOT
+ * linked either, so icon_draw_w below records what ICON2 asked it to draw.
  *
  * THE CONTROL (-DGUI_ABI_NEGCTL) makes wm2_pt truncate toward zero -- the
  * shear fb.c's fb_pt comment documents -- and must fail exactly
@@ -36,6 +40,7 @@
 #include "fb.h"
 #include "wm_draw2.h"
 #include "wm2_scale.h"
+#include "icons.h"
 
 const unsigned wm2_carets_info = 0;   /* text.c's, in the kernel */
 int gav2_wire_run(void);              /* gui_abi_v2_wire.c */
@@ -69,6 +74,13 @@ int  text_draw_run_a(struct ol_display *d, int x, int y, const char *s, int len,
  * wm_draw2_text.c; text.c is not linked and text_draw_run_a is a stub, so
  * the face it picks is never observed here. */
 unsigned text_face_for_weight(unsigned face, int weight) { (void)weight; return face; }
+/* icons.c's entry point, recording: wm_draw2_icon.c is what is under test. */
+static struct { int calls, id, x, y, px, weight; uint32_t color; } icon_rec;
+void icon_draw_w(int id, int x, int y, int px, uint32_t color, int weight)
+{
+    icon_rec.calls++; icon_rec.id = id; icon_rec.x = x; icon_rec.y = y;
+    icon_rec.px = px; icon_rec.color = color; icon_rec.weight = weight;
+}
 
 /* ---- layout (LP64): the numbers tools/gen_abi.py also asserts ---------- */
 #define OFF(t, f, n) _Static_assert(offsetof(struct t, f) == (n), #t "." #f)
@@ -118,6 +130,14 @@ OFF(logit_backdrop2, h, 20); OFF(logit_backdrop2, radius, 24); OFF(logit_backdro
 OFF(logit_backdrop2, opacity, 44); OFF(logit_backdrop2, tone, 48); OFF(logit_backdrop2, blur_level, 52);
 OFF(logit_backdrop2, rim, 56); OFF(logit_backdrop2, fill_rgb, 60); OFF(logit_backdrop2, flags, 64);
 OFF(logit_backdrop2, reserved, 68);
+SZ(logit_icon2, 32);
+OFF(logit_icon2, size, 0); OFF(logit_icon2, id, 4); OFF(logit_icon2, x, 8); OFF(logit_icon2, y, 12);
+OFF(logit_icon2, px, 16); OFF(logit_icon2, color, 20); OFF(logit_icon2, weight, 24); OFF(logit_icon2, flags, 28);
+/* the bits other items' #ifndef fallbacks copy (ui-glass-adapt, ui-aui-nav) */
+_Static_assert(LOGIT_GUI2_F_ICON2 == (1u << 10) && LOGIT_GUI2_F_BACKDROP_CACHE == (1u << 11), "GUI2 bits");
+_Static_assert(LOGIT_GLASS2_F_ADAPT_SMOOTH == (1u << 1) && LOGIT_GLASS2_F_ADAPT_FG == (1u << 2), "glass flags");
+_Static_assert(((LOGIT_GLASS2_F_ADAPT_SMOOTH | LOGIT_GLASS2_F_ADAPT_FG) &
+                (LOGIT_RECT_SNAP | LOGIT_BACKDROP_ALPHA_LAYER)) == 0, "glass flags collide");
 SZ(logit_text_carets_query, 64);
 OFF(logit_text_carets_query, size, 0); OFF(logit_text_carets_query, version, 4);
 OFF(logit_text_carets_query, s, 8); OFF(logit_text_carets_query, len, 16);
@@ -325,9 +345,12 @@ static void test_router(void)
     }
     uint32_t before = crc_surface();
 
+    /* ICON2 joins the set (ui-wm-abi); BACKDROP_CACHE stays clear until the
+     * C2 cache exists (W4) */
     bad += expect(wm2_dispatch(SYS_GUI2_INFO, &e, 0, 0, 0), ((long)LOGIT_GUI2_VERSION << 16) | LOGIT_GUI2_F_PATH | LOGIT_GUI2_F_PATH_EXT | LOGIT_GUI2_F_TEXT_RUN2 |
                   LOGIT_GUI2_F_CLIP | LOGIT_GUI2_F_GROUP | LOGIT_GUI2_F_BLIT2 |
-                  LOGIT_GUI2_F_SHADOW2 | LOGIT_GUI2_F_GLASS2 | LOGIT_GUI2_F_BACKDROP, "INFO(0)");
+                  LOGIT_GUI2_F_SHADOW2 | LOGIT_GUI2_F_GLASS2 | LOGIT_GUI2_F_BACKDROP |
+                  LOGIT_GUI2_F_ICON2, "INFO(0)");
     bad += expect(wm2_dispatch(SYS_GUI2_INFO, &e, 1, 0, 0), 0, "INFO(1)");
     bad += expect(wm2_dispatch(SYS_GUI2_INFO, &e, 2, 0, 0), OL_ARGUMENT, "INFO(2)");
     bad += expect(wm2_dispatch(SYS_GUI2_INFO, &e, -1, 0, 0), OL_ARGUMENT, "INFO(-1)");
@@ -335,7 +358,7 @@ static void test_router(void)
     union { struct logit_path2 p; struct logit_paint2 q; struct logit_stroke2 s;
             struct logit_clip2 c; struct logit_group2 g; struct logit_blit2 b;
             struct logit_run2 r; struct logit_shadow2 sh; struct logit_glass2 gl;
-            struct logit_backdrop2 bd; char pad[256]; } u;
+            struct logit_backdrop2 bd; struct logit_icon2 ic; char pad[256]; } u;
     /* implemented (wm-draw2-state): a zeroed clip is an empty clip (pushed,
      * OL_OK), a zeroed group an empty opacity-0 layer (OL_OK, nothing to
      * snapshot), a zeroed blit has sw = 0 (OL_ARGUMENT) */
@@ -350,6 +373,9 @@ static void test_router(void)
     /* implemented (wm-backdrop-regions): a zeroed backdrop is an empty
      * region, OL_OK, nothing recorded and no pixel written */
     bad += struct_call_w(&e, SYS_GUI_BACKDROP, "BACKDROP", &u, sizeof(struct logit_backdrop2), OL_OK);
+    /* implemented (ui-wm-abi): a zeroed icon has px 0 -> ARGUMENT */
+    bad += struct_call_w(&e, SYS_GUI_ICON2, "ICON2", &u, sizeof(struct logit_icon2), OL_ARGUMENT);
+    if (icon_rec.calls) { printf("     router: a refused ICON2 drew\n"); bad++; }
 
     /* PATH: three structs, each size-checked; c = 0 means fill. */
     struct logit_path2 p; struct logit_paint2 q; struct logit_stroke2 s;
@@ -405,6 +431,69 @@ static void test_router(void)
     }
     fb_target(NULL);
     check_fails("router", bad, "every v2 number: UNSUPPORTED / ARGUMENT / INFO, no pixel written");
+}
+
+/* SYS_GUI_ICON2 through the router: what reaches icon_draw_w, and what never
+ * does. The env's scale is set directly (wm2_env.scale_pct is what the handler
+ * converts with). */
+static long icon2_call(struct wm2_env *e, int id, int x24, int y24, int px24,
+                       unsigned color, int weight, unsigned flags)
+{
+    struct logit_icon2 ic = { sizeof ic, id, x24, y24, px24, color, weight, flags };
+    return wm2_dispatch(SYS_GUI_ICON2, e, (long)&ic, 0, 0);
+}
+static void test_icon2(void)
+{
+    int bad = 0;
+    struct wm2_env e;
+    surf.px = surf_px; surf.w = SW; surf.h = SH; surf.clip_on = 0;
+    fb_target(&surf);
+    env_init(&e, 2);
+    e.scale_pct = 100;
+    memset(&icon_rec, 0, sizeof icon_rec);
+    bad += expect(icon2_call(&e, ICON_SUN, 10 << 8, 20 << 8, 16 << 8, 0xFF123456u, 3, 0), OL_OK, "ICON2 sun");
+    if (icon_rec.calls != 1 || icon_rec.id != ICON_SUN || icon_rec.x != 10 || icon_rec.y != 20 ||
+        icon_rec.px != 16 || icon_rec.weight != 3 || icon_rec.color != 0x123456u) {
+        printf("     icon2: drew id %d at (%d,%d) px %d weight %d colour %06x, want %d (10,20) 16 3 123456\n",
+               icon_rec.id, icon_rec.x, icon_rec.y, icon_rec.px, icon_rec.weight,
+               (unsigned)icon_rec.color, ICON_SUN);
+        bad++;
+    }
+    /* weight 0 is regular; the Logit mark is a valid id */
+    bad += expect(icon2_call(&e, ICON_LOGIT, 0, 0, 14 << 8, 0, 0, 0), OL_OK, "ICON2 logit weight 0");
+    if (icon_rec.weight != 2 || icon_rec.px != 14) { printf("     icon2: weight 0 -> %d, px %d\n", icon_rec.weight, icon_rec.px); bad++; }
+    /* 150 %: 10.5 pt -> 15.75 -> 15 (floor), 13 pt -> 19.5 -> 19, -0.5 pt -> -1 */
+    e.scale_pct = 150;
+    bad += expect(icon2_call(&e, ICON_CHECK, (10 << 8) + 128, -128, 13 << 8, 0xFFFFFF, 1, 0), OL_OK, "ICON2 150%");
+    if (icon_rec.x != 15 || icon_rec.y != -1 || icon_rec.px != 19 || icon_rec.weight != 1) {
+        printf("     icon2: 150%% gave (%d,%d) px %d weight %d, want (15,-1) 19 1\n",
+               icon_rec.x, icon_rec.y, icon_rec.px, icon_rec.weight);
+        bad++;
+    }
+    /* 125 %: 16 pt -> exactly 20 px (the size-keyed cache sees the device size) */
+    e.scale_pct = 125;
+    bad += expect(icon2_call(&e, ICON_WIFI, 0, 0, 16 << 8, 0, 2, 0), OL_OK, "ICON2 125%");
+    if (icon_rec.px != 20) { printf("     icon2: 125%% px %d, want 20\n", icon_rec.px); bad++; }
+    /* a tiny size is one device pixel, never zero */
+    bad += expect(icon2_call(&e, ICON_WIFI, 0, 0, 1, 0, 2, 0), OL_OK, "ICON2 1/256 pt");
+    if (icon_rec.px != 1) { printf("     icon2: px %d for 1/256 pt, want 1\n", icon_rec.px); bad++; }
+    e.scale_pct = 100;
+    int before = icon_rec.calls;
+    bad += expect(icon2_call(&e, -1, 0, 0, 16 << 8, 0, 2, 0), OL_ARGUMENT, "ICON2 id -1");
+    bad += expect(icon2_call(&e, ICON_COUNT, 0, 0, 16 << 8, 0, 2, 0), OL_ARGUMENT, "ICON2 id ICON_COUNT");
+    bad += expect(icon2_call(&e, 65535, 0, 0, 16 << 8, 0, 2, 0), OL_ARGUMENT, "ICON2 LOGIT_ICON_APP");
+    bad += expect(icon2_call(&e, ICON_SUN, 0, 0, 16 << 8, 0, 4, 0), OL_ARGUMENT, "ICON2 weight 4");
+    bad += expect(icon2_call(&e, ICON_SUN, 0, 0, 16 << 8, 0, -1, 0), OL_ARGUMENT, "ICON2 weight -1");
+    bad += expect(icon2_call(&e, ICON_SUN, 0, 0, 16 << 8, 0, 2, LOGIT_RECT_SNAP), OL_ARGUMENT, "ICON2 flags");
+    bad += expect(icon2_call(&e, ICON_SUN, 0, 0, 0, 0, 2, 0), OL_ARGUMENT, "ICON2 px 0");
+    bad += expect(icon2_call(&e, ICON_SUN, 0, 0, -(16 << 8), 0, 2, 0), OL_ARGUMENT, "ICON2 px < 0");
+    bad += expect(icon2_call(&e, ICON_SUN, 0, 0, 513 << 8, 0, 2, 0), OL_ARGUMENT, "ICON2 px 513");
+    bad += expect(icon2_call(&e, ICON_SUN, 0, 0, 512 << 8, 0, 2, 0), OL_OK, "ICON2 px 512");
+    e.scale_pct = 200;
+    bad += expect(icon2_call(&e, ICON_SUN, 0, 0, 257 << 8, 0, 2, 0), OL_ARGUMENT, "ICON2 257 pt at 200%");
+    if (icon_rec.calls != before + 1) { printf("     icon2: %d refused calls drew\n", icon_rec.calls - before - 1); bad++; }
+    fb_target(NULL);
+    check_fails("icon2", bad, "ICON2 routed to icon_draw_w: 24.8 floor at 100/125/150 %, weight 0..3, bounds, RGB mask");
 }
 
 static void test_fb_clip(void)
@@ -483,9 +572,10 @@ static int has_case(const char *b, const char *e, const char *name)
 static void test_wm_switches(const char *wm_path)
 {
     static const char *pixel[] = { "SYS_GUI_PATH", "SYS_GUI_GROUP_END", "SYS_GUI_BLIT2",
-        "SYS_GUI_TEXT_RUN2", "SYS_GUI_SHADOW2", "SYS_GUI_GLASS2", "SYS_GUI_BACKDROP" };
+        "SYS_GUI_TEXT_RUN2", "SYS_GUI_SHADOW2", "SYS_GUI_GLASS2", "SYS_GUI_BACKDROP",
+        "SYS_GUI_ICON2" };
     static const char *state[] = { "SYS_GUI2_INFO", "SYS_GUI_CLIP_PUSH", "SYS_GUI_CLIP_POP",
-        "SYS_GUI_GROUP_BEGIN", "SYS_GUI_BACKDROP_CLEAR" };
+        "SYS_GUI_GROUP_BEGIN", "SYS_GUI_BACKDROP_CLEAR", "SYS_UI_DARK_AT" };
     int bad = 0;
     char *src = slurp(wm_path);
     if (!src) { printf("FAIL wm-switch: cannot read %s\n", wm_path); fails++; return; }
@@ -514,7 +604,7 @@ static void test_wm_switches(const char *wm_path)
         bad++;
     }
     free(src);
-    check_fails("wm-switch", bad, "12 numbers in wm_domain_call + wm_gui_dispatch, 7 in is_draw_call");
+    check_fails("wm-switch", bad, "14 numbers in wm_domain_call + wm_gui_dispatch, 8 in is_draw_call");
 }
 
 /* ---- static check over the generated AetherScript layouts -------------- */
@@ -562,12 +652,13 @@ int main(int argc, char **argv)
 {
     const char *wm_path = argc > 1 ? argv[1] : "c/kernel/gui/wm.c";
     init_fb();
-    printf("ok   layout: 11 v2 structs (static asserts)\n");
+    printf("ok   layout: 12 v2 structs (static asserts)\n");
     if (gav2_wire_run()) fails++;
     test_scale_parity();
     test_pt24();
     test_rect24();
     test_router();
+    test_icon2();
     test_fb_clip();
     test_wm_switches(wm_path);
     test_as_layouts(argc > 2 ? argv[2] : "fsroot/as/lib/abi.as");
