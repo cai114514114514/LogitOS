@@ -77,3 +77,15 @@ static void draw_project(void)
     if(aui_button(x,y+98,w/2-4,26,t->phase==AG_PAUSED?"继续":"暂停"))project_control(t->phase==AG_PAUSED?AG_QUEUED:AG_PAUSED);
     if(aui_button(x+w/2+4,y+98,w/2-4,26,"取消工作"))project_control(AG_CANCELLED);
 }
+/* Aims for the Project pane (see publish_aims in files.c). Same coordinates
+ * draw_project() uses; each is published only when its control is drawn. */
+static void project_publish_aims(void)
+{
+    int x=CONTENT_RIGHT+20,w=PROJECT_W-40;
+    ui_aim_rect("work-field",x,114,w,AUI_H_CTL);
+    ui_aim_rect("work-run",x,150,w,28);
+    if(project_rc||!project_view.count)return;
+    unsigned first=(unsigned)project_selected/4*4,last=first+4;if(last>project_view.count)last=project_view.count;
+    int y=238+(int)(last-first)*30;
+    if(project_view.tasks[project_selected].artifact[0])ui_aim_rect("open-in-textedit",x,y+58,w,28);
+}
