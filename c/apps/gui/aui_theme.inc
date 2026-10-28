@@ -1,15 +1,15 @@
-/* aui_theme.inc -- theme tokens: the light/dark tables, aui_ensure, set_dark,
+/* aui_theme.inc -- theme tokens: every aui_t role from the 「澄」 tokens
+ * (logit_tokens.h) for the mode and the ui.accent base, aui_ensure, set_dark,
  * theme_override, is_dark, set_accent and the hsl/mix/shade helpers.
  * Unity-included by aui.c (one translation unit): every static it names is
- * aui.c's, and it may use anything aui.c defines before the include. Code
- * moved verbatim from aui.c (ui-aui-core); new code is marked where added. */
+ * aui.c's, and it may use anything aui.c defines before the include. */
 
 /* ---------------------------------------------------------------- 2. theme */
 
 static int theme_dark, theme_inited;
 static int theme_override = -1;
 struct aui_theme aui_t;
-/* The 「澄」 token set behind aui_tok() and the appended aui_t roles. */
+/* The 「澄」 token set behind aui_tok() and every aui_t role. */
 static struct logit_tokens tok_cur;
 
 /* The channel lerp lives in the engine (gfx_mix): a gradient strip built by
@@ -25,71 +25,110 @@ unsigned aui_shade(unsigned c, int d)
     return rgb(r, g, b);
 }
 
-static void load_light(void)
+/* ---- the accent base (design 3.1.4, P3) ----
+ * `ui.accent` is the user's base colour; every accent role is DERIVED from it
+ * for the current mode by logit_tokens_derive() (the WM calls the same
+ * function), so a base survives a theme flip and a custom colour is clamped
+ * to white-on-fill >= 4.5:1. The base is read with the call Settings itself
+ * uses (settings.c: setting_int("ui.accent", ...)).
+ *
+ * 0x5E96FF is the kernel schema's pre-「澄」 default (c/kernel/core/settings.c,
+ * "ui.accent" row): a store nobody has written answers it, and it is not one
+ * of the swatches anyone can pick, so it means "never chosen" and reads as the
+ * new default, 靛 indigo. THE CONTROL: -DUI_THEME_NEGCTL keeps the old blue
+ * default (and the old store value) and tests/ui-aui-theme.mk must report
+ * 'FAIL default-accent'. */
+#ifdef UI_THEME_NEGCTL
+#define AUI_ACCENT_DEFAULT_ 0x4082F6u          /* (64,130,246): the pre-「澄」 light accent */
+#else
+#define AUI_ACCENT_DEFAULT_ LOGIT_ACCENT_DEFAULT
+#endif
+#define AUI_ACCENT_LEGACY_STORE 0x5E96FFu
+#define AUI_ACCENT_POLL_MS 500                 /* aui_begin re-reads ui.accent at most this often */
+
+static unsigned accent_base = AUI_ACCENT_DEFAULT_;
+static unsigned accent_stored = 0xFFFFFFFFu;   /* the store's value at the last read; ~0 = never */
+static unsigned accent_poll_ms;
+static int accent_polled;
+
+static unsigned accent_norm(unsigned c)
 {
-    aui_t.bg          = rgb(244, 245, 248);
-    aui_t.surface     = rgb(255, 255, 255);
-    aui_t.face        = rgb(232, 234, 240);
-    aui_t.text        = rgb(40, 42, 50);
-    aui_t.muted       = rgb(140, 144, 154);
-    aui_t.border      = rgb(206, 208, 216);
-    aui_t.hi          = rgb(255, 255, 255);
-    aui_t.accent      = rgb(64, 130, 246);
-    aui_t.accent_text = rgb(255, 255, 255);
-    aui_t.success     = rgb(52, 199, 89);
-    aui_t.warning     = rgb(255, 179, 64);
-    aui_t.error       = rgb(255, 69, 58);
-    aui_t.focus       = rgb(64, 130, 246);
-    aui_t.surface_2   = rgb(255, 255, 255);
-    aui_t.face_hover  = rgb(222, 225, 233);
-    aui_t.face_active = rgb(206, 210, 220);
-    aui_t.track       = rgb(219, 222, 230);
-    aui_t.thumb       = rgb(255, 255, 255);
-    aui_t.disabled    = rgb(236, 237, 241);
-    aui_t.disabled_tx = rgb(178, 181, 190);
-    aui_t.scrim       = rgb(18, 20, 28);
-    aui_t.shadow      = rgb(28, 32, 48);
-    aui_t.selection   = rgb(180, 208, 255);
+    c &= 0xFFFFFFu;
+#ifndef UI_THEME_NEGCTL
+    if (c == AUI_ACCENT_LEGACY_STORE) c = LOGIT_ACCENT_DEFAULT;
+#endif
+    return c;
 }
 
-static void load_dark(void)
+/* Read ui.accent (one syscall) at `now`. Edge-triggered: the base moves only
+ * when the STORED value changed since the last read, so an app that previews
+ * its own accent with aui_set_accent (Settings, every frame) is not reset to
+ * the store every 500 ms. Returns 1 when the base moved. */
+static int accent_poll(unsigned now)
 {
-    aui_t.bg          = rgb(28, 28, 32);
-    aui_t.surface     = rgb(44, 44, 52);
-    aui_t.face        = rgb(58, 58, 68);
-    aui_t.text        = rgb(236, 237, 242);
-    aui_t.muted       = rgb(146, 148, 160);
-    aui_t.border      = rgb(72, 74, 86);
-    aui_t.hi          = rgb(84, 86, 98);
-    aui_t.accent      = rgb(94, 150, 255);
-    aui_t.accent_text = rgb(255, 255, 255);
-    aui_t.success     = rgb(48, 209, 88);
-    aui_t.warning     = rgb(255, 190, 84);
-    aui_t.error       = rgb(255, 92, 82);
-    aui_t.focus       = rgb(94, 150, 255);
-    aui_t.surface_2   = rgb(56, 57, 66);
-    aui_t.face_hover  = rgb(72, 73, 85);
-    aui_t.face_active = rgb(88, 90, 104);
-    aui_t.track       = rgb(70, 72, 84);
-    aui_t.thumb       = rgb(226, 228, 236);
-    aui_t.disabled    = rgb(48, 49, 57);
-    aui_t.disabled_tx = rgb(104, 106, 118);
-    aui_t.scrim       = rgb(0, 0, 0);
-    aui_t.shadow      = rgb(0, 0, 0);
-    aui_t.selection   = rgb(46, 86, 152);
+    unsigned v = accent_norm((unsigned)setting_int("ui.accent", (int)AUI_ACCENT_DEFAULT_));
+    accent_polled = 1; accent_poll_ms = now;
+    if (v == accent_stored) return 0;
+    accent_stored = v;
+    if (v == accent_base) return 0;
+    accent_base = v;
+    return 1;
 }
 
-/* The new roles (added by ui-aui-core): the mode's table, then the accent
- * roles derived from the CURRENT aui_t.accent, then the appended aui_t fields.
+/* A translucent token flattened over the surface it is specified against: the
+ * legacy roles are opaque 0xRRGGBB (a window-surface write must keep the high
+ * byte clear: it is the backdrop marker). */
+static unsigned tok_over(unsigned argb, unsigned under)
+{ return aui_mix(under & 0xFFFFFFu, argb & 0xFFFFFFu, (int)(argb >> 24)); }
+
+/* Dark-mode legacy roles with no token of their own (design 3.1, ui-aui-theme). */
+#define AUI_HI_D_ARGB  0x14FFFFFFu             /* hi:    #FFFFFF @ 20 */
+#define AUI_THUMB_L    0xFFFFFFu               /* thumb: #FFFFFF light */
+#define AUI_THUMB_D    0x5A5A64u               /*        #5A5A64 dark  */
+
+/* The whole palette for (theme_dark, accent_base): the mode's token table, the
+ * accent roles derived from the base, then every aui_t field from them. The
+ * 23 legacy roles map onto the tokens (design 3.1, the W1 exit "every aui app
+ * adopts the palette"):
+ *   bg window | surface content | surface_2 raised | face/hover/active
+ *   fill.control (+ fill.hover / fill.pressed over it) | text label.primary |
+ *   muted label.secondary | border sep.strong over bg.content | hi white /
+ *   white @ 20 | accent, focus accent | accent_text label.onAccent |
+ *   success, warning, error 3.1.5 | track fill.control | thumb | disabled
+ *   fill.control | disabled_tx label.quaternary | scrim black | shadow the
+ *   shadow ink | selection accent.selText over bg.content.
  * The table is copied a word at a time through a volatile pointer: a struct
  * assignment may lower to a memcpy call, and aui.o links no libc. */
-static void tok_refresh(void)
+static void theme_load(void)
 {
     const uint32_t *src = (const uint32_t *)logit_tok(theme_dark);
     volatile uint32_t *dst = (volatile uint32_t *)&tok_cur;
     for (unsigned i = 0; i < sizeof tok_cur / sizeof(uint32_t); i++) dst[i] = src[i];
-    logit_tokens_derive(aui_t.accent, theme_dark, &tok_cur);
+    logit_tokens_derive(accent_base, theme_dark, &tok_cur);
     const struct logit_tokens *k = &tok_cur;
+    aui_t.bg          = k->bg_window;
+    aui_t.surface     = k->bg_content;
+    aui_t.face        = k->fill_control;
+    aui_t.text        = k->label_primary;
+    aui_t.muted       = k->label_secondary;
+    aui_t.border      = tok_over(k->sep_strong, k->bg_content);
+    aui_t.hi          = theme_dark ? tok_over(AUI_HI_D_ARGB, k->bg_content) : 0xFFFFFFu;
+    aui_t.accent      = k->accent;
+    aui_t.accent_text = k->label_on_accent;
+    aui_t.success     = k->success;
+    aui_t.warning     = k->warning;
+    aui_t.error       = k->error;               /* light (255,69,58): the AUI_ERROR pin */
+    aui_t.focus       = k->accent;
+    aui_t.surface_2   = k->bg_raised;
+    aui_t.face_hover  = tok_over(k->fill_hover, k->fill_control);
+    aui_t.face_active = tok_over(k->fill_pressed, k->fill_control);
+    aui_t.track       = k->fill_control;
+    aui_t.thumb       = theme_dark ? AUI_THUMB_D : AUI_THUMB_L;
+    aui_t.disabled    = k->fill_control;
+    aui_t.disabled_tx = k->label_quaternary;
+    aui_t.scrim       = 0x000000u;
+    aui_t.shadow      = k->shadow_ink;
+    aui_t.selection   = tok_over(k->accent_sel_text, k->bg_content);
     aui_t.bg_window = k->bg_window;       aui_t.bg_content = k->bg_content;
     aui_t.bg_card = k->bg_card;           aui_t.bg_sidebar = k->bg_sidebar;
     aui_t.bg_inspector = k->bg_inspector; aui_t.bg_toolbar = k->bg_toolbar;
@@ -112,23 +151,23 @@ static void tok_refresh(void)
     aui_t.shadow_ink = k->shadow_ink;
 }
 
-/* First use: adopt the current SYSTEM theme (SYS_UI_DARK) so even the first token
- * read / window clear matches a desktop that is already dark. */
+/* First use: adopt the current SYSTEM theme (SYS_UI_DARK) and the stored
+ * ui.accent, so even the first token read / window clear matches the desktop. */
 void aui_ensure(void)
 {
     if (!theme_inited) {
         theme_dark = sys_ui_dark(-1) > 0;
-        theme_dark ? load_dark() : load_light();
         theme_inited = 1;
-        tok_refresh();
+        accent_poll((unsigned)monotonic_ms());
+        theme_load();
     }
 }
 
 void aui_set_dark(int on)
 {
-    theme_dark = on; theme_inited = 1;
-    if (on) load_dark(); else load_light();
-    tok_refresh();
+    if (!theme_inited) { theme_inited = 1; accent_poll((unsigned)monotonic_ms()); }
+    theme_dark = !!on;
+    theme_load();
 }
 
 const struct logit_tokens *aui_tok(void) { aui_ensure(); return &tok_cur; }
@@ -164,8 +203,14 @@ unsigned aui_hsl(int h, int s, int l)
                iclamp((b1 + m) * 255 / 100, 0, 255));
 }
 
+/* An app's own accent (Settings previews the one being edited). It becomes
+ * the base and goes through logit_tokens_derive like ui.accent: the accent
+ * and focus fields are the DERIVED fill for the mode, never the raw colour. */
 void aui_set_accent(unsigned color)
 {
-    aui_ensure(); aui_t.accent = color; aui_t.focus = color;
-    tok_refresh();                      /* the derived accent roles follow (added) */
+    aui_ensure();
+    color = accent_norm(color);
+    if (color == accent_base) return;   /* Settings calls this every frame */
+    accent_base = color;
+    theme_load();
 }

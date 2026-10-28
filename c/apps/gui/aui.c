@@ -626,7 +626,7 @@ static void clip_pop(void)
  * did before groups existed. -DAUI_FADE_LEGACY_MIX forces that path: the
  * negative control of tests/aui-clip-group-adopt.mk. */
 #define FADE_MAX 8
-#define AUI_DISABLED_ALPHA 110          /* a disabled control's group opacity */
+#define AUI_DISABLED_ALPHA 102          /* a disabled control's group opacity: 40 % (design 4) */
 static struct { unsigned char kind; int prev_leg; } fadest[FADE_MAX];   /* kind 0 noop 1 group 2 legacy */
 static int faden, fade_over;
 static int fade_leg = 255;
@@ -904,7 +904,9 @@ void aui_feed(const struct logit_event *e)
     }
     if (e->type == EV_KEY) focus_vis = 1;
     if (e->type == EV_THEME) {
-        if (theme_override < 0) aui_set_dark(sys_ui_dark(-1) > 0);
+        aui_ensure();
+        accent_poll((unsigned)monotonic_ms());             /* the accent may have moved too */
+        aui_set_dark(theme_override < 0 ? sys_ui_dark(-1) > 0 : theme_override);
         in.repaint = 1;
     }
 }
@@ -1054,31 +1056,52 @@ static int glass_ctl_ok(void)
 #undef AUI_PAINT_API2
 
 
-/* Two concentric RINGS, never a filled halo: a filled rounded rect behind the
- * control is drawn over it by the control itself, and drawn after it washes the
- * control blue. Rings also survive on any background, which is the point -- the
- * ring has to read over a card, over glass and over an image.
+/* THE focus ring (design 4): ONE ring of accent.focusRing, 3 pt wide, its
+ * inner edge 1 pt outside the control and its outer edge 4 pt out, concentric
+ * with the control (outer radius r + 4, so the stroke's centre line runs at
+ * r + 2.5, the design's "radius + 2" on whole pixels). Shown only after
+ * keyboard navigation (aui_focus_visible) and faded in over t.hover
+ * (T_HOVER_IN, 90 ms; out over T_HOVER_OUT), linear as the design's colour
+ * tweens are. It replaces the two concentric rings. A ring, never a filled
+ * halo: it has to read over a card, over glass and over an image, and a halo
+ * drawn behind the control would be painted over by it.
  *
  * FADED, NOT POPPED, and that is why `focused` is a PARAMETER rather than a
  * caller-side `if`: the ring must be queried every frame the owning widget
  * draws, focused or not, or the slot goes stale the instant focus leaves and
- * the fade-out has nothing to animate from. Geometry never changes -- only the
- * mix fraction toward AUI_FOCUS -- so every corner tile this draws stays a
- * gfx mask-cache hit through the whole fade, in either direction. */
+ * the fade-out has nothing to animate from. The geometry never changes during
+ * the fade, only the ring's alpha. Without the PATH capability the ring is an
+ * opaque stroke of the same colour flattened over the window background. */
+#define AUI_FOCUS_W      3              /* points */
+#define AUI_FOCUS_GAP    1              /* points between the control and the ring */
 static void focus_ring(int focused, int x, int y, int w, int h, int r)
 {
-    int t = aui_anim(AUI_AK_FOCUS, (focused && focus_vis) ? 255 : 0, AUI_T_FAST, AUI_EASE_OUT);
+    int on = focused && focus_vis;
+    int t = aui_anim(AUI_AK_FOCUS, on ? 255 : 0, on ? T_HOVER_IN : T_HOVER_OUT, AUI_EASE_LINEAR);
     if (t <= 0) return;
-    aui_stroke(x - 4, y - 4, w + 8, h + 8, r + 4, 2, aui_mix(AUI_BG, aui_mix(AUI_BG, AUI_FOCUS, 110), t));
-    aui_stroke(x - 2, y - 2, w + 4, h + 4, r + 2, 2, aui_mix(AUI_BG, AUI_FOCUS, t));
+    int o = AUI_FOCUS_GAP + AUI_FOCUS_W;
+    unsigned ring = aui_t.accent_focus_ring;
+    int a = (int)(ring >> 24) * t / 255;
+    if (r < 0) r = 0;
+    if (a <= 0) return;
+    if (path_ok())
+        aui_stroke_a(aui_r(x - o, y - o, w + 2 * o, h + 2 * o), r + o, AUI_FOCUS_W * 256,
+                     ((unsigned)a << 24) | (ring & 0xFFFFFFu));
+    else
+        aui_stroke(x - o, y - o, w + 2 * o, h + 2 * o, r + o, AUI_FOCUS_W, aui_mix(AUI_BG, ring & 0xFFFFFFu, a));
 }
 
 void aui_begin(unsigned bg)
 {
+    unsigned now = (unsigned)monotonic_ms();
     int s = theme_override < 0 ? sys_ui_dark(-1) > 0 : theme_override;
     if (!theme_inited || s != theme_dark) { aui_set_dark(s); bg = aui_t.bg; }
+    /* ui.accent next to the theme read, at most once per AUI_ACCENT_POLL_MS:
+     * a change made in Settings reaches every aui app within half a second
+     * (EV_THEME re-reads at once). bg is the app's own: an accent never moves it. */
+    else if ((unsigned)(now - accent_poll_ms) >= AUI_ACCENT_POLL_MS && accent_poll(now)) theme_load();
     aui_ensure();
-    frame_ms = (unsigned)monotonic_ms();
+    frame_ms = now;
     anim_reduced = setting_int("ui.reduce_motion",0) != 0;
 #ifndef AUI_NO_AA
     glass_reduced = setting_int("ui.reduce_transparency",0) != 0;

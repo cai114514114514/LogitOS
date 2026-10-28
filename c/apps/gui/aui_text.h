@@ -4,7 +4,8 @@
 #ifndef AUI_TEXT_H
 #define AUI_TEXT_H
 
-/* text: aui_label is body size; aui_heading is title size; aui_text_sz is any. */
+/* text: aui_label is body size (14 / 400); aui_heading is the title style
+ * (17 / 600, design 3.6); aui_text_sz is any size at weight 400. */
 void aui_label(int x, int y, const char *s, unsigned color);
 void aui_heading(int x, int y, const char *s, unsigned color);
 void aui_text_sz(int x, int y, const char *s, unsigned color, int px);
@@ -19,10 +20,10 @@ void aui_text_n(int x, int y, const char *s, int len, unsigned color, int px);
  * prototypes picks by argument count, and the parentheses keep this
  * declaration (and the definition) out of the macro's reach. */
 int  (aui_text_w)(const char *s, int px);
-/* Centred / right-aligned inside a rect. Vertically the text sits on a BASELINE
- * derived from the font's ascent and descent (the metrics query), the same for
- * every size in the same rect, so mixed sizes in one row share a baseline. The
- * metrics are cached per (px, face, scale_percent). */
+/* Centred / right-aligned inside a rect. Vertically the text is centred by the
+ * font's own metrics, the aui_text_vc rule of design 3.6 (baseline = top +
+ * (h - 1.448 px) / 2 + 1.160 px): every size sits optically centred in its
+ * rect, with no metrics query. */
 void aui_text_in(struct aui_rect r, const char *s, unsigned color, int px, int align);
 #define AUI_ALIGN_LEFT   0
 #define AUI_ALIGN_CENTER 1
@@ -101,7 +102,7 @@ int  aui_text_tnum_width(const char *s, int px, int weight);
  * logit_tokens.h (ascent 1160, descent -288, upem 1000), top and h in 24.8
  * points, px an integer size; one rounding, so it is within 1/2 of 1/256 pt
  * of the exact value. aui_text_vc draws `s` in r on that baseline, aligned
- * horizontally per AUI_ALIGN_*. aui_text_in keeps its own (legacy) rule. */
+ * horizontally per AUI_ALIGN_*. aui_text_in / aui_text_in_w use the same rule. */
 int  aui_text_baseline24(int top24, int h24, int px);
 void aui_text_vc(struct aui_rect r, const char *s, int px, int weight, unsigned color, int align);
 
