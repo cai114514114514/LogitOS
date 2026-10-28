@@ -1,0 +1,29 @@
+# tests/ui-aims-c.serial -- the `[browser] aim`, `[terminal] aim`, `[assistant] aim`, `[ch] aim` and `[wm] win` lines of REAL
+# boots of the test image built from this tree (latest line per name). Two boots, merged: the Dock launch of the Browser
+# (focused through qmp_addrbar.focus(), then Cmd+T for a second tab), the Terminal and the Assistant; and the qmp_ch.py
+# --only refusal guest. Window slots are renumbered (1 Browser, 2 Terminal, 3 Assistant, 4 Chat) so lines of different boots
+# do not collide. Regenerate by repeating both boots; keep only the lines of those prefixes.
+[browser] aim tab-0 106 16
+[browser] aim new-tab 223 16
+[browser] aim address 563 46
+[browser] aim caret 15 45
+[wm] win 1 frame 138 24 1126 670 content 1126 640 pt zoom 0 min 0 Browser
+[wm] win 1 app browser
+[browser] aim tab-1 310 16
+[browser] aim new-tab 427 16
+[terminal] aim input 450 544
+[wm] win 2 frame 166 64 900 590 content 900 560 pt zoom 0 min 0 Terminal
+[wm] win 2 app terminal
+[assistant] aim field 360 108
+[assistant] aim send 100 171
+[assistant] aim suggestion-0 100 171
+[assistant] aim suggestion-1 269 171
+[assistant] aim suggestion-2 434 171
+[assistant] aim suggestion-3 612 171
+[assistant] aim store 612 171
+[wm] win 3 frame 194 54 720 610 content 720 580 pt zoom 0 min 0 Logit Assistant
+[wm] win 3 app assistant
+[ch] aim field 318 518
+[ch] aim send 666 518
+[wm] win 4 frame 166 74 720 570 content 720 540 pt zoom 0 min 0 Chat
+[wm] win 4 app ch

@@ -44,6 +44,22 @@ static void diff_preview(struct ag_task *t)
     char left[160],right[160];snprintf(left,sizeof left,"%.150s",a+offset);snprintf(right,sizeof right,"%.150s",b+offset);
     aui_label(20,462,left,AUI_TEXT);aui_label(20,484,right,AUI_ACCENT);free(before);free(after);
 }
+/* Aims (design P13, addendum I; [assistant] aim <name> x y): window-local
+ * points at each hand-placed control's centre, published after the frame's
+ * layout. aui_button / aui_textfield publish no aims of their own, so this is
+ * the only emitter of these names. Nothing here draws. */
+static void publish_aims(void)
+{
+    if(!ui_aim_on())return;
+    ui_aim_rect("field",20,94,680,AUI_H_CTL);
+    ui_aim_rect("send",20,157,160,28);                 /* 生成报告 */
+    ui_aim_rect("suggestion-0",20,157,160,28);         /* the four action buttons, in order */
+    ui_aim_rect("suggestion-1",194,157,150,28);
+    ui_aim_rect("suggestion-2",354,157,160,28);
+    ui_aim_rect("suggestion-3",524,157,176,28);
+    ui_aim_rect("store",524,157,176,28);               /* 记住文本 */
+    for(unsigned i=0;i<status.count;i++)ui_aim_i("task",(int)i,20+680/2,220+(int)i*23+21/2);
+}
 static void draw(void)
 {
     aui_begin(AUI_BG);aui_label(20,16,"Logit Assistant",AUI_TEXT);
@@ -89,13 +105,14 @@ static void draw(void)
             if(aui_button(20,548,200,26,"保留当前版本"))command(AG_ACCEPT_CANDIDATE,0,0,0);
             if(aui_button(234,548,210,26,"使用候选版本"))command(AG_ACCEPT_CANDIDATE,0,0,1);}
     }
+    publish_aims();
     aui_end();
 }
 int main(void)
 {
     struct aex_agent_identity self;if(ag_self(&self)<0||self.mode!=AEX_ACT_UI)return 1;
     /* Keep the task controls above the dock on the 1280x800 baseline. */
-    gui_create("Logit Assistant",720,580);aui_set_size(720,580);
+    gui_create("Logit Assistant",720,580);aui_set_size(720,580);ui_aim_set_app("assistant");
     /* Launched from Spotlight's "Ask Assistant" row: the question arrives as
      * the launch argument (SYS_OPEN_PATH_ARG) and becomes the goal field. */
     {char q[sizeof goal];int n=get_arg(q,sizeof q);if(n>0){memcpy(goal,q,(size_t)n);goal[n]=0;}}

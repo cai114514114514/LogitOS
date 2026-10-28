@@ -1,4 +1,13 @@
 #include "logit.h"
+#ifndef LOADERHOST_LOGIT_H
+#include "../../ui_aim.h"     /* [browser] aim <name> x y: test geometry (design P13) */
+#else
+/* The host loader tests (tests/unit logit.h shim) have no serial to print on. */
+#define ui_aim(...) ((void)0)
+#define ui_aim_rect(...) ((void)0)
+#define ui_aim_i(...) ((void)0)
+#define ui_aim_set_app(...) ((void)0)
+#endif
 #include "dom/tree.h"
 #include "css/style.h"
 #include "layout/block.h"
@@ -3695,12 +3704,16 @@ static void draw_tab_strip(void)
             gui_rrect(x + w - 20, 9, 14, 14, 7, rgb(232, 234, 240));
             gui_text_run(x + w - 16, 9, 12, 0, rgb(90, 90, 100), "x", 1);
         }
+        /* Aim (design P13, addendum I): tab-<k>, k = the tab's position in the
+         * strip, window-local points at the slot centre. Only visible slots. */
+        ui_aim_i("tab", k, x + w / 2, 4 + (TABH - 6) / 2);
         x += w + TAB_GAP;
     }
     /* new tab */
     gui_rrect(x, 4, TAB_PLUSW, TABH - 6, 7, rgb(226, 228, 234));
     gui_rrect(x + 1, 5, TAB_PLUSW - 2, TABH - 8, 6, rgb(244, 245, 248));
     gui_text(x + 9, 8, rgb(80, 80, 92), "+");
+    ui_aim_rect("new-tab", x, 4, TAB_PLUSW, TABH - 6);
 }
 
 /* The hit test, sharing the geometry above so the two cannot drift. Returns the
@@ -5650,6 +5663,7 @@ void app_main(void)
      * that never existed. */
     pick_born_size();
     gui_create("Browser", win_w, win_h);
+    ui_aim_set_app("browser");
     win_set_min();
     win_query_size();       /* the WM may have clamped what we asked for */
     browser_viewport();

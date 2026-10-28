@@ -913,6 +913,14 @@ static void frame(void)
     if (aui_button_ex(W - AUI_PAD - btnw, fy + AUI_SP(2), btnw, AUI_H_CTL,
                       busy ? "..." : "Send", AUI_V_PRIMARY, !busy && inbuf[0]))
         pending_send = 1;
+    /* Aims (design P13, addendum I; [ch] aim <name> x y): window-local content
+     * points at the centre of the two footer controls, which are placed by
+     * hand, so this is their only emitter. Draws nothing. */
+    if (ui_aim_on()) {
+        ui_aim_rect("field", AUI_PAD, fy + AUI_SP(2),
+                    W - 2 * AUI_PAD - btnw - AUI_GAP, AUI_H_CTL);
+        ui_aim_rect("send", W - AUI_PAD - btnw, fy + AUI_SP(2), btnw, AUI_H_CTL);
+    }
 
     /* --- status strip --- */
     int sy = fy - 22;
@@ -986,6 +994,7 @@ void app_main(void)
     int w = 720, h = 540;
     gui_create("Chat", w, h);
     aui_set_size(w, h);
+    ui_aim_set_app("ch");
     wrap_maxw = w - 2 * AUI_PAD - 24;
     space_w = text_measure_px(" ", 1, CH_FS, 0);
     if (space_w <= 0) space_w = 4;
