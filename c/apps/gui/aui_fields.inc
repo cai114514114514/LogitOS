@@ -59,7 +59,33 @@ static int tf_caret_w(void)
     return sc > 0 ? imax(1, (200 + sc - 1) / sc) : 2;
 }
 
-static int tfw(const char *s, int n) { return n <= 0 ? 0 : text_measure_px(s, n, TF_PX, 0); }
+/* Width in points of the first n bytes. The text is DRAWN with the weighted run
+ * (TEXT_RUN2 shapes with fractional advances), so where the kernel has the
+ * carets query the width comes from it -- the legacy measure rounds every glyph
+ * and under-reports a 14 px line by ~8 %, which put the caret a character short
+ * of the end of the text. Without them (INFO=0) the run is the legacy one and
+ * the legacy measure is exact. Sub-point error is the caret's to carry: it is
+ * placed on whole points. */
+static int tf_carets_ok(const char *s, int n, int *cnt)
+{
+    if (n <= 0 || n > TX_MAX || !tx_has_layout()) return 0;
+    int c = tx_carets_cb(0, s, n, TF_PX, 0, tx_off, tx_x, TX_MAX + 1);
+    if (c <= 0) return 0;
+    *cnt = c;
+    return 1;
+}
+static int tf_d2pt(int dev24) { int pct = aui_scale(); return (int)(((long long)dev24 * 100 + (long long)pct * 128) / ((long long)pct * 256)); }
+static int tfw(const char *s, int n)
+{
+    int c;
+    if (n <= 0) return 0;
+    if (tf_carets_ok(s, n, &c)) {
+        int best = 0;
+        for (int k = 0; k < c; k++) if ((int)tx_off[k] <= n) best = tx_x[k];
+        return tf_d2pt(best);
+    }
+    return text_measure_px(s, n, TF_PX, 0);
+}
 
 /* ---- UTF-8, at the one place a raw EV_KEY codepoint becomes bytes in this
  * buffer ----
@@ -120,12 +146,29 @@ static int tf_step_right(const char *s, int n, int i)
 
 static int tf_index_at(const char *buf, int n, int px_off)
 {
+    int c;
+    if (tf_carets_ok(buf, n, &c)) {
+        /* the nearest caret stop to the point (device 24.8), one query */
+        long long want = (long long)px_off * aui_scale() * 256 / 100;
+        int best = 0; long long bd = -1;
+        for (int k = 0; k < c; k++) {
+            long long d = want - tx_x[k]; if (d < 0) d = -d;
+            if (bd < 0 || d < bd) { bd = d; best = (int)tx_off[k]; }
+        }
+        while (best > 0 && best < n && tf_is_cont(buf[best])) best--;
+        return best;
+    }
     int lo = 0, hi = n;
     while (lo < hi) {                       /* binary search: each probe is a syscall */
         int mid = (lo + hi + 1) / 2;
         if (tfw(buf, mid) <= px_off) lo = mid; else hi = mid - 1;
     }
     while (lo > 0 && tf_is_cont(buf[lo])) lo--;   /* never split a UTF-8 char */
+    int nx = tf_step_right(buf, n, lo);           /* the nearer of the two stops around the point */
+    if (nx > lo) {
+        int d0 = px_off - tfw(buf, lo), d1 = tfw(buf, nx) - px_off;
+        if (d1 < d0) lo = nx;
+    }
     return lo;
 }
 
@@ -255,6 +298,21 @@ static void tf_follow(const char *buf, int n, int vw)
     tf_sx = iclamp(tf_sx, 0, total - vw + 2);
 }
 
+/* The field's text: body 14 regular, centred on the font's baseline rule (3.6),
+ * drawn with the LEGACY run. aui_text_vc would draw the same glyphs through
+ * TEXT_RUN2, whose quarter-pixel pen runs ~6 % wider than the pen SYS_TEXT_MEASURE
+ * (and the carets query) report -- every caret, selection edge and click in a
+ * field is placed from that measure, so drawing with the run2 pen put the caret a
+ * character short of the end of the line (seen in the guest). Regular weight is
+ * the legacy face, so the glyphs are the same; only the pen differs. Whole
+ * points, like every legacy run: at 200 % the line sits on the nearest 2 dev px. */
+static void fld_text(int x, int y, int h, const char *s, int n, unsigned color)
+{
+    if (n <= 0) return;
+    int y24 = aui_text_baseline24(Y_(y) * 256, h * 256, TF_PX) - tx_asc24(TF_PX);
+    gui_text_run(X_(x), tx_fdiv(y24 + 128, 256), TF_PX, 0, color, s, n);
+}
+
 #define AUI_TFX_LARGE_H 36
 
 /* The one field behind aui_textfield*, aui_searchfield*: `search` selects the
@@ -321,9 +379,8 @@ static int fld_core(int x, int y, int w, char *buf, int cap, const char *placeho
 
     /* Disabled: no box at all, the value (or the placeholder) as plain text. */
     if (!enabled && !search) {
-        struct aui_rect tr = aui_r(x + pad, y, w - 2 * pad, h);
-        if (n > 0) aui_text_vc(tr, buf, TF_PX, AUI_W_REGULAR, aui_t.label_secondary, AUI_ALIGN_LEFT);
-        else if (placeholder) aui_text_vc(tr, placeholder, TF_PX, AUI_W_REGULAR, aui_t.label_tertiary, AUI_ALIGN_LEFT);
+        if (n > 0) fld_text(x + pad, y, h, buf, n, aui_t.label_secondary);
+        else if (placeholder) fld_text(x + pad, y, h, placeholder, slen(placeholder), aui_t.label_tertiary);
         return 0;
     }
 
@@ -349,16 +406,15 @@ static int fld_core(int x, int y, int w, char *buf, int cap, const char *placeho
     }
 
     clip_push(aui_r(wx + left - 4, wy + 1, vw + 8, h - 2));
-    struct aui_rect tr = aui_r(x + left - sx, y, vw + sx, h);
     if (!n && placeholder)
-        aui_text_vc(aui_r(x + left, y, vw, h), placeholder, TF_PX, AUI_W_REGULAR, aui_t.label_tertiary, AUI_ALIGN_LEFT);
+        fld_text(x + left, y, h, placeholder, slen(placeholder), aui_t.label_tertiary);
     if (foc && tf_caret != tf_anchor) {
         int a = imin(tf_caret, tf_anchor), b = imax(tf_caret, tf_anchor);
         int ax = tfw(buf, a), bx = tfw(buf, b);
         unsigned sel = aui_t.accent_sel_text;
         aui_fill_a(x + left - sx + ax, cy, bx - ax, TF_CARET_H, sel & 0xFFFFFFu, (int)(sel >> 24));
     }
-    if (n > 0) aui_text_vc(tr, buf, TF_PX, AUI_W_REGULAR, aui_t.label_primary, AUI_ALIGN_LEFT);
+    fld_text(x + left - sx, y, h, buf, n, aui_t.label_primary);
     if (foc) {
         /* The caret wakes only its own rect: nothing else in the frame changes
          * with the blink, so the draw-call diff reports exactly this call. The
