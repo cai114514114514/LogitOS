@@ -199,45 +199,21 @@ def ctrl_key(ui, qcode): _hold(ui, "ctrl", qcode)
 # Every other browser driver here hard-codes a screen coordinate for the URL
 # field, and they get away with it because the Browser comes up with `editing`
 # ALREADY TRUE -- the first URL needs no click. This test navigates several
-# times, and it has moved the field down by the height of the tab strip, so a
-# guess is not good enough: a click 30 px too high lands on the tab strip and
-# the typing goes nowhere, which is indistinguishable from the browser
-# refusing to navigate.
+# times, and a click 30 px too high lands on the tab strip and the typing goes
+# nowhere, which is indistinguishable from the browser refusing to navigate.
 #
-# The window manager prints its own geometry, so use it:
-#   [wm] win 1 frame X Y W H content CW CH pt ...
-# The content origin is (X, Y + (H - CH)) -- the difference is the title bar,
-# which is the WM's and not the app's.
-TABH = 30
-_origin = None
+# The Browser prints its own control positions (design P13, ui-aims-c):
+#   [browser] aim address X Y      window-local points, the URL field's centre
+#   [browser] aim tab-<i> X Y      the i-th tab of the strip
+#   [browser] aim new-tab X Y
+# and the window manager prints the window's frame, so qmp_aim.Aims turns an
+# aim into the device pixel a click needs. No layout constant lives here.
+from qmp_aim import Aims               # noqa: E402
 
 
-def content_origin():
-    global _origin
-    if _origin:
-        return _origin
-    import re
-    m = None
-    for m in re.finditer(r"\[wm\] win \d+ frame (-?\d+) (-?\d+) (\d+) (\d+) "
-                         r"content (\d+) (\d+)", serial()):
-        pass
-    if not m:
-        die("the window manager never printed the Browser's frame")
-    fx, fy, fw, fh, cw, chh = (int(g) for g in m.groups())
-    _origin = (fx, fy + (fh - chh))
-    print("   browser content origin: %r (frame %dx%d, content %dx%d)"
-          % (_origin, fw, fh, cw, chh))
-    return _origin
-
-
-def win(x, y):
-    ox, oy = content_origin()
-    return (ox + x, oy + y)
-
-
-# window-local: the URL field is y TABH+5 .. TABH+25, x 10 .. w-10
-def bar_point():
-    return win(420, TABH + 15)
+def bar_point(ui):
+    """Device pixel of the URL field (the `address` aim)."""
+    return Aims(ui).screen("browser", "address", timeout=60)
 
 
 def goto(ui, path, secs=90, tries=3):
@@ -248,7 +224,7 @@ def goto(ui, path, secs=90, tries=3):
     a dropped key yields an unparseable URL and NO REQUEST -- indistinguishable
     from the browser ignoring the navigation."""
     for attempt in range(tries):
-        ui.click_at(*bar_point())
+        ui.click_at(*bar_point(ui))
         for _ in range(90):
             ui.key("backspace", settle=0.02)
         ui.typ("http://10.0.2.2:%d%s" % (PORT, path))
@@ -300,6 +276,16 @@ try:
     time.sleep(1.5)
     ck(goto(ui, "/b.html"), "Cmd+T opened a tab and it asked for page B")
     ck(wait_serial("TAB-B-SCRIPT-RAN", 90, "page B"), "page B loaded and ran its script")
+    # The strip publishes one aim per tab: two tabs -> tab-0 and tab-1, and the
+    # new-tab button sits to the right of both.
+    _aims = Aims(ui)
+    try:
+        t0 = _aims.wait("browser", "tab-0", timeout=10)
+        t1 = _aims.wait("browser", "tab-1", timeout=10)
+        nt = _aims.wait("browser", "new-tab", timeout=10)
+    except Exception as exc:                # noqa: BLE001
+        die("the tab strip printed no aims for two tabs: %s" % (exc,))
+    ck(t0[0] < t1[0] < nt[0], "the strip's aims run tab-0, tab-1, new-tab left to right")
     time.sleep(3)
     pb = PPM(ui.screendump(shot("tab-b")))
     ck(pb.find_color(RED) is not None, "TAB 2 IS PAINTED, by ITS external stylesheet")

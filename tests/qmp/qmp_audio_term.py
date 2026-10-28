@@ -43,6 +43,7 @@ import struct
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import qmp_ui
 from qmp_ui import PPM, Session
+from qmp_aim import Aims
 
 ISO = sys.argv[1]
 DISK = sys.argv[2]
@@ -253,6 +254,13 @@ time.sleep(1.5)
 # A clean scrollback so the object this test cares about is the FIRST (and
 # only) one on screen -- both for a deterministic click target and so a color
 # scan cannot land on some earlier command's pixels by accident.
+# The Terminal says where its input line is (`[terminal] aim input x y`,
+# terminal.c paint()); the prompt the commands below are typed at.
+try:
+    Aims(s).wait("terminal", "input", timeout=20)
+    chk(True, "the Terminal published its input aim")
+except AssertionError as e:
+    chk(False, "the Terminal published its input aim (%s)" % e)
 run("clear", 1.0)
 run("show /media/sample.wav", 2.0)
 
@@ -338,7 +346,11 @@ else:  # MODE == "none"
     # no-op by construction (on_click's O_AUDIO branch checks `usable` before
     # doing anything) -- so the assertion that matters is what does NOT
     # happen afterward, not where exactly the click landed.
-    cx, cy = 380, 210
+    # Window-local (270, 110) is where the old screen constant (380, 210) fell
+    # in the first-cascade Terminal; the content origin now comes from the WM's
+    # frame line (qmp_aim), so another window opening first cannot move it.
+    ox, oy = Aims(s).origin("terminal")
+    cx, cy = ox + qmp_ui.pt(270), oy + qmp_ui.pt(110)
     print(f"  clicking where the (disabled) object should be ({cx},{cy})")
     s.click_at(cx, cy, settle=0.3)
     time.sleep(1.0)

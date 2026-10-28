@@ -50,6 +50,11 @@ static void draw_address_bar(int editing)
     gui_text_run(14-addr_hscroll,TABH+7,ADDRESS_FONT_PX,0,rgb(40,40,48),url,ulen);
     if(editing)gui_rect(14+caret-addr_hscroll,TABH+7,2,16,rgb(90,150,240));
     gui_clip(0,0,0,0);
+    /* Aims (design P13, addendum I): the URL field's centre, and while editing
+     * the caret's centre (it is the landmark qmp_addrbar.py checks CARET_RGB
+     * at). Nothing here draws. */
+    ui_aim("address",win_w/2,TABH+5+23/2);
+    if(editing)ui_aim("caret",14+caret-addr_hscroll+1,TABH+7+16/2);
 #endif
     if(bookmark_find(url)>=0)gui_text(win_w-26,TABH+7,rgb(240,180,60),"*");
 }

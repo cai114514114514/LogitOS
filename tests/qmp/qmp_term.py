@@ -25,6 +25,7 @@ terminal is index 3 -> (576,753). Cursor starts at screen center (640,400).
 """
 import json
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -149,6 +150,10 @@ if not launched:
     cmd({"execute":"screendump","arguments":{"filename":out}})
     proc.kill(); sys.exit(1)
 time.sleep(1.5)
+# The input line the typing below lands on: the Terminal publishes it
+# (`[terminal] aim input x y`, terminal.c paint(), window-local points).
+chk(re.search(rb"\[terminal\] aim input -?\d+ -?\d+", bytes(log)) is not None,
+    "the Terminal published its input aim")
 for line in ["uname\n","ls /bin | wc\n","echo logit-os-is-real > /hi.txt\n"]:
     send(line); time.sleep(2.0)
 time.sleep(1.5)

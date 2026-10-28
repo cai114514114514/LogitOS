@@ -53,6 +53,7 @@
 #include "logit_cells.h"
 #include "term_line.h"
 #include "menu_blob.h"
+#include "../ui_aim.h"
 #include "h264.h"
 #include "h265.h"
 #include "audio.h"
@@ -2086,6 +2087,10 @@ static void paint(void)
         const char *s = "^ 已向上滚动 —— 按 End 回到底部";
         draw_text(win_w - PAD - SBW - (slen(s) + 1) * cell, iy, P.dim, s);
     }
+    /* Aim (design P13, addendum I): [terminal] aim input x y -- the centre of
+     * the input line in window-local points, so drivers click or look for the
+     * prompt where this frame drew it. Draws nothing; prints only on change. */
+    ui_aim("input", win_w / 2, iy - 5 + (lh + 11) / 2);
     /* WHAT CHANGED THIS FRAME -- see the flush-rectangle section above
      * (imin/imax) for the mechanism. paint() itself is unchanged above this
      * line: it always redraws everything, unconditionally, exactly as
@@ -2655,6 +2660,7 @@ void app_main(void)
     theme_load();
     measure_geometry();
     gui_create("Terminal", win_w, win_h);
+    ui_aim_set_app("terminal");
     rt_parser_init(&parser);
     rt_reset(&enc);
 
