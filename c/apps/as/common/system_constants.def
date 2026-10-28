@@ -85,6 +85,8 @@ AS_SYSTEM_CONSTANT(SYS_GUI_SHADOW2, SYS_GUI_SHADOW2)
 AS_SYSTEM_CONSTANT(SYS_GUI_GLASS2, SYS_GUI_GLASS2)
 AS_SYSTEM_CONSTANT(SYS_GUI_BACKDROP, SYS_GUI_BACKDROP)
 AS_SYSTEM_CONSTANT(SYS_GUI_BACKDROP_CLEAR, SYS_GUI_BACKDROP_CLEAR)
+AS_SYSTEM_CONSTANT(SYS_GUI_ICON2, SYS_GUI_ICON2)
+AS_SYSTEM_CONSTANT(SYS_UI_DARK_AT, SYS_UI_DARK_AT)
 /* Every remaining symbol a generated abi.as wrapper can name: the wrappers
  * are only resolved at call time, so a missing define here is an
  * "undefined variable" at first call rather than a build error. Keep this
