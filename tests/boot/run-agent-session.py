@@ -61,9 +61,11 @@ def main(default_run=False):
             position, _, _ = ui.frame(guest, 'Finder')
             def click(x, y):
                 ui.move(guest, *position(x, y)); ui.button(guest, True); ui.button(guest, False)
+            # Controls resolve through the apps' own `[<app>] aim` lines (design P13).
+            def aim(app, name): return ui.gate.aim(guest, app, name)
             guest.wait(rb'PROJECT_VIEW path=/docs tasks=0', 30)
-            click(310, 62)  # select the actual source row, then the work field
-            click(820, 128)  # the work field; Finder is 1000 wide since 2026-10-26 (was 940)
+            click(*aim('files', 'row-0'))  # select the actual source row, then the work field
+            click(*aim('files', 'work-field'))
             guest.type('Summarize Project Cedar with the budget and book count. Cite sources.')
             guest.key('ret')
             guest.wait(rb'AGENT_WORKER task=1 ', 60)
@@ -81,11 +83,10 @@ def main(default_run=False):
         if default_run:
             guest.wait(rb'PROJECT_VIEW path=/docs tasks=1 first=1 phase=6', 30)
             ui.gate.screenshot(guest, 'finder-sent')
-            click(832, 338)  # Finder's native Open in TextEdit action (was 952 at 1120 wide)
+            click(*aim('files', 'open-in-textedit'))  # Finder's native Open in TextEdit action
             position, width, height = ui.frame(guest, '/docs/report-1.md')
             time.sleep(1)
-            side = min(360, max(290, width*31//100)); left = width-side+24
-            click(left+80, height-49)
+            click(*aim('textedit', 'instruction'))
             guest.type('Append a short Next steps section. Preserve all source facts and citations.')
             guest.key('ret')
             revised = guest.complete(1, allow_conflict=True)
@@ -93,7 +94,7 @@ def main(default_run=False):
             candidate = guest.capture('/bin/agentctl candidate 1')
             check('TextEdit candidate preserves source facts and citations',
                   '4200' in candidate.replace(',', '') and '120' in candidate and '[S1:' in candidate)
-            click(left+(side-48)//2, height-127)
+            click(*aim('textedit', 'apply'))
             time.sleep(1)
             check('native TextEdit Apply saves the exact proposal',
                   guest.capture('/bin/agentctl document 1') == candidate and

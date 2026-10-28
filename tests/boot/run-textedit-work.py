@@ -7,9 +7,11 @@ unchanged-document assertion to fail. Run it before the positive guest gate.
 --gateway uses the existing real DeepSeek host service; absent that option,
 the deterministic model is explicitly only lifecycle/failure evidence.
 """
-import argparse, importlib.util, json, re, shlex, shutil, subprocess, time
+import argparse, importlib.util, json, re, shlex, shutil, subprocess, sys, time
 from pathlib import Path
 ROOT=Path(__file__).resolve().parents[2]
+sys.path.insert(0,str(ROOT/'tests/qmp'))
+import qmp_aim
 def module(name,path):
     spec=importlib.util.spec_from_file_location(name,path);m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m);return m
 fault=module('work_fault',ROOT/'tests/boot/run-agent-faults.py');runtime=fault.runtime
@@ -38,6 +40,19 @@ def work(g,task=1):
     m=re.search(r'WORK task=(\d+) revision=(\d+) proposal=(\d+) base=(\d+) bytes=(\d+) review=(\d+) phase=(.+)',s)
     if not m:raise AssertionError('work view unavailable: '+s)
     return tuple(map(int,m.groups()[:6]))+(m[7],)
+
+def aim(g,app,name,timeout=30):
+    """Window-local content point of `app`'s control `name`, from the guest's own
+    `[<app>] aim <name> x y` line (design P13; tests/qmp/qmp_aim.py). The latest
+    line wins. Layout constants live in the app, not in this driver."""
+    end=time.monotonic()+timeout
+    while True:
+        text=bytes(g.log).decode('utf-8','replace')
+        got=qmp_aim.parse_aims(text).get((app,name))
+        if got is not None:return got
+        if time.monotonic()>=end:
+            raise AssertionError('no aim %r from app %r within %ds; last aim lines: %s'%(name,app,timeout,qmp_aim.aim_lines(text)[-5:] or 'none'))
+        time.sleep(.1)
 
 def screenshot(g,name):
     g.screenshot();target=g.out/(name+'.ppm');shutil.copyfile(g.out/'desktop.ppm',target)
@@ -73,8 +88,8 @@ def main():
         g.complete(1);initial=g.capture('/bin/agentctl document 1');check('report has actual facts and source references','4200' in initial.replace(',','') and '[S1:' in initial)
         g.capture('/bin/agent-runtime-test open-path /docs/report-1.md');pos,W,H=frame(g,'/docs/report-1.md');time.sleep(2)
         check('native document binds its own task',work(g)[5]==1)
-        sw=min(360,max(290,W*31//100));dw=W-sw;x=dw+24;rw=sw-48
         check('work sidebar fits the native viewport',W>=760 and H>=640)
+        def at(name):return aim(g,'textedit',name)
         def click(px,py):
             tx,ty=pos(px,py)
             # PS/2 relative motion can split a long jump into several packets.
@@ -86,13 +101,13 @@ def main():
                 g.pointer[0]+=dx;g.pointer[1]+=dy;time.sleep(.18)
             g.click(tx,ty);time.sleep(.2)
         def submit(text):
-            click(x+80,H-49);g.type(text);screenshot(g,'instruction-entered');g.key('ret')
+            click(*at('instruction'));g.type(text);screenshot(g,'instruction-entered');g.key('ret')
             deadline=time.monotonic()+20
             while time.monotonic()<deadline:
                 if work(g)[6] not in ('done','paused'):return
                 time.sleep(.2)
             raise AssertionError('native instruction was not submitted')
-        click(100,170);g.key('ctrl','end');g.type('\nhuman note keep this sentence\n');time.sleep(2)
+        click(*at('body'));g.key('ctrl','end');g.type('\nhuman note keep this sentence\n');time.sleep(2)
         before=g.capture('/bin/agentctl document 1');check('unsaved human edit reaches task','human note keep this sentence' in before)
         submit('add next steps and preserve the exact sentence human note keep this sentence')
         g.complete(1,allow_conflict=True);v=work(g);candidate=g.capture('/bin/agentctl candidate 1')
@@ -104,25 +119,25 @@ def main():
         check('unknown source refused',denied('/bin/agentctl source 1 999 1 0'))
         check('wrong source version refused',denied('/bin/agentctl source 1 1 2 0'))
         check('source bytes match authorized immutable copy',g.capture('/bin/agentctl source 1 1 1 0')==(ROOT/'tests/fixtures/agent/source.md').read_text())
-        click(x+80,278);time.sleep(.4);screenshot(g,'authorized-sources')
-        click(W//2,(H-210-40)//3+40+67);g.wait(rb'TEXTEDIT_SOURCE task=1 object=1 revision=1 offset=0 bytes=368',20)
-        check('native source row opens the authorized text',True);time.sleep(.4);screenshot(g,'source-text');click(dw-225,78);time.sleep(.3)
-        click(dw-70,78);time.sleep(.5);screenshot(g,'candidate-review')
+        click(*at('sources'));time.sleep(.4);screenshot(g,'authorized-sources')
+        click(*at('dialog-row-0'));g.wait(rb'TEXTEDIT_SOURCE task=1 object=1 revision=1 offset=0 bytes=368',20)
+        check('native source row opens the authorized text',True);time.sleep(.4);screenshot(g,'source-text');click(*at('source-back'));time.sleep(.3)
+        click(*at('version-next'));time.sleep(.5);screenshot(g,'candidate-review')
         # Close and power-cycle while approval is pending. No model request
         # should be needed to restore the same candidate or document binding.
         click(18,-15);time.sleep(.3);g.close();g=None
         reboot=out/'reboot';reboot.mkdir();g=runtime.Guest(build,disk,reboot,a.mode,a.ram);g.wait(b'AGENTD_READY',180)
         check('pending review survives system restart',work(g)==v and g.capture('/bin/agentctl candidate 1')==candidate and g.capture('/bin/agentctl document 1')==before)
         g.capture('/bin/agent-runtime-test open-path /docs/report-1.md');pos,W,H=frame(g,'/docs/report-1.md');time.sleep(2)
-        click(dw-70,78);time.sleep(.4);click(x+rw//2,H-127);time.sleep(2)
+        click(*at('version-next'));time.sleep(.4);click(*at('apply'));time.sleep(2)
         applied=work(g)
         check('native Apply commits exactly the reviewed proposal',applied[1]==v[1]+1 and applied[2]==0 and g.capture('/bin/agentctl document 1')==candidate)
         check('accepted report has matching disk artifact','DOCUMENT_VERIFIED' in g.capture('/bin/agentctl verify 1'))
         check('old completion cannot apply twice',denied(f'/bin/agentctl decide 1 {v[1]} {v[2]} apply') and work(g)==applied)
-        click(323,22);time.sleep(.5);check('native Save retains complete document','DOCUMENT_VERIFIED' in g.capture('/bin/agentctl verify 1'))
+        click(*at('save'));time.sleep(.5);check('native Save retains complete document','DOCUMENT_VERIFIED' in g.capture('/bin/agentctl verify 1'))
         screenshot(g,'applied-document')
         submit('keep the report and suggest one more next step with citations');g.complete(1,allow_conflict=True);v2=work(g)
-        current=g.capture('/bin/agentctl document 1');click(x+rw//2,H-90);time.sleep(1)
+        current=g.capture('/bin/agentctl document 1');click(*at('keep'));time.sleep(1)
         check('native Keep preserves document and revision',work(g)[1]==v2[1] and work(g)[2]==0 and g.capture('/bin/agentctl document 1')==current)
         check('original material stays unchanged',g.capture('/bin/cat /docs/source.md')==(ROOT/'tests/fixtures/agent/source.md').read_text())
         (out/'result.json').write_text(json.dumps({'status':'passed','mode':a.mode,'ram':a.ram,'real_model':bool(a.gateway),'checks':checks,'initial_revision':v[1],'applied_revision':applied[1]},ensure_ascii=False,indent=2))
