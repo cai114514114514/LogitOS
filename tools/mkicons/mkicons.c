@@ -14,6 +14,7 @@
  *   - the glyph at 56 % of the tile, white or #1D1D23 on a light tile;
  *   - a soft bottom shade, #000000 @ 20 over the bottom 6 %;
  *   - a 1 dev px inner rim, #FFFFFF @ 90 at the top fading to @ 0 at 50 %;
+ *   - on a white or near-black tile, a full-perimeter edge hairline (draw_edge);
  *   - NO drop shadow: the Dock draws the contact shadow.
  * --sheet also writes the contact sheet: every icon at 256, 64 and 32 on light
  * #F4F4F8 and dark #1E1E24.
@@ -21,7 +22,7 @@
  * Rasterised by c/lib/gfx (the same coverage engine the OS draws with) and
  * encoded by rust/src/pngenc.rs (the in-tree PNG encoder tests/pngenc.mk
  * checks; stored deflate, so no zlib). Deterministic: same bytes every run.
- * -DUI_ART_NEGCTL drops the rim, which `test-ui-art-assets-negctl` watches
+ * -DUI_ART_NEGCTL drops the rim (and the edge hairline), which `test-ui-art-assets-negctl` watches
  * fail. Host tool: not part of the OS image.
  *
  * Build: see tests/ui-art-assets.mk. */
@@ -87,11 +88,55 @@ static void tile_paint(struct gfx_paint *p, const struct logit_app *a, int size)
     p->flags |= GFX_PAINT_DITHER;
 }
 
-static void squircle(struct gfx_path *p, int inset, int size)
+/* inset in 24.8 device px; r = 0.225 * size, and an inset ring keeps r - inset */
+static void squircle_fx(struct gfx_path *p, int inset, int size)
 {
-    /* r = 0.225 * size; the 1 px inset used by the rim keeps r - inset */
-    int r = (int)floor(0.225 * size * 256.0 + 0.5) - inset * 256;
-    gfx_path_squircle(p, GFX_PX(inset), GFX_PX(inset), GFX_PX(size - 2 * inset), GFX_PX(size - 2 * inset), r, 154);
+    int r = (int)floor(0.225 * size * 256.0 + 0.5) - inset;
+    gfx_path_squircle(p, inset, inset, GFX_PX(size) - 2 * inset, GFX_PX(size) - 2 * inset, r, 154);
+}
+static void squircle(struct gfx_path *p, int inset, int size) { squircle_fx(p, GFX_PX(inset), size); }
+
+/* ------------------------------------------------------------ the tile edge
+ * A white tile on a light surface (Finder #F3F4F8, the white Preview sidebar) and a
+ * near-black tile on the dark Dock or in dark Finder (#1E1E24) have no edge of their
+ * own, so the squircle vanishes and the glyph floats. Like the macOS icon family,
+ * those tiles carry a full-perimeter inner hairline, drawn after the glyph:
+ *   light tile (top stop luma > 0.85):    #000000 @ 20 at the top -> @ 30 at the bottom;
+ *   dark tile  (bottom stop luma < 0.10): #FFFFFF @ 34 all round.
+ * The masters are 256 dev px but are box-filtered down to the size on screen (the
+ * Dock's 54, 36 in a sidebar header, 108 at 2x), so the ring is EDGE_W master px wide:
+ * one dev px at the Dock's 54 (design 5.4), about two at 2x. Coloured tiles and the
+ * brand-gradient tiles get none; their gradient is their edge. */
+#define EDGE_W_FX ((TILE * 256 + 27) / 54)            /* 256 / 54 master px, in 24.8 */
+static double luma601(unsigned c)
+{
+    return (0.299 * ((c >> 16) & 255) + 0.587 * ((c >> 8) & 255) + 0.114 * (c & 255)) / 255.0;
+}
+enum { EDGE_NONE, EDGE_LIGHT, EDGE_DARK };
+static int tile_edge_kind(const struct logit_app *a)
+{
+    if (a->flags & LOGIT_APP_F_BRAND_GRADIENT) return EDGE_NONE;
+    if (luma601(rgb_of(a->grad_top)) > 0.85) return EDGE_LIGHT;
+    if (luma601(rgb_of(a->grad_bottom)) < 0.10) return EDGE_DARK;
+    return EDGE_NONE;
+}
+static void draw_edge(struct gfx_surface *s, const struct logit_app *a)
+{
+    int kind = tile_edge_kind(a);
+    if (kind == EDGE_NONE) return;
+    struct gfx_path p;
+    struct gfx_paint paint;
+    path_init(&p);
+    squircle(&p, 0, TILE);
+    squircle_fx(&p, EDGE_W_FX, TILE);
+    if (kind == EDGE_LIGHT) {
+        gfx_paint_linear(&paint, 0, 0, 0, GFX_PX(TILE));
+        gfx_paint_stop(&paint, 0, 0x000000, 20);
+        gfx_paint_stop(&paint, 65536, 0x000000, 30);
+    } else {
+        gfx_paint_solid(&paint, 0xFFFFFF, 34);
+    }
+    fill_path(s, &p, GFX_EVENODD, &paint);
 }
 
 /* ------------------------------------------------------------ glyph layers */
@@ -191,6 +236,8 @@ static int render_tile(const struct logit_app *a)
     gfx_paint_stop(&paint, 0, 0xFFFFFF, 90);
     gfx_paint_stop(&paint, 65536, 0xFFFFFF, 0);
     fill_path(&s, &p, GFX_EVENODD, &paint);
+    /* the full-perimeter edge of a white or near-black tile (see draw_edge) */
+    draw_edge(&s, a);
 #endif
     return 1;
 }

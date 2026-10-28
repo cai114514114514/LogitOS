@@ -13,7 +13,10 @@ FAIL. Checks (design_language.md 3.7.4, 3.7.5, 5.5):
   corner        pixel (2,2) is transparent (the squircle, not a square)
   gradient      the centre column at y=8 and y=238 is the tile gradient +-4
   coverage      the glyph covers 15..60 % of its 56 % box
-  rim           the 1 dev px top rim (#FFFFFF @ 90) lightens row 0 of every dark tile
+  rim           the 1 dev px top rim (#FFFFFF @ 90) lightens row 0 of every dark tile;
+                the edge hairline of a white tile (top luma > 0.85) darkens, and of a
+                near-black tile (bottom luma < 0.10) lightens, the side at (1,128), and
+                the tile is back to its gradient +-4 by (7,128) (a hairline, not a wash)
   sheet         the contact sheet is two panels, #F4F4F8 and #1E1E24
   wallpaper-size   wallpaper-dark 1280 x 800 and @2x 2560 x 1600
   sky-luma      luma at (640,200) < 50 (and the 2x twin at (1280,400))
@@ -143,6 +146,10 @@ def luma(c):
     return 0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2]
 
 
+def luma601(rgb):
+    return (0.299 * ((rgb >> 16) & 255) + 0.587 * ((rgb >> 8) & 255) + 0.114 * (rgb & 255)) / 255.0
+
+
 def check_icons(args, work):
     d1, d2 = os.path.join(work, "a"), os.path.join(work, "b")
     os.makedirs(d1), os.makedirs(d2)
@@ -194,6 +201,20 @@ def check_icons(args, work):
             e = expected(stem, 128, 0)
             lift = sum(g[i] - e[i] for i in range(3)) / 3.0
             (ok("rim", "%s +%.0f" % (stem, lift)) if lift >= 15 else fail("rim", "%s row 0 lifted only %.1f (want >= 15)" % (stem, lift)))
+        # the edge hairline (mkicons draw_edge): white and near-black tiles only
+        _, bottom, _, _ = TILES[stem]
+        kind = 0 if brand else (-1 if luma601(top) > 0.85 else (1 if luma601(bottom) < 0.10 else 0))
+        if kind:
+            g, e = px(img, 1, 128), expected(stem, 1, 128)
+            shift = sum(g[i] - e[i] for i in range(3)) / 3.0 * kind
+            g7, e7 = px(img, 7, 128), expected(stem, 7, 128)
+            inner = max(abs(g7[i] - e7[i]) for i in range(3))
+            if shift < 12:
+                fail("rim", "%s edge at (1,128) moved only %.1f toward the %s (want >= 12)" % (stem, shift, "dark" if kind < 0 else "light"))
+            elif inner > 4:
+                fail("rim", "%s edge reaches (7,128): off the gradient by %d" % (stem, inner))
+            else:
+                ok("rim", "%s edge %+.0f" % (stem, shift * kind))
     # contact sheet
     try:
         sh = decode_png(s1)

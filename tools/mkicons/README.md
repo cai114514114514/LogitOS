@@ -41,11 +41,20 @@ vertical gradient (`.grad`, `.gy0`, `.gy1`, `.rgb2`, `.alpha2`, `.fade`) and `.r
 - soft bottom shade, `#000000` 0 to 20/255 over the bottom 6 %, kept inside the squircle;
 - 1 dev px inner rim, `#FFFFFF` @ 90 at the top fading to @ 0 at 50 % of the height (an even-odd
   ring of two squircles, so it follows the corner);
+- edge hairline on a white tile (top stop luma > 0.85: 时钟, 预览, 文本编辑) of `#000000` @ 20 at
+  the top to @ 30 at the bottom, and on a near-black tile (bottom stop luma < 0.10: 活动监视器,
+  终端) of `#FFFFFF` @ 34, all round. It is 256/54 master px wide, so after the box filter it is
+  one dev px at the Dock's 54 (about two at 2x): without it those tiles vanish on light surfaces
+  (Finder `#F3F4F8`, a white sidebar) and in the dark Dock or dark Finder;
 - no baked drop shadow: the Dock draws the contact shadow.
+
+Glyph weight: strokes are about 5-6 % of the tile (the `</>`, the sparkline, the Logit mark's
+ring on its tile), so no glyph reads as a hairline next to the solid ones at 32-54 px. The 14 pt
+menu-bar mark keeps its own thin ratio (3.7.5); that is the kernel's, not this tool's.
 
 ## Determinism and the gate
 
 The output is byte-identical run to run (integer rasteriser, `-ffp-contract=off`, stored-deflate
 PNG encoder). `make BUILD=build test-ui-art-assets` checks that, the sizes, the corner, the
-gradient ends, glyph coverage and the rim; its control builds the tool with `-DUI_ART_NEGCTL`
-(no rim) and must see `FAIL rim`.
+gradient ends, glyph coverage, the rim and the edge hairline; its control builds the tool with
+`-DUI_ART_NEGCTL` (no rim, no edge) and must see `FAIL rim`.

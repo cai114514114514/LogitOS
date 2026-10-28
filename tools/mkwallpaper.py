@@ -95,10 +95,17 @@ NIGHT_SKY = [(0.00, (11, 11, 30)), (0.42, (30, 26, 68)), (0.72, (58, 42, 92)),
 # light picture has no night colour of its own, so it takes a haze between the
 # horizon and the first hill and keeps the composition four-deep.
 NIGHT_RIDGE_COLOURS = [(46, 34, 77), (0x22, 0x1A, 0x3D), (0x18, 0x12, 0x2E), (0x0F, 0x0B, 0x1F)]
+# At night that haze ridge is lit only by the sky, so where the light picture's two
+# slow waves run nearly level (x 0-380 and 1100-1280 at 1280) it read as a flat band.
+# Two low-amplitude faster waves (+-17 dev px at 800) keep it a hill across the full
+# width without moving the composition's peak.
+NIGHT_RIDGE0_EXTRA = [(0.014, 4.3, 1.1), (0.007, 8.2, 2.9)]
 MOON = (0.72, 0.22)                      # centre, fraction of width and of height
 MOON_GLOW = ((0x8C, 0x7B, 0xFF), 30 / 255.0, 0.30)   # colour, peak strength, radius / width
 MOON_HALO = ((0xB8, 0xAE, 0xFF), 70 / 255.0, 0.055)  # tight halo that makes the glow read as a moon
 MOON_DISC = ((0xEC, 0xE8, 0xFF), 0.0125)              # colour, radius / width
+MOON_EDGE_PX = 1.5        # the disc edge is anti-aliased over this many dev px at 1x
+MOON_LIMB = 0.22          # limb darkening: the rim of the disc is this much dimmer than its centre
 STAR_TOP_PT, STAR_BOTTOM_PT, STAR_BAND = 32, 712, 0.40   # never above 32 pt, never from 712 pt (Dock band)
 STAR_COUNT = 110
 STAR_RGB = (0xE6, 0xE8, 0xFF)
@@ -127,9 +134,11 @@ def star_list(w, h):
 
 def render_night(w, h, stars=True):
     rows = []
-    ridge_y = [[base + sum(a * math.sin(f * 2 * math.pi * (x / w) + p) for a, f, p in waves)
-                for x in range(w)] for base, waves, _, _ in RIDGES]
+    ridge_y = [[base + sum(a * math.sin(f * 2 * math.pi * (x / w) + p)
+                           for a, f, p in (waves + NIGHT_RIDGE0_EXTRA if k == 0 else waves))
+                for x in range(w)] for k, (base, waves, _, _) in enumerate(RIDGES)]
     mx, my = MOON[0] * w, MOON[1] * h
+    edge = MOON_EDGE_PX * w / 1280.0
     (gc, gs, gr), (hc, hs, hr), (dc, dr) = MOON_GLOW, MOON_HALO, MOON_DISC
     gr, hr, dr = gr * w, hr * w, dr * w
     gx0, gx1 = max(0, int(mx - gr)), min(w, int(mx + gr) + 1)
@@ -163,9 +172,12 @@ def render_night(w, h, stars=True):
                     c = [c[i] + (gc[i] - c[i]) * g for i in range(3)]
                     if g2 > 0.001:
                         c = [c[i] + (hc[i] - c[i]) * g2 for i in range(3)]
-                    if d2 < (dr + 1) ** 2:
-                        cover = min(1.0, max(0.0, dr + 0.5 - math.sqrt(d2)))
-                        c = [c[i] + (dc[i] - c[i]) * cover * 0.93 for i in range(3)]
+                    if d2 < (dr + edge) ** 2:
+                        r = math.sqrt(d2)
+                        cover = 1.0 - smoothstep(dr - edge, dr + edge, r)
+                        q = min(1.0, r / dr)
+                        lit = 1.0 - MOON_LIMB * (1.0 - math.sqrt(max(0.0, 1.0 - q * q)))
+                        c = [c[i] + (dc[i] * lit - c[i]) * cover * 0.93 for i in range(3)]
             for k in range(n_ridge):
                 ry, soft = ridge_y[k][x], RIDGES[k][3]
                 if v < ry - soft:
