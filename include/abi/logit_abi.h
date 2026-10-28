@@ -3041,8 +3041,8 @@ struct logit_itimer {
  * the WM turns into the screen point the 日夜 reveal (design 5.10) grows
  * from. A new number rather than a wider SYS_UI_DARK: that call's b and c are
  * unused today and garbage in existing callers, so they cannot start to mean
- * a position. Allowed without a window (a CLI caller): then (x, y) are
- * ignored, exactly SYS_UI_DARK. */
+ * a position. Like SYS_UI_DARK it is a GUI process's call; one that has no
+ * window yet flips the theme with no point (the reveal's (-1, -1)). */
 #define SYS_UI_DARK_AT         223
 
 #define LOGIT_GUI2_VERSION 1
