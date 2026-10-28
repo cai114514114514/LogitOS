@@ -26,6 +26,28 @@
 #include "openlogit_display_shadow.h"
 #include "openlogit_glass_material.h"
 
+/* Adaptive-tint flag bits of logit_glass2.flags / logit_backdrop2.flags (design
+ * P16). ui-wm-abi defines them in logit_abi.h; these fallbacks carry the same
+ * values so this file builds either side of that merge. They map onto
+ * ol_glass_material.flags OL_GLASS_ADAPT_SMOOTH (1) / OL_GLASS_ADAPT_FG (2). */
+#ifndef LOGIT_GLASS2_F_ADAPT_SMOOTH
+#define LOGIT_GLASS2_F_ADAPT_SMOOTH (1u << 1)
+#endif
+#ifndef LOGIT_GLASS2_F_ADAPT_FG
+#define LOGIT_GLASS2_F_ADAPT_FG (1u << 2)
+#endif
+_Static_assert(LOGIT_GLASS2_F_ADAPT_SMOOTH == (1u << 1), "ADAPT_SMOOTH is bit 1");
+_Static_assert(LOGIT_GLASS2_F_ADAPT_FG == (1u << 2), "ADAPT_FG is bit 2");
+_Static_assert(OL_GLASS_ADAPT_SMOOTH == 1 && OL_GLASS_ADAPT_FG == 2, "material flag values");
+#define GLASS2_ADAPT_MASK (LOGIT_GLASS2_F_ADAPT_SMOOTH | LOGIT_GLASS2_F_ADAPT_FG)
+
+/* The ring-3 flag bits as ol_glass_material.flags. */
+static inline __attribute__((unused)) uint8_t glass2_adapt_flags(unsigned f)
+{
+    return (uint8_t)(((f & LOGIT_GLASS2_F_ADAPT_SMOOTH) ? OL_GLASS_ADAPT_SMOOTH : 0) |
+                     ((f & LOGIT_GLASS2_F_ADAPT_FG) ? OL_GLASS_ADAPT_FG : 0));
+}
+
 const unsigned wm2_fx_info = LOGIT_GUI2_F_SHADOW2 | LOGIT_GUI2_F_GLASS2;
 
 #define FX_COORD_MAX (32768 * 256)     /* +-32768 pt, 24.8 */
@@ -106,7 +128,7 @@ long wm2_glass2(struct wm2_env *e, long a, long b, long c)
     long rc = wm2_copy_struct(e, &g, a, sizeof g);
     if (rc != OL_OK) return rc;
     if (!e->d) return OL_STATE;
-    if (g.flags & ~LOGIT_RECT_SNAP) return OL_ARGUMENT;
+    if (g.flags & ~(LOGIT_RECT_SNAP | GLASS2_ADAPT_MASK)) return OL_ARGUMENT;
     if (g.reserved[0] || g.reserved[1]) return OL_ARGUMENT;
     if (!rect_ok(g.x, g.y, g.w, g.h) || !radii_ok(g.radius)) return OL_ARGUMENT;
     if (g.cut > FX_GLASS_CUT_ALL) return OL_ARGUMENT;
@@ -128,6 +150,9 @@ long wm2_glass2(struct wm2_env *e, long a, long b, long c)
     m.blur = (uint8_t)g.blur_level;
     m.rim = (uint8_t)g.rim;
     m.fg_rgb = g.fg_rgb & 0xFFFFFFu;
+#ifndef UI_ADAPT_NEGCTL            /* control: drop the copy */
+    m.flags = glass2_adapt_flags(g.flags);
+#endif
     ol_display_liquid_glass_ex(e->d, x, y, w, h, rad[0], g.cut, &m);
     return OL_OK;
 }
