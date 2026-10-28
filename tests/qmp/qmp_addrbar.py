@@ -36,6 +36,16 @@ checked after typing and BEFORE Enter -- be the verdict. If that control ever
 goes green under QMP_ADDRBAR_LIE=1 again, the check has rotted and this
 comment is the place to start.
 
+AIMS (design P13, ui-aims-c). The Browser now prints `[browser] aim address x y`
+and, while editing, `[browser] aim caret x y` (window-local points, from
+draw_address_bar), and the WM prints the window's `frame` line. locate() and
+focus() read those through tests/qmp/qmp_aim.py instead of scanning every
+cascade candidate for the caret colour: the field click is the `address` aim,
+and the caret is still the referee -- CARET_RGB must be on screen at the
+`caret` aim, so a Browser that prints an aim for a caret it did not paint
+fails here. A Session with no serial text (nothing to read aims from) keeps the
+old candidate scan, below, unchanged.
+
 All constants are quoted with their single source line in c/; they are
 restated here, not derived, because the alternative is parsing C at test
 time. When one of them changes, this file is the second door -- grep for its
@@ -49,6 +59,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import qmp_ui                      # noqa: E402  (pt(), SCREEN_W/H -- the geometry jar)
+import qmp_aim                     # noqa: E402  (Aims: [browser] aim lines + WM frame)
 
 # --- one door per constant; each is the sole spelling used by the drivers ----
 CARET_RGB = (90, 150, 240)   # browser.c draw_address_bar(): gui_rect(..., rgb(90,150,240))
@@ -145,6 +156,31 @@ def _band_has_caret(ppm, cx, cy):
     return False
 
 
+def _aims(ui):
+    """An Aims reader over `ui`'s serial log, or None when it has none."""
+    try:
+        if not ui.serial_text():
+            return None
+    except (AttributeError, OSError):
+        return None
+    return qmp_aim.Aims(ui)
+
+
+def _caret_on_screen(ppm, sx, sy):
+    """True if CARET_RGB is within 2 pt of device pixel (sx, sy)."""
+    r = qmp_ui.pt(2)
+    target = bytes(CARET_RGB)
+    for y in range(max(0, sy - r), min(ppm.h, sy + r + 1)):
+        base = y * ppm.w * 3
+        seg = ppm.px[base + max(0, sx - r) * 3: base + (min(ppm.w - 1, sx + r) + 1) * 3]
+        k = seg.find(target)
+        while k >= 0:
+            if k % 3 == 0:
+                return True
+            k = seg.find(target, k + 1)
+    return False
+
+
 def field_point(origin):
     """The click target: the URL field's centre for a known client origin."""
     cx, cy = origin
@@ -164,6 +200,32 @@ def locate(ui, ppm_path=None, timeout=12.0):
         os.close(fd)
     from qmp_ui import PPM
     deadline = time.time() + timeout
+    aims = _aims(ui)
+    if aims is not None:
+        # The caret aim names where the Browser says the caret is; the caret
+        # colour must really be there. Polled: the ~3 MB browser.aex paints
+        # (and prints its first aims) seconds after the launched line.
+        while True:
+            try:
+                sx, sy = aims.screen("browser", "caret", timeout=max(0.5, deadline - time.time()))
+                cx, cy = aims.origin("browser")
+            except qmp_aim.AimTimeout as e:
+                die("%s -- the Browser printed no `[browser] aim caret` "
+                    "(c/apps/gui/browser/app/address.inc), so there is no "
+                    "landmark to find the address bar by" % e)
+            ui.screendump(ppm_path, settle=0.4)
+            if _caret_on_screen(PPM(ppm_path), sx, sy):
+                ax, ay = aims.screen("browser", "address", timeout=2.0)
+                print("qmp_addrbar: caret aim found -- Browser client origin "
+                      "(%d, %d), URL field click at %r (%s)"
+                      % (cx, cy, (ax, ay), ppm_path))
+                return (cx, cy)
+            if time.time() >= deadline:
+                die("the Browser published `[browser] aim caret` at device "
+                    "pixel (%d, %d) but its caret colour rgb(90,150,240) "
+                    "(CARET_RGB) is not painted there after %.0fs. Screendump "
+                    "kept at %s." % (sx, sy, timeout, ppm_path))
+            time.sleep(1.0)
     while True:
         ui.screendump(ppm_path, settle=0.4)
         ppm = PPM(ppm_path)
@@ -221,7 +283,9 @@ def focus(ui, origin=None, ppm_path=None, lie=False):
         ui.click_at(origin[0] + qmp_ui.pt(300),
                     origin[1] + qmp_ui.pt(TABH_PT + BARH_PT + 200))
         time.sleep(0.4)
-    x, y = (420, 145) if lie else field_point(origin)
+    aims = _aims(ui)
+    x, y = (420, 145) if lie else (aims.screen("browser", "address")
+                                   if aims is not None else field_point(origin))
     if lie:
         print("qmp_addrbar: SABOTAGE (negative control): clicking the retired "
               "(420, %d) instead of the field at %r" % (y, field_point(origin)))

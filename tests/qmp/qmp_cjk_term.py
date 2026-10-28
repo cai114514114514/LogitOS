@@ -53,6 +53,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import qmp_ui
 from qmp_ui import PPM, Session
+from qmp_aim import Aims
 
 ISO, DISK, PREFIX = sys.argv[1], sys.argv[2], sys.argv[3]
 # TERMINAL_SLOT = 3 used to live here; the tile now comes from the guest's own
@@ -152,6 +153,13 @@ except AssertionError as e:
 chk(launched, "Terminal launched from the dock")
 time.sleep(3.0)
 s.screendump(PREFIX + "-0-open.ppm")
+
+# The input line the keys below land on is the Terminal's `input` aim.
+try:
+    Aims(s).wait("terminal", "input", timeout=20)
+    chk(True, "the Terminal published its input aim")
+except AssertionError as e:
+    chk(False, "the Terminal published its input aim (%s)" % e)
 
 # --- the line: ab <IME nihao=你好> cd -------------------------------------
 s.key("a"); s.key("b")

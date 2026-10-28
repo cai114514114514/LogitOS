@@ -43,6 +43,9 @@ import threading
 import time
 import zlib
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import qmp_aim                    # noqa: E402  ([ch] aim lines, design P13)
+
 # --------------------------------------------------------------- the reply --
 # 24 slow tokens (the window in which the screendumps are taken) then a BURST of
 # 200 with no delay at all. The burst is not padding: it is what makes the
@@ -507,6 +510,19 @@ WINRE = re.compile(r"\[wm\] win (\d+) frame (-?\d+) (-?\d+) (\d+) (\d+) content 
 TITLEBAR = 30            # points; c/kernel/gui/wm.c TITLEBAR_H
 
 
+def aim(g, name, since=0, timeout=30.0):
+    """Latest `[ch] aim <name> x y` after log offset `since` (window-local pt)."""
+    end = time.time() + timeout
+    while True:
+        got = qmp_aim.parse_aims(g.snap()[since:]).get(("ch", name))
+        if got is not None:
+            return got
+        if time.time() >= end:
+            g.die("the Chat window printed no `[ch] aim %s` (ch.c frame()); "
+                  "last aim lines: %s" % (name, qmp_aim.aim_lines(g.snap())[-5:]))
+        time.sleep(0.2)
+
+
 def launch(g):
     mark = len(g.log)
     # This is the packaged A3 launcher. Missing native output must be a visible
@@ -530,10 +546,13 @@ def launch(g):
     if not m:
         g.die("the WM never reported the Chat window's geometry")
     fx, fy, cw, chh = int(m.group(2)), int(m.group(3)), int(m.group(6)), int(m.group(7))
-    # The prompt field, in the app's own layout terms: AUI_PAD in from the left,
-    # one control height plus 2*AUI_SP(2) up from the bottom.
-    fld_x = fx + 16 + 120
-    fld_y = fy + TITLEBAR + chh - (28 + 16) + 8 + 14
+    # The prompt field: the app says where it put it (`[ch] aim field x y`,
+    # window-local points, ch.c frame()), instead of this file re-deriving
+    # AUI_PAD / AUI_SP(2) / AUI_H_CTL. Only the WM's title bar (TITLEBAR) is
+    # still this driver's own constant.
+    fld = aim(g, "field", mark)
+    fld_x = fx + fld[0]
+    fld_y = fy + TITLEBAR + fld[1]
     g.goto(fld_x, fld_y)
     g.click()
     g.pump(0.6)
