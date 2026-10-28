@@ -3,7 +3,8 @@
 # reports LOGIT_GUI2_F_SHADOW2 (c/apps/gui/aui_paint.inc). tests/unit/aui_shadow_test.c
 # drives the real ring-3 aui.c over the aui-host transport with v2_fx.c, which
 # #includes the REAL c/kernel/gui/wm_draw2_fx.c: the call shape of an elevation
-# (an ambient and a key shadow, documented parameters), the fields of a general
+# (aui_elevation 1..4 = E1/E2/E3/E6 and aui_shadow 1..3 = E1/E2/E3 of design 3.3,
+# a key and an ambient shadow in the shadow ink), the fields of a general
 # shadow2, an unclamped 20 pt sigma against ol_display_shadow_ex at 100..200%,
 # damage coverage (3 sigma + offset) and the INFO=0 fallback.
 #

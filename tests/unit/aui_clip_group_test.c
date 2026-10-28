@@ -6,8 +6,9 @@
  * status is non-zero on any.
  *
  *   fade-group   a disabled button over a gradient is ONE group begin/end at
- *                AUI_DISABLED_ALPHA, and its pixels equal the display_group
- *                oracle (the enabled look drawn inside ol_display_group_begin/end)
+ *                AUI_DISABLED_ALPHA, which is 102 (40 %, design 4: was 110),
+ *                and its pixels equal the display_group oracle (the enabled
+ *                look drawn inside ol_display_group_begin/end at 102)
  *   balance      pushes and pops pair up per frame; a leak is counted by aui and
  *                the kernel's auto-close counter (SYS_GUI2_INFO a=1) stays 0
  *   scroll       a rounded scroll container clips its corners at 100/125/150%
@@ -60,6 +61,9 @@ static void gradient(void) { aui_vgrad_round(0, 0, 160, 120, 0, 0x3060C0, 0xC060
 
 static void t_fade_group(void)
 {
+    /* design 4 ("Disabled is always the existing opacity group at
+     * AUI_DISABLED_ALPHA, changed from 110 to 102 (40 %)") */
+    check(AUI_DISABLED_ALPHA == 102, "fade-group: AUI_DISABLED_ALPHA is 102 (design 4)");
     setup(100, 1);
     gradient();
     aui_host_stats_reset(H);
