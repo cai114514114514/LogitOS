@@ -509,6 +509,13 @@ static void case_sort(int arg)
     step(16, 2);
     if (g_sort.col != 0 || g_sort.desc != 1) FAIL("sort-chevron: second click -> desc %d, want 1", g_sort.desc);
     if (!ic_find(GICON_CHEVRON_D, 10) || ic_find(GICON_CHEVRON_U, 10)) FAIL("sort-chevron: descending is CHEVRON_D alone");
+    {   /* numeric column 1 (x 160..240): chevron 4 after its right-aligned label (design 4.8) */
+        click(200, 14); step(16, 2);
+        const struct irec *cn = ic_find(GICON_CHEVRON_U, 10);
+        int want = 160 + 80 - 22 + 4;
+        if (!cn) FAIL("sort-chevron-num: no chevron on a sorted numeric column");
+        else if (cn->x != want) FAIL("sort-chevron-num: chevron at x %d, want %d (4 after the label)", cn->x, want);
+    }
     click(300, 14);                     /* column 2 (x 240..) starts ascending */
     step(16, 2);
     if (g_sort.col != 2 || g_sort.desc != 0) FAIL("sort-chevron: other column -> col %d desc %d, want 2 ascending", g_sort.col, g_sort.desc);
@@ -524,6 +531,12 @@ static void case_zebra(int arg)
     reset(); frame(); step(16, 3);
     int z = 0;
     for (int i = 0; i < W.nrect; i++) z += W.rect[i].col == aui_tok()->fill_zebra && W.rect[i].w == 400;
+    int surf = 0, hdr = 0;
+    for (int i = 0; i < W.nrect; i++) {
+        surf += W.rect[i].col == aui_tok()->bg_content && W.rect[i].w == 400 && W.rect[i].h == 200;
+        hdr += W.rect[i].col == aui_tok()->bg_content && W.rect[i].w == 400 && W.rect[i].h == 28;
+    }
+    if (surf != 1 || hdr) FAIL("table-surface: %d full-widget bg.content fills (want 1), %d header-only fills (want 0): header and body are one surface", surf, hdr);
     if (nc >= 4 && z != 3) FAIL("zebra-rule: %d columns drew %d zebra rows, want 3 (odd rows of 6)", nc, z);
     if (nc < 4 && z != 0) FAIL("zebra-rule: %d columns drew %d zebra rows, want 0", nc, z);
     if (!bad) printf("ok   zebra %d columns: %d rows\n", nc, z);
@@ -565,6 +578,18 @@ static void case_slide(int arg)
         if (first - y0 != 28 * 256 || aui_anim_active()) FAIL("resort-slide: %d rows must snap (moved %d, active %d)", nrow, (first - y0) / 256, aui_anim_active());
         if (!bad) printf("ok   re-sort: %d rows snap\n", nrow);
     }
+}
+
+static void case_empty(int arg)
+{
+    (void)arg;
+    setup(100, 0);
+    fill_cells(3, 5); g_flags = AUI_TBL_EMPTY; g_rh = 0; g_scroll = 0; g_tsel = 1; memset(&g_sort, 0, sizeof g_sort); g_sort.col = -1;
+    cur = draw_table;
+    reset(); frame(); step(16, 3);
+    if (tx_find("项目1") || tx_find("项目0")) FAIL("table-empty: rows drawn under AUI_TBL_EMPTY");
+    if (!tx_find("名称")) FAIL("table-empty: the header is gone");
+    if (!bad) printf("ok   AUI_TBL_EMPTY clears the body\n");
 }
 
 static void case_collapse(int arg)
@@ -760,6 +785,7 @@ int main(void)
     run("slide", case_slide, 5);
     run("snap", case_slide, 40);
     run("collapse", case_collapse, 0);
+    run("empty", case_empty, 0);
     run("row aims", case_row_aims, 0);
     run("doctabs light", case_doctabs, 0);
     run("doctabs dark", case_doctabs, 1);

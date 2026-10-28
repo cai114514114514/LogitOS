@@ -196,6 +196,7 @@ static int ls_body(int x, int y, int w, int h, struct aui_col *cols, int ncol, i
     int colx[LS_MAXCOLS + 1], colw[LS_MAXCOLS];
     if (nc > LS_MAXCOLS) nc = LS_MAXCOLS;
     if (rh <= 0) rh = 28;
+    if (flags & AUI_TBL_EMPTY) nrow = 0;      /* the body stays clear for the empty state */
     ls_sync_focus();
     aim_take(&aim);
     if (foc_n < 128) foc_ids[foc_n++] = id;
@@ -211,10 +212,12 @@ static int ls_body(int x, int y, int w, int h, struct aui_col *cols, int ncol, i
     int wx = X_(x), wy = Y_(y);
     if (input_ok(wx, wy, w, h) && in.ev == EV_MOUSE) { focus_id = id; focus_vis = 0; }
 
+    /* the whole widget sits on bg.content: header and body one surface (4.8) */
+    aui_fill(x, y, w, h, T->bg_content);
+
     /* ---- header ---- */
     if (head) {
         int hov = input_ok(wx, wy, w, head);
-        aui_fill(x, y, w, head, T->bg_content);
         if (ncol > 0) {
             /* resize handles */
             if (resizable && ls_drag.id == id) {
@@ -247,9 +250,9 @@ static int ls_body(int x, int y, int w, int h, struct aui_col *cols, int ncol, i
                     ls_text(cx + 8, y, head, colw[c] - 16 - chev, cols[c].title, 12, AUI_W_MEDIUM,
                             T->label_secondary, AUI_ALIGN_RIGHT);
                     if (sorted) {
-                        int lw = aui_text_measure_w(cols[c].title, 12, AUI_W_MEDIUM);
+                        /* the label ends at cx + colw - 22 (right inset 8 + chevron 14) */
                         gui_icon(sort->desc ? GICON_CHEVRON_D : GICON_CHEVRON_U,
-                                 cx + colw[c] - 8 - lw - 14, y + (head - 10) / 2, 10, T->label_tertiary);
+                                 cx + colw[c] - 18, y + (head - 10) / 2, 10, T->label_tertiary);
                     }
                 } else {
                     ls_text(cx + padl, y, head, colw[c] - padl - 8 - chev, cols[c].title, 12, AUI_W_MEDIUM,
@@ -505,7 +508,7 @@ int aui_doctabs(int x, int y, int w, const struct aui_doctab *items, int n, int 
     for (int j = 0; j < oc; j++) {
         int e = ord[j];
         tgt[j] = st->e[e].live ? tw_ * 256 : 0;
-        int sk = 0x100 + (st->e[e].key & 0xFF);
+        int sk = 0x100 + e;                 /* one spring per entry slot: keys never collide */
         if (born[e]) aui_spring_ex(sk, 0, AUI_SPRING_SNAPPY);       /* opens from 0 */
         int wk = aui_spring_ex(sk, tgt[j], AUI_SPRING_SNAPPY);
         wpx[j] = (wk + 128) / 256;
