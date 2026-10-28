@@ -244,8 +244,11 @@ static void draw(void)
     reference_count=0;raw_painted=0;aui_begin(AUI_BG);aui_fill(0,0,dw,48,AUI_SURFACE_2);aui_vhairline(dw,0,H-28);
     static const char *fonts[]={"系统字体","等宽字体"};static const char *sizes[]={"16","18","20","24"};
     int size=te_font==16?0:te_font==18?1:te_font==20?2:3;
+    aui_aim_prefix("font");                 /* [textedit] aim font: aui_select is the single emitter */
     if(aui_select(16,8,110,fonts,2,&te_mono))cache_width=-1;
+    aui_aim_prefix("size");
     if(aui_select(134,8,66,sizes,4,&size)){te_font=(int[]){16,18,20,24}[size];cache_width=-1;}
+    ui_aim_rect("bold",212,8,34,30);ui_aim_rect("italic",250,8,34,30);ui_aim_rect("save",292,8,62,30);
     if(aui_button_ex(212,8,34,30,"B",AUI_V_GHOST,!source_open&&!view_mode&&!load_refused))work_markup("**");
     if(aui_button_ex(250,8,34,30,"I",AUI_V_GHOST,!source_open&&!view_mode&&!load_refused))work_markup("*");
     if(aui_button_ex(292,8,62,30,"保存",AUI_V_GHOST,!load_refused)){if(save_document()>=0)saved=1;}
@@ -255,6 +258,7 @@ static void draw(void)
     if(source_open){char label[192];const struct ag_object *o=&work.task.objects[source_index];
         snprintf(label,sizeof label,"来源 %llu · 版本 %llu · %s",(unsigned long long)o->id,(unsigned long long)o->revision,o->path);
         aui_text_ellipsis(28,70,dw-300,label,AUI_TEXT,14);
+        ui_aim_rect("source-back",dw-258,65,66,28);
         if(aui_button_ex(dw-258,65,66,28,"返回",AUI_V_GHOST,1)){source_open=0;scroll=0;cache_width=-1;}
         if(aui_button_ex(dw-186,65,76,28,"从头看",AUI_V_GHOST,source_offset>0))work_source(source_index,0);
         if(aui_button_ex(dw-104,65,76,28,"下一段",AUI_V_GHOST,source_offset+source_len<o->bytes))work_source(source_index,source_offset+source_len);
@@ -262,10 +266,15 @@ static void draw(void)
         char label[192];snprintf(label,sizeof label,"%s · 当前版本 %llu",fname,(unsigned long long)agent_revision);
         aui_text_ellipsis(28,72,dw-252,label,AUI_MUTED,14);
         static const char *tabs[]={"当前正文","拟修改"};
+        /* The two segments are the document's two versions: the text as it is and
+         * the proposed one. aui_segmented publishes their aims (ui-aui-core). */
+        static const char *const vnames[]={"version-back","version-next"};
+        aui_aim_names(vnames,2);
         if(aui_segmented(dw-218,64,192,30,tabs,2,&view_mode)){editor_focus=0;scroll=0;follow_caret=0;cache_width=-1;}
         if(!proposal_text)view_mode=0;
     }
     aui_hairline(28,100,dw-56);draw_document();
+    if(work_body_hit(body.x,body.y))ui_aim_rect("body",body.x,body.y,body.w,body.h);
     if(work.proposal&&!source_open)aui_text_sz(28,H-55,view_mode?"绿色标记：候选版本中变化的范围，尚未应用":"黄色标记：与候选稿不同的范围，当前正文已保留",AUI_MUTED,12);
     if(side){
         aui_text_sz(x,32,"这份文档的工作",AUI_TEXT,22);
@@ -277,6 +286,7 @@ static void draw(void)
         aui_hairline(x,216,rw);
         aui_text_sz(x,236,"已使用的资料",AUI_TEXT,15);
         snprintf(summary,sizeof summary,agent_task?"%u 份已授权资料  ›":"当前文档（包含尚未保存的编辑）",work.task.object_count);
+        ui_aim_rect("sources",x,262,rw,32);
         if(aui_button_ex(x,262,rw,32,summary,AUI_V_GHOST,agent_task&&work_available))source_list=!source_list;
         aui_hairline(x,308,rw);
         aui_text_sz(x,329,"已完成的工作",AUI_TEXT,15);
@@ -297,6 +307,7 @@ static void draw(void)
          * bottom is the margin above the composer. */
         int by=H-146;if(by<sy+56)by=sy+56;
         if(work.proposal){
+            ui_aim_rect("apply",x,by,rw,38);ui_aim_rect("keep",x,by+42,rw,28);
             if(aui_button_ex(x,by,rw,38,"应用修改",AUI_V_PRIMARY,proposal_text&&work_available&&!agent_dirty))work_decide(1);
             if(aui_button_ex(x,by+42,rw,28,"保留当前版本",AUI_V_GHOST,work_available))work_decide(0);
         }else {
@@ -309,6 +320,7 @@ static void draw(void)
                 aui_text_sz(x,by+44,summary,AUI_MUTED,12);}
         }
         int can=!load_refused&&(!agent_task||(work_available&&(work.task.phase==AG_DONE||work.task.phase==AG_PAUSED)));
+        ui_aim_rect("instruction",x,H-64,rw-44,AUI_H_CTL);
         int submit=aui_textfield_ex(x,H-64,rw-44,instruction,sizeof instruction,"继续告诉 TextEdit 要做什么…",can);
         if(aui_button_ex(x+rw-36,H-64,36,30,"↑",AUI_V_PRIMARY,can&&instruction[0])||submit)work_submit();
         if(source_list){
@@ -316,7 +328,13 @@ static void draw(void)
             if(aui_dialog_begin("本任务已授权的资料",580,mh)){
                 aui_label(24,18,"按任务保存的来源版本读取，原始资料保持原样。",AUI_MUTED);
                 static int source_scroll;aui_scroll_begin(20,50,540,mh-110,&source_scroll,(int)work.task.object_count*38);
+                /* dialog-row-<i>: the dialog origin is aui_dialog_begin's (centred, a third
+                 * down, title strip 40), so a row's window-local centre is that plus the
+                 * scroll view (20,50) minus the scroll; only rows inside the view. */
+                int dlg_x=(W-580)/2,dlg_y=(H-mh-40)/3;if(dlg_y<12)dlg_y=12;
                 for(unsigned i=0;i<work.task.object_count;i++){struct ag_object *o=&work.task.objects[i];
+                    int ry=(int)i*38-source_scroll;
+                    if(ry>=0&&ry+34<=mh-110)ui_aim_i("dialog-row",(int)i,dlg_x+20+260,dlg_y+40+50+ry+17);
                     snprintf(summary,sizeof summary,"[S%llu] %s · v%llu",(unsigned long long)o->id,o->path,(unsigned long long)o->revision);
                     if(aui_button_ex(0,(int)i*38,520,34,summary,AUI_V_GHOST,1)){work_source((int)i,0);source_list=0;}}
                 aui_scroll_end();const char *buttons[]={"返回文档"};if(aui_dialog_buttons(buttons,1)>=0)source_list=0;aui_dialog_end();}

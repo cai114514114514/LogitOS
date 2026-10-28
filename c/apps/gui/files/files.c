@@ -719,15 +719,15 @@ static void fit_label(const char *s, int maxpx, char *out, int omax)
  * (`SIDE[i].icon != GICON_TERMINAL`) so the two rows would not both highlight --
  * a model that stores the wrong thing and then patches the symptom in the
  * painter. */
-struct side { const char *label; const char *path; int icon; int header; int apps; };
+struct side { const char *label; const char *path; int icon; int header; int apps; const char *key; };
 static const struct side SIDE[] = {
-    { "我的项目", 0, 0, 1, 0 },
-    { "文稿",        "/docs",  GICON_DOC,      0, 0 },
-    { "系统位置",     0, 0, 1, 0 },
-    { "字体",        "/fonts", GICON_FOLDER,   0, 0 },
-    { "位置",        0, 0, 1, 0 },
-    { "LogitOS HD",  "/",      GICON_GRID,     0, 0 },
-    { "应用程序",     "/",      GICON_TERMINAL, 0, 1 },
+    { "我的项目", 0, 0, 1, 0, 0 },
+    { "文稿",        "/docs",  GICON_DOC,      0, 0, "docs" },
+    { "系统位置",     0, 0, 1, 0, 0 },
+    { "字体",        "/fonts", GICON_FOLDER,   0, 0, "fonts" },
+    { "位置",        0, 0, 1, 0, 0 },
+    { "LogitOS HD",  "/",      GICON_GRID,     0, 0, "hd" },
+    { "应用程序",     "/",      GICON_TERMINAL, 0, 1, "apps" },
 };
 #define SIDE_N (int)(sizeof SIDE / sizeof SIDE[0])
 
@@ -876,6 +876,47 @@ static void draw_menu(void)
         gui_text_run(mx + 12, my + 6 + i * MENU_IH, 14, 0, AUI_TEXT, MENU[i].label, slen(MENU[i].label));
 }
 
+/* --- aims (design P13, addendum I; [files] aim <name> x y) ----------------------
+ * Window-local content points at each control's centre, published AFTER the
+ * frame's layout and only for what is on screen, so tests/qmp/qmp_aim.py can
+ * click the real layout instead of a second copy of it. Everything here is hand
+ * drawn (or an aui button that publishes no aim of its own), so this file is the
+ * only emitter of these names. ui_aim() prints a line only when a name is new or
+ * moved. Layout and paint are untouched: this runs after the last draw call. */
+static void publish_aims(void)
+{
+    if (!ui_aim_on()) return;
+    ui_aim_rect("back", TB_BACK_X, TB_BTN_Y, TB_BACK_W, TB_BTN_H);
+    ui_aim_rect("view", TB_VIEW_X, TB_BTN_Y, TB_VIEW_W, TB_BTN_H);
+    ui_aim_rect("new-project", TB_NEW_X, TB_BTN_Y, TB_NEW_W, TB_BTN_H);
+    ui_aim_rect("logit", CONTENT_RIGHT - 118, WINH - 30, 108, 24);
+    for (int i = 0; i < SIDE_N; i++) {
+        if (SIDE[i].header || !SIDE[i].key) continue;
+        char nm[24]; int n = 0;
+        for (const char *k = "sidebar-"; *k; k++) nm[n++] = *k;
+        for (const char *k = SIDE[i].key; *k && n < 23; k++) nm[n++] = *k;
+        nm[n] = 0;
+        ui_aim(nm, SIDEBAR_W / 2, side_y(i) + 11);
+    }
+    if (rename_mode)        ui_aim_rect("rename-field", CX + 48, 11, 230, AUI_H_CTL);
+    else if (newfolder_mode) ui_aim_rect("newfolder-field", CX + 48, 11, 230, AUI_H_CTL);
+    /* Rows (list) or cells (grid) that are on screen: item_rect() answers
+     * "scrolled out of view" and the clip drops the half row at the bottom. */
+    for (int i = 0; i < nent; i++) {
+        int rx, ry, rw, rh;
+        if (!item_rect(i, &rx, &ry, &rw, &rh)) continue;
+        if (ry + rh / 2 >= CY + CHGT) continue;
+        ui_aim_i(view_mode ? "row" : "cell", i, rx + rw / 2, ry + rh / 2);
+    }
+    if (menu_open) {
+        int mx, my, mh;
+        menu_rect(&mx, &my, &mh);
+        for (int i = 0; i < MENU_N; i++)
+            ui_aim_i("context", i, mx + MENU_W / 2, my + 4 + i * MENU_IH + MENU_IH / 2);
+    }
+    project_publish_aims();
+}
+
 static void frame(void)
 {
     /* Take the snapshot here, and ONLY here. dispatch() runs before the next
@@ -903,6 +944,7 @@ static void frame(void)
      * is entirely aui widgets, so aui's own diff already covers it -- reporting
      * it here too would flush the whole window on every keystroke into the goal
      * field. Unioned with aui's rect, never instead of it (aui.c:1800). */
+    publish_aims();
     if (sig_acc != content_sig) {
         content_sig = sig_acc;
         aui_end_rect(0, 0, CONTENT_RIGHT, WINH);
@@ -1010,6 +1052,7 @@ static void handle_key(int k)
 void app_main(void)
 {
     gui_create("Finder", WINW, WINH);
+    ui_aim_set_app("files");            /* [files] aim <name> x y: see publish_aims() */
     /* The SAME size, told to aui. It is a jar with two doors: gui_create tells
      * the KERNEL how big the window is, aui_set_size tells the TOOLKIT, and
      * this app only ever walked through the first. aui's win_w/win_h default to

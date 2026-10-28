@@ -46,6 +46,8 @@ def main():
   value=g.capture(text);check('command '+text.split()[0],g.last_capture_exit==0);return value
  def click(px,py):
   x,y=pos(px,py);move(g,x,y);button(g,True);button(g,False)
+ def fa(name):return gate.aim(g,'files',name)
+ def ta(name):return gate.aim(g,'textedit',name)
  def identity(path):
   value=command('/bin/agentctl ref '+path);m=re.search(r'volume=([a-f0-9]+) object=(\d+)',value);check('persistent identity '+path,bool(m));return m.groups()
  try:
@@ -57,32 +59,31 @@ def main():
   g=runtime.Guest(b,disk,out,a.mode,a.ram);g.wait(b'AGENTD_READY',180);g.wait(b'LogitOS shell',60)
   if a.no_ui:command('/bin/mkdir /docs/Community')
   else:
-   # Finder-local clicks: +Project (630,23), work field (820,128), Open in TextEdit
-   # (832,338). Each moved 120 left when Finder went from 1120 to 1000 wide (2026-10-26).
-   pos,W,H=frame(g,'Finder');click(630,23);click(295,24);g.type('Community');g.key('ret');time.sleep(1)
+   # Finder clicks resolve through the app's own `[files] aim` lines (design P13): +Project,
+   # work field, Open in TextEdit and the rest move with the layout.
+   pos,W,H=frame(g,'Finder');click(*fa('new-project'));click(*fa('newfolder-field'));g.type('Community');g.key('ret');time.sleep(1)
   project=identity('/docs/Community');check('empty directory is already a Project','tasks=0' in command('/bin/agentctl project /docs/Community'))
   command('/bin/cp /docs/source.md /docs/Community/source.md')
   if a.no_ui:check('Finder creates task','TASK_CREATED id=1' in command('/bin/agentctl create "Summarize the source with exact citations" /docs/Community /docs/Community/source.md'))
   else:
    # Source.md precedes the newly created directory in the actual directory list.
-   move(g,*pos(310,90));button(g,True,'right');button(g,False,'right');click(332,102)
+   move(g,*pos(*fa('row-1')));button(g,True,'right');button(g,False,'right');click(*fa('context-0'))
    g.wait(rb'PROJECT_VIEW path=/docs/Community tasks=0',30);time.sleep(.3)
-   click(820,128);g.type('Write a concise report with exact source citations.');g.key('ret');time.sleep(1)
+   click(*fa('work-field'));g.type('Write a concise report with exact source citations.');g.key('ret');time.sleep(1)
   g.complete(1);initial=command('/bin/agentctl document 1');check('report contains source facts and citations','4200' in initial.replace(',','') and '[S1:' in initial)
   doc=identity('/docs/Community/report-1.md');check('Project owns the created task','PROJECT_TASK id=1' in command('/bin/agentctl project /docs/Community'))
   check('disk bytes match report','DOCUMENT_VERIFIED' in command('/bin/agentctl verify 1'))
   if not a.no_ui:
    g.wait(rb'PROJECT_VIEW path=/docs/Community tasks=1 first=1 phase=6',30);time.sleep(.5)
-   gate.screenshot(g,'finder-report');click(832,338);time.sleep(1)
+   gate.screenshot(g,'finder-report');click(*fa('open-in-textedit'));time.sleep(1)
    pos,W,H=frame(g,'/docs/Community/report-1.md');time.sleep(2)
    check('Finder opens TextEdit with the same task',gate.work(g)[5]==1)
-   click(100,170);g.key('ctrl','end');g.type('\nhuman note keep this sentence\n');time.sleep(2)
+   click(*ta('body'));g.key('ctrl','end');g.type('\nhuman note keep this sentence\n');time.sleep(2)
    before=command('/bin/agentctl document 1');check('unsaved TextEdit edit is in task state','human note keep this sentence' in before)
-   sw=min(360,max(290,W*31//100));dw=W-sw;x=dw+24;rw=sw-48
-   click(x+80,H-49);g.type('Suggest next steps and preserve the exact sentence human note keep this sentence.');g.key('ret');time.sleep(1)
+   click(*ta('instruction'));g.type('Suggest next steps and preserve the exact sentence human note keep this sentence.');g.key('ret');time.sleep(1)
    g.complete(1,allow_conflict=True);v=gate.work(g);candidate=command('/bin/agentctl candidate 1')
    check('review retains user document',v[2]>0 and command('/bin/agentctl document 1')==before)
-   gate.screenshot(g,'review-before-move');click(18,-15);time.sleep(.3)
+   gate.screenshot(g,'review-before-move');click(18,-15);time.sleep(.3)  # the close light: pinned WM geometry
   else:before=initial;v=candidate=None
   command('/bin/mv /docs/Community /docs/Library')
   check('Project identity survives rename',identity('/docs/Library')==project)
@@ -100,10 +101,10 @@ def main():
   if not a.no_ui:
    check('pending review survives rename and reboot',gate.work(g)==v and command('/bin/agentctl candidate 1')==candidate)
    command('/bin/agent-runtime-test open-path /docs/Archive/Library/report-1.md');pos,W,H=frame(g,'/docs/Archive/Library/report-1.md');time.sleep(2)
-   click(x+rw//2,H-127);time.sleep(2)
+   click(*ta('apply'));time.sleep(2)
    check('native Apply commits same proposal',command('/bin/agentctl document 1')==candidate and gate.work(g)[2]==0)
    check('accepted report stays inside renamed Project','artifact=/docs/Archive/Library/' in command('/bin/agentctl verify 1'))
-   click(323,22);time.sleep(1);check('native Save keeps exact bytes','DOCUMENT_VERIFIED' in command('/bin/agentctl verify 1'))
+   click(*ta('save'));time.sleep(1);check('native Save keeps exact bytes','DOCUMENT_VERIFIED' in command('/bin/agentctl verify 1'))
    gate.screenshot(g,'applied-in-renamed-project')
   command('/bin/cp /docs/source.md /docs/Archive/Library/report-1.md')
   check('external edit retains the file identity',identity('/docs/Archive/Library/report-1.md')==doc)

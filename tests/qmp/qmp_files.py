@@ -39,6 +39,7 @@ import socket, json, sys, os, time, subprocess, tempfile
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__))))
 import qmp_ui                                    # noqa: E402
+import qmp_aim                                   # noqa: E402
 from qmp_ui import LAUNCH_RE, FOCUS_RE, dock_icon_of, parse_dock, title_of  # noqa: E402
 
 iso, disk = sys.argv[1], sys.argv[2]
@@ -117,6 +118,21 @@ def send(t):
 
 json.loads(f.readline()); cmd({"execute": "qmp_capabilities"})
 
+class _Serial:                              # what qmp_aim.Aims needs of a session
+    @staticmethod
+    def serial_text():
+        try:
+            with open(serial, encoding="utf-8", errors="replace") as fh:
+                return fh.read()
+        except OSError:
+            return ""
+aims = qmp_aim.Aims(_Serial)                # `[files] aim <name> x y` -> screen px
+def aim_screen(name, timeout=15):
+    try:
+        return aims.screen("files", name, timeout)
+    except qmp_aim.AimTimeout as exc:
+        fail(str(exc))
+
 # 1. Raise the Finder from the Dock. Tile from the guest's own [wm] dock
 #    line; the click is then VERIFIED against the guest's own report. The
 #    Finder is already live (boot), so the good answer is the focus line; a
@@ -145,21 +161,21 @@ if launched == [] and not FOCUS_RE.search(newlog):
          "the click hit nothing" % (fx, fy))
 
 # 2. Drive New Folder: click the toolbar "New Folder" button, type a name, Enter.
-#    The boot Finder window sits at cascade 0 -> (110,70), content origin
-#    (110,100). The toolbar's "+Project" (files.c TB_NEW_X = CONTENT_RIGHT -
-#    80 = 600 at WINW 1000, y=10, 72x26) -> center screen (110+636, 100+23) =
-#    (746,123). It read TB_NEW_X=582 / (717,123) from an older layout, which
-#    had been missing the button since before 2026-10-26. A miss is harmless
-#    -- the screenshot still proves the app launched, and the data-correctness
-#    path is covered by run-shell-test.sh.
-goto(746, 123); click(); time.sleep(0.4)        # +Project toolbar button
+#    The control's place is the Finder's own `[files] aim new-project x y`
+#    (window-local content points, design P13), mapped to the screen through
+#    the window's `[wm] win N frame` line -- no layout constant is spelled in
+#    this driver, so the toolbar can move without moving the test. (It used to
+#    be the literal screen point (746,123), derived by hand from TB_NEW_X.)
+goto(*aim_screen("new-project")); click(); time.sleep(0.4)   # +Project toolbar button
+aim_screen("newfolder-field")                   # the click opened the name field
 send("qmpdir\n"); time.sleep(0.4)               # type a folder name + Enter
 
 # 3. Inject a right-button to pop the Files context menu over the list area.
-#    Content-local (400,200) -> screen (510,300), clear of the auto-launched
-#    Clock window (x138-378, y98-230).
-goto(510, 300); time.sleep(0.2)
+#    Right-click the first row (its aim), clear of the auto-launched Clock
+#    window (x138-378, y98-230); the menu must then publish its items.
+goto(*aim_screen("row-0")); time.sleep(0.2)
 click("right"); time.sleep(0.6)
+aim_screen("context-0")                         # the context menu opened
 
 # 4. Screenshot the desktop.
 time.sleep(0.3)

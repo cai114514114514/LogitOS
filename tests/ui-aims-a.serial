@@ -1,0 +1,47 @@
+# tests/ui-aims-a.serial -- the `[files] aim`, `[textedit] aim` and `[wm] win` lines of REAL boots of the
+# tour/test images built from this tree (latest line per name). Three boots, merged: the qmp_files.py boot
+# (Finder), the run-textedit-work.py guest (TextEdit review) and the run-project-work.py guest (Finder project pane).
+# Window slots are renumbered (11 = Finder, 12 = TextEdit) so lines of different boots do not collide.
+[wm] win 11 frame 110 70 1000 610 content 1000 580 pt zoom 0 min 0 Finder
+[wm] win 11 app files
+[wm] win 12 frame 138 24 1120 670 content 1120 640 pt zoom 0 min 0 /docs/report-1.md
+[wm] win 12 app textedit
+[files] aim back 191 23
+[files] aim context-0 486 106
+[files] aim context-1 486 130
+[files] aim context-2 486 154
+[files] aim context-3 486 178
+[files] aim context-4 486 202
+[files] aim context-5 486 226
+[files] aim context-6 486 250
+[files] aim context-7 486 274
+[files] aim logit 616 562
+[files] aim new-project 636 23
+[files] aim newfolder-field 331 25
+[files] aim open-in-textedit 840 340
+[files] aim row-0 424 62
+[files] aim row-1 424 90
+[files] aim row-2 424 118
+[files] aim sidebar-apps 84 193
+[files] aim sidebar-docs 84 53
+[files] aim sidebar-fonts 84 109
+[files] aim sidebar-hd 84 165
+[files] aim view 570 23
+[files] aim work-field 840 128
+[files] aim work-run 840 164
+[textedit] aim apply 946 520
+[textedit] aim body 386 344
+[textedit] aim bold 229 23
+[textedit] aim dialog-0 788 348
+[textedit] aim dialog-confirm 788 348
+[textedit] aim dialog-row-0 550 237
+[textedit] aim font 71 22
+[textedit] aim instruction 924 590
+[textedit] aim italic 267 23
+[textedit] aim keep 946 557
+[textedit] aim save 323 23
+[textedit] aim size 167 22
+[textedit] aim source-back 548 79
+[textedit] aim sources 946 278
+[textedit] aim version-back 603 79
+[textedit] aim version-next 699 79

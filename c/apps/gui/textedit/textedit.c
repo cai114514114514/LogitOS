@@ -515,6 +515,7 @@ void app_main(void)
     load_geometry(&w, &h);
     gui_create(fname, w, h);
     aui_set_size(w, h);
+    ui_aim_set_app("textedit");         /* [textedit] aim <name> x y: textedit_work.inc draw() */
     te_publish_menus();
 
     if(fname[0]!='/'){char absolute[AG_PATH];absolute[0]='/';
