@@ -59,22 +59,32 @@ static int tf_caret_w(void)
     return sc > 0 ? imax(1, (200 + sc - 1) / sc) : 2;
 }
 
-/* Width in points of the first n bytes. The text is DRAWN with the weighted run
- * (TEXT_RUN2 shapes with fractional advances), so where the kernel has the
- * carets query the width comes from it -- the legacy measure rounds every glyph
- * and under-reports a 14 px line by ~8 %, which put the caret a character short
- * of the end of the text. Without them (INFO=0) the run is the legacy one and
- * the legacy measure is exact. Sub-point error is the caret's to carry: it is
- * placed on whole points. */
+/* Width in points of the first n bytes, as the text is DRAWN.
+ *
+ * SYS_TEXT_MEASURE rounds every glyph advance to a whole device pixel at the size
+ * it is asked for, while the run is drawn with the real (quarter pixel) pen: a
+ * 14 px line measures ~6 % short, and a caret placed from that measure sat a
+ * character before the end of the text (seen in the guest, 21 characters:
+ * measured 124, drawn 135). Asking at TF_MS times the size makes the rounding
+ * TF_MS times smaller relative to the line, and dividing by TF_MS gives the pen
+ * the glyphs were drawn with to a sixteenth of a point. The carets query (one
+ * call for every stop) serves clicks the same way. */
+#define TF_MS 16
+
 static int tf_carets_ok(const char *s, int n, int *cnt)
 {
     if (n <= 0 || n > TX_MAX || !tx_has_layout()) return 0;
-    int c = tx_carets_cb(0, s, n, TF_PX, 0, tx_off, tx_x, TX_MAX + 1);
+    int c = tx_carets_cb(0, s, n, TF_PX * TF_MS, 0, tx_off, tx_x, TX_MAX + 1);
     if (c <= 0) return 0;
     *cnt = c;
     return 1;
 }
-static int tf_d2pt(int dev24) { int pct = aui_scale(); return (int)(((long long)dev24 * 100 + (long long)pct * 128) / ((long long)pct * 256)); }
+/* device 24.8 at TF_MS times the size -> points, rounded */
+static int tf_d2pt(int dev24)
+{
+    long long den = (long long)aui_scale() * 256 * TF_MS;
+    return (int)(((long long)dev24 * 100 + den / 2) / den);
+}
 static int tfw(const char *s, int n)
 {
     int c;
@@ -84,7 +94,7 @@ static int tfw(const char *s, int n)
         for (int k = 0; k < c; k++) if ((int)tx_off[k] <= n) best = tx_x[k];
         return tf_d2pt(best);
     }
-    return text_measure_px(s, n, TF_PX, 0);
+    return (text_measure_px(s, n, TF_PX * TF_MS, 0) + TF_MS / 2) / TF_MS;
 }
 
 /* ---- UTF-8, at the one place a raw EV_KEY codepoint becomes bytes in this
@@ -149,7 +159,7 @@ static int tf_index_at(const char *buf, int n, int px_off)
     int c;
     if (tf_carets_ok(buf, n, &c)) {
         /* the nearest caret stop to the point (device 24.8), one query */
-        long long want = (long long)px_off * aui_scale() * 256 / 100;
+        long long want = (long long)px_off * aui_scale() * 256 * TF_MS / 100;
         int best = 0; long long bd = -1;
         for (int k = 0; k < c; k++) {
             long long d = want - tx_x[k]; if (d < 0) d = -d;
@@ -298,19 +308,12 @@ static void tf_follow(const char *buf, int n, int vw)
     tf_sx = iclamp(tf_sx, 0, total - vw + 2);
 }
 
-/* The field's text: body 14 regular, centred on the font's baseline rule (3.6),
- * drawn with the LEGACY run. aui_text_vc would draw the same glyphs through
- * TEXT_RUN2, whose quarter-pixel pen runs ~6 % wider than the pen SYS_TEXT_MEASURE
- * (and the carets query) report -- every caret, selection edge and click in a
- * field is placed from that measure, so drawing with the run2 pen put the caret a
- * character short of the end of the line (seen in the guest). Regular weight is
- * the legacy face, so the glyphs are the same; only the pen differs. Whole
- * points, like every legacy run: at 200 % the line sits on the nearest 2 dev px. */
+/* The field's text: body 14 regular through the weight API, centred on the
+ * font's baseline rule (3.6). `s` is NUL-terminated (a field buffer is). */
 static void fld_text(int x, int y, int h, const char *s, int n, unsigned color)
 {
     if (n <= 0) return;
-    int y24 = aui_text_baseline24(Y_(y) * 256, h * 256, TF_PX) - tx_asc24(TF_PX);
-    gui_text_run(X_(x), tx_fdiv(y24 + 128, 256), TF_PX, 0, color, s, n);
+    aui_text_vc(aui_r(x, y, 1 << 14, h), s, TF_PX, AUI_W_REGULAR, color, AUI_ALIGN_LEFT);
 }
 
 #define AUI_TFX_LARGE_H 36
