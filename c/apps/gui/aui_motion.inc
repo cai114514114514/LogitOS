@@ -121,6 +121,16 @@ static unsigned scroll_order;
 static int *scroll_wheel_owner;
 static int scroll_wheel_used;
 
+/* ---- palette changes snap the colour tweens --------------------------------
+ * theme_load() (aui_theme.inc) calls anim_color_snap_arm() when the mode or
+ * the accent base actually moves. The frame being drawn (a mid-frame
+ * aui_set_dark / aui_set_accent) and the next one (an EV_THEME fed between
+ * frames, or the aui_begin theme read) take every aui_anim_color slot
+ * straight to its target. Wrap-safe on the frame counter. */
+static unsigned anim_snap_until;
+static int anim_snap_armed;
+static void anim_color_snap_arm(void) { anim_snap_until = anim_gen + 1; anim_snap_armed = 1; }
+
 #ifndef AUI_ANIM_OFF          /* unreferenced in the negative-control build */
 static struct anim_slot *anim_slot_for(int id, int key, int *fresh)
 {
@@ -347,6 +357,15 @@ int aui_stagger_ms(int index, int step_ms)
     return index * step_ms;
 }
 
+/* 1 while a palette change is being drawn (see anim_color_snap_arm). */
+static int anim_color_snap_due(void)
+{
+    if (!anim_snap_armed) return 0;
+    if ((int)(anim_snap_until - anim_gen) >= 0) return 1;
+    anim_snap_armed = 0;
+    return 0;
+}
+
 /* ---- aui_anim_color -------------------------------------------------------
  * Key space `key | AUI_KEY_COLOR`. Progress is linear over AUI_T_FAST, the
  * mix is ol_mix_argb_premul. s->from/to/cur are unused here; c_* carry it. */
@@ -356,7 +375,12 @@ uint32_t aui_anim_color(int id, uint32_t from, uint32_t to)
     struct anim_slot *s;
     if (wid <= 0) return to;
     s = anim_slot_for(wid, id | AUI_KEY_COLOR, &fresh);
-    if (anim_reduced) {
+    /* Reduced motion, and the frames of a palette change (anim_color_snap_due):
+     * the colour is the target at once. A theme flip re-aims every slot from
+     * the OLD theme's colour, and a window that is not in front may never draw
+     * the frames that finish the 90 ms tween, so its buttons kept the old fill
+     * (design 3.8: "the theme switch is instant"). */
+    if (anim_reduced || anim_color_snap_due()) {
         s->c_from = s->c_to = s->c_cur = to; s->arrived = 1; s->gen = anim_gen;
         return to;
     }

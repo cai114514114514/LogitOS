@@ -205,7 +205,17 @@ int aui_checkbox_ex(int x, int y, const char *label, int *state, int enabled)
     int vt = aui_anim(AUI_AK_VALUE, *state ? 255 : 0, 90, AUI_EASE_LINEAR);
 
     focus_ring(r.st & AUI_FOCUSED, x, y, box, box, 4);
-    if (off) aui_fade_begin(aui_r(x, y, w, box), CTL_DIS_ALPHA);
+    /* The disabled group must hold everything drawn inside it: the label is
+     * laid out in (x + 24, y - 2, lw + 2, box + 4), and the run2 the kernel
+     * draws there is wider than the legacy whole-point measure lw (the guest
+     * cut "Disabled on" to "Disabled o" with a box-tall, lw-wide group, and
+     * still clipped the last glyph with 4 pt of slack). The group is only a
+     * compositing layer, so it is sized generously: a quarter of lw plus
+     * 12 pt past the measure, and 4 pt above and below the box. */
+    if (off) {
+        int lx = label ? box + 8 + lw + lw / 4 + 12 : box;
+        aui_fade_begin(aui_r(x, y - 4, lx, box + 8), CTL_DIS_ALPHA);
+    }
     aui_round_a(x, y, box, box, 4, ctl_off_fill() & 0xFFFFFFu, (int)(ctl_off_fill() >> 24));
     if (vt > 0) aui_round_a(x, y, box, box, 4, CTL_ACC, vt);
     if (vt < 255) aui_stroke_a(aui_r(x, y, box, box), 4, ctl_dev_q8(), ctl_alpha(k->sep_strong, 255 - vt));
@@ -591,8 +601,9 @@ void aui_badge(int x, int y, const char *s, unsigned color)
 {
     int px = AUI_FS_CAPTION, pad = AUI_SP(2);
     int w = aui_text_w(s, px) + 2 * pad, h = px + AUI_SP(2) + 2;
-    aui_round_a(x, y, w, h, h / 2, color, 46);
-    aui_stroke(x, y, w, h, h / 2, 1, aui_mix(color, AUI_BG, 120));
+    /* 4.15: a tint fill (the colour @ 31 light / @ 51 dark) and the ink text,
+     * no stroke -- a saturated ring read as an outlined button in dark. */
+    aui_round_a(x, y, w, h, h / 2, color, aui_is_dark() ? 51 : 31);
     aui_text_in(aui_r(x, y, w, h), s, color, px, AUI_ALIGN_CENTER);
 }
 

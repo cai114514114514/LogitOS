@@ -21,8 +21,11 @@
  *   metrics         AUI_FS_BODY (PX) 14, LABEL 13, CAPTION 12, TITLE 17 / 600,
  *                   HEADING 22 / 600; heights 24/28/32/36/44; radii of 3.4;
  *                   AUI_DISABLED_ALPHA 102; aui_label draws at 14; aui_heading
- *                   is ONE run2 at 17 with weight 600 (the bold face bit
- *                   without TEXT_RUN2)
+ *                   is ONE run2 at 22 (title1) and aui_title ONE run2 at 17
+ *                   (title2), both weight 600 (the bold face bit without
+ *                   TEXT_RUN2); each returns its width measured at 600, and
+ *                   the drawn ink ends within it (an inline subtitle placed
+ *                   at x + width + gap cannot collide, polish-w2)
  *   text-in         aui_text_in puts every size's baseline on the 3.6 metric
  *                   rule (aui_text_baseline24)
  *   focus-ring      ONE ring: 3 pt of accent.focusRing, 1 pt outside the
@@ -33,7 +36,18 @@
  *                   brighter at the top (@38) than at 40 % (@10) and the
  *                   bottom (@18)
  *   glass           aui_glass is ONE GLASS2 (REGULAR material), no legacy
- *                   SYS_GUI_GLASS; Reduce Transparency draws the RT solid
+ *                   SYS_GUI_GLASS; Reduce Transparency draws the RT solid; a
+ *                   FLUSH band (radius <= 1) makes no GLASS2 and no GLASS:
+ *                   it is the REGULAR tint over bg.window, its edge pixels
+ *                   equal its interior (no rim line, polish-w2)
+ *   theme-snap      a Secondary button drawn in light, the theme flipped by
+ *                   EV_THEME, ONE frame drawn: the fill is already #3A3A43
+ *                   (and back to #FFFFFF), and aui_anim_due stays quiet --
+ *                   a background window never draws the tween's later frames
+ *   list-card       an inset aui_list is an r 12 bg.card container: dark body
+ *                   #26262D (not bg.content), corner pixel outside the round
+ *   checkbox-off    a disabled checkbox's label ink reaches as far right as
+ *                   the enabled one (the fade group no longer cuts a glyph)
  *
  * -DUI_THEME_NEGCTL (tests/ui-aui-theme.mk) keeps the old blue default and
  * must fail 'default-accent' and nothing else. Exits 1 on any failure. */
@@ -350,17 +364,41 @@ static void heading_case(int v2)
     check(nrec == 1 && recs[0].px24 == 14 * 256 && !recs[0].bold && recs[0].weight <= 400,
           "metrics %s: aui_label px %d (bold %d weight %d), want one regular run at 14", v2 ? "v2" : "info0",
           nrec ? recs[0].px24 / 256 : -1, nrec ? recs[0].bold : -1, nrec ? recs[0].weight : -1);
-    nrec = 0;
-    aui_heading(10, 40, "标题", AUI_TEXT);
-    if (v2)
-        check(nrec == 1 && recs[0].run2 && recs[0].weight == 600 && recs[0].px24 == 17 * 256,
-              "metrics v2: aui_heading is not ONE run2 at 17 px weight 600 (n %d run2 %d weight %d px %d)",
-              nrec, nrec ? recs[0].run2 : -1, nrec ? recs[0].weight : -1, nrec ? recs[0].px24 / 256 : -1);
-    else
-        check(nrec == 1 && !recs[0].run2 && recs[0].bold && recs[0].px24 == 17 * 256,
-              "metrics info0: aui_heading is not ONE bold run at 17 px (n %d bold %d px %d)",
-              nrec, nrec ? recs[0].bold : -1, nrec ? recs[0].px24 / 256 : -1);
+    static const struct { const char *name; int px; } st[2] = { { "aui_heading", 22 }, { "aui_title", 17 } };
+    for (int k = 0; k < 2; k++) {
+        const char *s = "Activity Monitor";
+        nrec = 0;
+        int w = k == 0 ? aui_heading(10, 40, s, AUI_TEXT) : aui_title(10, 40, s, AUI_TEXT);
+        int px = st[k].px;
+        if (v2)
+            check(nrec == 1 && recs[0].run2 && recs[0].weight == 600 && recs[0].px24 == px * 256,
+                  "metrics v2: %s is not ONE run2 at %d px weight 600 (n %d run2 %d weight %d px %d)", st[k].name, px,
+                  nrec, nrec ? recs[0].run2 : -1, nrec ? recs[0].weight : -1, nrec ? recs[0].px24 / 256 : -1);
+        else
+            check(nrec == 1 && !recs[0].run2 && recs[0].bold && recs[0].px24 == px * 256,
+                  "metrics info0: %s is not ONE bold run at %d px (n %d bold %d px %d)", st[k].name, px,
+                  nrec, nrec ? recs[0].bold : -1, nrec ? recs[0].px24 / 256 : -1);
+        check(w == aui_text_measure_w(s, px, 600) && w > aui_text_measure_w(s, px, 400) - 1,
+              "metrics %s: %s returned %d, want its 600 measure %d (400 measure %d)", v2 ? "v2" : "info0",
+              st[k].name, w, aui_text_measure_w(s, px, 600), aui_text_measure_w(s, px, 400));
+    }
     aui_end(); aui_feed_done();
+    /* the ink of each title ends inside the width it returned: a subtitle at
+     * x + w + 12 (monitor.c, gallery.c) has a clear gap */
+    for (int k = 0; k < 2; k++) {
+        const char *s = "Activity Monitor";
+        aui_begin(AUI_BG);
+        int w = k == 0 ? aui_heading(10, 40, s, AUI_TEXT) : aui_title(10, 40, s, AUI_TEXT);
+        aui_end(); aui_feed_done();
+        unsigned bg = px_at(300, 10);
+        int right = -1;
+        for (int y = 36; y < 80; y++)
+            for (int x = 10; x < 320; x++)
+                if (px_at(x, y) != bg && x > right) right = x;
+        check(right >= 10 + w / 2 && right <= 10 + w + 1,
+              "metrics %s: %s ink ends at x %d, past its returned width (x 10 + %d)", v2 ? "v2" : "info0",
+              st[k].name, right, w);
+    }
 }
 static void case_metrics_v2(void) { heading_case(1); }
 static void case_metrics_info0(void) { heading_case(0); }
@@ -545,6 +583,97 @@ static void case_glass_rt(void)
     aui_end(); aui_feed_done();
 }
 
+static void case_glass_flush(void)
+{
+    for (int dark = 0; dark < 2; dark++) {
+        host(160, 120, 100, 1, dark);
+        aui_begin(AUI_BG);
+        aui_host_stats_reset(H);
+        aui_glass(0, 0, 60, 120, 1);                       /* a sidebar flush with three window edges */
+        check(H->calls[SYS_GUI_GLASS2] == 0 && H->calls[SYS_GUI_GLASS] == 0,
+              "glass flush %s: %llu GLASS2 and %llu legacy GLASS, want none (a rimmed panel)",
+              dark ? "dark" : "light", H->calls[SYS_GUI_GLASS2], H->calls[SYS_GUI_GLASS]);
+        aui_end(); aui_feed_done();
+        unsigned in = px_at(30, 60);
+        unsigned want = over(dark ? 0x7822242Eu : 0x32FFFFFFu, aui_t.bg_window);
+        check(near(in, want, 1), "glass flush %s: the band is %06x, want the REGULAR tint over bg.window %06x",
+              dark ? "dark" : "light", in, want);
+        int bad = 0;
+        for (int y = 2; y < 118; y++) if (!near(px_at(0, y), in, 3) || !near(px_at(59, y), in, 3)) bad++;
+        for (int x = 2; x < 58; x++) if (!near(px_at(x, 0), in, 3) || !near(px_at(x, 119), in, 3)) bad++;
+        check(bad == 0, "glass flush %s: %d edge pixels differ from the interior %06x (a rim line; e.g. (0,60) %06x (30,119) %06x)",
+              dark ? "dark" : "light", bad, in, px_at(0, 60), px_at(30, 119));
+    }
+    st_rt = 1;
+    host(160, 120, 100, 1, 0);
+    aui_begin(AUI_BG);
+    aui_host_stats_reset(H);
+    aui_glass(0, 0, 60, 120, 1);
+    check(H->calls[SYS_GUI_GLASS2] == 0 && H->calls[SYS_GUI_GLASS] == 0 && H->calls[SYS_GUI_PATH] == 1,
+          "glass flush: Reduce Transparency drew %llu GLASS2 / %llu GLASS / %llu PATH, want the one RT solid",
+          H->calls[SYS_GUI_GLASS2], H->calls[SYS_GUI_GLASS], H->calls[SYS_GUI_PATH]);
+    aui_end(); aui_feed_done();
+}
+
+/* A Secondary button's fill at a point clear of its label and its round ends. */
+static unsigned snap_fill(void) { return px_at(BX + BH / 2 + 2, BY + BH / 2); }
+static void case_theme_snap(void)
+{
+    host(200, 120, 100, 1, 0);
+    frame_btn(1000); frame_btn(1016); frame_btn(1200);
+    check(near(snap_fill(), 0xFFFFFFu, 2), "theme-snap: the light Secondary fill is %06x, want #FFFFFF", snap_fill());
+    H->dark = 1; feed(EV_THEME, 0, 0);
+    frame_btn(1216);                                   /* ONE frame, 16 ms after the flip */
+    check(near(snap_fill(), 0x3A3A43u, 2),
+          "theme-snap: one frame after EV_THEME (dark) the Secondary fill is %06x, want #3A3A43 at once", snap_fill());
+    check(!aui_anim_active() && !aui_anim_due(),
+          "theme-snap: a tween is still live after the flip (active %d due %d)", aui_anim_active(), aui_anim_due());
+    frame_btn(1400);
+    H->dark = 0; feed(EV_THEME, 0, 0);
+    frame_btn(1416);
+    check(near(snap_fill(), 0xFFFFFFu, 2),
+          "theme-snap: one frame after EV_THEME (light) the Secondary fill is %06x, want #FFFFFF at once", snap_fill());
+    check(!aui_anim_active() && !aui_anim_due(),
+          "theme-snap: a tween is still live after the flip back (active %d due %d)", aui_anim_active(), aui_anim_due());
+}
+
+static void case_list_card(void)
+{
+    static const char *const items[3] = { "外观", "桌面", "网络" };
+    int sel = 0, scroll = 0;
+    host(240, 200, 100, 1, 1);
+    aui_begin(AUI_BG);
+    aui_fill(0, 0, 240, 200, aui_t.bg_raised);              /* a sidebar */
+    aui_list(20, 20, 160, 140, items, 3, &sel, &scroll);
+    aui_end(); aui_feed_done();
+    check(near(px_at(100, 140), 0x26262Du, 3),
+          "list-card: the dark inset list body is %06x, want bg.card #26262D (not bg.content #19191E)", px_at(100, 140));
+    check(!near(px_at(20, 20), 0x26262Du, 3) && !near(px_at(20, 20), 0x19191Eu, 3),
+          "list-card: the corner pixel (20,20) is %06x: the container is not rounded", px_at(20, 20));
+}
+
+static int ink_right(int x0, int y0, int x1, int y1)
+{
+    unsigned bg = px_at(x1 - 1, y0);
+    int right = -1;
+    for (int y = y0; y < y1; y++) for (int x = x0; x < x1; x++) if (px_at(x, y) != bg && x > right) right = x;
+    return right;
+}
+static void case_checkbox_off(void)
+{
+    int on = 1, off = 1;
+    host(260, 120, 100, 1, 0);
+    aui_begin(AUI_BG);
+    aui_checkbox_ex(20, 20, "Disabled on", &on, 1);
+    aui_end(); aui_feed_done();
+    int re = ink_right(20, 14, 260, 42);
+    aui_begin(AUI_BG);
+    aui_checkbox_ex(20, 20, "Disabled on", &off, 0);
+    aui_end(); aui_feed_done();
+    int rd = ink_right(20, 14, 260, 42);
+    check(re > 60 && rd >= re - 1, "checkbox-off: the disabled label ink ends at x %d, the enabled one at %d (a glyph cut)", rd, re);
+}
+
 int main(void)
 {
     run("roles: legacy roles are their 3.1 tokens, light and dark, set_dark and EV_THEME", case_roles);
@@ -554,8 +683,8 @@ int main(void)
     run("accent-poll: <= one read per 500 ms, EV_THEME at once, previews survive", case_accent_poll);
     run("set-accent: aui_set_accent goes through derive", case_set_accent);
     run("metrics: type, heights, radii, disabled alpha", case_metrics_const);
-    run("metrics: aui_label 14, aui_heading run2 17 / 600", case_metrics_v2);
-    run("metrics: aui_heading bold face bit without TEXT_RUN2", case_metrics_info0);
+    run("metrics: aui_label 14, aui_heading run2 22 / 600, aui_title 17 / 600, weighted widths", case_metrics_v2);
+    run("metrics: aui_heading / aui_title bold face bit without TEXT_RUN2", case_metrics_info0);
     run("text-in: aui_text_in centres by the 3.6 metric rule", case_text_in);
     run("focus-ring: one 3 pt accent.focusRing ring 1 pt out, faded in", case_focus_ring);
     run("focus-ring: none after a mouse focus", case_focus_mouse);
@@ -564,6 +693,10 @@ int main(void)
     run("card dark @150%: the rim is one device px", case_card_150);
     run("glass: one GLASS2 (REGULAR)", case_glass);
     run("glass: Reduce Transparency is the RT solid", case_glass_rt);
+    run("glass: a flush band is a rim-free solid (RT solid under RT)", case_glass_flush);
+    run("theme-snap: EV_THEME lands a Secondary fill in one frame, no tween left", case_theme_snap);
+    run("list-card: an inset aui_list is a rounded bg.card container", case_list_card);
+    run("checkbox-off: the disabled label is not cut by its fade group", case_checkbox_off);
     printf(case_fails ? "FAIL ui-aui-theme: %d case(s) failed\n" : "ok   ui-aui-theme: all cases passed\n", case_fails);
     return case_fails ? 1 : 0;
 }

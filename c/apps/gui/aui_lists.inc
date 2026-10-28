@@ -183,6 +183,13 @@ static unsigned ls_hash(const char *s, int occ)
 /* Column drag (resize handles). One drag at a time. */
 static struct { int id, col, mx0, w0; } ls_drag;
 
+/* aui_list's private flag: the list is an INSET one (a nav list in a sidebar,
+ * a list on a form window), so its body is an r 12 card -- bg.card, E1 in
+ * light, the dark rim in dark -- with the rows clipped to its rounded rect.
+ * A bg.content slab there was square-cornered and, in dark, sat BELOW its
+ * surface (#19191E inside a #2C2C34 sidebar). Tables stay full-bleed (4.8). */
+#define LS_F_CARD 0x80000000u
+
 static int ls_body(int x, int y, int w, int h, struct aui_col *cols, int ncol, int resizable,
                    const char *const *cells, int nrow, int *sel, int *scroll,
                    struct aui_sort *sort, unsigned flags, int rh)
@@ -212,8 +219,13 @@ static int ls_body(int x, int y, int w, int h, struct aui_col *cols, int ncol, i
     int wx = X_(x), wy = Y_(y);
     if (input_ok(wx, wy, w, h) && in.ev == EV_MOUSE) { focus_id = id; focus_vis = 0; }
 
-    /* the whole widget sits on bg.content: header and body one surface (4.8) */
-    aui_fill(x, y, w, h, T->bg_content);
+    /* the whole widget sits on bg.content: header and body one surface (4.8);
+     * an inset list is a rounded card instead (LS_F_CARD above) */
+    int card = (flags & LS_F_CARD) != 0;
+    if (card) {
+        aui_card(x, y, w, h, AUI_ELEV_1);
+        aui_clip_push_round(aui_r(x, y, w, h), AUI_R_LG);
+    } else aui_fill(x, y, w, h, T->bg_content);
 
     /* ---- header ---- */
     if (head) {
@@ -271,7 +283,7 @@ static int ls_body(int x, int y, int w, int h, struct aui_col *cols, int ncol, i
 
     /* ---- body ---- */
     int by = y + head, bh = h - head;
-    if (bh <= 0) return activated;
+    if (bh <= 0) { if (card) aui_clip_pop(); return activated; }
     int cur = nrow > 0 ? (range ? sel[1] : (sel ? *sel : -1)) : -1;
     if (focused && in.ev == EV_KEY && !in.key_used && nrow > 0 && sel) {
         int page = imax(1, bh / rh), ext = range && (in.mods & EV_MOD_SHIFT);
@@ -409,12 +421,13 @@ static int ls_body(int x, int y, int w, int h, struct aui_col *cols, int ncol, i
     /* AUI_TBL_EMPTY draws nothing more: the body stays clear (no rows, no zebra)
      * and the app centres its empty state (4.13, aui_empty_state) over it. */
     aui_scroll_end();
+    if (card) aui_clip_pop();
     return activated;
 }
 #undef LS_RY
 
 int aui_list(int x, int y, int w, int h, const char *const *items, int n, int *sel, int *scroll)
-{ return ls_body(x, y, w, h, 0, 0, 0, items, n, sel, scroll, 0, AUI_TBL_NOHEAD, 28); }
+{ return ls_body(x, y, w, h, 0, 0, 0, items, n, sel, scroll, 0, AUI_TBL_NOHEAD | LS_F_CARD, 28); }
 
 int aui_table(int x, int y, int w, int h, const char *const *cols, const int *widths,
               int ncol, const char *const *cells, int nrow, int *sel, int *scroll)

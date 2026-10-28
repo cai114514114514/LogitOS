@@ -99,8 +99,18 @@ static unsigned tok_over(unsigned argb, unsigned under)
  *   shadow ink | selection accent.selText over bg.content.
  * The table is copied a word at a time through a volatile pointer: a struct
  * assignment may lower to a memcpy call, and aui.o links no libc. */
+static void anim_color_snap_arm(void);     /* aui_motion.inc */
+static int theme_sig_dark = -1;            /* (mode, accent base) last loaded; -1 = none */
+static unsigned theme_sig_accent;
+
 static void theme_load(void)
 {
+    /* A palette that MOVED (not a reload of the same one: Settings calls
+     * aui_set_dark / aui_set_accent every frame) ends every colour tween at
+     * its new target, in this frame and the next (design 3.8). */
+    if (theme_sig_dark >= 0 && (theme_sig_dark != theme_dark || theme_sig_accent != accent_base))
+        anim_color_snap_arm();
+    theme_sig_dark = theme_dark; theme_sig_accent = accent_base;
     const uint32_t *src = (const uint32_t *)logit_tok(theme_dark);
     volatile uint32_t *dst = (volatile uint32_t *)&tok_cur;
     for (unsigned i = 0; i < sizeof tok_cur / sizeof(uint32_t); i++) dst[i] = src[i];

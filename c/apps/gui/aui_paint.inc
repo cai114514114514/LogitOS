@@ -1078,9 +1078,21 @@ void aui_card(int x, int y, int w, int h, int elev)
 }
 
 /* The legacy glass call is the design's REGULAR material (P4): one GLASS2 with
- * the SYMMETRIC rim, or its Reduce Transparency solid. */
+ * the SYMMETRIC rim, or its Reduce Transparency solid.
+ *
+ * EXCEPT A FLUSH RECT (radius <= 1): a sidebar or toolbar band laid against
+ * the window edges. GLASS2 has no rim-off value (and the legacy GLASS rims
+ * too), and its SYMMETRIC ring drew a bright 1-3 px line down the window's
+ * left edge, across its bottom and round the toolbar (a double line against
+ * the sidebar) -- lines the design never asks for (3.2: a band is solid, or
+ * carries at most a separator; P10 toolbars are solid). Such a band is the
+ * REGULAR tint flattened over bg.window, the surface its glass blurred: the
+ * same colour, one opaque rect, no rim and no blur cost. Reduce Transparency
+ * still takes the material's RT solid. */
+static int legacy_glass_flush(struct aui_rect rc, int radius);   /* below, after the probe */
 void aui_glass(int x, int y, int w, int h, int radius)
 {
+    if (radius <= 1 && legacy_glass_flush(aui_r(x, y, w, h), radius < 0 ? 0 : radius)) return;
     aui_material(aui_r(x, y, w, h), radius < 0 ? 0 : radius, LOGIT_MAT_REGULAR);
 }
 
@@ -1199,6 +1211,24 @@ static int mat_glass2(struct aui_rect rc, int r, const struct logit_material *m,
     return 1;
 }
 #endif
+
+/* aui_glass's flush band: the REGULAR tint over bg.window, one opaque rect.
+ * 0 = not drawn (Reduce Transparency, a build without the glass path): the
+ * caller falls through to aui_material and its RT solid. */
+static int legacy_glass_flush(struct aui_rect rc, int radius)
+{
+#ifndef AUI_NO_AA
+    const struct logit_material *m = logit_material(LOGIT_MAT_REGULAR);
+    if (rc.w <= 0 || rc.h <= 0) return 1;
+    if (glass_reduced) return 0;
+    aui_ensure();
+    aui_round(rc.x, rc.y, rc.w, rc.h, radius, tok_over(theme_dark ? m->tint_d : m->tint_l, aui_t.bg_window));
+    return 1;
+#else
+    (void)rc; (void)radius;
+    return 0;
+#endif
+}
 
 void aui_material(struct aui_rect rc, int r, enum logit_mat mat)
 {

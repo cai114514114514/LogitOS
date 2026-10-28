@@ -141,6 +141,10 @@ const struct logit_tokens *aui_tok(void);
 #define AUI_BG          (aui_ensure(), aui_t.bg)
 #define AUI_SURFACE     (aui_ensure(), aui_t.surface)
 #define AUI_SURFACE_2   (aui_ensure(), aui_t.surface_2)
+/* A raised legacy surface -- a card, a field or a tile ON the window -- is
+ * bg.card (#FFFFFF light, #26262D dark), not AUI_SURFACE (bg.content, which
+ * sits BELOW the window in dark: #19191E on #1E1E24 reads as a hole). */
+#define AUI_SURFACE_RAISED (aui_ensure(), aui_t.bg_card)
 #define AUI_FACE        (aui_ensure(), aui_t.face)
 #define AUI_FACE_HOVER  (aui_ensure(), aui_t.face_hover)
 #define AUI_FACE_ACTIVE (aui_ensure(), aui_t.face_active)
@@ -171,8 +175,8 @@ const struct logit_tokens *aui_tok(void);
  * Design 3.6 (the closed size set): body 14 / 400, label (callout) 13,
  * caption (footnote) 12, title (title2) 17 / 600, heading (title1) 22 / 600.
  * The weights travel with the size: draw a title or a heading with
- * aui_text_w(x, y, AUI_FS_TITLE, AUI_W_TITLE, colour, s) -- aui_heading()
- * does exactly that. */
+ * aui_text_w(x, y, AUI_FS_TITLE, AUI_W_TITLE, colour, s) -- aui_title() does
+ * exactly that, and aui_heading() the same at AUI_FS_HEADING / AUI_W_HEADING. */
 #define AUI_FS_CAPTION  12
 #define AUI_FS_LABEL    13
 #define AUI_FS_BODY     14

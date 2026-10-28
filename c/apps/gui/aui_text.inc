@@ -32,11 +32,17 @@ void aui_text_sz(int x, int y, const char *s, unsigned color, int px)
  * that is not the browser's own painter. */
 void aui_text_n(int x, int y, const char *s, int len, unsigned color, int px)
 { if (len > 0) gui_text_run(X_(x), Y_(y), px, 0, color, s, len); }
-/* A heading is the title style, 17 / 600 (design 3.6 title2): the weight
- * travels in TEXT_RUN2, or as the bold face bit on a kernel without it. */
+/* A heading is title1, 22 / 600 (design 3.6: page headings, the Settings
+ * pane); a title is title2, 17 / 600 (toolbar titles, sheet and card titles).
+ * The weight travels in TEXT_RUN2, or as the bold face bit on a kernel
+ * without it. Each returns its width measured at that weight, so a caller
+ * that puts a subtitle after it cannot collide with the heavier face. */
 void aui_text_draw_w(int x, int y, int px, int weight, unsigned color, const char *s);
-void aui_heading(int x, int y, const char *s, unsigned color)
-{ aui_text_draw_w(x, y, AUI_FS_TITLE, AUI_W_TITLE, color, s); }
+int  aui_text_measure_w(const char *s, int px, int weight);
+int aui_heading(int x, int y, const char *s, unsigned color)
+{ aui_text_draw_w(x, y, AUI_FS_HEADING, AUI_W_HEADING, color, s); return aui_text_measure_w(s, AUI_FS_HEADING, AUI_W_HEADING); }
+int aui_title(int x, int y, const char *s, unsigned color)
+{ aui_text_draw_w(x, y, AUI_FS_TITLE, AUI_W_TITLE, color, s); return aui_text_measure_w(s, AUI_FS_TITLE, AUI_W_TITLE); }
 void aui_label(int x, int y, const char *s, unsigned color) { txt(x, y, color, s); }
 
 /* ------------------------------------------------ v2 text: capabilities */

@@ -131,8 +131,11 @@ static void ov_plate(struct aui_rect rc, int r, enum logit_mat mat, int settled)
 }
 
 /* The rows, in absolute window points. `hi` is the highlighted row (-1 none);
- * the pill sits at `pill_y` when >= 0 (it glides there), else at the row. */
-static void ov_rows(int x, int y, int w, const char *const *items, int n, int hi, int pill_y)
+ * the pill sits at `pill_y` when >= 0 (it glides there), else at the row.
+ * `cur` is a select popup's current value (-1 none): it carries the CHECK 12
+ * in the check column (4.9), accent.ink, onAccent under the pill, so the
+ * selection stays visible once the pointer moves the pill elsewhere. */
+static void ov_rows(int x, int y, int w, const char *const *items, int n, int hi, int pill_y, int cur)
 {
     const struct logit_tokens *k = aui_tok();
     struct ov_it it;
@@ -157,6 +160,8 @@ static void ov_rows(int x, int y, int w, const char *const *items, int n, int hi
         else { ink = (it.flags & OVF_DESTRUCTIVE) ? k->error_ink : k->label_primary; sub = k->label_tertiary; }
         ink = ov_c(ink); sub = ov_c(sub);
         if (it.check) gui_icon(GICON_CHECK, x + 10, iy + (OV_ROW - 12) / 2, 12, ink);
+        else if (i == cur && !(it.flags & OVF_DISABLED))
+            gui_icon(GICON_CHECK, x + 10, iy + (OV_ROW - 12) / 2, 12, i == hi ? ink : ov_c(k->accent_ink));
         aui_text_vc(aui_r(x + 28, iy, w - 28 - 14, OV_ROW), it.label, OV_BODY, AUI_W_REGULAR, ink, AUI_ALIGN_LEFT);
         if (it.sc[0]) {
             int split = ov_sc_split(it.sc), kw, kc;
@@ -179,7 +184,7 @@ void aui_menu_panel(int x, int y, int w, const char *const *items, int n, int hi
     struct aui_rect rc = aui_r(X_(x), Y_(y), w, aui_menu_height(items, n));
     ov_elev(rc, OV_R, LOGIT_E3, 255);
     ov_plate(rc, OV_R, LOGIT_MAT_MENU, 1);
-    ov_rows(rc.x, rc.y, w, items, n, hi, -1);
+    ov_rows(rc.x, rc.y, w, items, n, hi, -1, -1);
 }
 
 /* The next enabled row from `from` in direction dir (clamped, no wrap). */
@@ -272,7 +277,8 @@ static void draw_popup_menu(void)
     ov_elev(rc, OV_R, LOGIT_E3, t);
     fade_open(ov_group_rect(rc), t, 1);
     ov_plate(rc, OV_R, LOGIT_MAT_MENU, settled);
-    ov_rows(rc.x, rc.y, w, pop.items, pop.n, pop.kind == 1 ? pop.hi : -1, pill);
+    ov_rows(rc.x, rc.y, w, pop.items, pop.n, pop.kind == 1 ? pop.hi : -1, pill,
+            issel && pop.sel ? *pop.sel : -1);
     fade_close();
     /* A click closes it -- except the click that OPENED it this very frame
      * (aui_select / aui_menubar open the popup on the press). A click on a

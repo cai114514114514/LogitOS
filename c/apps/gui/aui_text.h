@@ -4,10 +4,14 @@
 #ifndef AUI_TEXT_H
 #define AUI_TEXT_H
 
-/* text: aui_label is body size (14 / 400); aui_heading is the title style
- * (17 / 600, design 3.6); aui_text_sz is any size at weight 400. */
+/* text: aui_label is body size (14 / 400); aui_heading is the page heading,
+ * title1 22 / 600 (design 3.6, 7.2); aui_title is the toolbar / sheet / card
+ * title, title2 17 / 600; aui_text_sz is any size at weight 400. Both titles
+ * return the width they drew, in points, measured at their own weight: place
+ * an inline subtitle at x + that + gap (never aui_text_w, which measures 400). */
 void aui_label(int x, int y, const char *s, unsigned color);
-void aui_heading(int x, int y, const char *s, unsigned color);
+int  aui_heading(int x, int y, const char *s, unsigned color);
+int  aui_title(int x, int y, const char *s, unsigned color);
 void aui_text_sz(int x, int y, const char *s, unsigned color, int px);
 /* A SLICE of a buffer -- `len` bytes from `s`, no NUL needed. This is what a
  * scrolling text view draws: one buffer, a table of (offset, length) lines, and
