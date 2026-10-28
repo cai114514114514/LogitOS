@@ -167,37 +167,56 @@ const struct logit_tokens *aui_tok(void);
 #define AUI_GAP     AUI_SP(2)        /* default gap between stacked items (8)    */
 #define AUI_PAD     AUI_SP(4)        /* default content inset from a window edge */
 
-/* ---------- type scale (px cap heights) ---------- */
+/* ---------- type scale (px) ----------
+ * Design 3.6 (the closed size set): body 14 / 400, label (callout) 13,
+ * caption (footnote) 12, title (title2) 17 / 600, heading (title1) 22 / 600.
+ * The weights travel with the size: draw a title or a heading with
+ * aui_text_w(x, y, AUI_FS_TITLE, AUI_W_TITLE, colour, s) -- aui_heading()
+ * does exactly that. */
 #define AUI_FS_CAPTION  12
 #define AUI_FS_LABEL    13
-#define AUI_FS_BODY     15
-#define AUI_FS_TITLE    20
-#define AUI_FS_HEADING  26
+#define AUI_FS_BODY     14
+#define AUI_FS_TITLE    17
+#define AUI_FS_HEADING  22
+#define AUI_W_TITLE     600
+#define AUI_W_HEADING   600
 
 /* ---------- corner radii ----------
  * A radius token, not a number at the call site: the whole UI rounds by the
  * same family of curves or it looks assembled from parts. AUI_R_PILL is
- * clamped to half the shorter side, so it is "fully round" at any size. */
+ * clamped to half the shorter side, so it is "fully round" at any size.
+ * Design 3.4: xs 4 (checkbox, kbd chip, small badges), sm 6 (selection pills,
+ * tooltips, segmented thumb), md 8 (fields, popup items), lg 12 (cards,
+ * menus, sidebars), xl 14 (popovers), 2xl 18 (alerts, sheets, notifications),
+ * panel 22 (Spotlight, About, Dock), window 20 (every window). */
 #define AUI_R_NONE   0
-#define AUI_R_SM     4
+#define AUI_R_XS     4
+#define AUI_R_SM     6
 #define AUI_R_MD     8
 #define AUI_R_LG     12
-#define AUI_R_XL     18
+#define AUI_R_XL     14
+#define AUI_R_2XL    18
+#define AUI_R_PANEL  22
+#define AUI_R_WINDOW 20
 #define AUI_R_PILL   9999
 
-/* ---------- control metrics ---------- */
-#define AUI_H_SM     22
-#define AUI_H_CTL    28              /* the default control height */
-#define AUI_H_LG     36
+/* ---------- control metrics (design 3.5) ---------- */
+#define AUI_H_SM     24              /* small: toolbar segmented, chips, tags  */
+#define AUI_H_CTL    28              /* regular, the default control height    */
+#define AUI_H_LG     32              /* large: sheet and alert buttons         */
+#define AUI_H_XL     36              /* x-large: Greeter field, panel composer */
+#define AUI_H_HERO   44              /* hero: Assistant composer, new-tab search */
 
 /* ---------- elevation ----------
- * Elevation is a shadow recipe (y offset, blur, alpha), not a colour. Passing
+ * Elevation is a shadow recipe, not a colour: a level of the design's ladder
+ * (3.3, logit_elevation.h), two analytic shadows in the shadow ink. Passing
  * the level to aui_shadow() / aui_card() keeps every raised thing in the system
- * lit from the same direction with the same falloff. */
+ * lit from the same direction with the same falloff. aui_shadow and aui_card
+ * take 1/2/3 as E1/E2/E3; aui_elevation takes 1..4 as E1/E2/E3/E6. */
 #define AUI_ELEV_0   0               /* flush with the background: no shadow */
-#define AUI_ELEV_1   1               /* a resting card                       */
-#define AUI_ELEV_2   2               /* a popover / dropdown                 */
-#define AUI_ELEV_3   3               /* a modal sheet                        */
+#define AUI_ELEV_1   1               /* E1: a resting card                   */
+#define AUI_ELEV_2   2               /* E2: a lifted card, a tooltip         */
+#define AUI_ELEV_3   3               /* E3: a menu, popover, dropdown        */
 
 /* ---------- widget state bits (aui_state / the *_ex calls) ---------- */
 #define AUI_HOVER     0x01

@@ -9,7 +9,7 @@
 
 /* ------------------------------------------------------------------ text */
 
-#define PX AUI_FS_BODY
+#define PX AUI_FS_BODY            /* body 14 (design 3.6) */
 
 static int tw(const char *s) { return text_measure_px(s, slen(s), PX, 0); }
 static int twn(const char *s, int n) { return n <= 0 ? 0 : text_measure_px(s, n, PX, 0); }
@@ -32,7 +32,11 @@ void aui_text_sz(int x, int y, const char *s, unsigned color, int px)
  * that is not the browser's own painter. */
 void aui_text_n(int x, int y, const char *s, int len, unsigned color, int px)
 { if (len > 0) gui_text_run(X_(x), Y_(y), px, 0, color, s, len); }
-void aui_heading(int x, int y, const char *s, unsigned color) { aui_text_sz(x, y, s, color, AUI_FS_TITLE); }
+/* A heading is the title style, 17 / 600 (design 3.6 title2): the weight
+ * travels in TEXT_RUN2, or as the bold face bit on a kernel without it. */
+void aui_text_draw_w(int x, int y, int px, int weight, unsigned color, const char *s);
+void aui_heading(int x, int y, const char *s, unsigned color)
+{ aui_text_draw_w(x, y, AUI_FS_TITLE, AUI_W_TITLE, color, s); }
 void aui_label(int x, int y, const char *s, unsigned color) { txt(x, y, color, s); }
 
 /* ------------------------------------------------ v2 text: capabilities */
@@ -82,6 +86,9 @@ struct tx_met { int px, face, pct, asc, dsc, ok; };
 static struct tx_met tx_mc[8];
 static unsigned tx_mc_n;
 
+/* No caller since aui_text_in centres by the 3.6 font metrics (ui-aui-theme);
+ * kept, with its cache, for the host tests that reach it. */
+static int tx_metrics(int px, int face, int *asc, int *dsc) __attribute__((unused));
 static int tx_metrics(int px, int face, int *asc, int *dsc)
 {
     int pct = aui_scale();
@@ -224,36 +231,24 @@ static void tx_draw_line(const char *s, const struct tl_line *L, int x24, int y2
 
 /* ---------------------------------------------------- baseline alignment */
 
-/* Centre the BODY-size line box in the rect and put every size's baseline on
- * that one line, so a 13 px and a 17 px label in the same row share a baseline.
- * Metrics come from the query (ascent, descent in device px); a text too tall for
- * the rect is shifted to fit instead. Falls back to the old estimate when the
- * query is unsupported. */
+/* Vertical centring by the font's own metrics (design 3.6, the aui_text_vc
+ * rule): baseline = top + (h - 1.448 px) / 2 + 1.160 px, so every size sits
+ * optically centred in its rect -- the descenders no longer touch the bottom
+ * of a 24 pt bar at 2x. With TEXT_RUN2 the run lands at 24.8 points; without
+ * it at the nearest whole point. */
+static int tx_asc24(int px);
 static void tx_in(struct aui_rect r, const char *s, unsigned color, int px, int align, int weight)
 {
+    int n = slen(s);
+    if (n <= 0) return;
     int face = tx_wface(weight);
-    int w = text_measure_px(s, slen(s), px, face);       /* weight 0: aui_text_w(s, px) */
+    int w = text_measure_px(s, n, px, face);             /* weight 0: aui_text_w(s, px) */
     int x = r.x;
     if (align == AUI_ALIGN_CENTER) x = r.x + (r.w - w) / 2;
     else if (align == AUI_ALIGN_RIGHT) x = r.x + r.w - w;
-    int asc, dsc, rasc, rdsc, n = slen(s);
-    if (n > 0 && tx_metrics(px, face, &asc, &dsc) && tx_metrics(PX, 0, &rasc, &rdsc)) {
-        int pct = aui_scale();
-        int top = aui_dev(Y_(r.y)), hh = aui_dev(Y_(r.y + r.h)) - top;
-        int ty = (2 * top + hh + rasc - rdsc) / 2 - asc;
-        if (hh >= asc + dsc) {
-            if (ty < top) ty = top;
-            if (ty + asc + dsc > top + hh) ty = top + hh - asc - dsc;
-        }
-        if (tx_has_run2()) {
-            int y24 = (int)(((long long)ty * 25600 + pct - 1) / pct);   /* round up: S(y) lands on ty */
-            tx_run2(X_(x) * 256, y24, px, face, color, s, n, 255, weight);
-        } else {
-            tx_run1(X_(x), tx_fdiv(ty * 100 + pct / 2, pct), px, face, color, s, n);
-        }
-        return;
-    }
-    tx_text_w(x, r.y + (r.h - px) / 2 - 1, px, weight, color, s, n);
+    int y24 = aui_text_baseline24(Y_(r.y) * 256, r.h * 256, px) - tx_asc24(px);
+    if (tx_has_run2()) tx_run2(X_(x) * 256, y24, px, face, color, s, n, 255, weight);
+    else tx_run1(X_(x), tx_fdiv(y24 + 128, 256), px, face, color, s, n);
 }
 
 void aui_text_in(struct aui_rect r, const char *s, unsigned color, int px, int align)

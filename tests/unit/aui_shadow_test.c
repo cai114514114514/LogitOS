@@ -2,9 +2,10 @@
  * aui_paint.inc over the REAL SYS_GUI_SHADOW2 handler (tests/unit/aui_host/v2_fx.c
  * includes c/kernel/gui/wm_draw2_fx.c on a host env bound to the harness display).
  *
- *   elevation  level 0 issues none, levels 1..4 exactly two SHADOW2 calls
- *              (ambient, then key) with the documented parameters, light and
- *              dark                                         FAIL elevation-calls
+ *   elevation  aui_elevation level 0 issues none, levels 1..4 (5 -> 4) and
+ *              aui_shadow AUI_ELEV_1..3 exactly two SHADOW2 calls (key, then
+ *              ambient) with the design 3.3 ladder E1/E2/E3/E6 (E1/E2/E3) in
+ *              the shadow ink, light and dark              FAIL elevation-calls
  *   shadow2    one call, snapped device rect, fields passed through, inset flag
  *                                                           FAIL shadow2-call
  *   exact      a 20 pt sigma at 100/125/150/200% is pixel-identical to
@@ -95,36 +96,65 @@ static void sc_elev(struct aui_host *h, int level)
     aui_elevation(RECT, 8, level);
     aui_end();
 }
+static void sc_shadow(struct aui_host *h, int elev)
+{
+    (void)h;
+    aui_begin(AUI_BG);
+    aui_shadow(RECT.x, RECT.y, RECT.w, RECT.h, 8, elev);
+    aui_end();
+}
+
+/* Design 3.3, restated here rather than read from logit_elevation.h so the
+ * test does not grade the header against itself: per level the key and the
+ * ambient layer, {dy pt, sigma in HALF points, spread pt, alpha light, alpha
+ * dark} (dx is 0 everywhere). aui_elevation 1..4 -> E1 E2 E3 E6; aui_shadow
+ * AUI_ELEV_1..3 -> E1 E2 E3. Shadow ink (3.1.6): L #140F30, D #000000. */
+struct lay { int dy, s2, sp, al, ad; };
+static const struct lay E_KEY[4] = { { 1, 3, 0, 26, 77 }, { 2, 6, 0, 31, 87 }, { 4, 12, 0, 41, 102 }, { 12, 40, 0, 66, 140 } };
+static const struct lay E_AMB[4] = { { 1, 8, 0, 15, 51 }, { 6, 24, 0, 20, 61 }, { 12, 48, 0, 31, 82 }, { 28, 60, -6, 46, 115 } };
+static const char *const E_NAME[4] = { "E1", "E2", "E3", "E6" };
+
+static int layer_ok(const struct logit_shadow2 *c, const struct lay *l, int dark)
+{
+    unsigned ink = dark ? 0x000000u : 0x140F30u;
+    unsigned argb = ((unsigned)(dark ? l->ad : l->al) << 24) | ink;
+    return c->dx == 0 && c->dy == l->dy * 256 && c->blur == l->s2 * 128 && c->spread == l->sp * 256 &&
+           c->argb == argb && !(c->flags & LOGIT_SHADOW2_INSET);
+}
+
+static void check_level(const char *what, int arg, int dark, const struct shot *s, int e)
+{
+    int want = e < 0 ? 0 : 2;
+    if (s->nshadow != want) {
+        FAIL("elevation-calls %s %d dark %d: %d SYS_GUI_SHADOW2 calls, want %d", what, arg, dark, s->nshadow, want);
+        return;
+    }
+    if (!want) return;
+    const struct logit_shadow2 *key = &s->log[0], *amb = &s->log[1];
+    if (!layer_ok(key, &E_KEY[e], dark) || !layer_ok(amb, &E_AMB[e], dark))
+        FAIL("elevation-calls %s %d dark %d: not the %s key + ambient of design 3.3 "
+             "(key dy %d sigma %d spread %d argb %08x; ambient dy %d sigma %d spread %d argb %08x)",
+             what, arg, dark, E_NAME[e], key->dy, key->blur, key->spread, key->argb,
+             amb->dy, amb->blur, amb->spread, amb->argb);
+}
 
 static void check_elevation(void)
 {
-    /* light alpha of {key dy, key sigma, key alpha, ambient sigma, ambient alpha} */
-    static const int tab[4][5] = { { 1, 2, 36, 4, 16 }, { 2, 4, 44, 8, 20 }, { 4, 8, 52, 14, 24 }, { 8, 14, 60, 24, 28 } };
     for (int dark = 0; dark < 2; dark++) {
         g_dark = dark;
         for (int level = 0; level <= 5; level++) {
             struct shot *s = render(1, 100, 160, 120, sc_elev, level);
-            int want = level == 0 ? 0 : 2;
-            if (s->nshadow != want) {
-                FAIL("elevation-calls level %d dark %d: %d SYS_GUI_SHADOW2 calls, want %d", level, dark, s->nshadow, want);
-            } else if (want) {
-                const int *t = tab[(level > 4 ? 4 : level) - 1];
-                int mul = dark ? 2 : 1;
-                const struct logit_shadow2 *amb = &s->log[0], *key = &s->log[1];
-                /* the shadow colour is the theme's: the parent only knows the light one */
-                unsigned cm = dark ? 0xFF000000u : 0xFFFFFFFFu, col = dark ? 0 : (AUI_SHADOW & 0xFFFFFFu);
-                if (amb->dx || amb->dy || amb->spread || amb->blur != t[3] * 256 || (amb->argb & cm) != (((unsigned)(t[4] * mul) << 24) | col) ||
-                    key->dx || key->spread || key->dy != t[0] * 256 || key->blur != t[1] * 256 ||
-                    (key->argb & cm) != (((unsigned)(t[2] * mul) << 24) | col) || (key->flags & LOGIT_SHADOW2_INSET) || (amb->flags & LOGIT_SHADOW2_INSET))
-                    FAIL("elevation-calls level %d dark %d: parameters differ from the documented table "
-                         "(ambient dy %d sigma %d argb %08x; key dy %d sigma %d argb %08x)", level, dark,
-                         amb->dy, amb->blur, amb->argb, key->dy, key->blur, key->argb);
-            }
+            check_level("aui_elevation level", level, dark, s, level == 0 ? -1 : (level > 4 ? 4 : level) - 1);
+            munmap(s, sizeof *s);
+        }
+        for (int elev = AUI_ELEV_0; elev <= 4; elev++) {
+            struct shot *s = render(1, 100, 160, 120, sc_shadow, elev);
+            check_level("aui_shadow elev", elev, dark, s, elev >= AUI_ELEV_1 && elev <= AUI_ELEV_3 ? elev - 1 : -1);
             munmap(s, sizeof *s);
         }
     }
     g_dark = 0;
-    if (!bad) printf("ok   elevation: level 0 draws nothing, 1..4 (and 5 -> 4) are exactly an ambient and a key SHADOW2, light and dark\n");
+    if (!bad) printf("ok   elevation: aui_elevation 1..4 (5 -> 4) are E1/E2/E3/E6 and aui_shadow 1..3 E1/E2/E3, each exactly a key and an ambient SHADOW2 in the shadow ink, light and dark; level 0 draws nothing\n");
 }
 
 #ifndef AUI_SHADOW_LEGACY

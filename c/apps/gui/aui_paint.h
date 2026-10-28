@@ -20,9 +20,10 @@ void aui_ring(int cx, int cy, int radius, int thick, unsigned color);
 void aui_vgrad(int x, int y, int w, int h, unsigned top, unsigned bottom);
 void aui_hgrad(int x, int y, int w, int h, unsigned left, unsigned right);
 void aui_vgrad_round(int x, int y, int w, int h, int radius, unsigned top, unsigned bottom);
-/* Drop shadow UNDER the rect (x,y,w,h): 8 slices around it, nothing inside, so
- * the cost is O(perimeter * blur) and a big card's shadow is no dearer than a
- * small one's. `elev` is AUI_ELEV_*; aui_shadow_ex takes the recipe directly. */
+/* Drop shadow UNDER the rect (x,y,w,h). `elev` is AUI_ELEV_1/2/3, drawn as the
+ * design's E1/E2/E3 (aui_elev); aui_shadow_ex takes a recipe directly (8 tile
+ * slices around the rect without SHADOW2, so a big card's shadow is no dearer
+ * than a small one's). */
 void aui_shadow(int x, int y, int w, int h, int radius, int elev);
 void aui_shadow_ex(int x, int y, int w, int h, int radius, int dy, int blur, int alpha);
 /* ---- GUI ABI v2 shadows (SYS_GUI_SHADOW2) ----
@@ -37,9 +38,9 @@ void aui_shadow_ex(int x, int y, int w, int h, int radius, int dy, int blur, int
  * rect (tile fallback: outer form only, inset draws nothing). */
 void aui_shadow2(struct aui_rect rect, int radius, int dx, int dy, int sigma, int spread,
                  unsigned argb, int inset);
-/* level 0..4 (0 draws nothing, above 4 is 4): an ambient shadow, then a key
- * shadow over it; the table of parameters is on the definition in
- * aui_paint.inc. The dark theme doubles the alphas. */
+/* level 0..4 (0 draws nothing, above 4 is 4): the design's elevation ladder
+ * (3.3), 1 -> E1, 2 -> E2, 3 -> E3, 4 -> E6, through aui_elev (a key, then an
+ * ambient SHADOW2 in the shadow ink with the mode's alphas). */
 void aui_elevation(struct aui_rect rect, int radius, int level);
 /* A soft halo of argb around the rect (sigma 6 pt, spread 1 pt, no offset). */
 void aui_glow(struct aui_rect rect, int radius, unsigned argb);
@@ -63,11 +64,16 @@ long aui_path(const struct logit_path2 *path, const struct logit_paint2 *paint,
               const struct logit_stroke2 *stroke);
 void aui_hairline(int x, int y, int w);           /* 1px horizontal rule */
 void aui_vhairline(int x, int y, int h);
-/* Liquid-glass a region over the content drawn behind it (theme-tinted). For
- * app chrome (sidebars/toolbars/cards) -- draw the content first, then glass. */
+/* Liquid-glass a region over the content drawn behind it: aui_material(rect,
+ * radius, LOGIT_MAT_REGULAR) (design P4), whose Reduce Transparency solid is
+ * drawn where glass cannot be. Draw the content first, then glass. */
 void aui_glass(int x, int y, int w, int h, int radius);
 void aui_panel(int x, int y, int w, int h, unsigned color);
-/* A raised surface with a radius, a hairline and an elevation shadow. */
+/* A card (design 3.2, 3.3): bg.card, radius 12 (AUI_R_LG). Light: the
+ * elevation shadow (AUI_ELEV_1 = E1) and the 1 dev-px outer outline #141428 @ 20.
+ * Dark: the dark rim, a 1 dev-px inner stroke of ONE SYS_GUI_PATH with a LINEAR
+ * paint (#FFFFFF @ 38 at the top, @ 10 at 40 %, @ 18 at the bottom); a dark
+ * card raised above E1 (AUI_ELEV_2/3) keeps its shadow too. */
 void aui_card(int x, int y, int w, int h, int elev);
 
 /* ---- 「澄」 materials, backdrops, images and elevation (design P4, 3.2, 3.3;

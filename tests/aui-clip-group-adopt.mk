@@ -8,7 +8,7 @@
 # transport with tests/unit/aui_host/v2_state.c registered, which #includes the REAL
 # c/kernel/gui/wm_draw2_state.c on a host wm2_env (clip ops on the harness surface
 # clip, alloc = malloc). Checks: a disabled button over a gradient is one group at
-# AUI_DISABLED_ALPHA whose pixels equal the display_group oracle; push/pop balance
+# AUI_DISABLED_ALPHA (102, design 4) whose pixels equal the display_group oracle; push/pop balance
 # per frame (aui's leak counter and SYS_GUI2_INFO a=1); a rounded scroll container
 # clips its corners at 100/125/150%; OL_LIMIT falls back; 8 containers nest; an
 # alpha-only group change reaches the flush rect.

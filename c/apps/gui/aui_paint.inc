@@ -978,29 +978,23 @@ void aui_shadow2(struct aui_rect rect, int radius, int dx, int dy, int sigma, in
                  radius + spread, dy, 2 * sigma, alpha, argb & 0xFFFFFFu);
 }
 
-/* Elevation presets: an AMBIENT shadow (no offset, wide and faint) drawn first,
- * then a KEY shadow (offset down, tight, stronger) over it. Points; alpha is
- * the LIGHT theme value, the dark theme doubles it (clamped to 255). Colour is
- * AUI_SHADOW. Level 0 draws nothing, levels above 4 are 4.
+/* The legacy elevation calls on the design's ladder (3.3): aui_elevation's
+ * levels 1..4 are E1 / E2 / E3 / E6, each EXACTLY two SHADOW2 (key, then
+ * ambient) in the shadow ink with the mode's alphas (aui_elev, logit_elevation.h).
+ * Level 0 draws nothing, levels above 4 are 4.
  *
- *   level   key dy / sigma / alpha    ambient sigma / alpha
- *     1          1 /  2 / 36               4 / 16
- *     2          2 /  4 / 44               8 / 20
- *     3          4 /  8 / 52              14 / 24
- *     4          8 / 14 / 60              24 / 28
+ *   level   ladder   used for
+ *     1      E1      cards (light), Secondary buttons, thumbs and knobs
+ *     2      E2      hover-lifted cards, tooltips, dragged rows
+ *     3      E3      menus, popovers, select popups, HUDs
+ *     4      E6      alerts and sheets, Spotlight, About
  */
+static const unsigned char aui_elev_of_level[4] = { LOGIT_E1, LOGIT_E2, LOGIT_E3, LOGIT_E6 };
+
 void aui_elevation(struct aui_rect rect, int radius, int level)
 {
-    static const unsigned char tab[4][5] = {
-        { 1, 2, 36, 4, 16 }, { 2, 4, 44, 8, 20 }, { 4, 8, 52, 14, 24 }, { 8, 14, 60, 24, 28 },
-    };
-    const unsigned char *t;
-    unsigned col = AUI_SHADOW;
-    int mul = aui_is_dark() ? 2 : 1;
     if (level <= 0) return;
-    t = tab[(level > 4 ? 4 : level) - 1];
-    aui_shadow2(rect, radius, 0, 0, t[3], 0, sh_argb(col, t[4] * mul), 0);
-    aui_shadow2(rect, radius, 0, t[0], t[1], 0, sh_argb(col, t[2] * mul), 0);
+    aui_elev(rect, radius, (enum logit_elev)aui_elev_of_level[(level > 4 ? 4 : level) - 1]);
 }
 
 /* A glow: a soft halo of `argb` (alpha = peak opacity) around the rect, sigma
@@ -1010,30 +1004,84 @@ void aui_glow(struct aui_rect rect, int radius, unsigned argb)
     aui_shadow2(rect, radius, 0, 0, 6, 1, argb, 0);
 }
 
+/* AUI_ELEV_1/2/3 are E1/E2/E3; anything else draws nothing, as it always has. */
 void aui_shadow(int x, int y, int w, int h, int r, int elev)
 {
-    switch (elev) {
-        case AUI_ELEV_1: aui_shadow_ex(x, y, w, h, r, 1, 4,  aui_is_dark() ? 90  : 40); break;
-        case AUI_ELEV_2: aui_shadow_ex(x, y, w, h, r, 3, 10, aui_is_dark() ? 120 : 55); break;
-        case AUI_ELEV_3: aui_shadow_ex(x, y, w, h, r, 8, 22, aui_is_dark() ? 150 : 70); break;
-        default: break;
-    }
+    if (elev >= AUI_ELEV_1 && elev <= AUI_ELEV_3)
+        aui_elev(aui_r(x, y, w, h), r, (enum logit_elev)aui_elev_of_level[elev - 1]);
 }
 
 void aui_panel(int x, int y, int w, int h, unsigned color) { aui_fill(x, y, w, h, color); }
 
-void aui_card(int x, int y, int w, int h, int elev)
+/* A card's edge, 1 DEVICE pixel at any scale (design 3.2, "Dark rim on opaque
+ * raised surfaces"): dark, an INNER stroke whose paint is a LINEAR gradient
+ * top -> bottom, #FFFFFF @ 38 -> @ 10 at 40 % -> @ 18, so the card catches the
+ * light along its top edge; light, an OUTER stroke of #141428 @ 20 that keeps a
+ * white card crisp on bg.window. ONE SYS_GUI_PATH either way. The rrect is the
+ * card's own (same device edges and radius as its fill and its shadow: the
+ * one-rrect rule of 3.4), its centre line half a device pixel inside (dark) or
+ * outside (light). Without the PATH capability: a whole-point opaque stroke of
+ * the same colours flattened over what they sit on. */
+#define CARD_STOPS 3
+static void card_edge(int x, int y, int w, int h, int r, int dark)
 {
-    aui_shadow(x, y, w, h, AUI_R_LG, elev);
-    aui_round(x, y, w, h, AUI_R_LG, AUI_SURFACE);
-    aui_stroke(x, y, w, h, AUI_R_LG, 1, AUI_BORDER);
+    if (w <= 0 || h <= 0) return;
+    r = clamp_radius(w, h, r);
+    if (!path_ok()) {
+        if (dark) aui_stroke(x, y, w, h, r, 1, tok_over(LOGIT_DARK_RIM_BOTTOM, aui_t.bg_card));
+        else      aui_stroke(x - 1, y - 1, w + 2, h + 2, r + 1, 1, tok_over(LOGIT_LIGHT_OUTLINE, aui_t.bg));
+        return;
+    }
+    static const unsigned pos[CARD_STOPS] = { 0, (65536u * LOGIT_DARK_RIM_MID_POS + 50) / 100, 65536 };
+    static const unsigned col[CARD_STOPS] = { LOGIT_DARK_RIM_TOP, LOGIT_DARK_RIM_MID, LOGIT_DARK_RIM_BOTTOM };
+    struct ap p;
+    struct logit_path2 pa;
+    struct logit_paint2 pt;
+    struct logit_stroke2 st;
+    long long rx[4], ry[4];
+    int X = X_(x), Y = Y_(y);
+    long long g = dark ? 128 : -128;                     /* half a device px in, or out */
+    long long x0 = (long long)aui_dev(X) * 256 + g, x1 = (long long)aui_dev(X + w) * 256 - g;
+    long long y0 = (long long)aui_dev(Y) * 256 + g, y1 = (long long)aui_dev(Y + h) * 256 - g;
+    long long rdx = (long long)devlen(X, r) * 256 - g, rdy = (long long)devlen(Y, r) * 256 - g;
+    if (rdx < 0 || rdy < 0) rdx = rdy = 0;
+    for (int i = 0; i < 4; i++) { rx[i] = rdx; ry[i] = rdy; }
+    ap_begin(&p, 1);
+    ap_rrect(&p, x0, y0, x1, y1, rx, ry);
+    gfx_zero(&pa, sizeof pa); gfx_zero(&pt, sizeof pt); gfx_zero(&st, sizeof st);
+    pa.verbs = p.v; pa.xy = p.xy; pa.nverb = (unsigned)p.nv; pa.nxy = (unsigned)p.nxy;
+    pa.rule = LOGIT_PATH2_NONZERO;
+    if (dark) {
+        pt.kind = LOGIT_PAINT2_LINEAR;
+        pt.x0 = X * 256; pt.y0 = Y * 256; pt.x1 = X * 256; pt.y1 = (Y + h) * 256;
+        pt.nstop = CARD_STOPS; pt.stop_pos = pos; pt.stop_argb = col;
+        pt.argb = LOGIT_DARK_RIM_TOP;
+    } else {
+        pt.kind = LOGIT_PAINT2_SOLID;
+        pt.argb = LOGIT_LIGHT_OUTLINE;
+    }
+    st.width = (int)dev_ceil_pt24(256);                  /* one device pixel */
+    st.cap = LOGIT_STROKE2_CAP_BUTT; st.join = LOGIT_STROKE2_JOIN_MITER; st.miter = 4 * 65536;
+    ad_note_path(X, Y, w, h, 1, p.v, p.nv, p.xy, p.nxy, (dark ? 0x72696du : 0x6f75746cu) ^ pt.argb);
+    ol_window_path2(&pa, &pt, &st);
 }
 
+void aui_card(int x, int y, int w, int h, int elev)
+{
+    if (w <= 0 || h <= 0) return;
+    aui_ensure();
+    /* E1 is a light-mode level (3.3: "cards (light)"): a resting dark card is
+     * lit by its rim instead. A card raised above rest keeps its shadow. */
+    if (!theme_dark || elev >= AUI_ELEV_2) aui_shadow(x, y, w, h, AUI_R_LG, elev);
+    aui_round(x, y, w, h, AUI_R_LG, aui_t.bg_card);
+    card_edge(x, y, w, h, AUI_R_LG, theme_dark);
+}
+
+/* The legacy glass call is the design's REGULAR material (P4): one GLASS2 with
+ * the SYMMETRIC rim, or its Reduce Transparency solid. */
 void aui_glass(int x, int y, int w, int h, int radius)
 {
-    aui_ensure();
-    if (theme_dark) gui_glass(X_(x), Y_(y), w, h, radius, 34, 36, 46, 120);
-    else            gui_glass(X_(x), Y_(y), w, h, radius, 255, 255, 255, 50);
+    aui_material(aui_r(x, y, w, h), radius < 0 ? 0 : radius, LOGIT_MAT_REGULAR);
 }
 
 #endif /* AUI_PAINT_MASK */
@@ -1043,8 +1091,8 @@ void aui_glass(int x, int y, int w, int h, int radius)
  * 「澄」 materials, backdrops, images and elevation (design P4, 3.2, 3.3; added
  * by ui-aui-core). aui.c includes this file a THIRD time for these, after the
  * glass capability probe (glass_ctl_ok / glass_reduced) they share with the
- * glass control faces. The legacy aui_glass / aui_elevation / aui_shadow above
- * are untouched: ui-aui-theme remaps them onto these.
+ * glass control faces. The legacy aui_glass / aui_elevation / aui_shadow /
+ * aui_card above are built on these (ui-aui-theme).
  *
  * THE CONTROL: -DUI_AUI_CORE_NEGCTL asks the kernel for the DIRECTIONAL rim,
  * whose upper-left light is the dated Dock glint principle 2 retires; make
