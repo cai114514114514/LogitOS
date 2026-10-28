@@ -302,6 +302,7 @@ static void frame(void)
     aui_heading(AUI_PAD, 10, "aui gallery", AUI_TEXT);
     aui_text_sz(AUI_PAD + aui_text_w("aui gallery", AUI_FS_TITLE) + 12, 16,
                 "immediate-mode widgets over gui_*", AUI_MUTED, AUI_FS_LABEL);
+    aui_aim_prefix("tab");              /* [gallery] aim tab-<i> (P13): the strip is centred and sized by its labels */
     aui_tabs(AUI_PAD, 44, WINW - 2 * AUI_PAD, tabs, NTAB, &tab);
 
     int x = AUI_PAD, y = 92, w = WINW - 2 * AUI_PAD;
@@ -318,6 +319,7 @@ static void frame(void)
 void app_main(void)
 {
     gui_create("Gallery", WINW, WINH);
+    ui_aim_set_app("gallery");
     aui_set_size(WINW, WINH);
     frame();
 

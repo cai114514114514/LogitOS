@@ -27,7 +27,7 @@ SAME(ICON_DOWNLOAD, GICON_DOWNLOAD); SAME(ICON_REFRESH, GICON_REFRESH);
 SAME(ICON_STAR, GICON_STAR);       SAME(ICON_LOCK, GICON_LOCK);
 SAME(ICON_HOME, GICON_HOME);       SAME(ICON_LINK, GICON_LINK);
 SAME(ICON_EYE, GICON_EYE);         SAME(ICON_BELL, GICON_BELL);
-SAME(ICON_COUNT, GICON_BELL + 1);
+SAME(ICON_SUN, GICON_BELL + 1);   /* set C follows set B (ui-wm-abi) */
 SAME(ICON_SHARE, ICON_GEAR + 1);   /* set B is appended: existing ids unchanged */
 
 static int hook_fn(void) { return 0; }
@@ -87,7 +87,7 @@ static void test_ids(void)
 {
     static const int px[] = { 12, 16, 32, 64, 15, 18, 20, 24 };
     int empty = 0, outside = 0, wrongsz = 0;
-    for (int id = ICON_SHARE; id < ICON_COUNT; id++)
+    for (int id = ICON_SHARE; id <= ICON_BELL; id++)
         for (unsigned k = 0; k < sizeof px / sizeof *px; k++) {
             g_w = g_h = 0;
             icon_draw(id, 0, 0, px[k], 0xFFFFFF);
@@ -95,7 +95,7 @@ static void test_ids(void)
             if (ink() == 0) empty++;
             if (!ring_clear()) outside++;
         }
-    CHECK(NREC == ICON_COUNT - ICON_SHARE, "table-complete");
+    CHECK(NREC == ICON_BELL + 1 - ICON_SHARE, "table-complete");
     CHECK(!wrongsz, "size"); CHECK(!empty, "nonempty"); CHECK(!outside, "box");
 }
 
@@ -131,7 +131,7 @@ static void test_mirror(void)
 static void test_record(int dump)
 {
     int band = 0, crc = 0;
-    for (int id = ICON_SHARE; id < ICON_COUNT; id++) {
+    for (int id = ICON_SHARE; id <= ICON_BELL; id++) {
         icon_draw(id, 0, 0, 32, 1);
         long a = ink() / 255;
         uint32_t c = crc32(g_cov, 32 * 32);
@@ -156,7 +156,7 @@ static void test_stable(void)
     icon_draw(ICON_COUNT, 0, 0, 32, 1); icon_draw(-1, 0, 0, 32, 1);          /* rejected, no crash */
     /* large sizes: the path scratch must hold every new icon at wm.c's ceiling */
     int refused = 0;
-    for (int id = ICON_SHARE; id < ICON_COUNT; id++) { g_w = 0; icon_draw(id, 0, 0, 512, 1); if (g_w != 512 || ink() == 0) refused++; }
+    for (int id = ICON_SHARE; id <= ICON_BELL; id++) { g_w = 0; icon_draw(id, 0, 0, 512, 1); if (g_w != 512 || ink() == 0) refused++; }
     CHECK(!refused, "large");
 }
 

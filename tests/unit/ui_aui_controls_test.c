@@ -386,8 +386,10 @@ static void t_stepper(void)
     send(EV_MOUSE, 20 + 92 - 12, 130 + 14, 0);
     send(EV_MOUSE_UP, 20 + 92 - 12, 130 + 14, 0);
     check(st_val == 10, "stepper clamp: %d (want 10)", st_val);
-    /* geometry: the capsule is 92 x 28 of fill.control */
-    struct bb b = bbox_of(aui_tok()->fill_control, 3, 14, 124, 120, 164);
+    /* geometry: the capsule is 92 x 28 of fill.control. Tolerance 1: the 「澄」 E1
+     * ambient shadow (ui-aui-theme) darkens bg.window F4F4F8 one point above the
+     * capsule to EBEBF0, within 3 of fill.control E9E9EE. */
+    struct bb b = bbox_of(aui_tok()->fill_control, 1, 14, 124, 120, 164);
     check(b.n > 0 && b.y1 - b.y0 + 1 >= 27 && b.y1 - b.y0 + 1 <= 28 && b.x1 - b.x0 + 1 >= 90 && b.x1 - b.x0 + 1 <= 92,
           "stepper capsule %dx%d (want 92x28)", b.x1 - b.x0 + 1, b.y1 - b.y0 + 1);
     unworld();

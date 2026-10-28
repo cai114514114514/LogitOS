@@ -49,6 +49,7 @@ struct shot {
     unsigned tcol;
     struct prec p[NP];
     struct logit_tokens tok;
+    int gx[4], gy[4], gw[4], gh[4];     /* the first GLASS2 rects, 24.8 pt */
 };
 static struct shot g_rec;
 static int g_dark, g_rt, g_rm;
@@ -61,7 +62,15 @@ static void mkenv(struct wm2_env *e, struct aui_host *h)
     e->copyin = host_copyin; e->alloc = malloc; e->release = free;
 }
 static long glass_hook(struct aui_host *h, long a, long b, long c)
-{ struct wm2_env e; g_rec.nglass++; mkenv(&e, h); return wm2_glass2(&e, a, b, c); }
+{
+    struct wm2_env e;
+    const struct logit_glass2 *g = (const struct logit_glass2 *)a;
+    if (g && g_rec.nglass < 4) {
+        g_rec.gx[g_rec.nglass] = g->x; g_rec.gy[g_rec.nglass] = g->y;
+        g_rec.gw[g_rec.nglass] = g->w; g_rec.gh[g_rec.nglass] = g->h;
+    }
+    g_rec.nglass++; mkenv(&e, h); return wm2_glass2(&e, a, b, c);
+}
 
 static long path_hook(struct aui_host *h, long a, long b, long c)
 {
@@ -224,7 +233,18 @@ static void check_variant(int v, int dark, int pct, int rt)
     for (int k = 0; k < 4; k++) {
         sp.state = k;
         st[k] = render(1, pct, &sp, 0, 0);
-        if (st[k]->nglass) FAIL("no-glass %s state %d: %d GLASS2 calls", tag, k, st[k]->nglass);
+        /* A GLASS2 no larger than the button (plus a point) is the button's own and
+         * must not exist (design 4.3). Pressing a popup opens its menu panel
+         * (aui_select -> the ui-aui-overlays panel, design 4.9), whose settled frame
+         * is the ONE glass, larger than the button, and none under RT. */
+        int onb = st[k]->nglass > 4 ? st[k]->nglass - 4 : 0, off = 0;
+        for (int i = 0; i < st[k]->nglass && i < 4; i++) {
+            if (st[k]->gw[i] <= (sp.w + 1) * 256 && st[k]->gh[i] <= (sp.h + 1) * 256) onb++;
+            else off++;
+        }
+        int want_off = (v == V_POPUP && k == ST_PRESS && !rt) ? 1 : 0;
+        if (onb) FAIL("no-glass %s state %d: %d GLASS2 calls", tag, k, onb);
+        if (off != want_off) FAIL("no-glass %s state %d: %d menu-panel GLASS2 calls, want %d", tag, k, off, want_off);
         if (st[k]->unhandled) FAIL("legacy %s state %d: unhandled syscall numbers", tag, k);
     }
     const struct logit_tokens *t = &st[0]->tok;

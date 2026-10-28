@@ -116,6 +116,15 @@ class Frame:
         return self.p.dark_pixels((self.ox + pt(x), self.oy + pt(y),
                                    self.ox + pt(x + w), self.oy + pt(y + h)), thresh)
 
+    def count(self, x, y, w, h, pred):
+        """Device pixels of the window-local point rect for which pred(rgb) holds."""
+        n = 0
+        for yy in range(self.oy + pt(y), self.oy + pt(y + h)):
+            for xx in range(self.ox + pt(x), self.ox + pt(x + w)):
+                if pred(self.p.at(xx, yy)):
+                    n += 1
+        return n
+
 
 class Fatal(Exception):
     """A failed check that everything after it depends on -- see ck()."""
@@ -400,14 +409,23 @@ def main(argv):
         ui.screendump(shot, settle=1.0 * slow)
         g = Frame(shot)
         ppm_to_png(shot, base_out + "-refused.png")
-        # Enabled, the Force Quit button is AUI_V_DANGER -- a saturated red
-        # fill. Disabled, it is AUI_DISABLED, a neutral grey. So the test is
-        # REDNESS (r - b), not luma: the danger red's luma lands within a
-        # rounding error of any threshold worth picking, which made a luma test
-        # read 0 for both states. Sample left of centre, clear of the label.
+        # Force Quit is AUI_V_DANGER, which design 4.3 (ui-aui-buttons) makes a
+        # Plain button: no red fill, the LABEL is error.ink, (217,45,32) in light.
+        # Disabled, the label is label.quaternary (189,189,198), a neutral grey.
+        # So the test counts the label's ink inside the button's own rect (132 x
+        # 28 around its force-quit aim): error.ink pixels (+-6, appendix B) when
+        # enabled, and no reddish pixel at all when disabled.
         KILL_X, KILL_Y = aim("force-quit")      # Force Quit's centre
-        shell_px = g.at(KILL_X - 55, KILL_Y)
-        shell_red = shell_px[0] - shell_px[2]
+
+        def danger_ink(fr):
+            return fr.count(KILL_X - 66, KILL_Y - 14, 132, 28,
+                            lambda p: abs(p[0] - 217) <= 6 and abs(p[1] - 45) <= 6
+                            and abs(p[2] - 32) <= 6)
+
+        def reddish(fr):
+            return fr.count(KILL_X - 66, KILL_Y - 14, 132, 28,
+                            lambda p: p[0] - p[2] > 40)
+        shell_ink, shell_red = danger_ink(g), reddish(g)
 
         # Now select Clock again (descending, row 0) and compare.
         click_aim(g, "sort-desc")
@@ -417,12 +435,11 @@ def main(argv):
         park(g)
         ui.screendump(shot, settle=1.0 * slow)
         f = Frame(shot)
-        clock_px = f.at(KILL_X - 55, KILL_Y)
-        clock_red = clock_px[0] - clock_px[2]
-        ck(clock_red > shell_red + 40,
+        clock_ink, clock_red = danger_ink(f), reddish(f)
+        ck(clock_ink >= 10 and shell_red == 0,
            "Force Quit is DISABLED for the console shell and enabled for Clock",
-           "redness: shell=%d %s, clock=%d %s"
-           % (shell_red, shell_px, clock_red, clock_px))
+           "error.ink px: shell=%d clock=%d; reddish px: shell=%d clock=%d"
+           % (shell_ink, clock_ink, shell_red, clock_red))
 
         # --- kill it ------------------------------------------------------------
         # The FOURTH row's band, measured with the sort descending and the

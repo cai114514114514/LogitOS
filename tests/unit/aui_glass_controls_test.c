@@ -9,16 +9,18 @@
  *   primary           a Primary button makes 0 GLASS2 calls and paints a LINEAR gradient
  *   ai-stroke         the AI button's LINEAR stroke paint turns after hover + 300 ms and
  *                     is still after 600 ms (and asks for no more frames)
- *   call      the pill and the track are ONE glass2 SYMMETRIC/THIN   FAIL glass-call
+ *   call      the segmented control (design 4.5) and the switch (4.6) make NO
+ *             glass2 either, like the button              FAIL glass-call
  *   reduce    ui.reduce_transparency, or INFO without GLASS2, gives the
- *             gradient face: no glass2, strips present      FAIL reduce
- *   damage    a new track's flush set reaches the glass halo, and a changed
- *             backdrop pixel that the panel samples is flushed       FAIL damage
+ *             flat face: no glass2, strips present          FAIL reduce
+ *   damage    every pixel a new switch changes is in its flush set, and a
+ *             changed backdrop pixel next to it is flushed  FAIL damage
  *
  * The old rim-uniform check of an 80x28 BUTTON is gone with the button's glass
- * (design 4.3, tests/ui-aui-buttons.mk covers the capsule); the toggle track and
- * the segmented pill are superseded by ui-aui-controls / ui-aui-lists and keep the
- * asserts they had. Each render runs in a forked child (aui.c keeps its scale and
+ * (design 4.3, tests/ui-aui-buttons.mk covers the capsule); the switch track and
+ * the segmented thumb lost their glass too (ui-aui-controls / ui-aui-lists, design
+ * 4.5 / 4.6), so 'call' asserts 0 GLASS2 for all three and 'damage' checks the
+ * switch's drawn pixels instead of a glass halo. Each render runs in a forked child (aui.c keeps its scale and
  * capability in file-scope statics). THE CONTROL (-DAUI_BTN_SECONDARY_GLASS) puts
  * glass_face back under a Secondary button: only the button checks run and it must
  * report 'FAIL secondary-glass2'. Exits 1 on any failure. */
@@ -51,11 +53,11 @@ struct shot {
     int ai[4];
     struct logit_glass2 log[GL_LOG];
     struct aui_host_rect dmg[AUI_HOST_DMG_MAX];
-    long viol;
+    long viol, changed;
     uint32_t px[MAXW * MAXH];
 };
 typedef void (*scene_fn)(struct aui_host *h, int arg);
-static int g_dark, g_reduce, g_viol_out;
+static int g_dark, g_reduce, g_viol_out, g_changed;
 
 static struct logit_glass2 g_log[GL_LOG];
 static int g_nglass;
@@ -121,6 +123,7 @@ static struct shot *render(int v2, int pct, scene_fn fn, int arg)
         s->nrect = (int)(h->calls[SYS_GUI_RECT] + h->calls[SYS_GUI_RRECT]);
         s->nblit = (int)h->calls[SYS_GUI_BLIT];
         s->viol = g_viol_out;
+        s->changed = g_changed;
         s->npath = (int)h->calls[SYS_GUI_PATH];
         s->nshadow = (int)h->calls[SYS_GUI_SHADOW2];
         s->nlinear = g_nlinear;
@@ -242,13 +245,6 @@ static void sc_toggle(struct aui_host *h, int arg)
     aui_end();
 }
 
-static int glass_ok(const struct logit_glass2 *g)
-{
-    return g->rim == OL_GLASS_RIM_SYMMETRIC && g->blur_level == OL_GLASS_BLUR_THIN && g->cut == 0 &&
-           (g->flags & LOGIT_RECT_SNAP) && g->radius[1] == g->radius[0] && g->radius[2] == g->radius[0] &&
-           g->radius[3] == g->radius[0] && g->opacity > 0 && g->w > 0 && g->h > 0;
-}
-
 static void check_calls(void)
 {
     static const char *const nm[3] = { "button", "segmented", "toggle" };
@@ -257,13 +253,12 @@ static void check_calls(void)
         for (int w = 0; w < 3; w++) {
             struct shot *s = render(1, pcts[p], fn[w], 0);
             if (s->unhandled) FAIL("glass-call %s @%d%%: unhandled syscall numbers", nm[w], pcts[p]);
-            if (s->nglass != (w == 0 ? 0 : 1)) FAIL("glass-call %s @%d%%: %d SYS_GUI_GLASS2 calls, want %d", nm[w], pcts[p], s->nglass, w == 0 ? 0 : 1);
-            else if (w != 0 && !glass_ok(&s->log[0]))
-                FAIL("glass-call %s @%d%%: rim %d blur %d cut %u flags %x (want SYMMETRIC, THIN, no cut, SNAP)", nm[w], pcts[p],
-                     s->log[0].rim, s->log[0].blur_level, s->log[0].cut, s->log[0].flags);
+            /* design 4.3 / 4.5 / 4.6: no control face is glass */
+            if (s->nglass != 0) FAIL("glass-call %s @%d%%: %d SYS_GUI_GLASS2 calls, want 0", nm[w], pcts[p], s->nglass);
+            if (!s->npath && !s->nrect) FAIL("glass-call %s @%d%%: nothing drawn", nm[w], pcts[p]);
             munmap(s, sizeof *s);
         }
-    if (!bad) printf("ok   call: the segmented pill and the toggle track are one glass2 SYMMETRIC/THIN; the button makes none\n");
+    if (!bad) printf("ok   call: the button, the segmented control and the switch make no glass2\n");
 }
 
 static void check_fallback(void)
@@ -283,14 +278,34 @@ static void check_fallback(void)
 }
 
 /* ---------------------------------------------------------------- damage */
+/* Pixels that changed against `before`, and how many of them lie outside the
+ * frame's flush rectangles. */
+static void count_outside(struct aui_host *h, const uint32_t *before)
+{
+    g_viol_out = 0; g_changed = 0;
+    for (int y = 0; y < h->h; y++)
+        for (int x = 0; x < h->w; x++) {
+            int in = 0;
+            if (before[y * h->w + x] == h->px[y * h->w + x]) continue;
+            g_changed++;
+            for (int i = 0; i < h->ndmg; i++)
+                if (x >= h->dmg[i].x && x < h->dmg[i].x + h->dmg[i].w && y >= h->dmg[i].y && y < h->dmg[i].y + h->dmg[i].h) in = 1;
+            if (!in) g_viol_out++;
+        }
+}
+
+/* A switch appears on an empty frame: every pixel it draws (track, knob and the
+ * knob's shadow) must be in the flush set. */
 static void sc_damage_new(struct aui_host *h, int arg)
 {
-    (void)h;
+    static uint32_t before[MAXW * MAXH];
     aui_begin(AUI_BG); aui_end(); aui_feed_done();
+    memcpy(before, h->px, (size_t)h->w * h->h * 4);
     aui_host_stats_reset(h);
     aui_begin(AUI_BG);
     if (arg) { int on = 0; aui_toggle(BX, BY, &on, 1); }
     aui_end(); aui_feed_done();
+    count_outside(h, before);
 }
 
 /* A backdrop stripe 6 pt outside the button (inside the THIN halo) changes
@@ -310,15 +325,7 @@ static void sc_damage_back(struct aui_host *h, int arg)
     aui_round(BX - 8, BY, 4, TH, 0, 0xE08020u);
     { int on = 0; aui_toggle(BX, BY, &on, 1); }
     aui_end(); aui_feed_done();
-    g_viol_out = 0;
-    for (int y = 0; y < h->h; y++)
-        for (int x = 0; x < h->w; x++) {
-            int in = 0;
-            if (before[y * h->w + x] == h->px[y * h->w + x]) continue;
-            for (int i = 0; i < h->ndmg; i++)
-                if (x >= h->dmg[i].x && x < h->dmg[i].x + h->dmg[i].w && y >= h->dmg[i].y && y < h->dmg[i].y + h->dmg[i].h) in = 1;
-            if (!in) g_viol_out++;
-        }
+    count_outside(h, before);
 }
 
 static void check_damage(void)
@@ -326,25 +333,15 @@ static void check_damage(void)
     for (int p = 0; p < 2; p++) {
         int pct = pcts[p];
         struct shot *s = render(1, pct, sc_damage_new, 1);
-        int hd = ad_halo_glass(aui_host_pt(BX + TW, pct) - aui_host_pt(BX, pct), aui_host_pt(BY + TH, pct) - aui_host_pt(BY, pct),
-                               aui_host_pt(TH / 2, pct), OL_GLASS_BLUR_THIN);
-        int l = aui_host_pt(BX, pct) - hd, t = aui_host_pt(BY, pct) - hd;
-        int r = aui_host_pt(BX + TW, pct) + hd, b = aui_host_pt(BY + TH, pct) + hd, ok_l = 0, ok_t = 0, ok_r = 0, ok_b = 0;
-        for (int i = 0; i < s->ndmg; i++) {
-            if (s->dmg[i].x <= l) ok_l = 1;
-            if (s->dmg[i].y <= t) ok_t = 1;
-            if (s->dmg[i].x + s->dmg[i].w >= r) ok_r = 1;
-            if (s->dmg[i].y + s->dmg[i].h >= b) ok_b = 1;
-        }
-        if (!(ok_l && ok_t && ok_r && ok_b))
-            FAIL("damage @%d%%: the flush set does not reach the glass halo (%d px) (l %d t %d r %d b %d)", pct, hd, ok_l, ok_t, ok_r, ok_b);
+        if (!s->changed) FAIL("damage @%d%%: a new switch changed no pixel", pct);
+        if (s->viol) FAIL("damage @%d%%: a new switch changed %ld pixels outside its flush rectangles", pct, s->viol);
         munmap(s, sizeof *s);
         s = render(1, pct, sc_damage_back, 0);
         if (s->viol) FAIL("damage @%d%%: %ld changed pixels outside the flush rectangles", pct, s->viol);
         if (!s->ndmg) FAIL("damage @%d%%: a changed backdrop flushed nothing", pct);
         munmap(s, sizeof *s);
     }
-    if (!bad) printf("ok   damage: a glass track's flush set reaches the halo, and a changed backdrop it samples is flushed\n");
+    if (!bad) printf("ok   damage: a new switch is flushed whole, and a changed backdrop next to it is flushed\n");
 }
 #endif
 

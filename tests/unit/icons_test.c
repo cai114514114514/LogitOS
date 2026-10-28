@@ -36,7 +36,7 @@ SAME(ICON_DOWNLOAD, GICON_DOWNLOAD); SAME(ICON_REFRESH, GICON_REFRESH);
 SAME(ICON_STAR, GICON_STAR);       SAME(ICON_LOCK, GICON_LOCK);
 SAME(ICON_HOME, GICON_HOME);       SAME(ICON_LINK, GICON_LINK);
 SAME(ICON_EYE, GICON_EYE);         SAME(ICON_BELL, GICON_BELL);
-SAME(ICON_COUNT, GICON_BELL + 1);
+SAME(ICON_COUNT, GICON_COUNT);       /* set C follows set B (ui-wm-abi) */
 
 /* --- stubs for what icons.c links against --- */
 static int hook_fn(void) { return 0; }

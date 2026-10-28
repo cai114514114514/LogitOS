@@ -79,10 +79,12 @@ static void t_fade_group(void)
     setup(100, 0);
     gradient();
     int rad[4] = { 0, 0, 0, 0 };
-    unsigned long bytes = ol_display_group_bytes(BW, BH, rad, AUI_DISABLED_ALPHA);
+    /* design 4.3 (ui-aui-buttons): the disabled group also covers the 8 pt E1
+     * shadow margin around the capsule */
+    unsigned long bytes = ol_display_group_bytes(BW + 16, BH + 16, rad, AUI_DISABLED_ALPHA);
     uint32_t *snap = malloc(bytes);
     struct ol_display_group g;
-    int rc = ol_display_group_begin(&H->disp, &g, BX, BY, BW, BH, rad, AUI_DISABLED_ALPHA, snap, bytes);
+    int rc = ol_display_group_begin(&H->disp, &g, BX - 8, BY - 8, BW + 16, BH + 16, rad, AUI_DISABLED_ALPHA, snap, bytes);
     aui_button_ex(BX, BY, BW, BH, "Off", AUI_V_PRIMARY, 1);
     ol_display_group_end(&H->disp, &g);
     check(rc == 0 && !memcmp(got, H->px, n * 4), "fade-group: pixels equal the display_group oracle");

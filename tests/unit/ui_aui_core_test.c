@@ -310,17 +310,19 @@ static void case_roles(int unused)
     setup(100, 0, 0);
     core_frame(0, 0);
     roles_match("light", aui_t.accent, 0);
-    if (aui_t.bg != 0xF4F5F8u || aui_t.accent != 0x4082F6u || aui_t.surface != 0xFFFFFFu)
+    /* design 3.1.1 / 3.1.4 (ui-aui-theme): the legacy fields come from logit_tokens,
+     * bg.window L #F4F4F8 and the default accent 靛 #5E5CE6 */
+    if (aui_t.bg != 0xF4F4F8u || aui_t.accent != 0x5E5CE6u || aui_t.surface != 0xFFFFFFu)
         FAIL("theme-roles: legacy light fields moved (bg %06x accent %06x)", aui_t.bg, aui_t.accent);
     aui_set_dark(1);
     roles_match("set_dark", aui_t.accent, 1);
-    if (aui_t.bg != 0x1C1C20u || aui_t.accent != 0x5E96FFu)
+    if (aui_t.bg != 0x1E1E24u || aui_t.accent != 0x6563EEu)        /* bg.window D, 靛 D */
         FAIL("theme-roles: legacy dark fields moved (bg %06x accent %06x)", aui_t.bg, aui_t.accent);
     aui_set_accent(0x1F6FEBu);                     /* 蓝: the tuned swatch */
     roles_match("set_accent dark", 0x1F6FEBu, 1);
     if (aui_tok()->accent != 0x1F6FEBu || aui_tok()->accent_ink != 0x79AEFFu)
         FAIL("theme-roles: 蓝 dark accent %06x ink %06x, want 1f6feb 79aeff", aui_tok()->accent, aui_tok()->accent_ink);
-    aui_set_dark(0);                               /* load_light resets the legacy accent */
+    aui_set_dark(0);                               /* the accent base survives set_dark */
     aui_set_accent(0x1F6FEBu);
     if (aui_tok()->accent_ink != 0x1A62D6u) FAIL("theme-roles: 蓝 light ink %06x, want 1a62d6", aui_tok()->accent_ink);
     aui_set_accent(LOGIT_ACCENT_DEFAULT);

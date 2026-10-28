@@ -472,7 +472,9 @@ def main(argv):
             return sum(luma(ppm.at(x, y)) > 155 for y in range(pt(3), pt(20))
                        for x in range(xres - pt(160), xres - pt(12)))
         before_ink = clock_ink(before_clock)
-        for name in ("clock-seconds", "clock-date", "clock-weekday"):
+        # Design 5.2 (ui-wm-abi): the menu-bar clock shows no seconds by default,
+        # so the date and weekday switches remove ink and the seconds switch ADDS it.
+        for name in ("clock-date", "clock-weekday"):
             click_control(name)
         click_control("apply")
         time.sleep(1.0 * slow)
@@ -480,9 +482,19 @@ def main(argv):
         ui.screendump(shot)
         after_ink = clock_ink(PPM(shot))
         ck(after_ink < before_ink * 0.8,
-           "clock preferences remove date and seconds from the kernel menu bar",
+           "clock preferences remove date and weekday from the kernel menu bar",
            "ink %d -> %d" % (before_ink, after_ink))
         ppm_to_png(shot, base_out + "-clock-applied.png")
+        click_control("clock-seconds")
+        click_control("apply")
+        time.sleep(1.0 * slow)
+        park()
+        ui.screendump(shot)
+        sec_ink = clock_ink(PPM(shot))
+        ck(sec_ink > after_ink * 1.2,
+           "turning clock seconds on adds them to the kernel menu bar",
+           "ink %d -> %d" % (after_ink, sec_ink))
+        ppm_to_png(shot, base_out + "-clock-seconds.png")
 
         navigate(0)
         click_control("motion")

@@ -35,6 +35,7 @@ import zlib
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from qmp_ui import Session, configure, pt, PPM  # noqa: E402
+from qmp_aim import Aims  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -210,13 +211,14 @@ def main(argv):
            "%s -> %s" % (hot, back))
 
         # --- click: an unchecked box fills with the accent -------------------
-        # "Unchecked" checkbox at window-local (156,248), 18x18.
-        before = base.at(156 + 3, 248 + 9)
-        ui.click_at_confirmed(probe, base.ox + pt(156 + 9), base.oy + pt(248 + 9))
+        # "Unchecked" checkbox at window-local (156,248), 16x16 (design 4.7,
+        # ui-aui-controls): its centre is (164,256).
+        before = base.at(156 + 3, 248 + 8)
+        ui.click_at_confirmed(probe, base.ox + pt(156 + 8), base.oy + pt(248 + 8))
         time.sleep(1.2 * slow)
         park()
         ui.screendump(shot, settle=1.0 * slow)
-        after = Frame(shot, "controls").at(156 + 3, 248 + 9)
+        after = Frame(shot, "controls").at(156 + 3, 248 + 8)
         ck(luma(after) < luma(before) - 30, "clicking a checkbox fills it",
            "%s -> %s" % (before, after))
 
@@ -270,7 +272,10 @@ def main(argv):
         # --- keyboard page change ---------------------------------------------
         # Click the tab strip (which focuses it), then drive it with the arrow
         # key alone: this is the aui_tabs keyboard path, not a click on a tab.
-        ui.click_at_confirmed(probe, base.ox + pt(50), base.oy + pt(60))
+        # The strip is a centred capsule sized by its labels (design 4.5,
+        # ui-aui-lists), so the click lands on tab-0's own aim (the page shown).
+        tx, ty = Aims(ui).wait("gallery", "tab-0", timeout=20)
+        ui.click_at_confirmed(probe, base.ox + pt(tx), base.oy + pt(ty))
         time.sleep(1.0 * slow)
         park()
         ui.key("right"); time.sleep(1.6 * slow)

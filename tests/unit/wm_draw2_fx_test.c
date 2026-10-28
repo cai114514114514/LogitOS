@@ -266,7 +266,7 @@ static void t_args(void)
     g[3].reserved[1] = 1;
     g[4].opacity = 256;
     g[5].radius[0] = -1;
-    g[6].flags = 2;
+    g[6].flags = 1u << 3;          /* bit 1 is ADAPT_SMOOTH now (ui-glass-adapt); bit 3 is still unknown */
     g[7].tone = -1;
     g[8].h = -1;
     for (int i = 0; i < 9; i++)

@@ -1,9 +1,7 @@
 # tests/aui-glass-controls.mk -- design 4.3: buttons are capsules with NO glass (a Secondary
 # 80x28 = 0 GLASS2, <= 3 PATH, exactly 2 SHADOW2; Primary paints a gradient; the AI stroke's
-# paint turns on hover and stops). The segmented pill and the toggle track are still ONE
-# SYS_GUI_GLASS2 (SYMMETRIC rim, THIN blur, tint = the face colour) when the kernel reports
-# GLASS2 and ui.reduce_transparency is off; otherwise the flat face (c/apps/gui/aui_button.inc
-# glass_face). tests/unit/aui_glass_controls_test.c drives the real ring-3 aui.c over the aui
+# paint turns on hover and stops). The segmented control and the switch make no GLASS2
+# either (design 4.5 / 4.6), and a new switch is flushed whole. tests/unit/aui_glass_controls_test.c drives the real ring-3 aui.c over the aui
 # host with v2_fx.c and v2_path.c (used unchanged), which #include the REAL handlers.
 #
 # THE CONTROL builds the SAME sources and flags plus -DAUI_BTN_SECONDARY_GLASS (glass_face is

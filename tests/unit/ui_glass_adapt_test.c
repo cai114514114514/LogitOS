@@ -15,8 +15,8 @@
  *                       checks above are not vacuous
  *   unflagged-backdrop  the same for BACKDROP
  *   smooth-glass2       ADAPT_SMOOTH reaches the material (equals the direct call)
- *   smooth-backdrop     bit 1 of the BACKDROP flags is still LOGIT_BACKDROP_ALPHA_LAYER
- *                       (OL_UNSUPPORTED): SMOOTH cannot reach a BACKDROP yet (see below)
+ *   smooth-backdrop     ADAPT_SMOOTH reaches a BACKDROP's material (equals the direct
+ *                       call); ui-wm-abi moved LOGIT_BACKDROP_ALPHA_LAYER to bit 8
  *   reduce-transp       reduce transparency wins: flagged equals unflagged
  *   unknown-bits        a flag bit above ADAPT_FG is still OL_ARGUMENT
  *
@@ -225,7 +225,7 @@ static void t_backdrop(void)
     /* light fill -> black ink, dark fill -> white ink */
     static const uint32_t FILL[2] = {0xE6E6EC, 0x28282E};
     static const uint32_t INK[2] = {0x000000, 0xFFFFFF};
-    int unflagged_bad = 0, contrast_bad = 0, exact_bad = 0, plain_bad = 0, runs = 0;
+    int unflagged_bad = 0, contrast_bad = 0, exact_bad = 0, plain_bad = 0, smooth_bad = 0, runs = 0;
     double worst = 1e9;
     rng = 0x51ED270Bu;
     for (int n = 0; n < 24; n++) {
@@ -252,6 +252,13 @@ static void t_backdrop(void)
                     bd_oracle(&b, 0, 0, oracle);
                     if (memcmp(canvas, oracle, W * H * 4)) plain_bad++;
                     if (contrast(canvas[CY * W + 40], INK[f]) < 4.5) unflagged_bad++;
+                    /* SMOOTH */
+                    b.flags = LOGIT_RECT_SNAP | LOGIT_GLASS2_F_ADAPT_SMOOTH;
+                    memcpy(canvas, photo_px, W * H * 4);
+                    if (bd_run(&b, canvas) != OL_OK) { fail("smooth-backdrop", "status"); return; }
+                    memcpy(oracle, photo_px, W * H * 4);
+                    bd_oracle(&b, OL_GLASS_ADAPT_SMOOTH, INK[f], oracle);
+                    if (memcmp(canvas, oracle, W * H * 4)) smooth_bad++;
                 }
     }
     char s[96];
@@ -259,6 +266,7 @@ static void t_backdrop(void)
     if (exact_bad) { snprintf(s, sizeof s, "%d renders differ from OL_GLASS_ADAPT_FG", exact_bad); fail("adapt-fg-backdrop", s); }
     if (plain_bad) { snprintf(s, sizeof s, "%d unflagged renders differ from flags 0", plain_bad); fail("unflagged-backdrop", s); }
     if (unflagged_bad < 100) { snprintf(s, sizeof s, "only %d unflagged violations: vacuous", unflagged_bad); fail("unflagged-backdrop", s); }
+    if (smooth_bad) { snprintf(s, sizeof s, "%d renders differ from OL_GLASS_ADAPT_SMOOTH", smooth_bad); fail("smooth-backdrop", s); }
     printf("backdrop: worst flagged contrast %.2f, unflagged violations %d of %d\n", worst, unflagged_bad, runs);
 }
 
@@ -290,13 +298,9 @@ static void t_reduce_unknown(void)
     if (glass_call(&g, canvas) != OL_ARGUMENT) fail("unknown-bits", "glass2 accepted bit 3");
     b = mkbd(0xF0F2F8, 96, 0xE6E6EC, LOGIT_RECT_SNAP | (1u << 3));
     if (bd_run(&b, canvas) != OL_ARGUMENT) fail("unknown-bits", "backdrop accepted bit 3");
-    /* smooth-backdrop: bit 1 of logit_backdrop2.flags is also
-     * LOGIT_BACKDROP_ALPHA_LAYER (reserved, OL_UNSUPPORTED), so ADAPT_SMOOTH
-     * cannot reach a BACKDROP until ui-wm-abi renumbers ALPHA_LAYER. Pin the
-     * refusal so the collision is loud; when it is renumbered this check
-     * becomes the exact-render check glass2 has. */
-    b = mkbd(0xF0F2F8, 96, 0xE6E6EC, LOGIT_RECT_SNAP | LOGIT_GLASS2_F_ADAPT_SMOOTH);
-    if (bd_run(&b, canvas) != OL_UNSUPPORTED) fail("smooth-backdrop", "bit 1 no longer refused as ALPHA_LAYER");
+    /* the reserved ALPHA_LAYER (bit 8 since ui-wm-abi) is still refused */
+    b = mkbd(0xF0F2F8, 96, 0xE6E6EC, LOGIT_RECT_SNAP | LOGIT_BACKDROP_ALPHA_LAYER);
+    if (bd_run(&b, canvas) != OL_UNSUPPORTED) fail("unknown-bits", "backdrop accepted ALPHA_LAYER");
     free(a);
 }
 

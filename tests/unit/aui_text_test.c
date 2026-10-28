@@ -311,13 +311,19 @@ static void t_baseline(void)
                     int y = v2 ? dev24(recs[i].y24, pct) : aui_host_pt(recs[i].y24 / 256, pct);
                     bl[i] = y + (80 * aui_host_pt(pxs[i], pct) + 50) / 100;
                 }
-                int d1 = bl[1] - bl[0], d2 = bl[2] - bl[0];
-                if (d1 < 0) d1 = -d1;
-                if (d2 < 0) d2 = -d2;
-                /* run2 places at 24.8 points, so the baselines are equal; the legacy
-                 * path rounds to whole points and may differ by one device pixel */
-                int tol = v2 ? 0 : (pct == 100 ? 0 : 1);
-                checkf(d1 <= tol && d2 <= tol, "baseline shared across sizes %s %d", tag, d1 > d2 ? d1 : d2);
+                /* design 3.6 metric centring (ui-aui-theme): every size is centred
+                 * in the rect by the font's own metrics, so the sizes no longer
+                 * share one baseline. Each run's top + ascent IS
+                 * aui_text_baseline24() of the rect: exactly with TEXT_RUN2 (24.8
+                 * points); within one device pixel on the legacy path, which
+                 * rounds the run to whole points. */
+                for (int i = 0; i < 3; i++) {
+                    int want = aui_text_baseline24(10 * 256, 24 * 256, pxs[i]);
+                    int d = recs[i].y24 + tx_asc24(pxs[i]) - want;
+                    if (d < 0) d = -d;
+                    int tol = v2 ? 0 : (25600 + pct - 1) / pct;      /* 1 device px in 24.8 pt */
+                    checkf(d <= tol, "baseline 3.6 metric rule %s %d", tag, d);
+                }
                 /* and the text sits inside its rect */
                 int top = aui_dev(10), bot = aui_dev(34);
                 checkf(bl[0] > top && bl[0] < bot, "baseline inside rect %s %d", tag, bl[0]);
@@ -325,21 +331,20 @@ static void t_baseline(void)
             check(!v2 || nrec == 0 || recs[0].run2, "baseline v2 uses TEXT_RUN2");
             teardown();
         }
-    /* the metrics are cached per (px, face, scale): a hit costs no syscall, a new scale misses */
+    /* design 3.6: aui_text_in centres by the ui*.ttf metrics in logit_tokens.h,
+     * so it issues NO metrics query -- not on the first run, not on the next,
+     * not after a scale change (the cache these checks used to pin is gone). */
     setup(100, 1);
-    memset(tx_mc, 0, sizeof tx_mc);
     struct aui_rect r = aui_r(0, 0, 100, 24);
     unsigned long m0 = v2_text_nmetrics;
     aui_text_in(r, "x", 0xFFFFFF, 13, AUI_ALIGN_LEFT);
-    unsigned long first = v2_text_nmetrics - m0;
     aui_text_in(r, "y", 0xFFFFFF, 13, AUI_ALIGN_LEFT);
-    unsigned long again = v2_text_nmetrics - m0 - first;
-    check(first >= 1 && again == 0, "metrics cached per (px, face, scale): hit");
+    check(v2_text_nmetrics == m0 && nrec == 2, "aui_text_in issues no metrics query @100");
     teardown();
     setup(175, 1);                                 /* same px and face, new scale */
     m0 = v2_text_nmetrics;
     aui_text_in(r, "x", 0xFFFFFF, 13, AUI_ALIGN_LEFT);
-    check(v2_text_nmetrics - m0 >= 1, "metrics cache misses on a scale change");
+    check(v2_text_nmetrics == m0 && nrec == 1, "aui_text_in issues no metrics query @175");
     teardown();
 }
 

@@ -11,7 +11,8 @@
  *              popup, dialog) prints ZERO lines; a moved item re-prints only
  *              itself                                       FAIL aim-quiet
  *   table      aims only for the rows whose centre is visible, at the row
- *              centre, ROWH apart, following the scroll      FAIL aim-table
+ *              centre, 28 pt apart (design 4.8), following the scroll
+ *                                                           FAIL aim-table
  *   motion     no aim while the segmented thumb or the tab underline moves;
  *              all of them once it settles                  FAIL aim-motion
  *   widgets    tabs, segmented (names), select control and popup-<i> rows,
@@ -145,6 +146,9 @@ static int tab_sel, seg_sel, row_sel, row_scroll, opt_sel;
 static int with_dialog;
 #define TBL_X 20
 #define TBL_Y 120
+/* aui_tabs(20, 10, 400, ...) centres its capsule: 3 tabs of 24 pt + 4 (design 4.5) */
+#define TAB_X0 (20 + (400 - (3 * 24 + 4)) / 2)
+#define SEG_W ((300 - 4) / 3)
 #define TBL_W 320
 #define TBL_H 160
 static void scene(void *p)
@@ -214,17 +218,18 @@ static void case_table(int unused)
     (void)unused;
     scene_init();
     for (int pass = 0; pass < 2; pass++) {
-        row_scroll = pass ? 7 * 26 + 5 : 0;
+        row_scroll = pass ? 7 * 28 + 5 : 0;
         core_frame(scene, 0);
         ch_reset();
         ui_aim_g.tick = 0;
         forget();   /* forget: print all */
         core_frame(scene, 0);
-        /* viewport: below the 26 pt header, inset 1, h - 26 - 2 tall */
-        int vy0 = TBL_Y + 26 + 1, vy1 = vy0 + TBL_H - 26 - 2, n = 0, prev_y = 0, prev_i = -1;
+        /* design 4.8 (ui-aui-lists): the body starts below the 28 pt header with
+         * no inset and is h - 28 tall; rows are 28 pt */
+        int vy0 = TBL_Y + 28, vy1 = vy0 + TBL_H - 28, n = 0, prev_y = 0, prev_i = -1;
         for (int i = 0; i < 50; i++) {
             char nm[16];
-            int x, y, cy = vy0 + i * 26 + 13 - row_scroll;
+            int x, y, cy = vy0 + i * 28 + 14 - row_scroll;
             int vis = cy >= vy0 && cy < vy1;
             snprintf(nm, sizeof nm, "proc-%d", i);
             int got = find_aim("monitor", nm, &x, &y);
@@ -233,7 +238,7 @@ static void case_table(int unused)
                 n++;
                 if (y != cy) FAIL("aim-table: row %d at y %d, want its centre %d", i, y, cy);
                 if (x < TBL_X || x >= TBL_X + TBL_W) FAIL("aim-table: row %d at x %d, outside the table", i, x);
-                if (prev_i == i - 1 && prev_i >= 0 && y - prev_y != 26) FAIL("aim-table: rows %d,%d %d apart, want 26", prev_i, i, y - prev_y);
+                if (prev_i == i - 1 && prev_i >= 0 && y - prev_y != 28) FAIL("aim-table: rows %d,%d %d apart, want 28", prev_i, i, y - prev_y);
                 prev_y = y; prev_i = i;
             }
         }
@@ -259,20 +264,23 @@ static void case_motion(int unused)
     ch_reset(); core_frame(scene, 0);
     if (count_prefix("monitor", "view-")) FAIL("aim-motion: segmented aims printed while the thumb moves:\n%s", W.out);
     if (!count_prefix("monitor", "tab-")) FAIL("aim-motion: the resting tabs were not aimed");
-    W.ms += 400;
-    ch_reset(); core_frame(scene, 0);
+    /* 400 ms of frames: the snappy spring steps at most 250 ms per frame, so one
+     * frame after a 400 ms gap does not settle it */
+    ch_reset();
+    for (int k = 0; k < 4; k++) { W.ms += 100; core_frame(scene, 0); }
     if (count_prefix("monitor", "view-") != 3) FAIL("aim-motion: %d segmented aims after the thumb settled, want 3", count_prefix("monitor", "view-"));
-    /* the tab underline (the hook measures text 0 wide: tabs are 24 pt) */
+    /* the tab thumb: tabs are a centred segmented capsule (design 4.5,
+     * ui-aui-lists); the hook measures text 0 wide, so each tab is 24 pt */
     forget();
-    click(20 + 24 * 2 + 5, 10 + 17);
+    click(TAB_X0 + 2 + 24 * 2 + 12, 10 + 14);
     W.ms += 30;
     ch_reset(); core_frame(scene, 0);
     if (tab_sel != 2) FAIL("aim-motion: the click did not select tab 2 (%d)", tab_sel);
-    if (count_prefix("monitor", "tab-")) FAIL("aim-motion: tab aims printed while the underline moves:\n%s", W.out);
-    W.ms += 400;
+    if (count_prefix("monitor", "tab-")) FAIL("aim-motion: tab aims printed while the thumb moves:\n%s", W.out);
     forget();
-    ch_reset(); core_frame(scene, 0);
-    if (count_prefix("monitor", "tab-") != 3) FAIL("aim-motion: %d tab aims after the underline settled, want 3", count_prefix("monitor", "tab-"));
+    ch_reset();
+    for (int k = 0; k < 4; k++) { W.ms += 100; core_frame(scene, 0); }
+    if (count_prefix("monitor", "tab-") != 3) FAIL("aim-motion: %d tab aims after the thumb settled, want 3", count_prefix("monitor", "tab-"));
     if (!bad) printf("ok   aim-motion: none while moving, all once settled\n");
 }
 
@@ -293,10 +301,11 @@ static void case_widgets(int unused)
     }
     for (int i = 0; i < 3; i++) {
         char nm[16]; snprintf(nm, sizeof nm, "tab-%d", i);
-        if (!find_aim("monitor", nm, &x, &y) || x != 20 + 24 * i + 12 || y != 10 + 17)
-            FAIL("aim-widgets: %s at %d %d, want %d %d", nm, x, y, 20 + 24 * i + 12, 27);
-        if (!find_aim("monitor", SEG_NAMES[i], &x, &y) || x != 20 + 100 * i + 50 || y != 60 + 14)
-            FAIL("aim-widgets: %s at %d %d, want %d 74", SEG_NAMES[i], x, y, 20 + 100 * i + 50);
+        /* design 4.5 (ui-aui-lists): tab and segment centres inside the 2 pt inset */
+        if (!find_aim("monitor", nm, &x, &y) || x != TAB_X0 + 2 + 24 * i + 12 || y != 10 + 14)
+            FAIL("aim-widgets: %s at %d %d, want %d %d", nm, x, y, TAB_X0 + 2 + 24 * i + 12, 10 + 14);
+        if (!find_aim("monitor", SEG_NAMES[i], &x, &y) || x != 20 + 2 + SEG_W * i + SEG_W / 2 || y != 60 + 14)
+            FAIL("aim-widgets: %s at %d %d, want %d 74", SEG_NAMES[i], x, y, 20 + 2 + SEG_W * i + SEG_W / 2);
     }
     if (!find_aim("monitor", "sort", &x, &y) || x != 400 + 70 || y != 120 + 14)
         FAIL("aim-widgets: select control at %d %d, want 470 134", x, y);
@@ -309,7 +318,8 @@ static void case_widgets(int unused)
     ch_reset(); core_frame(scene, 0);
     int after = count_prefix("monitor", "popup-");
     if (after != 4) FAIL("aim-widgets: %d popup-<i> aims, want 4:\n%s", after, W.out);
-    if (!find_aim("monitor", "popup-0", &x, &y) || !find_aim("monitor", "popup-1", &x2, &y2) || y2 - y != 26 || x != x2)
+    /* design 4.9 (ui-aui-overlays): menu rows are 24 pt */
+    if (!find_aim("monitor", "popup-0", &x, &y) || !find_aim("monitor", "popup-1", &x2, &y2) || y2 - y != 24 || x != x2)
         FAIL("aim-widgets: popup rows %d,%d and %d,%d are not one row apart", x, y, x2, y2);
     opt_sel = 2;
     click(x, y);                                  /* choose popup-0 (closes it) */
@@ -338,10 +348,10 @@ static void case_widgets(int unused)
         FAIL("aim-widgets: dialog-confirm is not dialog-0:\n%s", W.out);
     if (!find_aim("monitor", "dialog-1", &x, &y) || !find_aim("monitor", "dialog-cancel", &x2, &y2) || x != x2 || y != y2)
         FAIL("aim-widgets: dialog-cancel is not dialog-1:\n%s", W.out);
-    /* aui_dialog_buttons lays item 0 out first from the left, the last item
-     * (Escape's) at the right edge */
-    if (find_aim("monitor", "dialog-0", &x2, &y2) && !(x2 < x && y2 == y))
-        FAIL("aim-widgets: confirm (%d,%d) is not left of cancel (%d,%d) on one row", x2, y2, x, y);
+    /* design 4.10 (ui-aui-overlays): aui_dialog_buttons puts labels[0], the
+     * Primary (Enter's), at the right edge and the last item (Escape's) to its left */
+    if (find_aim("monitor", "dialog-0", &x2, &y2) && !(x2 > x && y2 == y))
+        FAIL("aim-widgets: confirm (%d,%d) is not right of cancel (%d,%d) on one row", x2, y2, x, y);
     if (!bad) printf("ok   aim-widgets: tabs, segmented, select, popup-<i>, dialog-*\n");
 }
 

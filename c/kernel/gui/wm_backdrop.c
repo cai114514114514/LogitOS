@@ -228,9 +228,9 @@ long wm2_backdrop(struct wm2_env *e, long a, long b, long c)
     long rc = wm2_copy_struct(e, &bd, a, sizeof bd);
     if (rc != OL_OK) return rc;
     if (!bd_slot_ok(e->slot)) return OL_STATE;
-    /* ALPHA_LAYER shares bit 1 with LOGIT_GLASS2_F_ADAPT_SMOOTH in the ABI header, so
-     * SMOOTH is refused here until ui-wm-abi renumbers ALPHA_LAYER; ADAPT_FG (bit 2)
-     * is honoured. */
+    /* ALPHA_LAYER is reserved (bit 8, clear of the LOGIT_GLASS2_F_* bits since
+     * ui-wm-abi), so ADAPT_SMOOTH (bit 1) and ADAPT_FG (bit 2) both reach the
+     * material. */
     if (bd.flags & LOGIT_BACKDROP_ALPHA_LAYER) return OL_UNSUPPORTED;   /* reserved */
     if (bd.flags & ~(LOGIT_RECT_SNAP | GLASS2_ADAPT_MASK)) return OL_ARGUMENT;
     for (int k = 0; k < 4; k++) if (bd.reserved[k]) return OL_ARGUMENT;

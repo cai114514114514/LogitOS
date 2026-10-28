@@ -46,9 +46,21 @@ static int ov_nrun;
 #define OV_RR 24
 static struct { int x, y, w, h, r; unsigned color; } ov_rr[OV_RR];      /* SYS_GUI_RRECT: opaque rounded fills */
 static int ov_nrr;
+static int ov_ph[CH_LOG];             /* each PATH's height, 24.8 pt (by W.npath index) */
 
 long ov_sys(long n, long a, long b, long c)
 {
+    if (n == SYS_GUI_PATH && a && W.npath < CH_LOG) {
+        const struct logit_path2 *p = (const struct logit_path2 *)a;
+        int y0 = 0, y1 = 0;
+        for (unsigned i = 1; p->xy && i < p->nxy; i += 2) {
+            if (i == 1 || p->xy[i] < y0) y0 = p->xy[i];
+            if (i == 1 || p->xy[i] > y1) y1 = p->xy[i];
+        }
+        long long hh = y1 - y0;
+        if (p->flags & LOGIT_PATH_MATRIX) hh = hh * (p->m[3] < 0 ? -p->m[3] : p->m[3]) / 65536;
+        ov_ph[W.npath] = (int)hh;
+    }
     if (n == SYS_GUI_ICON) {
         if (ov_nicon < OV_ICONS) { ov_icon[ov_nicon].id = (int)(b >> 16); ov_icon[ov_nicon].px = (int)(b & 0xFFFF); }
         ov_nicon++;
@@ -142,6 +154,16 @@ static int count_rgb(unsigned rgb)       /* PATH paints of that colour */
 {
     int n = 0;
     for (int i = 0; i < W.npath && i < CH_LOG; i++) if ((W.paint[i].argb & 0xFFFFFFu) == rgb && W.paint[i].kind == LOGIT_PAINT2_SOLID) n++;
+    return n;
+}
+/* The same, for paths taller than `min_h24`: a sheet's own plate and rim, not the
+ * 28 pt design 4.3 buttons inside it (whose Secondary face is bg.raised in light
+ * and whose Primary is a LINEAR gradient). */
+static int count_rgb_tall(unsigned rgb, int min_h24)
+{
+    int n = 0;
+    for (int i = 0; i < W.npath && i < CH_LOG; i++)
+        if ((W.paint[i].argb & 0xFFFFFFu) == rgb && W.paint[i].kind == LOGIT_PAINT2_SOLID && ov_ph[i] > min_h24) n++;
     return n;
 }
 static int count_rr(unsigned rgb, int *which)     /* opaque rounded fills of that colour */
@@ -417,11 +439,13 @@ static void case_sheet(int dark)
             FAIL("sheet-title: x %d px %d weight %d, want x %d (left, padding 20) 17 / 600",
                  ov_run[title].x >> 8, ov_run[title].px >> 8, ov_run[title].weight, 290 + 20);
     }
-    if (count_rgb(raised) != 1) FAIL("sheet-plate: %d bg.raised fills, want 1 (no title band, no second plate)", count_rgb(raised));
+    if (count_rgb_tall(raised, 56 * 256) != 1)
+        FAIL("sheet-plate: %d bg.raised fills, want 1 (no title band, no second plate)", count_rgb_tall(raised, 56 * 256));
     {
         int rim = 0;
         for (int i = 0; i < W.npath && i < CH_LOG; i++)
-            if (dark ? W.paint[i].kind == LOGIT_PAINT2_LINEAR : (W.paint[i].kind == LOGIT_PAINT2_SOLID && W.paint[i].argb == 0x14141428u)) rim++;
+            if (ov_ph[i] > 56 * 256 &&
+                (dark ? W.paint[i].kind == LOGIT_PAINT2_LINEAR : (W.paint[i].kind == LOGIT_PAINT2_SOLID && W.paint[i].argb == 0x14141428u))) rim++;
         if (rim != 1) FAIL("sheet-rim: %d rim strokes (%s), want 1", rim, dark ? "dark LINEAR" : "light 141428@20");
     }
     for (int i = 0; i < 40; i++) { fr(draw_sheet); if (!aui_anim_active()) break; }

@@ -32,6 +32,21 @@ static long v2_path_call(struct aui_host *h, long a, long b, long c)
     e.copyin = host_copyin;
     e.alloc = malloc;
     e.release = free;
+#ifdef AUI_HOST_NEGCTL_SHIFT
+    /* THE CONTROL of test-aui-host: every path 1 device px right, as the legacy
+     * RECT / RRECT handlers do. A scene drawn only with v2 paths (the design
+     * 4.10 sheet of s4_sheet, ui-aui-overlays) must still move. */
+    if (a) {
+        struct logit_path2 p;
+        memcpy(&p, (const void *)a, sizeof p);
+        if (!(p.flags & LOGIT_PATH_MATRIX)) {
+            p.m[0] = 65536; p.m[1] = 0; p.m[2] = 0; p.m[3] = 65536; p.m[4] = 0; p.m[5] = 0;
+            p.flags |= LOGIT_PATH_MATRIX;
+        }
+        p.m[4] += (25600 + h->pct - 1) / h->pct;     /* one device px, in 24.8 pt */
+        return wm2_path(&e, (long)&p, b, c);
+    }
+#endif
     return wm2_path(&e, a, b, c);
 }
 

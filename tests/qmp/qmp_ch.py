@@ -759,8 +759,23 @@ def run_scroll(g):
     g.pump(.5)
     final = g.screendump("ch-scroll-endpoint")
     moved = pixels(final)
-    chk(moved != base and moved[48*stride:] == base[:-48*stride],
-        "Chat reaches the full 48-pixel scroll endpoint without another input")
+    # One wheel notch is 48 px unless the transcript has less room than that
+    # above it: design 4.12 (ui-aui-fields) made the scroll container
+    # gutterless, so the transcript wraps wider and is shorter, and the leg
+    # then ends at the transcript's top. Either way it must FINISH without
+    # another input: the transcript is a pure translation of `base` by d in
+    # 1..48, and when d < 48 a further notch up moves nothing.
+    shift = next((d for d in range(48, 0, -1)
+                  if moved != base and moved[d*stride:] == base[:-d*stride]), None)
+    at_top = None
+    if shift is not None and shift < 48:
+        wheel("wheel-up")
+        g.pump(.5)
+        at_top = pixels(g.screendump("ch-scroll-top")) == moved
+    print("        wheel leg: translated %s px%s" % (
+        shift, "" if shift in (None, 48) else ", top reached: %s" % at_top))
+    chk(shift == 48 or (shift is not None and at_top),
+        "Chat reaches the full scroll endpoint without another input")
     final.to_png(os.path.join(g.shots, "ch-scroll-endpoint.png"))
     wheel("wheel-down")
     g.pump(.5)
