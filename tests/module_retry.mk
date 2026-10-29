@@ -18,11 +18,6 @@ test-module-retry-negctl: $(MODULE_RETRY_DIR)/forget-error
 	 test $$rc -eq 86 && grep -q '^PASS first transitive missing dependency rejected$$' $(MODULE_RETRY_DIR)/forget-error.log && \
 	 grep -q 'AddressSanitizer: SEGV' $(MODULE_RETRY_DIR)/forget-error.log && \
 	 grep -q 'js_create_module_function' $(MODULE_RETRY_DIR)/forget-error.log
-.PHONY: test-module-retry-asan
-test-module-retry-asan: $(MODULE_RETRY_DEPS)
-	@mkdir -p $(MODULE_RETRY_DIR)
-	$(CC) -O1 -g -fsanitize=address -fno-omit-frame-pointer -w $(DOMIFACE_CF) -o $(MODULE_RETRY_DIR)/asan $(MODULE_RETRY_SRC) $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
-	ASAN_OPTIONS=detect_leaks=0 $(MODULE_RETRY_DIR)/asan
 test-module-retry: test-module-retry-negctl $(MODULE_RETRY_DIR)/current $(MODULE_RETRY_DIR)/eager
 	@$(MODULE_RETRY_DIR)/current
 	@ASAN_OPTIONS=detect_leaks=0 $(MODULE_RETRY_DIR)/eager

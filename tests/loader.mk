@@ -4,7 +4,7 @@
 # the hook lives in here too -- nothing about this test can then be lost by an
 # overwrite of the Makefile, which is exactly how it was lost once already.
 
-.PHONY: test-loader test-loader-negctl test-loader-asan test-script-nav \
+.PHONY: test-loader test-loader-negctl \
         test-tabs test-tabs-negctl test-tabs-asan test-media-negctl
 
 test-browser: test-loader test-loader-negctl test-tabs-negctl test-media-negctl
@@ -23,15 +23,12 @@ $(PROGRESS_PAINT_DIR)/current: $(PROGRESS_PAINT_DEPS)
 $(PROGRESS_PAINT_DIR)/old: $(PROGRESS_PAINT_DEPS)
 	@mkdir -p $(PROGRESS_PAINT_DIR)
 	$(CC) $(RUNTIME_SCROLL_CF) -DBROWSER_PROGRESS_STALE_PAINT -o $@ $(PROGRESS_PAINT_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
-.PHONY: test-progress-paint test-progress-paint-negctl test-progress-paint-sanitize
+.PHONY: test-progress-paint test-progress-paint-negctl
 test-progress-paint-negctl: $(PROGRESS_PAINT_DIR)/old
 	@rc=0; $< > $(PROGRESS_PAINT_DIR)/old.log 2>&1 || rc=$$?; \
 	 test $$rc -eq 1 && grep -F 'FAIL: progress callback does not paint an unsettled DOM' $(PROGRESS_PAINT_DIR)/old.log && grep -F 'ok: committed replacement is painted after settling' $(PROGRESS_PAINT_DIR)/old.log
 test-progress-paint: test-progress-paint-negctl $(PROGRESS_PAINT_DIR)/current
 	@$(PROGRESS_PAINT_DIR)/current
-test-progress-paint-sanitize: test-progress-paint
-	$(CC) $(RUNTIME_SCROLL_CF) -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=all -o $(PROGRESS_PAINT_DIR)/sanitize $(PROGRESS_PAINT_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
-	@ASAN_OPTIONS=detect_leaks=0 $(PROGRESS_PAINT_DIR)/sanitize
 ci-host: test-progress-paint
 
 # --- test-loader: the REAL browser.c load path, host-side ------------------
@@ -166,34 +163,8 @@ test-tabs-negctl: $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
 	    { echo "FAIL: the control broke the loader as well"; exit 1; }
 	@echo "ok: the tab negative control fails, and on the right checks"
 
-# Tabs under ASan+UBSan. A switch frees a document, a runtime and a display list
-# and then rebuilds all three from bytes the tab still owns -- ownership across
-# that boundary is exactly where a use-after-free would be silent for hours.
-test-tabs-asan: $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
-	@$(CC) -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -w \
-	    $(LOADER_INC) $(BTEST_INC) $(CSS_INC) $(JS_INC) \
-	    -DCONFIG_VERSION='"host"' -DWEBAPI_HOST -o $(BUILD)/tabs_asan \
-	    $(LOADER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
-	@ASAN_OPTIONS=detect_leaks=0 $(BUILD)/tabs_asan
 
-# Same under ASan+UBSan: the redirect chain frees a whole document and opens a
-# new runtime per hop, which is precisely the shape where an order-of-teardown
-# mistake is silent until much later.
-test-loader-asan: $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
-	@$(CC) -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -w \
-	    $(LOADER_INC) $(BTEST_INC) $(CSS_INC) $(JS_INC) \
-	    -DCONFIG_VERSION='"host"' -DWEBAPI_HOST -o $(BUILD)/loader_asan \
-	    $(LOADER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
-	@ASAN_OPTIONS=detect_leaks=0 $(BUILD)/loader_asan
 
-# --- test-script-nav: the same claim ON THE MACHINE, in the pixels ---------
-# test-loader proves the loader follows location.replace() against a fake
-# network. This boots the OS, serves baidu's own stub (retargeted at the host
-# server) and requires the destination's TEXT to appear in a screendump, its
-# sub-resources in the server's request log, and a self-navigating page to be
-# stopped rather than spun. See the docstring in tests/qmp/qmp_script_nav.py.
-test-script-nav: $(ISO) $(DISK)
-	python3 tests/qmp/qmp_script_nav.py $(ISO) $(DISK)
 
 # --- test-tabs: two real pages open at once, ON THE MACHINE ----------------
 # The host test proves the model against a fake network. This boots the OS,

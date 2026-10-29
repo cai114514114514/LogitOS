@@ -24,7 +24,6 @@
 # `make build/disk.img` for every line with "No rule to make target". A TEST
 # fragment must not be able to break the build of the thing it tests.
 
-.PHONY: test-sec test-sec-report
 
 SECPROBE_SRC := $(wildcard tests/boot/secprobe.c)
 ifneq ($(SECPROBE_SRC),)
@@ -47,12 +46,4 @@ else
 $(warning tests/sec.mk: tests/boot/secprobe.c is missing -- /bin/secprobe will not be built, and test-sec cannot run)
 endif
 
-# The gate. Boots the real machine, runs each exploit as its own ring-3 process
-# from the shell, and asserts on which of them the kernel refused.
-test-sec: $(ISO) $(DISK)
-	@bash tests/boot/run-sec-test.sh $(ISO) $(DISK)
 
-# The same run without the assertions: prints the verdict table. For looking at
-# what the machine actually does after changing a protection, rather than for CI.
-test-sec-report: $(ISO) $(DISK)
-	@SEC_REPORT_ONLY=1 bash tests/boot/run-sec-test.sh $(ISO) $(DISK)

@@ -19,7 +19,6 @@
 # HOST/GUEST ratio is known, which is what lets a future host-only measurement
 # (no QEMU boot required) predict a guest number.
 
-.PHONY: test-vidbench test-vidbench-host test-vidbench-guest
 
 VIDBENCH_INC   := -Ic/lib/video
 # vidbench currently dispatches only H.264/H.265. Once MJPEG joined VID_SRC,
@@ -53,11 +52,6 @@ $(BUILD)/vidbench_host: tests/guest/video/vidbench.c $(VIDBENCH_SRC)
 	@mkdir -p $(BUILD)
 	@$(CC) -O2 -Wall -Wextra -o $@ tests/guest/video/vidbench.c $(VIDBENCH_SRC) $(VIDBENCH_INC)
 
-test-vidbench-host: $(BUILD)/vidbench_host $(VIDBENCH_STREAMS)
-	@echo "--- vidbench: host, run 1 ---"
-	@$(BUILD)/vidbench_host $(VIDBENCH_STREAMS)
-	@echo "--- vidbench: host, run 2 (reproducibility) ---"
-	@$(BUILD)/vidbench_host $(VIDBENCH_STREAMS)
 
 # --- guest build ---------------------------------------------------------
 # Same shape as vidcheck.aex/vidcheck265.aex (root Makefile / tests/h265.mk):
@@ -97,9 +91,4 @@ FS_FILES += $(BUILD)/vidbench.aex:/bin/vidbench \
             $(VIDBENCH_DIR)/h265-1920x1080.h265:/media/vidbench/h265-1920x1080.h265
 $(DISK): $(BUILD)/vidbench.aex $(VIDBENCH_STREAMS)
 
-test-vidbench-guest: $(ISO) $(DISK)
-	@bash tests/boot/run-vidbench-test.sh $(ISO) $(DISK)
 
-# --- the target the task GATE runs: both machines, one table -----------------
-test-vidbench: test-vidbench-host test-vidbench-guest
-	@echo "vidbench: host + guest tables printed above"

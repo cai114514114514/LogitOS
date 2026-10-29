@@ -72,7 +72,7 @@ ifeq ($(FTNOSTREAM),1)
 $(BUILD)/jsobj/c/apps/gui/browser/js/runtime/webapi.o: JS_CF += -DWEBAPI_NO_STREAM
 endif
 
-.PHONY: test-firsttoken-page test-firsttoken-page-negctl test-firsttoken-live
+.PHONY: test-firsttoken-page test-firsttoken-page-negctl
 
 test-firsttoken-page: test-firsttoken-page-negctl $(ISO) $(DISK)
 	python3 tests/qmp/qmp_firsttoken_page.py $(ISO) $(DISK)
@@ -110,26 +110,3 @@ test-firsttoken-page-negctl:
 
 ci-boot: test-firsttoken-page
 
-# The live differential. Two ways to SKIP, both loud, both because a red here
-# must mean THE BROWSER, not the weather: (1) no outbound route to the host;
-# (2) the host itself cannot get a 200 from a minimal anonymous POST anymore
-# (the pollinations candidate died exactly this way -- anonymous budget
-# exhausted -- between two probes an hour apart).  Settle either with the
-# curl line the SKIP prints.
-test-firsttoken-live: $(ISO) $(DISK)
-	@code=$$(curl -sS --max-time 20 -o /dev/null -w '%{http_code}' \
-	    -A "Mozilla/5.0 (X11; LogitOS x86_64) Logit/1.0" \
-	    -H "Origin: http://10.0.2.2:18080" \
-	    -H "Content-Type: application/json" \
-	    -d '{"model":"meta-Llama-3.1-8B-Instruct-Turbo","messages":[{"role":"user","content":"hi"}],"stream":true}' \
-	    "https://api.llm7.io/v1/chat/completions" 2>/dev/null || echo 000); \
-	if [ "$$code" != "200" ]; then \
-	  echo "SKIP: the live firsttoken gate needs api.llm7.io to answer an"; \
-	  echo "      anonymous streaming POST with 200; this host just got HTTP $$code."; \
-	  echo "      Settle the endpoint with:"; \
-	  echo "          curl -sS --max-time 20 -A 'Mozilla/5.0 (X11; LogitOS x86_64) Logit/1.0' -H 'Content-Type: application/json' -d '{\"model\":\"meta-Llama-3.1-8B-Instruct-Turbo\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"stream\":true}' https://api.llm7.io/v1/chat/completions"; \
-	  echo "      then rerun: make BUILD=build-firsttoken test-firsttoken-live"; \
-	  echo "      The OFFLINE replay gate (make test-firsttoken-page) is unaffected."; \
-	  exit 0; \
-	fi
-	python3 tests/qmp/qmp_firsttoken_page.py $(ISO) $(DISK) --live

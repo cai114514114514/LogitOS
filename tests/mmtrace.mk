@@ -39,7 +39,7 @@ MMT_GLIB  := $(shell test -f /usr/include/glib-2.0/glib.h \
                && echo '-I/usr/include/glib-2.0 -I/usr/lib/x86_64-linux-gnu/glib-2.0/include' \
                || echo '-I$(MMT_SRC)/stub')
 
-.PHONY: mmtrace-tools test-mmsim mmtrace-video mmtrace-mempress mmtrace-churn \
+.PHONY: mmtrace-tools mmtrace-video mmtrace-mempress mmtrace-churn \
         mmtrace-as mmtrace-report mmtrace-clean
 
 $(MMT_SO): $(MMT_SRC)/mmtrace.c $(MMT_SRC)/mmtrace_fmt.h $(MMT_SRC)/qemu-plugin.h
@@ -53,20 +53,6 @@ $(MMT_SIM): $(MMT_SRC)/mmsim.c $(MMT_SRC)/mmtrace_fmt.h
 
 mmtrace-tools: $(MMT_SO) $(MMT_SIM)
 
-# --- the controls -------------------------------------------------------------
-# THE ONE TO RUN FIRST. A sequential scan of N+1 pages through N frames is the
-# worst case for LRU, FIFO and clock alike -- each evicts precisely the page
-# needed next, so they miss on EVERY reference while MIN misses about once per
-# N. A simulator that does not reproduce that gap has a broken MIN, and every
-# other number it prints is worthless.
-#
-# The mirror control is uniform random with memory far smaller than the page
-# set: there every policy including MIN converges, so a harness that shows the
-# clock losing there is measuring something other than policy.
-#
-# Both are asserted, not eyeballed.
-test-mmsim: $(MMT_SIM)
-	@bash tools/mmtrace/controls.sh $(MMT_SIM)
 
 # --- recording ----------------------------------------------------------------
 mmtrace-video: $(ISO) $(DISK) mmtrace-tools

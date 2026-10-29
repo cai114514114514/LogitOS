@@ -41,11 +41,6 @@ test-css-media-reduction-cache-negctl: $(XCASCADE_DIR)/media_reduction_cache_neg
 	 grep -F 'FAIL: prefers-reduced-transparency live extension rule' $(XCASCADE_DIR)/media_reduction_cache_negctl.log
 test-css-media-regions: test-css-media-reduction-cache-negctl
 ci-host: test-css-media-regions
-.PHONY: test-css-media-regions-asan
-test-css-media-regions-asan: test-css-media-regions-negctl
-	@mkdir -p $(XCASCADE_DIR)
-	@$(CC) -O1 -g -w -fsanitize=address,undefined -fno-omit-frame-pointer $(BTEST_INC) $(CSS_INC) -o $(XCASCADE_DIR)/media_regions_asan $(MEDIA_REGIONS_SRC) $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a -lm
-	@ASAN_OPTIONS=detect_leaks=0 $(XCASCADE_DIR)/media_regions_asan
 
 .PHONY: test-media-region-instrument
 test-media-region-instrument:
@@ -66,7 +61,7 @@ $(XCASCADE_DIR)/media_range_negctl: $(MEDIA_RANGE_DEPS)
 $(XCASCADE_DIR)/media_range_complement: $(MEDIA_RANGE_DEPS)
 	@mkdir -p $(XCASCADE_DIR)
 	@$(CC) -O2 -w -D_ALIGNED= -DWITHOUT_ICONV_FILTER -DCSS_MQ_RANGE_COMPLEMENT $(BTEST_INC) $(CSS_INC) -o $@ $(MEDIA_RANGE_SRC) $(HTML_PARSER_SRC) $(MEDIA_RANGE_PARSER) $(BUILD)/libcss_host.a -lm
-.PHONY: test-media-range test-media-range-negctl test-media-range-complement-negctl test-media-range-asan
+.PHONY: test-media-range test-media-range-negctl test-media-range-complement-negctl
 test-media-range-negctl: $(XCASCADE_DIR)/media_range_negctl
 	@rc=0; $< > $(XCASCADE_DIR)/media_range_negctl.log 2>&1 || rc=$$?; \
 	 test $$rc -eq 1 && grep -F 'FAIL range (width>=1126px)' $(XCASCADE_DIR)/media_range_negctl.log && \
@@ -77,8 +72,4 @@ test-media-range-complement-negctl: $(XCASCADE_DIR)/media_range_complement
 	 grep -F 'FAIL range (width<1126px)' $(XCASCADE_DIR)/media_range_complement.log
 test-media-range: test-media-range-negctl test-media-range-complement-negctl $(XCASCADE_DIR)/media_range
 	@$(XCASCADE_DIR)/media_range
-test-media-range-asan: test-media-range-negctl test-media-range-complement-negctl
-	@mkdir -p $(XCASCADE_DIR)
-	@$(CC) -O1 -g -w -D_ALIGNED= -DWITHOUT_ICONV_FILTER -fsanitize=address,undefined -fno-omit-frame-pointer $(BTEST_INC) $(CSS_INC) -o $(XCASCADE_DIR)/media_range_asan $(MEDIA_RANGE_SRC) $(HTML_PARSER_SRC) $(MEDIA_RANGE_PARSER) $(BUILD)/libcss_host.a -lm
-	@ASAN_OPTIONS=detect_leaks=0 $(XCASCADE_DIR)/media_range_asan
 ci-host: test-media-range

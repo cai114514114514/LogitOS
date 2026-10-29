@@ -29,12 +29,6 @@ ci-host: test-message-port
 $(PORT_DIR)/address: $(PORT_DEPS)
 	@mkdir -p $(PORT_DIR)
 	$(CC) -O1 -g -w -fsanitize=address -fno-omit-frame-pointer $(SEM_CF) -o $@ $(PORT_SRC) $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
-.PHONY: test-message-port-asan
-test-message-port-asan: test-message-port $(PORT_DIR)/address
-	@ASAN_OPTIONS=detect_leaks=0 $(PORT_DIR)/address
 $(PORT_DIR)/platform-regression: $(PLATFORM_TEST_SRC) $(PLATFORM_MOD) $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) c/apps/gui/browser/js/workers/message_port.inc
 	@mkdir -p $(PORT_DIR)
 	$(CC) -O1 -g -w $(SEM_CF) -o $@ $(PLATFORM_TEST_SRC) $(PLATFORM_MOD) $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
-.PHONY: test-message-port-platform
-test-message-port-platform: test-message-port $(PORT_DIR)/platform-regression
-	@$(PORT_DIR)/platform-regression

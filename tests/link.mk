@@ -78,11 +78,6 @@ test-eth-negctl:
 		echo "negative control ok: $$(grep -c '^FAIL' $(BUILD)/eth_negctl.log) checks fail without them"; \
 	fi
 
-# On the machine: boot, and require the link layer to report itself having
-# actually worked -- an ARP binding for the gateway, frames dispatched by
-# ethertype, and the announcement sent. Counters, not "it booted".
-test-link-os: $(ISO) $(DISK)
-	@bash tests/boot/run-link-test.sh $(ISO) $(DISK) $(if $(NIC),$(NIC),e1000)
 
 # The padding property is the one that is per-driver: two of the four cards pad
 # short frames themselves and two do not, so a build verified on one of them

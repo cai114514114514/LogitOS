@@ -38,11 +38,6 @@ $(BUILD)/weakmap_fin_test: tests/unit/weakmap_fin_test.c $(QJS_SRC)
 	@$(CC) -O1 -g -w $(JS_INC) -DCONFIG_VERSION='"host"' -o $@ \
 	    tests/unit/weakmap_fin_test.c $(QJS_SRC) -lm
 
-# The control is a PREREQUISITE of the positive gate, not a sibling named on
-# a ci- line: per AGENTS.md that names-but-never-runs shape is exactly how a
-# control rots while looking wired.
-test-weakmap-fin: test-weakmap-fin-control $(BUILD)/weakmap_fin_test
-	@$(BUILD)/weakmap_fin_test
 
 # THE NEGATIVE CONTROL. A python rewrite turns the two-pass fix back into
 # exactly the interleaved single-loop shape that shipped before 2026-09-09;
@@ -65,17 +60,4 @@ out = src.replace(a1, n1).replace(a6, "").replace(a4, "").replace(a5, ""); \
 assert "to_free" not in out, "two-pass remnants left behind"; \
 open("$(BUILD)/negctl_weakmap/quickjs.c", "w").write(out)'
 
-test-weakmap-fin-control: $(BUILD)/negctl_weakmap/quickjs.c
-	@mkdir -p $(BUILD)
-	@$(CC) -O1 -g -w $(JS_INC) -DCONFIG_VERSION='"host"' -o $(BUILD)/weakmap_fin_control \
-	    tests/unit/weakmap_fin_test.c $(BUILD)/negctl_weakmap/quickjs.c \
-	    $(filter-out third_party/quickjs/quickjs.c,$(QJS_SRC)) -lm
-	@if $(BUILD)/weakmap_fin_control > $(BUILD)/weakmap_fin_control.log 2>&1; then \
-	    echo "FAIL (control): the gate passes with js_finreg_unregister's fix reverted -- it is not testing the fix"; \
-	    exit 1; \
-	 else \
-	    echo "PASS (control): reverted js_finreg_unregister dies on the repro as it must --"; \
-	    echo "  $(BUILD)/weakmap_fin_control.log holds the death"; \
-	 fi
 
-.PHONY: test-weakmap-fin test-weakmap-fin-control

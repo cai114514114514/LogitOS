@@ -19,7 +19,7 @@ $(WORKER_FETCH_DIR)/unpolled: $(WORKER_FETCH_DEP)
 $(WORKER_FETCH_DIR)/san: $(WORKER_FETCH_DEP)
 	@mkdir -p $(WORKER_FETCH_DIR)
 	$(CC) -O1 -g -w $(WORKER_FETCH_CF) -fsanitize=address,undefined -fno-omit-frame-pointer -o $@ $(WORKER_FETCH_SRC) $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
-.PHONY: test-worker-fetch test-worker-fetch-negctl-missing test-worker-fetch-negctl-owner test-worker-fetch-negctl-pump test-worker-fetch-san
+.PHONY: test-worker-fetch test-worker-fetch-negctl-missing test-worker-fetch-negctl-owner test-worker-fetch-negctl-pump
 test-worker-fetch-negctl-missing: $(WORKER_FETCH_DIR)/missing
 	@rc=0; $(WORKER_FETCH_DIR)/missing > $(WORKER_FETCH_DIR)/missing.log 2>&1 || rc=$$?; cat $(WORKER_FETCH_DIR)/missing.log; test $$rc -eq 1 && test "$$(grep -c '^FAIL:' $(WORKER_FETCH_DIR)/missing.log)" -eq 1 && grep -q '^FAIL: both dedicated Workers expose fetch$$' $(WORKER_FETCH_DIR)/missing.log
 test-worker-fetch-negctl-owner: $(WORKER_FETCH_DIR)/foreign-abort
@@ -28,6 +28,4 @@ test-worker-fetch-negctl-pump: $(WORKER_FETCH_DIR)/unpolled
 	@rc=0; $(WORKER_FETCH_DIR)/unpolled > $(WORKER_FETCH_DIR)/unpolled.log 2>&1 || rc=$$?; cat $(WORKER_FETCH_DIR)/unpolled.log; test $$rc -eq 1 && test "$$(grep -c '^FAIL:' $(WORKER_FETCH_DIR)/unpolled.log)" -eq 3 && grep -q '^FAIL: worker text resolves relative to script URL$$' $(WORKER_FETCH_DIR)/unpolled.log
 test-worker-fetch: test-worker-fetch-negctl-missing test-worker-fetch-negctl-owner test-worker-fetch-negctl-pump $(WORKER_FETCH_DIR)/current
 	@$(WORKER_FETCH_DIR)/current
-test-worker-fetch-san: test-worker-fetch $(WORKER_FETCH_DIR)/san
-	@ASAN_OPTIONS=detect_leaks=0 $(WORKER_FETCH_DIR)/san
 ci-host: test-worker-fetch

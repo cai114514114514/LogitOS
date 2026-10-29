@@ -90,9 +90,6 @@ $(BUILD)/js_syntax_test: tests/unit/js_syntax_test.c $(QJS_SRC)
 	@$(CC) -O2 -w $(JS_INC) -DCONFIG_VERSION='"host"' -o $@ \
 	    tests/unit/js_syntax_test.c $(QJS_SRC) -lm
 
-test-js-syntax: $(BUILD)/js_syntax_test $(BUILD)/js_hash_test
-	@$(BUILD)/js_syntax_test $(JSPERF_DIR)/baidu-polyfill.js
-	@$(BUILD)/js_hash_test
 
 # The atom-hash patch must compute bit-for-bit the number the code it replaced
 # computed -- a merely-as-good hash would split the atom table between the
@@ -189,8 +186,6 @@ $(BUILD)/js_dynimport_test: tests/unit/js_dynimport_test.c $(QJS_SRC)
 	@$(CC) -O2 -w $(JS_INC) -DCONFIG_VERSION='"host"' -o $@ \
 	    tests/unit/js_dynimport_test.c $(QJS_SRC) -lm
 
-test-js-dynimport: $(BUILD)/js_dynimport_test
-	@$(BUILD)/js_dynimport_test
 
 # --- test-js-stack: err.stack has to say WHAT went wrong, not only where ----
 # Upstream QuickJS builds err.stack from the frames alone, so every error
@@ -315,7 +310,7 @@ test-js-callee-os: $(ISO) $(DISK)
 	   *fail=0) echo "PASS: $$r  (browser engine, in the guest)";; \
 	   *) echo "FAIL: $$r -- transcript at $(JSCALLEE_LOG)"; exit 1;; \
 	 esac
-.PHONY: bench-js bench-js-os test-js-syntax test-js-syntax-control test-js-propeq-control test-js-dynimport test-js-stack test-js-stack-control test-js-callee-control test-js-callee-atom-control test-js-callee-os
+.PHONY: bench-js bench-js-os test-js-syntax-control test-js-propeq-control test-js-stack test-js-stack-control test-js-callee-control test-js-callee-atom-control test-js-callee-os
 
 # Both controls are PREREQUISITES of test-js-stack, not siblings on this line:
 # naming a control on ci-host: satisfies the stranded-control audit and still

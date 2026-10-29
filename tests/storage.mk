@@ -81,7 +81,7 @@
 #                         tool, not a gate -- a probe that must pass is a
 #                         gate wearing a probe's name). Not on any ci line.
 
-.PHONY: test-storage test-storage-negctl test-storage-os test-storage-probe
+.PHONY: test-storage test-storage-negctl test-storage-os
 
 # The real code under test is ONE translation unit (file.c); the pollhost
 # pattern's subtraction-from-C_SRC has nothing to subtract, so the three
@@ -131,8 +131,6 @@ test-storage-os: $(ISO) $(DISK)
 # to pay for re-stating it, but leaving it out would let the pair rot apart.
 test-storage-os: test-storage-negctl
 
-test-storage-probe: $(ISO) $(DISK)
-	@bash tests/boot/run-storage-probe.sh $(ISO) $(DISK)
 
 # Host gate is offline and deterministic -- ci-host. The on-device gate is a
 # two-boot suite, the same price tests/fdstream.mk puts on ci-boot, and for

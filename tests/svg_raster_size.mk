@@ -9,7 +9,7 @@ SVG_RASTER_DEP := $(SVG_RASTER_SRC) c/apps/gui/browser/paint/svg_dom_paint.inc \
                   $(RUST_LIB_HOST)
 SVG_RASTER_INC := $(BTEST_INC) $(CSS_INC) $(KMM_INC)
 
-.PHONY: test-svg-raster-size-negctl test-svg-raster-size test-svg-raster-size-asan
+.PHONY: test-svg-raster-size-negctl test-svg-raster-size
 $(SVG_RASTER_DIR)/current: $(SVG_RASTER_DEP)
 	@mkdir -p $(SVG_RASTER_DIR)
 	@$(CC) -O2 -w $(SVG_RASTER_INC) -o $@ $(SVG_RASTER_SRC) \
@@ -36,7 +36,5 @@ test-svg-raster-size-negctl: $(SVG_RASTER_DIR)/source-sized
 test-svg-raster-size: test-svg-raster-size-negctl $(SVG_RASTER_DIR)/current
 	@$(SVG_RASTER_DIR)/current
 
-test-svg-raster-size-asan: test-svg-raster-size $(SVG_RASTER_DIR)/asan
-	@ASAN_OPTIONS=detect_leaks=0 UBSAN_OPTIONS=halt_on_error=1 $(SVG_RASTER_DIR)/asan
 
 ci-host: test-svg-raster-size

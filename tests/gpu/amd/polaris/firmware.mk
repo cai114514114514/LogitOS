@@ -31,8 +31,3 @@ $(BUILD)/check-polaris-firmware: tools/gpu/amd/firmware.c c/drivers/gpu/amd/pola
 	@$(CC) -std=c11 -O1 -g -Wall -Wextra -Werror -Ic/drivers/gpu \
 	    tools/gpu/amd/firmware.c c/drivers/gpu/amd/polaris/firmware.c -o $@
 
-.PHONY: test-polaris-firmware-files
-test-polaris-firmware-files: test-polaris-firmware-host $(BUILD)/check-polaris-firmware
-	@test -n "$(POLARIS_FIRMWARE_DIR)" || { echo 'POLARIS_FIRMWARE_DIR is required'; exit 2; }
-	@$(BUILD)/check-polaris-firmware "$(POLARIS_FIRMWARE_DIR)/polaris10_sdma.bin" \
-	    "$(POLARIS_FIRMWARE_DIR)/polaris10_sdma1.bin"

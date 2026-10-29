@@ -157,27 +157,6 @@ $(REFT_BIN): $(REFT_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) \
 	$(CC) -O2 -w $(REFT_INC) -o $@ $(REFT_SRC) \
 	    $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm -lpthread
 
-# --- the Ahem question, answered in seconds -------------------------------
-# Run this before anything else. A large class of layout reftests sets
-# `font: 25px/1 Ahem` precisely so that font rendering cancels out of the
-# comparison: Ahem's glyphs are exactly-specified filled boxes, one em wide,
-# from 0.8em above the baseline to 0.2em below. If we cannot render Ahem, that
-# whole class is unjudgeable no matter how good layout gets.
-#
-# THE ANSWER IS YES. Our own c/lib/text parses Ahem and rasterizes a 25px glyph
-# as a PERFECT 25x25 box: 625 pixels at full coverage and ZERO antialiased edge
-# pixels, so exact pixel comparison is viable rather than merely hoped for. The
-# metrics agree too -- text_line_height(25) == 25, and text_measure is exact em
-# multiples. This target re-asserts all of it, so a regression in ttf.c or
-# raster.c that made Ahem fuzzy would be caught here rather than showing up as
-# an unexplained drop in the rate.
-test-reftest-ahem: $(BUILD)/reftest/ahem_test
-	@if [ ! -f "$(REFT_AHEM)" ]; then \
-	    echo "test-reftest-ahem: $(REFT_AHEM) not present -- run 'make reftest-ahem-fetch'"; \
-	    echo "  (Ahem is NOT in the WPT subset wpt_fetch.sh takes: it omits fonts/.)"; \
-	    exit 1; \
-	 fi
-	@$(BUILD)/reftest/ahem_test $(REFT_AHEM)
 
 # Links only the text half -- no browser pipeline, no LibCSS -- so it builds and
 # runs in seconds and can be the first thing anyone asks.

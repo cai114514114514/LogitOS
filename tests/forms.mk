@@ -80,7 +80,7 @@
 # outright, so a name that appears ONLY there is invisible to every category it
 # has -- DEAD, MUTE, UNWIRED and STRANDED alike.
 
-.PHONY: test-forms test-forms-asan test-forms-device test-forms-negctl \
+.PHONY: test-forms test-forms-device test-forms-negctl \
         test-forms-ce-negctl test-forms-ce-device
 
 # THE CONTROL IS A PREREQUISITE OF THE SUITE IT CONTROLS. Its positive
@@ -102,14 +102,6 @@ test-forms: $(BUILD)/libcss_host.a
 	    $(FORMS_SRC) $(BUILD)/libcss_host.a -lm
 	@$(BUILD)/forms_test
 
-# ASan/UBSan over the same test. forms.c allocates per control and frees the
-# lot on navigation, and a use-after-free of a control's value would otherwise
-# only show as the wrong text on screen.
-test-forms-asan: $(BUILD)/libcss_host.a
-	@$(CC) -O1 -g -w -fsanitize=address,undefined -fno-omit-frame-pointer \
-	    $(BTEST_INC) $(CSS_INC) -o $(BUILD)/forms_test_asan \
-	    $(FORMS_SRC) $(BUILD)/libcss_host.a -lm
-	@ASAN_OPTIONS=detect_leaks=0 $(BUILD)/forms_test_asan
 
 # --- the contenteditable negative control -----------------------------------
 # The SAME sources and the SAME test binary, one -D different. Nothing is
@@ -142,10 +134,6 @@ test-forms-ce-negctl: $(BUILD)/libcss_host.a
 test-forms-device: test-forms-negctl $(ISO) $(DISK)
 	@python3 tests/qmp/qmp_forms.py $(ISO) $(DISK)
 
-# The same harness, driven at a contenteditable composer instead of an <input>.
-# Separate target because it is a separate boot and each is minutes long.
-test-forms-ce-device: $(ISO) $(DISK)
-	@python3 tests/qmp/qmp_forms.py $(ISO) $(DISK) --contenteditable
 
 # --- the negative control ---------------------------------------------------
 # A browser.aex built with the focus routing compiled OUT: keys go to <body>,

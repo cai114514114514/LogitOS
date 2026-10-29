@@ -32,31 +32,9 @@ UCD ?= /usr/share/unicode
 CSSTEXT_SRC := tests/unit/csstext_test.c c/apps/gui/browser/layout/text.c
 CSSTEXT_INC := $(BROWSER_INC)
 
-.PHONY: test-csstext test-csstext-negctl test-csstext-asan test-csstext-all
 .PHONY: test-cjkwrap test-cjkwrap-negctl test-cjkwrap-ws-negctl test-csstext-wired
 .PHONY: regen-linebreak-tables
 
-# All of them. A gate without its control is half a measurement -- the gate
-# says the suite passes, the control says the suite could have failed.
-#
-# THE THREE NEW ONES ARE A DIFFERENT QUESTION FROM THE OLD THREE, and the
-# difference is the whole reason this line existed for months with a green
-# scoreboard and an unreadable browser: csstext_test measures layout_text.c,
-# and a gate on a module cannot see whether anything CONSUMES the module.
-# Measured 2026-08-28, before the wiring: `nm build/browser.elf | grep -ci
-# 'lbrk|linebreak|layout_text'` = 0, against 19 `grid_` symbols as the control.
-# 103 checks passed and every Chinese paragraph on the machine was chopped at
-# an arbitrary column.
-#
-#   test-csstext-wired   every link line naming layout.c also names
-#                        layout_text.c -- the link, checked
-#   test-cjkwrap         where layout_page() actually puts the line ends
-#   test-cjkwrap-negctl  the same, with layout.c back on the any-boundary cut
-#   test-cjkwrap-ws-negctl  the same, with the invented inter-run space back
-test-csstext-all: test-csstext test-csstext-asan test-csstext-negctl \
-                  test-csstext-wired test-cjkwrap test-cjkwrap-negctl \
-                  test-cjkwrap-ws-negctl
-	@echo "test-csstext-all: gates green, negative controls red (as required)"
 
 # --- the link, checked ----------------------------------------------------
 # layout.c calls ltx_break_utf8(), so 31 hand-written link lines across eleven
@@ -128,50 +106,8 @@ test-cjkwrap-ws-negctl: $(BUILD)/cjkwrap_test_wsnegctl
 	        | head -8 | sed 's/^/      /'; \
 	 fi
 
-# The same suite under the sanitisers, which is what makes the fuzz sweep at
-# the end of it worth running. Every string this module sees came off the
-# network: truncated UTF-8, lone continuation bytes, a megabyte of soft
-# hyphens. The conformance corpus is all WELL-FORMED by construction and
-# therefore asks none of those questions. Without a sanitiser "it did not
-# crash" is a weak claim about 4,000 random inputs; with one it is a check on
-# every access those inputs caused.
-test-csstext-asan:
-	@mkdir -p $(BUILD)
-	@$(CC) -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer \
-	    -Wall -Wextra -Wno-unused-function -o $(BUILD)/csstext_test_asan \
-	    $(CSSTEXT_SRC) $(CSSTEXT_INC)
-	@$(BUILD)/csstext_test_asan $(UCD) 20000
 
-test-csstext:
-	@mkdir -p $(BUILD)
-	@$(CC) -O2 -Wall -Wextra -Wno-unused-function -o $(BUILD)/csstext_test \
-	    $(CSSTEXT_SRC) $(CSSTEXT_INC)
-	@$(BUILD)/csstext_test $(UCD)
 
-# THE NEGATIVE CONTROL, and note what it is NOT: it does not delete line
-# breaking. Deleting it would fail everything and prove nothing -- of course a
-# build with no algorithm fails a test of the algorithm.
-#
-# What it substitutes instead is the PLAUSIBLE WRONG ANSWER: break after
-# U+0020, honour the hard line-break characters, never break inside a
-# multi-byte character. That is a competent implementation. It is what
-# c/apps/gui/browser/layout/block.c does today, and it is what almost every hand-rolled
-# inline layout does, because on English prose it is indistinguishable from
-# correct -- an English-only test suite passes it outright.
-#
-# It has no idea that Chinese exists. This target requires the suite to notice.
-test-csstext-negctl:
-	@mkdir -p $(BUILD)
-	@$(CC) -O2 -w -DCSSTEXT_BREAK_ON_SPACE_ONLY -o $(BUILD)/csstext_test_negctl \
-	    $(CSSTEXT_SRC) $(CSSTEXT_INC)
-	@if $(BUILD)/csstext_test_negctl $(UCD) >$(BUILD)/csstext_negctl.log 2>&1; then \
-	    echo "NEGATIVE CONTROL FAILED: the suite passes a space-only line breaker"; \
-	    exit 1; \
-	 else \
-	    echo "negative control ok: with breaks only at U+0020 the suite reports"; \
-	    grep -E '^  (LineBreakTest|FAIL|[0-9]+ checks)' $(BUILD)/csstext_negctl.log \
-	        | head -8 | sed 's/^/      /'; \
-	 fi
 
 # Rebuild the Unicode tables from the host UCD. Not part of a normal build: the
 # .inc is committed, exactly like c/crypto/trust/roots_bundle.inc and

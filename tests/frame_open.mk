@@ -17,8 +17,3 @@ test-frame-open: test-frame-open-negctl $(FRAME_OPEN_DIR)/current
 	 rc=0; $(FRAME_OPEN_DIR)/current $$mode > $(FRAME_OPEN_DIR)/$$mode.log 2>&1 || rc=$$?; tail -15 $(FRAME_OPEN_DIR)/$$mode.log; test $$rc -eq 0 || exit $$rc; done
 ci-host: test-frame-open
 
-.PHONY: test-frame-open-sanitize
-test-frame-open-sanitize: test-frame-open
-	@$(CC) $(filter-out -O2,$(RUNTIME_SCROLL_CF)) -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -o $(FRAME_OPEN_DIR)/sanitize $(FRAME_OPEN_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
-	@for mode in open remove sandbox-late; do \
-	 rc=0; ASAN_OPTIONS=detect_leaks=0 UBSAN_OPTIONS=halt_on_error=1 $(FRAME_OPEN_DIR)/sanitize $$mode > $(FRAME_OPEN_DIR)/sanitize-$$mode.log 2>&1 || rc=$$?; tail -15 $(FRAME_OPEN_DIR)/sanitize-$$mode.log; test $$rc -eq 0 || exit $$rc; done

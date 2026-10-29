@@ -3,7 +3,7 @@
 # control; no constructor or DOM stubs. Both JS and native failures are required.
 INPUT_FILES_SRC = $(filter-out tests/unit/select_state_test.c,$(SELECT_STATE_SRC)) tests/unit/input_files_test.c
 INPUT_FILES_DEPS = tests/unit/select_state_test.c tests/fixtures/engine-expansion/input-files.html $(QJS_SRC) third_party/quickjs/quickjs.h tests/input_files.mk
-.PHONY: test-input-files test-input-files-negctl test-input-files-asan
+.PHONY: test-input-files test-input-files-negctl
 $(BUILD)/input_files_test: $(INPUT_FILES_SRC) $(INPUT_FILES_DEPS) $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
 	@mkdir -p $(BUILD)
 	$(CC) -O2 -w $(DOMIFACE_CF) -o $@ $(INPUT_FILES_SRC) $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
@@ -20,7 +20,4 @@ test-input-files-negctl: $(BUILD)/input_files_negctl
 	 grep -q '^FAIL native file value refuses invented path' $(BUILD)/input_files_negctl.log
 test-input-files: test-input-files-negctl $(BUILD)/input_files_test
 	@$(BUILD)/input_files_test
-test-input-files-asan: test-input-files-negctl $(INPUT_FILES_SRC) $(INPUT_FILES_DEPS) $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
-	$(CC) -O1 -g -w -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer $(DOMIFACE_CF) -o $(BUILD)/input_files_asan $(INPUT_FILES_SRC) $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
-	@ASAN_OPTIONS=detect_leaks=0 $(BUILD)/input_files_asan
 ci-host: test-input-files

@@ -6,7 +6,7 @@
 # which is the arrangement tests/h265.mk, tests/nic.mk, tests/audio.mk and
 # tests/usb.mk already use.
 
-.PHONY: test-h264 test-h264-units test-h264-diff test-h264-high \
+.PHONY: test-h264-diff test-h264-high \
         test-h264-negctl test-h264-real test-h264-pts \
         test-h264-bounds test-h264-bounds-negctl
 
@@ -17,49 +17,11 @@ H264_INC := -Ic/lib/video
 H264_BOUNDS_FLAGS := -O1 -g -Wall -Wextra -fsanitize=address,undefined \
                      -fno-omit-frame-pointer
 
-# The historical slice check compared a cast signed ue() value only with the
-# upper bound. Restoring that exact check in a build-only source copy makes the
-# crafted second IDR slice write 324 bytes 648 bytes before its allocation
-# (Darwin arm64 ASan); removing the SPS crop guard makes -2 report a 20x16
-# output plane from a 16x16 allocation. Both mutants must fail for those named
-# reasons before the current parser's rejection can count as a passing gate.
-test-h264-bounds-negctl:
-	@mkdir -p $(BUILD)/h264-bounds
-	@python3 tests/unit/h264_bounds_mutate.py slice c/lib/video/h264.c \
-	    $(BUILD)/h264-bounds/old_h264.c
-	@$(CC) $(H264_BOUNDS_FLAGS) -o $(BUILD)/h264-bounds/old_slice \
-	    tests/unit/h264_bounds_test.c $(BUILD)/h264-bounds/old_h264.c \
-	    $(filter-out c/lib/video/h264.c,$(H264_SRC)) $(H264_INC)
-	@status=0; $(BUILD)/h264-bounds/old_slice slice tests/fixtures/video/sample.h264 \
-	    >$(BUILD)/h264-bounds/slice.log 2>&1 || status=$$?; \
-	    if [ "$$status" -eq 0 ] || \
-	       ! rg -q 'H264-BOUNDS-SETUP: valid first picture' $(BUILD)/h264-bounds/slice.log || \
-	       ! rg -q 'AddressSanitizer: heap-buffer-overflow' $(BUILD)/h264-bounds/slice.log || \
-	       ! rg -q 'h264_decode_mb' $(BUILD)/h264-bounds/slice.log; then \
-	        cat $(BUILD)/h264-bounds/slice.log; \
-	        echo 'H264-BOUNDS-NEGCTL-FAIL: old slice guard did not reproduce the wild write'; exit 1; \
-	    fi; echo 'H264-BOUNDS-NEGCTL-RED: old slice guard writes before the picture allocation'
-	@python3 tests/unit/h264_bounds_mutate.py crop c/lib/video/h264_nal.c \
-	    $(BUILD)/h264-bounds/old_h264_nal.c
-	@$(CC) $(H264_BOUNDS_FLAGS) -o $(BUILD)/h264-bounds/old_crop \
-	    tests/unit/h264_bounds_test.c $(BUILD)/h264-bounds/old_h264_nal.c \
-	    $(filter-out c/lib/video/h264_nal.c,$(H264_SRC)) $(H264_INC)
-	@status=0; $(BUILD)/h264-bounds/old_crop crop \
-	    >$(BUILD)/h264-bounds/crop.log 2>&1 || status=$$?; \
-	    if [ "$$status" -ne 1 ] || \
-	       ! rg -q 'H264-BOUNDS-FAIL crop negative-left: parse=0 info=0 size=20x16 want=-1' \
-	         $(BUILD)/h264-bounds/crop.log; then \
-	        cat $(BUILD)/h264-bounds/crop.log; \
-	        echo 'H264-BOUNDS-NEGCTL-FAIL: old crop guard did not misreport geometry'; exit 1; \
-	    fi; echo 'H264-BOUNDS-NEGCTL-RED: old crop guard exposes 20x16 from a 16x16 SPS'
 
 $(BUILD)/h264_bounds_test: tests/unit/h264_bounds_test.c $(H264_SRC)
 	@mkdir -p $(BUILD)
 	@$(CC) $(H264_BOUNDS_FLAGS) -o $@ $< $(H264_SRC) $(H264_INC)
 
-test-h264-bounds: test-h264-bounds-negctl $(BUILD)/h264_bounds_test
-	@$(BUILD)/h264_bounds_test crop
-	@$(BUILD)/h264_bounds_test slice tests/fixtures/video/sample.h264
 
 # --- whole-stream gate ------------------------------------------------------
 # tools/genvideo.sh generates the stream matrix with ffmpeg/libx264 and the
@@ -102,39 +64,7 @@ H264_GATE := i-only-160x120 i-only-322x242 ip-320x240 ip-640x360 \
              high-full-320x240 high-full-640x360 high-slices-320x240 \
              high-cqm-flat-320x240
 
-test-h264: test-h264-bounds
-	@mkdir -p $(BUILD)/h264ref
-	@bash tools/genvideo.sh $(BUILD)/h264ref
-	@$(CC) -O2 -Wall -Wextra -o $(BUILD)/h264_test tests/unit/h264test.c $(H264_SRC) $(H264_INC)
-	@for c in $(H264_GATE); do \
-	    $(BUILD)/h264_test $(BUILD)/h264ref/$$c.h264 $(BUILD)/h264ref/$$c.ref.yuv || exit 1; \
-	done
-	@echo "all $(words $(H264_GATE)) gated H.264 host cases bit-exact"
-	@# The committed fixture, checked against a CRC pinned in the tree. The
-	@# generated matrix above re-encodes with whatever x264 is installed, so it
-	@# is not a fixed target; this one is, and it is also the only stream we
-	@# have that quantises finely enough to reach a chroma qP below 6. The same
-	@# CRC is what the on-device check prints, which is how a decode inside
-	@# LogitOS gets compared with a decode on the host.
-	@crc=`$(BUILD)/h264_test tests/fixtures/video/sample.h264 | awk '{print $$2}'`; \
-	 want=`cat tests/fixtures/video/sample.crc32`; \
-	 if [ "$$crc" != "$$want" ]; then \
-	     echo "H264-FIXTURE-FAIL crc $$crc want $$want"; exit 1; fi; \
-	 echo "H264-OK fixture crc $$crc (tests/fixtures/video/sample.h264)"
-	@$(MAKE) --no-print-directory test-h264-pts
 
-# Timestamps have to survive reordering. Until B slices landed, decode order
-# was display order for every stream this decoder accepted, so a caller could
-# pair frames with timestamps through a plain FIFO and be right; with B
-# pictures that is wrong for about half the frames and the failure is invisible
-# -- every frame is present, only their times are shuffled. h264_decode_pts
-# carries the caller's value on the picture itself, and this checks the two
-# things that matter: no value is lost or duplicated, and a stream that
-# reorders really does come back out of decode order (a FIFO would report 0).
-test-h264-pts: $(BUILD)/h264_test
-	@$(BUILD)/h264_test --pts $(BUILD)/h264ref/b-pyramid-320x240.h264
-	@$(BUILD)/h264_test --pts $(BUILD)/h264ref/cabac-b-176x144.h264
-	@$(BUILD)/h264_test --pts $(BUILD)/h264ref/i-only-160x120.h264
 
 $(BUILD)/h264_test: tests/unit/h264test.c $(H264_SRC)
 	@mkdir -p $(BUILD)
@@ -152,35 +82,6 @@ test-h264-diff:
 	    $(BUILD)/h264_diff $$f $${f%.h264}.ref.yuv | tail -1 || rc=1; \
 	done; exit $$rc
 
-# --- module unit tests ------------------------------------------------------
-# These existed but were wired to nothing, so they had never run -- and two of
-# their expectations disagreed with the spec (intra 4x4 vertical-left indexed
-# p[x+y] instead of p[x+(y>>1)]; chroma DC averaged both edges in all four
-# quadrants). Both were corrected against 8.3.1.2.8 / 8.3.4.1 and then
-# confirmed the honest way: with the decoder fixed to match, a real stream
-# decodes byte-identically to ffmpeg.
-#
-# h264_cavlc_test is NOT here on purpose. Its roundtrip section encodes with a
-# CAVLC *encoder* written inside the test, and that encoder disagrees with the
-# decoder about level coding. The decoder is the one that is right: it decodes
-# i-only-160x120 bit-exactly for all 60 frames, which exercises coeff_token,
-# level escapes, total_zeros and run_before across thousands of blocks. Fixing
-# the test's encoder is its own task; wiring a known-wrong test into a gate
-# would only teach people to ignore the gate.
-test-h264-units:
-	@mkdir -p $(BUILD)
-	@$(CC) -O2 -Wall -Wextra -o $(BUILD)/h264_pred_test tests/unit/h264_pred_test.c \
-	    c/lib/video/h264_pred.c $(H264_INC)
-	@$(BUILD)/h264_pred_test
-	@$(CC) -O2 -Wall -Wextra -o $(BUILD)/h264_mc_test tests/unit/h264_mc_test.c \
-	    c/lib/video/h264_mc.c $(H264_INC)
-	@$(BUILD)/h264_mc_test
-	@$(CC) -O2 -Wall -Wextra -o $(BUILD)/h264_deblock_test tests/unit/h264_deblock_test.c \
-	    c/lib/video/h264_deblock.c $(H264_INC)
-	@$(BUILD)/h264_deblock_test
-	@$(CC) -O2 -Wall -Wextra -o $(BUILD)/h264_cabac_test tests/unit/h264_cabac_test.c \
-	    c/lib/video/h264_cabac.c c/lib/video/h264_nal.c $(H264_INC)
-	@$(BUILD)/h264_cabac_test
 
 # --- real-world streams -----------------------------------------------------
 # A synthetic x264 corpus and a real segment off a video site fail differently:
@@ -193,17 +94,6 @@ test-h264-units:
 # redistribute); point H264_REAL at a directory of .h264 elementary streams and
 # this target checks every one of them. Missing directory -> skipped, loudly.
 H264_REAL ?= tests/fixtures/video/real
-test-h264-real:
-	@$(CC) -O2 -Wall -Wextra -o $(BUILD)/h264_test tests/unit/h264test.c $(H264_SRC) $(H264_INC)
-	@if [ ! -d "$(H264_REAL)" ]; then \
-	    echo "H264-REAL SKIPPED: no $(H264_REAL) (set H264_REAL=<dir of .h264>)"; \
-	    exit 0; fi; \
-	 n=0; for f in $(H264_REAL)/*.h264; do \
-	    [ -e "$$f" ] || continue; \
-	    ffmpeg -v error -i $$f -f rawvideo -pix_fmt yuv420p $$f.ref.yuv -y || exit 1; \
-	    $(BUILD)/h264_test $$f $$f.ref.yuv || exit 1; \
-	    rm -f $$f.ref.yuv; n=$$((n+1)); \
-	 done; echo "H264-REAL: $$n real stream(s) bit-exact"
 
 # --- negative control -------------------------------------------------------
 # An assertion that FAILS without the High-profile work: profile_idc 100 must

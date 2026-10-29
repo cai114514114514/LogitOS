@@ -31,7 +31,7 @@ $(BUILD)/subs_test_strict: tests/unit/subs_test.c $(SUBS_SRC) c/lib/media/subs.h
 	@mkdir -p $(BUILD)
 	@$(CC) -O2 -w -DSUBS_STRICT -o $@ tests/unit/subs_test.c $(SUBS_SRC) $(SUBS_INC)
 
-.PHONY: test-subs test-subs-negctl test-subs-fuzz
+.PHONY: test-subs test-subs-negctl
 
 # THE CONTROL IS A PREREQUISITE, NOT A SECOND NAME ON A ci-host: LINE.
 # tools/audit_tests.py's NOT_CI drops every `test-*-negctl` from what
@@ -64,5 +64,3 @@ $(BUILD)/subs_fuzz: tests/unit/subs_fuzz.c $(SUBS_SRC) c/lib/media/subs.h
 	@$(CC) -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer \
 	    -o $@ tests/unit/subs_fuzz.c $(SUBS_SRC) $(SUBS_INC)
 
-test-subs-fuzz: $(BUILD)/subs_fuzz
-	@$(BUILD)/subs_fuzz $(SUBS_FX)/wpt

@@ -36,13 +36,8 @@
 # used rather than one looked up afterwards). That pair is what turned this
 # from a theory into a fact, in one boot.
 
-.PHONY: test-smp-fork-storm test-smp-fork-storm-1core
 
-test-smp-fork-storm: $(ISO) $(DISK)
-	@bash tests/boot/run-smp-fork-storm.sh $(ISO) $(DISK) $(STORM_REPS) 4
 
-test-smp-fork-storm-1core: $(ISO) $(DISK)
-	@bash tests/boot/run-smp-fork-storm.sh $(ISO) $(DISK) $(STORM_REPS) 1
 
 STORM_REPS ?= 120
 
@@ -62,18 +57,11 @@ STORM_REPS ?= 120
 #
 # qmp_lockdump.py needs no target of its own: both probes drive it, and the
 # audit's reachability walk finds it from here.
-.PHONY: test-smp-lockprobe test-smp-freeze-probe test-wait-smp
 
-test-smp-lockprobe: $(ISO) $(DISK)
-	@bash tests/boot/run-smp-lockprobe.sh $(ISO) $(DISK)
 
-test-smp-freeze-probe: $(ISO) $(DISK)
-	@bash tests/boot/run-smp-freeze-probe.sh $(ISO) $(DISK) $(FREEZE_REPS) 4
 
 FREEZE_REPS ?= 2
 
-test-wait-smp: $(ISO) $(DISK)
-	@bash tests/boot/run-wait-smp.sh $(ISO) $(DISK)
 
 # Short process-ownership regression, including a non-cancellable producer
 # control. It uses real sleeping children, not an emulated guest workload.

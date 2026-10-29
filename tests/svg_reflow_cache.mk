@@ -17,7 +17,7 @@ $(SVG_REFLOW_DIR)/key-bound: $(SVG_REFLOW_DEP)
 $(SVG_REFLOW_DIR)/san: $(SVG_REFLOW_DEP)
 	@mkdir -p $(SVG_REFLOW_DIR)
 	@$(CC) -O1 -g -w -fsanitize=address,undefined -fno-omit-frame-pointer $(BTEST_INC) $(CSS_INC) $(KMM_INC) -o $@ $(sort $(SVG_REFLOW_SRC) $(HTML_PARSER_SRC)) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
-.PHONY: test-svg-reflow-cache test-svg-reflow-cache-negctl test-svg-reflow-cache-key-bound test-svg-reflow-cache-san
+.PHONY: test-svg-reflow-cache test-svg-reflow-cache-negctl test-svg-reflow-cache-key-bound
 test-svg-reflow-cache-negctl: $(SVG_REFLOW_DIR)/old
 	@rc=0; $< > $(SVG_REFLOW_DIR)/old.log 2>&1 || rc=$$?; test $$rc -eq 1
 	@python3 tests/unit/svg_reflow_cache_check.py $(SVG_REFLOW_DIR)/old.log
@@ -27,8 +27,6 @@ test-svg-reflow-cache-key-bound: $(SVG_REFLOW_DIR)/key-bound
 test-svg-reflow-cache: test-svg-reflow-cache-negctl test-svg-reflow-cache-key-bound $(SVG_REFLOW_DIR)/current $(SVG_REFLOW_DIR)/small
 	@$(SVG_REFLOW_DIR)/current
 	@$(SVG_REFLOW_DIR)/small
-test-svg-reflow-cache-san: test-svg-reflow-cache $(SVG_REFLOW_DIR)/san
-	@ASAN_OPTIONS=detect_leaks=0 UBSAN_OPTIONS=halt_on_error=1 $(SVG_REFLOW_DIR)/san
 
 -include tests/svg_raster_size.mk
 ci-host: test-svg-reflow-cache

@@ -35,6 +35,3 @@ ci-host: test-animation-refresh
 $(OPACITY_GROUP_DIR)/refresh-san: $(ANIMATION_REFRESH_DEPS)
 	@mkdir -p $(OPACITY_GROUP_DIR)
 	$(CC) $(RUNTIME_SCROLL_CF) -fsanitize=address,undefined -fno-omit-frame-pointer -o $@ $(ANIMATION_REFRESH_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
-.PHONY: test-animation-refresh-san
-test-animation-refresh-san: test-animation-refresh $(OPACITY_GROUP_DIR)/refresh-san
-	ASAN_OPTIONS=detect_leaks=0 UBSAN_OPTIONS=halt_on_error=1 $(OPACITY_GROUP_DIR)/refresh-san

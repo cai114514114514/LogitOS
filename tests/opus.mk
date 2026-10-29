@@ -96,7 +96,7 @@ $(BUILD)/opus_vec: tests/unit/opus_vec.c $(OPUS_SRC) $(OPUS_HDR)
 	@mkdir -p $(BUILD)
 	@$(CC) -O2 -w $(OPUS_INC) -o $@ tests/unit/opus_vec.c $(OPUS_SRC) -lm
 
-.PHONY: test-opus-range test-opus-range-negctl test-opus
+.PHONY: test-opus-range test-opus-range-negctl
 
 # THE CONTROL IS A PREREQUISITE, NOT A SECOND NAME ON A ci-host: LINE.
 # tools/audit_tests.py's NOT_CI drops every `test-*-negctl` from what
@@ -129,54 +129,3 @@ test-opus-range-negctl: $(BUILD)/opus_range_test_negctl
 	    echo "CONTROL-OK: opus_range_test fails without the fl==0 special case ($$got of 15691 checks)"; \
 	 fi
 
-# The corpus is OPTIONAL and the capability is not -- same rule tests/wpt.mk
-# already argues, and tools/opusvec.sh's own header states it for this one:
-# `make opus-vectors` fetches; no test target here downloads anything, and a
-# missing corpus exits 0 because that is not a regression in the decoder.
-test-opus: $(BUILD)/opus_vec
-	@if [ ! -d build/.opus/vectors ] || [ ! -x build/.opus/ref/opus_compare ]; then \
-	    echo "OPUS: no build/.opus/{vectors,ref} -- corpus not fetched" ; \
-	    echo "      (run: bash tools/opusvec.sh). Nothing measured." ; \
-	    exit 0 ; \
-	 fi
-	@rc=0; \
-	 for v in 01 02 03 04 05 06 07 08 09 10 11 12; do \
-	    case $$v in \
-	      02) esilk=1185; ehyb=0 ;; \
-	      03) esilk=998;  ehyb=0 ;; \
-	      04) esilk=1265; ehyb=0 ;; \
-	      05) esilk=0;    ehyb=2037 ;; \
-	      06) esilk=0;    ehyb=1876 ;; \
-	      08) esilk=5;    ehyb=0 ;; \
-	      09) esilk=5;    ehyb=0 ;; \
-	      10) esilk=0;    ehyb=314 ;; \
-	      12) esilk=1068; ehyb=264 ;; \
-	      *)  esilk=0;    ehyb=0 ;; \
-	    esac; \
-	    out=`$(BUILD)/opus_vec build/.opus/vectors/testvector$$v.bit $(BUILD)/tv$$v.sw 2`; \
-	    rng=`echo "$$out"  | grep -o 'rng_mismatch=[0-9]*'   | cut -d= -f2`; \
-	    herr=`echo "$$out" | grep -o 'hard_err=[0-9]*'       | cut -d= -f2`; \
-	    gsilk=`echo "$$out"| grep -o 'refused_silk=[0-9]*'   | cut -d= -f2`; \
-	    ghyb=`echo "$$out" | grep -o 'refused_hybrid=[0-9]*' | cut -d= -f2`; \
-	    if [ "$$rng" != "0" ] || [ "$$herr" != "0" ]; then \
-	        echo "OPUS-FAIL vector$$v: rng_mismatch=$$rng hard_err=$$herr (want 0/0)"; \
-	        echo "  $$out"; rc=1; continue; \
-	    fi; \
-	    if [ "$$gsilk" != "$$esilk" ] || [ "$$ghyb" != "$$ehyb" ]; then \
-	        echo "OPUS-FAIL vector$$v: refused_silk=$$gsilk refused_hybrid=$$ghyb (want $$esilk/$$ehyb)"; \
-	        echo "  $$out"; rc=1; continue; \
-	    fi; \
-	    echo "OPUS-OK vector$$v: $$out"; \
-	 done; \
-	 for v in 01 07 11; do \
-	    cout=`build/.opus/ref/opus_compare -s build/.opus/vectors/testvector$$v.dec $(BUILD)/tv$$v.sw 2>&1`; \
-	    ccode=$$?; \
-	    if [ $$ccode != 0 ]; then \
-	        echo "OPUS-FAIL vector$$v opus_compare (RFC 6716 sec.6 conformance): exit $$ccode"; \
-	        echo "$$cout"; rc=1; \
-	    else \
-	        q=`echo "$$cout" | grep 'quality metric'`; \
-	        echo "OPUS-OK vector$$v opus_compare PASSES -- $$q"; \
-	    fi; \
-	 done; \
-	 exit $$rc

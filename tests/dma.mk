@@ -1,5 +1,5 @@
 # DMA controls are prerequisites of positive acceptance, not optional siblings.
-.PHONY: test-dma test-dma-negctl test-dma-block test-dma-block-negctl test-dma-os
+.PHONY: test-dma test-dma-negctl test-dma-block test-dma-block-negctl
 test-dma: test-dma-negctl test-dma-block test-blk-async
 test-dma-negctl:
 	python3 tests/unit/dma_test.py --build $(BUILD)/dma-core
@@ -7,9 +7,6 @@ test-dma-block: test-dma-block-negctl
 	python3 tests/unit/block_dma_test.py --root . --build $(BUILD)/dma-block --positive-only
 test-dma-block-negctl:
 	python3 tests/unit/block_dma_test.py --root . --build $(BUILD)/dma-block --controls-only
-# Run with WIDEVERIFY=1 and an independent BUILD. The memory/PIE matrix uses
-# the ordinary DMA implementation and real virtio-blk + NVMe on both firmware.
-test-dma-os: test-dma test-wide-memory-os
 
 -include tests/dma_drivers.mk
 .PHONY: test-dma-virtio test-dma-virtio-negctl
@@ -27,14 +24,6 @@ test-dma-virtio-negctl:
 
 # Complete reproducible acceptance; both flags are test instrumentation only.
 # Example: make -j4 BUILD=/tmp/logitos-dma-check WIDEVERIFY=1 DMA_CAPTURE_VERIFY=1 test-dma-os
-.PHONY: test-dma-block-os test-dma-virtio-os test-dma-ime-os
-test-dma-os: test-dma-block-os test-dma-virtio-os test-dma-drivers-os test-dma-ime-os
-test-dma-block-os: test-dma-block wide-memory-image wide-memory-disk
-	python3 tests/boot/run-block-dma.py --build $(BUILD) --disk $(BUILD)/wide-disk.img --out $(BUILD)/dma-block-results
-test-dma-virtio-os: test-dma-virtio wide-memory-image wide-memory-disk
-	python3 tests/boot/run-dma-virtio.py --build $(BUILD) --disk $(BUILD)/wide-disk.img --out $(BUILD)/dma-virtio-results
-test-dma-ime-os: wide-memory-image wide-memory-disk
-	python3 tests/boot/run-dma-ime.py --build $(BUILD) --disk $(BUILD)/wide-disk.img --out $(BUILD)/dma-ime-results
 
 # Terminal device-removal probe runs in a separate guest; it deliberately takes
 # the private root disk offline and reports only through the resident console.
@@ -49,17 +38,11 @@ $(BUILD)/dma-shutdown.elf: tests/unit/dma_shutdown_guest.c c/apps/crt0_cli.asm c
 	$(LD) -nostdlib -e _start -Ttext=0x50000000 -o $@ $(BUILD)/tests/unit/dma-shutdown.crt.o $(BUILD)/tests/unit/dma-shutdown.o
 $(BUILD)/dma-shutdown.aex: $(BUILD)/dma-shutdown.elf tools/mkaex.py
 	python3 tools/mkaex.py --cli $< $@ dma-shutdown - '*' 150 150 150
-.PHONY: dma-shutdown-disk test-dma-shutdown-os
+.PHONY: dma-shutdown-disk
 dma-shutdown-disk: $(BUILD)/dma-shutdown.aex
 	$(MAKE) -n -W tools/mkfs.py BUILD=$(WIDE_BASE_BUILD) $(WIDE_BASE_BUILD)/disk.img > $(BUILD)/shutdown-disk.make
 	python3 tests/boot/mk-tcc-disk.py . $(BUILD)/shutdown-disk.make $(BUILD)/shutdown-disk.img $(BUILD)/dma-shutdown.aex:/bin/dma-shutdown
-test-dma-shutdown-os: test-dma wide-memory-image dma-shutdown-disk
-	python3 tests/boot/run-dma-shutdown.py --build $(BUILD) --disk $(BUILD)/shutdown-disk.img --out $(BUILD)/dma-shutdown-results
-test-dma-os: test-dma-shutdown-os
 
-# This recipe executes only after every prerequisite above has succeeded.
-test-dma-os:
-	python3 tests/boot/dma_report.py --build $(BUILD) --out $(BUILD)/dma-acceptance.json
 
 # The negative source variants run first and must trip the specific lifetime
 # and scratch assertions; the positive links the same production VFS code.

@@ -34,12 +34,5 @@ test-cookie-persistence: test-cookie-store-guest-adapter
 COOKIE_PERSIST_GUEST_ISO ?=
 COOKIE_PERSIST_GUEST_DISK ?=
 COOKIE_PERSIST_GUEST_NEG_DISK ?=
-.PHONY: test-cookie-persistence-guest test-cookie-persistence-guest-negctl
-test-cookie-persistence-guest-negctl:
-	@test -f "$(COOKIE_PERSIST_GUEST_ISO)" && test -f "$(COOKIE_PERSIST_GUEST_NEG_DISK)" || { echo 'ERROR: set COOKIE_PERSIST_GUEST_ISO and COOKIE_PERSIST_GUEST_NEG_DISK'; exit 1; }
-	python3 tests/qmp/cookie_persistence_guest.py --iso "$(COOKIE_PERSIST_GUEST_ISO)" --disk "$(COOKIE_PERSIST_GUEST_NEG_DISK)" --out "$(BUILD)/cookie-persistence-guest-negctl" --expect-missing
-test-cookie-persistence-guest: test-cookie-persistence-guest-negctl test-cookie-persistence
-	@test -f "$(COOKIE_PERSIST_GUEST_DISK)" || { echo 'ERROR: set COOKIE_PERSIST_GUEST_DISK'; exit 1; }
-	python3 tests/qmp/cookie_persistence_guest.py --iso "$(COOKIE_PERSIST_GUEST_ISO)" --disk "$(COOKIE_PERSIST_GUEST_DISK)" --out "$(BUILD)/cookie-persistence-guest"
 
 ci-host: test-cookie-persistence

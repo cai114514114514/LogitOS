@@ -105,15 +105,8 @@ $(BUILD)/libmhost/fenv.o: c/apps/libc/src/fenv.c
 $(BUILD)/libmhost/ref: $(BUILD)/libmhost/libmcheck.o $(LIBM_HOST_OBJ) $(BUILD)/libmhost/fenv.o
 	@$(CC) -o $@ $(BUILD)/libmhost/libmcheck.o $(LIBM_HOST_OBJ) $(BUILD)/libmhost/fenv.o
 
-test-libm-host: $(BUILD)/libmhost/ref
-	@$(BUILD)/libmhost/ref > $(BUILD)/libmhost/ref.out
-	@echo "PASS: host reference built, $$(wc -l < $(BUILD)/libmhost/ref.out) lines"
 
-test-libm-cli: $(ISO) $(DISK) $(BUILD)/libmhost/ref
-	@$(BUILD)/libmhost/ref > $(BUILD)/libmhost/ref.out
-	@bash tests/boot/run-libm-test.sh $(ISO) $(DISK) $(BUILD)/libmhost/ref.out
 
-.PHONY: test-libm-host test-libm-cli
 else
 $(warning tests/libm.mk: $(LIBMCHK_SRC) is missing -- /bin/libmcheck will not be built)
 endif

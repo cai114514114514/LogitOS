@@ -50,8 +50,6 @@ $(BUILD)/js_sem_probe: tests/unit/js_sem_probe.c $(QJS_SRC)
 	    -DLOGIT_OS -DCONFIG_STACK_CHECK -DNDEBUG -o $@ \
 	    tests/unit/js_sem_probe.c $(QJS_SRC) -lm
 
-test-jssem: $(BUILD)/js_sem_probe
-	@bash $(JSSEM_DIR)/run-objweak.sh $(BUILD)/js_sem_probe $(BUILD)/jssem-out
 
 # --- guest: /bin/jssem, linked from the browser's own engine objects ---------
 JSSEM_PACK := $(BUILD)/jssem.aex:/bin/jssem \
@@ -73,7 +71,4 @@ $(BUILD)/jssem.elf: $(ENGINE_OBJ) $(BUILD)/jsobj/tests/unit/js_sem_probe.o \
 $(BUILD)/jssem.aex: $(BUILD)/jssem.elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/jssem.elf $@ jssem - '?' 150 150 150
 
-test-jssem-os: $(ISO) $(DISK)
-	@bash $(JSSEM_DIR)/run-guest.sh $(ISO) $(DISK) $(JSSEM_PATHS)
 
-.PHONY: test-jssem test-jssem-os

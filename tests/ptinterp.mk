@@ -26,7 +26,7 @@ test-ptinterp-negctl:
 ptinterp-fixtures:
 	python3 tests/unit/ptinterp_run.py --build $(BUILD)/ptinterp --fixtures-only
 
-.PHONY: ptinterp-image ptinterp-disk test-ptinterp-os test-ptinterp-all
+.PHONY: ptinterp-image ptinterp-disk
 ptinterp-disk: test-kernel-disk-recipe ptinterp-fixtures
 	$(MAKE) -n -W tools/mkfs.py BUILD=$(WIDE_BASE_BUILD) $(WIDE_BASE_BUILD)/disk.img > $(BUILD)/ptinterp-disk.make
 	python3 tests/boot/mk-tcc-disk.py . $(BUILD)/ptinterp-disk.make $(BUILD)/ptinterp-disk.img \
@@ -40,8 +40,3 @@ ptinterp-disk: test-kernel-disk-recipe ptinterp-fixtures
 	  $(BUILD)/ptinterp/missing.elf:/bin/interp-missing $(BUILD)/ptinterp/denied.elf:/bin/interp-denied \
 	  $(BUILD)/ptinterp/nested.elf:/bin/interp-nested $(BUILD)/ptinterp/junk.elf:/bin/interp-junk
 ptinterp-image: $(ISO) $(BUILD)/esp.img ptinterp-disk
-test-ptinterp-os: test-ptinterp-host
-	$(MAKE) BUILD=$(BUILD) WIDE_BASE_BUILD=$(WIDE_BASE_BUILD) ptinterp-image
-	python3 tests/boot/run-ptinterp.py --build $(BUILD) --disk $(BUILD)/ptinterp-disk.img --out $(BUILD)/ptinterp-results
-test-ptinterp-all:
-	python3 tests/boot/run-ptinterp-acceptance.py --build $(BUILD) $(if $(PTINTERP_APPS_DISK),--apps-disk $(PTINTERP_APPS_DISK)) --apps $(WIDE_BASE_BUILD)

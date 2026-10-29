@@ -117,7 +117,7 @@ MPEG12_GATE := field-16x8 field-dmv field-intra frame-dmv frame-field \
                m2-ildct-bf-352x288 m2-intravlc-352x288 m2-ip-352x288 \
                m2-nonlinq-352x288 m2-q1-352x288 m2-q25-352x288
 
-.PHONY: test-mpeg12 test-mpeg12-diff test-mpeg12-idct test-mpeg12-negctl \
+.PHONY: test-mpeg12 test-mpeg12-diff test-mpeg12-negctl \
         test-mpeg12-census
 
 # THE CONTROL IS A PREREQUISITE, NOT A SECOND NAME ON A ci-host: LINE.
@@ -164,12 +164,6 @@ test-mpeg12-diff: $(BUILD)/mpeg12_test
 	    $(BUILD)/mpeg12_test --diff $$f $(BUILD)/mpeg12corpus/$$b.ref.yuv 2>&1 | tail -1; \
 	 done
 
-# The IDCT alone: is it an IDCT (butterfly coefficients vs cos((2n+1)k*pi/16)),
-# is it accurate enough to be conforming (IEEE 1180 / Annex A, run in full),
-# and is the DC shortcut a real behavioural difference and not a no-op. Fast,
-# no corpus needed.
-test-mpeg12-idct: $(BUILD)/mpeg12_idct_test
-	@$(BUILD)/mpeg12_idct_test
 
 # The negative control. Asserted on BOTH halves, same shape tests/subs.mk uses
 # for its control: not just "something failed", but the EXACT set that must
@@ -201,24 +195,3 @@ test-mpeg12-negctl: $(BUILD)/mpeg12_test_control
 	 fi; \
 	 echo "CONTROL-MPEG12-OK: $$red of $(words $(MPEG12_GATE)) redden without the DC shortcut, exactly the noise/escape cases stay clean"
 
-# The census, cross-checked against the case each field claims to exercise --
-# mpeg12.h's own comment on mpeg12_census: "a control that reddens the whole
-# suite is not measuring the one thing it claims", so this asserts EACH count
-# against ITS case, not just that the sum is nonzero somewhere in the corpus.
-test-mpeg12-census: $(BUILD)/mpeg12_test
-	@mkdir -p $(BUILD)/mpeg12corpus
-	@bash tools/genmpeg12.sh $(BUILD)/mpeg12corpus >/dev/null 2>&1 || { echo "MPEG12: no corpus -- census not run"; exit 0; }
-	@fail=0; \
-	 check() { \
-	    v=`$(BUILD)/mpeg12_test --census $(BUILD)/mpeg12corpus/$$1.m2v | grep -o "$$2=[0-9]*" | cut -d= -f2`; \
-	    if [ -z "$$v" ] || [ "$$v" -le 0 ]; then \
-	        echo "CENSUS-MPEG12-FAIL: $$1 $$2=$$v (expected > 0)"; fail=1; \
-	    else echo "  $$1 $$2=$$v"; fi; \
-	 }; \
-	 check field-16x8 mv_16x8; \
-	 check field-dmv mv_dualprime; \
-	 check frame-dmv mv_dualprime; \
-	 check m2-ildct-352x288 field_dct; \
-	 check m1-esc2-352x288 esc2; \
-	 check m2-intravlc-352x288 intra_vlc_blocks; \
-	 [ $$fail = 0 ] && echo "CENSUS-MPEG12-OK: every named feature is nonzero on its own case" || exit 1

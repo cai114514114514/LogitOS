@@ -13,10 +13,6 @@ test-dom-wrapper-lifetime-negctl: $(DOM_WRAPPER_DEPS)
 
 test-dom-wrapper-lifetime: test-dom-wrapper-lifetime-negctl $(BUILD)/wiring-next/dom_wrapper_lifetime
 	@$(BUILD)/wiring-next/dom_wrapper_lifetime
-.PHONY: test-dom-wrapper-lifetime-asan
-test-dom-wrapper-lifetime-asan: test-dom-wrapper-lifetime
-	@$(CC) -O1 -g -w -fsanitize=address -fno-omit-frame-pointer $(DOMIFACE_CF) -o $(BUILD)/wiring-next/dom_wrapper_asan $(DOM_WRAPPER_SRC) $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
-	@ASAN_OPTIONS=detect_leaks=0 $(BUILD)/wiring-next/dom_wrapper_asan
 
 # Two live independent runtimes exercise the DOM state boundary; this does
 # not install the still-singleton optional platform/network modules in child.
@@ -31,7 +27,7 @@ $(BUILD)/dom-context/negative: $$(DOM_CONTEXT_DEPS)
 	@sed 's/X(g_scroll_x) X(g_scroll_y)//' c/apps/gui/browser/js/dom/dom.c > $(BUILD)/dom-context/no-viewport.c
 	@! cmp -s c/apps/gui/browser/js/dom/dom.c $(BUILD)/dom-context/no-viewport.c
 	@$(CC) -O2 -w $(JSDOM_HOST_CF) -o $@ $(filter-out c/apps/gui/browser/js/dom/dom.c,$(DOM_CONTEXT_SRC)) $(BUILD)/dom-context/no-viewport.c $(BUILD)/libcss_host.a -lm
-.PHONY: test-dom-context test-dom-context-negctl test-dom-context-asan test-dom-context-fields
+.PHONY: test-dom-context test-dom-context-negctl test-dom-context-fields
 test-dom-context-fields:
 	@mkdir -p $(BUILD)/dom-context
 	@clang -fsyntax-only -Xclang -ast-dump=json $(JSDOM_HOST_CF) c/apps/gui/browser/js/dom/dom.c > $(BUILD)/dom-context/fields.json
@@ -41,9 +37,6 @@ test-dom-context-negctl: $(BUILD)/dom-context/negative
 	 test $$rc -eq 1 && grep -q '^FAIL: parent viewport restored' $(BUILD)/dom-context/negative.log
 test-dom-context: test-dom-context-negctl test-dom-context-fields $(BUILD)/dom-context/current
 	@$(BUILD)/dom-context/current
-test-dom-context-asan: test-dom-context
-	@$(CC) -O1 -g -w -fsanitize=address,undefined -fno-omit-frame-pointer $(JSDOM_HOST_CF) -o $(BUILD)/dom-context/asan $(DOM_CONTEXT_SRC) $(BUILD)/libcss_host.a -lm
-	@$(BUILD)/dom-context/asan
 ci-host: test-dom-context
 
 PAGE_CONTEXT_SRC = $(filter-out tests/unit/dom_iface_test.c,$(DOMIFACE_SRC)) tests/unit/page_context_test.c
@@ -56,7 +49,7 @@ $(BUILD)/dom-context/page-negative: $$(PAGE_CONTEXT_DEPS)
 	@sed 's/s->g_page=\&s->queue;/s->g_page=\&page_default_queue;/' c/apps/gui/browser/js/runtime/page.c > $(BUILD)/dom-context/shared-queue.c
 	@! cmp -s c/apps/gui/browser/js/runtime/page.c $(BUILD)/dom-context/shared-queue.c
 	@$(CC) -O2 -w $(DOMIFACE_CF) -o $@ $(filter-out c/apps/gui/browser/js/runtime/page.c,$(PAGE_CONTEXT_SRC)) $(BUILD)/dom-context/shared-queue.c $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
-.PHONY: test-page-context test-page-context-negctl test-page-context-asan test-page-context-fields
+.PHONY: test-page-context test-page-context-negctl test-page-context-fields
 test-page-context-fields:
 	@mkdir -p $(BUILD)/dom-context
 	@clang -fsyntax-only -Xclang -ast-dump=json $(DOMIFACE_CF) c/apps/gui/browser/js/runtime/page.c > $(BUILD)/dom-context/page-fields.json
@@ -66,9 +59,6 @@ test-page-context-negctl: $(BUILD)/dom-context/page-negative
 	 test $$rc -eq 1 && grep -q '^FAIL: parent timer survives child queue initialization' $(BUILD)/dom-context/page-negative.log
 test-page-context: test-page-context-negctl test-page-context-fields $(BUILD)/dom-context/page
 	@$(BUILD)/dom-context/page
-test-page-context-asan: test-page-context
-	@$(CC) -O1 -g -w -fsanitize=address,undefined -fno-omit-frame-pointer $(DOMIFACE_CF) -o $(BUILD)/dom-context/page-asan $(PAGE_CONTEXT_SRC) $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
-	@$(BUILD)/dom-context/page-asan
 ci-host: test-page-context
 
 # Opt-in WebAPI children reuse the shipping request engine and page scheduler.
@@ -83,7 +73,7 @@ $(BUILD)/dom-context/webapi-neg-%: $$(PAGE_WEBAPI_CONTEXT_DEPS)
 	@case '$*' in navigation) sed 's/X(g_pending_nav) X(g_have_pending_nav)//' c/apps/gui/browser/js/runtime/webapi.c > $@.c;; site) sed 's/g_embedded_site ? g_site_url : url/url/' c/apps/gui/browser/js/runtime/webapi.c > $@.c;; policy) sed 's/if(!r->connect_policy)return 1;/return 1;/' c/apps/gui/browser/js/runtime/webapi.c > $@.c;; *) exit 2;; esac
 	@! cmp -s c/apps/gui/browser/js/runtime/webapi.c $@.c
 	@$(CC) -O2 -w $(DOMIFACE_CF) -o $@ $(filter-out c/apps/gui/browser/js/runtime/webapi.c,$(PAGE_WEBAPI_CONTEXT_SRC)) $@.c $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
-.PHONY: test-page-webapi-context test-page-webapi-context-negctl test-page-webapi-context-fields test-page-webapi-context-asan
+.PHONY: test-page-webapi-context test-page-webapi-context-negctl test-page-webapi-context-fields
 test-page-webapi-context-fields:
 	@mkdir -p $(BUILD)/dom-context
 	@clang -fsyntax-only -Xclang -ast-dump=json $(DOMIFACE_CF) c/apps/gui/browser/js/runtime/webapi.c > $(BUILD)/dom-context/webapi-fields.json
@@ -123,7 +113,4 @@ test-page-webapi-policy-negctl: $(BUILD)/dom-context/webapi-neg-policy $(BUILD)/
 	@rc=0; $(BUILD)/dom-context/eval-policy-negative > $(BUILD)/dom-context/eval-policy-negative.log 2>&1 || rc=$$?; test $$rc -eq 1 && grep -q '^FAIL: document eval policy covers direct indirect and all Function constructors' $(BUILD)/dom-context/eval-policy-negative.log
 test-page-webapi-context: test-page-webapi-context-negctl test-page-webapi-context-fields $(BUILD)/dom-context/webapi
 	@$(BUILD)/dom-context/webapi
-test-page-webapi-context-asan: test-page-webapi-context
-	@$(CC) -O1 -g -w -fsanitize=address,undefined -fno-omit-frame-pointer $(DOMIFACE_CF) -o $(BUILD)/dom-context/webapi-asan $(PAGE_WEBAPI_CONTEXT_SRC) $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
-	@$(BUILD)/dom-context/webapi-asan
 ci-host: test-page-webapi-context

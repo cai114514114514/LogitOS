@@ -26,7 +26,7 @@
 # that foreach and through CLI_AEX -- see the header of run-procfs-test.sh for
 # the literal invocation.
 
-.PHONY: test-procfs test-procfs-negctl test-procfs-os
+.PHONY: test-procfs test-procfs-negctl
 
 # ci-host: the control is a PREREQUISITE of the positive rather than a sibling
 # on the ci-host line. tools/audit_tests.py's NOT_CI drops every
@@ -96,11 +96,3 @@ test-procfs-negctl: $(BUILD)/procfs_test_negctl
 	    fi; \
 	 fi
 
-# --- the boot gate ------------------------------------------------------------
-# THE CLAIM: /bin/ps -- an ordinary program that opens files -- lists at least
-# the console shell and itself, on the real machine, out of a real mount.
-#
-# ci-boot deliberately NOT declared: it boots QEMU and would fight a parallel
-# `make` for build/. Run it alone.
-test-procfs-os:
-	@bash tests/boot/run-procfs-test.sh

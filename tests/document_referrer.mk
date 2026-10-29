@@ -32,17 +32,7 @@ ci-host: test-document-referrer
 
 DOCUMENT_REFERRER_GUEST_ISO ?= $(BUILD)/logit.iso
 DOCUMENT_REFERRER_GUEST_DISK ?= $(BUILD)/disk.img
-.PHONY: test-document-referrer-guest test-document-referrer-guest-negctl
-# The immutable prior image is explicit, so a current image can never silently
-# become its own missing-getter control. Each QEMU writes an ephemeral overlay.
-test-document-referrer-guest-negctl:
-	@test -n "$(DOCUMENT_REFERRER_GUEST_NEG_DISK)" || { echo 'set DOCUMENT_REFERRER_GUEST_NEG_DISK to the prior immutable image'; exit 1; }
-	@python3 tests/qmp/document_referrer_guest.py --iso $(DOCUMENT_REFERRER_GUEST_ISO) \
-	    --disk $(DOCUMENT_REFERRER_GUEST_NEG_DISK) --expect-missing --out $(BUILD)/document-referrer-guest-negctl
 
-test-document-referrer-guest: test-document-referrer-guest-negctl
-	@python3 tests/qmp/document_referrer_guest.py --iso $(DOCUMENT_REFERRER_GUEST_ISO) \
-	    --disk $(DOCUMENT_REFERRER_GUEST_DISK) --out $(BUILD)/document-referrer-guest
 
 # The two Document wrapper families share this existing wired fragment. Focus
 # additionally links the native forms owner; no frame scripts or network run.

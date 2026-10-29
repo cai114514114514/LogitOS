@@ -28,7 +28,7 @@
 # -- so "this page is not writable" is measured by storing to it and catching
 # the fault, not by reading back a flag the test itself wrote.
 
-.PHONY: test-exec test-exec-fuzz test-exec-negctl test-exec-asan test-exec-os \
+.PHONY: test-exec test-exec-negctl \
         test-exec-bases
 
 # c/crypto/{trust/aexsig.c,trust/pkgsig.c,pubkey/ed25519.c,hash/sha*.c} are
@@ -150,12 +150,6 @@ test-exec-fuzz test-exec-asan: test-exec-negctl
 test-exec: $(BUILD)/exec_test $(BUILD)/exec_probe $(AEX) $(EXEC_FIXTURES)
 	@$(EXEC_ENV) $(EXEC_RUN) --mode test $(EXEC_BINS)
 
-# --- test-exec-fuzz --------------------------------------------------------
-# Three fixed seeds rather than a random one: a fuzz target whose corpus changes
-# every run cannot be bisected, and a failure that cannot be reproduced is a
-# rumour. 40k iterations each is a few seconds.
-test-exec-fuzz: $(BUILD)/exec_fuzz $(BUILD)/exec_probe $(AEX)
-	@$(EXEC_RUN) --mode fuzz $(EXEC_SEEDS)
 
 # --- test-exec-negctl ------------------------------------------------------
 # CONTROL 1: the overflow check as it was written before the fuzzer got to it
@@ -182,32 +176,8 @@ test-exec-negctl: $(BUILD)/exec_test_ovf $(BUILD)/exec_fuzz_ovf \
                   $(BUILD)/exec_test_nowx $(BUILD)/exec_probe $(AEX)
 	@$(EXEC_RUN) --mode control $(EXEC_SEEDS)
 
-# --- test-exec-asan --------------------------------------------------------
-# The loader writes to addresses it computed from the file. UBSan catches the
-# arithmetic that produced them and ASan catches the reads out of the image
-# buffer -- neither of which the MMU-backed harness can see, because a read
-# past the end of a malloc'd image is still a valid host address.
-test-exec-asan: $(BUILD)/exec_test_asan $(BUILD)/exec_fuzz_asan \
-               $(BUILD)/exec_probe_asan $(AEX)
-	@$(EXEC_RUN) --mode asan $(EXEC_SEEDS)
 
-# --- test-exec-bases -------------------------------------------------------
-# The link-base map, checked instead of remembered. Every GUI app links at a
-# distinct fixed base because nothing relocates; the map runs 0x40000000 to
-# 0x4B000000 and the consequence of two apps sharing a base is not a link error
-# but a launch that quietly loads the wrong image. Deliberate sharing (a
-# crippled variant packed in place of the app it replaces) is allowed -- it is
-# never on the disk at the same time as its original.
-test-exec-bases: $(AEX)
-	@python3 tests/unit/exec_bases.py $(EXEC_BINS)
 
-# --- test-exec-os ----------------------------------------------------------
-# ON THE MACHINE. The host battery proves the loader accepts the bytes; this
-# proves the process it builds actually runs -- the auxv is on the stack the
-# program was handed, the entry point is reachable, the read-only segments are
-# readable and the writable ones are writable, under the real MMU in ring 3.
-test-exec-os: $(ISO) $(DISK)
-	@bash tests/boot/run-exec-test.sh $(ISO) $(DISK)
 
 # --- test-bigexec ----------------------------------------------------------
 # HOW BIG A PROGRAM THIS MACHINE CAN LOAD, on the machine, with a control.

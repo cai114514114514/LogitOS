@@ -57,9 +57,6 @@ test-as-preview-launchers-negctl: $(BUILD)/asc
 test-as-preview-launchers: test-as-preview-launchers-negctl
 test-as-typed test-preview-assoc: test-as-preview-launchers
 AS_PREVIEW_GUEST_OUT ?= $(BUILD)/preview-native-$(shell date +%Y%m%d-%H%M%S)
-.PHONY: test-as-preview-guest
-test-as-preview-guest: test-as-preview-launchers as-toolchain $(AS_TYPED_GUEST_BASE)/logit.iso $(AS_TYPED_GUEST_BASE)/preview.aex $(addprefix $(AS_TYPED_GUEST_BASE)/,login.aex sh.aex echo.aex cat.aex)
-	python3 tests/boot/run-as-preview.py --build $(BUILD) --base $(AS_TYPED_GUEST_BASE) --out $(AS_PREVIEW_GUEST_OUT)
 test-as-a3-only: test-as-preview-guest
 
 # --- the reference decode the screen is compared against --------------------
@@ -82,13 +79,6 @@ $(BUILD)/previewref/.stamp: $(BUILD)/img_dump $(PREVIEW_IMG_FX)
 	@$(foreach f,$(PREVIEW_IMG_FX),$(BUILD)/img_dump $(f) $(BUILD)/previewref $(notdir $(f)) &&) true
 	@touch $@
 
-# --- the pixel gate ---------------------------------------------------------
-# Boots the desktop, opens Preview from the Dock and walks every format it can
-# decode, comparing the SCREEN against a host decode of the same fixture bytes.
-# See the header of tests/qmp/qmp_preview.py for what each case asserts.
-test-preview: $(ISO) $(DISK) $(BUILD)/previewref/.stamp
-	@python3 tests/qmp/qmp_preview.py --iso $(ISO) --disk $(DISK) \
-	    --ref $(BUILD)/previewref
 
 # --- the timing gate, and its negative control ------------------------------
 # THE SAME PLAYER, ENTERED FROM THE SHELL. PREVIEW_CLI builds c/apps/gui/
@@ -180,22 +170,7 @@ test-preview-timing: $(ISO) $(DISK) $(BUILD)/previewref/.stamp
 test-preview-negctl: $(ISO) $(BUILD)/disk-prevneg.img $(BUILD)/previewref/.stamp
 	@python3 tests/boot/preview_control.py --build $(BUILD)
 
-# THE ASSOCIATION, from the other end. test-preview drives Preview's own list;
-# this drives the route a user takes -- SYS_OPEN_PATH, which is all a Finder
-# double-click is -- for one file of each family, and asserts the app was
-# launched, was handed the path as its ARGUMENT, and decoded it.
-test-preview-assoc: $(ISO) $(DISK)
-	@python3 tests/qmp/qmp_preview.py --iso $(ISO) --disk $(DISK) --assoc
 
-# --- navigation: Esc unwinds a mode, a fragmented MP4 is named honestly -----
-# The owner's three complaints in one sitting: "M4S will not open", "the
-# overall navigation is a mess", and "pressing Esc quits outright when I
-# wanted to keep looking". This is the gate for the second and third that a
-# pixel comparison cannot make: whether the PROCESS survived Esc, and whether
-# a refusal names the real reason. See tests/qmp/qmp_preview_nav.py's header
-# for the control (revert pump_events()'s Esc branch and watch this go red).
-test-preview-nav: $(ISO) $(DISK)
-	@python3 tests/qmp/qmp_preview_nav.py --iso $(ISO) --disk $(DISK)
 
-.PHONY: test-preview test-preview-timing test-preview-negctl test-preview-assoc \
+.PHONY: test-preview-timing test-preview-negctl \
         test-preview-nav

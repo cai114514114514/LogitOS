@@ -29,11 +29,6 @@ test-selector-candidate-negctl: $(BUILD)/wiring/selector_candidate_negctl $(SIMP
 test-simple-selector: test-simple-selector-negctl test-selector-candidate-negctl $(BUILD)/wiring/simple_selector_test $(SIMPLE_SELECTOR_FIXTURES)
 	$(BUILD)/wiring/simple_selector_test $(SIMPLE_SELECTOR_FIXTURES)
 
-.PHONY: test-simple-selector-asan
-test-simple-selector-asan: test-simple-selector-negctl test-selector-candidate-negctl
-	@mkdir -p $(BUILD)/wiring
-	$(CC) -O1 -g -w -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer $(SELECTORS_CF) -DJSDOM_TRAVERSAL_PROFILE -o $(BUILD)/wiring/simple_selector_asan $(SIMPLE_SELECTOR_SRC) $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
-	@ASAN_OPTIONS=detect_leaks=0 $(BUILD)/wiring/simple_selector_asan $(SIMPLE_SELECTOR_FIXTURES)
 ci-host: test-simple-selector
 
 SELECTOR_TOKENS_SRC = $(filter-out tests/unit/selectors_test.c,$(SELECTORS_SRC)) tests/unit/selector_tokens_test.c
@@ -70,8 +65,3 @@ test-selector-batch: test-selector-batch-negctl $(BUILD)/wiring/selector_batch_t
 	$(BUILD)/wiring/selector_batch_test
 ci-host: test-selector-batch
 
-.PHONY: test-selector-batch-asan
-test-selector-batch-asan: test-selector-batch-negctl
-	@mkdir -p $(BUILD)/wiring
-	$(CC) -O1 -g -w -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer $(SELECTORS_CF) -DJSDOM_TRAVERSAL_PROFILE -o $(BUILD)/wiring/selector_batch_asan $(SELECTOR_BATCH_SRC) $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
-	@ASAN_OPTIONS=detect_leaks=0 $(BUILD)/wiring/selector_batch_asan

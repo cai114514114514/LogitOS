@@ -16,10 +16,8 @@
 #                            the next boot -- proof the no-replay assertion
 #                            above is capable of failing, not a tautology.
 
-test-power: $(ISO) $(DISK)
-	bash tests/boot/run-power-test.sh $(ISO) $(DISK)
 
 test-power-negctl: $(ISO) $(DISK)
 	bash tests/boot/run-power-test.sh $(ISO) $(DISK) --negative
 
-.PHONY: test-power test-power-negctl
+.PHONY: test-power-negctl

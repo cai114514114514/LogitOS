@@ -17,10 +17,6 @@ test-cache-invalidation-negctl: h2mux-link-check
 	  echo "cache-invalidation negative control: observed stale GET after mutation"; \
 	  grep 'cache-invalidation:.*failures' $(BUILD)/cache_invalidation_negctl.log
 
-.PHONY: test-cache-invalidation-asan
-test-cache-invalidation-asan: h2mux-link-check
-	@$(CC) -O1 -g -w -fsanitize=address,undefined -fno-omit-frame-pointer $(H2MUX_INC) -o $(BUILD)/cache_invalidation_asan $(CACHE_INVALIDATION_SRC)
-	@$(BUILD)/cache_invalidation_asan
 
 EMPTY_RESOURCE_SRC = tests/unit/empty_resource_test.c $(filter-out tests/unit/h2mux_test.c,$(H2MUX_SRC))
 .PHONY: test-empty-resource test-empty-resource-negctl

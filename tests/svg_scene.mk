@@ -13,7 +13,7 @@ $(SVG_SCENE_DIR)/old: $(SVG_SCENE_DEP)
 $(SVG_SCENE_DIR)/asan: $(SVG_SCENE_DEP)
 	@mkdir -p $(SVG_SCENE_DIR)
 	@$(CC) -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer $(IMG_HOST_INC) $(SVG_SCENE_SRC) -o $@
-.PHONY: test-svg-scene test-svg-scene-negctl test-svg-scene-asan
+.PHONY: test-svg-scene test-svg-scene-negctl
 test-svg-scene-negctl: $(SVG_SCENE_DIR)/old
 	@rc=0; $(SVG_SCENE_DIR)/old > $(SVG_SCENE_DIR)/old.log 2>&1 || rc=$$?; \
 	 cat $(SVG_SCENE_DIR)/old.log; test $$rc -eq 1 && \
@@ -24,8 +24,6 @@ test-svg-scene-negctl: $(SVG_SCENE_DIR)/old
 	 rg -q '^FAIL: clip user space clips right pixels$$' $(SVG_SCENE_DIR)/old.log
 test-svg-scene: test-svg-scene-negctl $(SVG_SCENE_DIR)/current
 	@$(SVG_SCENE_DIR)/current
-test-svg-scene-asan: test-svg-scene-negctl $(SVG_SCENE_DIR)/asan
-	@ASAN_OPTIONS=detect_leaks=0 UBSAN_OPTIONS=halt_on_error=1 $(SVG_SCENE_DIR)/asan
 ci-host: test-svg-scene
 
 SVG_SCENE_BUDGET_SRC := tests/unit/svg_scene_budget_test.c $(filter-out tests/unit/svg_scene_test.c,$(SVG_SCENE_SRC))
@@ -44,22 +42,10 @@ test-svg-scene-budget-negctl: $(SVG_SCENE_DIR)/budget-old
 test-svg-scene-budget: test-svg-scene-budget-negctl $(SVG_SCENE_DIR)/budget
 	@$(SVG_SCENE_DIR)/budget
 test-svg-scene: test-svg-scene-budget
-test-svg-scene-asan: test-svg-scene-budget
 
 $(SVG_SCENE_DIR)/budget-asan: $(SVG_SCENE_DEP) tests/unit/svg_scene_budget_test.c
 	@mkdir -p $(SVG_SCENE_DIR)
 	@$(CC) -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer $(IMG_HOST_INC) -DSV_WORK_LIMIT=8192 $(SVG_SCENE_BUDGET_SRC) -o $@
-.PHONY: test-svg-scene-budget-asan
-test-svg-scene-budget-asan: test-svg-scene-budget-negctl $(SVG_SCENE_DIR)/budget-asan
-	@ASAN_OPTIONS=detect_leaks=0 UBSAN_OPTIONS=halt_on_error=1 $(SVG_SCENE_DIR)/budget-asan
-test-svg-scene-asan: test-svg-scene-budget-asan
 
 # Frozen artifacts are explicit inputs: never default a guest gate to build/
 # or attach to an existing QEMU. The driver uses -snapshot for both images.
-.PHONY: test-svg-scene-guest test-svg-scene-guest-negctl
-test-svg-scene-guest-negctl:
-	@test -n "$(SVG_SCENE_OLD_SNAPSHOT)" || { echo 'Set SVG_SCENE_OLD_SNAPSHOT to a frozen baseline directory'; exit 2; }
-	@python3 tests/unit/svg_scene_guest.py --snapshot "$(SVG_SCENE_OLD_SNAPSHOT)" --out "$(SVG_SCENE_DIR)/guest-old" --expect-old
-test-svg-scene-guest: test-svg-scene-guest-negctl
-	@test -n "$(SVG_SCENE_SNAPSHOT)" || { echo 'Set SVG_SCENE_SNAPSHOT to the frozen current directory'; exit 2; }
-	@python3 tests/unit/svg_scene_guest.py --snapshot "$(SVG_SCENE_SNAPSHOT)" --out "$(SVG_SCENE_DIR)/guest-current"

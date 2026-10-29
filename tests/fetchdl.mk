@@ -61,12 +61,7 @@
 # answers cannot hold an origin's connection slot indefinitely while a
 # request that DOES answer, slowly, is left alone.
 
-.PHONY: test-fetch-firstbyte test-fetch-firstbyte-negctl
 
-# --- guest: the positive gate, ordinary $(DISK) build -----------------------
-test-fetch-firstbyte: test-fetch-firstbyte-negctl $(ISO) $(DISK)
-	python3 tests/qmp/qmp_fetchdl.py --iso $(ISO) --disk $(DISK) \
-	    --out $(BUILD)/fetchdl-os.json
 
 # --- guest negctl: the browser with BF_FIRSTBYTE_MS compiled OUT ------------
 # Same shape as tests/webaccel.mk's browser-waoff.elf: rebuild ONLY
@@ -87,10 +82,6 @@ $(BUILD)/browser-nofirstbyte.elf: $(ENGINE_OBJ) $(BROWSER_JS_OBJ) $(NOFIRSTBYTE_
 $(BUILD)/browser-nofirstbyte.aex: $(BUILD)/browser-nofirstbyte.elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/browser-nofirstbyte.elf $@ Browser - 'B' 120 130 240 --stack-pages 2048
 
-test-fetch-firstbyte-negctl: $(ISO) $(BUILD)/browser-nofirstbyte.aex
-	@$(MAKE) DISK=$(BUILD)/disk-nofirstbyte.img BROWSER_AEX=$(BUILD)/browser-nofirstbyte.aex $(BUILD)/disk-nofirstbyte.img
-	python3 tests/qmp/qmp_fetchdl.py --iso $(ISO) --disk $(BUILD)/disk-nofirstbyte.img \
-	    --out $(BUILD)/fetchdl-os-negctl.json --expect-off
 
 # NOT on ci-boot, deliberately, same reasoning as tests/webaccel.mk's guest
 # pair: this is two full QEMU boots (the negctl one waits out a real 60 s

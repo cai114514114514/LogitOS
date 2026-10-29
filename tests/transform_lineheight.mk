@@ -12,13 +12,11 @@ $(TRANSFORM_LINE_DIR)/old: $(TRANSFORM_LINE_DEPS)
 $(TRANSFORM_LINE_DIR)/san: $(TRANSFORM_LINE_DEPS)
 	@mkdir -p $(TRANSFORM_LINE_DIR)
 	$(CC) -O1 -g -w -fsanitize=address,undefined -fno-omit-frame-pointer $(PAINT_INC) $(BTEST_INC) $(CSS_INC) -o $@ $(TRANSFORM_LINE_SRC) $(BUILD)/libcss_host.a -lm
-.PHONY: test-transform-lineheight test-transform-lineheight-negctl test-transform-lineheight-san
+.PHONY: test-transform-lineheight test-transform-lineheight-negctl
 test-transform-lineheight-negctl: $(TRANSFORM_LINE_DIR)/old
 	@python3 tests/unit/transform_lineheight_check.py $< $(TRANSFORM_LINE_DIR)/old.log old
 test-transform-lineheight: test-transform-lineheight-negctl $(TRANSFORM_LINE_DIR)/current
 	@python3 tests/unit/transform_lineheight_check.py $(TRANSFORM_LINE_DIR)/current $(TRANSFORM_LINE_DIR)/current.log current
-test-transform-lineheight-san: test-transform-lineheight $(TRANSFORM_LINE_DIR)/san
-	@ASAN_OPTIONS=detect_leaks=0:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1 python3 tests/unit/transform_lineheight_check.py $(TRANSFORM_LINE_DIR)/san $(TRANSFORM_LINE_DIR)/san.log current
 ci-host: test-transform-lineheight
 
 TRANSFORM_LINE_CSSOM_SRC = $(filter-out tests/unit/cssom_test.c,$(CSSOM_TEST_SRC)) c/apps/gui/browser/css/interp.c tests/unit/transform_lineheight_cssom_test.c

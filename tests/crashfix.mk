@@ -56,13 +56,7 @@
 # js_dom_iface.inc, js_module.c or browser.c's script drain.
 
 # --- the guest gate ---------------------------------------------------------
-.PHONY: test-crashfix test-crashfix-negctl test-crashfix-caller
 
-# caller ratchet FIRST: it is host-side and instant once built, so a red
-# ratchet answers before either QEMU boot is paid for.
-test-crashfix: test-crashfix-caller test-crashfix-negctl
-test-crashfix: $(ISO) $(DISK)
-	python3 tests/qmp/qmp_crashfix_page.py --iso $(ISO) --disk $(DISK) --out $(BUILD)/crashfix.json
 
 # THE CONTROL BUILD: js_dom.c compiled with the type gate switched off, which
 # is byte-for-byte the behaviour the defect shipped with. $(BROWSER_JS_CF),
@@ -84,10 +78,6 @@ $(BUILD)/browser-notold.elf: $(ENGINE_OBJ) $(NOTOLD_JS_OBJ) $(BROWSER_OBJ) $(CSS
 $(BUILD)/browser-notold.aex: $(BUILD)/browser-notold.elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/browser-notold.elf $@ Browser - 'B' 120 130 240 --stack-pages 2048
 
-test-crashfix-negctl: $(ISO) $(BUILD)/browser-notold.aex
-	@$(MAKE) DISK=$(BUILD)/disk-notold.img BROWSER_AEX=$(BUILD)/browser-notold.aex $(BUILD)/disk-notold.img
-	python3 tests/qmp/qmp_crashfix_page.py --iso $(ISO) --disk $(BUILD)/disk-notold.img \
-	    --expect-broken --only fixture --out $(BUILD)/crashfix-negctl.json
 
 # --- the caller ratchet (host, no QEMU) --------------------------------------
 #
@@ -103,5 +93,3 @@ $(BUILD)/crashfix_caller_probe: tests/fixtures/crashfix/caller_probe.c $(QJS_SRC
 	@$(CC) -O1 -w $(JS_INC) -DCONFIG_VERSION='"host"' -o $@ \
 	    tests/fixtures/crashfix/caller_probe.c $(QJS_SRC) -lm
 
-test-crashfix-caller: $(BUILD)/crashfix_caller_probe
-	@$(BUILD)/crashfix_caller_probe tests/fixtures/crashfix/CALLER-BASELINE

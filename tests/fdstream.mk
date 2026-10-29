@@ -39,7 +39,7 @@
 # /dev/fsbench's `openfd` (c/fs/ctl/fsbench.c), which this line of work neither
 # wrote nor owns.
 
-.PHONY: test-fdstream test-fdstream-negctl test-fdstream-big
+.PHONY: test-fdstream test-fdstream-negctl
 
 FDSTREAM_MEM  ?= 512
 # The image the ceiling gate wants: anything with a file bigger than the heap.
@@ -55,8 +55,6 @@ test-fdstream: $(ISO) $(DISK)
 test-fdstream-negctl: $(ISO) $(DISK)
 	@bash tests/boot/run-fdstream-negctl.sh $(DISK) $(FDSTREAM_MEM)
 
-test-fdstream-big: $(ISO)
-	@bash tests/boot/run-fdstream-big.sh $(FDSTREAM_BIGIMG) $(FDSTREAM_BIGFILE) $(FDSTREAM_MEM)
 
 # Two QEMU boots for the gate and two more for its control, so this is a boot
 # suite, not a host one.

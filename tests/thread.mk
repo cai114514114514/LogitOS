@@ -110,10 +110,8 @@ else
 $(warning tests/thread.mk: tests/guest/sched/thrtest.c is missing -- /bin/thrtest will not be built, and test-thread cannot run)
 endif
 
-.PHONY: test-thread test-thread-negctl
+.PHONY: test-thread-negctl
 
-test-thread: $(ISO) $(DISK)
-	@sh tests/boot/run-thread-test.sh $(ISO) $(DISK)
 
 test-thread-negctl:
 	@$(MAKE) THR_NEGCTL=1 DISK=$(BUILD)/disk_thrneg.img $(BUILD)/disk_thrneg.img

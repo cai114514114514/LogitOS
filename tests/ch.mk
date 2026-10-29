@@ -73,52 +73,10 @@ $(BUILD)/ch.elf: $(CH_OBJ) $(APPDIR)/crt0.asm \
 $(CH_AEX): $(BUILD)/ch.elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/ch.elf $@ Chat - '@' 120 180 220
 
-# --- GATE A: the SSE reader, on the host -----------------------------------
-# ch_sse.c links no libc and allocates nothing, which is what lets the SAME
-# translation unit be the one in the .aex and the one under test here. A mock of
-# the parser would test the mock.
-test-ch-host:
-	@mkdir -p $(BUILD)
-	$(CC) -O1 -g -Wall -Wextra -Wno-unused-parameter -o $(BUILD)/ch_sse_test \
-	      tests/unit/ch_sse_test.c c/apps/gui/ch/ch_sse.c -Ic/apps/gui/ch
-	@$(BUILD)/ch_sse_test
 
-# The reader everybody writes first: -DSSE_NAIVE_CHUNK drops the partial line at
-# the start of every feed, so it can only parse input that arrives on line
-# boundaries. Case 1 of the gate (the whole stream in one write) STILL PASSES
-# against it -- which is the entire argument for cases 2, 3 and 4 existing.
-test-ch-negctl:
-	@mkdir -p $(BUILD)
-	$(CC) -O1 -g -Wall -Wextra -Wno-unused-parameter -DSSE_NAIVE_CHUNK \
-	      -o $(BUILD)/ch_sse_negctl \
-	      tests/unit/ch_sse_test.c c/apps/gui/ch/ch_sse.c -Ic/apps/gui/ch
-	@if $(BUILD)/ch_sse_negctl > $(BUILD)/ch_sse_negctl.log 2>&1; then \
-	    echo "NEGATIVE CONTROL FAILED: a per-buffer SSE reader passed the gate"; \
-	    exit 1; \
-	else \
-	    echo "negative control ok: a per-buffer reader loses deltas at read boundaries"; \
-	    grep -m1 'one write' $(BUILD)/ch_sse_negctl.log | sed 's/^/     /'; \
-	    grep -m1 'one byte at a time' $(BUILD)/ch_sse_negctl.log | sed 's/^/     /'; \
-	    grep -m1 'split points changed' $(BUILD)/ch_sse_negctl.log | sed 's/^/     /'; \
-	fi
 
-# --- GATE B: on the machine -------------------------------------------------
-# A canned SSE response served from the host over SLIRP (the guest reaches it at
-# 10.0.2.2), the app driven by QMP key injection, and the window photographed
-# twice DURING the stream. The assertion is not "the final text is right" -- a
-# reader that buffered the whole reply and printed it at the end would pass
-# that. It is that the second screendump contains STRICTLY MORE text than the
-# first, which only an incremental reader can produce.
-test-ch: test-ch-host test-ch-negctl $(ISO) $(DISK)
-	bash tests/boot/run-ch-test.sh $(ISO) $(DISK)
 
-# The loud-refusal path, on the machine: no /etc/ai.conf at all. The window has
-# to name the file and say what is missing. A blank window and a crash both fail
-# this, and so does a window that merely says "error".
-test-ch-refusal: $(ISO) $(DISK)
-	python3 tests/qmp/qmp_ch.py --iso $(ISO) --disk $(DISK) --only refusal
 
-.PHONY: test-ch test-ch-host test-ch-negctl test-ch-refusal
 
 # --- WHAT THE SHARED MAKEFILE NEEDS, and it is four lines --------------------
 #

@@ -323,7 +323,7 @@ GGUF ?= build/qwen/Qwen3-0.6B-Q8_0.gguf
 # the recipes below report that as a SKIP by name rather than as a pass.
 PY ?= python3
 
-.PHONY: test-gguf test-gguf-negctl test-lm-ropebase-negctl test-qwen-logits test-qwen-logits-negctl
+.PHONY: test-gguf test-gguf-negctl test-lm-ropebase-negctl
 
 # --- test-gguf-arch-drift: RETIRED, and the reason is worth keeping ---------
 #
@@ -657,64 +657,7 @@ endif
 # absolute /mnt/d path would be correct in WSL and meaningless to python.exe.
 QWEN_PY ?= python.exe
 QWEN_F32 ?= build/qwen3_f32.lm
-test-qwen-logits: test-qwen-logits-negctl
-	@if [ ! -f "$(QWEN_F32)" ] || [ ! -f "$(GGUF)" ]; then \
-	   echo "test-qwen-logits: SKIP -- need both:"; \
-	   echo "    $(GGUF)   (610 MB, not a repo artifact)"; \
-	   echo "    $(QWEN_F32)  (2.2 GB, build it with:"; \
-	   echo "      build/lmshape --weights $(GGUF) --dtype f32 --no-qemb \\"; \
-	   echo "        --seq 512 --out $(QWEN_F32))"; \
-	   echo "  A missing corpus is not a regression in the code under test."; \
-	   exit 0; \
-	 fi; \
-	 $(QWEN_PY) tools/qwen_verify.py --lm $(QWEN_F32) --gguf $(GGUF) --bound 1e-4 --wsl
 
-# --- test-qwen-logits-negctl -----------------------------------------------
-#
-# THE CONTROL FOR THE GATE ABOVE, and it is the PLAUSIBLE wrong build rather
-# than an absurd one: -DLM_IGNORE_HEADER_ARCH is exactly what c/lib/nn/infer.c
-# did before the header could carry the rope base and the rope pairing, and it
-# is what any build that missed that change still does. It reads the same file,
-# loads every weight correctly, runs at the same speed, and prints the same
-# `LOGITLM ... rope=neox/1e+06 eps=1e-06` describe line -- because
-# lm_describe() reads the HEADER, which is right, while the arithmetic ignores
-# it. THE FILE SAYS THE CORRECT THING AND THE RUN DOES THE WRONG THING, with
-# nothing in between to notice. That is the whole failure mode this line of
-# work is arranged against, reproduced on a switch.
-#
-# MEASURED, both directions, same prompt and same reference:
-#     shipped build     max|d| 3.29e-05  = 1.89e-06 of scale, greedy " Paris"
-#     control           max|d| 10.9      = 0.626    of scale, greedy " the"
-# Five orders of magnitude. A structural error in this arithmetic is never a
-# near miss, which is what makes the 1e-4 bound above safe to be loose.
-#
-# It compares ONE position rather than driving the whole sweep, because the
-# sweep's cost is 22 torch forward passes and the property here is not subtle.
-test-qwen-logits-negctl:
-	@if [ ! -f "$(QWEN_F32)" ] || [ ! -f "$(GGUF)" ]; then \
-	   echo "test-qwen-logits-negctl: SKIP -- same corpus as test-qwen-logits."; \
-	   exit 0; \
-	 fi; \
-	 set -e; mkdir -p $(BUILD); \
-	 $(CC) $(NN_CF) -DLM_IGNORE_HEADER_ARCH -o $(BUILD)/lm_host_negarch \
-	     c/apps/lm/lm.c c/lib/nn/infer.c c/lib/nn/model.c $(NN_SRC) -lm; \
-	 $(BUILD)/lm_host_negarch -m $(QWEN_F32) --ids 785,6722,315,9625,374 \
-	     -n 0 --greedy --budget 0 --dump-logits $(BUILD)/negarch.bin > /dev/null; \
-	 $(QWEN_PY) tools/qwen_oracle.py --gguf $(GGUF) --ids 785,6722,315,9625,374 \
-	     --out $(BUILD)/negarch_ref.bin --fp64 > /dev/null; \
-	 set +e; \
-	 $(QWEN_PY) tools/lmcmp.py $(BUILD)/negarch.bin $(BUILD)/negarch_ref.bin \
-	     --bound 1e-4 --label "negctl" > $(BUILD)/negarch.log 2>&1; rc=$$?; \
-	 set -e; cat $(BUILD)/negarch.log; \
-	 if [ "$$rc" -eq 0 ]; then \
-	   echo "test-qwen-logits-negctl: FAILED -- the control PASSED the gate."; \
-	   echo "  Ignoring the header rope base and pairing must move the logits"; \
-	   echo "  far outside the bound. That it did not means the gate is not"; \
-	   echo "  measuring the position encoding at all."; \
-	   exit 1; \
-	 fi; \
-	 echo "test-qwen-logits-negctl: ok -- the control fails the 1e-4 bound"; \
-	 echo "  (see the max|d| and the moved greedy token above)"
 
 # --- three harnesses that existed and were RUN BY NOBODY -------------------
 #

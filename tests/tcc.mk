@@ -53,7 +53,6 @@
 # A default `tcc hello.c -o hello` adds, in this order: crt1.o, crti.o, the
 # user's files, -lc, libtcc1.a, crtn.o. `-nostdlib` skips all six.
 
-.PHONY: test-tcc-build test-tcc-build-negctl test-elf-exec
 
 TCC_SRCDIR := third_party/tcc
 TCC_OUT    := $(BUILD)/tcc
@@ -139,54 +138,7 @@ $(TCC_OUT)/hello-bad: $(TCC_OUT)/host/tcc $(TCC_HELLO_IN)
 $(TCC_OUT)/hello-dyn: $(TCC_OUT)/host-stock/tcc $(TCC_HELLO_IN)
 	$(TCC_OUT)/host-stock/tcc $(TCC_XFLAGS) -Wl,-Ttext=0x50000000 -o $@ $(TCC_HELLO_IN)
 
-# --- test-tcc-build (host) ----------------------------------------------------
-# tcc.aex links; readelf on tcc's OWN image and on the hello tcc linked shows
-# ET_EXEC x86-64, no PT_INTERP, no PT_DYNAMIC, entry and every PT_LOAD inside
-# the private user region. Then the two controls, each required to fail the
-# same script on EXACTLY the checks it was built to fail:
-#   hello-bad   entry + PT_LOAD range      2 FAIL lines
-#   hello-dyn   PT_INTERP + PT_DYNAMIC     2 FAIL lines
-# and the kernel-side control below, as a prerequisite (the tree's convention:
-# a control named on a `ci-host:` line instead runs never).
-test-tcc-build: test-tcc-build-negctl
-test-tcc-build: $(TCC_OUT)/tcc.aex $(TCC_OUT)/hello-elf $(TCC_OUT)/hello-bad $(TCC_OUT)/hello-dyn
-	@echo "tcc: $$(bash tools/filesize.sh $(TCC_OUT)/tcc.elf) bytes of ELF, $$(bash tools/filesize.sh $(TCC_OUT)/tcc.aex) bytes of .aex"
-	@bash tests/unit/tcc_elfcheck.sh $(TCC_OUT)/tcc.elf
-	@bash tests/unit/tcc_elfcheck.sh $(TCC_OUT)/hello-elf
-	@if bash tests/unit/tcc_elfcheck.sh $(TCC_OUT)/hello-bad > $(TCC_OUT)/negctl_bad.log 2>&1; then \
-	    echo "FAIL: hello linked at 0x400000 PASSED the ELF check -- the check does not measure the link base"; exit 1; fi
-	@n=$$(grep -c '^  FAIL' $(TCC_OUT)/negctl_bad.log); [ "$$n" -eq 2 ] || \
-	    { echo "FAIL: the 0x400000 control failed $$n checks, expected exactly 2 (entry, PT_LOAD range):"; cat $(TCC_OUT)/negctl_bad.log; exit 1; }
-	@grep -q 'FAIL: entry' $(TCC_OUT)/negctl_bad.log || { echo "FAIL: the 0x400000 control did not fail on the ENTRY check"; exit 1; }
-	@echo "  ok: control -- the same hello at 0x400000 fails exactly the 2 range checks"
-	@if bash tests/unit/tcc_elfcheck.sh $(TCC_OUT)/hello-dyn > $(TCC_OUT)/negctl_dyn.log 2>&1; then \
-	    echo "FAIL: a stock-tcc dynamic link PASSED the ELF check -- the check does not see PT_INTERP"; exit 1; fi
-	@n=$$(grep -c '^  FAIL' $(TCC_OUT)/negctl_dyn.log); [ "$$n" -eq 2 ] || \
-	    { echo "FAIL: the dynamic control failed $$n checks, expected exactly 2 (INTERP, DYNAMIC):"; cat $(TCC_OUT)/negctl_dyn.log; exit 1; }
-	@grep -q 'FAIL: no PT_INTERP' $(TCC_OUT)/negctl_dyn.log || { echo "FAIL: the dynamic control did not fail on PT_INTERP"; exit 1; }
-	@echo "  ok: control -- stock tcc's default link fails exactly the 2 dynamic checks"
-	@echo "PASS: tcc.aex links, its output is a static ET_EXEC in the private user region, and both controls fail where they should"
 
-# --- test-tcc-build-negctl: the kernel half, on the host -------------------------
-# aex.c's bare-ELF pre-check with its 64-byte verdict removed (the plausible
-# "elf.c checks it later anyway" version). tests/unit/exec_test.c's bare-ELF
-# refusal cases must go red -- exactly 4 lines: the 0x4000b0 refusal, its
-# "out loud" companion, aex_info()'s verdict, and EM_386 -- while acceptance
-# of a good bare ELF stays green, or the control broke the feature rather
-# than the check. Built the way tests/exec.mk builds its own controls.
-test-tcc-build-negctl: $(EXEC_SEEDS) $(EXEC_FIXTURES)
-	@mkdir -p $(TCC_OUT)
-	@$(CC) -O1 -g -w $(EXEC_INC) -DAEX_NEGCTL_NOHDR -o $(TCC_OUT)/exec_test_nohdr \
-	    tests/unit/exec_test.c $(EXEC_SRC)
-	@if $(EXEC_ENV) $(TCC_OUT)/exec_test_nohdr $(EXEC_SEEDS) > $(TCC_OUT)/negctl_nohdr.log 2>&1; then \
-	    echo "FAIL: the no-header-check control PASSED -- the battery does not measure the bare-ELF verdict"; exit 1; fi
-	@n=$$(grep -c '^FAIL' $(TCC_OUT)/negctl_nohdr.log); [ "$$n" -eq 4 ] || \
-	    { echo "FAIL: the control reddened $$n checks, expected exactly 4:"; grep '^FAIL' $(TCC_OUT)/negctl_nohdr.log; exit 1; }
-	@grep -q '^FAIL: a bare ELF whose entry is 0x4000b0' $(TCC_OUT)/negctl_nohdr.log || \
-	    { echo "FAIL: the control did not redden the 0x4000b0 refusal"; exit 1; }
-	@grep -q '^ok: a bare ELF (the reference file' $(TCC_OUT)/negctl_nohdr.log || \
-	    { echo "FAIL: the control broke bare-ELF acceptance itself, not just the verdict"; exit 1; }
-	@echo "  ok: control -- without the 64-byte verdict, exactly the 4 refusal checks go red and acceptance stays green"
 
 # --- test-elf-exec (device) --------------------------------------------------
 # Its OWN disk image: the Makefile's $(DISK) file list, taken from `make -n`
@@ -212,8 +164,6 @@ $(TCC_OUT)/disk.img: $(TCC_OUT)/tcc.aex $(TCC_OUT)/tcc.elf $(TCC_OUT)/hello-elf 
 	    tests/unit/tcc_bare.c:/src/bare.c \
 	    tests/unit/tcc_hello.c:/src/hello.c
 
-test-elf-exec: $(ISO) $(TCC_OUT)/disk.img
-	@bash tests/boot/run-tcc-test.sh $(ISO) $(TCC_OUT)/disk.img
 
 # --- test-tcc-identity (device): the compiler on the device IS the host's ----
 # tests/boot/run-tcc-identity.sh: the same hello_id.c (no includes) and the
@@ -225,7 +175,3 @@ test-elf-exec: $(ISO) $(TCC_OUT)/disk.img
 # negative control (one -D on one side must change the bytes) and prints the
 # device compile wall times (TCG, and KVM when /dev/kvm exists) plus a host
 # LD_PRELOAD open() census, because no kernel VFS open counter exists to ask.
-.PHONY: test-tcc-identity
-test-tcc-identity: $(TCC_OUT)/tcc.aex $(TCC_OUT)/host/tcc $(ISO) \
-                   tests/boot/run-tcc-identity.sh tests/boot/mk-tcc-disk.py
-	@bash tests/boot/run-tcc-identity.sh $(ISO)

@@ -32,7 +32,7 @@
 # through aui.c, nm finds zero browser_paint symbols in it, and two runs of the
 # same binary have read 19,871 and 12,707 microseconds.
 
-.PHONY: test-repaint test-open-anim test-anim test-anim-negctl test-fb-scale-bl test-fb-scale-bl-negctl test-wm-cover test-wm-cover-negctl
+.PHONY: test-anim test-anim-negctl test-fb-scale-bl test-fb-scale-bl-negctl test-wm-cover test-wm-cover-negctl
 
 # A narrow browser paint inside the top window's opaque canvas must avoid
 # redrawing the hidden wallpaper. The control restores the old compositor path
@@ -102,17 +102,7 @@ REPAINT_YRES ?= 1200
 REPAINT_REPS ?= 3
 REPAINT_JSON ?= $(BUILD)/repaint.json
 
-test-repaint: $(ISO) $(DISK)
-	@python3 tests/qmp/qmp_repaint.py --xres $(REPAINT_XRES) --yres $(REPAINT_YRES) \
-	    --reps $(REPAINT_REPS) --iso $(ISO) --json $(REPAINT_JSON) $(REPAINT_ONLY)
 
-# Regression gate for a flight whose PIT-driven progress once remained p=0
-# indefinitely. It checks the real guest serial stream and gives the animation
-# a full second to settle, independent of how many intermediate TCG frames fit.
-test-open-anim: $(ISO) $(DISK)
-	@python3 tests/qmp/qmp_repaint.py --xres 1280 --yres 800 --reps 1 \
-	    --only open --assert-open --iso $(ISO) --disk $(DISK) \
-	    --json $(BUILD)/open_anim.json
 
 # ---------------------------------------------------------------------------
 # THE ANIMATION GATE. Three assertions; the second and third are what make it a

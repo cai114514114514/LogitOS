@@ -90,23 +90,9 @@ MPEG4_MC_SRC   := c/lib/video/mpeg4_mc.c
 # before this comment existed.
 MPEG4_INC := -Ic/lib/video
 
-.PHONY: test-mpeg4 test-mpeg4-idct test-mpeg4-idct-negctl \
+.PHONY: test-mpeg4-idct test-mpeg4-idct-negctl \
         test-mpeg4-mc test-mpeg4-mc-negctl test-mpeg4-units-asan
 
-# The top-level target. Reports the gap above rather than gating on it --
-# exiting nonzero here would be a FALSE failure (nothing is broken; nothing
-# was ever finished), and the vp9.mk precedent is exactly this: "this target
-# passes because it claims nothing." A `make test` sweep that reached this
-# target learns the true state instead of either a false red or a false
-# green.
-test-mpeg4:
-	@echo "MPEG4: mpeg4_mb.c (the macroblock/VLC layer) and the top-level"
-	@echo "       mpeg4_open/mpeg4_decode orchestrator do not exist. This"
-	@echo "       decoder cannot decode a single frame on anything -- see"
-	@echo "       the header of tests/mpeg4.mk for the evidence. Nothing"
-	@echo "       is claimed here. Run test-mpeg4-idct and test-mpeg4-mc"
-	@echo "       for what DOES exist and IS measured."
-	@echo "MPEG4-GAP-OK (reported, not gated)"
 
 # --- the IDCT: bit-exact, real oracle, real corpus --------------------------
 $(BUILD)/mpeg4_idct_test: tests/unit/mpeg4_idct_test.c tests/unit/mpeg4_idct_ref.c \

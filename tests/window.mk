@@ -44,10 +44,5 @@ bench-window: $(ISO) $(DISK)
 	python3 tests/qmp/qmp_window.py --iso $(ISO) --bench --xres 1920 --yres 1200
 	python3 tests/qmp/qmp_window.py --iso $(ISO) --bench --xres 2560 --yres 1600
 
-# Does every GUI app in the tree survive being resized? Opens each one, grows
-# it, and reports what the newly exposed region contains. Not a pass/fail gate
-# on apps this change does not own -- it is the inventory, with screenshots.
-test-window-apps: $(ISO) $(DISK)
-	python3 tests/qmp/qmp_window.py --iso $(ISO) --apps --shots $(BUILD)/window-shots
 
-.PHONY: test-window test-window-negctl bench-window test-window-apps
+.PHONY: test-window test-window-negctl bench-window

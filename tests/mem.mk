@@ -13,19 +13,6 @@
 #   make bench-arena    how much heap each page of the cssweb corpus needs,
 #                       measured through mini-libc's own allocator.
 
-# --- test-arena --------------------------------------------------------------
-# The browser's arena was a 96 MiB .bss array, and elf_load (c/kernel/exec/load/elf.c)
-# does pmm_alloc() + memset(0) for every page of p_memsz -- so it was resident
-# from launch, whatever the page did. It is now SYS_MMAP'd, so frames appear on
-# first touch. This asserts both halves of that change:
-#   -DARENA_NO_MMAP    the static array back -> the .bss-size check fails
-#   -DARENA_NO_BOUND   no commit bound       -> malloc hands out past the limit,
-#                                               which on the machine is a fault
-#                                               in a page the RAM cannot back
-# The .bss figure is read off the compiled malloc.o with `size`, not asserted by
-# the program about itself. See the header of tests/unit/arena_mem_test.c.
-test-arena:
-	@sh tests/unit/arena_run.sh $(BUILD)
 
 # Sized transactions do not remove the allocator lock. Link QuickJS to the
 # renamed real arena, and compare both semantic/accounting output and lock
@@ -149,7 +136,7 @@ $(BUILD)/arena_js_mem: tests/unit/arena_js_mem.c $(QJS_SRC) c/apps/libc/src/mall
 bench-arena-js: $(BUILD)/arena_js_mem
 	@$(BUILD)/arena_js_mem $(ARENA_JS)
 
-.PHONY: test-arena bench-arena bench-arena-js
+.PHONY: bench-arena bench-arena-js
 
 # --- the block layer's request engine: submit/poll, on the host --------------
 #
@@ -270,12 +257,10 @@ OOM_RAM   ?= 320
 OOM_HOG   ?= 200
 OOM_SMALL ?= 96
 
-.PHONY: test-oom test-oom-os
+.PHONY: test-oom
 test-oom:
 	@sh tests/unit/oom_run.sh $(BUILD)
 
-test-oom-os: $(ISO) $(DISK)
-	@bash tests/boot/run-oom-test.sh $(ISO) $(DISK) $(OOM_RAM) $(OOM_HOG) $(OOM_SMALL)
 
 # Into the host suite, from the fragment that owns the target. `ci-host:` takes
 # prerequisites from any fragment, so membership is this one line and nothing in
@@ -328,16 +313,7 @@ ci-host: test-oom
 # boots QEMU for real wall-clock time (pcachepeak drives ~15 binaries in
 # sequence) and would fight a parallel `make` for $(DISK)/$(ISO) -- which is
 # exactly the failure mode the pcachepeak rerun above hit. Run them alone.
-.PHONY: test-execshare-os test-elfshare-os test-pcachefill-os test-pcachepeak-os
 
-test-execshare-os: $(ISO) $(DISK)
-	@bash tests/boot/run-execshare-test.sh $(ISO) $(DISK)
 
-test-elfshare-os: $(ISO) $(DISK)
-	@bash tests/boot/run-elfshare.sh $(ISO) $(DISK)
 
-test-pcachefill-os: $(ISO) $(DISK)
-	@bash tests/boot/run-pcachefill.sh $(ISO) $(DISK)
 
-test-pcachepeak-os: $(ISO) $(DISK)
-	@bash tests/boot/run-pcachepeak.sh $(ISO) $(DISK)

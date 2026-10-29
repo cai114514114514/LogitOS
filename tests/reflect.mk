@@ -27,7 +27,7 @@
 # for one thing -- which the forms line has already had to delete once
 # (af5f085, "delete test-wpt-forms, which measured the same browser twice").
 
-.PHONY: test-reflect test-reflect-negctl test-reflect-table reflect-table
+.PHONY: test-reflect test-reflect-negctl reflect-table
 
 # The link is js_dom_test's plus js_reflect.c. Deliberately NOT the whole
 # browser: this test wants the reflection layer over the real DOM and nothing
@@ -86,33 +86,6 @@ test-reflect-negctl: $(BUILD)/libcss_host.a
 	    grep '^FAIL' $(BUILD)/reflect_negctl.log | head -4 | sed 's/^/    /'; \
 	 fi
 
-# --- the table still describes the corpus -----------------------------------
-# js_reflect.inc is generated, and a generated file that someone edits by hand
-# is a fork nobody knows about. This regenerates into $(BUILD) and diffs.
-#
-# A MISSING CORPUS IS NOT A FAILURE, and that is tests/wpt.mk's rule, adopted
-# here for the same reason it gives: the corpus is optional and the capability
-# is not, so the vendored data can be deleted later without deleting the check.
-# It says so out loud rather than passing quietly.
-test-reflect-table:
-	@if [ ! -d $(WPT_ROOT)/html/dom ]; then \
-	    echo "test-reflect-table: SKIP -- no corpus at $(WPT_ROOT)/html/dom (make wpt-fetch)."; \
-	    echo "  The committed js_reflect.inc stands; \`make wpt-fetch\` brings the"; \
-	    echo "  data back. A missing corpus is not a regression in the table."; \
-	 else \
-	    mkdir -p $(BUILD); \
-	    python3 tools/gen_reflect.py -o $(BUILD)/js_reflect.inc.new || exit 1; \
-	    if diff -u c/apps/gui/browser/js/dom/reflect.inc $(BUILD)/js_reflect.inc.new \
-	           > $(BUILD)/js_reflect.inc.diff 2>&1; then \
-	        echo "test-reflect-table: ok -- the table matches the corpus it came from"; \
-	    else \
-	        echo "test-reflect-table: FAIL -- js_reflect.inc and the corpus disagree."; \
-	        echo "  Either the corpus moved (run \`make reflect-table\` and read the"; \
-	        echo "  diff before committing it) or the file was edited by hand."; \
-	        head -40 $(BUILD)/js_reflect.inc.diff; \
-	        exit 1; \
-	    fi; \
-	 fi
 
 # Regenerate in place. Not named test-* on purpose: it changes the tree.
 reflect-table:

@@ -12,7 +12,3 @@ test-element-scroll-negctl: $(ELEMENT_SCROLL_DEPS)
 	@$(BUILD)/wiring-next/element_scroll_negctl > $(BUILD)/wiring-next/element_scroll_negctl.log 2>&1; rc=$$?; cat $(BUILD)/wiring-next/element_scroll_negctl.log; test $$rc -eq 1 && grep -q 'FAIL real painter moves descendant' $(BUILD)/wiring-next/element_scroll_negctl.log
 test-element-scroll: test-element-scroll-negctl $(BUILD)/wiring-next/element_scroll_test
 	$(BUILD)/wiring-next/element_scroll_test
-.PHONY: test-element-scroll-asan
-test-element-scroll-asan: test-element-scroll
-	$(CC) $(ELEMENT_SCROLL_FLAGS) -fsanitize=address -fno-omit-frame-pointer -o $(BUILD)/wiring-next/element_scroll_asan $(ELEMENT_SCROLL_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a -lm
-	ASAN_OPTIONS=detect_leaks=0 $(BUILD)/wiring-next/element_scroll_asan

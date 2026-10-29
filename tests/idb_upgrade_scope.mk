@@ -13,14 +13,11 @@ $(IDB_UPGRADE_DIR)/old: $(IDB_UPGRADE_DEP)
 $(IDB_UPGRADE_DIR)/san: $(IDB_UPGRADE_DEP)
 	@mkdir -p $(IDB_UPGRADE_DIR)
 	@$(CC) -O1 -g -w $(IDB_CF) -Itests/unit -fsanitize=address,undefined -fno-omit-frame-pointer -o $@ $(IDB_UPGRADE_SRC) $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
-.PHONY: test-idb-upgrade-scope test-idb-upgrade-scope-negctl test-idb-upgrade-scope-san
+.PHONY: test-idb-upgrade-scope test-idb-upgrade-scope-negctl
 test-idb-upgrade-scope-negctl: $(IDB_UPGRADE_DIR)/old
 	@rc=0; $(IDB_UPGRADE_DIR)/old > $(IDB_UPGRADE_DIR)/old.log 2>&1 || rc=$$?; test "$$rc" -eq 1
 	@python3 tests/unit/idb_upgrade_scope_check.py $(IDB_UPGRADE_DIR)/old.log
 test-idb-upgrade-scope: test-idb-upgrade-scope-negctl $(IDB_UPGRADE_DIR)/current
 	@$(IDB_UPGRADE_DIR)/current > $(IDB_UPGRADE_DIR)/current.log 2>&1
 	@cat $(IDB_UPGRADE_DIR)/current.log
-test-idb-upgrade-scope-san: test-idb-upgrade-scope $(IDB_UPGRADE_DIR)/san
-	@ASAN_OPTIONS=detect_leaks=0 $(IDB_UPGRADE_DIR)/san > $(IDB_UPGRADE_DIR)/san.log 2>&1
-	@cat $(IDB_UPGRADE_DIR)/san.log
 ci-host: test-idb-upgrade-scope

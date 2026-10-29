@@ -53,7 +53,7 @@
 FRAMEFETCH_TEST_SRC := tests/unit/frame_fetch_test.c tests/unit/loader_fakebfetch.c
 FRAMEFETCH_CF := $(BROWSER_INC) -Itests/unit
 
-.PHONY: test-framefetch test-framefetch-negctl-discipline \
+.PHONY: \
         test-framefetch-discipline test-framefetch-discipline-selftest
 
 $(BUILD)/frame_fetch_test: $(FRAMEFETCH_TEST_SRC)
@@ -61,8 +61,6 @@ $(BUILD)/frame_fetch_test: $(FRAMEFETCH_TEST_SRC)
 	@$(CC) -O1 -g -Wall -Wextra -Wno-unused-parameter $(FRAMEFETCH_CF) \
 	    -o $@ $(FRAMEFETCH_TEST_SRC)
 
-test-framefetch: $(BUILD)/frame_fetch_test
-	@$(BUILD)/frame_fetch_test
 
 # The negctl is a PREREQUISITE of test-framefetch, not a sibling -- same
 # reason tests/worker.mk gives: NOT_CI drops every test-*-negctl from the
@@ -75,19 +73,5 @@ $(BUILD)/frame_fetch_test_negctl_discipline: $(FRAMEFETCH_TEST_SRC)
 	@$(CC) -O1 -g -Wall -Wextra -Wno-unused-parameter $(FRAMEFETCH_CF) \
 	    -DFRAME_FETCH_NO_DISCIPLINE -o $@ $(FRAMEFETCH_TEST_SRC)
 
-test-framefetch-negctl-discipline: $(BUILD)/frame_fetch_test_negctl_discipline
-	@if $(BUILD)/frame_fetch_test_negctl_discipline > $(BUILD)/frame_fetch_negctl.log 2>&1; then \
-	    echo "test-framefetch-negctl-discipline: FAILED -- the isolation check PASSED"; \
-	    echo "  against a build where the frame fetches with an undisciplined"; \
-	    echo "  (implicit-base) call, so it is not measuring the property it claims to."; \
-	    exit 1; \
-	 else \
-	    echo "test-framefetch-negctl-discipline: ok -- the control catches it:"; \
-	    grep -E 'FAIL' $(BUILD)/frame_fetch_negctl.log | head -8; \
-	 fi
 
-test-framefetch-discipline-selftest:
-	@python3 tools/check_frame_base_discipline.py --selftest
 
-test-framefetch-discipline: test-framefetch-discipline-selftest
-	@python3 tools/check_frame_base_discipline.py

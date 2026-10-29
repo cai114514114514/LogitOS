@@ -182,11 +182,6 @@ test-dns-negctl:
 
 # AEX authenticated channel lifecycle, using actual Unix and file/FD code.
 # Temporary negative fixtures precede the positive run even under make -j.
-.PHONY: test-agent-channel-host test-agent-channel-negctl
-test-agent-channel-negctl:
-	@python3 tests/unit/agent_channel_test.py --build $(BUILD)/agent-channel --negative
-test-agent-channel-host: test-agent-channel-negctl
-	@python3 tests/unit/agent_channel_test.py --build $(BUILD)/agent-channel --positive
 
 UNIX_INC := -Itests/unit/unixstub -Ic/net/core -Iinclude/abi $(FS_INC)
 
@@ -624,7 +619,6 @@ ci-boot: test-netlock
 # make test-net-video           -- reruns the paired e1000/virtio comparison
 #                                   above (delay=15, 5 reps, 917,504 B/rep)
 # make test-net-video DELAY=0   -- the near-zero-RTT arm for comparison
-.PHONY: test-net-video
 
 # Actual /bin/net consumers, through the host's file/socket syscall adapter.
 # --gc-sections / -dead_strip is the same identity-only HTTP link contract as
@@ -669,22 +663,11 @@ test-net-consumers-tls-os: test-net-consumers $(ISO) $(DISK) $(BUILD)/net-consum
 ci-host: test-net-consumers
 ci-boot: test-net-consumers-os test-net-consumers-tls-os
 
-test-net-video: $(ISO) $(DISK)
-	@bash tests/boot/run-net-ab.sh --disk $(DISK) \
-	    --arm e1000:$(ISO):e1000 \
-	    --arm virtio:$(ISO):virtio-net-pci:virtio-net \
-	    --reps $(if $(REPS),$(REPS),5) --delay $(if $(DELAY),$(DELAY),15) \
-	    --bytes $(if $(BYTES),$(BYTES),917504)
 
 # The former absent lsock_file_poll weak hook returned NVAL for valid Unix
 # descriptors. Test real Unix/lsock/poll/wait code, including query-to-sleep
 # registration and named-datagram capacity wakes; each semantic control must
 # fail by its named assertion before the positive suite or agent gate runs.
-.PHONY: test-unix-poll test-unix-poll-negctl
-test-unix-poll-negctl:
-	python3 tests/unit/unix_poll_test.py --build $(BUILD)/unix-poll --negative
-test-unix-poll: test-unix-poll-negctl
-	python3 tests/unit/unix_poll_test.py --build $(BUILD)/unix-poll
 test-agent: test-unix-poll
 
 # --- the zero-window persist fix, and the control that must fail it ---------

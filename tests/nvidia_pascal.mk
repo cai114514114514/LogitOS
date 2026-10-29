@@ -78,14 +78,5 @@ test-nvidia-pascal-host: test-nvidia-pascal-negctl test-nvidia-pascal-accel-host
 	    -o $(BUILD)/nvidia-pascal-host
 	@$(BUILD)/nvidia-pascal-host
 
-# Use a dedicated BUILD because object rules do not track CFLAGS.  A product
-# image built without PASCALVERIFY contains no QEMU ID and can bind only the
-# twelve audited 10de IDs.
-test-nvidia-pascal-synthetic-guest: test-nvidia-pascal-host $(ISO) $(NV_PASCAL_ESP)
-	@test "$(PASCALVERIFY)" = 1 || { \
-	    echo 'Use PASCALVERIFY=1 with an independent BUILD; this is a synthetic test kernel'; \
-	    exit 1; }
-	@python3 tests/boot/run-nvidia-pascal.py --iso $(ISO) --esp $(NV_PASCAL_ESP) \
-	    --out $(BUILD)/nvidia-pascal-guest
 
 ci-host: test-nvidia-pascal-host

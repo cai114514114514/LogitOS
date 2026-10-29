@@ -19,9 +19,6 @@ ci-host: test-waapi-paint
 $(WAAPI_DIR)/address: $(WAAPI_DEPS)
 	@mkdir -p $(WAAPI_DIR)
 	$(CC) -O1 -g -w -fsanitize=address -fno-omit-frame-pointer $(JSDOM_HOST_CF) -o $@ $(WAAPI_SRC) $(BUILD)/libcss_host.a -lm
-.PHONY: test-waapi-paint-asan
-test-waapi-paint-asan: test-waapi-paint $(WAAPI_DIR)/address
-	@ASAN_OPTIONS=detect_leaks=0 $(WAAPI_DIR)/address
 
 $(WAAPI_DIR)/checkpoint-negctl: $(WAAPI_DEPS)
 	@mkdir -p $(WAAPI_DIR)

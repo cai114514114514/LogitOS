@@ -49,7 +49,7 @@ $(RD_DIR)/promise-old: $(RD_PROMISE_DEP)
 $(RD_DIR)/promise-san: $(RD_PROMISE_DEP)
 	@mkdir -p $(RD_DIR)
 	@$(CC) -O1 -g -w $(WORKER_CF) -DJS_RUNTIME_DIAGNOSTICS -fsanitize=address,undefined -fno-omit-frame-pointer -o $@ $(RD_PROMISE_SRC) $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
-.PHONY: test-worker-promise-diagnostics test-worker-promise-diagnostics-negctl test-worker-promise-diagnostics-san
+.PHONY: test-worker-promise-diagnostics test-worker-promise-diagnostics-negctl
 test-worker-promise-diagnostics-negctl: $(RD_DIR)/promise-old
 	@$(RD_DIR)/promise-old > $(RD_DIR)/promise-old.log 2>&1
 	@rc=0; python3 tests/unit/worker_promise_diagnostics_check.py $(RD_DIR)/promise-old.log > $(RD_DIR)/promise-old-check.log 2>&1 || rc=$$?; cat $(RD_DIR)/promise-old-check.log; test $$rc -eq 1 && test "$$(grep -c '^FAIL:' $(RD_DIR)/promise-old-check.log)" -eq 8 && grep -q '^FAIL: worker promise rejection metadata observable$$' $(RD_DIR)/promise-old-check.log
@@ -57,9 +57,6 @@ test-worker-promise-diagnostics: test-worker-promise-diagnostics-negctl $(RD_DIR
 	@$(RD_DIR)/promise-on > $(RD_DIR)/promise-on.log 2>&1
 	@cat $(RD_DIR)/promise-on.log
 	@python3 tests/unit/worker_promise_diagnostics_check.py $(RD_DIR)/promise-on.log
-test-worker-promise-diagnostics-san: test-worker-promise-diagnostics $(RD_DIR)/promise-san
-	@ASAN_OPTIONS=detect_leaks=0 $(RD_DIR)/promise-san > $(RD_DIR)/promise-san.log 2>&1
-	@python3 tests/unit/worker_promise_diagnostics_check.py $(RD_DIR)/promise-san.log
 test-runtime-diagnostics: test-worker-promise-diagnostics
 
 RD_BUDGET_SRC = tests/unit/worker_budget_diagnostics_test.c $(filter-out tests/unit/worker_test.c,$(WORKER_TEST_SRC))

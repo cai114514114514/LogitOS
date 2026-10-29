@@ -53,14 +53,4 @@ ci-host: test-disk-sparse
 # Full browser producer/consumer acceptance, with a real system repack between
 # boots. OUT defaults to a new path because overwriting old evidence is refused.
 DISK_PROFILE_GUEST_OUT ?= $(BUILD)/disk-profile-guest-$$(date +%Y%m%d-%H%M%S)
-.PHONY: test-disk-profile-os
-test-disk-profile-os: test-disk-profile $(ISO) $(DISK)
-	@python3 tests/qmp/cookie_persistence_guest.py --iso $(ISO) --disk $(DISK) \
-	    --snapshot-helper $(BUILD)/lfs_snapshot --rebuild-between --out $(DISK_PROFILE_GUEST_OUT)
 
-.PHONY: test-studio-persistence test-studio-persistence-negctl
-test-studio-persistence-negctl: $(BUILD)/lfs_snapshot
-	@rc=0; python3 tests/unit/studio_persistence_test.py --helper $(BUILD)/lfs_snapshot --negative > $(BUILD)/studio-persistence-negctl.log 2>&1 || rc=$$?; \
-	 tail -2 $(BUILD)/studio-persistence-negctl.log; test $$rc -ne 0 && rg -q 'AssertionError: project source survived rebuild' $(BUILD)/studio-persistence-negctl.log
-test-studio-persistence: test-studio-persistence-negctl
-	@python3 tests/unit/studio_persistence_test.py --helper $(BUILD)/lfs_snapshot

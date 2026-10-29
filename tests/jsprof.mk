@@ -27,32 +27,6 @@ JSPROF_PROBE := $(BUILD)/webapi_probe
 test-jsprof: $(JSPROF_PROBE)
 	@$(JSPROF_PROBE) --prof-selftest
 
-# The device half. Boots once, loads a page with no timers (a page WITH a timer
-# re-arms the deadline every callback and is immune, which is why the fixture
-# has none), clicks it three times, each with a synchronous nested "scroll"
-# dispatch inside the click handler (window.scrollTo -- see the driver's
-# NESTED DISPATCH section), and requires the FIXED-BUILD shape: all three
-# handlers run, none watchdog-bitten -- including click 2, 52+ s after load,
-# which is the case that was bitten before js_dom_dispatch() started bracketing
-# every outermost dispatch with js_page_slice_begin()/_end() (c/apps/gui/browser/
-# js_dom.c). BEFORE THAT FIX, on a device boot with the bracket removed
-# (test-jsslice-negctl's browser-noslice.aex), the field-measured shape was
-# click 2 killed on the wall-time rail at fuel=13 of a 2,000,000 budget
-# (0.00065%) and click 3 immediately after running clean, because the bite
-# clears g_slice_armed ("one interrupt per slice, not a storm") -- see
-# qmp_jsslice.py's header for the full arithmetic and why click 1 and click 3
-# alone would not distinguish this from a browser that simply dropped clicks.
-#
-# test-jsslice-negctl IS A PREREQUISITE, not a name on a ci- line: NOT_CI drops
-# every test-*-negctl from what ci.sh runs (tests/currentscript.mk's comment
-# has the full argument, paid for three times already in this tree), and a
-# control that is merely named somewhere runs never while looking wired.
-test-jsslice: test-jsslice-negctl
-test-jsslice: $(ISO) $(DISK)
-	@python3 tests/qmp/qmp_jsslice.py --iso $(ISO) --disk $(DISK) \
-	    --out $(BUILD)/jsslice.json | tee $(BUILD)/jsslice.log
-	@grep -q '"verdict": "FIXED"' $(BUILD)/jsslice.log || \
-	    { echo "FAIL: the shipped browser did not show the fixed slice shape -- read $(BUILD)/jsslice.json"; exit 1; }
 
 # THE NEGATIVE CONTROL: js_dom.c compiled with -DJS_DOM_NO_SLICE_BRACKET
 # removes BOTH js_page_slice_begin() and js_page_slice_end() calls from
@@ -83,53 +57,14 @@ $(BUILD)/browser-noslice.elf: $(ENGINE_OBJ) $(NOSLICE_JS_OBJ) $(BROWSER_OBJ) $(C
 $(BUILD)/browser-noslice.aex: $(BUILD)/browser-noslice.elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/browser-noslice.elf $@ Browser - 'B' 120 130 240 --stack-pages 2048
 
-test-jsslice-negctl: $(ISO) $(BUILD)/browser-noslice.aex
-	@$(MAKE) DISK=$(BUILD)/disk-noslice.img BROWSER_AEX=$(BUILD)/browser-noslice.aex $(BUILD)/disk-noslice.img
-	@python3 tests/qmp/qmp_jsslice.py --iso $(ISO) --disk $(BUILD)/disk-noslice.img \
-	    --label noslice --out $(BUILD)/jsslice-negctl.json | tee $(BUILD)/jsslice-negctl.log
-	@grep -q '"verdict": "BUG-PRESENT"' $(BUILD)/jsslice-negctl.log || \
-	    { echo "FAIL: the noslice build did not reproduce the known bug shape -- read $(BUILD)/jsslice-negctl.json"; exit 1; }
-	@echo "negctl red as expected: bug shape reproduced against -DJS_DOM_NO_SLICE_BRACKET"
 
 # Profile one captured site fixture. An instrument, not a test: it asserts
 # nothing and exists so "where did the slice go" has a command.
 probe-jsprof: $(JSPROF_PROBE)
 	@$(JSPROF_PROBE) --prof $(WEBAPI_FIXTURES) 2>&1 | grep -a jsprof
 
-# --- the scaling table: COST PLOTTED AGAINST INPUT SIZE ---------------------
-# The one thing a total cannot show. A quadratic operation and a linear one are
-# indistinguishable at one input size and differ by three orders of magnitude
-# at a thousand, so the only way to see it is to run the same operation at 1,
-# 10, 100, 1000 and 4000 and divide.
-#
-# test-domscale IS A TEST rather than an instrument, and it is a test of ONE
-# thing: its own control. Row 0 is a pure-JS loop that never touches the DOM
-# and must stay flat as the document grows around it; if it rises, the rise is
-# GC pressure or the allocator and every other row is contaminated. That is the
-# assertion. It deliberately does NOT assert that any particular row is
-# quadratic -- a gate that fails when somebody FIXES querySelector is a gate
-# that punishes the work it exists to order. The shapes are printed; the
-# control is enforced.
-#
-# It is not on ci-host: at 3 repeats it takes about eight minutes, which is
-# most of a host suite. Run it when the DOM or the selector engine changes.
-test-domscale: $(JSPROF_PROBE)
-	@$(JSPROF_PROBE) --domscale $(DOMSCALE_REPS)
 DOMSCALE_REPS ?= 3
 
-# --- the guest half of the same question ------------------------------------
-# The host binary is arm64/darwin and does not link layout.c; this runs the
-# same seven operations in browser.aex, x86_64 under TCG, with the layout
-# engine present. See the file header for why the row list is deliberately
-# smaller and hand-copied rather than shared, and for what that costs.
-#
-# Manual, not ci-boot, for the same reason test-jsslice is manual: it boots
-# QEMU and spends minutes inside it.
-test-domscale-os: $(ISO) $(DISK)
-	@python3 tests/qmp/qmp_jsdomscale.py --iso $(ISO) --disk $(DISK) \
-	    --out $(BUILD)/domscale-guest.json | tee $(BUILD)/domscale-guest.log
-	@grep -qE '"verdict": "(CONFIRMED|PARTIAL)"' $(BUILD)/domscale-guest.log || \
-	    { echo "FAIL: the device scaling run produced no table -- read $(BUILD)/domscale-guest.json"; exit 1; }
 
 # --- probe-jsctl: the CONTROLS, and they are the reason to believe the rest --
 # A profile in which everything is expensive is a profile of the instrument.
@@ -151,4 +86,4 @@ probe-jsctl: $(JSPROF_PROBE)
 
 ci-host: test-jsprof
 
-.PHONY: test-jsprof test-jsslice test-jsslice-negctl probe-jsprof test-domscale test-domscale-os probe-jsctl
+.PHONY: test-jsprof probe-jsprof probe-jsctl

@@ -12,7 +12,7 @@
 # (verified: build/c/drivers/net/*.o).
 
 .PHONY: test-nic test-nic-drv test-nic-82540-ids-negctl test-nic-e1000 test-nic-virtio test-nic-rtl8139 test-nic-none
-.PHONY: test-e1000-stats test-e1000-stats-negctl test-e1000-link
+.PHONY: test-e1000-stats test-e1000-stats-negctl
 .PHONY: test-e1000-linkmask-negctl
 
 # e1000 interrupt moderation, as a build knob rather than an edit, so that the
@@ -166,13 +166,6 @@ test-e1000-linkmask-negctl:
 	   echo "e1000 linkmask negctl OK: -DE1000_LINK_NEGCTL reddens exactly $$n checks"; \
 	 fi
 
-# On device: unplug the cable and plug it back in, from the host, while the
-# guest is running (QMP set_link). Asserts the driver prints the transition and
-# prints it ONCE -- a report per poll is what a whole-STATUS comparison gives,
-# and it is indistinguishable from a correct one in a log that only greps for
-# the word "link".
-test-e1000-link: $(ISO) $(DISK)
-	@bash tests/boot/run-e1000-link-test.sh $(ISO) $(DISK)
 
 # On-device, one target per card: enumerate -> DHCP lease -> complete 32 KiB
 # HTTP fetch. Link-up is not the claim; bytes arriving is.

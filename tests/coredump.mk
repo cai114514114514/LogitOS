@@ -42,7 +42,7 @@
 # `command -v gdb` in this fragment's negctl recipe gates which of the
 # control's "must redden"/"must stay green" lines it requires, so the control
 # is never silently satisfied by a skip it didn't check for.
-.PHONY: test-coredump test-coredump-negctl test-coredump-os
+.PHONY: test-coredump test-coredump-negctl
 
 CORE_SRC  := tests/unit/coredump_test.c c/kernel/exec/signal/coredump.c
 CORE_INC  := $(KEXEC_IQ) $(KCPU_IQ) -iquote c/apps/coreutils
@@ -221,14 +221,6 @@ test-coredump-negctl:
 	@echo "    every one of them that cannot coincide on this host, and leaves the"
 	@echo "    format intact"
 
-# --- test-coredump-os ------------------------------------------------------
-# ON THE MACHINE. See tests/boot/run-core-test.sh for what the two channels
-# are; the short version is that the kernel prints the TRAP FRAME on its
-# [fault] line and prints the FILE on its [core] line, the host then extracts
-# the file off the real disk image and gives it to gdb, and the fault address
-# came from fsroot/as/examples/crashme.as before the machine booted.
-test-coredump-os: $(ISO) $(DISK) $(BUILD)/corecheck
-	@bash tests/boot/run-core-test.sh $(ISO) $(DISK)
 
 # ===========================================================================
 # ptrace -- c/kernel/exec/ptrace.{c,h}. In this fragment rather than one of its

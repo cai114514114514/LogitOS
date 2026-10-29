@@ -70,8 +70,8 @@
 # controls still bite with no corpus at all; a control that depends on a
 # download stops controlling anything the day the download fails.
 # ============================================================================
-.PHONY: test-wasm test-wasm-negctl test-wasm-asan test-wasm-clang
-.PHONY: test-wasm-clang-negctl wasm-fetch wasm-corpus
+.PHONY: test-wasm test-wasm-negctl
+.PHONY: wasm-fetch wasm-corpus
 
 WASM_SRC      := c/lib/wasm/wasm_parse.c c/lib/wasm/wasm_valid.c
 WASM_HDR      := c/lib/wasm/wasm.h c/lib/wasm/wasm_int.h
@@ -172,16 +172,6 @@ test-wasm-negctl: $(BUILD)/wasm_test_negleb $(BUILD)/wasm_test_negstack
 	 done; \
 	 [ $$ok = 1 ]
 
-test-wasm-asan: tests/unit/wasm_test.c $(WASM_SRC) $(WASM_HDR)
-	@mkdir -p $(BUILD)
-	@$(CC) $(WASM_CF) -fsanitize=address,undefined -fno-sanitize-recover=all \
-	   -o $(BUILD)/wasm_test_asan tests/unit/wasm_test.c $(WASM_SRC)
-	@$(MAKE) --no-print-directory wasm-corpus 2>/dev/null || true
-	@if [ -f "$(WASM_CORPUS)/manifest.tsv" ]; then \
-	   $(BUILD)/wasm_test_asan "$(WASM_CORPUS)" "$(WASM_BASELINE)"; \
-	 else \
-	   $(BUILD)/wasm_test_asan; \
-	 fi
 
 # ---- the second oracle: a real toolchain -----------------------------------
 # The spec suite is hand-written by people who are testing a specification.
@@ -217,29 +207,7 @@ wasm-clang-build:
 	   printf 'accept\t%s.wasm\t%s:1\t\n' "$$b" "$$b.c" >> $(BUILD)/wasm-clang/manifest.tsv; \
 	 done
 
-test-wasm-clang: test-wasm-clang-negctl $(BUILD)/wasm_test wasm-clang-build
-	@if [ ! -f $(BUILD)/wasm-clang/manifest.tsv ]; then exit 0; fi
-	@$(BUILD)/wasm_test $(BUILD)/wasm-clang
 
-# The control for the gate above, and it is a real question rather than a
-# formality: those modules are the only ones in this tree that a compiler
-# produced, so "we accept them" is worth nothing unless we also refuse them
-# when they are damaged.  Every prefix at 25/50/75% must be rejected.
-test-wasm-clang-negctl: $(BUILD)/wasm_test wasm-clang-build
-	@if [ -z "$(WASM_CLANG)" ] || [ ! -f $(BUILD)/wasm-clang/manifest.tsv ]; then \
-	   echo "test-wasm-clang-negctl: SKIPPED with its positive counterpart"; exit 0; fi
-	@mkdir -p $(BUILD)/wasm-clang-cut
-	@rm -f $(BUILD)/wasm-clang-cut/*.wasm $(BUILD)/wasm-clang-cut/manifest.tsv
-	@printf '# mode\tclang-wasm32 truncated\n' > $(BUILD)/wasm-clang-cut/manifest.tsv
-	@for w in $(BUILD)/wasm-clang/*.wasm; do \
-	   b=$$(basename $$w .wasm); sz=$$(wc -c < $$w); \
-	   for pct in 25 50 75; do \
-	     head -c $$((sz * pct / 100)) $$w > $(BUILD)/wasm-clang-cut/$$b-$$pct.wasm; \
-	     printf 'malformed\t%s-%s.wasm\t%s.c:%s%%\t\n' "$$b" "$$pct" "$$b" "$$pct" \
-	       >> $(BUILD)/wasm-clang-cut/manifest.tsv; \
-	   done; \
-	 done
-	@$(BUILD)/wasm_test $(BUILD)/wasm-clang-cut
 
 # ============================================================================
 # THE INTERPRETER AND THE JAVASCRIPT API

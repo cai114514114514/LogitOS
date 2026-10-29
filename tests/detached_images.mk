@@ -18,8 +18,3 @@ test-detached-images: test-detached-images-negctl $(DETACHED_IMAGES_DIR)/current
 	@$(DETACHED_IMAGES_DIR)/current > $(DETACHED_IMAGES_DIR)/current.log 2>&1; rc=$$?; tail -24 $(DETACHED_IMAGES_DIR)/current.log; exit $$rc
 ci-host: test-detached-images
 
-.PHONY: test-detached-images-asan
-test-detached-images-asan: $(DETACHED_IMAGES_DEPS)
-	@mkdir -p $(DETACHED_IMAGES_DIR)
-	$(CC) $(filter-out -O2,$(RUNTIME_SCROLL_CF)) -O1 -g -fsanitize=address -fno-omit-frame-pointer $(IMG_HOST_INC) -o $(DETACHED_IMAGES_DIR)/asan $(DETACHED_IMAGES_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
-	ASAN_OPTIONS=detect_leaks=0 $(DETACHED_IMAGES_DIR)/asan

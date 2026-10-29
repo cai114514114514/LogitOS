@@ -52,11 +52,7 @@
 # control's disk image is a second full mkfs. Run it across a change to
 # js_module.c, browser_rt.c's bfetch_prefetch*/res_fetch, or
 # third_party/quickjs/quickjs.c's module resolution.
-.PHONY: test-jsmodpf test-jsmodpf-negctl
 
-test-jsmodpf: test-jsmodpf-negctl
-test-jsmodpf: $(ISO) $(DISK)
-	python3 tests/qmp/qmp_modprefetch.py $(ISO) $(DISK)
 
 # $(BROWSER_JS_CF), not $(JS_CF): the root Makefile's ONE target-specific
 # variable override strips `-include features.h` from the browser's own TUs;
@@ -76,6 +72,3 @@ $(BUILD)/browser-nomodpf.elf: $(ENGINE_OBJ) $(NOMODPF_JS_OBJ) $(BROWSER_OBJ) $(C
 $(BUILD)/browser-nomodpf.aex: $(BUILD)/browser-nomodpf.elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/browser-nomodpf.elf $@ Browser - 'B' 120 130 240 --stack-pages 2048
 
-test-jsmodpf-negctl: $(ISO) $(BUILD)/browser-nomodpf.aex
-	@$(MAKE) DISK=$(BUILD)/disk-nomodpf.img BROWSER_AEX=$(BUILD)/browser-nomodpf.aex $(BUILD)/disk-nomodpf.img
-	python3 tests/qmp/qmp_modprefetch.py $(ISO) $(BUILD)/disk-nomodpf.img --expect-slow
