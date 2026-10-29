@@ -10,10 +10,12 @@ $(BACKFACE_DIR)/old: $(BACKFACE_DEPS)
 $(BACKFACE_DIR)/san: $(BACKFACE_DEPS)
 	@mkdir -p $(BACKFACE_DIR)
 	$(CC) -O1 -g -w -fsanitize=address,undefined -fno-omit-frame-pointer $(PAINT_INC) $(BTEST_INC) $(CSS_INC) -o $@ $(BACKFACE_SRC) $(BUILD)/libcss_host.a -lm
-.PHONY: test-backface test-backface-negctl
+.PHONY: test-backface test-backface-negctl test-backface-san
 test-backface-negctl: $(BACKFACE_DIR)/old
 	@rc=0; $(BACKFACE_DIR)/old > $(BACKFACE_DIR)/old.log 2>&1 || rc=$$?; cat $(BACKFACE_DIR)/old.log; test $$rc -eq 1
 	python3 tests/unit/backface_check.py $(BACKFACE_DIR)/old.log
 test-backface: test-backface-negctl $(BACKFACE_DIR)/current
 	@$(BACKFACE_DIR)/current
+test-backface-san: test-backface $(BACKFACE_DIR)/san
+	ASAN_OPTIONS=detect_leaks=0 $(BACKFACE_DIR)/san
 ci-host: test-backface

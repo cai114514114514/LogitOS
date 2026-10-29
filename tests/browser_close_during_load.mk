@@ -21,7 +21,7 @@ $(BUILD)/wiring/browser_close_load_old: $(BROWSER_CLOSE_LOAD_DEP) $(BUILD)/libcs
 	$(CC) $(BROWSER_CLOSE_LOAD_CF) -DBROWSER_LOAD_CLOSE_LEGACY -o $@ \
 	    $(BROWSER_CLOSE_LOAD_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
 
-.PHONY: test-browser-close-load-negctl test-browser-close-load
+.PHONY: test-browser-close-load-negctl test-browser-close-load test-browser-close-load-sanitize
 test-browser-close-load-negctl: $(BUILD)/wiring/browser_close_load_old
 	@rc=0; $< stage > $(BUILD)/wiring/browser_close_load_old-stage.log 2>&1 || rc=$$?; \
 	 test $$rc -eq 1 && grep -F 'FAIL: close queued after document fetch stops CPU-side loading' $(BUILD)/wiring/browser_close_load_old-stage.log
@@ -46,5 +46,16 @@ test-browser-close-load: test-browser-close-load-negctl $(BUILD)/wiring/browser_
 	$(BUILD)/wiring/browser_close_load wheel-script
 	$(BUILD)/wiring/browser_close_load module
 
+test-browser-close-load-sanitize: test-browser-close-load
+	$(CC) $(BROWSER_CLOSE_LOAD_CF) -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=all \
+	    -o $(BUILD)/wiring/browser_close_load_sanitize $(BROWSER_CLOSE_LOAD_SRC) $(QJS_SRC) \
+	    $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
+	ASAN_OPTIONS=detect_leaks=0 $(BUILD)/wiring/browser_close_load_sanitize stage
+	ASAN_OPTIONS=detect_leaks=0 $(BUILD)/wiring/browser_close_load_sanitize script
+	ASAN_OPTIONS=detect_leaks=0 $(BUILD)/wiring/browser_close_load_sanitize resource
+	ASAN_OPTIONS=detect_leaks=0 $(BUILD)/wiring/browser_close_load_sanitize wheel
+	ASAN_OPTIONS=detect_leaks=0 $(BUILD)/wiring/browser_close_load_sanitize wheel-cancel
+	ASAN_OPTIONS=detect_leaks=0 $(BUILD)/wiring/browser_close_load_sanitize wheel-script
+	ASAN_OPTIONS=detect_leaks=0 $(BUILD)/wiring/browser_close_load_sanitize module
 
 ci-host: test-browser-close-load

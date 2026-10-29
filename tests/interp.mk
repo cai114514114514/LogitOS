@@ -60,7 +60,7 @@
 # gates: they exit non-zero when a check fails, so neither is one of the 22
 # harnesses that print FAIL and exit 0.
 # ============================================================================
-.PHONY: test-css-interp test-css-interp-negctl
+.PHONY: test-css-interp test-css-interp-asan test-css-interp-negctl
 .PHONY: test-css-interp-accum-negctl
 .PHONY: test-css-anim test-css-anim-negctl
 
@@ -82,6 +82,14 @@ $(BUILD)/interp_test: tests/unit/interp_test.c $(INTERP_SRC) c/apps/gui/browser/
 	@mkdir -p $(BUILD)
 	@$(CC) $(INTERP_CF) -o $@ tests/unit/interp_test.c $(INTERP_SRC) -lm
 
+# ASan matters more here than it looks: the parser walks caller-supplied byte
+# spans with no NUL guarantee and the serialisers write into fixed buffers, so
+# the interesting failures are one-past-the-end rather than wrong arithmetic.
+test-css-interp-asan:
+	@mkdir -p $(BUILD)
+	@$(CC) $(INTERP_CF) -fsanitize=address,undefined -fno-omit-frame-pointer \
+	    -o $(BUILD)/interp_test_asan tests/unit/interp_test.c $(INTERP_SRC) -lm
+	@$(BUILD)/interp_test_asan
 
 test-css-interp-negctl:
 	@mkdir -p $(BUILD)

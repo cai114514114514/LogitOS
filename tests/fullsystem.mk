@@ -13,7 +13,7 @@
 # only the ISO cannot see a userland that does not compile, and that is exactly
 # how a non-compiling c/lib/video file reached HEAD.
 
-.PHONY: verify-commit check-test-liveness
+.PHONY: test-fullsystem test-freeze verify-commit check-test-liveness
 
 # The .aex the DISK rule packs at the LogitFS root, in the order it packs them.
 # Passed to the test so it can read each header's display name on the host and
@@ -31,7 +31,14 @@
 # test wants the host paths, and a host path under $(BUILD) has no colon in it.
 ROOT_AEX := $(foreach p,$(ROOT_AEX_PACK),$(firstword $(subst :, ,$(p))))
 
+test-fullsystem: $(ISO) $(DISK)
+	@bash tests/boot/run-fullsystem-test.sh $(ISO) $(DISK) $(ROOT_AEX)
 
+# The user's freeze repro, as assertions. It had no target at all, which is the
+# other half of why it went unnoticed that it asserted nothing: a test nothing
+# runs cannot even fail loudly enough to be looked at.
+test-freeze: $(ISO) $(DISK)
+	@python3 tests/qmp/qmp_freeze.py $(ISO) $(DISK) $(BUILD)/freeze
 
 # The commit gate. Clones HEAD (or REV=...) somewhere else entirely, so the
 # working tree's untracked files cannot make a broken commit look fine, and

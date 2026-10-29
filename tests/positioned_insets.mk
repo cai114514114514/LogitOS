@@ -53,6 +53,10 @@ test-inset-math: test-inset-math-negctl $(POSITIONED_INSETS_DIR)/math
 	@$(POSITIONED_INSETS_DIR)/math
 ci-host: test-inset-math
 
+.PHONY: test-inset-math-asan
+test-inset-math-asan: test-inset-math-negctl
+	@$(CC) -O1 -g -w -fsanitize=address,undefined -fno-omit-frame-pointer $(BTEST_INC) $(CSS_INC) -o $(POSITIONED_INSETS_DIR)/math-asan $(INSET_MATH_SRC) $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a -lm
+	@ASAN_OPTIONS=detect_leaks=0 $(POSITIONED_INSETS_DIR)/math-asan
 
 LOGICAL_MARGIN_SRC = $(filter-out tests/unit/positioned_insets_test.c,$(POSITIONED_INSETS_SRC)) tests/unit/logical_margin_test.c
 LOGICAL_MARGIN_DEPS = $(POSITIONED_INSETS_DEPS) tests/unit/logical_margin_test.c c/apps/gui/browser/css/extra_cascade.inc c/apps/gui/browser/css/inset_math.inc c/apps/gui/browser/css/logical_margin.inc
@@ -68,7 +72,7 @@ $(POSITIONED_INSETS_DIR)/flex-inset-height-negctl: $(LOGICAL_MARGIN_DEPS)
 $(POSITIONED_INSETS_DIR)/replaced-margin-negctl: $(LOGICAL_MARGIN_DEPS)
 	@mkdir -p $(POSITIONED_INSETS_DIR)
 	@$(CC) -O2 -w -DLAYOUT_REPLACED_MARGIN_LEGACY $(BTEST_INC) $(CSS_INC) -o $@ $(LOGICAL_MARGIN_SRC) $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a -lm
-.PHONY: test-logical-margin test-logical-margin-negctl test-flex-inset-height-negctl
+.PHONY: test-logical-margin test-logical-margin-negctl test-flex-inset-height-negctl test-logical-margin-asan
 test-logical-margin-negctl: $(POSITIONED_INSETS_DIR)/logical-margin-negctl
 	@rc=0; $< > $(POSITIONED_INSETS_DIR)/logical-margin-negctl.log 2>&1 || rc=$$?; \
 	 test $$rc -eq 1 && grep -F 'FAIL: logical block auto preserves both edge kinds' $(POSITIONED_INSETS_DIR)/logical-margin-negctl.log && \
@@ -83,6 +87,9 @@ test-replaced-margin-negctl: $(POSITIONED_INSETS_DIR)/replaced-margin-negctl
 	 test $$rc -eq 1 && grep -F 'FAIL: block controls and images consume auto margins after sizing' $(POSITIONED_INSETS_DIR)/replaced-margin-negctl.log
 test-logical-margin: test-logical-margin-negctl test-flex-inset-height-negctl test-replaced-margin-negctl $(POSITIONED_INSETS_DIR)/logical-margin
 	@$(POSITIONED_INSETS_DIR)/logical-margin
+test-logical-margin-asan: test-logical-margin-negctl test-flex-inset-height-negctl test-replaced-margin-negctl
+	@$(CC) -O1 -g -w -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer $(BTEST_INC) $(CSS_INC) -o $(POSITIONED_INSETS_DIR)/logical-margin-asan $(LOGICAL_MARGIN_SRC) $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a -lm
+	@ASAN_OPTIONS=detect_leaks=0 $(POSITIONED_INSETS_DIR)/logical-margin-asan
 ci-host: test-logical-margin
 
 ABSOLUTE_AUTO_WIDTH_SRC = $(filter-out tests/unit/positioned_insets_test.c,$(POSITIONED_INSETS_SRC)) tests/unit/absolute_auto_width_test.c
@@ -93,13 +100,16 @@ $(POSITIONED_INSETS_DIR)/auto-width: $(ABSOLUTE_AUTO_WIDTH_DEPS)
 $(POSITIONED_INSETS_DIR)/auto-width-negctl: $(ABSOLUTE_AUTO_WIDTH_DEPS)
 	@mkdir -p $(POSITIONED_INSETS_DIR)
 	@$(CC) -O2 -w -DLAYOUT_POSITION_AUTO_WIDTH_LEGACY $(BTEST_INC) $(CSS_INC) -o $@ $(ABSOLUTE_AUTO_WIDTH_SRC) $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a -lm
-.PHONY: test-absolute-auto-width test-absolute-auto-width-negctl
+.PHONY: test-absolute-auto-width test-absolute-auto-width-negctl test-absolute-auto-width-asan
 test-absolute-auto-width-negctl: $(POSITIONED_INSETS_DIR)/auto-width-negctl
 	@rc=0; $< > $(POSITIONED_INSETS_DIR)/auto-width-negctl.log 2>&1 || rc=$$?; \
 	 test $$rc -eq 1 && grep -F 'FAIL: one-inset auto box uses max-content not containing width' $(POSITIONED_INSETS_DIR)/auto-width-negctl.log && \
 	 grep -F 'FAIL: positioned auto control retains the ordinary intrinsic width' $(POSITIONED_INSETS_DIR)/auto-width-negctl.log
 test-absolute-auto-width: test-absolute-auto-width-negctl $(POSITIONED_INSETS_DIR)/auto-width
 	@$(POSITIONED_INSETS_DIR)/auto-width
+test-absolute-auto-width-asan: test-absolute-auto-width-negctl
+	@$(CC) -O1 -g -w -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer $(BTEST_INC) $(CSS_INC) -o $(POSITIONED_INSETS_DIR)/auto-width-asan $(ABSOLUTE_AUTO_WIDTH_SRC) $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a -lm
+	@ASAN_OPTIONS=detect_leaks=0 $(POSITIONED_INSETS_DIR)/auto-width-asan
 ci-host: test-absolute-auto-width
 
 # Native gate takes immutable images explicitly; the old image must reach the
@@ -108,6 +118,15 @@ ci-host: test-absolute-auto-width
 LOGICAL_MARGIN_GUEST_ISO ?=
 LOGICAL_MARGIN_GUEST_DISK ?=
 LOGICAL_MARGIN_GUEST_NEG_DISK ?=
+.PHONY: test-logical-margin-guest test-logical-margin-guest-negctl
+test-logical-margin-guest-negctl:
+	@test -f "$(LOGICAL_MARGIN_GUEST_ISO)" && test -f "$(LOGICAL_MARGIN_GUEST_NEG_DISK)" || { echo 'ERROR: set LOGICAL_MARGIN_GUEST_ISO and immutable LOGICAL_MARGIN_GUEST_NEG_DISK'; exit 1; }
+	@mkdir -p $(POSITIONED_INSETS_DIR)
+	@rc=0; python3 tools/perf/browser_load.py --iso "$(LOGICAL_MARGIN_GUEST_ISO)" --disk "$(LOGICAL_MARGIN_GUEST_NEG_DISK)" --out $(POSITIONED_INSETS_DIR)/logical-guest-negctl --rounds 1 --cases logical-margin > $(POSITIONED_INSETS_DIR)/logical-guest-negctl.log 2>&1 || rc=$$?; \
+	 test $$rc -eq 1 && grep -F 'AssertionError: logical margin dialog is not centered: LOGICAL-MARGIN OPEN FAIL' $(POSITIONED_INSETS_DIR)/logical-guest-negctl.log
+test-logical-margin-guest: test-logical-margin-guest-negctl
+	@test -f "$(LOGICAL_MARGIN_GUEST_DISK)" || { echo 'ERROR: set immutable LOGICAL_MARGIN_GUEST_DISK'; exit 1; }
+	python3 tools/perf/browser_load.py --iso "$(LOGICAL_MARGIN_GUEST_ISO)" --disk "$(LOGICAL_MARGIN_GUEST_DISK)" --out $(POSITIONED_INSETS_DIR)/logical-guest --rounds 1 --cases logical-margin
 
 # Real decoded image dimensions and two disjoint native click targets. The
 # baseline must reach the specific geometry assertion; an apparatus/boot
@@ -115,3 +134,12 @@ LOGICAL_MARGIN_GUEST_NEG_DISK ?=
 AUTO_WIDTH_GUEST_ISO ?=
 AUTO_WIDTH_GUEST_DISK ?=
 AUTO_WIDTH_GUEST_NEG_DISK ?=
+.PHONY: test-absolute-auto-width-guest test-absolute-auto-width-guest-negctl
+test-absolute-auto-width-guest-negctl:
+	@test -f "$(AUTO_WIDTH_GUEST_ISO)" && test -f "$(AUTO_WIDTH_GUEST_NEG_DISK)" || { echo 'ERROR: set AUTO_WIDTH_GUEST_ISO and immutable AUTO_WIDTH_GUEST_NEG_DISK'; exit 1; }
+	@mkdir -p $(POSITIONED_INSETS_DIR)
+	@rc=0; python3 tools/perf/browser_load.py --iso "$(AUTO_WIDTH_GUEST_ISO)" --disk "$(AUTO_WIDTH_GUEST_NEG_DISK)" --out $(POSITIONED_INSETS_DIR)/auto-width-guest-negctl --rounds 1 --cases absolute-auto-width > $(POSITIONED_INSETS_DIR)/auto-width-guest-negctl.log 2>&1 || rc=$$?; \
+	 test $$rc -eq 1 && grep -F 'AssertionError: positioned auto width geometry failed: AUTO-WIDTH FAIL' $(POSITIONED_INSETS_DIR)/auto-width-guest-negctl.log
+test-absolute-auto-width-guest: test-absolute-auto-width-guest-negctl
+	@test -f "$(AUTO_WIDTH_GUEST_DISK)" || { echo 'ERROR: set immutable AUTO_WIDTH_GUEST_DISK'; exit 1; }
+	python3 tools/perf/browser_load.py --iso "$(AUTO_WIDTH_GUEST_ISO)" --disk "$(AUTO_WIDTH_GUEST_DISK)" --out $(POSITIONED_INSETS_DIR)/auto-width-guest --rounds 1 --cases absolute-auto-width

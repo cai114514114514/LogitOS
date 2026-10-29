@@ -13,6 +13,7 @@
 # c/kernel/exec/fd/kpoll.c and kpollsys.c link by existing, and mini-libc's
 # poll.c is picked up by the existing wildcard over c/apps/libc/src.
 
+.PHONY: test-poll test-poll-negctl test-poll-os
 
 # ---------------------------------------------------------------------------
 # THE HOST GATE.
@@ -48,8 +49,28 @@ $(BUILD)/poll_test_negctl: $(POLL_HOST_SRC) c/kernel/exec/fd/kpoll.h c/kernel/sy
 	@mkdir -p $(BUILD)
 	$(CC) $(POLL_HOST_CF) -DPOLL_NO_PREREGISTER -o $@ $(POLL_HOST_SRC) $(POLL_HOST_INC)
 
+test-poll: $(BUILD)/poll_test
+	@$(BUILD)/poll_test
 
+# THE NEGATIVE CONTROL, and what it changes is one thing only: poll_core()
+# reads every source's readiness BEFORE registering on its wait queue instead
+# of after. Everything else is identical, every ordinary case still passes, and
+# the ONLY checks that redden are the lost-wakeup ones -- which is the point.
+# A control that broke twenty checks would prove that -D did something, not
+# that the registration order is what closes the race.
+test-poll-negctl: $(BUILD)/poll_test_negctl
+	@echo "--- poll negative control: readiness read BEFORE registration ---"
+	@if $(BUILD)/poll_test_negctl; then \
+	    echo "NEGCTL FAILED TO FAIL: the lost wakeup did not reproduce"; exit 1; \
+	 else \
+	    echo "negctl reddened as required (see the two LOST WAKEUP lines above)"; \
+	 fi
 
+# Named as a prerequisite of the positive gate rather than beside it on a
+# ci- line: CLAUDE.md's STRANDED CONTROLS category exists because a control
+# that is a separate target and is named by nobody runs never while looking
+# exactly like one that is covered.
+test-poll: test-poll-negctl
 
 # ---------------------------------------------------------------------------
 # THE ON-DEVICE HALF: /bin/polltest.
@@ -107,5 +128,13 @@ else
 $(warning tests/poll.mk: tests/guest/exec/polltest.c is missing -- /bin/polltest will not be built, and test-poll-os cannot run)
 endif
 
+test-poll-os: $(ISO) $(DISK)
+	@bash tests/boot/run-poll-test.sh $(ISO) $(DISK)
 
+.PHONY: test-poll-os-negctl
+test-poll-os-negctl:
+	@$(MAKE) POLL_NEGCTL=1 DISK=$(BUILD)/disk_pollneg.img $(BUILD)/disk_pollneg.img
+	@bash tests/boot/run-poll-negctl.sh $(ISO) $(BUILD)/disk_pollneg.img
 
+# Same reasoning as above: a control nobody names runs never.
+test-poll-os: test-poll-os-negctl

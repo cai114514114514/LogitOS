@@ -51,7 +51,7 @@
 # needs that (err()/warn() embed the program name), and it re-execs both
 # binaries under a common argv[0] with `exec -a`; see its own recipe below.
 
-.PHONY: \
+.PHONY: test-libc-host test-libc2 test-libc-expand-host test-libc-expand-control \
         test-libc-argz-bounds test-libc-argz-bounds-control \
         $(addprefix test-libc-,$(LIBC_DIFFS))
 
@@ -144,8 +144,15 @@ $(BUILD)/libchost/uio_host.o: tests/unit/libc_uio_host.c tests/unit/libc_uio_hos
 	@mkdir -p $(dir $@)
 	$(CC) -std=c11 -O1 -Wall -Wextra -c $< -o $@
 
+test-libc-search-control:
+	python3 tests/unit/libc_portable_control.py --build $(BUILD)/libchost --family search --cc "$(CC)"
 
+test-libc-uio-control:
+	python3 tests/unit/libc_portable_control.py --build $(BUILD)/libchost --family uio --cc "$(CC)"
 
+test-libc-search: test-libc-search-control
+test-libc-uio: test-libc-uio-control
+.PHONY: test-libc-search-control test-libc-uio-control
 endif
 
 define LIBC_DIFF_RULE
@@ -175,11 +182,27 @@ test-libc-$(1):
 endef
 $(foreach g,$(LIBC_PLATFORM_SKIPS),$(eval $(call LIBC_PLATFORM_SKIP,$(g))))
 
+# Correction to the historical byte-diff claim: Darwin's permitted "//"
+# policy differs. Keep all cases, assert our GNU-style root explicitly, and
+# compare every other field. The runner also links the real memrchr on Darwin
+# (where host libc has no such symbol), without interposing host string APIs.
+test-libc-libgen-control:
+	python3 tests/unit/libc_libgen_test.py --build $(BUILD)/libchost --cc "$(CC)" --controls
 
+test-libc-libgen: test-libc-libgen-control
+	python3 tests/unit/libc_libgen_test.py --build $(BUILD)/libchost --cc "$(CC)"
 
+.PHONY: test-libc-libgen test-libc-libgen-control
 
+# Keep controls on the ordinary entrypoint, not only an aggregate CI target.
+test-libc-inet-control:
+	python3 tests/unit/libc_inet_contract_test.py --build $(BUILD)/inet-contract --cc "$(CC)" --controls
 
+test-libc-inet-contract: test-libc-inet-control
+	python3 tests/unit/libc_inet_contract_test.py --build $(BUILD)/inet-contract --cc "$(CC)"
 
+test-libc-inet: test-libc-inet-contract
+.PHONY: test-libc-inet test-libc-inet-control test-libc-inet-contract
 
 # The same assertions can run against the complete shipped libc in ring 3.
 # Build explicitly and pack into an isolated test disk; this diagnostic does
@@ -192,7 +215,38 @@ $(BUILD)/inet-contract.elf: $(BUILD)/asobj/tests/unit/libc_inet_contract_test.o 
 $(BUILD)/inet-contract.aex: $(BUILD)/inet-contract.elf tools/mkaex.py
 	python3 tools/mkaex.py $< $@ inet-contract - '?' 150 150 150
 
+# err()/warn() print "<progname>: ...", and the two binaries cannot share a
+# name, so the generic rule's diff would fail on the program name alone. Both
+# are re-exec'd under one argv[0] instead. stderr is compared as well as stdout
+# and so is the exit status, because err() is supposed to exit(status) -- a
+# version that printed correctly and returned would pass a stdout-only diff.
+#
+# NO `set -e` IN THIS RECIPE. err() and errx() are SUPPOSED to exit non-zero --
+# that is half of what is being compared -- so an errexit shell aborts on the
+# first correct result. The exit status is captured and diffed instead.
+test-libc-err: test-libc-libgen
+	@ok=1; \
+	for c in warnfam err errnull errx errxnull verr verrx errzero; do \
+	  bash -c "exec -a /usr/local/bin/progtest $(BUILD)/libchost/libgen_ours err $$c" \
+	      > $(BUILD)/libchost/err.o.out 2> $(BUILD)/libchost/err.o.err; oe=$$?; \
+	  bash -c "exec -a /usr/local/bin/progtest $(BUILD)/libchost/libgen_reference err $$c" \
+	      > $(BUILD)/libchost/err.g.out 2> $(BUILD)/libchost/err.g.err; ge=$$?; \
+	  if [ "$$oe" != "$$ge" ] \
+	     || ! diff -q $(BUILD)/libchost/err.g.out $(BUILD)/libchost/err.o.out >/dev/null \
+	     || ! diff -q $(BUILD)/libchost/err.g.err $(BUILD)/libchost/err.o.err >/dev/null; then \
+	    echo "FAIL: err/warn case $$c diverges (exit $$oe vs $$ge)"; \
+	    diff -u $(BUILD)/libchost/err.g.err $(BUILD)/libchost/err.o.err || true; ok=0; \
+	  fi; \
+	done; \
+	if [ $$ok = 1 ]; then \
+	  echo "PASS: err/warn family matches $(LIBC_HOST_NAME) (8 cases, stdout+stderr+exit)"; \
+	else echo "FAIL: err/warn family diverges from $(LIBC_HOST_NAME) (above)"; exit 1; fi
+.PHONY: test-libc-err
 
+# Everything above proves the pure-computation additions against a reference.
+# This runs them together, host-side, in one pass.
+test-libc-host: $(addprefix test-libc-,$(LIBC_DIFFS)) test-libc-err
+	@echo "DONE: available libc host comparisons and contracts completed; see any SKIP lines for missing platform coverage ($(LIBC_HOST_NAME))"
 
 # Broad, fast host coverage for the GNU/BSD/C23 compatibility wave.  The
 # syscall-backed entropy and UTF-16 state-machine cases remain in /bin/libctest
@@ -203,10 +257,53 @@ LIBC_EXPAND_HOST_SRC := tests/unit/libc_expand_host_test.c \
     c/apps/libc/src/drand48.c c/apps/libc/src/locale_ext.c \
     c/apps/libc/src/ctype_l.c $(LIBC_SHIM)
 
+test-libc-expand-control:
+	@mkdir -p $(BUILD)/libchost
+	@$(CC) -std=c11 -O1 -w $(LIBC_HOST_INC) -DLIBC_EXPAND_NEGATIVE_CONTROL \
+	    -o $(BUILD)/libchost/libc_expand_control $(LIBC_EXPAND_HOST_SRC)
+	@$(BUILD)/libchost/libc_expand_control > $(BUILD)/libchost/libc_expand_control.out; rc=$$?; \
+	  if [ $$rc -eq 0 ] || ! grep -q '^EXPECTED_CONTROL_FAILURE argz_replace multi-hit$$' \
+	       $(BUILD)/libchost/libc_expand_control.out; then \
+	    echo "CONTROL FAILED: the sabotaged multi-hit argz_replace was not detected"; \
+	    cat $(BUILD)/libchost/libc_expand_control.out; exit 1; \
+	  fi; \
+	  echo "control ok: host gate rejected the sabotaged second argz replacement"
 
+test-libc-expand-host: test-libc-expand-control
+	@mkdir -p $(BUILD)/libchost
+	@$(CC) -std=c11 -O1 -w $(LIBC_HOST_INC) \
+	    -o $(BUILD)/libchost/libc_expand_host $(LIBC_EXPAND_HOST_SRC)
+	@$(BUILD)/libchost/libc_expand_host
 
+# A malformed final argz element is still confined by argz_len.  Run this
+# under ASan because an unbounded string search can produce the right return
+# value while silently reading beyond the caller's allocation.
+test-libc-argz-bounds-control:
+	@mkdir -p $(BUILD)/libchost
+	@$(CC) -std=c11 -O1 -g -w -fsanitize=address,undefined \
+	    $(LIBC_HOST_INC) -DLIBC_ARGZ_UNBOUNDED_CONTROL \
+	    -o $(BUILD)/libchost/argz_bounds_control \
+	    tests/unit/libc_argz_bounds_test.c c/apps/libc/src/argz.c
+	@$(BUILD)/libchost/argz_bounds_control > $(BUILD)/libchost/argz_bounds_control.out 2>&1; rc=$$?; \
+	  if [ $$rc -eq 0 ] || ! grep -q 'AddressSanitizer: heap-buffer-overflow' \
+	       $(BUILD)/libchost/argz_bounds_control.out; then \
+	    echo 'CONTROL FAILED: unbounded argz scan escaped ASan'; \
+	    cat $(BUILD)/libchost/argz_bounds_control.out; exit 1; \
+	  fi; \
+	  echo 'control ok: ASan rejected unbounded argz scan'
 
+test-libc-argz-bounds: test-libc-argz-bounds-control
+	@mkdir -p $(BUILD)/libchost
+	@$(CC) -std=c11 -O1 -g -w -fsanitize=address,undefined \
+	    $(LIBC_HOST_INC) -o $(BUILD)/libchost/argz_bounds \
+	    tests/unit/libc_argz_bounds_test.c c/apps/libc/src/argz.c
+	@$(BUILD)/libchost/argz_bounds
 
+# Make the aggregate name reach the expansion even though an older unrelated
+# inet differential currently reddens earlier on Darwin (reported separately).
+# Correction (2026-09-22): inet now separates Darwin differences from the
+# strict contract and tests IPv6 rejection with controls; keep expansion wired.
+test-libc-host: test-libc-expand-host test-libc-argz-bounds
 
 # --- on-target: the syscall-backed additions (glob, pwd/grp, uname, mman,
 # sched, getrlimit, environ) that CANNOT be host-diffed because they talk to
@@ -226,6 +323,8 @@ $(BUILD)/libctest2.aex: $(BUILD)/libctest2.elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/libctest2.elf $@ libctest2 - '?' 150 150 150
 CLI += libctest2
 $(DISK): $(BUILD)/libctest2.aex
+test-libc2: $(ISO) $(DISK)
+	@bash tests/boot/run-libc2-test.sh $(ISO) $(DISK)
 else
 $(warning tests/libc.mk: $(LIBC2_SRC) is missing -- /bin/libctest2 will not be built, and test-libc2 cannot run)
 endif

@@ -6,7 +6,7 @@ SH_COMMANDS_INC := -Itests/unit -Ic/apps/coreutils -Ic/apps -Iinclude/abi
 SH_COMMANDS_BINS := $(BUILD)/login.aex $(BUILD)/sh.aex $(BUILD)/echo.aex \
                     $(BUILD)/false.aex
 
-.PHONY: test-sh-commands test-sh-commands-negctl
+.PHONY: test-sh-commands test-sh-commands-negctl test-sh-commands-os
 
 test-sh-commands-negctl:
 	@mkdir -p $(BUILD)
@@ -25,6 +25,9 @@ test-sh-commands: test-sh-commands-negctl
 	    tests/unit/sh_commands_test.c $(SH_COMMANDS_INC)
 	@$(BUILD)/sh_commands_test
 
+test-sh-commands-os: test-sh-commands $(ISO) $(SH_COMMANDS_BINS) $(FONTS)
+	@python3 tests/boot/run-sh-commands.py --build $(BUILD) \
+	    --out $(BUILD)/sh-commands-guest
 
 # The established shell host suite and ordinary CI both consume the new gate.
 # This fragment is included by exec.mk so test-mk-wired audits the connection.

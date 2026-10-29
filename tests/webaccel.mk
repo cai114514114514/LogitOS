@@ -44,7 +44,7 @@
 # these negctl boots against the positive boots -- are only trusted for the
 # CATEGORICAL counters (dials, hits), never for milliseconds.
 
-.PHONY: test-webaccel test-webaccel-negctl
+.PHONY: test-webaccel test-webaccel-negctl test-webaccel-os test-webaccel-os-negctl test-webaccel-cookie-negctl
 
 # --- host: the policy ---------------------------------------------------------
 # wa_cache_test.c includes http_cache.c with WAC_NOW_MS() faked, so
@@ -79,6 +79,16 @@ test-webaccel: test-webaccel-negctl
 
 ci-host: test-webaccel
 
+# --- guest: the same-boot revisit gate ----------------------------------------
+# The disk under test is the ordinary $(DISK) -- the cache is in the normal
+# build. The driver boots it, loads heavy.html twice back to back, and gates
+# on visit 2's own loadend line (0 dials, hits == requests) plus the ratio.
+# Local fixtures served from the host: no live network, deterministic bytes
+# (tests/fixtures/webaccel/gen.py is seeded), so the gate cannot redden
+# because a site shipped a new bundle overnight.
+test-webaccel-os: test-webaccel-os-negctl test-webaccel-cookie-negctl $(ISO) $(DISK)
+	python3 tests/qmp/qmp_webaccel.py --iso $(ISO) --disk $(DISK) \
+	    --rv --reload-probe --out $(BUILD)/wa-os.json
 
 # --- guest negctl: the browser with the cache COMPILED OUT --------------------
 # browser_rt.c rebuilt with -DWACACHE_OFF (every wacache_* becomes its refusal
@@ -101,6 +111,10 @@ $(BUILD)/browser-waoff.elf: $(ENGINE_OBJ) $(BROWSER_JS_OBJ) $(WAOFF_OBJ) $(CSS_O
 $(BUILD)/browser-waoff.aex: $(BUILD)/browser-waoff.elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/browser-waoff.elf $@ Browser - 'B' 120 130 240 --stack-pages 2048
 
+test-webaccel-os-negctl: $(ISO) $(BUILD)/browser-waoff.aex
+	@$(MAKE) DISK=$(BUILD)/disk-waoff.img BROWSER_AEX=$(BUILD)/browser-waoff.aex $(BUILD)/disk-waoff.img
+	python3 tests/qmp/qmp_webaccel.py --iso $(ISO) --disk $(BUILD)/disk-waoff.img \
+	    --out $(BUILD)/wa-os-negctl.json --expect-off
 
 # WATCHED RED, guest side, recorded 2026-08-30 on disk-waoff.img (exit 0 from
 # --expect-off, the redness being the expected kind): visit 2 printed
@@ -148,6 +162,40 @@ $(BUILD)/browser-nck.elf: $(ENGINE_OBJ) $(BROWSER_JS_OBJ) $(NCK_OBJ) $(CSS_OBJ) 
 $(BUILD)/browser-nck.aex: $(BUILD)/browser-nck.elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/browser-nck.elf $@ Browser - 'B' 120 130 240 --stack-pages 2048
 
+# The driver's --chl mode is a STANDALONE gate (see qmp_webaccel.py's --chl
+# help -- it skips the visit1/visit2 ratio flow entirely, one navigation to
+# chl-shell.html whose own script sets a cookie and reload()s itself), so it
+# cannot be folded into test-webaccel-os's own --rv/--reload-probe boot
+# without a second QEMU boot of its own; this target IS that second boot. The
+# POSITIVE side of this corner -- that the ordinary, fixed browser serves
+# page A once and page B once -- is proven on the host by wa_cache_test.c's
+# test_cookie_key() (part of test-webaccel, which this file's own header
+# lists as a target that MUST be run alongside this one across any change
+# here) and was guest-measured by hand against browser.aex before this
+# target existed (see the change's own notes); it is not repeated as a
+# separate `make` target here because a THIRD full QEMU boot per ordinary
+# run of test-webaccel-os would cost more than the corner is worth once its
+# negative control below is wired and watched. This target proves the OTHER
+# side: on the nck browser the same fixture MUST redden -- page A must be
+# served twice (NAV_MAX_HOPS would cap it well above 1) and page B never,
+# because a url-only key cannot tell the cookieless challenge request from
+# the cookie-bearing re-navigation apart.
+# `--expect-off` doesn't fit here -- that flag is waoff's "every cache
+# assertion must fail" shape (dials>0, hits=0 on a cache compiled OUT). This
+# control's cache is compiled IN; only the KEY is wrong. So this recipe
+# inverts the driver's own exit code the same way test-webaccel-negctl above
+# inverts wa_cache_test's: --chl already exits 1 (finish(1, "GATE RED..."))
+# exactly when page A is not served once and page B not served once, i.e.
+# exactly the douyin-loop shape this build must reproduce -- so a 0 here
+# means the nck build somehow behaved like the fixed one, which is the
+# negative control failing to control anything and must fail the build.
+test-webaccel-cookie-negctl: $(ISO) $(BUILD)/browser-nck.aex
+	@$(MAKE) DISK=$(BUILD)/disk-nck.img BROWSER_AEX=$(BUILD)/browser-nck.aex $(BUILD)/disk-nck.img
+	@if python3 tests/qmp/qmp_webaccel.py --iso $(ISO) --disk $(BUILD)/disk-nck.img \
+	    --chl --out $(BUILD)/wa-cookie-negctl.json; then \
+	    echo "FAIL: the cookie-key negative control PASSED on browser-nck.aex -- test-webaccel-os's --chl run does not measure the cookie half of the key"; \
+	    exit 1; fi
+	@echo "test-webaccel-cookie-negctl: RED observed (douyin loop reproduced on browser-nck.aex) -- the cookie half of the key is load-bearing"
 
 # WATCHED RED, guest side, recorded 2026-09-02 on disk-nck.img: page A served
 # repeatedly (NAV_MAX_HOPS-bounded) and page B never -- the exact douyin

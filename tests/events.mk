@@ -31,7 +31,7 @@
 # The recipes check for it and say so rather than emitting a confusing link
 # error, because "wpt.mk was not read" is the only way it can be empty.
 
-.PHONY: test-events test-events-negctl
+.PHONY: test-events test-events-negctl test-wpt-events test-wpt-events-all
 .PHONY: wpt-events-baseline events-root
 
 EVENTS_SRC      := c/apps/gui/browser/js/dom/events.c
@@ -109,8 +109,25 @@ test-events-negctl: $(BUILD)/wpt_events_negctl events-root
 	    grep -E '^WPT:' $(BUILD)/events_negctl.log; \
 	 fi
 
+# dom/events only -- the scoreboard for this line, and the only thing the
+# ratchet covers. The baseline is written with the SAME --only scope it is
+# checked with; a baseline whose scope does not match the run it is compared
+# against reports every file outside the scope as "newly passing", which is
+# noise that hides the one line that matters.
+test-wpt-events: $(BUILD)/wpt_events
+	@$(BUILD)/wpt_events --root $(WPT_ROOT) --only dom/events -b $(EVENTS_BASELINE) \
+	    $(if $(V),-v $(V),) $(if $(STRICT),--strict,)
 
 wpt-events-baseline: $(BUILD)/wpt_events
 	@$(BUILD)/wpt_events --root $(WPT_ROOT) --only dom/events -b $(EVENTS_BASELINE) \
 	    --write-baseline
 
+# The whole corpus with the layer linked. A RAW MEASUREMENT, not a ratchet:
+# the event constructors are used well outside dom/events, so a regression in
+# html/ or css/ would never show up in the number above -- but comparing the
+# whole corpus against a dom/events baseline would drown that signal, so this
+# one deliberately carries no baseline. Run it before and after a change and
+# diff the two totals.
+test-wpt-events-all: $(BUILD)/wpt_events
+	@$(BUILD)/wpt_events --root $(WPT_ROOT) -b /dev/null $(if $(V),-v $(V),) \
+	    $(if $(ONLY),--only $(ONLY),) $(if $(SUBSET),--subset $(SUBSET),)

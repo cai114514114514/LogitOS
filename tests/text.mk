@@ -47,9 +47,11 @@ SHAPE_SKIP_TEXT = $@ SKIPPED: the HarfBuzz oracle is not here\n\
   (any font works if both sides use it: the expected header is generated\n\
   from the same SHAPEFONT the shaper is run against).\n
 
-.PHONY: \
+.PHONY: test-bidi test-bidi-negctl test-shape test-shape-negctl \
         test-shape-device test-text regen-bidi-tables
 
+# --- bidi: UAX #9 against the Unicode conformance corpora -------------------
+test-bidi:
 ifneq ($(BIDI_ORACLE_OK),)
 	@mkdir -p $(BUILD)
 	@$(CC) -O2 -Wall -Wextra -o $(BUILD)/bidi_test tests/unit/bidi_test.c \
@@ -59,6 +61,11 @@ else
 	@printf '$(BIDI_SKIP_TEXT)'
 endif
 
+# The negative control for the bidi half: replace the resolver with what
+# LogitOS did before this line existed (every level 0, visual order = logical
+# order) and require the corpus to reject it. An "it rendered" assertion cannot
+# tell those apart; 800k conformance cases can.
+test-bidi-negctl:
 ifneq ($(BIDI_ORACLE_OK),)
 	@mkdir -p $(BUILD)
 	@$(CC) -O2 -w -DBIDI_NEGATIVE_CONTROL -o $(BUILD)/bidi_test_negctl \
@@ -93,6 +100,7 @@ $(BUILD)/shape_expect.h: tests/unit/shape_hb_gen.py tests/unit/shape_corpus.txt
 	    --corpus tests/unit/shape_corpus.txt --out $@ \
 	    --nogpos $(BUILD)/shape_nogpos.ttf
 
+test-shape: $(if $(SHAPE_ORACLE_OK),$(BUILD)/shape_expect.h)
 ifneq ($(SHAPE_ORACLE_OK),)
 	@$(CC) -O2 -Wall -Wextra -o $(BUILD)/shape_test tests/unit/shape_test.c \
 	    $(TEXTLIB) -Ic/lib/text -I$(BUILD)
@@ -101,6 +109,12 @@ else
 	@printf '$(SHAPE_SKIP_TEXT)'
 endif
 
+# Negative control for the shaping half: SHAPE_NEGATIVE_CONTROL makes the
+# shaper do what text.c did before -- one glyph per code point straight out of
+# cmap, advances summed, no GSUB and no GPOS. Arabic then comes out as
+# disconnected isolated letters and every kerned pair is a pixel or two wide,
+# which is exactly what the HarfBuzz comparison must catch.
+test-shape-negctl: $(if $(SHAPE_ORACLE_OK),$(BUILD)/shape_expect.h)
 ifneq ($(SHAPE_ORACLE_OK),)
 	@$(CC) -O2 -w -DSHAPE_NEGATIVE_CONTROL -o $(BUILD)/shape_test_negctl \
 	    tests/unit/shape_test.c $(TEXTLIB) -Ic/lib/text -I$(BUILD)
@@ -116,7 +130,30 @@ else
 	@printf '$(SHAPE_SKIP_TEXT)'
 endif
 
+# --- shaping on the device --------------------------------------------------
+# The host differential proves the glyph ids are right. This proves the pixels
+# reach the screen: it boots the ISO, opens /shaping.txt in TextEdit, and
+# MEASURES the screenshot -- Arabic letters that join project onto the x axis as
+# a handful of connected ink runs, isolated letters as one run per letter.
+#
+# Its negative control is a kernel build, not a second binary, so it is a
+# command rather than a target (CFLAGS changes need a rebuild, and a target that
+# quietly rebuilt the tree with different flags would leave it that way):
+#
+#     make clean && make NOSHAPE=1 && make test-shape-device
+#
+# which reports 7/10/11/6 ink groups where shaped text gives 3/4/4/2, and every
+# Arabic word about half again as wide. Put the tree back with
+# `make clean && make` afterwards.
+test-shape-device: $(ISO) $(DISK)
+	@python3 tests/qmp/qmp_shape.py $(ISO) $(DISK) $(BUILD)/shape_device.ppm
 
+test-text: test-bidi test-bidi-negctl test-shape test-shape-negctl
+	@if [ -n "$(BIDI_ORACLE_OK)" ] && [ -n "$(SHAPE_ORACLE_OK)" ]; then \
+	    echo "test-text: ALL PASS"; \
+	 else \
+	    echo "test-text: NOT all pass --$(if $(BIDI_ORACLE_OK),, bidi SKIPPED)$(if $(SHAPE_ORACLE_OK),, shape SKIPPED) (see above); what ran passed"; \
+	 fi
 
 # Rebuild the Unicode property tables from the host UCD. Not part of a normal
 # build: the .inc files are committed, exactly like roots_bundle.inc.

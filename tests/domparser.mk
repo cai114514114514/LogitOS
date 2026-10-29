@@ -35,6 +35,7 @@
 # absent (weak, "only if present"), which is itself a supported link and not
 # a special case.
 
+.PHONY: test-domparser
 
 DOMPARSER_SRC := tests/unit/domparser_test.c \
                   c/apps/gui/browser/js/dom/domparser.c c/apps/gui/browser/js/dom/dom.c \
@@ -50,3 +51,5 @@ $(BUILD)/domparser_test: $(DOMPARSER_SRC) $(HTML_PARSER_SRC) $(BUILD)/libcss_hos
 	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) $(JS_INC) -DCONFIG_VERSION='"host"' -DWEBAPI_HOST \
 	    -o $@ $(DOMPARSER_SRC) $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a -lm
 
+test-domparser: $(BUILD)/domparser_test
+	@$(BUILD)/domparser_test

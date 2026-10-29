@@ -73,7 +73,7 @@
 #
 # On ci-boot:. One boot per side, two per run. Run it across a change to
 # js_platform.c / js_page.c / js_dom.c / browser.c.
-.PHONY: test-docwrite test-docwrite-negctl
+.PHONY: test-docwrite test-docwrite-negctl test-docwrite-afterload-red
 
 test-docwrite: test-docwrite-negctl
 test-docwrite: $(ISO) $(DISK)
@@ -123,3 +123,6 @@ $(BUILD)/browser-adw.elf: $(ENGINE_OBJ) $(ADW_JS_OBJ) $(BROWSER_OBJ) $(CSS_OBJ) 
 $(BUILD)/browser-adw.aex: $(BUILD)/browser-adw.elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/browser-adw.elf $@ Browser - 'B' 120 130 240 --stack-pages 2048
 
+test-docwrite-afterload-red: $(ISO) $(BUILD)/browser-adw.aex
+	@$(MAKE) DISK=$(BUILD)/disk-adw.img BROWSER_AEX=$(BUILD)/browser-adw.aex $(BUILD)/disk-adw.img
+	python3 tests/qmp/qmp_docwrite.py $(ISO) $(BUILD)/disk-adw.img

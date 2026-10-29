@@ -104,7 +104,7 @@ test-cookie-cors-negctl: $(RUST_LIB_HOST)
 # Full PSL checks use the raw upstream source and official fixture; controls
 # require an ordinary test failure in exactly the disabled rule's group.
 COOKIE_HARDENING_SRC := tests/unit/cookie_hardening_test.c c/net/http/cookies.c
-.PHONY: test-cookie-hardening test-cookie-hardening-negctl test-cookie-psl
+.PHONY: test-cookie-hardening test-cookie-hardening-negctl test-cookie-psl test-cookie-hardening-sanitize
 ci-host: test-cookie-hardening
 test-cookie-jar: test-cookie-hardening
 test-cookie-hardening: test-cookie-hardening-negctl test-cookie-psl
@@ -120,3 +120,8 @@ test-cookie-psl:
 	@$(CC) -shared -fPIC -O2 -Ic/net/http tests/unit/cookie_psl_probe.c -o $(BUILD)/cookie_psl_test.so
 	@python3 tools/psl/verify.py $(BUILD)/cookie_psl_test.so
 
+test-cookie-hardening-sanitize:
+	@mkdir -p $(BUILD)
+	@$(CC) -O1 -g -Wall -Wextra -fsanitize=address,undefined -fno-omit-frame-pointer \
+	    -Ic/net/http -o $(BUILD)/cookie_hardening_sanitize $(COOKIE_HARDENING_SRC)
+	@ASAN_OPTIONS=detect_leaks=0 $(BUILD)/cookie_hardening_sanitize

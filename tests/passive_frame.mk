@@ -41,28 +41,34 @@ $(PASSIVE_FRAME_DIR)/ports: $(FRAME_PORT_DEP)
 $(PASSIVE_FRAME_DIR)/ports-no-messages: $(FRAME_PORT_DEP)
 	@mkdir -p $(PASSIVE_FRAME_DIR)
 	@$(CC) $(RUNTIME_SCROLL_CF) $(IMG_HOST_INC) -DPF_TEST_NO_MESSAGES -o $@ $(FRAME_PORT_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
-.PHONY: test-frame-ports test-frame-ports-negctl
+.PHONY: test-frame-ports test-frame-ports-negctl test-frame-ports-san
 test-frame-ports-negctl: $(PASSIVE_FRAME_DIR)/ports-no-messages
 	@rc=0; $(PASSIVE_FRAME_DIR)/ports-no-messages active-ports > $(PASSIVE_FRAME_DIR)/ports-no-messages.log 2>&1 || rc=$$?; test $$rc -eq 1 && grep -q '^FAIL: native child click and bidirectional message repaint embedded pixels' $(PASSIVE_FRAME_DIR)/ports-no-messages.log
 test-frame-ports: test-frame-ports-negctl test-native-ports $(PASSIVE_FRAME_DIR)/ports
 	@$(PASSIVE_FRAME_DIR)/ports active-ports
 	@$(PASSIVE_FRAME_DIR)/ports active
+test-frame-ports-san: test-frame-ports
+	@$(CC) $(RUNTIME_SCROLL_CF) $(IMG_HOST_INC) -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -o $(PASSIVE_FRAME_DIR)/ports-san $(FRAME_PORT_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
+	@ASAN_OPTIONS=detect_leaks=0 $(PASSIVE_FRAME_DIR)/ports-san active-ports
 ci-host: test-frame-ports
 
 $(PASSIVE_FRAME_DIR)/ports-lost-tab-policy: $(FRAME_PORT_DEP)
 	@mkdir -p $(PASSIVE_FRAME_DIR)
 	@$(CC) $(RUNTIME_SCROLL_CF) $(IMG_HOST_INC) -DPF_TEST_LOST_TAB_POLICY -o $@ $(FRAME_PORT_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
-.PHONY: test-frame-tab-policy test-frame-tab-policy-negctl
+.PHONY: test-frame-tab-policy test-frame-tab-policy-negctl test-frame-tab-policy-san
 test-frame-tab-policy-negctl: $(PASSIVE_FRAME_DIR)/ports-lost-tab-policy
 	@rc=0; $(PASSIVE_FRAME_DIR)/ports-lost-tab-policy active-ports-restore > $(PASSIVE_FRAME_DIR)/ports-lost-tab-policy.log 2>&1 || rc=$$?; test $$rc -eq 1 && grep -q '^FAIL: native child click and bidirectional message repaint embedded pixels' $(PASSIVE_FRAME_DIR)/ports-lost-tab-policy.log
 test-frame-tab-policy: test-frame-tab-policy-negctl $(PASSIVE_FRAME_DIR)/ports
 	@$(PASSIVE_FRAME_DIR)/ports active-ports-restore
+test-frame-tab-policy-san: test-frame-tab-policy
+	@$(CC) $(RUNTIME_SCROLL_CF) $(IMG_HOST_INC) -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -o $(PASSIVE_FRAME_DIR)/tab-policy-san $(FRAME_PORT_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
+	@ASAN_OPTIONS=detect_leaks=0 $(PASSIVE_FRAME_DIR)/tab-policy-san active-ports-restore
 ci-host: test-frame-tab-policy
 
 $(PASSIVE_FRAME_DIR)/no-element-focus: $(FRAME_PORT_DEP)
 	@mkdir -p $(PASSIVE_FRAME_DIR)
 	@$(CC) $(RUNTIME_SCROLL_CF) $(IMG_HOST_INC) -DPF_TEST_NO_ELEMENT_FOCUS -o $@ $(FRAME_PORT_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
-.PHONY: test-frame-focus test-frame-focus-negctl
+.PHONY: test-frame-focus test-frame-focus-negctl test-frame-focus-san
 $(PASSIVE_FRAME_DIR)/shared-element-focus: $(FRAME_PORT_DEP)
 	@mkdir -p $(PASSIVE_FRAME_DIR)
 	@$(CC) $(RUNTIME_SCROLL_CF) $(IMG_HOST_INC) -DFOCUS_TEST_SHARED_OWNER -o $@ $(FRAME_PORT_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
@@ -71,6 +77,9 @@ test-frame-focus-negctl: $(PASSIVE_FRAME_DIR)/no-element-focus $(PASSIVE_FRAME_D
 	@rc=0; $(PASSIVE_FRAME_DIR)/shared-element-focus active-focus > $(PASSIVE_FRAME_DIR)/shared-element-focus.log 2>&1 || rc=$$?; test $$rc -eq 1 && grep -q '^FAIL: native child click and bidirectional message repaint embedded pixels' $(PASSIVE_FRAME_DIR)/shared-element-focus.log
 test-frame-focus: test-frame-focus-negctl $(PASSIVE_FRAME_DIR)/ports
 	@$(PASSIVE_FRAME_DIR)/ports active-focus
+test-frame-focus-san: test-frame-focus
+	@$(CC) $(RUNTIME_SCROLL_CF) $(IMG_HOST_INC) -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -o $(PASSIVE_FRAME_DIR)/focus-san $(FRAME_PORT_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
+	@ASAN_OPTIONS=detect_leaks=0 $(PASSIVE_FRAME_DIR)/focus-san active-focus
 ci-host: test-frame-focus
 
 # Full parent/child consumer: neither a bare fresh Context nor a JSON alias
@@ -86,11 +95,14 @@ $(PASSIVE_FRAME_DIR)/realm: $(FRAME_REALM_DEP)
 $(PASSIVE_FRAME_DIR)/realm-no-globals: $(FRAME_REALM_DEP)
 	@mkdir -p $(PASSIVE_FRAME_DIR)
 	@$(CC) $(RUNTIME_SCROLL_CF) $(IMG_HOST_INC) -DFRAME_NO_REALM_GLOBALS -o $@ $(FRAME_REALM_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
-.PHONY: test-frame-realm test-frame-realm-negctl
+.PHONY: test-frame-realm test-frame-realm-negctl test-frame-realm-san
 test-frame-realm-negctl: $(PASSIVE_FRAME_DIR)/realm-no-globals
 	@rc=0; $< active-realm > $(PASSIVE_FRAME_DIR)/realm-no-globals.log 2>&1 || rc=$$?; test $$rc -eq 1 && grep -q '^FAIL: native child click and bidirectional message repaint embedded pixels' $(PASSIVE_FRAME_DIR)/realm-no-globals.log
 test-frame-realm: test-frame-realm-negctl $(PASSIVE_FRAME_DIR)/realm
 	@$(PASSIVE_FRAME_DIR)/realm active-realm
+test-frame-realm-san: test-frame-realm
+	@$(CC) $(RUNTIME_SCROLL_CF) $(IMG_HOST_INC) -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -o $(PASSIVE_FRAME_DIR)/realm-san $(FRAME_REALM_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
+	@ASAN_OPTIONS=detect_leaks=0 $(PASSIVE_FRAME_DIR)/realm-san active-realm
 ci-host: test-frame-realm
 
 $(PASSIVE_FRAME_DIR)/transport-diag: $(FRAME_REALM_DEP)
@@ -121,6 +133,10 @@ test-passive-frame: test-passive-frame-transport
 $(PASSIVE_FRAME_DIR)/san: $(PASSIVE_FRAME_DEPS)
 	@mkdir -p $(PASSIVE_FRAME_DIR)
 	$(CC) $(RUNTIME_SCROLL_CF) $(IMG_HOST_INC) -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -o $@ $(PASSIVE_FRAME_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
+.PHONY: test-passive-frame-san
+test-passive-frame-san: test-passive-frame test-active-frame $(PASSIVE_FRAME_DIR)/san
+	@for mode in paint geometry meta-tighten remove base-blocked active active-large; do \
+	 ASAN_OPTIONS=detect_leaks=0 $(PASSIVE_FRAME_DIR)/san $$mode > $(PASSIVE_FRAME_DIR)/san-$$mode.log 2>&1 || { tail -60 $(PASSIVE_FRAME_DIR)/san-$$mode.log; exit 1; }; tail -2 $(PASSIVE_FRAME_DIR)/san-$$mode.log; done
 
 # Device negative: same linked browser, replacing only the nested paint call.
 # The loader and child network requests remain live so a blank result cannot
@@ -135,3 +151,10 @@ $(PASSIVE_FRAME_DIR)/guest-old.aex: $(PASSIVE_FRAME_DIR)/guest-old.elf tools/mka
 # Disk paths must be explicit private images prepared by the caller; these
 # targets never package, write, or launch the user's default disk.
 PASSIVE_FRAME_GUEST_OUT ?= $(PASSIVE_FRAME_DIR)
+.PHONY: test-passive-frame-guest test-passive-frame-guest-negctl
+test-passive-frame-guest-negctl: $(PASSIVE_FRAME_DIR)/guest-old.aex
+	@test -n "$(PASSIVE_FRAME_GUEST_OLD_DISK)" -a -n "$(PASSIVE_FRAME_GUEST_ISO)"
+	python3 tests/qmp/passive_frame_guest.py --iso $(PASSIVE_FRAME_GUEST_ISO) --disk $(PASSIVE_FRAME_GUEST_OLD_DISK) --out $(PASSIVE_FRAME_GUEST_OUT)/guest-old --expect-no-paint
+test-passive-frame-guest: test-passive-frame-guest-negctl
+	@test -n "$(PASSIVE_FRAME_GUEST_DISK)"
+	python3 tests/qmp/passive_frame_guest.py --iso $(PASSIVE_FRAME_GUEST_ISO) --disk $(PASSIVE_FRAME_GUEST_DISK) --out $(PASSIVE_FRAME_GUEST_OUT)/guest-current

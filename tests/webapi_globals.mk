@@ -25,7 +25,7 @@
 # number, and that number is a count of subtests, not a rate, so growing the
 # corpus cannot quietly satisfy it.
 
-.PHONY: test-encoding test-encoding-negctl wg-local-root
+.PHONY: test-encoding test-encoding-negctl test-eventloop wg-local-root
 
 WG_ROOT     ?= build/wpt
 WG_LOCAL    := tests/wpt-local
@@ -123,3 +123,29 @@ test-encoding-negctl: $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
 	    echo "test-encoding-negctl: ok -- the suite collapses without the table."; \
 	 fi
 
+# --- test-eventloop ---------------------------------------------------------
+# tests/wpt-local/platform/event-loop-order.any.js, run by the same runner. It
+# is a WPT-format file in a WPT-format root, so it costs no second harness.
+#
+# fetch-size.any.js lives in the same directory and is deliberately NOT run
+# here: its large-resource case fails, and that failure is a finding about the
+# RUNNER's drain loop (it advances a virtual clock to the next timer deadline
+# while a fetch is mid-transfer), not about this code. A known-red case inside
+# a gate would only teach people to ignore the gate.
+test-eventloop: $(BUILD)/wpt_test wg-local-root
+	@if [ ! -e $(WG_LOCAL)/resources/testharness.js ]; then \
+	    echo "test-eventloop: no corpus at $(WG_ROOT) -- skipped"; exit 0; fi; \
+	 $(BUILD)/wpt_test --root $(WG_LOCAL) --subset platform \
+	    --only platform/event-loop-order -b /dev/null -v 20 2>&1 \
+	    | grep -E '^  (FAIL|HARNESS)' || true; \
+	 $(BUILD)/wpt_test --root $(WG_LOCAL) --subset platform \
+	    --only platform/event-loop-order -b /dev/null 2>/dev/null \
+	    | sed -n 's/^WPT: \([0-9]*\)\/\([0-9]*\).*/\1 \2/p' | { read got tot; \
+	      if [ -z "$$tot" ] || [ "$$tot" -eq 0 ]; then \
+	        echo "test-eventloop: FAILED -- ZERO subtests ran. 0/0 is not a pass:"; \
+	        echo "  --only filters within the runner's default subset list, so a"; \
+	        echo "  local root needs --subset too or it silently matches nothing."; \
+	        exit 1; \
+	      elif [ "$$got" != "$$tot" ]; then \
+	        echo "test-eventloop: FAILED -- $$got/$$tot"; exit 1; \
+	      else echo "test-eventloop: ok -- $$got/$$tot"; fi; }

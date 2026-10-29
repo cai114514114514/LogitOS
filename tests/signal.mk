@@ -9,7 +9,7 @@
 # c/kernel/exec/signal/ksignal.c and ksigframe.c link by existing. What this adds is
 # /bin/sigtest, a disk to put it on, and the two targets.
 
-.PHONY: test-signal-negctl
+.PHONY: test-signal test-signal-negctl test-signal-all
 
 # --- the -DSIGNAL_NO_FPU build ----------------------------------------------
 # THE NEGATIVE CONTROL, and the reason it is this and not "remove signals".
@@ -87,6 +87,11 @@ $(SIGDISK): $(BUILD)/sigtest.aex $(BUILD)/sh.aex $(BUILD)/echo.aex $(FONTS) tool
 	    $(BUILD)/sh.aex:/bin/sh $(BUILD)/echo.aex:/bin/echo \
 	    $(BUILD)/sigtest.aex:/bin/sigtest
 
+# The real test: boot, run /bin/sigtest on the serial console, require
+# SIGTEST_OK. Everything it checks is in the header comment of
+# tests/unit/sigtest_main.c.
+test-signal: $(ISO) $(SIGDISK)
+	@bash tests/boot/run-signal-test.sh $(ISO) $(SIGDISK)
 
 # REQUIRED TO FAIL. Rebuilds the kernel with the FPU state left out of the
 # signal frame and runs the identical suite; if it still passes, the FPU checks
@@ -111,6 +116,12 @@ test-signal-negctl: $(SIGDISK)
 	    grep -aE "XMM|FAIL:" $(BUILD)/signal_negctl.txt | head -12 | sed 's/^/       /'; \
 	 fi
 
+# The aggregate. Both halves, in the order that makes a failure readable: the
+# real one first, so a broken build is reported as a broken build rather than
+# as a negative control that "correctly failed".
+test-signal-all:
+	@$(MAKE) --no-print-directory test-signal
+	@$(MAKE) --no-print-directory test-signal-negctl
 
 else
 $(warning tests/signal.mk: tests/unit/sigtest_main.c is missing -- /bin/sigtest will not be built and the signal targets cannot run)

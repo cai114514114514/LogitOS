@@ -54,7 +54,7 @@
 # fragments give: concurrent agents overwrite that file wholesale.
 
 .PHONY: test-wpt wpt wpt-baseline wpt-rank wpt-fetch wpt-list
-.PHONY: test-wpt-negctl
+.PHONY: test-wpt-negctl test-wpt-harness
 
 WPT_ROOT ?= build/wpt
 WPT_BASELINE := tests/unit/wpt_expected_fail.txt
@@ -194,6 +194,30 @@ WPT_TEST_SRC += tests/unit/rust_host_shim.c
 #      stale exclusion excludes nothing and quietly stops being a decision;
 #      worse, a RENAMED file leaves its old name here and its new one linked,
 #      which reads as if the exclusion still holds.
+.PHONY: test-wpt-link
+test-wpt-link:
+	@if [ -n "$(WPT_LINK_ERR)" ]; then echo "$(WPT_LINK_ERR)"; exit 1; fi
+	@miss=""; for f in $(sort $(BROWSER_PIPE) $(BROWSER_JS_SRC) $(BROWSER_JS_C)); do \
+	    case " $(WPT_TEST_SRC) $(HTML_PARSER_SRC) $(WPT_BROWSER_OUT) " in *" $$f "*) ;; \
+	    *) miss="$$miss $$f";; esac; done; \
+	if [ -n "$$miss" ]; then \
+	    echo "test-wpt-link: FAIL -- the browser links these, and the runner neither"; \
+	    echo "  links them nor names them in WPT_BROWSER_OUT:"; \
+	    for f in $$miss; do echo "    $$f"; done; \
+	    echo "  Every measurement is then of a browser that does not exist."; exit 1; \
+	 fi; \
+	stale=""; for f in $(WPT_BROWSER_OUT); do \
+	    case " $(BROWSER_PIPE) $(BROWSER_JS_SRC) " in *" $$f "*) ;; \
+	    *) stale="$$stale $$f";; esac; done; \
+	if [ -n "$$stale" ]; then \
+	    echo "test-wpt-link: FAIL -- WPT_BROWSER_OUT names files the browser does"; \
+	    echo "  not link. The exclusion excludes nothing, so it has stopped being"; \
+	    echo "  a decision -- and if the file was RENAMED, its new name is linked"; \
+	    echo "  here while this reads as if it were still out:"; \
+	    for f in $$stale; do echo "    $$f"; done; exit 1; \
+	 fi; \
+	echo "test-wpt-link: ok -- runner = browser minus $(words $(WPT_BROWSER_OUT)) named files;"; \
+	echo "  $(words $(WPT_FROM_BROWSER)) shared TUs, every exclusion still real."
 # -Ic/apps is here and not in BTEST_INC because js_platform.c includes
 # "logit.h" (the ring-3 syscall wrappers) unconditionally for its getrandom
 # path. On the host those wrappers are never called -- the file's own fallback
@@ -275,6 +299,16 @@ wpt-baseline: $(BUILD)/wpt_test
 wpt-list: $(BUILD)/wpt_test
 	@$(WPT_ENV) $(BUILD)/wpt_test $(WPT_ARGS) --list
 
+# --- test-wpt-harness: does testharness.js RUN? -----------------------------
+# Finding number one, kept as a target because it is the load-bearing
+# assumption under every number this file prints. If testharness.js stops
+# installing, test-wpt does not go red case by case -- it collapses to zero and
+# the rate looks like a catastrophe in the DOM instead of a broken runner.
+# This asserts the harness itself: it loads, test()/assert_equals work, an
+# async_test resolves through the timer queue, and the completion callback
+# fires with the statuses testharness defines.
+test-wpt-harness: $(BUILD)/wpt_test
+	@$(WPT_ENV) $(BUILD)/wpt_test --root $(WPT_ROOT) --subset _selfcheck -b /dev/null
 
 # --- test-wpt-fire-negctl: the load event fires ONCE -------------------------
 # The runner used to dispatch `load` four times over -- dispatchEvent plus a
@@ -317,6 +351,21 @@ test-wpt-fire-negctl: $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
 # reached is 450 (where QuickJS's own 2 MiB limit trips on the cheapest
 # dispatch path), so the first assertion is its own negative control. See the
 # comment above MAX_DISPATCH_DEPTH in c/apps/gui/browser/js/dom/events.c for why 64.
+.PHONY: test-wpt-depth
+test-wpt-depth: $(BUILD)/wpt_test
+	@if [ ! -d "$(WPT_ROOT)/resources" ]; then \
+	    echo "test-wpt-depth: no corpus at $(WPT_ROOT) -- testharness.js is upstream's."; \
+	    echo "  Not a regression; point WPT_ROOT at a checkout."; exit 0; fi
+	@ln -sfn "$(abspath $(WPT_ROOT))/resources" tests/wpt-local/resources
+	@$(BUILD)/wpt_test --root tests/wpt-local --subset platform \
+	    --only event-dispatch-depth -b /dev/null > $(BUILD)/wpt_depth.log 2>&1; \
+	 line=$$(grep -E '^WPT: ' $(BUILD)/wpt_depth.log); \
+	 echo "test-wpt-depth: $$line"; \
+	 case "$$line" in \
+	   "WPT: 3/3 subtests passed"*) echo "test-wpt-depth: ok -- dispatch stops at 64 and throws";; \
+	   *) echo "test-wpt-depth: FAILED -- the dispatch bound is not what it says:"; \
+	      grep -E 'FAIL|CRASH|HARNESS' $(BUILD)/wpt_depth.log | head -6; exit 1;; \
+	 esac
 
 # --- test-wpt-order: the same corpus, two orders, identical numbers ---------
 # THE ACCEPTANCE TEST FOR ISOLATION, and it is one line: run the corpus twice
@@ -336,6 +385,24 @@ test-wpt-fire-negctl: $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
 #
 # SUBSET= scopes it (default: the whole corpus, which is the point). Two seeds
 # rather than sorted-vs-shuffled, so neither run is the "normal" one.
+.PHONY: test-wpt-order
+test-wpt-order: $(BUILD)/wpt_test
+	@if [ ! -d "$(WPT_ROOT)" ]; then \
+	    echo "test-wpt-order: no corpus at $(WPT_ROOT) -- nothing to measure."; exit 0; fi
+	@$(BUILD)/wpt_test --root $(WPT_ROOT) $(if $(SUBSET),--subset $(SUBSET),) --list \
+	    | sort > $(BUILD)/wpt_order_files_before.txt
+	@echo "test-wpt-order: run 1 of 2 (order seed 20260809)"
+	@$(WPT_ENV) $(BUILD)/wpt_test --root $(WPT_ROOT) $(if $(SUBSET),--subset $(SUBSET),) \
+	    --jobs $(if $(J),$(J),8) --shuffle 20260809 \
+	    --write-baseline -b $(BUILD)/wpt_order_a.txt > $(BUILD)/wpt_order_a.log 2>&1 || true
+	@echo "test-wpt-order: run 2 of 2 (order seed 77)"
+	@$(WPT_ENV) $(BUILD)/wpt_test --root $(WPT_ROOT) $(if $(SUBSET),--subset $(SUBSET),) \
+	    --jobs $(if $(J),$(J),8) --shuffle 77 \
+	    --write-baseline -b $(BUILD)/wpt_order_b.txt > $(BUILD)/wpt_order_b.log 2>&1 || true
+	@grep -E '^WPT: ' $(BUILD)/wpt_order_a.log | sed 's/^/  order A: /'
+	@grep -E '^WPT: ' $(BUILD)/wpt_order_b.log | sed 's/^/  order B: /'
+	@grep -v '^#' $(BUILD)/wpt_order_a.txt | sort > $(BUILD)/wpt_order_a.set
+	@grep -v '^#' $(BUILD)/wpt_order_b.txt | sort > $(BUILD)/wpt_order_b.set
 # DID THE CORPUS HOLD STILL? Asked FIRST, because otherwise its answer is
 # delivered as the other question's. It happened on the first full green run:
 # the two orders differed by exactly one entry,

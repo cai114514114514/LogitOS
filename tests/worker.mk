@@ -156,7 +156,7 @@ $(BUILD)/worker-context/shared: $(WORKER_CONTEXT_DEPS)
 	@sed 's/worker_owner=s?s:\&worker_default;/worker_owner=\&worker_default;/' c/apps/gui/browser/js/workers/worker.c > $@.c
 	@! cmp -s c/apps/gui/browser/js/workers/worker.c $@.c
 	@$(CC) -O2 -w $(WORKER_CF) -o $@ $(filter-out c/apps/gui/browser/js/workers/worker.c,$(WORKER_CONTEXT_SRC)) $@.c $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
-.PHONY: test-worker-context-negctl test-worker-context
+.PHONY: test-worker-context-negctl test-worker-context test-worker-context-san
 $(BUILD)/worker-context/unbalanced: $(WORKER_CONTEXT_DEPS)
 	@mkdir -p $(dir $@)
 	@sed 's/if(LOGIT_HAVE(js_page_slice_end))js_page_slice_end();/(void)0;/' c/apps/gui/browser/js/workers/worker.c > $@.c
@@ -179,6 +179,9 @@ test-worker-context-negctl: $(BUILD)/worker-context/shared $(BUILD)/worker-conte
 	@rc=0; $(BUILD)/worker-context/creator-policy > $(BUILD)/worker-context/creator-policy.log 2>&1 || rc=$$?; test $$rc -eq 1 && grep -q 'FAIL.*network Worker uses response policy and final URL for imports and fetch' $(BUILD)/worker-context/creator-policy.log
 test-worker-context: test-worker-context-negctl $(BUILD)/worker-context/current
 	@$(BUILD)/worker-context/current
+test-worker-context-san: test-worker-context
+	@$(CC) -O1 -g -w -fsanitize=address,undefined -fno-omit-frame-pointer $(WORKER_CF) -o $(BUILD)/worker-context/san $(WORKER_CONTEXT_SRC) $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
+	@ASAN_OPTIONS=detect_leaks=0 $(BUILD)/worker-context/san
 ci-host: test-worker-context
 
 # Standalone native port ownership needs no page fixture: two actual runtimes
@@ -196,7 +199,7 @@ $(BUILD)/native-ports/not-closed: $(NATIVE_PORTS_DEP)
 	@sed 's/if(op==2){close_endpoint(e);return JS_UNDEFINED;}/if(op==2){return JS_UNDEFINED;}/' c/apps/gui/browser/js/workers/ports.c > $@.c
 	@! cmp -s c/apps/gui/browser/js/workers/ports.c $@.c
 	@$(CC) -O1 -g -w $(WORKER_CF) -o $@ tests/unit/native_ports_test.c $@.c $(QJS_SRC) -lm
-.PHONY: test-native-ports test-native-ports-negctl
+.PHONY: test-native-ports test-native-ports-negctl test-native-ports-san
 $(BUILD)/native-ports/small-budget: $(NATIVE_PORTS_DEP)
 	@mkdir -p $(dir $@)
 	@sed 's/#define PORT_BYTES (1024\*1024)/#define PORT_BYTES (64*1024)/' c/apps/gui/browser/js/workers/ports.c > $@.c
@@ -208,6 +211,9 @@ test-native-ports-negctl: $(BUILD)/native-ports/not-detached $(BUILD)/native-por
 	@rc=0; $(BUILD)/native-ports/small-budget > $(BUILD)/native-ports/small-budget.log 2>&1 || rc=$$?; test $$rc -eq 1 && grep -q 'FAIL.*large port message preserves complete buffer bytes' $(BUILD)/native-ports/small-budget.log
 test-native-ports: test-native-ports-negctl $(BUILD)/native-ports/current
 	@$(BUILD)/native-ports/current
+test-native-ports-san: test-native-ports
+	@$(CC) -O1 -g -w $(WORKER_CF) -fsanitize=address,undefined -fno-omit-frame-pointer -o $(BUILD)/native-ports/san $(NATIVE_PORTS_SRC) $(QJS_SRC) -lm
+	@ASAN_OPTIONS=detect_leaks=0 $(BUILD)/native-ports/san
 ci-host: test-native-ports
 
 # Outbound Worker transfer uses the same real page/Worker runtime apparatus.
@@ -223,10 +229,13 @@ $(BUILD)/worker-ports/dropped: $(WORKER_PORTS_DEP)
 $(BUILD)/worker-ports/leaked: $(WORKER_PORTS_DEP)
 	@mkdir -p $(dir $@)
 	@$(CC) -O1 -g -w $(WORKER_CF) -DJS_WORKER_TEST_LEAK_PACKETS -o $@ $(WORKER_PORTS_SRC) $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
-.PHONY: test-worker-ports test-worker-ports-negctl
+.PHONY: test-worker-ports test-worker-ports-negctl test-worker-ports-san
 test-worker-ports-negctl: $(BUILD)/worker-ports/dropped $(BUILD)/worker-ports/leaked
 	@rc=0; $(BUILD)/worker-ports/dropped > $(BUILD)/worker-ports/dropped.log 2>&1 || rc=$$?; test $$rc -eq 1 && grep -q '^FAIL: Worker handoff exposes recipient-realm frozen event ports' $(BUILD)/worker-ports/dropped.log
 	@rc=0; $(BUILD)/worker-ports/leaked > $(BUILD)/worker-ports/leaked.log 2>&1 || rc=$$?; test $$rc -eq 1 && grep -q '^FAIL: close discards in-transit ports without exhausting broker slots' $(BUILD)/worker-ports/leaked.log
 test-worker-ports: test-worker-ports-negctl $(BUILD)/worker-ports/current
 	@$(BUILD)/worker-ports/current
+test-worker-ports-san: test-worker-ports
+	@$(CC) -O1 -g -w $(WORKER_CF) -fsanitize=address,undefined -fno-omit-frame-pointer -o $(BUILD)/worker-ports/san $(WORKER_PORTS_SRC) $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
+	@ASAN_OPTIONS=detect_leaks=0 $(BUILD)/worker-ports/san
 ci-host: test-worker-ports

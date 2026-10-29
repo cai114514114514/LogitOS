@@ -23,17 +23,37 @@
 # The host exercises the same engine objects without any GUI/Logit syscalls.
 $(BUILD)/asc: c/apps/as/common/diagnostic.h
 STUDIO_HOST_SRC := $(wildcard c/apps/gui/studio/core/*.c) c/apps/as/editor/completion.c c/apps/as/common/version.c c/lib/agent/json.c c/lib/agent/task.c c/drivers/block/crc32.c
+.PHONY: test-studio-core test-studio-core-negctl test-as-check
 $(BUILD)/studio-core-test: tests/unit/studio_core_test.c $(STUDIO_HOST_SRC) $(wildcard c/apps/gui/studio/core/*.h)
 	@mkdir -p $(BUILD)
 	$(CC) -std=c11 -D_DEFAULT_SOURCE -Wall -Wextra -Wno-unused-function -Wno-misleading-indentation -O1 -g -fsanitize=address,undefined tests/unit/studio_core_test.c $(STUDIO_HOST_SRC) -o $@
+test-studio-core-negctl: $(BUILD)/studio-core-test $(BUILD)/asc as-toolchain
+	@python3 tests/unit/studio_core_gate.py --negative $(BUILD)/studio-core-test $(BUILD)/asc
+test-studio-core: test-studio-core-negctl $(BUILD)/studio-core-test $(BUILD)/asc
+	@python3 tests/unit/studio_core_gate.py $(BUILD)/studio-core-test $(BUILD)/asc
+test-as-check: check-abi $(BUILD)/asc
+	@python3 tests/unit/as_check_test.py $(BUILD)/asc
 
 # Completion consumes the same snapshot and module declarations as checking.
 # Run the privacy mutation before its positive target so the gate cannot rot.
+.PHONY: test-as-completion test-as-completion-negctl
+test-as-completion-negctl: $(BUILD)/asc
+	@python3 tests/unit/as_semantic_completion_test.py --negative $(BUILD)/asc
+	@python3 tests/unit/as_object_completion_test.py --negative $(BUILD)/asc
+test-as-completion: test-as-completion-negctl $(BUILD)/asc-numeric-debug
+	@python3 tests/unit/as_semantic_completion_test.py $(BUILD)/asc-numeric-debug
+	@python3 tests/unit/as_object_completion_test.py $(BUILD)/asc-numeric-debug
 test-as-typed test-studio-core: test-as-completion
 
+.PHONY: test-as-recovery test-as-recovery-negctl
 $(BUILD)/as-lex-recovery-test: tests/unit/as_lex_recovery_test.c c/apps/as/frontend/lexer.c c/apps/as/frontend/lexer.h
 	@mkdir -p $(BUILD)
 	$(CC) -std=c11 -O1 -g -fsanitize=address,undefined -Ic/apps/as tests/unit/as_lex_recovery_test.c c/apps/as/frontend/lexer.c -o $@
+test-as-recovery-negctl: $(BUILD)/as-lex-recovery-test
+	@python3 tests/unit/as_lex_recovery_gate.py --negative $<
+test-as-recovery: test-as-recovery-negctl $(BUILD)/asc $(BUILD)/asc-numeric-debug
+	@python3 tests/unit/as_recovery_test.py $(BUILD)/asc
+	@python3 tests/unit/as_recovery_test.py $(BUILD)/asc-numeric-debug
 test-as-typed test-as-completion: test-as-recovery
 
 # $(BUILD)/asc-numeric-debug is the compiler unoptimized under ASan/UBSan;
@@ -58,10 +78,24 @@ $(BUILD)/asc-numeric-debug: $(AS_CORE) c/apps/as/cli/main.c c/apps/as/common/num
 $(BUILD)/asc-numeric-debug: $(AS_HDRS)
 
 # Recording primitives execute the actual Studio renderer, not a copied model.
+.PHONY: test-studio-render test-studio-render-negctl
 $(BUILD)/studio-render-test: tests/unit/studio_render_test.c c/apps/gui/studio/core/studio_render.inc c/apps/gui/studio/core/studio_code.inc c/apps/gui/studio/core/studio_completion.inc $(STUDIO_HOST_SRC) $(wildcard c/apps/gui/studio/core/*.h)
 	$(CC) -std=c11 -D_DEFAULT_SOURCE -O1 -g -fsanitize=address,undefined -Wno-unused-function tests/unit/studio_render_test.c $(STUDIO_HOST_SRC) -o $@
+test-studio-render-negctl: $(BUILD)/studio-render-test
+	@python3 tests/unit/studio_render_gate.py --negative
+test-studio-render: test-studio-render-negctl $(BUILD)/studio-render-test
+	@$(BUILD)/studio-render-test
 
 # The guest gate builds a PRIVATE disk; never overwrite a running desktop.
 # Base contains the kernel/fonts' core CLI peers; Studio/AS come from BUILD.
 STUDIO_GUEST_BASE ?= build
+.PHONY: test-studio-completion
+test-studio-completion: test-studio-render test-studio-core $(BUILD)/studio.aex $(BUILD)/as.aex
+	@python3 tests/boot/run-studio-completion.py --build $(BUILD) --base $(STUDIO_GUEST_BASE) --out $(BUILD)/studio-completion-$$$$
+.PHONY: test-studio-ui
+test-studio-ui: test-studio-render test-studio-core $(BUILD)/studio.aex $(BUILD)/as.aex
+	@python3 tests/boot/run-studio-ui.py --build $(BUILD) --base $(STUDIO_GUEST_BASE) --out $(BUILD)/studio-ui-$$$$
 
+.PHONY: test-studio-persistence-os
+test-studio-persistence-os: test-studio-persistence test-studio-render test-studio-core $(BUILD)/studio.aex $(BUILD)/as.aex
+	@python3 tests/boot/run-studio-ui.py --build $(BUILD) --base $(STUDIO_GUEST_BASE) --rebuild --out $(BUILD)/studio-rebuild-$$$$

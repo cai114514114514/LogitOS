@@ -33,8 +33,12 @@ RANGE_SRC := tests/unit/range_test.c c/apps/gui/browser/app/runtime.c \
              c/net/http/http1.c c/net/http/http2.c c/net/http/hpack.c \
              c/net/http/hpool.c c/net/http/url.c
 
-.PHONY: test-range-negctl
+.PHONY: test-range test-range-negctl test-range-asan test-range-wire
 
+test-range:
+	@mkdir -p $(BUILD)
+	@$(CC) -O1 -g -w $(RANGE_INC) -o $(BUILD)/range_test $(RANGE_SRC)
+	@$(BUILD)/range_test
 
 # THE NEGATIVE CONTROL. -DBFETCH_NO_RANGE_CHECK builds the browser that sends a
 # Range header and then believes whatever comes back -- which is the honest
@@ -63,4 +67,18 @@ test-range-negctl:
 	    { echo "FAIL: the control broke the request side, not just the verdict"; exit 1; }
 	@echo "ok: the range negative control fails, and on the right checks"
 
+test-range-asan:
+	@mkdir -p $(BUILD)
+	@$(CC) -O1 -g -w -fsanitize=address,undefined -fno-sanitize-recover=all \
+	    $(RANGE_INC) -o $(BUILD)/range_asan $(RANGE_SRC)
+	@$(BUILD)/range_asan
 
+# ON A REAL SERVER. Everything above is an in-memory origin, which proves the
+# parsing and the verdicts and proves nothing about whether the public web
+# answers this request the way the fixture does. This asks a real host for two
+# disjoint slices of one file over the host's own network stack and requires
+# the bytes to match a whole-file download at those offsets. Not a prerequisite
+# of anything: it needs the network, and a test suite that fails when the
+# network is down is a test suite people stop running.
+test-range-wire:
+	@bash tests/unit/range_wire.sh

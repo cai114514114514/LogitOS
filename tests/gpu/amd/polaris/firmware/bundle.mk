@@ -3,7 +3,7 @@ AMD_BUNDLE_CORE := c/drivers/gpu/amd/polaris/firmware/bundle.c c/drivers/gpu/amd
 AMD_BUNDLE_HEADERS := c/drivers/gpu/amd/polaris/firmware/bundle.h c/drivers/gpu/amd/polaris/firmware.h c/drivers/gpu/amd/polaris/smu/toc.h
 AMD_BUNDLE_FLAGS := -std=c11 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined -Ic/drivers/gpu
 AMD_BUNDLE_TEST := tests/gpu/amd/polaris/firmware/bundle_test.c
-.PHONY: test-polaris-bundle-host test-polaris-bundle-negctl
+.PHONY: test-polaris-bundle-host test-polaris-bundle-negctl test-polaris-bundle-files
 
 test-polaris-bundle-negctl:
 	@mkdir -p $(BUILD)/firmware
@@ -26,3 +26,6 @@ $(BUILD)/firmware/bundle-negative-tool: tools/gpu/amd/bundle.c $(AMD_BUNDLE_CORE
 	@mkdir -p $(dir $@)
 	@$(CC) $(AMD_BUNDLE_FLAGS) -DPOLARIS_FW_BUNDLE_NEGCTL_JT tools/gpu/amd/bundle.c $(AMD_BUNDLE_CORE) -o $@
 
+test-polaris-bundle-files: test-polaris-bundle-host $(BUILD)/firmware/bundle $(BUILD)/firmware/bundle-negative-tool
+	@test -n "$(POLARIS_FIRMWARE_DIR)" || { echo 'POLARIS_FIRMWARE_DIR is required'; exit 2; }
+	@python3 tests/gpu/amd/polaris/firmware/files.py --tool $(BUILD)/firmware/bundle --negative-tool $(BUILD)/firmware/bundle-negative-tool --firmware-dir "$(POLARIS_FIRMWARE_DIR)" --out $(BUILD)/firmware/evidence

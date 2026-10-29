@@ -47,5 +47,10 @@ test-biliplay-offline: test-biliplay-offline-negctl $(ISO) $(DISK) \
 
 test-biliplay: test-biliplay-offline
 
+# Intentionally not on CI: this is a live public-site measurement whose result
+# may be connectivity, CDN refusal or a newly exposed browser API gap. It must
+# report those honestly rather than turn external unavailability green.
+test-biliplay-live: test-biliplay-offline $(ISO) $(DISK) $(BILIPLAY_DRIVER)
+	@python3 $(BILIPLAY_DRIVER) $(ISO) $(DISK) --mode live --secs 180
 
 ci-boot: test-biliplay-offline

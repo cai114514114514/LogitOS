@@ -41,7 +41,11 @@
 # NOT on ci-boot:. One whole QEMU boot per side, two boots per run, and the
 # control's disk image is a second full mkfs. Run it across a change to
 # js_page.c / browser.c / js_platform.c.
+.PHONY: test-currentscript test-currentscript-negctl
 
+test-currentscript: test-currentscript-negctl
+test-currentscript: $(ISO) $(DISK)
+	python3 tests/qmp/qmp_currentscript.py $(ISO) $(DISK)
 
 # $(BROWSER_JS_CF), not $(JS_CF): the root Makefile's ONE target-specific
 # variable override strips `-include features.h` from the browser's own TUs,
@@ -62,3 +66,6 @@ $(BUILD)/browser-nocs.elf: $(ENGINE_OBJ) $(NOCS_JS_OBJ) $(BROWSER_OBJ) $(CSS_OBJ
 $(BUILD)/browser-nocs.aex: $(BUILD)/browser-nocs.elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/browser-nocs.elf $@ Browser - 'B' 120 130 240 --stack-pages 2048
 
+test-currentscript-negctl: $(ISO) $(BUILD)/browser-nocs.aex
+	@$(MAKE) DISK=$(BUILD)/disk-nocs.img BROWSER_AEX=$(BUILD)/browser-nocs.aex $(BUILD)/disk-nocs.img
+	python3 tests/qmp/qmp_currentscript.py $(ISO) $(BUILD)/disk-nocs.img --expect-null

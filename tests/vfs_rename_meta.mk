@@ -16,7 +16,7 @@ $(BUILD)/vfs_rename_meta_asan: $(VFS_RENAME_META_DEPS)
 	$(CC) $(VFS_RENAME_META_FLAGS) -fsanitize=address,undefined -fno-omit-frame-pointer \
 	    -o $@ $(VFS_RENAME_META_SRC)
 
-.PHONY: test-vfs-rename-meta test-vfs-rename-meta-negctl test-vfs-rename-meta-asan
+.PHONY: test-vfs-rename-meta test-vfs-rename-meta-negctl test-vfs-rename-meta-asan test-vfs-rename-meta-os
 
 # Require both the lost permissions and the post-rename length failure. A crash
 # or fixture failure must not impersonate the root-only metadata mutation.
@@ -35,5 +35,8 @@ test-vfs-rename-meta-asan: test-vfs-rename-meta-negctl $(BUILD)/vfs_rename_meta_
 # program cannot silently pack an older .aex. Each run retains its own disk.
 VFS_RENAME_META_PROGRAMS := $(shell python3 -c 'import runpy; print(*runpy.run_path("tests/boot/run-vfs-rename-meta.py")["PROGRAMS"])')
 VFS_RENAME_META_AEX := $(addprefix $(BUILD)/,$(addsuffix .aex,$(VFS_RENAME_META_PROGRAMS)))
+test-vfs-rename-meta-os: test-vfs-rename-meta-negctl $(ISO) $(VFS_RENAME_META_AEX)
+	@case_dir=$$(mktemp -d "$(BUILD)/vfs-rename-meta-os.XXXXXX") && \
+	    python3 tests/boot/run-vfs-rename-meta.py --build "$(BUILD)" --out "$$case_dir/run"
 
 ci-host: test-vfs-rename-meta test-vfs-rename-meta-asan

@@ -29,7 +29,7 @@ $(CRC32_PERF_DIR)/compare: $(CRC32_PERF_SRC) $(CRC32_PERF_DIR)/current.o $(CRC32
 	$(CC) $(CRC32_PERF_FLAGS) -DCRC32_PERF_COMPARE -o $@ $(CRC32_PERF_SRC) \
 	 $(CRC32_PERF_DIR)/current.o $(CRC32_PERF_DIR)/nibble.o
 
-.PHONY: test-crc32-fast-negctl test-crc32-fast bench-crc32
+.PHONY: test-crc32-fast-negctl test-crc32-fast test-crc32-fast-asan bench-crc32
 test-crc32-fast-negctl: $(CRC32_PERF_DIR)/nibble
 	@rc=0; $< > $(CRC32_PERF_DIR)/nibble.log 2>&1 || rc=$$?; \
 	 cat $(CRC32_PERF_DIR)/nibble.log; \
@@ -41,6 +41,14 @@ test-crc32-fast: test-crc32-fast-negctl $(CRC32_PERF_DIR)/current $(CRC32_PERF_D
 	@$(CRC32_PERF_DIR)/current
 	@$(CRC32_PERF_DIR)/compare | tee $(CRC32_PERF_DIR)/compare.log
 
+test-crc32-fast-asan: test-crc32-fast-negctl
+	@mkdir -p $(CRC32_PERF_DIR)
+	$(CC) -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined \
+	 -fno-sanitize-recover=all -fno-omit-frame-pointer -Ic/drivers/block \
+	 -DCRC32_TEST_COUNT_LOOKUPS -o $(CRC32_PERF_DIR)/sanitize \
+	 $(CRC32_PERF_SRC) $(CRC32_IMPL)
+	@ASAN_OPTIONS=detect_leaks=0 UBSAN_OPTIONS=halt_on_error=1 \
+	 $(CRC32_PERF_DIR)/sanitize
 
 bench-crc32: $(CRC32_PERF_DIR)/compare
 	@$(CRC32_PERF_DIR)/compare | tee $(CRC32_PERF_DIR)/compare.log

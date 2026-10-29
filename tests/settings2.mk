@@ -77,6 +77,9 @@
 # described above stays documented because it is how the NEXT fragment-owned
 # coreutil should register itself when the list line is contended again.
 
+test-pref: $(ISO) $(DISK)
+	@bash tests/boot/run-pref-test.sh $(ISO) $(DISK)
+.PHONY: test-pref
 
 # Settings is split into private includes so the shared APP_RULE and its link
 # recipe stay authoritative; each include must still invalidate its object.

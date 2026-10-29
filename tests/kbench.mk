@@ -48,10 +48,16 @@ ifeq ($(KBENCH_NEGCTL),1)
 CFLAGS += -DKBENCH_NEGCTL
 endif
 
-.PHONY: test-kbench-negctl test-kbench-micro
+.PHONY: test-kbench test-kbench-5 test-kbench-1core test-kbench-negctl test-kbench-micro
 
+test-kbench: $(ISO) $(DISK)
+	@bash tests/boot/run-kbench.sh $(ISO) $(DISK) 1
 
+test-kbench-5: $(ISO) $(DISK)
+	@bash tests/boot/run-kbench.sh $(ISO) $(DISK) 5
 
+test-kbench-1core: $(ISO) $(DISK)
+	@KBENCH_SMP=1 bash tests/boot/run-kbench.sh $(ISO) $(DISK) 1
 
 # Objects are not flag-tracked (same note as CHURN/GROWFI/KPROF_OFF), so the
 # three affected translation units are touched on the way in and on the way out,

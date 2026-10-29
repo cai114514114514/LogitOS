@@ -12,9 +12,11 @@ $(WORKER_PARENT_FETCH_DIR)/control: $(WORKER_PARENT_FETCH_DEP)
 $(WORKER_PARENT_FETCH_DIR)/san: $(WORKER_PARENT_FETCH_DEP)
 	@mkdir -p $(WORKER_PARENT_FETCH_DIR)
 	$(CC) -O1 -g -w $(WORKER_CF) -fsanitize=address,undefined -fno-omit-frame-pointer -o $@ $(WORKER_PARENT_FETCH_SRC) $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
-.PHONY: test-worker-parent-fetch test-worker-parent-fetch-negctl
+.PHONY: test-worker-parent-fetch test-worker-parent-fetch-negctl test-worker-parent-fetch-san
 test-worker-parent-fetch-negctl: $(WORKER_PARENT_FETCH_DIR)/control
 	@rc=0; $(WORKER_PARENT_FETCH_DIR)/control > $(WORKER_PARENT_FETCH_DIR)/control.log 2>&1 || rc=$$?; cat $(WORKER_PARENT_FETCH_DIR)/control.log; test $$rc -eq 1 && python3 tests/unit/worker_parent_fetch_check.py control $(WORKER_PARENT_FETCH_DIR)/control.log
 test-worker-parent-fetch: test-worker-parent-fetch-negctl $(WORKER_PARENT_FETCH_DIR)/current
 	@rc=0; $(WORKER_PARENT_FETCH_DIR)/current > $(WORKER_PARENT_FETCH_DIR)/current.log 2>&1 || rc=$$?; cat $(WORKER_PARENT_FETCH_DIR)/current.log; test $$rc -eq 0 && python3 tests/unit/worker_parent_fetch_check.py current $(WORKER_PARENT_FETCH_DIR)/current.log
+test-worker-parent-fetch-san: test-worker-parent-fetch $(WORKER_PARENT_FETCH_DIR)/san
+	@rc=0; ASAN_OPTIONS=detect_leaks=0 UBSAN_OPTIONS=halt_on_error=1 $(WORKER_PARENT_FETCH_DIR)/san > $(WORKER_PARENT_FETCH_DIR)/san.log 2>&1 || rc=$$?; cat $(WORKER_PARENT_FETCH_DIR)/san.log; test $$rc -eq 0 && python3 tests/unit/worker_parent_fetch_check.py current $(WORKER_PARENT_FETCH_DIR)/san.log
 ci-host: test-worker-parent-fetch

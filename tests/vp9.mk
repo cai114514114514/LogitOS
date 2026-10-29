@@ -105,7 +105,7 @@ VP9_MISSING := $(strip $(foreach f,$(VP9_NEEDS),$(if $(wildcard $(f)),,$(f))))
 # from that moment a regression in it fails the build.
 VP9_GATE :=
 
-.PHONY: test-vp9-diff
+.PHONY: test-vp9 test-vp9-diff
 
 ifeq ($(VP9_MISSING),)
 
@@ -118,6 +118,24 @@ $(BUILD)/vp9_test: tests/unit/vp9_test.c $(VP9_SRC) $(VP9_HDRS)
 	@mkdir -p $(BUILD)
 	@$(CC) -O2 -w $(VP9_INC) -o $@ tests/unit/vp9_test.c $(VP9_SRC)
 
+test-vp9: $(BUILD)/vp9_test
+	@mkdir -p $(BUILD)/vp9corpus
+	@rc=0; bash tools/genvp9.sh $(BUILD)/vp9corpus >/dev/null 2>&1 || rc=$$?; \
+	 if [ $$rc != 0 ]; then \
+	    echo "VP9: no ffmpeg with libvpx-vp9 -- corpus not generated, nothing measured"; \
+	    exit 0; \
+	 fi; \
+	 if [ -z "$(VP9_GATE)" ]; then \
+	    echo "VP9: the bit-exact list is EMPTY -- no case decodes exactly yet."; \
+	    echo "     This target passes because it claims nothing. Run test-vp9-diff"; \
+	    echo "     for the picture, and read the header of tests/vp9.mk first."; \
+	    exit 0; \
+	 fi; \
+	 for c in $(VP9_GATE); do \
+	    $(BUILD)/vp9_test $(BUILD)/vp9corpus/$$c.ivf \
+	        $(BUILD)/vp9corpus/$$c.ref.yuv || exit 1; \
+	 done; \
+	 echo "VP9-OK $(words $(VP9_GATE)) case(s) bit-exact"
 
 # The honest picture. Always exits 0 -- it is a REPORT, and a report that
 # fails is a report nobody runs. Bisect with the byte counts, never with
@@ -150,6 +168,8 @@ define VP9_ABSENT_SAY
 @echo "     decoder ever had (2026-08-25); it is the record, read it first."
 endef
 
+test-vp9:
+	$(VP9_ABSENT_SAY)
 
 test-vp9-diff:
 	$(VP9_ABSENT_SAY)

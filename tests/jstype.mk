@@ -45,7 +45,7 @@
 #
 # ONE BOOT PER TARGET. Both targets boot QEMU, so this is a ci-boot gate.
 
-.PHONY: test-jstype test-jstype-negctl
+.PHONY: test-jstype test-jstype-negctl test-jstype-write
 
 # The census, against the committed baseline. Its own control runs first.
 test-jstype: test-jstype-negctl $(ISO) $(DISK)
@@ -60,5 +60,10 @@ test-jstype: test-jstype-negctl $(ISO) $(DISK)
 test-jstype-negctl: $(ISO) $(DISK)
 	python3 tests/qmp/jstype_check.py --iso $(ISO) --disk $(DISK) --negctl
 
+# Re-cut the baseline. Deliberately not a dependency of anything: a baseline
+# that regenerates itself records whatever the build does today and can never
+# go red.
+test-jstype-write: $(ISO) $(DISK)
+	python3 tests/qmp/jstype_check.py --iso $(ISO) --disk $(DISK) --write
 
 ci-boot: test-jstype

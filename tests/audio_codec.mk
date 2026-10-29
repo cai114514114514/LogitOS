@@ -195,6 +195,8 @@ $(BUILD)/audiocheck_host: tests/guest/audio/audiocheck.c $(AUDIO_CODEC_SRC) \
 	@$(CC) -O2 -Wall -Wextra -Ic/lib/audio -o $@ tests/guest/audio/audiocheck.c \
 	    $(AUDIO_CODEC_SRC)
 
+test-audio-codec-os: $(ISO) $(DISK) $(BUILD)/audiocheck_host
+	@bash tests/boot/run-audio-test.sh $(ISO) $(DISK) $(BUILD)/audiocheck_host
 
 # =============================================================================
 # AAC-LC (c/lib/audio/aac.c), added by the codec line that brings AAC, Vorbis
@@ -227,7 +229,7 @@ $(BUILD)/audiocheck_host: tests/guest/audio/audiocheck.c $(AUDIO_CODEC_SRC) \
 #                           says what to run when the data is absent rather
 #                           than passing vacuously.
 
-.PHONY: test-aac test-aac-negctl
+.PHONY: test-aac test-aac-conformance test-aac-fetch test-aac-negctl
 
 AAC_SRC   := c/lib/audio/aac.c c/lib/audio/aac_sbr.c c/lib/audio/afft.c \
              c/lib/audio/amath.c
@@ -244,7 +246,16 @@ test-aac: $(AAC_STAMP)
 	    tests/unit/aac_test.c $(AAC_SRC) -lm
 	@$(BUILD)/aac_test $(AAC_REF)
 
+# Fetching is a separate target from running so that a network failure is
+# reported as a network failure and never as a conformance result.
+test-aac-fetch:
+	@bash tests/unit/aac_iso_fetch.sh $(ISO_AAC) $(ISO_AAC_N)
 
+test-aac-conformance:
+	@mkdir -p $(BUILD)
+	@$(CC) -O2 -Wall -Wextra -Ic/lib/audio -o $(BUILD)/aac_iso_test \
+	    tests/unit/aac_iso_test.c $(AAC_SRC) -lm
+	@$(BUILD)/aac_iso_test $(ISO_AAC)
 
 # NEGATIVE CONTROL. -DAUDIO_SABOTAGE=3 removes the TNS filter: the decoder
 # still produces music, every structural check still passes, and transients

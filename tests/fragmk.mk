@@ -63,10 +63,14 @@
 # the control). Run it across a change to js_module.c / js_dom.c / js_page.c /
 # html_tree.c -- or before believing any framework-corpus number from the host
 # probe alone.
+.PHONY: test-fragmk-guest test-fragmk-guest-negctl
 
 FRMW_GUEST := tests/fixtures/frameworks/_guest/guest_mount.py
 FRMW_BAR   := 5
 
+test-fragmk-guest: test-fragmk-guest-negctl
+test-fragmk-guest: $(ISO) $(DISK)
+	python3 $(FRMW_GUEST) $(ISO) $(DISK) --min $(FRMW_BAR)
 
 # $(BROWSER_JS_CF), not $(JS_CF): the root Makefile's one target-specific
 # variable override strips `-include features.h` from the browser's own TUs,
@@ -88,3 +92,18 @@ $(BUILD)/browser-negmod.elf: $(ENGINE_OBJ) $(FRMW_NEG_OBJ) $(BROWSER_OBJ) $(CSS_
 $(BUILD)/browser-negmod.aex: $(BUILD)/browser-negmod.elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/browser-negmod.elf $@ Browser - 'B' 120 130 240 --stack-pages 2048
 
+# The verdict line, not the exit code, is what this reads: the driver exits 1
+# both for "below the bar" (the designed red) and for its own die() paths, and
+# a control that cannot tell those apart passes when the harness is broken.
+test-fragmk-guest-negctl: $(ISO) $(BUILD)/browser-negmod.aex
+	@$(MAKE) DISK=$(BUILD)/disk-negmod.img BROWSER_AEX=$(BUILD)/browser-negmod.aex $(BUILD)/disk-negmod.img
+	@out=`python3 $(FRMW_GUEST) $(ISO) $(BUILD)/disk-negmod.img --settle 15 --min $(FRMW_BAR)`; \
+	echo "$$out"; \
+	n=`echo "$$out" | sed -n 's/.*-- \([0-9][0-9]*\) of [0-9][0-9]* settled non-blank.*/\1/p' | tail -1`; \
+	if [ -z "$$n" ]; then \
+	  echo "test-fragmk-guest-negctl: FAILED -- the driver produced no verdict line"; exit 1; \
+	fi; \
+	if [ "$$n" -ge $(FRMW_BAR) ]; then \
+	  echo "test-fragmk-guest-negctl: FAILED -- the silenced-module build met the bar ($$n >= $(FRMW_BAR)); this control is measuring something other than module execution"; exit 1; \
+	fi; \
+	echo "test-fragmk-guest-negctl: red as designed -- $$n of 7 mounted with modules silenced, below the bar of $(FRMW_BAR)"

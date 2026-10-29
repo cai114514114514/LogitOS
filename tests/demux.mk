@@ -7,7 +7,7 @@
 # demuxers stay OUT of the kernel) and $(MED_OBJ) in Preview's link. That is
 # the same arrangement tests/h265.mk, tests/nic.mk and tests/audio.mk use.
 
-.PHONY: \
+.PHONY: test-demux test-demux-units test-demux-diff test-demux-lacing \
         test-demux-fuzz test-demux-fuzz-deep test-demux-fuzz-negctl \
         test-demux-negctl test-avsync test-demux-os test-demux-expect \
         media-fixtures
@@ -136,6 +136,12 @@ media-fixtures:
 	@bash tests/unit/gen_media.sh $(MEDIA_FX)
 	@echo "regenerated -- now run 'make test-demux-expect' to re-pin the guest digest"
 
+# --- the parser's own unit assertions ----------------------------------------
+# A whole-file test says something is wrong; a unit test says what. These run
+# the bounded reader, the tick arithmetic, the sniffer and the Annex B rewrite
+# against hand-written cases whose right answer is known by construction.
+test-demux-units: $(BUILD)/demux_test
+	@$(BUILD)/demux_test units
 
 # --- THE DIFFERENTIAL AGAINST FFMPEG -----------------------------------------
 # The bar next door is bit-exactness against ffmpeg's decoders. The equivalent
@@ -155,7 +161,19 @@ DIFF_FILES := $(MEDIA_FX)/h264-mp3.mp4 $(MEDIA_FX)/h264-mp3-nobf.mp4 \
               $(MEDIA_FX)/vp9-opus.webm $(MEDIA_FX)/mp3.mka \
               $(MEDIA_FX)/laced-xiph.mkv $(MEDIA_FX)/laced-fixed.mkv \
               $(MEDIA_FX)/laced-ebml.mkv $(MEDIA_FX)/laced-none.mkv
+test-demux-diff: $(BUILD)/demux_test
+	@if ! command -v ffprobe >/dev/null 2>&1; then \
+	    echo "test-demux-diff: no ffmpeg on this machine -- differential skipped"; \
+	 else \
+	    python3 tests/unit/demux_diff.py $(BUILD)/demux_test $(BUILD) $(DIFF_FILES); \
+	 fi
 
+# --- lacing, against arithmetic rather than another implementation -----------
+# ffmpeg's Matroska muxer never writes lacing, so the laced fixtures are built
+# by tests/unit/gen_laced.py and their frame boundaries are known BY
+# CONSTRUCTION. Needs no ffmpeg at all.
+test-demux-lacing: $(BUILD)/demux_test
+	@python3 tests/unit/demux_lacing.py $(BUILD)/demux_test $(BUILD) $(MEDIA_FX)
 
 # --- FUZZ, under ASan + UBSan ------------------------------------------------
 # A container comes off the network and is the most attacker-shaped input in
@@ -234,6 +252,12 @@ ASAN_LEAK_NOTE = if [ "$$leaks" = 0 ]; then \
 SCALE ?= 8
 SEED  ?= 0x243F6A8885A308D3
 
+test-demux-fuzz: $(BUILD)/.asan-leaks
+	@mkdir -p $(BUILD)
+	@$(CC) -O1 -g $(DEMUX_ASAN_FLAGS) -w $(MED_INC) \
+	    -o $(BUILD)/demux_fuzz tests/unit/demux_fuzz.c $(MED_SRC)
+	@leaks=`cat $(BUILD)/.asan-leaks`; $(ASAN_LEAK_NOTE); \
+	 $(DEMUX_ASAN_ENV) $(BUILD)/demux_fuzz $(SCALE) $(SEED) $(MEDIA_FX)
 
 # The soak. Not part of test-demux -- it takes minutes -- but it is what a
 # "the parsers are fuzzed" claim should be able to point at.
@@ -249,8 +273,119 @@ test-demux-fuzz-deep: $(BUILD)/.asan-leaks
 	    $(DEMUX_ASAN_ENV) $(BUILD)/demux_fuzz $(SCALE) $$s $(MEDIA_FX) || exit 1; \
 	 done
 
+# NEGATIVE CONTROL FOR THE FUZZER ITSELF. A fuzz target that has never caught
+# anything is indistinguishable from one wired to /dev/null, and this one
+# reports "0 failures" in its own output -- so the sanitizers have to be shown
+# to be live. -DDEMUX_FUZZ_SABOTAGE takes a length-prefixed NAL's length at
+# face value in media_to_annexb: a heap over-read driven directly by four
+# attacker-chosen bytes, which is the exact bug class this fuzzer exists for.
+# REQUIRED TO FAIL, and required to fail with an ASan report specifically.
+#
+# THE GUARD USED TO BE `grep -q 'AddressSanitizer'` AND THAT IS HOW IT REPORTED
+# A FALSE GREEN. On darwin/arm64 the `detect_leaks=1` above made the runtime
+# print "AddressSanitizer: detect_leaks is not supported on this platform" and
+# abort before main -- a non-zero exit whose message contains the word, so the
+# elif matched and this control announced a caught over-read on a run that never
+# executed one byte of media_to_annexb. The option is probed now, and the guard
+# is tightened to the string ASan prints for an actual FINDING ('ERROR:
+# AddressSanitizer'), with the runtime-refused case broken out and named -- so
+# the next option this runtime dislikes fails loudly here instead of passing.
+test-demux-fuzz-negctl: $(BUILD)/.asan-leaks
+	@mkdir -p $(BUILD)
+	@$(CC) -O1 -g $(DEMUX_ASAN_FLAGS) -w -DDEMUX_FUZZ_SABOTAGE=1 $(MED_INC) \
+	    -o $(BUILD)/demux_fuzz_neg tests/unit/demux_fuzz.c $(MED_SRC)
+	@leaks=`cat $(BUILD)/.asan-leaks`; $(ASAN_LEAK_NOTE); \
+	 if $(DEMUX_ASAN_ENV) $(BUILD)/demux_fuzz_neg 3 $(SEED) $(MEDIA_FX) \
+	        >$(BUILD)/demux_fuzz_neg.log 2>&1; then \
+	    echo "NEGCTL-FAIL: a deliberate out-of-bounds read in the NAL length walk"; \
+	    echo "  did not trip the fuzzer -- the sanitizers are not doing anything."; \
+	    exit 1; \
+	 elif grep -q 'is not supported on this platform' $(BUILD)/demux_fuzz_neg.log; then \
+	    echo "NEGCTL-FAIL: the ASan RUNTIME refused one of its own options and died"; \
+	    echo "  before main, so nothing was measured. This is the exact false green"; \
+	    echo "  this control carried until 2026-08-28 -- the refusal message contains"; \
+	    echo "  the word AddressSanitizer, and a loose grep read it as a finding."; \
+	    head -3 $(BUILD)/demux_fuzz_neg.log | sed 's/^/       /'; exit 1; \
+	 elif grep -q 'ERROR: AddressSanitizer' $(BUILD)/demux_fuzz_neg.log; then \
+	    echo "negctl: the injected NAL-length over-read is caught by AddressSanitizer"; \
+	    grep -m1 'ERROR: AddressSanitizer' $(BUILD)/demux_fuzz_neg.log | sed 's/^/       /'; \
+	 else \
+	    echo "NEGCTL-FAIL: the sabotaged build failed, but not with an ASan report --"; \
+	    echo "  so this proves the harness noticed, not that the sanitizer did."; \
+	    head -20 $(BUILD)/demux_fuzz_neg.log | sed 's/^/       /'; exit 1; \
+	 fi
 
+# --- NEGATIVE CONTROLS FOR THE GATES -----------------------------------------
+# A gate that never fails is not a gate. Two deliberate faults, each a real bug
+# class, each behind a -DDEMUX_CONTROL_* that no shipping build defines:
+#
+#   NO_CTTS     composition offsets ignored, so presentation time is taken to
+#               equal decode time. Invisible on every stream without B frames,
+#               and on a stream with them it plays the pictures at the wrong
+#               times. The differential must reject it.
+#   NO_LACING   every Matroska block treated as holding one frame. This does
+#               not fail loudly: audio still comes out, with eleven frames
+#               glued to the end of every twelfth. The lacing check must
+#               reject it.
+test-demux-negctl:
+	@mkdir -p $(BUILD)
+	@$(CC) -O2 -w -DDEMUX_CONTROL_NO_CTTS=1 $(MED_INC) \
+	    -o $(BUILD)/demux_test_noctts tests/unit/demux_test.c $(MED_SRC)
+	@if ! command -v ffprobe >/dev/null 2>&1; then \
+	    echo "test-demux-negctl: no ffmpeg -- the ctts control needs the differential"; \
+	 elif python3 tests/unit/demux_diff.py $(BUILD)/demux_test_noctts $(BUILD) \
+	        $(MEDIA_FX)/h264-mp3.mp4 $(MEDIA_FX)/frag.mp4 \
+	        >$(BUILD)/demux_noctts.log 2>&1; then \
+	    echo "NEGCTL-FAIL: the ffmpeg differential passed a demuxer that ignores"; \
+	    echo "  composition offsets, so it is not measuring timestamps."; exit 1; \
+	 else \
+	    echo "negctl: ignoring ctts is rejected by the differential"; \
+	    grep -m2 'sample .* pts' $(BUILD)/demux_noctts.log | sed 's/^/       /'; \
+	 fi
+	@$(CC) -O2 -w -DDEMUX_CONTROL_NO_LACING=1 $(MED_INC) \
+	    -o $(BUILD)/demux_test_nolace tests/unit/demux_test.c $(MED_SRC)
+	@if python3 tests/unit/demux_lacing.py $(BUILD)/demux_test_nolace $(BUILD) \
+	        $(MEDIA_FX) >$(BUILD)/demux_nolace.log 2>&1; then \
+	    echo "NEGCTL-FAIL: the lacing check passed a demuxer with lacing removed."; \
+	    exit 1; \
+	 else \
+	    echo "negctl: removing Matroska lacing is rejected"; \
+	    grep -m2 'frames, expected\|size .*expected\|payload is' $(BUILD)/demux_nolace.log \
+	        | sed 's/^/       /'; \
+	 fi
 
+# --- A/V SYNCHRONISATION, MEASURED -------------------------------------------
+# "It stays in sync" is not checkable by watching, and on this machine the
+# interesting case -- decode falls behind -- is the normal case. avclock takes
+# `now_ns` as an argument so a whole minute of playback can be simulated to the
+# nanosecond at four decode speeds. Reports drift; gates on it; and includes a
+# control that removes the bounded-audio-lead rule and must be shown to drift.
+test-avsync: $(BUILD)/avsync_test
+	@$(BUILD)/avsync_test
 
+# --- the digest the guest must reproduce -------------------------------------
+# Pinned from the HOST build of demuxcheck, so tests/boot/run-demux-test.sh has
+# something to compare with. Re-pin after regenerating the fixtures.
+test-demux-expect: $(BUILD)/demuxcheck_host
+	@{ $(BUILD)/demuxcheck_host -decode $(MEDIA_FX)/h264-mp3-nobf.mp4; \
+	   $(BUILD)/demuxcheck_host -decode $(MEDIA_FX)/h264-flac.mkv; \
+	   $(BUILD)/demuxcheck_host $(MEDIA_FX)/frag.mp4; \
+	   $(BUILD)/demuxcheck_host $(MEDIA_FX)/h264-mp3.mp4; \
+	   $(BUILD)/demuxcheck_host $(MEDIA_FX)/laced-xiph.mkv; \
+	   $(BUILD)/demuxcheck_host $(MEDIA_FX)/vp9-opus.webm; } \
+	 | grep -E '^(MEDIA |MEDIA-|TRACK |ORDER |DEMUX-CRC)' > $(MEDIA_FX)/expected-guest.txt
+	@echo "pinned $$(wc -l < $(MEDIA_FX)/expected-guest.txt) lines to $(MEDIA_FX)/expected-guest.txt"
 
+# --- ON THE DEVICE -----------------------------------------------------------
+# Everything above is a glibc build on Linux. Only this says the demuxers work
+# on LogitOS, where the allocator is mini-libc's arena and its realloc cannot
+# always grow in place -- which is precisely what building a sample index does
+# thousands of times.
+test-demux-os: $(ISO) $(DISK)
+	@bash tests/boot/run-demux-test.sh $(ISO) $(DISK) $(MEDIA_FX)/expected-guest.txt
 
+# Everything host-side, in one target.
+test-demux: test-demux-units test-demux-lacing test-demux-diff test-avsync \
+            test-demux-fuzz test-demux-fuzz-negctl test-demux-negctl
+	@echo "test-demux: units, lacing, the ffmpeg differential, A/V sync, the"
+	@echo "            fuzzer and all three negative controls"

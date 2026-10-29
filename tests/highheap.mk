@@ -17,7 +17,7 @@ $(BUILD)/$(HIGHHEAP_CONTROL_FILE).o: $(HIGHHEAP_CONTROL_FILE).c tests/unit/highh
 	python3 tests/unit/highheap_variant.py --out $(BUILD)/heap-control --control $(HIGHHEAP_CONTROL)
 	$(CC) $(CFLAGS) -c $(BUILD)/heap-control/$(HIGHHEAP_CONTROL_FILE).c -o $@
 endif
-.PHONY: test-highheap-host test-highheap-negctl highheap-image highheap-disk
+.PHONY: test-highheap-host test-highheap-negctl highheap-image highheap-disk test-highheap-all
 test-highheap-host: test-highheap-negctl
 test-highheap-negctl:
 	python3 tests/unit/highheap_run.py --build $(BUILD)/core
@@ -36,3 +36,5 @@ highheap-image: $(ISO) $(BUILD)/esp.img $(BUILD)/highheap.aex $(BUILD)/highheap.
 highheap-disk: $(BUILD)/highheap.aex $(BUILD)/highheap.ko
 	$(MAKE) -n -W tools/mkfs.py BUILD=$(WIDE_BASE_BUILD) $(WIDE_BASE_BUILD)/disk.img > $(BUILD)/highheap-disk.make
 	python3 tests/boot/mk-tcc-disk.py . $(BUILD)/highheap-disk.make $(BUILD)/highheap-disk.img $(BUILD)/highheap.aex:/bin/highheap $(BUILD)/highheap.ko:/lib/modules/highheap.ko
+test-highheap-all:
+	python3 tests/boot/run-highheap-acceptance.py --build $(BUILD) --apps $(WIDE_BASE_BUILD) $(if $(HIGHHEAP_APPS_DISK),--apps-disk $(HIGHHEAP_APPS_DISK)) $(if $(HIGHHEAP_BASELINE),--baseline $(HIGHHEAP_BASELINE))

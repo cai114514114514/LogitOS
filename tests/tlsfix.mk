@@ -43,7 +43,7 @@
 #                           ci-host: -- it skips loudly, naming the check,
 #                           when the network is absent.
 
-.PHONY: test-tls-chain test-tls-chain-negctl
+.PHONY: test-tls-chain test-tls-chain-negctl test-tls-chain-live
 
 # Source lists are derived from the KERNEL's own link list, never hand-copied
 # (AGENTS.md rule 3): a new TU under c/net/tls/ joins these gates the day it
@@ -124,6 +124,48 @@ test-tls-chain-negctl: $(BUILD)
 	done; \
 	[ $$rc -eq 0 ] && echo "PASS: test-tls-chain-negctl (2 controls fired)"; exit $$rc
 
+# The live differential. Network-dependent on purpose: it exists to be run by
+# a human at the moment a "TLS refused" report lands, against the wire as it
+# is RIGHT NOW. A host with no outbound :443 must SKIP LOUDLY (one line naming
+# the missing capability and the command that would settle it) rather than
+# fail -- a red network target on CI is a gate people learn to ignore, and a
+# silent green is worse. Distinguishable because the bridge prints
+# "RESULT: FAIL (connect)" for a DIAL failure and nothing else in that shape.
+test-tls-chain-live: $(BUILD)
+	@$(CC) -O1 -g -Wall -Wextra -o $(BUILD)/tls_chain_live $(TLSFIX_LIVE_SRC) $(TLSFIX_INC) \
+	  -Ic/net/core -Ic/net/transport -Ic/drivers/timer $(KCORE_INC) || { \
+	  echo "FAIL: could not build tls_chain_live"; exit 1; }
+	@if ! $(BUILD)/tls_chain_live www.bing.com 443 www.bing.com 2>&1 | grep -q "RESULT: PASS"; then \
+	  if $(BUILD)/tls_chain_live www.bing.com 443 www.bing.com 2>&1 | grep -q "(connect)"; then \
+	    echo "SKIP: this host has no outbound TLS to www.bing.com:443 -- the live gate"; \
+	    echo "      needs the real wire. Settle the network with:"; \
+	    echo "          curl -sI --max-time 10 https://www.bing.com/"; \
+	    echo "      then rerun: make BUILD=build-tls test-tls-chain-live"; \
+	    echo "      The OFFLINE fixture gate (make test-tls-chain) is unaffected."; \
+	    exit 0; \
+	  fi; \
+	  echo "FAIL (live): www.bing.com reached the network but did not complete -- full output:"; \
+	  $(BUILD)/tls_chain_live www.bing.com 443 www.bing.com 2>&1 | tail -5; exit 1; \
+	fi
+	# cloudflare.com carries the PQ hybrid: it negotiates X25519MLKEM768
+	# (MEASURED 2026-08-30: suite 0x1301, group X25519MLKEM768, chain of 3
+	# verified, GET completed) while the jd CDNs take the plain-x25519 half
+	# of the dual key_share with no HRR and bing answers TLS 1.2 -- so one
+	# run of this gate exercises all three ClientHello shapes the client can
+	# end up committed to. www.google.com also speaks the hybrid but is
+	# unreachable from this network (RESULT: FAIL (connect)), which is
+	# exactly the dial-failure shape the SKIP branch above exists for.
+	@rc=0; \
+	for h in cloudflare.com www.jd.com misc.360buyimg.com static.360buyimg.com storage.360buyimg.com; do \
+	  if ! $(BUILD)/tls_chain_live $$h 443 $$h 2>&1 | grep -q "RESULT: PASS"; then \
+	    echo "FAIL (live): $$h did not complete a handshake -- full output:"; \
+	    $(BUILD)/tls_chain_live $$h 443 $$h 2>&1 | tail -5; rc=1; \
+	  else \
+	    echo "ok   (live): $$h handshake + GET completed"; \
+	  fi; \
+	done; \
+	echo "ok   (live): www.bing.com handshake + GET completed"; \
+	[ $$rc -eq 0 ] && echo "PASS: test-tls-chain-live (6 hosts)" || exit $$rc
 
 # Reachability for the audit. The LIVE gate is deliberately absent: ci hosts
 # have no outbound :443, and a network target on ci-host: is a gate that rots

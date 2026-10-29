@@ -70,7 +70,7 @@ $(CSSOM_DIR)/stylesheet_interface_test: $(SHEET_INTERFACE_SRC) tests/unit/cssom_
 	@mkdir -p $(CSSOM_DIR)
 	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) $(JS_INC) -DCONFIG_VERSION='"host"' -DWEBAPI_HOST -o $@ $(SHEET_INTERFACE_SRC) $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a -lm
 
-.PHONY: test-stylesheet-interface test-stylesheet-interface-negctl
+.PHONY: test-stylesheet-interface test-stylesheet-interface-negctl test-stylesheet-interface-sanitize
 test-stylesheet-interface: test-stylesheet-interface-negctl $(CSSOM_DIR)/stylesheet_interface_test
 	@$(CSSOM_DIR)/stylesheet_interface_test
 ci-host: test-stylesheet-interface
@@ -82,13 +82,16 @@ SLOT_ASSIGNMENT_DEPS = $(SLOT_ASSIGNMENT_SRC) tests/unit/cssom_test.c c/apps/gui
 $(CSSOM_DIR)/slot_assignment_test: $(SLOT_ASSIGNMENT_DEPS)
 	@mkdir -p $(CSSOM_DIR)
 	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) $(JS_INC) -DCONFIG_VERSION='"host"' -DWEBAPI_HOST -o $@ $(SLOT_ASSIGNMENT_SRC) $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a -lm
-.PHONY: test-slot-assignment test-slot-assignment-negctl
+.PHONY: test-slot-assignment test-slot-assignment-negctl test-slot-assignment-sanitize
 test-slot-assignment-negctl: $(BUILD)/libcss_host.a
 	@mkdir -p $(CSSOM_DIR)
 	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) $(JS_INC) -DCONFIG_VERSION='"host"' -DWEBAPI_HOST -DDOM_SLOT_NO_ASSIGNMENT -o $(CSSOM_DIR)/slot_assignment_old $(SLOT_ASSIGNMENT_SRC) $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a -lm
 	@rc=0; $(CSSOM_DIR)/slot_assignment_old > $(CSSOM_DIR)/slot_assignment_old.log 2>&1 || rc=$$?; test $$rc -eq 1 && grep -F 'FAIL SLOT named distribution returns the real direct child' $(CSSOM_DIR)/slot_assignment_old.log
 test-slot-assignment: test-slot-assignment-negctl $(CSSOM_DIR)/slot_assignment_test
 	@$(CSSOM_DIR)/slot_assignment_test
+test-slot-assignment-sanitize: test-slot-assignment
+	@$(CC) -O1 -g -w -fsanitize=address,undefined -fno-sanitize-recover=all $(BTEST_INC) $(CSS_INC) $(JS_INC) -DCONFIG_VERSION='"host"' -DWEBAPI_HOST -o $(CSSOM_DIR)/slot_assignment_sanitize $(SLOT_ASSIGNMENT_SRC) $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a -lm
+	@ASAN_OPTIONS=detect_leaks=0 $(CSSOM_DIR)/slot_assignment_sanitize
 ci-host: test-slot-assignment
 
 # Both assertions must be seen failing; an unrelated crash or empty output
@@ -102,10 +105,22 @@ test-stylesheet-interface-negctl: $(BUILD)/libcss_host.a
 	  echo "stylesheet-interface: $$n observed red"; grep '^  FAIL CSS-SHEET' $(CSSOM_DIR)/sheet_neg_$$n.log; \
 	done
 
+test-stylesheet-interface-sanitize: test-stylesheet-interface-negctl
+	@$(CC) -O1 -g -w -fsanitize=address,undefined -fno-sanitize-recover=all $(BTEST_INC) $(CSS_INC) $(JS_INC) -DCONFIG_VERSION='"host"' -DWEBAPI_HOST -o $(CSSOM_DIR)/sheet_sanitize $(SHEET_INTERFACE_SRC) $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a -lm
+	@ASAN_OPTIONS=detect_leaks=0 $(CSSOM_DIR)/sheet_sanitize
 
 SHEET_GUEST_ISO ?=
 SHEET_GUEST_DISK ?=
 SHEET_GUEST_NEG_DISK ?=
+.PHONY: test-stylesheet-interface-guest test-stylesheet-interface-guest-negctl
+test-stylesheet-interface-guest-negctl:
+	@test -f "$(SHEET_GUEST_ISO)" && test -f "$(SHEET_GUEST_NEG_DISK)" || { echo 'ERROR: set SHEET_GUEST_ISO and immutable SHEET_GUEST_NEG_DISK'; exit 1; }
+	@mkdir -p $(CSSOM_DIR)
+	@rc=0; python3 tools/perf/browser_load.py --iso "$(SHEET_GUEST_ISO)" --disk "$(SHEET_GUEST_NEG_DISK)" --out $(CSSOM_DIR)/sheet-guest-negctl --rounds 1 --cases stylesheet-interface > $(CSSOM_DIR)/sheet-guest-negctl.log 2>&1 || rc=$$?; \
+	 test $$rc -eq 1 && grep -F 'AssertionError: stylesheet interface failed: CSS-SHEET READY FAIL missing-interface' $(CSSOM_DIR)/sheet-guest-negctl.log
+test-stylesheet-interface-guest: test-stylesheet-interface-guest-negctl
+	@test -f "$(SHEET_GUEST_DISK)" || { echo 'ERROR: set immutable SHEET_GUEST_DISK'; exit 1; }
+	python3 tools/perf/browser_load.py --iso "$(SHEET_GUEST_ISO)" --disk "$(SHEET_GUEST_DISK)" --out $(CSSOM_DIR)/sheet-guest --rounds 1 --cases stylesheet-interface
 
 # --- the negative control ---------------------------------------------------
 # An assertion nobody has watched fail is not an assertion. Two independent

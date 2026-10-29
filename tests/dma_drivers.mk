@@ -40,7 +40,10 @@ $(BUILD)/dma-capture.aex: $(BUILD)/dma-capture.elf tools/mkaex.py
 	python3 tools/mkaex.py --cli $< $@ dma-capture - '*' 150 150 150
 
 DMA_BASE_BUILD ?= build
-.PHONY: dma-driver-capture-disk
+.PHONY: dma-driver-capture-disk test-dma-drivers-os
 dma-driver-capture-disk: $(BUILD)/dma-capture.aex
 	$(MAKE) -n -W tools/mkfs.py BUILD=$(DMA_BASE_BUILD) $(DMA_BASE_BUILD)/disk.img > $(BUILD)/capture-disk.make
 	python3 tests/boot/mk-tcc-disk.py . $(BUILD)/capture-disk.make $(BUILD)/capture-disk.img $(BUILD)/dma-capture.aex:/bin/dma-capture
+test-dma-drivers-os: test-dma-drivers wide-memory-image wide-memory-disk dma-driver-capture-disk
+	@test "$(DMA_CAPTURE_VERIFY)" = "1" || { echo "Use DMA_CAPTURE_VERIFY=1 in an independent BUILD"; exit 1; }
+	python3 tests/boot/run-dma-drivers.py --build $(BUILD) --disk $(BUILD)/wide-disk.img --out $(BUILD)/dma-driver-results

@@ -26,7 +26,7 @@
 #                              a harness that printed an empty table would look
 #                              exactly like a handshake that cost nothing.
 
-.PHONY: test-crypto-bench test-crypto-bench-control \
+.PHONY: test-crypto-bench test-crypto-bench-gate test-crypto-bench-control \
         test-tls-bench test-tls-bench-control
 
 # The bench links the same CRYPTO_SRC the vectors and the differential suite do,
@@ -39,6 +39,9 @@ test-crypto-bench: $(BUILD)
 	$(CC) -O2 -Wall -Wextra -o $(BUILD)/crypto_bench $(BENCH_SRC) $(BENCH_INC)
 	$(BUILD)/crypto_bench
 
+test-crypto-bench-gate: $(BUILD)
+	$(CC) -O2 -Wall -Wextra -o $(BUILD)/crypto_bench $(BENCH_SRC) $(BENCH_INC)
+	$(BUILD)/crypto_bench --gate
 
 test-crypto-bench-control: $(BUILD)
 	@$(CC) -O2 -w -DRSA_SLOW_CONTROL -o $(BUILD)/crypto_bench_slow $(BENCH_SRC) $(BENCH_INC)

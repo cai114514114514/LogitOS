@@ -33,13 +33,37 @@ ifeq ($(KPROF_OFF),1)
 CFLAGS += -DKPROF_DISABLE
 endif
 
-.PHONY: test-prof-control
+.PHONY: test-prof test-prof-host test-prof-negctl test-prof-control test-prof-all
 
 PROF_TEST_SRC := tests/unit/prof_test.c c/kernel/diag/kprof.c
 PROF_TEST_INC := $(KCORE_INC)
 
+test-prof-host:
+	@mkdir -p $(BUILD)
+	@$(CC) -O2 -g -Wall -Wextra -DLOGIT_KPROF_HOST \
+	    -fsanitize=address,undefined -fno-omit-frame-pointer \
+	    $(PROF_TEST_INC) -o $(BUILD)/prof_test $(PROF_TEST_SRC) -lpthread
+	@$(BUILD)/prof_test
 
+# The negative control. -DKPROF_UNSAFE swaps the CAS + atomic-add accumulator
+# for the read-modify-write anybody writes first. Under four threads it loses
+# tens of thousands of samples -- which is exactly the failure that would
+# otherwise be invisible, because a profiler that under-counts the hottest
+# address still produces a plausible-looking report.
+test-prof-negctl:
+	@mkdir -p $(BUILD)
+	@$(CC) -O2 -g -w -DLOGIT_KPROF_HOST -DKPROF_UNSAFE \
+	    $(PROF_TEST_INC) -o $(BUILD)/prof_test_unsafe $(PROF_TEST_SRC) -lpthread
+	@if $(BUILD)/prof_test_unsafe > $(BUILD)/prof_test_unsafe.out 2>&1; then \
+	    echo "CONTROL FAILED: the non-atomic accumulator passed the four-thread test"; \
+	    cat $(BUILD)/prof_test_unsafe.out; exit 1; \
+	 else \
+	    echo "control ok: -DKPROF_UNSAFE fails as required --"; \
+	    grep -E '^  FAIL' $(BUILD)/prof_test_unsafe.out | head -6; \
+	 fi
 
+test-prof: $(ISO) $(DISK)
+	@bash tests/boot/run-prof-test.sh $(ISO) $(DISK)
 
 # The on-device negative control. Only kprof.o and kdiag.o depend on kprof.h, so
 # this is a two-object rebuild and a relink, not a clean build -- and the tree is
@@ -59,3 +83,5 @@ test-prof-control: $(DISK)
 	    grep -E '^  FAIL' $(BUILD)/prof_control.out | head -8; \
 	 fi
 
+test-prof-all: test-prof-host test-prof-negctl test-prof
+	@echo "test-prof-all: ALL PASS"

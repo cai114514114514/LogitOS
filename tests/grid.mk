@@ -23,7 +23,7 @@
 #                           fail, and the target succeeds when it does
 # ============================================================================
 .PHONY: test-grid test-grid-parse test-grid-place test-grid-size test-grid-align
-.PHONY: test-grid-negctl
+.PHONY: test-grid-asan test-grid-negctl
 
 GRID_SRC  := c/apps/gui/browser/layout/grid.c
 GRID_CF   := -O1 -g -Wall -Wextra $(BROWSER_INC)
@@ -94,3 +94,14 @@ test-grid-align: $(BUILD)/grid_align_test
 # CI and invoked by nobody, which reads exactly like a covered control.
 test-grid: test-grid-negctl test-grid-parse test-grid-place test-grid-size test-grid-align
 
+# The same four suites under ASan + UBSan. Grid allocates per axis and per item
+# and the placement pass grows an occupancy bitmap in both dimensions, so the
+# interesting bugs here are out-of-bounds reads on a track array, not wrong
+# arithmetic -- and those are invisible to an assertion about track sizes.
+test-grid-asan:
+	@mkdir -p $(BUILD)
+	@for t in parse place size align; do \
+	    $(CC) $(GRID_CF) -fsanitize=address,undefined -fno-omit-frame-pointer \
+	        -o $(BUILD)/grid_$${t}_asan tests/unit/grid_$${t}_test.c $(GRID_SRC) || exit 1; \
+	    $(BUILD)/grid_$${t}_asan || exit 1; \
+	done

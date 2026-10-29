@@ -3,10 +3,15 @@
 RUNTIME_SCROLL_SRC = $(filter-out tests/unit/loader_test.c,$(LOADER_SRC)) $(filter-out tests/unit/cssom_test.c $(LOADER_SRC),$(CSSOM_TEST_SRC)) tests/unit/runtime_scroll_test.c
 RUNTIME_SCROLL_DEPS = $(RUNTIME_SCROLL_SRC) tests/unit/loader_test.c tests/unit/loaderhost/logit.h tests/unit/painthost/logit.h $(wildcard $(BROWSER_HEADERS) $(BROWSER_INCLUDES)) tests/unit/loader_fakebfetch.h c/apps/gui/browser/layout/flex.c c/apps/gui/browser/layout/grid.c $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
 RUNTIME_SCROLL_CF = -O2 -w -DLOADER_POLL_HOOK $(LOADER_INC) $(BTEST_INC) $(CSS_INC) $(JS_INC) -DCONFIG_VERSION='"host"' -DWEBAPI_HOST
+.PHONY: test-runtime-scroll test-runtime-scroll-negctl
 $(BUILD)/runtime_scroll_test: $(RUNTIME_SCROLL_DEPS)
 	$(CC) $(RUNTIME_SCROLL_CF) -o $@ $(RUNTIME_SCROLL_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
 $(BUILD)/runtime_scroll_negctl: $(RUNTIME_SCROLL_DEPS)
 	$(CC) $(RUNTIME_SCROLL_CF) -DBROWSER_SCROLL_SYNC_EVENTS -o $@ $(RUNTIME_SCROLL_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
+test-runtime-scroll-negctl: $(BUILD)/runtime_scroll_negctl
+	@$(BUILD)/runtime_scroll_negctl > $(BUILD)/runtime_scroll_negctl.log 2>&1; rc=$$?; cat $(BUILD)/runtime_scroll_negctl.log; test $$rc -eq 1 && grep -q 'FAIL: scroll listener never reenters itself' $(BUILD)/runtime_scroll_negctl.log
+test-runtime-scroll: test-runtime-scroll-negctl $(BUILD)/runtime_scroll_test
+	$(BUILD)/runtime_scroll_test
 
 SCRIPT_RESOURCE_DIR = $(BUILD)/site-general/script-resources
 SCRIPT_RESOURCE_BASE = $(filter-out tests/unit/runtime_scroll_test.c,$(RUNTIME_SCROLL_SRC)) tests/unit/script_resource_events_test.c

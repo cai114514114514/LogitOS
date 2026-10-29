@@ -12,4 +12,9 @@ $(WORKER_WASM_NORMAL_DIR)/diagnostics: $(WORKER_WASM_NORMAL_DEP)
 .PHONY: test-worker-wasm-normal
 test-worker-wasm-normal: $(WORKER_WASM_NORMAL_DIR)/current
 	@$(WORKER_WASM_NORMAL_DIR)/current
+.PHONY: test-worker-wasm-diagnostics
+test-worker-wasm-diagnostics: $(WORKER_WASM_NORMAL_DIR)/current $(WORKER_WASM_NORMAL_DIR)/diagnostics
+	@$(WORKER_WASM_NORMAL_DIR)/current > $(WORKER_WASM_NORMAL_DIR)/diagnostics-off.log 2>&1
+	@$(WORKER_WASM_NORMAL_DIR)/diagnostics > $(WORKER_WASM_NORMAL_DIR)/diagnostics-on.log 2>&1
+	@python3 tests/unit/worker_wasm_diagnostics_check.py $(WORKER_WASM_NORMAL_DIR)/diagnostics-off.log $(WORKER_WASM_NORMAL_DIR)/diagnostics-on.log
 ci-host: test-worker-wasm-normal

@@ -30,6 +30,13 @@ test-html-rawtext-fast-negctl: $(HTML_RAWTEXT_PERF_DIR)/bytewise
 test-html-rawtext-fast: test-html-rawtext-fast-negctl $(HTML_RAWTEXT_PERF_DIR)/current
 	@$(HTML_RAWTEXT_PERF_DIR)/current
 
+test-html-rawtext-fast-asan: test-html-rawtext-fast-negctl
+	@mkdir -p $(HTML_RAWTEXT_PERF_DIR)
+	$(CC) -O1 -g -w -fsanitize=address,undefined -fno-sanitize-recover=all \
+	 -fno-omit-frame-pointer $(BTEST_INC) -o $(HTML_RAWTEXT_PERF_DIR)/sanitize \
+	 $(HTML_RAWTEXT_PERF_SRC)
+	@ASAN_OPTIONS=detect_leaks=0 UBSAN_OPTIONS=halt_on_error=1 \
+	 $(HTML_RAWTEXT_PERF_DIR)/sanitize
 
 BENCH_HTML_RAWTEXT_ITERS ?= 64
 bench-html-rawtext: $(HTML_RAWTEXT_PERF_DIR)/current $(HTML_RAWTEXT_PERF_DIR)/bytewise

@@ -6,9 +6,11 @@
 # else's half-finished work happens to be in that file. `-include` of a missing
 # file is silently ignored, so losing the one line in the Makefile costs the
 # targets and breaks nothing.
-.PHONY: probe-webapi test-platform-control
-.PHONY: test-platform-page-control test-webapi-url-negctl
+.PHONY: probe-webapi test-platform test-platform-control test-platform-asan
+.PHONY: test-platform-page test-platform-page-control test-webapi-url-negctl
 .PHONY: test-webapi-slots-negctl
+.PHONY: test-platform-timing-negctl test-platform-livecollection-negctl
+.PHONY: test-platform-observer-negctl
 .PHONY: webapi-link-check
 
 # ===========================================================================
@@ -287,6 +289,15 @@ PLATFORM_TEST_SRC += c/apps/gui/browser/css/interp.c
 PLATFORM_TEST_SRC += c/net/http/http1.c c/net/http/url.c c/net/http/cookies.c c/net/http/ws.c c/net/ssh/base64.c c/crypto/hash/sha1.c
 PLATFORM_TEST_SRC += tests/unit/rust_host_shim.c
 PLATFORM_CF  := $(BTEST_INC) $(CSS_INC) $(JS_INC) -Iinclude/abi -Ic/net/ssh -Ic/crypto -DCONFIG_VERSION='"host"' -DWEBAPI_HOST
+# test-platform-livecollection-negctl joins its two siblings on this line:
+# same rule (NOT_CI drops test-*-negctl from CI; a prerequisite line is the
+# only thing that makes the positive actually run it), same suite, and it
+# had drifted to stranded-but-never-recorded -- worse than stranded, because
+# the audit had no line to compare against.
+test-platform: webapi-link-check test-platform-timing-negctl test-platform-observer-negctl test-platform-livecollection-negctl $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
+	@mkdir -p $(BUILD)
+	@$(CC) -O2 -w $(PLATFORM_CF) -o $(BUILD)/platform_test $(PLATFORM_TEST_SRC) $(PLATFORM_MOD) $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
+	@$(BUILD)/platform_test
 
 # The negative control. The SAME test file, linked WITHOUT js_platform.o and
 # js_select.o -- which links cleanly because js_page.c declares both entry
@@ -298,7 +309,23 @@ test-platform-control: $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
 	@$(CC) -O2 -w $(PLATFORM_CF) -o $(BUILD)/platform_control $(PLATFORM_TEST_SRC) $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
 	@$(BUILD)/platform_control --control
 
+# ASan/UBSan with the leak checker: the prelude holds JSValues (the rejection
+# hook, the observer registry) across page close, and the failure mode for that
+# is a leak or a use-after-free at JS_FreeRuntime, not a wrong answer.
+test-platform-asan: $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
+	@mkdir -p $(BUILD)
+	@$(CC) -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -w $(PLATFORM_CF) -o $(BUILD)/platform_asan $(PLATFORM_TEST_SRC) $(PLATFORM_MOD) $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
+	@ASAN_OPTIONS=detect_leaks=1 $(BUILD)/platform_asan
 
+# --- test-platform-page: the on-device proof, in PIXELS --------------------
+# The host test above does not go through the .aex loader, the ring-3 heap, the
+# browser's event loop, layout or the framebuffer. This does. The fixture page
+# is built so the text on screen can only appear if a CHAIN of the new APIs all
+# worked -- mark/measure, queueMicrotask, a MessagePort macrotask, a named
+# Storage read and querySelectorAll -- so the before/after screendump measures
+# the chain rather than a typeof.
+test-platform-page: $(ISO) $(DISK)
+	python3 tests/qmp/qmp_platform_page.py $(ISO) $(DISK)
 
 # The device negative control: the same harness against a browser.aex linked
 # without js_platform.o and js_select.o. Both entry points are weak in
@@ -329,6 +356,135 @@ test-platform-page-control: $(ISO) $(BUILD)/browser-noplat.aex
 	@$(MAKE) DISK=$(BUILD)/disk-noplat.img BROWSER_AEX=$(BUILD)/browser-noplat.aex $(BUILD)/disk-noplat.img
 	python3 tests/qmp/qmp_platform_page.py $(ISO) $(BUILD)/disk-noplat.img --expect-none
 
+# --- test-bing: the acceptance case, from the page's own bytes -------------
+# bing.com is what the bug report was about. This serves the CAPTURED bing
+# document and its four scripts (tests/fixtures/webapi/bing, the same bytes the
+# probe measures) at the paths the document names, loads it on the machine, and
+# reports every JS exception the page produced plus a screendump. It is a
+# REPORT, not a pass/fail gate on the page rendering: bing's own <inline 2>
+# references `_w` 37 KiB before the script that defines it and throws in a real
+# browser too, so a green light there would be a lie. What it does assert is
+# that the number of scripts that die is the number the host probe predicts.
+test-bing: $(ISO) $(DISK)
+	python3 tests/qmp/qmp_bing.py $(ISO) $(DISK)
 
+# --- test-platform-timing-negctl -------------------------------------------
+# The negative control for User Timing's SECOND lookup. It cannot be
+# test-platform-control: that build drops js_platform.o entirely, so
+# performance.measure does not exist and EVERY performance check fails for the
+# same uninformative reason. -DPLATFORM_NO_TIMING_MARKS restores exactly what
+# shipped -- markTime searching only user marks -- and leaves the rest of the
+# platform intact, so the checks that redden are the ones about this rule and
+# nothing else.
+#
+# EXACTLY 2, and the count is asserted rather than eyeballed. The third check
+# of the three added with the fix -- that a non-numeric timing member is still
+# a SyntaxError -- must keep PASSING here: it is the half that stops "make
+# markTime never throw" from satisfying the other two.
+test-platform-timing-negctl: $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
+	@mkdir -p $(BUILD)
+	@$(CC) -O2 -w $(PLATFORM_CF) -DPLATFORM_NO_TIMING_MARKS \
+	    -o $(BUILD)/platform_tmneg $(PLATFORM_TEST_SRC) $(PLATFORM_MOD) \
+	    $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
+	@$(BUILD)/platform_tmneg > $(BUILD)/platform_tmneg.log 2>&1; \
+	 n=`grep -c '^FAIL: ' $(BUILD)/platform_tmneg.log`; \
+	 if [ "$$n" != "2" ]; then \
+	   echo "test-platform-timing-negctl: FAILED -- expected exactly 2 FAILs, got $$n:"; \
+	   grep '^FAIL: ' $(BUILD)/platform_tmneg.log; exit 1; \
+	 else \
+	   echo "test-platform-timing-negctl: ok -- the suite fails without the fix:"; \
+	   grep '^FAIL: ' $(BUILD)/platform_tmneg.log; \
+	 fi
 
+# --- test-platform-livecollection-negctl ------------------------------------
+# js_dom.c's comment above live_list_cid promises this target exists ("See
+# ll_own_prop below and CLAUDE.md rule 5: test-live-collection-negctl is the
+# control that stays able to fail") -- it did not, until now. Per rule 5, a
+# control that is claimed in a comment but not wired is worse than admitting
+# there is none: the comment reads as evidence the fix is guarded when nothing
+# runs it.
+#
+# -DPLATFORM_NO_LIVE_COLLECTIONS (js_dom.c's child_array) restores the exact
+# Array-snapshot behaviour this file shipped before 2026-08-28. The six
+# "children / childNodes are LIVE" checks in webapi_platform_test.c must
+# answer differently there: five depend on the collection observing a mutation
+# made AFTER it was captured, which a snapshot cannot do by construction; the
+# sixth ("keep their real interface identity") does NOT -- child_array's
+# negative-control branch still calls iface_tag_list(), the same call the live
+# branch makes, so `instanceof HTMLCollection/NodeList` holds either way. A
+# target that asserted all six would be asserting something the code was never
+# meant to break, and the day it silently stopped breaking five-of-six instead
+# of six-of-six nobody would notice which one.
+#
+# Matched by DESCRIPTION rather than a blind total-FAIL count on purpose: this
+# file's other negctl (test-platform-timing-negctl, immediately above) counts
+# every FAIL line, and while this target was being written that count read 4
+# instead of its asserted 2 -- two unrelated checks (indexedDB, crypto.subtle)
+# were failing because PLATFORM_MOD/PLATFORM_TEST_SRC do not yet carry every
+# js_*.c TU another workflow is mid-landing (see the file header on why this
+# fragment's source lists drift). A blind count here would go red for the same
+# reason and blame the wrong fix. Matching the five checks' own text is immune
+# to that collateral noise: it goes red only when ITS OWN five checks stop
+# failing, which is the one thing this target exists to watch.
+test-platform-livecollection-negctl: $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
+	@mkdir -p $(BUILD)
+	@$(CC) -O2 -w $(PLATFORM_CF) -DPLATFORM_NO_LIVE_COLLECTIONS \
+	    -o $(BUILD)/platform_llneg $(PLATFORM_TEST_SRC) $(PLATFORM_MOD) \
+	    $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
+	@$(BUILD)/platform_llneg > $(BUILD)/platform_llneg.log 2>&1; \
+	 n=`grep -cE '^FAIL: (children\.length reflects|children\[i\] sees|children re-indexes|childNodes\.length is live|children supports Array-generic)' $(BUILD)/platform_llneg.log`; \
+	 idok=`grep -c '^ok  : children/childNodes keep their real interface identity' $(BUILD)/platform_llneg.log`; \
+	 if [ "$$n" != "5" ]; then \
+	   echo "test-platform-livecollection-negctl: FAILED -- expected exactly 5 of the live-collection checks to FAIL, got $$n:"; \
+	   grep -E '^(FAIL|ok  ): (children|childNodes)' $(BUILD)/platform_llneg.log; exit 1; \
+	 elif [ "$$idok" != "1" ]; then \
+	   echo "test-platform-livecollection-negctl: FAILED -- the interface-identity check must still PASS (it does not depend on liveness) but did not"; \
+	   grep -E '^(FAIL|ok  ): children/childNodes keep' $(BUILD)/platform_llneg.log; exit 1; \
+	 else \
+	   echo "test-platform-livecollection-negctl: ok -- the five liveness checks fail without the fix, identity still passes:"; \
+	   grep -E '^(FAIL|ok  ): (children|childNodes)' $(BUILD)/platform_llneg.log; \
+	 fi
 
+# --- test-platform-observer-negctl -------------------------------------------
+# The negative control for PerformanceObserver (js_platform.c). MEASURED IN
+# THE GUEST: bing.com constructs one un-guarded and threw a ReferenceError that
+# took the rest of its IIFE with it -- see js_platform.c's comment above
+# SUPPORTED_TYPES for the call site and tests/scoreboard/full-corpus/bing.json
+# for the recorded exception.
+#
+# -DPLATFORM_NO_PERFORMANCE_OBSERVER restores exactly what shipped before this
+# change: `if (!G.PerformanceObserver) def(...)` is skipped, so the global
+# stays absent and every check about it must fail.
+#
+# MATCHED BY DESCRIPTION, not a blind FAIL count, for the reason
+# test-platform-livecollection-negctl above gives verbatim: this file's source
+# lists (PLATFORM_TEST_SRC) are mid-drift from other workflows landing in
+# c/apps/gui/browser at the same time, and at the moment this target was written
+# that collateral noise was three UNRELATED failures (indexedDB, crypto.subtle,
+# Element.attachShadow) that have nothing to do with this change and must not
+# make this control flap. A blind count would go red the next time that drift
+# count changes and blame the wrong fix.
+#
+# EXACTLY 11, not 14: three of the fourteen PerformanceObserver checks assert
+# an ABSENCE of a side effect ("has not fired synchronously", "an unsupported
+# type never fires", "disconnect() removes the observer before its callback
+# ever ran") and are true VACUOUSLY when the whole feature is missing -- there
+# is no callback to have fired either way. Each of those three is paired with
+# a positive check right next to it (the batched-delivery count, the
+# instanceof check, takeRecords) that DOES fail here, so the feature is still
+# proven; counting the vacuous three as evidence would be the exact "control
+# passes for the wrong reason" shape CLAUDE.md rule 5 names.
+test-platform-observer-negctl: $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
+	@mkdir -p $(BUILD)
+	@$(CC) -O2 -w $(PLATFORM_CF) -DPLATFORM_NO_PERFORMANCE_OBSERVER \
+	    -o $(BUILD)/platform_poneg $(PLATFORM_TEST_SRC) $(PLATFORM_MOD) \
+	    $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
+	@$(BUILD)/platform_poneg > $(BUILD)/platform_poneg.log 2>&1; \
+	 n=`grep -cE '^FAIL: (PerformanceObserver exists|supportedEntryTypes |PerformanceObserver requires|three entries made|the batched callback|the delivered list|delivered entries are instanceof|buffered:true replays|takeRecords )' $(BUILD)/platform_poneg.log`; \
+	 if [ "$$n" != "11" ]; then \
+	   echo "test-platform-observer-negctl: FAILED -- expected exactly 11 PerformanceObserver checks to FAIL, got $$n:"; \
+	   grep -E '^(FAIL|ok  ): (PerformanceObserver|supportedEntryTypes|three entries|the batched|the delivered|delivered entries|buffered:true|takeRecords)' $(BUILD)/platform_poneg.log; exit 1; \
+	 else \
+	   echo "test-platform-observer-negctl: ok -- the observer's real-delivery checks fail without the fix:"; \
+	   grep -E '^FAIL: (PerformanceObserver|supportedEntryTypes|three entries|the batched|the delivered|delivered entries|buffered:true|takeRecords)' $(BUILD)/platform_poneg.log; \
+	 fi

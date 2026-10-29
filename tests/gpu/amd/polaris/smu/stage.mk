@@ -34,3 +34,9 @@ $(BUILD)/stage-polaris-sdma-neg: $(POLARIS_STAGE_TOOL_SRC) $(POLARIS_STAGE_TOOL_
 
 # Optional pinned real inputs, never fetched by a test. The Python oracle must
 # first reject the corrupted build, then check the identical positive output.
+.PHONY: test-polaris-smu-stage-files
+test-polaris-smu-stage-files: test-polaris-smu-stage-host $(BUILD)/stage-polaris-sdma $(BUILD)/stage-polaris-sdma-neg
+	@test -n "$(POLARIS_FIRMWARE_DIR)" || { echo 'POLARIS_FIRMWARE_DIR is required'; exit 2; }
+	@python3 tests/gpu/amd/polaris/smu/files.py --tool $(BUILD)/stage-polaris-sdma \
+	    --negative-tool $(BUILD)/stage-polaris-sdma-neg --firmware-dir "$(POLARIS_FIRMWARE_DIR)" \
+	    --out $(BUILD)/polaris-smu-real-files

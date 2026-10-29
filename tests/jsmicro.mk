@@ -72,6 +72,7 @@
 #   make test-jsmicro       the host differential (fast)
 #   make test-jsmicro-os    the same cases on the machine, over serial
 #
+.PHONY: test-jsmicro test-jsmicro-os
 
 JSMICRO_DIR   := tests/jsmicro
 JSMICRO_CASES := $(sort $(wildcard $(JSMICRO_DIR)/cases/*.js)) \
@@ -86,4 +87,15 @@ $(BUILD)/micro_run: $(JSMICRO_DIR)/micro_run.c $(QJS_SRC)
 	    -DCONFIG_VERSION='"logit-2024"' -DLOGIT_OS -DCONFIG_STACK_CHECK \
 	    -DNDEBUG -o $@ $(JSMICRO_DIR)/micro_run.c $(QJS_SRC) -lm
 
+test-jsmicro: $(BUILD)/micro_run
+	@ENGINE=$(BUILD)/micro_run OUT=$(BUILD)/jsmicro-out \
+	    bash $(JSMICRO_DIR)/run.sh
 
+# On the machine. NOT verified by the line that wired this fragment -- the host
+# half was run and is green-with-two-findings, the guest half is wired from the
+# scripts' own documented interface and is stated as unrun rather than claimed.
+# Whoever runs it first should replace this paragraph with what happened.
+test-jsmicro-os: $(ISO) $(DISK)
+	@BUILD=$(BUILD) bash $(JSMICRO_DIR)/build-guest.sh
+	@ISO=$(ISO) DISK=$(DISK) OUT=$(BUILD)/jsmicro-guest \
+	    bash $(JSMICRO_DIR)/run-guest.sh

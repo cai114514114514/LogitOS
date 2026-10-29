@@ -21,7 +21,7 @@
 #   pictures must arrive in presentation order, match the whole-file decode
 #   sample for sample, and hold an A/V drift bound measured by avclock itself.
 
-.PHONY: test-mse test-mse-negctl test-mse-nocard-negctl test-mse-os mse-fixtures
+.PHONY: test-mse test-mse-asan test-mse-negctl test-mse-nocard-negctl test-mse-os mse-fixtures
 
 MSE_FX   := tests/fixtures/mse
 MSE_SRC  := c/apps/gui/browser/js/media/media_src.c
@@ -147,6 +147,15 @@ test-mse: $(BUILD)/mse_test test-mse-negctl test-mse-nocard-negctl
 # before this file. (Same option, same day, worse consequence over there: it was
 # satisfying test-demux-fuzz-negctl.)
 MSE_ASAN := -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer
+test-mse-asan: $(MSE_DEPS) $(MSE_IMG_SRC) $(BUILD)/mse_kshim.c tests/unit/mse_test.c \
+               $(BUILD)/.asan-leaks
+	@mkdir -p $(BUILD)
+	@$(CC) -O1 -g $(MSE_ASAN) -w -o $(BUILD)/mse_test_asan tests/unit/mse_test.c \
+	    $(BUILD)/mse_kshim.c $(MSE_SRC) c/lib/media/*.c c/lib/video/*.c \
+	    c/lib/audio/*.c $(MSE_IMG_SRC) $(MSE_INC) -lm
+	@leaks=`cat $(BUILD)/.asan-leaks`; $(ASAN_LEAK_NOTE); \
+	 ASAN_OPTIONS=detect_leaks=$$leaks:halt_on_error=1 \
+	 UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1 $(BUILD)/mse_test_asan $(MSE_FX)
 
 # --- THE NEGATIVE CONTROL ----------------------------------------------------
 # The bug this whole design exists to prevent, built on purpose:
