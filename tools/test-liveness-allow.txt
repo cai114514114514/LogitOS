@@ -15,13 +15,9 @@
 # another line's file is not this line's job, not because it is fine.
 
 # --- tools, not tests: they produce a picture or drive the machine for a human
-tests/qmp/qmp_shot.py: screendumps a running QEMU; the output IS the result
-tests/qmp/qmp_demo.py: drives a demo sequence for a screenshot
-tests/qmp/qmp_drag.py: demonstrates window dragging for a screenshot
 tests/qmp/qmp_apps.py: opens two apps and screendumps; no claim is made about what is in the pictures
 tests/qmp/qmp_browser.py: screendumps for a human; its no-URL path asserts nothing on purpose (its URL path now dies through qmp_addrbar, but rule 1 reads this file's text, not its imports')
 tests/qmp/qmp_probe.py: a minimal "does a click arrive" probe used interactively
-tests/qmp/qmp_stress.py: soak driver -- reloads a page N times; the artefact is the screenshot afterwards
 tests/boot/bootwait.sh: a SOURCED helper library, not a test -- it defines logit_wait_for_shell(); every harness that sources it owns its own verdict, and this file returning non-zero would fail the sourcing harness's shell, not the machine
 tests/boot/run-smp-lockprobe.sh: an instrument, not a gate -- samples every lock's ticket counter before and after the smptest workload and prints both; the number is the output and there is no threshold to fail
 tests/unit/p521_gen.sh: a vector GENERATOR -- openssl picks the key, nonce and message and this prints them as hex; the verdict belongs to ecdsa_p521_test, which consumes the output
@@ -38,9 +34,6 @@ tests/boot/sweep-resume.sh: runs the targets a sweep never reached, then delegat
 
 # --- these PRESENT as detectors and cannot report what they detect.
 # Not this line's files to fix; listed so the next person to touch them knows.
-tests/qmp/qmp_blackframe.py: its docstring defines healthy vs black-frame by pixel content, then exits 0 whichever it saw
-tests/qmp/qmp_fuzz.py: "if heartbeats stop -> FROZEN" is in the docstring; nothing in the code acts on it
-tests/qmp/qmp_watch.py: dumps every CPU's registers when the screen goes static, then exits 0 -- the dump is the output, the verdict is not
 
 # 2026-08-30, testdebt: the two lines that were here for run-launch-profile.sh
 # and qmp_launch_click.py were dropped -- both can fail now (their owner added
