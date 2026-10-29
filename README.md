@@ -100,6 +100,18 @@ flowchart TB
     DRV["virtio · NVMe · AHCI · xHCI · HDA · e1000 · RTL8169"] --- BOOT["BIOS + UEFI loaders · long-mode entry"]
   end
   R3 --> LIB --> K --> HW
+  classDef app fill:#1b1430,stroke:#c27bff,color:#f4f4fb
+  classDef lib fill:#0f1d26,stroke:#3cc4ff,color:#f4f4fb
+  classDef ker fill:#241809,stroke:#ff9a4a,color:#f4f4fb
+  classDef hw fill:#2a1015,stroke:#ff5a6a,color:#f4f4fb
+  class APPS,BR,AG,AS app
+  class AUI,GFX,TXT,LIBC lib
+  class WM,SCH,MM,FS,NET ker
+  class DRV,BOOT hw
+  style R3 fill:#0d0a18,stroke:#7b78ff,color:#c9c7ff
+  style LIB fill:#0a1318,stroke:#38e6a8,color:#bff5e2
+  style K fill:#170f07,stroke:#ffd35c,color:#ffe9b0
+  style HW fill:#170a0d,stroke:#ff7a5a,color:#ffc9bd
 ```
 
 ### A real boot, as it prints
