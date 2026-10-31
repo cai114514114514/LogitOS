@@ -1,16 +1,19 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
-/* Intel C600/X79 host SMBus, deliberately limited to read-only DDR3 SPD
+/* Intel PCH host SMBus, deliberately limited to read-only DDR3 SPD
  * discovery.  PCI class 0c:05 says "SMBus" but does not standardize this I/O
  * register layout, so binding every controller with that class would be a
- * hardware-corruption risk.  Intel's specification update identifies the
- * C600/X79 D31:F3 function as 8086:1d22; that exact ID plus the class is the
- * compatibility boundary here.
+ * hardware-corruption risk. Previously this accepted only C600/X79 1d22.
+ * Correction: Linux v6.6 i2c-i801.c identifies 1c22/1d22/1e22 as the same
+ * 32-byte I/O layout (SMBBAR=4, SMBHSTCFG=0x40, Byte Data=0x08):
+ * https://github.com/torvalds/linux/blob/v6.6/drivers/i2c/busses/i2c-i801.c
+ * Only those IDs plus the original class checks are admitted. Host-model
+ * evidence only: not verified on X79-VG4 hardware.
  *
  * No public arbitrary-address API exists.  The only issued bus operation is
  * SMBus Byte Data READ to 0x50..0x57.  In particular there is no Quick command
  * probe and no write direction, because either can modify a poorly protected
  * EEPROM on real hardware. */
-#include "intel_c600_smbus.h"
+#include "intel_pch_smbus.h"
 #include "driver.h"
 #include "pci.h"
 #include "io.h"
@@ -18,7 +21,6 @@
 #include "kprintf.h"
 
 #define INTEL_VENDOR_ID 0x8086u
-#define C600_SMBUS_ID   0x1d22u
 #define SMBUS_CLASS     0x0cu
 #define SMBUS_SUBCLASS  0x05u
 #define SMB_BASE_BAR    4
@@ -48,6 +50,19 @@
 #define KILL_NS         5000000ull
 #define POLL_LIMIT      100000u
 
+static const uint16_t pch_smbus_ids[] = {
+    0x1c22, /* Linux i2c-i801: PCI_DEVICE_ID_INTEL_COUGARPOINT_SMBUS, 6/C200. */
+    0x1d22, /* Linux i2c-i801: PCI_DEVICE_ID_INTEL_PATSBURG_SMBUS, C600/X79. */
+    0x1e22, /* Linux i2c-i801: PCI_DEVICE_ID_INTEL_PANTHERPOINT_SMBUS, 7 series. */
+};
+
+static int pch_smbus_supported(uint16_t id)
+{
+    for (unsigned i = 0; i < sizeof pch_smbus_ids / sizeof pch_smbus_ids[0]; i++)
+        if (id == pch_smbus_ids[i]) return 1;
+    return 0;
+}
+
 #ifndef X79_SPD_READ_BIT
 #define X79_SPD_READ_BIT 1u
 #endif
@@ -56,14 +71,14 @@ enum xfer_result { XFER_OK = 0, XFER_NO_DEVICE = -1, XFER_COLLISION = -2,
                    XFER_TIMEOUT = -3, XFER_BUSY = -4,
                    XFER_QUARANTINED = -5 };
 
-static struct c600_spd_inventory inventory;
-/* This exact device ID represents the single PCH SMBus function.  Once a
+static struct pch_spd_inventory inventory;
+/* These device IDs represent the single PCH SMBus function. Once a
  * failed recovery leaves either its transaction engine or PCI decoder state
  * unknowable, retrying the probe would turn a bounded diagnostic read into an
  * unowned port access.  Keep the refusal for the lifetime of this boot. */
 static int controller_quarantined;
 
-const struct c600_spd_inventory *c600_spd_inventory(void) { return &inventory; }
+const struct pch_spd_inventory *pch_spd_inventory(void) { return &inventory; }
 
 static int before_deadline(uint64_t deadline, unsigned *polls)
 {
@@ -193,7 +208,7 @@ static void inventory_reset(uint16_t io)
 static void scan_spd(uint16_t io)
 {
     uint8_t spd[DDR3_SPD_BYTES_NEEDED];
-    for (uint8_t addr = C600_SPD_FIRST_ADDR; addr <= C600_SPD_LAST_ADDR; addr++) {
+    for (uint8_t addr = PCH_SPD_FIRST_ADDR; addr <= PCH_SPD_LAST_ADDR; addr++) {
         int rc = byte_data_read(io, addr, 2, &spd[2]);
         if (rc == XFER_NO_DEVICE) continue;
         if (rc != XFER_OK) {
@@ -226,7 +241,10 @@ static void scan_spd(uint16_t io)
             kprintf("[spd] addr=0x%02x rejected=%s\n", addr, decode_error(rc));
             continue;
         }
-        struct c600_spd_module *m = &inventory.module[inventory.modules++];
+        /* Firmware locator strings (two Node0_Bank0 labels on X79-VG4) and
+         * duplicated part/serial data are not module identities. Count each
+         * responding SPD address exactly once; never deduplicate by a label. */
+        struct pch_spd_module *m = &inventory.module[inventory.modules++];
         m->address = addr;
         m->ddr3 = info;
         inventory.module_capacity_mib += info.module_mib;
@@ -244,10 +262,10 @@ static void scan_spd(uint16_t io)
             inventory.rejected, inventory.read_errors);
 }
 
-int c600_smbus_probe(struct device *dev)
+int pch_smbus_probe(struct device *dev)
 {
     if (!dev || dev->bus_type != DEV_BUS_PCI || dev->vendor != INTEL_VENDOR_ID ||
-        dev->device != C600_SMBUS_ID || dev->class_code != SMBUS_CLASS ||
+        !pch_smbus_supported(dev->device) || dev->class_code != SMBUS_CLASS ||
         dev->subclass != SMBUS_SUBCLASS)
         return -1;
     if (controller_quarantined) {
@@ -258,13 +276,13 @@ int c600_smbus_probe(struct device *dev)
     struct dev_resource *bar = &dev->res[SMB_BASE_BAR];
     if (!(bar->flags & DEV_RES_IO) || !bar->start || bar->start > 0xffe0u ||
         bar->size < 0x20u || (bar->start & 0x1fu)) {
-        kprintf("[smbus] %s C600/X79 unusable I/O BAR\n", dev->name);
+        kprintf("[smbus] %s PCH unusable I/O BAR\n", dev->name);
         return -1;
     }
 
     uint8_t hostc = pci_cfg_read8(dev->bus, dev->slot, dev->func, SMB_HOSTC);
     if (hostc & HOSTC_I2C_EN) {
-        kprintf("[smbus] %s C600/X79 I2C mode refused\n", dev->name);
+        kprintf("[smbus] %s PCH I2C mode refused\n", dev->name);
         return -1;
     }
     uint16_t old_cmd = pci_cfg_read16(dev->bus, dev->slot, dev->func, PCI_CFG_COMMAND);
@@ -281,7 +299,7 @@ int c600_smbus_probe(struct device *dev)
     if (!(pci_cfg_read16(dev->bus, dev->slot, dev->func,
                          PCI_CFG_COMMAND) & PCI_CMD_IO)) {
         (void)restore_command(dev, old_cmd);
-        kprintf("[smbus] %s C600/X79 I/O decode enable refused\n", dev->name);
+        kprintf("[smbus] %s PCH I/O decode enable refused\n", dev->name);
         return -1;
     }
 #endif
@@ -290,26 +308,29 @@ int c600_smbus_probe(struct device *dev)
                        (uint8_t)(hostc | HOSTC_HST_EN));
         if (!(pci_cfg_read8(dev->bus, dev->slot, dev->func, SMB_HOSTC) & HOSTC_HST_EN)) {
             (void)restore_command(dev, old_cmd);
-            kprintf("[smbus] %s C600/X79 host enable refused\n", dev->name);
+            kprintf("[smbus] %s PCH host enable refused\n", dev->name);
             return -1;
         }
     }
 
     uint16_t io = (uint16_t)bar->start;
     inventory_reset(io);
-    kprintf("[smbus] %s Intel C600/X79 io=0x%x SPD read-only 0x50-0x57\n",
+    kprintf("[smbus] %s Intel PCH io=0x%x SPD read-only 0x50-0x57\n",
             dev->name, io);
     scan_spd(io);
     dev_set_drvdata(dev, &inventory);
     return 0;
 }
 
-static const struct dev_match c600_smbus_ids[] = {
-    { INTEL_VENDOR_ID, C600_SMBUS_ID, SMBUS_CLASS, SMBUS_SUBCLASS, DEV_ANYC, 0 },
+/* This table only dispatches probes. The ID allowlist above is authoritative:
+ * repeating it here would let registration and direct-probe tests drift apart.
+ * Probe rejects unknown IDs before any PCI configuration or port access. */
+static const struct dev_match pch_smbus_matches[] = {
+    DEV_MATCH_VCLASS(INTEL_VENDOR_ID, SMBUS_CLASS, SMBUS_SUBCLASS),
     DEV_MATCH_END
 };
-static struct driver c600_smbus_driver = {
-    .name = "c600-smbus", .bus_type = DEV_BUS_PCI,
-    .match = c600_smbus_ids, .probe = c600_smbus_probe,
+static struct driver pch_smbus_driver = {
+    .name = "pch-smbus", .bus_type = DEV_BUS_PCI,
+    .match = pch_smbus_matches, .probe = pch_smbus_probe,
 };
-DRIVER_DECLARE(c600_smbus_driver);
+DRIVER_DECLARE(pch_smbus_driver);

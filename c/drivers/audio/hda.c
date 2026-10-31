@@ -982,9 +982,27 @@ static void hda_isr(void *arg)
 #define HDA_PCI_CLASS       0x04
 #define HDA_PCI_SUBCLASS    0x03
 #define HDA_INTEL_VENDOR    0x8086
-#define HDA_X79_DEVICE      0x1d20
 #define HDA_NVIDIA_VENDOR   0x10de
 #define HDA_RUN             0x02
+
+/* Linux v6.12 hda_intel.c azx_ids lists HDA_CPT/PBG/PPT as PCH controllers;
+ * include/linux/pci_ids.h supplies these values. Previously only 1d20 was
+ * preferred here, which let GPU audio take the singleton on a 6-series PCH.
+ * https://github.com/torvalds/linux/blob/v6.12/sound/pci/hda/hda_intel.c
+ * https://github.com/torvalds/linux/blob/v6.12/include/linux/pci_ids.h
+ * Selection is host-model evidence: not verified on X79-VG4 hardware. */
+static const uint16_t pch_hda_ids[] = {
+    0x1c20, /* PCI_DEVICE_ID_INTEL_HDA_CPT: Cougar Point, 6/C200 series. */
+    0x1d20, /* PCI_DEVICE_ID_INTEL_HDA_PBG: Patsburg, C600/X79. */
+    0x1e20, /* PCI_DEVICE_ID_INTEL_HDA_PPT: Panther Point, 7 series. */
+};
+
+static int hda_pch_id(uint16_t id)
+{
+    for (unsigned i = 0; i < sizeof pch_hda_ids / sizeof pch_hda_ids[0]; i++)
+        if (id == pch_hda_ids[i]) return 1;
+    return 0;
+}
 
 /* Bring up BAR decoding without ever reviving firmware DMA.  The legacy
  * wrappers now use the checked Command helper: disable first removes decode
@@ -1096,15 +1114,15 @@ static int hda_set_ring_size(struct hda *h, unsigned reg, unsigned *entries)
     return 0;
 }
 
-static int hda_is_x79_onboard(const struct device *dev)
+static int hda_is_pch_onboard(const struct device *dev)
 {
-    /* Patsburg exposes the X79/C600 HD Audio function at 00:1b.0.  Requiring
+    /* These PCH generations expose HD Audio at 00:1b.0. Requiring
      * both the published ID and the integrated BDF prevents an unrelated
      * passthrough endpoint with a copied ID from becoming the boot-wide
      * single HDA instance. */
     return dev && dev->bus_type == DEV_BUS_PCI && dev->seg == 0 &&
            dev->bus == 0 && dev->slot == 0x1b && dev->func == 0 &&
-           dev->vendor == HDA_INTEL_VENDOR && dev->device == HDA_X79_DEVICE &&
+           dev->vendor == HDA_INTEL_VENDOR && hda_pch_id(dev->device) &&
            dev->class_code == HDA_PCI_CLASS &&
            dev->subclass == HDA_PCI_SUBCLASS;
 }
@@ -1127,10 +1145,22 @@ static int hda_has_display_sibling(const struct device *dev)
     return 0;
 }
 
-static int hda_x79_onboard_present(void)
+static int hda_display_audio(const struct device *dev)
+{
+    /* A partial PCI inventory need not contain the VGA sibling. The target
+     * inventory in docs/superpowers/specs/2026-10-31-x79-vg4-bringup-design.md
+     * identifies 10de:0fb9 as the GTX 1050 HDMI function.
+     * Keep an explicit identity fallback for it, rather than rejecting all
+     * NVIDIA HDA: older NVIDIA chipset audio can be an analogue controller.
+     * HDMI/DP routing and ELD are deliberately deferred to phase 3. */
+    return dev && ((dev->vendor == HDA_NVIDIA_VENDOR && dev->device == 0x0fb9) ||
+                   hda_has_display_sibling(dev));
+}
+
+static int hda_pch_onboard_present(void)
 {
     for (int i = 0; i < dev_count(); i++)
-        if (hda_is_x79_onboard(dev_at(i))) return 1;
+        if (hda_is_pch_onboard(dev_at(i))) return 1;
     return 0;
 }
 
@@ -1145,8 +1175,8 @@ static int hda_controller_candidate(const struct device *dev)
      * before the X79 controller is reached. */
     if (dev->vendor == HDA_NVIDIA_VENDOR) return 1;
 #endif
-    if (hda_has_display_sibling(dev)) return 0;
-    if (!hda_is_x79_onboard(dev) && hda_x79_onboard_present()) return 0;
+    if (hda_display_audio(dev)) return 0;
+    if (!hda_is_pch_onboard(dev) && hda_pch_onboard_present()) return 0;
     return 1;
 }
 
@@ -1238,10 +1268,10 @@ static int hda_probe(struct device *dev)
     unsigned i, iss, oss;
 
     if (!hda_controller_candidate(dev)) {
-        if (hda_has_display_sibling(dev))
-            kprintf("[hda] %s: display-function audio skipped\n", dev->name);
-        else if (hda_x79_onboard_present())
-            kprintf("[hda] %s: deferred to X79 8086:1d20 at 00:1b.0\n",
+        if (hda_display_audio(dev))
+            kprintf("[hda] %s: HDMI/DP audio deferred to phase 3\n", dev->name);
+        else if (hda_pch_onboard_present())
+            kprintf("[hda] %s: deferred to Intel PCH HDA at 00:1b.0\n",
                     dev->name);
         return -1;
     }

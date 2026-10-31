@@ -7,7 +7,7 @@
 #include "driver.h"
 #include "pci.h"
 #include "ddr3_spd.h"
-#include "intel_c600_smbus.h"
+#include "intel_pch_smbus.h"
 
 #define IO_BASE 0x500u
 #define HST_STS 0x00u
@@ -132,11 +132,11 @@ void outb(uint16_t port, uint8_t value)
     uint8_t wire = hw.reg[XMIT_SLVA];
     if (!(wire & 1u)) hw.write_directions++;
     unsigned addr = wire >> 1;
-    if (addr < C600_SPD_FIRST_ADDR || addr > C600_SPD_LAST_ADDR) {
+    if (addr < PCH_SPD_FIRST_ADDR || addr > PCH_SPD_LAST_ADDR) {
         hw.outside_spd++; hw.status = STS_DEVERR; return;
     }
     if (hw.stuck_after_start) { hw.status = STS_BUSY; return; }
-    unsigned slot = addr - C600_SPD_FIRST_ADDR;
+    unsigned slot = addr - PCH_SPD_FIRST_ADDR;
     hw.starts_by_addr[slot]++;
     if (!hw.present[slot]) { hw.status = STS_DEVERR; return; }
     hw.reg[HST_D0] = hw.spd[slot][hw.reg[HST_CMD]];
@@ -164,7 +164,7 @@ void pci_cfg_write16(uint8_t b, uint8_t s, uint8_t f, uint16_t off, uint16_t v)
     cfg_command = v;
 }
 
-static struct device c600_device(void)
+static struct device pch_device(void)
 {
     struct device d; memset(&d, 0, sizeof d);
     strcpy(d.name, "0000:00:1f.3");
@@ -205,9 +205,9 @@ static void full_driver_checks(void)
     make_spd(hw.spd[1], 1, 4, 2, 2, "X79-8G-UDIMM");
     make_spd(hw.spd[2], 0, 3, 2, 2, "BAD-CRC"); hw.spd[2][40] ^= 1;
     hw.spd[3][2] = 0x0c; /* a responding DDR4 SPD-shaped device */
-    struct device d = c600_device();
-    CHECK(c600_smbus_probe(&d) == 0, "C600/X79 SMBus binds");
-    const struct c600_spd_inventory *inv = c600_spd_inventory();
+    struct device d = pch_device();
+    CHECK(pch_smbus_probe(&d) == 0, "C600/X79 SMBus binds");
+    const struct pch_spd_inventory *inv = pch_spd_inventory();
     CHECK(inv->modules == 2 && inv->rejected == 2 && inv->read_errors == 0,
           "valid, corrupt and absent SPD addresses are distinguished");
     CHECK(inv->module_capacity_mib == 24576,
@@ -234,37 +234,37 @@ static void full_driver_checks(void)
 static void refusal_checks(void)
 {
     struct device d;
-    reset_model(); d = c600_device(); d.device = 0x1c22;
-    CHECK(c600_smbus_probe(&d) != 0 && hw.starts == 0,
+    reset_model(); d = pch_device(); d.device = 0x1c23;
+    CHECK(pch_smbus_probe(&d) != 0 && hw.starts == 0,
           "another Intel SMBus register layout is not guessed");
-    reset_model(); d = c600_device(); d.class_code = 0x01;
-    CHECK(c600_smbus_probe(&d) != 0 && hw.starts == 0, "wrong PCI class is refused");
-    reset_model(); d = c600_device(); d.res[4].size = 0x10;
-    CHECK(c600_smbus_probe(&d) != 0 && cfg_command == (PCI_CMD_MEM | PCI_CMD_MASTER),
+    reset_model(); d = pch_device(); d.class_code = 0x01;
+    CHECK(pch_smbus_probe(&d) != 0 && hw.starts == 0, "wrong PCI class is refused");
+    reset_model(); d = pch_device(); d.res[4].size = 0x10;
+    CHECK(pch_smbus_probe(&d) != 0 && cfg_command == (PCI_CMD_MEM | PCI_CMD_MASTER),
           "short I/O aperture is refused before enabling decode");
-    reset_model(); d = c600_device(); cfg_hostc |= 0x04;
-    CHECK(c600_smbus_probe(&d) != 0 && hw.starts == 0,
+    reset_model(); d = pch_device(); cfg_hostc |= 0x04;
+    CHECK(pch_smbus_probe(&d) != 0 && hw.starts == 0,
           "unknown I2C formatting mode is refused");
-    reset_model(); d = c600_device(); hw.hostc_write_ignored = 1;
-    CHECK(c600_smbus_probe(&d) != 0 && cfg_command == (PCI_CMD_MEM | PCI_CMD_MASTER),
+    reset_model(); d = pch_device(); hw.hostc_write_ignored = 1;
+    CHECK(pch_smbus_probe(&d) != 0 && cfg_command == (PCI_CMD_MEM | PCI_CMD_MASTER),
           "failed host-enable restores the original PCI Command");
-    reset_model(); d = c600_device(); hw.command_write_ignored = 1;
-    CHECK(c600_smbus_probe(&d) != 0 && hw.starts == 0 &&
+    reset_model(); d = pch_device(); hw.command_write_ignored = 1;
+    CHECK(pch_smbus_probe(&d) != 0 && hw.starts == 0 &&
           cfg_command == (PCI_CMD_MEM | PCI_CMD_MASTER),
           "ignored I/O-decode write is refused before BAR access");
-    reset_model(); d = c600_device(); clock_ready = 0;
-    CHECK(c600_smbus_probe(&d) != 0 && hw.starts == 0, "unready timeout clock is refused");
+    reset_model(); d = pch_device(); clock_ready = 0;
+    CHECK(pch_smbus_probe(&d) != 0 && hw.starts == 0, "unready timeout clock is refused");
 
-    reset_model(); d = c600_device(); hw.stuck_after_start = 1; hw.present[0] = 1;
-    CHECK(c600_smbus_probe(&d) == 0, "timed-out SPD scan does not claim a module");
+    reset_model(); d = pch_device(); hw.stuck_after_start = 1; hw.present[0] = 1;
+    CHECK(pch_smbus_probe(&d) == 0, "timed-out SPD scan does not claim a module");
     CHECK(hw.kill_writes == 1 && hw.kill_clears == 1 && hw.inuse == 0 && hw.time_reads < 1000,
           "owned timeout is killed, cleared and bounded");
 
-    reset_model(); d = c600_device(); hw.busy_before_start = 1;
-    CHECK(c600_smbus_probe(&d) == 0 && hw.starts == 0 && hw.kill_writes == 0 && hw.inuse == 0,
+    reset_model(); d = pch_device(); hw.busy_before_start = 1;
+    CHECK(pch_smbus_probe(&d) == 0 && hw.starts == 0 && hw.kill_writes == 0 && hw.inuse == 0,
           "pre-existing busy transaction is never killed");
-    reset_model(); d = c600_device(); hw.external_inuse = 1;
-    CHECK(c600_smbus_probe(&d) == 0 && hw.starts == 0 && hw.kill_writes == 0 && hw.releases == 0,
+    reset_model(); d = pch_device(); hw.external_inuse = 1;
+    CHECK(pch_smbus_probe(&d) == 0 && hw.starts == 0 && hw.kill_writes == 0 && hw.releases == 0,
           "another semaphore owner is neither used nor released");
 }
 
@@ -272,7 +272,7 @@ static void readonly_control(void)
 {
     reset_model(); hw.present[0] = 1;
     make_spd(hw.spd[0], 0, 5, 2, 1, "READONLY");
-    struct device d = c600_device(); (void)c600_smbus_probe(&d);
+    struct device d = pch_device(); (void)pch_smbus_probe(&d);
     CHECK(hw.write_directions == 0, "SPD transactions remain read-only");
 }
 
@@ -287,7 +287,7 @@ static void crc_control(void)
 static void kill_control(void)
 {
     reset_model(); hw.stuck_after_start = 1; hw.present[0] = 1;
-    struct device d = c600_device(); (void)c600_smbus_probe(&d);
+    struct device d = pch_device(); (void)pch_smbus_probe(&d);
     CHECK(hw.kill_writes == 1 && hw.kill_clears == 1 && hw.inuse == 0,
           "owned timeout is killed, cleared and bounded");
 }
@@ -296,8 +296,8 @@ static void command_control(void)
 {
     reset_model(); hw.command_write_ignored = 1; hw.present[0] = 1;
     make_spd(hw.spd[0], 0, 5, 2, 1, "CMD-LOCKED");
-    struct device d = c600_device();
-    CHECK(c600_smbus_probe(&d) != 0 && hw.starts == 0,
+    struct device d = pch_device();
+    CHECK(pch_smbus_probe(&d) != 0 && hw.starts == 0,
           "ignored I/O-decode write is refused before BAR access");
 }
 
@@ -306,12 +306,12 @@ static void kill_ignored_control(void)
     reset_model();
     hw.stuck_after_start = 1;
     hw.kill_write_ignored = 1;
-    struct device d = c600_device();
-    int first = c600_smbus_probe(&d);
+    struct device d = pch_device();
+    int first = pch_smbus_probe(&d);
     unsigned reads = hw.io_reads, writes = hw.io_writes;
     hw.stuck_after_start = 0;
     hw.kill_write_ignored = 0;
-    int second = c600_smbus_probe(&d);
+    int second = pch_smbus_probe(&d);
     CHECK(first == 0 && second != 0 && hw.starts == 1 &&
           hw.kill_writes == 1 && hw.kill_clears == 0 &&
           hw.inuse == 1 && hw.releases == 0 &&
@@ -324,12 +324,12 @@ static void command_restore_control(void)
     reset_model();
     hw.hostc_write_ignored = 1;
     hw.command_restore_write_ignored = 1;
-    struct device d = c600_device();
-    int first = c600_smbus_probe(&d);
+    struct device d = pch_device();
+    int first = pch_smbus_probe(&d);
     unsigned reads = hw.io_reads, writes = hw.io_writes;
     hw.hostc_write_ignored = 0;
     hw.command_restore_write_ignored = 0;
-    int second = c600_smbus_probe(&d);
+    int second = pch_smbus_probe(&d);
     CHECK(first != 0 && second != 0 && hw.starts == 0 &&
           cfg_command == (PCI_CMD_IO | PCI_CMD_MEM | PCI_CMD_MASTER) &&
           hw.io_reads == reads && hw.io_writes == writes,
