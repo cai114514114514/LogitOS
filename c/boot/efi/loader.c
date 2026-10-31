@@ -647,6 +647,14 @@ static void mask_field(UINT32 mask, UINT8 *pos, UINT8 *size)
     *pos = p; *size = n;
 }
 
+/* build.sh deliberately compiles one translation unit. Include the GOP
+ * modules here so standalone and make-driven EFI builds use the same tested
+ * implementation; adding an object only in a test recipe would leave the
+ * production loader silently on the old policy. Each module also compiles
+ * independently in the host gates. */
+#include "gop_pick.c"
+#include "gop_pick_efi.c"
+
 /* Emits the native framebuffer tag, or emits nothing and says why. Absence is
  * a supported outcome: with `-vga none`, fb_init() drives virtio-gpu itself.
  * A fabricated linear address would turn a usable fallback into corruption. */
@@ -660,13 +668,50 @@ static void build_fb_tag(struct infobuf *ib)
         return;
     }
 
-    /* v1 takes the mode the firmware already set and does not call SetMode.
+    /* The old v1 policy took the mode the firmware already set, without
+     * SetMode, on the following rationale (retained for readers of that claim):
      * Mode-setting is a separate risk with its own failure modes (a mode the
      * panel cannot show is a black screen on a running machine), and OVMF's
      * default is a perfectly good linear framebuffer. The kernel picks its UI
      * scale from whatever size it is handed (fb.c pick_scale), so there is
-     * nothing to gain here and a boot to lose. */
+     * nothing to gain here and a boot to lose.
+     * Correction 2026-10-31: that leaves native resolution to firmware luck.
+     * Prefer the associated EDID's first progressive DTD, or the largest
+     * offered 32-bit mode. On SetMode failure request the original mode back.
+     * This uses only UEFI services, never NVIDIA MMIO. Host/OVMF evidence is
+     * not verified on X79-VG4 hardware. */
+    /* Log the actual pre-selection geometry: a guest gate must distinguish
+     * a SetMode transition from firmware already having picked this size. */
+    say("[efi] gop firmware ");
+    sayd(gop->Mode->Info->HorizontalResolution); say("x");
+    sayd(gop->Mode->Info->VerticalResolution); say("\n");
+    struct gop_selection selection;
+    gop_select_mode(BS, gop, &selection);
+    if (selection.set_failed) {
+        say("[efi] gop SetMode failed "); sayx(selection.set_status);
+        say("; restore "); sayx(selection.restore_status);
+        say(selection.restore_status ? " (failed)\n" : " (ok)\n");
+    }
+    /* SetMode can replace Mode/Info and the framebuffer base/stride. Saved
+     * pointers from before that call would describe an unrelated aperture. */
+    if (!gop->Mode || !gop->Mode->Info) {
+        say("[efi] gop live mode missing -- no fb tag\n");
+        return;
+    }
     EFI_GRAPHICS_OUTPUT_MODE_INFORMATION *mi = gop->Mode->Info;
+    say("[efi] gop pick ");
+    sayd(mi->HorizontalResolution); say("x"); sayd(mi->VerticalResolution);
+    say(" ("); say(selection.why); say(")\n");
+
+    /* Keeping firmware does not license fabricating a 32-bit tag for packed
+     * 24-bit masks. The existing consumer accepts only a 32-bit linear mode.
+     * Validate the live descriptor even after a failed rollback. */
+    if (gop->Mode->SizeOfInfo < sizeof(*mi) || !linear32(mi) ||
+        !gop->Mode->FrameBufferBase ||
+        gop->Mode->FrameBufferSize < (UINT64)mi->PixelsPerScanLine * 4 * mi->VerticalResolution) {
+        say("[efi] gop live mode has no usable 32-bit framebuffer -- no fb tag\n");
+        return;
+    }
 
     UINT8 rp = 0, rs = 0, gp = 0, gs = 0, bp = 0, bs = 0;
     switch (mi->PixelFormat) {
