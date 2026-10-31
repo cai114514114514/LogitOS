@@ -12,6 +12,7 @@
 #include "pch_lpc.h"
 #include "board_io.h"
 #include "intel_imc_smbus.h"
+#include "nct6779.h"
 #include "hwreport.h"
 
 /* Filled once by board_early(), before any other thread exists, and only
@@ -83,9 +84,22 @@ void board_init(void)
     struct sio_chip c[SIO_MAX];
     int n = superio_probe(l, c);
     if (!n) kprintf("[board] superio none on the forwarded ports (lpc_en=0x%04x)\n", l->lpc_en);
-    for (int i = 0; i < n; i++)
+    for (int i = 0; i < n; i++) {
         kprintf("[board] superio 0x%x: %s %s (id %04x)\n", c[i].port, c[i].vendor,
                 c[i].name ? c[i].name : "unknown chip", c[i].id);
+        struct nct_sensors s;
+        if ((c[i].id & 0xfff8) != 0xc560) continue;
+        if (nct6779_find(c[i].port) != 0 || nct6779_read(&s) != 0) {
+            kprintf("[hwmon] NCT6779 monitor disabled or absent; not enabled\n");
+            continue;
+        }
+        kprintf("[hwmon] NCT6779 at 0x%x:", s.base);
+        for (int t = 0; t < NCT_TEMPS; t++)
+            if (s.temp_c[t] != -128) kprintf(" %s %dC", nct_temp_label[t], s.temp_c[t]);
+        for (int f = 0; f < NCT_FANS; f++)
+            if (s.fan_rpm[f]) kprintf(" fan%d %urpm", f + 1, s.fan_rpm[f]);
+        kprintf(" CPUVC %umV 3VCC %umV VBAT %umV\n", s.mv[0], s.mv[3], s.mv[8]);
+    }
 }
 
 void board_reset(void)

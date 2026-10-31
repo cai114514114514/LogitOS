@@ -14,6 +14,7 @@
 #include "hardware.h"
 #include "hid_diag.h"
 #include "ehci_diag.h"
+#include "nct6779.h"
 #include "logit_boot.h"
 
 #define COLS 92
@@ -91,7 +92,7 @@ static uint64_t rdtsc(void)
     return (uint64_t)hi << 32 | lo;
 }
 
-static int g_intel, g_aperf, g_mtrr, g_smi, g_physbits = 36;
+static int g_intel, g_aperf, g_mtrr, g_smi, g_ptm, g_physbits = 36;
 
 static void probe_cpu(void)
 {
@@ -105,7 +106,8 @@ static void probe_cpu(void)
     cpuid(1, 0, r);
     unsigned family = (r[0] >> 8) & 15, model = ((r[0] >> 4) & 15) | ((r[0] >> 12) & 0xf0);
     g_mtrr = (r[3] >> 12) & 1;
-    if (max >= 6) { cpuid(6, 0, r); g_aperf = r[2] & 1; }
+    int hypervisor = (r[2] >> 31) & 1;
+    if (max >= 6) { cpuid(6, 0, r); g_aperf = r[2] & 1; g_ptm = g_intel && !hypervisor && ((r[0] >> 6) & 1); }
     /* MSR_SMI_COUNT (0x34): Nehalem and later (Intel SDM vol 4, table 2-15) */
     g_smi = g_intel && family == 6 && model >= 0x1a;
     cpuid(0x80000000u, 0, r);
@@ -254,6 +256,36 @@ static void lines_irq(uint64_t dms)
     addline(out);
 }
 
+/* Package temperature from the digital thermal sensor (IA32_PACKAGE_THERM_STATUS
+ * readout below MSR_TEMPERATURE_TARGET's TjMax), and the board's NCT6779. */
+static void lines_thermal(void)
+{
+    char out[COLS + 1];
+    int n = 0;
+    if (g_ptm) {
+        uint64_t st = power_rdmsr(0x1b1), tj = (power_rdmsr(0x1a2) >> 16) & 0xff;
+        if (st & (1ull << 31))
+            n = ksnprintf(out, sizeof out, "temp pkg %luC (tjmax %lu)", (unsigned long)(tj - ((st >> 16) & 0x7f)),
+                          (unsigned long)tj);
+    }
+    if (!n) n = ksnprintf(out, sizeof out, "temp pkg n/a");
+    struct nct_sensors s;
+    if (nct6779_read(&s) == 0) {
+        for (int t = 0; t < NCT_TEMPS; t++)
+            if (s.temp_c[t] != -128 && n < COLS)
+                n += ksnprintf(out + n, (int)sizeof out - n, " %s %d", nct_temp_label[t], s.temp_c[t]);
+        for (int f = 0; f < NCT_FANS; f++)
+            if (s.fan_rpm[f] && n < COLS)
+                n += ksnprintf(out + n, (int)sizeof out - n, " fan%d %u", f + 1, s.fan_rpm[f]);
+        addline(out);
+        LINE("volt CPUVC %u.%03u 3VCC %u.%03u 3VSB %u.%03u VBAT %u.%03u VTT %u.%03u", s.mv[0] / 1000,
+             s.mv[0] % 1000, s.mv[3] / 1000, s.mv[3] % 1000, s.mv[7] / 1000, s.mv[7] % 1000,
+             s.mv[8] / 1000, s.mv[8] % 1000, s.mv[9] / 1000, s.mv[9] % 1000);
+        return;
+    }
+    addline(out);
+}
+
 static void lines_hid(void)
 {
     struct usb_hid_diag d;
@@ -299,6 +331,7 @@ void hwhud_tick(const struct hwhud_wm *wm)
     lines_wm(wm, dms);
     lines_irq(dms);
     lines_mtrr();
+    lines_thermal();
     lines_hid();
 
     int w = COLS * HWSCREEN_FONT_W + 8, h = g_rows * HWSCREEN_FONT_H + 8;
