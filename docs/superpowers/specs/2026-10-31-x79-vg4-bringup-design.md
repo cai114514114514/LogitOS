@@ -59,7 +59,7 @@
 | T3 RTL8168G | 照 Linux r8169 的 8168G 启动流程补全：识别芯片版本、MAC OCP / ePHY 初始化、PHY 初始化（不依赖固件补丁）、链路检测、MSI 或 INTx、64 位 DMA；未知芯片版本一律拒绝 | `c/drivers/net/rtl8169.c`（可以拆文件）、`tests/hw-rtl.mk` | 寄存器模型覆盖初始化、收发、链路断开 / 恢复、关机；未知版本的负控变红 |
 | T4 USB 输入 | 速率匹配集线器 `8087:0024` 之后的低速 / 全速键盘和鼠标：拆分事务、复合设备里的多个 HID 接口、启动协议回退 | `c/drivers/usb/`（不含 `xhci*`）、`tests/hw-usb.mk` | QEMU EHCI + usb-hub + 键盘鼠标；宿主模型模拟复合设备两个接口 |
 | T5 显示 | EFI 加载器在 GOP 模式里选显示器的原生分辨率（读 EDID，没有就选最大的 32 位模式），把选择的原因打到串口；GTX 1050 保持零 MMIO | `c/boot/efi/loader.c`、`c/kernel/gui/fb/`、`tests/hw-display.mk` | OVMF 多个分辨率；没有 EDID 时回退的负控 |
-| T6 诊断 | 新增 `hwreport`：每次启动把 PCI 列表、驱动绑定、CPU 拓扑、内存、根盘、各里程碑写到串口和 `/var/log/boot-<n>.log`；用 `hwreport` 应用在屏幕上查看同一份内容 | `c/kernel/diag/hwreport*`、`tests/hw-diag.mk` | QEMU 输出包含全部里程碑标记；根盘只读时也不会卡住 |
+| T6 诊断 | 新增 `hwreport`：每次启动把 PCI 列表、驱动绑定、CPU 拓扑、内存、根盘、各里程碑写到串口和 `/var/log/boot-<n>.log`；在屏幕上看，用终端执行 `cat` 查看这个日志文件 | `c/kernel/diag/hwreport*`、`tests/hw-diag.mk` | QEMU 输出包含全部里程碑标记；根盘只读时也不会卡住 |
 
 暂不做：GTX 1050 的 HDMI 声音（`10de:0fb9`）、NVIDIA 硬件加速、Windows ESP 里的启动项、USB 根文件系统。它们放到第三阶段。
 
