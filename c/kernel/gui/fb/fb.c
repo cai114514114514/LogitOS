@@ -1,4 +1,5 @@
 static int fb_lfb_wc;   /* the scanout PTE read back as PAT PA1 (WC) */
+int fb_scanout_wc(void) { return fb_lfb_wc; }
 #include "../../cpu/power/pat.h"
 #include "mmhost.h"
 #include "kprintf.h"

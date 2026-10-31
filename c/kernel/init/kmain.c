@@ -1,3 +1,4 @@
+#include "hwhud.h"
 #include "dma.h"
 #include <stdint.h>
 #include "serial.h"
@@ -109,6 +110,7 @@ void kernel_main(uint64_t mb_info)
      * and the BIOS-area scan acpi.c falls back to finds nothing there. */
     acpi_set_mb2_info(mb_info);
     smbios_capture_boot_info(mb_info);   /* UEFI: the board report reads it later */
+    hwhud_capture_boot_info(mb_info);    /* what the GOP offered */
     /* Before storage probing and the desktop: a TCO watchdog firmware left
      * counting would reset the machine a few minutes into boot. */
     board_early();

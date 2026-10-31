@@ -8,6 +8,7 @@
 int fb_init(uint64_t mb_info_addr);
 
 uint32_t fb_width(void);
+int fb_scanout_wc(void);      /* the scanout is mapped write-combining */
 uint32_t fb_height(void);
 
 /* Return the physical linear-framebuffer aperture supplied by Multiboot2/GOP.

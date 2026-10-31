@@ -293,6 +293,10 @@ endif
 ifeq ($(GROWFI),1)
 CFLAGS += -DKHEAP_GROW_FAULT_INJECT
 endif
+#   make HWHUD=1   draw the hardware panel (c/kernel/diag/hwhud.c) over the desktop
+ifeq ($(HWHUD),1)
+CFLAGS += -DLOGIT_HWHUD
+endif
 #   make FPO=1     drop frame pointers -- the NEGATIVE CONTROL for the panic
 #                  backtrace. Build with this and run-panic-test.sh's frame
 #                  assertions fail, which is how "the backtrace is real" is

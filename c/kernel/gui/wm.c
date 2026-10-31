@@ -3,6 +3,7 @@
  * geometry, input dispatch, the GUI system calls, launching apps, the
  * pointer and the main loop. The surfaces it composites live in their own
  * files (wm_menubar.c, wm_dock.c, ... -- see wm_internal.h). */
+#include "hwhud.h"
 #include "wm_internal.h"
 
 static int wm_keyboard_focus(void);
@@ -5540,6 +5541,14 @@ void wm_run(void)
         wm_geom_report();     /* window frames, when they stop moving */
         wm_state_unlock();
         wm_lock_report_emit();
+#ifdef LOGIT_HWHUD
+        {
+            struct hwhud_wm hud = { perf_composites, perf_comp_ns, perf_comp_ns_max,
+                                    perf_present_ns, perf_cursor_moves, perf_cursor_ns,
+                                    perf_motions };
+            hwhud_tick(&hud);
+        }
+#endif
         /* Interrupts only enqueue input. A batch that left backlog starts a new
          * full desktop pass immediately; otherwise the final locked recheck
          * catches input that arrived while this pass rendered. Park with no

@@ -55,6 +55,7 @@
 #include "kprintf.h"
 #include "pit.h"
 #include "logit_abi.h"
+#include "hid_diag.h"
 
 #ifndef memset
 void *memset(void *, int, size_t);
@@ -154,7 +155,21 @@ struct hid_dev {
     struct hid_kbd_state game_keys;
     struct hid_touch_state touch;
     unsigned long reports;
+    struct usb_hid_diag diag;       /* for the hardware panel */
 };
+
+#define HID_DIAG_SLOTS 16
+static struct hid_dev *hid_diag_slot[HID_DIAG_SLOTS];
+
+int usb_hid_diag_get(int i, struct usb_hid_diag *out)
+{
+    for (int k = 0, seen = 0; k < HID_DIAG_SLOTS; k++) {
+        struct hid_dev *h = __atomic_load_n(&hid_diag_slot[k], __ATOMIC_ACQUIRE);
+        if (!h) continue;
+        if (seen++ == i) { *out = h->diag; return 0; }
+    }
+    return -1;
+}
 
 /* ------------------------------------------------------------ helpers --- */
 
@@ -221,8 +236,11 @@ static void handle_keyboard(struct hid_dev *h, const uint8_t *rep, int len)
     int report = 0;
 
     if (h->generic) {
-        if (hid_decode_keyboard(&h->rd, rep, len, &ks) <= 0)
+        if (hid_decode_keyboard(&h->rd, rep, len, &ks) <= 0) {
+            h->diag.kbd_rej++;
             return;
+        }
+        h->diag.kbd_ok++;
         if (h->rd.uses_report_ids)
             for (int i = 0; i < h->rd.nreports; i++)
                 if (h->rd.rep[i].id == rep[0]) {
@@ -261,6 +279,7 @@ static void handle_keyboard(struct hid_dev *h, const uint8_t *rep, int len)
     for (int i = 0; i < ks.nkeys; i++)
         if (!was_down(prev, ks.keys[i])) {
             post_key(ks.keys[i], combined);
+            h->diag.kbd_down++;
             fresh = 1;
         }
 
@@ -593,6 +612,11 @@ static int hid_probe(struct usb_device *d, int ifno)
         return -1;
     }
 
+    h->diag.vid = d->dd.vendor; h->diag.pid = d->dd.product;
+    h->diag.ifnum = (uint8_t)it->num;
+    h->diag.role = (uint8_t)(((h->role & ROLE_KBD) ? 1 : 0) | ((h->role & ROLE_MOUSE) ? 2 : 0));
+    for (int k = 0; k < HID_DIAG_SLOTS; k++)
+        if (!hid_diag_slot[k]) { __atomic_store_n(&hid_diag_slot[k], h, __ATOMIC_RELEASE); break; }
     kprintf("USB_HID_BIND if=%d role=%s decode=%s ep=%02x interval=%d\n", it->num,
             h->role == (ROLE_KBD | ROLE_MOUSE) ? "keyboard+mouse"
             : h->role == ROLE_KBD              ? "keyboard"
@@ -615,6 +639,9 @@ static void hid_poll(struct usb_device *d, int ifno)
     if (n >= 0 && buf) {
         h->reports++;
         usb_reports_total++;
+        h->diag.reports++;
+        h->diag.last_len = (uint8_t)(n > 255 ? 255 : n);
+        for (int i = 0; i < 8; i++) h->diag.last[i] = i < n ? buf[i] : 0;
         /* A single HID interface can multiplex both roles using report IDs.
          * Each decoder rejects reports outside its fields. The old else made
          * every mouse report vanish when the descriptor also had a keyboard. */
@@ -638,6 +665,8 @@ static void hid_remove(struct usb_device *d, int ifno)
 {
     struct hid_dev *h = d->binding[ifno].drvdata;
     if (h) {
+        for (int k = 0; k < HID_DIAG_SLOTS; k++)
+            if (hid_diag_slot[k] == h) __atomic_store_n(&hid_diag_slot[k], NULL, __ATOMIC_RELEASE);
         __atomic_store_n(&hid_modifiers[h->modifier_slot], 0, __ATOMIC_RELEASE);
         for (int i = 0; i < 4; i++)
             __atomic_store_n(&hid_held[h->modifier_slot][i], 0, __ATOMIC_RELEASE);
