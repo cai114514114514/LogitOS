@@ -27,6 +27,15 @@
 #include "klog.h"
 #include "kdiag.h"
 #include "hwreport.h"
+#include "smbios.h"
+#include "board.h"
+#include "lapic.h"
+#include "pit.h"
+#include "ktime.h"
+#include "hwscreen.h"
+#include "bootmark.h"
+#include "../cpu/power/pat.h"
+#include "fb.h"
 #include "pcache.h"
 #include "pcache_vfs.h"
 #include "procfs.h"       /* /proc -- mounted below, right after the root */
@@ -47,6 +56,8 @@ int rust_png_selftest(void);       /* rust/src/png.rs -- PNG decoder self-check 
 void kernel_main(uint64_t mb_info)
 {
     serial_init();
+    bootmark_init(mb_info);
+    bootmark(3);
 #ifdef BOOT_MB2_DUMP
     extern void mb2_dump(uint64_t); mb2_dump(mb_info);
 #endif
@@ -65,7 +76,9 @@ void kernel_main(uint64_t mb_info)
     idt_init();
     gdt_init();
     pic_remap();
+    bootmark(4);
     pit_init(TIMER_HZ);
+    bootmark(5);
 
     /* The SIMD self-test. It was written, documented down to its call order
      * ("once the PIT is ticking, needs IF=0 on entry") and then never called
@@ -83,12 +96,27 @@ void kernel_main(uint64_t mb_info)
      * (xmm_probe brackets its spin with sti/cli under pushfq/popfq), so IF is
      * 0 on both sides of this call. */
     cpu_simd_selftest();
+    bootmark(6);
+    bootmark_early_end();   /* pmm_init edits the tables the early squares used */
 
     pmm_init(mb_info);
+    /* The 8259 reaches the CPU only through LAPIC LINT0 in virtual-wire mode,
+     * which UEFI firmware need not leave set up; the PIT has been ticking
+     * into nothing until here otherwise. Needs pmm for the LAPIC mapping. */
+    lapic_virtual_wire();
+    {
+        uint64_t t0 = time_mono_ns(), k0 = timer_ticks();
+        while (time_mono_ns() - t0 < 50000000ull) __asm__ volatile ("sti; pause");
+        kprintf("[time] PIT ticks in 50 ms after virtual wire: %lu (expect ~5)\n", (unsigned long)(timer_ticks() - k0));
+    }
     /* Before anything can ask for an ACPI table: under UEFI the RSDP is only
      * reachable through this block (c/boot/efi/loader.c forwards it as tag 15),
      * and the BIOS-area scan acpi.c falls back to finds nothing there. */
     acpi_set_mb2_info(mb_info);
+    smbios_capture_boot_info(mb_info);   /* UEFI: the board report reads it later */
+    /* Before storage probing and the desktop: a TCO watchdog firmware left
+     * counting would reset the machine a few minutes into boot. */
+    board_early();
     /* ACPI-backed clocks cannot be discovered in pit_init(): firmware tables
      * are not safely mapped until pmm_init.  This keeps early boot on PIT/TSC,
      * then upgrades a PIT-only machine to HPET continuously when available. */
@@ -135,12 +163,19 @@ void kernel_main(uint64_t mb_info)
     kprintf(rust_png_selftest() == 0 ? "[rust] png selftest OK\n"
                                           : "[rust] png selftest FAIL\n");
 
+    /* PA1 becomes write-combining before the framebuffer is first mapped, so
+     * the scanout memory is never mapped with two cache types. */
+    pat_init();
+    kprintf("[pat] cpu0 PA1=%s\n", pat_wc_available() ? "WC (IA32_PAT 0x0007040600070106)" : "unchanged (no PAT)");
+
     if (!fb_init(mb_info)) {
         hwreport_milestone("fb", "FAIL");
         kprintf("\nLOGIT_FB_FAIL\n");
         for (;;) __asm__ volatile ("hlt");
     }
     hwreport_milestone("fb", "OK framebuffer initialized");
+    bootmark_resume();
+    bootmark(7);
 
     proc_init();   /* process table */
     file_init();   /* open-file-description pool */
@@ -148,12 +183,15 @@ void kernel_main(uint64_t mb_info)
     nvme_init();         /* prefer NVMe (M24 bare-metal target) when present */
     virtio_blk_init();   /* else virtio-blk; logitfs falls back to ATA */
     blk_init();          /* + AHCI/SATA, partition tables, and pick the root device */
+    bootmark(8);
 
     vfs_register(&logitfs);
     int fs_ok = (vfs_mount() == 0);
+    bootmark(9);
     hwreport_milestone("root", fs_ok ? "OK filesystem mounted" : "FAIL filesystem mount failed");
     if (!fs_ok) hwreport_dump();
     kprintf(fs_ok ? "[fs] mounted\n" : "[fs] mount FAILED\n");
+    bootmark(10);
 
     /* /proc, on top of the root that just arrived.
      *
@@ -196,6 +234,7 @@ void kernel_main(uint64_t mb_info)
      * turns that into pcache_file_open()'s ordinary -1 -- there is no third
      * state to special-case here that vfs.c does not already handle. */
     pcache_vfs_install();
+    bootmark(11);
 
     /* Load what this machine remembers about its user. Between the mount and
      * net_init/wm_init on purpose: the network configuration and the theme are
@@ -214,20 +253,29 @@ void kernel_main(uint64_t mb_info)
      * against. trust_banner() is idempotent; tls_start still calls it, and on
      * an ordinary boot finds it already said. */
     trust_banner();
+    bootmark(12);
 
     net_init();   /* NIC + stack (incl. TCP + HTTP); apps drive it at runtime */
+    bootmark(14);
 
     text_init();  /* load the TTF fonts for the anti-aliased Unicode text engine */
+    bootmark(15);
     img_init();   /* register the PNG + GIF image codecs (browser <img>) */
+    bootmark(16);
 
     wm_init();
+    bootmark(17);
     wm_render();                 /* first frame -> desktop visible */
+    bootcon_stop();              /* the desktop owns the screen from here */
+    bootmark(18);
+    fb_present_bench();          /* the back buffer exists now: time one full frame */
     mouse_init();
     kprintf("[logitos] desktop up; mouse + keyboard armed\n");
     hwreport_milestone("input", "ARMED keyboard/mouse initialized; interaction unverified");
     hwreport_milestone("desktop", "READY first frame submitted; scanout unverified");
 
     smp_init();   /* detect + bring up the other CPUs */
+    bootmark(19);
     hwreport_milestone("smp", "OBSERVED see CPU topology summary");
 
     /* Now that the LAPIC and I/O APIC are live, run the probe/bind pass and
@@ -235,6 +283,7 @@ void kernel_main(uint64_t mb_info)
      * and the driver that claimed it. On unfamiliar hardware this log is the
      * first debugging tool anyone has. */
     dev_probe_all();
+    bootmark(20);
     /* Resource discovery needs both a mounted root and the boot-display
      * driver's successful binding; at root mount time no GPU is bound yet. */
     if (fs_ok)
@@ -245,6 +294,15 @@ void kernel_main(uint64_t mb_info)
 
     if (fs_ok)
         kprintf("\n" BOOT_OK_MARKER "\n");
+    else {
+        /* No root: no desktop, no apps and nowhere to keep the log, and on a
+         * machine without a serial port nothing else would show it. The board
+         * report normally runs on the acpi-init thread wm_run() starts; run it
+         * here so its lines reach the screen too. */
+        board_init();
+        bootmark(21);
+        hwscreen_report();
+    }
 
     wm_run();                    /* becomes the scheduler main thread; never returns */
 }
