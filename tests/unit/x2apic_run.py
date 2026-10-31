@@ -25,6 +25,15 @@ common = [
     "-DLOGIT_LAPIC_HOST", "-DLOGIT_SMP_BOOT_HOST",
     "-DLAPIC_IPI_WAIT_SPINS=4",
     "-I" + str(root / "c/kernel/cpu"),
+    "-I" + str(root / "c/kernel/cpu/irq"),
+    "-I" + str(root / "c/kernel/cpu/acpi"),
+    "-I" + str(root / "c/kernel/cpu/smp"),
+    "-I" + str(root / "c/kernel/diag"),
+    "-I" + str(root / "c/kernel/mm/virt"),
+    "-I" + str(root / "c/kernel/sync"),
+    "-I" + str(root / "c/drivers/core"),
+    "-I" + str(root / "c/kernel/sched"),
+    "-I" + str(root / "include/abi"),
     "-I" + str(root / "c/kernel/core"),
 ]
 controls = [

@@ -5,4 +5,5 @@
  * output is checked by the QEMU boot tests, not here. */
 #include <stdio.h>
 #define kprintf printf
+#define ksnprintf snprintf
 #endif

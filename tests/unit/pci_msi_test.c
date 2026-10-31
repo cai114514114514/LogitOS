@@ -133,6 +133,7 @@ int  ioapic_gsi_valid(uint32_t gsi) { return g_ioapic_present && gsi < 24; }
 int  ioapic_can_route(uint32_t gsi, uint32_t apic)
 { return ioapic_gsi_valid(gsi) && apic < 0xffu; }
 int  ioapic_mask(uint32_t gsi) { return ioapic_gsi_valid(gsi) ? 0 : -1; }
+uint32_t ioapic_rte_low(uint32_t gsi) { (void)gsi; return 0; }   /* panel diagnostics only */
 int  ioapic_is_masked(uint32_t gsi) { return ioapic_gsi_valid(gsi) ? 1 : -1; }
 int ioapic_route(uint32_t gsi, uint8_t vec, uint32_t apic_id, int level, int active_low)
 {
