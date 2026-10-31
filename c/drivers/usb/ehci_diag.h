@@ -12,5 +12,9 @@ struct ehci_ep_diag {
 };
 /* 0 and *out filled for periodic endpoint i, -1 past the last one. */
 int ehci_diag_get(int i, struct ehci_ep_diag *out);
+/* 0 and USBSTS/USBINTR for controller slot c, -1 if unused or out of range. */
+int ehci_ctrl_diag(unsigned c, uint32_t *sts, uint32_t *intr, unsigned long *errors);
+/* pci_msi.c: INTx line i as one line of text, -1 past the last. */
+int pci_intx_diag(int i, char *buf, int max);
 
 #endif

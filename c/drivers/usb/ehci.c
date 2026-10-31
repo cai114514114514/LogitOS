@@ -101,6 +101,15 @@ struct ehci {
 };
 static struct ehci controllers[EHCI_CONTROLLERS];
 
+int ehci_ctrl_diag(unsigned c, uint32_t *sts, uint32_t *intr, unsigned long *errors)
+{
+    if (c >= EHCI_CONTROLLERS || !controllers[c].used || !controllers[c].op) return -1;
+    *sts = *(volatile uint32_t *)(controllers[c].op + 0x04);
+    *intr = *(volatile uint32_t *)(controllers[c].op + 0x08);
+    *errors = (unsigned long)controllers[c].errors;
+    return 0;
+}
+
 int ehci_diag_get(int i, struct ehci_ep_diag *out)
 {
     for (unsigned c = 0, seen = 0; c < EHCI_CONTROLLERS; c++) {

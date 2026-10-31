@@ -17,7 +17,7 @@
 #include "logit_boot.h"
 
 #define COLS 92
-#define ROWS 30
+#define ROWS 36
 
 static struct logit_boot_display_tag g_disp;
 static int g_have_disp;
@@ -267,6 +267,16 @@ static void lines_hid(void)
              d.last[4], d.last[5], d.last[6], d.last[7]);
     }
     if (!any) LINE("hid: no interfaces bound");
+    for (unsigned c = 0; c < 4; c++) {
+        uint32_t sts, intr; unsigned long errs;
+        if (ehci_ctrl_diag(c, &sts, &intr, &errs) == 0)
+            LINE("ehci%u usbsts %08x usbintr %08x errors %lu", c, sts, intr, errs);
+    }
+    for (int i = 0; i < 6; i++) {
+        char b[COLS + 1];
+        if (pci_intx_diag(i, b, sizeof b) != 0) break;
+        addline(b);
+    }
     struct ehci_ep_diag e;
     for (int i = 0; ehci_diag_get(i, &e) == 0; i++)
         LINE("ehci%u dev %u ep %02x period %u phase %u %s done %lu err %lu td %08x qh %08x",

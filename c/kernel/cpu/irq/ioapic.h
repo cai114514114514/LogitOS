@@ -17,6 +17,7 @@ int  ioapic_can_route(uint32_t gsi, uint32_t apic_id);
  * acknowledged mask, -1 for an absent GSI or failed register readback. */
 int  ioapic_mask(uint32_t gsi);
 int  ioapic_is_masked(uint32_t gsi); /* 1 masked, 0 enabled, -1 absent */
+uint32_t ioapic_rte_low(uint32_t gsi);  /* diagnostics: the low RTE word */
 int  ioapic_route(uint32_t gsi, uint8_t vec, uint32_t apic_id, int level, int active_low);
 int  ioapic_route_isa(int isa_irq, uint8_t vec, uint32_t apic_id);
 /* Program timer/keyboard/mouse as one boot transaction. A failed transaction

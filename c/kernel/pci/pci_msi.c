@@ -288,6 +288,30 @@ struct intx_member {
 };
 static struct intx_line intx_lines[INTX_MAX_LINES];
 static struct intx_member intx_members[INTX_MAX_MEMBERS];
+
+/* For the hardware panel: one INTx line, its IOAPIC entry as read back, and
+ * each member's PCI Command/Status (Status bit 3: the device is asserting). */
+int pci_intx_diag(int i, char *buf, int max)
+{
+    int seen = 0;
+    for (unsigned l = 0; l < INTX_MAX_LINES; l++) {
+        struct intx_line *line = &intx_lines[l];
+        if (!line->used || seen++ != i) continue;
+        int n = ksnprintf(buf, max, "intx gsi %u vec %x rte %08x:", line->gsi, line->vector,
+                          ioapic_rte_low(line->gsi));
+        for (unsigned m = 0; m < INTX_MAX_MEMBERS && n < max; m++) {
+            struct intx_member *mb = &intx_members[m];
+            if (mb->line != line || !mb->dev) continue;
+            struct device *d = mb->dev;
+            uint16_t cmd = pci_cfg_read16(d->bus, d->slot, d->func, PCI_CFG_COMMAND);
+            uint16_t sts = pci_cfg_read16(d->bus, d->slot, d->func, PCI_CFG_COMMAND + 2);
+            n += ksnprintf(buf + n, max - n, " %02x:%02x.%u cmd %04x sts %04x%s", d->bus, d->slot,
+                           d->func, cmd, sts, (sts & 8) ? " ASSERTING" : "");
+        }
+        return 0;
+    }
+    return -1;
+}
 static io_lock_t intx_gate = IO_LOCK_INIT;
 
 /* One physical wire has one vector. Calling every registered device's handler

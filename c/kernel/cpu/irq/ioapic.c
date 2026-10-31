@@ -82,6 +82,13 @@ int ioapic_mask(uint32_t gsi)
     return (rd(reg) & (1u << 16)) ? 0 : -1;
 }
 
+uint32_t ioapic_rte_low(uint32_t gsi)
+{
+    if (!ioapic_gsi_valid(gsi)) return 0xffffffffu;
+    IO_GUARD(&ioapic_gate);
+    return rd((uint8_t)(0x10 + 2 * (gsi - gsi_base)));
+}
+
 int ioapic_is_masked(uint32_t gsi)
 {
     if (!ioapic_gsi_valid(gsi)) return -1;
