@@ -3,6 +3,7 @@
 #include <stdint.h>
 
 int      lapic_init(void);                           /* preserve + initialize handed-off mode */
+void     lapic_virtual_wire(void);                   /* BSP before the I/O APIC: 8259 via LINT0 (ExtINT) */
 int      lapic_ready(void);                          /* MMIO xAPIC or MSR x2APIC live */
 uint32_t lapic_id(void);                            /* this CPU's APIC ID */
 void     lapic_eoi(void);

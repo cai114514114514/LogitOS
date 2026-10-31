@@ -59,6 +59,11 @@ int main(void)
     uint64_t revision_zero = cap64 & ~0xffull;
     CHECK(hpet_parse_caps(revision_zero, (uint32_t)revision_zero, &c) != 0,
           "reserved HPET revision zero accepted");
+    /* the X79-VG4 hand-over: comparator 0 armed, legacy route on */
+    CHECK(hpet_disarmed_timer(0x0000004c00000056ull) == 0x0000004c00000052ull,
+          "an armed comparator is disarmed and nothing else changes");
+    CHECK(hpet_unrouted_config(0x3) == 0x1, "legacy-replacement route cleared, counter enable kept");
+    CHECK(hpet_unrouted_config(0x2) == 0x0, "legacy-replacement route cleared on a stopped counter");
     CHECK(hpet_parse_caps(0, 0, &c) != 0, "zero period accepted");
     CHECK(hpet_parse_caps((uint64_t)100000001u << 32, 0, &c) != 0,
           "sub-10MHz counter accepted");

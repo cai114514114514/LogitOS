@@ -220,6 +220,28 @@ int lapic_init(void)
     return 0;
 }
 
+/* Virtual-wire mode for the boot CPU (Intel MP spec 3.6.2.2; what Linux sets
+ * up on the BSP until the I/O APIC takes over): LINT0 delivers the 8259's
+ * output as ExtINT, LINT1 is NMI, and the task priority admits every vector.
+ * QEMU's firmware leaves LINT0 like this; the X79-VG4's AMI UEFI does not,
+ * and its first boots took no PIT interrupt at all ("simd selftest ... 0
+ * ticks", 2026-10-31). Not verified on X79-VG4 hardware. */
+#define LAPIC_TPR_REG   0x080
+#define LAPIC_LVT_LINT0 0x350
+#define LAPIC_LVT_LINT1 0x360
+void lapic_virtual_wire(void)
+{
+    if (lapic_init() != 0) return;
+    uint32_t l0 = reg_read(LAPIC_LVT_LINT0), l1 = reg_read(LAPIC_LVT_LINT1), tpr = reg_read(LAPIC_TPR_REG);
+#ifndef LAPIC_NEGCTL_NO_VIRTUAL_WIRE
+    reg_write(LAPIC_TPR_REG, 0);
+    reg_write(LAPIC_LVT_LINT0, 0x700);       /* ExtINT, edge, unmasked */
+    reg_write(LAPIC_LVT_LINT1, 0x400);       /* NMI */
+#endif
+    kprintf("[lapic] virtual wire: LINT0 %x -> %x, LINT1 %x -> %x, TPR %x -> %x\n",
+            l0, reg_read(LAPIC_LVT_LINT0), l1, reg_read(LAPIC_LVT_LINT1), tpr, reg_read(LAPIC_TPR_REG));
+}
+
 uint32_t lapic_id(void)
 {
     if (!lapic_ready()) return UINT32_MAX;

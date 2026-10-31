@@ -35,4 +35,7 @@ uint64_t hpet_hz(void);
 uint64_t hpet_mask(void);
 uint32_t hpet_period_fs(void);
 
+uint64_t hpet_disarmed_timer(uint64_t tcfg);
+uint64_t hpet_unrouted_config(uint64_t gen);
+
 #endif

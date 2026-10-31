@@ -97,6 +97,23 @@ int hpet_parse_caps(uint64_t raw, uint32_t firmware_block_id,
     return 0;
 }
 
+/* Tn_INT_ENB_CNF (bit 2) off: the comparator can no longer interrupt. */
+uint64_t hpet_disarmed_timer(uint64_t tcfg)
+{
+    return tcfg & ~(1ull << 2);
+}
+
+/* LEG_RT_CNF (bit 1) off: IRQ0 and IRQ8 belong to the 8254 PIT and the RTC
+ * again (IA-PC HPET specification 2.3.9.1). */
+uint64_t hpet_unrouted_config(uint64_t gen)
+{
+#ifndef HPET_NEGCTL_KEEP_LEGACY
+    return gen & ~2ull;
+#else
+    return gen;
+#endif
+}
+
 #ifdef LOGIT_HPET_HOST
 int hpet_init(void) { return -1; }
 int hpet_ready(void) { return 0; }
@@ -193,16 +210,26 @@ int hpet_init(void)
         g_mmio = 0;
         return -1;
     }
-    /* We only read the main counter.  If firmware left a comparator armed,
-     * enabling the counter could inject an IRQ whose route we do not own.
-     * Refuse the whole source instead of clearing firmware state blindly. */
+    /* Firmware's use of the HPET ended with ExitBootServices. The X79-VG4's
+     * AMI firmware hands over with comparator 0 armed, and with it the PIT
+     * never ticked once into LogitOS (photos, 2026-10-31): the classic sign
+     * of the legacy-replacement route taking IRQ0 away from the 8254. The
+     * old answer -- refuse the HPET and touch nothing -- left that route in
+     * place. Disarm every comparator, then drop the route, before the
+     * counter is enabled. */
+    uint64_t gen = mmio_read64(HPET_REG_CONFIG);
+    unsigned armed = 0;
     for (unsigned i = 0; i < g_caps.timers; i++) {
-        uint64_t cfg = mmio_read64(HPET_REG_TIMER0_CONFIG + i * HPET_REG_TIMER_STRIDE);
-        if (cfg & (1ull << 2)) {
-            kprintf("[hpet] unavailable: comparator %u already owns an interrupt\n", i);
-            g_mmio = 0;
-            return -1;
+        uint64_t tcfg = mmio_read64(HPET_REG_TIMER0_CONFIG + i * HPET_REG_TIMER_STRIDE);
+        if (tcfg & (1ull << 2)) {
+            armed++;
+            mmio_write64(HPET_REG_TIMER0_CONFIG + i * HPET_REG_TIMER_STRIDE, hpet_disarmed_timer(tcfg));
         }
+    }
+    if (armed || (gen & 2ull)) {
+        mmio_write64(HPET_REG_CONFIG, hpet_unrouted_config(gen));
+        kprintf("[hpet] firmware handed over GEN_CONF=%x with %u armed comparator(s), legacy route %s: "
+                "disarmed, IRQ0 back to the PIT\n", (unsigned)gen, armed, (gen & 2ull) ? "ON" : "off");
     }
 
     uint64_t cfg = mmio_read64(HPET_REG_CONFIG);
