@@ -19,8 +19,13 @@ struct nct_sensors {
 /* Find the HWM logical device behind Super I/O port `sio` (0x2e or 0x4e).
  * Never enables a disabled device. 0 on success, -1 if absent or disabled. */
 int nct6779_find(uint16_t sio);
-/* One snapshot. The bank register is restored afterwards. 0 or -1. */
+/* One serialized snapshot, restoring the original bank. Zero on success,
+ * -1 if absent, -EAGAIN before AML ownership checking, -EBUSY if firmware-owned,
+ * -EIO if the ownership scan failed. Both refusals are permanent. */
 int nct6779_read(struct nct_sensors *out);
+/* Called once after successful AML initialization. A firmware claim returns
+ * -EBUSY; an incomplete check returns -EIO. Both permanently disable access. */
+int nct6779_acpi_gate(void);
 /* Labels for temp_c[] and mv[] (Linux nct6779_temp_label / in labels). */
 extern const char *const nct_temp_label[NCT_TEMPS];
 extern const char *const nct_volt_label[NCT_VOLTS];

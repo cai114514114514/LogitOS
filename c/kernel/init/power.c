@@ -77,6 +77,7 @@
 #include "../../drivers/power/acpi/native.h"
 #include "../../drivers/power/acpi/button.h"
 #include "../../drivers/board/board.h"
+#include "../../drivers/board/nct6779.h"
 #include "../../drivers/core/driver.h"
 
 /* Only power requests serialize here. Drain is a reversible token: already
@@ -184,8 +185,10 @@ static void power_boot_worker(void)
     board_init();
     (void)kernel_power_init();
     mutex_lock(&aml_lock);
-    if (!initialize_aml_locked())
+    if (!initialize_aml_locked()) {
+        (void)nct6779_acpi_gate(); /* Failed AML leaves HWM pending, with no port I/O. */
         (void)power_acpi_button_install();
+    }
     mutex_unlock(&aml_lock);
 }
 

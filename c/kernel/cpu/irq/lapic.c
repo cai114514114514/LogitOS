@@ -349,36 +349,148 @@ static inline uint64_t tsc_now(void)
 }
 #endif
 
+/* Measure the divided timer while rejecting SMI-delayed register endpoints.
+ * A single old 10 ms sample could double the result when an endpoint stalled;
+ * plausibility bounds alone do not detect that error. Model evidence only,
+ * not verified on X79-VG4 hardware. */
 uint64_t lapic_timer_calibrate(void)
 {
-    if (g_timer_hz) return g_timer_hz;
+    if (g_timer_hz) {
+        return g_timer_hz;
+    }
 #ifdef LOGIT_LAPIC_HOST
-    return 0;
+    /* Substitute only the clock leaf; the register sequence and estimator are
+     * the same code as the kernel, unlike the former host-only return zero. */
+    extern uint64_t lapic_host_tsc_now(void);
+    extern uint64_t lapic_host_tsc_hz(void);
+    uint64_t (*read_tsc)(void) = lapic_host_tsc_now;
+    uint64_t tsc_hz = lapic_host_tsc_hz();
+#define TIMER_FENCE() __asm__ volatile ("" ::: "memory")
 #else
-    /* The calibrated TSC only: a 100 Hz PIT clock would make a 10 ms window
-     * anywhere from 0 to 10 ms long (Astra round 7). No TSC, no change. */
+    uint64_t (*read_tsc)(void) = tsc_now;
     uint64_t tsc_hz = time_source_hz(TIMESRC_TSC);
+    /* Intel SDM Vol. 2, RDTSC: LFENCE orders earlier loads and prevents later
+     * instructions executing before the timestamp. Fence both sides so the
+     * APIC access stays inside its bracket even on an out-of-order core. */
+#define TIMER_FENCE() __asm__ volatile ("lfence" ::: "memory")
+#endif
+    /* A 100 Hz PIT makes a nominal 10 ms interval 0-10 ms (round 7).
+     * Only a calibrated TSC can establish this measurement's time scale. */
     if (!tsc_hz) {
         kprintf("[lapic] timer unmeasured (no calibrated TSC): AP ticks keep the fixed counts\n");
         return 0;
     }
+
+    /* Intel SDM Vol. 3A section 10.5.4, APIC Timer: divisor encoding 0x3 is
+     * divide-by-16; LVT bit 16 masks delivery, bit 17 clear selects one-shot.
+     * Vector 0xFF is the existing spurious vector; masking prevents delivery. */
     reg_write(LAPIC_TMRDIV, 0x3);
-    reg_write(LAPIC_LVT_TMR, 0xffu | (1u << 16));        /* masked one-shot */
-    reg_write(LAPIC_TMRINIT, 0xffffffffu);
-    uint64_t t0 = tsc_now(), want = tsc_hz / 100, t1;    /* 10 ms of TSC */
-    unsigned long spins = 0;
-    do { t1 = tsc_now(); __asm__ volatile ("pause"); }
-    while (t1 - t0 < want && ++spins < 400000000ul);
-    uint32_t cur = reg_read(LAPIC_TMRCUR);
-    reg_write(LAPIC_TMRINIT, 0);
-    uint64_t ns = (t1 - t0) * 1000000000ull / tsc_hz, ticks = 0xffffffffull - cur;
-    uint64_t hz = (ns >= 5000000ull && ticks) ? ticks * 1000000000ull / ns : 0;
-    if (hz < 1000000ull || hz > 2000000000ull) hz = 0;
-    g_timer_hz = hz;
-    kprintf("[lapic] timer %lu kHz after divide-by-16 (%s)\n", (unsigned long)(hz / 1000),
-            hz ? "measured against the TSC" : "unmeasured: AP ticks keep the fixed counts");
-    return hz;
+    reg_write(LAPIC_LVT_TMR, 0xffu | (1u << 16));
+    uint64_t samples[5];
+    int valid = 0;
+    int attempts = 0;
+    /* Bring-up policy: 10 ms observation, at most 10 us uncertainty per
+     * endpoint (0.2% combined), five valid samples and at most 15 attempts.
+     * Three clean samples are the minimum for a useful median. */
+    const uint64_t window = tsc_hz / 100;
+    const uint64_t max_bracket = tsc_hz / 100000;
+    int wanted_samples = 5;
+    int minimum_samples = 3;
+#ifdef LAPIC_NEGCTL_UNBRACKETED
+    wanted_samples = 1;
+    minimum_samples = 1;
 #endif
+    while (valid < wanted_samples && attempts < 15) {
+        attempts++;
+        TIMER_FENCE();
+        uint64_t start_before = read_tsc();
+        TIMER_FENCE();
+        /* Full 32-bit one-shot span, SDM 10.5.4; no wrap is accepted below. */
+        reg_write(LAPIC_TMRINIT, 0xffffffffu);
+        TIMER_FENCE();
+        uint64_t start_after = read_tsc();
+        TIMER_FENCE();
+
+        uint64_t polled;
+        unsigned long spins = 0;
+        /* Retain the existing 400 M poll ceiling: a stalled TSC must not
+         * strand BSP startup. A short interval is rejected, never estimated. */
+        do {
+            polled = read_tsc();
+            lapic_relax();
+        } while (polled - start_after < window && ++spins < 400000000ul);
+
+        TIMER_FENCE();
+        uint64_t end_before = read_tsc();
+        TIMER_FENCE();
+        uint32_t current = reg_read(LAPIC_TMRCUR);
+        TIMER_FENCE();
+        uint64_t end_after = read_tsc();
+        TIMER_FENCE();
+        /* Stop even rejected samples; leaving a countdown running obscures
+         * fallback behavior when APs retain their existing fixed counts. */
+        reg_write(LAPIC_TMRINIT, 0);
+
+#ifndef LAPIC_NEGCTL_UNBRACKETED
+        if (start_after - start_before > max_bracket ||
+            end_after - end_before > max_bracket) {
+            continue;
+        }
+#else
+        (void)max_bracket;
+#endif
+        /* Midpoints bound the access uncertainty. The negative control uses
+         * the old inside timestamps, which exclude endpoint SMI time while
+         * still including those LAPIC decrements. */
+        uint64_t start = start_before + (start_after - start_before) / 2;
+        uint64_t end = end_before + (end_after - end_before) / 2;
+#ifdef LAPIC_NEGCTL_UNBRACKETED
+        start = start_after;
+        end = end_before;
+#endif
+        uint64_t elapsed = end - start;
+        uint64_t ticks = 0xffffffffull - current;
+        if (polled - start_after < window || !current || !ticks ||
+            elapsed < window) {
+            continue;
+        }
+        /* Compute directly against TSC ticks rather than truncating to ns.
+         * Split the product to avoid overflow for implausibly long stalls. */
+        uint64_t whole = ticks / elapsed;
+        uint64_t remainder = ticks % elapsed;
+        if (whole > UINT64_MAX / tsc_hz ||
+            (remainder && tsc_hz > UINT64_MAX / remainder)) {
+            continue;
+        }
+        uint64_t fraction = remainder * tsc_hz / elapsed;
+        uint64_t hz = whole * tsc_hz;
+        if (hz > UINT64_MAX - fraction) {
+            continue;
+        }
+        hz += fraction;
+        /* Preserve the previous divided-rate sanity range (1 MHz-2 GHz).
+         * It is a guard against broken clocks, not proof of a clean sample. */
+        if (hz < 1000000ull || hz > 2000000000ull) {
+            continue;
+        }
+        int position = valid;
+        while (position > 0 && samples[position - 1] > hz) {
+            samples[position] = samples[position - 1];
+            position--;
+        }
+        samples[position] = hz;
+        valid++;
+    }
+#undef TIMER_FENCE
+    if (valid < minimum_samples) {
+        kprintf("[lapic] timer calibration disturbed (%d/%d samples): AP ticks keep the fixed counts\n",
+                valid, attempts);
+        return 0;
+    }
+    g_timer_hz = samples[valid / 2];
+    kprintf("[lapic] timer %lu kHz after divide-by-16 (measured against the TSC)\n",
+            (unsigned long)(g_timer_hz / 1000));
+    return g_timer_hz;
 }
 
 uint64_t lapic_timer_hz(void) { return g_timer_hz; }
