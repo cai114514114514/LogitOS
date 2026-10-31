@@ -291,6 +291,7 @@ void kernel_main(uint64_t mb_info)
      * and the driver that claimed it. On unfamiliar hardware this log is the
      * first debugging tool anyone has. */
     dev_probe_all();
+    ahci_irq_attach();
     bootmark(20);
     /* Resource discovery needs both a mounted root and the boot-display
      * driver's successful binding; at root mount time no GPU is bound yet. */

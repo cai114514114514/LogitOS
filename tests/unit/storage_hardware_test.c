@@ -23,7 +23,14 @@ static unsigned bme_before_handoff, bme_with_running_port, port_access_before_ha
 static unsigned abar_ops_at_bme;
 static int handoff_complete, fail_stop_armed, fail_stops;
 static jmp_buf fail_stop_env;
-struct ahci_port { int index, lba48; uint64_t nsectors; char model[41]; };
+/* Keep the extracted IDENTIFY fixture layout aligned with its appended NCQ
+ * capability output; existing geometry assertions remain unchanged. */
+struct ahci_port {
+    int index, lba48;
+    uint64_t nsectors;
+    char model[41];
+    uint32_t ncq_words;
+};
 void kprintf(const char *fmt, ...) { (void)fmt; }
 __attribute__((noreturn)) void panic(const char *fmt, ...)
 {
@@ -270,6 +277,10 @@ int main(void)
 
     struct ahci_port port={0}; identify[60]=2048;
     CHECK(!port_identify(&port)&&port.nsectors==2048, "AHCI legacy 512B identify accepted");
+    identify[75] = 0x1f;
+    identify[76] = 0x0100;
+    CHECK(!port_identify(&port) && port.ncq_words == 0x0100001f,
+          "AHCI retains IDENTIFY NCQ capability words");
     identify[106]=0x6003;
     CHECK(!port_identify(&port), "AHCI 512e accepted despite 4KiB physical grouping");
     identify[106]=0x5000;identify[117]=2048;

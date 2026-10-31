@@ -33,6 +33,7 @@
 #include <stdio.h>
 #include <setjmp.h>
 #include "logitfs_fmt.h"
+#include "blkdev.h"
 
 #define SIM_MAX_PENDING 8192
 
@@ -131,6 +132,19 @@ int blk_write(uint32_t lba, uint8_t count, const void *buf)
     }
     memcpy(sim_pend[p].data, buf, LFS_BS);
     return 0;
+}
+
+/* Preserve every simulated device write and therefore every crash cut point.
+ * Batch transport concurrency is tested with real blkdev.c in hw/ahci/blkq.c. */
+int blk_write_batch(struct blk_span *spans, unsigned count)
+{
+    int failed = 0;
+    for (unsigned i = 0; i < count; i++) {
+        spans[i].status = blk_write((uint32_t)spans[i].lba,
+                                    (uint8_t)spans[i].count, spans[i].buf);
+        if (spans[i].status) failed++;
+    }
+    return failed;
 }
 
 int blk_flush(void)

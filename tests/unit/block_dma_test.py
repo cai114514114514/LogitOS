@@ -25,6 +25,8 @@ test = Path(__file__).with_name("block_dma_test.c")
 
 
 def function(source, name):
+    if name == "link_ms":
+        return re.search(r"^static uint64_t link_ms\(void\).*", source, re.M).group(0) + "\n"
     match = re.search(
         r"^(?:static )?(?:inline )?[\w *]+\b" + name + r"\([^;]*?\)\n\{", source, re.M
     )
@@ -41,9 +43,10 @@ for driver in ("nvme", "ahci"):
     structs = (
         ["nvme_sqe", "nvme_cqe", "nvme_q"]
         if driver == "nvme"
-        else ["ahci_cmdspec", "ahci_port"]
+        else ["ahci_cmdspec", "ahci_slot", "ahci_stats", "ahci_ctl", "ahci_ncq_err", "ahci_port"]
     )
-    types = "\n".join(re.findall(r"^#define [A-Z][^\n]*", source, re.M)) + "\n"
+    types = "\n".join(line for line in re.findall(r"^#define [A-Z][^\n]*", source, re.M)
+                       if not re.match(r"#define AHCI_(FLAGS|STI|CLI|PAUSE|HALT)\b", line)) + "\n"
     for name in structs:
         match = re.search(r"^struct " + name + r" \{", source, re.M)
         start = match.start()
@@ -83,11 +86,19 @@ for driver in ("nvme", "ahci"):
             "port_stop",
             "port_start",
             "port_quiesce",
-            "port_recover",
+            "link_ms",
+            "port_link_reset",
+            "ahci_port_irq_collect",
+            "ahci_clear_errors",
             "ahci_unmap",
             "ahci_issue",
             "ahci_check",
             "ahci_begin",
+            "ahci_complete_slot",
+            "ahci_fail_port",
+            "ahci_reset_link",
+            "ahci_read_log10",
+            "ahci_recover",
             "ahci_step",
             "ahci_shutdown",
         ]

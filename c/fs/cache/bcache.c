@@ -249,8 +249,32 @@ int bcache_sync(void)
 {
     if (!hdr) return blk_flush();
     int rc = 0;
-    for (int i = 0; i < nbuf; i++)
-        if (flush_one(i)) rc = -1;              /* stays dirty: retried next sync */
+    /* Supply independent cache blocks, rather than splitting an existing large
+     * request to manufacture queue depth. Sixteen requests bound kernel stack
+     * use in blk_dev_batch; the filesystem lock owns these buffers throughout.
+     * Successful spans alone become clean. A failed span stays dirty exactly
+     * as with flush_one, and the final journal barrier still follows ALL writes.
+     * Model/QEMU evidence only: not verified on X79-VG4 hardware. */
+    struct blk_span spans[16];
+    int indices[16];
+    unsigned count = 0;
+    for (int i = 0; i <= nbuf; i++) {
+        if (i < nbuf && hdr[i].valid && hdr[i].dirty) {
+            spans[count] = (struct blk_span){(uint64_t)hdr[i].blk * SPB, SPB, data[i], -1};
+            indices[count] = i;
+            count++;
+        }
+        if (count && (count == 16 || i == nbuf)) {
+            int result = blk_write_batch(spans, count);
+            if (result) rc = -1;
+            for (unsigned span = 0; span < count; span++) {
+                if (result < 0 || spans[span].status) continue;
+                hdr[indices[span]].dirty = 0;
+                st.writebacks++;
+            }
+            count = 0;
+        }
+    }
     st.syncs++;
     if (blk_flush()) rc = -1;
     return rc;
