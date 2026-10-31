@@ -135,15 +135,26 @@ void pci_intx_guest_dev_dump(void)
     __atomic_store_n(&contexts[1].retired,1,__ATOMIC_RELEASE);
     verify(source_disabled(b),"last-owner-source-disabled");
     verify(ioapic_is_masked(ga)==1,"last-owner-gsi-masked");
-    /* Reuse the released vector, then deliberately re-enable BOTH hardware
-     * sources. Leaving PCI_CMD_INTX_DIS set would hide a missing route mask and
-     * make the negative control pass without testing the I/O APIC at all. */
+    /* Correction: release formerly returned a vector immediately; CPU-local
+     * IRR quarantine now makes reuse asynchronous (Linux v6.12 vector.c
+     * __vector_cleanup()). Keep every assertion, but give the owning CPUs'
+     * timer EOIs a chance to certify reuse. One second is this test's failure
+     * budget, not a hardware drain guarantee; production never frees on time.
+     * Then re-enable BOTH hardware sources: leaving INTX_DIS set would hide a
+     * missing mask and make its negative control inspect no IOAPIC delivery. */
     int allocated[IRQ_NVEC],nallocated=0,got_vector=0;
-    for(int i=0;i<IRQ_NVEC;++i) {
-        int vector=irq_alloc_vector(sentinel_irq,NULL,"released-intx-sentinel");
-        if(vector<0)break;
-        allocated[nallocated++]=vector;
-        if(vector==va){got_vector=1;break;}
+    uint64_t reuse_until = time_mono_ms() + 1000;
+    while (nallocated < IRQ_NVEC && time_mono_ms() < reuse_until) {
+        int vector = irq_alloc_vector(sentinel_irq, NULL, "released-intx-sentinel");
+        if (vector < 0) {
+            settle_ms(1);
+            continue;
+        }
+        allocated[nallocated++] = vector;
+        if (vector == va) {
+            got_vector = 1;
+            break;
+        }
     }
     verify(got_vector,"released-vector-can-be-reused");
     source_enable(a,1);source_enable(b,1);

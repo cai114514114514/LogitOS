@@ -1,6 +1,7 @@
 #ifndef LOGIT_ACPI_H
 #define LOGIT_ACPI_H
 #include <stdint.h>
+#include "madt_irq.h"
 
 #define ACPI_MAX_CPUS 32
 
@@ -35,6 +36,8 @@ uint32_t acpi_cpu_apic_id(int i);          /* full MADT type-0/type-9 APIC ID */
 uint32_t acpi_lapic_base(void);
 uint32_t acpi_ioapic_addr(void);          /* IOAPIC MMIO base (0 if none) */
 uint32_t acpi_ioapic_gsibase(void);
+int acpi_ioapic_count(void);
+int acpi_ioapic_get(int i, struct acpi_ioapic_info *out);
 uint32_t acpi_gsi_for_irq(int isa_irq);   /* ISA IRQ -> GSI (handles overrides) */
 uint16_t acpi_gsi_flags(int isa_irq);     /* MPS INTI flags for the override */
 

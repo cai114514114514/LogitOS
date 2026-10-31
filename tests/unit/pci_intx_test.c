@@ -14,9 +14,18 @@
 #include "io_lock.h"
 #include "ioapic.h"
 #include "apic_model.h"
+#include "ioapic_map.h"
+#define ksnprintf snprintf
 
 static int checks, failures;
-#define CHECK(c,m) do { checks++; if (!(c)) { failures++; printf("FAIL: %s\n",m); } } while (0)
+#define CHECK(condition, name) \
+    do { \
+        checks++; \
+        if (!(condition)) { \
+            failures++; \
+            printf("FAIL: %s\n", name); \
+        } \
+    } while (0)
 typedef pthread_mutex_t spinlock_t;
 #define SPINLOCK_INIT PTHREAD_MUTEX_INITIALIZER
 static uint64_t spin_lock_irqsave(spinlock_t *l) { pthread_mutex_lock(l); return 0; }
@@ -26,19 +35,61 @@ static uint8_t irq_stub_base[IRQ_NVEC * IRQ_STUB_STRIDE];
 static uint8_t *irq_stub_end = irq_stub_base + sizeof irq_stub_base;
 static void install_gate(int v,const void *s) { (void)v; (void)s; }
 void kprintf(const char *fmt,...) { (void)fmt; }
-struct cpu { int in_kernel; };
+struct cpu {
+    int in_kernel;
+    int index;
+};
 static _Thread_local struct cpu cpu;
 static struct cpu *this_cpu(void) { return &cpu; }
 struct registers { uint64_t vector; };
+/* LAPIC acceptance is independent of both IOAPIC Remote IRR and callback
+ * activity. An accepted vector can remain pending beyond the mask timeout. */
+static atomic_uint lapic_pending[2][8];
+static _Thread_local int model_cpu;
+static int model_cpu_count = 1;
+static void (*model_cleanup)(void);
+
+/* Model only the current CPU's IRR; querying another CPU is not an oracle. */
+int lapic_vector_pending(uint8_t vector)
+{
+    return !!(atomic_load(&lapic_pending[model_cpu][vector / 32]) &
+              (1u << (vector % 32)));
+}
+
+/* The production EOI path runs the registered bounded cleanup on that CPU. */
+void lapic_set_eoi_hook(void (*fn)(void))
+{
+    __atomic_store_n(&model_cleanup, fn, __ATOMIC_RELEASE);
+}
+
+/* Snapshot online CPUs without inventing a destination from the caller. */
+int smp_cpu_count(void)
+{
+    return model_cpu_count;
+}
+
+/* The lifetime fixture schedules remote CPU execution explicitly; sending
+ * a kick must not let its caller inspect or clear another CPU's IRR bits. */
+void smp_kick_others(void)
+{
+}
 static atomic_int eois, hold_eoi, eoi_entered, release_eoi;
 int lapic_ready(void) { return 1; }
 uint32_t lapic_id(void) { return 3; }
+static void model_eoi(uint8_t vector);
+static _Thread_local uint8_t delivered_vector;
+
 void lapic_eoi(void)
 {
     if (atomic_load(&hold_eoi)) {
         atomic_store(&eoi_entered, 1);
         while (!atomic_load(&release_eoi)) sched_yield();
     }
+    void (*cleanup)(void) = __atomic_load_n(&model_cleanup, __ATOMIC_ACQUIRE);
+    if (cleanup) {
+        cleanup();
+    }
+    model_eoi(delivered_vector);
     atomic_fetch_add(&eois, 1);
 }
 void pic_eoi(int v) { (void)v; }
@@ -48,9 +99,33 @@ void pic_eoi(int v) { (void)v; }
  * check that source disable precedes the last-owner mask transaction. */
 static io_lock_t ioapic_gate;
 static unsigned ioapic_ready = 1;
+static volatile uint8_t *io;
+/* This legacy fixture deliberately models one controller only. */
+static int chip_select(uint32_t gsi)
+{
+    (void)io;
+    return ioapic_map_find(gsi) >= 0 ? 0 : -1;
+}
 static uint32_t gsi_base;
 static int max_rte = 47;
 static uint32_t rte[256];
+static uint8_t remote_vector[120];
+
+/* Correction: this previously matched remote_vector's delivery history.
+ * Intel 6-series datasheet section 13.5.4 matches the CURRENT RTE vector;
+ * rewriting that field too early prevents the old CPU EOI acknowledging it. */
+static void model_eoi(uint8_t vector)
+{
+    uint64_t flags = io_lock_enter(&ioapic_gate);
+    for (unsigned index = 0; index < 120; index++) {
+        unsigned reg = 0x10 + 2 * index;
+        if ((rte[reg] & (1u << 15)) && (rte[reg] & (1u << 14)) &&
+            (rte[reg] & 0xff) == vector) {
+            rte[reg] &= ~(1u << 14);
+        }
+    }
+    io_lock_leave(&ioapic_gate, flags);
+}
 static atomic_uint sequence, disable_seq[32], mask_seq[48];
 static atomic_int reject_mask, reject_route, reject_program_low;
 static atomic_int duplicate_legacy_gsi;
@@ -84,8 +159,30 @@ static void wr(uint8_t reg,uint32_t value)
                 rte[reg + 1] ^= 1u << 24;
         }
     }
+    if (reg >= 0x10 && !(reg & 1)) {
+        /* Bits 14 (Remote IRR) and 12 (delivery status) ignore RTE writes.
+         * The legacy masked level-to-edge EOI sequence is modeled separately. */
+        uint32_t hardware = rte[reg] & ((1u << 14) | (1u << 12));
+        if ((rte[reg] & (1u << 15)) && !(value & (1u << 15)) &&
+            (value & (1u << 16))) {
+            hardware &= ~(1u << 14);
+        }
+        value = (value & ~((1u << 14) | (1u << 12))) | hardware;
+    }
     rte[reg] = value;
 }
+/* The explicit EOI MMIO leaf is called with ioapic_gate held. It only
+ * acknowledges level deliveries on the selected chip with the OLD vector. */
+static void model_explicit_eoi(uint8_t vector)
+{
+    for (unsigned index = gsi_base; index <= gsi_base + (unsigned)max_rte; index++) {
+        unsigned reg = 0x10 + 2 * index;
+        if ((rte[reg] & (1u << 15)) && (rte[reg] & 0xff) == vector) {
+            rte[reg] &= ~(1u << 14);
+        }
+    }
+}
+
 uint32_t acpi_gsi_for_irq(int irq)
 {
     if (atomic_load(&duplicate_legacy_gsi) && irq == 1) return 0;
@@ -144,8 +241,14 @@ static void deliver(int gsi)
         !(atomic_load(&commands[i]) & PCI_CMD_INTX_DIS) && atomic_load(&sources[i]->pending)) pending=1;
     uint64_t f=io_lock_enter(&ioapic_gate);
     uint32_t low=rte[0x10+2*gsi];
+    int accepted = pending && !(low & ((1u << 16) | (1u << 14)));
+    if (accepted && (low & (1u << 15))) {
+        rte[0x10 + 2 * gsi] |= 1u << 14;
+        remote_vector[gsi] = low & 255;
+    }
     io_lock_leave(&ioapic_gate,f);
-    if (pending && !(low & (1u<<16))) {
+    if (accepted) {
+        delivered_vector = low & 255;
         struct registers r={ .vector=low & 255 };
         irq_isr_entry(&r);
     }
@@ -173,6 +276,7 @@ static int report(void)
 
 int main(void)
 {
+    ioapic_map_add(0xfec00000, 0, 48, 8, 0x20);
     for (unsigned i=0;i<48;i++) rte[0x10+2*i]=1u<<16;
     dev_irq_prefer(DEV_IRQ_INTX);
 

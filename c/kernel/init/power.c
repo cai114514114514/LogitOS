@@ -63,6 +63,7 @@
  * longer strands all filesystems. Admission is drained per explicit request
  * and restored on failure; successful hardware shutdown still never returns. */
 
+#include "pci_prt_aml.h"
 #include <stdint.h>
 #include "power.h"
 #include "acpi.h"
@@ -128,11 +129,14 @@ static struct mutex aml_lock = MUTEX_INIT;
 static int aml_initialization_attempted;
 static int aml_initialization_error;
 
+/* Register here, not in the boot worker: a status query can initialize AML
+ * first. _PIC must precede every possible namespace_initialize entry path. */
 static int initialize_aml_locked(void)
 {
     if (aml_initialization_attempted)
         return aml_initialization_error;
     aml_initialization_attempted = 1;
+    power_acpi_set_preinit(pci_prt_aml_preinit);
     aml_initialization_error = power_acpi_native_start();
     if (!aml_initialization_error)
         aml_initialization_error = power_acpi_start();
@@ -185,11 +189,15 @@ static void power_boot_worker(void)
     board_init();
     (void)kernel_power_init();
     mutex_lock(&aml_lock);
-    if (!initialize_aml_locked()) {
+    int aml_status = initialize_aml_locked();
+    if (!aml_status) {
         (void)nct6779_acpi_gate(); /* Failed AML leaves HWM pending, with no port I/O. */
         (void)power_acpi_button_install();
     }
     mutex_unlock(&aml_lock);
+    /* Rerouting can wait for ISR retirement; aml_lock must be released. */
+    if (!aml_status)
+        pci_prt_aml_ready();
 }
 
 void kernel_power_start(void)

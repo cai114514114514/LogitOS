@@ -50,6 +50,7 @@ struct power_acpi_status {
  * individual method failures have explicit error fields and unknown values.
  * A battery's rate/capacity unit is usable only when info_error is zero. */
 int power_acpi_start(void);
+void power_acpi_set_preinit(int (*fn)(void));
 int power_acpi_query(struct power_acpi_status *out);
 
 /* Preparation evaluates firmware AML and may sleep. The kernel consumer owns

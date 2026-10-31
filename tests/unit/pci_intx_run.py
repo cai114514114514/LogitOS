@@ -16,6 +16,9 @@ irq = (root / 'c/drivers/core/irq.c').read_text()
 irq = irq[irq.index('struct irq_slot {'):].replace('__asm__ volatile ("cli");', '/* host CLI leaf */')
 ioapic = (root / 'c/kernel/cpu/irq/ioapic.c').read_text()
 ioapic = ioapic[ioapic.index('int ioapic_present(void)'):]
+# Substitute only the explicit-EOI MMIO leaf, preserving its production sequence.
+ioapic = ioapic.replace('*(volatile uint32_t *)(io + 0x40) = low & 0xff;',
+                        'model_explicit_eoi(low & 0xff);')
 variants = [('', None)] if not a.negative_only and not a.x2apic_only else [
     ('PCI_INTX_NEGCTL_FIRST_ONLY', 'one shared interrupt services both pending devices'),
     ('PCI_INTX_NEGCTL_SKIP_MASK', 'masked stale route cannot hit a reused vector'),
@@ -55,7 +58,7 @@ for macro, expected in variants:
            '-Ic/kernel/cpu', '-Ic/kernel/cpu/acpi', '-Ic/kernel/cpu/irq',
            '-Ic/kernel/cpu/smp',
            str(build / 'test.c'), 'c/kernel/pci/pci_msi.c',
-           'c/kernel/cpu/irq/apic_model.c', '-o', str(build / 'test')]
+           'c/kernel/cpu/irq/apic_model.c', 'c/kernel/cpu/irq/ioapic_map.c', '-o', str(build / 'test')]
     if macro.startswith('PCI_') or macro.startswith('LOGIT_'):
         cmd.insert(1, '-D' + macro)
     subprocess.run(cmd, cwd=root, check=True)

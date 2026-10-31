@@ -26,6 +26,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include "pci.h"
+#include "pci_route.h"
 #include "pci_platform.h"
 #include "driver.h"
 #include "irq.h"
@@ -277,6 +278,8 @@ struct intx_line {
     int used, vector;
     int retiring; /* 1 draining, 2 quarantined after failed hardware masking */
     unsigned members;
+    int level, active_low;
+    int source; /* Highest-priority electrical description accepted on this wire. */
 };
 struct intx_member {
     struct device *dev;
@@ -284,10 +287,19 @@ struct intx_member {
     irq_handler_t fn;
     void *arg;
     unsigned active;
+    uint64_t generation;
+    uint64_t deliveries;
+    struct pci_irq_route route;
+    /* route describes the actual RTE. Retain the member's own request too:
+     * a peer changing the wire does not mean this member has adopted AML. */
+    int requested_level, requested_low;
     int retiring;
 };
 static struct intx_line intx_lines[INTX_MAX_LINES];
 static struct intx_member intx_members[INTX_MAX_MEMBERS];
+/* Member slots and vector numbers are reusable. A boot-wide sequence prevents
+ * either reuse from identifying a new binding as the old delivery epoch. */
+static uint64_t intx_generation;
 
 /* For the hardware panel: one INTx line, its IOAPIC entry as read back, and
  * each member's PCI Command/Status (Status bit 3: the device is asserting). */
@@ -333,6 +345,7 @@ static void intx_dispatch(void *arg)
         void *data = NULL;
         if (m->line == line && m->fn && !m->retiring) {
             fn = m->fn; data = m->arg;
+            m->deliveries++;
             __atomic_fetch_add(&m->active, 1, __ATOMIC_RELAXED);
         }
         io_lock_leave(&intx_gate, flags);
@@ -375,11 +388,17 @@ static int intx_source(struct device *d, int enable)
  * and src/southbridge/intel/common/rcba_pirq.c. The firmware interrupt line
  * (config 0x3C) is the 8259 routing; it matches the IOAPIC only where the
  * chipset mirrors ISA IRQs onto pins 0-15, as QEMU's ICH9 does. On the
- * X79-VG4 it named pins nothing drives (2026-10-31). */
-static int pch_intx_gsi(const struct device *d, uint32_t *gsi)
+ * X79-VG4 it named pins nothing drives (2026-10-31).
+ * Correction (2026-11-01): that last sentence was an inference from missing
+ * interrupts, not measured wiring. Neither RCBA nor _PRT has been verified
+ * on X79-VG4 hardware; retain the disagreement instead of declaring a winner
+ * from model evidence. Firmware _PRT takes precedence by policy below. */
+static int pch_intx_gsi(const struct device *d, struct pci_irq_route *out)
 {
 #ifdef PCI_NEGCTL_IGNORE_PCH_ROUTE
-    (void)d; (void)gsi; return -1;
+    (void)d;
+    (void)out;
+    return -1;
 #else
     static const struct { uint8_t slot; uint16_t reg; } dir[] = {
         {20, 0x3160}, {22, 0x315c}, {25, 0x3150}, {26, 0x314c}, {27, 0x3148},
@@ -402,63 +421,215 @@ static int pch_intx_gsi(const struct device *d, uint32_t *gsi)
     vmm_map_page(page, page, VMM_WRITABLE | VMM_NOCACHE);
     uint16_t route = *(volatile uint16_t *)(uintptr_t)(page + (reg & 0xfff));
     unsigned pirq = (route >> (4 * (d->irq_pin - 1))) & 7;
-    *gsi = 16 + pirq;
-    kprintf("[irq] %s INT%c -> PIRQ%c -> GSI %u (PCH D%uIR %04x; firmware line %u)\n",
-            d->name, 'A' + d->irq_pin - 1, 'A' + pirq, *gsi, d->slot, route, d->irq_line);
+    *out = (struct pci_irq_route){
+        .gsi = 16 + pirq, .level = 1, .active_low = 1,
+        .source = PCI_ROUTE_RCBA, .pin = d->irq_pin - 1
+    };
+    ksnprintf(out->how, sizeof out->how, "PCH D%uIR %04x", d->slot, route);
     return 0;
 #endif
 }
 
-static int intx_setup(struct device *d, irq_handler_t fn, void *arg)
+static pci_route_resolver_fn aml_resolver;
+static uint32_t intx_destination;
+static unsigned intx_destination_ready;
+
+/* Publication is independent of the callback lock: evaluating AML can sleep.
+ * Only pci_prt_aml_ready installs this resolver, after _PIC and namespace init. */
+void pci_intx_set_aml_resolver(pci_route_resolver_fn fn)
 {
-    uint32_t gsi;
-    if (pch_intx_gsi(d, &gsi) != 0) {
-    if (!d->irq_pin || d->irq_pin > 4 || !d->irq_line || d->irq_line == 0xff) return -1;
-    /* Without an AML interpreter we cannot evaluate _PRT, so the GSI comes from
-     * the firmware-programmed interrupt line (config 0x3C) -- which is what the
-     * e1000 has always used here. Lines < 16 go through the MADT's ISA source
-     * overrides; other values are GSIs. This is still firmware-line fallback,
-     * not an ACPI _PRT interpreter or PCI bridge interrupt swizzling. */
-    gsi = (d->irq_line < 16) ? acpi_gsi_for_irq(d->irq_line) : d->irq_line;
+    __atomic_store_n(&aml_resolver, fn, __ATOMIC_RELEASE);
+}
+
+/* Keep spelling authoritative for serial output and the hardware panel. */
+const char *pci_route_source_name(int source)
+{
+    switch (source) {
+    case PCI_ROUTE_AML:
+        return "_PRT";
+    case PCI_ROUTE_RCBA:
+        return "RCBA";
+    case PCI_ROUTE_FIRMWARE:
+        return "firmware";
+    default:
+        return "none";
     }
-    uint32_t destination = lapic_id();
-    if (!ioapic_can_route(gsi, destination)) return -1;
+}
+
+/* Prefer evaluated firmware topology, then PCH routing, then the BIOS line.
+ * Compute RCBA even on an AML hit: disagreement is essential board evidence.
+ * The old comment claimed the X79 pins were undriven; neither RCBA nor _PRT
+ * wiring has been verified on X79-VG4 hardware. Retain both values in logs. */
+static int intx_route_for(struct device *device, struct pci_irq_route *route)
+{
+    if (!device->irq_pin || device->irq_pin > 4) {
+        return -1;
+    }
+    struct pci_irq_route pch;
+    int have_pch = pch_intx_gsi(device, &pch) == 0;
+    pci_route_resolver_fn resolver = __atomic_load_n(&aml_resolver, __ATOMIC_ACQUIRE);
+#ifdef PRT_NEGCTL_PREFER_RCBA
+    if (have_pch) {
+        *route = pch;
+        return 0;
+    }
+#endif
+    if (resolver && resolver(device, route) == 0) {
+        if (have_pch && pch.gsi != route->gsi) {
+            kprintf("[irq-route] %s CONFLICT _PRT gsi %u vs RCBA gsi %u (using _PRT)\n",
+                    device->name, route->gsi, pch.gsi);
+        }
+        return 0;
+    }
+    if (have_pch) {
+        *route = pch;
+        return 0;
+    }
+    if (!device->irq_line || device->irq_line == 0xff) {
+        return -1;
+    }
+    *route = (struct pci_irq_route){
+        .gsi = device->irq_line < 16 ? acpi_gsi_for_irq(device->irq_line) : device->irq_line,
+        .level = 1, .active_low = 1, .source = PCI_ROUTE_FIRMWARE,
+        .pin = device->irq_pin - 1
+    };
+    ksnprintf(route->how, sizeof route->how, "fw line %u", device->irq_line);
+    return 0;
+}
+
+/* Establish membership using the existing source-disable, verified RTE and
+ * vector quarantine lifecycle. Always retain the original bootstrap target:
+ * the AML worker can run on an AP which never serviced the device at probe. */
+static int intx_bind_route(struct device *device, irq_handler_t fn, void *arg,
+                           const struct pci_irq_route *route)
+{
+    uint32_t gsi = route->gsi;
+    uint64_t target_flags = io_lock_enter(&intx_gate);
+    if (!intx_destination_ready) {
+        intx_destination = lapic_id();
+        intx_destination_ready = 1;
+    }
+    uint32_t destination = intx_destination;
+    io_lock_leave(&intx_gate, target_flags);
+    if (!ioapic_can_route(gsi, destination)) {
+        return -1;
+    }
     /* Firmware may have left INTx enabled. Suppress this source until its
      * complete shared-line membership and verified IOAPIC route are live. */
-    if (intx_source(d, 0) != 0) return -1;
+    if (intx_source(device, 0) != 0) {
+        return -1;
+    }
     for (;;) {
         uint64_t flags = io_lock_enter(&intx_gate);
         struct intx_line *line = NULL, *empty = NULL;
         struct intx_member *member = NULL;
         for (unsigned i = 0; i < INTX_MAX_LINES; i++) {
-            if (intx_lines[i].used && intx_lines[i].gsi == gsi) line = &intx_lines[i];
-            if (!intx_lines[i].used && !empty) empty = &intx_lines[i];
+            if (intx_lines[i].used && intx_lines[i].gsi == gsi) {
+                line = &intx_lines[i];
+            }
+            if (!intx_lines[i].used && !empty) {
+                empty = &intx_lines[i];
+            }
         }
         if (line && line->retiring) {
             int quarantined = line->retiring == 2;
             io_lock_leave(&intx_gate, flags);
-            if (quarantined) return -1;
-            io_relax(); continue; /* final owner drains outside this lock */
+            if (quarantined) {
+                return -1;
+            }
+            /* The final owner drains outside this lock. */
+            io_relax();
+            continue;
         }
-        for (unsigned i = 0; i < INTX_MAX_MEMBERS; i++)
-            if (!intx_members[i].dev) { member = &intx_members[i]; break; }
+        for (unsigned i = 0; i < INTX_MAX_MEMBERS; i++) {
+            if (!intx_members[i].dev) {
+                member = &intx_members[i];
+                break;
+            }
+        }
         if (!member || (!line && !empty)) {
-            io_lock_leave(&intx_gate, flags); return -1;
+            io_lock_leave(&intx_gate, flags);
+            return -1;
         }
         int first = !line;
         if (first) {
             line = empty;
             int vec = irq_alloc_vector(intx_dispatch, line, "pci-intx");
-            if (vec < 0) { io_lock_leave(&intx_gate, flags); return -1; }
-            *line = (struct intx_line){ .gsi = gsi, .used = 1, .vector = vec };
+            if (vec < 0) {
+                io_lock_leave(&intx_gate, flags);
+                return -1;
+            }
+            *line = (struct intx_line){ .gsi = gsi, .used = 1, .vector = vec,
+                .level = route->level && pci_intx_level(), .active_low = route->active_low };
         }
-        *member = (struct intx_member){ .dev=d, .line=line, .fn=fn, .arg=arg };
+        int level = route->level && pci_intx_level();
+        int active_low = route->active_low;
+        int source = route->source;
+        /* One RTE has one electrical mode (Intel 82093AA section 3.2.4).
+         * Correction: the last joining member previously overwrote it, so a
+         * firmware-low peer could silently undo an AML-high route. Apply the
+         * same _PRT > RCBA > firmware policy at the WIRE, not just per device.
+         * Retain the best accepted description until the wire is retired:
+         * removing its AML member does not change physical board wiring. */
+#ifndef PRT_NEGCTL_SHARED_LAST_WINS
+        if (!first && line->source < source) {
+            level = line->level;
+            active_low = line->active_low;
+            source = line->source;
+        }
+#endif
+        int changed = line->level != level || line->active_low != active_low;
+        if (!first && changed && source == line->source) {
+            /* Contradictory descriptions at equal authority cannot both be
+             * true. Refuse the newcomer while keeping existing peers live;
+             * allow a sole AML owner to update a wire shared with fallbacks. */
+            int conflict = 0;
+            for (unsigned i = 0; i < INTX_MAX_MEMBERS; i++) {
+                struct intx_member *peer = &intx_members[i];
+                if (peer->line == line && peer->dev && !peer->retiring &&
+                    peer->route.source == source &&
+                    (peer->requested_level != level || peer->requested_low != active_low)) {
+                    conflict = 1;
+                }
+            }
+            if (conflict) {
+                kprintf("[irq-route] %s shared GSI %u electrical CONFLICT via=%s; polling required\n",
+                        device->name, gsi, pci_route_source_name(source));
+                io_lock_leave(&intx_gate, flags);
+                return -1;
+            }
+        }
+        *member = (struct intx_member){ .dev = device, .line = line, .fn = fn,
+            .arg = arg, .route = *route, .generation = ++intx_generation,
+            .requested_level = route->level && pci_intx_level(),
+            .requested_low = route->active_low };
         line->members++;
         /* Install the complete dispatcher/member before enabling a source. An
          * existing shared line must retain its vector and remote-IRR state. */
-        int route_status = first ?
+        int route_status = (first || changed) ?
             ioapic_route(gsi, (uint8_t)line->vector, destination,
-                         pci_intx_level(), 1) : IOAPIC_ROUTE_OK;
+                         level, active_low) : IOAPIC_ROUTE_OK;
+        /* _PRT may change polarity on a shared GSI (q35 GSIA-H are high).
+         * Preserve its vector and other members, but verify the new electrical
+         * mode. On a safe reject restore their old RTE before returning. */
+        if (!first && route_status != IOAPIC_ROUTE_OK) {
+            *member = (struct intx_member){0};
+            line->members--;
+            int restored = ioapic_route(gsi, (uint8_t)line->vector, destination,
+                                         line->level, line->active_low);
+            if (restored != IOAPIC_ROUTE_OK) {
+                /* Retain the dispatcher and its remaining members. Even a
+                 * failed mask may still target this vector, so it must never
+                 * be recycled. Drivers' polling paths can continue; halting
+                 * here would turn a silent wire into a machine-wide outage. */
+                line->retiring = 2;
+                kprintf("[irq-route] GSI %u shared route quarantined; polling required\n", gsi);
+                io_lock_leave(&intx_gate, flags);
+                return -1;
+            }
+            io_lock_leave(&intx_gate, flags);
+            return -1;
+        }
         if (route_status != IOAPIC_ROUTE_OK) {
             int failed_vec = line->vector;
             *member = (struct intx_member){0};
@@ -478,11 +649,24 @@ static int intx_setup(struct device *d, irq_handler_t fn, void *arg)
             irq_free_vector(failed_vec);
             return -1;
         }
-        if (intx_source(d, 1) != 0) {
+        if (intx_source(device, 1) != 0) {
             int failed_vec = line->vector;
             *member = (struct intx_member){0};
             line->members--;
             if (!first) {
+                /* The RTE may already have changed polarity for this joining
+                 * member. If its source enable fails, restore the remaining
+                 * peers' old electrical mode before rollback can rejoin.
+                 * Otherwise metadata says low while hardware stays high. */
+                if (changed && ioapic_route(gsi, (uint8_t)line->vector, destination,
+                                             line->level, line->active_low) != IOAPIC_ROUTE_OK) {
+                    /* Same quarantine rule as a rejected route update:
+                     * remaining callbacks and their vector still have owners. */
+                    line->retiring = 2;
+                    kprintf("[irq-route] GSI %u shared route quarantined; polling required\n", gsi);
+                    io_lock_leave(&intx_gate, flags);
+                    return -1;
+                }
                 io_lock_leave(&intx_gate, flags);
                 return -1;
             }
@@ -499,12 +683,55 @@ static int intx_setup(struct device *d, irq_handler_t fn, void *arg)
             irq_free_vector(failed_vec);
             return -1;
         }
+        line->level = level;
+        line->active_low = active_low;
+        line->source = source;
+        /* Publish only after route AND source readback succeeded. Otherwise a
+         * failed move's restore must still see every old peer's old mode.
+         * Keep device-specific provenance, but make route_of describe hardware. */
+        for (unsigned i = 0; i < INTX_MAX_MEMBERS; i++) {
+            struct intx_member *peer = &intx_members[i];
+            if (peer->line == line && peer->dev && !peer->retiring) {
+                peer->route.level = level;
+                peer->route.active_low = active_low;
+            }
+        }
         int vec = line->vector;
+#ifndef PRT_NEGCTL_REROUTE_STALE_VEC
+        /* Publish vector and epoch under the same gate that accounts ISR
+         * delivery. A snapshot must never pair a new epoch with an old vector.
+         * Dispatch cannot borrow this enabled source until we drop the gate. */
+        __atomic_store_n(&device->irq_vec, (int16_t)vec, __ATOMIC_RELEASE);
+#endif
         io_lock_leave(&intx_gate, flags);
         return vec;
     }
 }
 
+/* Route selection is separate from binding so rollback can restore the exact
+ * old GSI instead of asking the now-changed AML resolver a second time. */
+static int intx_setup(struct device *device, irq_handler_t fn, void *arg)
+{
+    struct pci_irq_route route;
+    if (intx_route_for(device, &route) != 0) {
+        return -1;
+    }
+    int vector = intx_bind_route(device, fn, arg, &route);
+    if (vector >= 0) {
+        pci_intx_route_of(device, &route);
+        kprintf("[irq-route] %s INT%c gsi %u %s %s via=%s (%s) fw-line %u\n",
+                device->name, 'A' + device->irq_pin - 1, route.gsi,
+                route.level && pci_intx_level() ? "level" : "edge",
+                route.active_low ? "low" : "high", pci_route_source_name(route.source),
+                route.how, device->irq_line);
+    }
+    return vector;
+}
+
+/* Suppress a source and retire its last wire only after the IOAPIC has also
+ * drained the old level delivery. Return 1 for a quarantined vector: normal
+ * teardown can finish, but a reroute must leave this device polled, not rebind
+ * it after an unacknowledged EOI. Negative returns leave ownership intact. */
 static int intx_release(struct device *d)
 {
     /* PCI source suppression comes first even for a non-last member. Masking
@@ -533,19 +760,23 @@ static int intx_release(struct device *d)
 #endif
     if (last) {
         if (masked) {
-            /* Keep the vector and static line state quarantined if masking was
-             * not acknowledged. Freeing it would allow hardware to interrupt
-             * a new driver's callback through the stale route. */
+            /* Mask alone used to count as retirement. Linux v6.12 io_apic.c
+             * ioapic_irq_get_chip_state() also requires Remote IRR to clear:
+             * queued LAPIC work need not be an active callback yet. Keep the
+             * vector reserved if either masking or that EOI boundary fails. */
             flags = io_lock_enter(&intx_gate);
             *member = (struct intx_member){0};
             line->retiring = 2;
             io_lock_leave(&intx_gate, flags);
             kprintf("[irq] GSI %u mask failed; vector %d quarantined\n", line->gsi, line->vector);
-            return 0;
+            return 1;
         }
-        /* This existing retirement primitive closes dispatcher admission and
-         * drains the entire old ISR callback, including another member whose
-         * concurrent removal is still waiting. Never hold intx_gate here. */
+        /* irq_free_vector closes dispatcher admission, drains callbacks/EOI
+         * and quarantines CPU/vector pairs until CPU-local LAPIC IRR is clear
+         * (Linux v6.12 vector.c __vector_cleanup()). ioapic_mask's explicit
+         * EOI alone cannot prove that an old CPU delivery has completed.
+         * Callback arguments can be released now; a late vector is counted
+         * and acknowledged without touching this line. Never hold intx_gate. */
         irq_free_vector(line->vector);
     }
     flags = io_lock_enter(&intx_gate);
@@ -553,6 +784,277 @@ static int intx_release(struct device *d)
     if (last) *line = (struct intx_line){0};
     io_lock_leave(&intx_gate, flags);
     return 0;
+}
+
+/* Copy live metadata under the callback gate; never evaluate AML here. */
+int pci_intx_route_of(const struct device *device, struct pci_irq_route *out)
+{
+    if (!device || !out) {
+        return -1;
+    }
+    IO_GUARD(&intx_gate);
+    for (unsigned i = 0; i < INTX_MAX_MEMBERS; i++) {
+        struct intx_member *member = &intx_members[i];
+        if (member->dev == device && !member->retiring) {
+            *out = member->route;
+            return 0;
+        }
+    }
+    return -1;
+}
+
+/* Count at dispatcher admission, not after the driver callback: reroute's
+ * synthetic catchup must never manufacture physical delivery evidence. The
+ * gate also prevents mixing fields while release+bind reuses the same vector. */
+int pci_intx_delivery_snapshot(const struct device *device, struct pci_intx_delivery *out)
+{
+    if (!device || !out) {
+        return -1;
+    }
+    IO_GUARD(&intx_gate);
+    for (unsigned i = 0; i < INTX_MAX_MEMBERS; i++) {
+        const struct intx_member *member = &intx_members[i];
+        if (member->dev == device && !member->retiring) {
+            out->generation = member->generation;
+            out->vector = member->line->vector;
+            out->count = member->deliveries;
+            return 0;
+        }
+    }
+    return -1;
+}
+
+/* Serialize only reroute passes, without a kernel mutex symbol dependency:
+ * pci_msi.c is also linked by freestanding standalone PCI tests. This atomic
+ * mutex leaves IF unchanged; it is never held by ISR code. Device lifetime is
+ * separately borrowed through bind_busy, exactly like dev_unbind's contract. */
+static unsigned reroute_owner;
+static void (*reroute_wait)(void);
+
+/* Keep the scheduler out of this standalone-linkable PCI unit. The AML
+ * consumer supplies a sleeping worker, never a timer/ISR callback. */
+void pci_intx_set_reroute_wait(void (*wait)(void))
+{
+    __atomic_store_n(&reroute_wait, wait, __ATOMIC_RELEASE);
+}
+
+/* Move each entry from a device snapshot: reusing an earlier free member slot
+ * during a split must not cause that device to be processed twice.
+ * Correction: bind_busy was once treated like unbinding. EHCI's short report
+ * publication can own it, so that silently stranded a live fallback route
+ * forever after AML's one-shot ready(). Retain only contended entries and
+ * retry from the sleeping AML worker, with no routing lock held during sleep.
+ * 100 waits requesting 5 ms each cap the retry count, with 500 ms of requested
+ * delay. Timer granularity/scheduling can extend it; this contention policy
+ * is not a hardware response-time assertion. */
+void pci_intx_reroute_all(struct pci_reroute_stats *out)
+{
+    struct pci_reroute_stats stats = {0};
+    void (*wait)(void) = __atomic_load_n(&reroute_wait, __ATOMIC_ACQUIRE);
+    unsigned waits = 0;
+    enum { RETRY_LIMIT = 100 };
+    while (__atomic_exchange_n(&reroute_owner, 1, __ATOMIC_ACQUIRE)) {
+        io_relax();
+    }
+    struct device *devices[INTX_MAX_MEMBERS];
+    uint64_t generations[INTX_MAX_MEMBERS];
+    unsigned count = 0;
+    uint64_t flags = io_lock_enter(&intx_gate);
+    for (unsigned i = 0; i < INTX_MAX_MEMBERS; i++) {
+        if (intx_members[i].dev && !intx_members[i].retiring) {
+            devices[count] = intx_members[i].dev;
+            generations[count] = intx_members[i].generation;
+            count++;
+        }
+    }
+    io_lock_leave(&intx_gate, flags);
+    stats.devices = count;
+    for (;;) {
+        unsigned pending = 0;
+        for (unsigned i = 0; i < count; i++) {
+            struct device *device = devices[i];
+            if (!device) {
+                continue;
+            }
+            unsigned idle = 0;
+            if (__atomic_load_n(&device->unbinding, __ATOMIC_ACQUIRE)) {
+                devices[i] = NULL;
+                stats.kept++;
+                continue;
+            }
+            if (!__atomic_compare_exchange_n(&device->bind_busy, &idle, 1, 0,
+                                              __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) {
+#ifndef PRT_NEGCTL_REROUTE_NO_RETRY
+                if (wait && waits < RETRY_LIMIT) {
+                    pending++;
+                    continue;
+                }
+#endif
+                devices[i] = NULL;
+                stats.kept++;
+                struct pci_irq_route retained;
+                if (pci_intx_route_of(device, &retained) == 0) {
+                    kprintf("[irq-route] %s INT%c gsi %u kept via=%s (route busy; %s)\n",
+                            device->name, 'A' + device->irq_pin - 1, retained.gsi,
+                            pci_route_source_name(retained.source),
+                            wait ? "retry limit reached" : "no retry worker");
+                }
+                continue;
+            }
+            devices[i] = NULL;
+            struct pci_irq_route old, route;
+            int requested_level = 0, requested_low = 0;
+            irq_handler_t fn = NULL;
+            void *arg = NULL;
+            flags = io_lock_enter(&intx_gate);
+            for (unsigned m = 0; m < INTX_MAX_MEMBERS; m++) {
+                struct intx_member *member = &intx_members[m];
+                if (member->dev == device && !member->retiring &&
+                    member->generation == generations[i]) {
+                    /* A sleeping retry must not borrow a replacement binding:
+                     * dev_unbind may finish and the same registry slot rebind. */
+                    old = member->route;
+                    requested_level = member->requested_level;
+                    requested_low = member->requested_low;
+                    fn = member->fn;
+                    arg = member->arg;
+                    break;
+                }
+            }
+            io_lock_leave(&intx_gate, flags);
+            if (!fn || __atomic_load_n(&device->unbinding, __ATOMIC_ACQUIRE)) {
+                stats.kept++;
+                goto release_owner;
+            }
+            pci_route_resolver_fn resolver = __atomic_load_n(&aml_resolver, __ATOMIC_ACQUIRE);
+            /* Absence of _PRT is not a request to discard the working fallback. */
+            if (!resolver || resolver(device, &route) != 0) {
+                stats.kept++;
+                kprintf("[irq-route] %s INT%c gsi %u kept via=%s (no _PRT entry)\n",
+                        device->name, 'A' + device->irq_pin - 1, old.gsi, pci_route_source_name(old.source));
+                goto release_owner;
+            }
+            struct pci_irq_route pch;
+            if (pch_intx_gsi(device, &pch) == 0 && pch.gsi != route.gsi) {
+                kprintf("[irq-route] %s CONFLICT _PRT gsi %u vs RCBA gsi %u (using _PRT)\n",
+                        device->name, route.gsi, pch.gsi);
+            }
+            int level = route.level && pci_intx_level();
+            if (old.gsi == route.gsi && old.level == level &&
+                old.active_low == route.active_low && requested_level == level &&
+                requested_low == route.active_low) {
+                flags = io_lock_enter(&intx_gate);
+                for (unsigned m = 0; m < INTX_MAX_MEMBERS; m++) {
+                    if (intx_members[m].dev == device) {
+                        intx_members[m].route = route;
+                        intx_members[m].route.level = level;
+                        /* Matching electrical bits still confirm firmware
+                         * authority. Without this promotion a later conflicting
+                         * peer could treat this AML wire as a fallback wire. */
+                        if (route.source < intx_members[m].line->source) {
+                            intx_members[m].line->source = route.source;
+                        }
+                    }
+                }
+                io_lock_leave(&intx_gate, flags);
+                stats.same++;
+                kprintf("[irq-route] %s INT%c gsi %u same via=_PRT\n",
+                        device->name, 'A' + device->irq_pin - 1, route.gsi);
+                goto release_owner;
+            }
+            int released = intx_release(device);
+            if (released < 0) {
+                stats.failed++;
+                kprintf("[irq-route] %s FAILED gsi %u release refused\n", device->name, old.gsi);
+                goto release_owner;
+            }
+            if (released > 0) {
+                /* The old GSI is isolated and its vector is still reserved. Do
+                 * not attempt either the new route or rollback into that pin;
+                 * driver polling remains the only safe completion path. */
+                __atomic_store_n(&device->irq_vec, -1, __ATOMIC_RELEASE);
+                device->irq_mode = DEV_IRQ_NONE;
+                stats.lost++;
+                kprintf("[irq-route] %s LOST (INTx disabled)\n", device->name);
+                kprintf("[irq-route] %s GSI %u isolated; INTx disabled, polling required\n",
+                        device->name, old.gsi);
+                goto release_owner;
+            }
+            int vector = intx_bind_route(device, fn, arg, &route);
+            if (vector >= 0) {
+                stats.moved++;
+                /* The probe-time [irq] line remains unchanged for existing gates.
+                 * Retirement may allocate a different vector even on the same
+                 * GSI; log it here so later delivery evidence has a live owner. */
+                kprintf("[irq-route] %s INT%c gsi %u -> %u moved via=_PRT (was %s) vector %d\n",
+                        device->name, 'A' + device->irq_pin - 1, old.gsi, route.gsi,
+                        pci_route_source_name(old.source), vector);
+#ifndef PRT_NEGCTL_REROUTE_NO_CATCHUP
+                /* Level sources retain status while INTX_DIS is set. The catchup
+                 * also covers emulated edges and chipset latches. bind_busy keeps
+                 * the driver's callback alive; intx_gate is not held here. */
+                fn(arg);
+#endif
+            } else {
+#ifndef PRT_NEGCTL_REROUTE_NO_ROLLBACK
+                vector = intx_bind_route(device, fn, arg, &old);
+#endif
+                if (vector >= 0) {
+                    stats.failed++;
+                    /* Rollback rebuilds the route, so its vector may change too. */
+                    kprintf("[irq-route] %s FAILED gsi %u restored vector %d\n",
+                            device->name, old.gsi, vector);
+                } else {
+                    __atomic_store_n(&device->irq_vec, -1, __ATOMIC_RELEASE);
+                    device->irq_mode = DEV_IRQ_NONE;
+                    stats.lost++;
+                    kprintf("[irq-route] %s LOST (INTx disabled)\n", device->name);
+                }
+            }
+release_owner:
+            __atomic_store_n(&device->bind_busy, 0, __ATOMIC_RELEASE);
+        }
+        __atomic_store_n(&reroute_owner, 0, __ATOMIC_RELEASE);
+        if (!pending) {
+            break;
+        }
+        waits++;
+        wait();
+        while (__atomic_exchange_n(&reroute_owner, 1, __ATOMIC_ACQUIRE)) {
+            io_relax();
+        }
+    }
+    if (out) {
+        *out = stats;
+    }
+}
+
+/* Per-member hardware evidence: Intel 82093AA section 3.2.4 gives RIRR bit
+ * 14, Delivery Status bit 12 and Mask bit 16. PCI 3.0 Status bit 3 reports
+ * assertion, not CPU delivery; retain both to diagnose a silent physical wire. */
+int pci_route_diag(int index, char *buffer, int max)
+{
+    if (!buffer || max <= 0 || index < 0) {
+        return -1;
+    }
+    IO_GUARD(&intx_gate);
+    for (unsigned i = 0; i < INTX_MAX_MEMBERS; i++) {
+        struct intx_member *member = &intx_members[i];
+        if (!member->dev || member->retiring || index-- != 0) {
+            continue;
+        }
+        struct device *device = member->dev;
+        uint32_t rte = ioapic_rte_low(member->route.gsi);
+        uint16_t status = pci_cfg_read16(device->bus, device->slot, device->func, PCI_CFG_COMMAND + 2);
+        ksnprintf(buffer, max,
+                  "route %02x:%02x.%u %c gsi %u vec %x via %s rte %08x RIRR %u DS %u M %u n %llu ASSERT %u",
+                  device->bus, device->slot, device->func, 'A' + device->irq_pin - 1, member->route.gsi,
+                  member->line->vector, pci_route_source_name(member->route.source), rte,
+                  (rte >> 14) & 1, (rte >> 12) & 1, (rte >> 16) & 1,
+                  (unsigned long long)dev_irq_count(device), (status >> 3) & 1);
+        return 0;
+    }
+    return -1;
 }
 
 /* --------------------------------------------------------- the model API -- */
@@ -619,7 +1121,7 @@ int dev_irq_release(struct device *dev)
 {
     if (!dev || dev->irq_mode == DEV_IRQ_NONE) return 0;
     if (dev->irq_mode == DEV_IRQ_INTX) {
-        if (intx_release(dev) != 0) return -1;
+        if (intx_release(dev) < 0) return -1;
         dev->irq_mode = DEV_IRQ_NONE; dev->irq_vec = -1;
         return 0;
     }

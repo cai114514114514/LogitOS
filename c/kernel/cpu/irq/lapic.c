@@ -17,6 +17,10 @@
 
 #define LAPIC_ID        0x020
 #define LAPIC_EOI       0x0B0
+/* Intel SDM vol. 3, 12.5.2/12.9: eight 32-bit ISR and IRR banks,
+ * 16 bytes apart. x2APIC exposes the same banks through MSRs 810h/820h. */
+#define LAPIC_ISR       0x100
+#define LAPIC_IRR       0x200
 #define LAPIC_SVR       0x0F0
 #define LAPIC_ICRLO     0x300
 #define LAPIC_ICRHI     0x310
@@ -37,6 +41,7 @@
 static volatile uint8_t *lapic;              /* xAPIC MMIO only */
 static enum apic_access_mode system_mode;
 static int announced;
+static void (*eoi_hook)(void);
 
 static inline void lapic_relax(void)
 {
@@ -71,6 +76,7 @@ void lapic_host_reset(void)
     lapic = 0;
     system_mode = APIC_ACCESS_NONE;
     announced = 0;
+    eoi_hook = NULL;
 }
 #else
 static void arch_cpuid1(uint32_t *ecx, uint32_t *edx)
@@ -250,8 +256,38 @@ uint32_t lapic_id(void)
     return system_mode == APIC_ACCESS_X2APIC ? id : id >> 24;
 }
 
+/* CPU-local proof for vector retirement (Linux v6.12 vector.c
+ * __vector_cleanup()). Never infer a remote CPU's IRR from local MMIO/MSRs.
+ * ISR is checked too: an accepted request has already left IRR when its stub
+ * runs, and its EOI must complete before the number can be recycled. */
+int lapic_vector_pending(uint8_t vector)
+{
+    if (!lapic_ready()) {
+        return -1;
+    }
+    uint32_t bank = ((uint32_t)vector / 32) * 16;
+    uint32_t bit = 1u << (vector % 32);
+    return !!((reg_read(LAPIC_IRR + bank) | reg_read(LAPIC_ISR + bank)) & bit);
+}
+
+/* Keep LAPIC usable by standalone platform tests without linking the device
+ * registry. The registry installs its bounded, non-sleeping cleanup before
+ * allocating a vector. Retirement explicitly kicks remote CPUs through the
+ * existing vector-243 EOI path, which also works with BSP PIT/PIC timing;
+ * periodic LAPIC timer EOIs provide additional retries on CPUs using them. */
+void lapic_set_eoi_hook(void (*fn)(void))
+{
+    __atomic_store_n(&eoi_hook, fn, __ATOMIC_RELEASE);
+}
+
+/* Run cleanup before EOI so an in-service quarantined vector still has its
+ * ISR bit set during the check. Callers are interrupt entries with IF=0. */
 void lapic_eoi(void)
 {
+    void (*cleanup)(void) = __atomic_load_n(&eoi_hook, __ATOMIC_ACQUIRE);
+    if (cleanup) {
+        cleanup();
+    }
     if (lapic_ready()) reg_write(LAPIC_EOI, 0);
 }
 

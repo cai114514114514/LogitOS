@@ -34,6 +34,10 @@
 #include "pic.h"
 #include "kprintf.h"
 
+/* The cleanup mask must cover every CPU the scheduler can publish. Growing
+ * percpu.h without this guard would silently omit a possible old target. */
+_Static_assert(PERCPU_MAXCPU <= 32, "IRQ quarantine CPU mask is too small");
+
 /* --------------------------------------------------------------- stubs -- */
 /* 32 stubs, each padded to 16 bytes so stub N is at irq_stub_base + N*16.
  * (A symbol per stub would need .altmacro string pasting; fixed stride is
@@ -119,12 +123,57 @@ struct irq_slot {
     const char   *name;
     volatile uint64_t count;
     unsigned active;
-    int retiring;
+    int retiring;             /* 1: draining callbacks; 2: CPU quarantine */
+    uint32_t cleanup_cpus;
 };
 
 static struct irq_slot g_slot[IRQ_NVEC];
 static spinlock_t      g_irq_lock = SPINLOCK_INIT;
 static int             g_stubs_ok = -1;    /* -1 = not checked yet */
+
+/* Linux v6.12 arch/x86/kernel/apic/vector.c __vector_cleanup() checks IRR
+ * on the OLD target CPU and rearms its pinned timer if a delivery is pending.
+ * Our vector pool is global and its allocation API carries no affinity. Check
+ * every online CPU instead of guessing that an AML worker's CPU owns the old
+ * INTx route (it still targets the BSP). Each bit is a (CPU, vector) quarantine
+ * entry; only that CPU can clear it. This deliberately costs extra checks to
+ * preserve the existing standalone PCI API and its callback lifetime contract.
+ *
+ * Called before LAPIC EOI and after a dynamic IRQ drops its dispatch pin.
+ * Correction: relying on periodic LAPIC EOIs stranded the BSP's bit in PIC
+ * fallback, where PIT ticks use pic_eoi() and the BSP LAPIC timer is off.
+ * Retirement now explicitly sends the existing kick IPI to every other CPU;
+ * interrupts.c's vector-243 path always executes lapic_eoi(), even in PIC
+ * fallback. If its high-priority IPI observes a queued old IRQ, that IRQ's
+ * own post-EOI cleanup retries after dropping the dispatch pin. Both triggers
+ * run with IF=0, without waiting for an unrelated interrupt or timer tick.
+ * One bounded scan (32 slots); IRR/ISR still veto reuse without a timeout.
+ * https://github.com/torvalds/linux/blob/v6.12/arch/x86/kernel/apic/vector.c
+ * Model/QEMU evidence: not verified on X79-VG4 hardware. */
+void irq_cleanup_vectors(void)
+{
+    int index = this_cpu()->index;
+    if (index < 0 || index >= 32) {
+        return;
+    }
+    uint32_t cpu_bit = 1u << index;
+    uint64_t flags = spin_lock_irqsave(&g_irq_lock);
+    for (int i = 0; i < IRQ_NVEC; i++) {
+        struct irq_slot *slot = &g_slot[i];
+        if (slot->retiring != 2 || slot->active ||
+            !(slot->cleanup_cpus & cpu_bit)) {
+            continue;
+        }
+        if (lapic_vector_pending((uint8_t)(IRQ_VEC_BASE + i)) != 0) {
+            continue;
+        }
+        slot->cleanup_cpus &= ~cpu_bit;
+        if (!slot->cleanup_cpus) {
+            slot->retiring = 0;
+        }
+    }
+    spin_unlock_irqrestore(&g_irq_lock, flags);
+}
 
 static int stubs_ready(void)
 {
@@ -144,6 +193,9 @@ int irq_alloc_vector(irq_handler_t fn, void *arg, const char *name)
                 (int)(irq_stub_end - irq_stub_base), IRQ_NVEC);
         return -1;
     }
+    /* Register before publishing any slot: even a first allocation freed on
+     * another CPU must be visited by that CPU's explicit cleanup kick. */
+    lapic_set_eoi_hook(irq_cleanup_vectors);
     uint64_t fl = spin_lock_irqsave(&g_irq_lock);
     int got = -1;
     for (int i = 0; i < IRQ_NVEC; i++) {
@@ -166,8 +218,11 @@ void irq_free_vector(int vec)
     int i = vec - IRQ_VEC_BASE;
     if (i < 0 || i >= IRQ_NVEC) return;
     uint64_t fl = spin_lock_irqsave(&g_irq_lock);
-    /* Retiring slots cannot be reused until the last old callback returns.
-     * Clearing the function alone would leave a dispatcher using freed arg. */
+    /* Correction: waiting for active callbacks alone used to release the
+     * vector. A cleared IOAPIC Remote IRR also says nothing about CPU IRR
+     * after an explicit controller EOI (Linux v6.12 io_apic.c
+     * __eoi_ioapic_pin()). Drain callback arguments now, quarantine the vector
+     * until all potential target CPUs have checked their own LAPIC later. */
     if (g_slot[i].retiring) {
         spin_unlock_irqrestore(&g_irq_lock, fl);
         while (__atomic_load_n(&g_slot[i].active, __ATOMIC_ACQUIRE)) io_relax();
@@ -178,8 +233,29 @@ void irq_free_vector(int vec)
     spin_unlock_irqrestore(&g_irq_lock, fl);
     while (__atomic_load_n(&g_slot[i].active, __ATOMIC_ACQUIRE)) io_relax();
     fl = spin_lock_irqsave(&g_irq_lock);
-    g_slot[i].arg = NULL; g_slot[i].name = NULL; g_slot[i].retiring = 0;
+    g_slot[i].arg = NULL;
+    g_slot[i].name = NULL;
+    /* PERCPU_MAXCPU is 32; retain all bits on an invalid snapshot rather than
+     * silently certify that a CPU which might own an interrupt is absent. */
+    int online = smp_cpu_count();
+    g_slot[i].cleanup_cpus = online > 0 && online < 32 ?
+                               (1u << online) - 1 : UINT32_MAX;
+    g_slot[i].retiring = 2;
+#ifdef PRT_NEGCTL_REUSE_OLD_VECTOR
+    g_slot[i].cleanup_cpus = 0;
+    g_slot[i].retiring = 0;
+#endif
     spin_unlock_irqrestore(&g_irq_lock, fl);
+    irq_cleanup_vectors();
+    /* Linux v6.12 vector.c __vector_schedule_cleanup() targets the old
+     * CPU rather than assuming it will happen to interrupt later. Use the
+     * existing smp.c kick (fixed IPI 243) to reach every possible old target,
+     * including a BSP whose timer is PIT/PIC. Send outside g_irq_lock: the
+     * receiving CPU needs that lock to certify its own IRR/ISR. An IPI send
+     * failure leaves the bits quarantined; it never authorizes slot reuse. */
+#ifndef PRT_NEGCTL_NO_CLEANUP_KICK
+    smp_kick_others();
+#endif
 }
 
 uint64_t irq_vector_count(int vec)
@@ -211,10 +287,11 @@ void irq_isr_entry(struct registers *r)
         uint64_t f = spin_lock_irqsave(&g_irq_lock);
         irq_handler_t fn = g_slot[i].fn;
         void *arg = g_slot[i].arg;
-        if (fn) {
-            __atomic_fetch_add(&g_slot[i].active, 1, __ATOMIC_RELAXED);
-            borrowed = 1;
-        }
+        /* Pin even a quarantined delivery through EOI. It has no device
+         * callback, but cleanup on another CPU must not recycle its slot
+         * between this CPU's IRR acceptance and acknowledgement. */
+        __atomic_fetch_add(&g_slot[i].active, 1, __ATOMIC_RELAXED);
+        borrowed = 1;
         __atomic_fetch_add(&g_slot[i].count, 1, __ATOMIC_RELAXED);
         spin_unlock_irqrestore(&g_irq_lock, f);
         /* A callback may acquire device locks or wake tasks. Keep the registry
@@ -232,5 +309,26 @@ void irq_isr_entry(struct registers *r)
     this_cpu()->in_kernel = depth;
     /* Keep the vector pinned through EOI: a level INTx owner's final removal
      * must not recycle it while this CPU still completes the old interrupt. */
-    if (borrowed) __atomic_fetch_sub(&g_slot[i].active, 1, __ATOMIC_RELEASE);
+    if (borrowed) {
+        __atomic_fetch_sub(&g_slot[i].active, 1, __ATOMIC_RELEASE);
+        /* The pre-EOI hook still saw this vector's ISR/dispatch pin. Finish
+         * its local quarantine now: in PIC fallback no later LAPIC timer is
+         * promised. IF remains clear until IRET, and the shared registry lock
+         * serializes this final proof against allocation on another CPU. */
+#ifndef PRT_NEGCTL_NO_LOCAL_CLEANUP
+        irq_cleanup_vectors();
+#endif
+        /* A remote cleanup IPI can arrive while this dispatch pin is still
+         * active and decline its scan. Re-kick after the last old dispatch
+         * completes so a quiet PIC-mode CPU does not wait for another EOI.
+         * As in free(), snapshot under the registry lock and send outside it. */
+#ifndef PRT_NEGCTL_NO_COMPLETION_KICK
+        uint64_t flags = spin_lock_irqsave(&g_irq_lock);
+        int cleanup_pending = g_slot[i].retiring == 2;
+        spin_unlock_irqrestore(&g_irq_lock, flags);
+        if (cleanup_pending) {
+            smp_kick_others();
+        }
+#endif
+    }
 }

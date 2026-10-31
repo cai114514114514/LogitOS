@@ -15,7 +15,7 @@ else:
 for name,mode,marker in variants:
  d=b/(name+str(mode));d.mkdir(exist_ok=True)
  pci=(r/'c/kernel/pci/pci.c').read_text();io=(r/'c/kernel/cpu/irq/ioapic.c').read_text()
- for old,new in [('"../../drivers/core/io_lock.h"',r/'c/drivers/core/io_lock.h'),('"../../drivers/core/io_domain.h"',r/'c/drivers/core/io_domain.h')]:
+ for old,new in [('"../../../drivers/core/io_lock.h"',r/'c/drivers/core/io_lock.h'),('"../../drivers/core/io_domain.h"',r/'c/drivers/core/io_domain.h')]:
   pci=pci.replace(old,'"'+str(new)+'"');io=io.replace(old,'"'+str(new)+'"')
  if name=='port':
   for fn in ['uint32_t pci_cfg_read(','void pci_cfg_write(']:
@@ -26,11 +26,18 @@ for name,mode,marker in variants:
   bits=8 if name=='rmw' else 16
   start=pci.index('void pci_cfg_write'+str(bits)+'(')
   end=pci.index('\n}',start)+2
-  replacement=('void pci_cfg_write%d(uint8_t bus,uint8_t slot,uint8_t func,uint16_t off,uint%d_t val)\n'
-   '{ uint16_t d=off&~3u; uint32_t v=pci_cfg_read(bus,slot,func,d);\n'
-   '  unsigned sh=(off&%d)*8,mask=%su<<sh;\n'
-   '  pci_cfg_write(bus,slot,func,d,(v&~mask)|((uint32_t)val<<sh)); }') % (bits,bits,3 if bits==8 else 2,'255' if bits==8 else '65535')
+  replacement=('/* Deliberately split the transaction to test lost concurrent lanes. */\n'
+   'void pci_cfg_write%d(uint8_t bus, uint8_t slot, uint8_t func, uint16_t off, uint%d_t val)\n'
+   '{\n'
+   '    uint16_t aligned = off & ~3u;\n'
+   '    uint32_t old = pci_cfg_read(bus, slot, func, aligned);\n'
+   '    test_split_rmw_read();\n'
+   '    unsigned shift = (off & %d) * 8;\n'
+   '    unsigned mask = %su << shift;\n'
+   '    pci_cfg_write(bus, slot, func, aligned, (old & ~mask) | ((uint32_t)val << shift));\n'
+   '}') % (bits,bits,3 if bits==8 else 2,'255' if bits==8 else '65535')
   pci=pci[:start]+replacement+pci[end:]
+  pci='void test_split_rmw_read(void);\n'+pci
  if name=='map':
   start=pci.index('static volatile uint8_t *ecam_ptr(');j=pci.index('        IO_DOMAIN_GUARD(&ecam_owner);',start);pci=pci[:j]+pci[j:].replace('        IO_DOMAIN_GUARD(&ecam_owner);','/* control: concurrent mappers */',1)
  if name=='publish':
@@ -50,7 +57,7 @@ for name,mode,marker in variants:
  (d/'vmm.h').write_text('#include <stdint.h>\n#define VMM_WRITABLE 2\n#define VMM_NOCACHE 24\nvoid vmm_map_page(uint64_t,uint64_t,uint64_t);\nvoid vmm_map_range(uint64_t,uint64_t,uint64_t,uint64_t);\n')
  exe=d/'test';cmd=[os.environ.get('CC','clang'),'-std=gnu11','-O1','-g','-pthread','-fsanitize=address,undefined','-DLOGIT_HOST_TEST','-I'+str(d)]+['-I'+str(r/p) for p in ['tests/unit/pcistub','c/drivers/core','c/kernel/pci','c/kernel/cpu','c/kernel/cpu/acpi','c/kernel/cpu/irq','c/kernel/cpu/smp']]
  subprocess.run(cmd+[str(test),str(d/'pci.c'),str(d/'ioapic.c'),
-                     str(r/'c/kernel/cpu/irq/apic_model.c'),'-o',str(exe)],check=True)
+                     str(r/'c/kernel/cpu/irq/apic_model.c'),str(r/'c/kernel/cpu/irq/ioapic_map.c'),'-o',str(exe)],check=True)
  p=subprocess.run([str(exe),str(mode)],capture_output=True,text=True,timeout=25);(d/'result.log').write_text(p.stdout+p.stderr)
  if marker:
   assert p.returncode==1 and 'FAIL: '+marker in p.stdout,(name,p.stdout,p.stderr)

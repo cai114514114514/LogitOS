@@ -10,6 +10,7 @@
 #include "pci.h"
 #include "driver.h"
 #include "ioapic.h"
+#include "madt_irq.h"
 static _Atomic uint32_t cf8,ports[32][64],sel,regs[256];
 static atomic_int bad,maps,checked_map,drop_init_mask;
 static unsigned char *space;
@@ -22,6 +23,15 @@ static void sync_all(void) {
     if(++syncpoint.count==(unsigned)workers){syncpoint.count=0;syncpoint.gen++;pthread_cond_broadcast(&syncpoint.c);}
     else while(syncpoint.gen==g)pthread_cond_wait(&syncpoint.c,&syncpoint.m);
     pthread_mutex_unlock(&syncpoint.m);
+}
+
+/* The split-RMW controls call this AFTER their real pci_cfg_read returns,
+ * outside cfg_gate. Every writer must retain the same old dword before any
+ * writer can store: lost lanes are then certain, independent of scheduling.
+ * Native byte/word writes never call this hook or wait under cfg_gate. */
+void test_split_rmw_read(void)
+{
+    sync_all();
 }
 void outl(uint16_t port,uint32_t value) {
     if(port==0xcf8){atomic_store(&cf8,value);sched_yield();return;}
@@ -50,6 +60,21 @@ void test_ioapic_store(uint32_t value){
     atomic_store(&regs[r],value);sched_yield();
 }
 uint32_t test_ioapic_load(void){return atomic_load(&regs[atomic_load(&sel)&255]);}
+/* The existing concurrency gate remains a single-chip specimen. */
+int acpi_ioapic_count(void)
+{
+    return 1;
+}
+
+/* Production discovery now consumes the MADT list. */
+int acpi_ioapic_get(int index, struct acpi_ioapic_info *out)
+{
+    if (index != 0) {
+        return -1;
+    }
+    *out = (struct acpi_ioapic_info){8, 0xfec00000, 0};
+    return 0;
+}
 uint32_t acpi_ioapic_addr(void){return 0xfec00000u;}
 uint32_t acpi_ioapic_gsibase(void){return 0;}
 uint32_t acpi_gsi_for_irq(int i){return (uint32_t)i;}

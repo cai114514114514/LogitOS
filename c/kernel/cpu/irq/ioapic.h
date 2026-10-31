@@ -11,10 +11,14 @@ enum {
 /* Boot-only discovery/mapping; runtime route updates use a short controller lock. */
 int  ioapic_init(void);
 int  ioapic_present(void);
+int  ioapic_chip_count(void);
+int  ioapic_describe(int chip, char *buf, int max);
 int  ioapic_gsi_valid(uint32_t gsi);
 int  ioapic_can_route(uint32_t gsi, uint32_t apic_id);
-/* Mask and read back the RTE before retiring its vector. Returns 0 on an
- * acknowledged mask, -1 for an absent GSI or failed register readback. */
+/* Mask, read back, and drain an old delivery before retiring its vector.
+ * Returns 0 only with Mask set and Remote IRR/Delivery Status clear, -1 for
+ * an absent GSI, failed mask, or stuck delivery (keep that vector isolated).
+ * Linux v6.12 io_apic.c: ioapic_irq_get_chip_state(), __eoi_ioapic_pin(). */
 int  ioapic_mask(uint32_t gsi);
 int  ioapic_is_masked(uint32_t gsi); /* 1 masked, 0 enabled, -1 absent */
 uint32_t ioapic_rte_low(uint32_t gsi);  /* diagnostics: the low RTE word */
