@@ -8,15 +8,17 @@
  * ASS=0 is required before queue reuse; final release requires HCHalted. No
  * isochronous, high-bandwidth interrupt endpoints, companion UHCI/OHCI routing,
  * suspend or downstream-hub hotplug. Root-port connect/disconnect is deferred
- * to the USB core's kworker. Periodic admission reserves whole frames: a
- * conservative refusal is preferable to corrupting a shared TT's bandwidth.
- * Periodic rearming is deferred until PSS=0; an IRQ never spins for hardware.
+ * to the USB core's kworker. The old whole-frame reservation and PSS-stop on
+ * every rearm are replaced by bandwidth admission, a shared periodic tree and
+ * inactive dummy-qTD swaps. IRQ-side unlink uses timestamped grace periods;
+ * it never spins for hardware. Not verified on X79-VG4 hardware.
  */
 #include "ehci_diag.h"
 #include <stdint.h>
 #include <stddef.h>
 #include "ehci.h"
 #include "ehci_hw.h"
+#include "ehci_sched.h"
 #include "usb.h"
 #include "usb_hc.h"
 #include "driver.h"
@@ -26,6 +28,7 @@
 #include "io_lock.h"
 #include "ktime.h"
 #include "kprintf.h"
+#include "work.h"
 #ifndef memset
 void *memset(void *, int, size_t);
 #endif
@@ -63,9 +66,8 @@ void *memcpy(void *, const void *, size_t);
 
 struct ehci_ep {
     struct usb_device *dev;
-    uint8_t addr, type, toggle, armed, pending;
-    uint16_t packet, period, phase;
-    uint8_t smask, cmask;
+    uint8_t addr, type, toggle, armed; /* toggle drives bulk; INT keeps only a diagnostic copy. */
+    uint16_t packet;
     uint8_t dev_addr;                   /* for the panel: dev may be freed */
     uint32_t done, errs, last_token, last_qh_token;
     struct dma_buffer *mem;
@@ -73,7 +75,32 @@ struct ehci_ep {
     struct ehci_qtd *td;
     uint8_t *payload;
     uint32_t qh_dma, td_dma, payload_dma;
+    struct ehci_ps ps;
+    struct ehci_pnode node;
+    struct ehci_tt_acct *tt;
+    struct ehci_qtd *q[2];
+    uint32_t q_dma[2];
+    uint8_t cur, state, interval, stall_pending;
+    uint8_t stall_attempts, closing, reported_stalled;
+    uint64_t unlink_ns, arm_ns, stall_retry_ns;
+    uint32_t arm_frame;
+    struct work stall_work;
+    struct ehci *owner;
+    uint32_t rearms, err_halt, err_xact, err_mmf, err_dbe, err_babble, stalls;
 };
+/* Software state, not hardware bits. UNLINKING retains QH/TD ownership until
+ * ehci-timer.c's 9-microframe (1125 us) grace period has expired. */
+enum { EP_IDLE, EP_LINKED, EP_UNLINKING };
+#define EHCI_UNLINK_NS UINT64_C(1125000)
+#define EHCI_PSE_OFF_NS (10 * NS_PER_MS) /* Linux EHCI_HRTIMER_DISABLE_PERIODIC. */
+/* P2 bring-up policy, not timings mandated by USB: three CLEAR_HALT attempts
+ * at 100 ms intervals, and a one-shot 3 s no-report diagnostic. EHCI 2.3.1/
+ * 2.3.2 require the PSE/PSS handshake; 100 ms retains this driver's previous
+ * refusal bound rather than claiming a specification-defined timeout. */
+#define EHCI_STALL_RETRIES 3u
+#define EHCI_STALL_RETRY_NS (100 * NS_PER_MS)
+#define EHCI_INPUT_WARN_NS (3 * NS_PER_SEC)
+#define EHCI_PSS_TIMEOUT_MS 100u
 struct ehci_dev {
     struct usb_device *dev;
     uint8_t addr;
@@ -83,15 +110,18 @@ struct ehci {
     struct usb_hc hc;
     struct device *pci;
     volatile uint8_t *op;
-    unsigned used, up, failed, ports, ppc, dirty, reported_staging, reported_irq;
-    uint64_t periodic_deadline;
+    unsigned used, up, failed, ports, ppc, reported_staging, reported_irq;
     struct dma_device dma;
     struct dma_buffer *async_mem, *payload_mem, *periodic_mem;
     struct ehci_qh *head, *work;
     struct ehci_qtd *td;
     uint8_t *payload;
     volatile uint32_t *frames;
-    struct ehci_ep *frame_owner[1024];
+    struct ehci_sched sched;
+    struct ehci_ptree tree;
+    unsigned pse_toggles, intr_count, reported_sched, reported_poll;
+    uint64_t pse_off_deadline, pse_check_deadline;
+    struct ehci_sched_diag sched_diag;
     struct ehci_ep ep[EHCI_ENDPOINTS];
     struct ehci_dev device[USB_MAX_DEVICES];
     struct io_domain owner;
@@ -119,19 +149,41 @@ int ehci_diag_get(int i, struct ehci_ep_diag *out)
             if (!p->dev || p->type != USB_XFER_INT || !p->qh) continue;
             if ((int)seen++ != i) continue;
             *out = (struct ehci_ep_diag){ .controller = (uint8_t)c, .dev_addr = p->dev_addr,
-                .ep = p->addr, .armed = p->armed, .period = p->period, .phase = p->phase,
+                .ep = p->addr, .armed = p->armed, .period = p->ps.period, .phase = p->ps.phase,
                 .done = p->done, .errors = p->errs, .td_token = p->last_token,
-                .qh_token = p->last_qh_token };
+                .qh_token = p->last_qh_token, .phase_uf = p->ps.phase_uf,
+                .smask = p->ps.smask, .cmask = p->ps.cmask, .speed = p->ps.speed,
+                .state = p->state, .us_s = p->ps.us_s, .us_c = p->ps.us_c,
+                .us_tt = p->ps.us_tt, .rearms = p->rearms, .err_halt = p->err_halt,
+                .err_xact = p->err_xact, .err_mmf = p->err_mmf, .err_dbe = p->err_dbe,
+                .err_babble = p->err_babble, .stalls = p->stalls,
+                .overlay_status = p->last_qh_token & 255 };
             return 0;
         }
     }
     return -1;
 }
 static io_lock_t controllers_gate=IO_LOCK_INIT;
+
+/* Default MMIO remains exactly a volatile access. The host model overrides
+ * these leaves so every read advances DMA and every PSE edge is observable;
+ * otherwise a test of volatile stores would only be watching its own clock. */
+#ifndef EHCI_MMIO_RD
+#define EHCI_MMIO_RD(e, r) (*(volatile uint32_t *)((e)->op + (r)))
+#endif
+#ifndef EHCI_MMIO_WR
+#define EHCI_MMIO_WR(e, r, value) (*(volatile uint32_t *)((e)->op + (r)) = (value))
+#endif
+/* Read an EHCI operational register (EHCI 2.3); model hook owns no policy. */
 static uint32_t rd(struct ehci *e, unsigned r)
-{ return *(volatile uint32_t *)(e->op+r); }
+{
+    return EHCI_MMIO_RD(e, r);
+}
+/* Write an EHCI operational register, preserving the existing volatile ABI. */
 static void wr(struct ehci *e, unsigned r, uint32_t v)
-{ *(volatile uint32_t *)(e->op+r)=v; }
+{
+    EHCI_MMIO_WR(e, r, v);
+}
 static struct ehci *controller(struct usb_device *d)
 { return d && d->hc ? d->hc->priv : NULL; }
 static int wait_reg(struct ehci *e,unsigned reg,uint32_t mask,uint32_t value,unsigned ms)
@@ -148,6 +200,9 @@ static int wait_reg(struct ehci *e,unsigned reg,uint32_t mask,uint32_t value,uns
 }
 static int delay(unsigned ms)
 {
+#ifdef EHCI_DELAY_ENTER
+    EHCI_DELAY_ENTER();
+#endif
     uint64_t end=time_mono_ns()+(uint64_t)ms*NS_PER_MS;
     for (unsigned i=0;i<100000000;i++) {
         if (time_mono_ns()>=end) return 0;
@@ -503,36 +558,269 @@ static int set_ep0(struct usb_device *d,int packet)
     sd->ep0=packet; return 0;
 }
 
-/* gate held. Rebuilding only with PSS clear avoids modifying an overlay that
- * the controller has prefetched. The timer advances this handshake when a
- * NAK-only keyboard produces no USB interrupt at all. */
-static void periodic_service(struct ehci *e)
+/* Snapshot aggregate bandwidth without reading any DMA. The diagnostic ABI
+ * is append-only because the hardware panel also consumes its older fields. */
+int ehci_sched_diag_get(unsigned controller_index, struct ehci_sched_diag *out)
 {
-    if (!e->dirty || !e->up || e->failed) return;
-    if (rd(e,OP_STS)&STS_PSS) {
-        if (e->periodic_deadline && time_mono_ns()>e->periodic_deadline) {
-            /* IRQ context: stop admission/run now, retain every DMA page.
-             * Thread-context shutdown performs the acknowledged halt/drain. */
-            e->failed=1;wr(e,OP_INTR,0);wr(e,OP_CMD,rd(e,OP_CMD)&~CMD_RUN);
+    if (!out || controller_index >= EHCI_CONTROLLERS || !controllers[controller_index].used) {
+        return -1;
+    }
+    *out = controllers[controller_index].sched_diag;
+    return 0;
+}
+
+/* Keep measured high-water reservations for the next physical-machine log.
+ * A rejected endpoint must not change these values or any schedule pointer. */
+static void sched_measure(struct ehci *e)
+{
+    for (unsigned i = 0; i < EHCI_BW_UFRAMES; i++) {
+        if (e->sched.bw_us[i] > e->sched_diag.max_uframe_us) {
+            e->sched_diag.max_uframe_us = e->sched.bw_us[i];
         }
+    }
+    for (unsigned i = 0; i < EHCI_TT_MAX; i++) {
+        for (unsigned frame = 0; frame < EHCI_BW_FRAMES; frame++) {
+            if (e->sched.tt[i].frame_us[frame] > e->sched_diag.max_tt_frame_us) {
+                e->sched_diag.max_tt_frame_us = e->sched.tt[i].frame_us[frame];
+            }
+        }
+    }
+    e->sched_diag.eps = e->intr_count;
+    e->sched_diag.pse_toggles = e->pse_toggles;
+}
+
+/* One stable line at publication, first completion and each error. This is
+ * evidence collection, not a claim to have identified the silent keyboard's
+ * physical cause. Tokens here were copied under the endpoint gate. */
+static void ep_report(struct ehci *e, struct ehci_ep *p)
+{
+    char status[64];
+    ehci_ov_decode(p->last_qh_token, status, sizeof(status));
+    kprintf("EHCI_EP hc=%u dev=%u ep=%02x spd=%s tt=%u/%u ivl=%u per=%u ph=%u uf=%u s=%02x c=%02x us=%u/%u/%u armed=%u done=%u err=%u/%u/%u/%u/%u ov=%02x(%s) tok=%08x not verified on X79-VG4 hardware\n",
+            e->hc.index, p->dev_addr, p->addr,
+            p->ps.speed == USB_SPEED_HIGH ? "high" : p->ps.speed == USB_SPEED_LOW ? "low" : "full",
+            p->dev->tt_hub ? p->dev->tt_hub->addr : 0, p->dev->tt_port,
+            p->interval, p->ps.period, p->ps.phase, p->ps.phase_uf, p->ps.smask, p->ps.cmask,
+            p->ps.us_s, p->ps.us_c, p->ps.us_tt, p->armed, p->done,
+            p->err_halt, p->err_xact, p->err_mmf, p->err_dbe, p->err_babble,
+            p->last_qh_token & 255, status, p->last_token);
+}
+
+/* Caller holds gate. Linux qh_unlink_periodic deliberately does NOT set the
+ * EHCI 4.12.2.5 I bit (its "We won't bother" decision). Keep the old next
+ * intact and retain the reservation while recovery is pending, so another
+ * endpoint cannot consume bandwidth still used by a prefetched QH. */
+static void ep_recover(struct ehci *e, struct ehci_ep *p)
+{
+    if (p->state != EP_LINKED) {
         return;
     }
-    int live=0;
-    for (unsigned i=0;i<EHCI_ENDPOINTS;i++) {
-        struct ehci_ep *p=&e->ep[i];
-        if (!p->dev || p->type!=USB_XFER_INT) continue;
-        live=1;
-        if (!p->pending) continue;
-        if (qh_device(p->qh,p->dev,USB_EP_NUM(p->addr),p->packet,0,p->smask,p->cmask) ||
-            ehci_qtd_init(p->td,p->payload_dma,p->packet,1,0)) { p->pending=0; continue; }
-        p->td->token|=EHCI_IOC;
-        p->qh->token=p->toggle?EHCI_TOGGLE:0;
-        p->qh->next=p->td_dma;
-        p->pending=0; p->armed=1;
-    }
-    dma_wmb(); e->dirty=0;
-    if (live) wr(e,OP_CMD,rd(e,OP_CMD)|CMD_PSE);
+    ehci_ptree_unlink(&e->tree, &p->node);
+    dma_wmb();
+    p->unlink_ns = time_mono_ns();
+    p->state = EP_UNLINKING;
+    e->sched_diag.unlinks++;
 }
+
+/* A queued per-endpoint worker pins its static slot until it has run. The
+ * device may already have been closed; inspect dev only under the controller
+ * thread owner, which device_close also holds. No control request runs from
+ * periodic_tick/int_poll (timer/INTx context). USB2 9.4.1 CLEAR_FEATURE resets
+ * device DATA0 before the backend resets the safely unlinked overlay. */
+static void stall_work(void *arg)
+{
+    struct ehci_ep *p = arg;
+    struct ehci *e = p->owner;
+    IO_DOMAIN_GUARD(&e->owner);
+    if (!p->dev || p->closing || !e->up || e->failed) {
+        IO_GUARD(&e->gate);
+        p->stall_pending = 0;
+        return;
+    }
+    int result = -1;
+#ifndef EHCI_NEGCTL_NO_STALL_RECOVERY
+    result = usb_clear_halt(p->dev, p->addr);
+#endif
+    IO_GUARD(&e->gate);
+    p->stall_pending = 0;
+    if (result) {
+        /* A failed class control request must not pretend that either side's
+         * toggle was reset. Retry in thread context, at a bounded cadence. */
+        p->stall_retry_ns = time_mono_ns() + EHCI_STALL_RETRY_NS;
+        if (p->stall_attempts >= EHCI_STALL_RETRIES) {
+            p->closing = 1;
+            kprintf("[ehci] dev=%u ep=%02x giving up after %u clear-halt attempts\n",
+                    p->dev_addr, p->addr, EHCI_STALL_RETRIES);
+        }
+    } else {
+        p->stall_retry_ns = 0;
+    }
+}
+
+/* Publish a completely initialized QH pointing at an inactive dummy before
+ * it becomes reachable. Linux ehci-q.c qh_make/qh_update, ehci-sched.c
+ * qh_link_periodic; EHCI 3.6 forbids Mult=0 even on an unarmed endpoint.
+ * Only configure (thread) calls this routine, so the first PSS handshake may
+ * wait. Rearms and IRQ recovery never use it or rewrite an active overlay. */
+static int ep_publish(struct ehci *e, struct ehci_ep *p)
+{
+#ifdef EHCI_NEGCTL_ZERO_QH_LINKED
+    p->qh->link = EHCI_END;
+    ehci_ptree_link(&e->tree, &p->node);
+#endif
+    if (qh_device(p->qh, p->dev, USB_EP_NUM(p->addr), p->packet, 0, p->ps.smask, p->ps.cmask)) {
+        return -1;
+    }
+    ehci_qtd_dummy(p->q[0]);
+    ehci_qtd_dummy(p->q[1]);
+    p->qh->next = p->q_dma[0];
+    dma_wmb();
+    int enabling = 0;
+    for (;;) {
+        {
+            IO_GUARD(&e->gate);
+            /* Linux v6.12 ehci-sched.c enable_periodic() cancels delayed disable
+             * before polling PSS. Checking PSE before gate used to let an IRQ
+             * clear it between the check and publication, reversing the command
+             * while PSS was still 1 (EHCI 2.3.1/2.3.2, 4.6).
+             *
+             * Cancel and decide under the same gate as periodic_tick. A stop
+             * already issued still needs its acknowledgement: retain the check
+             * deadline and drop gate before waiting in configure's thread. IRQ
+             * progress never waits. Recheck after reacquiring because another
+             * thread may have enabled the schedule while this one was waiting. */
+            if (e->failed) {
+                return -1;
+            }
+            e->pse_off_deadline = 0;
+            uint32_t command = rd(e, OP_CMD);
+            if ((command & CMD_PSE) || !(rd(e, OP_STS) & STS_PSS)) {
+#ifdef EHCI_NEGCTL_ZERO_QH_LINKED
+                p->node.linked = 0;
+#endif
+                ehci_ptree_link(&e->tree, &p->node);
+                p->state = EP_LINKED;
+                e->intr_count++;
+                e->pse_check_deadline = 0;
+                if (!(command & CMD_PSE)) {
+                    wr(e, OP_CMD, command | CMD_PSE);
+                    e->pse_toggles++;
+                    enabling = 1;
+                }
+                sched_measure(e);
+                ep_report(e, p);
+                break;
+            }
+        }
+        if (wait_reg(e, OP_STS, STS_PSS, 0, EHCI_PSS_TIMEOUT_MS)) {
+            failed(e, "periodic schedule disable was not acknowledged");
+            return -1;
+        }
+    }
+    if (enabling && wait_reg(e, OP_STS, STS_PSS, STS_PSS, EHCI_PSS_TIMEOUT_MS)) {
+        failed(e, "periodic schedule did not start");
+        return -1;
+    }
+    return 0;
+}
+
+/* IRQ/timer progress only: the old periodic_service stopped every endpoint
+ * for each packet. Correction: only an errored QH is unlinked, its overlay is
+ * refreshed after Linux ehci-timer.c UNLINK_INTR=1125 us, then relinked.
+ * DISABLE_PERIODIC=10 ms and the PSS timeout are also timestamp transitions,
+ * not delay()/wait_reg() calls beneath usb_hc_irq. Caller holds gate. */
+static void periodic_tick(struct ehci *e)
+{
+    if (!e->up || e->failed) {
+        return;
+    }
+    uint64_t now = time_mono_ns();
+    for (unsigned i = 0; i < EHCI_ENDPOINTS; i++) {
+        struct ehci_ep *p = &e->ep[i];
+        if (!p->dev || p->type != USB_XFER_INT || p->closing) {
+            continue;
+        }
+        if (p->state == EP_UNLINKING && now - p->unlink_ns >= EHCI_UNLINK_NS) {
+            if (p->stall_retry_ns) {
+                if (!p->stall_pending && now >= p->stall_retry_ns) {
+                    if (p->stall_attempts >= EHCI_STALL_RETRIES) {
+                        p->closing = 1;
+                        kprintf("[ehci] dev=%u ep=%02x giving up after %u clear-halt attempts\n",
+                                p->dev_addr, p->addr, EHCI_STALL_RETRIES);
+                    } else {
+                        p->stall_attempts++;
+                        p->stall_pending = 1;
+                        work_queue(&p->stall_work);
+                    }
+                }
+                continue;
+            }
+            if (p->stall_pending) {
+                continue;
+            }
+            /* Linux qh_update()/qh_refresh(): software owns the overlay only
+             * after the unlink grace period. Preserve DTC=0's hardware toggle
+             * on transaction errors; only clear_halt is allowed to reset it. */
+            ehci_qtd_dummy(p->q[p->cur]);
+            p->qh->current = 0;
+            p->qh->next = p->q_dma[p->cur];
+            p->qh->alt = EHCI_END;
+            p->qh->token &= EHCI_TOGGLE;
+            dma_wmb();
+            ehci_ptree_link(&e->tree, &p->node);
+            p->state = EP_LINKED;
+            e->sched_diag.relinks++;
+        }
+        if (p->armed && !p->done && !p->reported_stalled && now - p->arm_ns >= EHCI_INPUT_WARN_NS) {
+            /* EHCI 1.0 4.10.3: interrupt IN can NAK indefinitely with Active
+             * still set. EHCI_STALLED is the existing log key, not a fault
+             * classification. Observe once; never recover, unlink or rewrite
+             * this live qTD merely because no input has been produced. */
+            char status[64];
+            dma_rmb();
+            uint32_t overlay = p->qh->token;
+            uint32_t frame = rd(e, OP_FRAME);
+            ehci_ov_decode(overlay, status, sizeof(status));
+            p->reported_stalled = 1;
+            kprintf("EHCI_STALLED hc=%u dev=%u ep=%02x armed_ms=%lu ov=%02x(%s) frindex=%u previous=%u delta=%u usbsts=%08x not verified on X79-VG4 hardware\n",
+                    e->hc.index, p->dev_addr, p->addr, (unsigned long)((now - p->arm_ns) / NS_PER_MS),
+                    overlay & 255, status, frame, p->arm_frame, (frame - p->arm_frame) & 0x3fff,
+                    rd(e, OP_STS));
+        }
+    }
+    if (!e->intr_count && e->pse_off_deadline && now >= e->pse_off_deadline) {
+        e->pse_off_deadline = 0;
+        if (rd(e, OP_CMD) & CMD_PSE) {
+            wr(e, OP_CMD, rd(e, OP_CMD) & ~CMD_PSE);
+            e->pse_toggles++;
+            e->sched_diag.pse_toggles = e->pse_toggles;
+            e->pse_check_deadline = now + EHCI_PSS_TIMEOUT_MS * NS_PER_MS;
+        }
+    }
+    if (e->pse_check_deadline) {
+        if (!!(rd(e, OP_CMD) & CMD_PSE) == !!(rd(e, OP_STS) & STS_PSS)) {
+            e->pse_check_deadline = 0;
+        } else if (now >= e->pse_check_deadline) {
+            /* IRQ-safe refusal retains all DMA; shutdown owns the full drain. */
+            e->failed = 1;
+            wr(e, OP_INTR, 0);
+            wr(e, OP_CMD, rd(e, OP_CMD) & ~CMD_RUN);
+        }
+    }
+    if (!e->reported_sched && e->reports >= 8) {
+        e->reported_sched = 1;
+        kprintf("EHCI_PERIODIC hc=%u eps=%u pse_toggles=%u rearms=%u unlinks=%u max_uframe_us=%u max_tt_us=%u not verified on X79-VG4 hardware\n",
+                e->hc.index, e->intr_count, e->pse_toggles, e->sched_diag.rearms,
+                e->sched_diag.unlinks, e->sched_diag.max_uframe_us, e->sched_diag.max_tt_frame_us);
+    }
+}
+
+/* Linux qh_append_tds dummy swap: edit only an inactive qTD, publish the new
+ * dummy and buffer pointers, dma_wmb(), then Active LAST (EHCI 4.10.2).
+ * A pending recovery makes arm a harmless no-op until the next callback.
+ * The host HC model's 200-report FIFO scenario measured max completion-to-
+ * Active latency 9015 us with a 10 ms tick, 265 us with a 1 ms tick. These
+ * are model-clock observations, not verified on X79-VG4 hardware. */
 static int int_arm(struct usb_device *d,uint8_t addr)
 {
     struct ehci *e=controller(d);
@@ -540,14 +828,49 @@ static int int_arm(struct usb_device *d,uint8_t addr)
     IO_GUARD(&e->gate);
     struct ehci_ep *p=endpoint(e,d,addr);
     if (!e->up || e->failed || !p || p->type!=USB_XFER_INT) return -1;
-    if (p->armed || p->pending) return 0;
-    p->pending=1;
-    if (!e->dirty) e->periodic_deadline=time_mono_ns()+100*NS_PER_MS;
-    e->dirty=1;
-    wr(e,OP_CMD,rd(e,OP_CMD)&~CMD_PSE);
-    periodic_service(e);
+    /* Permanent STALL refusal is terminal, unlike the temporary unlink wait.
+     * Checking UNLINKING first would claim success forever after giving up. */
+    if (p->closing) {
+        return -1;
+    }
+    if (p->armed || p->state == EP_UNLINKING) {
+        return 0;
+    }
+    if (p->state != EP_LINKED) {
+        return -1;
+    }
+    unsigned dummy = p->cur;
+    unsigned successor = dummy ^ 1;
+    uint32_t token;
+    ehci_qtd_dummy(p->q[successor]);
+#ifdef EHCI_NEGCTL_ACTIVATE_BEFORE_LINK
+    EHCI_HW_STORE(&p->q[dummy]->token, EHCI_ACTIVE);
+#endif
+    if (ehci_qtd_fill_in(p->q[dummy], p->q_dma[successor], p->payload_dma, p->packet, &token)) {
+        return -1;
+    }
+#ifdef EHCI_NEGCTL_TOGGLE_RESET_ON_REARM
+    p->qh->token &= ~EHCI_TOGGLE;
+#endif
+    dma_wmb();
+    EHCI_HW_STORE(&p->q[dummy]->token, token);
+    p->armed = 1;
+    p->td = p->q[dummy];
+    p->td_dma = p->q_dma[dummy];
+    p->rearms++;
+    e->sched_diag.rearms++;
+    if (!p->arm_ns) {
+        p->arm_ns = time_mono_ns();
+        p->arm_frame = rd(e, OP_FRAME);
+    }
+#ifdef EHCI_NEGCTL_REARM_STOPS_PSE
+    wr(e, OP_CMD, rd(e, OP_CMD) & ~CMD_PSE);
+#endif
     return 0;
 }
+/* Consume each finished qTD once and freeze diagnostic status. Rearming does
+ * not reconstruct QH/toggle; transaction errors recover only this QH and a
+ * real STALL schedules CLEAR_FEATURE on the worker thread. */
 static int int_poll(struct usb_device *d,uint8_t addr,uint8_t **data)
 {
     struct ehci *e=controller(d);
@@ -556,7 +879,7 @@ static int int_poll(struct usb_device *d,uint8_t addr,uint8_t **data)
     struct ehci_ep *p=endpoint(e,d,addr);
     if (!e->up || !p || !p->armed) return -1;
     dma_rmb();
-    uint32_t t=p->td->token;
+    uint32_t t=p->q[p->cur]->token;
     if (t&EHCI_ACTIVE) return -1;
     p->armed=0;
     p->last_token=t;
@@ -564,12 +887,39 @@ static int int_poll(struct usb_device *d,uint8_t addr,uint8_t **data)
      * that controller teardown can free (Astra round 7) */
     p->last_qh_token=p->qh->token;
     int n=ehci_actual(p->packet,t);
-    if (n<0) { e->errors++; p->errs++; return -1; }
+    if (n < 0) {
+        e->errors++;
+        p->errs++;
+        /* EHCI 3.5.3: Halted=6, XactErr=3, MMF=2, DBE=5, Babble=4. */
+        p->err_halt += !!(t & EHCI_HALTED);
+        p->err_xact += !!(t & (1u << 3));
+        p->err_mmf += !!(t & (1u << 2));
+        p->err_dbe += !!(t & (1u << 5));
+        p->err_babble += !!(t & (1u << 4));
+        /* EHCI 3.5.3: bare Halted with nonzero CERR is STALL. CERR=0
+         * transaction errors are never cleared with a fabricated TT reset.
+         * USB2 11.24.2.3 Clear_TT_Buffer excludes interrupt endpoints. */
+        if ((t & EHCI_HALTED) && !(t & 0x3c)) {
+            p->stalls++;
+            p->stall_retry_ns = time_mono_ns() + EHCI_STALL_RETRY_NS;
+        }
+        ep_report(e, p);
+        ep_recover(e, p);
+        return -1;
+    }
     p->done++;
     p->toggle=!!(p->qh->token&EHCI_TOGGLE);
+    p->cur ^= 1;
+    p->stall_attempts = 0;
+    if (p->done == 1) {
+        ep_report(e, p);
+    }
     *data=p->payload; e->completions++;e->reports++;
     return n;
 }
+/* Admit before allocating the non-freeable arena, then initialize-before-link.
+ * A failure changes neither PSE nor existing endpoints. This intentionally
+ * does not roll back an earlier successfully configured sibling interface. */
 static int configure(struct usb_device *d,const struct usb_interface *iface)
 {
     struct ehci *e=controller(d);
@@ -586,49 +936,85 @@ static int configure(struct usb_device *d,const struct usb_interface *iface)
             (d->speed==USB_SPEED_FULL && packet>64) ||
             (d->speed==USB_SPEED_HIGH && packet>(type==USB_XFER_BULK?512u:1024u))) return -1;
         struct ehci_ep *p=NULL;
-        for (unsigned j=0;j<EHCI_ENDPOINTS;j++) if (!e->ep[j].dev) { p=&e->ep[j]; break; }
+        for (unsigned j=0;j<EHCI_ENDPOINTS;j++) {
+            if (!e->ep[j].dev && !e->ep[j].stall_pending) {
+                p = &e->ep[j];
+                break;
+            }
+        }
         if (!p) return -1;
         *p=(struct ehci_ep){.addr=desc->addr,.type=type,.packet=packet};
-        if (type==USB_XFER_BULK) { IO_GUARD(&e->gate);p->dev=d;continue; }
-        unsigned mask=0;
-        int period=ehci_period(d->speed,desc->interval,&mask);
-        if (period<1 || period>1024) { memset(p,0,sizeof(*p)); return -1; }
-        p->period=period; p->smask=mask; p->cmask=d->speed==USB_SPEED_HIGH?0:0x1c;
-        p->mem=arena(e,4096);
-        if (!p->mem) { memset(p,0,sizeof(*p)); return -1; }
-        p->qh=p->mem->cpu; p->td=(void *)((uint8_t *)p->mem->cpu+128);
-        p->payload=(uint8_t *)p->mem->cpu+256;
-        p->qh_dma=(uint32_t)dma_addr_value(p->mem->dma);
-        p->td_dma=p->qh_dma+128; p->payload_dma=p->qh_dma+256;
-        p->qh->link=p->qh->next=p->qh->alt=EHCI_END;
-        command(e,CMD_PSE,0);
-        if (wait_reg(e,OP_STS,STS_PSS,0,100)) { failed(e,"periodic schedule did not stop"); return -1; }
-        IO_GUARD(&e->gate);
-        int phase=-1;
-        for (unsigned j=0;j<(unsigned)period;j++) {
-            int free=1;
-            for (unsigned f=j;f<1024;f+=period) if(e->frame_owner[f]) {free=0;break;}
-            if (free) {phase=(int)j;break;}
+        if (type == USB_XFER_BULK) {
+            IO_GUARD(&e->gate);
+            p->dev = d;
+            continue;
         }
-        if (phase<0) {
-            kprintf("[ehci] periodic bandwidth unavailable addr=%u ep=%x interval=%u\n",d->addr,desc->addr,desc->interval);
-            /* PSE was stopped above to edit the frame list. Without this the
-             * endpoints that already own frames (an armed keyboard) stay
-             * silent: periodic_service() only restarts a dirty schedule.
-             * The slot is released; its 4 KiB arena block is not returned
-             * (the arena has no free), as on the other error paths here. */
-            memset(p,0,sizeof(*p));
-#ifndef EHCI_NEGCTL_NO_PERIODIC_RESTORE
-            e->dirty=1; periodic_service(e);
-#endif
+        unsigned think_ns = d->tt_hub ? 666u * (1u + d->tt_hub->hub_tt_think) : 0;
+        /* Linux v6.12 hub.c hub_configure: wHubCharacteristics[6:5] encodes
+         * think_time=666*(1+value) ns. Do not use the raw two-bit value as ns. */
+        if (ehci_ps_make(&p->ps, d->speed, 1, packet, desc->interval, think_ns)) {
+            memset(p, 0, sizeof(*p));
             return -1;
         }
-        p->phase=phase;p->dev=d;p->dev_addr=d->addr;
-        for (unsigned f=phase;f<1024;f+=period) {
-            e->frame_owner[f]=p; e->frames[f]=p->qh_dma|EHCI_QH_LINK;
+#ifdef EHCI_NEGCTL_LEAK_ARENA
+        p->mem=arena(e,4096);
+#endif
+        int admitted;
+        {
+            IO_GUARD(&e->gate);
+            if (d->speed != USB_SPEED_HIGH && d->tt_hub) {
+                p->tt = ehci_sched_tt(&e->sched, d->tt_hub->addr, d->tt_port, d->tt_multi);
+            }
+            admitted = ehci_sched_admit(&e->sched, p->tt, &p->ps);
         }
-        dma_wmb(); e->dirty=1;e->periodic_deadline=time_mono_ns()+100*NS_PER_MS;
-        periodic_service(e);
+        if (admitted) {
+            kprintf("[ehci] periodic bandwidth unavailable addr=%u ep=%x interval=%u\n",d->addr,desc->addr,desc->interval);
+            e->sched_diag.refused++;
+            {
+                IO_GUARD(&e->gate);
+                ehci_sched_release(&e->sched, p->tt, &p->ps);
+            }
+#ifdef EHCI_NEGCTL_NO_PERIODIC_RESTORE
+            /* Existing named control now restores the old refusal defect,
+             * rather than testing the removed stop/restart implementation. */
+            command(e, CMD_PSE, 0);
+#endif
+            memset(p,0,sizeof(*p));
+            return -1;
+        }
+#ifndef EHCI_NEGCTL_LEAK_ARENA
+        p->mem = arena(e, 4096);
+#endif
+        if (!p->mem) {
+            IO_GUARD(&e->gate);
+            ehci_sched_release(&e->sched, p->tt, &p->ps);
+            memset(p, 0, sizeof(*p));
+            return -1;
+        }
+        /* EHCI 3.5/3.6: QH and qTDs require 32-byte alignment. Separate cache
+         * lines at 0/128/192 and payload@256 fit any supported single packet. */
+        p->qh = p->mem->cpu;
+        p->qh_dma = (uint32_t)dma_addr_value(p->mem->dma);
+        p->q[0] = (void *)((uint8_t *)p->mem->cpu + 128);
+        p->q[1] = (void *)((uint8_t *)p->mem->cpu + 192);
+        p->q_dma[0] = p->qh_dma + 128;
+        p->q_dma[1] = p->qh_dma + 192;
+        p->td = p->q[0];
+        p->td_dma = p->q_dma[0];
+        p->payload = (uint8_t *)p->mem->cpu + 256;
+        p->payload_dma = p->qh_dma + 256;
+        p->dev = d;
+        p->dev_addr = d->addr;
+        p->interval = desc->interval;
+        p->owner = e;
+        p->node = (struct ehci_pnode){.hw_next = &p->qh->link, .dma = p->qh_dma,
+            .period = p->ps.period, .phase = p->ps.phase};
+        work_item_init(&p->stall_work, stall_work, p);
+        if (ep_publish(e, p)) {
+            /* A failed enable may have prefetched this QH. Keep both endpoint
+             * and arena quarantined; shutdown must prove HCHalted first. */
+            return -1;
+        }
     }
     return 0;
 }
@@ -637,35 +1023,91 @@ static int configure_hub(struct usb_device *d,int ports,int multi,int think)
     (void)multi; (void)think;
     return d && ports>0 && ports<=127 ? 0 : -1;
 }
+/* CLEAR_FEATURE has already succeeded at the core. Reset bulk software state
+ * or an interrupt overlay only while that QH is safely outside the schedule. */
 static int clear_halt(struct usb_device *d,uint8_t addr)
 {
     struct ehci *e=controller(d);
     if (!e) return -1;
     IO_DOMAIN_GUARD(&e->owner);
     struct ehci_ep *p=endpoint(e,d,addr);
-    if (!p || p->type!=USB_XFER_BULK || e->failed) return -1;
+    if (!p || e->failed) return -1;
+    if (p->type == USB_XFER_INT) {
+        IO_GUARD(&e->gate);
+        if (p->state != EP_UNLINKING || time_mono_ns() - p->unlink_ns < EHCI_UNLINK_NS) {
+            return -1;
+        }
+        /* USB2 9.4.1 and Linux qh_update: device already accepted CLEAR_HALT;
+         * the unlinked overlay is now safe to reset to DATA0. */
+        p->qh->token &= ~EHCI_TOGGLE;
+        p->toggle = 0;
+        return 0;
+    }
+    if (p->type != USB_XFER_BULK) return -1;
     p->toggle=0; /* bulk QH is reconstructed for every transfer */
     return 0;
 }
+/* Thread-only close. First unlink all of this device's QHs under gate, then
+ * wait outside it for Linux's 9-microframe grace period. Other devices keep
+ * running throughout; the controller arena is retained until final halt. */
 static void device_close(struct usb_device *d)
 {
     struct ehci *e=controller(d);
     if (!e || !d->hcpriv) return;
     IO_DOMAIN_GUARD(&e->owner);
-    command(e,CMD_PSE,0);
-    if (e->up && wait_reg(e,OP_STS,STS_PSS,0,100)) failed(e,"device close schedule stop failed");
     if (e->dma.blocked) return; /* keep the hardware-visible schedule intact */
+    int unlinked = 0;
+    {
+        IO_GUARD(&e->gate);
+        for (unsigned i = 0; i < EHCI_ENDPOINTS; i++) {
+            struct ehci_ep *p = &e->ep[i];
+            if (p->dev != d || p->type != USB_XFER_INT) {
+                continue;
+            }
+            ep_recover(e, p);
+            p->closing = 1;
+            p->armed = 0;
+            unlinked = 1;
+        }
+    }
+#ifndef EHCI_NEGCTL_UNLINK_NO_WAIT
+    /* delay() accepts milliseconds; 2 ms rounds 1125 us upward and, unlike a
+     * tick handshake, also works with a 10 ms PIT. Never hold gate here. */
+    if (unlinked && delay(2)) {
+        failed(e, "device close unlink grace did not elapse");
+        return;
+    }
+#else
+    (void)unlinked;
+#endif
     IO_GUARD(&e->gate);
     for (unsigned i=0;i<EHCI_ENDPOINTS;i++) {
         struct ehci_ep *p=&e->ep[i];
         if (p->dev!=d) continue;
-        for (unsigned f=0;f<1024;f++) if(e->frame_owner[f]==p) {e->frames[f]=EHCI_END;e->frame_owner[f]=NULL;}
+        if (p->type == USB_XFER_INT) {
+            ehci_sched_release(&e->sched, p->tt, &p->ps);
+            e->intr_count--;
+#ifdef EHCI_NEGCTL_UNLINK_NO_WAIT
+            p->qh->token = 0;
+            dma_wmb();
+#endif
+        }
         /* Coherent endpoint memory remains in the controller ledger until
          * HCHalted at shutdown. This also makes failed-stop pointers stable. */
-        memset(p,0,sizeof(*p));
+        if (p->stall_pending) {
+            /* work.c has no cancellation primitive. Do not memset its next
+             * pointer or reuse this slot until the queued worker observes the
+             * tombstone. owner serializes an already running worker too. */
+            p->dev = NULL;
+        } else {
+            memset(p,0,sizeof(*p));
+        }
     }
     memset(d->hcpriv,0,sizeof(struct ehci_dev)); d->hcpriv=NULL;
-    e->dirty=1; periodic_service(e);
+    if (!e->intr_count) {
+        e->pse_off_deadline = time_mono_ns() + EHCI_PSE_OFF_NS;
+    }
+    e->sched_diag.eps = e->intr_count;
 }
 static int root_count(struct usb_hc *h) { struct ehci *e=h->priv;return e->ports; }
 static int root_connected(struct usb_hc *h,int p)
@@ -722,18 +1164,26 @@ static void events(struct usb_hc *h)
     if (s==UINT32_MAX) {e->failed=1;return;}
     if (s&0x3fu) wr(e,OP_STS,s&0x3fu);
     if (s&STS_HSE) {e->failed=1;wr(e,OP_INTR,0);wr(e,OP_CMD,rd(e,OP_CMD)&~CMD_RUN);}
-    periodic_service(e);
+    periodic_tick(e);
 }
 static void timer_tick(struct ktimer *t)
 {
     struct ehci *e=t->arg;
     usb_hc_irq(&e->hc);
     uint64_t irqs=dev_irq_count(e->pci);
+    if (!irqs && !e->reported_poll && e->intr_count) {
+        e->reported_poll = 1;
+        kprintf("[ehci] hc=%u no IRQ observed; periodic input polling active (not verified on X79-VG4 hardware)\n", e->hc.index);
+    }
     if (!e->reported_irq && e->reports && irqs) {
         e->reported_irq=1;
         kprintf("EHCI_IRQ vector=%d delivered=%lu reports=%lu\n",e->pci->irq_vec,(unsigned long)irqs,e->reports);
     }
 }
+/* EHCI 2.3.3 USBINTR bits 0/1/2/4: qTD completion/error, port change and HSE.
+ * Progress is independently timer-driven even if INTx never arrives. A 1 ms
+ * requested period is rounded by the 100 Hz PIT to 10 ms on that clock; dummy
+ * swapping therefore guarantees one tick, not an invented 1 kHz HID rate. */
 static void irq_enable(struct usb_hc *h)
 {
     struct ehci *e=h->priv;
@@ -804,7 +1254,8 @@ int ehci_probe(struct device *pci)
     e->head->link=(uint32_t)dma_addr_value(e->async_mem->dma)|EHCI_QH_LINK;
     e->head->ep=(2u<<12)|(1u<<15)|(64u<<16);
     e->head->caps=1u<<30;e->head->next=e->head->alt=EHCI_END;e->head->token=EHCI_HALTED;
-    for (unsigned i=0;i<1024;i++) e->frames[i]=EHCI_END;
+    ehci_sched_init(&e->sched);
+    ehci_ptree_init(&e->tree, e->frames);
     wr(e,OP_SEGMENT,0);wr(e,OP_FRAME,0);
     wr(e,OP_PERIODIC,(uint32_t)dma_addr_value(e->periodic_mem->dma));
     wr(e,OP_ASYNC,(uint32_t)dma_addr_value(e->async_mem->dma));
@@ -817,6 +1268,12 @@ int ehci_probe(struct device *pci)
     if (delay(20)) goto stop;
     kprintf("[ehci] %s up: ports=%u DMA32 async/periodic TT-split\n",pci->name,e->ports);
     if (usb_hc_register(&e->hc,pci,&ops,e)) goto stop;
+    /* The core calls irq_enable only when a vector was obtained. A missing
+     * vector must still install our input progress timer; enabling USBINTR
+     * alone would leave a NAK-only keyboard dependent on an absent IRQ. */
+    if (e->timer.heap_idx < 0) {
+        irq_enable(&e->hc);
+    }
     return 0;
 stop:
     if (shutdown(&(struct usb_hc){.priv=e})) return -1;
