@@ -16,6 +16,7 @@ static uint64_t ticks;
 uint64_t timer_ticks(void) { return ticks; }
 void net_poll(void) {}
 void net_idle(void) { ticks++; }        /* advance time so pump loops terminate */
+uint64_t time_mono_ns(void) { return ticks * 10000000ull; }   /* the TSC bound follows the same clock */
 void kernel_random_bytes(uint8_t *out, int len)
 {
     for (int i = 0; i < len; i++) out[i] = (uint8_t)(0x5Au + (unsigned)i);

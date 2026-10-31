@@ -1,3 +1,4 @@
+#include "../../../include/weaksym.h"
 #include <stdint.h>
 #include <stdarg.h>
 #include "kprintf.h"
@@ -81,14 +82,15 @@ static inline void note_alignment(void *frame, void *caller)
 
 /* the on-screen boot console (c/kernel/diag/bootmark.c); weak so host
  * builds of this file need not link it */
-void bootcon_putc(char c) __attribute__((weak));
+void bootcon_putc(char c) LOGIT_WEAK;
+LOGIT_WEAK_STUB(bootcon_putc);
 
 static void out_console(struct out *o, char c)
 {
     if (o->console) {
         vga_putc(c);
         serial_putc(c);
-        if (bootcon_putc) bootcon_putc(c);
+        if (LOGIT_HAVE(bootcon_putc)) bootcon_putc(c);
     }
     klog_putc(o->level, c);
     o->n++;

@@ -12,6 +12,19 @@ static void dhcp_runner_drop(unsigned *claim)
 #include "rng.h"
 #include "ktime.h"
 #include "kprintf.h"
+#include "../../../include/weaksym.h"
+
+/* The bring-up's NIC interrupt counter, for the progress line; absent when
+ * the driver is not linked (X79-VG4, 2026-10-31). */
+extern uint64_t rtl8169_irq_count LOGIT_WEAK;
+LOGIT_WEAK_STUB(rtl8169_irq_count);
+
+#ifdef LOGIT_NET_HOST
+static void dhcp_wait(void) { net_idle(); }
+#else
+/* pause, not hlt: a halt waits for an interrupt that may never come */
+static void dhcp_wait(void) { for (int i = 0; i < 2000; i++) __asm__ volatile ("sti; pause"); }
+#endif
 
 void *memcpy(void *, const void *, size_t);
 void *memset(void *, int, size_t);
@@ -264,7 +277,6 @@ int dhcp_run(int timeout_ticks)
     uint64_t start = timer_ticks();
     uint64_t t0 = time_mono_ns(), next = t0 + 1000000000ull;
     uint64_t wall = (uint64_t)timeout_ticks * 10000000ull + 1000000000ull;
-    extern uint64_t rtl8169_irq_count __attribute__((weak));
     while (timer_ticks() - start < (uint64_t)timeout_ticks && time_mono_ns() - t0 < wall) {
         net_poll();
         dhcp_step();
@@ -275,11 +287,10 @@ int dhcp_run(int timeout_ticks)
             kprintf("[dhcp] waiting %lus: pit ticks %lu, nic irqs %lu\n",
                     (unsigned long)((now - t0) / 1000000000ull),
                     (unsigned long)(timer_ticks() - start),
-                    (unsigned long)(&rtl8169_irq_count ? rtl8169_irq_count : 0));
+                    (unsigned long)(LOGIT_HAVE(&rtl8169_irq_count) ? rtl8169_irq_count : 0));
             next += 1000000000ull;
         }
-        /* pause, not hlt: a halt waits for an interrupt that may never come */
-        for (int i = 0; i < 2000; i++) __asm__ volatile ("sti; pause");
+        dhcp_wait();
     }
     kprintf("[dhcp] no lease after %lu ms (pit ticks %lu)\n",
             (unsigned long)((time_mono_ns() - t0) / 1000000ull), (unsigned long)(timer_ticks() - start));
