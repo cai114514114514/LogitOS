@@ -211,3 +211,6 @@ reports/**/*.wav
 # instruction (2026-09-16): managed on disk, not in this history. The site's
 # own website/.gitignore no longer matters once the whole directory is ignored.
 /website/
+
+# X79-VG4 bring-up harness state and per-track worktrees (deleted after merge)
+/.hw/

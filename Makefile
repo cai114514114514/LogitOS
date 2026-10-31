@@ -4103,6 +4103,9 @@ test-webapi-asan: test-webapi $(RUST_LIB_HOST)
 # advertises it -- driven by a reduction of the one page whose stack named it.
 # Own fragment; see the file.
 -include tests/logreporter.mk
+# X79-VG4 bring-up tracks: each track owns one tests/hw-<track>.mk (docs/superpowers/plans/2026-10-31-x79-vg4-phase1.md)
+include tests/hw.mk
+-include $(wildcard tests/hw-*.mk)
 
 # document.currentScript in the SHIPPED browser, on the machine -- the one
 # question no host gate can ask, because the subject is the channel between the
