@@ -1,3 +1,4 @@
+#include "../power/pat.h"
 #include "tlb.h"
 /* SMP bring-up + a parallel framebuffer present.
  *
@@ -341,6 +342,7 @@ static void ap_entry(void)
         for (;;) __asm__ volatile ("cli; hlt");
     }
     percpu_ap_init(idx, lapic_id());           /* build + load this core's GDT/TSS */
+    pat_init();                                /* same IA32_PAT as the BSP before any fb band copy */
     capture_topology(idx, my_id);               /* CPUID.1A/1F are per logical CPU */
     /* Arm the periodic LAPIC timer NOW (before parking). It both (a) wakes this AP
      * from its park `hlt` so it can re-check g_sched_ready -- nothing else sends

@@ -1,3 +1,8 @@
+static int fb_lfb_wc;   /* the scanout PTE read back as PAT PA1 (WC) */
+#include "../../cpu/power/pat.h"
+#include "mmhost.h"
+#include "kprintf.h"
+#include "ktime.h"
 #include <stdint.h>
 #include <stddef.h>
 #include "fb.h"
@@ -308,9 +313,27 @@ int fb_init(uint64_t mb_info_addr)
     uint64_t bytes = (uint64_t)fb->pitch * fb->height;
     if (!bytes || fb->addr + bytes < fb->addr) return 0;
 
-    /* The framebuffer is high-MMIO, outside the identity map — map it. */
-    vmm_map_range(fb->addr, fb->addr, bytes,
-                  VMM_WRITABLE | VMM_NOCACHE);
+    /* The framebuffer is high-MMIO, outside the identity map — map it.
+     * Write-combining (PAT PA1: PWT=1, PCD=0) when pat_init() programmed it:
+     * firmware's MTRRs leave the aperture UC, and UC turns every 4-byte store
+     * into its own PCIe write -- tens of milliseconds per 1080p frame on a
+     * real card. MTRR UC + PAT WC is WC (Intel SDM vol. 3A table 11-7). This
+     * is the first mapping of the aperture, so there is no UC alias to retire.
+     * X79-VG4 bring-up; not verified on X79-VG4 hardware. */
+#ifndef FB_NEGCTL_UC_MAP
+    uint64_t cache = pat_wc_available() ? VMM_PAT_WC : VMM_NOCACHE;
+#else
+    uint64_t cache = VMM_NOCACHE;
+#endif
+    vmm_map_range(fb->addr, fb->addr, bytes, VMM_WRITABLE | cache);
+    {
+        uint64_t *pte = vmm_pte(mm_read_cr3(), fb->addr);
+        uint64_t f = pte ? *pte : 0;
+        fb_lfb_wc = (f & 0x18) == 0x08;
+        kprintf("[fb] lfb %x+%x mapped %s (pte pwt=%d pcd=%d)\n", (unsigned)fb->addr, (unsigned)bytes,
+                (f & 0x18) == 0x08 ? "write-combining" : (f & 0x18) == 0x18 ? "uncached" : "other",
+                (int)((f >> 3) & 1), (int)((f >> 4) & 1));
+    }
     fb_mem = (volatile uint8_t *)fb->addr;
     boot_lfb_addr = fb->addr;
     boot_lfb_bytes = bytes;
@@ -515,7 +538,18 @@ void fb_copy_rect(int x, int y, int w, int h)
     for (int yy = 0; yy < h; yy++) {
         volatile uint32_t *dst = (volatile uint32_t *)(mem + (uint32_t)(y + yy) * fb_pitch);
         const uint32_t *src = g_fbctx[0].screen.px + (uint32_t)(y + yy) * fb_w;
+#ifndef FB_NEGCTL_PIXEL_COPY
+        /* One string move per row: with the aperture write-combining, the CPU
+         * merges it into full 64-byte bursts; ERMSB (Ivy Bridge and later)
+         * makes rep movsb the fast form. The old per-pixel volatile loop
+         * forced one bus write per 4 bytes. */
+        void *d = (void *)(uintptr_t)(dst + x);
+        const void *s = src + x;
+        size_t n = (size_t)w * 4;
+        __asm__ volatile ("rep movsb" : "+D"(d), "+S"(s), "+c"(n) : : "memory");
+#else
         for (int xx = 0; xx < w; xx++) dst[x + xx] = src[x + xx];
+#endif
     }
     fb_front_release();
 }
@@ -526,6 +560,21 @@ static void (*g_par_present)(int, int, int, int);
 void fb_set_present_par(void (*fn)(int, int, int, int)) { g_par_present = fn; }
 
 void fb_present(void) { fb_present_rect(0, 0, (int)fb_w, (int)fb_h); }
+
+/* One full-screen copy, timed, before anything else draws: the number that
+ * says whether the scanout path is fast on this machine. */
+void fb_present_bench(void)
+{
+    /* the label is the mapping read back at fb_init(), not PAT availability */
+    if (!g_fbctx[0].screen.px || using_gpu || native_present) return;
+    uint64_t t0 = time_mono_ns();
+    fb_copy_rect(0, 0, (int)fb_w, (int)fb_h);
+    uint64_t ns = time_mono_ns() - t0;
+    uint64_t bytes = (uint64_t)fb_w * fb_h * 4;
+    unsigned us = (unsigned)(ns / 1000), mbs = ns ? (unsigned)(bytes * 1000 / ns) : 0;
+    kprintf("[fb] present bench %ux%u: %u us per frame, %u MB/s (%s)\n", fb_w, fb_h, us, mbs,
+            fb_lfb_wc ? "WC" : "not WC");
+}
 
 /* Pixels actually pushed to the display since boot, and the number of pushes.
  * Clamped, so a caller that hands in a rect hanging off the edge is charged for

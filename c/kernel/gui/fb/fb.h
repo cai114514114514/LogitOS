@@ -61,6 +61,7 @@ uint32_t fb_rgb(uint8_t r, uint8_t g, uint8_t b);
  * then blit to the visible framebuffer with fb_present(). */
 void fb_set_backbuffer(uint32_t *buf);
 void fb_present(void);
+void fb_present_bench(void);   /* boot log: one full-frame copy, timed */
 void fb_present_rect(int x, int y, int w, int h);   /* push one rect back->framebuffer */
 
 /* How much of the display has actually been pushed since boot: the CLAMPED
