@@ -10,6 +10,7 @@ static void dhcp_runner_drop(unsigned *claim)
 #include "net.h"
 #include "pit.h"
 #include "rng.h"
+#include "ktime.h"
 #include "kprintf.h"
 
 void *memcpy(void *, const void *, size_t);
@@ -256,14 +257,32 @@ int dhcp_run(int timeout_ticks)
     enter(ST_SELECTING);
     }
 
+    /* Bounded twice: by PIT ticks as before, and by the TSC wall clock,
+     * which needs no interrupt -- on a machine whose timer interrupt stopped,
+     * the tick bound alone never expires. One progress line per second says
+     * which clock is moving (X79-VG4 bring-up, 2026-10-31). */
     uint64_t start = timer_ticks();
-    while (timer_ticks() - start < (uint64_t)timeout_ticks) {
+    uint64_t t0 = time_mono_ns(), next = t0 + 1000000000ull;
+    uint64_t wall = (uint64_t)timeout_ticks * 10000000ull + 1000000000ull;
+    extern uint64_t rtl8169_irq_count __attribute__((weak));
+    while (timer_ticks() - start < (uint64_t)timeout_ticks && time_mono_ns() - t0 < wall) {
         net_poll();
         dhcp_step();
         { IO_DOMAIN_GUARD(&dhcp_owner);
           if (st == ST_BOUND) { initial = 0; return 0; } }
-        net_idle();
+        uint64_t now = time_mono_ns();
+        if (now >= next) {
+            kprintf("[dhcp] waiting %lus: pit ticks %lu, nic irqs %lu\n",
+                    (unsigned long)((now - t0) / 1000000000ull),
+                    (unsigned long)(timer_ticks() - start),
+                    (unsigned long)(&rtl8169_irq_count ? rtl8169_irq_count : 0));
+            next += 1000000000ull;
+        }
+        /* pause, not hlt: a halt waits for an interrupt that may never come */
+        for (int i = 0; i < 2000; i++) __asm__ volatile ("sti; pause");
     }
+    kprintf("[dhcp] no lease after %lu ms (pit ticks %lu)\n",
+            (unsigned long)((time_mono_ns() - t0) / 1000000ull), (unsigned long)(timer_ticks() - start));
     { IO_DOMAIN_GUARD(&dhcp_owner); initial = 0; st = ST_IDLE; }
     return -1;
 }

@@ -6,6 +6,7 @@
 #include "dma.h"
 #include "vmm.h"
 #include "net.h"
+#include "ktime.h"
 #include "kprintf.h"
 
 /* Realtek RTL8169 / RTL8168 / RTL8111 gigabit -- the onboard NIC on a very
@@ -183,10 +184,29 @@ static void rtl_irq_on(net_rx_cb cb)
     w16(R_IMR, ISR_ROK | ISR_RER | ISR_RDU | ISR_FOVW);
 }
 
+/* Interrupts taken, and a storm guard. The X79-VG4's first boot (2026-10-31)
+ * stopped right after this driver bound its 8168 and enabled the interrupt:
+ * a level-triggered INTx this code cannot acknowledge on that chip re-enters
+ * forever and the boot thread never runs again. More than 50,000 in one
+ * second masks the device's interrupts and leaves it polled. */
+uint64_t rtl8169_irq_count;
+static uint64_t storm_window_ns, storm_count;
+static int storm_masked;
+
 static void rtl_isr(void)
 {
     NET_GUARD;
     if (!ready) return;
+    rtl8169_irq_count++;
+    uint64_t now = time_mono_ns();
+    if (now - storm_window_ns > 1000000000ull) { storm_window_ns = now; storm_count = 0; }
+    if (++storm_count > 50000 && !storm_masked) {
+        w16(R_IMR, 0);
+        storm_masked = 1;
+        kprintf("[rtl8169] interrupt storm (%lu in 1 s, ISR=%x): device interrupts masked, polling\n",
+                (unsigned long)storm_count, r16(R_ISR));
+        return;
+    }
     uint16_t isr = r16(R_ISR);
     if (!isr || isr == UINT16_MAX) return;       /* another device owns the shared IRQ */
     w16(R_ISR, isr);                              /* ack before draining */

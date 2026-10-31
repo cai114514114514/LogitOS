@@ -1,3 +1,4 @@
+#include "bootmark.h"
 #include <stdint.h>
 #include <stddef.h>
 #include "net.h"
@@ -415,7 +416,9 @@ void net_tcp_timer_stats(uint32_t *fires, uint32_t *softirq, uint32_t *inl)
 
 int net_init(void)
 {
-    if (netdev_init() != 0)
+    int nic_rc = netdev_init();
+    bootmark(13);                 /* NICs probed (c/kernel/diag/bootmark.c) */
+    if (nic_rc != 0)
         return -1;
     memcpy(net_cfg.mac, netdev_mac(), 6);
     up = 1;
