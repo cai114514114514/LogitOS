@@ -340,25 +340,45 @@ int lapic_send_ipi(uint32_t apic_id, uint8_t vec)
  * cross-thread handoff waited tens of milliseconds (2026-10-31). */
 static uint64_t g_timer_hz;
 
+#ifndef LOGIT_LAPIC_HOST
+static inline uint64_t tsc_now(void)
+{
+    uint32_t lo, hi;
+    __asm__ volatile ("rdtsc" : "=a"(lo), "=d"(hi));
+    return (uint64_t)hi << 32 | lo;
+}
+#endif
+
 uint64_t lapic_timer_calibrate(void)
 {
     if (g_timer_hz) return g_timer_hz;
+#ifdef LOGIT_LAPIC_HOST
+    return 0;
+#else
+    /* The calibrated TSC only: a 100 Hz PIT clock would make a 10 ms window
+     * anywhere from 0 to 10 ms long (Astra round 7). No TSC, no change. */
+    uint64_t tsc_hz = time_source_hz(TIMESRC_TSC);
+    if (!tsc_hz) {
+        kprintf("[lapic] timer unmeasured (no calibrated TSC): AP ticks keep the fixed counts\n");
+        return 0;
+    }
     reg_write(LAPIC_TMRDIV, 0x3);
     reg_write(LAPIC_LVT_TMR, 0xffu | (1u << 16));        /* masked one-shot */
     reg_write(LAPIC_TMRINIT, 0xffffffffu);
-    uint64_t t0 = time_mono_ns(), t1;
+    uint64_t t0 = tsc_now(), want = tsc_hz / 100, t1;    /* 10 ms of TSC */
     unsigned long spins = 0;
-    do { t1 = time_mono_ns(); __asm__ volatile ("pause"); }
-    while (t1 - t0 < 10000000ull && ++spins < 200000000ul);
+    do { t1 = tsc_now(); __asm__ volatile ("pause"); }
+    while (t1 - t0 < want && ++spins < 400000000ul);
     uint32_t cur = reg_read(LAPIC_TMRCUR);
     reg_write(LAPIC_TMRINIT, 0);
-    uint64_t ns = t1 - t0, ticks = 0xffffffffull - cur;
+    uint64_t ns = (t1 - t0) * 1000000000ull / tsc_hz, ticks = 0xffffffffull - cur;
     uint64_t hz = (ns >= 5000000ull && ticks) ? ticks * 1000000000ull / ns : 0;
     if (hz < 1000000ull || hz > 2000000000ull) hz = 0;
     g_timer_hz = hz;
     kprintf("[lapic] timer %lu kHz after divide-by-16 (%s)\n", (unsigned long)(hz / 1000),
-            hz ? "measured" : "unmeasured: AP ticks keep the fixed counts");
+            hz ? "measured against the TSC" : "unmeasured: AP ticks keep the fixed counts");
     return hz;
+#endif
 }
 
 uint64_t lapic_timer_hz(void) { return g_timer_hz; }

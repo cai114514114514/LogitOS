@@ -67,7 +67,7 @@ struct ehci_ep {
     uint16_t packet, period, phase;
     uint8_t smask, cmask;
     uint8_t dev_addr;                   /* for the panel: dev may be freed */
-    uint32_t done, errs, last_token;
+    uint32_t done, errs, last_token, last_qh_token;
     struct dma_buffer *mem;
     struct ehci_qh *qh;
     struct ehci_qtd *td;
@@ -121,7 +121,7 @@ int ehci_diag_get(int i, struct ehci_ep_diag *out)
             *out = (struct ehci_ep_diag){ .controller = (uint8_t)c, .dev_addr = p->dev_addr,
                 .ep = p->addr, .armed = p->armed, .period = p->period, .phase = p->phase,
                 .done = p->done, .errors = p->errs, .td_token = p->last_token,
-                .qh_token = ((volatile struct ehci_qh *)p->qh)->token };
+                .qh_token = p->last_qh_token };
             return 0;
         }
     }
@@ -560,6 +560,9 @@ static int int_poll(struct usb_device *d,uint8_t addr,uint8_t **data)
     if (t&EHCI_ACTIVE) return -1;
     p->armed=0;
     p->last_token=t;
+    /* copied here, under the gate: the panel must never read QH DMA memory
+     * that controller teardown can free (Astra round 7) */
+    p->last_qh_token=p->qh->token;
     int n=ehci_actual(p->packet,t);
     if (n<0) { e->errors++; p->errs++; return -1; }
     p->done++;

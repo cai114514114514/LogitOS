@@ -318,13 +318,28 @@ static void calibrate_tsc(void)
 static void calibrate_tsc_hpet(uint64_t hpet_hz, uint64_t mask)
 {
     if (!tsc_usable(&g_tsc_invariant, &g_tsc_hypervisor)) return;
-    uint64_t want = hpet_hz / 50;                    /* 20 ms of HPET ticks */
-    uint64_t h0 = src_read_hpet() & mask, t0 = rdtsc(), h1;
-    long guard = 400000000L;
-    do { h1 = src_read_hpet() & mask; } while (((h1 - h0) & mask) < want && --guard > 0);
-    uint64_t t1 = rdtsc(), dh = (h1 - h0) & mask;
-    if (guard <= 0 || !dh) return;
-    uint64_t hz = (t1 - t0) * hpet_hz / dh;
+    /* Each endpoint is an HPET read on both sides of rdtsc; an SMI landing
+     * between them widens the bracket, and that sample is retried. Three
+     * 20 ms samples, median taken (Astra round 7). */
+    uint64_t want = hpet_hz / 50, tight = hpet_hz / 100000 + 2;   /* ~10 us */
+    uint64_t samples[3];
+    for (int s = 0; s < 3; s++) {
+        samples[s] = 0;
+        for (int attempt = 0; attempt < 8 && !samples[s]; attempt++) {
+            uint64_t a0 = src_read_hpet() & mask, t0 = rdtsc(), b0 = src_read_hpet() & mask;
+            if (((b0 - a0) & mask) > tight) continue;
+            long guard = 400000000L;
+            uint64_t a1;
+            do { a1 = src_read_hpet() & mask; } while (((a1 - b0) & mask) < want && --guard > 0);
+            uint64_t t1 = rdtsc(), b1 = src_read_hpet() & mask;
+            if (guard <= 0 || ((b1 - a1) & mask) > tight) continue;
+            uint64_t dh = (((a1 + b1) / 2 - (a0 + b0) / 2) & mask);
+            if (dh) samples[s] = (t1 - t0) * hpet_hz / dh;
+        }
+        if (!samples[s]) return;
+    }
+    uint64_t a = samples[0], b = samples[1], c = samples[2];
+    uint64_t hz = a > b ? (b > c ? b : (a > c ? c : a)) : (a > c ? a : (b > c ? c : b));
     if (hz < 10000000ull || hz > 100000000000ull) return;
     g_src[TIMESRC_TSC].hz = hz;
     calc_mult_shift(hz, &g_src[TIMESRC_TSC].mult, &g_src[TIMESRC_TSC].shift);
