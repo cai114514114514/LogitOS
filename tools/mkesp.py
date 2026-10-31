@@ -5,7 +5,7 @@ firmware) to boot LogitOS from.
 
 Usage:
     mkesp.py <out.img> --efi <BOOTX64.EFI> --kernel <kernel.elf>
-             [--kernel-name LOGIT.ELF] [--size-mb N]
+             [--kernel-name LOGIT.ELF] [--size-mb N] [--layout superfloppy|gpt]
 
 SUPERFLOPPY, NOT GPT -- decided by experiment, not by guessing.
 The UEFI spec's default-boot behaviour (spec 3.5.1.1's "removable media" boot
@@ -32,6 +32,13 @@ present, on both an IDE-attached and a virtio-blk-pci-attached superfloppy:
 So this tool never writes a partition table. A superfloppy is also strictly
 less code: no protective MBR, no GPT header/entry-array CRC32, one filesystem
 instead of "a filesystem inside a partition inside a disk".
+
+Correction 2026-10-31 (old claim retained above): superfloppy remains the
+default, but --layout gpt now wraps the SAME FAT volume in a single ESP at
+LBA 2048, with both GPT copies. --size-mb continues to size the FAT volume;
+GPT adds 2048 leading and 33 trailing sectors. This gives firmware a second
+removable-media layout without changing the old build interface.
+Host/QEMU evidence only: not verified on X79-VG4 hardware.
 
 TWO BUILD PATHS, same on-disk result
   1. mtools (mformat/mcopy/mmd) if all three are on PATH -- it is a build-time
@@ -62,7 +69,10 @@ import shutil
 import struct
 import subprocess
 import sys
+import tempfile
 import time
+import uuid
+import zlib
 
 SECTOR = 512
 
@@ -317,10 +327,67 @@ def build_with_pyfat(out_path, size_mb, efi_bytes, kernel_bytes, kernel_name):
 
 # --------------------------------------------------------------------------
 
+def gpt_header(current, alternate, last_usable, entries_lba, disk_guid, entries):
+    """UEFI 2.10 section 5.3: CRC covers HeaderSize, with its CRC field zero.
+
+    https://uefi.org/specs/UEFI/2.10/05_GUID_Partition_Table_Format.html
+    The backup MUST have its own current/alternate/entry LBAs and CRC; copying
+    the primary header verbatim appears bootable until firmware repairs GPT.
+    """
+    header = bytearray(SECTOR)
+    struct.pack_into('<8sIIIIQQQQ16sQIII', header, 0, b'EFI PART', 0x10000,
+                     92, 0, 0, current, alternate, 34, last_usable, disk_guid,
+                     entries_lba, 128, 128, zlib.crc32(entries))
+    struct.pack_into('<I', header, 16, zlib.crc32(header[:92]))
+    return header
+
+
+def write_backup_gpt(out, last_lba, header, entries):
+    out.seek((last_lba - 32) * SECTOR)
+    out.write(entries)
+    out.write(header)
+
+
+def wrap_gpt(out_path, fat_path):
+    """Keep FAT construction independent of partitioning (both writers work)."""
+    start = 2048
+    fat_sectors = os.path.getsize(fat_path) // SECTOR
+    last_lba = start + fat_sectors + 32
+    last_usable = last_lba - 33
+    entries = bytearray(128 * 128)
+    struct.pack_into('<16s16sQQQ', entries, 0,
+                     uuid.UUID('c12a7328-f81f-11d2-ba4b-00a0c93ec93b').bytes_le,
+                     uuid.uuid4().bytes_le, start, last_usable, 0)
+    name = 'LogitOS ESP'.encode('utf-16le')
+    entries[56:56 + len(name)] = name
+    disk_guid = uuid.uuid4().bytes_le
+    primary = gpt_header(1, last_lba, last_usable, 2, disk_guid, entries)
+    backup = gpt_header(last_lba, 1, last_usable, last_lba - 32, disk_guid, entries)
+    mbr = bytearray(SECTOR)
+    struct.pack_into('<B3sB3sII', mbr, 446, 0, b'\x00\x02\x00', 0xee,
+                     b'\xff\xff\xff', 1, min(last_lba, 0xffffffff))
+    mbr[510:512] = b'\x55\xaa'
+    with open(fat_path, 'r+b') as fat, open(out_path, 'wb') as out:
+        # BPB_HiddSec is a whole-disk offset, not relative to the FAT volume.
+        # Leaving the superfloppy's zero here silently disagrees with the GPT.
+        fat.seek(28)
+        fat.write(struct.pack('<I', start))
+        fat.seek(0)
+        out.truncate((last_lba + 1) * SECTOR)
+        out.write(mbr)
+        out.write(primary)
+        out.write(entries)
+        out.seek(start * SECTOR)
+        shutil.copyfileobj(fat, out)
+        write_backup_gpt(out, last_lba, backup, entries)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                   formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("out", help="output ESP image path")
+    ap.add_argument("--layout", choices=('gpt', 'superfloppy'), default='superfloppy',
+                    help="partition layout (default: superfloppy)")
     ap.add_argument("--efi", required=True, help="path to BOOTX64.EFI")
     ap.add_argument("--kernel", required=True, help="path to the kernel ELF")
     ap.add_argument("--kernel-name", default="LOGIT.ELF",
@@ -350,17 +417,21 @@ def main():
         size_mb = max(16, int(needed) + 8)
 
     force_py = os.environ.get("MKESP_FORCE_PYFAT") == "1"
-    if not force_py and have_mtools():
-        build_with_mtools(args.out, size_mb, efi_bytes, kernel_bytes, args.kernel_name)
-        method = "mtools"
-    else:
-        if not force_py:
-            print("mkesp: mtools not found on PATH, using the from-scratch FAT16 writer",
-                  file=sys.stderr)
-        build_with_pyfat(args.out, size_mb, efi_bytes, kernel_bytes, args.kernel_name)
-        method = "pyfat (from-scratch FAT16, no mtools)"
+    with tempfile.TemporaryDirectory(prefix='mkesp-') as directory:
+        fat_path = os.path.join(directory, 'fat.img') if args.layout == 'gpt' else args.out
+        if not force_py and have_mtools():
+            build_with_mtools(fat_path, size_mb, efi_bytes, kernel_bytes, args.kernel_name)
+            method = "mtools"
+        else:
+            if not force_py:
+                print("mkesp: mtools not found on PATH, using the from-scratch FAT16 writer",
+                      file=sys.stderr)
+            build_with_pyfat(fat_path, size_mb, efi_bytes, kernel_bytes, args.kernel_name)
+            method = "pyfat (from-scratch FAT16, no mtools)"
+        if args.layout == 'gpt':
+            wrap_gpt(args.out, fat_path)
 
-    print(f"mkesp: {args.out} ({size_mb} MiB, superfloppy FAT16, via {method}) -- "
+    print(f"mkesp: {args.out} ({size_mb} MiB FAT volume, {args.layout}, via {method}) -- "
           f"EFI/BOOT/BOOTX64.EFI ({len(efi_bytes)} bytes), "
           f"{args.kernel_name} ({len(kernel_bytes)} bytes)")
 
