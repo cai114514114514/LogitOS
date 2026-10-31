@@ -247,6 +247,17 @@ int main(void)
     pe->td->token=3u<<16;pe->qh->token=EHCI_TOGGLE;uint8_t *got=NULL;
     CHECK(int_poll(&d,0x82,&got)==5 && got==pe->payload && pe->toggle==1,"periodic completion preserves short report and toggle");
     CHECK(int_poll(&d,0x82,&got)<0,"periodic completion is consumed exactly once");
+    {
+        /* Every frame owned: a second interrupt endpoint gets no phase, and the
+         * schedule the armed one runs on has to come back (X79-VG4 review). */
+        for (unsigned f=0;f<1024;f++) e.frame_owner[f]=pe;
+        struct usb_interface it2; memset(&it2,0,sizeof it2);
+        it2.n_ep=1; it2.ep[0].addr=0x83; it2.ep[0].attr=USB_XFER_INT; it2.ep[0].max_packet=8; it2.ep[0].interval=1;
+        CHECK(configure(&d,&it2)<0,"interrupt endpoint without periodic bandwidth is refused");
+        wr(&e,OP_STS,0);events(&e.hc);
+        CHECK(rd(&e,OP_CMD)&CMD_PSE,"refused endpoint leaves the periodic schedule running for the armed one");
+        for (unsigned f=0;f<1024;f++) e.frame_owner[f]=NULL;
+    }
     model_run=0;hold_halt=1;wr(&e,OP_STS,0);quiesces=quarantines=0;
     CHECK(halt(&e)<0 && quarantines==0 && quiesces==0,
           "unacknowledged hardware halt is reported before DMA classification");

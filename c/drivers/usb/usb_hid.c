@@ -494,6 +494,15 @@ static int hid_probe(struct usb_device *d, int ifno)
         h->role = ROLE_MOUSE;
 
     if (h->role == ROLE_NONE) {
+        /* HID 1.11 sections 4.4/7.1.1 make the interface the descriptor and
+         * failure boundary: a report-only multimedia sibling may be unknown
+         * while if0 already supplies boot input. Include VID:PID and the wire
+         * interface number so two composite devices behind one hub can be
+         * diagnosed separately; do not remove their other bindings here.
+         * https://www.usb.org/sites/default/files/hid1_11.pdf
+         * Model evidence only; not verified on X79-VG4 hardware. */
+        kprintf("[usb] %04x:%04x if%d report desc unsupported\n",
+                d->dd.vendor, d->dd.product, it->num);
         kprintf("[hid] if%d: no supported HID input collection; not bound\n", it->num);
         kfree(h);
         return -1;
