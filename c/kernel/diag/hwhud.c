@@ -264,13 +264,21 @@ static void lines_thermal(void)
     int n = 0;
     if (g_ptm) {
         uint64_t st = power_rdmsr(0x1b1), tj = (power_rdmsr(0x1a2) >> 16) & 0xff;
+        /* The old bit-31 check treated PACKAGE_THERM_STATUS like the core
+         * THERM_STATUS MSR. Intel SDM Vol. 3B Figure 16-33 reserves that bit
+         * in the package MSR; thermal.c uses TjMax/distance bounds instead. */
+#ifdef HUD_NEGCTL_PKG_BIT31
         if (st & (1ull << 31))
+#else
+        if (tj && tj >= ((st >> 16) & 0x7f))
+#endif
             n = ksnprintf(out, sizeof out, "temp pkg %luC (tjmax %lu)", (unsigned long)(tj - ((st >> 16) & 0x7f)),
                           (unsigned long)tj);
     }
     if (!n) n = ksnprintf(out, sizeof out, "temp pkg n/a");
     struct nct_sensors s;
-    if (nct6779_read(&s) == 0) {
+    int sensor_status = nct6779_read(&s);
+    if (sensor_status == 0) {
         for (int t = 0; t < NCT_TEMPS; t++)
             if (s.temp_c[t] != -128 && n < COLS)
                 n += ksnprintf(out + n, (int)sizeof out - n, " %s %d", nct_temp_label[t], s.temp_c[t]);
@@ -282,6 +290,16 @@ static void lines_thermal(void)
              s.mv[0] % 1000, s.mv[3] / 1000, s.mv[3] % 1000, s.mv[7] / 1000, s.mv[7] % 1000,
              s.mv[8] / 1000, s.mv[8] % 1000, s.mv[9] / 1000, s.mv[9] % 1000);
         return;
+    }
+    /* Admission failures describe ownership or an incomplete scan, not broken
+     * sensors. LogitOS errno values are EAGAIN=11, EBUSY=16 and EIO=5 (not
+     * Darwin's host errno ABI). EIO must not claim the firmware owns a port. */
+    if (sensor_status == -11) {
+        ksnprintf(out + n, (int)sizeof out - n, " nct pending");
+    } else if (sensor_status == -16) {
+        ksnprintf(out + n, (int)sizeof out - n, " nct firmware-owned");
+    } else if (sensor_status == -5) {
+        ksnprintf(out + n, (int)sizeof out - n, " nct ACPI scan failed");
     }
     addline(out);
 }

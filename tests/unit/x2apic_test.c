@@ -20,6 +20,12 @@ static int checks, failures;
 #define APIC_EXTD    (1ull << 10)
 #define IA32_APIC_BASE 0x1bu
 
+/* Intel SDM Vol. 3A Table 10-1 (Local APIC Register Address Map), section
+ * 10.5.4 (APIC Timer): initial count starts the countdown; current count reads
+ * its remaining ticks. Keep the model's endpoint hooks on those exact leaves. */
+#define LAPIC_TIMER_INITIAL_COUNT 0x380u
+#define LAPIC_TIMER_CURRENT_COUNT 0x390u
+
 struct msr_write { uint32_t msr; uint64_t value; };
 static uint32_t host_ecx, host_edx;
 static uint64_t host_msrs[0x900];
@@ -32,7 +38,47 @@ static int host_ndelay, host_delay_fail;
 static int publish_pause_state, cancel_during_publish;
 static enum smp_ap_boot_state publish_cancel_result;
 
-void kprintf(const char *fmt, ...) { (void)fmt; }
+/* Calibrated 1 GHz TSC and 100 MHz divided LAPIC timer. A 10 ms SMI is
+ * injected around the actual register leaves, not inside the estimator. */
+static uint64_t calibration_clock, timer_started;
+static int calibration_active, calibration_sample, calibration_disturbance;
+static int calibration_all_disturbed;
+static int calibration_clean_samples, calibration_median;
+static char calibration_log[1024];
+
+/* Host-only TSC leaf: each poll takes 1 us, much smaller than the 10 ms window. */
+uint64_t lapic_host_tsc_now(void)
+{
+    calibration_clock += 1000;
+    return calibration_clock;
+}
+
+/* A calibrated TSC frequency is independent of the modeled LAPIC clock. */
+uint64_t lapic_host_tsc_hz(void)
+{
+    return 1000000000ull;
+}
+
+/* Disturb either register access before or after its side effect. Only the
+ * first sample is delayed unless the all-disturbed fallback is under test. */
+static void calibration_smi(int endpoint)
+{
+    if (calibration_disturbance == endpoint &&
+        (calibration_sample == 1 || calibration_all_disturbed) &&
+        calibration_sample > calibration_clean_samples) {
+        calibration_clock += 10000000ull;
+    }
+}
+
+
+void kprintf(const char *fmt, ...)
+{
+    (void)fmt;
+    va_list arguments;
+    va_start(arguments, fmt);
+    vsnprintf(calibration_log, sizeof calibration_log, fmt, arguments);
+    va_end(arguments);
+}
 
 void lapic_host_cpuid1(uint32_t *ecx, uint32_t *edx)
 {
@@ -63,6 +109,17 @@ volatile uint8_t *lapic_host_map(uint64_t phys)
 
 uint32_t lapic_host_mmio_read(uint32_t reg)
 {
+    if (calibration_active && reg == LAPIC_TIMER_CURRENT_COUNT) {
+        calibration_smi(3);
+        /* A deliberately unsorted spread makes choosing the first/last or
+         * averaging distinguishable from the required middle sample. */
+        static const uint64_t rates[] = {80000000, 180000000, 100000000, 110000000, 95000000};
+        uint64_t rate = calibration_median ? rates[(calibration_sample - 1) % 5] : 100000000;
+        uint64_t elapsed = calibration_clock - timer_started;
+        uint32_t current = 0xffffffffu - (uint32_t)(elapsed * rate / 1000000000ull);
+        calibration_smi(4);
+        return current;
+    }
     uint32_t value = host_mmio[reg / 4];
     if (reg == 0x300 && host_sticky_icr) value |= 1u << 12;
     return value;
@@ -70,6 +127,12 @@ uint32_t lapic_host_mmio_read(uint32_t reg)
 
 void lapic_host_mmio_write(uint32_t reg, uint32_t value)
 {
+    if (calibration_active && reg == LAPIC_TIMER_INITIAL_COUNT && value) {
+        calibration_sample++;
+        calibration_smi(1);
+        timer_started = calibration_clock;
+        calibration_smi(2);
+    }
     host_mmio[reg / 4] = value;
 }
 
@@ -382,8 +445,60 @@ static TEST_UNUSED void test_eoi_policy(void)
           "BSP external IOAPIC route uses LAPIC EOI");
 }
 
-int main(void)
+/* Each scenario runs in a fresh process so the production one-time cached
+ * calibration is exercised without adding a reset hook to the kernel. */
+static int test_timer_calibration(const char *scenario)
 {
+    host_reset(APIC_ENABLE | 0xfee00000u, 3);
+    (void)lapic_init();
+    calibration_active = 1;
+    calibration_all_disturbed = !strcmp(scenario, "all-disturbed") ||
+                               !strcmp(scenario, "two-valid") ||
+                               !strcmp(scenario, "three-valid") ||
+                               !strcmp(scenario, "four-valid");
+    calibration_clean_samples = !strcmp(scenario, "two-valid") ? 2 :
+                                !strcmp(scenario, "three-valid") ? 3 :
+                                !strcmp(scenario, "four-valid") ? 4 : 0;
+    calibration_median = !strcmp(scenario, "median");
+    calibration_disturbance = !strcmp(scenario, "start-before") ? 1 :
+                             !strcmp(scenario, "start-after") ? 2 :
+                             !strcmp(scenario, "end-before") ? 3 : 4;
+    if (calibration_median) {
+        calibration_disturbance = 0;
+    }
+    uint64_t measured = lapic_timer_calibrate();
+    if (calibration_all_disturbed && calibration_clean_samples < 3) {
+        CHECK(measured == 0 && lapic_timer_count_ns(1000000) == 0 &&
+              strstr(calibration_log, "timer calibration disturbed"),
+              "disturbed LAPIC calibration retains fixed counts");
+    } else {
+        CHECK(measured > 99000000ull && measured < 101000000ull,
+              "bracketed LAPIC calibration rejects endpoint SMI bias");
+        /* A correct median alone can hide an admitted SMI-biased sample.
+         * Count attempts too: each single-endpoint delay must be discarded
+         * before five clean samples can be collected. */
+        if (calibration_median) {
+            CHECK(calibration_sample == 5,
+                  "undisturbed LAPIC calibration collects five valid samples in five attempts");
+        } else if (!calibration_all_disturbed) {
+            CHECK(calibration_sample == 6,
+                  "LAPIC calibration rejects one disturbed endpoint before collecting five valid samples");
+        }
+    }
+    if (calibration_all_disturbed) {
+        CHECK(calibration_sample == 15, "disturbed LAPIC calibration bounds retries at fifteen");
+    }
+    CHECK(host_mmio[LAPIC_TIMER_INITIAL_COUNT / 4] == 0,
+          "calibration leaves the one-shot timer stopped");
+    printf("LAPIC_TIMER: %d checks, %d failures\n", checks, failures);
+    return failures != 0;
+}
+
+int main(int argc, char **argv)
+{
+    if (argc > 1) {
+        return test_timer_calibration(argv[1]);
+    }
 #if defined(LOGIT_X2APIC_NEGCTL_IGNORE_TYPE9)
     test_type9_focus();
 #elif defined(LOGIT_X2APIC_NEGCTL_DUPLICATE_CPU)

@@ -8,6 +8,7 @@ import subprocess
 ap = argparse.ArgumentParser()
 ap.add_argument("--build", type=Path, required=True)
 ap.add_argument("--negative-only", action="store_true")
+ap.add_argument("--timer-only", action="store_true")
 a = ap.parse_args()
 
 root = Path(__file__).resolve().parents[2]
@@ -59,7 +60,7 @@ controls = [
      "wide-BSP PIC fallback still EOIs an AP LAPIC timer locally"),
 ]
 
-variants = controls if a.negative_only else [("", "")]
+variants = [] if a.timer_only else (controls if a.negative_only else [("", "")])
 for macro, marker in variants:
     name = macro.lower() if macro else "positive"
     out = base / name
@@ -82,3 +83,27 @@ for macro, marker in variants:
         assert result.returncode == 0, (result.stdout, result.stderr)
         assert "X2APIC_HOST: 39 checks, 0 failures" in result.stdout, result.stdout
         print(result.stdout.strip())
+
+# Additional calibration scenarios preserve every original APIC/SMP case above.
+# Separate processes retain the production boot-only calibration cache.
+timer_out = base / 'timer'
+timer_out.mkdir(parents=True, exist_ok=True)
+timer_exe = timer_out / 'x2apic-host'
+timer_command = list(common)
+if a.negative_only:
+    timer_command.append('-DLAPIC_NEGCTL_UNBRACKETED')
+timer_command += [str(path) for path in sources] + ['-o', str(timer_exe)]
+subprocess.run(timer_command, check=True)
+scenarios = ('start-after',) if a.negative_only else (
+    'start-before', 'start-after', 'end-before', 'end-after', 'all-disturbed',
+    'two-valid', 'three-valid', 'four-valid', 'median')
+for scenario in scenarios:
+    result = subprocess.run([str(timer_exe), scenario], capture_output=True, text=True, timeout=20)
+    (timer_out / (scenario + '.log')).write_text(result.stdout + result.stderr)
+    if a.negative_only:
+        assert result.returncode != 0, result.stdout
+        assert 'FAIL: bracketed LAPIC calibration rejects endpoint SMI bias' in result.stdout, result.stdout
+        print('LAPIC_NEGCTL_UNBRACKETED: RED (endpoint SMI bias)')
+    else:
+        assert result.returncode == 0, result.stdout + result.stderr
+        print('LAPIC_TIMER', scenario, result.stdout.strip())
