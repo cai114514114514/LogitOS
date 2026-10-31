@@ -104,11 +104,6 @@ void kernel_main(uint64_t mb_info)
      * which UEFI firmware need not leave set up; the PIT has been ticking
      * into nothing until here otherwise. Needs pmm for the LAPIC mapping. */
     lapic_virtual_wire();
-    {
-        uint64_t t0 = time_mono_ns(), k0 = timer_ticks();
-        while (time_mono_ns() - t0 < 50000000ull) __asm__ volatile ("sti; pause");
-        kprintf("[time] PIT ticks in 50 ms after virtual wire: %lu (expect ~5)\n", (unsigned long)(timer_ticks() - k0));
-    }
     /* Before anything can ask for an ACPI table: under UEFI the RSDP is only
      * reachable through this block (c/boot/efi/loader.c forwards it as tag 15),
      * and the BIOS-area scan acpi.c falls back to finds nothing there. */
@@ -121,6 +116,15 @@ void kernel_main(uint64_t mb_info)
      * are not safely mapped until pmm_init.  This keeps early boot on PIT/TSC,
      * then upgrades a PIT-only machine to HPET continuously when available. */
     time_platform_init();
+    /* After time_platform_init: until the HPET legacy route is disarmed the
+     * PIT cannot tick, and a PIT-only clock would never reach 50 ms. Bounded
+     * by iterations too, so no clock can hang it (Astra round 5). */
+    {
+        uint64_t t0 = time_mono_ns(), k0 = timer_ticks();
+        for (unsigned long spins = 0; spins < 200000000ul && time_mono_ns() - t0 < 50000000ull; spins++)
+            __asm__ volatile ("sti; pause");
+        kprintf("[time] PIT ticks in 50 ms after virtual wire: %lu (expect ~5)\n", (unsigned long)(timer_ticks() - k0));
+    }
     kprintf("[logitos] interrupts + memory + gdt/tss online\n");
 
     /* The page cache's frame table (pc_of_frame[], pcache.c) comes out of the
