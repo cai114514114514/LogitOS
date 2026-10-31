@@ -23,6 +23,7 @@
 #define LAPIC_LVT_TMR   0x320
 #define LAPIC_TMRINIT   0x380
 #define LAPIC_TMRDIV    0x3E0
+#define LAPIC_TMRCUR    0x390
 
 #define X2APIC_MSR(reg) (0x800u + ((reg) >> 4))
 #define X2APIC_ICR_MSR  0x830u
@@ -330,6 +331,43 @@ int lapic_send_ipi(uint32_t apic_id, uint8_t vec)
 {
     if (vec < 0x10 || vec == 0xff) return -1;
     return send_icr(apic_id, 0x00004000 | vec);
+}
+
+/* The LAPIC timer's rate after divide-by-16, measured once on the BSP
+ * against the calibrated clock. The AP preemption counts used to be fixed
+ * numbers picked under QEMU, whose APIC timer runs at 1 GHz: 1.6-5.4 ms
+ * there, but 16-54 ms on the X79-VG4's 100 MHz bus clock, so every
+ * cross-thread handoff waited tens of milliseconds (2026-10-31). */
+static uint64_t g_timer_hz;
+
+uint64_t lapic_timer_calibrate(void)
+{
+    if (g_timer_hz) return g_timer_hz;
+    reg_write(LAPIC_TMRDIV, 0x3);
+    reg_write(LAPIC_LVT_TMR, 0xffu | (1u << 16));        /* masked one-shot */
+    reg_write(LAPIC_TMRINIT, 0xffffffffu);
+    uint64_t t0 = time_mono_ns(), t1;
+    unsigned long spins = 0;
+    do { t1 = time_mono_ns(); __asm__ volatile ("pause"); }
+    while (t1 - t0 < 10000000ull && ++spins < 200000000ul);
+    uint32_t cur = reg_read(LAPIC_TMRCUR);
+    reg_write(LAPIC_TMRINIT, 0);
+    uint64_t ns = t1 - t0, ticks = 0xffffffffull - cur;
+    uint64_t hz = (ns >= 5000000ull && ticks) ? ticks * 1000000000ull / ns : 0;
+    if (hz < 1000000ull || hz > 2000000000ull) hz = 0;
+    g_timer_hz = hz;
+    kprintf("[lapic] timer %lu kHz after divide-by-16 (%s)\n", (unsigned long)(hz / 1000),
+            hz ? "measured" : "unmeasured: AP ticks keep the fixed counts");
+    return hz;
+}
+
+uint64_t lapic_timer_hz(void) { return g_timer_hz; }
+
+uint32_t lapic_timer_count_ns(uint64_t ns)
+{
+    if (!g_timer_hz) return 0;
+    uint64_t c = g_timer_hz * ns / 1000000000ull;
+    return c < 1 ? 1 : c > 0xffffffffull ? 0xffffffffu : (uint32_t)c;
 }
 
 /* Periodic LAPIC timer -> `vec` (reload is rough and not calibrated). */

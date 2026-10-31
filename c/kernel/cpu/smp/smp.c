@@ -355,7 +355,14 @@ static void ap_entry(void)
      * sample each other's state at correlated instants (discovered during the
      * M25 P4 per-CPU-runqueue experiment; see the P4 spec doc). Drifted phases
      * decorrelate both. */
-    lapic_timer_init(32, LAPIC_AP_TIMER_COUNT + (uint32_t)idx * (LAPIC_AP_TIMER_COUNT / 8));
+    /* 1.6 ms plus 12.5% per index: the periods the fixed counts gave under
+     * QEMU, now true on any bus clock. */
+    uint32_t tick = 0;
+#ifndef SMP_NEGCTL_FIXED_AP_TICK
+    tick = lapic_timer_count_ns(1600000ull + (uint64_t)idx * 200000ull);
+#endif
+    if (!tick) tick = LAPIC_AP_TIMER_COUNT + (uint32_t)idx * (LAPIC_AP_TIMER_COUNT / 8);
+    lapic_timer_init(32, tick);
     /* EFER and CR4 are PER-CORE. An AP whose trampoline missed the NXE/SMEP
      * writes would run ring-3 code with no NX and no SMEP while the BSP's boot
      * line claimed both were on, and nothing would ever say so. Reported per
@@ -389,6 +396,7 @@ void smp_init(void)
         return;
     }
     percpu_register_id(0, lapic_id());     /* BSP's real lapic_id now available */
+    lapic_timer_calibrate();               /* before any AP arms its tick */
     capture_topology(0, lapic_id());        /* sample the BSP on the BSP */
     if (n < 1) { kprintf("[smp] no CPUs via ACPI; uniprocessor\n"); return; }
     kprintf("[smp] %d CPU(s) detected, BSP apic_id=%u\n", n, (unsigned)lapic_id());

@@ -5,7 +5,12 @@
 int      lapic_init(void);                           /* preserve + initialize handed-off mode */
 void     lapic_virtual_wire(void);                   /* BSP before the I/O APIC: 8259 via LINT0 (ExtINT) */
 int      lapic_ready(void);                          /* MMIO xAPIC or MSR x2APIC live */
-uint32_t lapic_id(void);                            /* this CPU's APIC ID */
+uint32_t lapic_id(void);
+/* The divided LAPIC timer rate, measured on the BSP (0 = not measured), and
+ * the count for a period in nanoseconds (0 when not measured). */
+uint64_t lapic_timer_calibrate(void);
+uint64_t lapic_timer_hz(void);
+uint32_t lapic_timer_count_ns(uint64_t ns);                            /* this CPU's APIC ID */
 void     lapic_eoi(void);
 int      lapic_start_ap(uint32_t apic_id, uint8_t trampoline_vec);
 int      lapic_send_ipi(uint32_t apic_id, uint8_t vec);
