@@ -2,11 +2,12 @@
 #include <stddef.h>
 #include "blkdev.h"
 #include "part.h"
-/* Bare name, not a relative path: INCDIRS carries every directory under c/,
- * so a ../.. spelling only survives until the target moves -- which it did on
- * 2026-09-15 when c/fs was split into subdirectories and this was the one
- * include in the tree that broke. */
-#include "logitfs_fmt.h"
+/* The previous note required the bare name because INCDIRS covers all c/
+ * directories. Correction 2026-11-01: narrow real-block host gates such as
+ * bkl_blk_run.py do not use INCDIRS and lack the filesystem search path. Bind
+ * the actual format header here rather than silently depending on the caller's
+ * include inventory; the earlier c/fs split also requires its logitfs/ level. */
+#include "../../fs/logitfs/logitfs_fmt.h"
 #include "ata.h"
 #include "ahci.h"
 #include "virtio_blk.h"
@@ -39,11 +40,21 @@ void *memcpy(void *, const void *, size_t);
  * The seam does NOT touch the engine: blk_submit, blk_poll, blk_wait, the
  * interlock and the bounce loop are the same lines in both builds. Anything
  * conditional inside those would make the gate a test of a different program.
+ * Correction 2026-11-01: the host-only admission hook below adds a scheduling
+ * point before the real gate, without changing request or locking decisions.
+ * It reproduces a completion while another CPU waits to submit that request;
+ * a timing-dependent thread test could otherwise miss the replay indefinitely.
  * ------------------------------------------------------------------------ */
 #ifdef BLK_HOSTTEST
 void *blk_hosttest_user_buffer; /* simulate the usercopy boundary, not a DMA mask */
+/* Count STI leaves per test thread: hosted io_lock cannot execute CLI, so the
+ * PIT model distinguishes a drain's enable from the outer batch's enable. */
+_Thread_local unsigned blk_hosttest_irq_enables;
+/* Deterministic scheduling seam: the queue model completes an older request
+ * on a simulated second CPU after the fast check but before gate admission. */
+void (*blk_hosttest_before_submit_lock)(struct blk_req *request);
 #  define BLK_IRQ_SAVE(f)     ((f) = 0x200)
-#  define BLK_IRQ_ENABLE()    ((void)0)
+#  define BLK_IRQ_ENABLE()    ((void)++blk_hosttest_irq_enables)
 #  define BLK_IRQ_DISABLE()   ((void)0)
 #  define BLK_RELAX()         ((void)0)
 
@@ -87,6 +98,7 @@ struct blkdev *blk_register(const char *name, const struct blk_ops *ops,
     d->ctx = ctx;
     d->start = 0;
     d->nsectors = nsectors;
+    d->queue_depth = 1;
     return d;
 }
 
@@ -230,6 +242,18 @@ static struct blkdev *medium(struct blkdev *d)
     return (d && d->parent) ? d->parent : d;
 }
 
+/* Recovery calls this with the medium gate already held. An atomic admission
+ * limit avoids recursive locking; lowering it does not cancel owned requests.
+ * Only a driver that implements independent request state opts above one. */
+void blk_set_queue_depth(struct blkdev *d, unsigned depth)
+{
+    struct blkdev *m = medium(d);
+    if (!m) return;
+    if (depth < 1) depth = 1;
+    if (depth > BLK_QDEPTH_MAX) depth = BLK_QDEPTH_MAX;
+    __atomic_store_n(&m->queue_depth, depth, __ATOMIC_RELEASE);
+}
+
 void blk_req_init(struct blk_req *r, struct blkdev *d, int op,
                   uint64_t lba, uint32_t count, void *buf)
 {
@@ -254,7 +278,17 @@ static int req_reject(struct blk_req *r, int status)
 static int req_finish(struct blk_req *r, int status)
 {
     struct blkdev *m = medium(r->dev);
-    if (m && m->inflight == r) m->inflight = NULL;
+    if (m) {
+        struct blk_req **link = &m->inflight;
+        while (*link && *link != r) {
+            link = &(*link)->next;
+        }
+        if (*link) {
+            *link = r->next;
+            m->ninflight--;
+        }
+    }
+    r->next = NULL;
     r->status = status;
     __atomic_store_n(&r->state, BLK_REQ_DONE, __ATOMIC_RELEASE);
     return status;
@@ -298,6 +332,24 @@ static int poll_locked(struct blk_req *r)
     return 1;
 }
 
+/* Admission may have to drain an older command while holding the medium gate.
+ * Its CLI must not freeze timer_ms (NVMe deadlines and AHCI's PIT fallback).
+ * Keep ownership, but enable IRQs under g_ata_busy exactly as offline/wait do:
+ * transport ISRs do not take this gate, and the busy flag excludes scheduling.
+ * Return with IF clear so io_lock_leave alone restores the caller's IF state. */
+static void wait_locked(struct blk_req *r)
+{
+    __atomic_fetch_add(&g_ata_busy, 1, __ATOMIC_RELAXED);
+#ifndef AHCI_NEGCTL_BLK_DRAIN_IF0
+    BLK_IRQ_ENABLE();
+#endif
+    while (!poll_locked(r)) {
+        BLK_RELAX();
+    }
+    BLK_IRQ_DISABLE();
+    __atomic_fetch_sub(&g_ata_busy, 1, __ATOMIC_RELAXED);
+}
+
 int blk_poll(struct blk_req *r)
 {
     if (!r) return 1;
@@ -327,8 +379,11 @@ void blk_dev_offline(struct blkdev *d)
 int blk_submit(struct blk_req *r)
 {
     if (!r) return BLK_E_ARG;
+    if (__atomic_load_n(&r->state, __ATOMIC_ACQUIRE) == BLK_REQ_DONE)
+        return r->status;
     struct blkdev *d = r->dev;
     if (!d || !d->ops) return req_reject(r, BLK_E_ARG);
+    if (r->op > BLK_OP_FLUSH) return req_reject(r, BLK_E_ARG);
     if (r->op != BLK_OP_FLUSH && !in_bounds(d, r->lba, r->count))
         return req_reject(r, BLK_E_ARG);
     if (r->op != BLK_OP_FLUSH && user_buffer(r->buf)) {
@@ -336,25 +391,93 @@ int blk_submit(struct blk_req *r)
         return req_reject(r, BLK_E_NODMA);
     }
     struct blkdev *m = medium(d);
-    uint64_t f = io_lock_enter(&m->gate);
-#ifndef BLK_NO_INTERLOCK
-    struct blk_req *prior;
-    while ((prior = m->inflight) && prior != r)
-        (void)poll_locked(prior);
+#ifdef BLK_HOSTTEST
+    if (blk_hosttest_before_submit_lock) blk_hosttest_before_submit_lock(r);
 #endif
+    uint64_t f = io_lock_enter(&m->gate);
     int rc;
+#ifndef AHCI_NEGCTL_BLK_REPLAY_DONE
+    /* The unlocked DONE check is only a fast path. Another CPU may finish
+     * this request and admit an overlapping newer write while we wait for
+     * the gate. Resetting DONE here would replay the older write afterwards.
+     * Every state except IDLE is already owned or terminal; only explicit
+     * blk_req_init may make a completed request eligible for admission again. */
+    if (r->state != BLK_REQ_IDLE && r->state != BLK_REQ_INFLIGHT) {
+        rc = r->status;
+        goto out;
+    }
+#endif
+    if (r->state == BLK_REQ_INFLIGHT) {
+        rc = 0;
+        goto out;
+    }
+    r->dev_lba = d->start + r->lba;
+#ifndef BLK_NO_INTERLOCK
+    /* A flush is a queue fence in both directions. Read/read overlap is safe;
+     * any overlap involving a write must finish before the new command starts.
+     * Use the original absolute range, not the driver's advancing chunk cursor. */
+    for (;;) {
+        struct blk_req *conflict = NULL;
+        unsigned depth = __atomic_load_n(&m->queue_depth, __ATOMIC_ACQUIRE);
+        if (!depth) depth = 1;
+#ifndef AHCI_NEGCTL_BLK_NO_DEPTH_CAP
+        if (m->ninflight >= depth) conflict = m->inflight;
+#endif
+        for (struct blk_req *prior = m->inflight; prior; prior = prior->next) {
+#ifndef AHCI_NEGCTL_BLK_NO_FLUSH_DRAIN
+            if (r->op == BLK_OP_FLUSH || prior->op == BLK_OP_FLUSH) {
+                conflict = prior;
+                break;
+            }
+#endif
+#ifndef AHCI_NEGCTL_BLK_NO_OVERLAP
+            uint64_t start = prior->dev->start + prior->lba;
+            if ((r->op == BLK_OP_WRITE || prior->op == BLK_OP_WRITE) &&
+                r->dev_lba < start + prior->count &&
+                start < r->dev_lba + r->count) {
+                conflict = prior;
+                break;
+            }
+#endif
+        }
+        if (!conflict) break;
+        wait_locked(conflict);
+    }
+#endif
     if (m->offline) { rc = req_finish(r, BLK_E_ARG); goto out; }
-    if (m->inflight == r) { rc = 0; goto out; }
     r->state = BLK_REQ_INFLIGHT;
     r->status = 0;
     r->done = 0;
     r->attempt = 0;
     r->dev_lba = d->start + r->lba;
-    m->inflight = r;
     if (!d->ops->submit) rc = req_finish(r, run_sync_ops(r));
     else {
-        rc = d->ops->submit(d->ctx, r);
-        if (rc < 0) rc = req_finish(r, rc);
+        /* Temporary transport refusal owns no DMA and publishes no doorbell.
+         * Keep the new request out of the list until it is actually accepted. */
+        for (;;) {
+            rc = d->ops->submit(d->ctx, r);
+            if (rc != BLK_E_AGAIN || !m->inflight) break;
+            struct blk_req *oldest = m->inflight;
+            wait_locked(oldest);
+        }
+        if (rc < 0) {
+            rc = req_finish(r, rc);
+        } else {
+#ifdef BLK_NO_INTERLOCK
+            /* Preserve the original deliberately broken one-pointer model:
+             * its three historical checks must fail without dangling a list
+             * of requests whose old submitters have already returned. */
+            r->next = NULL;
+            m->inflight = r;
+            m->ninflight = 1;
+#else
+            struct blk_req **tail = &m->inflight;
+            while (*tail) tail = &(*tail)->next;
+            r->next = NULL;
+            *tail = r;
+            m->ninflight++;
+#endif
+        }
     }
 out:
     io_lock_leave(&m->gate, f);
@@ -371,12 +494,58 @@ int blk_wait(struct blk_req *r)
     __atomic_fetch_add(&g_ata_busy, 1, __ATOMIC_RELAXED);                       /* flag BEFORE sti -- see the header above */
     BLK_IRQ_ENABLE();
 
-    if (blk_submit(r) == 0)
-        while (!blk_poll(r)) BLK_RELAX();
+    if (blk_submit(r) == 0) {
+        while (!blk_poll(r)) {
+            const struct blk_ops *ops = r->dev->ops;
+#ifndef AHCI_NEGCTL_BLK_NO_IDLE
+            if (ops->idle) ops->idle(r->dev->ctx);
+            else BLK_RELAX();
+#else
+            (void)ops;
+            BLK_RELAX();
+#endif
+        }
+    }
 
     if (!(fl & 0x200)) BLK_IRQ_DISABLE();
     __atomic_fetch_sub(&g_ata_busy, 1, __ATOMIC_RELAXED);
     return r->status;
+}
+
+/* Pipeline at most sixteen caller-owned spans without letting stack requests
+ * escape. Validate user pointers before issuing anything: BLK_E_NODMA lets a
+ * caller fall back to synchronous usercopy without duplicating earlier writes.
+ * The busy-before-sti discipline matches blk_wait, including its IF restore. */
+int blk_dev_batch(struct blkdev *d, int op, struct blk_span *s, unsigned n)
+{
+    if (!d || !d->ops || !s || !n || (op != BLK_OP_READ && op != BLK_OP_WRITE))
+        return BLK_E_ARG;
+    for (unsigned i = 0; i < n; i++) {
+        if (user_buffer(s[i].buf)) return BLK_E_NODMA;
+    }
+    struct blk_req requests[16];
+    uint64_t flags;
+    BLK_IRQ_SAVE(flags);
+    __atomic_fetch_add(&g_ata_busy, 1, __ATOMIC_RELAXED);
+    BLK_IRQ_ENABLE();
+    int failed = 0;
+    for (unsigned first = 0; first < n; ) {
+        unsigned count = n - first;
+        if (count > 16) count = 16;
+        for (unsigned i = 0; i < count; i++) {
+            struct blk_span *span = &s[first + i];
+            blk_req_init(&requests[i], d, op, span->lba, span->count, span->buf);
+            (void)blk_submit(&requests[i]);
+        }
+        for (unsigned i = 0; i < count; i++) {
+            s[first + i].status = blk_wait(&requests[i]);
+            if (s[first + i].status) failed++;
+        }
+        first += count;
+    }
+    if (!(flags & 0x200)) BLK_IRQ_DISABLE();
+    __atomic_fetch_sub(&g_ata_busy, 1, __ATOMIC_RELAXED);
+    return failed;
 }
 
 /* The synchronous convenience, including the bounce. The whole chunked loop
@@ -462,6 +631,14 @@ int blk_write(uint32_t lba, uint8_t count, const void *buf)
 {
     blk_ensure();
     return blk_dev_write(g_root, lba, count, buf);
+}
+
+/* Root-relative addressing is resolved by the same device path as blk_write;
+ * batching must never lose the root partition's start offset. */
+int blk_write_batch(struct blk_span *s, unsigned n)
+{
+    blk_ensure();
+    return blk_dev_batch(g_root, BLK_OP_WRITE, s, n);
 }
 
 /* Barrier: return only once everything already written is on media.

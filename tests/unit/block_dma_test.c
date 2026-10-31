@@ -13,6 +13,17 @@
 #define AHCI_DEVICE_MODEL 1
 #include "blkdev.h"
 #include "block_dma_types.inc"
+#ifdef TEST_AHCI
+/* Extracted AHCI lifecycle code never executes privileged CPU instructions on
+ * the host. The multi-slot model separately tests IRQ/IF/HLT behavior. */
+#define AHCI_PAUSE() ((void)0)
+/* Recovery now saves/restores IF and holds the storage non-preemption count.
+ * Only those CPU leaves are stubbed; existing DMA assertions are unchanged. */
+#define AHCI_FLAGS(flags) ((flags) = 0)
+#define AHCI_STI() ((void)0)
+#define AHCI_CLI() ((void)0)
+static volatile int g_ata_busy;
+#endif
 static int failures,checks,unmapped,completed,quarantined,stopped,panic_expected;
 static void *host_allocs[128];
 static unsigned nhost_allocs;
@@ -23,6 +34,25 @@ static void host_cleanup(void){for(unsigned i=0;i<nhost_allocs;i++)free(host_all
 #define calloc fixture_calloc
 static size_t completed_valid;
 static uint64_t ticks=100,serial=1;
+#ifdef TEST_AHCI
+/* The old single-slot fixture never resets a link, but recovery now shares
+ * that bounded helper and therefore needs its clock symbol at link time. */
+static uint64_t time_mono_ns(void)
+{
+    return ticks * 1000000;
+}
+/* This single-slot fixture stays on the bootstrap CPU; the multi-slot model
+ * separately varies APIC IDs to test interrupt-destination ownership. */
+uint32_t lapic_id(void)
+{
+    return 0;
+}
+/* Depth reduction is observable in the separate real-block queue model. */
+void blk_set_queue_depth(struct blkdev *disk, unsigned depth)
+{
+    if (disk) disk->queue_depth = depth;
+}
+#endif
 static jmp_buf panic_env;
 static struct dma_mapping fixture_map;
 static struct dma_segment fixture_segments[300];
@@ -88,7 +118,8 @@ static uint32_t g_max_sectors=65535,g_nsid=1,g_lba=512;
 #else
 static struct ahci_port g_ports[AHCI_MAX_DISKS];
 static int g_ndisks;
-static void ahci_count_cmd(struct ahci_port*p){p->req_cmds++;}
+static struct ahci_ctl g_ctls[AHCI_MAX_HBA];
+static unsigned g_nctls;
 #endif
 #include "block_dma_functions.inc"
 #ifdef TEST_NVME
@@ -263,37 +294,88 @@ int main(void){
  host_cleanup();printf("NVMe DMA: %d checks, %d failures\n",checks,failures);return failures?1:0;
 }
 #else
-int main(void){
- struct ahci_port p={0};p.reg=registers;p.lba48=1;
- check(ahci_dma_init(&p,CAP_S64A)==0&&p.dma_dev.mask==DMA_MASK_64,"AHCI uses CAP_S64A for full DMA mask");
- struct ahci_port low={0};check(ahci_dma_init(&low,0)==0&&low.dma_dev.mask==DMA_MASK_32,"AHCI without S64A constrains all DMA objects to 32 bits");
- dma_buffer_submit(p.metadata);port_start(&p);
- struct ahci_cmdspec spec={ATA_READ_DMA_EXT,0,29,20,payload+128,20*512};
- check(ahci_begin(&p,&spec)==0,"AHCI maps and issues fragmented buffer");uint32_t*hdr=(void*)p.dma;uint32_t*prd=(void*)(p.dma+0x880);
- check(hdr[2]==(uint32_t)(p.metadata->dma.value+0x800)&&hdr[3]==(uint32_t)((p.metadata->dma.value+0x800)>>32),"AHCI CTBA uses metadata DMA address");
- check((hdr[0]>>16)==3&&prd[0]==0x80000080&&prd[1]==1&&prd[4]==0x80010000&&prd[5]==1,"AHCI PRDT follows mapped scatter segments");
- check(fixture_map.state==DMA_DEVICE_OWNED&&ahci_step(&p,0)==0&&unmapped==0,"AHCI retains mapping while command is pending");
- *(uint32_t*)(registers+P_CI)=0;hdr[1]=spec.bytes;
- check(ahci_step(&p,0)==1&&unmapped==1&&completed_valid==spec.bytes,"AHCI completes valid bytes before unmap");
- ahci_begin(&p,&spec);uint64_t token=p.map_token;*(uint32_t*)(registers+P_IS)=IS_TFES;
- check(ahci_step(&p,0)==0&&p.map_token!=token&&fixture_map.state==DMA_DEVICE_OWNED&&unmapped==1,"AHCI retry stops and renews ownership without premature unmap");
- p.attempt=AHCI_RETRIES-1;*(uint32_t*)(registers+P_IS)=IS_TFES;
- check(ahci_step(&p,0)==-1&&p.dma_dev.blocked&&unmapped==2,"AHCI final failure leaves port stopped before releasing caller mapping");
- dma_device_resume(&p.dma_dev);dma_buffer_submit(p.metadata);port_start(&p);ahci_begin(&p,&spec);*(uint32_t*)(registers+P_IS)=IS_TFES;hold_running=1;
- panic_expected=1;if(!setjmp(panic_env)){ahci_step(&p,0);check(0,"AHCI unconfirmed stop must not return to caller");}
- check(quarantined==1&&unmapped==2,"AHCI unconfirmed stop quarantines without unmap");
- panic_expected=0;hold_running=0;memset(registers,0,sizeof registers);
- g_ndisks=2;g_ports[0].controller=&fixture_device;g_ports[1].controller=&other_device;
- g_ports[0].reg=registers;g_ports[1].reg=registers+0x100;g_ports[0].block=&fixture_disk;
- ahci_dma_init(&g_ports[0],CAP_S64A);ahci_dma_init(&g_ports[1],CAP_S64A);
- dma_buffer_submit(g_ports[0].metadata);dma_buffer_submit(g_ports[1].metadata);
- int before_free=freed,before_stop=stopped;
- fixture_device.drv=&ahci_driver;fixture_device.drv->remove(&fixture_device);
- check(offline_calls==1&&fixture_disk.offline&&stopped==before_stop+1&&disabled==1&&offline_event<stop_event&&stop_event<free_event&&free_event<disable_event,
-       "AHCI normal remove offlines port and acknowledges hardware stop");
- check(freed==before_free+1&&!g_ports[0].metadata&&g_ports[1].metadata->state==DMA_DEVICE_OWNED,
-       "AHCI normal remove frees only its controller DMA objects");
- ahci_shutdown(&fixture_device);check(freed==before_free+1,"AHCI repeated shutdown does not double free");
- host_cleanup();printf("AHCI DMA: %d checks, %d failures\n",checks,failures);return failures?1:0;
+/* Drive the extracted production AHCI lifecycle without weakening the original
+ * DMA-address, retry, panic and controller-removal assertions. */
+int main(void)
+{
+    struct ahci_port p = {0};
+    p.reg = registers;
+    p.lba48 = 1;
+    check(ahci_dma_init(&p, CAP_S64A) == 0 && p.dma_dev.mask == DMA_MASK_64,
+          "AHCI uses CAP_S64A for full DMA mask");
+    struct ahci_port low = {0};
+    check(ahci_dma_init(&low, 0) == 0 && low.dma_dev.mask == DMA_MASK_32,
+          "AHCI without S64A constrains all DMA objects to 32 bits");
+    dma_buffer_submit(p.metadata);
+    port_start(&p);
+    struct ahci_cmdspec spec = {ATA_READ_DMA_EXT, 0, 29, 20, payload + 128, 20 * 512, 0, 0};
+    check(ahci_begin(&p, 0, &spec) == 0, "AHCI maps and issues fragmented buffer");
+    uint32_t *header = (void *)p.dma;
+    uint32_t *prd = (void *)(p.dma + 0x880);
+    check(header[2] == (uint32_t)(p.metadata->dma.value + 0x800) &&
+          header[3] == (uint32_t)((p.metadata->dma.value + 0x800) >> 32),
+          "AHCI CTBA uses metadata DMA address");
+    check((header[0] >> 16) == 3 && prd[0] == 0x80000080 && prd[1] == 1 &&
+          prd[4] == 0x80010000 && prd[5] == 1, "AHCI PRDT follows mapped scatter segments");
+    check(fixture_map.state == DMA_DEVICE_OWNED && ahci_step(&p, 0, 0) == 0 && unmapped == 0,
+          "AHCI retains mapping while command is pending");
+    *(uint32_t *)(registers + P_CI) = 0;
+    header[1] = spec.bytes;
+    check(ahci_step(&p, 0, 0) == 1 && unmapped == 1 && completed_valid == spec.bytes,
+          "AHCI completes valid bytes before unmap");
+
+    ahci_begin(&p, 0, &spec);
+    uint64_t token = p.slot[0].map_token;
+    *(uint32_t *)(registers + P_IS) = IS_TFES;
+    check(ahci_step(&p, 0, 0) == 0 && p.slot[0].map_token != token &&
+          fixture_map.state == DMA_DEVICE_OWNED && unmapped == 1,
+          "AHCI retry stops and renews ownership without premature unmap");
+    p.slot[0].attempt = AHCI_RETRIES - 1;
+    *(uint32_t *)(registers + P_IS) = IS_TFES;
+    check(ahci_step(&p, 0, 0) == -1 && p.dma_dev.blocked && unmapped == 2,
+          "AHCI final failure leaves port stopped before releasing caller mapping");
+
+    dma_device_resume(&p.dma_dev);
+    dma_buffer_submit(p.metadata);
+    port_start(&p);
+    ahci_begin(&p, 0, &spec);
+    *(uint32_t *)(registers + P_IS) = IS_TFES;
+    hold_running = 1;
+    panic_expected = 1;
+    if (!setjmp(panic_env)) {
+        ahci_step(&p, 0, 0);
+        check(0, "AHCI unconfirmed stop must not return to caller");
+    }
+    check(quarantined == 1 && unmapped == 2, "AHCI unconfirmed stop quarantines without unmap");
+    panic_expected = 0;
+    hold_running = 0;
+    memset(registers, 0, sizeof registers);
+
+    g_ndisks = 2;
+    g_ports[0].controller = &fixture_device;
+    g_ports[1].controller = &other_device;
+    g_ports[0].reg = registers;
+    g_ports[1].reg = registers + 0x100;
+    g_ports[0].block = &fixture_disk;
+    ahci_dma_init(&g_ports[0], CAP_S64A);
+    ahci_dma_init(&g_ports[1], CAP_S64A);
+    dma_buffer_submit(g_ports[0].metadata);
+    dma_buffer_submit(g_ports[1].metadata);
+    int before_free = freed;
+    int before_stop = stopped;
+    fixture_device.drv = &ahci_driver;
+    fixture_device.drv->remove(&fixture_device);
+    check(offline_calls == 1 && fixture_disk.offline && stopped == before_stop + 1 &&
+          disabled == 1 && offline_event < stop_event && stop_event < free_event &&
+          free_event < disable_event,
+          "AHCI normal remove offlines port and acknowledges hardware stop");
+    check(freed == before_free + 1 && !g_ports[0].metadata &&
+          g_ports[1].metadata->state == DMA_DEVICE_OWNED,
+          "AHCI normal remove frees only its controller DMA objects");
+    ahci_shutdown(&fixture_device);
+    check(freed == before_free + 1, "AHCI repeated shutdown does not double free");
+    host_cleanup();
+    printf("AHCI DMA: %d checks, %d failures\n", checks, failures);
+    return failures ? 1 : 0;
 }
 #endif

@@ -1,96 +1,38 @@
-/* AHCI 1.x host bus adapter -- SATA disks on real hardware.
+/* AHCI SATA disks: early polling, late MSI, independent NCQ data slots.
  *
- * Why this exists: every other block driver in this tree found its disk because
- * QEMU was told to hand us one specific device. virtio-blk needs a hypervisor;
- * NVMe needs a machine new enough to have one; IDE PIO is a compatibility mode
- * chipsets are dropping. AHCI is what an actual x86 box presents its SATA disks
- * through, and it ships under dozens of vendor:device IDs -- so it is matched by
- * PCI CLASS (01/06/01), never by ID.
+ * Correction 2026-11-01, kept beside the old claims: this file used to say
+ * "NCQ: WHY THERE IS STILL ONLY SLOT 0" and "WHY THIS IS STILL A POLL".
+ * Those were accurate with blkdev's one-in-flight interlock and sequential
+ * bcache_sync. The block layer now opts capable media into bounded queues and
+ * bcache_sync supplies independent dirty blocks in batches of sixteen. Root
+ * mount still polls; ahci_irq_attach runs only after dev_probe_all and SMP.
+ * MSI delivery is tested, and absent delivery automatically retains polling.
  *
- * Scope: one command at a time per port (slot 0 only), polled, no interrupts,
- * no port multipliers, no ATAPI. The block layer grew submit/poll on
- * 2026-08-20 (blkdev.h) and this driver went with it, so "one at a time" is now
- * an interlock rather than a call that cannot return.
+ * Do NOT split requests merely to fill tags. Historical QEMU measurements
+ * (2026-08-20, f8d2ca4): 741 eight-sector commands reading a 3 MB app cost
+ * 97.6 ms; nine coalesced commands cost 1.35 ms. Each command carried a fixed
+ * charge (~110 us for 8 sectors, 288 us for 2048). DMA_MAX_MAPPING now bounds
+ * each chunk to 1 MiB, independently of AHCI's 8 x 4 MiB PRDT capacity.
+ * The queue is for independent requests, not manufactured fragments.
  *
- * ---------------------------------------------------------------------------
- * NCQ: WHY THERE IS STILL ONLY SLOT 0, AND THE NUMBER THAT DECIDES IT
+ * NCQ errors abort a queue, not one request. READ LOG EXT page 10h attributes
+ * the failed tag; DMA tokens for already completed siblings must be consumed
+ * before device-wide quiescence invalidates them. The ISR latches status only;
+ * request/DMA ownership transitions belong to the medium gate's poll path.
+ * HLT never hands the CPU to another thread while g_ata_busy is raised, and
+ * only the MSI destination CPU may halt: APs otherwise pay a whole local tick.
  *
- * This line used to read "no NCQ" with no reason attached, which is the shape
- * of omission that gets read as "nobody got to it yet". It was asked for
- * directly on 2026-08-20 -- READ/WRITE_FPDMA_QUEUED, up to 32 tags through
- * SActive -- and it is not here because the arithmetic says it would move
- * nothing on this machine and could only make it slower. The arithmetic, not
- * the reluctance, is the part worth keeping:
+ * Metadata: command list +0x000 (1 KiB alignment), receive FIS +0x400 (256),
+ * command tables +0x800+slot*0x100 (128-byte header + eight 16-byte PRDs).
+ * CAP.NCS+1 tables are allocated together and rounded to whole pages; CPU
+ * aliases and DMA addresses are separate. One slot is reserved for internal
+ * nonqueued commands. No ATAPI, port multipliers, read-ahead or swap concurrency.
  *
- *   A queue needs something to put in it, and there are exactly two sources.
- *
- *   1. TWO REQUESTS AT ONCE ON ONE MEDIUM. There are none. blkdev.h's
- *      interlock is explicit -- "ONE IN FLIGHT PER MEDIUM" -- and blk_submit()
- *      drives an already-in-flight request to completion before starting
- *      another. That interlock is not incidental: `make test-blk-async-negctl`
- *      deletes it and exactly 3 of 75 checks redden, which is the only witness
- *      there is that two commands never sit on the medium at once. So queue
- *      depth from this source is 1, by construction, and lifting it is a
- *      change to the block layer's contract and to every driver under it --
- *      a work order, not a flag in this file.
- *
- *   2. ONE REQUEST SPLIT INTO SEVERAL COMMANDS. One command here already
- *      describes AHCI_PRDT * AHCI_PRD_MAX = 8 x 4 MiB = 32 MiB. The largest
- *      transfer anything in this tree asks for is a coalesced bcache run of a
- *      whole file, and the largest file is the 12 MiB ceiling measured in
- *      CLAUDE.md -- 24,576 sectors against the 65,535 this driver will put in
- *      one command (the PRDT would carry 65,536; the LBA48 sector-count field
- *      is the tighter of the two). So a request is ONE command, and
- *      ahci_count_cmd() below reports it rather than asserting it: if that
- *      line never prints, no request on this boot ever needed a second
- *      command and there was never a second tag to issue. The host gate pins
- *      the same property directly -- tests/unit/blkreq_test.c case 12 drives
- *      a request through a driver whose bound is this one's 65,535 and
- *      requires exactly ONE command; forcing the bound below the request
- *      reddens that check and its sector-count sibling, watched, 2 of 75.
- *
- *      MEASURED, 2026-08-20, and this is the number the whole argument turns
- *      on: a full boot off an AHCI root (ich9-ahci, `make test-ahci` raw --
- *      mount, mount-time fsck, the desktop, a file read back byte-correct)
- *      printed that line ZERO times. Every request on the disk was one
- *      command. A 32-deep queue would have held exactly one entry, all boot.
- *
- *   And making source 2 produce work on purpose -- issuing a big read as eight
- *   4 MiB commands so the tags have something to hold -- is a REGRESSION here,
- *   measured: an AHCI command costs a flat ~110 us for 8 sectors and 288 us
- *   for 2048, i.e. a fixed per-command charge that dominates. Commit f8d2ca4
- *   is the whole record of that: reading a 3 MB app as 741 commands cost
- *   97.6 ms and as 9 commands costs 1.35 ms. Splitting to fill a queue pays
- *   that charge back N times to overlap latency QEMU does not have.
- *
- * WHAT IS HERE INSTEAD is the half that has a consumer today: CAP.SNCQ and
- * CAP.NCS are read and PRINTED, so the question "does this controller support
- * queuing, and how deep" has an answer on the boot log for the first time; and
- * the per-request command count is counted, so whoever picks the work order up
- * has the number that says whether it would have bought anything. Neither
- * costs a command.
- *
- * THE TRAP, recorded for that reader because it is the expensive part and it
- * is not in the register list: an NCQ completion is NOT a per-command
- * interrupt. You learn what finished by reading SActive and diffing against
- * what you issued, and a task-file error takes the WHOLE queue down at once --
- * every outstanding tag is aborted, and the device refuses further queued
- * commands until READ LOG EXT page 0x10 has been read to find which tag
- * failed. An implementation that skips that log read appears to work on a
- * healthy disk and silently loses the other 31 commands on a sick one, which
- * is worse than not queuing at all.
- *
- * DMA memory: one 4 KiB page per port, identity-mapped like every kernel page
- * here, laid out to satisfy AHCI's alignment rules by construction --
- *   +0x000  command list   (1 KiB, needs 1 KiB alignment)
- *   +0x400  received FIS   (256 B, needs 256 B alignment)
- *   +0x800  command table  (128 B header + PRDT, needs 128 B alignment)
- * A page is 4 KiB-aligned, so all three fall out for free and no allocator with
- * an alignment parameter is needed.
+ * Sources: AHCI 1.3.1; Linux v6.12 drivers/ata/libahci.c, libata-core.c and
+ * libata-eh.c (functions cited at the hardware sequences below):
+ * https://github.com/torvalds/linux/tree/v6.12/drivers/ata
+ * Model and QEMU evidence only: not verified on X79-VG4 hardware.
  */
-/* DMA migration correction: the page layout above is retained, but its CPU
- * alias and DMA base are separate. Payloads use bounded SG mappings; CAP.S64A
- * constrains metadata and payloads alike. */
 #include "ktime.h"
 #include <stdint.h>
 #include <stddef.h>
@@ -103,6 +45,7 @@
 #include "panic.h"
 #include "pit.h"
 #include "kprintf.h"
+#include "lapic.h"
 
 /* The device model (c/drivers/core/driver.h) landed while this driver was being
  * written, and it is the right way to find an AHCI controller: match on
@@ -126,7 +69,27 @@
 #  endif
 #endif
 
+#ifndef memset
 void *memset(void *, int, size_t);
+#endif
+
+/* Only privileged CPU operations and MMIO are substituted in the host model.
+ * The command, DMA ownership and recovery state machines remain identical. */
+#ifdef AHCI_HOSTTEST
+#define AHCI_FLAGS(flags) ((flags) = ahci_host_flags())
+#define AHCI_STI() ahci_host_sti()
+#define AHCI_CLI() ahci_host_cli()
+#define AHCI_PAUSE() ahci_host_pause()
+#define AHCI_HALT() ahci_host_halt()
+#else
+#define AHCI_FLAGS(flags) __asm__ volatile ("pushfq; pop %0" : "=r"(flags) :: "memory")
+#define AHCI_STI() __asm__ volatile ("sti" ::: "memory")
+#define AHCI_CLI() __asm__ volatile ("cli" ::: "memory")
+#define AHCI_PAUSE() __asm__ volatile ("pause" ::: "memory")
+/* STI's interrupt shadow makes the adjacent HLT atomic against a delivered MSI
+ * (Intel SDM Vol. 2, STI). Splitting these asm statements loses that property. */
+#define AHCI_HALT() __asm__ volatile ("sti; hlt" ::: "memory")
+#endif
 
 /* --- HBA global registers --- */
 #define HBA_CAP    0x00
@@ -144,6 +107,7 @@ void *memset(void *, int, size_t);
 #define CAP_S64A   (1u << 31)
 #define CAP_SNCQ   (1u << 30)   /* native command queuing supported */
 #define CAP_SSS    (1u << 27)   /* staggered spin-up supported */
+#define CAP_SCLO   (1u << 24)   /* AHCI 1.3.1 3.1.1: command-list override */
 
 #define BOHC_BOS   (1u << 0)    /* BIOS owned semaphore */
 #define BOHC_OOS   (1u << 1)    /* OS owned semaphore */
@@ -168,6 +132,7 @@ void *memset(void *, int, size_t);
 #define CMD_ST     (1u << 0)
 #define CMD_SUD    (1u << 1)    /* spin-up device */
 #define CMD_POD    (1u << 2)    /* power on device */
+#define CMD_CLO    (1u << 3)    /* AHCI 1.3.1 3.3.7: clear HBA BSY/DRQ shadow, not device state */
 #define CMD_FRE    (1u << 4)    /* FIS receive enable */
 #define CMD_FR     (1u << 14)   /* FIS receive running */
 #define CMD_CR     (1u << 15)   /* command list running */
@@ -198,6 +163,24 @@ void *memset(void *, int, size_t);
 #define AHCI_MAX_HBA    4               /* controllers brought up; a box has 1-2 */
 #define AHCI_PRDT       8               /* 8 x 4 MiB = 32 MiB per command */
 #define AHCI_PRD_MAX    0x400000u       /* DBC is 22 bits: 4 MiB per PRD entry */
+/* AHCI command tables need 128-byte alignment (4.2.3); 128-byte CFIS/ACMD
+ * header plus eight 16-byte PRDs fits in 256 bytes. Slot zero stays at +0x800. */
+#define AHCI_CT_STRIDE 0x100
+#define AHCI_CT_OFF(slot) (0x800 + (slot) * AHCI_CT_STRIDE)
+/* AHCI 1.3.1 3.3.6: DHRS, PSS, SDBS, OFE, INFE, IFE, HBDE, HBFE, TFEE.
+ * This bring-up mask is intentionally narrower than Linux v6.12 ahci.h
+ * DEF_PORT_IRQ (which also covers hotplug/unknown FIS); it is not its value. */
+#define AHCI_PXIE_DEFAULT (0x1u|0x2u|0x8u|(1u<<24)|(1u<<26)|(1u<<27)|(1u<<28)|(1u<<29)|(1u<<30))
+/* Fatal transport errors: interface fatal, host-bus data and host-bus fatal;
+ * taskfile ERR is separate. Linux v6.12 libahci.c ahci_error_intr. */
+#define AHCI_IS_FATAL ((1u << 27) | (1u << 28) | (1u << 29))
+#define AHCI_RC_TFES 1
+#define AHCI_RC_TIMEOUT 2
+#define AHCI_RC_FATAL 3
+#define AHCI_SLOT_FREE 0
+#define AHCI_SLOT_ACTIVE 1
+#define AHCI_SLOT_DONE 2
+#define AHCI_SLOT_FAILED 3
 
 /* Two independent bounds on every wait. The spin cap is the one that holds
  * during init, when kmain still runs with IF=0 and the PIT tick therefore does
@@ -221,44 +204,82 @@ struct ahci_cmdspec {
     uint32_t sectors;
     void    *buf;
     uint32_t bytes;
+    uint8_t ncq;
+    uint8_t tag;
 };
 
 #define AHCI_RETRIES 8
 
+struct ahci_slot {
+    struct ahci_cmdspec cur;
+    struct dma_mapping *mapping;
+    uint64_t map_token;
+    struct blk_req *req;
+    uint64_t deadline;
+    uint8_t attempt, state;
+    uint8_t timeouts;
+    uint8_t stale_error;
+    uint32_t irq_start;
+};
+
+struct ahci_stats {
+    uint32_t spurious, poll_done, max_inflight, errors, recoveries, resets;
+};
+
+/* One vector per HBA. The ISR never dereferences blk_req or streaming maps.
+ * irq_cpu is the MSI destination chosen by pci_msi.c, not the waiting CPU. */
+struct ahci_ctl {
+    struct device *dev;
+    volatile uint8_t *reg;
+    uint32_t pi, irq_cpu;
+    int irq_armed, attach_tried;
+};
+
+struct ahci_ncq_err {
+    uint8_t tag, status, error;
+    uint64_t lba;
+};
+
 struct ahci_port {
     struct dma_device dma_dev;
     struct dma_buffer *metadata;
-    struct dma_mapping *mapping;
-    uint64_t map_token;
     struct device *controller;
     struct blkdev *block;
 
     int      index;
     volatile uint8_t *reg;          /* port register block */
-    uint8_t *dma;                   /* the 4 KiB page (identity mapped: virt == phys) */
+    /* Previously "the 4 KiB page": metadata now spans whole pages for every
+     * CAP.NCS slot (12 KiB at 32 slots, 4 KiB at one). This is the CPU alias;
+     * command addresses come from metadata->dma, not an identity-map assumption. */
+    uint8_t *dma;
     uint64_t nsectors;
     int      lba48;
     char     model[41];
     char     name[8];               /* "ahci0" ... */
 
-    /* the command in flight, and how it is going */
-    struct ahci_cmdspec cur;
-    int      attempt;               /* retries already spent on `cur` */
-    uint64_t deadline;              /* timer_ms() by which it must complete */
+    struct ahci_ctl *ctl;
+    uint32_t cap, nslots, qdepth, ncq_words, active_mask, ncq_mask;
+    uint32_t is_latched, irq_events, irq_seen;
+    /* Atomic bitmap of slots the ISR actually observed finished. A port-wide
+     * IRQ generation cannot attribute completion when siblings finish apart. */
+    uint32_t irq_completed;
+    /* IRQ collection never takes the medium gate. This separate short gate
+     * couples epoch validation, latch publication and W1C with recovery's
+     * discard boundary; it is never held across a stop, DMA work or polling. */
+    io_lock_t irq_gate;
+    uint64_t error_epoch;
+    unsigned ncq_recoveries;
+    int recovering;
+    struct ahci_stats st;
+    struct ahci_slot slot[32];
 
-    /* HOW DEEP A QUEUE WOULD EVER HAVE BEEN. See the NCQ paragraph at the top
-     * of this file: the only source of a second outstanding tag is a request
-     * that needs a second command, so counting commands per request answers
-     * the question NCQ exists to answer. Kept per port rather than globally
-     * because two ports are two queues and a max over both would hide which
-     * one has the traffic. */
-    uint32_t req_cmds;              /* commands issued for the request in flight */
-    int      reported_multi;        /* the one-shot below has fired */
 };
 
 static volatile uint8_t *g_abar;
 static struct ahci_port  g_ports[AHCI_MAX_DISKS];
 static int               g_ndisks;
+static struct ahci_ctl g_ctls[AHCI_MAX_HBA];
+static unsigned g_nctls;
 
 /* Keep capability policy with this driver; no upper layer guesses whether an
  * HBA can address 64-bit PRDs or command-list/FIS structures. */
@@ -267,14 +288,73 @@ static int ahci_dma_init(struct ahci_port *p, uint32_t cap)
     dma_device_init(&p->dma_dev, "ahci", (cap & CAP_S64A) ? DMA_MASK_64 : DMA_MASK_32);
     p->dma_dev.max_segments = AHCI_PRDT;
     p->dma_dev.max_segment = AHCI_PRD_MAX;
-    p->metadata = dma_alloc_coherent(&p->dma_dev, 4096, 4096, 0);
+    p->cap = cap;
+    p->nslots = ((cap >> 8) & 31) + 1;
+    p->qdepth = 1;
+    /* NCS=31: 0x2800 rounds to 12 KiB; NCS=0: 0x900 stays one page.
+     * AHCI 1.3.1 3.1.1 NCS, 4.2 command list/table alignment. */
+    size_t bytes = (AHCI_CT_OFF(p->nslots) + 4095u) & ~(size_t)4095u;
+    p->metadata = dma_alloc_coherent(&p->dma_dev, bytes, 4096, 0);
     p->dma = p->metadata ? p->metadata->cpu : NULL;
     return p->dma ? 0 : -1;
 }
 
-static inline uint32_t r32(volatile uint8_t *b, int o) { return *(volatile uint32_t *)(b + o); }
-static inline void     w32(volatile uint8_t *b, int o, uint32_t v) { *(volatile uint32_t *)(b + o) = v; }
-static inline void     barrier(void) { __asm__ volatile ("mfence" ::: "memory"); }
+/* Keep register access widths fixed; AHCI register semantics are 32-bit. */
+static inline uint32_t r32(volatile uint8_t *b, int o)
+{
+#ifdef AHCI_HOSTTEST
+    return ahci_host_read(b, o);
+#else
+    return *(volatile uint32_t *)(b + o);
+#endif
+}
+
+/* The model implements W1S/W1C; normal RAM assignments cannot model AHCI. */
+static inline void w32(volatile uint8_t *b, int o, uint32_t v)
+{
+#ifdef AHCI_HOSTTEST
+    ahci_host_write(b, o, v);
+#else
+    *(volatile uint32_t *)(b + o) = v;
+#endif
+}
+
+/* Publish command memory before ringing PxSACT/PxCI (AHCI 1.3.1 5.3). */
+static inline void barrier(void)
+{
+#ifdef AHCI_HOSTTEST
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+#else
+    __asm__ volatile ("mfence" ::: "memory");
+#endif
+}
+
+/* Intersect HBA slots with IDENTIFY queue depth. One internal slot is reserved
+ * even when the drive supports 32 tags: READ LOG must not overwrite a data FIS.
+ * Source: Linux v6.12 libata-core.c ata_dev_config_ncq, ata.h ata_id_queue_depth
+ * and ata_id_has_ncq; https://github.com/torvalds/linux/tree/v6.12/drivers/ata . */
+static unsigned ahci_ncq_depth(uint32_t cap, uint32_t ncq_words)
+{
+    unsigned slots = ((cap >> 8) & 31) + 1;
+    unsigned word76 = ncq_words >> 16;
+#ifdef AHCI_NONCQ
+    return 0;
+#endif
+    if (!(cap & CAP_SNCQ) || slots < 2) return 0;
+#ifndef AHCI_NEGCTL_NCQ_IGNORE_W76
+    if (!word76 || word76 == 0xffff || !(word76 & 0x100)) return 0;
+#else
+    (void)word76;
+#endif
+    unsigned depth = (ncq_words & 31) + 1;
+    if (depth < 2) return 0;
+#ifdef AHCI_NEGCTL_NCQ_IGNORE_W75
+    depth = 32;
+#endif
+    if (depth > slots - 1) depth = slots - 1;
+    if (depth > 31) depth = 31;
+    return depth >= 2 ? depth : 0;
+}
 
 int ahci_disk_count(void) {
     int live = 0;
@@ -349,8 +429,9 @@ static int port_needs_reset(uint32_t det, uint32_t sig)
 #endif
 }
 
-/* The interrupt-independent clock: boot runs this with IF=0, when timer_ms()
- * does not advance, and a millisecond hold must be a millisecond. */
+/* Originally described as interrupt-independent: boot uses calibrated TSC
+ * with IF=0. Correction: time_mono_ns can fall back to PIT, which needs IF=1;
+ * storage waiters must enable IRQs under g_ata_busy for that clock source. */
 static uint64_t link_ms(void) { return time_mono_ns() / 1000000ull; }
 
 /* With CLB/FB programmed, the receive area owned by the DMA layer and ST
@@ -406,331 +487,776 @@ static void port_quiesce(struct ahci_port *p)
     dma_device_quiesced(&p->dma_dev);
 }
 
-static void port_recover(struct ahci_port *p)
+/* Latch before W1C, as in AHCI 1.3.1 3.3.5 and Linux v6.12 libahci.c
+ * ahci_port_intr. Correction to the old atomic-words-only claim: an atomic OR
+ * can still resurrect TFES read before recovery cleared the latch. Snapshot
+ * the error epoch BEFORE MMIO, then validate and publish under irq_gate.
+ * Recovery takes the same gate to discard the old epoch, so it cannot race
+ * between our validation and OR/W1C. A stale collector must skip W1C too:
+ * acknowledging its old bits could erase a completion from the replay.
+ * io_lock_enter masks local IRQs, preventing same-CPU ISR lock inversion;
+ * the ISR never takes the medium gate, and this gate covers no DMA or waits.
+ * Model evidence only: not verified on X79-VG4 hardware. */
+static uint32_t ahci_port_irq_collect(struct ahci_port *p)
 {
-    port_quiesce(p);
-    w32(p->reg, P_SERR, r32(p->reg, P_SERR));
-    w32(p->reg, P_IS, r32(p->reg, P_IS));
-    if (dma_device_resume(&p->dma_dev) || !dma_buffer_submit(p->metadata))
-        panic("ahci: cannot resume DMA ownership after acknowledged stop");
-    if (port_start(p))
-        kprintf("[ahci] port %d: device still busy after recovery; command engine left stopped\n", p->index);
+    uint64_t epoch = __atomic_load_n(&p->error_epoch, __ATOMIC_ACQUIRE);
+    uint32_t status = r32(p->reg, P_IS);
+    uint64_t flags = io_lock_enter(&p->irq_gate);
+#ifndef AHCI_NEGCTL_COLLECT_STALE_EPOCH
+    if (epoch != __atomic_load_n(&p->error_epoch, __ATOMIC_ACQUIRE)) {
+        io_lock_leave(&p->irq_gate, flags);
+        return 0;
+    }
+#else
+    (void)epoch;
+#endif
+    __atomic_fetch_or(&p->is_latched, status, __ATOMIC_ACQ_REL);
+    if (status) w32(p->reg, P_IS, status);
+    io_lock_leave(&p->irq_gate, flags);
+    return status;
 }
 
-static void ahci_unmap(struct ahci_port *p)
+/* Retire a stopped queue's interrupt history before issuing READ LOG or
+ * replaying data. The medium gate already owns recovery; irq_gate excludes
+ * only collectors, including one that read PxIS on another CPU before stop.
+ * Both the epoch change and latch reset must stay inside this short section.
+ * PxIS is W1C (AHCI 1.3.1 3.3.5); no new command is issued while it is cleared.
+ * Model evidence only: not verified on X79-VG4 hardware. */
+static void ahci_clear_errors(struct ahci_port *p)
 {
-    if (p->mapping) {
-        if (dma_unmap(p->mapping)) panic("ahci: unmap before DMA stopped");
-        p->mapping = NULL; p->map_token = 0;
+    uint64_t flags = io_lock_enter(&p->irq_gate);
+    w32(p->reg, P_IS, r32(p->reg, P_IS));
+    __atomic_store_n(&p->is_latched, 0, __ATOMIC_RELEASE);
+    __atomic_fetch_add(&p->error_epoch, 1, __ATOMIC_RELEASE);
+    io_lock_leave(&p->irq_gate, flags);
+}
+
+/* Each HBA has a single MSI. Clear port sources BEFORE the host level latch,
+ * including implemented ports without disks, or an orphan status can storm.
+ * Previously: "No gate ... is permitted here." Correction: the collector now
+ * takes only the short irq_gate to synchronize its epoch with recovery. It
+ * never takes the medium gate or BKL, allocates, transitions DMA or uses blk_req.
+ * Source: Linux v6.12 libahci.c ahci_single_level_irq_intr.
+ * https://github.com/torvalds/linux/blob/v6.12/drivers/ata/libahci.c */
+static void ahci_isr(void *arg)
+{
+    struct ahci_ctl *ctl = arg;
+    int handled = 0;
+    for (unsigned pass = 0; pass < 4; pass++) {
+        uint32_t pending = r32(ctl->reg, HBA_IS);
+        if (!pending) break;
+        handled = 1;
+#ifdef AHCI_NEGCTL_ISR_CLEAR_ORDER
+        w32(ctl->reg, HBA_IS, pending);
+#endif
+        for (unsigned index = 0; index < 32; index++) {
+            if (!(pending & (1u << index))) continue;
+            struct ahci_port *port = NULL;
+            for (int disk = 0; disk < g_ndisks; disk++) {
+                if (g_ports[disk].ctl == ctl && g_ports[disk].index == (int)index) {
+                    port = &g_ports[disk];
+                    break;
+                }
+            }
+            if (port) {
+                (void)ahci_port_irq_collect(port);
+                /* Completion means both CI and SActive clear (AHCI 1.3.1
+                 * 3.3.13 PxSACT, 3.3.14 PxCI; Linux v6.12 libahci.c
+                 * ahci_handle_port_interrupt). Do not read request/mapping
+                 * state in the ISR. Serialize this register observation with
+                 * issue's bitmap reset and doorbell, so an old idle-slot
+                 * observation cannot credit a newly issued command. */
+                uint64_t flags = io_lock_enter(&port->irq_gate);
+                uint32_t running = r32(port->reg, P_SACT) | r32(port->reg, P_CI);
+                __atomic_fetch_or(&port->irq_completed, ~running, __ATOMIC_RELEASE);
+                io_lock_leave(&port->irq_gate, flags);
+#ifdef AHCI_NEGCTL_ISR_DROP_TFES
+                __atomic_fetch_and(&port->is_latched, ~IS_TFES, __ATOMIC_ACQ_REL);
+#endif
+                __atomic_fetch_add(&port->irq_events, 1, __ATOMIC_RELEASE);
+            } else if (ctl->pi & (1u << index)) {
+                volatile uint8_t *reg = ctl->reg + 0x100 + index * 0x80;
+                w32(reg, P_IS, r32(reg, P_IS));
+            }
+        }
+#ifndef AHCI_NEGCTL_ISR_CLEAR_ORDER
+        w32(ctl->reg, HBA_IS, pending);
+#endif
+    }
+    if (!handled) {
+        for (int disk = 0; disk < g_ndisks; disk++) {
+            if (g_ports[disk].ctl == ctl)
+                __atomic_fetch_add(&g_ports[disk].st.spurious, 1, __ATOMIC_RELAXED);
+        }
     }
 }
 
-/* --------------------------------------------------------------------------
- * Issuing a command
- * ------------------------------------------------------------------------ */
-
-/* Build slot 0's command header + command table from p->cur and ISSUE it.
- *
- * This is the half of the old ahci_cmd_once() that talks to the controller.
- * The other half -- the spin waiting for CI to clear -- is ahci_check() below,
- * and separating them is the whole of this file's part in the block layer's
- * submit/poll split (blkdev.h). Nothing about the FIS or the PRDT changed; the
- * only deletion is `g_ata_busy++ / sti`, which moved UP into blkdev.c's
- * blk_wait() so that it is raised once for a whole request rather than once per
- * chunk, and is not raised at all for an asynchronous one.
- *
- * ---------------------------------------------------------------------------
- * WHY THIS IS STILL A POLL AND NOT AN INTERRUPT, MEASURED
- *
- * c/kernel/sync/wait.h and dev_irq_request() would let a completion ISR wake a
- * sleeper, and driver.h's own worked example is called `ahci_isr`. It is still
- * not done, and the reason is arithmetic rather than reluctance. There is no
- * completion interrupt wired on this port (P_IE is 0), so the only thing that
- * can wake a halted waiter is the 100 Hz timer -- 10 ms. Measured on this
- * machine, an AHCI command costs 110 us for 8 sectors and 288 us for 2048
- * (make bench-fs BENCH_BLK=ahci), and `make test-swap` moves ~50,000 pages in
- * one run. Parking on the tick would turn 8.8 s of device time into 8.5
- * MINUTES. So the asynchronous path here gives the BKL back around a BOUNDED
- * SPIN and not around a halt, and closing the rest needs the interrupt, which
- * needs dev_irq_request() at a point where the LAPIC is live -- blk_init() runs
- * at kmain.c:135, smp_init() at :183. That ordering, not this file, is what
- * stands in the way.
- * ------------------------------------------------------------------------- */
-static int ahci_issue(struct ahci_port *p)
+/* Completed-but-unreaped slots stay reserved by req. Hardware may finish early;
+ * reusing such a slot would let the later poll consume another request's DMA. */
+static int ahci_slot_alloc(struct ahci_port *p, int ncq)
 {
-    const struct ahci_cmdspec *s = &p->cur;
-    uint32_t *hdr = (uint32_t *)p->dma;                 /* command header, slot 0 */
-    uint8_t  *tbl = p->dma + 0x800;                     /* command table */
-    uint8_t  *fis = tbl;                                /* CFIS at table offset 0 */
-    uint8_t  *prd = tbl + 0x80;
+    if (!ncq && p->active_mask) return -1;
+    if (ncq && (p->active_mask & ~p->ncq_mask)) return -1;
+    unsigned limit = ncq ? p->qdepth : 1;
+    for (unsigned slot = 0; slot < limit; slot++) {
+        if (!p->slot[slot].req && p->slot[slot].state != AHCI_SLOT_ACTIVE)
+            return (int)slot;
+    }
+    return -1;
+}
 
-    if (wait_clear(p->reg, P_TFD, TFD_BSY | TFD_DRQ, SPIN_INIT, 2000)) return -1;
+/* Release a streaming map only after completion or acknowledged engine stop.
+ * The slot retains its request until blk_poll consumes the terminal state. */
+static void ahci_unmap(struct ahci_port *p, unsigned slot)
+{
+    struct ahci_slot *command = &p->slot[slot];
+    if (command->mapping) {
+        if (dma_unmap(command->mapping)) panic("ahci: unmap before DMA stopped");
+        command->mapping = NULL;
+        command->map_token = 0;
+    }
+}
 
-    memset(tbl, 0, 0x80 + AHCI_PRDT * 16);
+/* Build the slot's command list entry, CFIS and PRDT, then publish SACT before
+ * CI. PxSACT/PxCI are write-one-to-set: write ONLY the new bit, rather than a
+ * read/OR/write that could resurrect a tag hardware cleared between accesses.
+ * Source: AHCI 1.3.1 3.3.13/3.3.14, 4.2; Linux v6.12 libahci.c ahci_qc_issue,
+ * ahci_qc_prep and libata-core.c ata_build_rw_tf (FPDMA count in Features). */
+static int ahci_issue(struct ahci_port *p, unsigned slot)
+{
+    struct ahci_slot *command = &p->slot[slot];
+    const struct ahci_cmdspec *s = &command->cur;
+    uint32_t *hdr = (uint32_t *)(p->dma + slot * 32);
+    uint8_t *tbl = p->dma + AHCI_CT_OFF(slot);
+    uint8_t *fis = tbl;
+    uint8_t *prd = tbl + 0x80;
 
-    int nprd = 0;
+    /* With a live NCQ queue H:CheckBusy belongs to the HBA, not the CPU.
+     * Waiting on TFD here would serialize a queue that is already running. */
+    if (!p->active_mask &&
+        wait_clear(p->reg, P_TFD, TFD_BSY | TFD_DRQ, SPIN_INIT, 2000)) return -1;
+    memset(tbl, 0, AHCI_CT_STRIDE);
+    unsigned nprd = 0;
     if (s->bytes) {
-        if (!p->mapping || p->mapping->nsegments > AHCI_PRDT) return -1;
-        for (size_t i = 0; i < p->mapping->nsegments; i++) {
-            const struct dma_segment *segment = &p->mapping->segments[i];
+        if (!command->mapping || command->mapping->nsegments > AHCI_PRDT) return -1;
+        for (size_t i = 0; i < command->mapping->nsegments; i++) {
+            const struct dma_segment *segment = &command->mapping->segments[i];
             uint64_t addr = dma_addr_value(segment->addr);
             if (!segment->len || segment->len > AHCI_PRD_MAX) return -1;
-            uint32_t *e = (uint32_t *)(prd + nprd * 16);
-            e[0] = (uint32_t)addr; e[1] = (uint32_t)(addr >> 32);
-            e[2] = 0; e[3] = (uint32_t)segment->len - 1;
+            uint32_t *entry = (uint32_t *)(prd + nprd * 16);
+            entry[0] = (uint32_t)addr;
+            entry[1] = (uint32_t)(addr >> 32);
+            entry[2] = 0;
+            entry[3] = (uint32_t)segment->len - 1;
             nprd++;
         }
     }
-
-    /* Host-to-device register FIS. */
-    fis[0]  = 0x27;                                     /* FIS type: H2D register */
-    fis[1]  = 0x80;                                     /* C: this is a command, not a control write */
-    fis[2]  = s->command;
-    fis[3]  = 0;                                        /* features */
-    fis[4]  = (uint8_t)(s->lba);
-    fis[5]  = (uint8_t)(s->lba >> 8);
-    fis[6]  = (uint8_t)(s->lba >> 16);
-    fis[7]  = 0x40;                                     /* device: LBA mode */
-    fis[8]  = (uint8_t)(s->lba >> 24);
-    fis[9]  = (uint8_t)(s->lba >> 32);
+    /* Register H2D FIS (SATA 3.x 10.3.4); command bit, LBA mode, no FUA.
+     * ACS READ/WRITE FPDMA QUEUED: Count[7:3]=tag, Features=sector count.
+     * PRIO and ICC remain zero; QEMU and real drives may reject other values. */
+    fis[0] = 0x27;
+    fis[1] = 0x80;
+    fis[2] = s->command;
+    fis[4] = (uint8_t)s->lba;
+    fis[5] = (uint8_t)(s->lba >> 8);
+    fis[6] = (uint8_t)(s->lba >> 16);
+    fis[7] = 0x40;
+    fis[8] = (uint8_t)(s->lba >> 24);
+    fis[9] = (uint8_t)(s->lba >> 32);
     fis[10] = (uint8_t)(s->lba >> 40);
-    fis[11] = 0;
-    fis[12] = (uint8_t)(s->sectors);
-    fis[13] = (uint8_t)(s->sectors >> 8);
-
-    hdr[0] = (5u)                                       /* CFL: 5 dwords of FIS */
-           | (s->write ? (1u << 6) : 0u)                /* W: host to device */
-           | ((uint32_t)nprd << 16);                    /* PRDTL */
-    hdr[1] = 0;                                         /* PRDBC: device fills this in */
-    uint64_t table_dma = dma_addr_value(dma_addr_add(p->metadata->dma, 0x800));
+    if (s->ncq) {
+        fis[3] = (uint8_t)s->sectors;
+        fis[11] = (uint8_t)(s->sectors >> 8);
+#ifndef AHCI_NEGCTL_NCQ_TAG_ZERO
+        fis[12] = (uint8_t)(slot << 3);
+#endif
+    } else {
+        fis[12] = (uint8_t)s->sectors;
+        fis[13] = (uint8_t)(s->sectors >> 8);
+        /* Legacy READ/WRITE DMA still needs the upper LBA28 nibble. */
+        if (s->command == ATA_READ_DMA || s->command == ATA_WRITE_DMA)
+            fis[7] |= (uint8_t)((s->lba >> 24) & 15);
+    }
+    hdr[0] = 5u | (s->write ? 1u << 6 : 0u) | (nprd << 16);
+    hdr[1] = 0;
+    uint64_t table_dma = dma_addr_value(dma_addr_add(p->metadata->dma, AHCI_CT_OFF(slot)));
     hdr[2] = (uint32_t)table_dma;
     hdr[3] = (uint32_t)(table_dma >> 32);
-
-    if (p->mapping) {
-        /* submit synchronises TO/BIDI bounce bytes, including a retry. */
-        p->map_token = dma_mapping_submit(p->mapping);
-        if (!p->map_token) return -1;
+    if (command->mapping) {
+        command->map_token = dma_mapping_submit(command->mapping);
+        if (!command->map_token) return -1;
     }
-    w32(p->reg, P_IS, r32(p->reg, P_IS));               /* clear stale status */
+    /* Clear stale success status only for a new empty queue. Errors stay
+     * latched until recovery; issuing a sibling must never discard TFES. */
+    (void)ahci_port_irq_collect(p);
+    if (!p->active_mask)
+        __atomic_fetch_and(&p->is_latched, IS_TFES | AHCI_IS_FATAL, __ATOMIC_ACQ_REL);
+    uint32_t bit = 1u << slot;
+    p->active_mask |= bit;
+    if (s->ncq) p->ncq_mask |= bit;
+    command->state = AHCI_SLOT_ACTIVE;
+    command->irq_start = __atomic_load_n(&p->irq_events, __ATOMIC_ACQUIRE);
+    /* Retain the 8000 ms budget using the monotonic clock. Correction: ktime
+     * may fall back to PIT, so this is not always interrupt-independent.
+     * Block admission enables IF under g_ata_busy while draining its gate. */
+    command->deadline = link_ms() + 8000;
+    /* PxTFD is the last received taskfile, not this command's status until a
+     * new FIS arrives (AHCI 1.3.1 3.3.8). ST=0 does not clear its old ERR.
+     * Remember that old bit so a replay is not aborted again before the HBA
+     * has even sent its command. New TFES remains authoritative throughout. */
+    command->stale_error = !!(r32(p->reg, P_TFD) & TFD_ERR);
     barrier();
-    w32(p->reg, P_CI, 1u);                              /* issue slot 0 */
-    p->deadline = timer_ms() + 8000;
+    /* Pair the new command with a fresh ISR-completion observation. This short
+     * gate excludes the ISR's register snapshot through SACT -> CI publication;
+     * no DMA operation or wait belongs inside it. See ahci_isr above. */
+    uint64_t flags = io_lock_enter(&p->irq_gate);
+    __atomic_fetch_and(&p->irq_completed, ~bit, __ATOMIC_ACQ_REL);
+#ifdef AHCI_NEGCTL_RECOVER_REPLAY_CI_FIRST
+    if (p->recovering && s->ncq) w32(p->reg, P_CI, bit);
+#endif
+#ifndef AHCI_NEGCTL_NCQ_NO_SACT
+    if (s->ncq) w32(p->reg, P_SACT, bit);
+#endif
+    w32(p->reg, P_CI, bit);
+    io_lock_leave(&p->irq_gate, flags);
+    unsigned count = (unsigned)__builtin_popcount(p->active_mask);
+    if (count > p->st.max_inflight) p->st.max_inflight = count;
     return 0;
 }
 
-/* ONE look at the port. 1 = the command finished cleanly, 0 = still running,
- * -1 = it failed. No loop and no waiting: a poll that spun would be the thing
- * this split exists to remove. */
-static int ahci_check(struct ahci_port *p)
+/* One observation, shared by interrupt-assisted and pure polling operation.
+ * NCQ completion is SActive, never PRDBC: Linux v6.12 libahci.c
+ * ahci_handle_port_interrupt uses the same active-register distinction. */
+static int ahci_check(struct ahci_port *p, unsigned slot)
 {
-    if (r32(p->reg, P_IS) & IS_TFES) return -1;         /* device reported a task-file error */
-    if (r32(p->reg, P_CI) & 1u) return 0;
-    if (r32(p->reg, P_TFD) & TFD_ERR) return -1;
-
-    /* A read must have moved every byte it asked for. Without this a short DMA
-     * -- the shape a truncated or mis-programmed PRDT produces -- returns
-     *  success with a buffer that is partly whatever was there before. */
+    (void)ahci_port_irq_collect(p);
+    uint32_t status = __atomic_load_n(&p->is_latched, __ATOMIC_ACQUIRE);
+    if (status & (IS_TFES | AHCI_IS_FATAL))
+        return -1;
+    struct ahci_slot *command = &p->slot[slot];
+    unsigned reg = command->cur.ncq ? P_SACT : P_CI;
+    /* A new naked taskfile ERR is also a recovery trigger. Correction to the
+     * old READ-LOG-only exception: reissued nonqueued commands can also still
+     * see the preceding ERR until their first response FIS (3.3.8/6.2.2.1).
+     * A completed command with ERR always fails, and fresh TFES was checked
+     * above; only the unchanged old bit on a running command is ignored. */
+    uint32_t running = r32(p->reg, reg) & (1u << slot);
+    uint32_t taskfile = r32(p->reg, P_TFD);
+    if (!(taskfile & TFD_ERR)) command->stale_error = 0;
+    int old_error = command->stale_error;
+#ifdef AHCI_NEGCTL_RETRY_STALE_ERR
+    old_error = p->recovering;
+#endif
+    if ((taskfile & TFD_ERR) && (!old_error || !running)) return -1;
+    if (running) return 0;
     dma_rmb();
-    const uint32_t *hdr = (const uint32_t *)p->dma;
-    if (!p->cur.write && p->cur.bytes && hdr[1] < p->cur.bytes) return -1;
+    const uint32_t *header = (const uint32_t *)(p->dma + slot * 32);
+    if (!command->cur.ncq && !command->cur.write && command->cur.bytes &&
+        header[1] < command->cur.bytes) return -1;
     return 1;
 }
 
-/* Start `s` on the port. Nothing else may be in flight -- the block layer's
- * one-request-per-medium interlock is what guarantees that, and IDENTIFY runs
- * before the port is registered at all. */
-static int ahci_begin(struct ahci_port *p, const struct ahci_cmdspec *s)
+/* Start one independently mapped command; no DMA ownership exists on refusal.
+ * Internal commands also use this path, but their reserved slot never holds a
+ * blk_req. Nonqueued commands are fences, including IDENTIFY and READ LOG. */
+static int ahci_begin(struct ahci_port *p, unsigned slot, const struct ahci_cmdspec *s)
 {
-    if (p->dma_dev.blocked || p->mapping) return -1;
-    p->cur = *s;
-    p->attempt = 0;
+    if (slot >= p->nslots || p->dma_dev.blocked) return -1;
+#ifndef AHCI_NEGCTL_MIX_NONQUEUED
+    if ((!s->ncq && p->active_mask) ||
+        (s->ncq && (p->active_mask & ~p->ncq_mask))) return BLK_E_AGAIN;
+#endif
+    struct ahci_slot *command = &p->slot[slot];
+    if (command->mapping || command->state == AHCI_SLOT_ACTIVE) return BLK_E_AGAIN;
+    command->cur = *s;
+    command->attempt = 0;
+    command->timeouts = 0;
     if (s->bytes) {
-        p->mapping = dma_map_kernel(&p->dma_dev, s->buf, s->bytes,
-            s->write ? DMA_TO_DEVICE : DMA_FROM_DEVICE, 0);
-        if (!p->mapping) return -1;
+        command->mapping = dma_map_kernel(&p->dma_dev, s->buf, s->bytes,
+                                          s->write ? DMA_TO_DEVICE : DMA_FROM_DEVICE, 0);
+        if (!command->mapping) return -1;
     }
-    int rc = ahci_issue(p);
-    if (rc) ahci_unmap(p); /* no doorbell was written */
+    int rc = ahci_issue(p, slot);
+    if (rc) ahci_unmap(p, slot);
     return rc;
 }
 
-/* One look, WITH the retry. 1 = done, 0 = still running (possibly re-issued
- * after a recovery), -1 = gave up. `expired` is the caller's verdict on the
- * deadline, because the two callers measure time differently and cannot both
- * be right with one rule: the block path has a live PIT and uses milliseconds,
- * bring-up runs with IF=0 where the tick does not advance and must count spins
- * instead. A single ms deadline would simply never fire during init.
- *
- * The retry itself is ata.c's 8x loop and CLAUDE.md records why it is there:
- * under -smp TCG the AP's framebuffer present contends the big QEMU lock and
- * delays the device thread past a bounded poll, which surfaces as a
- * nondeterministic "file not found" rather than as an I/O error. The recovery
- * between attempts is the part ata.c does not need -- a timed-out AHCI command
- * leaves CI set and SERR latched, and re-issuing into that state fails
- * forever. */
-static int ahci_step(struct ahci_port *p, int expired)
+/* Publish successful DMA before any device-wide quiesce invalidates its token.
+ * A refused completion remains a failure; fabricated success loses read data. */
+static int ahci_complete_slot(struct ahci_port *p, unsigned slot)
 {
-    int r = ahci_check(p);
-    if (r == 1) {
-        if (p->mapping && dma_mapping_complete(p->mapping, p->map_token, p->cur.bytes))
-            panic("ahci: invalid DMA completion ownership");
-        ahci_unmap(p);
-        return 1;
+    struct ahci_slot *command = &p->slot[slot];
+    int status = 0;
+    if (command->mapping &&
+        dma_mapping_complete(command->mapping, command->map_token, command->cur.bytes))
+        status = -1;
+    ahci_unmap(p, slot);
+    command->state = status ? AHCI_SLOT_FAILED : AHCI_SLOT_DONE;
+    if (command->req) command->req->status = status;
+    p->active_mask &= ~(1u << slot);
+    p->ncq_mask &= ~(1u << slot);
+    return status;
+}
+
+/* Exhausted retry or restart failure is terminal for the whole port. Confirm
+ * stop BEFORE releasing any caller mapping; blocked remains set permanently.
+ * Existing callers own request storage until their normal blk_poll consumes it. */
+static int ahci_fail_port(struct ahci_port *p)
+{
+    port_quiesce(p);
+    for (unsigned slot = 0; slot < p->nslots; slot++) {
+        struct ahci_slot *command = &p->slot[slot];
+        if (command->state != AHCI_SLOT_ACTIVE) continue;
+        ahci_unmap(p, slot);
+        command->state = AHCI_SLOT_FAILED;
+        if (command->req) command->req->status = -1;
     }
-    if (r == 0 && !expired) return 0;
-    if (++p->attempt >= AHCI_RETRIES) {
-        port_quiesce(p); ahci_unmap(p); return -1;
+    p->active_mask = 0;
+    p->ncq_mask = 0;
+    return -1;
+}
+
+/* A link reset is counted separately from engine restart. FRE must be running
+ * for the signature FIS; port_link_reset preserves the old SCTL speed limits.
+ * Source: Linux v6.12 libahci.c ahci_hardreset and AHCI 1.3.1 10.1.2. */
+static int ahci_reset_link(struct ahci_port *p, const char *reason)
+{
+    uint32_t signature;
+    p->st.resets++;
+    kprintf("[ahci] %s: COMRESET (%s)\n", p->name, reason);
+    /* READ LOG failure may already have quiesced the entire DMA context.
+     * COMRESET needs FRE for its signature FIS, so renew METADATA ownership
+     * before enabling that receiver. Streaming maps stay quiesced, ST stays 0.
+     * Afterwards acknowledge FR=0 again before invalidating metadata's token:
+     * the initial engine stop does not cover this newly enabled FIS receiver.
+     * AHCI 1.3.1 3.3.7 / 10.1.2; same FRE-before-signature rule as bring-up. */
+    if (p->dma_dev.blocked) {
+        if (dma_device_resume(&p->dma_dev) || !dma_buffer_submit(p->metadata)) return -1;
     }
-    port_recover(p); /* retain the mapping while the same command is retried */
-    if (ahci_issue(p) != 0) {
-        port_quiesce(p); ahci_unmap(p); return -1;
+    int result = port_link_reset(p->reg, &signature);
+    port_quiesce(p);
+    return result || signature != SIG_SATA ? -1 : 0;
+}
+
+/* Read ACS NCQ Command Error log (address 10h, one 512-byte sector) in the
+ * reserved slot. No recursive recovery here: failure goes back to the owner,
+ * which COMRESETs before replaying. Source: Linux v6.12 libata-sata.c
+ * ata_eh_read_log_10h / ata_eh_analyze_ncq_error (moved there from libata-eh.c
+ * in 2020); byte0 NQ means no valid tag.
+ * https://github.com/torvalds/linux/blob/v6.12/drivers/ata/libata-sata.c */
+static int ahci_read_log10(struct ahci_port *p, struct ahci_ncq_err *out)
+{
+    /* 512-byte alignment keeps this single-sector log within one CPU page,
+     * so a scattered kernel stack cannot require a second PRD for the log. */
+    uint8_t log[512] __attribute__((aligned(512)));
+    unsigned slot = p->nslots - 1;
+    struct ahci_cmdspec spec = {0x2f, 0, 0x10, 1, log, sizeof log, 0, 0};
+    if (ahci_begin(p, slot, &spec)) return -1;
+    /* ahci_begin/ahci_issue already assigned this slot the normal 8000 ms
+     * command budget. The former separate 1000 ms limit had no device/spec
+     * basis: a valid slow log would cause an unnecessary COMRESET and lose
+     * selective retry attribution. Keep the same deadline and SPIN_CMD bound
+     * as other commands, without extending it on each observation.
+     * Policy tested in the host model, not verified on X79-VG4 hardware. */
+    uint64_t deadline = p->slot[slot].deadline;
+#ifdef AHCI_NEGCTL_LOG_SHORT_BUDGET
+    deadline = link_ms() + 1000;
+#endif
+    int result = 0;
+    for (long spin = 0; spin < SPIN_CMD; spin++) {
+        result = ahci_check(p, slot);
+        if (result || link_ms() >= deadline) break;
+        AHCI_PAUSE();
     }
+    if (result != 1) {
+        port_quiesce(p);
+        ahci_unmap(p, slot);
+        p->slot[slot].state = AHCI_SLOT_FREE;
+        p->active_mask &= ~(1u << slot);
+        return -1;
+    }
+    if (ahci_complete_slot(p, slot)) return -1;
+    p->slot[slot].state = AHCI_SLOT_FREE;
+    if (log[0] & 0x80) return -1;
+    out->tag = log[0] & 31;
+    out->status = log[2];
+    out->error = log[3];
+    out->lba = (uint64_t)log[4] | (uint64_t)log[5] << 8 | (uint64_t)log[6] << 16 |
+               (uint64_t)log[8] << 24 | (uint64_t)log[9] << 32 | (uint64_t)log[10] << 40;
     return 0;
 }
 
-/* Begin + step to completion, for the bring-up path only (IDENTIFY).
- *
- * A spin count, not a millisecond deadline, for the reason above; and it keeps
- * its own IF/no-preempt handling because it runs from blk_init() before any
- * blk_req exists. Every OTHER caller reaches the same two functions through
- * blkdev.c, so there is one state machine with two drivers of it and not two
- * implementations. */
-static int ahci_run(struct ahci_port *p, const struct ahci_cmdspec *s)
+/* Recover the entire port, attributing retry cost to the failing NCQ tag only.
+ * Completed maps MUST be consumed before dma_device_quiesced: it invalidates
+ * ALL tokens, not just the tag being polled. Source: AHCI 1.3.1 6.2.2;
+ * Linux v6.12 libahci.c ahci_kick_engine and libata-sata.c ata_eh_analyze_ncq_error.
+ * Model/QEMU evidence only, not verified on X79-VG4 hardware. */
+static int ahci_recover(struct ahci_port *p, int cause)
 {
-    uint64_t fl; __asm__ volatile ("pushfq; pop %0" : "=r"(fl) :: "memory");
+    if (p->recovering) return ahci_fail_port(p);
+    /* The old READ LOG wait inherited IF=0 from ordinary blk_poll's medium
+     * gate. Its 8000 ms deadline then froze on the PIT fallback, leaving only
+     * SPIN_CMD as a limit. Cover the WHOLE recovery (including COMRESET's
+     * minimum hold time) with the same busy-before-STI discipline as
+     * blkdev.c wait_locked and ahci_run. The AHCI ISR never takes that gate;
+     * g_ata_busy prevents scheduling while its recovery owner enables IRQs.
+     * Restore IF before dropping busy, even on fail-stop cleanup returns.
+     * IF is RFLAGS bit 9 (Intel SDM Vol. 3A, 6.3.2); clock fallback is in
+     * c/kernel/core/ktime.c time_mono_ns. Model evidence only:
+     * not verified on X79-VG4 hardware. */
+    uint64_t flags;
+    AHCI_FLAGS(flags);
     __atomic_fetch_add(&g_ata_busy, 1, __ATOMIC_RELAXED);
-    __asm__ volatile ("sti");
-
-    int rc = -1;
-    if (ahci_begin(p, s) == 0) {
-        long i = 0;
-        int last = p->attempt;
-        for (;;) {
-            int st = ahci_step(p, i >= SPIN_CMD);
-            if (st) { rc = (st == 1) ? 0 : -1; break; }
-            if (p->attempt != last) { last = p->attempt; i = 0; }  /* re-issued: fresh budget */
-            else i++;
-            __asm__ volatile ("pause");
+#ifndef AHCI_NEGCTL_RECOVERY_IF0
+    AHCI_STI();
+#endif
+    int result;
+    p->recovering = 1;
+    p->st.errors++;
+    p->st.recoveries++;
+    uint32_t queued = p->ncq_mask;
+    uint32_t active = p->active_mask;
+    /* Correction to the old "some HBAs clear CI" claim: AHCI 1.3.1 6.2.2.2
+     * requires stop to reset BOTH CI and SACT. Snapshot before clearing ST;
+     * after CR/FR acknowledge, DMA cannot race the successful unmaps.
+     * A clear CI alone does not validate nonqueued data: short PRDBC or ERR
+     * must remain a retry, never publish bytes the device did not transfer.
+     * https://www.intel.com/content/dam/www/public/us/en/documents/technical-specifications/serial-ata-ahci-spec-rev1-3-1.pdf */
+    uint32_t running_ncq = r32(p->reg, P_SACT);
+    uint32_t running_dma = r32(p->reg, P_CI);
+    uint32_t taskfile = r32(p->reg, P_TFD);
+    uint32_t interrupts = __atomic_load_n(&p->is_latched, __ATOMIC_ACQUIRE);
+#ifndef AHCI_NEGCTL_RECOVER_NO_STOP
+    if (port_stop(p)) {
+        dma_device_quarantine(&p->dma_dev);
+        panic("ahci: DMA stop unconfirmed; caller memory cannot be reused");
+    }
+#endif
+#ifdef AHCI_NEGCTL_RECOVER_POSTSTOP_SNAPSHOT
+    running_ncq = r32(p->reg, P_SACT);
+    running_dma = r32(p->reg, P_CI);
+#endif
+#ifdef AHCI_NEGCTL_COMPLETE_AFTER_QUIESCE
+    dma_device_quiesced(&p->dma_dev);
+#endif
+    for (unsigned slot = 0; slot < p->nslots; slot++) {
+        uint32_t bit = 1u << slot;
+        if (!(active & bit)) continue;
+        struct ahci_slot *command = &p->slot[slot];
+        uint32_t running = command->cur.ncq ? running_ncq : running_dma;
+        if (running & bit) continue;
+#ifndef AHCI_NEGCTL_RECOVER_SHORT_SUCCESS
+        if (!command->cur.ncq) {
+            const uint32_t *header = (const uint32_t *)(p->dma + slot * 32);
+            dma_rmb();
+            if ((taskfile & TFD_ERR) || (interrupts & (IS_TFES | AHCI_IS_FATAL)) ||
+                (!command->cur.write && header[1] < command->cur.bytes)) continue;
+        }
+#endif
+        (void)ahci_complete_slot(p, slot);
+    }
+    active = p->active_mask;
+    uint32_t serr = r32(p->reg, P_SERR);
+    uint32_t tfd = r32(p->reg, P_TFD);
+#ifdef AHCI_NEGCTL_RECOVER_CLEAR_ORDER
+    w32(p->reg, P_IS, r32(p->reg, P_IS));
+#endif
+    w32(p->reg, P_SERR, UINT32_MAX);
+    ahci_clear_errors(p);
+    int reset = 0;
+    if (tfd & (TFD_BSY | TFD_DRQ)) {
+        if (p->cap & CAP_SCLO) {
+            /* CLO is legal only with ST=0; wait for hardware self-clear
+             * (AHCI 1.3.1 3.3.7; Linux v6.12 libahci.c ahci_kick_engine).
+             * Correction to the planned "CLO replaces COMRESET" rule:
+             * clearing the HBA's BSY/DRQ shadow does NOT stop the device's
+             * command. Even successful CLO must be followed by device reset
+             * before replay. We use COMRESET, not an unimplemented SRST FIS
+             * sequence (AHCI 1.3.1 6.2.2.1/6.2.2.2 and 10.4.1).
+             * https://www.intel.com/content/dam/www/public/us/en/documents/technical-specifications/serial-ata-ahci-spec-rev1-3-1.pdf
+             * Model evidence only, not verified on X79-VG4 hardware. */
+            w32(p->reg, P_CMD, r32(p->reg, P_CMD) | CMD_CLO);
+            if (wait_clear(p->reg, P_CMD, CMD_CLO, SPIN_INIT, 500)) reset = 1;
+        } else reset = 1;
+#ifndef AHCI_NEGCTL_CLO_NO_RESET
+        reset = 1;
+#endif
+    }
+    if (cause == AHCI_RC_TIMEOUT) {
+        /* Correction to the planned "first timeout only stop/start" rule:
+         * ST=0 clears HBA CI/SACT, but a disk with BSY=0 may still own every
+         * NCQ tag. CLO only clears the HBA taskfile busy handshake. Reusing
+         * those tags without cancelling the DEVICE queue can duplicate I/O.
+         * Reset on the FIRST NCQ timeout, before any replay; only a reported
+         * NCQ error can instead use the READ LOG 10h cancellation path below.
+         * Source: libATA Developer's Guide, "Unknown error (timeout)":
+         * https://www.kernel.org/doc/html/latest/driver-api/libata.html#unknown-error-timeout
+         * Model evidence only, not verified on X79-VG4 hardware. */
+#ifndef AHCI_NEGCTL_NCQ_TIMEOUT_NO_RESET
+        if (queued & active) reset = 1;
+#endif
+        for (unsigned slot = 0; slot < p->nslots; slot++) {
+            if ((active & (1u << slot)) && p->slot[slot].timeouts >= 2) reset = 1;
         }
     }
+    if (cause == AHCI_RC_FATAL) reset = 1;
+    if (reset && ahci_reset_link(p, cause == AHCI_RC_TIMEOUT ?
+                                "command timeout" : "busy/fatal error")) goto failed;
+    dma_device_quiesced(&p->dma_dev);
+    if (dma_device_resume(&p->dma_dev) || !dma_buffer_submit(p->metadata)) goto failed;
+#ifdef AHCI_NEGCTL_RECOVER_LOG_BEFORE_START
+    if (queued && cause == AHCI_RC_TFES && !reset) {
+        struct ahci_ncq_err error;
+        p->active_mask = 0;
+        p->ncq_mask = 0;
+        (void)ahci_read_log10(p, &error);
+    }
+#endif
+    if (port_start(p)) goto failed;
 
-    if (!(fl & 0x200)) __asm__ volatile ("cli");        /* restore the caller's IF */
+    /* Suspend software masks while the reserved nonqueued log command runs.
+     * Data slots and their mappings remain private to this recovery owner. */
+    p->active_mask = 0;
+    p->ncq_mask = 0;
+    int tag = -1;
+    if (queued && cause == AHCI_RC_TFES && !reset) {
+#ifndef AHCI_NEGCTL_NO_LOG10
+        struct ahci_ncq_err error;
+        if (!ahci_read_log10(p, &error) && (active & (1u << error.tag))) {
+            tag = error.tag;
+            kprintf("[ahci] %s: ncq error tag=%u status=%02x error=%02x lba=%llu "
+                    "serr=%x tfd=%x -> retry %u/8\n",
+                    p->name, error.tag, error.status, error.error,
+                    (unsigned long long)error.lba, serr, tfd, p->slot[tag].attempt + 1);
+        } else {
+            /* Failed log DMA must be stopped before COMRESET and metadata
+             * ownership renewed again. NQ/invalid tags never guess a victim. */
+            port_quiesce(p);
+            if (ahci_reset_link(p, "NCQ log unavailable")) goto failed;
+            if (dma_device_resume(&p->dma_dev) || !dma_buffer_submit(p->metadata) ||
+                port_start(p)) goto failed;
+            ahci_clear_errors(p);
+        }
+#endif
+    }
+    (void)serr; /* NO_LOG10 control omits the diagnostic that consumes it. */
+    if (queued && ++p->ncq_recoveries >= 3 && p->qdepth > 1) {
+        p->qdepth = 1;
+        blk_set_queue_depth(p->block, 1);
+        kprintf("[ahci] %s: ncq disabled after repeated errors\n", p->name);
+    }
+    for (unsigned slot = 0; slot < p->nslots; slot++) {
+        if (!(active & (1u << slot))) continue;
+        if (tag < 0 || tag == (int)slot) p->slot[slot].attempt++;
+        if (p->slot[slot].attempt >= AHCI_RETRIES) goto failed;
+    }
+    for (unsigned slot = 0; slot < p->nslots; slot++) {
+        if (!(active & (1u << slot))) continue;
+        if (ahci_issue(p, slot)) goto failed;
+    }
+    p->recovering = 0;
+    result = 0;
+    goto out;
+failed:
+    p->recovering = 0;
+    result = ahci_fail_port(p);
+out:
+    if (!(flags & 0x200)) AHCI_CLI();
+    __atomic_fetch_sub(&g_ata_busy, 1, __ATOMIC_RELAXED);
+    return result;
+}
+
+/* Drive one slot once. A recovery may finish a sibling, but the block layer
+ * alone publishes BLK_REQ_DONE and removes its own list entry under the gate. */
+static int ahci_step(struct ahci_port *p, unsigned slot, int expired)
+{
+    struct ahci_slot *command = &p->slot[slot];
+    if (command->state == AHCI_SLOT_DONE) return 1;
+    if (command->state == AHCI_SLOT_FAILED) return -1;
+    int result = ahci_check(p, slot);
+    if (result == 1) {
+        uint32_t events = __atomic_load_n(&p->irq_events, __ATOMIC_ACQUIRE);
+        /* Previously compared events to irq_start for the whole port. A
+         * sibling's early IRQ then hid this slot's later polling completion.
+         * Count each command by whether the ISR observed THIS slot finished;
+         * issue resets its bit when the slot is reused, including chunking.
+         * Model evidence only: not verified on X79-VG4 hardware. */
+#ifdef AHCI_NEGCTL_POLL_PORT_GENERATION
+        if (events == command->irq_start) p->st.poll_done++;
+#else
+        uint32_t completed = __atomic_load_n(&p->irq_completed, __ATOMIC_ACQUIRE);
+        if (!(completed & (1u << slot))) p->st.poll_done++;
+#endif
+        /* Only the MSI destination owns the idle generation. An AP completing
+         * a sibling must not consume the BSP's wake-up between poll and HLT;
+         * that would turn a delivered MSI into a whole timer-tick delay. */
+        if (p->ctl && p->ctl->irq_armed && lapic_id() == p->ctl->irq_cpu)
+            p->irq_seen = events;
+        return ahci_complete_slot(p, slot) ? -1 : 1;
+    }
+    if (!result && !expired) return 0;
+    int cause = AHCI_RC_TFES;
+    if (!result) {
+        command->timeouts++;
+        cause = AHCI_RC_TIMEOUT;
+    } else if (__atomic_load_n(&p->is_latched, __ATOMIC_ACQUIRE) & AHCI_IS_FATAL) {
+        cause = AHCI_RC_FATAL;
+    }
+    if (ahci_recover(p, cause)) return -1;
+    if (command->state == AHCI_SLOT_DONE) return 1;
+    if (command->state == AHCI_SLOT_FAILED) return -1;
+    return 0;
+}
+
+/* Internal IDENTIFY uses the reserved slot and the same command/DMA state
+ * machine as block I/O. Temporarily enable IF even during kmain, preserving
+ * the busy-before-sti order that prevents preemption during a storage wait. */
+static int ahci_run(struct ahci_port *p, const struct ahci_cmdspec *s)
+{
+    uint64_t flags;
+    AHCI_FLAGS(flags);
+    __atomic_fetch_add(&g_ata_busy, 1, __ATOMIC_RELAXED);
+    AHCI_STI();
+    unsigned slot = p->nslots - 1;
+    int rc = -1;
+    if (!ahci_begin(p, slot, s)) {
+        long spins = 0;
+        unsigned attempt = p->slot[slot].attempt;
+        for (;;) {
+            int result = ahci_step(p, slot, spins >= SPIN_CMD);
+            if (result) {
+                rc = result == 1 ? 0 : -1;
+                break;
+            }
+            if (p->slot[slot].attempt != attempt) {
+                attempt = p->slot[slot].attempt;
+                spins = 0;
+            } else spins++;
+            AHCI_PAUSE();
+        }
+    }
+    if (!(flags & 0x200)) AHCI_CLI();
     __atomic_fetch_sub(&g_ata_busy, 1, __ATOMIC_RELAXED);
     return rc;
 }
 
-/* --------------------------------------------------------------------------
- * Block device ops
- * ------------------------------------------------------------------------ */
+/* HLT is useful only on the MSI destination CPU. An AP otherwise waits for its
+ * 1.6--5.4 ms local tick while g_ata_busy prevents scheduling: much slower than
+ * PAUSE for microsecond I/O. Check events with IF clear; STI/HLT are adjacent.
+ * This is interrupt-assisted waiting, not a scheduler handoff. */
+static void ahci_blk_idle(void *ctx)
+{
+    struct ahci_port *p = ctx;
+    int destination = p->ctl && p->ctl->irq_armed && lapic_id() == p->ctl->irq_cpu;
+#ifdef AHCI_NEGCTL_IDLE_ANY_CPU
+    destination = 1;
+#endif
+    if (!p->ctl || !p->ctl->irq_armed || !destination) {
+        AHCI_PAUSE();
+        return;
+    }
+    AHCI_CLI();
+    uint32_t events = __atomic_load_n(&p->irq_events, __ATOMIC_ACQUIRE);
+    (void)events; /* IDLE_NO_GUARD control deliberately omits this observation. */
+#ifndef AHCI_NEGCTL_IDLE_NO_GUARD
+    if (events != p->irq_seen) {
+        p->irq_seen = events;
+        AHCI_STI();
+        return;
+    }
+#endif
+    AHCI_HALT();
+}
 
-static void ahci_count_cmd(struct ahci_port *p);   /* defined below, with its rationale */
-
-/* Start the chunk at r->done. The chunking that used to be ahci_rw()'s while
- * loop is now this function plus the "issue the next one" branch in
- * ahci_blk_poll -- same bounds, same commands, driven across returns. */
+/* Start one bounded chunk while retaining the request's tag across chunks.
+ * DMA mappings cap chunks at 1 MiB; do not split further just to fill a queue.
+ * ACS FPDMA 60h/61h is selected only for LBA48 data commands. */
 static int ahci_begin_chunk(struct ahci_port *p, struct blk_req *r)
 {
-    struct ahci_cmdspec s;
-    s.write = (r->op == BLK_OP_WRITE);
-
+    struct ahci_cmdspec spec = {0};
+    spec.write = r->op == BLK_OP_WRITE;
     if (r->op == BLK_OP_FLUSH) {
-        /* FLUSH CACHE (EXT) -- the barrier the journal's ordering rests on. A
-         * SATA disk has a writeback cache by default, so a completed WRITE DMA
-         * means the drive accepted the data, not that a platter holds it. */
-        s.command = p->lba48 ? ATA_FLUSH_EXT : ATA_FLUSH;
-        s.lba = 0; s.sectors = 0; s.buf = NULL; s.bytes = 0; s.write = 0;
-        r->chunk = 0;
-        int frc = ahci_begin(p, &s);
-        if (frc == 0) ahci_count_cmd(p);
-        return frc;
+        spec.command = p->lba48 ? ATA_FLUSH_EXT : ATA_FLUSH;
+    } else {
+        uint64_t lba = r->dev_lba + r->done;
+        uint32_t count = r->count - r->done;
+        if (count > DMA_MAX_MAPPING / 512) count = DMA_MAX_MAPPING / 512;
+        if (!p->lba48) {
+            if (count > 255) count = 255;
+            if (lba + count > (1u << 28)) return -1;
+        }
+        /* Finish already-owned NCQ requests in their original protocol after
+         * reducing admission depth. Waiting here for a sibling's poll would
+         * deadlock blk_submit: under throttling it drives ONLY the oldest
+         * request, which may be this multi-chunk one. New requests use DMA EXT
+         * once the old request list drains; no new NCQ work is admitted. */
+        int continuing_ncq = r->done && p->slot[r->tag].cur.ncq;
+        spec.ncq = p->lba48 && (p->qdepth >= 2 || continuing_ncq);
+        spec.command = spec.ncq ? (spec.write ? 0x61 : 0x60) :
+                       p->lba48 ? (spec.write ? ATA_WRITE_DMA_EXT : ATA_READ_DMA_EXT) :
+                       (spec.write ? ATA_WRITE_DMA : ATA_READ_DMA);
+        spec.lba = lba;
+        spec.sectors = count;
+        spec.bytes = count * 512u;
+        spec.buf = (uint8_t *)r->buf + (size_t)r->done * 512;
     }
-
-    uint64_t lba = r->dev_lba + r->done;
-    uint32_t n   = r->count - r->done;
-
-    /* Bound each command by the smallest of: what the PRDT can describe, what
-     * the sector-count field can express, and (for a drive without LBA48) what
-     * the 28-bit addressing can reach. */
-    /* DMA mappings are bounded to 1 MiB, independently of the larger ATA
-     * command/PRDT limits described in the historical NCQ note above. */
-    uint32_t prd_max = DMA_MAX_MAPPING / 512;
-    if (n > prd_max) n = prd_max;
-    if (p->lba48) { if (n > 65535) n = 65535; }
-    else {
-        if (n > 255) n = 255;
-        if (lba + n > (1u << 28)) return -1;
-    }
-
-    s.command = p->lba48 ? (s.write ? ATA_WRITE_DMA_EXT : ATA_READ_DMA_EXT)
-                         : (s.write ? ATA_WRITE_DMA     : ATA_READ_DMA);
-    s.lba     = lba;
-    s.sectors = n;
-    s.buf     = (uint8_t *)r->buf + (uint64_t)r->done * 512;
-    s.bytes   = n * 512u;
-    r->chunk  = n;
-    int rc = ahci_begin(p, &s);
-    if (rc == 0) ahci_count_cmd(p);
-    return rc;
+    spec.tag = (uint8_t)r->tag;
+    r->chunk = spec.sectors;
+    return ahci_begin(p, r->tag, &spec);
 }
 
-/* Count the command this request just started, and say so the FIRST time a
- * request needs a second one.
- *
- * A one-shot rather than a counter somebody has to go and read, and printed by
- * the driver itself rather than behind a trigger, for the reason the browser's
- * painted-text dump was built that way: an instrument whose trigger has to be
- * remembered is an instrument that reports nothing on the run that mattered.
- * The absence of this line over a whole boot IS the measurement -- it says
- * every request was one command, and therefore that a 32-deep queue would have
- * held exactly one entry. */
-static void ahci_count_cmd(struct ahci_port *p)
-{
-    p->req_cmds++;
-    /* Only "was it ever more than one" is recorded, and no running maximum:
-     * that is the whole question NCQ turns on, and a deepest-so-far field with
-     * no reader would be state carried for its own sake. */
-    if (p->req_cmds > 1 && !p->reported_multi) {
-        p->reported_multi = 1;
-        kprintf("[ahci] %s: a request needed a %d%s command (%u sectors) -- "
-                "NCQ would have had something to queue here\n",
-                p->name, (int)p->req_cmds,
-                p->req_cmds == 2 ? "nd" : (p->req_cmds == 3 ? "rd" : "th"),
-                (unsigned)p->cur.sectors);
-    }
-}
-
+/* Admission may refuse temporarily without changing a live queue. Block bounds
+ * include partition translation; recheck against the disk's IDENTIFY capacity. */
 static int ahci_blk_submit(void *ctx, struct blk_req *r)
 {
-    struct ahci_port *p = (struct ahci_port *)ctx;
-    /* blkdev.c has already bounded the request against the blkdev's length; this
-     * bounds it against what the PORT reported, which is the number that came
-     * from IDENTIFY and is the one a lying partition table cannot inflate. */
-    if (r->op != BLK_OP_FLUSH) {
-        if (r->count == 0) return -1;
-        if (r->dev_lba >= p->nsectors || (uint64_t)r->count > p->nsectors - r->dev_lba)
-            return -1;
-    }
-    p->req_cmds = 0;                /* a new request; the depth count starts over */
-    return ahci_begin_chunk(p, r);
+    struct ahci_port *p = ctx;
+    if (p->dma_dev.blocked) return -1;
+    if (r->op != BLK_OP_FLUSH &&
+        (!r->count || r->dev_lba >= p->nsectors ||
+         r->count > p->nsectors - r->dev_lba)) return -1;
+    int ncq = r->op != BLK_OP_FLUSH && p->qdepth >= 2 && p->lba48;
+    int slot = ahci_slot_alloc(p, ncq);
+#ifdef AHCI_NEGCTL_MIX_NONQUEUED
+    if (!ncq && p->active_mask) slot = (int)p->nslots - 1;
+#endif
+    if (slot < 0) return BLK_E_AGAIN;
+    r->tag = (uint32_t)slot;
+    p->slot[slot].req = r;
+    int result = ahci_begin_chunk(p, r);
+    if (result) p->slot[slot].req = NULL;
+    return result;
 }
 
+/* Reap only the caller's slot. Queue recovery can have completed it already;
+ * terminal slots remain reserved until this callback consumes that result. */
 static int ahci_blk_poll(void *ctx, struct blk_req *r)
 {
-    struct ahci_port *p = (struct ahci_port *)ctx;
-    int st = ahci_step(p, timer_ms() > p->deadline);
-    if (st == 0) return 0;
-    if (st < 0) { r->status = -1; return 1; }
-
-    r->done += r->chunk;
-    if (r->op != BLK_OP_FLUSH && r->done < r->count) {
-        if (ahci_begin_chunk(p, r) != 0) { r->status = -1; return 1; }
-        return 0;                                       /* the next chunk is in flight */
+    struct ahci_port *p = ctx;
+    if (r->tag >= p->nslots) {
+        r->status = -1;
+        return 1;
     }
-    r->status = 0;
+    struct ahci_slot *command = &p->slot[r->tag];
+    int result = ahci_step(p, r->tag, link_ms() > command->deadline);
+    if (!result) return 0;
+    if (result > 0) {
+        r->done += r->chunk;
+        if (r->op != BLK_OP_FLUSH && r->done < r->count) {
+            if (!ahci_begin_chunk(p, r)) return 0;
+            result = -1;
+        }
+    }
+    r->status = result < 0 ? -1 : 0;
+    command->req = NULL;
+    command->state = AHCI_SLOT_FREE;
     return 1;
 }
 
-static const struct blk_ops ahci_ops = { .submit = ahci_blk_submit, .poll = ahci_blk_poll };
+static const struct blk_ops ahci_ops = {
+    .submit = ahci_blk_submit,
+    .poll = ahci_blk_poll,
+    .idle = ahci_blk_idle,
+};
 
 /* --------------------------------------------------------------------------
  * Discovery
@@ -1069,7 +1595,7 @@ static int port_identify(struct ahci_port *p)
 {
     static uint16_t id[256] __attribute__((aligned(64)));   /* identity mapped DMA target */
     memset(id, 0, sizeof id);
-    struct ahci_cmdspec s = { ATA_IDENTIFY, 0, 0, 0, id, sizeof id };
+    struct ahci_cmdspec s = { ATA_IDENTIFY, 0, 0, 0, id, sizeof id, 0, 0 };
     if (ahci_run(p, &s) != 0) return -1;
     uint64_t sector_bytes = ahci_identify_sector_bytes(id);
     if (sector_bytes != 512) {
@@ -1079,6 +1605,7 @@ static int port_identify(struct ahci_port *p)
     }
 
     p->lba48 = (id[83] & (1u << 10)) ? 1 : 0;
+    p->ncq_words = id[75] | (uint32_t)id[76] << 16;
     uint64_t caps = p->lba48
         ? ((uint64_t)id[100] | ((uint64_t)id[101] << 16) | ((uint64_t)id[102] << 32) | ((uint64_t)id[103] << 48))
         : ((uint64_t)id[60] | ((uint64_t)id[61] << 16));
@@ -1106,6 +1633,40 @@ static const char *sig_name(uint32_t sig)
     }
 }
 
+/* No model-specific exceptions are justified yet. Linux v6.12 libata-core.c
+ * ata_device_blacklist uses ATA_HORKAGE_NONCQ for measured drive defects.
+ * Add a prefix only with a cited failure; never guess from the Netac brand.
+ * Model/QEMU evidence only: not verified on X79-VG4 hardware. */
+static const char *const ahci_ncq_horkage[] = { NULL };
+
+/* Keep IDENTIFY policy at the driver boundary. LBA28 cannot use FPDMA, and a
+ * known broken drive must remain usable through the existing DMA commands. */
+static void ahci_configure_queue(struct ahci_port *p)
+{
+    unsigned depth = ahci_ncq_depth(p->cap, p->ncq_words);
+    const char *reason = p->lba48 ? "cap.sncq/word76/depth" : "LBA48 absent";
+    if (!p->lba48) depth = 0;
+    for (unsigned i = 0; ahci_ncq_horkage[i]; i++) {
+        const char *prefix = ahci_ncq_horkage[i];
+        unsigned length = 0;
+        while (prefix[length] && prefix[length] == p->model[length]) length++;
+        if (!prefix[length]) {
+            depth = 0;
+            reason = "model horkage";
+            break;
+        }
+    }
+    p->qdepth = depth ? depth : 1;
+    blk_set_queue_depth(p->block, p->qdepth);
+    if (depth) {
+        kprintf("[ahci] port %d: ncq on, depth %u (hba slots %u - 1 internal, drive %u) %s\n",
+                p->index, depth, p->nslots, (p->ncq_words & 31) + 1, p->name);
+    } else {
+        kprintf("[ahci] port %d: ncq off (%s, cap.sncq=%u word76=0x%x) %s\n",
+                p->index, reason, !!(p->cap & CAP_SNCQ), p->ncq_words >> 16, p->name);
+    }
+}
+
 /* Bring up one controller: claim MMIO/BOHC, quiesce every firmware engine,
  * enable BME, then initialise attached SATA disks. */
 static int ahci_bring_up(struct ahci_hba *dev)
@@ -1115,21 +1676,28 @@ static int ahci_bring_up(struct ahci_hba *dev)
 
     uint32_t cap, pi, vs;
     if (ahci_prepare_controller(dev, abar, &cap, &pi, &vs)) return 0;
+    if (g_nctls >= AHCI_MAX_HBA) return 0;
+    struct ahci_ctl *ctl = &g_ctls[g_nctls++];
+    ctl->dev = dev->model;
+    ctl->reg = abar;
+    ctl->pi = pi;
     int nports = (int)(cap & 0x1F) + 1;
     int ncs    = (int)((cap >> 8) & 0x1F) + 1;
 
     /* ncq= is new, and it is the answer to a question nothing in this tree
      * could ask before: SNCQ says whether the controller can queue at all and
-     * NCS says how deep. Printed even though the driver does not queue,
-     * because "we do not use it" and "the hardware does not have it" are
-     * different findings and only one of them is about this file. */
+     * NCS says how deep. The old comment said "the driver does not queue";
+     * correction: NCQ now uses up to NCS-1 data slots after IDENTIFY confirms
+     * support, reserving one internal slot. This line describes HBA capacity;
+     * the per-port diagnostic below reports the negotiated device depth. */
     kprintf("[ahci] %x:%x at %02x:%02x.%d abar=%x ver=%d.%d ports=%d impl=%x slots=%d "
-            "addr64=%s ncq=%s(%d deep, unused -- see the NCQ note in ahci.c)\n",
+            "addr64=%s ncq=%s(%d slots)\n",
             dev->vendor, dev->device, (int)dev->bus, (int)dev->slot, (int)dev->func,
             (unsigned)dev->abar,
             (int)(vs >> 16), (int)((vs >> 8) & 0xFF), nports, pi, ncs,
             (cap & CAP_S64A) ? "yes" : "no",
             (cap & CAP_SNCQ) ? "yes" : "no", ncs);
+    kprintf("[ahci] model/QEMU evidence only; not verified on X79-VG4 hardware\n");
 
     int found = 0;
     for (int i = 0; i < AHCI_MAX_PORTS && i < 32; i++) {
@@ -1167,10 +1735,11 @@ static int ahci_bring_up(struct ahci_hba *dev)
 
         struct ahci_port *p = &g_ports[g_ndisks];
         p->controller = dev->model;
+        p->ctl = ctl;
         p->index = i;
         p->reg   = pr;
         if (ahci_dma_init(p, cap)) { kprintf("[ahci] port %d: out of memory\n", i); continue; }
-        memset(p->dma, 0, 4096);
+        memset(p->dma, 0, p->metadata->size);
 
         if (port_stop(p) != 0) {
             kprintf("[ahci] port %d: engines would not stop (cmd=%x) -- skipped\n", i, r32(pr, P_CMD));
@@ -1221,6 +1790,7 @@ static int ahci_bring_up(struct ahci_hba *dev)
                 i, p->model, (unsigned)p->nsectors, (unsigned)(p->nsectors / 2048),
                 p->lba48 ? "yes" : "no");
         p->block = blk_register(p->name, &ahci_ops, p, p->nsectors);
+        ahci_configure_queue(p);
         g_ndisks++;
         found++;
     }
@@ -1264,12 +1834,281 @@ int ahci_init(void)
     return total;
 }
 
+/* Arm only after root mount and SMP. A read-only IDENTIFY witnesses actual
+ * delivery, not merely the vector allocation. kmain enters with IF=0: save,
+ * busy-before-sti, wait, then restore IF exactly as ahci_run does. Fifty ms is
+ * a delivery diagnostic budget, not a device command timeout.
+ * Not verified on X79-VG4 hardware. */
+static int ahci_irq_selftest(struct ahci_ctl *c)
+{
+    struct ahci_port *port = NULL;
+    for (int disk = 0; disk < g_ndisks; disk++) {
+        if (g_ports[disk].ctl == c && g_ports[disk].metadata) {
+            port = &g_ports[disk];
+            break;
+        }
+    }
+    if (!port) return -1;
+    uint16_t identify[256];
+    struct ahci_cmdspec spec = {ATA_IDENTIFY, 0, 0, 0, identify, sizeof identify, 0, 0};
+    uint64_t flags;
+    AHCI_FLAGS(flags);
+    __atomic_fetch_add(&g_ata_busy, 1, __ATOMIC_RELAXED);
+#ifndef AHCI_NEGCTL_SELFTEST_IF0
+    AHCI_STI();
+#endif
+    uint32_t before = __atomic_load_n(&port->irq_events, __ATOMIC_ACQUIRE);
+    uint64_t start = time_mono_ns();
+    uint64_t deadline = link_ms() + 50;
+    unsigned slot = port->nslots - 1;
+    int issued = ahci_begin(port, slot, &spec) == 0;
+    int done = 0;
+    if (issued) {
+        for (long spins = 0; spins < SPIN_CMD && link_ms() < deadline; spins++) {
+            int result = ahci_check(port, slot);
+            if (result == 1 && !done) {
+                done = ahci_complete_slot(port, slot) == 0;
+            }
+            if (done && __atomic_load_n(&port->irq_events, __ATOMIC_ACQUIRE) != before)
+                break;
+            AHCI_PAUSE();
+        }
+    }
+    uint64_t elapsed = (time_mono_ns() - start) / 1000;
+    int delivered = done && __atomic_load_n(&port->irq_events, __ATOMIC_ACQUIRE) != before;
+    if (delivered) {
+        kprintf("[ahci] irq selftest %s: msi delivered in %llu us\n",
+                port->name, (unsigned long long)elapsed);
+    } else {
+        kprintf("[ahci] irq selftest %s: NO INTERRUPT in 50 ms "
+            "(vec=%d is=%x pxis=%x ie=%x) -> polling\n",
+            port->name, c->dev->irq_vec, r32(c->reg, HBA_IS),
+            r32(port->reg, P_IS), r32(port->reg, P_IE));
+#ifndef AHCI_NEGCTL_NO_IRQ_FALLBACK
+        for (int disk = 0; disk < g_ndisks; disk++) {
+            if (g_ports[disk].ctl == c) w32(g_ports[disk].reg, P_IE, 0);
+        }
+        w32(c->reg, HBA_GHC, r32(c->reg, HBA_GHC) & ~GHC_IE);
+        c->irq_armed = 0;
+        (void)dev_irq_release(c->dev);
+#endif
+    }
+    /* The old code called ahci_fail_port at the 50 ms diagnostic boundary,
+     * permanently blocking a healthy but slow disk. Disable MSI independently,
+     * then drain IDENTIFY with the normal 8000 ms/retry policy. Its DMA buffer
+     * is on this stack and cannot escape, even on the polling fallback path. */
+    if (issued && !done) {
+        long spins = 0;
+        unsigned attempt = port->slot[slot].attempt;
+        for (;;) {
+            int expired = spins >= SPIN_CMD || link_ms() >= port->slot[slot].deadline;
+            if (ahci_step(port, slot, expired)) break;
+            if (port->slot[slot].attempt != attempt) {
+                attempt = port->slot[slot].attempt;
+                spins = 0;
+            } else {
+                spins++;
+            }
+            AHCI_PAUSE();
+        }
+    }
+    if (!(flags & 0x200)) AHCI_CLI();
+    __atomic_fetch_sub(&g_ata_busy, 1, __ATOMIC_RELAXED);
+    return delivered ? 0 : -1;
+}
+
+/* Compare sixteen disjoint 4 KiB reads against nonqueued serial reads. The
+ * original serial baseline still used NCQ and its failure was only printed;
+ * it could neither establish a safe fallback nor stop later queued writes.
+ * Return -2 when even DMA EXT fails, so attachment offlines that port instead
+ * of trusting a failed fallback. Both paths use the real block/DMA callbacks.
+ * This checks queue/tag integrity, not performance on this board. max_inflight
+ * counts unreaped requests: QEMU AIO may have already completed some of them.
+ * Not verified on X79-VG4 hardware. */
+static int ahci_ncq_selftest(struct ahci_port *p)
+{
+    if (p->qdepth < 2 || !p->block || p->dma_dev.blocked) return 0;
+    static uint8_t queued[16][4096];
+    static uint8_t serial[4096];
+    struct blk_span spans[16];
+    unsigned count = 0;
+    for (unsigned i = 0; i < 16; i++) {
+        uint64_t lba = (uint64_t)i * 2048;
+        if (lba + 8 > p->nsectors) continue;
+        spans[count] = (struct blk_span){lba, 8, queued[count], 0};
+        count++;
+    }
+    if (!count) return 0;
+    uint32_t saved_max = p->st.max_inflight;
+    p->st.max_inflight = 0;
+    uint64_t start = time_mono_ns();
+    int failed = blk_dev_batch(p->block, BLK_OP_READ, spans, count);
+    uint64_t queued_us = (time_mono_ns() - start) / 1000;
+    uint32_t maximum = p->st.max_inflight;
+    if (p->st.max_inflight < saved_max) p->st.max_inflight = saved_max;
+    /* blk_dev_batch has drained every request before returning. Only now may
+     * the protocol change: Linux v6.12 libata-core.c ata_std_qc_defer forbids
+     * mixing NCQ and nonqueued commands. Preserve any recovery-induced depth
+     * reduction rather than restoring the depth from before the queued test.
+     * kmain attaches before wm_run starts the scheduler; APs still wait for
+     * g_sched_ready in smp.c, so no cache writer can enter this interval. */
+    unsigned depth = p->qdepth;
+    p->qdepth = 1;
+    blk_set_queue_depth(p->block, 1);
+    int serial_failed = 0;
+    start = time_mono_ns();
+    for (unsigned i = 0; i < count; i++) {
+        if (blk_dev_read(p->block, spans[i].lba, 8, serial)) {
+            failed = 1;
+            serial_failed = 1;
+            continue;
+        }
+        for (unsigned byte = 0; byte < sizeof serial; byte++) {
+            if (serial[byte] != queued[i][byte]) {
+                failed = 1;
+                break;
+            }
+        }
+    }
+    uint64_t serial_us = (time_mono_ns() - start) / 1000;
+    kprintf("[ahci] ncq selftest %s: %u reads x 4 KiB: %llu us queued "
+            "(max in flight %u unreaped requests) vs %llu us serial; data identical: %s\n",
+            p->name, count, (unsigned long long)queued_us, maximum,
+            (unsigned long long)serial_us, failed ? "NO" : "yes");
+    /* Restore the candidate depth only for the attachment decision below;
+     * no I/O occurs between this return and handling the result. */
+    p->qdepth = depth;
+    blk_set_queue_depth(p->block, depth);
+    if (serial_failed) return -2;
+    return failed ? -1 : 0;
+}
+
+/* Keep HBA IE clear throughout root mount. Late attachment is MSI-only; an
+ * allocation that silently selects INTx is released rather than claimed as
+ * working MSI. Source: AHCI 1.3.1 10.7; Linux v6.12 libahci.c
+ * ahci_init_controller clears ports before the host latch and enables last. */
+void ahci_irq_attach(void)
+{
+    if (!lapic_ready()) return;
+    for (unsigned index = 0; index < g_nctls; index++) {
+        struct ahci_ctl *ctl = &g_ctls[index];
+        if (ctl->attach_tried) continue;
+        int busy = 0;
+        int disks = 0;
+        for (int disk = 0; disk < g_ndisks; disk++) {
+            if (g_ports[disk].ctl != ctl || !g_ports[disk].metadata) continue;
+            disks++;
+            if (g_ports[disk].active_mask) busy = 1;
+        }
+        if (busy) continue;
+        ctl->attach_tried = 1;
+        /* q35 may enumerate both the onboard HBA and a disk-bearing add-in
+         * HBA. An empty controller has no IDENTIFY delivery witness. */
+        if (!disks) continue;
+        struct device *dev = ctl->dev;
+        int available = dev && dev->cap_msi;
+#ifdef AHCI_NOIRQ
+        available = 0;
+#endif
+        if (available) {
+            ctl->irq_cpu = lapic_id();
+            int previous = dev_irq_prefer(DEV_IRQ_MSI);
+            int vector = dev_irq_request(dev, ahci_isr, ctl, "ahci");
+            dev_irq_prefer(previous);
+            if (vector < 0 || dev->irq_mode != DEV_IRQ_MSI) {
+                if (dev->irq_mode != DEV_IRQ_NONE) (void)dev_irq_release(dev);
+                available = 0;
+            }
+        }
+        if (available) {
+            for (unsigned port = 0; port < 32; port++) {
+                if (!(ctl->pi & (1u << port))) continue;
+                volatile uint8_t *reg = ctl->reg + 0x100 + port * 0x80;
+                w32(reg, P_IE, 0);
+                w32(reg, P_IS, r32(reg, P_IS));
+            }
+            w32(ctl->reg, HBA_IS, r32(ctl->reg, HBA_IS));
+            for (int disk = 0; disk < g_ndisks; disk++) {
+                struct ahci_port *port = &g_ports[disk];
+                if (port->ctl != ctl || !port->metadata) continue;
+                __atomic_store_n(&port->is_latched, 0, __ATOMIC_RELEASE);
+                w32(port->reg, P_IE, AHCI_PXIE_DEFAULT);
+            }
+            ctl->irq_armed = 1;
+            w32(ctl->reg, HBA_GHC, r32(ctl->reg, HBA_GHC) | GHC_IE);
+            (void)ahci_irq_selftest(ctl);
+        } else {
+            kprintf("[ahci] MSI unavailable -> polling\n");
+        }
+        for (int disk = 0; disk < g_ndisks; disk++) {
+            struct ahci_port *port = &g_ports[disk];
+            if (port->ctl != ctl || !port->metadata) continue;
+            int result = ahci_ncq_selftest(port);
+#ifndef AHCI_NEGCTL_SELFTEST_IGNORE_RESULT
+            if (result < 0) {
+                /* A successful status FIS cannot detect wrong data. Never
+                 * admit queued writes after a failed comparison, timeout or
+                 * read error. The drained DMA EXT baseline above is the only
+                 * fallback witness; a failed/blocked baseline stays offline.
+                 * Model/QEMU evidence, not verified on X79-VG4 hardware. */
+                port->qdepth = 1;
+                blk_set_queue_depth(port->block, 1);
+                kprintf("[ahci] %s: ncq disabled after failed selftest; depth 1\n",
+                        port->name);
+                if (result == -2 || port->dma_dev.blocked) {
+                    (void)ahci_fail_port(port);
+                    blk_dev_offline(port->block);
+                    kprintf("[ahci] %s: nonqueued fallback failed -> offline\n",
+                            port->name);
+                }
+            }
+#else
+            (void)result;
+#endif
+            char line[192];
+            if (ahci_diag(disk, line, sizeof line) >= 0)
+                kprintf("[ahci] %s\n", line);
+        }
+    }
+}
+
+/* Bounded snapshot in the pci_intx_diag style. irq/poll_done deliberately
+ * distinguish allocation from delivered interrupts on unfamiliar hardware. */
+int ahci_diag(int disk, char *buf, int max)
+{
+    if (disk < 0 || disk >= g_ndisks || !buf || max <= 0 || !g_ports[disk].metadata)
+        return -1;
+    struct ahci_port *p = &g_ports[disk];
+    return ksnprintf(buf, max,
+                     "%s ncq=%u irq=%s/%u spur=%u poll_done=%u maxq=%u err=%u rec=%u rst=%u",
+                     p->name, p->qdepth, p->ctl && p->ctl->irq_armed ? "msi" : "polled",
+                     __atomic_load_n(&p->irq_events, __ATOMIC_ACQUIRE),
+                     __atomic_load_n(&p->st.spurious, __ATOMIC_RELAXED),
+                     p->st.poll_done, p->st.max_inflight, p->st.errors,
+                     p->st.recoveries, p->st.resets);
+}
+
 /* BKL-held normal controller removal. Each port owns its DMA context, so a
  * different HBA and its in-flight requests remain unaffected. The block registry
  * retains offline objects so old filesystem/swap handles fail safely. */
 void ahci_shutdown(struct device *controller)
 {
     if (!controller) return;
+    /* dev_unbind currently releases the vector BEFORE remove. Mask sources
+     * here as well and stop using HLT, but the earlier release-to-remove window
+     * is a core lifecycle risk outside this driver's ownership. */
+    for (unsigned index = 0; index < g_nctls; index++) {
+        struct ahci_ctl *ctl = &g_ctls[index];
+        /* After the first remove, PCI decode is off. Polling controllers have
+         * never enabled these sources; an already disarmed HBA needs no MMIO. */
+        if (ctl->dev != controller || !ctl->irq_armed) continue;
+        ctl->irq_armed = 0;
+        for (unsigned port = 0; port < 32; port++) {
+            if (ctl->pi & (1u << port))
+                w32(ctl->reg + 0x100 + port * 0x80, P_IE, 0);
+        }
+        w32(ctl->reg, HBA_GHC, r32(ctl->reg, HBA_GHC) & ~GHC_IE);
+    }
     /* First close all upper-layer entry points on this controller. */
     for (int i = 0; i < g_ndisks; i++) {
         struct ahci_port *p = &g_ports[i];
@@ -1280,7 +2119,9 @@ void ahci_shutdown(struct device *controller)
         struct ahci_port *p = &g_ports[i];
         if (p->controller != controller || !p->metadata) continue;
         port_quiesce(p);
-        ahci_unmap(p);
+        for (unsigned slot = 0; slot < p->nslots; slot++) {
+            ahci_unmap(p, slot);
+        }
         if (dma_free_coherent(p->metadata)) panic("ahci: stopped metadata still owned");
         p->metadata = NULL; p->dma = NULL;
     }

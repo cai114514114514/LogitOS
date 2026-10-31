@@ -22,4 +22,10 @@ void ahci_shutdown(struct device *controller);
 /* Number of SATA disks brought up (0 before ahci_init). */
 int ahci_disk_count(void);
 
+/* Late MSI attachment: root mount deliberately runs before LAPIC availability.
+ * Idempotent; unsupported or undelivered MSI retains the polling path. */
+void ahci_irq_attach(void);
+/* One bounded diagnostic line; -1 means no live disk at this index. */
+int ahci_diag(int disk, char *buf, int max);
+
 #endif /* LOGIT_AHCI_H */

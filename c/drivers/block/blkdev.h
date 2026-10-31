@@ -4,6 +4,10 @@
 
 #include <stdint.h>
 #include "../core/io_lock.h"
+/* Boot callers already import this storage entry point for blk_init. Expose
+ * the late AHCI attachment declaration from its single authoritative header;
+ * kmain's only change is the post-dev_probe_all call, as the bring-up requires. */
+#include "ahci.h"
 
 /* The block layer: a registry of block devices, and the one device the
  * filesystem is mounted on.
@@ -55,7 +59,14 @@ struct blkdev;
  * Nobody ever waits for another thread to run in order for a device request to
  * finish.
  *
- * ONE IN FLIGHT PER MEDIUM. `inflight` is kept on the whole disk, never on the
+ * Historical rule: ONE IN FLIGHT PER MEDIUM. Correction 2026-11-01: this is
+ * still the default, and BLK_NO_INTERLOCK still breaks its three old checks.
+ * Capable drivers may now opt into depth N; the medium gate owns an oldest-
+ * first list, conflict serialization and flush fences. Anyone holding the
+ * gate can drive an older request to completion, without waiting for its
+ * submitter to be scheduled. bcache_sync supplies independent batch requests;
+ * ordinary reads and swap retain their existing caller behavior.
+ * `inflight` is kept on the whole disk, never on the
  * partition, because a partition shares its parent's ops and ctx -- two
  * partitions of one disk are one queue. This interlock is what replaces what
  * non-preemptibility used to provide: ahci.c held g_ata_busy across its poll
@@ -78,6 +89,17 @@ struct blkdev;
  * correct fallback, and c/kernel/mm/reclaim/swap.c takes it and counts it). */
 #define BLK_E_ARG    (-1)   /* no device, no ops, zero count, out of bounds */
 #define BLK_E_NODMA  (-2)   /* async + a buffer the device cannot reach -- see blk_submit */
+#define BLK_E_AGAIN  (-3)   /* temporary driver backpressure; drain oldest and retry */
+#define BLK_QDEPTH_MAX 32
+
+/* Batch LBAs are relative to the supplied device, including partitions. Each
+ * status is independent: a failed write must leave its cache block dirty. */
+struct blk_span {
+    uint64_t lba;
+    uint32_t count;
+    void *buf;
+    int status;
+};
 
 struct blk_req {
     /* --- the request: filled by blk_req_init(), read-only afterwards --- */
@@ -91,6 +113,7 @@ struct blk_req {
     /* --- state the block layer owns --- */
     uint8_t  state;          /* BLK_REQ_* */
     int      status;         /* 0 ok, <0 error. Meaningful only in BLK_REQ_DONE */
+    struct blk_req *next;    /* medium-owned list, oldest first */
 
     /* --- state the DRIVER owns, from submit until the poll that reports done.
      * In the request rather than in the driver for the reason above: the
@@ -126,6 +149,7 @@ struct blk_ops {
      * length of a transfer. */
     int (*submit)(void *ctx, struct blk_req *r);
     int (*poll)(void *ctx, struct blk_req *r);
+    void (*idle)(void *ctx); /* optional transport wait; no scheduler handoff */
 };
 
 struct blkdev {
@@ -142,9 +166,15 @@ struct blkdev {
     int      parts_scanned;        /* successful boot/late discovery, including raw media */
     uint8_t  type_mbr;             /* MBR partition type byte */
     char     label[BLK_LABEL_MAX]; /* GPT name / MBR type description, for the log */
-    struct blk_req *inflight;      /* whole disks only: the request this medium is
-                                    * running, NULL when idle. See above. */
+    struct blk_req *inflight;      /* whole disk: oldest request, NULL when idle */
+    uint32_t queue_depth, ninflight; /* whole medium; legacy transports default to 1 */
 };
+
+/* Change admission depth, including through a partition. Existing requests
+ * drain normally when the driver lowers its depth during error recovery. */
+void blk_set_queue_depth(struct blkdev *d, unsigned depth);
+int blk_dev_batch(struct blkdev *d, int op, struct blk_span *s, unsigned n);
+int blk_write_batch(struct blk_span *s, unsigned n);
 
 /* Fill a request. Bounds are NOT checked here -- blk_submit does that once, at
  * the point where a refusal can be reported. `count` is ignored for
