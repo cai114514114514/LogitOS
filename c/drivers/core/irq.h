@@ -12,7 +12,9 @@
  * Handlers run in interrupt context on whichever CPU the interrupt was routed
  * to (the BSP, in practice), with device-local locks, and EOI is sent for them.
  * irq_free_vector drains old callbacks and their EOI; never call it from that
- * vector itself. The caller must disable/mask the hardware source first. */
+ * vector itself. The caller must disable/mask the hardware source first.
+ * Slot reuse additionally waits for CPU-local LAPIC IRR/ISR checks; returning
+ * from free releases callback arguments, not necessarily the vector number. */
 
 #include <stdint.h>
 #include "driver.h"     /* irq_handler_t */
@@ -25,6 +27,11 @@
  * or the I/O APIC path) programs the source to raise this vector. */
 int      irq_alloc_vector(irq_handler_t fn, void *arg, const char *name);
 void     irq_free_vector(int vec);
+
+/* Bounded CPU-local quarantine cleanup. Free actively kicks remote CPUs into
+ * the LAPIC EOI hook even in PIC fallback; a queued old IRQ also cleans up
+ * after its own EOI and dispatch-pin release. No periodic tick is required. */
+void     irq_cleanup_vectors(void);
 
 /* Number of times this vector has been delivered. The MSI boot test asserts on
  * this: a fallback path that has never actually run is not a fallback. */

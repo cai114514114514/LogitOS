@@ -22,6 +22,13 @@
 #include "usb.h"
 #include "usb_hc.h"
 #include "driver.h"
+#include "../../kernel/pci/pci_route.h"
+#include "../../../include/weaksym.h"
+/* Standalone EHCI MMIO/scheduler gates omit PCI routing entirely. Missing
+ * routing evidence suppresses the diagnostic; a vector-wide count is not a
+ * substitute. The real kernel always links the strong PCI implementation. */
+int pci_intx_delivery_snapshot(const struct device *, struct pci_intx_delivery *) LOGIT_WEAK;
+LOGIT_WEAK_STUB(pci_intx_delivery_snapshot);
 #include "pci.h"
 #include "dma.h"
 #include "io_domain.h"
@@ -110,7 +117,8 @@ struct ehci {
     struct usb_hc hc;
     struct device *pci;
     volatile uint8_t *op;
-    unsigned used, up, failed, ports, ppc, reported_staging, reported_irq;
+    unsigned used, up, failed, ports, ppc, reported_staging;
+    uint64_t reported_irq;
     struct dma_device dma;
     struct dma_buffer *async_mem, *payload_mem, *periodic_mem;
     struct ehci_qh *head, *work;
@@ -1170,15 +1178,45 @@ static void timer_tick(struct ktimer *t)
 {
     struct ehci *e=t->arg;
     usb_hc_irq(&e->hc);
-    uint64_t irqs=dev_irq_count(e->pci);
+    /* usb_hc_irq has dropped its callback lock. Borrow the device's lifecycle
+     * owner through publication so reroute cannot retire even a coherent old
+     * sample between the snapshot and kprintf (including same-vector reuse).
+     * No device/USB lock is held while taking the INTx snapshot gate. */
+    unsigned idle = 0;
+    if (!__atomic_compare_exchange_n(&e->pci->bind_busy, &idle, 1, 0,
+                                      __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) {
+        return;
+    }
+    struct pci_intx_delivery delivery = {0};
+#ifdef PRT_NEGCTL_EHCI_SPLIT_SNAPSHOT
+    /* Reproduce the former mixed-epoch diagnostic for its named control. */
+    delivery.count = dev_irq_count(e->pci);
+    delivery.vector = e->pci->irq_vec;
+    delivery.generation = (uint64_t)(delivery.vector + 1);
+    int sampled = 1;
+#else
+    int sampled = !__atomic_load_n(&e->pci->unbinding, __ATOMIC_ACQUIRE) &&
+        LOGIT_HAVE(pci_intx_delivery_snapshot) &&
+        pci_intx_delivery_snapshot(e->pci, &delivery) == 0;
+#endif
+    uint64_t irqs = sampled ? delivery.count : 0;
     if (!irqs && !e->reported_poll && e->intr_count) {
         e->reported_poll = 1;
         kprintf("[ehci] hc=%u no IRQ observed; periodic input polling active (not verified on X79-VG4 hardware)\n", e->hc.index);
     }
-    if (!e->reported_irq && e->reports && irqs) {
-        e->reported_irq=1;
-        kprintf("EHCI_IRQ vector=%d delivered=%lu reports=%lu\n",e->pci->irq_vec,(unsigned long)irqs,e->reports);
+    /* Correction: separately reading dev_irq_count/irq_vec/bind_busy could
+     * label an old positive count with a new route. Vector equality also hid
+     * a complete release+bind between timer visits. Use the locked per-member
+     * epoch and count; shared-wire attribution remains the checker's job. */
+    uint64_t route = delivery.generation;
+#ifdef PRT_NEGCTL_EHCI_REPORT_ONCE
+    route = 1;
+#endif
+    if (sampled && e->reported_irq != route && e->reports && irqs) {
+        e->reported_irq = route;
+        kprintf("EHCI_IRQ vector=%d delivered=%lu reports=%lu\n",delivery.vector,(unsigned long)irqs,e->reports);
     }
+    __atomic_store_n(&e->pci->bind_busy, 0, __ATOMIC_RELEASE);
 }
 /* EHCI 2.3.3 USBINTR bits 0/1/2/4: qTD completion/error, port change and HSE.
  * Progress is independently timer-driven even if INTx never arrives. A 1 ms

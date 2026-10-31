@@ -100,6 +100,8 @@ static int      g_ncpu;
 
 static uint32_t g_ioapic_addr;               /* IOAPIC MMIO base (0 if none) */
 static uint32_t g_ioapic_gsibase;
+static struct acpi_ioapic_info g_ioapics[ACPI_MAX_IOAPICS];
+static size_t g_ioapic_count;
 static uint32_t g_irq_gsi[16];               /* ISA IRQ -> GSI (identity unless overridden) */
 static uint16_t g_irq_flags[16];             /* override polarity/trigger flags */
 
@@ -108,6 +110,22 @@ int      acpi_cpu_count(void)  { return g_ncpu; }
 uint32_t acpi_cpu_apic_id(int i){ return (i >= 0 && i < g_ncpu) ? g_apic_ids[i] : UINT32_MAX; }
 uint32_t acpi_ioapic_addr(void){ return g_ioapic_addr; }
 uint32_t acpi_ioapic_gsibase(void){ return g_ioapic_gsibase; }
+/* Keep the old address/base accessors as the first-chip view. Consumers that
+ * route GSIs must use this list; a second MADT controller is not optional. */
+int acpi_ioapic_count(void)
+{
+    return (int)g_ioapic_count;
+}
+
+/* Copy discovery data so callers cannot mutate firmware routing ownership. */
+int acpi_ioapic_get(int i, struct acpi_ioapic_info *out)
+{
+    if (!out || i < 0 || (size_t)i >= g_ioapic_count) {
+        return -1;
+    }
+    *out = g_ioapics[i];
+    return 0;
+}
 uint32_t acpi_gsi_for_irq(int irq){ return (irq >= 0 && irq < 16) ? g_irq_gsi[irq] : (uint32_t)irq; }
 uint16_t acpi_gsi_flags(int irq){ return (irq >= 0 && irq < 16) ? g_irq_flags[irq] : 0; }
 
@@ -171,11 +189,12 @@ static struct rsdp *find_rsdp(void)
 
 static void parse_madt(const struct sdt_header *madt)
 {
+    g_ioapic_count = 0;
+    g_ioapic_addr = 0;
+    g_ioapic_gsibase = 0;
     if (madt->length < 44) return;                       /* fixed MADT header must be present */
     const uint8_t *p = (const uint8_t *)madt;
     g_ncpu = 0;
-    g_ioapic_addr = 0;
-    g_ioapic_gsibase = 0;
     g_lapic_base = *(const uint32_t *)(p + 36);          /* MADT local APIC address */
     for (int i = 0; i < 16; i++) { g_irq_gsi[i] = (uint32_t)i; g_irq_flags[i] = 0; }
     int type0 = 0, type9 = 0, duplicate = 0, rejected = 0;
@@ -203,10 +222,13 @@ static void parse_madt(const struct sdt_header *madt)
             } else if (decoded < 0) {
                 rejected++;
             }
-        } else if (type == 1 && len >= 12) {             /* I/O APIC */
-            if (!g_ioapic_addr) {
-                g_ioapic_addr    = *(const uint32_t *)(p + 4);
-                g_ioapic_gsibase = *(const uint32_t *)(p + 8);
+        } else if (type == 1) {                         /* I/O APIC, ACPI 6.5 5.2.12.3 */
+            struct acpi_ioapic_info info;
+            if (madt_irq_decode_ioapic(p, (size_t)(e - p), &info) > 0 &&
+                madt_irq_add_ioapic(g_ioapics, &g_ioapic_count,
+                                    ACPI_MAX_IOAPICS, &info) > 0) {
+                g_ioapic_addr = g_ioapics[0].addr;
+                g_ioapic_gsibase = g_ioapics[0].gsi_base;
             }
         } else if (type == 2 && len >= 10) {             /* Interrupt Source Override */
             uint8_t src = p[3];

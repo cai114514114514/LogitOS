@@ -209,6 +209,16 @@ visit_thermal_zone(void *context, uacpi_namespace_node *node, uacpi_u32 depth)
     return UACPI_ITERATION_DECISION_CONTINUE;
 }
 
+static int (*namespace_preinit)(void);
+
+/* A registered consumer may evaluate _PIC after namespace load but before
+ * any device _INI. Keep the interpreter consumer independently host-linkable;
+ * it must not directly depend on kernel PCI or APIC symbols. */
+void power_acpi_set_preinit(int (*fn)(void))
+{
+    namespace_preinit = fn;
+}
+
 int power_acpi_start(void)
 {
     if (namespace_ready)
@@ -221,6 +231,12 @@ int power_acpi_start(void)
     if (status == UACPI_STATUS_OK)
         status = uacpi_namespace_load();
     if (status == UACPI_STATUS_OK) {
+        if (namespace_preinit) {
+            int result = namespace_preinit();
+            if (result) {
+                uacpi_kernel_log(UACPI_LOG_WARN, "[power] namespace preinit failed; continuing ACPI initialization\n");
+            }
+        }
         /* A rejected EC leaves its region unavailable, but must not hide
          * independent ACPI devices or disable a usable shutdown method. */
         power_ec_initialize();

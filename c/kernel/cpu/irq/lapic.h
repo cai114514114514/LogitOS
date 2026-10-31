@@ -12,6 +12,10 @@ uint64_t lapic_timer_calibrate(void);
 uint64_t lapic_timer_hz(void);
 uint32_t lapic_timer_count_ns(uint64_t ns);                            /* this CPU's APIC ID */
 void     lapic_eoi(void);
+/* Current CPU only: 1 IRR/ISR pending, 0 clear, -1 LAPIC unavailable. */
+int      lapic_vector_pending(uint8_t vector);
+/* IRQ retirement uses explicit kick-IPI EOIs as well as periodic timer EOIs. */
+void     lapic_set_eoi_hook(void (*fn)(void));
 int      lapic_start_ap(uint32_t apic_id, uint8_t trampoline_vec);
 int      lapic_send_ipi(uint32_t apic_id, uint8_t vec);
 int      lapic_ipi_destination_supported(uint32_t apic_id);
