@@ -75,6 +75,9 @@
 #include "sched.h"
 #include "../../drivers/power/acpi/devices.h"
 #include "../../drivers/power/acpi/native.h"
+#include "../../drivers/power/acpi/button.h"
+#include "../../drivers/board/board.h"
+#include "../../drivers/core/driver.h"
 
 /* Only power requests serialize here. Drain is a reversible token: already
  * admitted filesystem work finishes with its CPUs running; every failure
@@ -176,7 +179,14 @@ int kernel_power_init(void)
 
 static void power_boot_worker(void)
 {
+    /* The board first: a TCO watchdog firmware left counting resets the
+     * machine minutes after boot, and AML initialization can take seconds. */
+    board_init();
     (void)kernel_power_init();
+    mutex_lock(&aml_lock);
+    if (!initialize_aml_locked())
+        (void)power_acpi_button_install();
+    mutex_unlock(&aml_lock);
 }
 
 void kernel_power_start(void)
@@ -185,6 +195,29 @@ void kernel_power_start(void)
      * thread after scheduler startup: running on kworker would wait for that
      * same worker's startup probe, and running under wm_lock stalls input. */
     thread_create(power_boot_worker, "acpi-init");
+}
+
+/* Stop every device that could still DMA, right before firmware takes the
+ * machine (see dev_quiesce_all), and put them back if the transition returns. */
+static int power_quiesce(const char *where)
+{
+    int failed = 0;
+#ifndef POWER_NEGCTL_NO_QUIESCE
+    int n = dev_quiesce_all(&failed);
+    kprintf("[power] quiesced %d device(s) before %s", n, where);
+    if (failed) kprintf("; DMA stop UNCONFIRMED on %d", failed);
+    kprintf("\n");
+#else
+    (void)where;
+#endif
+    return failed;
+}
+
+static int power_abort(struct vfs_drain *token, const char *why)
+{
+    int n = dev_probe_all();
+    kprintf("[power] rebound %d device(s)\n", n);
+    return power_cancel(token, why);
 }
 
 int kernel_poweroff(void)
@@ -205,6 +238,10 @@ int kernel_poweroff(void)
         return power_cancel(&token, "ACPI S5 preparation failed");
     }
 
+    /* No quiesce before S5: removing device power ends their DMA, and if S5
+     * fails and returns, the devices are still bound and the machine keeps
+     * its keyboard, storage and network (a removed EHCI cannot be safely
+     * rebound while a dispatched timer callback may still run). */
     kprintf("[power] entering firmware-evaluated S5\n");
     status = power_acpi_enter_off();
     /* A normal return means the machine is still executing. Restore ACPI's
@@ -222,6 +259,16 @@ int kernel_reboot(void)
     if (rc)
         return rc;
     kprintf("[power] rebooting\n");
+    /* Stop every device that could still DMA before the next boot starts
+     * using RAM. If one could not be stopped, only resets that reset the
+     * whole platform (PLTRST#: CF9, the ACPI reset register) are allowed;
+     * the 8042 pulse and the triple fault reset the CPU alone (the 8042 line
+     * is a processor INIT, Intel 6 Series datasheet 2.9) and are refused. */
+    int dma_unconfirmed = power_quiesce("reset");
+    if (dma_unconfirmed) {
+        kprintf("[power] reboot: a device is still bus-mastering; platform reset first\n");
+        board_reset();
+    }
 
     mutex_lock(&aml_lock);
     int reset_status = initialize_aml_locked();
@@ -231,7 +278,18 @@ int kernel_reboot(void)
     kprintf("[power] ACPI reset returned status=%d; trying legacy reset\n",
             reset_status);
 
-    /* Tier 2: the legacy 8042 keyboard-controller pulse -- write the
+    /* Tier 2: the PCH's own reset control register (0xCF9): a platform reset
+     * (PLTRST#), present on every Intel board even when it has no 8042 behind
+     * its USB-only keyboard ports. */
+    board_reset();
+
+    if (dma_unconfirmed) {
+        kprintf("[power] reboot refused: a device could not be stopped and no platform reset took; "
+                "the CPU-only resets would let it keep writing into the next boot. Power the machine off.\n");
+        for (;;) __asm__ volatile ("cli; hlt");
+    }
+
+    /* Tier 3: the legacy 8042 keyboard-controller pulse -- write the
      * "pulse output port, drive reset low" command byte. Every PC-compatible
      * platform this kernel targets, real or emulated, still honours it. */
     kprintf("[power] reboot: 8042 pulse\n");
@@ -239,7 +297,7 @@ int kernel_reboot(void)
     spin_ms(50);
     kprintf("[power] reboot: 8042 pulse did not take -- triple fault\n");
 
-    /* Tier 3: load a zero-limit IDT, then fault. With IDTR.limit == 0, EVERY
+    /* Tier 4: load a zero-limit IDT, then fault. With IDTR.limit == 0, EVERY
      * vector lookup is out of bounds -- so int3 takes #GP (its own IDT entry
      * is unreachable), the CPU's attempt to deliver THAT #GP takes another
      * #GP (same reason), which is the double-fault condition and escalates to
@@ -258,5 +316,5 @@ int kernel_reboot(void)
      * into a clean exit instead) -- previously halted loudly. If a monitor
      * returns control at all, restore the IDT before cancelling the drain. */
     __asm__ volatile ("lidt %0" : : "m"(previous));
-    return power_cancel(&token, "triple fault returned control");
+    return power_abort(&token, "triple fault returned control");
 }

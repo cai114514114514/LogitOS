@@ -222,6 +222,51 @@ void dev_unbind(struct device *dev)
     __atomic_store_n(&dev->unbinding, 0, __ATOMIC_RELEASE);
 }
 
+/* A warm reset does not power PCI functions down: a NIC or an EHCI left
+ * running keeps writing descriptors into RAM the next boot is already using,
+ * and S5 can fail and return. So before firmware takes over, every device a
+ * driver can stop is unbound, which runs that driver's ->remove (stop DMA,
+ * drop Bus Master). Storage stays bound because the filesystems were drained
+ * first and it has nothing in flight; display stays because it shows the
+ * shutdown. The read-back Bus Master bit is logged as the evidence.
+ * X79-VG4 bring-up, 2026-10-31; QEMU evidence only, not verified on X79-VG4
+ * hardware. */
+int dev_quiesce_all(int *failed)
+{
+    int n = 0, bad = 0;
+    for (int i = dev_count() - 1; i >= 0; i--) {
+        struct device *d = &g_devs[i];
+        const struct driver *drv = __atomic_load_n(&d->drv, __ATOMIC_ACQUIRE);
+        if (!drv || !drv->remove) continue;
+        if (d->bus_type == DEV_BUS_PCI && (d->class_code == 0x01 || d->class_code == 0x03)) continue;
+        dev_unbind(d);
+        int still = __atomic_load_n(&d->drv, __ATOMIC_ACQUIRE) != NULL;
+        uint16_t cmd = d->bus_type == DEV_BUS_PCI
+                     ? pci_cfg_read16(d->bus, d->slot, d->func, PCI_CFG_COMMAND) : 0;
+        const char *how = "";
+        /* Not every ->remove clears Bus Master: e1000_remove() resets the MAC,
+         * which stops its engines but leaves the config bit set (found by
+         * test-hw-board-guest). Once the driver is gone and has stopped its
+         * DMA, the device model clears it, and says so. */
+        if (!still && (cmd & PCI_CMD_MASTER)) {
+#ifndef POWER_NEGCTL_NO_BME_CLEAR
+            if (dev_disable_checked(d)) how = " (clear refused)";
+            else how = " (cleared after ->remove)";
+            cmd = pci_cfg_read16(d->bus, d->slot, d->func, PCI_CFG_COMMAND);
+#else
+            how = " (cleared after ->remove)";
+#endif
+        }
+        kprintf("[power] quiesce %s %s: %s, bus master %s%s\n", d->name, drv->name,
+                still ? "STILL BOUND (unbind refused)" : "unbound",
+                (cmd & PCI_CMD_MASTER) ? "ON" : "off", how);
+        if (still || (cmd & PCI_CMD_MASTER)) bad++;
+        else n++;
+    }
+    if (failed) *failed = bad;
+    return n;
+}
+
 /* ------------------------------------------------------------- resources -- */
 /* A PCI config write is not proof that the function accepted it.  Physical
  * firmware, bridges and a disappearing function can all leave Command

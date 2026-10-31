@@ -77,6 +77,9 @@ static const void *map_firmware(uint64_t phys, uint32_t bytes)
     return (const void *)(uintptr_t)(ACPI_ALIAS_BASE + phys);
 }
 
+/* The same bounded read-only alias for other firmware tables (SMBIOS). */
+const void *acpi_map_firmware(uint64_t phys, uint32_t bytes) { return map_firmware(phys, bytes); }
+
 static const struct sdt_header *map_sdt(uint64_t phys)
 {
     const struct sdt_header *h = map_firmware(phys, sizeof *h);

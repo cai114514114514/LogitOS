@@ -223,6 +223,14 @@ const struct dev_match *dev_match_table(const struct dev_match *tbl, const struc
  * Returns the number of devices newly bound. */
 int  dev_probe_all(void);
 void dev_unbind(struct device *dev);
+/* Before firmware takes the machine (S5 or any reset tier): unbind every
+ * bound device whose driver has ->remove, except storage and display, in
+ * reverse binding order, and log each one's Bus Master bit as read back.
+ * Returns how many were unbound and confirmed with Bus Master off; *failed
+ * (if given) counts devices whose unbind was refused or whose Bus Master
+ * could not be cleared. dev_probe_all() rebinds them if the power transition
+ * returns. */
+int  dev_quiesce_all(int *failed);
 
 static inline void  dev_set_drvdata(struct device *d, void *p) { d->drvdata = p; }
 static inline void *dev_get_drvdata(const struct device *d)    { return d->drvdata; }

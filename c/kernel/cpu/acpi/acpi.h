@@ -19,6 +19,9 @@ int         acpi_tables_init(void);
 /* Look up a table by its 4-character signature ("APIC", "MCFG", ...). Returns a
  * pointer to its SDT header, or NULL. */
 const void *acpi_find_table(const char *sig);
+/* Read-only supervisor alias of a firmware-owned range of at most 1 MiB
+ * (SMBIOS lives in reserved memory too). NULL if it cannot be mapped. */
+const void *acpi_map_firmware(uint64_t phys, uint32_t bytes);
 
 /* MCFG allocation entry `idx` (one PCIe ECAM window). 0 on success, -1 when
  * there is no MCFG or idx is past the end. Any out pointer may be NULL. */
