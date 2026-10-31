@@ -706,6 +706,18 @@ static void build_fb_tag(struct infobuf *ib)
     sayd(gop->Mode->Info->VerticalResolution); say("\n");
     struct gop_selection selection;
     gop_select_mode(BS, gop, &selection);
+    {
+        struct logit_boot_display_tag *d = ib_take(ib, sizeof(*d));
+        d->tag.type = LOGIT_BOOT_TAG_DISPLAY;
+        d->tag.size = sizeof(*d);
+        d->fw_width = selection.fw_width; d->fw_height = selection.fw_height;
+        d->mode_count = selection.mode_count; d->listed = selection.listed;
+        d->set_failed = (UINT32)selection.set_failed;
+        d->edid_len = selection.edid_len;
+        mcopy(d->why, selection.why, sizeof d->why);
+        mcopy(d->mode, selection.mode, sizeof d->mode);
+        mcopy(d->edid, selection.edid, sizeof d->edid);
+    }
     if (selection.set_failed) {
         say("[efi] gop SetMode failed "); sayx(selection.set_status);
         say("; restore "); sayx(selection.restore_status);
@@ -1158,6 +1170,7 @@ void efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *systab)
                       + 48                       /* framebuffer tag */
                       + 4096                     /* ACPI tag, generously */
                       + 16 + 0x20 + LOGIT_BOOT_SMBIOS_TABLE_MAX  /* SMBIOS copy */
+                      + sizeof(struct logit_boot_display_tag) + 8  /* GOP report */
                       + 16 + max_entries * 24    /* mmap tag */
                       + 16;                      /* end tag + alignment */
     info_bytes = (info_bytes + 0xFFF) & ~(UINTN)0xFFF;

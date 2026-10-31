@@ -87,6 +87,7 @@
  * 0xF0000 segment holds nothing, and the table may live in boot-services
  * memory the kernel reclaims, so the kernel never follows the address. */
 #define LOGIT_BOOT_TAG_SMBIOS            0x4c420105
+#define LOGIT_BOOT_TAG_DISPLAY           0x4c420106
 #define LOGIT_BOOT_TAG_END               0x4c42ffff
 #define LOGIT_BOOT_TAG_NAMESPACE_MASK    0xffff0000
 #define LOGIT_BOOT_TAG_NAMESPACE         0x4c420000
@@ -243,6 +244,22 @@ struct logit_boot_smbios_tag {
     uint32_t entry_len;                 /* bytes of "_SM3_"/"_SM_" entry point */
     uint32_t table_len;                 /* bytes of structure table, <= TABLE_MAX */
     /* uint8_t entry[entry_len]; uint8_t table[table_len]; */
+} __attribute__((packed));
+
+/* What the firmware's GOP offered and what the loader chose, so a machine
+ * with no serial port can show it on screen (c/kernel/diag/hwhud.c). */
+#define LOGIT_BOOT_DISPLAY_MODES_MAX     48
+#define LOGIT_BOOT_DISPLAY_EDID_MAX      256
+struct logit_boot_display_tag {
+    struct logit_boot_tag tag;          /* type LOGIT_BOOT_TAG_DISPLAY */
+    uint32_t fw_width, fw_height;       /* the mode firmware had set */
+    uint32_t mode_count;                /* GOP MaxMode */
+    uint32_t listed;                    /* 32-bit linear modes in mode[] */
+    uint32_t set_failed;
+    uint32_t edid_len;                  /* bytes in edid[]; 0 = no EDID protocol */
+    char why[40];
+    struct { uint16_t width, height; } mode[LOGIT_BOOT_DISPLAY_MODES_MAX];
+    uint8_t edid[LOGIT_BOOT_DISPLAY_EDID_MAX];
 } __attribute__((packed));
 
 #endif

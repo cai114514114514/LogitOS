@@ -28,6 +28,11 @@ struct gop_selection {
     char why[40];
     int set_failed;
     EFI_STATUS set_status, restore_status;
+    /* what the GOP offered, for the boot report (LOGIT_BOOT_TAG_DISPLAY) */
+    UINT32 fw_width, fw_height, mode_count, listed;
+    struct { UINT16 width, height; } mode[48];
+    UINT32 edid_len;
+    UINT8 edid[256];
 };
 
 void gop_select_mode(EFI_BOOT_SERVICES *services,

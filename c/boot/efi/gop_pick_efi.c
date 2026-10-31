@@ -68,8 +68,19 @@ void gop_select_mode(EFI_BOOT_SERVICES *services,
                      EFI_GRAPHICS_OUTPUT_PROTOCOL *gop,
                      struct gop_selection *result)
 {
-    *result = (struct gop_selection){.why="keep-firmware"};
+    /* By hand: the loader links no memset, and this struct is now large
+     * enough that a compound literal becomes a call to one. */
+    for (UINTN i = 0; i < sizeof(*result); i++) ((UINT8 *)result)[i] = 0;
+    {
+        const char *keep = "keep-firmware";
+        for (int i = 0; keep[i]; i++) result->why[i] = keep[i];
+    }
     if (!gop || !gop->Mode || !gop->QueryMode || !gop->SetMode) return;
+    if (gop->Mode->Info) {
+        result->fw_width = gop->Mode->Info->HorizontalResolution;
+        result->fw_height = gop->Mode->Info->VerticalResolution;
+    }
+    result->mode_count = gop->Mode->MaxMode;
     UINT32 count = gop->Mode->MaxMode;
     UINT32 original = gop->Mode->Mode;
     if (!count || count > INT32_MAX || original >= count) return;
@@ -90,7 +101,18 @@ void gop_select_mode(EFI_BOOT_SERVICES *services,
             services->FreePool(info);
         }
     }
+    for (UINT32 i = 0; i < count && result->listed < 48; i++)
+        if (modes[i].bpp == 32 && modes[i].width <= 0xffff && modes[i].height <= 0xffff) {
+            result->mode[result->listed].width = (UINT16)modes[i].width;
+            result->mode[result->listed].height = (UINT16)modes[i].height;
+            result->listed++;
+        }
     struct gop_edid *edid = display_edid(services, gop);
+    if (edid && edid->Edid && edid->SizeOfEdid) {
+        UINT32 n = edid->SizeOfEdid < 256 ? edid->SizeOfEdid : 256;
+        for (UINT32 i = 0; i < n; i++) result->edid[i] = edid->Edid[i];
+        result->edid_len = n;
+    }
     int pick = gop_pick_mode(modes, (int)count, edid ? edid->Edid : 0,
                             edid ? edid->SizeOfEdid : 0,
                             result->why, sizeof(result->why));
@@ -103,7 +125,13 @@ void gop_select_mode(EFI_BOOT_SERVICES *services,
          * owns them and can replace them even on error. Ask firmware to put
          * the original mode back, then let the caller inspect the LIVE Mode.
          * A failed restore is reported separately, never claimed successful. */
-        *result = (struct gop_selection){.why="keep-firmware", .set_failed=1,
-            .set_status=status, .restore_status=set(gop, original)};
+        const char *keep = "keep-firmware";
+        for (int i = 0; i < (int)sizeof(result->why); i++) {
+            result->why[i] = keep[i];
+            if (!keep[i]) break;
+        }
+        result->set_failed = 1;
+        result->set_status = status;
+        result->restore_status = set(gop, original);
     }
 }

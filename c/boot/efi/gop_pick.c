@@ -69,6 +69,25 @@ int gop_pick_mode(const struct gop_mode_info *modes, int n,
                         return i;
                     }
                 }
+#ifndef GOP_NEGCTL_IGNORE_ASPECT
+                /* The panel's own mode is not offered (the X79-VG4's GOP
+                 * topped out at 1280x1024 on a wide monitor, which then
+                 * stretched every circle into an ellipse). The largest mode
+                 * of the panel's shape scales without distortion. */
+                int shaped = -1;
+                uint64_t shaped_area = 0;
+                for (int i = 0; w && h && i < n; i++) {
+                    if (modes[i].bpp != 32 || !modes[i].width || !modes[i].height) continue;
+                    uint64_t a = (uint64_t)modes[i].width * h, b = (uint64_t)w * modes[i].height;
+                    uint64_t diff = a > b ? a - b : b - a;
+                    uint64_t px = (uint64_t)modes[i].width * modes[i].height;
+                    if (diff * 100 <= b * 2 && px > shaped_area) { shaped = i; shaped_area = px; }
+                }
+                if (shaped >= 0) {
+                    pick_reason(why, why_len, "edid-aspect");
+                    return shaped;
+                }
+#endif
             }
         }
     }
