@@ -30,6 +30,10 @@ int usb_bind_interfaces(struct usb_device *d, const struct usb_driver *const *dr
              * allocate/configure the same transport endpoint a second time. */
             if (!configured && usb_configure_interface(d, it)) break;
             configured = 1;
+            /* Probe failure belongs only to this interface. In particular,
+             * rolling back all bindings here silences an already armed boot
+             * keyboard when its multimedia sibling has an unknown descriptor.
+             * Keep walking candidates/interfaces without a device-wide remove. */
             if (!drv->probe(d, ifno)) {
                 d->binding[ifno].drv = drv;
                 kprintf("[usb] if%d bound to driver '%s'\n", it->num, drv->name);

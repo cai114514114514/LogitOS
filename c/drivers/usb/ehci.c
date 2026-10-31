@@ -543,6 +543,15 @@ static int configure(struct usb_device *d,const struct usb_interface *iface)
         }
         if (phase<0) {
             kprintf("[ehci] periodic bandwidth unavailable addr=%u ep=%x interval=%u\n",d->addr,desc->addr,desc->interval);
+            /* PSE was stopped above to edit the frame list. Without this the
+             * endpoints that already own frames (an armed keyboard) stay
+             * silent: periodic_service() only restarts a dirty schedule.
+             * The slot is released; its 4 KiB arena block is not returned
+             * (the arena has no free), as on the other error paths here. */
+            memset(p,0,sizeof(*p));
+#ifndef EHCI_NEGCTL_NO_PERIODIC_RESTORE
+            e->dirty=1; periodic_service(e);
+#endif
             return -1;
         }
         p->phase=phase;p->dev=d;
