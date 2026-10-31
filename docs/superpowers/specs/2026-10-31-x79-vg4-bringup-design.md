@@ -39,10 +39,10 @@
 
 ## 工作拆分：省 Claude 额度
 
-这次的代码几乎全部交给 OpenAI 模型写，Claude 只负责调度和验收。
+按用户的规则：较弱的模型写代码，强模型审计。Claude 和 GPT 一起干，负责调度，并在每条线路合并前做最终检查、完成合并。
 
-- **写代码**：Codex `gpt-6-astra`，`workspace-write` 沙箱，工作目录是 `~/LogitOS`。每条线路是一个 agent，最多 3 条并行。
-- **复核**：Codex `gpt-6.1-sol`，只读。拿到这条线路的 diff 和测试输出，按“会变红的负控是否存在、是否违反 TRANSPARENCY、有没有改到别人的文件”给出问题清单。写代码的 agent 按清单最多修两轮。
+- **写代码**：Codex `gpt-6.1-sol`（high），`workspace-write` 沙箱。每条线路一个 agent，在仓库内的临时 worktree `~/LogitOS/.hw/wt/<线路>` 里工作，最多 3 条并行。
+- **审计**：Codex `gpt-6-astra`（xhigh），只读。拿到这条线路的 diff 和测试输出，按“会变红的负控是否存在、是否违反 TRANSPARENCY、有没有改到别人的文件”给出问题清单。写代码的 agent 按清单最多修两轮。
 - **调度**：Mac 上的一个后台脚本 `hw-run`，结构和文档流水线一样，状态写在 `~/LogitOS/.hw/`（加进 `.gitignore`，结束后删掉）。Claude 只看每条线路的一页摘要，然后负责提交。
 - **并行但不打架**：
   - 每条线路有自己独占的文件清单，提示词里写死；
