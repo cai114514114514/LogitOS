@@ -109,6 +109,7 @@ tests/wpt-local/resources
 # sweep cannot sweep itself into a commit.
 /vbuild/
 /tmp/
+/images/
 
 # The HTML parser conformance corpus: fetched, not vendored (tools/h5l_fetch.sh).
 # It was 75 files carrying TWO upstreams and two licence files, and 61 of them
