@@ -91,6 +91,7 @@
 /* DMA migration correction: the page layout above is retained, but its CPU
  * alias and DMA base are separate. Payloads use bounded SG mappings; CAP.S64A
  * constrains metadata and payloads alike. */
+#include "ktime.h"
 #include <stdint.h>
 #include <stddef.h>
 #include "ahci.h"
@@ -317,14 +318,78 @@ static int port_stop(struct ahci_port *p)
     return 0;
 }
 
-static void port_start(struct ahci_port *p)
+static int port_start(struct ahci_port *p)
 {
     /* FRE before ST, and only once BSY/DRQ are clear: starting the command
      * engine against a device that still has a transfer in progress is how a
-     * port ends up wedged with no error bit to explain it. */
-    (void)wait_clear(p->reg, P_TFD, TFD_BSY | TFD_DRQ, SPIN_INIT, 1000);
+     * port ends up wedged with no error bit to explain it. Not ready is
+     * reported, not papered over by setting ST anyway. */
+    if (wait_clear(p->reg, P_TFD, TFD_BSY | TFD_DRQ, SPIN_INIT, 1000)) return -1;
     w32(p->reg, P_CMD, r32(p->reg, P_CMD) | CMD_FRE);
     w32(p->reg, P_CMD, r32(p->reg, P_CMD) | CMD_ST);
+    return 0;
+}
+
+/* Port bring-up when firmware left the link alone (X79-VG4 bring-up,
+ * 2026-10-31). Observed under OVMF booting from a USB stick: the HBA's ports
+ * report DET=3 but PxSIG still holds its reset value 0xffffffff, because no
+ * one programmed a receive area, enabled FIS receive or reset the link, so
+ * the drive's signature FIS was never posted (AHCI 1.3.1 sections 3.3.10 and
+ * 10.1.2; FRE gates posting the FIS to memory and the TFD update). An AMI
+ * board in "fast boot" mode can leave SATA the same way. A DET=1 port may
+ * also still show SIG_SATA from before its link dropped, since COMINIT does
+ * not clear PxSIG -- so the signature alone never proves a link. */
+static int port_needs_reset(uint32_t det, uint32_t sig)
+{
+#ifndef AHCI_NEGCTL_SIG_ONLY
+    return det != 3 || sig != SIG_SATA;
+#else
+    (void)det;
+    return sig != SIG_SATA;
+#endif
+}
+
+/* The interrupt-independent clock: boot runs this with IF=0, when timer_ms()
+ * does not advance, and a millisecond hold must be a millisecond. */
+static uint64_t link_ms(void) { return time_mono_ns() / 1000000ull; }
+
+/* With CLB/FB programmed, the receive area owned by the DMA layer and ST
+ * clear: enable FRE, COMRESET (SCTL.DET=1, read back, hold >= 1 ms, then 0,
+ * keeping the SPD/IPM limits, as Linux sata_link_hardreset() does), wait for
+ * DET=3, acknowledge the DIAG bits the reset sets in SERR, then wait for the
+ * signature FIS with BSY and DRQ clear. 0 = ready with *sig valid;
+ * -1 = no link within 1 s; -2 = the device never became ready (10 s). Every
+ * wait is bounded by a spin count as well as by the clock. */
+static int port_link_reset(volatile uint8_t *pr, uint32_t *sig)
+{
+    w32(pr, P_CMD, r32(pr, P_CMD) | CMD_FRE);
+    uint32_t sctl = r32(pr, P_SCTL) & ~0xFu;
+#ifndef AHCI_NEGCTL_NO_COMRESET
+    w32(pr, P_SCTL, sctl | 1);
+    (void)r32(pr, P_SCTL);                               /* post the write before timing it */
+    uint64_t hold = link_ms() + 2;
+    for (long n = 0; n < SPIN_INIT && link_ms() < hold; n++) { }
+    w32(pr, P_SCTL, sctl);
+#else
+    (void)sctl;
+#endif
+    uint64_t deadline = link_ms() + 1000;
+    int link = 0;
+    for (long n = 0; n < SPIN_INIT; n++) {
+        if ((r32(pr, P_SSTS) & 0xF) == 3) { link = 1; break; }
+        if ((n & 0xFFFF) == 0xFFFF && link_ms() > deadline) break;
+    }
+    w32(pr, P_SERR, r32(pr, P_SERR));
+    *sig = r32(pr, P_SIG);
+    if (!link) return -1;
+    deadline = link_ms() + 10000;
+    for (long n = 0; n < SPIN_INIT * 10; n++) {
+        uint32_t tfd = r32(pr, P_TFD);
+        *sig = r32(pr, P_SIG);
+        if (!(tfd & (TFD_BSY | TFD_DRQ)) && *sig != 0xFFFFFFFFu) return 0;
+        if ((n & 0xFFFF) == 0xFFFF && link_ms() > deadline) break;
+    }
+    return -2;
 }
 
 /* Clear the accumulated error registers and re-run the engines. Called between
@@ -348,7 +413,8 @@ static void port_recover(struct ahci_port *p)
     w32(p->reg, P_IS, r32(p->reg, P_IS));
     if (dma_device_resume(&p->dma_dev) || !dma_buffer_submit(p->metadata))
         panic("ahci: cannot resume DMA ownership after acknowledged stop");
-    port_start(p);
+    if (port_start(p))
+        kprintf("[ahci] port %d: device still busy after recovery; command engine left stopped\n", p->index);
 }
 
 static void ahci_unmap(struct ahci_port *p)
@@ -1079,11 +1145,14 @@ static int ahci_bring_up(struct ahci_hba *dev)
 
         uint32_t ssts = r32(pr, P_SSTS);
         uint32_t det = ssts & 0xF, ipm = (ssts >> 8) & 0xF;
-        if (det != 3) continue;                         /* no device, or PHY not communicating */
-        if (ipm != 1) continue;                         /* not in active power state */
+        /* DET=1: a device is present but the PHY is not talking -- what a
+         * port nobody reset can look like -- so it gets the link reset below.
+         * 0 is no device; 4 is a PHY that is offline or disabled. */
+        if (det != 3 && det != 1) continue;
+        if (det == 3 && ipm != 1) continue;             /* not in active power state */
 
         uint32_t sig = r32(pr, P_SIG);
-        if (sig != SIG_SATA) {
+        if (det == 3 && sig != SIG_SATA && sig != 0xFFFFFFFFu) {
             /* Reported, not mounted: an ATAPI drive answers on the same port
              * registers and would accept READ DMA EXT with results nobody
              * wants. Distinguishing by signature is the point of reading it. */
@@ -1119,7 +1188,24 @@ static int ahci_bring_up(struct ahci_hba *dev)
         if (!dma_buffer_submit(p->metadata)) {
             dma_free_coherent(p->metadata); p->metadata = NULL; p->dma = NULL; continue;
         }
-        port_start(p);
+        if (port_needs_reset(det, sig)) {
+            int rr = port_link_reset(pr, &sig);
+            kprintf("[ahci] port %d: link not established by firmware (det=%u); COMRESET -> %s ssts=%x sig=%08x\n",
+                    i, det, rr == 0 ? "ready" : rr == -1 ? "NO LINK" : "DEVICE NOT READY", r32(pr, P_SSTS), sig);
+            if (rr != 0 || sig != SIG_SATA) {
+                if (rr == 0)
+                    kprintf("[ahci] port %d: %s (sig=%08x) -- skipped, not a SATA disk\n", i, sig_name(sig), sig);
+                port_quiesce(p);                        /* FRE is on now: stop it before freeing FB */
+                dma_free_coherent(p->metadata); p->metadata = NULL; p->dma = NULL;
+                continue;
+            }
+        }
+        if (port_start(p)) {
+            kprintf("[ahci] port %d: device busy (tfd=%x) -- command engine not started, skipped\n", i, r32(pr, P_TFD));
+            port_quiesce(p);
+            dma_free_coherent(p->metadata); p->metadata = NULL; p->dma = NULL;
+            continue;
+        }
 
         if (port_identify(p) != 0) {
             kprintf("[ahci] port %d: IDENTIFY failed (tfd=%x serr=%x) -- skipped\n",
