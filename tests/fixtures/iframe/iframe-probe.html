@@ -80,9 +80,14 @@ test(function () {
   f.setAttribute('sandbox', '');
   f.setAttribute('srcdoc', '<p>x</p>');
   document.body.appendChild(f);
-  assert_throws_dom('SecurityError', function () { return f.contentDocument; },
-                    'a sandboxed frame refuses access rather than reading null');
-}, 'B2 sandbox refuses by name with a real error, not a null document');
+  /* ~~A sandboxed frame refuses access by throwing.~~ Superseded 2026-09-25:
+   * sandbox is honoured as HTML's flag set, not refused. sandbox="" gives the
+   * document an opaque origin, so contentDocument is null (not same
+   * origin-domain) and reaching through the WindowProxy throws SecurityError. */
+  assert_equals(f.contentDocument, null, 'an opaque-origin frame has no content document for its embedder');
+  assert_throws_dom('SecurityError', function () { return f.contentWindow.document; },
+                    'the WindowProxy refuses its document by name');
+}, 'B2 sandbox="" is an opaque origin: null contentDocument, SecurityError through the window');
 
 promise_test(function () {
   var f = document.createElement('iframe');

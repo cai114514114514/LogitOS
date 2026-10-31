@@ -14,7 +14,7 @@ ABI names are unchanged by the 2026-09-22 reorganization.
 | `paint/` | Rasterization consumers, text/SVG painting, projection and hit geometry |
 | `net/` | Fetch contract, URL resolution and HTTP cache |
 | `storage/` | Persistent browser storage and cookie adapters |
-| `frame/` | Passive frames, isolation policy and embedded navigation |
+| `frame/` | Passive frames, isolation policy, sandboxing flags (`sandbox.h`) and embedded navigation |
 | `js/runtime/` | Realm lifecycle, platform installation, modules, budgets and diagnostics |
 | `js/dom/` | DOM/event/form/frame bindings, observers, ranges and reflection |
 | `js/style/` | CSSOM, animation and font interfaces |

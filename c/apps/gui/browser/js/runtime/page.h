@@ -36,6 +36,16 @@ struct js_worker_policy;
 int js_page_context_enable_workers(struct js_page_context *,const struct js_worker_policy *);
 int js_page_context_activate(struct js_page_context *, struct js_page_context **previous);
 int js_page_context_destroy(struct js_page_context *);
+/* The document's active sandboxing flag set (frame/sandbox.h; a set bit is a
+ * restriction). Set once, after enable_webapi and before js_page_open, on a
+ * closed non-selected slot: the origin flag is forwarded to the WebAPI slot
+ * (opaque origin), the rest is read by this file's natives and the sandbox
+ * prelude installed at open. 0 = unsandboxed (the default, and the only
+ * value the top-level context has). */
+int js_page_context_set_sandbox(struct js_page_context *, unsigned flags);
+/* The SELECTED document's flags -- a native reads it at call time, which is
+ * always while its own document is selected. */
+unsigned js_page_sandbox_flags(void);
 
 /* The page's JavaScript runtime -- the thing that makes a loaded page LIVE.
  *

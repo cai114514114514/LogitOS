@@ -4097,6 +4097,7 @@ test-webapi-asan: test-webapi $(RUST_LIB_HOST)
 -include tests/fetch_body.mk
 -include tests/idl_shape.mk
 -include tests/native_shape.mk
+-include tests/frame_sandbox.mk
 # The PNG ENCODER (rust/src/pngenc.rs) -- the other direction from png.rs, and
 # what removes the premise under js_canvas.c's toDataURL refusal. Two oracles,
 # one of them outside this tree; own fragment, see the file.

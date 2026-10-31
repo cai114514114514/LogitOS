@@ -10,6 +10,7 @@
 #include "js/runtime/page.h"
 #include "js/runtime/task_budget.h"
 #include "js/runtime/timers.h"
+#include "frame/sandbox.h"      /* header-only flag constants and parser */
 /* The queue is compiled here so every existing host consumer of js_page uses
  * the same scheduling code as browser.aex; do not also link page_runtime.c. */
 #include "../../app/page.c"
@@ -150,6 +151,15 @@ static int g_workers_enabled = 1;
 #define PAGE_WEBAPI_HAVE(fn) (g_webapi_enabled && LOGIT_HAVE(fn))
 #define PAGE_PLATFORM_HAVE(fn) (g_platform_enabled && LOGIT_HAVE(fn))
 #define PAGE_WORKER_HAVE(fn) (g_workers_enabled && LOGIT_HAVE(fn))
+/* The selected document's active sandboxing flag set (frame/sandbox.h), set
+ * by the embedder before the runtime opens and never changed while it is
+ * live. 0 -- the top-level default -- is an unsandboxed document. Every
+ * native below that a flag restricts reads THIS, at call time: a call can
+ * only happen while its own document is the selected context. */
+static unsigned g_sandbox;
+#ifdef JS_PROBE_TRACE
+static int page_is_top_level(void);   /* after the context table, below */
+#endif
 
 /* ---- the CSS animation/transition clock, as a consumer of THIS queue -----
  *
@@ -1252,6 +1262,119 @@ static JSValue con_warn(JSContext *ctx, JSValueConst t, int argc, JSValueConst *
 static JSValue con_error(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
 { note("[error] "); printf("[error] "); return con_out(ctx, t, argc, argv); }
 
+/* ---- simple dialogs: alert / confirm / prompt, and print ----------------
+ * This browser has no modal dialog surface; alert() has always written its
+ * message to the console instead, and that console line IS the dialog here.
+ * HTML "cannot show simple dialogs": a document whose active sandboxing flag
+ * set has the sandboxed modals flag (no allow-modals) shows nothing --
+ * alert() returns, confirm() returns false, prompt() returns null, print()
+ * returns -- and the user agent may report the refusal to the developer
+ * console. The report deliberately never repeats the message text: the
+ * message reaching the console would BE showing the dialog.
+ * confirm() and prompt() did not exist at all before this. They now take the
+ * spec's "optionally, return true" (cannot show) branch for every document,
+ * logging the message like alert(): the user was never asked, so the answer
+ * is the negative one (false / null), never a fabricated acceptance. */
+static int modals_blocked(const char *what)
+{
+    if (!(g_sandbox & SANDBOX_MODALS)) return 0;
+    note("[sandbox] ignored "); note(what); note("()\n");
+    printf("[sandbox] Ignored call to '%s()'. The document is sandboxed, and the "
+           "'allow-modals' keyword is not set.\n", what);
+    return 1;
+}
+static JSValue js_alert(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
+{ if (modals_blocked("alert")) return JS_UNDEFINED; return con_out(ctx, t, argc, argv); }
+static JSValue js_print(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
+{ if (modals_blocked("print")) return JS_UNDEFINED; return con_out(ctx, t, argc, argv); }
+static JSValue js_confirm(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
+{
+    if (modals_blocked("confirm")) return JS_FALSE;
+    note("[confirm] "); printf("[confirm] ");
+    JSValue r = con_out(ctx, t, argc > 1 ? 1 : argc, argv);
+    if (JS_IsException(r)) return r;
+    return JS_FALSE;
+}
+static JSValue js_prompt(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
+{
+    if (modals_blocked("prompt")) return JS_NULL;
+    note("[prompt] "); printf("[prompt] ");
+    JSValue r = con_out(ctx, t, argc > 1 ? 1 : argc, argv);
+    if (JS_IsException(r)) return r;
+    return JS_NULL;
+}
+
+/* Installed LAST, over what every installer published, and only for a
+ * sandboxed document. JS for the pieces that are JS-shaped already:
+ *   popups  window.open parses its URL first (an invalid one still throws
+ *           SyntaxError, as the window open steps do before choosing a
+ *           navigable), then the sandboxed auxiliary navigation flag makes
+ *           "choose a navigable" yield none: return null, report the block.
+ *   forms   the form submission algorithm returns before firing anything
+ *           when the sandboxed forms flag is set -- submit() and
+ *           requestSubmit() both. (Frames have no native form owner, so
+ *           this binds whatever form surface the document was given.)
+ *           CORRECTION, measured: an embedded context is created with no
+ *           extensions (js_forms_install never runs there), so in a frame
+ *           HTMLFormElement.prototype.submit does not exist and this branch
+ *           binds NOTHING -- form submission from a frame is absent whether
+ *           sandboxed or not, and no gate measures this branch. If forms is
+ *           ever installed in frames, this is not enough: the natives behind
+ *           submit (__fc_submit/__fc_reqsubmit) are globals this prelude does
+ *           not hide, so the check must move into the native submit path.
+ * Nothing here keeps a reference to what it replaces, so no author code in
+ * this realm can recover an unrestricted window.open. Top-level navigation
+ * from a frame is not reachable at all (the parent WindowProxy's location
+ * refuses: cross-runtime navigation is unimplemented), sandboxed or not. */
+static const char SANDBOX_PRELUDE[] =
+"(function (G, flags, POPUPS, FORMS) {\n"
+   /* The report goes to THIS browser's console, captured before any author
+    * byte: a page that replaces console.warn later neither sees nor hides it. */
+"  var con = G.console, cwarn = con && con.warn;\n"
+"  var warn = function (m) { try { if (typeof cwarn === 'function') cwarn.call(con, m); } catch (e) {} };\n"
+"  if (flags & POPUPS) {\n"
+"    var open = function open(url) {\n"
+"      if (arguments.length && url !== undefined && String(url) !== '' && typeof G.URL === 'function') {\n"
+"        var base = (G.document && G.document.baseURI) || (G.location && G.location.href) || undefined;\n"
+"        try { new G.URL(String(url), base); }\n"
+"        catch (e) { throw new G.DOMException(\"Failed to execute 'open' on 'Window': Unable to open a window with invalid URL '\" + String(url) + \"'.\", 'SyntaxError'); }\n"
+"      }\n"
+"      warn(\"Blocked opening a new window because the request was made in a sandboxed frame whose 'allow-popups' permission is not set.\");\n"
+"      return null;\n"
+"    };\n"
+"    Object.defineProperty(G, 'open', { value: open, writable: true, configurable: true, enumerable: true });\n"
+"  }\n"
+"  var F = G.HTMLFormElement && G.HTMLFormElement.prototype;\n"
+"  if ((flags & FORMS) && F) {\n"
+"    ['submit', 'requestSubmit'].forEach(function (m) {\n"
+"      if (typeof F[m] !== 'function') return;\n"
+"      Object.defineProperty(F, m, { writable: true, configurable: true, enumerable: true,\n"
+"        value: function () {\n"
+"          warn(\"Blocked form submission because the form's frame is sandboxed and the 'allow-forms' permission is not set.\");\n"
+"        } });\n"
+"    });\n"
+"  }\n"
+"})";
+static void install_sandbox(JSContext *ctx)
+{
+    JSValue fn = JS_Eval(ctx, SANDBOX_PRELUDE, sizeof SANDBOX_PRELUDE - 1, "<sandbox>", JS_EVAL_TYPE_GLOBAL);
+    JSValue r = fn;
+    if (!JS_IsException(fn)) {
+        JSValue args[4] = { JS_GetGlobalObject(ctx), JS_NewUint32(ctx, g_sandbox),
+                            JS_NewUint32(ctx, SANDBOX_AUXILIARY_NAVIGATION), JS_NewUint32(ctx, SANDBOX_FORMS) };
+        r = JS_Call(ctx, fn, JS_UNDEFINED, 4, (JSValueConst *)args);
+        for (int i = 0; i < 4; i++) JS_FreeValue(ctx, args[i]);
+        JS_FreeValue(ctx, fn);
+    }
+    if (JS_IsException(r)) {
+        JSValue e = JS_GetException(ctx);
+        const char *m = JS_ToCString(ctx, e);
+        printf("[sandbox] prelude failed: %s\n", m ? m : "?");
+        if (m) JS_FreeCString(ctx, m);
+        JS_FreeValue(ctx, e);
+    } else JS_FreeValue(ctx, r);
+}
+
 /* ---- document.currentScript -------------------------------------------
  *
  * MEASURED on two unrelated sites, and it is not a page quirk -- it is the
@@ -1422,8 +1545,10 @@ int js_page_open(struct node *root)
     JS_SetPropertyStr(g_ctx, con, "warn",  JS_NewCFunction(g_ctx, con_warn, "warn", 1));
     JS_SetPropertyStr(g_ctx, con, "error", JS_NewCFunction(g_ctx, con_error, "error", 1));
     JS_SetPropertyStr(g_ctx, g, "console", con);
-    JS_SetPropertyStr(g_ctx, g, "print", JS_NewCFunction(g_ctx, con_out, "print", 1));
-    JS_SetPropertyStr(g_ctx, g, "alert", JS_NewCFunction(g_ctx, con_out, "alert", 1));
+    JS_SetPropertyStr(g_ctx, g, "print", JS_NewCFunction(g_ctx, js_print, "print", 1));
+    JS_SetPropertyStr(g_ctx, g, "alert", JS_NewCFunction(g_ctx, js_alert, "alert", 1));
+    JS_SetPropertyStr(g_ctx, g, "confirm", JS_NewCFunction(g_ctx, js_confirm, "confirm", 0));
+    JS_SetPropertyStr(g_ctx, g, "prompt", JS_NewCFunction(g_ctx, js_prompt, "prompt", 0));
 
     JS_SetPropertyStr(g_ctx, g, "setTimeout",  JS_NewCFunction(g_ctx, js_setTimeout, "setTimeout", 2));
     JS_SetPropertyStr(g_ctx, g, "setInterval", JS_NewCFunction(g_ctx, js_setInterval, "setInterval", 2));
@@ -1618,6 +1743,12 @@ int js_page_open(struct node *root)
      * js_platform.c, or it wraps a placeholder and the real one overwrites the
      * wrapper afterwards, leaving animate() present and unobservable. */
     if (PAGE_HAVE(js_anim_install)) JS_OPEN_STEP("js_anim_install", js_anim_install(g_ctx));
+    /* After every installer, before any author byte: a sandboxed document's
+     * restrictions bind over whatever surface it was given. They go BEFORE
+     * the shape pass below, so the restricted members move onto the interface
+     * prototypes with everything else instead of landing back on the instance
+     * (merge of the iframe-sandbox branch, 2026-11-01). */
+    if (g_sandbox) JS_OPEN_STEP("sandbox", install_sandbox(g_ctx));
     /* AFTER EVERY INSTALLER ABOVE: the shape pass moves what they put on
      * navigator/document/body/history/performance/screen/crypto onto the
      * interface prototypes, so anything installed after it would land back on
@@ -1652,8 +1783,11 @@ int js_page_open(struct node *root)
     JS_FreeValue(g_ctx, shape_roots);
 #ifdef JS_PROBE_TRACE
     /* LAST: the probe snapshots what the platform installed, so everything
-     * above must already be there -- see js/runtime/probe.c. */
-    js_probe_install(g_ctx, "");
+     * above must already be there -- see js/runtime/probe.c. Only the
+     * top-level document here: an embedded document's embedder installs its
+     * own labelled probe ("frame:", frame/passive.c), and a second unlabelled
+     * install would claim its objects first as plain "window". */
+    if (page_is_top_level()) js_probe_install(g_ctx, "");
 #endif
 #ifdef JS_PAGE_INSTALL_PROFILE
     js_install_report(js_samples,js_sample_count,now_ms()-js_open_start);
@@ -1824,7 +1958,8 @@ int js_page_eval(const char *src, int len, const char *filename, struct node *no
     X(g_prof_last_ms) X(g_prof_in_js) X(g_prof_label) X(g_polls) \
     X(g_rt) X(g_ctx) X(g_t0) X(g_location) X(g_page) \
     X(g_next_id) X(g_next_raf_id) X(g_running_timer) X(g_timer_nesting) X(g_frame_due) X(g_due_phase) \
-    X(g_due_timer_active) X(g_due_timer_now) X(g_due_timer_limit) X(g_cur_script)
+    X(g_due_timer_active) X(g_due_timer_now) X(g_due_timer_limit) X(g_cur_script) \
+    X(g_sandbox)
 
 struct js_page_context {
     struct js_dom_context *dom;
@@ -1839,6 +1974,9 @@ struct js_page_context {
 };
 static struct js_page_context page_default_context;
 static struct js_page_context *page_active_context=&page_default_context;
+#ifdef JS_PROBE_TRACE
+static int page_is_top_level(void) { return page_active_context==&page_default_context; }
+#endif
 
 struct js_page_context *js_page_context_create(void)
 {
@@ -1896,6 +2034,24 @@ int js_page_context_enable_workers(struct js_page_context *s,const struct js_wor
     s->workers=js_worker_context_create(p);if(!s->workers)return 0;
     s->g_workers_enabled=1;return 1;
 }
+
+int js_page_context_set_sandbox(struct js_page_context *s, unsigned flags)
+{
+    /* Before the runtime opens, never on the top-level default (its flags
+     * would come from its own response and are not enforced there yet), and
+     * never on the selected context. The origin flag is the one WebAPI must
+     * know at install time, so it is forwarded now or not at all. */
+    if (!s || s==&page_default_context || s==page_active_context ||
+        s->g_ctx || s->g_rt || g_entry_depth || g_slice_io_depth) return 0;
+    flags &= SANDBOX_ALL;
+    if ((flags & SANDBOX_ORIGIN) && s->webapi &&
+        (!LOGIT_HAVE(js_webapi_context_set_opaque_origin) ||
+         !js_webapi_context_set_opaque_origin(s->webapi))) return 0;
+    s->g_sandbox=flags;
+    return 1;
+}
+
+unsigned js_page_sandbox_flags(void) { return g_sandbox; }
 
 int js_page_context_activate(struct js_page_context *next,
                              struct js_page_context **previous)

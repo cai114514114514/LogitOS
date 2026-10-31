@@ -14,6 +14,8 @@ struct js_event_init;
 PF_FN int passive_frames_enabled(void);
 PF_FN void passive_frames_reset(void);
 PF_FN void passive_frames_set_parent(const char *url,const char *csp,int policy_known);
+/* The top-level document's response-header CSP sandbox flags (frame/sandbox.h). */
+PF_FN unsigned passive_frames_parent_sandbox(void);
 PF_FN int passive_frames_update(struct node *root,unsigned long long mutation);
 PF_FN int passive_frames_pending(void);
 PF_FN int passive_frame_view(const struct node *host,struct passive_frame_view *out);
@@ -27,6 +29,7 @@ PF_FN int passive_frame_content_box(const struct node *host,int w,int h,int *x,i
 LOGIT_WEAK_STUB(passive_frames_enabled);
 LOGIT_WEAK_STUB(passive_frames_reset);
 LOGIT_WEAK_STUB(passive_frames_set_parent);
+LOGIT_WEAK_STUB(passive_frames_parent_sandbox);
 LOGIT_WEAK_STUB(passive_frames_update);
 LOGIT_WEAK_STUB(passive_frames_pending);
 LOGIT_WEAK_STUB(passive_frame_view);

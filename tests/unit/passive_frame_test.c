@@ -14,6 +14,9 @@
 #include "js/dom/dom.h"
 #include "net/fetch.h"
 #include "dom/focus.h"
+#include "js/runtime/webapi.h"
+#include "logit_abi.h"
+#include <unistd.h>
 void app_main(void);
 static int stage,polls,finished,embed_requests,resource_requests,mutated;
 static const char *mode;
@@ -23,6 +26,42 @@ static char *large_fixture;
 static int active(void){return !strncmp(mode,"active",6);}
 static int port_mode(void){return !strncmp(mode,"active-ports",12);}
 static int restore_mode(void){return !strcmp(mode,"active-ports-restore");}
+/* Sandboxed active frames. active-sandbox carries allow-scripts
+ * allow-same-origin and must behave as the unsandboxed frame does (plus the
+ * modals/popups flags it still has); active-opaque carries allow-scripts
+ * only: an opaque origin, visible as "null" message origins, SecurityError
+ * cookie/storage access and an undeliverable non-"*" targetOrigin.
+ * The same flags through the OTHER doors, with NO sandbox attribute at all:
+ *   active-csp-opaque          the child's response header is
+ *                              `Content-Security-Policy: sandbox allow-scripts`;
+ *   active-parent-csp-opaque   the TOP-LEVEL document's header is, and its
+ *                              frames inherit it -- a srcdoc frame too;
+ *   csp-sandbox                the child's header is a bare `sandbox`;
+ *   active-worker-csp          an allow-scripts allow-same-origin frame whose
+ *                              network Worker response carries a CSP sandbox
+ *                              directive: that Worker must never exist. */
+static int parent_csp_mode(void){return !strcmp(mode,"active-parent-csp-opaque");}
+static int opaque_mode(void){return !strcmp(mode,"active-opaque")||!strcmp(mode,"active-csp-opaque")||parent_csp_mode();}
+static int worker_mode(void){return !strcmp(mode,"active-worker-csp");}
+static int sandbox_mode(void){return !strcmp(mode,"active-sandbox")||opaque_mode()||worker_mode();}
+/* Frames with no runtime: nothing in them runs, yet they still load. */
+static int scriptless_sandbox(void){return !strcmp(mode,"sandbox")||!strcmp(mode,"csp-sandbox");}
+/* The WebAPI transport of the CHILD's own fetch(). Only request bytes are
+ * observed: whether a Referer rides a request is decided before any byte of
+ * a response exists, so the reply is a fixed CORS-open "ok". */
+#define REC_SOCKETS 8
+static char rec_req[REC_SOCKETS][2048];static int rec_off[REC_SOCKETS],rec_n;
+static int rec_open(const char *h,int port,int tls){(void)h;(void)port;(void)tls;if(rec_n==REC_SOCKETS)return -1;rec_req[rec_n][0]=0;rec_off[rec_n]=0;return rec_n++;}
+static int rec_poll(int fd){return SOCK_P_CONNECTED|SOCK_P_WRITABLE|(strstr(rec_req[fd],"\r\n\r\n")?SOCK_P_READABLE:0);}
+static int rec_send(int fd,const void *b,int n){size_t l=strlen(rec_req[fd]);if(n<0||l+(size_t)n>=sizeof rec_req[fd])return -1;memcpy(rec_req[fd]+l,b,(size_t)n);rec_req[fd][l+n]=0;return n;}
+static int rec_recv(int fd,void *b,int n){static const char r[]="HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: 2\r\n\r\nok";
+ int left=(int)sizeof r-1-rec_off[fd];if(left<=0)return 0;if(n>left)n=left;memcpy(b,r+rec_off[fd],(size_t)n);rec_off[fd]+=n;return n;}
+static void rec_close(int fd){(void)fd;}
+static unsigned long long rec_now(void){return host_clock;}
+static const struct webapi_net REC_NET={rec_open,rec_poll,rec_send,rec_recv,rec_close,rec_now,0};
+static const char *rec_find(const char *line){for(int i=0;i<rec_n;i++)if(strstr(rec_req[i],line))return rec_req[i];return 0;}
+#define SANDBOX_REPORT_OPAQUE "ls=SecurityError,ss=SecurityError,ck=SecurityError,cks=SecurityError,origin=null,domain=\"\",alert=undefined,confirm=false,prompt=null,open=null,worker=undefined"
+#define SANDBOX_REPORT_SAME "ls=function,ss=function,ck=string,cks=set,origin=https://child.test,domain=\"child.test\",alert=undefined,confirm=false,prompt=null,open=null"
 static int restored;
 static void policy_retention_checks(void)
 {
@@ -56,6 +95,13 @@ const char *bfetch_response_header(int id,const char *name){
   if(restore_mode()&&strstr(u,"other.html"))return "frame-src 'none'";
   if(!strcmp(mode,"parent-csp")&&!strcmp(u,parent))return "frame-src 'none'";
   if(!strcmp(mode,"base-blocked")&&strstr(u,"child.html"))return "base-uri 'none';script-src 'none'";
+  /* Only the sandbox may stop this child's scripts: no CSP beside it. */
+  if(!strcmp(mode,"sandbox")&&strstr(u,"child.html"))return "";
+  /* The CSP doors: the directive alone must do what the attribute does. */
+  if(!strcmp(mode,"csp-sandbox")&&strstr(u,"child.html"))return "sandbox";
+  if(!strcmp(mode,"active-csp-opaque")&&strstr(u,"child.html"))return "sandbox allow-scripts";
+  if(parent_csp_mode()&&!strcmp(u,parent))return "sandbox allow-scripts";
+  if(worker_mode()&&strstr(u,"/w.js"))return "sandbox allow-scripts";
   if(!strcmp(mode,"allowed-csp")&&strstr(u,"child.html"))return "script-src 'none'; style-src 'unsafe-inline' https:; img-src https:";
   return strstr(u,"child.html")&&!active()?"script-src 'none'":"";
  }
@@ -76,6 +122,16 @@ static void post(int t){struct logit_event e={0};e.type=t;if(t==EV_RESIZE){e.a=1
 static void finish(void){finished=1;CHECK(!strcmp(js_page_location(),parent),"embedding never navigates or replaces the parent document");CHECK(tabs_count()==(restore_mode()?2:1),"embedding never opens a second tab");CHECK(textop("PARENT-RETAINED")!=0,"parent still paints after the child context is restored");CHECK(expr("document.querySelector('#inside')===null && typeof childRan==='undefined'"),"child DOM and scripts do not enter the parent realm");CHECK(fake_site_fetched("never.js")==0&&fake_site_fetched("nested.html")==0,"policy-blocked scripts and nested documents never fetch");
  if(active()){
   CHECK(textop(!strcmp(mode,"active-focus")?"FRAME-KEY":"FRAME-MESSAGE")!=0,"native child click and bidirectional message repaint embedded pixels");
+  if(opaque_mode())CHECK(expr("report==='" SANDBOX_REPORT_OPAQUE "'"),"opaque-origin frame: storage/cookie SecurityError, null origin, no dialogs, popup null, no Worker");
+  if(parent_csp_mode())CHECK(expr("srcdocOpaque===true"),"a srcdoc frame inherits the top-level CSP sandbox exactly as the network frame does");
+  if(worker_mode())CHECK(expr("report==='worker=refused'"),"a network Worker whose response CSP sandboxes it never runs");
+  /* Referrer Policy: an opaque-origin document's request has no referrer.
+   * The same-origin sandboxed twin proves the recorder sees the header. */
+  if(opaque_mode()){const char *q=rec_find("GET /ref-probe.txt");
+   CHECK(q&&strstr(q,"\r\nOrigin: null\r\n")&&!strstr(q,"\r\nReferer:"),"an opaque-origin document fetch carries Origin: null and no Referer");}
+  if(!strcmp(mode,"active-sandbox")){const char *q=rec_find("GET /ref-probe.txt");
+   CHECK(q&&strstr(q,"\r\nReferer: https://child.test/child.html\r\n"),"a same-origin sandboxed document fetch keeps its Referer");}
+  if(!strcmp(mode,"active-sandbox"))CHECK(expr("report==='" SANDBOX_REPORT_SAME "'"),"allow-same-origin frame keeps its origin, storage and cookies; modals and popups stay sandboxed");
   CHECK(expr("got===1 && bad===0 && sourceOK"),"parent receives exact child origin and stable source identity");
   CHECK(!js_dom_has_activation(),"window messages do not grant parent user activation");
   if(!strcmp(mode,"active-realm"))CHECK(expr("parentRealm.JSON.parse('{\"v\":7}').v===7 && parentRealm.JSON!==JSON && new DOMParser().parseFromString('<b>after child</b>','text/html').body.textContent==='after child'"),"parent auxiliary realm and DOMParser survive child owner switches");
@@ -94,7 +150,10 @@ static void finish(void){finished=1;CHECK(!strcmp(js_page_location(),parent),"em
   CHECK(passive_frames_pending(),"queued window messages wake an otherwise idle browser");
   stage=99;post(EV_CLOSE);return;
  }
- if(!blocked){CHECK(textop("FRAME-CONTENT")!=0,"actual child document text reaches embedded paint");CHECK(image_painted(),"actual decoded child image reaches embedded paint");if(textop("FRAME-CONTENT"))CHECK((textop(PASSIVE_FRAME_SCRIPT_NOTICE)!=0)==(strcmp(mode,"static")!=0),"native preview notice appears only for documents with scripts");CHECK(embed_requests==1&&resource_requests==2,"one child document and its independent stylesheet and image were fetched");const struct paintop *p=textop("FRAME-CONTENT");CHECK(!p||(p->x>=42&&p->x<242&&p->y>=162&&p->y<302),"child text is translated inside the iframe viewport");}
+ if(!blocked){CHECK(textop("FRAME-CONTENT")!=0,"actual child document text reaches embedded paint");CHECK(image_painted(),"actual decoded child image reaches embedded paint");if(textop("FRAME-CONTENT"))CHECK((textop(PASSIVE_FRAME_SCRIPT_NOTICE)!=0)==(strcmp(mode,"static")&&!scriptless_sandbox()),"native preview notice appears only for documents whose scripts were refused, never for a sandbox that disallows them");CHECK(embed_requests==1&&resource_requests==2,"one child document and its independent stylesheet and image were fetched");const struct paintop *p=textop("FRAME-CONTENT");CHECK(!p||(p->x>=42&&p->x<242&&p->y>=162&&p->y<302),"child text is translated inside the iframe viewport");
+  /* HTML's iframe load event steps do not ask whether the child can run
+   * script: a runtime-less sandboxed document still loads its <iframe>. */
+  CHECK(expr("frameLoads===1"),"the parent iframe element gets exactly one load event, whether or not its document can run script");}
  else CHECK(textop("FRAME-CONTENT")==0&&image_painted()==0,"policy-refused frame exposes no child pixels");
  CHECK(!textop("FORGED-FILE")&&!textop("SECRET-MARKUP"),"passive file and password controls never paint markup values");CHECK(expr("(function(){try{return document.getElementById('f').contentDocument===null}catch(e){return true}})()"),"passive document has no script-visible child DOM");stage=99;post(EV_CLOSE);}
 void loader_poll_hook(void){host_clock+=25;if(finished||restored==1)return;if(++polls>800){finish();return;}
@@ -134,8 +193,9 @@ void loader_poll_hook(void){host_clock+=25;if(finished||restored==1)return;if(++
   * empty event queue; otherwise the recorder is cleared and every pixel test
   * fails before the browser gets its chance to paint. */
  if(stage==2&&host_evq_head==host_evq_tail&&textop("PARENT-RETAINED"))finish();}
-int main(int argc,char **argv){mode=argc>1?argv[1]:"paint";blocked=!strcmp(mode,"xfo")||!strcmp(mode,"sandbox")||!strcmp(mode,"parent-csp")||!strcmp(mode,"unknown")||!strcmp(mode,"bad-mime")||!strcmp(mode,"meta-tighten")||!strcmp(mode,"remove");
- char page[2000];snprintf(page,sizeof page,"<!doctype html><style>body{margin:0}iframe{position:absolute;left:40px;top:100px;width:200px;height:140px;border:2px solid blue;%s}</style><body>PARENT-RETAINED<iframe id=f src='https://child.test/child.html' %s></iframe>",!strcmp(mode,"geometry")?"display:none":"",!strcmp(mode,"sandbox")?"sandbox=''":"");
+int main(int argc,char **argv){mode=argc>1?argv[1]:"paint";blocked=!strcmp(mode,"xfo")||!strcmp(mode,"parent-csp")||!strcmp(mode,"unknown")||!strcmp(mode,"bad-mime")||!strcmp(mode,"meta-tighten")||!strcmp(mode,"remove");
+ char page[2000];snprintf(page,sizeof page,"<!doctype html><style>body{margin:0}iframe{position:absolute;left:40px;top:100px;width:200px;height:140px;border:2px solid blue;%s}</style><body>PARENT-RETAINED<iframe id=f src='https://child.test/child.html' %s></iframe>",!strcmp(mode,"geometry")?"display:none":"",!strcmp(mode,"sandbox")?"sandbox=''":!strcmp(mode,"active-sandbox")||worker_mode()?"sandbox='allow-scripts allow-same-origin'":!strcmp(mode,"active-opaque")?"sandbox='allow-scripts'":"");
+ if(!active())strcat(page,"<script>var frameLoads=0;document.getElementById('f').addEventListener('load',function(){frameLoads++});</script>");
  if(active())strcat(page,"<script>var got=0,bad=0,sourceOK=false;var savedWindow=document.getElementById('f').contentWindow;addEventListener('message',function(e){if(e.data==='wrong'){bad++;return;}if(e.data==='clicked'&&e.origin==='https://child.test'){got++;sourceOK=e.source===savedWindow;e.source.postMessage('reply','https://child.test');}});</script>");
  if(restore_mode())policy_retention_checks();
  if(!strcmp(mode,"active-realm"))strcat(page,"<script>var auxParent=document.createElement('iframe');auxParent.style.display='none';document.body.appendChild(auxParent);var parentRealm=auxParent.contentWindow;if(parentRealm.JSON===JSON)throw Error('parent realm alias');</script>");
@@ -205,6 +265,47 @@ int main(int argc,char **argv){mode=argc>1?argv[1]:"paint";blocked=!strcmp(mode,
     "box.addEventListener('click',function(e){if(!e.isTrusted)throw Error('input');channel.port1.postMessage('clicked')});");
   if(restore_mode())fake_site_add("https://other.test/other.html","<!doctype html><p>OTHER-POLICY-TAB</p>");
  }
+ if(sandbox_mode()){
+  /* The parent answers the child's report only from the origin the child's
+   * DOCUMENT has, and then posts twice: 'leak' addressed to the child URL's
+   * origin (an opaque-origin document must never receive it) and 'reply'
+   * to "*". The child paints FRAME-MESSAGE only if 'leak' arrived exactly
+   * when it should. */
+  *strstr(page,"<script>")=0;
+  strcat(page,"<script>var got=0,bad=0,sourceOK=false,report='';var savedWindow=document.getElementById('f').contentWindow;");
+  strcat(page,opaque_mode()?"var CHILD='null';":"var CHILD='https://child.test';");
+  /* The about:blank/srcdoc door (platform.c) must inherit the top-level
+   * document's CSP sandbox exactly as the network door (passive.c) does. */
+  if(parent_csp_mode())strcat(page,"var sf=document.createElement('iframe');sf.style.display='none';sf.srcdoc='<p>SRCDOC</p>';document.body.appendChild(sf);"
+    "var srcdocOpaque=sf.contentDocument===null&&(function(){try{sf.contentWindow.document;return false}catch(e){return e.name==='SecurityError'}})();");
+  strcat(page,"addEventListener('message',function(e){if(e.data==='wrong'){bad++;return;}"
+    "if(typeof e.data==='string'&&e.data.indexOf('clicked|')===0&&e.origin===CHILD){got++;sourceOK=e.source===savedWindow;report=e.data.slice(8);"
+    "e.source.postMessage('leak','https://child.test');e.source.postMessage('reply','*');}});</script>");
+  fake_site_reset();fake_site_add(parent,page);fake_site_add("https://child.test/child.html",child_page);
+  static char code[3000];
+  snprintf(code,sizeof code,
+    "fetch('/ref-probe.txt').catch(function(){});"
+    "var box=document.getElementById('inside'),leaked=false,EXPECT_LEAK=%s;"
+    "function t(f){try{return String(f())}catch(e){return e.name}}"
+    "var r=['ls='+t(function(){return typeof localStorage.getItem}),'ss='+t(function(){return typeof sessionStorage.getItem}),"
+    "'ck='+t(function(){return typeof document.cookie}),'cks='+t(function(){document.cookie='sbx=1';return 'set'}),"
+    "'origin='+t(function(){return self.origin}),'domain='+t(function(){return JSON.stringify(document.domain)}),"
+    "'alert='+t(function(){return alert('SANDBOX-ALERT-TEXT')}),'confirm='+t(function(){return confirm('SANDBOX-CONFIRM-TEXT')}),"
+    "'prompt='+t(function(){return prompt('SANDBOX-PROMPT-TEXT','d')}),'open='+t(function(){return open('https://child.test/popup')})%s].join(',');"
+    "box.textContent='FRAME-READY';"
+    "box.addEventListener('click',function(e){if(!e.isTrusted)throw Error('input');parent.postMessage('wrong','https://not-parent.test');parent.postMessage('clicked|'+r,'https://parent.test')});"
+    "addEventListener('message',function(e){if(e.data==='leak'){leaked=true;return}"
+    "if(e.origin==='https://parent.test'&&e.source===parent&&e.data==='reply')box.textContent=leaked===EXPECT_LEAK?'FRAME-MESSAGE':'FRAME-LEAKED'});",
+    opaque_mode()?"false":"true",opaque_mode()?",'worker='+typeof Worker":"");
+  if(worker_mode())snprintf(code,sizeof code,"%s",
+    "var box=document.getElementById('inside'),out='pending';function ready(v){out=v;box.textContent='FRAME-READY'}"
+    "try{var w=new Worker('/w.js');w.onmessage=function(e){ready('worker='+e.data)};w.onerror=function(){ready('worker=refused')}}"
+    "catch(e){ready('worker=threw-'+e.name)}"
+    "box.addEventListener('click',function(e){if(!e.isTrusted)throw Error('input');parent.postMessage('clicked|'+out,'https://parent.test')});"
+    "addEventListener('message',function(e){if(e.origin==='https://parent.test'&&e.source===parent&&e.data==='reply')box.textContent='FRAME-MESSAGE'});");
+  fake_site_add("https://child.test/active.js",code);
+  fake_site_add("https://child.test/w.js","postMessage('ran')");
+ }
  if(!strcmp(mode,"active-large")){
   /* The sentinel is AFTER the former ceiling, so a truncated successful
    * parse cannot satisfy the exact same click/message/pixel observations. */
@@ -212,5 +313,22 @@ int main(int argc,char **argv){mode=argc>1?argv[1]:"paint";blocked=!strcmp(mode,
   fake_site_reset();fake_site_add(parent,page);fake_site_add("https://child.test/child.html",child_page);
   large_fixture=malloc((size_t)padding+strlen(code)+5);large_fixture[0]='/';large_fixture[1]='*';memset(large_fixture+2,'x',padding);strcpy(large_fixture+padding+2,"*/");strcpy(large_fixture+padding+4,code);fake_site_add("https://child.test/active.js",large_fixture);
  }
+ if(sandbox_mode())js_webapi_set_net(&REC_NET);
  tabs_set_store(&memfs);char session[300];snprintf(session,sizeof session,"logit-browser-session\t1\t0\n0\t%s\tframe\t0\n",parent);memfs_write(SESSION_PATH,session,strlen(session));struct logit_event e={0};e.type=EV_KEY;e.a='\n';host_post_event(&e);
- if(setjmp(host_exit_jmp)==0)app_main();CHECK(finished,"bounded app_main completed iframe observations");passive_frames_reset();free(large_fixture);printf("passive-frame %s: %s\n",mode,fail?"FAIL":"PASS");return fail?1:0;}
+ /* Sandboxed modes also judge the console: the dialog surface of this
+  * browser. Capture it, then replay it so failures stay visible. */
+ FILE *capture=0;int saved=-1;
+ if(sandbox_mode()){capture=tmpfile();fflush(stdout);saved=dup(STDOUT_FILENO);if(!capture||saved<0)return 2;dup2(fileno(capture),STDOUT_FILENO);}
+ if(setjmp(host_exit_jmp)==0)app_main();CHECK(finished,"bounded app_main completed iframe observations");passive_frames_reset();free(large_fixture);
+ if(capture){
+  fflush(stdout);dup2(saved,STDOUT_FILENO);close(saved);
+  fseek(capture,0,SEEK_END);long n=ftell(capture);rewind(capture);char *out=malloc((size_t)n+1);if(!out)return 2;
+  if(fread(out,1,(size_t)n,capture)!=(size_t)n)return 2;out[n]=0;fclose(capture);fputs(out,stdout);
+  CHECK(!strstr(out,"SANDBOX-ALERT-TEXT")&&!strstr(out,"SANDBOX-CONFIRM-TEXT")&&!strstr(out,"SANDBOX-PROMPT-TEXT"),"no simple dialog message reaches the console without allow-modals");
+  if(!worker_mode()){
+   CHECK(strstr(out,"Ignored call to 'alert()'")!=0,"the blocked dialog is reported to the developer console");
+   CHECK(strstr(out,"Blocked opening a new window")!=0,"the blocked popup is reported to the developer console");
+  }
+  free(out);
+ }
+ printf("passive-frame %s: %s\n",mode,fail?"FAIL":"PASS");return fail?1:0;}

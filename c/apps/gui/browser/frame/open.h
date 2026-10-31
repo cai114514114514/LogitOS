@@ -9,7 +9,14 @@
 /* This is browser chrome painted inside a frame's existing empty box. It is
  * never a DOM child or a synthetic link: that would give author script a new
  * navigation primitive and misrepresent an isolated child document as pixels.
- * Empty sandbox/srcdoc attributes matter just as much as nonempty ones. */
+ * Empty sandbox/srcdoc attributes matter just as much as nonempty ones.
+ * Correction (2026-09-25): sandboxed frames now LOAD inline with their flags
+ * enforced (frame/sandbox.h); this refusal is no longer about honouring the
+ * attribute. It stays because this action creates a TOP-LEVEL document, and
+ * nothing here propagates a frame's sandboxing flags to one (top-level
+ * sandbox enforcement is not implemented): opening would strip the author's
+ * restrictions. The button also only exists when the frame is not rendered
+ * inline, which a loaded sandboxed network frame is. */
 static const char *frame_open_source(const struct node *n)
 {
     if (!n || n->type != N_ELEM || strcmp(n->tag,"iframe") ||

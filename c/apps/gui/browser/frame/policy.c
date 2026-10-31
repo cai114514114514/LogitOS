@@ -3,8 +3,13 @@
  * intersect, duplicate directives use the first occurrence, and unrelated
  * script-src directives cannot disable an otherwise permitted image embed.
  * URLs use the shipping URL parser, never suffix checks on unparsed URLs.
- * This initial consumer refuses CSP sandbox, unsupported URL schemes, and
- * hash-only inline styles (no source text hash is supplied to this API).
+ * This initial consumer refuses unsupported URL schemes and hash-only inline
+ * styles (no source text hash is supplied to this API). ~~It also refused any
+ * policy carrying a CSP sandbox directive.~~ Correction (2026-09-25): the
+ * sandbox directive is not a source list and never decides a fetch here; it
+ * feeds the document's sandboxing flag set (frame/sandbox.h), which the frame
+ * loader and runtime enforce. Refusing on it made every sandboxed widget a
+ * blank box while protecting nothing the flags do not.
  * Redirects must be checked by the loader at EACH destination, before fetch.
  * Sources: W3C CSP3 sections 6.4.2 and 6.7.2, HTML X-Frame-Options processing.
  */
@@ -156,7 +161,6 @@ static int ip_policies(const char *all,const struct ipurl *self,const struct ipu
     if(!ip_bounded(all))return 0;
     size_t at=0;struct ips p;
     while(ip_next_policy(all,&at,&p)){
-        if(ip_directive(p,"sandbox").found)return 0;
         struct ips l=ip_select(p,a,b,c);if(l.found && found)*found=1;
         if(!ip_list(l,self,dest))return 0;
     }return 1;
@@ -212,7 +216,6 @@ static int ip_inline(const char *all,const char *nonce,int attr,int script)
     if(!ip_bounded(all))return 0;
     size_t at=0;struct ips p;
     while(ip_next_policy(all,&at,&p)){
-        if(ip_directive(p,"sandbox").found)return 0;
         struct ips l=ip_select(p,script?(attr?"script-src-attr":"script-src-elem"):
             (attr?"style-src-attr":"style-src-elem"),script?"script-src":"style-src","default-src");
         if(!l.found)continue;
@@ -244,7 +247,6 @@ int iframe_policy_eval(const char *csp)
     if(!ip_bounded(csp))return 0;
     size_t at=0;struct ips p;
     while(ip_next_policy(csp,&at,&p)){
-        if(ip_directive(p,"sandbox").found)return 0;
         struct ips l=ip_select(p,"script-src","default-src",0);
         if(l.found&&!ip_token(l,"'unsafe-eval'"))return 0;
     }return 1;
@@ -254,7 +256,6 @@ int iframe_policy_blob_worker(const char *csp)
     if(!ip_bounded(csp))return 0;
     size_t at=0;struct ips p;
     while(ip_next_policy(csp,&at,&p)){
-        if(ip_directive(p,"sandbox").found)return 0;
         struct ips l=ip_select(p,"worker-src","child-src","script-src");
         if(!l.found)l=ip_directive(p,"default-src");
         /* Conservative subset: require explicit blob: when a source list
@@ -271,7 +272,6 @@ int iframe_policy_network_worker(const char *document_url,const char *url,const 
      * includes redirects and HTTP-to-HTTPS origin changes. */
     int ok=ip_bounded(csp)&&!strcmp(d.origin,r.origin);size_t at=0;struct ips p;
     while(ok&&ip_next_policy(csp,&at,&p)){
-        if(ip_directive(p,"sandbox").found){ok=0;break;}
         struct ips l=ip_select(p,"worker-src","child-src","script-src");
         if(!l.found)l=ip_directive(p,"default-src");
         ok=!l.found||ip_list(l,&d,&r);
@@ -285,7 +285,6 @@ int iframe_policy_worker_import(const char *document_url,const char *url,const c
     int ok=ip_bounded(csp);size_t at=0;struct ips p;
     if(!strcmp(d.scheme,"https:")&&!strcmp(r.scheme,"http:"))ok=0;
     while(ok&&ip_next_policy(csp,&at,&p)){
-        if(ip_directive(p,"sandbox").found){ok=0;break;}
         /* importScripts has no element, nonce or parser insertion. CSP3's
          * worker script request uses script-src, NOT script-src-elem. */
         struct ips l=ip_select(p,"script-src","default-src",0);
@@ -302,7 +301,6 @@ int iframe_policy_script(const char *document_url,const char *resource_url,
     if(!strcmp(d.scheme,"https:")&&!strcmp(r.scheme,"http:"))ok=0;
     size_t at=0;struct ips p;
     while(ok&&ip_next_policy(csp,&at,&p)){
-        if(ip_directive(p,"sandbox").found){ok=0;break;}
         struct ips l=ip_select(p,"script-src-elem","script-src","default-src");
         if(!l.found)continue;
         int nonce_ok=0;
