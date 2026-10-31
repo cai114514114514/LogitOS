@@ -6,7 +6,7 @@
 #include <string.h>
 #include <stdarg.h>
 #include "../../c/drivers/usb/ehci.c"
-static int checks,failures,quarantines,quiesces,bios_release=1;
+static int checks,failures,quarantines,quiesces,bios_release=1,bios_sticky;
 static uint64_t now;
 static uint32_t cfg[64];
 static uint16_t command_drop_mask;
@@ -55,7 +55,7 @@ int time_ready(void){return 1;}
 uint32_t pci_cfg_read(uint8_t b,uint8_t s,uint8_t f,uint16_t o)
 {(void)b;(void)s;(void)f;cfg_reads++;return cfg[o/4];}
 void pci_cfg_write(uint8_t b,uint8_t s,uint8_t f,uint16_t o,uint32_t v)
-{(void)b;(void)s;(void)f;cfg_writes++;cfg[o/4]=v;if(o==0x40 && bios_release && (v&(1u<<24)))cfg[o/4]&=~(1u<<16);}
+{(void)b;(void)s;(void)f;cfg_writes++;cfg[o/4]=v;if(o==0x40 && bios_release && (v&(1u<<24)))cfg[o/4]&=~(1u<<16);if(o==0x40 && bios_sticky)cfg[o/4]|=1u<<16;}
 uint16_t pci_cfg_read16(uint8_t b,uint8_t s,uint8_t f,uint16_t o)
 {return (uint16_t)(pci_cfg_read(b,s,f,o&~3u)>>((o&2)*8));}
 void pci_cfg_write16(uint8_t b,uint8_t s,uint8_t f,uint16_t o,uint16_t v)
@@ -204,8 +204,16 @@ int main(void)
     CHECK(!(cfg[0x44/4]&0xe03fu),"legacy SMI enables cleared after handoff");
     cfg[0x40/4]=1|(1u<<16);bios_release=0;
     handoff_touched=0;
-    CHECK(handoff(&e,0x40u<<8,&handoff_touched)<0 && handoff_touched,
-          "firmware ownership timeout refuses controller");
+    cfg[0x44/4]=0xe03f;
+    CHECK(!handoff(&e,0x40u<<8,&handoff_touched) && handoff_touched &&
+          !(cfg[0x40/4]&(1u<<16)) && (cfg[0x40/4]&(1u<<24)) && !(cfg[0x44/4]&0xe03fu),
+          "firmware ownership timeout: OS takes the semaphore (Bus Master off) and clears SMI enables");
+    /* X79-VG4 shape: USBLEGSUP handed off, then a next pointer that is not
+     * a valid capability offset */
+    cfg[0x40/4]=1|(0x45u<<8)|(1u<<16);cfg[0x44/4]=0x0000e03fu;bios_release=1;
+    handoff_touched=0;
+    CHECK(!handoff(&e,0x40u<<8,&handoff_touched) && handoff_touched,
+          "handoff stops after the legacy-support capability");
     cfg[0x40/4]=2|(0x40u<<8);
     handoff_touched=0;
     CHECK(handoff(&e,0x40u<<8,&handoff_touched)<0 && !handoff_touched,"EECP cycle refused");
@@ -264,8 +272,8 @@ int main(void)
     hold_halt=0;wr(&e,OP_STS,STS_HALT);
     CHECK(!halt(&e) && quiesces==0,"hardware halt alone does not release DMA ownership");
 
-    /* A valid legacy capability that points to itself fails only after the OS
-     * semaphore write. Full probe must remember that irreversible boundary:
+    /* A BIOS that holds its semaphore even against the forced takeover fails
+     * only after the OS semaphore write. Full probe must remember that irreversible boundary:
      * restoring firmware's old BME or reusing the static slot could restart its
      * schedule through unknown QH/qTD addresses. */
     static uint32_t probe_regs[128];
@@ -276,8 +284,8 @@ int main(void)
     partial.res[0]=(struct dev_resource){.start=(uintptr_t)probe_regs,
         .size=sizeof(probe_regs),.flags=DEV_RES_MEM};
     memset(cfg,0,sizeof(cfg));cfg[PCI_CFG_COMMAND/4]=PCI_CMD_IO|PCI_CMD_MASTER;
-    cfg[0x40/4]=1|(0x40u<<8)|(1u<<16);cfg[0x44/4]=0xe03f;
-    bios_release=1;command_drop_mask=0;command_ignore_writes=0;
+    cfg[0x40/4]=1|(1u<<16);cfg[0x44/4]=0xe03f;
+    bios_release=0;bios_sticky=1;command_drop_mask=0;command_ignore_writes=0;
     bar_base=(uintptr_t)probe_regs;bar_maps=cfg_reads=cfg_writes=master_on_writes=0;model=NULL;
     int partial_rc=ehci_probe(&partial),partial_slot=-1;
     for(unsigned i=0;i<EHCI_CONTROLLERS;i++)
@@ -291,6 +299,7 @@ int main(void)
               (PCI_CMD_MEM|PCI_CMD_INTX_DIS) && !master_on_writes &&
           accesses==bar_maps+cfg_reads+cfg_writes,
           "post-semaphore handoff failure retains quiet ownership and blocks reprobe");
+    bios_sticky=0;
 
     /* Drive a second controller through the complete production probe, then
      * make HCHalted stick low. shutdown still has to cut PCI Bus Master and
@@ -318,6 +327,7 @@ int main(void)
           live->dma.buffers==submitted && submitted->state==DMA_QUARANTINED && !free_calls,
           "halt-timeout shutdown still isolates BME and retains submitted DMA");
     hold_halt=0;
+
     printf("EHCI production: %d checks, %d failures\n",checks,failures);
     return failures?1:0;
 }

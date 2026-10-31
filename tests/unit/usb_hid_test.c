@@ -211,6 +211,24 @@ int main(void)
         checki(hid_decode_keyboard(&hd, none, 0, &ks), -1, "an empty report is rejected");
     }
 
+    /* ------------------------------------------- an NKRO bitmap keyboard -- */
+    {
+        static const uint8_t nkro_rd[] = {
+            0x05, 0x01, 0x09, 0x06, 0xA1, 0x01,
+            0x05, 0x07, 0x19, 0xE0, 0x29, 0xE7, 0x15, 0x00, 0x25, 0x01,
+            0x75, 0x01, 0x95, 0x08, 0x81, 0x02,             /* modifiers */
+            0x19, 0x00, 0x29, 0xE7, 0x95, 0xE8, 0x81, 0x02, /* 232 key bits */
+            0xC0,
+        };
+        checki(hid_parse_report_desc(nkro_rd, sizeof nkro_rd, &hd), 0,
+               "a 240-field NKRO bitmap keyboard parses");
+        struct hid_kbd_state ks;
+        uint8_t rep[30] = { 0x02, 0x10 };                   /* LeftShift + usage 0x04 */
+        checki(hid_decode_keyboard(&hd, rep, 30, &ks), 1, "an NKRO report decodes");
+        checki(ks.mods == 0x02 && ks.nkeys == 1 && ks.keys[0] == 0x04, 1,
+               "the NKRO bitmap yields LeftShift + a");
+    }
+
     /* ---------------------------------------------------- the boot mouse -- */
     checki(hid_parse_report_desc(mouse_rd, sizeof mouse_rd, &hd), 0, "QEMU usb-mouse report descriptor parses");
     checki(hid_report_in_bits(&hd, 0), 32, "the input report is 32 bits -- 4 bytes");

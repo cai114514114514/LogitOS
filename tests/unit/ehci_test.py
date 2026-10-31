@@ -7,8 +7,9 @@ p.add_argument('--build',required=True,type=Path)
 p.add_argument('--controls-only',action='store_true')
 p.add_argument('--positive-only',action='store_true')
 a=p.parse_args();r=Path(__file__).resolve().parents[2];b=a.build.resolve();b.mkdir(parents=True,exist_ok=True)
-controls=[('NO_PERIODIC_RESTORE','refused endpoint leaves the periodic schedule running for the armed one'),('NO_TT','FS split records actual TT hub and port'),('FULL_SHORT','short packet reports exact actual bytes'),
-          ('IGNORE_BIOS','firmware ownership timeout refuses controller'),
+controls=[('WALK_PAST_LEGSUP','handoff stops after the legacy-support capability'),('NO_PERIODIC_RESTORE','refused endpoint leaves the periodic schedule running for the armed one'),('NO_TT','FS split records actual TT hub and port'),('FULL_SHORT','short packet reports exact actual bytes'),
+          ('IGNORE_BIOS','firmware ownership timeout: OS takes the semaphore'),
+          ('NO_FORCE','firmware ownership timeout: OS takes the semaphore'),
           ('NO_HALT','unacknowledged hardware halt is reported before DMA classification'),
           ('PRE_HANDOFF_BME','pre-ownership PCI gate clears bus master and confirms MEM/INTx state'),
           ('COMMAND_NO_READBACK','PCI quiet gate refuses a dropped MEM-decode readback'),

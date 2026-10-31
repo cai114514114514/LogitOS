@@ -247,7 +247,10 @@ static int handoff(struct ehci *e,uint32_t hcc,int *touched)
     unsigned off=(hcc>>8)&255u;
     uint64_t seen=0;
     while (off) {
-        if (off<0x40 || off>0xf8 || (off&3) || (seen&(UINT64_C(1)<<(off/4)))) return -1;
+        if (off<0x40 || off>0xf8 || (off&3) || (seen&(UINT64_C(1)<<(off/4)))) {
+            kprintf("[ehci] %s EECP chain refused at %x (HCCPARAMS %x)\n",e->pci->name,off,hcc);
+            return -1;
+        }
         seen|=UINT64_C(1)<<(off/4);
         uint32_t v=pci_cfg_read(e->pci->bus,e->pci->slot,e->pci->func,off);
         if ((v&255u)==1) {
@@ -255,16 +258,47 @@ static int handoff(struct ehci *e,uint32_t hcc,int *touched)
             pci_cfg_write(e->pci->bus,e->pci->slot,e->pci->func,off,v|(1u<<24));
             uint64_t end=time_mono_ns()+NS_PER_SEC;
             unsigned tries=0;
+            uint64_t t0=time_mono_ns();
             do {
                 v=pci_cfg_read(e->pci->bus,e->pci->slot,e->pci->func,off);
                 if (!(v&(1u<<16))) break;
-                if (++tries==100000000 || time_mono_ns()>=end) return -1;
+                if (++tries==100000000 || time_mono_ns()>=end) {
+#ifndef EHCI_NEGCTL_NO_FORCE
+                    /* The X79-VG4's AMI BIOS never releases (photos,
+                     * 2026-10-31). Linux quirk_usb_disable_ehci() waits 1 s
+                     * and then clears the BIOS semaphore itself. Here Bus
+                     * Master is already off (pci_command_quiet), so the
+                     * BIOS's schedule cannot DMA; the SMI enables are
+                     * cleared below as on the ordinary path. */
+                    kprintf("[ehci] %s BIOS kept ownership for 1 s (USBLEGSUP=%x): taking it\n",e->pci->name,v);
+                    pci_cfg_write(e->pci->bus,e->pci->slot,e->pci->func,off,(v&~(1u<<16))|(1u<<24));
+                    v=pci_cfg_read(e->pci->bus,e->pci->slot,e->pci->func,off);
+                    if (v&(1u<<16)) return -1;
+                    break;
+#else
+                    return -1;
+#endif
+                }
                 io_relax();
             } while (1);
-            if (!(v&(1u<<24))) return -1;
+            if (!(v&(1u<<16)) && time_mono_ns()-t0<NS_PER_SEC)
+                kprintf("[ehci] %s BIOS released ownership in %lu ms\n",e->pci->name,
+                        (unsigned long)((time_mono_ns()-t0)/1000000u));
+            /* Linux quirk_usb_disable_ehci() does not read the OS semaphore
+             * back either: once the BIOS bit is clear nobody else owns it */
+            if (!(v&(1u<<24)))
+                kprintf("[ehci] %s OS semaphore reads back clear (USBLEGSUP=%x)\n",e->pci->name,v);
             uint32_t ctl=pci_cfg_read(e->pci->bus,e->pci->slot,e->pci->func,off+4);
             pci_cfg_write(e->pci->bus,e->pci->slot,e->pci->func,off+4,
                           (ctl&~0xe03fu)|0xe03f0000u);
+#ifndef EHCI_NEGCTL_WALK_PAST_LEGSUP
+            /* EHCI 1.0 section 5.1 defines one legacy-support capability,
+             * and once it is handed off nothing further in the chain matters.
+             * On the X79-VG4 the walk refused both controllers right after a
+             * clean release (photos, 2026-10-31); Linux's quirk does not
+             * validate the rest of the chain at all. */
+            break;
+#endif
         }
         off=(v>>8)&255u;
     }

@@ -81,7 +81,10 @@
 #define HID_MAIN_RELATIVE 0x004
 #define HID_MAIN_NULL_STATE 0x040
 
-#define HID_MAX_FIELDS 96
+/* An NKRO keyboard reports one variable bit per key, usages 0x00..0xE7 plus
+ * the eight modifiers: 240 fields in a single report. 96 refused the
+ * X79-VG4's keyboard (24ae:4056) second interface. */
+#define HID_MAX_FIELDS 320
 #define HID_MAX_REPORTS 8
 #define HID_MAX_REPORT_BITS 4096
 #define HID_MAX_REPORT_BYTES ((HID_MAX_REPORT_BITS + 7) / 8 + 1)

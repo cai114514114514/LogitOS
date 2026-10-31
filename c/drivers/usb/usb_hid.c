@@ -474,6 +474,20 @@ static int hid_probe(struct usb_device *d, int ifno)
             } else {
                 kprintf("[hid] if%d: report descriptor %s\n", it->num,
                         n > 0 ? "did not parse" : "could not be read");
+                /* the bytes themselves, so a photo of the screen is enough to
+                 * reproduce the refusal in the host test */
+                for (int o = 0; o < n && o < 192; o += 24) {
+                    static const char hex[] = "0123456789abcdef";
+                    char line[24 * 3 + 1];
+                    int k = 0;
+                    for (int j = o; j < n && j < o + 24; j++) {
+                        line[k++] = hex[rd[j] >> 4];
+                        line[k++] = hex[rd[j] & 15];
+                        line[k++] = ' ';
+                    }
+                    line[k] = 0;
+                    kprintf("[hid] if%d rd+%03d %s\n", it->num, o, line);
+                }
             }
             kfree(rd);
         }
