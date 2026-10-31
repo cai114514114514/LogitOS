@@ -344,15 +344,59 @@ static int intx_source(struct device *d, int enable)
 #endif
 }
 
+/* Intel ICH9 / 6 Series / C600 / 7 Series: a bus-0 PCH device's INTx pin
+ * reaches the IOAPIC through PIRQA-H at GSI 16-23, chosen per device by the
+ * DxxIR registers in the chipset configuration space (RCBA, LPC config 0xF0).
+ * Offsets and the GSI 16 base: coreboot src/southbridge/intel/bd82x6x/pch.h
+ * and src/southbridge/intel/common/rcba_pirq.c. The firmware interrupt line
+ * (config 0x3C) is the 8259 routing; it matches the IOAPIC only where the
+ * chipset mirrors ISA IRQs onto pins 0-15, as QEMU's ICH9 does. On the
+ * X79-VG4 it named pins nothing drives (2026-10-31). */
+static int pch_intx_gsi(const struct device *d, uint32_t *gsi)
+{
+#ifdef PCI_NEGCTL_IGNORE_PCH_ROUTE
+    (void)d; (void)gsi; return -1;
+#else
+    static const struct { uint8_t slot; uint16_t reg; } dir[] = {
+        {20, 0x3160}, {22, 0x315c}, {25, 0x3150}, {26, 0x314c}, {27, 0x3148},
+        {28, 0x3146}, {29, 0x3144}, {30, 0x3142}, {31, 0x3140},
+    };
+    if (d->bus != 0 || !d->irq_pin || d->irq_pin > 4) return -1;
+    uint16_t reg = 0;
+    for (unsigned i = 0; i < sizeof dir / sizeof dir[0]; i++)
+        if (dir[i].slot == d->slot) reg = dir[i].reg;
+    if (!reg) return -1;
+    uint32_t id = pci_cfg_read(0, 31, 0, 0);
+    uint16_t dev = (uint16_t)(id >> 16);
+    if ((id & 0xffff) != 0x8086 ||
+        !((dev >= 0x2910 && dev <= 0x2919) || (dev >= 0x1c40 && dev <= 0x1c5f) ||
+          (dev >= 0x1d40 && dev <= 0x1d41) || (dev >= 0x1e40 && dev <= 0x1e5f)))
+        return -1;
+    uint32_t rcba = pci_cfg_read(0, 31, 0, 0xf0);
+    if (!(rcba & 1) || !(rcba & 0xffffc000u)) return -1;
+    uint64_t page = (uint64_t)(rcba & 0xffffc000u) + 0x3000;
+    vmm_map_page(page, page, VMM_WRITABLE | VMM_NOCACHE);
+    uint16_t route = *(volatile uint16_t *)(uintptr_t)(page + (reg & 0xfff));
+    unsigned pirq = (route >> (4 * (d->irq_pin - 1))) & 7;
+    *gsi = 16 + pirq;
+    kprintf("[irq] %s INT%c -> PIRQ%c -> GSI %u (PCH D%uIR %04x; firmware line %u)\n",
+            d->name, 'A' + d->irq_pin - 1, 'A' + pirq, *gsi, d->slot, route, d->irq_line);
+    return 0;
+#endif
+}
+
 static int intx_setup(struct device *d, irq_handler_t fn, void *arg)
 {
+    uint32_t gsi;
+    if (pch_intx_gsi(d, &gsi) != 0) {
     if (!d->irq_pin || d->irq_pin > 4 || !d->irq_line || d->irq_line == 0xff) return -1;
     /* Without an AML interpreter we cannot evaluate _PRT, so the GSI comes from
      * the firmware-programmed interrupt line (config 0x3C) -- which is what the
      * e1000 has always used here. Lines < 16 go through the MADT's ISA source
      * overrides; other values are GSIs. This is still firmware-line fallback,
      * not an ACPI _PRT interpreter or PCI bridge interrupt swizzling. */
-    uint32_t gsi = (d->irq_line < 16) ? acpi_gsi_for_irq(d->irq_line) : d->irq_line;
+    gsi = (d->irq_line < 16) ? acpi_gsi_for_irq(d->irq_line) : d->irq_line;
+    }
     uint32_t destination = lapic_id();
     if (!ioapic_can_route(gsi, destination)) return -1;
     /* Firmware may have left INTx enabled. Suppress this source until its
