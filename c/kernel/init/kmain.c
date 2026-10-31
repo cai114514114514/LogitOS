@@ -1,3 +1,4 @@
+#include "mce.h"
 #include "hwhud.h"
 #include "dma.h"
 #include <stdint.h>
@@ -172,6 +173,7 @@ void kernel_main(uint64_t mb_info)
     /* PA1 becomes write-combining before the framebuffer is first mapped, so
      * the scanout memory is never mapped with two cache types. */
     pat_init();
+    mce_init();                          /* CR4.MCE: a machine check logs banks instead of shutting down */
     kprintf("[pat] cpu0 PA1=%s\n", pat_wc_available() ? "WC (IA32_PAT 0x0007040600070106)" : "unchanged (no PAT)");
 
     if (!fb_init(mb_info)) {

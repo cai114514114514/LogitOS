@@ -9,6 +9,7 @@
 #include "swap.h"
 #include "mmhost.h"
 #include "kprintf.h"
+#include "../../cpu/power/pat.h"
 #include "../../../../include/weaksym.h"   /* the weak tlb_flush_all below */
 
 /* WEAK, and not an #include: vmm.c is compiled host-side by make test-mm with
@@ -213,6 +214,42 @@ void vmm_map_range(uint64_t virt, uint64_t phys, uint64_t size, uint64_t flags)
         }
         kernel_map_finish(changed);
     }
+}
+
+/* MMIO uses its existing supervisor identity address, so there is no new WB/WC
+ * alias of the same aperture. The display owner must remove old mappings and
+ * quiesce users BEFORE calling this; changing a live UC/WB PTE to WC needs a
+ * system-wide cache transition, not merely a TLB invalidation. Refuse that
+ * transition here. PAT must have been initialized on every online CPU first.
+ * Intel SDM vol.3A 11.12.4, cache-type alias restrictions. This narrow entry
+ * deliberately does not map RAM, user virtual addresses, or split huge pages.
+ * Not verified on X79-VG4 hardware. */
+void *vmm_map_mmio_wc(uint64_t phys, uint64_t len)
+{
+    if (!len || phys > UINT64_MAX - len || phys + len > UINT64_MAX - 4095)
+        return NULL;
+    uint64_t start = phys & ~4095ull, end = (phys + len + 4095) & ~4095ull;
+    MM_KERNEL_GUARD;
+    uint64_t cr3 = vmm_kernel_cr3();
+    for (uint64_t page = start; page < end; page += 4096) {
+        if (!kernel_map_address(page) || pmm_is_ram(page, 4096)) return NULL;
+        uint64_t *pte = vmm_pte(cr3, page);
+        if (pte && (*pte & PRESENT) &&
+            ((*pte & MM_PTE_ADDR) != page || (*pte & (0x80 | VMM_NOCACHE)) != VMM_PAT_WC))
+            return NULL;
+    }
+    int changed = 0, complete = 1;
+    for (uint64_t page = start; page < end; page += 4096) {
+        changed |= map_page_locked(cr3, page, page, WRITABLE | VMM_PAT_WC, 0);
+        invlpg(page);
+        uint64_t *pte = vmm_pte(cr3, page);
+        if (!pte || (*pte & (PRESENT | WRITABLE)) != (PRESENT | WRITABLE) ||
+            (*pte & MM_PTE_ADDR) != page) { complete = 0; break; }
+    }
+    /* Partial allocation still publishes tables; flush even on refusal, just
+     * as vmm_map_range does. The caller gets no usable pointer on OOM. */
+    kernel_map_finish(changed);
+    return complete ? (void *)(uintptr_t)phys : NULL;
 }
 
 /* --- per-process address spaces --- */

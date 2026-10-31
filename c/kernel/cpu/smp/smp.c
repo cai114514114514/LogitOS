@@ -1,4 +1,8 @@
 #include "../power/pat.h"
+#include "../power/mce.h"
+#include "../power/pstate.h"
+#include "../power/cpuidle.h"
+#include "../power/thermal.h"
 #include "tlb.h"
 /* SMP bring-up + a parallel framebuffer present.
  *
@@ -343,6 +347,10 @@ static void ap_entry(void)
     }
     percpu_ap_init(idx, lapic_id());           /* build + load this core's GDT/TSS */
     pat_init();                                /* same IA32_PAT as the BSP before any fb band copy */
+    mce_init();                                /* per core, before this AP is published online */
+    pstate_init();
+    cpuidle_init();
+    cpu_power_sample();
     capture_topology(idx, my_id);               /* CPUID.1A/1F are per logical CPU */
     /* Arm the periodic LAPIC timer NOW (before parking). It both (a) wakes this AP
      * from its park `hlt` so it can re-check g_sched_ready -- nothing else sends
@@ -397,6 +405,10 @@ void smp_init(void)
     }
     percpu_register_id(0, lapic_id());     /* BSP's real lapic_id now available */
     lapic_timer_calibrate();               /* before any AP arms its tick */
+    /* CPU power on the BSP, before any AP starts (the T7 handoff order) */
+    pstate_init();
+    cpuidle_init();
+    cpu_power_sample();
     capture_topology(0, lapic_id());        /* sample the BSP on the BSP */
     if (n < 1) { kprintf("[smp] no CPUs via ACPI; uniprocessor\n"); return; }
     kprintf("[smp] %d CPU(s) detected, BSP apic_id=%u\n", n, (unsigned)lapic_id());
@@ -493,6 +505,7 @@ void smp_init(void)
         kprintf("[smp] CPU %d apic_id=%u online\n", slot, (unsigned)aid);
     }
     kprintf("[smp] %d/%d CPUs online\n", g_online, n);
+    cpu_power_report();                    /* every online CPU has published its sample */
     report_topology();
 #ifdef LOGIT_RAPTOR_SMP_QEMU_TEST
     run_test_ipi_probe();

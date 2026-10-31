@@ -591,6 +591,8 @@ UACPI_CFLAGS := -Ithird_party/uacpi/include \
                 -DUACPI_DEFAULT_LOOP_TIMEOUT_SECONDS=2 \
                 -DUACPI_DEFAULT_MAX_CALL_STACK_DEPTH=64
 $(BUILD)/third_party/uacpi/source/%.o $(BUILD)/c/drivers/power/%.o: CFLAGS += $(UACPI_CFLAGS)
+# _PSS/_CST reader of the CPU power track (c/kernel/cpu/power/firmware.c)
+$(BUILD)/c/kernel/cpu/power/firmware.o: CFLAGS += $(UACPI_CFLAGS)
 
 # --- Hybrid C+Rust: a no_std staticlib (rust/) linked with the C objects. Rust
 # owns the memory-safety-critical untrusted-input parsers; C owns the core. Use

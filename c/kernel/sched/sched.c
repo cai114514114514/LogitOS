@@ -1,6 +1,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include "sched.h"
+#include "../cpu/power/cpuidle.h"
 #include "kheap.h"
 #include "gdt.h"
 #include "vmm.h"
@@ -1773,7 +1774,7 @@ void sched_poll_wait(void)
     /* Explicit quiescent point: no spinlock may be held, and callers must
      * recheck their condition. Both nesting and IF belong to this stack. */
     this_cpu()->in_kernel = 0;
-    __asm__ volatile ("sti; hlt; cli" ::: "memory");
+    cpuidle_enter();
     this_cpu()->in_kernel = depth;
     if (flags & 0x200) __asm__ volatile ("sti" ::: "memory");
 }
@@ -1828,7 +1829,7 @@ __attribute__((noreturn)) void sched_become_idle(void)
          * later iterations, but the first entry arrives with IF=1.) */
         __asm__ volatile ("cli");
         this_cpu()->in_kernel = 0;
-        __asm__ volatile ("sti; hlt; cli");
+        cpuidle_enter();
         this_cpu()->in_kernel = 1;
         schedule();
     }

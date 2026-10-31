@@ -1,5 +1,6 @@
 #include <stdint.h>
 #include "idt.h"
+#include "../power/mce.h"
 
 #define IDT_ENTRIES 256
 #define KERNEL_CS   0x08          /* 64-bit code selector from the boot GDT */
@@ -51,6 +52,10 @@ void idt_init(void)
 {
     for (int i = 0; i < 48; i++)
         idt_set(i, isr_stub_table[i], GATE_INT64);
+
+    /* #MC cannot pass through generic exception-to-signal dispatch: it may
+     * interrupt a kernel lock owner and must log banks before any panic. */
+    idt_set(18, (void *)mce_entry, GATE_INT64);
 
     /* int 0x80 must be reachable from ring 3, so DPL 3. */
     idt_set(SYSCALL_VEC, (void *)isr128, GATE_USER);
