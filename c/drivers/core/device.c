@@ -237,8 +237,24 @@ int dev_quiesce_all(int *failed)
     for (int i = dev_count() - 1; i >= 0; i--) {
         struct device *d = &g_devs[i];
         const struct driver *drv = __atomic_load_n(&d->drv, __ATOMIC_ACQUIRE);
+        if (d->bus_type == DEV_BUS_PCI && d->class_code == 0x01 && drv) {
+            /* Storage stays bound, but a drained VFS does not stop an AHCI
+             * port's FIS-receive engine or raw swap I/O, so its Bus Master
+             * counts as unconfirmed DMA: only a platform reset may follow
+             * (Astra round 5). */
+            uint16_t cmd = pci_cfg_read16(d->bus, d->slot, d->func, PCI_CFG_COMMAND);
+            (void)cmd;
+#ifndef POWER_NEGCTL_STORAGE_TRUSTED
+            if (cmd & PCI_CMD_MASTER) {
+                kprintf("[power] quiesce %s %s: storage kept bound, bus master ON (DMA unconfirmed)\n",
+                        d->name, drv->name);
+                bad++;
+            }
+#endif
+            continue;
+        }
         if (!drv || !drv->remove) continue;
-        if (d->bus_type == DEV_BUS_PCI && (d->class_code == 0x01 || d->class_code == 0x03)) continue;
+        if (d->bus_type == DEV_BUS_PCI && d->class_code == 0x03) continue;
         dev_unbind(d);
         int still = __atomic_load_n(&d->drv, __ATOMIC_ACQUIRE) != NULL;
         uint16_t cmd = d->bus_type == DEV_BUS_PCI
