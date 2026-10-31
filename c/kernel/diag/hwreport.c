@@ -6,7 +6,7 @@
 #include "smp.h"
 #include "pmm.h"
 #include "blkdev.h"
-#include "intel_c600_smbus.h"
+#include "intel_pch_smbus.h"
 #include <stdarg.h>
 #include <string.h>
 
@@ -94,7 +94,7 @@ static void report_memory(void)
      * distinction. Firmware usable bytes still do not measure DIMM capacity. */
     emit("memory firmware_usable_mib=%llu source=pmm (not DIMM capacity)",
          (unsigned long long)(pmm_total_bytes() / (1024 * 1024)));
-    const struct c600_spd_inventory *spd = c600_spd_inventory();
+    const struct pch_spd_inventory *spd = pch_spd_inventory();
     /* The inventory pointer exists even before probing. io_base is published
      * by the SMBus probe only once its aperture is usable; a zero-initialized
      * inventory does not mean that a scan found zero DIMMs. */
@@ -105,8 +105,8 @@ static void report_memory(void)
     emit("spd modules=%u capacity_mib=%llu rejected=%u read_errors=%u source=SPD",
          spd->modules, (unsigned long long)spd->module_capacity_mib,
          spd->rejected, spd->read_errors);
-    for (unsigned i = 0; i < spd->modules && i < C600_SPD_MAX_MODULES; i++) {
-        const struct c600_spd_module *m = &spd->module[i];
+    for (unsigned i = 0; i < spd->modules && i < PCH_SPD_MAX_MODULES; i++) {
+        const struct pch_spd_module *m = &spd->module[i];
         /* Address is the identity. Two DIMMs may share a firmware locator;
          * inventing bank/channel names here would collapse distinct modules. */
         emit("dimm address=%02x capacity_mib=%u part=%s ranks=%u bus_width=%u ecc_bits=%u",

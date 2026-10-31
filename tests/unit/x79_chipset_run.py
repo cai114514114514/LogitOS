@@ -28,7 +28,7 @@ COMMON = [
 SOURCES = [
     str(ROOT / 'tests/unit/x79_chipset_test.c'),
     str(ROOT / 'c/drivers/platform/ddr3_spd.c'),
-    str(ROOT / 'c/drivers/platform/intel_c600_smbus.c'),
+    str(ROOT / 'c/drivers/platform/intel_pch_smbus.c'),
 ]
 
 
