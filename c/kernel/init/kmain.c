@@ -26,6 +26,7 @@
 #include "nvme.h"
 #include "klog.h"
 #include "kdiag.h"
+#include "hwreport.h"
 #include "pcache.h"
 #include "pcache_vfs.h"
 #include "procfs.h"       /* /proc -- mounted below, right after the root */
@@ -57,6 +58,7 @@ void kernel_main(uint64_t mb_info)
      * to read the boot log AFTER it happened, and on a laptop there is no
      * serial port to have been watching. */
     kprintf("\n[logitos] long mode, C kernel running\n");
+    hwreport_milestone("efi", "NOT_OBSERVED kernel entered; loader mode not recorded here");
     kprintf(rust_inflate_selftest() == 0 ? "[rust] inflate selftest OK\n"
                                              : "[rust] inflate selftest FAIL\n");
 
@@ -134,9 +136,11 @@ void kernel_main(uint64_t mb_info)
                                           : "[rust] png selftest FAIL\n");
 
     if (!fb_init(mb_info)) {
+        hwreport_milestone("fb", "FAIL");
         kprintf("\nLOGIT_FB_FAIL\n");
         for (;;) __asm__ volatile ("hlt");
     }
+    hwreport_milestone("fb", "OK framebuffer initialized");
 
     proc_init();   /* process table */
     file_init();   /* open-file-description pool */
@@ -147,6 +151,8 @@ void kernel_main(uint64_t mb_info)
 
     vfs_register(&logitfs);
     int fs_ok = (vfs_mount() == 0);
+    hwreport_milestone("root", fs_ok ? "OK filesystem mounted" : "FAIL filesystem mount failed");
+    if (!fs_ok) hwreport_dump();
     kprintf(fs_ok ? "[fs] mounted\n" : "[fs] mount FAILED\n");
 
     /* /proc, on top of the root that just arrived.
@@ -218,8 +224,11 @@ void kernel_main(uint64_t mb_info)
     wm_render();                 /* first frame -> desktop visible */
     mouse_init();
     kprintf("[logitos] desktop up; mouse + keyboard armed\n");
+    hwreport_milestone("input", "ARMED keyboard/mouse initialized; interaction unverified");
+    hwreport_milestone("desktop", "READY first frame submitted; scanout unverified");
 
     smp_init();   /* detect + bring up the other CPUs */
+    hwreport_milestone("smp", "OBSERVED see CPU topology summary");
 
     /* Now that the LAPIC and I/O APIC are live, run the probe/bind pass and
      * print the device table -- one line per PCI function, with its class name
@@ -232,6 +241,7 @@ void kernel_main(uint64_t mb_info)
         amd_bootfb_probe_resources();
     dev_dump();
     dma_report("boot");
+    hwreport_dump();
 
     if (fs_ok)
         kprintf("\n" BOOT_OK_MARKER "\n");
