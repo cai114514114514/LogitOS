@@ -123,6 +123,25 @@ int usb_hc_register(struct usb_hc *h,struct device *d,const struct usb_hc_ops *o
 void usb_hc_unregister(struct usb_hc *h){(void)h;}
 int usb_clear_tt_buffer(struct usb_device *d,uint8_t a,unsigned t){(void)d;(void)a;(void)t;return 0;}
 uint64_t dev_irq_count(const struct device *d){(void)d;return 0;}
+/* The production worker is exercised by the separate HC system model. These
+ * ownership/encoding unit tests only need link-complete workqueue leaves. */
+void work_item_init(struct work *work, void (*fn)(void *), void *arg)
+{
+    *work = (struct work){.fn = fn, .arg = arg};
+}
+/* Queueing never executes synchronously on the IRQ stack. */
+int work_queue(struct work *work)
+{
+    work->queued = 1;
+    return 1;
+}
+/* Existing ownership fixture has no USB core; do not fabricate recovery. */
+int usb_clear_halt(struct usb_device *device, uint8_t addr)
+{
+    (void)device;
+    (void)addr;
+    return -1;
+}
 
 int main(void)
 {
@@ -152,6 +171,7 @@ int main(void)
     CHECK(ehci_period(1,10,&mask)==8 && mask==1,"FS polling period does not exceed bInterval");
     CHECK(ehci_period(3,2,&mask)==1 && mask==0x55,"HS subframe polling mask is encoded");
     CHECK(ehci_period(3,17,&mask)<0,"invalid HS interval refused");
+    CHECK(ehci_period(3,16,&mask)==1024,"HS interval 16 clamps to frame list size");
 
     static struct ehci e;
     static uint32_t regs[64];
@@ -241,30 +261,50 @@ int main(void)
     CHECK(!clear_halt(&d,0x81) && !e.ep[0].toggle,"clear halt restores DATA0");
     model_short=0;memset(data,0x33,sizeof(data));
     CHECK(ehci_bulk(&d,0x81,data,64)==0 && data[0]==0x33,"zero-short bulk does not fabricate or copy payload");
-    static uint8_t periodic_mem[4096] __attribute__((aligned(4096)));
+    static uint32_t periodic_frames[1024] __attribute__((aligned(4096)));
+    e.frames = periodic_frames;
+    ehci_sched_init(&e.sched);
+    ehci_ptree_init(&e.tree, e.frames);
     struct ehci_ep *pe=&e.ep[1];
-    *pe=(struct ehci_ep){.dev=&d,.addr=0x82,.type=USB_XFER_INT,.packet=8,
-        .smask=1,.qh=(void *)periodic_mem,.td=(void *)(periodic_mem+128),
-        .payload=periodic_mem+256,.qh_dma=0x300000,.td_dma=0x300080,.payload_dma=0x300100};
+    struct usb_interface periodic = {0};
+    periodic.n_ep = 1;
+    periodic.ep[0] = (struct usb_endpoint){.addr=0x82,.attr=USB_XFER_INT,.max_packet=8,.interval=4};
+    CHECK(!configure(&d, &periodic) && pe->qh->ep && (pe->qh->caps >> 30),
+          "configured but unarmed periodic QH is completely initialized");
     wr(&e,OP_STS,STS_PSS);wr(&e,OP_CMD,CMD_RUN|CMD_PSE);
-    CHECK(!int_arm(&d,0x82) && pe->pending && !pe->armed,"periodic arm defers while controller owns overlay");
-    CHECK(!pe->td->token && !(rd(&e,OP_CMD)&CMD_PSE),"periodic arm requests stop without editing active schedule");
-    wr(&e,OP_STS,0);events(&e.hc);
-    CHECK(pe->armed && !pe->pending && (rd(&e,OP_CMD)&CMD_PSE),"event service rearms after acknowledged PSS clear");
+    uint32_t saved_command = rd(&e, OP_CMD);
+    uint32_t saved_next = pe->qh->next;
+    CHECK(!int_arm(&d,0x82) && pe->armed && rd(&e,OP_CMD)==saved_command,
+          "periodic arm defers while controller owns overlay: replaced by immediate arm without any USBCMD write");
+    CHECK((pe->q[0]->token & EHCI_ACTIVE) && pe->q[0]->next == pe->q_dma[1] &&
+          pe->q[1]->token == EHCI_HALTED && pe->q[1]->next == EHCI_END,
+          "periodic arm requests stop without editing active schedule: replaced by Active qTD followed by HALTED dummy");
+    events(&e.hc);
+    CHECK(pe->armed && (rd(&e,OP_CMD)&CMD_PSE) && pe->qh->next == saved_next,
+          "event service rearms after acknowledged PSS clear: replaced by continuous PSE and unchanged QH next");
     CHECK(pe->qh->next==pe->td_dma && (pe->td->token&EHCI_ACTIVE),"periodic rearm publishes real qTD DMA address");
-    pe->td->token=3u<<16;pe->qh->token=EHCI_TOGGLE;uint8_t *got=NULL;
+    pe->td->token = 3u << 16;
+    pe->qh->token = EHCI_TOGGLE;
+    pe->qh->next = pe->q_dma[1];
+    uint8_t *got = NULL;
     CHECK(int_poll(&d,0x82,&got)==5 && got==pe->payload && pe->toggle==1,"periodic completion preserves short report and toggle");
     CHECK(int_poll(&d,0x82,&got)<0,"periodic completion is consumed exactly once");
+    saved_next = pe->qh->next;
+    CHECK(!int_arm(&d,0x82) && pe->qh->next == saved_next &&
+          (pe->qh->token & EHCI_TOGGLE) && rd(&e,OP_CMD) == saved_command &&
+          (pe->q[1]->token & EHCI_ACTIVE) && pe->q[1]->next == pe->q_dma[0] &&
+          pe->q[0]->token == EHCI_HALTED,
+          "re-arm swaps dummy without resetting hardware toggle or stopping PSE");
     {
-        /* Every frame owned: a second interrupt endpoint gets no phase, and the
-         * schedule the armed one runs on has to come back (X79-VG4 review). */
-        for (unsigned f=0;f<1024;f++) e.frame_owner[f]=pe;
+        /* All microframes at the 80% limit: a second endpoint gets no phase.
+         * Rejection must leave the running one and its USBCMD bits alone. */
+        memset(e.sched.bw_us, 100, sizeof(e.sched.bw_us));
         struct usb_interface it2; memset(&it2,0,sizeof it2);
         it2.n_ep=1; it2.ep[0].addr=0x83; it2.ep[0].attr=USB_XFER_INT; it2.ep[0].max_packet=8; it2.ep[0].interval=1;
         CHECK(configure(&d,&it2)<0,"interrupt endpoint without periodic bandwidth is refused");
         wr(&e,OP_STS,0);events(&e.hc);
         CHECK(rd(&e,OP_CMD)&CMD_PSE,"refused endpoint leaves the periodic schedule running for the armed one");
-        for (unsigned f=0;f<1024;f++) e.frame_owner[f]=NULL;
+        memset(e.sched.bw_us, 0, sizeof(e.sched.bw_us));
     }
     model_run=0;hold_halt=1;wr(&e,OP_STS,0);quiesces=quarantines=0;
     CHECK(halt(&e)<0 && quarantines==0 && quiesces==0,

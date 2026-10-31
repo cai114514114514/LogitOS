@@ -25,6 +25,13 @@ _Static_assert(sizeof(struct ehci_qh)==96, "QH geometry");
 #define EHCI_IOC (1u<<15)
 #define EHCI_TOGGLE (1u<<31)
 #define EHCI_REMAIN(t) (((t)>>16)&0x7fffu)
+/* EHCI 3.6 endpoint characteristics bit 7. Deliberately not used by unlink:
+ * Linux v6.12 ehci-sched.c qh_unlink_periodic skips I-bit handshaking and
+ * instead waits EHCI_HRTIMER_UNLINK_INTR before modifying the old QH. */
+#define EHCI_QH_INACTIVATE (1u << 7)
+#ifndef EHCI_HW_STORE
+#define EHCI_HW_STORE(ptr, value) (*(ptr) = (value))
+#endif
 /* Shared USB speed encoding is NOT EHCI's EPS encoding. */
 static inline int ehci_eps(unsigned speed)
 { return speed==1 ? 0 : speed==2 ? 1 : speed==3 ? 2 : -1; }
@@ -79,21 +86,97 @@ static inline int ehci_actual(unsigned requested, uint32_t token)
     return (int)(requested-left);
 #endif
 }
-/* Conservatively reserve complete frames, not guessed TT bandwidth. Distinct
- * endpoints never share a frame, even across different TTs. This supports
- * common 8/10ms HID devices and refuses overcommit explicitly. */
+/* The old policy reserved whole frames for each endpoint. Correction: period
+ * now describes hardware recurrence; ehci_sched.h accounts bandwidth and
+ * shares tails. Linux v6.12 ehci-q.c qh_make clamps hardware recurrence to
+ * periodic_size=1024 frames; intervals 15/16 must not be refused as >1024. */
 static inline int ehci_period(unsigned speed, unsigned interval, unsigned *mask)
 {
     if (!interval || !mask) return -1;
     if (speed==3) {
         if (interval>16) return -1;
         *mask=interval==1?255u:interval==2?85u:interval==3?17u:1u;
-        return interval<=4?1:1<<(interval-4);
+        unsigned period = interval <= 4 ? 1u : 1u << (interval - 4);
+#ifndef EHCI_NEGCTL_HS_NO_CLAMP
+        if (period > 1024) {
+            period = 1024;
+        }
+#endif
+        return (int)period;
     }
     if (speed!=1 && speed!=2) return -1;
     unsigned period=1;
     while (period*2<=interval && period<128) period*=2;
     *mask=1;
     return (int)period;
+}
+
+/* Linux v6.12 ehci-mem.c ehci_qtd_init: an inactive HALTED sentinel prevents
+ * Advance Queue (EHCI 4.10.2) from loading an unfinished descriptor. This
+ * token is a software sentinel, not a STALL returned by the device. */
+static inline void ehci_qtd_dummy(struct ehci_qtd *q)
+{
+    volatile uint32_t *words = (volatile uint32_t *)q;
+    for (unsigned i = 0; i < sizeof(*q) / sizeof(*words); i++) {
+        EHCI_HW_STORE(&words[i], 0);
+    }
+    EHCI_HW_STORE(&q->next, EHCI_END);
+    EHCI_HW_STORE(&q->alt, EHCI_END);
+    EHCI_HW_STORE(&q->token, EHCI_HALTED);
+}
+
+/* Fill an old dummy while it is still inactive. Unlike ehci_qtd_init(), never
+ * expose Active before next/pages are complete: Linux ehci-q.c qh_append_tds
+ * and EHCI 4.10.2 require the caller's final dma_wmb + token publication.
+ * Both next and alt lead to the next dummy so a short HID packet also advances
+ * without changing an HC-owned overlay (EHCI 4.10.2 short-packet traversal). */
+static inline int ehci_qtd_fill_in(struct ehci_qtd *q, uint32_t next_dma,
+        uint64_t buf, unsigned len, uint32_t *token_out)
+{
+    if (!q || !token_out || (next_dma & 31) || len > 0x7fff ||
+        len > 5u * 4096u - (buf & 4095u) || buf > UINT32_MAX ||
+        (len && len - 1 > UINT32_MAX - buf)) {
+        return -1;
+    }
+    EHCI_HW_STORE(&q->token, EHCI_HALTED);
+    EHCI_HW_STORE(&q->next, next_dma);
+    EHCI_HW_STORE(&q->alt, next_dma);
+    for (unsigned i = 0; i < 5; i++) {
+        uint64_t page = i ? (buf & ~UINT64_C(4095)) + 4096u * i : buf;
+        EHCI_HW_STORE(&q->page[i], page <= UINT32_MAX ? (uint32_t)page : 0);
+        EHCI_HW_STORE(&q->high[i], 0);
+    }
+    for (unsigned i = 0; i < 3; i++) {
+        EHCI_HW_STORE(&q->reserved[i], 0);
+    }
+    /* EHCI 3.5.3: PID=IN (1), CERR=3, IOC, length, Active last. DTC=0
+     * periodic QHs obtain the toggle from their overlay, never this token. */
+    *token_out = EHCI_ACTIVE | (1u << 8) | (3u << 10) | EHCI_IOC | (len << 16);
+    return 0;
+}
+
+/* Decode EHCI 3.5.3 status without printf/heap dependencies, for the frozen
+ * diagnostic snapshot rather than a later read from possibly retired DMA. */
+static inline void ehci_ov_decode(uint32_t token, char *buf, unsigned n)
+{
+    static const char *const names[] = {
+        "PING", "SPLITX", "MMF", "XACT", "BABBLE", "DBE", "HALT", "ACTIVE"
+    };
+    unsigned used = 0;
+    if (!n) {
+        return;
+    }
+    for (int bit = 7; bit >= 0; bit--) {
+        if (!(token & (1u << bit))) {
+            continue;
+        }
+        if (used && used + 1 < n) {
+            buf[used++] = '|';
+        }
+        for (const char *letter = names[bit]; *letter && used + 1 < n; letter++) {
+            buf[used++] = *letter;
+        }
+    }
+    buf[used] = 0;
 }
 #endif

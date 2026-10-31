@@ -5,7 +5,10 @@
  * boot and supplies topology/TT state before the child gets an address.
  * Runtime connect/disconnect and SuperSpeed hub requests are not implemented. */
 #include "usb.h"
+#include <stddef.h>
+#include "usb_hc.h"
 #include "kprintf.h"
+int strcmp(const char *, const char *);
 #define HUB_DESC 0x29
 #define HUB_CLASS 9
 #define HUB_RECIP_PORT 3
@@ -31,6 +34,8 @@ static int port_status(struct usb_device *d,unsigned port,uint16_t *status,uint1
     *status=(uint16_t)(b[0]|b[1]<<8); *change=(uint16_t)(b[2]|b[3]<<8);
     return 0;
 }
+/* Discover the topology once. Status monitoring below is advisory and EHCI
+ * only: adding traffic to xHCI here would need its own hub model coverage. */
 static int hub_probe(struct usb_device *d,int ifno)
 {
     if (d->speed==USB_SPEED_SUPER || d->depth>=USB_MAX_DEPTH) return -1;
@@ -59,6 +64,22 @@ static int hub_probe(struct usb_device *d,int ifno)
         d->hub_multi_tt,d->hub_tt_think)) {
         kprintf("[usb-hub] addr=%d controller hub context rejected\n",d->addr);return -1;
     }
+    /* USB2 11.12 status-change endpoint. Configure/arm before enumerating
+     * children so the hub gets the first deterministic scheduler rotor slot.
+     * Failure is nonfatal: boot-only enumeration still works. Deliberately
+     * leave runtime port resets/removal absent; a bitmap alone does not
+     * authorize topology mutation on the IRQ stack. Not hardware verified. */
+#ifndef EHCI_NEGCTL_HUB_EP_SKIP
+    if (d->hc->ops->name && !strcmp(d->hc->ops->name, "ehci")) {
+        struct usb_interface *iface = &d->cfg.iface[ifno];
+        const struct usb_endpoint *ep = usb_find_ep(iface, USB_XFER_INT, 1);
+        if (!ep || usb_configure_interface(d, iface) || usb_int_in_arm(d, ep->addr)) {
+            kprintf("[usb-hub] addr=%u status endpoint unavailable\n", d->addr);
+        } else {
+            d->binding[ifno].drvdata = (void *)ep;
+        }
+    }
+#endif
     for (unsigned p=1;p<=ports;p++)
         if (port_feature(d,p,HUB_PORT_POWER,1)<0 && (characteristics&3)!=2) return -1;
     if (usb_delay_ms((unsigned)desc[5]*2+100)) return -1; /* power-good plus debounce */
@@ -91,5 +112,24 @@ static int hub_probe(struct usb_device *d,int ifno)
     return 0;
 }
 static const struct usb_match hub_ids[]={ { HUB_CLASS,USB_ANY,USB_ANY },{0,0,0} };
-static const struct usb_driver hub_driver={ .name="usb-hub",.match=hub_ids,.probe=hub_probe };
+/* Report the observed bitmap and keep monitoring. USB2 11.12: bit zero is
+ * hub change, bit p is port p. No hotplug action or synchronous I/O here. */
+static void hub_poll(struct usb_device *d, int ifno)
+{
+    const struct usb_endpoint *ep = d->binding[ifno].drvdata;
+    if (!ep) {
+        return;
+    }
+    uint8_t *data = NULL;
+    int length = usb_int_in_poll(d, ep->addr, &data);
+    if (length > 0 && data) {
+        for (int byte = 0; byte < length; byte++) {
+            if (data[byte]) {
+                kprintf("[usb-hub] addr=%u status change 0x%02x byte=%u\n", d->addr, data[byte], (unsigned)byte);
+            }
+        }
+    }
+    (void)usb_int_in_arm(d, ep->addr);
+}
+static const struct usb_driver hub_driver={ .name="usb-hub",.match=hub_ids,.probe=hub_probe,.poll=hub_poll };
 void usb_hub_register(void) { usb_register_driver(&hub_driver); }

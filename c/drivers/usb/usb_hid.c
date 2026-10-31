@@ -595,9 +595,15 @@ static int hid_probe(struct usb_device *d, int ifno)
         return -1;
     }
 
-    /* Advisory -- some devices STALL SET_IDLE, harmlessly. A keyboard that
-     * refuses it simply will not auto-repeat. */
-    hid_set_idle(d, it->num, (h->role & ROLE_KBD) ? 24 : 0);
+    /* HID 1.11 7.2.4/7.2.6: descriptor -> protocol -> touchpad negotiation ->
+     * SET_IDLE -> arm. A refused idle request is advisory, but must be visible:
+     * no reports from a NAK-only keyboard then does not prove a dead HC.
+     * Not verified on X79-VG4 hardware. */
+#ifdef EHCI_NEGCTL_ARM_FIRST
+    (void)usb_int_in_arm(d, h->ep_addr);
+#endif
+    int idle_result = hid_set_idle(d, it->num, (h->role & ROLE_KBD) ? 24 : 0);
+    kprintf("[hid] if%d SET_IDLE %s\n", it->num, idle_result < 0 ? "refused" : "ok");
 
     h->modifier_slot = -1;
     for (unsigned i = 0; i < USB_MAX_DEVICES * USB_MAX_IF; i++)
@@ -670,7 +676,9 @@ static void hid_poll(struct usb_device *d, int ifno)
 
     /* Re-arm unconditionally: an interrupt endpoint with no TRB queued is an
      * endpoint the controller stops asking about, and the report that would
-     * have told us so is the one we are no longer collecting. */
+     * have told us so is the one we are no longer collecting. EHCI owns STALL
+     * recovery on its worker; do not issue synchronous CLEAR_FEATURE here on
+     * the IRQ stack or change xHCI's existing completion behavior. */
     usb_int_in_arm(d, h->ep_addr);
 }
 
