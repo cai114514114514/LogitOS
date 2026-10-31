@@ -7,6 +7,7 @@
 #include "pmm.h"
 #include "blkdev.h"
 #include "intel_pch_smbus.h"
+#include "intel_imc_smbus.h"
 #include <stdarg.h>
 #include <string.h>
 
@@ -94,6 +95,22 @@ static void report_memory(void)
      * distinction. Firmware usable bytes still do not measure DIMM capacity. */
     emit("memory firmware_usable_mib=%llu source=pmm (not DIMM capacity)",
          (unsigned long long)(pmm_total_bytes() / (1024 * 1024)));
+    /* Sandy/Ivy Bridge-EP DIMMs answer on the CPU's iMC SMBus, not the PCH's.
+     * The scan runs once; calling it here keeps the report from reading an
+     * inventory board_init() has not filled yet (X79-VG4, 2026-10-31). */
+    imc_spd_scan();
+    const struct imc_spd_inventory *imc = imc_spd_inventory();
+    if (imc->device) {
+        emit("spd imc modules=%u capacity_mib=%llu rejected=%u read_errors=%u source=SPD",
+             imc->modules, (unsigned long long)imc->module_capacity_mib,
+             imc->rejected, imc->read_errors);
+        for (unsigned i = 0; i < imc->modules && i < IMC_SPD_MAX_MODULES; i++) {
+            const struct imc_spd_module *m = &imc->module[i];
+            emit("dimm imc smbus=%u address=%02x capacity_mib=%u part=%s ranks=%u bus_width=%u ecc_bits=%u",
+                 m->controller, m->address, m->ddr3.module_mib, m->ddr3.part_number,
+                 m->ddr3.ranks, m->ddr3.bus_width, m->ddr3.ecc_bits);
+        }
+    }
     const struct pch_spd_inventory *spd = pch_spd_inventory();
     /* The inventory pointer exists even before probing. io_base is published
      * by the SMBus probe only once its aperture is usable; a zero-initialized
