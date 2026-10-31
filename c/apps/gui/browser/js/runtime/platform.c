@@ -3078,8 +3078,16 @@ static const char *PLATFORM_PRELUDE =
  * measured specimen is actually reaching for -- fresh intrinsics the page has
  * not monkey-patched, which is precisely what an about:blank detection frame
  * is built to obtain. What a frame still does NOT get is a DOM of its own:
- * `document` inside a frame script is a ReferenceError, stated, and the
- * measured reason is in settle()'s own comment (js_dom.c:4364).
+ * ~~`document` inside a frame script is a ReferenceError, stated, and the
+ * measured reason is in settle()'s own comment (js_dom.c:4364).~~
+ * CORRECTED 2026-09-25: still no second DOM (that reason stands), but the
+ * ReferenceError is gone. A frame script's `document` is this frame's
+ * DOMParser-backed document -- the same object contentDocument returns --
+ * and its global is a Window for it (parent, top, frameElement, location,
+ * timers: js_frame.c's frame_install_window). settle() now hands
+ * __frameAdopt the element, the committed URL and navigateFrame for exactly
+ * that. Measured reason for the change: Cloudflare's bootstrap ran in the
+ * frame on openai.com and died at its first `document`.
  *
  * The rest of this paragraph stands unchanged and is now load-bearing for a
  * second reason: contentDocument is built through `new DOMParser().parseFromString(...)`
@@ -3286,6 +3294,7 @@ static const char *PLATFORM_PRELUDE =
 "    if (r || !RECS || !el || typeof el !== 'object') return r;\n"
 "    r = recCreate(null);\n"
 "    r.doc = null; r.win = null; r.blocked = null; r.gen = 0; r.sandbox = 0; r.opaque = false;\n"
+"    r.url = null; r.nav = null;\n"
 "    try { recApply(recSet, RECS, [el, r]); } catch (e) { return null; }\n"
 "    return r;\n"
 "  };\n"
@@ -3367,7 +3376,7 @@ static const char *PLATFORM_PRELUDE =
       document now", not five different answers); `blocked` non-null is the
       one that makes contentWindow/contentDocument throw, doc is irrelevant
       and left null. Whichever it is, exactly one load. */
-"  var settle = function (el, r, gen, doc, blocked) {\n"
+"  var settle = function (el, r, gen, doc, blocked, url) {\n"
 "    if (r.gen !== gen) return;\n"
        /* A committed navigation replaces the browsing context. Keeping the
           old context until page close was not a cache: after eight src/srcdoc
@@ -3375,7 +3384,10 @@ static const char *PLATFORM_PRELUDE =
           not at fetch start, so the old document remains active while an
           asynchronous navigation is still in flight. */
 "    if (r.doc && r.doc !== doc) releaseDoc(r);\n"
-"    r.doc = doc; r.blocked = blocked || null;\n"
+"    r.doc = doc; r.blocked = blocked || null; r.url = doc ? String(url || 'about:blank') : null;\n"
+       /* One navigation door per committed document (see frameNav), made
+          here once rather than on every contentWindow property access. */
+"    r.nav = doc ? frameNav(el, r, doc) : null;\n"
 "    r.opaque = !!(doc && !blocked && ((r.sandbox >>> 0) & SB_ORIGIN));\n"
 "    var scripted = !((r.sandbox >>> 0) & SB_SCRIPTS);\n"
        /* An OPAQUE-origin document (sandboxed without allow-same-origin) is
@@ -3433,7 +3445,7 @@ static const char *PLATFORM_PRELUDE =
           is the same "absent dependency is inert" contract the weak symbol
           gives the C half. */
 "      if (doc && !blocked && hostable && typeof G.__frameAdopt === 'function') {\n"
-"        try { G.__frameAdopt(doc); } catch (eAdopt) {}\n"
+"        try { G.__frameAdopt(doc, el, r.url, r.nav); } catch (eAdopt) {}\n"
 "      }\n"
        /* ONE JAR, TWO DOORS, closed: contentDocument.defaultView must be the
           SAME object as contentWindow (probe B1 -- WPT's own idiom, e.g.
@@ -3485,7 +3497,7 @@ static const char *PLATFORM_PRELUDE =
 "              'embedder\\'s own runtime (js/dom/frame.c), which is no cross-origin boundary'\n"
 "            : typeof G.__frameAdopt === 'function'\n"
 "            ? '[iframe] a <script> inside this frame document runs in the frame\\'s OWN JSContext ' +\n"
-"              '(fresh intrinsics, no document/DOM of its own) -- see js_frame.c'\n"
+"              '(its own Window over this document, fresh intrinsics) -- see js_frame.c'\n"
 "            : '[iframe] a <script> inside a frame document will never run: ' +\n"
 "              'frame documents are parsed data (DOMParser-backed), not a second program'); } catch (e3) {}\n"
 "        try { if (doc.querySelector && doc.querySelector('iframe'))\n"
@@ -3513,13 +3525,13 @@ static const char *PLATFORM_PRELUDE =
 "    try { u = new G.URL(String(url), base); } catch (e) {}\n"
        /* An unparseable src is not a navigation at all in real browsers --
           treated here the same as no src: about:blank. */
-"    if (!u) { settle(el, r, gen, parseDoc(''), null); return; }\n"
+"    if (!u) { settle(el, r, gen, parseDoc(''), null, 'about:blank'); return; }\n"
 /* about:blank inherits the embedding origin; URL.origin is "null", which
  * must not feed the ordinary cross-origin network check below. ~~Sandbox was
  * already refused above this branch.~~ (Stale since 2026-09-25: the frame's
  * flags were snapshotted above, and settle() applies them.) Other about: URLs
  * remain refused. */
-"    if (u.protocol === 'about:' && u.pathname === 'blank') { settle(el, r, gen, parseDoc(''), null); return; }\n"
+"    if (u.protocol === 'about:' && u.pathname === 'blank') { settle(el, r, gen, parseDoc(''), null, u.href); return; }\n"
 /* Network frames now have a separate native document owner. Do not ALSO fetch
  * their bytes through parent fetch/CORS, expose a DOMParser copy, execute child
  * scripts in the compatibility realm, or fabricate a load event before pixels
@@ -3535,11 +3547,11 @@ static const char *PLATFORM_PRELUDE =
 "      settle(el, r, gen, null, 'cross-origin');\n"
 "      return;\n"
 "    }\n"
-"    if (typeof G.fetch !== 'function') { settle(el, r, gen, parseDoc(''), null); return; }\n"
+"    if (typeof G.fetch !== 'function') { settle(el, r, gen, parseDoc(''), null, u.href); return; }\n"
 "    var alive = function () { return r.gen === gen && connected(el); };\n"
 "    G.fetch(u.href).then(function (resp) {\n"
 "      if (!alive()) return;\n"
-"      if (!resp.ok) { settle(el, r, gen, parseDoc(''), null); return; }\n"
+"      if (!resp.ok) { settle(el, r, gen, parseDoc(''), null, u.href); return; }\n"
 "      var ct = '';\n"
 "      try { ct = (resp.headers && typeof resp.headers.get === 'function') ? (resp.headers.get('content-type') || '') : ''; } catch (e2) {}\n"
 "      var kind = ct.split(';')[0].replace(/^\\s+|\\s+$/g, '').toLowerCase();\n"
@@ -3547,15 +3559,15 @@ static const char *PLATFORM_PRELUDE =
 "      if (kind && kind !== 'text/html')\n"
 "        console.log('[iframe] content-type \\'' + kind + '\\' is not text/html -- this engine has no parser for it, ' +\n"
 "                    'answering the same way DOMParser answers identical bytes');\n"
-"      return resp.text().then(function (t) { if (alive()) settle(el, r, gen, parseDocAs(t, mime), null); });\n"
-"    }).catch(function () { if (alive()) settle(el, r, gen, parseDoc(''), null); });\n"
+"      return resp.text().then(function (t) { if (alive()) settle(el, r, gen, parseDocAs(t, mime), null, u.href); });\n"
+"    }).catch(function () { if (alive()) settle(el, r, gen, parseDoc(''), null, u.href); });\n"
 "  };\n"
 "  var loadSrcdoc = function (el, html) {\n"
 "    var r = rec(el);\n"
 "    if (!r) return;\n"
 "    var gen = ++r.gen;\n"
 "    r.sandbox = creationFlags(el);\n"
-"    settle(el, r, gen, parseDoc(html), null);\n"
+"    settle(el, r, gen, parseDoc(html), null, 'about:srcdoc');\n"
 "  };\n"
    /* The navigation DECISION, factored out of the once-ever guard below so it
       can be run again on a RE-insertion (remove() then appendChild() of the
@@ -3578,7 +3590,7 @@ static const char *PLATFORM_PRELUDE =
 #else
 "    r.sandbox = creationFlags(el);\n"
 #endif
-"    settle(el, r, r.gen, parseDoc(''), null);\n"
+"    settle(el, r, r.gen, parseDoc(''), null, 'about:blank');\n"
 "  };\n"
    /* Runs once per element, ever -- the '__frameInit' expando is the guard,
       same shape as '__frame' above. Both the mutation wraps and the
@@ -3606,22 +3618,53 @@ static const char *PLATFORM_PRELUDE =
       matching the termination bar's row 6 -- the throw is what a page's own
       try/catch can observe, where a silently-null property cannot be told
       apart from "not loaded yet". */
+   /* ONE navigation door for a frame, used by the parent's
+      contentWindow.location setter AND handed to js_frame.c as the frame's
+      own location.href/assign/replace/reload -- a frame navigating itself and
+      a parent navigating it must not decide "is this a valid URL, and what
+      happens next" in two places. */
+"  var navigateFrame = function (el, v) {\n"
+"    var base = D.baseURI || (G.location && G.location.href) || '';\n"
+"    try { new G.URL(String(v), base); }\n"
+       /* This is the synchronous throw url/failure.html's 188 cases assert:
+          an unparseable assignment to contentWindow.location never reaches
+          startLoad at all. */
+"    catch (e) { throw new G.DOMException(\"'\" + v + \"' is not a valid URL.\", 'SyntaxError'); }\n"
+"    startLoad(el, String(v));\n"
+"  };\n"
+   /* The door as the FRAME holds it: bound to the document it was issued
+      for, so a Location retained after the frame navigated or was removed
+      navigates nothing (a discarded browsing context has no navigation). */
+"  var frameNav = function (el, r, doc) {\n"
+"    return function (v) { if (r.doc !== doc || !connected(el)) return; navigateFrame(el, v); };\n"
+"  };\n"
+   /* The frame realm for r's current document, built with the same Window
+      inputs settle() gives __frameAdopt, whichever door reaches it first. */
+"  var realmOf = function (el, r) {\n"
+"    if (!r.doc || typeof nativeFrameGlobal !== 'function') return null;\n"
+"    return nativeFrameGlobal(r.doc, el, r.url, r.nav);\n"
+"  };\n"
 "  var makeWindow = function (el, r) {\n"
 "    var win = {};\n"
 "    try {\n"
 "      Object.defineProperty(win, 'document', { enumerable: true, configurable: true,\n"
 "        get: function () { if (r.blocked) throw blockedErr(r); if (r.opaque) throw opaqueErr(); return r.doc || null; } });\n"
 "      Object.defineProperty(win, 'location', { enumerable: true, configurable: true,\n"
-"        get: function () { if (r.blocked) throw blockedErr(r); if (r.opaque) throw opaqueErr(); return G.location; },\n"
-"        set: function (v) {\n"
-"          var base = D.baseURI || (G.location && G.location.href) || '';\n"
-"          try { new G.URL(String(v), base); }\n"
-             /* This is the synchronous throw url/failure.html's 188 cases
-                assert: an unparseable assignment to contentWindow.location
-                never reaches startLoad at all. */
-"          catch (e) { throw new G.DOMException(\"'\" + v + \"' is not a valid URL.\", 'SyntaxError'); }\n"
-"          startLoad(el, String(v));\n"
-"        } });\n"
+"        get: function () {\n"
+"          if (r.blocked) throw blockedErr(r);\n"
+"          if (r.opaque) throw opaqueErr();\n"
+#ifndef FRAME_NO_REALM_GLOBALS
+       /* The frame's own Location (js_frame.c builds it from r.url), so
+          contentWindow.location.href reads what the frame reads as
+          location.href -- about:blank for a blank frame. This used to answer
+          G.location, i.e. the PARENT's address, for every frame. */
+"          var fg = null;\n"
+"          try { fg = realmOf(el, r); } catch (eRealm) {}\n"
+"          if (fg && fg.location) return fg.location;\n"
+#endif
+"          return G.location;\n"
+"        },\n"
+"        set: function (v) { navigateFrame(el, v); } });\n"
 "    } catch (e) {}\n"
 "    win.parent = G; win.top = G; win.self = win; win.frameElement = el;\n"
        /* The rest of HTML's CrossOriginProperties, as the stand-in's OWN
@@ -3676,7 +3719,7 @@ static const char *PLATFORM_PRELUDE =
 "    var realm = null;\n"
 #ifndef FRAME_NO_REALM_GLOBALS
 "    if (typeof nativeFrameGlobal === 'function')\n"
-"      realm = function () { if (r.blocked) throw blockedErr(r); if (r.opaque) throw opaqueErr(); return r.doc ? nativeFrameGlobal(r.doc) : null; };\n"
+"      realm = function () { if (r.blocked) throw blockedErr(r); if (r.opaque) throw opaqueErr(); return realmOf(el, r); };\n"
 #endif
 "    if (typeof Proxy !== 'function') return win;\n"
 "    var proxy = new Proxy(win, {\n"
