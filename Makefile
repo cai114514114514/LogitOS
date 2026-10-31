@@ -297,6 +297,10 @@ endif
 ifeq ($(HWHUD),1)
 CFLAGS += -DLOGIT_HWHUD
 endif
+#   make TIMENOCH2=1  pretend PIT channel 2 never answers (tests the HPET TSC calibration)
+ifeq ($(TIMENOCH2),1)
+CFLAGS += -DTIME_TEST_NO_CH2
+endif
 #   make FPO=1     drop frame pointers -- the NEGATIVE CONTROL for the panic
 #                  backtrace. Build with this and run-panic-test.sh's frame
 #                  assertions fail, which is how "the backtrace is real" is

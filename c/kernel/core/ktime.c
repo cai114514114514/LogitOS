@@ -259,6 +259,9 @@ static uint64_t g_calib_samples[3];
 
 static uint64_t calibrate_tsc_once(void)
 {
+#ifdef TIME_TEST_NO_CH2
+    return 0;   /* test hook: a machine whose channel 2 never answers (make TIMENOCH2=1) */
+#endif
     uint8_t p61 = inb(0x61);
     outb(0x61, (uint8_t)((p61 & ~0x02u) | 0x01u));   /* speaker off, gate ON */
     outb(0x43, 0xB0);                                /* ch2, lo/hi, mode 0 */
@@ -305,6 +308,30 @@ static void calibrate_tsc(void)
     g_src[TIMESRC_TSC].res_ns = res ? res : 1;
     g_src[TIMESRC_TSC].available = 1;
     g_tsc_calib_ok = 1;
+}
+
+/* Second chance, against the HPET main counter, whose frequency the hardware
+ * states exactly and which needs no interrupt. On the X79-VG4 the channel-2
+ * calibration above found nothing (calib=none) while firmware's HPET legacy
+ * route was still on, so the machine ran on HPET reads -- about a microsecond
+ * each, from every time_mono_ns() in the system (2026-10-31). */
+static void calibrate_tsc_hpet(uint64_t hpet_hz, uint64_t mask)
+{
+    if (!tsc_usable(&g_tsc_invariant, &g_tsc_hypervisor)) return;
+    uint64_t want = hpet_hz / 50;                    /* 20 ms of HPET ticks */
+    uint64_t h0 = src_read_hpet() & mask, t0 = rdtsc(), h1;
+    long guard = 400000000L;
+    do { h1 = src_read_hpet() & mask; } while (((h1 - h0) & mask) < want && --guard > 0);
+    uint64_t t1 = rdtsc(), dh = (h1 - h0) & mask;
+    if (guard <= 0 || !dh) return;
+    uint64_t hz = (t1 - t0) * hpet_hz / dh;
+    if (hz < 10000000ull || hz > 100000000000ull) return;
+    g_src[TIMESRC_TSC].hz = hz;
+    calc_mult_shift(hz, &g_src[TIMESRC_TSC].mult, &g_src[TIMESRC_TSC].shift);
+    uint32_t res = (uint32_t)(NS_PER_SEC / hz);
+    g_src[TIMESRC_TSC].res_ns = res ? res : 1;
+    g_src[TIMESRC_TSC].available = 1;
+    g_tsc_calib_ok = 2;
 }
 #endif /* !LOGIT_TIME_HOST */
 
@@ -933,7 +960,7 @@ void time_report(void)
             cs->name, milli(cs->hz / 1000, a), (unsigned)cs->res_ns,
             g_tsc_invariant ? "yes" : "no",
             g_tsc_hypervisor ? "yes" : "no",
-            g_tsc_calib_ok ? "pit-ch2" : "none");
+            g_tsc_calib_ok == 2 ? "hpet" : g_tsc_calib_ok ? "pit-ch2" : "none");
     kprintf("[time] fallback=%s %s Hz res=%uns  timers=heap/%d  mono=64-bit ns "
             "(wraps in 584 years)\n",
             g_src[TIMESRC_PIT].name, u64d(g_src[TIMESRC_PIT].hz, b),
@@ -1357,6 +1384,16 @@ void time_platform_init(void)
     g_src[TIMESRC_HPET].res_ns = (uint32_t)(res ? res : 1);
     g_src[TIMESRC_HPET].available = 1;
 
+#ifndef TIME_NEGCTL_NO_HPET_CALIB
+    if (!g_tsc_calib_ok) {
+        calibrate_tsc_hpet(hz, mask);
+        if (g_tsc_calib_ok && time_set_source(TIMESRC_TSC) == 0) {
+            kprintf("[time] TSC calibrated against HPET; TSC active, HPET standby\n");
+            time_report();
+            return;
+        }
+    }
+#endif
     if (g_cur == TIMESRC_PIT && time_set_source(TIMESRC_HPET) == 0) {
         kprintf("[time] HPET active: TSC unavailable, PIT remains emergency fallback\n");
         time_report();
