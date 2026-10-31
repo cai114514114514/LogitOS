@@ -45,6 +45,10 @@ struct netdev {
      * from the WM loop is the backstop for every card. */
     void (*irq_enable)(net_rx_cb cb);
     void (*irq)(void);
+    /* Set by a driver whose MSI path is tested: netdev_irq_route() then
+     * prefers MSI for it (INTx is the fallback dev_irq_request supplies).
+     * Unset keeps the conservative INTx-only routing every other NIC had. */
+    int msi_ok;
 };
 
 /* Bind a NIC: walk the device registry that pci_init() built, in NIC-line

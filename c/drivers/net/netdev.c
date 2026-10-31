@@ -493,6 +493,10 @@ int netdev_irq_route(void)
         }
         if (!owner) continue;
         if (owner->irq_mode != DEV_IRQ_NONE) { routed++; continue; }
+        /* Per device, not global: a NIC that declared msi_ok gets MSI first
+         * and INTx only as the fallback, so it is no longer polled on a board
+         * whose INTx cannot be allocated (X79-VG4 review of the RTL8168G). */
+        dev_irq_prefer(nd->msi_ok ? DEV_IRQ_MSI : DEV_IRQ_INTX);
         int vec = dev_irq_request(owner, netdev_device_irq, owner, nd->name);
         if (vec >= 0) {
             routed++;
