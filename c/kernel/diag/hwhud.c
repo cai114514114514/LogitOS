@@ -31,7 +31,8 @@ void hwhud_capture_boot_info(uint64_t info)
     if (total < 16 || total > 0x100000) return;
     for (uint32_t off = 8; off + 8 <= total; ) {
         uint32_t type = rd32(base + off), size = rd32(base + off + 4);
-        if (type == 0 || size < 8 || size > total - off) return;
+        if (type == 0) break;
+        if (size < 8 || size > total - off) return;
         if (type == LOGIT_BOOT_TAG_DISPLAY && size >= sizeof g_disp) {
             const uint8_t *s = base + off;
             uint8_t *d = (uint8_t *)&g_disp;
@@ -198,7 +199,9 @@ static void lines_cpu(uint64_t dms)
         ksnprintf(busy, sizeof busy, "busy %u%% at %u MHz", (unsigned)(dm * 100 / dt), mhz);
     }
     char smis[24] = "smi n/a";
-    if (g_smi && dms) ksnprintf(smis, sizeof smis, "smi %lu/s", (unsigned long)((smi - p_smi) * 1000 / dms));
+    /* MSR_SMI_COUNT is per logical CPU and 32 bits wide */
+    if (g_smi && dms && apic == p_apic)
+        ksnprintf(smis, sizeof smis, "smi %lu/s", (unsigned long)((uint32_t)(smi - p_smi) * 1000ull / dms));
     LINE("cpu apic %u (WM thread): %s  tsc %lu MHz  %s", apic, busy, (unsigned long)(hz / 1000000), smis);
     p_tsc = tsc; p_mperf = mperf; p_aperf = aperf; p_smi = smi; p_apic = apic;
 }
