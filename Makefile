@@ -595,6 +595,8 @@ $(BUILD)/third_party/uacpi/source/%.o $(BUILD)/c/drivers/power/%.o: CFLAGS += $(
 $(BUILD)/c/kernel/cpu/power/firmware.o: CFLAGS += $(UACPI_CFLAGS)
 # X79-VG4 phase 2 P0: the NCT6779 firmware-ownership check walks the AML namespace
 $(BUILD)/c/drivers/board/nct_acpi.o: CFLAGS += $(UACPI_CFLAGS)
+# X79-VG4 phase 2 P3: _PRT, link devices and _PRS/_SRS are evaluated through uACPI
+$(BUILD)/c/kernel/pci/pci_prt_aml.o: CFLAGS += $(UACPI_CFLAGS)
 
 # --- Hybrid C+Rust: a no_std staticlib (rust/) linked with the C objects. Rust
 # owns the memory-safety-critical untrusted-input parsers; C owns the core. Use
