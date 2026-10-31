@@ -12,6 +12,7 @@
  * conservative refusal is preferable to corrupting a shared TT's bandwidth.
  * Periodic rearming is deferred until PSS=0; an IRQ never spins for hardware.
  */
+#include "ehci_diag.h"
 #include <stdint.h>
 #include <stddef.h>
 #include "ehci.h"
@@ -65,6 +66,8 @@ struct ehci_ep {
     uint8_t addr, type, toggle, armed, pending;
     uint16_t packet, period, phase;
     uint8_t smask, cmask;
+    uint8_t dev_addr;                   /* for the panel: dev may be freed */
+    uint32_t done, errs, last_token;
     struct dma_buffer *mem;
     struct ehci_qh *qh;
     struct ehci_qtd *td;
@@ -97,6 +100,24 @@ struct ehci {
     unsigned long completions, errors, reports;
 };
 static struct ehci controllers[EHCI_CONTROLLERS];
+
+int ehci_diag_get(int i, struct ehci_ep_diag *out)
+{
+    for (unsigned c = 0, seen = 0; c < EHCI_CONTROLLERS; c++) {
+        if (!controllers[c].used) continue;
+        for (unsigned j = 0; j < EHCI_ENDPOINTS; j++) {
+            struct ehci_ep *p = &controllers[c].ep[j];
+            if (!p->dev || p->type != USB_XFER_INT || !p->qh) continue;
+            if ((int)seen++ != i) continue;
+            *out = (struct ehci_ep_diag){ .controller = (uint8_t)c, .dev_addr = p->dev_addr,
+                .ep = p->addr, .armed = p->armed, .period = p->period, .phase = p->phase,
+                .done = p->done, .errors = p->errs, .td_token = p->last_token,
+                .qh_token = ((volatile struct ehci_qh *)p->qh)->token };
+            return 0;
+        }
+    }
+    return -1;
+}
 static io_lock_t controllers_gate=IO_LOCK_INIT;
 static uint32_t rd(struct ehci *e, unsigned r)
 { return *(volatile uint32_t *)(e->op+r); }
@@ -529,8 +550,10 @@ static int int_poll(struct usb_device *d,uint8_t addr,uint8_t **data)
     uint32_t t=p->td->token;
     if (t&EHCI_ACTIVE) return -1;
     p->armed=0;
+    p->last_token=t;
     int n=ehci_actual(p->packet,t);
-    if (n<0) { e->errors++; return -1; }
+    if (n<0) { e->errors++; p->errs++; return -1; }
+    p->done++;
     p->toggle=!!(p->qh->token&EHCI_TOGGLE);
     *data=p->payload; e->completions++;e->reports++;
     return n;
@@ -588,7 +611,7 @@ static int configure(struct usb_device *d,const struct usb_interface *iface)
 #endif
             return -1;
         }
-        p->phase=phase;p->dev=d;
+        p->phase=phase;p->dev=d;p->dev_addr=d->addr;
         for (unsigned f=phase;f<1024;f+=period) {
             e->frame_owner[f]=p; e->frames[f]=p->qh_dma|EHCI_QH_LINK;
         }

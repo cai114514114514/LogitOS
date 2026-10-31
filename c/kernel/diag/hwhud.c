@@ -13,10 +13,11 @@
 #include "lapic.h"
 #include "hardware.h"
 #include "hid_diag.h"
+#include "ehci_diag.h"
 #include "logit_boot.h"
 
 #define COLS 92
-#define ROWS 22
+#define ROWS 30
 
 static struct logit_boot_display_tag g_disp;
 static int g_have_disp;
@@ -215,8 +216,8 @@ static void lines_clock(uint64_t dms)
     unsigned ns = hz ? (unsigned)(cyc * 1000000000ull / hz) : 0;
     uint64_t ticks = timer_ticks();
     int src = time_get_source();
-    LINE("clock %s, now() %u ns/call, pit %lu ticks/s", time_source_name(src), ns,
-         dms ? (unsigned long)((ticks - p_ticks) * 1000 / dms) : 0ul);
+    LINE("clock %s, now() %u ns/call, pit %lu ticks/s, lapic timer %lu kHz", time_source_name(src), ns,
+         dms ? (unsigned long)((ticks - p_ticks) * 1000 / dms) : 0ul, (unsigned long)(lapic_timer_hz() / 1000));
     p_ticks = ticks;
     (void)sink;
 }
@@ -266,6 +267,11 @@ static void lines_hid(void)
              d.last[4], d.last[5], d.last[6], d.last[7]);
     }
     if (!any) LINE("hid: no interfaces bound");
+    struct ehci_ep_diag e;
+    for (int i = 0; ehci_diag_get(i, &e) == 0; i++)
+        LINE("ehci%u dev %u ep %02x period %u phase %u %s done %lu err %lu td %08x qh %08x",
+             e.controller, e.dev_addr, e.ep, e.period, e.phase, e.armed ? "armed" : "idle",
+             (unsigned long)e.done, (unsigned long)e.errors, e.td_token, e.qh_token);
 }
 
 void hwhud_tick(const struct hwhud_wm *wm)
