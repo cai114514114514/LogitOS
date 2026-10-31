@@ -486,12 +486,15 @@ static UINT64 load_kernel(EFI_HANDLE image)
     st = BS->HandleProtocol(image, &li_guid, (void **)&li);
     if (st) die_st("no LoadedImageProtocol on our own image handle", st);
 
-    /* Firmware relocates a PE image wherever it likes. The native handoff
+    /* Firmware relocates a PE image wherever it likes, and the X79-VG4's AMI
+     * firmware (revision 0x2001f) puts it above 1 GiB. The native handoff
      * replaces CR3 with a table mapping exactly the first 1 GiB, so the code
-     * performing that switch must itself be inside the runway. */
+     * and GDT used across that switch run from a copy in a low page
+     * (setup_native_runway); the image itself may live anywhere. */
     UINT64 img_end = (UINT64)(UINTN)li->ImageBase + li->ImageSize;
-    if (img_end > BOOT_IDENTITY_LIMIT)
-        die("firmware placed the native loader outside its 1-GiB runway");
+    say("[efi] loader image at "); sayx((UINT64)(UINTN)li->ImageBase);
+    say(img_end > BOOT_IDENTITY_LIMIT
+        ? " (above the 1-GiB runway; handoff runs from a low copy)\n" : "\n");
     say("[efi] image "); sayx((UINT64)(UINTN)li->ImageBase);
     say(".."); sayx(img_end); say("\n");
 
@@ -658,6 +661,22 @@ static void mask_field(UINT32 mask, UINT8 *pos, UINT8 *size)
 /* Emits the native framebuffer tag, or emits nothing and says why. Absence is
  * a supported outcome: with `-vga none`, fb_init() drives virtio-gpu itself.
  * A fabricated linear address would turn a usable fallback into corruption. */
+/* Boot breadcrumbs (c/kernel/diag/bootmark.c): after ExitBootServices only
+ * serial carries text, so the loader also writes two yellow squares straight
+ * into the scanout memory -- 1: firmware exited, 2: jumping to the kernel. */
+static UINT64 mark_lfb;
+static UINT32 mark_pitch, mark_width;
+static void loader_mark(int index)
+{
+    sputs("[efi] mark "); sputx((UINT64)index); sputs(" lfb "); sputx(mark_lfb);
+    sputs(" pitch "); sputx(mark_pitch); sputs(" width "); sputx(mark_width); sputs("\n");
+    if (!mark_lfb || (UINT32)(8 + 30 * index) > mark_width) return;
+    for (UINT32 y = 8; y < 32; y++) {
+        volatile UINT32 *row = (volatile UINT32 *)(UINTN)(mark_lfb + (UINT64)y * mark_pitch);
+        for (UINT32 x = 8 + 30 * (UINT32)(index - 1); x < 32 + 30 * (UINT32)(index - 1); x++) row[x] = 0x00e0e000u;
+    }
+}
+
 static void build_fb_tag(struct infobuf *ib)
 {
     EFI_GUID gop_guid = EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID;
@@ -751,6 +770,7 @@ static void build_fb_tag(struct infobuf *ib)
      * it. Multiplying by 4 is the whole conversion, and getting it wrong is the
      * classic sheared-image bug. */
     t->pitch  = mi->PixelsPerScanLine * 4;
+    mark_lfb = t->addr; mark_pitch = t->pitch; mark_width = mi->HorizontalResolution;
     t->width  = mi->HorizontalResolution;
     t->height = mi->VerticalResolution;
     t->bpp     = 32;                    /* fb.c:157 requires exactly this */
@@ -770,6 +790,90 @@ static void build_fb_tag(struct infobuf *ib)
 /* ------------------------------------------------------------------ *
  *  step 5: the RSDP                                                   *
  * ------------------------------------------------------------------ */
+
+/* The SMBIOS entry point and its structure table, copied. UEFI lets firmware
+ * keep the table in EfiBootServicesData, which the kernel's memory map treats
+ * as reclaimable RAM, and the entry point's address could name any range; so
+ * both are validated and copied here, while boot services still guarantee the
+ * bytes, and the kernel reads only the copy (c/drivers/board/smbios.c). */
+static int smbios_sum_ok(const UINT8 *p, UINTN n)
+{
+    UINT8 s = 0;
+    for (UINTN i = 0; i < n; i++) s = (UINT8)(s + p[i]);
+    return s == 0;
+}
+
+/* [lo, lo+len) lies wholly inside memory the firmware describes as holding
+ * data (reserved, loader/boot/runtime data, ACPI): never MMIO, never a hole.
+ * Checked against the live memory map before a byte is read. */
+static int smbios_extent_ok(UINT64 lo, UINT64 len)
+{
+    if (!len || lo + len < lo) return 0;
+    /* The X79-VG4's AMI firmware publishes the entry point in the legacy BIOS
+     * area, which its EFI memory map does not describe (photo, 2026-10-31).
+     * That segment is ROM/shadow RAM on every PC, never MMIO. */
+    if (lo >= 0xE0000 && lo + len <= 0x100000) return 1;
+    UINT64 cur = lo, hi = lo + len;
+    EFI_MEMORY_DESCRIPTOR *m; UINTN map_size, dsz;
+    map_walk_begin(&m, &map_size, &dsz);
+    if (!m) return 0;
+    for (int progress = 1; cur < hi && progress; ) {
+        progress = 0;
+        for (UINTN off = 0; off + dsz <= map_size; off += dsz) {
+            EFI_MEMORY_DESCRIPTOR *d = (EFI_MEMORY_DESCRIPTOR *)((UINT8 *)m + off);
+            UINT64 a = d->PhysicalStart, b = a + d->NumberOfPages * 4096ull;
+            if (cur < a || cur >= b) continue;
+            if (d->Type != EfiReservedMemoryType && d->Type != EfiLoaderData &&
+                d->Type != EfiBootServicesData && d->Type != EfiRuntimeServicesData &&
+                d->Type != EfiACPIReclaimMemory && d->Type != EfiACPIMemoryNVS) break;
+            cur = b; progress = 1; break;
+        }
+    }
+    BS->FreePool(m);
+    return cur >= hi;
+}
+
+static void build_smbios_tag(struct infobuf *ib)
+{
+    EFI_GUID g3 = EFI_SMBIOS3_TABLE_GUID, g2 = EFI_SMBIOS_TABLE_GUID;
+    UINT8 *sm3 = 0, *sm2 = 0;
+    for (UINTN i = 0; i < ST->NumberOfTableEntries; i++) {
+        EFI_CONFIGURATION_TABLE *e = &ST->ConfigurationTable[i];
+        if (meq(&e->VendorGuid, &g3, sizeof(EFI_GUID))) sm3 = e->VendorTable;
+        if (meq(&e->VendorGuid, &g2, sizeof(EFI_GUID))) sm2 = e->VendorTable;
+    }
+    /* The kernel accepts entry points of at most 0x20 bytes (both formats are
+     * 0x18/0x1f today); check that whole extent before reading even the
+     * length byte, and refuse a longer declared length. */
+    if (sm3 && !smbios_extent_ok((UINT64)(UINTN)sm3, 0x20)) { say("[efi] smbios3 entry outside firmware memory -- ignored\n"); sm3 = 0; }
+    if (sm2 && !smbios_extent_ok((UINT64)(UINTN)sm2, 0x20)) { say("[efi] smbios entry outside firmware memory -- ignored\n"); sm2 = 0; }
+    UINT8 *ep = 0; UINT32 elen = 0, tlen = 0; UINT64 taddr = 0;
+    if (sm3 && meq(sm3, "_SM3_", 5) && sm3[6] >= 0x18 && sm3[6] <= 0x20 && smbios_sum_ok(sm3, sm3[6])) {
+        ep = sm3; elen = sm3[6];
+        mcopy(&tlen, sm3 + 12, 4); mcopy(&taddr, sm3 + 16, 8);
+    } else if (sm2 && meq(sm2, "_SM_", 4) && sm2[5] >= 0x1f && sm2[5] <= 0x20 && smbios_sum_ok(sm2, sm2[5]) &&
+               meq(sm2 + 16, "_DMI_", 5) && smbios_sum_ok(sm2 + 16, 15)) {
+        UINT16 l16; UINT32 a32;
+        ep = sm2; elen = sm2[5];
+        mcopy(&l16, sm2 + 22, 2); mcopy(&a32, sm2 + 24, 4);
+        tlen = l16; taddr = a32;
+    }
+    if (!ep || !taddr || !tlen) { say("[efi] smbios none (or invalid) in the configuration table\n"); return; }
+    if (tlen > LOGIT_BOOT_SMBIOS_TABLE_MAX) tlen = LOGIT_BOOT_SMBIOS_TABLE_MAX;
+    if (!smbios_extent_ok(taddr, tlen)) {
+        say("[efi] smbios table outside firmware memory -- not copied\n");
+        return;
+    }
+    struct logit_boot_smbios_tag *t = ib_take(ib, sizeof(*t) + elen + tlen);
+    t->tag.type = LOGIT_BOOT_TAG_SMBIOS;
+    t->tag.size = (UINT32)(sizeof(*t) + elen + tlen);
+    t->entry_len = elen;
+    t->table_len = tlen;
+    mcopy((UINT8 *)(t + 1), ep, elen);
+    mcopy((UINT8 *)(t + 1) + elen, (void *)(UINTN)taddr, tlen);
+    say(ep == sm3 ? "[efi] smbios3 copied " : "[efi] smbios copied ");
+    sayd(tlen); say(" bytes from "); sayx(taddr); say("\n");
+}
 
 static void build_acpi_tag(struct infobuf *ib)
 {
@@ -892,6 +996,47 @@ static struct native_gdt_pointer native_gdt_ptr = {
     sizeof(native_gdt) - 1, 0
 };
 
+/* The handoff itself, position-independent so it can run from a copy in a
+ * low page: under the firmware's identity tables it loads the GDT copy
+ * beside it, moves to the low stack, installs the 1-GiB CR3 -- after which
+ * only this page, the stack, the tables and the kernel are mapped -- reloads
+ * CS through a far return and jumps to the kernel with RAX = magic and RDI =
+ * the information block. System V arguments: entry, info, pml4, stack, gdtr. */
+#define LOGIT_XSTR_(x) #x
+#define LOGIT_XSTR(x) LOGIT_XSTR_(x)
+extern const unsigned char logit_handoff_stub[], logit_handoff_stub_end[];
+__asm__(
+    ".text\n"
+    ".globl logit_handoff_stub\n"
+    ".globl logit_handoff_stub_end\n"
+    "logit_handoff_stub:\n"
+    "    cli\n"
+    "    cld\n"
+    "    movq %rdi, %r9\n"
+    "    movq %rcx, %rsp\n"
+    "    lgdt (%r8)\n"
+    "    movq %rdx, %cr3\n"
+    "    pushq $0x08\n"
+    "    leaq 1f(%rip), %rax\n"
+    "    pushq %rax\n"
+    "    lretq\n"
+    "1:  movw $0x10, %ax\n"
+    "    movw %ax, %ds\n"
+    "    movw %ax, %es\n"
+    "    movw %ax, %ss\n"
+    "    xorl %eax, %eax\n"
+    "    movw %ax, %fs\n"
+    "    movw %ax, %gs\n"
+    "    movq %rsi, %rdi\n"
+    "    movl $" LOGIT_XSTR(LOGIT_BOOT_MAGIC) ", %eax\n"
+    "    jmp *%r9\n"
+    "logit_handoff_stub_end:\n");
+
+/* One EfiLoaderCode page below 1 GiB (executable under the firmware's own
+ * tables, unlike LoaderData on firmware that enforces NX): the GDT copy at
+ * +0x40, its pointer at +0x80, the stub at +0x100. */
+static UINT64 native_handoff_page;
+
 static void setup_native_runway(void)
 {
     if (kernel_lo < 4 * LOGIT_BOOT_BASE_PAGE_BYTES)
@@ -919,47 +1064,25 @@ static void setup_native_runway(void)
 
     native_stack_top = native_aux_lo + LOGIT_BOOT_BASE_PAGE_BYTES;
     native_pml4 = (UINT64)(UINTN)pml4;
-    native_gdt_ptr.base = (UINT64)(UINTN)native_gdt;
+
+    EFI_PHYSICAL_ADDRESS hp = BOOT_IDENTITY_LIMIT - 1;
+    st = BS->AllocatePages(AllocateMaxAddress, EfiLoaderCode, 1, &hp);
+    if (st != EFI_SUCCESS || hp + LOGIT_BOOT_BASE_PAGE_BYTES > BOOT_IDENTITY_LIMIT)
+        die_st("cannot place the handoff page below 1 GiB", st);
+    UINTN stub_len = (UINTN)(logit_handoff_stub_end - logit_handoff_stub);
+    if (stub_len > LOGIT_BOOT_BASE_PAGE_BYTES - 0x100)
+        die("handoff stub does not fit its page");
+    native_handoff_page = hp;
+    mzero((void *)(UINTN)hp, LOGIT_BOOT_BASE_PAGE_BYTES);
+    mcopy((void *)(UINTN)(hp + 0x40), native_gdt, sizeof(native_gdt));
+    native_gdt_ptr.base = hp + 0x40;
+    mcopy((void *)(UINTN)(hp + 0x80), &native_gdt_ptr, sizeof(native_gdt_ptr));
+    mcopy((void *)(UINTN)(hp + 0x100), logit_handoff_stub, stub_len);
+    say("[efi] handoff page "); sayx(hp); say(" (stub "); sayd(stub_len); say(" bytes, below 1 GiB)\n");
     say("[efi] native identity runway 0x0..");
     sayx(LOGIT_BOOT_IDENTITY_MAP_BYTES);
     say(" tables "); sayx(native_aux_lo); say(".."); sayx(native_aux_hi);
     say("\n");
-}
-
-/* No descent is hidden here. UEFI already supplied long mode; the only
- * transition installs the documented GDT and the loader-owned 1-GiB CR3,
- * moves to the reserved low stack before replacing CR3, reloads CS through a
- * far return, then jumps with RAX/RDI. Every operand is parked in a register
- * before either change, and no C access follows. */
-__attribute__((noreturn, noinline))
-static void native_handoff(UINT64 entry, UINT64 info, UINT64 pml4, UINT64 stack)
-{
-    __asm__ volatile (
-        "cli\n\t"
-        "cld\n\t"
-        "movq %3, %%rsp\n\t"
-        "lgdt %5\n\t"
-        "movq %2, %%cr3\n\t"
-        "pushq $0x08\n\t"
-        "leaq 1f(%%rip), %%rax\n\t"
-        "pushq %%rax\n\t"
-        "lretq\n\t"
-        "1:\n\t"
-        "movw $0x10, %%ax\n\t"
-        "movw %%ax, %%ds\n\t"
-        "movw %%ax, %%es\n\t"
-        "movw %%ax, %%ss\n\t"
-        "xor %%eax, %%eax\n\t"
-        "movw %%ax, %%fs\n\t"
-        "movw %%ax, %%gs\n\t"
-        "movq %1, %%rdi\n\t"
-        "movl %4, %%eax\n\t"
-        "jmp *%0\n\t"
-        :
-        : "r"(entry), "r"(info), "r"(pml4), "r"(stack),
-          "i"(LOGIT_BOOT_MAGIC), "m"(native_gdt_ptr)
-        : "rax", "rdi", "memory");
-    __builtin_unreachable();
 }
 
 /* THE 1 GiB CEILING ON THE INFORMATION BLOCK. The native contract promises
@@ -1034,6 +1157,7 @@ void efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *systab)
     UINTN info_bytes  = LOGIT_BOOT_HEADER_SIZE
                       + 48                       /* framebuffer tag */
                       + 4096                     /* ACPI tag, generously */
+                      + 16 + 0x20 + LOGIT_BOOT_SMBIOS_TABLE_MAX  /* SMBIOS copy */
                       + 16 + max_entries * 24    /* mmap tag */
                       + 16;                      /* end tag + alignment */
     info_bytes = (info_bytes + 0xFFF) & ~(UINTN)0xFFF;
@@ -1079,6 +1203,7 @@ void efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *systab)
 
     build_fb_tag(&ib);
     build_acpi_tag(&ib);
+    build_smbios_tag(&ib);
 
     /* The mmap tag goes last because it is the only variable-size tag that may
      * have to be rebuilt if ExitBootServices rejects the key. Remembering the
@@ -1219,6 +1344,7 @@ void efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *systab)
     __asm__ volatile ("cli");
 
     sputs("[efi] ebs ok\n");
+    loader_mark(1);
     sputs("[efi] jump entry ");
     sputx(entry);
     sputs(" info ");
@@ -1226,8 +1352,10 @@ void efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *systab)
     sputs("\n");
 
     sputs("[efi] native jump (UEFI long mode retained)\n");
-    native_handoff(entry, (UINT64)(UINTN)ib.base, native_pml4,
-                   native_stack_top);
+    loader_mark(2);
+    typedef void (__attribute__((sysv_abi, noreturn)) *handoff_fn)(UINT64, UINT64, UINT64, UINT64, UINT64);
+    ((handoff_fn)(UINTN)(native_handoff_page + 0x100))(entry, (UINT64)(UINTN)ib.base, native_pml4,
+                                                       native_stack_top, native_handoff_page + 0x80);
 
     halt();   /* native_handoff does not return; this is for the compiler */
 }

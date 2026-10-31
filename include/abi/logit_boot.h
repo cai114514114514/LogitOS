@@ -81,6 +81,12 @@
 #define LOGIT_BOOT_TAG_FRAMEBUFFER       0x4c420102
 #define LOGIT_BOOT_TAG_ACPI_OLD          0x4c420103
 #define LOGIT_BOOT_TAG_ACPI_NEW          0x4c420104
+/* UEFI only: a copy of the SMBIOS entry point the firmware published in its
+ * configuration table (SMBIOS 3 preferred) followed by a copy of the structure
+ * table it points at, both taken before ExitBootServices. Under UEFI the
+ * 0xF0000 segment holds nothing, and the table may live in boot-services
+ * memory the kernel reclaims, so the kernel never follows the address. */
+#define LOGIT_BOOT_TAG_SMBIOS            0x4c420105
 #define LOGIT_BOOT_TAG_END               0x4c42ffff
 #define LOGIT_BOOT_TAG_NAMESPACE_MASK    0xffff0000
 #define LOGIT_BOOT_TAG_NAMESPACE         0x4c420000
@@ -230,5 +236,13 @@ LOGIT_BOOT_ASSERT_OFFSET(struct logit_boot_framebuffer_tag, blue_mask_size,
 #endif
 
 uint64_t logit_boot_normalize(uint64_t info_addr, uint64_t entry_magic);
+
+#define LOGIT_BOOT_SMBIOS_TABLE_MAX      0x10000
+struct logit_boot_smbios_tag {
+    struct logit_boot_tag tag;          /* type LOGIT_BOOT_TAG_SMBIOS */
+    uint32_t entry_len;                 /* bytes of "_SM3_"/"_SM_" entry point */
+    uint32_t table_len;                 /* bytes of structure table, <= TABLE_MAX */
+    /* uint8_t entry[entry_len]; uint8_t table[table_len]; */
+} __attribute__((packed));
 
 #endif
