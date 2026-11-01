@@ -25,6 +25,11 @@ struct polaris_resource_report {
     unsigned firmware_from_rootfs;
     unsigned firmware_from_bootmod;
     unsigned firmware_pin_mismatch; /* slots, in either set, whose digest differed */
+    /* polaris_fw_bundle_plan().bytes_used of the seven engine files, the input
+     * the arena size depends on (runtime.c plans memory from the same value).
+     * Zero when any of the seven failed: the size is then not known. The SMC
+     * file is not part of the bundle, so key=0 and key=1 give the same number. */
+    uint64_t firmware_bundle_bytes;
     unsigned ownership_missing;
     unsigned security_key_unknown;
 };

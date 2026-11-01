@@ -336,6 +336,15 @@ static void lines_display(void)
             add_wrapped(gpu);
         }
     }
+    /* The read-only CRTC scan and VRAM arena choice (amd/bootfb.c), as the
+     * photo-readable twin of the [amd-dce] and [amd-arena] serial lines. */
+    static const char *const display_label[] = {"dce ", "arena "};
+    for (unsigned line = 0; amd_bootfb_display_hud_line(line); line++) {
+        char text[COLS * 2];
+        ksnprintf(text, sizeof text, "%s%s", display_label[line],
+                  amd_bootfb_display_hud_line(line));
+        add_wrapped(text);
+    }
     if (!g_have_disp) { LINE("gop: no firmware report"); return; }
     LINE("gop firmware %ux%u, %u modes, pick by %s%s", g_disp.fw_width, g_disp.fw_height,
          g_disp.mode_count, g_disp.why, g_disp.set_failed ? " SETMODE FAILED" : "");

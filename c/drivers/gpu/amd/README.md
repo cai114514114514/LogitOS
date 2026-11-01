@@ -18,6 +18,8 @@ amd/
     firmware/bundle.c     完整 normal-PF 固件目录与 RAM staging
     memory/layout.c       显存保留区与控制对象布局
     memory/gart.c         GMC8 页表编码
+    memory/arena.c        显存保留清单与 2 MiB 对齐 arena 选择（只读规划；含完整 GOP 帧缓冲）
+    display/crtc.c        六个 CRTC 的只读扫描、GOP 核对与刷新率实测（bootfb 仅在 HWHUD 构建调用）
     smu/loader.c          SMU 启动、微码加载与完成等待
     smu/mailbox.c         独立 Test 消息传输检查
     smu/toc.c             SMU7 目录编码

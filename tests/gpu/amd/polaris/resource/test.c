@@ -38,6 +38,9 @@ static uint8_t file_data[9][512];
  * edited AFTER make_files() therefore no longer matches its pin. */
 static struct polaris_fw_pin test_pins[9];
 static uint8_t vram_copy[256 * 1024];
+/* Bundle size the files case computes from the same seven blobs; the probe must
+ * report it, because the arena is sized from it. */
+static size_t planned_bundle_bytes;
 static uint32_t registers[65536 / 4];
 static uint32_t configuration[256 / 4];
 static struct device gpu;
@@ -347,6 +350,7 @@ static void firmware_cases(void)
     struct polaris_fw_bundle_info bundle;
     CHECK(polaris_fw_bundle_plan(&files.firmware, 0, &bundle) == 0);
     CHECK(bundle.inventory.present_mask == 0x5fe);
+    planned_bundle_bytes = bundle.bytes_used;
     CHECK(polaris_resource_files_load(0xe7, 1, &files) < 0);
     polaris_resource_files_release(&files);
     CHECK(allocations == frees && !files.valid_mask);
@@ -418,6 +422,7 @@ static void device_cases(void)
     CHECK(report.firmware_mask[0] == 0xff && report.firmware_mask[1] == 0xff);
     CHECK(report.firmware_from_rootfs == 9 && report.firmware_from_bootmod == 0);
     CHECK(report.firmware_pin_mismatch == 0);
+    CHECK(planned_bundle_bytes && report.firmware_bundle_bytes == planned_bundle_bytes);
     CHECK(report.ownership_missing == 1 && report.security_key_unknown == 1);
     CHECK(report.device.vram_bytes == UINT64_C(0x200000000));
     CHECK(file_stats == 16 && file_reads == 16 && map_count == 1);
@@ -447,6 +452,7 @@ static void device_cases(void)
     CHECK(report.firmware_mask[0] == 0xfb && report.firmware_mask[1] == 0xfb);
     CHECK(report.file_result[0][2] == POLARIS_RESOURCE_FILE_PIN);
     CHECK(report.firmware_pin_mismatch == 2 && report.firmware_from_rootfs == 8);
+    CHECK(report.firmware_bundle_bytes == 0);
 
     reset();
     vram_copy[0] = 0;

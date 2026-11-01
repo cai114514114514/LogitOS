@@ -166,6 +166,13 @@ static void discover_files(struct polaris_resource_report *report)
         struct polaris_resource_files files = {0};
         (void)polaris_resource_files_load(report->pci_revision, key, &files);
         report->firmware_mask[key] = files.valid_mask;
+        /* The planner needs all seven engine files; a partial set sizes
+         * nothing. No MMIO and no allocation: it only reads the held blobs. */
+        struct polaris_fw_bundle_info bundle;
+        if (!report->firmware_bundle_bytes &&
+            polaris_fw_bundle_plan(&files.firmware, 0, &bundle) == 0) {
+            report->firmware_bundle_bytes = bundle.bytes_used;
+        }
         for (unsigned kind = 0; kind < POLARIS_RESOURCE_FILE_SLOTS; ++kind) {
             report->file_result[key][kind] = files.result[kind];
             if (files.result[kind] == POLARIS_RESOURCE_FILE_PIN) {
