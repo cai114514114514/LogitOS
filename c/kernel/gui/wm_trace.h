@@ -12,6 +12,13 @@ struct wm_slowframe {
     unsigned rects, par, full_reasons;
 };
 
+/* Same inclusive 33 ms budget as the serial policy; accumulation is separate
+ * from its one-second rate limit so a burst is not counted as one frame.
+ * Kernel callers hold graphics_lock for note and while copying worst/count.
+ * The returned pointer is borrowed, not an immutable snapshot across unlock. */
+void wm_slowframe_note(const struct wm_slowframe *frame);
+const struct wm_slowframe *wm_slowframe_worst(uint64_t *count);
+
 /* snprintf's sizing contract: return the complete length, excluding NUL;
  * write at most n-1 characters and terminate whenever n is nonzero. */
 size_t wm_slowframe_format(char *buf, size_t n, const struct wm_slowframe *frame);

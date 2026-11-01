@@ -3,10 +3,96 @@
  * written to any device. */
 #include <stdint.h>
 #include <stddef.h>
+#include "driver.h"
+#include "wm_trace.h"
+#ifndef HWHUD_FORMAT_HOST
+#include "kprintf.h"
+#endif
+
+/* Decode a leaf PTE using the live PAT, not the stale fb_init snapshot.
+ * Intel SDM Vol. 3A sections 4.5 and 11.12: PWT/PCD/PAT are bits 3/4/7 and
+ * Present is bit 0; each selected IA32_PAT byte encodes a memory type.
+ * pat.c normally changes only PA1 from reset WT to WC, but reading the MSR
+ * keeps a later PAT change visible too. MTRR interaction is shown
+ * separately by lines_mtrr: these labels describe PTE policy, not a measured
+ * effective bus memory type. Not verified on X79-VG4 hardware. */
+static const char *scanout_type(uint64_t pte, uint64_t pat)
+{
+    static const char *const types[] = {"UC", "WC", "??", "??",
+                                        "WT", "WP", "WB", "UC-"};
+    if (!(pte & 1)) {
+        return "unmapped";
+    }
+    unsigned index = ((pte >> 5) & 4) | ((pte >> 3) & 3);
+    unsigned type = (pat >> (index * 8)) & 0xff;
+    return type < sizeof types / sizeof types[0] ? types[type] : "??";
+}
+
+/* Keep boot and live policy side by side: the old HUD called a UC remap WC
+ * because fb_scanout_wc() remembers only fb_init's first readback. Both ends
+ * matter when only part of the scanout has been remapped. A non-WC boot flag
+ * cannot distinguish UC from WB, so deliberately do not invent that value. */
+static void scanout_format(char *out, size_t capacity, unsigned width,
+                            unsigned height, int boot_wc, uint64_t first,
+                            uint64_t last, uint64_t pat)
+{
+#ifdef HUD_NEGCTL_STALE_SCANOUT
+    first = boot_wc ? 0x9 : 0x19;
+    last = first;
+#endif
+    const char *first_type = scanout_type(first, pat);
+    const char *last_type = scanout_type(last, pat);
+    int first_wc = first_type[0] == 'W' && first_type[1] == 'C';
+    int last_wc = last_type[0] == 'W' && last_type[1] == 'C';
+    ksnprintf(out, capacity, "fb %ux%u scanout first=%s last=%s boot=%s%s",
+              width, height, first_type, last_type, boot_wc ? "WC" : "not-WC",
+              first_wc != !!boot_wc || last_wc != !!boot_wc ? " CHANGED" : "");
+}
+
+/* Show enumerated identity and actual binding, rather than inferring a GPU
+ * from a boot framebuffer. BAR lengths are bytes so small/absent apertures
+ * remain distinguishable without a rounding-dependent size label. */
+static void gpu_format(char *out, size_t capacity, const struct device *device)
+{
+    ksnprintf(out, capacity, "gpu %04x:%04x rev=%02x BAR0=%luB BAR5=%luB driver=%s",
+              device->vendor, device->device, device->revision,
+              (unsigned long)device->res[0].size,
+              (unsigned long)device->res[5].size,
+              device->drv ? device->drv->name : "unbound");
+}
+
+/* Preserve every stage of the worst measured frame for machines without a
+ * serial cable. Subtract in ns before truncating, as the serial formatter
+ * does; CPU time above wall time must not wrap blocked time into a huge stall. */
+static void slow_format(char *out, size_t capacity,
+                        const struct wm_slowframe *frame, uint64_t count)
+{
+    const struct wm_slowframe empty = {0};
+    if (!frame) {
+        frame = &empty;
+    }
+    uint64_t blocked_ns = frame->total_ns > frame->cpu_ns ?
+                          frame->total_ns - frame->cpu_ns : 0;
+    ksnprintf(out, capacity, "slow count=%lu us total=%lu cpu=%lu blocked=%lu "
+              "lock=%lu layers=%lu top=%lu present=%lu glass=%lu",
+              (unsigned long)count, (unsigned long)(frame->total_ns / 1000),
+              (unsigned long)(frame->cpu_ns / 1000),
+              (unsigned long)(blocked_ns / 1000),
+              (unsigned long)(frame->lockwait_ns / 1000),
+              (unsigned long)(frame->layers_ns / 1000),
+              (unsigned long)(frame->top_ns / 1000),
+              (unsigned long)(frame->present_ns / 1000),
+              (unsigned long)(frame->glass_ns / 1000));
+}
+
+/* Host gates include just the pure formatters above. The production build
+ * retains all collectors below; no host stand-in can hide a stale formatter. */
+#ifndef HWHUD_FORMAT_HOST
 #include "hwhud.h"
 #include "hwscreen_font.h"
 #include "fb.h"
-#include "kprintf.h"
+#include "mmhost.h"
+#include "vmm.h"
 #include "ktime.h"
 #include "pit.h"
 #include "irq.h"
@@ -65,6 +151,38 @@ static void addline(const char *s)
     g_rows++;
 }
 
+/* A worst frame has eight timings and may exceed one 92-column photo row.
+ * Wrap between fields instead of silently clipping present/glass, precisely
+ * the attribution the serial-less hardware report was missing. */
+static void add_wrapped(const char *text)
+{
+    while (*text) {
+        char line[COLS + 1];
+        size_t length = 0;
+        while (length < COLS && text[length]) {
+            length++;
+        }
+        if (text[length]) {
+            size_t boundary = length;
+            while (boundary && text[boundary] != ' ') {
+                boundary--;
+            }
+            if (boundary) {
+                length = boundary;
+            }
+        }
+        for (size_t i = 0; i < length; i++) {
+            line[i] = text[i];
+        }
+        line[length] = 0;
+        addline(line);
+        text += length;
+        while (*text == ' ') {
+            text++;
+        }
+    }
+}
+
 /* ksnprintf has no va_list form; format into a buffer through it per call */
 #define LINE(...) do { char b_[COLS + 1]; ksnprintf(b_, sizeof b_, __VA_ARGS__); addline(b_); } while (0)
 
@@ -92,7 +210,7 @@ static uint64_t rdtsc(void)
     return (uint64_t)hi << 32 | lo;
 }
 
-static int g_intel, g_aperf, g_mtrr, g_smi, g_ptm, g_physbits = 36;
+static int g_intel, g_aperf, g_mtrr, g_smi, g_ptm, g_pat, g_physbits = 36;
 
 static void probe_cpu(void)
 {
@@ -106,6 +224,9 @@ static void probe_cpu(void)
     cpuid(1, 0, r);
     unsigned family = (r[0] >> 8) & 15, model = ((r[0] >> 4) & 15) | ((r[0] >> 12) & 0xf0);
     g_mtrr = (r[3] >> 12) & 1;
+    /* Intel SDM Vol. 2 CPUID.01H:EDX.PAT[16] gates IA32_PAT reads; do not
+     * fault the diagnostic panel on a CPU without that optional MSR. */
+    g_pat = (r[3] >> 16) & 1;
     int hypervisor = (r[2] >> 31) & 1;
     if (max >= 6) { cpuid(6, 0, r); g_aperf = r[2] & 1; g_ptm = g_intel && !hypervisor && ((r[0] >> 6) & 1); }
     /* MSR_SMI_COUNT (0x34): Nehalem and later (Intel SDM vol 4, table 2-15) */
@@ -153,7 +274,37 @@ static void lines_mtrr(void)
 
 static void lines_display(void)
 {
-    LINE("fb %ux%u scanout %s", fb_width(), fb_height(), fb_scanout_wc() ? "WC" : "not WC");
+    uint64_t lfb, bytes;
+    uint64_t first = 0;
+    uint64_t last = 0;
+    if (fb_boot_lfb_range(&lfb, &bytes) && bytes && lfb <= UINT64_MAX - bytes) {
+        uint64_t cr3 = mm_read_cr3();
+        uint64_t *first_pte = vmm_pte(cr3, lfb);
+        uint64_t *last_pte = vmm_pte(cr3, lfb + bytes - 1);
+        if (first_pte) {
+            first = __atomic_load_n(first_pte, __ATOMIC_RELAXED);
+        }
+        if (last_pte) {
+            last = __atomic_load_n(last_pte, __ATOMIC_RELAXED);
+        }
+    }
+    char scanout[COLS + 1];
+    /* Intel SDM Vol. 3A section 11.12: IA32_PAT is MSR 277h. Without PAT,
+     * legacy PWT/PCD policy matches its architectural reset table below. */
+    uint64_t pat = g_pat ? power_rdmsr(0x277) : UINT64_C(0x0007040600070406);
+    scanout_format(scanout, sizeof scanout, fb_width(), fb_height(),
+                   fb_scanout_wc(), first, last, pat);
+    addline(scanout);
+    /* PCI base class 03h is Display Controller (pci.h). Include every display
+     * function, even unbound ones; an HDMI audio function is not a GPU. */
+    for (int i = 0; i < dev_count(); i++) {
+        const struct device *device = dev_at(i);
+        if (device && device->bus_type == DEV_BUS_PCI && device->class_code == 3) {
+            char gpu[256];
+            gpu_format(gpu, sizeof gpu, device);
+            add_wrapped(gpu);
+        }
+    }
     if (!g_have_disp) { LINE("gop: no firmware report"); return; }
     LINE("gop firmware %ux%u, %u modes, pick by %s%s", g_disp.fw_width, g_disp.fw_height,
          g_disp.mode_count, g_disp.why, g_disp.set_failed ? " SETMODE FAILED" : "");
@@ -226,6 +377,19 @@ static void lines_clock(uint64_t dms)
 
 static void lines_wm(const struct hwhud_wm *w, uint64_t dms)
 {
+    /* Other callers can render too. Copy the borrowed history under the same
+     * graphics lock used by wm_render's note, before formatting outside it. */
+    struct wm_slowframe worst = {0};
+    uint64_t count;
+    fb_graphics_lock();
+    const struct wm_slowframe *record = wm_slowframe_worst(&count);
+    if (record) {
+        worst = *record;
+    }
+    fb_graphics_unlock();
+    char slow[384];
+    slow_format(slow, sizeof slow, &worst, count);
+    add_wrapped(slow);
     uint64_t dc = w->composites - p_wm.composites, dn = w->comp_ns - p_wm.comp_ns;
     uint64_t dp = w->present_ns - p_wm.present_ns, dcm = w->cursor_moves - p_wm.cursor_moves;
     uint64_t dcn = w->cursor_ns - p_wm.cursor_ns, dmo = w->motions - p_wm.motions;
@@ -364,3 +528,4 @@ void hwhud_tick(const struct hwhud_wm *wm)
     fb_present_rect(x, y, w, h);
     fb_graphics_unlock();
 }
+#endif /* !HWHUD_FORMAT_HOST */
