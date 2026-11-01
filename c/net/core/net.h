@@ -41,6 +41,20 @@ extern struct net_config net_cfg;
 int  net_init(void);
 int  net_up(void);                  /* 1 if a NIC initialised successfully */
 
+/* Boot-time address acquisition (c/net/core/netcfg.c), called by net_init():
+ * a static configuration from settings, else DHCP, else -- under a hypervisor
+ * only -- the QEMU SLIRP static configuration. On real hardware with no lease
+ * the address stays 0.0.0.0 and the DHCP client keeps trying in the
+ * background (c/net/core/dhcp.c). */
+void net_cfg_acquire(void);
+
+/* Receive-path observability for the diagnostic HUD. net_rx_irq_count() is the
+ * number of NIC interrupts that scheduled a drain; net_rx_poll_active() is 1
+ * when receive is being served by polling -- the NIC has no interrupt route,
+ * or frames keep arriving while its interrupt is silent. */
+uint32_t net_rx_irq_count(void);
+int      net_rx_poll_active(void);
+
 /* Pump the receive path (called from the WM main loop). */
 void net_poll(void);
 

@@ -49,6 +49,11 @@ struct netdev {
      * prefers MSI for it (INTx is the fallback dev_irq_request supplies).
      * Unset keeps the conservative INTx-only routing every other NIC had. */
     int msi_ok;
+    /* Optional. Speed and duplex of the established link, for the diagnostic
+     * HUD: fills *mbps (10/100/1000) and *full_duplex and returns 1, or
+     * returns 0 when the driver cannot tell. Only meaningful while the link is
+     * up. A driver without it simply reports an unknown speed. */
+    int (*link_info)(unsigned *mbps, int *full_duplex);
 };
 
 /* Bind a NIC: walk the device registry that pci_init() built, in NIC-line
@@ -75,6 +80,24 @@ int netdev_init(void);
  * not program virtio queue vectors or 82574 IVAR, so it would lose interrupts.
  */
 int netdev_irq_route(void);
+
+/* The primary interface's link: 1 when the wire is usable, 0 when it is down
+ * or nothing is bound. This is NETIF_F_RUNNING, which a driver publishes
+ * through netdev_set_link(); a driver that never does (e1000, virtio, rtl8139,
+ * pcnet today) leaves it at the optimistic "up" netif_register() gave it, which
+ * is what the stack believed about every NIC before link state existed. The
+ * DHCP client keys its boot-time wait and its restart-on-link-up off this. */
+int netdev_link_up(void);
+
+/* Speed and duplex of the primary interface's established link, when its
+ * driver can say (struct netdev::link_info). Returns 1 and fills the outputs,
+ * or 0 when the link is down or the driver cannot tell. */
+int netdev_link_info(unsigned *mbps, int *full_duplex);
+
+/* 1 once at least one NIC interrupt route exists (netdev_irq_route()). A NIC
+ * without a route is polled by design; one with a route whose interrupt never
+ * arrives is the case net.c reports. */
+int netdev_irq_routed(void);
 
 const char    *netdev_name(void);     /* "none" when nothing bound */
 const uint8_t *netdev_mac(void);      /* always a valid 6-byte pointer */

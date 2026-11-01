@@ -243,6 +243,42 @@ int netif_is_local(uint32_t a)
     return 0;
 }
 
+/* The primary interface's link, for the DHCP client and the HUD. Reads
+ * NETIF_F_RUNNING under the network lock, the same lock netdev_set_link()
+ * writes it under, so a driver's down edge and this answer cannot interleave.
+ * No interface, or one that is not RUNNING (an unplugged cable, a Wi-Fi
+ * adapter that has not authenticated), is "down". */
+int netdev_link_up(void)
+{
+    NET_GUARD;
+    struct netif *primary = netif_by_index(primary_if);
+    if (!primary || !primary->dev)
+        return 0;
+    return (primary->flags & NETIF_F_RUNNING) != 0;
+}
+
+int netdev_link_info(unsigned *mbps, int *full_duplex)
+{
+    NET_GUARD;
+    struct netif *primary = netif_by_index(primary_if);
+    if (!primary || !primary->dev || !primary->dev->link_info)
+        return 0;
+    if (!(primary->flags & NETIF_F_RUNNING))
+        return 0;
+    return primary->dev->link_info(mbps, full_duplex);
+}
+
+/* Whether netdev_irq_route() gave any NIC a device-model interrupt route: the
+ * owner it records per interface is the evidence, so there is no second flag
+ * to keep in step with it. */
+int netdev_irq_routed(void)
+{
+    for (int i = 0; i < NETIF_MAX; i++)
+        if (__atomic_load_n(&irq_owners[i], __ATOMIC_ACQUIRE))
+            return 1;
+    return 0;
+}
+
 int netdev_primary_ifindex(void)
 {
     NET_GUARD;

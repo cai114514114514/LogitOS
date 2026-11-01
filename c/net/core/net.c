@@ -11,64 +11,19 @@
 
 void *memcpy(void *, const void *, size_t);
 
-/* net_cfg starts empty; net_init fills it via DHCP, or with the static SLIRP
- * fallback below if negotiation fails. */
+/* net_cfg starts empty; net_init fills it through net_cfg_acquire()
+ * (c/net/core/netcfg.c): settings, DHCP, or the hypervisor-only static
+ * fallback -- and dhcp.c keeps acquiring in the background after boot. */
 struct net_config net_cfg;
-
-/* Static config matching QEMU SLIRP (user networking) defaults, used when
- * DHCP does not answer (and identical to what SLIRP hands out when it does). */
-static void net_cfg_fallback(void)
-{
-    net_cfg.ip   = IPV4(10, 0, 2, 15);
-    net_cfg.mask = IPV4(255, 255, 255, 0);
-    net_cfg.gw   = IPV4(10, 0, 2, 2);
-    net_cfg.dns  = IPV4(10, 0, 2, 3);
-    kprintf("[net] dhcp failed; static ip 10.0.2.15/24 gw 10.0.2.2 dns 10.0.2.3\n");
-}
 
 static _Atomic int up;
 
 int net_up(void) { return up; }
 
-/* dhcp.c is linked into the kernel but kept optional like the other layers. */
-int  dhcp_run(int timeout_ticks) LOGIT_WEAK;
+/* dhcp.c is linked into the kernel but kept optional like the other layers.
+ * Only the net_poll hook lives here; the boot-time exchange is netcfg.c's. */
 void dhcp_poll(void) LOGIT_WEAK;
-LOGIT_WEAK_STUB(dhcp_run);
 LOGIT_WEAK_STUB(dhcp_poll);
-
-/* The settings store, weak for exactly the reason dhcp_run is: net.c is linked
- * into host tests that have no filesystem to read a settings file from. On the
- * machine these resolve; host-side they are NULL and the configuration is the
- * DHCP-then-static path this file always had. */
-int      settings_get_int(const char *key, int def) LOGIT_WEAK;
-unsigned settings_get_ip(const char *key, unsigned def) LOGIT_WEAK;
-LOGIT_WEAK_STUB(settings_get_int);
-LOGIT_WEAK_STUB(settings_get_ip);
-
-/* A user who has turned automatic configuration off. The addresses come from
- * the store and are already validated -- settings_get_ip() returns the schema
- * default for anything that is not a dotted quad, so `net.ip = 999.1.1.1` in a
- * hand-edited file configures 10.0.2.15 and does not configure garbage.
- *
- * Returns 1 if a static configuration was applied, 0 to fall through to DHCP. */
-static int net_cfg_from_settings(void)
-{
-    if (!LOGIT_HAVE(settings_get_int) || !LOGIT_HAVE(settings_get_ip)) return 0;
-    if (settings_get_int("net.dhcp", 1)) return 0;      /* automatic: DHCP below */
-
-    net_cfg.ip   = settings_get_ip("net.ip",   IPV4(10, 0, 2, 15));
-    net_cfg.mask = settings_get_ip("net.mask", IPV4(255, 255, 255, 0));
-    net_cfg.gw   = settings_get_ip("net.gw",   IPV4(10, 0, 2, 2));
-    net_cfg.dns  = settings_get_ip("net.dns",  IPV4(10, 0, 2, 3));
-    kprintf("[net] static from settings: ip %u.%u.%u.%u gw %u.%u.%u.%u dns %u.%u.%u.%u\n",
-            (net_cfg.ip >> 24) & 255, (net_cfg.ip >> 16) & 255,
-            (net_cfg.ip >> 8) & 255, net_cfg.ip & 255,
-            (net_cfg.gw >> 24) & 255, (net_cfg.gw >> 16) & 255,
-            (net_cfg.gw >> 8) & 255, net_cfg.gw & 255,
-            (net_cfg.dns >> 24) & 255, (net_cfg.dns >> 16) & 255,
-            (net_cfg.dns >> 8) & 255, net_cfg.dns & 255);
-    return 1;
-}
 
 /* Link-layer hooks, weak for the same reason: net.c is linked into host tests
  * that have no NIC and no ARP. */
@@ -113,6 +68,28 @@ LOGIT_WEAK_STUB(eth_dump);
  * ------------------------------------------------------------------------- */
 static _Atomic uint32_t rx_owed;      /* a raise is outstanding */
 static _Atomic uint32_t rx_n_softirq, rx_n_inline, rx_n_poll, rx_n_irq, rx_frames;
+
+/* IS THE NIC INTERRUPT ARRIVING AT ALL? The X79-VG4 showed `nic irqs 0` for the
+ * whole of the boot DHCP exchange, and INTx/MSI routing on that board is not
+ * verified. Receive does not depend on the answer -- it never has: the 10 ms
+ * SOFTIRQ_NET tick below drains the ring every time it fires whether or not an
+ * ISR raised it (net_rx_softirq -> net_rx_drain, unconditional), and net_poll()
+ * drains it again from the window manager loop -- but a machine whose
+ * interrupt is dead looks, in every log, exactly like one whose interrupt is
+ * fine. These counters make the difference visible. A frame is UNANNOUNCED when
+ * a drain finds it and no ISR had promised that drain (rx_owed clear); it only
+ * counts as proof of a dead interrupt when the route exists (a NIC that was
+ * never routed is polled by design) and no ISR has run for NET_IRQ_SILENT_NS. */
+#define NET_IRQ_SILENT_NS (100ull * NS_PER_MS)
+/* Unannounced frames needed before polling is declared the receive path. One
+ * frame can beat its own ISR on a healthy NIC (an IF=0 stretch on the core the
+ * interrupt is routed to, then the 10 ms tick drains first); four after 100 ms
+ * of silence cannot be coincidence, and any short conversation is that many. */
+#define NET_IRQ_SILENT_FRAMES 4
+static _Atomic uint64_t last_irq_ns;       /* time_mono_ns() of the latest net_rx_schedule */
+static _Atomic uint64_t irq_route_seen_ns; /* first drain that saw the route in place */
+static _Atomic uint32_t rx_unannounced;    /* frames found with no ISR behind them */
+static int              irq_poll_reported;
 static _Atomic uint32_t idle_halts, idle_skips;   /* net_idle: how often it slept vs looked again */
 /* 64, not 512: a fetch has to be reported while it is still small enough to
  * have IDLE GAPS in it, because "did an interrupt wake us" is only a question
@@ -145,15 +122,36 @@ static void net_loopback_drain(void)
     if(local_count)softirq_raise(SOFTIRQ_NET);
 }
 
+/* Count `frames` found by a drain that no ISR had asked for, but only when the
+ * NIC's interrupt is routed and has been silent for NET_IRQ_SILENT_NS: that is
+ * the signature of an interrupt that never arrives, as opposed to a frame that
+ * beat its own ISR by a few microseconds. Runs in softirq, interrupt and thread
+ * context, so it touches nothing but atomics (a lost race on the timestamp
+ * costs one frame of the count, never a wrong answer). */
+static void net_rx_note_unannounced(uint32_t frames)
+{
+    if (!netdev_irq_routed()) return;      /* polled by design: nothing to report */
+    uint64_t now = time_mono_ns();
+    if (!irq_route_seen_ns) irq_route_seen_ns = now;
+    uint64_t base = last_irq_ns > irq_route_seen_ns ? last_irq_ns : irq_route_seen_ns;
+    if (now - base <= NET_IRQ_SILENT_NS) return;
+    rx_unannounced += frames;
+}
+
 /* Counts drains that actually DELIVERED something. net_poll runs ~100x/s and
  * mostly finds an empty ring; counting those would drown the comparison this
  * exists to make ("which context is the receive path?") in idle polls. */
 static void net_rx_drain(_Atomic uint32_t *counter)
 {
     net_loopback_drain();
+    uint32_t announced = rx_owed;      /* did an ISR promise this drain? */
     rx_owed = 0;                       /* whoever drains discharges the debt */
     int n = netdev_rx_poll(eth_input);
-    if (n > 0) { (*counter)++; rx_frames += (uint32_t)n; }
+    if (n > 0) {
+        (*counter)++;
+        rx_frames += (uint32_t)n;
+        if (!announced) net_rx_note_unannounced((uint32_t)n);
+    }
 }
 
 /* Defined with the TCP timer block below. SOFTIRQ_NET now has two producers --
@@ -180,7 +178,16 @@ static void net_rx_softirq(void)
 void net_rx_schedule(void)
 {
     if (!up) return;
+#ifdef NET_NEGCTL_DROP_NIC_IRQ
+    /* NEGATIVE CONTROL (tests/hw-netdhcp.mk, NETDHCP_NOIRQ=1): the NIC's
+     * interrupt arrives, is acked by its driver, and schedules nothing -- the
+     * machine whose interrupt routing is wrong (the X79-VG4's, unverified).
+     * Receive must still work, from the 10 ms SOFTIRQ_NET tick and net_poll()
+     * alone, and the "no NIC IRQ observed" line must appear. */
+    return;
+#endif
     rx_n_irq++;
+    last_irq_ns = time_mono_ns();
     if (rx_owed) {                     /* the last raise never ran -- see above */
         net_rx_drain(&rx_n_inline);
         return;
@@ -205,6 +212,28 @@ static void rx_report(void)
             "idle %u/%u halt/skip\n",
             rx_frames, rx_n_irq, rx_n_softirq, rx_n_inline, rx_n_poll,
             idle_halts, idle_skips);
+}
+
+/* The ehci.c line for the NIC (`no IRQ observed; periodic input polling
+ * active`): once, from thread context where kprintf is safe, when frames have
+ * been arriving with the interrupt silent. Receive is working -- this says by
+ * which path. */
+static void irq_poll_report(void)
+{
+    if (irq_poll_reported || rx_unannounced < NET_IRQ_SILENT_FRAMES) return;
+    irq_poll_reported = 1;
+    kprintf("[net] no NIC IRQ observed; periodic polling active (%u frames served "
+            "by the 10 ms SOFTIRQ_NET tick / net_poll, irqs %u) "
+            "(not verified on X79-VG4 hardware)\n", rx_unannounced, rx_n_irq);
+}
+
+uint32_t net_rx_irq_count(void) { return rx_n_irq; }
+
+/* 1 when receive is being served by polling: the NIC has no interrupt route at
+ * all, or it has one and frames keep arriving without it firing. */
+int net_rx_poll_active(void)
+{
+    return !netdev_irq_routed() || rx_unannounced >= NET_IRQ_SILENT_FRAMES;
 }
 
 /* ---------------------------------------------------------------------------
@@ -425,10 +454,10 @@ int net_init(void)
     softirq_register(SOFTIRQ_NET, net_rx_softirq);
     netdev_irq_enable(eth_input);   /* IRQ-driven RX; net_poll still backstops */
     /* Unconfigured while negotiating: DHCPDISCOVER leaves from 0.0.0.0, and
-     * only broadcast UDP can come back in until we own an address. */
-    if (!net_cfg_from_settings())
-        if (!LOGIT_HAVE(dhcp_run) || dhcp_run(300) != 0)    /* ~3 s */
-            net_cfg_fallback();
+     * only broadcast UDP can come back in until we own an address. What the
+     * machine is when no lease comes -- and that DHCP then keeps trying in the
+     * background -- is netcfg.c's policy. */
+    net_cfg_acquire();
 
     /* RFC 5227 s3: announce the address we just took. Until now the machine
      * never announced at all -- nothing on the segment learned our binding
@@ -589,6 +618,7 @@ void net_poll(void)
          * pending from a nested entry (see net_rx_schedule). */
         net_rx_drain(&rx_n_poll);
         rx_report();
+        irq_poll_report();
         netlock_report();       /* its own cadence -- see the block above */
         /* NOT a poll any more: discharge an owed timer pass, if the 10 ms
          * ktimer's raise has not been able to run (a nested entry -- see the

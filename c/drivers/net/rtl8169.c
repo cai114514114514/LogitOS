@@ -130,6 +130,7 @@ static struct device *nic_owner;
 static struct netdev rtl_dev;
 static int link_known, link_up, link_published;
 static uint64_t link_changes;
+static uint8_t link_phystatus;   /* PHYstatus at the last link update */
 
 static inline uint8_t  m8 (uint32_t o)             { return *(volatile uint8_t  *)(mmio + o); }
 static inline void     w8 (uint32_t o, uint8_t v)  { *(volatile uint8_t  *)(mmio + o) = v; }
@@ -169,7 +170,8 @@ static int rtl_reset(void)
 
 static void rtl_link_update(void)
 {
-    int up = !!(m8(R_PHYSTATUS) & PHYSTATUS_LINK);
+    link_phystatus = m8(R_PHYSTATUS);
+    int up = !!(link_phystatus & PHYSTATUS_LINK);
     if (!link_known || up != link_up) {
         if (link_known) link_changes++;
         link_known = 1;
@@ -182,6 +184,28 @@ static void rtl_link_update(void)
      * physical state did not change, otherwise an initially unplugged card
      * keeps the network layer's optimistic RUNNING flag forever. */
     if (!link_published && netdev_set_link(&rtl_dev, up) == 0) link_published = 1;
+}
+
+/* Speed and duplex of the established link, from the PHYstatus byte the last
+ * link update read, for the HUD's network line. Reads the cached byte rather
+ * than the register: the HUD runs on the window manager thread and must not
+ * touch the device. The bits mean nothing while the link is down (the X79-VG4
+ * reported "10Mb/s half" with the cable negotiating), so a down link is
+ * "unknown". Decode unverified on hardware, as the rest of this register. */
+static int rtl_link_info(unsigned *mbps, int *full_duplex)
+{
+    if (!link_known || !link_up)
+        return 0;
+    if (link_phystatus & PHYSTATUS_1000M)
+        *mbps = 1000;
+    else if (link_phystatus & PHYSTATUS_100M)
+        *mbps = 100;
+    else if (link_phystatus & PHYSTATUS_10M)
+        *mbps = 10;
+    else
+        return 0;
+    *full_duplex = !!(link_phystatus & PHYSTATUS_FDX);
+    return 1;
 }
 
 static int rtl_rx_poll(net_rx_cb cb)
@@ -288,6 +312,7 @@ static struct netdev rtl_dev = {
     .tx = rtl_tx, .rx_poll = rtl_rx_poll,
     .irq_enable = rtl_irq_on, .irq = rtl_isr,
     .msi_ok = 1,                     /* MSI path covered by tests/hw/rtl */
+    .link_info = rtl_link_info,
 };
 
 /* First memory BAR. pci_dev->bar0 is no use here: on this family BAR0 is the
