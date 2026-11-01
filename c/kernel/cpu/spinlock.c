@@ -1,4 +1,5 @@
 #include "spinlock.h"
+#include "../sched/observe/flight_recorder.h"
 #ifdef LOGIT_LOCK_HOST
 /* Architecture seam only: host tests execute the production ticket protocol. */
 extern int logit_lock_host_cpu(void);
@@ -168,6 +169,13 @@ uint64_t spin_lock_irqsave(spinlock_t *l)
 #else
     __asm__ volatile ("pushfq\n\tpop %0\n\tcli" : "=r"(flags) :: "memory");
 #endif
+    /* Start timing this interrupts-off interval for the scheduler observer.
+     * The interval includes any wait for the ticket lock, since interrupts
+     * are already off while waiting.  The timer takes no lock and records
+     * nothing, so it cannot recurse.  Only intervals opened through this
+     * function are seen; a bare cli or assembly code is not, so the observer
+     * always reports its coverage as partial. */
+    flight_irq_disabled_begin(flags, (uintptr_t)__builtin_return_address(0));
     spin_lock(l);
     return flags;
 }
@@ -175,6 +183,7 @@ uint64_t spin_lock_irqsave(spinlock_t *l)
 void spin_unlock_irqrestore(spinlock_t *l, uint64_t flags)
 {
     spin_unlock(l);
+    flight_irq_disabled_end(flags);
 #ifndef LOGIT_LOCK_HOST
     if (flags & 0x200)              /* restore IF only if the caller had it set */
         __asm__ volatile ("sti");

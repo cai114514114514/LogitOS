@@ -1,5 +1,7 @@
 #include <stdint.h>
 #include "interrupts.h"
+#include "../../sched/observe/flight_recorder.h"
+#include "../../sched/observe/observe_control.h"
 #include "kprintf.h"
 #include "vga.h"
 #include "serial.h"
@@ -92,8 +94,19 @@ static int fault_signal(uint64_t vector)
 
 void interrupt_handler(struct registers *r, void *fxarea)
 {
-    if (r->vector == 255)          /* LAPIC spurious: no BKL, no EOI, just return */
+    /* The scheduler observer's timestamp for this interrupt: the earliest point
+     * in C, after isr_common has saved the registers and FP state
+     * (c/boot/isr.asm:95..151).  It is therefore a little later than the CPU's
+     * hardware interrupt instant; the test gate disassembles this call path and
+     * exports the instruction offsets so that gap is known.  NMI and machine
+     * check are counted but never recorded, since they can interrupt a
+     * recorder write halfway. */
+    uint64_t arrival_tsc = observe_read_tsc();
+    flight_interrupt_enter((uint32_t)r->vector, arrival_tsc);
+    if (r->vector == 255) {        /* LAPIC spurious: no BKL, no EOI, just return */
+        flight_interrupt_leave();
         return;
+    }
 
     /* The syscall NUMBER, kept because r->rax holds the RESULT by the time the
      * exit path runs and SA_RESTART needs the number to put back. 0 on every
@@ -402,6 +415,13 @@ done:
      * irqrestore won't re-enable it here; the final iretq restores the caller's IF. */
     __asm__ volatile ("cli");
     this_cpu()->in_kernel = depth;
+    if (r->vector != FLIGHT_VECTOR_NMI && r->vector != FLIGHT_VECTOR_MACHINE_CHECK) {
+        flight_interrupt_leave();
+        /* Let a stopping run advance.  Not done for NMI or machine check: they
+         * can arrive while the observer's control lock is held on this CPU, so
+         * they must stay out of its lock domain; they are only counted. */
+        observe_advance_shutdown();
+    }
 
     if (__builtin_expect(kb_t0 != 0, 0)) {
         int cls = (r->vector == 128) ? KB_C_SYSCALL

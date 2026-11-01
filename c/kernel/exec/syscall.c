@@ -33,6 +33,7 @@
 #include "kprintf.h"
 #include "pit.h"
 #include "ktime.h"
+#include "../sched/observe/observe_control.h"
 /* Path-qualified, and it has to be: mini-libc ships c/apps/libc/include/sys/
  * wait.h, that directory is in INCDIRS, and it sorts BEFORE c/kernel/core -- so
  * a bare #include "wait.h" from OUTSIDE c/kernel/core silently resolves to the
@@ -1608,6 +1609,16 @@ static void syscall_do(struct registers *r, const void *user_fxarea)
         r->rax = (uint64_t)kernel_reboot();
         return;
     }
+
+    /* Scheduler observation facility (c/kernel/sched/observe/): start, stop,
+     * report and page out a measurement run.  Its records are exported in
+     * pages through the observer's own private copies, not through kdiag's
+     * single bounded render snapshot, which could not hold a long input
+     * ledger.  Only 224 is handled here; 225 (the GUI receipt) is not wired
+     * yet and still falls through to the window manager's default below. */
+    case SYS_SCHED_OBSERVE:
+        r->rax = (uint64_t)observe_syscall((long)r->rdi, (long)r->rsi, (long)r->rdx);
+        return;
 
     /* Loadable kernel modules (c/kernel/module/). The uid check is NOT here
      * with the two above it: mod_syscall does it per operation, because

@@ -100,6 +100,10 @@ void klog_putc(int level, char c);
  * go to VGA+serial; the rest are ring-only. Same conversions as kprintf. */
 void klog(int level, const char *fmt, ...);
 void klogv(int level, const char *fmt, va_list ap);
+/* Ring-only logging: never reaches the console or the serial port, even when
+ * the console threshold is KL_DEBUG.  For measurement summaries, which must not
+ * disturb the interrupts-off and UART evidence they report. */
+void klog_ring(int level, const char *fmt, ...);
 
 #define kerr(...)   klog(KL_ERR,   __VA_ARGS__)
 #define kwarn(...)  klog(KL_WARN,  __VA_ARGS__)

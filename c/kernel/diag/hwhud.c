@@ -191,6 +191,7 @@ static void console_format(char *out, size_t capacity, uint64_t queued_per_s,
 #include "lapic.h"
 #include "hardware.h"
 #include "hid_diag.h"
+#include "../sched/observe/observe_hud.h"
 #include "ehci_diag.h"
 #include "usb_hc.h"
 #include "nct6779.h"
@@ -735,6 +736,14 @@ void hwhud_tick(const struct hwhud_wm *wm)
     par_format(par_line, sizeof par_line, &par);
     add_wrapped(par_line);
     lines_console(dms);
+#if !__STDC_HOSTED__ || defined(SCHED_OBSERVE_HOST)
+    /* The scheduler observation summary.  It is formatted from a copy of the
+     * counters before anything is drawn, so no observer lock is held while the
+     * HUD draws. */
+    char scheduler_line[COLS + 1];
+    observe_hud_format_summary(scheduler_line, sizeof scheduler_line);
+    addline(scheduler_line);
+#endif
     lines_irq(dms);
     lines_net();
     lines_mtrr();

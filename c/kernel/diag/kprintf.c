@@ -3,6 +3,7 @@
 #include <stdarg.h>
 #include "kprintf.h"
 #include "klog.h"
+#include "../sched/observe/flight_recorder.h"
 #include "vga.h"
 #include "serial.h"
 #include "../../drivers/core/io_lock.h"
@@ -97,6 +98,11 @@ LOGIT_WEAK_STUB(bootcon_putc);
 static void out_console(struct out *o, char c)
 {
     if (o->console) {
+        /* Tell the scheduler observer a byte really reached the console.  It is
+         * counted here, at the output itself, not when a message is formatted
+         * (a message may be formatted and dropped).  The counter is a plain
+         * atomic, so calling it from inside the print lock cannot recurse. */
+        flight_count_console_byte();
         vga_putc(c);
         serial_putc(c);
         if (LOGIT_HAVE(bootcon_putc)) bootcon_putc(c);

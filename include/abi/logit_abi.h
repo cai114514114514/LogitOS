@@ -3045,6 +3045,14 @@ struct logit_itimer {
  * window yet flips the theme with no point (the reveal's (-1, -1)). */
 #define SYS_UI_DARK_AT         223
 
+/* Scheduler observation (c/kernel/sched/observe/, ABI in logit_sched_observe.h):
+ * one diagnostic call to start, stop, report and page out a measurement run.
+ * 225 is reserved for the GUI input receipt; until the window manager's receipt
+ * code exists it still falls through to the window manager's default handling.
+ * Both numbers are defined here and nowhere else. */
+#define SYS_SCHED_OBSERVE      224
+#define SYS_GUI_RECEIPT        225
+
 #define LOGIT_GUI2_VERSION 1
 #define LOGIT_GUI2_F_PATH      (1u << 0)  /* SYS_GUI_PATH: solid/linear/radial, <= 8 stops */
 #define LOGIT_GUI2_F_PATH_EXT  (1u << 1)  /* ...plus conic, spread modes, 16 stops, op != 0 */

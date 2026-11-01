@@ -6218,3 +6218,4 @@ include tools/build/product.mk
 -include tests/fluid_perf.mk
 -include tests/shebang.mk
 -include tests/fluid_desktop.mk
+-include tests/sched-stages.mk

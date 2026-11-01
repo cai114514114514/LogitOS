@@ -209,6 +209,31 @@ void klog(int level, const char *fmt, ...)
 
 /* --- consumers ------------------------------------------------------------ */
 
+/* Whether a ring-only message also goes to the console.  Never, in the product.
+ * Flipped by SCHED_NEGCTL_DEBUG_CONSOLE, which lets the console threshold
+ * decide as klog() does (host and guest test: measurement_console_bytes_zero). */
+static int ring_only_console_flag(int level)
+{
+#ifdef SCHED_NEGCTL_DEBUG_CONSOLE
+    return level <= klog_console_level();
+#else
+    (void)level;
+    return 0;
+#endif
+}
+
+/* Log into the ring only.  Unlike klog(KL_DEBUG, ...), this can never reach the
+ * console, even if an operator raises the console threshold to DEBUG, because
+ * any console or serial output during a scheduler measurement disturbs it.
+ * Measurement summaries are logged through this. */
+void klog_ring(int level, const char *fmt, ...)
+{
+    va_list arguments;
+    va_start(arguments, fmt);
+    kvlog_out(level, ring_only_console_flag(level), "", fmt, arguments);
+    va_end(arguments);
+}
+
 uint64_t klog_next_seq(void) { return __atomic_load_n(&g_seq, __ATOMIC_ACQUIRE); }
 
 uint64_t klog_first_seq(void)

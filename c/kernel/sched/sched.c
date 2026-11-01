@@ -1,6 +1,10 @@
 #include <stdint.h>
 #include <stddef.h>
 #include "sched.h"
+#include "observe/flight_recorder.h"
+#include "observe/input_ledger.h"
+#include "observe/coalesced_inputs.h"
+#include "observe/observe_control.h"
 #include "../cpu/power/cpuidle.h"
 #include "kheap.h"
 #include "gdt.h"
@@ -48,6 +52,10 @@ struct thread {
 
     /* --- M27 blocking core (see sched.h for the lost-wakeup argument) --- */
     int state;               /* THREAD_READY / THREAD_BLOCKED */
+    /* Observation only: when this thread last became runnable, kept until it
+     * really starts running so the recorder can report how long it waited for
+     * a CPU.  It is never read by the weight, virtual-time or pick logic. */
+    uint64_t runnable_since_ns;
     int on_ring;             /* 1 while spliced into g_ring's circular list */
     unsigned long slices;    /* times this thread was DISPATCHED. The number that
                               * makes "it sleeps now" a measurement rather than a
@@ -344,6 +352,7 @@ static void block_fields_init(struct thread *t, int on_ring)
 {
     t->wake_pending=0;
     t->state     = THREAD_READY;
+    t->runnable_since_ns = 0;
     t->on_ring   = on_ring;
     t->slices    = 0;
     t->tw_next   = NULL;
@@ -371,6 +380,43 @@ static void block_fields_init(struct thread *t, int on_ring)
     t->weight = SCHED_W_REF;
     t->vmul   = 1u << SCHED_VSHIFT;
     t->vtime  = 0;
+}
+
+/* --- hooks for the scheduler observer (c/kernel/sched/observe/) -------------
+ * These feed a measurement recorder only.  They read the clock and write
+ * records; they never touch weight, virtual time, the ring or any decision. */
+
+/* Record one wake: who ran the wake (the current thread), who was woken, why,
+ * whether it really made a blocked thread runnable (woke = 1) or did nothing
+ * (0), so the two cases are counted apart, and, for a timeout, the time at which
+ * the timer fired. */
+static void record_wake(int woken_thread_id, uint32_t reason, int woke, uint64_t timeout_fired_ns)
+{
+    flight_record_event(FLIGHT_EVENT_WAKE, sched_thread_id(this_cpu()->current),
+                        woken_thread_id, reason, woke, timeout_fired_ns);
+}
+
+/* Record a sleep or wait that ended because its deadline passed, as a wake and
+ * as a timer event.  Flipped by SCHED_NEGCTL_TRACE_SKIP_TIMEOUT, which records
+ * nothing (test: trace_all_paths in tests/sched/observe/assertions.py). */
+static void record_timeout_wake(struct thread *t, uint64_t timer_fired_ns)
+{
+#ifndef SCHED_NEGCTL_TRACE_SKIP_TIMEOUT
+    record_wake(t->id, SCHED_WAKE_TIMEOUT, 1, timer_fired_ns);
+    flight_record_event(FLIGHT_EVENT_TIMER, t->id, 0, SCHED_WAKE_TIMEOUT, t->deadline,
+                        timer_fired_ns);
+#else
+    (void)t;
+    (void)timer_fired_ns;
+#endif
+}
+
+/* A new thread was just spliced onto the ring and is runnable.  Remember when,
+ * so the recorder can report how long it waited for its first CPU. */
+static void observe_new_thread_runnable(struct thread *t)
+{
+    t->runnable_since_ns = observe_monotonic_ns();
+    record_wake(t->id, SCHED_WAKE_NEW, 1, 0);
 }
 
 /* nice -> (weight, vmul). The ONE place the table is read, so a caller cannot
@@ -581,6 +627,10 @@ void sched_init(void)
      * benchmark thread, which sleeps until the desktop is live before it
      * measures anything. */
     kbench_start();
+    /* Make the observation facility ready.  An ordinary image starts no run
+     * and no benchmark here; later stages register their providers before the
+     * first BEGIN. */
+    observe_control_init();
 }
 
 extern void kthread_bootstrap(void);   /* sched.c: releases g_sched_lock, calls entry, exits */
@@ -653,6 +703,7 @@ int thread_create_stack(void (*entry)(void), const char *name, unsigned long byt
     t->next->prev = t;
     g_ring->next = t;
     all_link(t);
+    observe_new_thread_runnable(t);
     spin_unlock_irqrestore(&g_sched_lock, f);
     return 0;
 }
@@ -713,6 +764,7 @@ static int create_user_prepared(const char *name, uint64_t entry, uint64_t ustac
     t->next->prev = t;
     g_ring->next = t;
     all_link(t);
+    observe_new_thread_runnable(t);
     spin_unlock_irqrestore(&g_sched_lock, f);
     return tid;
 }
@@ -805,6 +857,7 @@ int thread_fork(const char *name, struct registers *pr, const void *user_fxarea,
     t->next->prev = t;
     g_ring->next = t;
     all_link(t);
+    observe_new_thread_runnable(t);
     spin_unlock_irqrestore(&g_sched_lock, f);
     return tid;
 }
@@ -849,6 +902,21 @@ static struct thread *pick_min_locked(struct thread *self)
     return best;
 }
 
+/* Called on the incoming thread's own stack, right after a context switch (or
+ * at a new thread's first instructions): tell the recorder that this thread now
+ * really runs.  The evidence has to be written here, not at the pick or when
+ * current is assigned, because only now is it true.  All three switch paths and
+ * both first-run trampolines call this.  It is separate from cpu_stamp_ns,
+ * which belongs to the existing CPU-time accounting. */
+static void record_incoming_thread_running(void)
+{
+    struct thread *incoming = this_cpu()->current;
+    if (incoming) {
+        flight_record_run_start(incoming->id, incoming->runnable_since_ns);
+        incoming->runnable_since_ns = 0;
+    }
+}
+
 /* Advance the ring's virtual now to the thread just chosen. Applied to the
  * FINAL choice rather than inside pick_min_locked(), because schedule() may
  * override that choice with `prev` -- whose vtime is smaller -- and a floor set
@@ -868,6 +936,9 @@ static inline void vnow_advance(struct thread *t)
  * own frame. */
 __attribute__((noinline)) void schedule(void)
 {
+    /* Entering the scheduler is a point every CPU reaches regularly, so a
+     * stopping measurement run advances (and this CPU seals its ring) here. */
+    observe_advance_shutdown();
     uint64_t flags = spin_lock_irqsave(&g_sched_lock);
 
     while (dead_threads) {
@@ -971,7 +1042,16 @@ __attribute__((noinline)) void schedule(void)
         /* IF stays off while the incoming stack restores its local depth. */
         int saved_depth = me->in_kernel;
         me->in_kernel = 1;
+        /* Observation only, after the unchanged picker and ownership writes:
+         * a preempted thread is runnable again from this instant, and the
+         * recorder closes this CPU's interrupts-off timing before the stack
+         * changes (the lock is handed to the incoming stack). */
+        if (!prev->is_idle && prev->alive && prev->state == THREAD_READY) {
+            prev->runnable_since_ns = observe_monotonic_ns();
+        }
+        flight_record_switch(prev->id, next->id, SCHED_SWITCH_SCHEDULE);
         context_switch(&prev->rsp, next->rsp);
+        record_incoming_thread_running();
         /* === RESUME AS THE INCOMING THREAD (existing) === g_sched_lock held, BKL not. */
         me = this_cpu();
         spin_unlock(&g_sched_lock);              /* release inner; IF still off */
@@ -1071,6 +1151,7 @@ void thread_exit(void)
      * the incoming thread re-acquires it (schedule tail / kthread_bootstrap) or
      * runs ring3 without it (ring3_bootstrap/fork_ret). Same model as schedule(). */
     me->in_kernel = 1;
+    flight_record_switch(dead->id, next->id, SCHED_SWITCH_EXIT);
     context_switch(&me->exit_discard, next->rsp);   /* per-cpu discard, NOT static */
     /* unreachable: the dead thread never resumes. */
 }
@@ -1203,7 +1284,9 @@ static void block_self(spinlock_t *outer, uint64_t flags, uint64_t deadline, int
      * thread re-acquires after. IF stays 0 across the whole window. */
     int saved_depth = me->in_kernel;
     me->in_kernel = 1;
+    flight_record_switch(self->id, next->id, SCHED_SWITCH_BLOCK);
     context_switch(&self->rsp, next->rsp);
+    record_incoming_thread_running();
     /* === RESUMED (someone called sched_wake / the deadline fired) ===
      * g_sched_lock is held, the BKL is not. */
     me = this_cpu();
@@ -1231,6 +1314,7 @@ static int wake_locked(struct thread *t)
 {
     if (!t || !t->alive || t->state != THREAD_BLOCKED) return 0;
     t->state = THREAD_READY;
+    t->runnable_since_ns = observe_monotonic_ns();
     timerlist_remove(t);
     ring_link(t);
     if (g_blocked) g_blocked--;
@@ -1243,9 +1327,13 @@ static int wake_locked(struct thread *t)
 int sched_wake(struct thread *t)
 {
     int did;
-    if (!t) return 0;
+    if (!t) {
+        record_wake(0, SCHED_WAKE_OBJECT, 0, 0);
+        return 0;
+    }
     uint64_t f = spin_lock_irqsave(&g_sched_lock);
     did = wake_locked(t);
+    record_wake(t->id, SCHED_WAKE_OBJECT, did, 0);
     spin_unlock_irqrestore(&g_sched_lock, f);
     return did;
 }
@@ -1277,6 +1365,7 @@ int sched_wake_id(int id)
     uint64_t f = spin_lock_irqsave(&g_sched_lock);
     struct thread *t=by_id_locked(id);
     int did = wake_locked(t);
+    record_wake(id, SCHED_WAKE_ASYNC_ID, did, 0);
     wake_pending_note_locked(t,did);
     spin_unlock_irqrestore(&g_sched_lock, f);
     return did;
@@ -1618,6 +1707,14 @@ int sched_cpu_tick_check(void)
  * of the BKL acquire. */
 void sched_timer_expire(void)
 {
+    /* Observation only.  The existing periodic tick also drives the observer's
+     * housekeeping, so no new timer or scheduling decision is introduced: it
+     * expires inputs that missed their deadline (including inputs for which no
+     * scheduler token exists), destroys queued coalesced groups in a bounded
+     * batch, and lets a stopping measurement run advance. */
+    input_ledger_expire_overdue(time_mono_ns());
+    coalesced_groups_release_queued();
+    observe_advance_shutdown();
     uint64_t now;
     /* Lock-free early-out: this runs on every tick and the list is empty almost
      * always. A stale read costs at most one tick of latency. */
@@ -1633,6 +1730,8 @@ void sched_timer_expire(void)
             t->on_timer  = 0;
             t->timed_out = 1;
             t->state     = THREAD_READY;
+            t->runnable_since_ns = observe_monotonic_ns();
+            record_timeout_wake(t, now);
             ring_link(t);
             if (g_blocked) g_blocked--;
             continue;
@@ -1652,6 +1751,7 @@ void sched_timer_expire(void)
  * fork_ret (enter_user.asm). */
 void sched_unlock_new_thread(void)
 {
+    record_incoming_thread_running();
     /* DIAG: one line per ring-3/forked thread at its first dispatch -- proves a
      * forked child (e.g. the terminal's /bin/sh) actually got a time slice.
      *
@@ -1675,6 +1775,7 @@ void sched_unlock_new_thread(void)
  * returns; if it does, thread_exit() reaps the thread. */
 __attribute__((noreturn)) void kthread_bootstrap(void)
 {
+    record_incoming_thread_running();
     struct cpu *me = this_cpu();
     spin_unlock(&g_sched_lock);
     me->in_kernel = 1;

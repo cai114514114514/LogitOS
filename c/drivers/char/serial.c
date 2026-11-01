@@ -1,4 +1,5 @@
 #include <stdint.h>
+#include "../../kernel/sched/observe/flight_recorder.h"
 #include "serial.h"
 #include "io.h"
 #include "io_lock.h"
@@ -215,6 +216,11 @@ static void tx_write_burst(void)
     tx_wedged = 0;
     while (written < tx_burst && tx_pending()) {
         outb(UART_THR, (uint8_t)tx_ring[tx_tail & SERIAL_TX_RING_MASK]);
+        /* Tell the scheduler observer that a byte really left for the UART.
+         * Counting here, at the transmit register, also covers code that
+         * bypasses kprintf and bytes queued before a measurement started
+         * and drained during it; counting at enqueue would miss both. */
+        flight_count_uart_byte();
         __atomic_store_n(&tx_tail, tx_tail + 1, __ATOMIC_RELEASE);
         written++;
     }

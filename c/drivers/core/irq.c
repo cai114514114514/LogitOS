@@ -25,6 +25,8 @@
 #include <stdint.h>
 #include <stddef.h>
 #include "irq.h"
+#include "../../kernel/sched/observe/flight_recorder.h"
+#include "../../kernel/sched/observe/observe_control.h"
 #include "interrupts.h"
 #include "spinlock.h"
 #include "io_lock.h"
@@ -276,6 +278,11 @@ const char *irq_vector_name(int vec)
 /* ------------------------------------------------------------- dispatch -- */
 void irq_isr_entry(struct registers *r)
 {
+    /* Dynamically assigned device vectors do not go through interrupt_handler(),
+     * so the scheduler observer timestamps them here: after this entry's
+     * register-saving assembly prologue, and before the registry lock is
+     * taken, so lock waiting is not counted as interrupt latency. */
+    flight_interrupt_enter((uint32_t)r->vector, observe_read_tsc());
     struct cpu *me = this_cpu();
     /* Entry depth is CPU-local context tracking, never mutual exclusion. */
     int depth = me->in_kernel;
@@ -307,6 +314,10 @@ void irq_isr_entry(struct registers *r)
 
     __asm__ volatile ("cli");
     this_cpu()->in_kernel = depth;
+    /* The handler is finished: let the observer close this interrupt's record,
+     * then let a stopping run advance (a CPU seals its ring at such points). */
+    flight_interrupt_leave();
+    observe_advance_shutdown();
     /* Keep the vector pinned through EOI: a level INTx owner's final removal
      * must not recycle it while this CPU still completes the old interrupt. */
     if (borrowed) {
