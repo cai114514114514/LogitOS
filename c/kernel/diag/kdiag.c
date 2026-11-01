@@ -32,7 +32,8 @@ void idt_install_gate(int vec, void *handler);   /* c/kernel/cpu/irq/idt.c */
 
 /* --- synthetic file plumbing --------------------------------------------- */
 
-static char g_snap[96 * 1024];      /* .bss: rendering never allocates */
+static char g_snap[512 * 1024];     /* .bss: rendering never allocates; holds the
+                                     * pinned boot log plus the ring (klog.h) */
 static int  g_snap_len;
 static char g_snap_for[32];
 

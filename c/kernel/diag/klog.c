@@ -49,6 +49,8 @@ static inline void irq_restore(uint64_t f)
 /* --- the ring ------------------------------------------------------------- */
 
 static struct klog_rec g_ring[KLOG_SLOTS];
+/* Pinned copy of the first KLOG_BOOT_SLOTS records (see klog.h). */
+static struct klog_rec g_boot[KLOG_BOOT_SLOTS];
 static spinlock_t      g_klog_lock = SPINLOCK_INIT;
 static volatile uint64_t g_seq = 1;          /* seq the next record will take */
 static volatile uint64_t g_truncated_lines;
@@ -109,6 +111,17 @@ static void klog_commit(struct klog_line *L, int cpu)
         r->text[i] = L->t[i];
     __asm__ volatile ("" ::: "memory");
     r->seq = s;
+    if (s <= KLOG_BOOT_SLOTS) {
+        /* Same record, kept for good: copied under the same lock and with the
+         * same seq-last ordering, so a reader never sees half of it. */
+        struct klog_rec *pinned = &g_boot[(unsigned)(s - 1)];
+        pinned->seq = 0;
+        __asm__ volatile ("" ::: "memory");
+        *pinned = *r;
+        pinned->seq = 0;
+        __asm__ volatile ("" ::: "memory");
+        pinned->seq = s;
+    }
 
     if (L->level < KL_NLEVELS)
         g_by_level[L->level]++;
@@ -242,6 +255,28 @@ uint64_t klog_first_seq(void)
     return (n > KLOG_SLOTS) ? (n - KLOG_SLOTS) : 1;
 }
 
+uint64_t klog_boot_end(void)
+{
+    uint64_t next = klog_next_seq();
+    return next <= KLOG_BOOT_SLOTS + 1 ? next : KLOG_BOOT_SLOTS + 1;
+}
+
+/* Read one pinned boot record. Unlike klog_get, this succeeds for the whole
+ * boot range however long ago the ring overwrote it. */
+int klog_get_boot(uint64_t seq, struct klog_rec *out)
+{
+    if (seq == 0 || seq >= klog_boot_end())
+        return 0;
+    uint64_t fl = g_lockless ? 0 : spin_lock_irqsave(&g_klog_lock);
+    struct klog_rec *pinned = &g_boot[(unsigned)(seq - 1)];
+    int ok = (pinned->seq == seq);
+    if (ok)
+        *out = *pinned;
+    if (!g_lockless)
+        spin_unlock_irqrestore(&g_klog_lock, fl);
+    return ok;
+}
+
 int klog_get(uint64_t seq, struct klog_rec *out)
 {
     if (seq == 0 || seq >= klog_next_seq())
@@ -296,7 +331,24 @@ int klog_render(char *buf, int max)
 {
     struct klog_rec rec;
     int n = 0;
-    for (uint64_t s = klog_first_seq(); s < klog_next_seq(); s++) {
+    uint64_t ring_first = klog_first_seq();
+    uint64_t boot_end = klog_boot_end();
+    /* Boot records the ring has already overwritten come first, from the
+     * pinned copy; then a marker saying how much was lost in between; then the
+     * ring as before. While nothing has aged out the output is unchanged. */
+    if (ring_first > 1) {
+        uint64_t pinned_end = boot_end < ring_first ? boot_end : ring_first;
+        for (uint64_t s = 1; s < pinned_end; s++) {
+            if (max - n < 8)
+                break;
+            if (klog_get_boot(s, &rec))
+                n += klog_format_rec(&rec, buf + n, max - n);
+        }
+        if (ring_first > boot_end && max - n > 80)
+            n += ksnprintf(buf + n, max - n, "--- %lu record(s) aged out between the boot log and the ring ---\n",
+                           (unsigned long)(ring_first - boot_end));
+    }
+    for (uint64_t s = ring_first; s < klog_next_seq(); s++) {
         if (max - n < 8)
             break;
         if (!klog_get(s, &rec))
