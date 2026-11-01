@@ -104,3 +104,24 @@
 1. 显示器接口：已决定 HDMI 与 DP 都做，开机时自动判断（用户 2026-11-01）。
 2. B 是否接管 GMC。
 3. C3 的着色器二进制：手工编码，还是构建期用 `llvm-mc -mcpu=gfx803` 汇编（后者会用掉剩下的第三方名额，默认手工编码）。
+
+## 补记（2026-11-01，用户决定）：GMC 系统窗口与 L1 访问模式的一次性例外
+
+真机 X79-VG4 上 RX 580（1002:6fdf rev ef，8 GiB）第一次跑 B3：gate、lease、map 通过，bind 被 `native.c check_mapping` 拒绝。
+GOP 留下的状态是 `MC_VM_MX_L1_TLB_CNTL = 0x503`（SYSTEM_ACCESS_MODE 0 即 PA_ONLY、无高级驱动模型）、系统窗口 LOW/HIGH 为 0；
+而 Linux v6.12 从不在这种状态下运行 SDMA 或 SMU 的固件 DMA：`gmc_v8_0.c` 的 `mc_program` 先把系统窗口设成恰好覆盖显存，
+`gart_enable` 再选 SYSTEM_ACCESS_MODE 3（NOT_IN_SYS）+ 高级驱动模型，整个过程不黑屏（`mc_stop` 只在软复位前用）。
+
+用户批准对「不接管 GMC」破一次例，范围仅限：
+
+1. 只读前置检查（任何一项不满足就拒绝、什么都不写）：L1 访问字段是 GOP 状态（或已是 Linux 状态则不动）；VM_CONTEXT0/1 未启用；
+   AGP 关闭或与显存不相交；VMID0 无锁存的保护故障；MC 不在 blackout。等待 MC 空闲有界（100 ms），超时只记录，与 Linux 相同。
+2. 写入顺序与 Linux 一致：`MC_VM_SYSTEM_APERTURE_LOW_ADDR` ← 显存起点 >> 12，`HIGH_ADDR` ← 显存终点（含）>> 12，
+   `DEFAULT_ADDR` ← VBIOS 驱动暂存页 >> 12（每次写后回读核对）；然后 `MC_VM_MX_L1_TLB_CNTL` ← `(l1 & ~0x78) | 0x58`；
+   最后 `VM_INVALIDATE_REQUEST` ← 1（VMID0）。窗口必须先于访问模式设好，显存地址任何时刻都不会走 VMID0 页表。
+3. 恢复：自检任一后续阶段失败立即恢复；成功的话在重启/S5 前的 quiesce 恢复（SDMA 环确认空闲时；仍忙则保留 Linux 值，复位会清掉）。
+   顺序相反：先 L1 回到快照值、使 TLB 失效，再 HIGH、LOW、DEFAULT。
+4. 不碰 `MC_VM_FB_LOCATION`、HDP、MC 微码、页表与其余 GMC 寄存器。
+
+实现：`c/drivers/gpu/amd/polaris/memory/gmc_aperture.{c,h}`，接在 B3 自检的 bind 之前；主机测试 `tests/hw/b3/gmc_aperture_test.c`
+（含三个反面对照：跳过前置检查、先写访问模式、先恢复窗口）。未在 X79-VG4 真机上验证。

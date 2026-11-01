@@ -422,6 +422,25 @@ static int selftest_read_diagnostic_register(void *context, uint32_t byte_offset
     return 0;
 }
 
+/* The write half of selftest_read_diagnostic_register, for the approved
+ * memory-controller aperture program only (memory/gmc_aperture.h). The
+ * self-test checks the lease before every call; the BAR bounds are checked
+ * here before the store. */
+static int selftest_write_register(void *context, uint32_t byte_offset, uint32_t value)
+{
+    struct device *device = context;
+    const struct dev_resource *registers = &device->res[POLARIS_REGISTER_BAR];
+    if ((byte_offset & 3u) || registers->size < 4u || byte_offset > registers->size - 4u) {
+        return SELFTEST_ENVIRONMENT_FAILED;
+    }
+    uint64_t base = dev_bar_map(device, POLARIS_REGISTER_BAR);
+    if (!base) {
+        return SELFTEST_ENVIRONMENT_FAILED;
+    }
+    *(volatile uint32_t *)(uintptr_t)(base + byte_offset) = value;
+    return 0;
+}
+
 /* The self-test times its waits in microseconds; the kernel's monotonic clock
  * is TSC backed once calibrated (ktime.h). */
 static uint64_t selftest_now_us(void *context)
@@ -472,6 +491,7 @@ static struct polaris_selftest_ops selftest_ops = {
     .map_arena_window = selftest_map_arena_window,
     .read_pci_config = selftest_read_pci_config,
     .read_diagnostic_register = selftest_read_diagnostic_register,
+    .write_register = selftest_write_register,
     .now_us = selftest_now_us,
     .load_firmware = selftest_load_firmware,
     .release_firmware = selftest_release_firmware,

@@ -153,6 +153,11 @@ struct polaris_selftest_ops {
     /* One 32-bit read of BAR5 for the bind-failure diagnostics; never a write,
      * and only asked after the lease is held. 0 on success. */
     int (*read_diagnostic_register)(void *context, uint32_t byte_offset, uint32_t *value);
+    /* One 32-bit write of BAR5, used only for the memory-controller aperture
+     * program the owner approved (memory/gmc_aperture.h); asked only while the
+     * lease is held. Optional: without it the aperture is never programmed and
+     * a GOP-state card refuses at bind. 0 on success. */
+    int (*write_register)(void *context, uint32_t byte_offset, uint32_t value);
     uint64_t (*now_us)(void *context);
     /* All eight firmware files for SECURITY_KEY (resource/files.h); 0 only if
      * every file is present, structurally valid and matches its pin. FILES is
