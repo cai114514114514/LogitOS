@@ -12,6 +12,30 @@ enum {
     HDP_MISC=0x2f4c, HDP_DEBUG=0x2f30, HDP_FLUSH=0x5480,
     BIF_FB=0x5490, MEMSIZE=0x5428
 };
+/* HDP_NONSURFACE_INFO fields (oss_3_0_sh_mask.h) that decide where a CPU
+ * access through BAR0 lands in VRAM: address type, array (tiling) mode and
+ * endian swap. The other fields (pixel size, tile split, micro tile mode and
+ * the bank geometry) only describe tiled layouts and mean nothing while the
+ * array mode is linear. */
+enum {
+    HDP_INFO_ADDRESS_TYPE=0x1, HDP_INFO_ARRAY_MODE=0x1e, HDP_INFO_ENDIAN_SWAP=0x60
+};
+/* Why only these fields: Linux v6.12 gmc_v8_0_mc_program writes
+ * (2<<7)|(1<<30) to this register for SR-IOV virtual functions only, so on
+ * bare metal it runs with whatever the VBIOS left. The GOP on the real RX 580
+ * (X79-VG4) leaves 0x00020080: linear, no swap, physical addresses, which is
+ * exactly what the self-test needs. Requiring the SR-IOV value refused that
+ * card. A tiled or byte-swapped layout would scramble every BAR0 copy, so
+ * those still refuse. */
+static int hdp_info_is_linear(uint32_t info)
+{
+#ifdef POLARIS_NATIVE_NEGCTL_ANY_HDP_LAYOUT
+    (void)info;
+    return 1;
+#else
+    return (info&(HDP_INFO_ADDRESS_TYPE|HDP_INFO_ARRAY_MODE|HDP_INFO_ENDIAN_SWAP))==0;
+#endif
+}
 /* Register accesses that share one full PCI identity check. The check costs
  * about a dozen configuration reads (port I/O on this platform, microseconds
  * each); at this size an SMC firmware upload of 32768 words (65536 accesses,
@@ -84,7 +108,7 @@ static int check_mapping(struct polaris_native *n,int first)
     uint64_t start=(uint64_t)(location&65535u)<<24;
     uint64_t end=((uint64_t)(location>>16)+1)<<24;
     if (end<=start || !mem || mem>65536 || ((uint64_t)mem<<20)!=end-start ||
-        ((uint64_t)hdp_base<<8)!=start || info!=0x40000100u ||
+        ((uint64_t)hdp_base<<8)!=start || !hdp_info_is_linear(info) ||
         (misc&0x00c0001eu) || (raw_read(n,BIF_FB)&3u)!=3u ||
         (raw_read(n,MC_BLACKOUT)&7u) || n->resource.bar0_bytes>end-start) return -1;
     /* Correction: matching MC_FB/HDP and SDMA VMID0 alone did NOT establish
