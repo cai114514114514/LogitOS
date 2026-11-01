@@ -7,9 +7,8 @@
 ## 1. 目标与用户决定
 
 - 「完全驱动」= 三个阶段，按 A → B → C 实施，每阶段在真机上验证后才进入下一阶段（用户 2026-11-01）。
-- 第三方组件只有两个名额，已全部用掉（用户 2026-11-01）：
-  1. **AMD Polaris 微码包**（linux-firmware `amdgpu/polaris10_*.bin` 等），固定到官方提交并校验 SHA256，放在根盘；只用于 B、C。
-  2. **AtomBIOS 命令表解释器**（Linux `drivers/gpu/drm/amd/amdgpu/atom.c`，MIT，约 1.6k 行），放在 `third_party/atombios/`，保留原版权头。只用来执行显卡 VBIOS 里的命令表。
+- 第三方组件（用户 2026-11-01）：只新增一个——**AMD Polaris 微码包**（linux-firmware `amdgpu/polaris10_*.bin` 等），固定到官方提交并校验 SHA256，放在根盘；只用于 B、C。
+- **AtomBIOS 命令表解释器自己写**（用户 2026-11-01 更正：「不要 2 了，必须得要，但是 2 可以自己写」）。Linux 的 `atom.c` 只作为格式与语义的参考，不引入代码。
 - 其余代码全部自己写，不从 amdgpu 搬代码。实现流程：Sonnet 写，Claude 审查、跑门、提交（用户 2026-11-01）。
 
 ## 2. 现状（调研，`c/drivers/gpu/amd`，约 5.5k 行）
@@ -48,14 +47,14 @@
 - 给合成器一个帧时钟 `amd_dce_frame_wait()`，这是调度器设计里「按显示器刷新率计帧」的硬件来源。
 - 第二块扫描缓冲（1280×1024×4 = 5 MiB，切换到 2K 后 14.7 MiB）需要显存所有权；A2 只在 A0 证明 GOP 尾部够大时启用，否则等 B 的保留清单。
 
-### A3 原生分辨率：VBIOS 获取 + ATOM 解释器 + 开机早期模式切换（约 2–3k 行，含第三方 1.6k）
+### A3 原生分辨率：VBIOS 获取 + 自写 ATOM 解释器 + 开机早期模式切换（约 3–4k 行，全部自写）
 
 - **VBIOS 来源**（`amdgpu_bios.c` 的顺序）：
   1. 引导加载器在 `ExitBootServices` 之前，经 `EFI_PCI_IO_PROTOCOL.RomImage/RomSize` 把显卡 ROM 拷进一块内存，并通过启动信息交给内核（`x86-stub.c` 43–105 的做法）；
   2. 内核里的 ACPI `VFCT` 表；
   3. 都没有就不做 A3。
   BAR0 永远不作为 VBIOS 来源（P12 的教训）。
-- **解释器**：`third_party/atombios/atom.c` 原样引入，外面写一层自己的胶水，提供它要的寄存器、IO、延时、PLL 回调；命令表执行有超时（原版 20 秒 `ATOM_CMD_TIMEOUT_SEC`）。
+- **解释器（自写）**：`c/drivers/gpu/amd/atom/`。按 Linux `atom.c` 的操作码与寻址语义（寄存器/参数空间/工作空间/帧缓冲暂存/PLL/MC、`IIO` 子程序、`CALL_TABLE`、条件跳转、`DELAY`、`SWITCH`）自己实现；每个操作码都有主机测试，未知操作码与越界访问拒绝执行；每张命令表有执行步数和墙钟超时（参考原版 20 秒 `ATOM_CMD_TIMEOUT_SEC`）。只实现 A3/B 实际要执行的命令表所用到的操作码，用真实 VBIOS 映像在主机上统计后确定范围。
 - **模式切换顺序**（`dce_v11_0_crtc_mode_set` 2702–2741，`atombios_crtc.c`）：只针对 A0 找到的那个 CRTC 和它的编码器——`BlankCRTC` → `SetPixelClock`（Polaris 为 v7）→ `SetCRTC_UsingDTDTiming`（用 EDID 首选时序）→ 编码器/发送器表 → 如果是 DP，做链路训练（只有 DP 需要；HDMI 不需要）→ 重设 `GRPH_*` 指向新的扫描缓冲 → `UpdateCRTC_DoubleBufferRegisters` → 解除消隐。行缓冲和水位按 `dce_v11_0` 的公式用 VBIOS 启动频率计算。
 - **时机**：在内核早期、`fb_init()` 之前完成，所以合成器从一开始就按 2560×1440 建立，不需要运行中改分辨率。失败（任一命令表报错或超时、链路训练失败、读回不对）就回到 GOP 原来的地址和模式，桌面照常以 1280×1024 起来，并在 HUD 上标出原因。
 - **刷新率**：首选 EDID 首选时序；如果 RX 580 的 HDMI 输出不支持该时序的像素时钟，就选 EDID 里像素时钟可达的最高刷新率（具体上限等 A0 读到接口类型后确定）。
@@ -86,7 +85,7 @@
 | 阶段 | 驱动代码 | 测试 |
 |---|---|---|
 | A0–A2 | 约 1.2k | 约 1.5k |
-| A3 | 约 1.5k 自写 + 1.6k 第三方 | 约 1k |
+| A3 | 约 3k（解释器约 1.5k + 模式切换约 1.5k） | 约 1.5k |
 | B | 约 2k | 约 1.2k |
 | C1–C3 | 约 5–6k | 约 3k |
 
@@ -101,4 +100,4 @@
 
 1. 显示器接 HDMI 还是 DP（决定 A3 是否要做 DP 链路训练，以及 2K 下能到多少 Hz）。
 2. B 是否接管 GMC。
-3. C3 的着色器二进制：手工编码，还是构建期用 `llvm-mc -mcpu=gfx803` 汇编（后者会动用第三方名额，名额已满，所以默认手工编码）。
+3. C3 的着色器二进制：手工编码，还是构建期用 `llvm-mc -mcpu=gfx803` 汇编（后者会用掉剩下的第三方名额，默认手工编码）。
