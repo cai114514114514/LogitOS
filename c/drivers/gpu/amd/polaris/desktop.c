@@ -153,10 +153,19 @@ int polaris_desktop_query(struct polaris_desktop_info *out)
     if (!out) return POLARIS_DESKTOP_REFUSED;
     fb_graphics_lock();
     *out = (struct polaris_desktop_info) {
-        runtime.stage, runtime.failed_stage, runtime.error, runtime.quarantined,
-        runtime.queue.submitted, runtime.queue.completed,
-        runtime.present.frames, runtime.present.pixels, runtime.present.uploaded_bytes,
-        runtime.smu.load_status
+        .stage = runtime.stage,
+        .failed_stage = runtime.failed_stage,
+        .error = runtime.error,
+        .quarantined = runtime.quarantined,
+        .submitted = runtime.queue.submitted,
+        .completed = runtime.queue.completed,
+        .frames = runtime.present.frames,
+        .pixels = runtime.present.pixels,
+        .uploaded_bytes = runtime.present.uploaded_bytes,
+        .smu_load_status = runtime.smu.load_status,
+        .smu_upload_microseconds = runtime.smu.upload_microseconds,
+        .smu_previous_response_anomalies = runtime.smu.previous_response_anomalies,
+        .smu_previous_response_first = runtime.smu.previous_response_first
     };
     fb_graphics_unlock();
     return 0;

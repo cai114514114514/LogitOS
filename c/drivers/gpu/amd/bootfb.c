@@ -55,7 +55,9 @@
 #define POLARIS_REGISTER_BAR 5
 #define DISPLAY_HUD_LINES 2u
 #define DISPLAY_HUD_LINE_BYTES 112
-#define SELFTEST_HUD_LINE_BYTES 160
+/* The self-test HUD text (selftest.h) plus its SMC preflight tail; hwhud.c
+ * prefixes "gpu-rt " and keeps the result in a 200-byte line buffer. */
+#define SELFTEST_HUD_LINE_BYTES 192
 
 static const char amd_bootfb_name[] = "AMD/ATI firmware framebuffer";
 static struct device *polaris_boot_device;

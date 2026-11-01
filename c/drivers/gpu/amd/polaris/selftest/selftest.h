@@ -24,8 +24,9 @@
  * B2) already chose an arena:
  *
  *   gate      skip unless this is a Polaris10 PCI ID, the ESP has no
- *             \LOGIT\NOGPU marker, the survey found an arena and the engine
- *             firmware can be sized
+ *             \LOGIT\NOGPU (or NOGPU.TXT) marker, the loader did not have to
+ *             assume one, the survey found an arena and the engine firmware
+ *             can be sized
  *   lease     take the exclusive ownership lease (gpu_lease.h); every register
  *             write below refuses to happen without it
  *   map       map BAR5 (registers) and ONLY the arena window of BAR0, both
@@ -103,6 +104,7 @@ enum polaris_selftest_result {
     POLARIS_SELFTEST_FAILED_SMU,
     POLARIS_SELFTEST_FAILED_SDMA,
     POLARIS_SELFTEST_FAILED_SDMA_BUSY,
+    POLARIS_SELFTEST_FAILED_QUARANTINED,
     POLARIS_SELFTEST_RESULT_COUNT
 };
 
@@ -175,6 +177,17 @@ struct polaris_selftest_report {
     int sdma_ran;
     uint64_t sdma_completed;
     uint64_t sdma_submitted;
+    /* What the SMU loader saw in the SMC before its first write, and the
+     * start-up branch it chose; known as soon as the loader has read it, so a
+     * run that dies later still has it. */
+    int smu_preflight_known;
+    struct polaris_smu_preflight smu_preflight;
+    /* The runtime got as far as configuring the SDMA ring (success, or a
+     * failure at the ring stage or later): quiesce must then look at it. */
+    int sdma_configured;
+    /* The runtime wrote to the card and then failed or lost track of it
+     * (polaris_runtime_start quarantine): the card's state is unknown. */
+    unsigned runtime_quarantined;
 };
 
 /* Run the stages above. Returns POLARIS_SELFTEST_OK, or the result that
@@ -187,20 +200,27 @@ polaris_selftest_run(const struct polaris_selftest_inputs *inputs,
 
 /* Before reboot or S5 (dev_quiesce_all): confirm SDMA0 is idle and end the
  * lease. Read-only; returns 0 when nothing is running or the engine is idle,
- * nonzero when it could not be confirmed idle. Writes nothing. */
+ * nonzero when it could not be confirmed idle (driver.h quiesce contract).
+ * The ring pointers are read whenever the runtime configured the ring, success
+ * or not; a runtime that is quarantined after writing to the card is never
+ * confirmed idle, because nothing can say what the card is doing. Writes
+ * nothing. */
 int polaris_selftest_quiesce(const struct polaris_selftest_ops *ops,
                              struct polaris_selftest_report *report);
 
 /* "stage=... result=... key=... smc=... sdma=..." without the "gpu-rt "
- * label, for the HUD. */
+ * label, for the HUD, followed by "pre=<branch> fw=... clk=... pc=... rst=...
+ * fl=..." (the SMC state the loader saw, in hex) once the loader has read it. */
 void polaris_selftest_format_hud(char *out, int capacity,
                                  const struct polaris_selftest_report *report);
 
 const char *polaris_selftest_stage_name(enum polaris_selftest_stage stage);
 const char *polaris_selftest_result_name(enum polaris_selftest_result result);
 
-/* Nonzero when the boot volume carried the \LOGIT\NOGPU opt-out marker, which
- * the UEFI loader turns into a boot module of this name. */
+/* Nonzero when the boot volume carried the \LOGIT\NOGPU (or NOGPU.TXT) opt-out
+ * marker, which the UEFI loader turns into a boot module of this name, or when
+ * the loader could not tell and assumed it (bootmod_gpu_optout_assumed): the
+ * opt-out fails closed. */
 #define POLARIS_SELFTEST_OPT_OUT_MODULE "nogpu"
 int polaris_selftest_opted_out(void);
 

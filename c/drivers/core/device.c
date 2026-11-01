@@ -222,6 +222,22 @@ void dev_unbind(struct device *dev)
     __atomic_store_n(&dev->unbinding, 0, __ATOMIC_RELEASE);
 }
 
+/* Why one function: asking a display driver whether its GPU is idle is the
+ * only thing that keeps a started GPU from being reset under live DMA, so the
+ * watched mutation removes exactly this question and the gate must see a busy
+ * GPU go unreported. Nonzero when the driver could not confirm the device
+ * stopped (driver.h quiesce contract). */
+static int display_quiesce_unconfirmed(const struct driver *drv, struct device *display)
+{
+#ifdef POWER_NEGCTL_NO_DISPLAY_QUIESCE
+    (void)drv;
+    (void)display;
+    return 0;
+#else
+    return drv->quiesce(display);
+#endif
+}
+
 /* A warm reset does not power PCI functions down: a NIC or an EHCI left
  * running keeps writing descriptors into RAM the next boot is already using,
  * and S5 can fail and return. So before firmware takes over, every device a
@@ -258,13 +274,11 @@ int dev_quiesce_all(int *failed)
             /* A display stays bound, but a GPU the driver started (stage B3
              * self-test) must be confirmed idle before the platform resets.
              * Silent when the driver has nothing to report. */
-#ifndef POWER_NEGCTL_NO_DISPLAY_QUIESCE
-            if (drv->quiesce(d)) {
+            if (display_quiesce_unconfirmed(drv, d)) {
                 kprintf("[power] quiesce %s %s: display kept bound, GPU activity unconfirmed\n",
                         d->name, drv->name);
                 bad++;
             }
-#endif
             continue;
         }
         if (!drv || !drv->remove) continue;

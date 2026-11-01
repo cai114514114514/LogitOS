@@ -12,13 +12,25 @@
  * Bus Specification 3.0, section 6.2.2). Bit 1 enables memory decode and bit 2
  * bus mastering; the native platform insists on both. */
 #define PCI_COMMAND_OFFSET 0x04u
-#define LOG_DETAIL_BYTES 120
+/* The longest stage detail is a failed smu line: error, reason, load status,
+ * quarantine flag, upload time and the previous-response counters. */
+#define LOG_DETAIL_BYTES 200
 #define BIND_DIAGNOSTICS_BYTES 240
 #define SMC_LABEL_BYTES 24
 /* "<label>/<8 hex digits>" and its terminator. */
 #define HUD_SMC_TEXT_BYTES (SMC_LABEL_BYTES + 12)
 /* A 64-bit decimal count and its terminator. */
 #define HUD_SDMA_TEXT_BYTES 24
+/* " reason=" and the longest SMU loader error name ("unsupported-state"). */
+#define SMU_REASON_TEXT_BYTES 32
+/* " prev-first=0xffff" and its terminator, rounded up. */
+#define SMU_FIRST_RESPONSE_TEXT_BYTES 24
+/* "upload-us=18446744073709551615 prev-anomalies=4294967295" is 56 characters,
+ * plus the first-response text and a terminator. */
+#define SMU_FACTS_TEXT_BYTES (56 + SMU_FIRST_RESPONSE_TEXT_BYTES + 1)
+/* " pre=cold-unprotected fw=ffffffff clk=ffffffff pc=ffffffff rst=ffffffff
+ * fl=ffffffff" is 83 characters; one more for the terminator, rounded up. */
+#define HUD_PREFLIGHT_TEXT_BYTES 96
 #define SMC_FILE_PREFIX "polaris10_"
 #define SMC_FILE_SUFFIX ".bin"
 
@@ -68,7 +80,8 @@ static const char *const result_names[POLARIS_SELFTEST_RESULT_COUNT] = {
     [POLARIS_SELFTEST_FAILED_STAGING] = "failed-firmware-staging",
     [POLARIS_SELFTEST_FAILED_SMU] = "failed-smu",
     [POLARIS_SELFTEST_FAILED_SDMA] = "failed-sdma",
-    [POLARIS_SELFTEST_FAILED_SDMA_BUSY] = "failed-sdma-busy"
+    [POLARIS_SELFTEST_FAILED_SDMA_BUSY] = "failed-sdma-busy",
+    [POLARIS_SELFTEST_FAILED_QUARANTINED] = "failed-quarantined"
 };
 
 /* Why a table and not a switch: a missing entry shows up as a NULL the host
@@ -105,6 +118,10 @@ struct lease_guard {
 
 static struct lease_guard guard;
 static struct polaris_platform guarded_platform;
+/* Whether guarded_platform wraps a bound platform in this run. Quiesce reads
+ * registers through it only then, and a stale guard from an earlier run must
+ * not count. */
+static int guard_is_installed;
 
 /* Why one function: the watched mutation removes exactly this decision, and
  * the gate must see the unleased write get through. */
@@ -191,6 +208,7 @@ static uint64_t guard_now_us(void *opaque)
 static void guard_install(const struct polaris_platform *inner,
                           const struct polaris_selftest_ops *ops)
 {
+    guard_is_installed = 1;
     guard = (struct lease_guard){.inner = *inner, .ops = ops};
     guarded_platform = (struct polaris_platform){
         .opaque = &guard,
@@ -207,23 +225,32 @@ static void guard_install(const struct polaris_platform *inner,
 
 /* One serial line per stage. DETAIL may be empty. The same text, shortened, is
  * what the HUD shows (polaris_selftest_format_hud), so the report is updated
- * here and nowhere else. */
+ * in record() and nowhere else; this only prints, for the one stage line that
+ * must not replace an earlier failure on the HUD (quiesce after a failed run). */
+static void log_stage_line(enum polaris_selftest_stage stage,
+                           enum polaris_selftest_result result, const char *detail)
+{
+    kprintf("[amd-polaris-runtime] stage=%s result=%s%s%s\n",
+            polaris_selftest_stage_name(stage), polaris_selftest_result_name(result),
+            detail[0] ? " " : "", detail);
+}
+
+/* Why the report is updated here as well: the HUD and the serial line must
+ * never disagree about the last stage. */
 static void record(struct polaris_selftest_report *report,
                    enum polaris_selftest_stage stage,
                    enum polaris_selftest_result result, const char *detail)
 {
     report->stage = stage;
     report->result = result;
-    kprintf("[amd-polaris-runtime] stage=%s result=%s%s%s\n",
-            polaris_selftest_stage_name(stage), polaris_selftest_result_name(result),
-            detail[0] ? " " : "", detail);
+    log_stage_line(stage, result, detail);
 }
 
 /* ---- adapters between the environment and the native platform -------------- */
 
-/* The native platform re-reads PCI configuration before every register access
- * to notice a function that moved or vanished; this hands it the environment's
- * reader. */
+/* The native platform re-reads PCI configuration at the start of every batch of
+ * register accesses (native.c) to notice a function that moved or vanished;
+ * this hands it the environment's reader. */
 static int native_read_pci32(void *opaque, uint16_t byte_offset, uint32_t *value)
 {
     const struct polaris_selftest_ops *ops = opaque;
@@ -250,6 +277,19 @@ struct run_state {
     struct polaris_platform native_platform;
 };
 
+/* Why one function: the owner's switch is obeyed in exactly one place, so the
+ * watched mutation can make the marker be read and then ignored and the gate
+ * can watch the run go ahead on a stick that carries it. */
+static int opt_out_stops_the_run(const struct run_state *state)
+{
+#ifdef POLARIS_SELFTEST_NEGCTL_IGNORE_NOGPU
+    (void)state;
+    return 0;
+#else
+    return state->ops->opted_out(state->ops->context);
+#endif
+}
+
 /* Why the order: the cheapest, hardware-free refusals come first, so a machine
  * that opted out or has some other GPU is not touched at all (no lease, no
  * mapping, no register read). The opt-out is asked even when the arena is
@@ -261,19 +301,13 @@ static enum polaris_selftest_result stage_gate(struct run_state *state)
     enum polaris_selftest_result result = POLARIS_SELFTEST_OK;
     if (!polaris10_identity_known(identity)) {
         result = POLARIS_SELFTEST_SKIPPED_UNKNOWN_DEVICE;
-    } else if (state->ops->opted_out(state->ops->context)) {
+    } else if (opt_out_stops_the_run(state)) {
         result = POLARIS_SELFTEST_SKIPPED_NOGPU;
     } else if (!inputs->arena_plan) {
         result = POLARIS_SELFTEST_SKIPPED_NO_ARENA;
     } else if (!inputs->firmware_bundle_bytes) {
         result = POLARIS_SELFTEST_SKIPPED_NO_FIRMWARE;
     }
-#ifdef POLARIS_SELFTEST_NEGCTL_IGNORE_NOGPU
-    /* Watched mutation: the opt-out marker is read but never obeyed. */
-    if (result == POLARIS_SELFTEST_SKIPPED_NOGPU) {
-        result = POLARIS_SELFTEST_OK;
-    }
-#endif
     char detail[LOG_DETAIL_BYTES];
     ksnprintf(detail, sizeof detail, "device=%04x:%04x rev=%02x",
               inputs->pci_vendor, inputs->pci_device, inputs->pci_revision);
@@ -381,6 +415,31 @@ struct diagnostic_register {
     uint32_t byte_offset;
 };
 
+/* Linux numbers registers in 32-bit words (the mm* constants of the asic_reg
+ * headers); BAR5 is addressed in bytes. */
+#define REGISTER_WORD_BYTES 4u
+#define BAR5_BYTE_OFFSET(word_index) ((uint32_t)(word_index) * REGISTER_WORD_BYTES)
+
+/* Word indices, Linux v6.12 drivers/gpu/drm/amd/include/asic_reg/. */
+/* gmc/gmc_8_1_d.h: first and last 16 MiB unit of VRAM in the MC address space. */
+#define MM_MC_VM_FB_LOCATION 0x809u
+/* gmc/gmc_8_1_d.h: first and last 4 KiB page of the system aperture. */
+#define MM_MC_VM_SYSTEM_APERTURE_LOW_ADDR 0x80du
+#define MM_MC_VM_SYSTEM_APERTURE_HIGH_ADDR 0x80eu
+/* gmc/gmc_8_1_d.h: MX L1 TLB control (system access mode, advanced driver model). */
+#define MM_MC_VM_MX_L1_TLB_CNTL 0x819u
+/* gmc/gmc_8_1_d.h: memory-controller blackout control. */
+#define MM_MC_SHARED_BLACKOUT_CNTL 0x82bu
+/* oss/oss_3_0_d.h: HDP non-surface aperture base (256-byte units) and info. */
+#define MM_HDP_NONSURFACE_BASE 0xb01u
+#define MM_HDP_NONSURFACE_INFO 0xb02u
+/* oss/oss_3_0_d.h: HDP miscellaneous control. */
+#define MM_HDP_MISC_CNTL 0xbd3u
+/* bif/bif_5_0_d.h: installed VRAM size in MiB. */
+#define MM_CONFIG_MEMSIZE 0x150au
+/* bif/bif_5_0_d.h: framebuffer read/write enable at the bus interface. */
+#define MM_BIF_FB_EN 0x1524u
+
 enum diagnostic_register_index {
     DIAGNOSTIC_MC_FB_LOCATION,
     DIAGNOSTIC_MC_SYSTEM_APERTURE_LOW,
@@ -396,16 +455,21 @@ enum diagnostic_register_index {
 };
 
 static const struct diagnostic_register diagnostic_registers[DIAGNOSTIC_REGISTER_COUNT] = {
-    [DIAGNOSTIC_MC_FB_LOCATION] = {"mc_fb", 0x2024u},
-    [DIAGNOSTIC_MC_SYSTEM_APERTURE_LOW] = {"sys_low", 0x2034u},
-    [DIAGNOSTIC_MC_SYSTEM_APERTURE_HIGH] = {"sys_high", 0x2038u},
-    [DIAGNOSTIC_MC_VM_L1_TLB_CONTROL] = {"l1", 0x2064u},
-    [DIAGNOSTIC_MC_SHARED_BLACKOUT] = {"blackout", 0x20acu},
-    [DIAGNOSTIC_HDP_NONSURFACE_BASE] = {"hdp_base", 0x2c04u},
-    [DIAGNOSTIC_HDP_NONSURFACE_INFO] = {"hdp_info", 0x2c08u},
-    [DIAGNOSTIC_HDP_MISC_CNTL] = {"hdp_misc", 0x2f4cu},
-    [DIAGNOSTIC_CONFIG_MEMSIZE] = {"memsize", 0x5428u},
-    [DIAGNOSTIC_BIF_FB_EN] = {"bif_fb", 0x5490u}
+    [DIAGNOSTIC_MC_FB_LOCATION] = {"mc_fb", BAR5_BYTE_OFFSET(MM_MC_VM_FB_LOCATION)},
+    [DIAGNOSTIC_MC_SYSTEM_APERTURE_LOW] =
+        {"sys_low", BAR5_BYTE_OFFSET(MM_MC_VM_SYSTEM_APERTURE_LOW_ADDR)},
+    [DIAGNOSTIC_MC_SYSTEM_APERTURE_HIGH] =
+        {"sys_high", BAR5_BYTE_OFFSET(MM_MC_VM_SYSTEM_APERTURE_HIGH_ADDR)},
+    [DIAGNOSTIC_MC_VM_L1_TLB_CONTROL] = {"l1", BAR5_BYTE_OFFSET(MM_MC_VM_MX_L1_TLB_CNTL)},
+    [DIAGNOSTIC_MC_SHARED_BLACKOUT] =
+        {"blackout", BAR5_BYTE_OFFSET(MM_MC_SHARED_BLACKOUT_CNTL)},
+    [DIAGNOSTIC_HDP_NONSURFACE_BASE] =
+        {"hdp_base", BAR5_BYTE_OFFSET(MM_HDP_NONSURFACE_BASE)},
+    [DIAGNOSTIC_HDP_NONSURFACE_INFO] =
+        {"hdp_info", BAR5_BYTE_OFFSET(MM_HDP_NONSURFACE_INFO)},
+    [DIAGNOSTIC_HDP_MISC_CNTL] = {"hdp_misc", BAR5_BYTE_OFFSET(MM_HDP_MISC_CNTL)},
+    [DIAGNOSTIC_CONFIG_MEMSIZE] = {"memsize", BAR5_BYTE_OFFSET(MM_CONFIG_MEMSIZE)},
+    [DIAGNOSTIC_BIF_FB_EN] = {"bif_fb", BAR5_BYTE_OFFSET(MM_BIF_FB_EN)}
 };
 
 /* Why a separate line: it is not a stage, so the one-line-per-stage rule and
@@ -457,19 +521,30 @@ static enum polaris_selftest_result stage_bind(struct run_state *state)
     return POLARIS_SELFTEST_OK;
 }
 
+/* Why one function: the comparison of the platform's translation with the plan
+ * is the whole safety argument of the mapping stage, so the watched mutation
+ * removes exactly it and the gate watches a wrong base slip through. Nonzero
+ * when the translation disagrees with the plan. */
+static int arena_mapping_mismatches(const struct run_state *state)
+{
+#ifdef POLARIS_SELFTEST_NEGCTL_SKIP_MAPPING_CHECK
+    (void)state;
+    return 0;
+#else
+    return polaris_arena_check_mapping(state->inputs->arena_plan,
+                                       guarded_platform.resolve_mapping,
+                                       guarded_platform.opaque,
+                                       state->bar0_origin);
+#endif
+}
+
 /* Why before the first write: if the platform's address translation disagrees
  * with the plan, everything the runtime writes into the arena lands somewhere
  * else in VRAM, possibly on the scanout. polaris_arena_check_mapping() asks the
  * very callback the runtime will use (through the guard) and compares. */
 static enum polaris_selftest_result stage_mapping(struct run_state *state)
 {
-    int mismatch = 0;
-#ifndef POLARIS_SELFTEST_NEGCTL_SKIP_MAPPING_CHECK
-    mismatch = polaris_arena_check_mapping(state->inputs->arena_plan,
-                                           guarded_platform.resolve_mapping,
-                                           guarded_platform.opaque,
-                                           state->bar0_origin);
-#endif
+    int mismatch = arena_mapping_mismatches(state);
     if (mismatch) {
         record(state->report, POLARIS_SELFTEST_STAGE_MAPPING,
                POLARIS_SELFTEST_FAILED_MAPPING_CHECK, "");
@@ -477,6 +552,19 @@ static enum polaris_selftest_result stage_mapping(struct run_state *state)
     }
     record(state->report, POLARIS_SELFTEST_STAGE_MAPPING, POLARIS_SELFTEST_OK, "");
     return POLARIS_SELFTEST_OK;
+}
+
+/* Why one function: which SMC file is loaded follows from the key and from
+ * nothing else, so the watched mutation replaces exactly this value and the
+ * gate watches the wrong file get chosen for a card whose key is 0. */
+static unsigned security_key_to_use(unsigned key_read_from_hardware)
+{
+#ifdef POLARIS_SELFTEST_NEGCTL_ASSUME_KEY_ONE
+    (void)key_read_from_hardware;
+    return 1;
+#else
+    return key_read_from_hardware;
+#endif
 }
 
 /* Why here: the key is the first register write of the run, so everything that
@@ -499,22 +587,22 @@ static enum polaris_selftest_result stage_key(struct run_state *state)
                POLARIS_SELFTEST_FAILED_KEY_UNREADABLE, detail);
         return POLARIS_SELFTEST_FAILED_KEY_UNREADABLE;
     }
-#ifdef POLARIS_SELFTEST_NEGCTL_ASSUME_KEY_ONE
-    /* Watched mutation: whatever the hardware says, take the key-1 files. */
-    key.security_key = 1;
-#endif
+    unsigned security_key = security_key_to_use(key.security_key);
     state->report->key_known = 1;
-    state->report->security_key = key.security_key;
+    state->report->security_key = security_key;
     state->report->smc_path = polaris_resource_file_path(
         POLARIS_FW_SMC, state->inputs->pci_device, state->inputs->pci_revision,
-        key.security_key);
+        security_key);
     ksnprintf(detail, sizeof detail, "key=%u protected-mode=%u smu-firmware=0x%08x",
-              key.security_key, key.protected_mode, key.firmware_register);
+              security_key, key.protected_mode, key.firmware_register);
     record(state->report, POLARIS_SELFTEST_STAGE_KEY, POLARIS_SELFTEST_OK, detail);
     return POLARIS_SELFTEST_OK;
 }
 
-/* Name of an SMU loader error for the log (smu/loader.h). */
+/* Name of an SMU loader error for the log (smu/loader.h). Only an error the
+ * SMU loader returned belongs here: the runtime's memory-plan and staging
+ * failures carry other numbers, and naming those with this table would print a
+ * plausible but wrong word (stage_runtime asks only for failed-smu). */
 static const char *smu_error_name(int error)
 {
     switch (error) {
@@ -535,6 +623,58 @@ static const char *smu_error_name(int error)
     default:
         return "other";
     }
+}
+
+/* Words for the start-up branch the SMU loader chose (smu/loader.h), shared by
+ * the serial line and the HUD so the two cannot disagree. */
+static const char *smu_branch_name(enum polaris_smu_start_branch branch)
+{
+    switch (branch) {
+    case POLARIS_SMU_BRANCH_REFUSED:
+        return "refused";
+    case POLARIS_SMU_BRANCH_WARM:
+        return "warm";
+    case POLARIS_SMU_BRANCH_COLD_PROTECTED:
+        return "cold-protected";
+    case POLARIS_SMU_BRANCH_COLD_UNPROTECTED:
+        return "cold-unprotected";
+    default:
+        return "none";
+    }
+}
+
+/* Why a serial line of its own, printed from inside the loader: the SMC
+ * sequences poll for up to seconds, and a card that hangs the machine there
+ * leaves no later line. This one is printed after the registers were read and
+ * the branch was chosen and before the loader's first write, so it is the last
+ * evidence of a hang. It is not a stage line (the one-line-per-stage rule and
+ * the stage counts stay as they are). The report keeps a copy for the HUD. */
+static void log_smu_preflight(void *context, const struct polaris_smu_preflight *preflight)
+{
+    struct run_state *state = context;
+    state->report->smu_preflight_known = 1;
+    state->report->smu_preflight = *preflight;
+    kprintf("[amd-polaris-runtime] smu-preflight smu-firmware=0x%08x smc-clock=0x%08x "
+            "smc-pc=0x%08x smc-reset=0x%08x smc-flags=0x%08x branch=%s\n",
+            preflight->smu_firmware, preflight->clock_control, preflight->program_counter,
+            preflight->reset_control, preflight->firmware_flags,
+            smu_branch_name(preflight->branch));
+}
+
+/* What the loader measured, for the smu and sdma lines: how long the firmware
+ * upload took (0 when the SMC was already running) and whether any mailbox
+ * message found a previous response other than 1. */
+static void format_smu_facts(char *out, size_t capacity, const struct polaris_desktop_info *info)
+{
+    char first_response[SMU_FIRST_RESPONSE_TEXT_BYTES];
+    first_response[0] = '\0';
+    if (info->smu_previous_response_anomalies) {
+        ksnprintf(first_response, sizeof first_response, " prev-first=0x%x",
+                  info->smu_previous_response_first);
+    }
+    ksnprintf(out, (int)capacity, "upload-us=%llu prev-anomalies=%u%s",
+              (unsigned long long)info->smu_upload_microseconds,
+              info->smu_previous_response_anomalies, first_response);
 }
 
 /* Map the runtime's own report onto the stage that stopped it. The runtime
@@ -569,13 +709,17 @@ static enum polaris_selftest_result stage_runtime(struct run_state *state)
     struct polaris_desktop_info info = {0};
     polaris_desktop_query(&info);
     char detail[LOG_DETAIL_BYTES];
+    char facts[SMU_FACTS_TEXT_BYTES];
+    format_smu_facts(facts, sizeof facts, &info);
     report->smu_load_status = info.smu_load_status;
     report->sdma_submitted = info.submitted;
     report->sdma_completed = info.completed;
+    report->runtime_quarantined = info.quarantined;
     if (!start_result) {
         report->smu_loaded = 1;
         report->sdma_ran = 1;
-        ksnprintf(detail, sizeof detail, "load-status=0x%x", info.smu_load_status);
+        report->sdma_configured = 1;
+        ksnprintf(detail, sizeof detail, "load-status=0x%x %s", info.smu_load_status, facts);
         record(report, POLARIS_SELFTEST_STAGE_SMU, POLARIS_SELFTEST_OK, detail);
         ksnprintf(detail, sizeof detail, "completed=%llu submitted=%llu",
                   (unsigned long long)info.completed, (unsigned long long)info.submitted);
@@ -586,7 +730,8 @@ static enum polaris_selftest_result stage_runtime(struct run_state *state)
     report->detail_code = info.error;
     if (failure == POLARIS_SELFTEST_FAILED_SDMA) {
         report->smu_loaded = 1;
-        ksnprintf(detail, sizeof detail, "load-status=0x%x", info.smu_load_status);
+        report->sdma_configured = 1;
+        ksnprintf(detail, sizeof detail, "load-status=0x%x %s", info.smu_load_status, facts);
         record(report, POLARIS_SELFTEST_STAGE_SMU, POLARIS_SELFTEST_OK, detail);
         ksnprintf(detail, sizeof detail,
                   "error=%d completed=%llu submitted=%llu quarantined=%u",
@@ -595,9 +740,13 @@ static enum polaris_selftest_result stage_runtime(struct run_state *state)
         record(report, POLARIS_SELFTEST_STAGE_SDMA, failure, detail);
         return failure;
     }
-    ksnprintf(detail, sizeof detail, "error=%d reason=%s load-status=0x%x quarantined=%u",
-              info.error, smu_error_name(info.error), info.smu_load_status,
-              info.quarantined);
+    char reason[SMU_REASON_TEXT_BYTES];
+    reason[0] = '\0';
+    if (failure == POLARIS_SELFTEST_FAILED_SMU) {
+        ksnprintf(reason, sizeof reason, " reason=%s", smu_error_name(info.error));
+    }
+    ksnprintf(detail, sizeof detail, "error=%d%s load-status=0x%x quarantined=%u %s",
+              info.error, reason, info.smu_load_status, info.quarantined, facts);
     record(report, POLARIS_SELFTEST_STAGE_SMU, failure, detail);
     return failure;
 }
@@ -636,6 +785,8 @@ static enum polaris_selftest_result stage_firmware_and_runtime(struct run_state 
     state->request.smc_security_key = report->security_key;
     state->request.workspace = workspace;
     state->request.workspace_bytes = (size_t)state->inputs->firmware_bundle_bytes;
+    state->request.smu_preflight = log_smu_preflight;
+    state->request.smu_preflight_context = state;
     enum polaris_selftest_result result = stage_runtime(state);
     ops->free_workspace(ops->context, workspace);
     ops->release_firmware(ops->context, &files);
@@ -656,6 +807,7 @@ polaris_selftest_run(const struct polaris_selftest_inputs *inputs,
         return POLARIS_SELFTEST_FAILED_BAD_ARGUMENT;
     }
     *report = (struct polaris_selftest_report){0};
+    guard_is_installed = 0;
     if (!inputs || !ops || !ops->opted_out || !ops->acquire_lease || !ops->lease_held ||
         !ops->retire_lease || !ops->map_registers || !ops->map_arena_window ||
         !ops->read_pci_config || !ops->read_diagnostic_register || !ops->now_us ||
@@ -692,36 +844,72 @@ polaris_selftest_run(const struct polaris_selftest_inputs *inputs,
     return stage_firmware_and_runtime(&state);
 }
 
-/* Why read-only: at shutdown nothing may be started or reconfigured. The only
- * question is whether the SDMA ring still has work queued (read pointer behind
- * write pointer), which would mean the engine could still be writing VRAM when
- * the platform resets. An idle ring is simply left as it is. */
+/* Why a function of its own: the answer "is the SDMA0 ring drained" is two
+ * reads and a comparison, and a read that fails is as unconfirmed as a ring
+ * with work still queued in it. Nonzero when idleness could not be confirmed. */
+static int sdma_ring_unconfirmed(uint32_t *read_pointer, uint32_t *write_pointer)
+{
+    if (guarded_platform.read_reg(guarded_platform.opaque,
+                                  SDMA0_RING_READ_POINTER_REGISTER, read_pointer)) {
+        return 1;
+    }
+    if (guarded_platform.read_reg(guarded_platform.opaque,
+                                  SDMA0_RING_WRITE_POINTER_REGISTER, write_pointer)) {
+        return 1;
+    }
+    return *read_pointer != *write_pointer;
+}
+
+/* Why read-only: at shutdown nothing may be started or reconfigured. Two things
+ * are asked. Is the SDMA ring still holding work (read pointer behind write
+ * pointer), which would mean the engine could still be writing VRAM when the
+ * platform resets; that is read whenever the runtime configured the ring, not
+ * only after a clean run, because a run that failed after configuring it can
+ * have left work queued. And did the runtime write to the card and then lose
+ * track of it (quarantine): then nothing can say what the card is doing, and
+ * the driver.h quiesce contract ("could not be confirmed stopped") says so. An
+ * idle ring of a healthy run is simply left as it is. */
 int polaris_selftest_quiesce(const struct polaris_selftest_ops *ops,
                              struct polaris_selftest_report *report)
 {
-    int unconfirmed = 0;
     if (!ops || !report || !ops->lease_held(ops->context)) {
-        return unconfirmed;
+        return 0;
     }
-    if (report->sdma_ran && report->result == POLARIS_SELFTEST_OK) {
-        uint32_t read_pointer = 0;
-        uint32_t write_pointer = 0;
-        if (guarded_platform.read_reg(guarded_platform.opaque,
-                                      SDMA0_RING_READ_POINTER_REGISTER, &read_pointer) ||
-            guarded_platform.read_reg(guarded_platform.opaque,
-                                      SDMA0_RING_WRITE_POINTER_REGISTER, &write_pointer) ||
-            read_pointer != write_pointer) {
-            unconfirmed = 1;
+    int ring_inspected = guard_is_installed && report->sdma_configured;
+    int ring_unconfirmed = 0;
+    uint32_t read_pointer = 0;
+    uint32_t write_pointer = 0;
+    if (ring_inspected) {
+        ring_unconfirmed = sdma_ring_unconfirmed(&read_pointer, &write_pointer);
+    }
+    unsigned quarantined = report->runtime_quarantined != 0;
+    if (ring_inspected || quarantined) {
+        enum polaris_selftest_result result = POLARIS_SELFTEST_OK;
+        if (ring_unconfirmed) {
+            result = POLARIS_SELFTEST_FAILED_SDMA_BUSY;
+        } else if (quarantined) {
+            result = POLARIS_SELFTEST_FAILED_QUARANTINED;
         }
+        char pointers[LOG_DETAIL_BYTES];
         char detail[LOG_DETAIL_BYTES];
-        ksnprintf(detail, sizeof detail, "sdma-read-pointer=0x%x sdma-write-pointer=0x%x",
-                  read_pointer, write_pointer);
-        record(report, POLARIS_SELFTEST_STAGE_QUIESCE,
-               unconfirmed ? POLARIS_SELFTEST_FAILED_SDMA_BUSY : POLARIS_SELFTEST_OK,
-               detail);
+        if (ring_inspected) {
+            ksnprintf(pointers, sizeof pointers,
+                      "sdma-read-pointer=0x%x sdma-write-pointer=0x%x",
+                      read_pointer, write_pointer);
+        } else {
+            ksnprintf(pointers, sizeof pointers, "sdma-ring=not-configured");
+        }
+        ksnprintf(detail, sizeof detail, "%s runtime-quarantined=%u", pointers, quarantined);
+        /* A clean run's last word is the quiesce line, on the HUD too. After a
+         * failure the HUD keeps the failure: it is the more useful photo. */
+        if (report->result == POLARIS_SELFTEST_OK) {
+            record(report, POLARIS_SELFTEST_STAGE_QUIESCE, result, detail);
+        } else {
+            log_stage_line(POLARIS_SELFTEST_STAGE_QUIESCE, result, detail);
+        }
     }
     ops->retire_lease(ops->context);
-    return unconfirmed;
+    return ring_unconfirmed || quarantined;
 }
 
 /* The HUD shows the SMC file as the part of its name that tells the variants
@@ -773,6 +961,7 @@ void polaris_selftest_format_hud(char *out, int capacity,
     char smc_text[HUD_SMC_TEXT_BYTES];
     char label[SMC_LABEL_BYTES];
     char sdma_text[HUD_SDMA_TEXT_BYTES];
+    char preflight_text[HUD_PREFLIGHT_TEXT_BYTES];
     const char *key_text = !report->key_known ? "?" : report->security_key ? "1" : "0";
     if (report->smc_path) {
         smc_label(label, sizeof label, report->smc_path);
@@ -789,9 +978,18 @@ void polaris_selftest_format_hud(char *out, int capacity,
     } else {
         ksnprintf(sdma_text, sizeof sdma_text, "-");
     }
-    ksnprintf(out, capacity, "stage=%s result=%s key=%s smc=%s sdma=%s",
+    preflight_text[0] = '\0';
+    if (report->smu_preflight_known) {
+        const struct polaris_smu_preflight *seen = &report->smu_preflight;
+        ksnprintf(preflight_text, sizeof preflight_text,
+                  " pre=%s fw=%x clk=%x pc=%x rst=%x fl=%x", smu_branch_name(seen->branch),
+                  seen->smu_firmware, seen->clock_control, seen->program_counter,
+                  seen->reset_control, seen->firmware_flags);
+    }
+    ksnprintf(out, capacity, "stage=%s result=%s key=%s smc=%s sdma=%s%s",
               polaris_selftest_stage_name(report->stage),
-              polaris_selftest_result_name(report->result), key_text, smc_text, sdma_text);
+              polaris_selftest_result_name(report->result), key_text, smc_text, sdma_text,
+              preflight_text);
 }
 
 #endif /* POLARIS_SELFTEST_COMPILED */

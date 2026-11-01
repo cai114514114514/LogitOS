@@ -2,6 +2,20 @@
 #include <stddef.h>
 #include "amd/gpu_lease.h"
 
+/* Why one function: that the device is bound to this driver is the whole
+ * "no other driver may touch it" argument of the lease, so the watched mutation
+ * waives exactly this condition and the gate must watch an unbound device
+ * obtain the lease. */
+static int device_binding_is_acceptable(int device_is_bound)
+{
+#ifdef AMD_GPU_LEASE_NEGCTL_ACCEPT_UNBOUND
+    (void)device_is_bound;
+    return 1;
+#else
+    return device_is_bound;
+#endif
+}
+
 /* Why the checks come in this order: a retired lease must say "retired" even
  * for the old holder, so the log of a second attempt names the real reason,
  * not "already taken". */
@@ -17,13 +31,9 @@ int amd_gpu_lease_acquire(struct amd_gpu_lease *lease, const void *device,
     if (lease->state == AMD_GPU_LEASE_HELD) {
         return AMD_GPU_LEASE_ALREADY_TAKEN;
     }
-#ifndef AMD_GPU_LEASE_NEGCTL_ACCEPT_UNBOUND
-    if (!device_is_bound) {
+    if (!device_binding_is_acceptable(device_is_bound)) {
         return AMD_GPU_LEASE_NOT_BOUND;
     }
-#else
-    (void)device_is_bound;
-#endif
     lease->state = AMD_GPU_LEASE_HELD;
     lease->holder = device;
     return AMD_GPU_LEASE_OK;

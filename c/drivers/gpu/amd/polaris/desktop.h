@@ -9,6 +9,13 @@ struct polaris_desktop_info {
     unsigned quarantined;
     uint64_t submitted, completed, frames, pixels, uploaded_bytes;
     uint32_t smu_load_status; /* SRAM UcodeLoadStatus read back by the loader */
+    /* How long the SMC firmware upload took (0 when the SMC was already
+     * running), and how many mailbox messages found a previous response other
+     * than 1 (smu/loader.h), the first such response being
+     * smu_previous_response_first. */
+    uint64_t smu_upload_microseconds;
+    uint32_t smu_previous_response_anomalies;
+    uint32_t smu_previous_response_first;
 };
 
 /* What a successful start leaves behind. PRESENT is the product behaviour: the

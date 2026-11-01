@@ -87,9 +87,9 @@ enum polaris_security_key_result {
 };
 
 /* Read SMU_FIRMWARE through SMC port 11. At most one register write (the
- * index) and three reads; no loop, so there is nothing to time out. On any
- * failure the output is left untouched and no register is written after the
- * failing step. */
+ * index) and two reads (SMC_IND_ACCESS_CNTL, then SMC_IND_DATA_11); no loop, so
+ * there is nothing to time out. On any failure the output is left untouched and
+ * no register is written after the failing step. */
 int polaris_security_key_read(const struct polaris_security_key_ops *ops,
                               struct polaris_security_key *out);
 

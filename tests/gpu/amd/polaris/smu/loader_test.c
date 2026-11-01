@@ -9,7 +9,10 @@ struct fake {
     uint32_t response, response_high, argument, msg[8], arg[8], count, uploads, writes, io;
     unsigned authenticated, cleared, syncs, partial, noack, stale, nopass;
     unsigned noevents, noflags, fail_sync, map_short, bad_offset, time_step, fail_io;
-    uint64_t now;
+    /* Every write except the SMC index: what changes the card's state. */
+    unsigned state_writes, state_writes_at_preflight, preflight_calls;
+    struct polaris_smu_preflight last_preflight;
+    uint64_t now, upload_delay_us;
     uint8_t toc[4096], scratch[819200], image[9][16];
 };
 static int identity(void *p, uint32_t *v) { (void)p; *v = 0x67df1002; return 0; }
@@ -44,6 +47,7 @@ static int wr(void *p, uint32_t offset, uint32_t value)
     struct fake *f = p; ++f->io;
     if (f->fail_io && f->io == f->fail_io) return -1;
     ++f->writes;
+    if (offset != 0x6b0) ++f->state_writes;
     switch (offset) {
     case 0x6b0: f->index = value; return 0;
     case 0x6b4: {
@@ -59,6 +63,7 @@ static int wr(void *p, uint32_t offset, uint32_t value)
         if (f->index >= 0x20000 && f->index < 0x20010) {
             if (!(f->reset & 1)) return -1;
             ++f->uploads;
+            f->now += f->upload_delay_us;
         }
         if (f->index == 0x3006c && value == 0) f->cleared = 1;
         *a = value; return 0;
@@ -109,9 +114,14 @@ static int sync_dev(void *p, uint64_t gpu, uint64_t n)
     ++f->syncs; return 0;
 }
 static uint64_t now(void *p) { struct fake *f = p; f->now += f->time_step; return f->now; }
+static void preflight(void *p, const struct polaris_smu_preflight *seen)
+{
+    struct fake *f = p;
+    ++f->preflight_calls; f->last_preflight = *seen; f->state_writes_at_preflight = f->state_writes;
+}
 static struct polaris_smu_loader_ops ops(struct fake *f)
 {
-    struct polaris_smu_loader_ops o = {f,identity,rd,wr,map,sync_dev,now}; return o;
+    struct polaris_smu_loader_ops o = {f,identity,rd,wr,map,sync_dev,now,preflight}; return o;
 }
 static void init(struct fake *f)
 {
@@ -139,6 +149,13 @@ int main(void)
     const uint32_t arg[] = {8,0x200000,8,0x100000,0x47e};
     CHECK(memcmp(f->msg,msg,sizeof(msg)) == 0 && memcmp(f->arg,arg,sizeof(arg)) == 0);
     CHECK(f->scratch[0] == 0 && f->scratch[819199] == 0 && f->toc[4095] == 0);
+    /* The five SMC registers and the branch are reported once, before the first
+     * write that changes any state. */
+    CHECK(f->preflight_calls == 1 && c.preflight_valid && f->state_writes_at_preflight == 0);
+    CHECK(f->last_preflight.branch == POLARIS_SMU_BRANCH_WARM && f->last_preflight.smu_firmware == 0x20000 &&
+          f->last_preflight.clock_control == 0 && f->last_preflight.program_counter == 0x20100 &&
+          f->last_preflight.reset_control == 0 && f->last_preflight.firmware_flags == 1);
+    CHECK(c.previous_response_anomalies == 0 && c.upload_microseconds == 0);
     unsigned oldio = f->io;
     CHECK(polaris_smu_load(&c,&o,&r) == -1 && f->io == oldio);
     /* Reserved high bits neither complete a pending command nor invalidate
@@ -150,8 +167,11 @@ int main(void)
     CHECK(polaris_smu_load(&c,&o,&r) == POLARIS_SMU_LOAD_TIMEOUT && c.quarantined && f->count == 1);
     init(f); memset(&c,0,sizeof(c)); f->response_high=0xabcd0000; f->stale=1;
     CHECK(polaris_smu_load(&c,&o,&r) == POLARIS_SMU_LOAD_REJECTED && f->count == 0);
+    /* Linux v6.12 smu7_send_msg_to_smc logs a previous response other than 1 and
+     * sends its own message anyway: the load goes on, the anomaly is counted. */
     init(f); memset(&c,0,sizeof(c)); f->response_high=0xabcd0000; f->response=0xfe;
-    CHECK(polaris_smu_load(&c,&o,&r) == POLARIS_SMU_LOAD_REJECTED && f->count == 0);
+    CHECK(polaris_smu_load(&c,&o,&r) == 0 && c.loaded && !c.quarantined && c.messages == 5);
+    CHECK(c.previous_response_anomalies == 1 && c.previous_response_first == 0xfe);
     init(f); memset(&c,0,sizeof(c)); f->response=UINT32_MAX;
     CHECK(polaris_smu_load(&c,&o,&r) == POLARIS_SMU_LOAD_IO && f->count == 0);
     for (unsigned protected_mode = 0; protected_mode < 2; ++protected_mode) {
@@ -161,7 +181,25 @@ int main(void)
         CHECK(c.started && c.loaded && c.uploaded_dwords == 4 && c.protected_mode == protected_mode);
         CHECK(f->ram[0x20000/4] == 0x04030201 && f->ram[0x2000c/4] == 0x100f0e0d);
         CHECK(protected_mode ? f->authenticated && f->msg[0] == 0x100 : f->ram[0] == 0xe0008040);
+        CHECK(f->preflight_calls == 1 && f->state_writes_at_preflight == 0);
+        CHECK(f->last_preflight.branch ==
+              (protected_mode ? POLARIS_SMU_BRANCH_COLD_PROTECTED : POLARIS_SMU_BRANCH_COLD_UNPROTECTED));
+        CHECK(f->last_preflight.clock_control == 1 && f->last_preflight.program_counter == 0 &&
+              f->last_preflight.reset_control == 0 && f->last_preflight.firmware_flags == 0 &&
+              f->last_preflight.smu_firmware == (0x20000u | protected_mode << 16));
     }
+    /* The 10 s whole-load limit does not run while the SMC is held in reset: an
+     * upload that alone takes 12 s (three seconds per word) still completes, and
+     * the time is reported. The ordinary waits that follow still get their own
+     * budget. */
+    init(f); memset(&c,0,sizeof(c)); f->clock=1; f->pc=0; f->ram[0x3f000/4]=0;
+    f->upload_delay_us = 3000000;
+    CHECK(polaris_smu_load(&c,&o,&r) == 0 && c.loaded && c.started && !c.quarantined);
+    CHECK(c.upload_microseconds >= 12000000 && c.uploaded_dwords == 4);
+    init(f); memset(&c,0,sizeof(c)); f->clock=1; f->pc=0; f->ram[0x3f000/4]=0;
+    f->mode|=0x10000; f->upload_delay_us = 3000000;
+    CHECK(polaris_smu_load(&c,&o,&r) == 0 && c.loaded && c.protected_mode);
+    CHECK(c.upload_microseconds >= 12000000);
     init(f); memset(&c,0,sizeof(c)); f->partial=1;
     /* NEGCTL removes only SRAM completion wait: mailbox ACK alone must fail. */
     CHECK(polaris_smu_load(&c,&o,&r) == POLARIS_SMU_LOAD_TIMEOUT);
@@ -192,10 +230,25 @@ int main(void)
     CHECK(polaris_smu_load(&c,&o,&r) == POLARIS_SMU_LOAD_TIMEOUT && !c.quarantined && f->uploads == 0);
     init(f); memset(&c,0,sizeof(c)); f->pc=0x80000;
     CHECK(polaris_smu_load(&c,&o,&r) == POLARIS_SMU_LOAD_UNSUPPORTED && !c.quarantined);
+    CHECK(f->preflight_calls == 1 && f->state_writes == 0 &&
+          f->last_preflight.branch == POLARIS_SMU_BRANCH_REFUSED &&
+          f->last_preflight.program_counter == 0x80000);
     init(f); memset(&c,0,sizeof(c)); f->mode|=0x10;
     CHECK(polaris_smu_load(&c,&o,&r) == POLARIS_SMU_LOAD_UNSUPPORTED && !c.quarantined);
     init(f); memset(&c,0,sizeof(c)); f->response=0xfe;
-    CHECK(polaris_smu_load(&c,&o,&r) == POLARIS_SMU_LOAD_REJECTED && f->count == 0);
+    CHECK(polaris_smu_load(&c,&o,&r) == 0 && c.loaded && c.messages == 5);
+    CHECK(c.previous_response_anomalies == 1 && c.previous_response_first == 0xfe);
+    /* A stale RESP_0 of 0 (previous message never answered) or 0xfe (previous
+     * message unsupported) in front of the very first message of a cold
+     * protected start, SMU_TEST: it is logged, never a failure. */
+    const uint32_t stale_before_test[] = {0, 0xfe};
+    for (unsigned i = 0; i < 2; ++i) {
+        init(f); memset(&c,0,sizeof(c)); f->clock=1; f->pc=0; f->ram[0x3f000/4]=0;
+        f->mode|=0x10000; f->response=stale_before_test[i];
+        CHECK(polaris_smu_load(&c,&o,&r) == 0 && c.loaded && !c.quarantined && c.protected_mode);
+        CHECK(f->msg[0] == 0x100 && f->authenticated && c.messages == 6);
+        CHECK(c.previous_response_anomalies == 1 && c.previous_response_first == stale_before_test[i]);
+    }
     init(f); memset(&c,0,sizeof(c)); f->partial=2;
     CHECK(polaris_smu_load(&c,&o,&r) == POLARIS_SMU_LOAD_IO && c.quarantined && !c.loaded);
     init(f); memset(&c,0,sizeof(c)); f->mode=0; r.smc_security_key=0;

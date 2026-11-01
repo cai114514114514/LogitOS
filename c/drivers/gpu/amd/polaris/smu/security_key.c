@@ -6,14 +6,30 @@
  * registers read here have reserved bits that are zero on a live part. */
 #define REGISTER_READ_ABSENT UINT32_MAX
 
+/* Why a function of its own: which SMC file the board gets follows from this
+ * one bit and from nothing else, so the watched mutation reads the neighbouring
+ * bit (SMU_MODE, the protected-mode flag) instead and the gate must see the
+ * wrong file chosen. SMU_SEL is bit 17 (smu_7_1_3_sh_mask.h
+ * SMU_FIRMWARE__SMU_SEL_MASK 0x20000), polaris10_smumgr.c security_hard_key. */
+static unsigned security_key_from_register(uint32_t firmware_register)
+{
+#ifdef POLARIS_SECURITY_KEY_NEGCTL_READ_MODE_BIT
+    return !!(firmware_register & POLARIS_SMU_FIRMWARE_PROTECTED_MODE_MASK);
+#else
+    return (firmware_register & POLARIS_SMU_FIRMWARE_SECURITY_KEY_MASK) >>
+           POLARIS_SMU_FIRMWARE_SECURITY_KEY_SHIFT;
+#endif
+}
+
 /* Why this exists: the self-test must know which SMC microcode file the board
  * wants before it loads anything, and the only authority is the SMU_FIRMWARE
  * strap. The sequence is Linux vi_smc_rreg() with one extra read in front:
  * the access-control read refuses a port left in auto-increment mode, because
  * the index would then move after our data read and the next SMC access of
- * another component would land on the wrong address. Reads never change
- * state, so the single write below is the only side effect, and nothing is
- * written once a step has failed. */
+ * another component would land on the wrong address. With that refused, the
+ * data read cannot move the index, so the single index write below is the only
+ * register write of the sequence, and nothing is written once a step has
+ * failed. Two reads (access control, then data) and one write in all. */
 int polaris_security_key_read(const struct polaris_security_key_ops *ops,
                               struct polaris_security_key *out)
 {
@@ -48,13 +64,7 @@ int polaris_security_key_read(const struct polaris_security_key_ops *ops,
     }
 
     out->firmware_register = firmware_register;
-#ifdef POLARIS_SECURITY_KEY_NEGCTL_READ_MODE_BIT
-    /* Watched mutation: the protected-mode bit mistaken for the key. */
-    out->security_key = !!(firmware_register & POLARIS_SMU_FIRMWARE_PROTECTED_MODE_MASK);
-#else
-    out->security_key = (firmware_register & POLARIS_SMU_FIRMWARE_SECURITY_KEY_MASK) >>
-                        POLARIS_SMU_FIRMWARE_SECURITY_KEY_SHIFT;
-#endif
+    out->security_key = security_key_from_register(firmware_register);
     out->protected_mode = !!(firmware_register & POLARIS_SMU_FIRMWARE_PROTECTED_MODE_MASK);
     return POLARIS_SECURITY_KEY_OK;
 }

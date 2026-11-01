@@ -129,4 +129,47 @@ static void system_aperture(void)
         CHECK(p.write_reg(p.opaque,0x1234,9)<0 && mmio[0x1234/4]==0);
     }
 }
-int main(void){success();rejection();system_aperture();printf("NATIVE: %u checks, %u failures\n",checks,failures);return failures?1:0;}
+/* A run of register accesses shares one PCI identity verification (native.c):
+ * the SMC firmware upload is ~65000 accesses and must not re-walk the
+ * capability list for every one of them. Staleness is bounded to one batch. */
+static void batching(void)
+{
+    const unsigned batch=1024;
+    struct polaris_native n={0};struct polaris_platform p;struct polaris_native_resources r=resource();
+    uint32_t value;volatile uint8_t *cpu=NULL;
+    CHECK(!polaris_native_bind(&n,&r,&p) && n.identity_credit==0);
+    /* bind leaves no credit: the first access reads configuration space. */
+    unsigned before=pci_reads;
+    CHECK(!p.read_reg(p.opaque,0x1234,&value));
+    unsigned full_check=pci_reads-before;
+    CHECK(full_check>=6);
+    /* That check covers the rest of its batch without another PCI read. */
+    before=pci_reads;int covered=1;
+    for(unsigned i=1;i<batch;++i)
+        covered&=!(i&1?p.write_reg(p.opaque,0x1234,i):p.read_reg(p.opaque,0x1234,&value));
+    CHECK(covered && pci_reads==before);
+    /* The access after the batch verifies again. */
+    CHECK(!p.read_reg(p.opaque,0x1234,&value) && pci_reads-before==full_check);
+    /* A function that vanishes mid-batch is noticed at the end of the batch, no
+     * later: the rest of the batch still runs, then the next access faults. */
+    config[0]=0xffffffff;covered=1;
+    for(unsigned i=1;i<batch;++i) covered&=!p.read_reg(p.opaque,0x1234,&value);
+    CHECK(covered && !n.faulted);
+    CHECK(p.read_reg(p.opaque,0x1234,&value)<0 && n.faulted);
+    CHECK(p.write_reg(p.opaque,0x1234,5)<0 && mmio[0x1234/4]!=5);
+    /* The phase boundaries never trust a credit. */
+    n=(struct polaris_native){0};r=resource();
+    CHECK(!polaris_native_bind(&n,&r,&p) && !p.read_identity(p.opaque,&value));
+    before=pci_reads;CHECK(!p.read_reg(p.opaque,0x1234,&value) && pci_reads==before);
+    config[0]=0xffffffff;
+    CHECK(p.read_identity(p.opaque,&value)<0 && n.faulted);
+    n=(struct polaris_native){0};r=resource();
+    CHECK(!polaris_native_bind(&n,&r,&p) && !p.read_identity(p.opaque,&value));
+    config[0]=0xffffffff;
+    CHECK(p.resolve_mapping(p.opaque,0x100002000ull,4,&cpu)<0 && n.faulted);
+    n=(struct polaris_native){0};r=resource();
+    CHECK(!polaris_native_bind(&n,&r,&p) && !p.read_identity(p.opaque,&value));
+    config[0]=0xffffffff;
+    CHECK(p.sync(p.opaque,POLARIS_SDMA_TO_DEVICE,0x100002000ull,4096)<0 && n.faulted);
+}
+int main(void){success();rejection();system_aperture();batching();printf("NATIVE: %u checks, %u failures\n",checks,failures);return failures?1:0;}

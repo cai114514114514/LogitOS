@@ -644,15 +644,35 @@ static UINT64 load_kernel(EFI_HANDLE image)
 /* WHY THIS EXISTS. The first run of the AMD GPU self-test on real hardware
  * writes to the card (docs/superpowers/plans/2026-11-01-rx580-stage-b.md,
  * task B3). The owner must be able to switch it off from the boot stick alone,
- * without rebuilding anything: an empty file \LOGIT\NOGPU on the ESP does it.
+ * without rebuilding anything: an empty file \LOGIT\NOGPU (or NOGPU.TXT, which
+ * is what Windows makes of "NOGPU" with extensions hidden) on the ESP does it.
  * Only the loader can read the ESP, so a file that exists becomes a boot module
  * named "nogpu" (gpu_optout_marker.c has the contract). This runs BEFORE the
  * firmware files so the marker always has a registry slot: a full registry that
- * dropped it would silently run the self-test the owner asked not to run. */
+ * dropped it would silently run the self-test the owner asked not to run.
+ *
+ * It fails CLOSED. Whatever stops this code from knowing the owner's wish or
+ * from passing it on (no loaded-image or file-system protocol, a volume that
+ * will not open, a lookup that fails with anything but "not found", no pages
+ * for the module, a full module registry) switches the self-test off: the loader
+ * says why on the serial line and sends LOGIT_BOOT_TAG_GPU_OPTOUT, which needs
+ * no memory of its own beyond the information block every boot must have. */
 #include "gpu_optout_marker.c"
 
 static struct gpu_optout_slot optout_slot;
 static void load_fw_module_from_slot(const struct gpu_optout_slot *slot);
+/* Set when the kernel must treat the self-test as off without a "nogpu" module. */
+static int gpu_optout_assumed;
+
+/* Why one function: every way of not knowing ends the same, with the same kind
+ * of line, so a photo of the screen shows which door was shut. */
+static void assume_gpu_optout(const char *why)
+{
+    gpu_optout_assumed = 1;
+    say("[efi] GPU opt-out marker state unknown (");
+    say(why);
+    say("): GPU self-test off (assumed)\n");
+}
 
 static void load_optout_marker(EFI_HANDLE image)
 {
@@ -661,23 +681,40 @@ static void load_optout_marker(EFI_HANDLE image)
     EFI_LOADED_IMAGE_PROTOCOL *li = 0;
     EFI_SIMPLE_FILE_SYSTEM_PROTOCOL *fs = 0;
     EFI_FILE_PROTOCOL *root = 0;
-    if (BS->HandleProtocol(image, &li_guid, (void **)&li))
+    if (BS->HandleProtocol(image, &li_guid, (void **)&li)) {
+        assume_gpu_optout("loaded image protocol unavailable");
         return;
-    if (BS->HandleProtocol(li->DeviceHandle, &sfs_guid, (void **)&fs))
+    }
+    if (BS->HandleProtocol(li->DeviceHandle, &sfs_guid, (void **)&fs)) {
+        assume_gpu_optout("boot volume has no file system protocol");
         return;
-    if (fs->OpenVolume(fs, &root))
+    }
+    if (fs->OpenVolume(fs, &root)) {
+        assume_gpu_optout("boot volume cannot be opened");
         return;
+    }
     enum gpu_optout_outcome outcome =
         gpu_optout_marker_collect(BS, root, &optout_slot, allocated_range_is_loader_data);
     root->Close(root);
     if (outcome != GPU_OPTOUT_ABSENT) {
         say("[efi] ");
         say(gpu_optout_outcome_name(outcome));
+        if (optout_slot.found_path) {
+            say(" (");
+            say(optout_slot.found_path);
+            say(")");
+        }
+        if (outcome == GPU_OPTOUT_UNREADABLE) {
+            say(" status ");
+            sayx(optout_slot.unreadable_status);
+        }
         say(outcome == GPU_OPTOUT_FOUND ? ": GPU self-test off\n"
-                                        : ": GPU self-test NOT disabled\n");
+                                        : ": GPU self-test off (assumed)\n");
     }
     if (outcome == GPU_OPTOUT_FOUND)
         load_fw_module_from_slot(&optout_slot);
+    else if (gpu_optout_outcome_assumes_opt_out(outcome))
+        gpu_optout_assumed = 1;
 }
 
 /* ------------------------------------------------------------------ *
@@ -719,8 +756,11 @@ static char fw_index_text[FW_INDEX_BYTES_MAX + 1];
  * check treat it like every other. The caller has checked the slot's pages. */
 static void load_fw_module_from_slot(const struct gpu_optout_slot *slot)
 {
-    if (fw_module_count == LOGIT_BOOT_MODULES_MAX)
+    if (fw_module_count == LOGIT_BOOT_MODULES_MAX) {
+        /* The marker was found and cannot be passed on as a module. */
+        assume_gpu_optout("module registry full");
         return;
+    }
     struct fw_module *module = &fw_modules[fw_module_count++];
     module->lo = slot->lo;
     module->hi = slot->hi;
@@ -909,6 +949,17 @@ static void load_firmware_modules(EFI_HANDLE image)
     say(", ");
     sayd(total);
     say(" bytes\n");
+}
+
+/* The header-only tag that carries the fail-closed GPU opt-out when no module
+ * can (gpu_optout_marker.h). Nothing is emitted for a clean "no marker". */
+static void build_gpu_optout_tag(struct infobuf *ib)
+{
+    if (!gpu_optout_assumed)
+        return;
+    struct logit_boot_tag *tag = ib_take(ib, sizeof(*tag));
+    tag->type = LOGIT_BOOT_TAG_GPU_OPTOUT;
+    tag->size = (UINT32)sizeof(*tag);
 }
 
 /* One LOGIT_BOOT_TAG_MODULE per file, name NUL-terminated after the fixed part
@@ -1541,6 +1592,7 @@ void efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *systab)
                       + sizeof(struct logit_boot_display_tag) + 8  /* GOP report */
                       + LOGIT_BOOT_MODULES_MAX                     /* module tags */
                         * (sizeof(struct logit_boot_module_tag) + LOGIT_BOOT_MODULE_NAME_MAX + 8)
+                      + sizeof(struct logit_boot_tag)            /* GPU opt-out tag */
                       + 16 + max_entries * 24    /* mmap tag */
                       + 16;                      /* end tag + alignment */
     info_bytes = (info_bytes + 0xFFF) & ~(UINTN)0xFFF;
@@ -1588,6 +1640,7 @@ void efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *systab)
     build_acpi_tag(&ib);
     build_smbios_tag(&ib);
     build_module_tags(&ib);
+    build_gpu_optout_tag(&ib);
 
     /* The mmap tag goes last because it is the only variable-size tag that may
      * have to be rebuilt if ExitBootServices rejects the key. Remembering the

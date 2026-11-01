@@ -12,6 +12,13 @@ enum {
     HDP_MISC=0x2f4c, HDP_DEBUG=0x2f30, HDP_FLUSH=0x5480,
     BIF_FB=0x5490, MEMSIZE=0x5428
 };
+/* Register accesses that share one full PCI identity check. The check costs
+ * about a dozen configuration reads (port I/O on this platform, microseconds
+ * each); at this size an SMC firmware upload of 32768 words (65536 accesses,
+ * smu/loader.c) pays for 64 checks instead of 65536, and a function that
+ * vanishes or moves is still noticed within roughly a millisecond of MMIO
+ * traffic. Linux does no per-access check at all. */
+#define POLARIS_NATIVE_ACCESSES_PER_IDENTITY_CHECK 1024u
 static int span(const void *p,uint64_t n)
 { return p && n && n<=UINTPTR_MAX-(uintptr_t)p; }
 static int overlap(const void *a,uint64_t an,const void *b,uint64_t bn)
@@ -101,31 +108,78 @@ static int check_mapping(struct polaris_native *n,int first)
                 n->system_low=low;n->system_high=high;n->l1_mode=mode&0x78u;}
     return 0;
 }
+/* Why a full check here and a credit elsewhere: the explicit identity request
+ * is the phase boundary (the SMU loader and the SDMA engine ask once when they
+ * start), so it always re-reads configuration space and then covers the
+ * accesses that follow. */
 static int read_identity(void *opaque,uint32_t *out)
 {
-    struct polaris_native *n=opaque;uint32_t v;
-    if (!n || !n->bound || !out || identity(n,&v)) {if(n)n->faulted=1;return -1;}
-    *out=v;return 0;
+    struct polaris_native *native=opaque;
+    uint32_t identity_value;
+    if (!native || !native->bound || !out) {
+        return -1;
+    }
+    if (identity(native,&identity_value)) {
+        native->faulted=1;
+        return -1;
+    }
+    native->identity_credit=POLARIS_NATIVE_ACCESSES_PER_IDENTITY_CHECK;
+    *out=identity_value;
+    return 0;
+}
+/* Why a per-batch check: see POLARIS_NATIVE_ACCESSES_PER_IDENTITY_CHECK. The
+ * access that finds the credit used up pays for the full check and starts the
+ * next batch with itself already counted. A fault is latched, so a later
+ * access never runs on a credit earned before it. */
+static int register_access_allowed(struct polaris_native *native)
+{
+    uint32_t identity_value;
+    if (native->faulted) {
+        return -1;
+    }
+    if (native->identity_credit) {
+        --native->identity_credit;
+        return 0;
+    }
+    if (identity(native,&identity_value)) {
+        native->faulted=1;
+        return -1;
+    }
+    native->identity_credit=POLARIS_NATIVE_ACCESSES_PER_IDENTITY_CHECK-1u;
+    return 0;
 }
 static int read_reg(void *opaque,uint32_t at,uint32_t *out)
 {
-    struct polaris_native *n=opaque;uint32_t id;
-    if (!n || !n->bound || !out || (at&3u) || at>n->resource.bar5_bytes-4) return -1;
-    if (identity(n,&id)) {n->faulted=1;return -1;}
-    *out=raw_read(n,at);return 0;
+    struct polaris_native *native=opaque;
+    if (!native || !native->bound || !out || (at&3u) || at>native->resource.bar5_bytes-4) {
+        return -1;
+    }
+    if (register_access_allowed(native)) {
+        return -1;
+    }
+    *out=raw_read(native,at);
+    return 0;
 }
 static int write_reg(void *opaque,uint32_t at,uint32_t value)
 {
-    struct polaris_native *n=opaque;uint32_t id;
-    if (!n || !n->bound || (at&3u) || at>n->resource.bar5_bytes-4) return -1;
-    if (identity(n,&id)) {n->faulted=1;return -1;}
-    raw_write(n,at,value);return 0;
+    struct polaris_native *native=opaque;
+    if (!native || !native->bound || (at&3u) || at>native->resource.bar5_bytes-4) {
+        return -1;
+    }
+    if (register_access_allowed(native)) {
+        return -1;
+    }
+    raw_write(native,at,value);
+    return 0;
 }
 static int resolve(void *opaque,uint64_t gpu,uint64_t bytes,volatile uint8_t **out)
 {
     struct polaris_native *n=opaque;
     if (!n || !n->bound || !out || n->faulted) return -1;
     if (check_mapping(n,0)) {n->faulted=1;return -1;}
+    /* check_mapping verified identity in full, which covers the accesses that
+     * follow (see register_access_allowed). */
+    n->identity_credit=POLARIS_NATIVE_ACCESSES_PER_IDENTITY_CHECK;
     if (!inside(gpu,bytes,n->resource.arena.base,n->resource.arena.bytes) &&
         !inside(gpu,bytes,n->resource.scanout.base,n->resource.scanout.bytes)) return -1;
     if (!inside(gpu,bytes,n->vram_base,n->resource.bar0_bytes)) return -1;
