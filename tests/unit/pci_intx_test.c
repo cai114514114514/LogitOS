@@ -93,6 +93,28 @@ void lapic_eoi(void)
     atomic_fetch_add(&eois, 1);
 }
 void pic_eoi(int v) { (void)v; }
+/* The scheduler observer's hooks inside irq_isr_entry().  This host fixture
+ * exercises vector dispatch and retirement, not measurement, so each hook
+ * records nothing; the real hooks are tested by test-sched-observe-host. */
+static uint64_t flight_interrupt_arrival_tsc(void)
+{
+    return 0;
+}
+
+static void flight_interrupt_enter(uint32_t vector, uint64_t arrival_tsc)
+{
+    (void)vector;
+    (void)arrival_tsc;
+}
+
+static void flight_interrupt_leave(void)
+{
+}
+
+static void observe_advance_shutdown(void)
+{
+}
+
 #include "irq_body.c"
 
 /* Register leaves run under the real ioapic_gate. Keep sequence numbers to
