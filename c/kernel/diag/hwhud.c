@@ -5,6 +5,7 @@
 #include <stddef.h>
 #include "driver.h"
 #include "wm_trace.h"
+#include "smp.h"
 #ifndef HWHUD_FORMAT_HOST
 #include "kprintf.h"
 #endif
@@ -83,6 +84,27 @@ static void slow_format(char *out, size_t capacity,
               (unsigned long)(frame->top_ns / 1000),
               (unsigned long)(frame->present_ns / 1000),
               (unsigned long)(frame->glass_ns / 1000));
+}
+
+/* One HUD line for the IPI-parallel present: whether the other cores answer
+ * vector 241 inside the wait, which ones do not, and whether the path has
+ * switched itself off. Pure so the host test pins every character. */
+static void par_format(char *out, size_t capacity, const struct smp_present_stats *stats)
+{
+    uint64_t max_wait_us = stats->tsc_hz ?
+        stats->wait_cycles_max * 1000000ull / stats->tsc_hz : 0;
+    char state[48];
+    if (stats->disabled) {
+        ksnprintf(state, sizeof state, "off(%lu/%lu timed out)",
+                  (unsigned long)stats->disable_timeouts, (unsigned long)stats->disable_calls);
+    } else {
+        ksnprintf(state, sizeof state, "on");
+    }
+    ksnprintf(out, capacity, "par  calls=%lu fast=%lu timeouts=%lu fallback_bands=%lu "
+              "max_wait_us=%lu missing=%lx state=%s",
+              (unsigned long)stats->calls, (unsigned long)stats->fast,
+              (unsigned long)stats->timeouts, (unsigned long)stats->fallback_bands,
+              (unsigned long)max_wait_us, (unsigned long)stats->missing_mask, state);
 }
 
 /* Host gates include just the pure formatters above. The production build
@@ -511,6 +533,11 @@ void hwhud_tick(const struct hwhud_wm *wm)
     lines_cpu(dms);
     lines_clock(dms);
     lines_wm(wm, dms);
+    struct smp_present_stats par;
+    smp_present_stats(&par);
+    char par_line[256];
+    par_format(par_line, sizeof par_line, &par);
+    add_wrapped(par_line);
     lines_irq(dms);
     lines_mtrr();
     lines_thermal();

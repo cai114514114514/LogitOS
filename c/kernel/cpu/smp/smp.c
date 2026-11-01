@@ -34,6 +34,7 @@
 #include "spinlock.h"
 #include "prot.h"       /* cpu_prot_report: EFER/CR4 are per-core, so this is too */
 #include "ktime.h"
+#include "present_policy.h"
 
 void *memcpy(void *, const void *, size_t);
 void *kmalloc(unsigned long);
@@ -243,6 +244,44 @@ static void run_test_ipi_probe(void)
  * published band + the ack word. */
 static struct { int x, y, w, h; } g_band[PERCPU_MAXCPU];
 static volatile int g_band_ack[PERCPU_MAXCPU];
+_Static_assert(PERCPU_MAXCPU <= SMP_PRESENT_STATS_CORES, "present stats cover every core");
+
+/* Present diagnostics. Presents are serialised by the framebuffer lock, so
+ * there is one writer; relaxed atomics keep the HUD's reads tear-free without
+ * ordering cost on the present path. */
+static uint64_t g_pstat_calls;
+static uint64_t g_pstat_fast;
+static uint64_t g_pstat_timeouts;
+static uint64_t g_pstat_fallback_bands;
+static uint64_t g_pstat_wait_total;
+static uint64_t g_pstat_wait_max;
+static uint64_t g_pstat_miss[PERCPU_MAXCPU];
+static int      g_pstat_disabled;
+static uint64_t g_pstat_disable_timeouts;
+static uint64_t g_pstat_disable_calls;
+static struct smp_present_window g_present_window;
+
+/* WHY: the HUD and the disable message need one consistent view of the
+ * counters; the mask is derived here so both report the same cores. */
+void smp_present_stats(struct smp_present_stats *out)
+{
+    out->calls = __atomic_load_n(&g_pstat_calls, __ATOMIC_RELAXED);
+    out->fast = __atomic_load_n(&g_pstat_fast, __ATOMIC_RELAXED);
+    out->timeouts = __atomic_load_n(&g_pstat_timeouts, __ATOMIC_RELAXED);
+    out->fallback_bands = __atomic_load_n(&g_pstat_fallback_bands, __ATOMIC_RELAXED);
+    out->wait_cycles_total = __atomic_load_n(&g_pstat_wait_total, __ATOMIC_RELAXED);
+    out->wait_cycles_max = __atomic_load_n(&g_pstat_wait_max, __ATOMIC_RELAXED);
+    out->tsc_hz = time_source_hz(TIMESRC_TSC);
+    out->missing_mask = 0;
+    for (int i = 0; i < SMP_PRESENT_STATS_CORES; i++) {
+        uint64_t misses = i < PERCPU_MAXCPU ? __atomic_load_n(&g_pstat_miss[i], __ATOMIC_RELAXED) : 0;
+        out->miss[i] = misses;
+        if (misses) out->missing_mask |= 1ull << i;
+    }
+    out->disabled = __atomic_load_n(&g_pstat_disabled, __ATOMIC_ACQUIRE);
+    out->disable_timeouts = __atomic_load_n(&g_pstat_disable_timeouts, __ATOMIC_RELAXED);
+    out->disable_calls = __atomic_load_n(&g_pstat_disable_calls, __ATOMIC_RELAXED);
+}
 
 void smp_present_ipi(void)               /* vector-241 handler body (interrupts.c) */
 {
@@ -266,6 +305,51 @@ void smp_kick_others(void)
     int self = this_cpu()->index;
     for (int i = 0; i < n; i++)
         if (i != self) (void)lapic_send_ipi(g_cpus[i].lapic_id, 243);
+}
+
+/* WHY: the parallel present is only a win while the other cores answer the
+ * IPI promptly (Intel SDM Vol. 3A 10.6: delivery is asynchronous and the
+ * target services it only when it can take the interrupt). On a machine where
+ * they do not, every tall present pays the whole timeout plus a serial copy,
+ * so the path switches itself off once the policy has proof. fb.c reads the
+ * pointer once per present, so unregistering with the framebuffer lock held
+ * cannot be seen half-way. */
+static void present_disable_parallel(void)
+{
+    struct smp_present_stats stats;
+    fb_set_present_par((void (*)(int, int, int, int))0);
+    __atomic_store_n(&g_pstat_disable_timeouts,
+                     __atomic_load_n(&g_pstat_timeouts, __ATOMIC_RELAXED), __ATOMIC_RELAXED);
+    __atomic_store_n(&g_pstat_disable_calls,
+                     __atomic_load_n(&g_pstat_calls, __ATOMIC_RELAXED), __ATOMIC_RELAXED);
+    __atomic_store_n(&g_pstat_disabled, 1, __ATOMIC_RELEASE);
+    smp_present_stats(&stats);
+    uint64_t max_wait_us = stats.tsc_hz ? stats.wait_cycles_max * 1000000ull / stats.tsc_hz : 0;
+    kprintf("[smp] parallel present disabled: %lu/%lu timed out, missing cores mask=%lx, max wait %lu us\n",
+            (unsigned long)stats.timeouts, (unsigned long)stats.calls,
+            (unsigned long)stats.missing_mask, (unsigned long)max_wait_us);
+}
+
+/* WHY: one place records a wait's outcome and feeds the policy, so the fast
+ * path and the timeout path cannot drift apart. Returns 1 when the policy says
+ * to disable the parallel present after this frame's fallback copy. */
+static int present_account_wait(uint64_t wait_cycles, int all_acked,
+                                const int *band_of, int nb)
+{
+    __atomic_fetch_add(&g_pstat_calls, 1, __ATOMIC_RELAXED);
+    __atomic_fetch_add(&g_pstat_wait_total, wait_cycles, __ATOMIC_RELAXED);
+    if (wait_cycles > __atomic_load_n(&g_pstat_wait_max, __ATOMIC_RELAXED))
+        __atomic_store_n(&g_pstat_wait_max, wait_cycles, __ATOMIC_RELAXED);
+    if (all_acked) {
+        __atomic_fetch_add(&g_pstat_fast, 1, __ATOMIC_RELAXED);
+    } else {
+        __atomic_fetch_add(&g_pstat_timeouts, 1, __ATOMIC_RELAXED);
+        for (int i = 0; i < nb; i++) {
+            if (__atomic_load_n(&g_band_ack[band_of[i]], __ATOMIC_ACQUIRE) == 1) continue;
+            __atomic_fetch_add(&g_pstat_miss[band_of[i]], 1, __ATOMIC_RELAXED);
+        }
+    }
+    return smp_present_policy(&g_present_window, !all_acked);
 }
 
 static void smp_present_par(int x, int y, int w, int h)
@@ -296,20 +380,27 @@ static void smp_present_par(int x, int y, int w, int h)
 
     fb_copy_rect(g_band[self].x, g_band[self].y, g_band[self].w, g_band[self].h);
 
-    /* Bounded wait, then idempotent fallback for any band still un-acked. */
+    /* Bounded wait, then idempotent fallback for any band still un-acked. The
+     * TSC brackets only the wait, so the counters show what the IPIs cost. */
+    uint64_t wait_start = __builtin_ia32_rdtsc();
+    int all_acked = 0;
     for (volatile long spin = 0; spin < 500000L; spin++) {
         int done = 1;
         for (int i = 0; i < nb; i++)
             if (__atomic_load_n(&g_band_ack[band_of[i]], __ATOMIC_ACQUIRE) != 1) { done = 0; break; }
-        if (done) return;
+        if (done) { all_acked = 1; break; }
         __asm__ volatile ("pause");
     }
+    int disable_now = present_account_wait(__builtin_ia32_rdtsc() - wait_start,
+                                           all_acked, band_of, nb);
+    if (all_acked) return;
     for (int i = 0; i < nb; i++) {
         int c = band_of[i];
         int pending = 0;
         if (__atomic_compare_exchange_n(&g_band_ack[c], &pending, 2, 0,
                                         __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) {
             fb_copy_rect(g_band[c].x, g_band[c].y, g_band[c].w, g_band[c].h);
+            __atomic_fetch_add(&g_pstat_fallback_bands, 1, __ATOMIC_RELAXED);
             __atomic_store_n(&g_band_ack[c], 1, __ATOMIC_RELEASE);
         } else {
             /* A RUNNING reader still owns the backdrop. Do not recycle its
@@ -320,6 +411,7 @@ static void smp_present_par(int x, int y, int w, int h)
             }
         }
     }
+    if (disable_now) present_disable_parallel();
 }
 
 /* First C code each AP runs: enable LAPIC, load the shared IDT + its own GDT/TSS,
