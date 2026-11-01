@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "amd/polaris/selftest/selftest.h"
 #include "amd/polaris/pci_id.h"
+#include "amd/polaris/memory/gmc_aperture.h"
 #include "kprintf.h"
 
 /* The stage exists only in HWHUD builds. The guard wraps the whole file, so a
@@ -122,6 +123,10 @@ static struct polaris_platform guarded_platform;
  * registers through it only then, and a stale guard from an earlier run must
  * not count. */
 static int guard_is_installed;
+/* The memory-controller values the firmware had before gmc_aperture_prepare
+ * changed them (memory/gmc_aperture.h). Static, because quiesce runs from a
+ * later call, at reboot or power-off. */
+static struct gmc_aperture_snapshot memory_controller_snapshot;
 
 /* Why one function: the watched mutation removes exactly this decision, and
  * the gate must see the unleased write get through. */
@@ -472,27 +477,180 @@ static const struct diagnostic_register diagnostic_registers[DIAGNOSTIC_REGISTER
     [DIAGNOSTIC_BIF_FB_EN] = {"bif_fb", BAR5_BYTE_OFFSET(MM_BIF_FB_EN)}
 };
 
+/* The rest of the memory-controller state that decides whether the aperture
+ * may be programmed (gmc_8_1_d.h, oss_3_0_d.h word indices), so a refusal on
+ * the real board can be read off one boot log. */
+#define MM_MC_VM_AGP_TOP 0x80au
+#define MM_MC_VM_AGP_BOT 0x80bu
+#define MM_MC_VM_AGP_BASE 0x80cu
+#define MM_MC_VM_SYSTEM_APERTURE_DEFAULT_ADDR 0x80fu
+#define MM_VM_L2_CNTL 0x500u
+#define MM_VM_CONTEXT0_CNTL 0x504u
+#define MM_VM_CONTEXT1_CNTL 0x505u
+#define MM_VM_CONTEXT0_PROTECTION_FAULT_STATUS 0x536u
+#define MM_VM_CONTEXT0_PAGE_TABLE_BASE_ADDR 0x54fu
+#define MM_SRBM_STATUS 0x394u
+
+enum memory_controller_register_index {
+    MEMORY_CONTROLLER_AGP_TOP,
+    MEMORY_CONTROLLER_AGP_BOTTOM,
+    MEMORY_CONTROLLER_AGP_BASE,
+    MEMORY_CONTROLLER_APERTURE_DEFAULT,
+    MEMORY_CONTROLLER_L2_CONTROL,
+    MEMORY_CONTROLLER_CONTEXT0_CONTROL,
+    MEMORY_CONTROLLER_CONTEXT1_CONTROL,
+    MEMORY_CONTROLLER_CONTEXT0_FAULT_STATUS,
+    MEMORY_CONTROLLER_CONTEXT0_PAGE_TABLE,
+    MEMORY_CONTROLLER_SRBM_STATUS,
+    MEMORY_CONTROLLER_REGISTER_COUNT
+};
+
+static const struct diagnostic_register memory_controller_registers[MEMORY_CONTROLLER_REGISTER_COUNT] = {
+    [MEMORY_CONTROLLER_AGP_TOP] = {"agp_top", BAR5_BYTE_OFFSET(MM_MC_VM_AGP_TOP)},
+    [MEMORY_CONTROLLER_AGP_BOTTOM] = {"agp_bot", BAR5_BYTE_OFFSET(MM_MC_VM_AGP_BOT)},
+    [MEMORY_CONTROLLER_AGP_BASE] = {"agp_base", BAR5_BYTE_OFFSET(MM_MC_VM_AGP_BASE)},
+    [MEMORY_CONTROLLER_APERTURE_DEFAULT] =
+        {"sys_default", BAR5_BYTE_OFFSET(MM_MC_VM_SYSTEM_APERTURE_DEFAULT_ADDR)},
+    [MEMORY_CONTROLLER_L2_CONTROL] = {"l2", BAR5_BYTE_OFFSET(MM_VM_L2_CNTL)},
+    [MEMORY_CONTROLLER_CONTEXT0_CONTROL] = {"ctx0", BAR5_BYTE_OFFSET(MM_VM_CONTEXT0_CNTL)},
+    [MEMORY_CONTROLLER_CONTEXT1_CONTROL] = {"ctx1", BAR5_BYTE_OFFSET(MM_VM_CONTEXT1_CNTL)},
+    [MEMORY_CONTROLLER_CONTEXT0_FAULT_STATUS] =
+        {"ctx0_fault", BAR5_BYTE_OFFSET(MM_VM_CONTEXT0_PROTECTION_FAULT_STATUS)},
+    [MEMORY_CONTROLLER_CONTEXT0_PAGE_TABLE] =
+        {"ctx0_ptb", BAR5_BYTE_OFFSET(MM_VM_CONTEXT0_PAGE_TABLE_BASE_ADDR)},
+    [MEMORY_CONTROLLER_SRBM_STATUS] = {"srbm", BAR5_BYTE_OFFSET(MM_SRBM_STATUS)}
+};
+
+/* Registers per log line: a klog record keeps 112 bytes of text
+ * (c/kernel/diag/klog.h KLOG_TEXT), and the first real-board bind failure lost
+ * everything after the fifth register when all ten shared one line. */
+#define REGISTERS_PER_LOG_LINE 4u
+
+/* Why one helper: every register dump is printed the same way, a few
+ * registers per line so no klog record is cut off. */
+static void log_register_table(const struct run_state *state, const char *label,
+                               const struct diagnostic_register *table, unsigned count)
+{
+    for (unsigned first = 0; first < count; first += REGISTERS_PER_LOG_LINE) {
+        char text[BIND_DIAGNOSTICS_BYTES];
+        int used = 0;
+        text[0] = '\0';
+        for (unsigned index = first; index < count && index < first + REGISTERS_PER_LOG_LINE; ++index) {
+            uint32_t value = 0;
+            if (state->ops->read_diagnostic_register(state->ops->context, table[index].byte_offset,
+                                                     &value)) {
+                continue;
+            }
+            used += ksnprintf(text + used, (int)sizeof text - used, "%s=%08x ", table[index].name,
+                              value);
+            if (used >= (int)sizeof text) {
+                break;
+            }
+        }
+        kprintf("[amd-polaris-runtime] %s %s\n", label, text);
+    }
+}
+
 /* Why a separate line: it is not a stage, so the one-line-per-stage rule and
  * the HUD stay clean, and it is printed only when a bind has just failed. */
 static void log_bind_diagnostics(const struct run_state *state)
 {
-    char text[BIND_DIAGNOSTICS_BYTES];
-    int used = 0;
-    text[0] = '\0';
-    for (unsigned index = 0; index < DIAGNOSTIC_REGISTER_COUNT; ++index) {
-        uint32_t value = 0;
-        if (state->ops->read_diagnostic_register(state->ops->context,
-                                                 diagnostic_registers[index].byte_offset,
-                                                 &value)) {
-            continue;
-        }
-        used += ksnprintf(text + used, (int)sizeof text - used, "%s=%08x ",
-                          diagnostic_registers[index].name, value);
-        if (used >= (int)sizeof text) {
-            break;
+    log_register_table(state, "bind-diagnostics", diagnostic_registers, DIAGNOSTIC_REGISTER_COUNT);
+    log_register_table(state, "gmc-diagnostics", memory_controller_registers,
+                       MEMORY_CONTROLLER_REGISTER_COUNT);
+}
+
+/* Why a port of its own: the aperture is programmed BEFORE the native platform
+ * exists (its bind is what needs the aperture), so these accesses go through
+ * the environment's own BAR5 accessors, and still only while the lease is
+ * held, like every other register access of the self-test. */
+static int memory_controller_read(void *context, uint32_t byte_offset, uint32_t *value)
+{
+    const struct run_state *state = context;
+    if (!state->ops->lease_held(state->ops->context)) {
+        return GUARD_ACCESS_REFUSED;
+    }
+    return state->ops->read_diagnostic_register(state->ops->context, byte_offset, value);
+}
+
+/* The write half of the same port; see memory_controller_read. */
+static int memory_controller_write(void *context, uint32_t byte_offset, uint32_t value)
+{
+    const struct run_state *state = context;
+    if (!state->ops->write_register || !state->ops->lease_held(state->ops->context)) {
+        return GUARD_ACCESS_REFUSED;
+    }
+    return state->ops->write_register(state->ops->context, byte_offset, value);
+}
+
+/* The clock for the bounded idle wait. */
+static uint64_t memory_controller_now_us(void *context)
+{
+    const struct run_state *state = context;
+    return state->ops->now_us(state->ops->context);
+}
+
+/* The page the memory controller answers unmapped accesses with. Linux uses
+ * its own VRAM scratch page (mem_scratch); the VBIOS driver-scratch area is
+ * that page here, and the arena's first page stands in when the VBIOS named
+ * none. Both are inside VRAM and kept out of every other use by B2. */
+static uint64_t memory_controller_default_address(const struct run_state *state)
+{
+    const struct polaris_arena_plan *plan = state->inputs->arena_plan;
+    for (size_t index = 0; index < plan->inventory.count; ++index) {
+        if (plan->inventory.kind[index] == POLARIS_ARENA_RESERVE_VBIOS_DRIVER_SCRATCH) {
+            return plan->inventory.range[index].base;
         }
     }
-    kprintf("[amd-polaris-runtime] bind-diagnostics %s\n", text);
+    return plan->arena.base;
+}
+
+/* Why before bind: the native platform refuses (native.c check_mapping) any
+ * memory controller not in the state Linux leaves it in, and the board's GOP
+ * leaves it in another one. The owner approved programming exactly the system
+ * aperture and the L1 access mode the Linux way (memory/gmc_aperture.h). The
+ * outcome is always logged, with the register dump when it was refused. */
+static enum gmc_aperture_outcome prepare_memory_controller(struct run_state *state)
+{
+    struct gmc_register_port port = {
+        .context = state,
+        .read = memory_controller_read,
+        .write = memory_controller_write,
+        .now_us = memory_controller_now_us,
+    };
+    int idle_timed_out = 0;
+    enum gmc_aperture_outcome outcome =
+        gmc_aperture_prepare(&port, state->inputs->vram, memory_controller_default_address(state),
+                             &memory_controller_snapshot, &idle_timed_out);
+    kprintf("[amd-polaris-runtime] gmc result=%s firmware-l1=%08x firmware-aperture=%08x-%08x "
+            "mc-idle=%s\n",
+            gmc_aperture_outcome_name(outcome), memory_controller_snapshot.l1_tlb_control,
+            memory_controller_snapshot.aperture_low_page, memory_controller_snapshot.aperture_high_page,
+            idle_timed_out ? "timeout" : "ok");
+    if (outcome != GMC_APERTURE_PROGRAMMED && outcome != GMC_APERTURE_ALREADY_CONFIGURED) {
+        log_register_table(state, "gmc-diagnostics", memory_controller_registers,
+                           MEMORY_CONTROLLER_REGISTER_COUNT);
+    }
+    return outcome;
+}
+
+/* Why: whatever stage fails after the aperture was programmed, the card goes
+ * back to the firmware's values before the self-test gives up, in the reverse
+ * order (memory/gmc_aperture.h). The lease is still held here. */
+static void restore_memory_controller(struct run_state *state)
+{
+    struct gmc_register_port port = {
+        .context = state,
+        .read = memory_controller_read,
+        .write = memory_controller_write,
+        .now_us = memory_controller_now_us,
+    };
+    if (!memory_controller_snapshot.programmed) {
+        return;
+    }
+    int failed = gmc_aperture_restore(&port, &memory_controller_snapshot);
+    kprintf("[amd-polaris-runtime] gmc result=%s\n",
+            failed ? "restore-incomplete" : "restored-firmware-values");
 }
 
 /* Why read-only and why PCI Command in the failure text: the native platform
@@ -503,6 +661,14 @@ static enum polaris_selftest_result stage_bind(struct run_state *state)
 {
     fill_memory_request(state);
     fill_resources(state);
+    enum gmc_aperture_outcome memory_controller = prepare_memory_controller(state);
+    if (memory_controller != GMC_APERTURE_PROGRAMMED &&
+        memory_controller != GMC_APERTURE_ALREADY_CONFIGURED) {
+        char detail[LOG_DETAIL_BYTES];
+        ksnprintf(detail, sizeof detail, "gmc=%s", gmc_aperture_outcome_name(memory_controller));
+        record(state->report, POLARIS_SELFTEST_STAGE_BIND, POLARIS_SELFTEST_FAILED_BIND, detail);
+        return POLARIS_SELFTEST_FAILED_BIND;
+    }
     if (polaris_desktop_bind(&state->resources, &state->request,
                              &state->native_platform)) {
         uint32_t command = 0;
@@ -798,6 +964,25 @@ static enum polaris_selftest_result stage_firmware_and_runtime(struct run_state 
  * after a failure runs, so nothing after a failure writes. The state is static
  * because the platform stored in the runtime keeps pointers into the
  * environment for the rest of the boot. */
+/* Why split out: every stage from bind on may run after the memory controller
+ * was programmed, and the caller undoes that on any failure in one place. */
+static enum polaris_selftest_result run_from_bind(struct run_state *state)
+{
+    enum polaris_selftest_result result = stage_bind(state);
+    if (result != POLARIS_SELFTEST_OK) {
+        return result;
+    }
+    result = stage_mapping(state);
+    if (result != POLARIS_SELFTEST_OK) {
+        return result;
+    }
+    result = stage_key(state);
+    if (result != POLARIS_SELFTEST_OK) {
+        return result;
+    }
+    return stage_firmware_and_runtime(state);
+}
+
 enum polaris_selftest_result
 polaris_selftest_run(const struct polaris_selftest_inputs *inputs,
                      const struct polaris_selftest_ops *ops,
@@ -808,6 +993,7 @@ polaris_selftest_run(const struct polaris_selftest_inputs *inputs,
     }
     *report = (struct polaris_selftest_report){0};
     guard_is_installed = 0;
+    memory_controller_snapshot = (struct gmc_aperture_snapshot){0};
     if (!inputs || !ops || !ops->opted_out || !ops->acquire_lease || !ops->lease_held ||
         !ops->retire_lease || !ops->map_registers || !ops->map_arena_window ||
         !ops->read_pci_config || !ops->read_diagnostic_register || !ops->now_us ||
@@ -829,19 +1015,11 @@ polaris_selftest_run(const struct polaris_selftest_inputs *inputs,
     if (result != POLARIS_SELFTEST_OK) {
         return result;
     }
-    result = stage_bind(&state);
+    result = run_from_bind(&state);
     if (result != POLARIS_SELFTEST_OK) {
-        return result;
+        restore_memory_controller(&state);
     }
-    result = stage_mapping(&state);
-    if (result != POLARIS_SELFTEST_OK) {
-        return result;
-    }
-    result = stage_key(&state);
-    if (result != POLARIS_SELFTEST_OK) {
-        return result;
-    }
-    return stage_firmware_and_runtime(&state);
+    return result;
 }
 
 /* Why a function of its own: the answer "is the SDMA0 ring drained" is two
@@ -869,6 +1047,53 @@ static int sdma_ring_unconfirmed(uint32_t *read_pointer, uint32_t *write_pointer
  * track of it (quarantine): then nothing can say what the card is doing, and
  * the driver.h quiesce contract ("could not be confirmed stopped") says so. An
  * idle ring of a healthy run is simply left as it is. */
+/* The register port for quiesce: the run is over, so registers are reached
+ * through the lease-guarded platform the run installed. */
+static int quiesce_read(void *context, uint32_t byte_offset, uint32_t *value)
+{
+    (void)context;
+    return guarded_platform.read_reg(guarded_platform.opaque, byte_offset, value);
+}
+
+/* The write half of the quiesce port; see quiesce_read. */
+static int quiesce_write(void *context, uint32_t byte_offset, uint32_t value)
+{
+    (void)context;
+    return guarded_platform.write_reg(guarded_platform.opaque, byte_offset, value);
+}
+
+/* The clock half of the quiesce port. */
+static uint64_t quiesce_now_us(void *context)
+{
+    (void)context;
+    return guarded_platform.now_us(guarded_platform.opaque);
+}
+
+/* Why at quiesce and why only with an idle ring: before a reboot or power-off
+ * the card goes back to the firmware's memory-controller values, but never
+ * under a DMA engine that may still be fetching (a busy ring keeps the Linux
+ * values, which are the safe ones for it; the reset that follows clears
+ * them). Failure runs already restored in polaris_selftest_run. */
+static void restore_memory_controller_at_quiesce(int ring_unconfirmed)
+{
+    struct gmc_register_port port = {
+        .context = NULL,
+        .read = quiesce_read,
+        .write = quiesce_write,
+        .now_us = quiesce_now_us,
+    };
+    if (!memory_controller_snapshot.programmed || !guard_is_installed) {
+        return;
+    }
+    if (ring_unconfirmed) {
+        kprintf("[amd-polaris-runtime] gmc result=kept-linux-values sdma-busy\n");
+        return;
+    }
+    int failed = gmc_aperture_restore(&port, &memory_controller_snapshot);
+    kprintf("[amd-polaris-runtime] gmc result=%s\n",
+            failed ? "restore-incomplete" : "restored-firmware-values");
+}
+
 int polaris_selftest_quiesce(const struct polaris_selftest_ops *ops,
                              struct polaris_selftest_report *report)
 {
@@ -908,6 +1133,7 @@ int polaris_selftest_quiesce(const struct polaris_selftest_ops *ops,
             log_stage_line(POLARIS_SELFTEST_STAGE_QUIESCE, result, detail);
         }
     }
+    restore_memory_controller_at_quiesce(ring_unconfirmed);
     ops->retire_lease(ops->context);
     return ring_unconfirmed || quarantined;
 }
