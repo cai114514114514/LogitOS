@@ -734,26 +734,101 @@ static int fw_parse_line(char *line, char **esp_name, UINT64 *size, char **real_
     return 1;
 }
 
-/* Read \LOGIT\FW\INDEX.TXT and every file it lists into LoaderData pages. */
-static void load_firmware_modules(EFI_HANDLE image)
+/* Open the volume this loader was booted from (UEFI 2.10 sec 13.4 and 13.5).
+ * Returns its root directory, or 0 when the volume cannot be opened. Why a
+ * helper: the firmware set and the developer key file below both read the boot
+ * volume, and both must reach it by the same road. It is the road load_kernel
+ * takes, repeated rather than shared so the kernel loader above stays
+ * untouched: that one closes the volume before returning and its error strings
+ * name logit.elf. */
+static EFI_FILE_PROTOCOL *fw_open_boot_volume(EFI_HANDLE image)
 {
     EFI_GUID li_guid  = EFI_LOADED_IMAGE_PROTOCOL_GUID;
     EFI_GUID sfs_guid = EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID;
-    EFI_GUID fi_guid  = EFI_FILE_INFO_ID;
     EFI_LOADED_IMAGE_PROTOCOL *li = 0;
     EFI_SIMPLE_FILE_SYSTEM_PROTOCOL *fs = 0;
+    EFI_FILE_PROTOCOL *root = 0;
+
+    if (BS->HandleProtocol(image, &li_guid, (void **)&li))
+        return 0;
+    if (BS->HandleProtocol(li->DeviceHandle, &sfs_guid, (void **)&fs))
+        return 0;
+    if (fs->OpenVolume(fs, &root))
+        return 0;
+    return root;
+}
+
+enum fw_load_result {
+    FW_LOAD_OK,
+    FW_LOAD_NOT_FOUND,     /* the file cannot be opened */
+    FW_LOAD_BAD_SIZE       /* its size is not acceptable */
+};
+
+/* Read the file at PATH into fresh EfiLoaderData pages and append it to
+ * fw_modules[] under MODULE_NAME. WANT is the exact size the caller expects
+ * (the index line's size, a cross-check against a FAT driver that hands back a
+ * short file); with WANT == 0 the file's own size is taken instead, provided it
+ * is 1..SIZE_MAX. The caller has already checked there is a free module slot.
+ * *LOADED receives the byte count on success. Why one function: the firmware
+ * files and the developer key file are the same kind of thing to the kernel (a
+ * LOGIT_BOOT_TAG_MODULE), so they share the allocation, the LoaderData check,
+ * the read and the zeroed page tail. */
+static enum fw_load_result fw_load_file(EFI_FILE_PROTOCOL *root, const CHAR16 *path,
+                                        UINT64 want, UINT64 size_max,
+                                        const char *module_name, UINT64 *loaded)
+{
+    EFI_GUID fi_guid = EFI_FILE_INFO_ID;
+    EFI_FILE_PROTOCOL *file = 0;
+    UINT64 raw[(sizeof(EFI_FILE_INFO) + 64 + 7) / 8];
+    UINTN info_size = sizeof raw;
+
+    if (root->Open(root, &file, (CHAR16 *)path, EFI_FILE_MODE_READ, 0))
+        return FW_LOAD_NOT_FOUND;
+    EFI_STATUS st = file->GetInfo(file, &fi_guid, &info_size, raw);
+    UINT64 have = st ? 0 : ((EFI_FILE_INFO *)raw)->FileSize;
+    if (st || have == 0 || have > size_max || (want != 0 && have != want)) {
+        file->Close(file);
+        return FW_LOAD_BAD_SIZE;
+    }
+
+    /* Any free pages will do: the kernel is told the address. LoaderData is
+     * what the final-map check in efi_main insists on, as for every other
+     * region this loader owns. */
+    UINTN pages = (UINTN)((have + 0xFFF) >> 12);
+    EFI_PHYSICAL_ADDRESS at = 0;
+    st = BS->AllocatePages(AllocateAnyPages, EfiLoaderData, pages, &at);
+    if (st)
+        die_st("no pages for a firmware module", st);
+    if (!allocated_range_is_loader_data(at, at + ((UINT64)pages << 12)))
+        die("firmware did not mark a firmware module LoaderData");
+    read_exact(file, (void *)(UINTN)at, have, "short read of a firmware module");
+    mzero((UINT8 *)(UINTN)at + have, ((UINT64)pages << 12) - have);
+    file->Close(file);
+
+    struct fw_module *module = &fw_modules[fw_module_count++];
+    module->lo = at;
+    module->hi = at + have;
+    module->page_hi = at + ((UINT64)pages << 12);
+    UINTN name_length = 0;
+    while (module_name[name_length]) {
+        module->name[name_length] = module_name[name_length];
+        name_length++;
+    }
+    module->name[name_length] = 0;
+    *loaded = have;
+    return FW_LOAD_OK;
+}
+
+/* Read \LOGIT\FW\INDEX.TXT and every file it lists into LoaderData pages. */
+static void load_firmware_modules(EFI_HANDLE image)
+{
+    EFI_GUID fi_guid  = EFI_FILE_INFO_ID;
     EFI_FILE_PROTOCOL *root = 0, *file = 0;
     EFI_STATUS st;
     CHAR16 path[64];
 
-    /* The same road to the boot volume load_kernel takes, repeated rather than
-     * shared so the kernel loader above stays untouched: it closes the volume
-     * before returning and its error strings name logit.elf. */
-    if (BS->HandleProtocol(image, &li_guid, (void **)&li))
-        return;
-    if (BS->HandleProtocol(li->DeviceHandle, &sfs_guid, (void **)&fs))
-        return;
-    if (fs->OpenVolume(fs, &root))
+    root = fw_open_boot_volume(image);
+    if (!root)
         return;
 
     fw_path(path, "INDEX.TXT");
@@ -804,47 +879,21 @@ static void load_firmware_modules(EFI_HANDLE image)
         }
 
         fw_path(path, esp_name);
-        st = root->Open(root, &file, path, EFI_FILE_MODE_READ, 0);
-        if (st) {
+        UINT64 loaded = 0;
+        enum fw_load_result result = fw_load_file(root, path, want, FW_MODULE_BYTES_MAX,
+                                                  real_name, &loaded);
+        if (result == FW_LOAD_NOT_FOUND) {
             say("[efi] firmware module ");
             say(esp_name);
             say(" cannot be opened; skipped\n");
             continue;
         }
-        info_size = sizeof raw;
-        st = file->GetInfo(file, &fi_guid, &info_size, raw);
-        if (st || ((EFI_FILE_INFO *)raw)->FileSize != want) {
+        if (result == FW_LOAD_BAD_SIZE) {
             say("[efi] firmware module "); say(esp_name);
             say(" is not the size the index says; skipped\n");
-            file->Close(file);
             continue;
         }
-
-        /* Any free pages will do: the kernel is told the address. LoaderData is
-         * what the final-map check in efi_main insists on, as for every other
-         * region this loader owns. */
-        UINTN pages = (UINTN)((want + 0xFFF) >> 12);
-        EFI_PHYSICAL_ADDRESS at = 0;
-        st = BS->AllocatePages(AllocateAnyPages, EfiLoaderData, pages, &at);
-        if (st)
-            die_st("no pages for a firmware module", st);
-        if (!allocated_range_is_loader_data(at, at + ((UINT64)pages << 12)))
-            die("firmware did not mark a firmware module LoaderData");
-        read_exact(file, (void *)(UINTN)at, want, "short read of a firmware module");
-        mzero((UINT8 *)(UINTN)at + want, ((UINT64)pages << 12) - want);
-        file->Close(file);
-
-        struct fw_module *module = &fw_modules[fw_module_count++];
-        module->lo = at;
-        module->hi = at + want;
-        module->page_hi = at + ((UINT64)pages << 12);
-        UINTN name_length = 0;
-        while (real_name[name_length]) {
-            module->name[name_length] = real_name[name_length];
-            name_length++;
-        }
-        module->name[name_length] = 0;
-        total += want;
+        total += loaded;
     }
     root->Close(root);
     say("[efi] firmware modules ");
@@ -853,6 +902,59 @@ static void load_firmware_modules(EFI_HANDLE image)
     sayd(total);
     say(" bytes\n");
 }
+
+#ifdef LOGIT_HWHUD
+/* ------------------------------------------------------------------ *
+ *  step 2b+: the developer ssh key file (bring-up builds only)        *
+ * ------------------------------------------------------------------ */
+
+/* WHY THIS EXISTS. The X79-VG4's USB keyboard does not work yet, so nothing can
+ * be typed on it, and its root partition cannot be updated from the stick. The
+ * person building the bring-up stick may put the public half of a dedicated
+ * key at \LOGIT\DEVSSH.PUB (tools/mkesp.py --file KEY.pub:LOGIT/DEVSSH.PUB);
+ * this reads it into LoaderData pages and hands it over as the boot module
+ * "devssh-authorized-keys", the same door the AMD microcode uses. The kernel
+ * (c/kernel/init/devssh.c) validates every byte of it before it creates any
+ * account, so this loader does not vouch for the contents either.
+ *
+ * Built only with LOGIT_HWHUD (tests/uefi.mk passes it for HWHUD=1): a product
+ * loader never looks for this file. The file is OPTIONAL and independent of
+ * INDEX.TXT, so a stick with the key and no firmware set works. Size is capped
+ * at DEVSSH_FILE_BYTES_MAX, the same cap the kernel enforces. */
+#define DEVSSH_FILE_BYTES_MAX 4096
+#define DEVSSH_MODULE_NAME    "devssh-authorized-keys"
+
+static void load_devssh_module(EFI_HANDLE image)
+{
+    static const char directory_and_name[] = "\\LOGIT\\DEVSSH.PUB";
+    CHAR16 path[sizeof directory_and_name];
+    for (UINTN i = 0; i < sizeof directory_and_name; i++)
+        path[i] = (CHAR16)(UINT8)directory_and_name[i];
+
+    if (fw_module_count == LOGIT_BOOT_MODULES_MAX) {
+        say("[efi] devssh key file skipped: the module limit is reached\n");
+        return;
+    }
+    EFI_FILE_PROTOCOL *root = fw_open_boot_volume(image);
+    if (!root)
+        return;
+    UINT64 loaded = 0;
+    enum fw_load_result result = fw_load_file(root, path, 0, DEVSSH_FILE_BYTES_MAX,
+                                              DEVSSH_MODULE_NAME, &loaded);
+    root->Close(root);
+    if (result == FW_LOAD_NOT_FOUND) {
+        say("[efi] no \\LOGIT\\DEVSSH.PUB; no developer ssh key\n");
+        return;
+    }
+    if (result == FW_LOAD_BAD_SIZE) {
+        say("[efi] \\LOGIT\\DEVSSH.PUB is empty or larger than 4096 bytes; skipped\n");
+        return;
+    }
+    say("[efi] developer ssh key file ");
+    sayd(loaded);
+    say(" bytes\n");
+}
+#endif /* LOGIT_HWHUD */
 
 /* One LOGIT_BOOT_TAG_MODULE per file, name NUL-terminated after the fixed part
  * (tag.size covers it; ib_take 8-aligns the next tag). */
@@ -1451,6 +1553,12 @@ void efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *systab)
      * kernel at a FIXED address, which an AllocateAnyPages grab for a module
      * could otherwise take first. */
     load_firmware_modules(image);
+
+#ifdef LOGIT_HWHUD
+    /* Before the ROMs: like the firmware files it takes a module slot, and the
+     * ROMs are given whatever slots remain. */
+    load_devssh_module(image);
+#endif
 
     /* Same allocation window as the firmware files, and appended to the same
      * list, so the final-map LoaderData check below covers the ROMs too. */
