@@ -11,6 +11,7 @@
 #include "mmhost.h"
 #include "kprintf.h"
 #include "pcache.h"
+#include "oom.h"
 
 /* See reclaim.h for the design and the arguments. This file is the machine. */
 
@@ -35,6 +36,201 @@ static int      rc_inited;
 static int      rc_in_pass;              /* reentrancy guard: see reclaim_on_alloc */
 static uint64_t rc_hand;
 static uint64_t rc_low, rc_high;
+
+/* A bounded allocation slice is not a complete unsuccessful clock round.
+ * Two revolutions allow one to clear accessed bits and the next to evict;
+ * declaring OOM after two slices would kill with untouched candidates farther
+ * round the hand on a large machine. This is a scan bound, not a hardware
+ * timeout: 128 MiB / 4 KiB * 2 = 65,536 frames in the host pressure case.
+ * No watermark, reserve or page-cache policy is changed by this limit.
+ * Reference: Linux v6.12 mm/vmscan.c, wakeup_kswapd(), also stops waking a
+ * hopeless scanner after kswapd_failures reaches MAX_RECLAIM_RETRIES:
+ * https://github.com/torvalds/linux/blob/v6.12/mm/vmscan.c
+ * The two-revolution value here comes from this clock's second chance, not
+ * Linux's LRU retry count. Model only; not verified on X79-VG4 hardware. */
+#define RECLAIM_STALL_ROUNDS 2u
+static uint64_t rc_unproductive;
+
+/* THE STALL WORD. rc_unproductive holds, in one atomic word, the episode's
+ * count of fruitless frames scanned and the state of the one scanner, so every
+ * decision about the episode is made on a single read and committed by one CAS:
+ *   bit 63      RC_STALL_SCANNING  a scan is between its start and its publish
+ *   bit 62      RC_STALL_STALE     the episode ended while that scan ran
+ *   bits 0..61  fruitless frames scanned in this episode
+ *
+ * Corrections, kept because they explain the shape. The first version stored
+ * the count alone and ended an episode with a plain store, so a scan that had
+ * finished two revolutions before an OOM decision added them back after it.
+ * The second tagged the count with a 16-bit generation; that still let the
+ * watermark path decide on two separate reads (the count, then a separate
+ * scanner flag) while a scan published in between, and a generation bumped
+ * once per end could wrap after 65,536 ends during one scan. A STALE bit has
+ * neither problem: it is set in the same CAS that ends the episode, and only
+ * the scan it condemns clears it. Model only; not verified on X79-VG4. */
+#define RC_STALL_SCANNING   (1ull << 63)
+#define RC_STALL_STALE      (1ull << 62)
+#define RC_STALL_COUNT_MASK (RC_STALL_STALE - 1)
+
+/* Why an episode ends; the watermark mutation control below needs to know. */
+#define RC_END_DECISION  0   /* an OOM decision (reclaim_stall_reset) */
+#define RC_END_WATERMARK 1   /* free memory at or above low */
+#define RC_END_DISABLED  2   /* reclaim switched off, or found off */
+
+#ifdef MM_HOSTTEST
+/* Host seams for tests/hw/oom/pressure.c. reclaim_test_before_account runs
+ * between a scan and its publish, where another core's end can land;
+ * reclaim_test_in_end runs between rc_episode_end()'s read and its CAS, where
+ * a scan can publish. Both are one-shot and unset outside the cases using them. */
+void (*reclaim_test_before_account)(void);
+void (*reclaim_test_in_end)(void);
+#endif
+
+/* End the current episode: zero the count and, if a scan is running, mark it
+ * stale so its publish is discarded. Nothing to do when nothing is counted and
+ * no scan runs -- the common case above low costs one load. A CAS that fails
+ * because a scan started or published meanwhile re-reads and decides again. */
+static void rc_episode_end(int why)
+{
+    uint64_t word = __atomic_load_n(&rc_unproductive, __ATOMIC_ACQUIRE);
+    for (;;) {
+        if (!(word & (RC_STALL_COUNT_MASK | RC_STALL_SCANNING))) {
+            return;
+        }
+        uint64_t next = word & RC_STALL_SCANNING;
+        if (next) {
+            next |= RC_STALL_STALE;
+        }
+#ifdef OOM_NEGCTL_WATERMARK_NOT_STALE
+        /* Mutation control: the watermark path zeroes the count only. */
+        if (why == RC_END_WATERMARK) {
+            next = word & (RC_STALL_SCANNING | RC_STALL_STALE);
+        }
+#else
+        (void)why;
+#endif
+#ifdef MM_HOSTTEST
+        if (reclaim_test_in_end) {
+            void (*hook)(void) = reclaim_test_in_end;
+            reclaim_test_in_end = NULL;
+            hook();
+        }
+#endif
+        if (__atomic_compare_exchange_n(&rc_unproductive, &word, next, 0,
+                                        __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+            return;
+        }
+#ifdef OOM_NEGCTL_END_NO_RETRY
+        /* Mutation control: act on the stale read and give up. */
+        return;
+#endif
+    }
+}
+
+/* Claim the one scan. 0 if another scan is in flight: an allocating caller
+ * never waits for reclaim (see reclaim_scan). */
+static int rc_scan_begin(void)
+{
+    uint64_t word = __atomic_load_n(&rc_unproductive, __ATOMIC_RELAXED);
+    for (;;) {
+        if (word & RC_STALL_SCANNING) {
+            return 0;
+        }
+        if (__atomic_compare_exchange_n(&rc_unproductive, &word, word | RC_STALL_SCANNING,
+                                        0, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) {
+            return 1;
+        }
+    }
+}
+
+/* Release the scan and account for it. Progress ends the episode; a stale scan
+ * belongs to an episode that already ended and adds nothing; otherwise its
+ * fruitless frames are added, capped at the stall limit. */
+static void rc_scan_publish(int progress, uint64_t scanned)
+{
+    uint64_t limit = pmm_total_frames() * RECLAIM_STALL_ROUNDS;
+    uint64_t word = __atomic_load_n(&rc_unproductive, __ATOMIC_RELAXED);
+    for (;;) {
+        uint64_t count = word & RC_STALL_COUNT_MASK;
+        uint64_t next = count;
+        int stale = (word & RC_STALL_STALE) != 0;
+#ifdef OOM_NEGCTL_STALL_IGNORE_STALE
+        stale = 0;  /* mutation control: publish across an ended episode */
+#endif
+        if (progress) {
+            next = 0;
+        } else if (!stale) {
+            uint64_t remaining = count < limit ? limit - count : 0;
+            next = count + (scanned < remaining ? scanned : remaining);
+        }
+        if (__atomic_compare_exchange_n(&rc_unproductive, &word, next, 0,
+                                        __ATOMIC_RELEASE, __ATOMIC_RELAXED)) {
+            return;
+        }
+    }
+}
+
+/* What is left of the episode's two revolutions. reclaim_scan() caps its
+ * budget with it, so the bound is on frames actually scanned, not only on
+ * the count published: with a total that is not a whole number of
+ * allocation slices, the uncapped slices overran it by up to a slice. */
+static uint64_t rc_scan_allowance(void)
+{
+    uint64_t limit = pmm_total_frames() * RECLAIM_STALL_ROUNDS;
+    uint64_t count = __atomic_load_n(&rc_unproductive, __ATOMIC_RELAXED) & RC_STALL_COUNT_MASK;
+    return count < limit ? limit - count : 0;
+}
+
+/* Fruitless frames scanned in the current episode. */
+static uint64_t rc_stall_count(void)
+{
+    return __atomic_load_n(&rc_unproductive, __ATOMIC_RELAXED) & RC_STALL_COUNT_MASK;
+}
+
+/* Report exhaustion only while pressure still exists. An allocation can leave
+ * a few hundred free frames and still livelock across repeated empty scans;
+ * waiting for pmm_alloc() to return zero never hands that case to OOM.
+ * Atomic state lets the scanner publish the evidence without invoking policy
+ * under a caller's AS/heap/IRQ locks. Recovery above low starts a new episode. */
+int reclaim_stalled(void)
+{
+    if (!reclaim_enabled()) {
+#ifndef OOM_NEGCTL_DISABLE_KEEPS_EPISODE
+        rc_episode_end(RC_END_DISABLED);
+#endif
+        return 0;
+    }
+    if (pmm_free_frames() >= rc_low) {
+        rc_episode_end(RC_END_WATERMARK);
+        return 0;
+    }
+#ifdef OOM_NEGCTL_RECLAIM_UNBOUNDED
+    (void)rc_stall_count;  /* the count is kept, only never consulted */
+    return 0;  /* old behavior: scan again forever, never hand pressure to OOM */
+#else
+    uint64_t limit = pmm_total_frames() * RECLAIM_STALL_ROUNDS;
+    return limit && rc_stall_count() >= limit;
+#endif
+}
+
+/* See oom.h: an OOM decision ends the episode like the watermark does. */
+void reclaim_stall_reset(void)
+{
+    rc_episode_end(RC_END_DECISION);
+}
+
+#ifdef MM_HOSTTEST
+/* Drive the scanner's two steps without a pass, so a case can place a publish
+ * exactly between rc_episode_end()'s read and CAS. */
+int reclaim_test_scan_begin(void)
+{
+    return rc_scan_begin();
+}
+
+void reclaim_test_scan_publish(uint64_t scanned)
+{
+    rc_scan_publish(0, scanned);
+}
+#endif
 
 static uint64_t c_runs, c_scanned, c_dropped, c_swapped, c_second;
 static uint64_t c_skip_unmapped, c_skip_pinned, c_skip_partial, c_skip_wide;
@@ -97,7 +293,19 @@ uint64_t reclaim_cycles(void)        { return c_cycles; }
 uint64_t reclaim_swapins(void)       { return c_swapin; }
 uint64_t reclaim_swapin_fail(void)   { return c_swapin_fail; }
 
-void reclaim_set_enabled(int on) { rc_on = on ? 1 : 0; }
+/* Switching reclaim off ends the episode too: the first version only set
+ * rc_on, so a count, or a scan in flight, survived an off/on cycle and the
+ * next fault could be refused without a fresh check. */
+void reclaim_set_enabled(int on)
+{
+    rc_on = on ? 1 : 0;
+#ifndef OOM_NEGCTL_DISABLE_KEEPS_EPISODE
+    if (!rc_on) {
+        rc_episode_end(RC_END_DISABLED);
+    }
+#endif
+}
+
 int  reclaim_enabled(void)       { return rc_on && rmap_ready(); }
 uint64_t reclaim_low(void)       { return rc_low; }
 uint64_t reclaim_high(void)      { return rc_high; }
@@ -576,13 +784,47 @@ static uint64_t reclaim_scan_locked(uint64_t want, uint64_t budget)
 }
 
 /* One clock hand/scanner. An allocating caller never waits for reclaim:
- * that scanner may itself need this caller's AS/FS lock to finish. */
-static int rc_scanning;
+ * that scanner may itself need this caller's AS/FS lock to finish. The claim
+ * is RC_STALL_SCANNING in the stall word (rc_scan_begin). */
 static uint64_t reclaim_scan(uint64_t want,uint64_t budget)
 {
-    if (__atomic_exchange_n(&rc_scanning,1,__ATOMIC_ACQUIRE)) return 0;
+#ifndef OOM_NEGCTL_DIRECT_STALE_ALLOWANCE
+    /* A direct caller (reclaim_frames) need not come through
+     * reclaim_on_alloc() or reclaim_stalled(), which end a recovered
+     * episode. End it here, before the scan is claimed, so the allowance
+     * below belongs to the current episode and not to a spent old one. */
+    if (pmm_free_frames() >= rc_low) {
+        rc_episode_end(RC_END_WATERMARK);
+    }
+#endif
+    if (!rc_scan_begin()) return 0;
+#ifndef OOM_NEGCTL_BUDGET_UNCAPPED
+    /* Never scan past the episode's two revolutions; once they are spent
+     * there is nothing to look at until the episode ends. */
+    uint64_t allowance = rc_scan_allowance();
+    if (!allowance) {
+        rc_scan_publish(pmm_free_frames() >= rc_low, 0);
+        return 0;
+    }
+    if (!budget || budget > allowance) {
+        budget = allowance;
+    }
+#else
+    (void)rc_scan_allowance;  /* mutation control: slices may overrun the bound */
+#endif
+    uint64_t before = c_scanned;
     uint64_t n=reclaim_scan_locked(want,budget);
-    __atomic_store_n(&rc_scanning,0,__ATOMIC_RELEASE);
+#ifdef MM_HOSTTEST
+    if (reclaim_test_before_account) {
+        void (*hook)(void) = reclaim_test_before_account;
+        reclaim_test_before_account = NULL;
+        hook();
+    }
+#endif
+    /* Only work actually performed by this scanner counts. A failed scanner
+     * trylock is not a fruitless round; another core may be freeing pages.
+     * Any freed page resets the consecutive no-progress bound. */
+    rc_scan_publish(n || pmm_free_frames() >= rc_low, c_scanned - before);
     return n;
 }
 
@@ -611,10 +853,23 @@ uint64_t reclaim_emergency(uint64_t want)
  * from being a hang. */
 void reclaim_on_alloc(void)
 {
-    if (!rc_on || __atomic_load_n(&rc_inited,__ATOMIC_ACQUIRE)!=2 ||
-        !rmap_ready()) return;
+    if (!rc_on) {
+        /* Off: no episode may carry over to when it is switched back on. */
+#ifndef OOM_NEGCTL_DISABLE_KEEPS_EPISODE
+        rc_episode_end(RC_END_DISABLED);
+#endif
+        return;
+    }
+    if (__atomic_load_n(&rc_inited,__ATOMIC_ACQUIRE)!=2 || !rmap_ready()) return;
     uint64_t free_now = pmm_free_frames();
-    if (free_now >= rc_low) return;
+    if (free_now >= rc_low) {
+        rc_episode_end(RC_END_WATERMARK);
+        return;
+    }
+    /* Stop repeating the scan after a complete failed episode. The next user
+     * fault hands it to OOM outside its AS guard, even if this allocation can
+     * still draw an ordinary frame above the reserve. */
+    if (reclaim_stalled()) return;
 
     /* BACKOFF, and the line it must not cross.
      *
@@ -698,7 +953,21 @@ int reclaim_swapin(uint64_t cr3, uint64_t va, uint64_t *pte, int active)
         reclaim_emergency(64);
         f = pmm_alloc_reserve_any();
     }
-    if (!f) { c_swapin_fail++; return 0; }
+    if (!f) {
+#ifdef OOM_NEGCTL_SWAPIN_PLAIN_FAIL
+        c_swapin_fail++;
+        return 0;
+#else
+        /* Correction to the old "c_swapin_fail++; return 0": no frame is
+         * not a corrupt slot or a failed read. Preserve both PTE and slot and
+         * let fault.c retry/choose a victim after releasing this AS guard.
+         * Calling OOM here could park with a stale leaf pointer still live.
+         * Reference: Linux v6.12 mm/memory.c, do_swap_page(), likewise reports
+         * failed swap-in allocation as VM_FAULT_OOM, distinct from read errors:
+         * https://github.com/torvalds/linux/blob/v6.12/mm/memory.c */
+        return OOM_SWAPIN_NOMEM;
+#endif
+    }
 
     if (swap_read_page(slot, mm_p2v(f)) != 0) {
         pmm_free(f);

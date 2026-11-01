@@ -214,6 +214,11 @@
 /* Who ran out. Recorded per kill so "the browser died" can be told from "a
  * driver could not get a DMA ring". */
 #define OOM_SRC_FAULT 0     /* a user page fault could not get a frame */
+/* Correction: this source also covers a successful user fault reporting two
+ * fruitless reclaim rounds. Only an explicit SELF choice makes that one fatal.
+ * Correction to that (2026-11-01, Claude's revision): no successful fault
+ * reports pressure any more. Under stalled reclaim fault_frame() gives the
+ * frame back first, so this source is again a fault that has no frame. */
 #define OOM_SRC_KHEAP 1     /* kmalloc could not grow the kernel heap */
 /* There is deliberately no OOM_SRC_PMM. A draft had one, for oom_alloc_fail(),
  * and nothing ever set it: that function records and does not choose a victim
@@ -231,11 +236,14 @@
                              * that had already exited. See the zombie tier in
                              * oom.c -- the caller retries and no program dies. */
 
-/* Choose and mark a victim. Never allocates, never blocks, never tears anything
- * down. Returns one of OOM_*; the victim's pid is oom_last_pid(). */
+/* Choose and mark a victim. Never allocates or blocks; may reap already-dead
+ * user spaces before choosing a live victim. Returns one of OOM_*; the victim's
+ * pid is oom_last_pid(). Correction to "never tears anything down": the zombie
+ * tier has done so since it landed. NO_VICTIM is also the busy guard's answer
+ * when another CPU is choosing. */
 int oom_kill(int source);
 
-/* THE FAULT PATH'S WHOLE USE OF THIS FILE.
+/* THE FAILED-ALLOCATION FAULT PATH.
  *
  * Call when a user page fault could not obtain a frame after reclaim. Returns 1
  * if the caller should RETRY the fault (a victim other than the caller was
@@ -244,8 +252,50 @@ int oom_kill(int source);
  * May block -- it parks with bkl_hlt_wait(), which drops the big kernel lock,
  * exactly as the swap path already does from this same fault context. That is
  * why the retry re-walks the page tables from the top rather than reusing a
- * PTE pointer taken before the wait. */
+ * PTE pointer taken before the wait. Equivalent to
+ * oom_fault_decide(0) == OOM_FAULT_RETRY. */
 int oom_fault_retry(void);
+
+/* What oom_fault_decide() tells the fault path. oom_fault_retry()'s zero
+ * merged DECLINE and NONE; the fault path needs them apart, because a frame
+ * withheld only for stalled reclaim may still be taken when nobody could be
+ * marked, and must not be taken when the caller itself was chosen. */
+#define OOM_FAULT_DECLINE 0  /* the caller was chosen, or its wait expired */
+#define OOM_FAULT_RETRY   1  /* another process was marked or reaped; memory is free */
+#define OOM_FAULT_NONE    2  /* nobody could be marked: nothing eligible, or busy */
+
+/* The same decision and bounded wait as oom_fault_retry(), with the outcome
+ * kept. May block, exactly as oom_fault_retry() does. reserve_ok is nonzero
+ * for a swap-in decline: swap-in allocates from the reserve, so any free
+ * frame ends its wait, while anonymous and COW faults wait for frames above
+ * the reserve, which is not theirs to spend (pmm.h). */
+int oom_fault_decide(int reserve_ok);
+
+/* Swap-in's three outcomes: 1 installed, 0 invalid entry/device failure, -1
+ * no payload frame even after emergency reclaim. Kept at the OOM boundary
+ * because reclaim.h's historical boolean contract did not carry the cause.
+ * Callers must test success with > 0; treating this negative result as true
+ * would resume an instruction whose page is still absent. */
+#define OOM_SWAPIN_NOMEM (-1)
+
+/* A user payload frame was available but fault_frame() gave it back because
+ * reclaim_stalled() held: a decline for want of memory like the other two,
+ * distinguished so that mm_fault_in() can still serve it when the OOM
+ * decision finds nobody to mark. */
+#define OOM_FAULT_STALLED (-2)
+
+/* Reclaim could not free a frame over two complete clock revolutions below
+ * its low watermark. The fault path consumes this fact AFTER releasing its
+ * AS guard; the allocator must not choose victims from arbitrary IRQ/lock
+ * contexts. Implemented beside the clock in reclaim.c, without a second
+ * copy of its watermarks or scan state in the OOM policy. */
+int reclaim_stalled(void);
+
+/* Forget a stalled episode. The fault path calls this after every OOM
+ * decision, so withholding frames again first needs two fresh fruitless
+ * revolutions: a victim's exit, an unpinned page or a newly droppable one is
+ * then found by reclaim instead of costing another process. */
+void reclaim_stall_reset(void);
 
 /* kmalloc's failure path: it grew the heap, the PMM refused, and kmalloc is
  * about to return NULL. Called with NO heap lock held. */
@@ -317,6 +367,9 @@ int  oom_task_reap_dead(void);
 void oom_test_reset(void);
 int  oom_test_add(int pid, uint64_t cr3, int gui, int immune, const char *name);
 void oom_test_set_self(int pid);
+/* Model another CPU owning the chooser; exercises its real nonblocking guard
+ * without requiring a scheduler or making the host fixture multithreaded. */
+void oom_test_set_busy(int busy);
 /* Declare a process's resident set instead of building page tables for it.
  * If NOTHING declares one, the sweep runs for real over the reverse map -- see
  * tally_rss() -- so one host case can put two real address spaces in front of
@@ -326,6 +379,9 @@ int  oom_test_nkilled(void);
 int  oom_test_killed(int n);
 void oom_test_set_zombie(int pid, int z);  /* the reap tier's fixture */
 int  oom_test_nreaped(void);
+/* A killed process becomes a zombie at once, as the machine's victim does at
+ * its next kernel entry, so the fault path's wait can reap its frames. */
+void oom_test_set_exit_on_kill(int on);
 #endif
 
 #endif /* LOGIT_OOM_H */

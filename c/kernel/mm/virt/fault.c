@@ -12,7 +12,7 @@
 #include "oom.h"
 #include "mmhost.h"
 #include "kprintf.h"
-#include "../../../../include/weaksym.h"   /* the weak oom_fault_retry below */
+#include "../../../../include/weaksym.h"   /* the weak oom_fault_decide below */
 
 /* WEAK, and the reason is about the test tree rather than about the kernel.
  * c/kernel/mm/reclaim/oom.c reads the PROCESS TABLE, so it only makes sense where there
@@ -23,9 +23,17 @@
  * dozen host suites that are about something else -- so the hook is weak, the
  * kernel always provides it (C_SRC globs c/kernel/mm), and a harness that does
  * not link it gets exactly the behaviour that existed before this line. The
- * same trick, for the same reason, as proc.c's sock_close_owner. */
-int oom_fault_retry(void) LOGIT_WEAK;
-LOGIT_WEAK_STUB(oom_fault_retry);
+ * same trick, for the same reason, as proc.c's sock_close_owner. The stub's
+ * zero is OOM_FAULT_DECLINE, the behaviour that existed before the killer. */
+int oom_fault_decide(int reserve_ok) LOGIT_WEAK;
+LOGIT_WEAK_STUB(oom_fault_decide);
+
+/* Input value for fault_once()'s decline argument, set only by mm_fault_in()
+ * for the one retry that follows an OOM decision. fault_frame() then keeps a
+ * frame above the reserve even though reclaim has stalled: the policy has
+ * already marked a victim or found none, and withholding the frame again
+ * would kill this caller for the very condition that decision handled. */
+#define FAULT_STALL_ACCEPTED (-3)
 
 void reclaim_late_init(void);
 #ifndef MM_HOSTTEST
@@ -298,13 +306,34 @@ static int do_cow(uint64_t cr3, uint64_t page, uint64_t *pte, int active, int *o
  * below 1 GiB; only these payloads opt into the RAM direct map. */
 static uint64_t fault_frame(int *oom)
 {
+    int stall_accepted = *oom == FAULT_STALL_ACCEPTED;
     uint64_t f = pmm_alloc_any();
-    if (f) return f;
-    if (reclaim_emergency(64)) f = pmm_alloc_any();
+    if (!f && reclaim_emergency(64)) {
+        f = pmm_alloc_any();
+    }
+
+    /* A STALLED CLOCK IS A REFUSAL, even when a frame above the reserve is
+     * still there to take. reclaim_stalled() means two complete revolutions
+     * below the low watermark found nothing; handing out the remaining frames
+     * one fruitless scan at a time is how the no-swap control crawled for
+     * minutes without completing or failing. Linux reaches its OOM killer the
+     * same way: only from an allocation that failed after reclaim stopped making
+     * progress (mm/page_alloc.c: should_reclaim_retry() gives up, then
+     * __alloc_pages_may_oom(), v6.12). So the frame
+     * goes back and the fault declines for want of memory, which sends it
+     * through the one OOM decision and retry in mm_fault_in() -- and a fault
+     * that a kill rescues is then counted as rescued, because it really failed
+     * first. The check follows the allocation, since that allocation's own scan
+     * may be the one that completes the second revolution. */
+    if (f && !stall_accepted && reclaim_stalled()) {
+        pmm_free(f);
+        *oom = OOM_FAULT_STALLED;
+        return 0;
+    }
     /* WHY THE KILLER IS NOT CALLED FROM HERE, one frame short of it.
      *
      * The obvious place to ask for a victim is right on this line, and it is
-     * the wrong one: oom_fault_retry() PARKS (it drops the big kernel lock, see
+     * the wrong one: oom_fault_decide() PARKS (it drops the big kernel lock, see
      * oom.c), and do_cow()'s caller is holding a `uint64_t *pte` obtained by
      * walking the page tables before the call. Another thread of the same
      * process can fault on that page while this one is parked, so the entry
@@ -583,19 +612,25 @@ static int fault_once(uint64_t cr3, uint64_t va, uint64_t err, int *oom)
             return 1;
         }
         break;
-    case MM_FAULT_SWAP:
+    case MM_FAULT_SWAP: {
         /* THE ONE FAULT THAT GOES TO A DISK. Everything above resolves in
          * microseconds out of memory; this one is milliseconds and can give up
          * the CPU in the middle (see swap.c on which of its waits releases the
          * big kernel lock and which does not). Timed separately for exactly
          * that reason -- averaging a disk read into the copy-on-write numbers
          * would make both meaningless. */
-        if (reclaim_swapin(cr3, page, pte, active)) {
+        int outcome = reclaim_swapin(cr3, page, pte, active);
+        if (outcome > 0) {
             g_swapin++;
             g_cyc_swapin += fault_cyc() - t0;
             return 1;
         }
+        /* A spent swap-in cushion is the same OOM decline as an anonymous
+         * allocation failure, not a reason to kill whichever reader faulted.
+         * Keep device/entry failures ordinary; killing cannot repair those. */
+        if (outcome == OOM_SWAPIN_NOMEM) *oom = OOM_SWAPIN_NOMEM;
         break;
+    }
     default:
         break;
     }
@@ -616,27 +651,78 @@ static int fault_once(uint64_t cr3, uint64_t va, uint64_t err, int *oom)
  * allocation site) now gets one more chance. oom_kill() either takes back the
  * memory of a process that has already exited, or marks the largest eligible
  * live one, and this retries the fault FROM THE TOP -- a second full walk of
- * the page tables, because oom_fault_retry() can park and drop the big kernel
+ * the page tables, because oom_fault_decide() can park and drop the big kernel
  * lock, so nothing read before it may be reused after it. The retry is why the
  * body above is a separate function.
  *
  * ONE retry, not a loop. If the fault fails again the machine is out of memory
  * in a way one kill did not fix, and spinning here would hold this process in
  * the kernel while it happened. The behaviour then is exactly what it was
- * before this existed: decline, and the process dies. */
+ * before this existed: decline, and the process dies.
+ * Correction to "ONE retry": swap-in may first retry after a full reclaim
+ * pass without choosing a victim. That pass releases frames but does not
+ * reserve one for this CPU. If another CPU takes them, allow the same ONE OOM
+ * decision and final retry as an allocation that reclaim could not help. */
 int mm_fault_in(uint64_t cr3, uint64_t va, uint64_t err)
 {
     int decline = 0;
     int r = fault_once(cr3, va, err, &decline);
     if (r || !decline) return r;
 
-    if (!LOGIT_HAVE(oom_fault_retry)) return 0;  /* no killer linked: the old behaviour */
+    /* Minimal host linkages can omit the policy: keep the decline, the
+     * behaviour that existed before the killer. */
+    if (!LOGIT_HAVE(oom_fault_decide)) return r;
     g_oom_retry++;
-    if (!oom_fault_retry()) return 0;   /* we were the victim, or nothing helped */
+    /* An empty swap-in reserve already tried one allocation-sized slice.
+     * Give its clock one bounded full pass (reclaim_scan caps it at two
+     * revolutions) before choosing a victim: a droppable page may simply be
+     * beyond that slice. Do this after fault_once released its AS guard, then
+     * re-walk from the top. Ordinary pressure keeps the existing OOM policy. */
+    if (decline == OOM_SWAPIN_NOMEM && reclaim_frames(1) > 0) {
+        decline = 0;
+        r = fault_once(cr3, va, err, &decline);
+#ifdef OOM_NEGCTL_SWAPIN_RETRY_CAUSE
+        /* Mutation control: the old test, which returned an anonymous memory
+         * decline from this walk without the one OOM decision below. */
+        if (r || decline != OOM_SWAPIN_NOMEM) {
+#else
+        if (r || !decline) {
+#endif
+            if (r) {
+                g_oom_saved++;
+            }
+            return r;
+        }
+        /* Correction to "recovered = reclaim_frames(1) > 0": a freed frame
+         * belongs to no caller until its PMM allocation succeeds. A concurrent
+         * allocation can consume it before this retry, and while the AS guard
+         * was released another thread may have replaced the swap entry with an
+         * anonymous page whose allocation now fails instead. Every decline for
+         * want of memory, whatever its cause, therefore reaches the one policy
+         * call and final walk below; only success or an ordinary entry/read
+         * error returns here, and those never select a victim. */
+    }
 
-    decline = 0;
+    /* ONE OOM decision. DECLINE: this caller was chosen, or its wait for the
+     * victim expired, so it ends exactly as before. NONE: nobody could be
+     * marked (nothing eligible, or another CPU is choosing). After a real
+     * allocation failure that is the old decline as well; after a frame that
+     * fault_frame() withheld only because reclaim stalled, the frame is still
+     * there, and refusing it would bypass oom_choose()'s protection of the
+     * console shell -- so the retry takes it, and nothing was rescued.
+     * RETRY: another process was marked or reaped and memory is free. */
+    int decision = oom_fault_decide(decline == OOM_SWAPIN_NOMEM);
+#ifndef OOM_NEGCTL_STALL_STICKY
+    /* Whatever was decided, the next refusal must be earned again by two
+     * fruitless revolutions: see reclaim_stall_reset() in oom.h. */
+    reclaim_stall_reset();
+#endif
+    if (decision == OOM_FAULT_DECLINE) return 0;
+    if (decision == OOM_FAULT_NONE && decline != OOM_FAULT_STALLED) return 0;
+
+    decline = FAULT_STALL_ACCEPTED;
     r = fault_once(cr3, va, err, &decline);
-    if (r) g_oom_saved++;
+    if (r && decision == OOM_FAULT_RETRY) g_oom_saved++;
     return r;
 }
 
