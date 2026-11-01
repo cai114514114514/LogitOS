@@ -6,6 +6,7 @@
 #include "driver.h"
 #include "wm_trace.h"
 #include "smp.h"
+#include "hwhud_panel.h"
 #ifndef HWHUD_FORMAT_HOST
 #include "kprintf.h"
 #endif
@@ -262,6 +263,7 @@ static void hid_ctl_format(char *out, size_t capacity, const struct hwhud_hid *h
  * retains all collectors below; no host stand-in can hide a stale formatter. */
 #ifndef HWHUD_FORMAT_HOST
 #include "hwhud.h"
+#include "wm.h"
 #include "hwscreen_font.h"
 #include "serial.h"
 #include "fb.h"
@@ -297,6 +299,10 @@ static void hid_ctl_format(char *out, size_t capacity, const struct hwhud_hid *h
  * panel (the 1080 - 40 - 8 pixels left hold at most 64 rows). */
 #define COLS 100
 #define ROWS 61
+
+/* The panel's own state; touched only by the WM thread (hwhud_tick and
+ * hwhud_click both run in its loop), so it needs no lock. */
+static struct hwhud_panel g_panel;
 
 /* The bring-up's NIC interrupt counter (every ISR entry, before the receive
  * path's own count); absent when the driver is not linked. */
@@ -823,10 +829,48 @@ static void lines_hid(void)
     }
 }
 
+/* Draw the last sample into the back buffer and present it. A collapsed panel
+ * is the title row alone. The title carries a [-] / [+] marker so a photograph
+ * of the screen says the title row is a button and what it will do. */
+static void paint_panel(void)
+{
+    int rows = g_panel.collapsed ? 1 : g_rows;
+    struct hwhud_box box = hwhud_box_for(fb_width(), COLS, rows, HWSCREEN_FONT_W, HWSCREEN_FONT_H);
+    char title[COLS + 1];
+    ksnprintf(title, sizeof title, "%s %s", g_panel.collapsed ? "[+]" : "[-]", g_line[0]);
+    fb_graphics_lock();
+    fb_fill_rect(box.x, box.y, box.w, box.h, fb_rgb(12, 12, 20));
+    uint32_t fg = fb_rgb(120, 255, 160);
+    for (int r = 0; r < rows; r++) {
+        const char *text = r == 0 ? title : g_line[r];
+        for (int c = 0; text[c]; c++) {
+            glyph(box.x + 4 + c * HWSCREEN_FONT_W, box.y + 4 + r * HWSCREEN_FONT_H, text[c], fg);
+        }
+    }
+    fb_present_rect(box.x, box.y, box.w, box.h);
+    fb_graphics_unlock();
+    hwhud_note_drawn(&g_panel, &box);
+}
+
+/* The WM loop calls this at the end of every pass. It is cheap when there is
+ * nothing to do (one decision), and does the sampling and the drawing at most
+ * once a second -- never while system UI is on the screen, because the panel is
+ * painted over the finished frame and would cover it. */
 void hwhud_tick(const struct hwhud_wm *wm)
 {
     uint64_t ms = time_mono_ms();
-    if (p_ms && ms - p_ms < 1000) return;
+    enum hwhud_action action = hwhud_step(&g_panel, wm->system_ui_visible, ms, p_ms);
+    if (action == HWHUD_IDLE) {
+        return;
+    }
+    if (action == HWHUD_ERASE) {
+        wm_damage(g_panel.box.x, g_panel.box.y, g_panel.box.w, g_panel.box.h);
+        return;
+    }
+    if (action == HWHUD_REDRAW) {
+        paint_panel();
+        return;
+    }
     uint64_t dms = p_ms ? ms - p_ms : 0;
     p_ms = ms;
     probe_cpu();
@@ -855,17 +899,20 @@ void hwhud_tick(const struct hwhud_wm *wm)
     lines_mtrr();
     lines_thermal();
     lines_hid();
+    paint_panel();
+}
 
-    int w = COLS * HWSCREEN_FONT_W + 8, h = g_rows * HWSCREEN_FONT_H + 8;
-    int x = (int)fb_width() - w - 8, y = 40;
-    if (x < 0) x = 0;
-    fb_graphics_lock();
-    fb_fill_rect(x, y, w, h, fb_rgb(12, 12, 20));
-    uint32_t fg = fb_rgb(120, 255, 160);
-    for (int r = 0; r < g_rows; r++)
-        for (int c = 0; g_line[r][c]; c++)
-            glyph(x + 4 + c * HWSCREEN_FONT_W, y + 4 + r * HWSCREEN_FONT_H, g_line[r][c], fg);
-    fb_present_rect(x, y, w, h);
-    fb_graphics_unlock();
+/* The WM's pointer path asks here first for every left press. Consuming a press
+ * on the title row is what keeps it from also raising, dragging or clicking the
+ * window under the panel; the smaller (or larger) picture is drawn on the next
+ * tick, after the WM has recomposed the box the old one covered. */
+int hwhud_click(int x, int y)
+{
+    struct hwhud_box repaint;
+    if (!hwhud_press(&g_panel, x, y, HWSCREEN_FONT_H, &repaint)) {
+        return 0;
+    }
+    wm_damage(repaint.x, repaint.y, repaint.w, repaint.h);
+    return 1;
 }
 #endif /* !HWHUD_FORMAT_HOST */

@@ -53,6 +53,14 @@ void wm_damage(int x, int y, int w, int h);
 void wm_damage_menubar(void);
 int  wm_dark(void);                /* 1 if the system theme is dark */
 
+/* 1 while the About / power panel, an open menu, the Cmd+Tab switcher, Expose,
+ * a panel window, the input method's candidate bar or a notification card is
+ * on the screen. For chrome painted
+ * over the finished frame (the HWHUD=1 diagnostic panel, c/kernel/diag/hwhud.c),
+ * which must not cover a dialog the user has to answer. The caller holds the
+ * WM state lock. */
+int  wm_system_overlay_visible(void);
+
 /* The third one, for the input method's candidate bar (c/kernel/gui/ime/ime_ui.c).
  * Fills the FOCUSED app window's index and its outer rectangle in device
  * pixels; returns 0 (and touches nothing) when there is no focused app window.
