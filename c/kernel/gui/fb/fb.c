@@ -600,7 +600,12 @@ void fb_copy_rect(int x, int y, int w, int h)
 /* When SMP is up, smp.c registers a parallel implementation that splits a tall
  * rect's rows across all CPUs via work IPIs. */
 static void (*g_par_present)(int, int, int, int);
-void fb_set_present_par(void (*fn)(int, int, int, int)) { g_par_present = fn; }
+/* Atomic because smp.c may unregister from inside a present (it self-disables
+ * when the IPIs are not serviced); fb_present_rect loads the pointer once. */
+void fb_set_present_par(void (*fn)(int, int, int, int))
+{
+    __atomic_store_n(&g_par_present, fn, __ATOMIC_RELEASE);
+}
 
 void fb_present(void) { fb_present_rect(0, 0, (int)fb_w, (int)fb_h); }
 
@@ -737,7 +742,8 @@ void fb_present_rect(int x, int y, int w, int h)
             overlay_prepared = 1;
         }
     }
-    if (g_par_present && h >= 128) g_par_present(x, y, w, h);   /* RAM-to-RAM now (fast) */
+    void (*par_present)(int, int, int, int) = __atomic_load_n(&g_par_present, __ATOMIC_ACQUIRE);
+    if (par_present && h >= 128) par_present(x, y, w, h);   /* RAM-to-RAM now (fast) */
     else fb_copy_rect(x, y, w, h);
     overlay_prepared = 0;
     if (using_gpu) virtio_gpu_flush(x, y, w, h);               /* DMA the rect to the host */
