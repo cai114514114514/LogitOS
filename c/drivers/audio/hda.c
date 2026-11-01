@@ -51,6 +51,15 @@ static io_lock_t hda_gate = IO_LOCK_INIT;
 #include "dma.h"
 #include "kprintf.h"
 #include "pit.h"
+#include "hda_route.h"
+/* The existing LOGIT_HOST_TEST register gates compile hda.c as one TU and
+ * predate the route module. Include the SAME implementation for that seam;
+ * the kernel's recursive source list compiles hda_route.c separately. This
+ * avoids either editing another track's fixtures or growing a host-only port
+ * that can drift away from the production graph and verb logic. */
+#ifdef LOGIT_HOST_TEST
+#include "hda_route.c"
+#endif
 #ifdef HDA_DMA_CAPTURE_CANARY
 #include "sched.h"
 #include "kernel/sync/wait.h"
@@ -128,6 +137,16 @@ void *memset(void *, int, size_t);
 #define VERB_SET_EAPD         0x70C
 #define VERB_GET_CONFIG_DEF   0xF1C
 #define VERB_SET_POWER        0x705
+/* HDA 1.0a 7.3.3.10, table 82: status is a separate GET, not the SET reply. */
+#define VERB_GET_POWER        0xF05
+#define HDA_POWER_ERROR       (1u << 8) /* PS-Error: requested transition refused */
+#define HDA_POWER_STATE_MASK  0xffu     /* PS-Act[7:4] and PS-Set[3:0]; D0 is 0 */
+/* Local probe policy, not a codec timing guarantee: allow 500 ms for D0.
+ * Also cap status transactions at 16384 when IF=0 or the clock is frozen;
+ * each transaction has codec_cmd's own transport bounds. No udelay/sleep:
+ * udelay's clock-only loop could hang this very frozen-clock case. */
+#define HDA_POWER_TIMEOUT_MS  500
+#define HDA_POWER_MAX_READS   16384
 #define VERB_SET_CONN_SELECT  0x701    /* choose which connection-list entry a
                                         * multi-source widget (an ADC, a mixer,
                                         * an input selector) actually listens
@@ -139,7 +158,9 @@ void *memset(void *, int, size_t);
 #define PARAM_FG_TYPE         0x05
 #define PARAM_AUDIO_WIDGET_CAP 0x09
 #define PARAM_PIN_CAP         0x0C
+#define PARAM_AMP_IN_CAP      0x0D    /* HDA 1.0a Amplifier Capabilities */
 #define PARAM_CONN_LIST_LEN   0x0E
+#define PARAM_AMP_OUT_CAP     0x12    /* HDA 1.0a Amplifier Capabilities */
 
 #define WIDGET_DAC   0x0
 #define WIDGET_ADC   0x1
@@ -197,6 +218,7 @@ struct hda {
     unsigned          codec_addr;
     unsigned          dac_nid;
     unsigned          pin_nid;
+    struct hda_route output_route; /* proven path, including intermediate amps */
 
     uint8_t          *ring;       /* the PCM the DMA engine plays */
     struct bdl_entry *bdl;
@@ -321,10 +343,14 @@ static int codec_cmd(struct hda *h, unsigned cad, unsigned nid,
     unsigned wp;
     uint64_t deadline;
 
-    /* A 12-bit verb carries an 8-bit payload; a 4-bit verb carries 16 bits.
-     * Getting this split wrong silently sends a different command. */
-    if ((verb & 0xF00) == verb && payload > 0xFF)
-        val = (cad << 28) | (nid << 20) | ((verb & 0xF) << 16) | (payload & 0xFFFF);
+    /* HDA 1.0a section 7.3: a 12-bit verb carries eight payload bits; the
+     * Converter Format (2) and Amplifier Gain/Mute (3) verbs carry sixteen.
+     * Historical code chose by payload > 0xff and used verb & 0xf. Correction:
+     * our constants are 0x200/0x300, so that mask sent verb ZERO for every
+     * stereo amp write. Select by verb kind, shift the constant down, and
+     * preserve the wide format even when its data happens to fit in a byte. */
+    if (verb == VERB_SET_STREAM_FMT || verb == VERB_SET_AMP)
+        val = (cad << 28) | (nid << 20) | ((verb >> 8) << 16) | (payload & 0xFFFF);
     else
         val = (cad << 28) | (nid << 20) | ((verb & 0xFFF) << 8) | (payload & 0xFF);
 
@@ -394,14 +420,60 @@ static uint32_t codec_param(struct hda *h, unsigned nid, unsigned param)
     return v;
 }
 
+/* Bring an AFG or power-capable output widget to proven D0 before using it.
+ * The old SET_POWER-only sequence treated command delivery as success; a
+ * codec may acknowledge it while staying in D3. HDA 1.0a 7.3.3.10 requires
+ * checking PS-Error separately from the asynchronous PS-Act transition:
+ * https://www.intel.com/content/dam/www/public/us/en/documents/product-specifications/high-definition-audio-specification.pdf
+ * Refusal, unreadable status and bounded noncompletion all leave output
+ * unavailable; retrying a refused transition or guessing D0 hides silence.
+ * This polls CORB/RIRB without relying on interrupts, including boot at IF=0.
+ * Model evidence: not verified on X79-VG4 hardware. */
+static int hda_power_up(struct hda *h, unsigned nid)
+{
+    if (codec_cmd(h, h->codec_addr, nid, VERB_SET_POWER, 0, NULL) != 0) {
+        kprintf("[hda] D0 request failed: nid %u\n", nid);
+        return -1;
+    }
+#ifdef HDA_NEGCTL_NO_POWER_CONFIRM
+    /* Reproduce the acknowledged-but-still-D3 bug for the integration gate. */
+    return 0;
+#else
+    uint64_t started = hda_ms();
+    uint32_t state = 0;
+
+    for (unsigned reads = 0; reads < HDA_POWER_MAX_READS; reads++) {
+        if (codec_cmd(h, h->codec_addr, nid, VERB_GET_POWER, 0, &state) != 0) {
+            kprintf("[hda] D0 status unreadable: nid %u\n", nid);
+            return -1;
+        }
+        if (state & HDA_POWER_ERROR) {
+            kprintf("[hda] D0 refused: nid %u state %x\n", nid, state);
+            return -1;
+        }
+        if (!(state & HDA_POWER_STATE_MASK)) {
+            return 0;
+        }
+        if (hda_ms() - started >= HDA_POWER_TIMEOUT_MS) {
+            break;
+        }
+        __asm__ volatile ("pause");
+    }
+    kprintf("[hda] D0 transition timed out: nid %u state %x\n", nid, state);
+    return -1;
+#endif
+}
+
 /* ------------------------------------------------------ codec discovery -- */
 
-/* Connection-list helpers, shared by the output pin search below (which
+/* Historical description: shared by the output pin search below (which
  * already open-coded a short-form (4-per-response) connection list read) and
  * the capture search that follows it. Only the short form is read -- real
  * codecs in this tree's corpus so far (QEMU's, and every ALC datasheet this
  * driver was cross-checked against) never exceed a handful of sources, so 8
- * is generous rather than tight. */
+ * is generous rather than tight.
+ * Correction (P7): capture alone retains these helpers unchanged. Output now
+ * expands short/long/range entries with hda_read_output_connections below. */
 static int hda_conn_len(struct hda *h, unsigned nid)
 {
     int n = (int)(codec_param(h, nid, PARAM_CONN_LIST_LEN) & 0x7F);
@@ -461,7 +533,9 @@ static void hda_report_jack(struct hda *h, const char *label, unsigned nid)
  * unproven CAPTURE guess reads an ADC that may be listening to a different,
  * disconnected source -- which produces something that LOOKS like a working
  * microphone (silence, or noise off a dead input) and is exactly the
- * "stubbed to success" shape this tree forbids. Refuse instead. */
+ * "stubbed to success" shape this tree forbids. Refuse instead.
+ * Correction (P7): output now refuses an unproven graph too; the old contrast
+ * above is retained for readers following the original fallback diagnosis. */
 static int try_capture_path(struct hda *h, const unsigned *adcs, unsigned nadc,
                             const unsigned *inpins, unsigned ninpin)
 {
@@ -517,6 +591,106 @@ static int try_capture_path(struct hda *h, const unsigned *adcs, unsigned nadc,
     return 0;
 }
 
+/* Read the output graph's connection list without changing capture's legacy
+ * reader. HDA 1.0a Connection List Length / Get Connection List Entry tables
+ * and Linux v6.12 sound/hda/hdac_device.c, snd_hdac_get_connections(): bit 7
+ * selects long form, entries pack four bytes or two words per response, and
+ * each entry's top bit expands a range AFTER the preceding NID.
+ * https://github.com/torvalds/linux/blob/v6.12/sound/hda/hdac_device.c
+ * Reject overflow/malformed lists completely: truncating a range changes
+ * Connection Select indices and can enable the wrong mixer input silently. */
+static int hda_read_output_connections(struct hda *h, struct hda_widget *widget)
+{
+    uint32_t length = 0;
+    uint32_t packed = 0;
+    unsigned previous = 0;
+
+    widget->connection_count = 0;
+    if (codec_cmd(h, h->codec_addr, widget->nid, VERB_GET_PARAM,
+                  PARAM_CONN_LIST_LEN, &length) != 0) {
+        return -1;
+    }
+    unsigned entry_bits = (length & 0x80) ? 16 : 8;
+    unsigned per_response = 32 / entry_bits;
+    unsigned range_bit = 1u << (entry_bits - 1);
+    unsigned entry_mask = range_bit - 1;
+
+    for (unsigned index = 0; index < (length & 0x7f); index++) {
+        if (index % per_response == 0) {
+            if (codec_cmd(h, h->codec_addr, widget->nid, VERB_GET_CONN_LIST,
+                          index, &packed) != 0) {
+                goto invalid;
+            }
+        }
+        unsigned entry = packed >> ((index % per_response) * entry_bits);
+        unsigned nid = entry & entry_mask;
+        unsigned first = nid;
+
+        /* Codec command NIDs are eight bits. Long-form entries are legal
+         * only when they still fit this address space (HDA 1.0a 7.3). */
+        if (nid == 0 || nid > 255) {
+            goto invalid;
+        }
+        if (entry & range_bit) {
+            if (index == 0 || nid <= previous) {
+                goto invalid;
+            }
+            first = previous + 1;
+        }
+        for (unsigned source = first; source <= nid; source++) {
+            if (widget->connection_count == HDA_ROUTE_CONNECTIONS) {
+                goto invalid;
+            }
+            widget->connections[widget->connection_count++] = source;
+        }
+        previous = nid;
+    }
+    return 0;
+
+invalid:
+    widget->connection_count = 0;
+    return -1;
+}
+
+/* Resolve amplifier inheritance before the pure search sees the graph. HDA
+ * 1.0a Audio Widget Capabilities bit 3 (Amp Param Override) says whether the
+ * widget supplies capabilities or inherits its AFG's defaults; Linux v6.12
+ * sound/pci/hda/hda_codec.c, query_amp_caps(), follows the same rule.
+ * A failed capability/list read invalidates only this output widget. Capture
+ * keeps its existing independent search and never consumes this table. */
+static int hda_read_output_caps(struct hda *h, struct hda_widget *widget,
+                                uint32_t default_input, uint32_t default_output,
+                                int input_ready, int output_ready)
+{
+    unsigned amp_node = (widget->caps & (1u << 3)) ? widget->nid : 0;
+
+    if (widget->caps & (1u << 1)) {
+        if (!amp_node && !input_ready) {
+            return -1;
+        }
+        widget->amp_in = default_input;
+        if (amp_node && codec_cmd(h, h->codec_addr, amp_node, VERB_GET_PARAM,
+                                  PARAM_AMP_IN_CAP, &widget->amp_in) != 0) {
+            return -1;
+        }
+    }
+    if (widget->caps & (1u << 2)) {
+        if (!amp_node && !output_ready) {
+            return -1;
+        }
+        widget->amp_out = default_output;
+        if (amp_node && codec_cmd(h, h->codec_addr, amp_node, VERB_GET_PARAM,
+                                  PARAM_AMP_OUT_CAP, &widget->amp_out) != 0) {
+            return -1;
+        }
+    }
+    if (widget->type == WIDGET_PIN || widget->type == WIDGET_MIXER ||
+        widget->type == WIDGET_SEL) {
+        return hda_read_output_connections(h, widget);
+    }
+    return 0;
+}
+
 /* Walk the widget graph and find a DAC that can reach a usable output pin.
  * While it is walking the graph anyway, it also gathers the ADCs and
  * input-capable pins this fg has and hands them to try_capture_path -- one
@@ -533,6 +707,14 @@ static int find_output_path(struct hda *h)
 {
     uint32_t sub, cap;
     unsigned fg_start, fg_count, i;
+    /* A full eight-bit NID table is too large for the kernel stack. Probe is
+     * admitted through the existing g_hda singleton; keep only its selected
+     * three-node route in h, and reuse this scratch table for the next AFG. */
+    static struct hda_widget widgets[256];
+
+    h->output_route.count = 0;
+    h->pin_nid = 0;
+    h->dac_nid = 0;
 
     sub = codec_param(h, 0, PARAM_SUBNODE_COUNT);
     fg_start = (sub >> 16) & 0xFF;
@@ -548,8 +730,9 @@ static int find_output_path(struct hda *h)
     for (i = 0; i < fg_count; i++) {
         unsigned fg = fg_start + i;
         unsigned w_start, w_count, j;
-        unsigned dacs[16], ndac = 0;
-        unsigned pins[16], npin = 0;
+        uint32_t default_input = 0;
+        uint32_t default_output = 0;
+        int input_ready, output_ready;
         unsigned adcs[16], nadc = 0;
         unsigned inpins[16], ninpin = 0;
 
@@ -562,30 +745,60 @@ static int find_output_path(struct hda *h)
             if ((t & 0x7F) != 0x01) continue;   /* not an Audio Function Group */
         }
 
-        /* An AFG comes up powered down on plenty of real codecs; D0 first or
-         * every subsequent verb reads back plausible nonsense. */
-        codec_cmd(h, h->codec_addr, fg, VERB_SET_POWER, 0, 0);
+        /* Historical assumption: sending D0 made later widget reads safe.
+         * Correction: prove AFG D0 (HDA 1.0a 7.3.3.10) before reading the
+         * graph; a rejected transition must not fabricate a usable output. */
+        if (hda_power_up(h, fg) != 0) {
+            return -1;
+        }
 
         sub = codec_param(h, fg, PARAM_SUBNODE_COUNT);
         w_start = (sub >> 16) & 0xFF;
         w_count = sub & 0xFF;
+        if (w_start + w_count > 256) {
+            kprintf("[hda]   fg %u: widget range exceeds codec NID space\n", fg);
+            continue;
+        }
+        memset(widgets, 0, sizeof widgets);
+        /* HDA 1.0a Amplifier Capabilities: AFG defaults apply when a widget
+         * does not advertise Amp Param Override. Refuse failed reads instead
+         * of interpreting a timeout as a mute-only, zero-gain amplifier. */
+        input_ready = codec_cmd(h, h->codec_addr, fg, VERB_GET_PARAM,
+                                 PARAM_AMP_IN_CAP, &default_input) == 0;
+        output_ready = codec_cmd(h, h->codec_addr, fg, VERB_GET_PARAM,
+                                  PARAM_AMP_OUT_CAP, &default_output) == 0;
 
         for (j = 0; j < w_count; j++) {
             unsigned nid = w_start + j;
             unsigned type;
-            cap = codec_param(h, nid, PARAM_AUDIO_WIDGET_CAP);
+            struct hda_widget *widget = &widgets[j];
+            int output_valid;
+
+            cap = 0;
+            output_valid = codec_cmd(h, h->codec_addr, nid, VERB_GET_PARAM,
+                                      PARAM_AUDIO_WIDGET_CAP, &cap) == 0;
             type = (cap >> 20) & 0xF;
-            if (type == WIDGET_DAC && ndac < 16) {
-                dacs[ndac++] = nid;
+            widget->nid = nid;
+            widget->type = type;
+            widget->caps = cap;
+            if (type == WIDGET_DAC) {
                 kprintf("[hda]   nid %u: DAC (cap %x)\n", nid, cap);
             } else if (type == WIDGET_ADC && nadc < 16) {
                 adcs[nadc++] = nid;
                 kprintf("[hda]   nid %u: ADC (cap %x)\n", nid, cap);
             } else if (type == WIDGET_PIN) {
-                uint32_t pcap = codec_param(h, nid, PARAM_PIN_CAP);
+                uint32_t pcap = 0;
                 uint32_t cfg = 0;
                 int connected;
-                codec_cmd(h, h->codec_addr, nid, VERB_GET_CONFIG_DEF, 0, &cfg);
+                if (codec_cmd(h, h->codec_addr, nid, VERB_GET_PARAM,
+                              PARAM_PIN_CAP, &pcap) != 0) {
+                    output_valid = 0;
+                }
+                if (codec_cmd(h, h->codec_addr, nid, VERB_GET_CONFIG_DEF, 0, &cfg) != 0) {
+                    output_valid = 0;
+                }
+                widget->pin_caps = pcap;
+                widget->cfg = cfg;
                 kprintf("[hda]   nid %u: PIN (cap %x pincap %x cfg %x)\n",
                         nid, cap, pcap, cfg);
                 /* Port connectivity 0x1 == "no physical connection". Picking
@@ -596,10 +809,17 @@ static int find_output_path(struct hda *h)
                  * can be output-capable, input-capable, or (real hardware's
                  * combo mic/line jacks) both. */
                 connected = ((cfg >> 30) & 0x3) != 0x1;
-                if (connected && (pcap & (1u << 4)) && npin   < 16) pins[npin++]     = nid;
                 if (connected && (pcap & (1u << 5)) && ninpin < 16) inpins[ninpin++] = nid;
             } else {
                 kprintf("[hda]   nid %u: type %u (cap %x)\n", nid, type, cap);
+            }
+            if (!output_valid ||
+                hda_read_output_caps(h, widget, default_input, default_output,
+                                      input_ready, output_ready) != 0) {
+                /* Vendor-defined type F cannot be mistaken for a DAC or pin.
+                 * Do not remove the node: indices refer to hardware lists. */
+                widget->type = 0xf;
+                kprintf("[hda]   nid %u: output capabilities/list unreadable or oversized\n", nid);
             }
         }
 
@@ -611,36 +831,22 @@ static int find_output_path(struct hda *h)
         if (!h->adc_nid)
             try_capture_path(h, adcs, nadc, inpins, ninpin);
 
-        if (!ndac || !npin) {
-            kprintf("[hda]   fg %u: %u DAC(s), %u usable output pin(s)\n",
-                    fg, ndac, npin);
-            continue;
-        }
-
-        /* Prefer a pin that actually lists a DAC among its sources; fall back
-         * to the first output pin and the first DAC, which is right for the
-         * simple one-path codecs (QEMU's included) whose pin has a single
-         * hardwired source and may report an empty connection list. */
-        for (j = 0; j < npin; j++) {
-            uint32_t len = codec_param(h, pins[j], PARAM_CONN_LIST_LEN) & 0x7F;
-            unsigned k;
-            for (k = 0; k < len && k < 8; k++) {
-                uint32_t e = 0;
-                unsigned entry;
-                if (codec_cmd(h, h->codec_addr, pins[j], VERB_GET_CONN_LIST, k & ~3u, &e) != 0)
-                    break;
-                entry = (e >> ((k & 3) * 8)) & 0xFF;      /* short form, 4 per response */
-                for (unsigned d = 0; d < ndac; d++)
-                    if (dacs[d] == entry) {
-                        h->dac_nid = dacs[d];
-                        h->pin_nid = pins[j];
-                        return 0;
-                    }
+        /* The previous direct-only search fell back to the first DAC/pin.
+         * Correction: QEMU's pin has a real connection-list edge too, while
+         * ALC887 needs its summing mixer opened; neither warrants guessing. */
+        if (hda_route_find(widgets, w_count, NULL, 0, &h->output_route) == 0) {
+            h->pin_nid = h->output_route.nodes[0].nid;
+            h->dac_nid = h->output_route.nodes[h->output_route.count - 1].nid;
+            if (h->output_route.count == 3) {
+                kprintf("[hda]   output: pin %u -> widget %u -> DAC %u\n",
+                        h->pin_nid, h->output_route.nodes[1].nid, h->dac_nid);
+            } else {
+                kprintf("[hda]   output: pin %u -> DAC %u direct\n",
+                        h->pin_nid, h->dac_nid);
             }
+            return 0;
         }
-        h->dac_nid = dacs[0];
-        h->pin_nid = pins[0];
-        return 0;
+        kprintf("[hda]   fg %u: no reachable output DAC -- refusing to guess\n", fg);
     }
     return -1;
 }
@@ -648,43 +854,49 @@ static int find_output_path(struct hda *h)
 /* SDnFMT / converter format: base 48 kHz, x1, /1, 16-bit, 2 channels. */
 #define HDA_FMT_48K_S16_2CH  0x0011
 
-static void codec_setup_output(struct hda *h)
+/* Send the shared route compiler's exact verb sequence, stopping on transport
+ * or power-state failure rather than registering a silent output. Power verbs
+ * are barriers: prove each D0 before the compiler's stream/select/amp writes.
+ * hda_route.c documents capability checks and the HDA/Linux sequence sources. */
+static int codec_setup_output(struct hda *h)
 {
-    /* Route: tell the DAC which stream tag to consume and which channel to
-     * start at. THIS is the connection between the DMA engine and the codec --
-     * without it the engine runs, LPIB advances, and nothing is heard. */
-    codec_cmd(h, h->codec_addr, h->dac_nid, VERB_SET_STREAM_FMT, HDA_FMT_48K_S16_2CH, 0);
-    codec_cmd(h, h->codec_addr, h->dac_nid, VERB_SET_STREAM_CHAN,
-              (HDA_STREAM_TAG << 4) | 0, 0);
+    struct hda_route_verb verbs[HDA_ROUTE_VERBS];
+    int count = hda_route_verbs(&h->output_route, HDA_FMT_48K_S16_2CH,
+                                HDA_STREAM_TAG, verbs, HDA_ROUTE_VERBS);
 
-    /* Unmute and set gain. 0xB000 = set output amp, left+right, index 0,
-     * unmuted, gain 0x00... which on most codecs is the MINIMUM, not 0 dB. Use
-     * a mid-scale gain instead: a driver that "works" but is inaudible because
-     * it left the amp at its floor is a classic. */
-    codec_cmd(h, h->codec_addr, h->dac_nid, VERB_SET_AMP, 0, 0);   /* payload below */
-    {
-        /* SET_AMP is a 4-bit verb with a 16-bit payload:
-         * b15 set-output, b14 set-input, b13 left, b12 right, b7 mute,
-         * b6..0 gain. */
-        unsigned p = (1u << 15) | (1u << 13) | (1u << 12) | 0x2A;
-        codec_cmd(h, h->codec_addr, h->dac_nid, VERB_SET_AMP, p, 0);
-        codec_cmd(h, h->codec_addr, h->pin_nid, VERB_SET_AMP, p, 0);
+    if (count < 0) {
+        return -1;
     }
-
-    /* Pin: output enable (b6) + headphone drive (b7). */
-    codec_cmd(h, h->codec_addr, h->pin_nid, VERB_SET_PIN_CTL, 0x40 | 0x80, 0);
-    /* EAPD/amplifier power. Harmless where unsupported, and on the laptops that
-     * do need it the speakers stay dead without it. */
-    codec_cmd(h, h->codec_addr, h->pin_nid, VERB_SET_EAPD, 0x02, 0);
-    codec_cmd(h, h->codec_addr, h->pin_nid, VERB_SET_POWER, 0, 0);
-    codec_cmd(h, h->codec_addr, h->dac_nid, VERB_SET_POWER, 0, 0);
+    for (int i = 0; i < count; i++) {
+        if (verbs[i].verb == VERB_SET_POWER) {
+            if (hda_power_up(h, verbs[i].nid) != 0) {
+                return -1;
+            }
+            continue;
+        }
+        if (codec_cmd(h, h->codec_addr, verbs[i].nid,
+                      verbs[i].verb, verbs[i].payload, NULL) != 0) {
+            kprintf("[hda] output setup failed: nid %u verb %x\n",
+                    verbs[i].nid, verbs[i].verb);
+            return -1;
+        }
+    }
+    return 0;
 }
 
-/* The capture-side twin of codec_setup_output. Same verbs, opposite amp
+/* Historical claim before P7: the capture-side twin of codec_setup_output.
+ * Same verbs, opposite amp
  * direction bit, and one extra step output never needs: programming WHICH
  * source a multi-input ADC (or an intermediate selector) actually listens to,
  * because unlike a DAC -- which only ever has one thing to say -- an ADC can
- * have several possible inputs and defaults to an unspecified one. */
+ * have several possible inputs and defaults to an unspecified one.
+ *
+ * Correction (P7, 2026-11-01): output now also selects the pin's connection
+ * and any intermediate selector in hda_route_verbs(). A mixer sums inputs
+ * instead of selecting one, so output enables its chosen DAC input through
+ * the indexed input amplifier. These are routing requirements, not an ADC-only
+ * distinction (HDA 1.0a Connection Select / Amplifier Gain-Mute verb tables;
+ * Linux v6.12 sound/pci/hda/hda_generic.c, snd_hda_activate_path()). */
 static void codec_setup_capture(struct hda *h)
 {
     if (h->cap_sel_nid)
@@ -701,7 +913,8 @@ static void codec_setup_capture(struct hda *h)
               (HDA_CAPTURE_STREAM_TAG << 4) | 0, 0);
 
     {
-        /* b14 SET-INPUT instead of output's b15 SET-OUTPUT is the whole
+        /* Historical claim before P7: b14 SET-INPUT instead of output's
+         * b15 SET-OUTPUT is the whole
          * difference from codec_setup_output's amp write, and getting it
          * backwards is invisible for the exact reason this file's header
          * warns about generally: the verb completes, the register reads back
@@ -710,7 +923,15 @@ static void codec_setup_capture(struct hda *h)
          * several possible SOURCES this gain applies to on a multi-source
          * ADC -- leaving it 0 on a widget where cap_sel_index != 0 would
          * gain-stage a source that is not the one actually selected, and
-         * leave the real one at its power-on default (frequently muted). */
+         * leave the real one at its power-on default (frequently muted).
+         *
+         * Correction (P7, 2026-11-01): output now programs both directions:
+         * b15 for output amplifiers and b14 for intermediate mixer/selector
+         * input amplifiers. hda_route_verbs() uses each route edge's source
+         * index and amplifier capabilities; changing the direction bit alone
+         * cannot configure that path. Capture's writes below are unchanged
+         * (HDA 1.0a Amplifier Gain-Mute verb table; Linux v6.12
+         * sound/pci/hda/hda_generic.c, activate_amp_in()/activate_amp_out()). */
         unsigned idx = (h->cap_sel_nid == h->adc_nid) ? h->cap_sel_index : 0;
         unsigned p = (1u << 14) | (1u << 13) | (1u << 12) | (idx << 8) | 0x2A;
         codec_cmd(h, h->codec_addr, h->adc_nid, VERB_SET_AMP, p, 0);
@@ -1437,7 +1658,9 @@ static int hda_probe(struct device *dev)
         *p = 0;
     }
 
-    codec_setup_output(h);
+    if (codec_setup_output(h) != 0) {
+        goto probe_fail;
+    }
     if (h->adc_nid) codec_setup_capture(h);
 
     /* The PCM ring the engine walks, and the BDL that describes it. Contiguous
