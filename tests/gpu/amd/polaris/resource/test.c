@@ -2,6 +2,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include "amd/polaris/resource/device.h"
+#include "bootmod.h"
+#include "crypto.h"
 #include "driver.h"
 #include "pci.h"
 #include "vfs.h"
@@ -30,6 +32,11 @@ static const char *const file_paths[9] = {
     "/lib/firmware/amdgpu/polaris10_k_smc.bin"
 };
 static uint8_t file_data[9][512];
+/* The synthetic blobs are not the vendored firmware, so the production pin
+ * table cannot vouch for them. make_files() pins each one to its own digest
+ * through files.c's host-gate override (POLARIS_FW_PIN_HOST_OVERRIDE). A file
+ * edited AFTER make_files() therefore no longer matches its pin. */
+static struct polaris_fw_pin test_pins[9];
 static uint8_t vram_copy[256 * 1024];
 static uint32_t registers[65536 / 4];
 static uint32_t configuration[256 / 4];
@@ -114,6 +121,25 @@ static void make_files(void)
     }
 }
 
+static void install_pins(void)
+{
+    for (unsigned file = 0; file < 9; ++file) {
+        sha256(file_data[file], sizeof file_data[file], test_pins[file].sha256);
+        test_pins[file].name = strrchr(file_paths[file], '/') + 1;
+    }
+    polaris_fw_pin_table = test_pins;
+    polaris_fw_pin_table_count = 9;
+}
+
+/* No boot modules in this gate: the rootfs path is under test. The fallback
+ * order has its own gate (tests/hw/fwwire/files_test.c). */
+const void *bootmod_find(const char *name, uint64_t *bytes)
+{
+    (void)name;
+    (void)bytes;
+    return NULL;
+}
+
 static void reset(void)
 {
     CHECK(allocations == frees);
@@ -133,6 +159,7 @@ static void reset(void)
     bad_read_delta = -1;
     make_vbios();
     make_files();
+    install_pins();
     memset(configuration, 0, sizeof configuration);
     memset(registers, 0, sizeof registers);
     configuration[0] = 0x67df1002;
@@ -299,6 +326,8 @@ static void firmware_cases(void)
     struct polaris_resource_files files = {0};
     CHECK(polaris_resource_files_load(0xe7, 1, &files) == 0);
     CHECK(files.valid_mask == 0xff && allocations == 8);
+    for (unsigned kind = 0; kind < POLARIS_RESOURCE_FILE_SLOTS; ++kind)
+        CHECK(files.source[kind] == POLARIS_RESOURCE_SOURCE_ROOTFS);
     CHECK(!memcmp(files.smc.data, file_data[8], 512));
     struct polaris_fw_bundle_info bundle;
     CHECK(polaris_fw_bundle_plan(&files.firmware, 0, &bundle) == 0);
@@ -369,6 +398,8 @@ static void device_cases(void)
     CHECK(window_maps == 1);
 #endif
     CHECK(report.firmware_mask[0] == 0xff && report.firmware_mask[1] == 0xff);
+    CHECK(report.firmware_from_rootfs == 9 && report.firmware_from_bootmod == 0);
+    CHECK(report.firmware_pin_mismatch == 0);
     CHECK(report.ownership_missing == 1 && report.security_key_unknown == 1);
     CHECK(report.device.vram_bytes == UINT64_C(0x200000000));
     CHECK(file_stats == 16 && file_reads == 16 && map_count == 2);
@@ -386,6 +417,16 @@ static void device_cases(void)
     CHECK(window_maps == 0 && whole_vram_maps == 0 && map_count == 1);
     CHECK(report.firmware_mask[0] == 0xff && report.firmware_mask[1] == 0xff);
 #endif
+
+    /* A rootfs file that no longer hashes to its pin is a pin mismatch, not a
+     * format error: the edit keeps the header valid. Slot 2 is shared by both
+     * candidate sets, so it counts twice. */
+    reset();
+    file_data[2][400] ^= 1;
+    CHECK(probe(&report) == 0);
+    CHECK(report.firmware_mask[0] == 0xfb && report.firmware_mask[1] == 0xfb);
+    CHECK(report.file_result[0][2] == POLARIS_RESOURCE_FILE_PIN);
+    CHECK(report.firmware_pin_mismatch == 2 && report.firmware_from_rootfs == 8);
 
     reset();
     vram_copy[0] = 0;

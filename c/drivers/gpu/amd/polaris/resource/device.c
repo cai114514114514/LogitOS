@@ -168,6 +168,18 @@ static void discover_files(struct polaris_resource_report *report)
         report->firmware_mask[key] = files.valid_mask;
         for (unsigned kind = 0; kind < POLARIS_RESOURCE_FILE_SLOTS; ++kind) {
             report->file_result[key][kind] = files.result[kind];
+            if (files.result[kind] == POLARIS_RESOURCE_FILE_PIN) {
+                ++report->firmware_pin_mismatch;
+            }
+            /* key=1 repeats the shared slots, so count only its SMC file. */
+            if (key == 1 && kind != POLARIS_FW_SMC) {
+                continue;
+            }
+            if (files.source[kind] == POLARIS_RESOURCE_SOURCE_ROOTFS) {
+                ++report->firmware_from_rootfs;
+            } else if (files.source[kind] == POLARIS_RESOURCE_SOURCE_BOOTMOD) {
+                ++report->firmware_from_bootmod;
+            }
         }
         polaris_resource_files_release(&files);
     }

@@ -229,6 +229,41 @@ static void release(uint64_t base, uint64_t len)
     }
 }
 
+/* ---------------------------------------------------------- held ranges --
+ * Memory the boot loader filled with data the kernel still needs (the AMD
+ * firmware modules, c/kernel/init/bootmod.c). The UEFI loader allocates it as
+ * EfiLoaderData, which the native memory map reports AVAILABLE -- exactly like
+ * the loader's own dead code and data, which pmm_init is meant to recycle.
+ * Nothing in the map distinguishes the two, so the kernel records the ranges
+ * it must keep BEFORE pmm_init and pmm_init treats them like the kernel image
+ * and the boot information block: never released, never a place for metadata.
+ * Ends are rounded outward to whole frames; a partly covered frame is held. */
+#define PMM_HOLD_MAX 64
+static struct { uint64_t base, end; } held[PMM_HOLD_MAX];
+static unsigned held_count;
+
+int pmm_hold_range(uint64_t base, uint64_t bytes)
+{
+    uint64_t end = base + bytes;
+    if (!bytes || end < base || held_count == PMM_HOLD_MAX) return -1;
+    held[held_count].base = base & ~(uint64_t)(FRAME_SIZE - 1);
+    held[held_count].end = (end + FRAME_SIZE - 1) & ~(uint64_t)(FRAME_SIZE - 1);
+    held_count++;
+    return 0;
+}
+
+/* The shared reserve() already ignores frames beyond total_frames, so a range
+ * the firmware map never described costs nothing here. Called after every
+ * release() pass: release() clears the bit it finds set, so a hold applied
+ * only once would be undone by whichever zone is released later. */
+static void reserve_held(void)
+{
+#ifndef FWWIRE_NEGCTL_NO_RESERVE   /* negative control: modules left allocatable */
+    for (unsigned i = 0; i < held_count; i++)
+        reserve(held[i].base, held[i].end - held[i].base);
+#endif
+}
+
 /* The physmap builder lives in this translation unit so every existing host
  * PMM suite continues to link the real boot allocator. It runs before APs,
  * rmap and reclaim exist, using only low-zone pages for its own tables. */
@@ -346,6 +381,26 @@ static int metadata_available(struct mb2_tag_mmap *map, uint64_t base, uint64_t 
     return 1;
 }
 
+/* Slide CANDIDATE up past every held range the window [candidate, candidate +
+ * bytes) touches. Without this the metadata can be placed ON a low boot module
+ * (UEFI allocates module pages wherever it likes, including below 1 GiB on a
+ * small machine) and memset() would erase firmware before it is ever read.
+ * Terminates because each move strictly raises the candidate. */
+static uint64_t skip_held(uint64_t candidate, uint64_t bytes)
+{
+    int moved;
+    do {
+        moved = 0;
+        for (unsigned i = 0; i < held_count; i++) {
+            if (held[i].base < candidate + bytes && candidate < held[i].end) {
+                candidate = held[i].end;
+                moved = 1;
+            }
+        }
+    } while (moved);
+    return candidate;
+}
+
 static uint64_t metadata_place(struct mb2_tag_mmap *map, uint64_t floor, uint64_t bytes,
                                uint64_t info, uint64_t info_size)
 {
@@ -361,6 +416,7 @@ static uint64_t metadata_place(struct mb2_tag_mmap *map, uint64_t floor, uint64_
             if (candidate < PMM_LOW_LIMIT && bytes <= PMM_LOW_LIMIT - candidate) {
                 if (info < candidate + bytes && candidate < info + info_size)
                     candidate = (info + info_size + FRAME_SIZE - 1) & ~(uint64_t)(FRAME_SIZE - 1);
+                candidate = skip_held(candidate, bytes);
                 if (candidate < PMM_LOW_LIMIT && bytes <= PMM_LOW_LIMIT - candidate &&
                     (!best || candidate < best) && metadata_available(map, candidate, bytes))
                     best = candidate;
@@ -473,6 +529,7 @@ void pmm_init(uint64_t mb_info_addr)
     reserve(0, kernel_reserved);
     reserve(base, meta); /* relocated metadata must not consume all intervening RAM */
     reserve(mb_info_addr, total_size);
+    reserve_held();
 
     uint64_t flags = PMM_PTE_P | PMM_PTE_W | (direct_nx_enabled() ? PMM_PTE_NX : 0);
     /* Low aliases must be complete even in the high-map negative control.
@@ -528,6 +585,7 @@ void pmm_init(uint64_t mb_info_addr)
             if (mmap->entry_size > (uint64_t)(mend - e)) break;
             e += mmap->entry_size;
         }
+        reserve_held(); /* the high release above just freed any high module */
         high_available = total_frames - used_frames - low_zone_free;
         /* Prefer payload RAM above 4 GiB when the physical map reaches it.
          * This preserves scarce low DMA RAM and exercises full-width physical

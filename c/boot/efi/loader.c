@@ -27,8 +27,9 @@
  * EfiLoaderData. Any refusal, hole, type mismatch, or descriptor overflow stops
  * before ExitBootServices. No code writes the kernel image after firmware exit.
  *
- * WHAT IS STILL GENUINELY THIN. There is no module/initrd tag,
- * so this loader has no way to hand the kernel anything except the kernel. The
+ * WHAT IS STILL GENUINELY THIN. The only thing besides the kernel this loader
+ * hands over is the firmware set listed in \LOGIT\FW\INDEX.TXT (see "step
+ * 2b"): there is no general initrd, and the index is read as plain text. The
  * image path is the hardcoded pair \logit.elf / \LOGIT.ELF: no config, no
  * second entry, no fallback kernel. Nothing verifies the image it is about to
  * run, on a machine that compiles a root key into the kernel for .lpk. And
@@ -637,6 +638,241 @@ static UINT64 load_kernel(EFI_HANDLE image)
 }
 
 /* ------------------------------------------------------------------ *
+ *  step 2b: firmware modules                                          *
+ * ------------------------------------------------------------------ */
+
+/* WHY THIS EXISTS. The AMD Polaris microcode must reach the kernel on a
+ * machine whose root disk cannot be re-imaged except from Windows, so the USB
+ * stick this loader booted from carries it too (tools/mkesp.py --firmware-dir).
+ * Before ExitBootServices, while FAT reads still work, every file listed in
+ * \LOGIT\FW\INDEX.TXT is read into EfiLoaderData pages and described to the
+ * kernel by one LOGIT_BOOT_TAG_MODULE tag, shaped like the Multiboot2 module
+ * tag (Multiboot2 specification, section 3.6.5 "Modules") but with 64-bit
+ * addresses, because AllocateAnyPages may return memory above 4 GiB.
+ *
+ * INDEX.TXT is the map from the 8.3 names the ESP can hold to real names:
+ * one "<8.3 name> <size> <real name>" line per file, LF ended. The size is a
+ * cross-check against a FAT driver that hands back a short file. The index is
+ * OPTIONAL -- a stick without it boots exactly as before -- but a file the
+ * index names and the volume then fails to deliver correctly is skipped with a
+ * printed reason, never half-loaded. The kernel pins every blob's SHA-256
+ * itself (files.c), so this loader does not vouch for the contents. */
+#define FW_INDEX_BYTES_MAX  4096
+/* Same ceiling bootmod.c applies; a larger "file" is a corrupt index line. */
+#define FW_MODULE_BYTES_MAX (16ull * 1024 * 1024)
+
+struct fw_module {
+    UINT64 lo;                           /* first byte of the file */
+    UINT64 hi;                           /* one past its last byte */
+    UINT64 page_hi;                      /* end of the page allocation */
+    char   name[LOGIT_BOOT_MODULE_NAME_MAX];
+};
+static struct fw_module fw_modules[LOGIT_BOOT_MODULES_MAX];
+static UINTN fw_module_count;
+static char fw_index_text[FW_INDEX_BYTES_MAX + 1];
+
+/* Widen "\LOGIT\FW\<name>" into a UCS-2 path for EFI_FILE_PROTOCOL.Open
+ * (UEFI 2.10 sec 13.5). The names are ASCII, validated before this runs. */
+static void fw_path(CHAR16 *out, const char *name)
+{
+    static const char directory[] = "\\LOGIT\\FW\\";
+    UINTN length = 0;
+    for (UINTN i = 0; i < sizeof directory - 1; i++)
+        out[length++] = (CHAR16)directory[i];
+    while (*name)
+        out[length++] = (CHAR16)(UINT8)*name++;
+    out[length] = 0;
+}
+
+/* A name is 1..max_len characters from the set FAT 8.3 names and linux-firmware
+ * file names use. Anything else (spaces, slashes, control bytes) in the index
+ * is a refusal of that line: the name is later opened and echoed to serial. */
+static int fw_name_ok(const char *text, UINTN max_len)
+{
+    UINTN length = 0;
+    for (; text[length]; length++) {
+        char ch = text[length];
+        int allowed = (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
+                      (ch >= '0' && ch <= '9') || ch == '.' || ch == '_' || ch == '-';
+        if (!allowed || length >= max_len)
+            return 0;
+    }
+    return length != 0;
+}
+
+/* Parse one "<name> <size> <name>" line in place (separators become NULs).
+ * Returns 0 when the line is malformed. */
+static int fw_parse_line(char *line, char **esp_name, UINT64 *size, char **real_name)
+{
+    char *cursor = line;
+    *esp_name = cursor;
+    while (*cursor > ' ')
+        cursor++;
+    if (*cursor != ' ')
+        return 0;
+    *cursor++ = 0;
+
+    /* At most ten digits: enough for FW_MODULE_BYTES_MAX, too few to overflow. */
+    UINT64 value = 0;
+    UINTN digits = 0;
+    while (*cursor >= '0' && *cursor <= '9' && digits < 10) {
+        value = value * 10 + (UINT64)(*cursor - '0');
+        cursor++;
+        digits++;
+    }
+    if (!digits || *cursor != ' ')
+        return 0;
+    *cursor++ = 0;
+    *size = value;
+
+    *real_name = cursor;
+    while (*cursor > ' ')
+        cursor++;
+    if (*cursor && *cursor != '\r')
+        return 0;
+    *cursor = 0;
+    return 1;
+}
+
+/* Read \LOGIT\FW\INDEX.TXT and every file it lists into LoaderData pages. */
+static void load_firmware_modules(EFI_HANDLE image)
+{
+    EFI_GUID li_guid  = EFI_LOADED_IMAGE_PROTOCOL_GUID;
+    EFI_GUID sfs_guid = EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID;
+    EFI_GUID fi_guid  = EFI_FILE_INFO_ID;
+    EFI_LOADED_IMAGE_PROTOCOL *li = 0;
+    EFI_SIMPLE_FILE_SYSTEM_PROTOCOL *fs = 0;
+    EFI_FILE_PROTOCOL *root = 0, *file = 0;
+    EFI_STATUS st;
+    CHAR16 path[64];
+
+    /* The same road to the boot volume load_kernel takes, repeated rather than
+     * shared so the kernel loader above stays untouched: it closes the volume
+     * before returning and its error strings name logit.elf. */
+    if (BS->HandleProtocol(image, &li_guid, (void **)&li))
+        return;
+    if (BS->HandleProtocol(li->DeviceHandle, &sfs_guid, (void **)&fs))
+        return;
+    if (fs->OpenVolume(fs, &root))
+        return;
+
+    fw_path(path, "INDEX.TXT");
+    st = root->Open(root, &file, path, EFI_FILE_MODE_READ, 0);
+    if (st) {
+        say("[efi] no firmware index (\\LOGIT\\FW\\INDEX.TXT); no boot modules\n");
+        root->Close(root);
+        return;
+    }
+
+    UINT64 raw[(sizeof(EFI_FILE_INFO) + 64 + 7) / 8];
+    UINTN info_size = sizeof raw;
+    st = file->GetInfo(file, &fi_guid, &info_size, raw);
+    UINT64 index_bytes = st ? 0 : ((EFI_FILE_INFO *)raw)->FileSize;
+    if (!index_bytes || index_bytes > FW_INDEX_BYTES_MAX) {
+        say("[efi] firmware index has an unusable size; no boot modules\n");
+        file->Close(file);
+        root->Close(root);
+        return;
+    }
+    read_exact(file, fw_index_text, index_bytes, "short read of the firmware index");
+    fw_index_text[index_bytes] = 0;
+    file->Close(file);
+
+    UINT64 total = 0;
+    char *cursor = fw_index_text;
+    while (*cursor) {
+        char *line = cursor;
+        while (*cursor && *cursor != '\n')
+            cursor++;
+        if (*cursor)
+            *cursor++ = 0;
+        if (!*line)
+            continue;
+
+        char *esp_name, *real_name;
+        UINT64 want;
+        if (!fw_parse_line(line, &esp_name, &want, &real_name) ||
+            !fw_name_ok(esp_name, 12) ||
+            !fw_name_ok(real_name, LOGIT_BOOT_MODULE_NAME_MAX - 1) ||
+            want == 0 || want > FW_MODULE_BYTES_MAX) {
+            say("[efi] firmware index: skipping a malformed line\n");
+            continue;
+        }
+        if (fw_module_count == LOGIT_BOOT_MODULES_MAX) {
+            say("[efi] firmware index: more files than the module limit; rest ignored\n");
+            break;
+        }
+
+        fw_path(path, esp_name);
+        st = root->Open(root, &file, path, EFI_FILE_MODE_READ, 0);
+        if (st) {
+            say("[efi] firmware module ");
+            say(esp_name);
+            say(" cannot be opened; skipped\n");
+            continue;
+        }
+        info_size = sizeof raw;
+        st = file->GetInfo(file, &fi_guid, &info_size, raw);
+        if (st || ((EFI_FILE_INFO *)raw)->FileSize != want) {
+            say("[efi] firmware module "); say(esp_name);
+            say(" is not the size the index says; skipped\n");
+            file->Close(file);
+            continue;
+        }
+
+        /* Any free pages will do: the kernel is told the address. LoaderData is
+         * what the final-map check in efi_main insists on, as for every other
+         * region this loader owns. */
+        UINTN pages = (UINTN)((want + 0xFFF) >> 12);
+        EFI_PHYSICAL_ADDRESS at = 0;
+        st = BS->AllocatePages(AllocateAnyPages, EfiLoaderData, pages, &at);
+        if (st)
+            die_st("no pages for a firmware module", st);
+        if (!allocated_range_is_loader_data(at, at + ((UINT64)pages << 12)))
+            die("firmware did not mark a firmware module LoaderData");
+        read_exact(file, (void *)(UINTN)at, want, "short read of a firmware module");
+        mzero((UINT8 *)(UINTN)at + want, ((UINT64)pages << 12) - want);
+        file->Close(file);
+
+        struct fw_module *module = &fw_modules[fw_module_count++];
+        module->lo = at;
+        module->hi = at + want;
+        module->page_hi = at + ((UINT64)pages << 12);
+        UINTN name_length = 0;
+        while (real_name[name_length]) {
+            module->name[name_length] = real_name[name_length];
+            name_length++;
+        }
+        module->name[name_length] = 0;
+        total += want;
+    }
+    root->Close(root);
+    say("[efi] firmware modules ");
+    sayd(fw_module_count);
+    say(", ");
+    sayd(total);
+    say(" bytes\n");
+}
+
+/* One LOGIT_BOOT_TAG_MODULE per file, name NUL-terminated after the fixed part
+ * (tag.size covers it; ib_take 8-aligns the next tag). */
+static void build_module_tags(struct infobuf *ib)
+{
+    for (UINTN i = 0; i < fw_module_count; i++) {
+        UINTN name_bytes = 0;
+        while (fw_modules[i].name[name_bytes]) name_bytes++;
+        name_bytes++;                                  /* the NUL */
+        UINTN bytes = sizeof(struct logit_boot_module_tag) + name_bytes;
+        struct logit_boot_module_tag *tag = ib_take(ib, bytes);
+        tag->tag.type = LOGIT_BOOT_TAG_MODULE;
+        tag->tag.size = (UINT32)bytes;
+        tag->mod_start = fw_modules[i].lo;
+        tag->mod_end = fw_modules[i].hi;
+        mcopy((UINT8 *)tag + sizeof *tag, fw_modules[i].name, name_bytes);
+    }
+}
+
+/* ------------------------------------------------------------------ *
  *  step 3: the framebuffer                                            *
  * ------------------------------------------------------------------ */
 
@@ -1146,6 +1382,11 @@ void efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *systab)
 
     setup_native_runway();
 
+    /* After the runway: that one needs the four pages directly below the
+     * kernel at a FIXED address, which an AllocateAnyPages grab for a module
+     * could otherwise take first. */
+    load_firmware_modules(image);
+
     /* ---- everything that ALLOCATES happens here, before the map is taken ---- */
 
     /* Size the EFI memory map. The sizing call is expected to fail with
@@ -1171,6 +1412,8 @@ void efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *systab)
                       + 4096                     /* ACPI tag, generously */
                       + 16 + 0x20 + LOGIT_BOOT_SMBIOS_TABLE_MAX  /* SMBIOS copy */
                       + sizeof(struct logit_boot_display_tag) + 8  /* GOP report */
+                      + LOGIT_BOOT_MODULES_MAX                     /* module tags */
+                        * (sizeof(struct logit_boot_module_tag) + LOGIT_BOOT_MODULE_NAME_MAX + 8)
                       + 16 + max_entries * 24    /* mmap tag */
                       + 16;                      /* end tag + alignment */
     info_bytes = (info_bytes + 0xFFF) & ~(UINTN)0xFFF;
@@ -1217,6 +1460,7 @@ void efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *systab)
     build_fb_tag(&ib);
     build_acpi_tag(&ib);
     build_smbios_tag(&ib);
+    build_module_tags(&ib);
 
     /* The mmap tag goes last because it is the only variable-size tag that may
      * have to be rebuilt if ExitBootServices rejects the key. Remembering the
@@ -1269,6 +1513,15 @@ void efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *systab)
             sputs("\n[efi] REFUSING TO BOOT: final memory map no longer owns "
                   "the boot information block as LoaderData\n[efi] halted.\n");
             halt();
+        }
+        for (UINTN i = 0; i < fw_module_count; i++) {
+            if (!efi_load_range_is_loader_data(map, map_size, desc_size,
+                                               fw_modules[i].lo & ~(UINT64)0xFFF,
+                                               fw_modules[i].page_hi)) {
+                sputs("\n[efi] REFUSING TO BOOT: final memory map no longer owns "
+                      "a firmware module as LoaderData\n[efi] halted.\n");
+                halt();
+            }
         }
         if (attempt == 0)
             sputs("[efi] kernel map LoaderData confirmed\n");

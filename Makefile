@@ -74,12 +74,16 @@ include tools/build/jobs.mk
 #                  LICENSES/ and must pack after the directories above)
 #
 # fonts and as are absent because they have their own rules further down.
+# third_party/amd-firmware/amdgpu is the one directory spec here: the Polaris
+# microcode lands at /lib/firmware/amdgpu on both disks, where
+# c/drivers/gpu/amd/polaris/resource/files.c looks first.
 # ORDER MATTERS FOR /docs, and only there. LogitFS lists a directory in
 # INSERTION order, the Files window starts in /docs (files.c), and
 # tests/qmp/qmp_shape.py drives the whole on-device text-shaping gate by
 # clicking an icon at a fixed coordinate. shaping.txt is FIRST so that the cell
 # it lands in is the one adding another document cannot move.
 FS_SPECS      := fsroot/etc fsroot/ime fsroot/www \
+                 third_party/amd-firmware/amdgpu:/lib/firmware/amdgpu \
                  fsroot/docs/shaping.txt:/docs/shaping.txt \
                  fsroot/docs/readme.txt:/docs/readme.txt \
                  fsroot/docs/demo.as:/docs/demo.as \
@@ -127,6 +131,11 @@ FONT_MONO_SRC := third_party/fonts/NotoSansMono-VF.ttf
 FONT_NOTICES := third_party/fonts/OFL-NotoSansSC.txt \
                 third_party/fonts/OFL-NotoSansMono.txt \
                 third_party/fonts/README.md
+# The Polaris microcode ships on both disks (FS_SPECS above) and, through
+# tools/mkesp.py --firmware-dir, on the USB ESP. Its licence and the MANIFEST
+# that pins the files travel with it to /licenses/amd-firmware/.
+AMD_FIRMWARE_NOTICES := third_party/amd-firmware/LICENSE.amdgpu \
+                        third_party/amd-firmware/MANIFEST
 RELEASE_NOTICES := LICENSE LICENSING.md \
                    LICENSES/GPL-3.0-or-later.txt LICENSES/MIT.txt \
                    LICENSES/MPL-2.0.txt \
@@ -134,7 +143,7 @@ RELEASE_NOTICES := LICENSE LICENSING.md \
                    third_party/quickjs/LICENSE \
                    third_party/css/libcss/COPYING \
                    third_party/libm/COPYRIGHT \
-                   $(FONT_NOTICES)
+                   $(FONT_NOTICES) $(AMD_FIRMWARE_NOTICES)
 
 CC          := clang
 LD          := ld.lld
@@ -638,6 +647,16 @@ $(RUST_LIB_HOST): $(RUST_SRC)
 	    exit 1; \
 	fi
 	cd rust && RUSTC="$(RUST_BIN)/rustc" "$(RUST_BIN)/cargo" build --release
+
+# files.c pins every Polaris firmware blob to a SHA-256 taken from the vendored
+# MANIFEST, so the digests are generated, not hand-copied. The object lists the
+# header explicitly because -MMD only learns of it after the first compile.
+POLARIS_FW_PIN_H := $(BUILD)/gen/polaris_fw_pin.h
+$(POLARIS_FW_PIN_H): third_party/amd-firmware/MANIFEST tools/gpu/amd/fwpin.py
+	@mkdir -p $(dir $@)
+	python3 tools/gpu/amd/fwpin.py third_party/amd-firmware/MANIFEST $@
+$(BUILD)/c/drivers/gpu/amd/polaris/resource/files.o: $(POLARIS_FW_PIN_H)
+$(BUILD)/c/drivers/gpu/amd/polaris/resource/files.o: CFLAGS += -I$(BUILD)/gen
 
 # roots.c #includes the generated bundle; rebuild it when the bundle changes.
 $(BUILD)/c/crypto/trust/roots.o: c/crypto/trust/roots_bundle.inc c/crypto/trust/roots.h
@@ -1979,6 +1998,8 @@ DISK_PACK = \
     third_party/quickjs/LICENSE:/licenses/third_party/quickjs-LICENSE.txt \
     third_party/css/libcss/COPYING:/licenses/third_party/libcss-COPYING.txt \
     third_party/libm/COPYRIGHT:/licenses/third_party/musl-libm-COPYRIGHT.txt \
+    third_party/amd-firmware/LICENSE.amdgpu:/licenses/amd-firmware/LICENSE.amdgpu \
+    third_party/amd-firmware/MANIFEST:/licenses/amd-firmware/MANIFEST \
     $(ROOT_AEX_PACK) \
     $(foreach c,$(CLI),$(BUILD)/$(c).aex:/bin/$(c)) $(BUILD)/as.aex:/bin/as $(BUILD)/libctest.aex:/bin/libctest \
     $(BUILD)/closefull.aex:/bin/closefull \
@@ -2012,6 +2033,9 @@ $(BUILD)/qmp-probes:
 	@mkdir -p $(BUILD)
 	@echo "Switches on the QMP colour probes (c/apps/gui/qmp_probe.h). Dev disk only." > $@
 $(DISK): $(BUILD)/qmp-probes
+# A directory prerequisite only notices files added or removed, not rewritten.
+AMD_FIRMWARE_FILES := $(wildcard third_party/amd-firmware/amdgpu/*.bin)
+$(DISK): $(AMD_FIRMWARE_FILES)
 $(DISK): $(FS_BASE_HOSTS) $(AS_EXAMPLES) $(FONTS) $(FONT_TEXT) $(RELEASE_NOTICES) $(AEX) $(BUILD)/libctest.aex $(BUILD)/closefull.aex $(BUILD)/vidcheck.aex $(BUILD)/audiocheck.aex $(BUILD)/h2check.aex $(BUILD)/dot.png tools/mkfs.py $(BUILD)/imgcheck.aex $(IMG_FIXTURES) $(BUILD)/asnative.aex $(LPK_FIXTURES) $(GREETER_AEX) $(CH_AEX) $(BUILD)/lm.aex $(MODEL_LM) $(BUILD)/tcc/tcc.aex
 	@mkdir -p $(BUILD)
 	@if [ -n "$(MODEL_LM)" ]; then \

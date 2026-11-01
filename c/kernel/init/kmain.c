@@ -46,6 +46,7 @@
 #include "pci.h"
 #include "driver.h"
 #include "amd/bootfb.h"
+#include "bootmod.h"
 
 /* TIMER_HZ now lives in pit.h: SYS_MONOTONIC_MS divides by it, so the tick rate
  * is part of a userland-visible answer and cannot be a private constant here. */
@@ -101,6 +102,9 @@ void kernel_main(uint64_t mb_info)
     bootmark(6);
     bootmark_early_end();   /* pmm_init edits the tables the early squares used */
 
+    /* Before pmm_init, which frees every page the firmware map calls AVAILABLE:
+     * the loader's firmware modules sit in exactly such pages (bootmod.h). */
+    bootmod_init(mb_info);
     pmm_init(mb_info);
     /* The 8259 reaches the CPU only through LAPIC LINT0 in virtual-wire mode,
      * which UEFI firmware need not leave set up; the PIT has been ticking

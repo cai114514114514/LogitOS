@@ -14,6 +14,11 @@ struct polaris_resource_report {
     uint8_t pci_revision;
     unsigned firmware_mask[2]; /* Independently checked key=0/key=1 candidates. */
     int file_result[2][POLARIS_RESOURCE_FILE_SLOTS];
+    /* Where the distinct accepted files came from: every valid key=0 slot plus
+     * the key=1 SMC slot, the only one the two candidate sets do not share. */
+    unsigned firmware_from_rootfs;
+    unsigned firmware_from_bootmod;
+    unsigned firmware_pin_mismatch; /* slots, in either set, whose digest differed */
     unsigned ownership_missing;
     unsigned security_key_unknown;
 };

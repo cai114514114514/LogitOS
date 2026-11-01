@@ -6,6 +6,7 @@ firmware) to boot LogitOS from.
 Usage:
     mkesp.py <out.img> --efi <BOOTX64.EFI> --kernel <kernel.elf>
              [--kernel-name LOGIT.ELF] [--size-mb N] [--layout superfloppy|gpt]
+             [--file SRC:ESP_PATH ...] [--firmware-dir DIR]
 
 SUPERFLOPPY, NOT GPT -- decided by experiment, not by guessing.
 The UEFI spec's default-boot behaviour (spec 3.5.1.1's "removable media" boot
@@ -39,6 +40,34 @@ LBA 2048, with both GPT copies. --size-mb continues to size the FAT volume;
 GPT adds 2048 leading and 33 trailing sectors. This gives firmware a second
 removable-media layout without changing the old build interface.
 Host/QEMU evidence only: not verified on X79-VG4 hardware.
+
+EXTRA FILES (--file, --firmware-dir), added 2026-11-01 for stage B0 of the RX 580
+driver (docs/superpowers/specs/2026-11-01-rx580-driver-design.md, section 4).
+The root filesystem sits on a disk partition the owner can only reinstall from
+Windows, so the USB stick has to be able to deliver the AMD microcode by itself.
+The UEFI loader (c/boot/efi/loader.c) reads whatever \\LOGIT\\FW\\INDEX.TXT lists
+before ExitBootServices and hands each file to the kernel as a boot module.
+
+  --file SRC:ESP_PATH   copy host file SRC to ESP_PATH, repeatable. ESP_PATH
+                        uses / or \\ and every component must fit an 8.3 short
+                        name, on BOTH build paths: the from-scratch writer
+                        cannot emit VFAT long names, and mtools would silently
+                        emit them for a longer name, which a firmware FAT
+                        driver and the loader's fixed paths then disagree about.
+  --firmware-dir DIR    shorthand for the firmware set: every DIR/*.bin goes to
+                        \\LOGIT\\FW\\FWnn.BIN and a generated \\LOGIT\\FW\\INDEX.TXT
+                        records the name map.
+
+THE NAME MAP. Real firmware names (polaris10_mec2_2.bin) are longer than 8.3,
+so the ESP stores FWnn.BIN where nn is the 1-based, zero-padded position of the
+real name in the sorted list of DIR/*.bin. INDEX.TXT, not that rule, is the
+authority the loader reads: one line per file,
+
+    FW01.BIN 8852 polaris10_ce.bin
+
+i.e. "<8.3 name> <size in decimal> <real name>", space separated, LF ended.
+The size lets the loader refuse a file the FAT driver delivers short; the real
+name is what the kernel registry (c/kernel/init/bootmod.c) is asked for.
 
 TWO BUILD PATHS, same on-disk result
   1. mtools (mformat/mcopy/mmd) if all three are on PATH -- it is a build-time
@@ -90,6 +119,87 @@ def die(msg):
 
 
 # --------------------------------------------------------------------------
+# Extra files on the ESP (--file / --firmware-dir)
+# --------------------------------------------------------------------------
+
+# Where the loader looks for the firmware set. c/boot/efi/loader.c spells the
+# same two paths in UCS-2; change them together.
+FIRMWARE_ESP_DIR = ("LOGIT", "FW")
+FIRMWARE_INDEX_NAME = "INDEX.TXT"
+
+# Real firmware names are copied into INDEX.TXT and later into a boot-module
+# tag, so keep them to the characters linux-firmware names actually use and to
+# a length the loader's fixed buffers hold.
+FIRMWARE_NAME_MAX = 48
+FIRMWARE_NAME_CHARS = frozenset("abcdefghijklmnopqrstuvwxyz0123456789_.-")
+
+
+def esp_path_parts(esp_path):
+    """Split an ESP path into upper-cased 8.3 components, or die.
+
+    FAT names are case-insensitive; upper-casing here makes the duplicate and
+    collision checks below compare what the filesystem will compare."""
+    parts = [part for part in esp_path.replace("\\", "/").split("/") if part]
+    if not parts:
+        die(f"empty ESP path '{esp_path}'")
+    for part in parts:
+        short_name(part)
+    return tuple(part.upper() for part in parts)
+
+
+def parse_file_option(spec):
+    """SRC:ESP_PATH -> (esp parts, bytes). Split on the LAST colon so a host
+    path with a drive letter (C:\\fw\\a.bin:/LOGIT/FW/A.BIN) still parses."""
+    src, colon, esp_path = spec.rpartition(":")
+    if not colon or not src or not esp_path:
+        die(f"--file wants SRC:ESP_PATH, got '{spec}'")
+    if not os.path.isfile(src):
+        die(f"--file: no such file: {src}")
+    with open(src, "rb") as f:
+        return esp_path_parts(esp_path), f.read()
+
+
+def firmware_set(directory):
+    """Every DIR/*.bin as FWnn.BIN under \\LOGIT\\FW, plus INDEX.TXT."""
+    names = sorted(n for n in os.listdir(directory) if n.endswith(".bin"))
+    if not names:
+        die(f"--firmware-dir: no *.bin files in {directory}")
+    if len(names) > 99:
+        die("--firmware-dir: more than 99 files do not fit FWnn.BIN")
+    files = []
+    index_lines = []
+    for position, name in enumerate(names, start=1):
+        if len(name) > FIRMWARE_NAME_MAX or not set(name) <= FIRMWARE_NAME_CHARS:
+            die(f"--firmware-dir: unsupported firmware name '{name}'")
+        with open(os.path.join(directory, name), "rb") as f:
+            blob = f.read()
+        if not blob:
+            die(f"--firmware-dir: {name} is empty")
+        esp_name = f"FW{position:02d}.BIN"
+        files.append((FIRMWARE_ESP_DIR + (esp_name,), blob))
+        index_lines.append(f"{esp_name} {len(blob)} {name}\n")
+    files.append((FIRMWARE_ESP_DIR + (FIRMWARE_INDEX_NAME,),
+                  "".join(index_lines).encode("ascii")))
+    return files
+
+
+def check_extra_files(extra_files, kernel_name):
+    """Refuse a duplicate path, a path that shadows one this tool already
+    writes, and a name used as both a file and a directory."""
+    taken = {("EFI", "BOOT", "BOOTX64.EFI"), (kernel_name.upper(),)}
+    directories = {("EFI",), ("EFI", "BOOT")}
+    for parts, _ in extra_files:
+        if parts in taken:
+            die(f"ESP path '/{'/'.join(parts)}' is written twice")
+        taken.add(parts)
+        for depth in range(1, len(parts)):
+            directories.add(parts[:depth])
+    clash = taken & directories
+    if clash:
+        die(f"ESP path '/{'/'.join(sorted(clash)[0])}' is both a file and a directory")
+
+
+# --------------------------------------------------------------------------
 # Path 1: mtools
 # --------------------------------------------------------------------------
 
@@ -97,7 +207,7 @@ def have_mtools():
     return all(shutil.which(t) for t in ("mformat", "mcopy", "mmd"))
 
 
-def build_with_mtools(out_path, size_mb, efi_bytes, kernel_bytes, kernel_name):
+def build_with_mtools(out_path, size_mb, efi_bytes, kernel_bytes, kernel_name, extra_files=()):
     if os.path.exists(out_path):
         os.remove(out_path)
     with open(out_path, "wb") as f:
@@ -117,6 +227,7 @@ def build_with_mtools(out_path, size_mb, efi_bytes, kernel_bytes, kernel_name):
 
     tmp_efi = out_path + ".efi.tmp"
     tmp_krn = out_path + ".krn.tmp"
+    tmp_extra = out_path + ".extra.tmp"
     with open(tmp_efi, "wb") as f:
         f.write(efi_bytes)
     with open(tmp_krn, "wb") as f:
@@ -124,9 +235,23 @@ def build_with_mtools(out_path, size_mb, efi_bytes, kernel_bytes, kernel_name):
     try:
         run("mcopy", "-i", out_path, tmp_efi, "::/EFI/BOOT/BOOTX64.EFI")
         run("mcopy", "-i", out_path, tmp_krn, f"::/{kernel_name}")
+
+        # Extra files: create each missing directory parents-first (mmd does
+        # not make intermediate directories), then copy through a temp file for
+        # the same reason as above -- the bytes live in memory, not on disk.
+        made = {("EFI",), ("EFI", "BOOT")}
+        for parts, blob in extra_files:
+            for depth in range(1, len(parts)):
+                if parts[:depth] not in made:
+                    run("mmd", "-i", out_path, "::/" + "/".join(parts[:depth]))
+                    made.add(parts[:depth])
+            with open(tmp_extra, "wb") as f:
+                f.write(blob)
+            run("mcopy", "-i", out_path, tmp_extra, "::/" + "/".join(parts))
     finally:
-        os.remove(tmp_efi)
-        os.remove(tmp_krn)
+        for tmp in (tmp_efi, tmp_krn, tmp_extra):
+            if os.path.exists(tmp):
+                os.remove(tmp)
 
 
 # --------------------------------------------------------------------------
@@ -168,9 +293,9 @@ def dos_datetime(t=None):
 
 
 def short_name(name):
-    """8.3-encode NAME.EXT. Both names this tool ever writes (BOOTX64.EFI,
-    and the default LOGIT.ELF / any --kernel-name the caller picks) are
-    required to already fit 8.3 -- refusing here is cheaper than silently
+    """8.3-encode NAME.EXT. Every name this tool ever writes (BOOTX64.EFI,
+    the default LOGIT.ELF / any --kernel-name the caller picks, and every
+    component of a --file path) is required to already fit 8.3 -- refusing here is cheaper than silently
     emitting a VFAT long-name entry set this reader was never written to
     produce.
 
@@ -185,7 +310,7 @@ def short_name(name):
         return name.ljust(11).encode("ascii")
     base, dot, ext = name.upper().partition(".")
     if len(base) > 8 or len(ext) > 3 or (not dot and "." in name):
-        die(f"'{name}' does not fit an 8.3 short name (need mtools, or rename it)")
+        die(f"'{name}' does not fit an 8.3 short name (rename it; both build paths require 8.3)")
     return base.ljust(8)[:8].encode("ascii") + ext.ljust(3)[:3].encode("ascii")
 
 
@@ -285,41 +410,68 @@ class Fat16Image:
         return bytes(out)
 
 
-def build_with_pyfat(out_path, size_mb, efi_bytes, kernel_bytes, kernel_name):
+def write_directory_entries(img, children, dt):
+    """Allocate and write everything below one directory; return its entries.
+
+    CHILDREN maps an 8.3 name to file bytes or, for a subdirectory, to another
+    such dict. A directory entry names a cluster its child must already own, so
+    this recurses innermost first -- the order the fixed EFI/BOOT/BOOTX64.EFI
+    chain used to be hard-coded in. Returns (name, attr, cluster, size) tuples
+    for the caller to place in the root directory or in a new directory."""
+    entries = []
+    for name, node in children.items():
+        if isinstance(node, dict):
+            below = write_directory_entries(img, node, dt)
+            entries.append((name, 0x10, make_subdir(img, below, dt), 0))
+        else:
+            cluster = img._alloc_chain(len(node)) if node else 0
+            if node:
+                img._write_cluster_data(cluster, node)
+            entries.append((name, 0x20, cluster, len(node)))
+    return entries
+
+
+def make_subdir(img, children, dt):
+    """Write a non-root directory holding CHILDREN; return its first cluster.
+
+    This directory's own ".." is written as 0 (the root) and patched by ITS
+    parent, in the loop below, once this directory's cluster is known:
+    fatgen103 sec. 6 wants the real parent cluster there, 0 only for the root,
+    and a firmware FAT walk going upward would otherwise land in the root from
+    every directory."""
+    payload = bytearray((2 + len(children)) * 32)
+    for i, (cname, attr, ccluster, csize) in enumerate(children):
+        img._entry(payload, (2 + i) * 32, cname, attr, ccluster, csize, dt)
+    first = img._alloc_chain(len(payload))
+    img._entry(payload, 0, ".", 0x10, first, 0, dt)
+    img._entry(payload, 32, "..", 0x10, 0, 0, dt)
+    img._write_cluster_data(first, payload)
+    for cname, attr, ccluster, _ in children:
+        if attr == 0x10:
+            struct.pack_into("<H", img.data, (ccluster - 2) * img.cluster_bytes + 32 + 26,
+                             first & 0xFFFF)
+    return first
+
+
+def build_with_pyfat(out_path, size_mb, efi_bytes, kernel_bytes, kernel_name, extra_files=()):
     total_sectors = size_mb * 1024 * 1024 // SECTOR
     img = Fat16Image(total_sectors)
     dt = dos_datetime()
 
-    # BOOTX64.EFI lives inside EFI/BOOT, so allocate its data+entry first and
-    # nest that directory inside EFI, THEN root -- exactly the order a real
-    # writer needs, innermost first, because a directory entry names a
-    # cluster its child must already own.
-    efi_cluster = img._alloc_chain(len(efi_bytes))
-    img._write_cluster_data(efi_cluster, efi_bytes)
+    # One tree for every file the image holds, so EFI/BOOT/BOOTX64.EFI and the
+    # extra files go through the same directory writer. Names are already
+    # upper-cased 8.3 (short_name() would refuse anything else).
+    tree = {"EFI": {"BOOT": {"BOOTX64.EFI": efi_bytes}}}
+    for parts, blob in extra_files:
+        node = tree
+        for part in parts[:-1]:
+            node = node.setdefault(part, {})
+        node[parts[-1]] = blob
+    tree[kernel_name.upper()] = kernel_bytes
 
-    # Build EFI/BOOT as a non-root directory, then EFI, then link EFI into the
-    # root -- each level needs the one below it's first cluster already
-    # assigned, hence innermost first.
-    def make_subdir(children, parent_cluster):
-        payload = bytearray((2 + len(children)) * 32)
-        for i, (cname, attr, ccluster, csize) in enumerate(children):
-            img._entry(payload, (2 + i) * 32, cname, attr, ccluster, csize, dt)
-        first = img._alloc_chain(len(payload))
-        img._entry(payload, 0, ".", 0x10, first, 0, dt)
-        img._entry(payload, 32, "..", 0x10, parent_cluster, 0, dt)
-        img._write_cluster_data(first, payload)
-        return first
-
-    boot_dir = make_subdir([("BOOTX64.EFI", 0x20, efi_cluster, len(efi_bytes))], 0)
-    efi_dir = make_subdir([("BOOT", 0x10, boot_dir, 0)], 0)
-    # Patch EFI/BOOT's '..' now that EFI's own cluster is known (it was written
-    # as 0 above, root-relative; EFI is not root, so fix it up).
-    off = (boot_dir - 2) * img.cluster_bytes
-    struct.pack_into("<H", img.data, off + 32 + 26, efi_dir & 0xFFFF)
-
-    img._entry(img.root_dir, img._root_used * 32, "EFI", 0x10, efi_dir, 0, dt)
-    img._root_used += 1
-    img.add_root_file(kernel_name, kernel_bytes, dt)
+    for name, attr, cluster, size in write_directory_entries(img, tree, dt):
+        img._entry(img.root_dir, img._root_used * 32, name, attr, cluster, size, dt)
+        img._root_used += 1
 
     with open(out_path, "wb") as f:
         f.write(img.serialize())
@@ -393,7 +545,11 @@ def main():
     ap.add_argument("--kernel-name", default="LOGIT.ELF",
                      help="8.3 name the kernel is stored under at the ESP root (default LOGIT.ELF)")
     ap.add_argument("--size-mb", type=int, default=0,
-                     help="image size in MiB (default: auto-sized from the two input files)")
+                     help="image size in MiB (default: auto-sized from the input files)")
+    ap.add_argument("--file", action="append", default=[], metavar="SRC:ESP_PATH",
+                     help="also copy host file SRC to ESP_PATH (8.3 components); repeatable")
+    ap.add_argument("--firmware-dir", metavar="DIR",
+                     help="also store DIR/*.bin as /LOGIT/FW/FWnn.BIN plus INDEX.TXT (see header)")
     args = ap.parse_args()
 
     if not os.path.isfile(args.efi):
@@ -408,32 +564,41 @@ def main():
     short_name("BOOTX64.EFI")
     short_name(args.kernel_name)
 
+    extra_files = [parse_file_option(spec) for spec in args.file]
+    if args.firmware_dir:
+        extra_files += firmware_set(args.firmware_dir)
+    check_extra_files(extra_files, args.kernel_name)
+
     size_mb = args.size_mb
     if size_mb <= 0:
         # Auto-size: both files, generous slack for FAT/dir overhead and a
         # floor comfortably above FAT16's minimum cluster count so a tiny
         # loader binary never produces a geometry with no valid SectorsPerCluster.
-        needed = (len(efi_bytes) + len(kernel_bytes)) / (1024 * 1024)
+        needed = (len(efi_bytes) + len(kernel_bytes) +
+                  sum(len(blob) for _, blob in extra_files)) / (1024 * 1024)
         size_mb = max(16, int(needed) + 8)
 
     force_py = os.environ.get("MKESP_FORCE_PYFAT") == "1"
     with tempfile.TemporaryDirectory(prefix='mkesp-') as directory:
         fat_path = os.path.join(directory, 'fat.img') if args.layout == 'gpt' else args.out
         if not force_py and have_mtools():
-            build_with_mtools(fat_path, size_mb, efi_bytes, kernel_bytes, args.kernel_name)
+            build_with_mtools(fat_path, size_mb, efi_bytes, kernel_bytes, args.kernel_name,
+                              extra_files)
             method = "mtools"
         else:
             if not force_py:
                 print("mkesp: mtools not found on PATH, using the from-scratch FAT16 writer",
                       file=sys.stderr)
-            build_with_pyfat(fat_path, size_mb, efi_bytes, kernel_bytes, args.kernel_name)
+            build_with_pyfat(fat_path, size_mb, efi_bytes, kernel_bytes, args.kernel_name,
+                             extra_files)
             method = "pyfat (from-scratch FAT16, no mtools)"
         if args.layout == 'gpt':
             wrap_gpt(args.out, fat_path)
 
     print(f"mkesp: {args.out} ({size_mb} MiB FAT volume, {args.layout}, via {method}) -- "
           f"EFI/BOOT/BOOTX64.EFI ({len(efi_bytes)} bytes), "
-          f"{args.kernel_name} ({len(kernel_bytes)} bytes)")
+          f"{args.kernel_name} ({len(kernel_bytes)} bytes)"
+          + (f", {len(extra_files)} extra file(s)" if extra_files else ""))
 
 
 if __name__ == "__main__":
