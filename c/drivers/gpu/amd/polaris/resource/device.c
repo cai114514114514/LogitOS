@@ -1,7 +1,6 @@
 #include "amd/polaris/resource/device.h"
 #include "driver.h"
 #include "pci.h"
-#include "kheap.h"
 
 #define AMD_VENDOR 0x1002u
 #define PM_CAPABILITY_ID 1u
@@ -99,62 +98,63 @@ static uint32_t read_register(void *opaque, uint64_t base, uint32_t offset)
     return *(volatile uint32_t *)(uintptr_t)(base + offset);
 }
 
-/* Read the optional POST-time VRAM copy without remapping the desktop UC.
- * A missing reservation report is safer than slowing the live GOP scanout. */
-static void discover_vbios(struct device *device, uint64_t lfb, uint64_t lfb_bytes,
+/* Find the VBIOS of this function and parse its declared reservations.
+ *
+ * BAR0 is no longer read. The previous code copied the first 256 KiB of the
+ * aperture, as Linux v6.12 amdgpu_read_bios_from_vram() does for an already
+ * POSTed dGPU after amdgpu_get_bios_dgpu() has tried ATRM and VFCT
+ * (drivers/gpu/drm/amd/amdgpu/amdgpu_bios.c); it only finds a ROM if POST left
+ * one there. On the X79-VG4 that range is also where the GOP scanout lives, so
+ * the read needed a window and a skip rule (P12) to avoid remapping live
+ * pages, and still could not say where the bytes came from. The boot module
+ * and the VFCT table are firmware-provided copies with a known origin, so they
+ * replace it entirely (resource/vbios.c has the policy and the Linux sources).
+ *
+ * The window and skip logic were removed rather than kept as dead code: with
+ * no BAR0 access there is nothing for them to protect, and an unreachable
+ * guard is a guard nobody can test. The P12 control that BAR0 is never mapped
+ * from here stays alive as the NEGCTL below, now with a stronger assertion
+ * (never mapped, wherever the framebuffer sits). */
+static void discover_vbios(struct device *device,
                            struct polaris_resource_report *report)
 {
-    /* amdgpu_bios.c v6.12 probes the first 256 KiB of BAR0 on an already
-     * POSTed dGPU. Here the established boot LFB is required by the caller;
-     * no disabled ROM decode or indirect ROM access is enabled as fallback.
-     * Correction to the bring-up plan's "BAR0 is the last source": Linux
-     * v6.12 amdgpu_get_bios_dgpu tries ATRM/VFCT before VRAM, but platform/ROM
-     * sources afterwards. BAR0 is only our last supported read-only source.
-     * Source: drivers/gpu/drm/amd/amdgpu/amdgpu_bios.c,
-     * amdgpu_read_bios_from_vram() and amdgpu_get_bios_dgpu():
-     * https://github.com/torvalds/linux/blob/v6.12/drivers/gpu/drm/amd/amdgpu/amdgpu_bios.c
-     * No firmware decode or indirect-port writes are introduced here. */
-    if (!report->device.layout_covers_vram ||
-        device->res[0].size < POLARIS_VBIOS_COPY_BYTES) {
-        return;
-    }
-    uint64_t start = device->res[0].start;
-    if (start > UINT64_MAX - POLARIS_VBIOS_COPY_BYTES ||
-        lfb > UINT64_MAX - lfb_bytes) {
-        return;
-    }
-    /* The old whole-BAR UC map overwrote fb_init's WC PTEs on RX 580 while
-     * fb_scanout_wc still reported its boot snapshot. The 256 KiB window is
-     * page-aligned (PCI BAR base and POLARIS_VBIOS_COPY_BYTES), so half-open
-     * byte disjointness also proves no scanout page is remapped. This is a
-     * code-path diagnosis, not verified on X79-VG4 hardware. */
-    if (start < lfb + lfb_bytes && lfb < start + POLARIS_VBIOS_COPY_BYTES) {
-        report->vbios_skipped_scanout = 1;
-        return;
-    }
+    struct polaris_vbios_location location = {
+        .segment = (uint16_t)device->seg,
+        .bus = (uint8_t)device->bus,
+        .slot = (uint8_t)device->slot,
+        .function = (uint8_t)device->func,
+        .vendor = device->vendor,
+        .device = device->device
+    };
+    struct polaris_vbios_image image;
+    int missing = polaris_vbios_select(&location, &image);
+    report->vbios_source = image.source;
+    report->vbios_module_status = image.module_status;
+    report->vbios_vfct_status = image.vfct_status;
 #ifdef POLARIS_RESOURCE_NEGCTL_MAP_WHOLE_BAR
-    uint64_t mapped = dev_bar_map(device, 0);
-#else
-    uint64_t mapped = dev_bar_map_window(device, 0, 0, POLARIS_VBIOS_COPY_BYTES);
+    /* Watched mutation: bring back the whole-aperture UC remap that
+     * overwrote fb_init's WC PTEs on RX 580. */
+    (void)dev_bar_map(device, 0);
 #endif
-    if (!mapped || mapped > UINTPTR_MAX - POLARIS_VBIOS_COPY_BYTES) {
+    if (missing) {
         return;
     }
-    uint8_t *copy = kmalloc(POLARIS_VBIOS_COPY_BYTES);
-    if (!copy) {
+    report->vbios_bytes = (unsigned)image.bytes;
+    if (!report->device.layout_covers_vram) {
+        /* Skipped on purpose, not failed: the declared ranges are MC addresses
+         * and cannot be checked against VRAM this layout does not cover. Say
+         * so, so the log does not read like a rejected image. */
+        report->atom_result = POLARIS_ATOM_SKIPPED_LAYOUT_UNVERIFIED;
         return;
     }
-    const volatile uint8_t *source = (const volatile uint8_t *)(uintptr_t)mapped;
-    for (size_t i = 0; i < POLARIS_VBIOS_COPY_BYTES; ++i) {
-        copy[i] = source[i];
-    }
-    report->vbios_bytes_read = POLARIS_VBIOS_COPY_BYTES;
-    report->atom_result = polaris_atom_reservations_parse(copy,
-        POLARIS_VBIOS_COPY_BYTES,
+    /* The image is parsed in place: both sources are stable read-only pages
+     * (held boot-module frames, the permanent ACPI alias), so no scratch
+     * copy or allocation is needed and none can fail. */
+    report->atom_result = polaris_atom_reservations_parse(image.data,
+        image.bytes,
         (struct polaris_memory_range){report->device.mc_base,
                                       report->device.vram_bytes},
         report->device.cpu_aperture_bytes, &report->reservations);
-    kfree(copy);
 }
 
 static void discover_files(struct polaris_resource_report *report)
@@ -225,7 +225,7 @@ int polaris_resources_probe_device(struct device *device, uint64_t lfb,
         return -1;
     }
     out->pci_revision = (uint8_t)class_revision;
-    discover_vbios(device, lfb, lfb_bytes, out);
+    discover_vbios(device, out);
     discover_files(out);
     return 0;
 }

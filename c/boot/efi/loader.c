@@ -873,6 +873,71 @@ static void build_module_tags(struct infobuf *ib)
 }
 
 /* ------------------------------------------------------------------ *
+ *  step 2c: video BIOS modules                                        *
+ * ------------------------------------------------------------------ */
+
+/* WHY THIS EXISTS. The AMD driver needs the card's ATOM VBIOS (reserved VRAM
+ * ranges now, mode tables later). The only copy the firmware promises is the
+ * one its PCI bus driver keeps in memory and publishes as
+ * EFI_PCI_IO_PROTOCOL.RomImage/RomSize (UEFI spec 2.10 section 14.4), and that
+ * memory is boot-services data: it is gone after ExitBootServices. Reading
+ * BAR0 afterwards instead only works if POST left a copy there and, on the
+ * X79-VG4, runs through the live GOP scanout. So every display-class function's
+ * ROM is copied into EfiLoaderData here and handed over as a module named
+ * vbios-SSSS:BB:DD.F, which the kernel pairs with the PCI function it is
+ * probing (c/drivers/gpu/amd/polaris/resource/vbios.c).
+ *
+ * Runs after the firmware files so a crowded INDEX.TXT can never lose a
+ * microcode file to a ROM; the registry's remaining slots are what the ROMs
+ * get. Failures are printed and skipped, never fatal: a machine without a
+ * usable VBIOS module still boots, and the kernel falls back to the ACPI VFCT
+ * table. */
+#include "vbios_rom.c"
+
+_Static_assert(VBIOS_ROM_SLOT_NAME_BYTES == LOGIT_BOOT_MODULE_NAME_MAX,
+               "a vbios module name must fit the boot ABI's name field");
+
+static struct vbios_rom_slot vbios_slots[LOGIT_BOOT_MODULES_MAX];
+static struct vbios_rom_report vbios_report;
+
+static void load_vbios_modules(void)
+{
+    UINTN free_slots = LOGIT_BOOT_MODULES_MAX - fw_module_count;
+    vbios_rom_collect(BS, vbios_slots, free_slots, &vbios_report,
+                      allocated_range_is_loader_data);
+
+    for (UINTN i = 0; i < vbios_report.recorded; i++) {
+        const struct vbios_rom_result *result = &vbios_report.results[i];
+        say("[efi] ");
+        say(result->name[0] ? result->name : "vbios-(unaddressable function)");
+        say(": ");
+        say(vbios_rom_outcome_name(result->outcome));
+        if (result->rom_bytes) {
+            say(", rom ");
+            sayd(result->rom_bytes);
+            say(" bytes");
+        }
+        say("\n");
+    }
+    for (UINTN i = 0; i < vbios_report.loaded; i++) {
+        struct fw_module *module = &fw_modules[fw_module_count++];
+        module->lo = vbios_slots[i].lo;
+        module->hi = vbios_slots[i].hi;
+        module->page_hi = vbios_slots[i].page_hi;
+        mcopy(module->name, vbios_slots[i].name, sizeof module->name);
+    }
+    say("[efi] vbios modules ");
+    sayd(vbios_report.loaded);
+    say(", ");
+    sayd(vbios_report.loaded_bytes);
+    say(" bytes (display functions ");
+    sayd(vbios_report.display);
+    say(" of ");
+    sayd(vbios_report.handles);
+    say(" PCI handles)\n");
+}
+
+/* ------------------------------------------------------------------ *
  *  step 3: the framebuffer                                            *
  * ------------------------------------------------------------------ */
 
@@ -1386,6 +1451,10 @@ void efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *systab)
      * kernel at a FIXED address, which an AllocateAnyPages grab for a module
      * could otherwise take first. */
     load_firmware_modules(image);
+
+    /* Same allocation window as the firmware files, and appended to the same
+     * list, so the final-map LoaderData check below covers the ROMs too. */
+    load_vbios_modules();
 
     /* ---- everything that ALLOCATES happens here, before the map is taken ---- */
 

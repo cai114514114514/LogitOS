@@ -14,6 +14,11 @@ int amd_bootfb_probe(struct device *dev);
  * VBIOS and installed firmware; it does not grant a GPU execution lease. */
 void amd_bootfb_probe_resources(void);
 
+/* "module", "vfct" or "none" for the Polaris device whose resources were
+ * probed, so the HUD can show where its VBIOS came from; NULL for any other
+ * device and before the probe ran. The string is static. */
+const char *amd_bootfb_vbios_source(const struct device *dev);
+
 #ifdef LOGIT_HOST_TEST
 /* Lets the host gate pin the declarative match table as well as the probe. */
 const struct dev_match *amd_bootfb_match_table(void);

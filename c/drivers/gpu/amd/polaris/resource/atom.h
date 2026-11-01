@@ -3,15 +3,18 @@
 
 #include "amd/polaris/memory/layout.h"
 
-#define POLARIS_VBIOS_COPY_BYTES (256u * 1024u)
-
 enum polaris_atom_result {
     POLARIS_ATOM_OK = 0,
     POLARIS_ATOM_BAD_IMAGE = -1,
     POLARIS_ATOM_WRONG_DEVICE = -2,
     POLARIS_ATOM_NO_USAGE_TABLE = -3,
     POLARIS_ATOM_UNSUPPORTED_TABLE = -4,
-    POLARIS_ATOM_BAD_RESERVATION = -5
+    POLARIS_ATOM_BAD_RESERVATION = -5,
+    /* Never returned by the parser: discovery sets it when it chose not to
+     * parse, because the MC layout does not cover the card's VRAM and every
+     * range would be unverifiable. Distinct from BAD_IMAGE so the log does not
+     * report an image that was never examined as an image that failed. */
+    POLARIS_ATOM_SKIPPED_LAYOUT_UNVERIFIED = -6
 };
 
 struct polaris_atom_reservations {

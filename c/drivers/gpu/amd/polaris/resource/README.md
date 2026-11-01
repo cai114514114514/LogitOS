@@ -14,11 +14,38 @@ BAR0, then samples BAR5. No register-write API is linked into this new path.
 
 ## VBIOS and declared reservations
 
-`device.c` copies at most the first 256 KiB of the enabled VRAM aperture into
-ordinary RAM, following the already-POSTed dGPU path in Linux v6.12
-[`amdgpu_bios.c`](https://github.com/torvalds/linux/blob/v6.12/drivers/gpu/drm/amd/amdgpu/amdgpu_bios.c).
-It does not enable a ROM BAR, access an indirect ROM port, run ATOM commands or
-assume arbitrary physical shadow RAM belongs to this device.
+`vbios.c` picks the image, in this order, for the exact PCI function:
+
+1. the boot module `vbios-SSSS:BB:DD.F` (lowercase hex, e.g.
+   `vbios-0000:01:00.0`). The UEFI loader (`c/boot/efi/vbios_rom.c`) copies
+   `EFI_PCI_IO_PROTOCOL.RomImage`/`RomSize` of every display-class function into
+   EfiLoaderData before ExitBootServices (UEFI spec 2.10 section 14.4), and
+   `bootmod.c` holds those pages out of the allocator;
+2. the entry of the ACPI `VFCT` table whose PCI bus, device, function, vendor
+   and device ID match, walked as Linux v6.12
+   [`amdgpu_bios.c`](https://github.com/torvalds/linux/blob/v6.12/drivers/gpu/drm/amd/amdgpu/amdgpu_bios.c)
+   `amdgpu_acpi_vfct_bios()` does, with the table layout of
+   [`atombios.h`](https://github.com/torvalds/linux/blob/v6.12/drivers/gpu/drm/amd/include/atombios.h)
+   (`UEFI_ACPI_VFCT`, `VFCT_IMAGE_HEADER`). It is found through the kernel's
+   `acpi_find_table()` because uACPI is only initialised later, on the
+   acpi-init thread; that walker caps a table at 1 MiB, so a VFCT holding
+   several large ROMs is not seen and the module is the way in on such a board.
+
+Each candidate must pass `polaris_vbios_check()` (0x55 0xAA, a nonzero legacy
+length that fits the bytes held, the `ATOM`/`MOTA` signature where the pointer
+at 0x48 says) before it is used; a module that fails is skipped and VFCT is
+still tried. Neither source is ever written, copied or remapped, and **BAR0 is
+no longer read**: it only held a copy if POST left one, with an unknown origin,
+and on the X79-VG4 the same range is the live GOP scanout. The earlier 256 KiB
+window and its scanout-overlap skip (P12) were removed with that read because
+nothing is left for them to guard. `[amd-resources]` reports
+`vbios-source=module|vfct|none` plus `vbios-module=` and `vbios-vfct=`
+(`absent` means nothing was offered; `no-match`, `truncated`, `bad-*` mean
+something was offered and refused), and the HUD `gpu` line ends in
+`vbios=<source>`. `atom-result=` names the parse outcome; an accepted image
+whose MC layout does not cover the card's VRAM is not parsed at all and reads
+`atom-result=skipped-layout-unverified`, not `vbios-image-unavailable`. The loader prints `[efi] vbios ...` lines for every display
+function it saw, including the ones whose firmware gave it no ROM.
 
 `atom.c` validates the ROM length, PCIR identity `1002:67df`, ATOM ROM header,
 master data table and the `VRAM_UsageByFirmware` table. Versions 1.4 and 1.5 use
@@ -32,8 +59,9 @@ These layouts and policies are defined in Linux v6.12
 [`atombios.h`](https://github.com/torvalds/linux/blob/v6.12/drivers/gpu/drm/amd/include/atombios.h)
 (`ATOM_ROM_HEADER`, `ATOM_MASTER_LIST_OF_DATA_TABLES`,
 `ATOM_VRAM_USAGE_BY_FIRMWARE[_V1_5]`). Its comment explicitly says the usage
-table is filled at VBIOS runtime. Neither a file's signature nor finding its
-copy in VRAM proves that its reservation list is current or exhaustive.
+table is filled at VBIOS runtime. Neither an image's signature nor finding it
+in a boot module or VFCT proves that its reservation list is current or
+exhaustive.
 
 ## Installed firmware inputs
 
