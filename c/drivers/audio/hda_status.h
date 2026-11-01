@@ -74,4 +74,9 @@ int hda_status_get(unsigned index, struct hda_controller_status *status);
 /* Short stable name of the error for the panel: "none", "cmd-timeout", ... */
 const char *hda_codec_error_name(enum hda_codec_error error);
 
+/* Make every routed output jack drive regardless of jack sense while nonzero
+ * (the boot test tone uses it so the tone is heard on whichever jack the
+ * speakers are in, even if a floating front-panel line reads "plugged"). */
+void hda_automute_suspend(int suspended);
+
 #endif

@@ -65,7 +65,7 @@
 #define HDA_PIN_CAPABILITY_HEADPHONE_DRIVE      (1u << 3)
 #define HDA_PIN_CAPABILITY_OUTPUT               (1u << 4)
 
-/* HDA 1.0a 7.3.3.12, Pin Widget Control. */
+/* HDA 1.0a 7.3.3.13, Pin Widget Control. */
 #define HDA_PIN_CONTROL_HEADPHONE_ENABLE        (1u << 7)
 #define HDA_PIN_CONTROL_OUTPUT_ENABLE           (1u << 6)
 #define HDA_PIN_CONTROL_ALL_OUTPUTS_OFF         0u

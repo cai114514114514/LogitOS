@@ -25,7 +25,7 @@
 #define SET_STREAM          0x706
 #define SET_AMP             0x300
 #define SET_PIN             0x707
-#define PIN_WIDGET_CONTROL_MAX 0xffu       /* one byte of payload, HDA 1.0a 7.3.3.12 */
+#define PIN_WIDGET_CONTROL_MAX 0xffu       /* one byte of payload, HDA 1.0a 7.3.3.13 */
 #define SET_EAPD            0x70c
 #define AMP_OUTPUT          0x8000u
 #define AMP_INPUT           0x4000u
@@ -341,7 +341,7 @@ int hda_route_verbs(const struct hda_route *route, unsigned format,
 
 /* Same command stream, but the pin is switched on with exactly the widget
  * control value the caller computed from the pin's role. Values above one
- * byte are refused: Pin Widget Control carries eight bits (HDA 1.0a 7.3.3.12). */
+ * byte are refused: Pin Widget Control carries eight bits (HDA 1.0a 7.3.3.13). */
 int hda_route_verbs_with_pin_control(const struct hda_route *route, unsigned format,
                                      unsigned stream_tag, unsigned pin_widget_control,
                                      struct hda_route_verb *verbs, size_t capacity)

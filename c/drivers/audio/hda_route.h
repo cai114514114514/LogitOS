@@ -57,7 +57,7 @@ int hda_route_verbs(const struct hda_route *route, unsigned format,
                     size_t capacity);
 
 /* hda_route_verbs(), except the pin is enabled with `pin_widget_control`
- * (Pin Widget Control, HDA 1.0a 7.3.3.12) instead of a value derived from the
+ * (Pin Widget Control, HDA 1.0a 7.3.3.13) instead of a value derived from the
  * pin capabilities. Returns -1 for a value that does not fit in one byte. */
 int hda_route_verbs_with_pin_control(const struct hda_route *route, unsigned format,
                                      unsigned stream_tag, unsigned pin_widget_control,

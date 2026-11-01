@@ -288,6 +288,11 @@ struct hda {
 
 static void hda_remove(struct device *dev);
 static struct hda g_hda;
+/* Set while the boot test tone plays (hda_automute_suspend): every usable
+ * output pin drives, whatever the jacks report. A floating front-panel
+ * presence line reads "headphone plugged" and would otherwise mute every rear
+ * jack, and this build has no alsamixer-style switch to turn auto-mute off. */
+static int g_automute_suspended;
 /* An unacknowledged controller reset means its last CORB/RIRB addresses may
  * still be live.  The active instance must nevertheless be reusable when a
  * display controller's HDA function probes before the motherboard codec.  A
@@ -1028,6 +1033,36 @@ static int hda_apply_pin_control(struct hda *h, unsigned index, int enabled)
     return 0;
 }
 
+/* When jack polling has to give up, leave every usable output DRIVING rather
+ * than frozen in whatever state the last poll chose: if a headphone happened to
+ * be sensed then, the line-outs would otherwise stay muted until reboot. A
+ * louder wrong jack is better than silence. Best effort and bounded: the first
+ * further timeout ends it. */
+static void hda_fail_open_outputs(struct hda *h)
+{
+    const struct hda_output_plan *plan = &h->output_plan;
+
+    for (unsigned index = 0; index < plan->path_count; index++) {
+        if (!h->path_usable[index]) {
+            continue;
+        }
+        if (hda_apply_pin_control(h, index, 1) != 0) {
+            kprintf("[hda] could not re-enable outputs after the jack poll failure\n");
+            return;
+        }
+    }
+    kprintf("[hda] every routed output left driving (fail open)\n");
+}
+
+/* Suspend or resume auto-mute (see g_automute_suspended). The next jack poll
+ * applies it; resetting the poll clock makes that poll the very next one. */
+void hda_automute_suspend(int suspended)
+{
+    __atomic_store_n(&g_automute_suspended, suspended ? 1 : 0, __ATOMIC_RELEASE);
+    g_hda.last_jack_poll_ms = 0;
+    kprintf("[hda] auto-mute %s\n", suspended ? "suspended: every routed jack drives" : "resumed");
+}
+
 /* Re-read every output jack and apply Linux's auto-mute: a plugged headphone
  * silences the line-outs and speakers (hda_generic.c, snd_hda_gen_update_outputs
  * and do_automute). Runs from thread context only, because it sends codec
@@ -1058,14 +1093,25 @@ static void hda_poll_output_jacks(struct hda *h, int force)
                                  ? hda_read_jack_state(h, &plan->paths[index].route.nodes[0],
                                                        &transport_failed)
                                  : HDA_JACK_NO_DETECT;
+        if (transport_failed) {
+            /* Stop at the first timeout: each one costs 50 ms, possibly with
+             * interrupts off (the kaudio housekeeping caller). */
+            break;
+        }
     }
     if (transport_failed) {
         h->jack_poll_failed = 1;
         kprintf("[hda] jack sense verb timed out: jack polling and auto-mute disabled\n");
+        hda_fail_open_outputs(h);
         __atomic_store_n(&h->jack_poll_running, 0, __ATOMIC_RELEASE);
         return;
     }
     hda_output_automute_decide(plan, jack_states, output_enabled);
+    if (__atomic_load_n(&g_automute_suspended, __ATOMIC_ACQUIRE)) {
+        for (unsigned index = 0; index < plan->path_count; index++) {
+            output_enabled[index] = 1;
+        }
+    }
     for (unsigned index = 0; index < plan->path_count; index++) {
         const struct hda_output_path *path = &plan->paths[index];
 
@@ -1080,6 +1126,7 @@ static void hda_poll_output_jacks(struct hda *h, int force)
         if (hda_apply_pin_control(h, index, output_enabled[index]) != 0) {
             h->jack_poll_failed = 1;
             kprintf("[hda] pin control verb timed out: jack polling and auto-mute disabled\n");
+            hda_fail_open_outputs(h);
             break;
         }
     }

@@ -80,6 +80,21 @@ void boot_test_tone_generate(int16_t *stereo_frames, uint32_t first_frame_index,
 #include "sched.h"
 #include "kernel/sync/wait.h"
 #include "bootmod.h"
+#include "../../../include/weaksym.h"
+
+/* The HDA driver suspends auto-mute while the tone plays (hda.c). Weak, as the
+ * other cross-layer hooks are: the host gates link this file without a driver,
+ * and a kernel whose only sound device is not HDA has nothing to suspend. */
+void hda_automute_suspend(int suspended) LOGIT_WEAK;
+LOGIT_WEAK_STUB(hda_automute_suspend);
+
+/* Ask for every jack to drive (or return to auto-mute) when the driver exists. */
+static void tone_automute_suspend(int suspended)
+{
+    if (LOGIT_HAVE(hda_automute_suspend)) {
+        hda_automute_suspend(suspended);
+    }
+}
 
 /* How long after the first panel tick (the desktop is running by then) the
  * tone starts: long enough for the boot chatter to finish and for a person to
@@ -108,6 +123,9 @@ void boot_test_tone_generate(int16_t *stereo_frames, uint32_t first_frame_index,
  * multiple of the hardware ring: it exists only so a stuck card cannot hold
  * the thread forever. */
 #define TONE_POLL_MS                    10u
+/* Longer than one jack poll interval (250 ms, hda.c), so the poll that
+ * applies the auto-mute suspension has run before the tone starts. */
+#define TONE_AUTOMUTE_SETTLE_MS         300u
 #define TONE_PLAY_OUT_TIMEOUT_MS        1000u
 
 static int g_state = BOOT_TEST_TONE_WAITING;
@@ -153,9 +171,19 @@ static void boot_test_tone_thread(void)
     unsigned consecutive_stalls = 0;
     int start_announced = 0;
     struct logit_sndstate stream_state = {0};
-    int stream = snd_stream_open(NULL, &format);
+    int stream;
+
+    /* Every jack sounds for the tone, whatever the jack sense says, then the
+     * normal auto-mute policy returns. The wait lets the next jack poll
+     * (every HDA_JACK_POLL_INTERVAL_MS, 250 ms) apply it before playback. */
+    if (LOGIT_HAVE(hda_automute_suspend)) {
+        tone_automute_suspend(1);
+        sched_sleep_ms(TONE_AUTOMUTE_SETTLE_MS);
+    }
+    stream = snd_stream_open(NULL, &format);
 
     if (stream < 0) {
+        tone_automute_suspend(0);
         kprintf("[hda] test tone skipped: no sound stream could be opened (%d)\n", stream);
         set_state(BOOT_TEST_TONE_NO_DEVICE);
         return;
@@ -205,6 +233,7 @@ static void boot_test_tone_thread(void)
         sched_sleep_ms(TONE_POLL_MS);
         position_after = snd_device_position_frames();
     }
+    tone_automute_suspend(0);
     if (frames_written < BOOT_TEST_TONE_FRAME_COUNT) {
         kprintf("[hda] test tone FAILED: wrote %u of %u frames\n", frames_written,
                 BOOT_TEST_TONE_FRAME_COUNT);
