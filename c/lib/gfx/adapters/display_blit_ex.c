@@ -338,9 +338,11 @@ void ol_display_glyph_lut_for(uint8_t lut[256], uint32_t text, uint32_t bg)
     }
 }
 
-void ol_display_blit_glyph_a(struct ol_display *ctx, int x, int y,
-                             const uint8_t *cov, int w, int h, int stride,
-                             uint32_t color, int alpha)
+/* Original scalar loop, the reference for layouts the SIMD kernels cannot
+ * serve (display_lanes_ok()). */
+static void ol_display_blit_glyph_a_ref(struct ol_display *ctx, int x, int y,
+                                        const uint8_t *cov, int w, int h, int stride,
+                                        uint32_t color, int alpha)
 {
     if (!ctx || !cov || alpha <= 0 || stride < w) return;
     if (alpha > 255) alpha = 255;
@@ -363,6 +365,47 @@ void ol_display_blit_glyph_a(struct ol_display *ctx, int x, int y,
             int ng = (cg * a + bg * (255 - a)) / 255;
             int nb = (cb * a + bb * (255 - a)) / 255;
             drow[i] = ol_display_rgb(ctx, (uint8_t)nr, (uint8_t)ng, (uint8_t)nb);
+        }
+    }
+}
+
+/* S2: text is the busiest per-pixel loop of the desktop (c/kernel/gui/text.c).
+ * The contrast LUT and the overall alpha reshape the coverage row first, in
+ * stack chunks, and gfx_k_blend_cv then blends it. A row with neither is fed
+ * to the kernel in place. The shaping arithmetic is the original's, so the
+ * coverage the kernel sees is exactly what the scalar loop computed per pixel. */
+#define GLYPH_A_CHUNK 256
+void ol_display_blit_glyph_a(struct ol_display *ctx, int x, int y,
+                             const uint8_t *cov, int w, int h, int stride,
+                             uint32_t color, int alpha)
+{
+    if (!ctx || !cov || alpha <= 0 || stride < w) return;
+    if (!display_lanes_ok(ctx)) {
+        ol_display_blit_glyph_a_ref(ctx, x, y, cov, w, h, stride, color, alpha);
+        return;
+    }
+    if (alpha > 255) alpha = 255;
+    int i0, j0, i1, j1;
+    if (!clip_ij(ctx, x, y, w, h, &i0, &j0, &i1, &j1)) return;
+    struct ol_pixel_target *s = &ctx->target;
+    const uint8_t *lut = glyph_lut(ctx);
+    for (int j = j0; j < j1; j++) {
+        const uint8_t *crow = cov + (long)j * stride;
+        uint32_t *drow = s->px + (long)(y + j) * s->w + x;
+        if (!lut && alpha == 255) {
+            gfx_k_blend_cv(drow + i0, crow + i0, i1 - i0, color);
+            continue;
+        }
+        for (int i = i0; i < i1; i += GLYPH_A_CHUNK) {
+            uint8_t shaped[GLYPH_A_CHUNK];
+            int count = i1 - i < GLYPH_A_CHUNK ? i1 - i : GLYPH_A_CHUNK;
+            for (int k = 0; k < count; k++) {
+                int coverage = crow[i + k];
+                if (lut) coverage = lut[coverage];
+                if (alpha < 255) coverage = (coverage * alpha + 127) / 255;
+                shaped[k] = (uint8_t)coverage;
+            }
+            gfx_k_blend_cv(drow + i, shaped, count, color);
         }
     }
 }

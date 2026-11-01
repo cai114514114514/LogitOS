@@ -325,8 +325,10 @@ static inline void rr_fill(uint32_t *row, int a, int b, uint32_t c)
 }
 
 /* Span form of blend_cov(): every pixel is inside the clip (clip_ij proved it),
- * so the put/get bounds checks are redundant; the arithmetic is the same. */
-static inline void rr_blend_span(struct ol_display *ctx, uint32_t *row, int a, int b, uint32_t color, int al)
+ * so the put/get bounds checks are redundant; the arithmetic is the same.
+ * This is the original scalar loop, kept as the reference for displays whose
+ * channel layout the SIMD kernels cannot serve (see display_lanes_ok()). */
+static inline void rr_blend_span_ref(struct ol_display *ctx, uint32_t *row, int a, int b, uint32_t color, int al)
 {
     if (al <= 0) return;
     if (al >= 255) { rr_fill(row, a, b, color); return; }
@@ -337,6 +339,23 @@ static inline void rr_blend_span(struct ol_display *ctx, uint32_t *row, int a, i
                                 (uint8_t)((cg * al + bg * (255 - al)) / 255),
                                 (uint8_t)((cb * al + bb * (255 - al)) / 255));
     }
+}
+
+/* S2: the same span through gfx_k_blend_cc, one call per span. al 0 and 255
+ * keep the original early-outs, so the kernel never sees the two alphas whose
+ * cost the original code avoided. */
+static inline void rr_blend_span(struct ol_display *ctx, uint32_t *row, int a, int b, uint32_t color, int al)
+{
+    if (al <= 0) return;
+    if (al >= 255) {
+        rr_fill(row, a, b, color);
+        return;
+    }
+    if (!display_lanes_ok(ctx)) {
+        rr_blend_span_ref(ctx, row, a, b, color, al);
+        return;
+    }
+    if (b > a) gfx_k_blend_cc(row + a, b - a, color, al);
 }
 
 void ol_display_round_rect(struct ol_display *ctx, int x, int y, int w, int h, int radius, uint32_t color)
@@ -368,7 +387,7 @@ void ol_display_round_rect(struct ol_display *ctx, int x, int y, int w, int h, i
  * -- the same shape fb_blit_surface's header describes, one layer down, on the
  * busiest per-pixel loop the kernel still has. Output is unchanged: fb_get
  * inside the clip returns the pixel, fb_put inside the clip stores it. */
-void ol_display_blit_glyph(struct ol_display *ctx, int x, int y, const uint8_t *cov, int w, int h, uint32_t color)
+static void ol_display_blit_glyph_ref(struct ol_display *ctx, int x, int y, const uint8_t *cov, int w, int h, uint32_t color)
 {
     int cr, cg, cb; unpack(ctx, color, &cr, &cg, &cb);
     int i0, j0, i1, j1;
@@ -390,7 +409,27 @@ void ol_display_blit_glyph(struct ol_display *ctx, int x, int y, const uint8_t *
     }
 }
 
-void ol_display_blend_rect(struct ol_display *ctx, int x, int y, int w, int h, uint8_t r, uint8_t g, uint8_t b, uint8_t a)
+/* S2: the same glyph row loop through gfx_k_blend_cv, which skips empty
+ * coverage, stores full coverage and blends the rest (pixman's combine of a
+ * solid source through an a8 mask, pixman-sse2.c sse2_composite_over_n_8_8888).
+ * Displays with an unusual channel layout take the scalar original above. */
+void ol_display_blit_glyph(struct ol_display *ctx, int x, int y, const uint8_t *cov, int w, int h, uint32_t color)
+{
+    if (!display_lanes_ok(ctx)) {
+        ol_display_blit_glyph_ref(ctx, x, y, cov, w, h, color);
+        return;
+    }
+    int i0, j0, i1, j1;
+    if (!clip_ij(ctx, x, y, w, h, &i0, &j0, &i1, &j1)) return;
+    struct ol_pixel_target *s = &ctx->target;
+    for (int j = j0; j < j1; j++) {
+        const uint8_t *crow = cov + (long)j * w;
+        uint32_t *drow = s->px + (long)(y + j) * s->w + x;
+        gfx_k_blend_cv(drow + i0, crow + i0, i1 - i0, color);
+    }
+}
+
+static void ol_display_blend_rect_ref(struct ol_display *ctx, int x, int y, int w, int h, uint8_t r, uint8_t g, uint8_t b, uint8_t a)
 {
     int i0, j0, i1, j1;
     if (!clip_ij(ctx, x, y, w, h, &i0, &j0, &i1, &j1)) return;
@@ -405,6 +444,24 @@ void ol_display_blend_rect(struct ol_display *ctx, int x, int y, int w, int h, u
             int nb = (b * a + bb * (255 - a)) / 255;
             drow[i] = ol_display_rgb(ctx, (uint8_t)nr, (uint8_t)ng, (uint8_t)nb);
         }
+    }
+}
+
+/* S2: one gfx_k_blend_cc call per row. The kernel rewrites every pixel even
+ * for a == 0, as the original loop did, so this function adds no special case. */
+void ol_display_blend_rect(struct ol_display *ctx, int x, int y, int w, int h, uint8_t r, uint8_t g, uint8_t b, uint8_t a)
+{
+    if (!display_lanes_ok(ctx)) {
+        ol_display_blend_rect_ref(ctx, x, y, w, h, r, g, b, a);
+        return;
+    }
+    int i0, j0, i1, j1;
+    if (!clip_ij(ctx, x, y, w, h, &i0, &j0, &i1, &j1)) return;
+    struct ol_pixel_target *s = &ctx->target;      /* clip_ij already proved every (i,j) writable */
+    uint32_t color = ol_display_rgb(ctx, r, g, b);
+    for (int j = j0; j < j1; j++) {
+        uint32_t *drow = s->px + (long)(y + j) * s->w + x;
+        gfx_k_blend_cc(drow + i0, i1 - i0, color, a);
     }
 }
 
@@ -777,7 +834,7 @@ int ol_display_pack_argb(struct ol_display *ctx, uint32_t *out, const unsigned c
         out[i]=rgba[3] ? ((uint32_t)rgba[3]<<24)|ol_display_rgb(ctx,rgba[0],rgba[1],rgba[2]) : 0;
     return OL_OK;
 }
-void ol_display_blit_argb(struct ol_display *ctx,int x,int y,const uint32_t *p,int w,int h,int stride)
+static void ol_display_blit_argb_ref(struct ol_display *ctx,int x,int y,const uint32_t *p,int w,int h,int stride)
 {
     int x0,y0,x1,y1;
     if (!ctx || !p || stride < w || ctx->rpos > 16 || ctx->gpos > 16 || ctx->bpos > 16 ||
@@ -791,9 +848,28 @@ void ol_display_blit_argb(struct ol_display *ctx,int x,int y,const uint32_t *p,i
         *d=ol_display_rgb(ctx,(sr*a+dr*(255-a))/255,(sg*a+dg*(255-a))/255,(sb*a+db*(255-a))/255);
     }
 }
-/* Uniform layer alpha is sampled without rewriting every source alpha byte.
- * Clipping is a loop bound, so cost follows the damaged destination region. */
-void ol_display_blit_surface_alpha(struct ol_display *ctx,int x,int y,int w,int h,
+/* S2: ARGB sprites (cursor, icons) one row at a time through gfx_k_blend_vv.
+ * The validity checks are the original's, so every rejected call still draws
+ * nothing, including layouts with a channel above bit 16. */
+void ol_display_blit_argb(struct ol_display *ctx,int x,int y,const uint32_t *p,int w,int h,int stride)
+{
+    int x0, y0, x1, y1;
+    if (!ctx || !p || stride < w || ctx->rpos > 16 || ctx->gpos > 16 || ctx->bpos > 16 ||
+        !clip_ij(ctx, x, y, w, h, &x0, &y0, &x1, &y1)) return;
+    if (!display_lanes_ok(ctx)) {
+        ol_display_blit_argb_ref(ctx, x, y, p, w, h, stride);
+        return;
+    }
+    for (int j = y0; j < y1; j++) {
+        uint32_t *drow = ctx->target.px + (long)(y + j) * ctx->target.w + x;
+        gfx_k_blend_vv(drow + x0, p + (long)j * stride + x0, x1 - x0);
+    }
+}
+
+/* Original scalar loop, kept as the reference for layouts the SIMD kernels
+ * cannot serve. Uniform layer alpha is sampled without rewriting every source
+ * alpha byte. Clipping is a loop bound, so cost follows the damaged region. */
+static void ol_display_blit_surface_alpha_ref(struct ol_display *ctx,int x,int y,int w,int h,
                                    const struct ol_pixel_target *src,int alpha)
 {
     int x0,y0,x1,y1;
@@ -807,6 +883,37 @@ void ol_display_blit_surface_alpha(struct ol_display *ctx,int x,int y,int w,int 
             unpack(ctx,s,&sr,&sg,&sb);unpack(ctx,dst[i],&dr,&dg,&db);
             dst[i]=ol_display_rgb(ctx,(sr*alpha+dr*(255-alpha))/255,
                 (sg*alpha+dg*(255-alpha))/255,(sb*alpha+db*(255-alpha))/255);
+        }
+    }
+}
+
+/* S2: the same blit through gfx_k_blend_vc. When the source is as wide as the
+ * destination the nearest-neighbour column map is the identity (i * w / w == i),
+ * so the source row feeds the kernel directly; otherwise the row is first
+ * sampled into a small stack buffer, which keeps the kernel's source linear. */
+#define SURFACE_ALPHA_CHUNK 64
+void ol_display_blit_surface_alpha(struct ol_display *ctx,int x,int y,int w,int h,
+                                   const struct ol_pixel_target *src,int alpha)
+{
+    int x0, y0, x1, y1;
+    if (!ctx || !src || !src->px || src->w <= 0 || src->h <= 0 || alpha <= 0 || alpha > 255 ||
+        !clip_ij(ctx, x, y, w, h, &x0, &y0, &x1, &y1)) return;
+    if (!display_lanes_ok(ctx)) {
+        ol_display_blit_surface_alpha_ref(ctx, x, y, w, h, src, alpha);
+        return;
+    }
+    for (int j = y0; j < y1; j++) {
+        const uint32_t *row = src->px + ((long)j * src->h / h) * src->w;
+        uint32_t *dst = ctx->target.px + (long)(y + j) * ctx->target.w + x;
+        if (src->w == w) {
+            gfx_k_blend_vc(dst + x0, row + x0, x1 - x0, alpha);
+            continue;
+        }
+        for (int i = x0; i < x1; i += SURFACE_ALPHA_CHUNK) {
+            uint32_t sampled[SURFACE_ALPHA_CHUNK];
+            int count = x1 - i < SURFACE_ALPHA_CHUNK ? x1 - i : SURFACE_ALPHA_CHUNK;
+            for (int k = 0; k < count; k++) sampled[k] = row[(long)(i + k) * src->w / w];
+            gfx_k_blend_vc(dst + i, sampled, count, alpha);
         }
     }
 }

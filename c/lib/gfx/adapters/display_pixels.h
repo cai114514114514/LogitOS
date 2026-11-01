@@ -4,6 +4,7 @@
 #define OPENLOGIT_DISPLAY_PIXELS_H
 #include "openlogit_display.h"
 #include "gfx.h"
+#include "../simd/gfx_simd.h"
 
 /* Moving the material to its own file otherwise turns every blur/store pack
  * into an external call (seven call sites in the x86 object). Keep the pixel
@@ -13,6 +14,15 @@ static inline uint32_t display_rgb(struct ol_display *ctx,
 {
     return (uint32_t)r << ctx->rpos | (uint32_t)g << ctx->gpos |
            (uint32_t)b << ctx->bpos;
+}
+
+/* May the SIMD pixel kernels draw into this display? They treat bytes 0..2
+ * alike and clear byte 3, which is only ol_display_rgb()'s behaviour when the
+ * three channel positions are a permutation of {0,8,16}; any other layout that
+ * ol_display_bind() accepts (e.g. 24,8,0) keeps its own scalar loops. */
+static inline int display_lanes_ok(const struct ol_display *ctx)
+{
+    return gfx_simd_lanes_ok(ctx->rpos, ctx->gpos, ctx->bpos);
 }
 
 static inline void *display_alloc(struct ol_display *ctx, unsigned long bytes)

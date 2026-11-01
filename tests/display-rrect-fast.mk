@@ -5,6 +5,8 @@
 # written solid), which must fail "FAIL identity". Same sources/flags as the
 # positive; only the -D differs.
 DRRF_SRC := tests/unit/display_rrect_test.c c/lib/gfx/adapters/openlogit_display.c
+# openlogit_display.c's pixel loops now call the SIMD kernels (S2).
+DRRF_SRC += c/lib/gfx/simd/gfx_simd.c
 DRRF_INC := -Itests/unit $(GFX_INC)
 DRRF_CFLAGS := -std=gnu11 -O2 -g -Wall -Wextra -Werror
 

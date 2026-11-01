@@ -69,11 +69,16 @@ Usage:
     tests/qmp/qmp_repaint.py [--xres W] [--yres H] [--iso PATH] [--disk PATH]
                              [--reps N] [--only NAME[,NAME...]] [--json PATH]
                              [--assert] [--expect-off N] [--assert-cover]
+                             [--serial-out PATH]
 
 --disk defaults to a `disk.img` sibling of --iso (i.e. the same BUILD=
 tree) -- NOT build/disk.img unconditionally, so a run against
 BUILD=build-<yours>/logit.iso boots that tree's own apps rather than
 whatever (or nothing) happens to sit in build/.
+
+--serial-out copies the guest's whole serial log to PATH when the run ends
+(also after a failure), so a gate can grep counters the driver does not parse.
+Without it nothing is saved: the log lives in a temporary directory.
 
 --assert turns the `anim` class into a gate (see assert_anim at the bottom).
 --expect-off carries the composite count from a -DAUI_ANIM_OFF build; without
@@ -88,6 +93,7 @@ import http.server
 import json as _json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -908,7 +914,7 @@ def boot(iso, xres, yres, tmp, disk=None, snapshot=True):
 
 def main(argv):
     xres, yres, reps = 1920, 1200, 3
-    iso, disk, only, jpath = None, None, None, None
+    iso, disk, only, jpath, serial_out = None, None, None, None, None
     do_assert, assert_open, assert_cover, expect_off = False, False, False, None
     max_frac = {}
     assert_par = None
@@ -921,6 +927,7 @@ def main(argv):
         elif argv[i] == "--disk":  disk = argv[i + 1]; i += 2
         elif argv[i] == "--only":  only = argv[i + 1].split(","); i += 2
         elif argv[i] == "--json":  jpath = argv[i + 1]; i += 2
+        elif argv[i] == "--serial-out": serial_out = argv[i + 1]; i += 2
         elif argv[i] == "--assert":     do_assert = True; i += 1
         elif argv[i] == "--assert-open": assert_open = True; i += 1
         elif argv[i] == "--assert-cover": assert_cover = True; i += 1
@@ -1131,6 +1138,8 @@ def main(argv):
     finally:
         qemu.kill()
         qemu.wait()
+        if serial_out:
+            shutil.copyfile(serial, serial_out)
 
     if jpath:
         with open(jpath, "w") as fh:
