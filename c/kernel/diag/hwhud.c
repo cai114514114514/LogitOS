@@ -52,14 +52,22 @@ static void scanout_format(char *out, size_t capacity, unsigned width,
 
 /* Show enumerated identity and actual binding, rather than inferring a GPU
  * from a boot framebuffer. BAR lengths are bytes so small/absent apertures
- * remain distinguishable without a rounding-dependent size label. */
-static void gpu_format(char *out, size_t capacity, const struct device *device)
+ * remain distinguishable without a rounding-dependent size label. VBIOS_SOURCE
+ * is where the driver found this function's ATOM image (module, vfct or none)
+ * or NULL when no resource probe covers the device, in which case the field is
+ * left out rather than printed as a guess. */
+static void gpu_format(char *out, size_t capacity, const struct device *device,
+                       const char *vbios_source)
 {
-    ksnprintf(out, capacity, "gpu %04x:%04x rev=%02x BAR0=%luB BAR5=%luB driver=%s",
+    int used = ksnprintf(out, capacity,
+              "gpu %04x:%04x rev=%02x BAR0=%luB BAR5=%luB driver=%s",
               device->vendor, device->device, device->revision,
               (unsigned long)device->res[0].size,
               (unsigned long)device->res[5].size,
               device->drv ? device->drv->name : "unbound");
+    if (vbios_source && used > 0 && (size_t)used < capacity) {
+        ksnprintf(out + used, capacity - (size_t)used, " vbios=%s", vbios_source);
+    }
 }
 
 /* Preserve every stage of the worst measured frame for machines without a
@@ -124,6 +132,7 @@ static void par_format(char *out, size_t capacity, const struct smp_present_stat
 #include "ehci_diag.h"
 #include "nct6779.h"
 #include "logit_boot.h"
+#include "amd/bootfb.h"
 
 #define COLS 92
 #define ROWS 36
@@ -323,7 +332,7 @@ static void lines_display(void)
         const struct device *device = dev_at(i);
         if (device && device->bus_type == DEV_BUS_PCI && device->class_code == 3) {
             char gpu[256];
-            gpu_format(gpu, sizeof gpu, device);
+            gpu_format(gpu, sizeof gpu, device, amd_bootfb_vbios_source(device));
             add_wrapped(gpu);
         }
     }

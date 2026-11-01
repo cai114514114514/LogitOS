@@ -199,6 +199,8 @@ const char *polaris_atom_result_name(int result)
         return "usage-version-or-policy";
     case POLARIS_ATOM_BAD_RESERVATION:
         return "reservation-range";
+    case POLARIS_ATOM_SKIPPED_LAYOUT_UNVERIFIED:
+        return "skipped-layout-unverified";
     default:
         return "vbios-image-unavailable";
     }

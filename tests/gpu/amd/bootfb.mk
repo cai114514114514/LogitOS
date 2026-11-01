@@ -2,7 +2,10 @@
 # proves the full-LFB-within-one-BAR ownership rule and zero takeover side
 # effects.  The QEMU guest uses its real ati-vga PCI identity; this exercises
 # firmware display handoff and device-model binding, not a physical AMD GPU.
-AMD_BOOTFB_SRC := tests/gpu/amd/bootfb_test.c c/drivers/gpu/amd/bootfb.c
+# atom.c is linked only for polaris_atom_result_name(): bootfb.c prints that
+# name in the [amd-resources] line. The probe itself stays a stub in the test.
+AMD_BOOTFB_SRC := tests/gpu/amd/bootfb_test.c c/drivers/gpu/amd/bootfb.c \
+                  c/drivers/gpu/amd/polaris/resource/atom.c
 AMD_BOOTFB_INC := -Ic/drivers/gpu -Ic/drivers/core -Ic/kernel/pci \
                   $(KGUI_INC) $(KCORE_INC) $(KMM_INC) -Ic/lib/gfx/include
 AMD_BOOTFB_EFI := $(BUILD)/amd-bootfb-efi/BOOTX64.EFI

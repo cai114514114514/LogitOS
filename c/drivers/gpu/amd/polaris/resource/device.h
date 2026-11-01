@@ -4,13 +4,19 @@
 #include "amd/polaris/device.h"
 #include "amd/polaris/resource/atom.h"
 #include "amd/polaris/resource/files.h"
+#include "amd/polaris/resource/vbios.h"
 
 struct polaris_resource_report {
     struct polaris_info device;
     struct polaris_atom_reservations reservations;
+    /* enum polaris_atom_result. SKIPPED_LAYOUT_UNVERIFIED: an image was
+     * accepted but deliberately not parsed. BAD_IMAGE (the default): no image
+     * passed, or the parser rejected it. */
     int atom_result;
-    unsigned vbios_bytes_read;
-    unsigned vbios_skipped_scanout; /* Refused a VBIOS window touching live GOP. */
+    unsigned vbios_bytes; /* The accepted image; 0 when no source passed. */
+    enum polaris_vbios_source vbios_source;
+    int vbios_module_status; /* enum polaris_vbios_status, per source, so the */
+    int vbios_vfct_status;   /* log can tell "absent" from "present but bad". */
     uint8_t pci_revision;
     unsigned firmware_mask[2]; /* Independently checked key=0/key=1 candidates. */
     int file_result[2][POLARIS_RESOURCE_FILE_SLOTS];
@@ -31,8 +37,10 @@ struct polaris_resource_report {
  * Return 0 means the read-only device snapshot succeeded, not acceleration.
  * ATOM and every named file have independent results even when absent. No
  * MMIO or PCI register writes, ring submissions, engine reset or presenter
- * installation occur. A VRAM VBIOS copy's origin/liveness is not provable by
- * its signature: ownership_missing remains set even with a valid table and
+ * installation occur. The VBIOS comes from the boot module the loader saved
+ * for this PCI function or from the ACPI VFCT table, never from BAR0, so the
+ * live scanout is not touched. A valid image still proves nothing about which
+ * VRAM is free: ownership_missing remains set even with a valid table and
  * all files. The current boot ABI supplies no complete VRAM allocation lease.
  */
 int polaris_resources_probe_device(struct device *, uint64_t lfb,

@@ -32,6 +32,9 @@
 static const char amd_bootfb_name[] = "AMD/ATI firmware framebuffer";
 static struct device *polaris_boot_device;
 static int polaris_resources_probed;
+/* Which door the VBIOS came through, kept for the HUD: the serial line below
+ * is gone from a machine without a serial cable. NULL until a probe ran. */
+static const char *polaris_vbios_label;
 
 static int memory_bar_sane(const struct dev_resource *r)
 {
@@ -167,16 +170,24 @@ void amd_bootfb_probe_resources(void)
     int status = polaris_resources_probe_device(polaris_boot_device, lfb, bytes,
                                                 fb_width(), fb_height(), &report);
     kprintf("[amd-resources] pci=%04x status=%d vbios-bytes=%u atom=%d "
-            "usage-revision=%u firmware-key0=%x firmware-key1=%x required=%x "
-            "ownership-missing=%u security-key-unknown=%u vbios-skipped-scanout=%u "
+            "atom-result=%s usage-revision=%u "
+            "firmware-key0=%x firmware-key1=%x required=%x "
+            "ownership-missing=%u security-key-unknown=%u "
+            "vbios-source=%s vbios-module=%s vbios-vfct=%s "
             "firmware-sources=rootfs:%u,bootmod:%u pinned=%s\n",
-            polaris_boot_device->device, status, report.vbios_bytes_read,
-            report.atom_result, report.reservations.table_revision,
+            polaris_boot_device->device, status, report.vbios_bytes,
+            report.atom_result, polaris_atom_result_name(report.atom_result),
+            report.reservations.table_revision,
             report.firmware_mask[0], report.firmware_mask[1], POLARIS_RESOURCE_ALL_FILES,
             report.ownership_missing, report.security_key_unknown,
-            report.vbios_skipped_scanout, report.firmware_from_rootfs,
-            report.firmware_from_bootmod,
+            polaris_vbios_source_name(report.vbios_source),
+            polaris_vbios_status_name(report.vbios_module_status),
+            polaris_vbios_status_name(report.vbios_vfct_status),
+            report.firmware_from_rootfs, report.firmware_from_bootmod,
             report.firmware_pin_mismatch ? "mismatch" : "ok");
+    /* A refused probe never looked for a VBIOS, so "none" would be a claim. */
+    if (status == 0)
+        polaris_vbios_label = polaris_vbios_source_name(report.vbios_source);
     if (report.atom_result == POLARIS_ATOM_OK) {
         kprintf("[amd-resources] firmware-reserved=%llx/%llu driver-scratch=%llx/%llu\n",
                 (unsigned long long)report.reservations.firmware.base,
@@ -186,11 +197,17 @@ void amd_bootfb_probe_resources(void)
     }
 }
 
+const char *amd_bootfb_vbios_source(const struct device *dev)
+{
+    return dev && dev == polaris_boot_device ? polaris_vbios_label : NULL;
+}
+
 static void amd_bootfb_remove(struct device *dev)
 {
     if (dev == polaris_boot_device) {
         polaris_boot_device = NULL;
         polaris_resources_probed = 0;
+        polaris_vbios_label = NULL;
     }
     amd_accel_reset();
     if (dev) dev_set_drvdata(dev, NULL);

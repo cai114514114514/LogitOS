@@ -2,6 +2,7 @@ POLARIS_RESOURCE_SOURCE := tests/gpu/amd/polaris/resource/test.c \
     c/drivers/gpu/amd/polaris/resource/atom.c \
     c/drivers/gpu/amd/polaris/resource/files.c \
     c/drivers/gpu/amd/polaris/resource/device.c \
+    c/drivers/gpu/amd/polaris/resource/vbios.c \
     c/drivers/gpu/amd/polaris/device.c \
     c/drivers/gpu/amd/polaris/firmware.c \
     c/drivers/gpu/amd/polaris/firmware/bundle.c \
@@ -13,7 +14,7 @@ POLARIS_RESOURCE_SOURCE := tests/gpu/amd/polaris/resource/test.c \
 POLARIS_RESOURCE_FLAGS := -std=c11 -O1 -g -Wall -Wextra -Werror \
     -Ic/drivers/gpu -Ic/drivers/core -Ic/kernel/pci \
     -Ic/kernel/mm/phys -Ic/fs/vfs -Ic/fs/logitfs \
-    -Ic/crypto -Ic/kernel/init -DPOLARIS_FW_PIN_HOST_OVERRIDE \
+    -Ic/crypto -Ic/kernel/init -Ic/kernel/cpu/acpi -DPOLARIS_FW_PIN_HOST_OVERRIDE \
     -Itests/gpu/amd/polaris/resource/fixture
 
 .PHONY: test-polaris-resources-host test-polaris-resources-negctl

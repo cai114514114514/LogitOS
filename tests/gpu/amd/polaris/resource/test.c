@@ -131,12 +131,27 @@ static void install_pins(void)
     polaris_fw_pin_table_count = 9;
 }
 
-/* No boot modules in this gate: the rootfs path is under test. The fallback
- * order has its own gate (tests/hw/fwwire/files_test.c). */
+/* No firmware boot modules in this gate: the rootfs path is under test. The
+ * fallback order has its own gate (tests/hw/fwwire/files_test.c). The one
+ * module present is the VBIOS the loader saves for the fixture's PCI function
+ * 0000:00:00.0 (resource/vbios.c): since B1 the probe takes the ROM from there
+ * and never reads BAR0. The source policy has its own gate
+ * (tests/hw/b1vbios/vbios_test.c). */
 const void *bootmod_find(const char *name, uint64_t *bytes)
 {
-    (void)name;
-    (void)bytes;
+    if (name && !strcmp(name, "vbios-0000:00:00.0")) {
+        if (bytes) {
+            *bytes = sizeof vram_copy;
+        }
+        return vram_copy;
+    }
+    return NULL;
+}
+
+/* No ACPI VFCT table either. */
+const void *acpi_find_table(const char *signature)
+{
+    (void)signature;
     return NULL;
 }
 
@@ -390,30 +405,35 @@ static void device_cases(void)
     memcpy(saved_registers, registers, sizeof registers);
     struct polaris_resource_report report;
     CHECK(probe(&report) == 0);
-    CHECK(report.vbios_bytes_read == 262144 && report.atom_result == 0);
+    CHECK(report.vbios_bytes == 262144 && report.atom_result == 0);
+    CHECK(report.vbios_source == POLARIS_VBIOS_SOURCE_MODULE);
     CHECK(report.reservations.firmware.base == UINT64_C(0x1200400000));
     CHECK(report.reservations.firmware.bytes == 65536);
 #ifdef RX580DIAG_CASES
+    /* BAR0 is not a VBIOS source any more (B1): no whole-aperture map and no
+     * window, where P12 allowed exactly one window. */
     CHECK(whole_vram_maps == 0);
-    CHECK(window_maps == 1);
+    CHECK(window_maps == 0);
 #endif
     CHECK(report.firmware_mask[0] == 0xff && report.firmware_mask[1] == 0xff);
     CHECK(report.firmware_from_rootfs == 9 && report.firmware_from_bootmod == 0);
     CHECK(report.firmware_pin_mismatch == 0);
     CHECK(report.ownership_missing == 1 && report.security_key_unknown == 1);
     CHECK(report.device.vram_bytes == UINT64_C(0x200000000));
-    CHECK(file_stats == 16 && file_reads == 16 && map_count == 2);
+    CHECK(file_stats == 16 && file_reads == 16 && map_count == 1);
     CHECK(allocations == frees);
     CHECK(!memcmp(saved_registers, registers, sizeof registers));
 
 #ifdef RX580DIAG_CASES
-    /* An overlapping scanout is not a missing ROM: record the deliberate
-     * refusal, and prove no VBIOS read/whole-aperture remap occurred. */
+    /* The scanout starting at BAR0 was the case P12 had to refuse
+     * (vbios_skipped_scanout). With the ROM taken from the boot module the
+     * probe never touches BAR0 at all, so the same layout now finds the VBIOS
+     * AND maps nothing but the register BAR. */
     reset();
     CHECK(polaris_resources_probe_device(&gpu, 0x80000000, 640 * 480 * 4,
         640, 480, &report) == 0);
-    CHECK(report.vbios_skipped_scanout == 1);
-    CHECK(report.vbios_bytes_read == 0);
+    CHECK(report.vbios_source == POLARIS_VBIOS_SOURCE_MODULE);
+    CHECK(report.vbios_bytes == 262144 && report.atom_result == 0);
     CHECK(window_maps == 0 && whole_vram_maps == 0 && map_count == 1);
     CHECK(report.firmware_mask[0] == 0xff && report.firmware_mask[1] == 0xff);
 #endif
@@ -433,6 +453,8 @@ static void device_cases(void)
     missing_files = (1u << 4) | (1u << 8);
     CHECK(probe(&report) == 0);
     CHECK(report.atom_result == POLARIS_ATOM_BAD_IMAGE);
+    CHECK(report.vbios_source == POLARIS_VBIOS_SOURCE_NONE);
+    CHECK(report.vbios_module_status == POLARIS_VBIOS_BAD_SIGNATURE);
     CHECK(report.firmware_mask[0] == 0xef && report.firmware_mask[1] == 0x6f);
     CHECK(report.ownership_missing == 1 && allocations == frees);
 
@@ -463,11 +485,29 @@ static void device_cases(void)
     CHECK(polaris_resources_probe_device(&gpu, 0x8ffff000, 640 * 480 * 4,
         640, 480, &report) < 0 && map_count == 0);
     reset();
-    fail_allocation = 1; /* No VBIOS scratch: firmware inventory still runs. */
+    /* The VBIOS is parsed in place and needs no allocation, so the first one
+     * to fail is now key 0's first firmware file; key 1 allocates later and
+     * is unaffected. Before B1 this hit the 256 KiB scratch copy instead. */
+    fail_allocation = 1;
     CHECK(probe(&report) == 0);
-    CHECK(report.vbios_bytes_read == 0 && report.atom_result < 0);
-    CHECK(report.firmware_mask[0] == 0xff && report.firmware_mask[1] == 0xff);
+    CHECK(report.vbios_bytes == 262144 && report.atom_result == 0);
+    CHECK(report.firmware_mask[0] == 0xfe && report.firmware_mask[1] == 0xff);
     CHECK(allocations == frees);
+
+    /* An MC window of 256 MiB for a card that reports 8 GiB: the layout does
+     * not cover VRAM, so the accepted image is deliberately not parsed. The
+     * report must say "skipped", not "image unavailable", and must not claim
+     * any reservation. */
+    reset();
+    registers[0x2024 / 4] = 0x120f1200;
+    CHECK(probe(&report) == 0);
+    CHECK(report.device.layout_covers_vram == 0);
+    CHECK(report.vbios_bytes == 262144);
+    CHECK(report.atom_result == POLARIS_ATOM_SKIPPED_LAYOUT_UNVERIFIED);
+    CHECK(!strcmp(polaris_atom_result_name(report.atom_result),
+                  "skipped-layout-unverified"));
+    CHECK(report.reservations.firmware.bytes == 0 &&
+          report.reservations.driver_scratch.bytes == 0);
 }
 
 int main(void)
