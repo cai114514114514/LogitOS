@@ -91,6 +91,12 @@
 /* UEFI only: one boot module, a file the loader read off the boot volume into
  * EfiLoaderData memory before ExitBootServices. One tag per file. */
 #define LOGIT_BOOT_TAG_MODULE            0x4c420107
+/* UEFI only, header-only (tag.size == 8): the owner's GPU self-test opt-out is
+ * to be treated as given although no "nogpu" module says so, because the loader
+ * could not tell whether the marker file exists or could not build its module
+ * (c/boot/efi/gpu_optout_marker.h). The opt-out fails closed; the kernel
+ * (c/kernel/init/bootmod.c) treats this tag like the module. */
+#define LOGIT_BOOT_TAG_GPU_OPTOUT        0x4c420108
 #define LOGIT_BOOT_TAG_END               0x4c42ffff
 #define LOGIT_BOOT_TAG_NAMESPACE_MASK    0xffff0000
 #define LOGIT_BOOT_TAG_NAMESPACE         0x4c420000

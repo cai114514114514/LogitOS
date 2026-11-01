@@ -160,6 +160,12 @@ struct driver {
     const struct dev_match *match;          /* DEV_MATCH_END-terminated */
     int  (*probe)(struct device *dev);      /* 0 = bound, !=0 = decline */
     void (*remove)(struct device *dev);     /* optional */
+    /* Optional, display devices only: dev_quiesce_all keeps a display bound (it
+     * shows the shutdown) so it cannot use ->remove to stop a GPU the driver
+     * has working. It calls this instead, before a reboot or S5. Return 0 when
+     * the device is confirmed idle or was never started, nonzero when its
+     * activity could not be confirmed stopped. Must not start anything. */
+    int  (*quiesce)(struct device *dev);
     struct driver *next;                    /* internal: registry chain */
 };
 

@@ -1,12 +1,14 @@
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "driver.h"
 #include "pci.h"
 #include "amd/bootfb.h"
 #include "amd/polaris/resource/device.h"
+#include "amd/polaris/selftest/selftest.h"
 
 static int checks, failures;
 static uint16_t cfg_command = PCI_CMD_MEM;
@@ -46,9 +48,144 @@ static struct polaris_resource_report survey_report;
 #else
 #define SURVEY_EXPECTED SURVEY_COMPILED_IN
 #endif
+/* Stage B3: the kernel glue of the GPU self-test, driven through the very ops
+ * table bootfb.c hands to polaris_selftest_run. The run itself is a stub that
+ * records what it was given and, when exercise_ops is set, calls every
+ * callback once, so the adapters are tested against the stub kernel services
+ * below instead of being trusted. */
+#ifdef AMD_BOOTFB_NEGCTL_SELFTEST_IN_ANY_BUILD
+#define SELFTEST_EXPECTED 0
+#else
+#define SELFTEST_EXPECTED SURVEY_EXPECTED
+#endif
+static unsigned selftest_runs;
+static struct polaris_selftest_inputs selftest_inputs;
+static int exercise_ops;
+static int leave_lease_held;
+static int selftest_quiesce_result;
+static unsigned selftest_quiesces;
+static unsigned bar0_whole_maps;
+static unsigned window_maps;
+static uint64_t window_offset, window_bytes;
+static unsigned firmware_loads, firmware_releases, workspace_allocs, workspace_frees;
+static uint16_t firmware_device;
+static uint8_t firmware_revision;
+static unsigned firmware_key;
+static struct {
+    int acquire_result;
+    int held_after_acquire;
+    int held_after_retire;
+    int registers_mapped;
+    int window_mapped;
+    uint32_t config_value;
+    int diagnostic_ok;
+    int diagnostic_unaligned_refused;
+    int diagnostic_out_of_range_refused;
+    uint32_t diagnostic_value;
+    uint64_t clock_us;
+    int firmware_result;
+    int workspace_ok;
+} glue;
 static uint32_t fake_bar5[0x4600];
 static uint64_t resource_lfb, resource_bytes;
 static uint32_t resource_width, resource_height;
+
+enum polaris_selftest_result
+polaris_selftest_run(const struct polaris_selftest_inputs *inputs,
+                     const struct polaris_selftest_ops *ops,
+                     struct polaris_selftest_report *report)
+{
+    ++selftest_runs;
+    selftest_inputs = *inputs;
+    *report = (struct polaris_selftest_report){
+        .stage = POLARIS_SELFTEST_STAGE_SDMA, .result = POLARIS_SELFTEST_OK
+    };
+    if (!exercise_ops) {
+        return POLARIS_SELFTEST_OK;
+    }
+    glue.acquire_result = ops->acquire_lease(ops->context);
+    glue.held_after_acquire = ops->lease_held(ops->context);
+    if (glue.acquire_result) {
+        return POLARIS_SELFTEST_FAILED_LEASE;
+    }
+    volatile uint8_t *registers = 0;
+    volatile uint8_t *window = 0;
+    glue.registers_mapped = !ops->map_registers(ops->context, &registers) &&
+                            registers == (volatile uint8_t *)(uintptr_t)fake_bar5;
+    const struct polaris_arena_plan *plan = inputs->arena_plan;
+    glue.window_mapped = plan &&
+                         !ops->map_arena_window(ops->context,
+                                                plan->arena.base - plan->aperture.base,
+                                                plan->arena.bytes, &window) &&
+                         window != 0;
+    ops->read_pci_config(ops->context, 0x04, &glue.config_value);
+    fake_bar5[0x2024 / 4] = 0x12345678u;
+    glue.diagnostic_ok = !ops->read_diagnostic_register(ops->context, 0x2024, &glue.diagnostic_value);
+    glue.diagnostic_unaligned_refused = ops->read_diagnostic_register(ops->context, 0x2026, &glue.diagnostic_value) != 0;
+    glue.diagnostic_out_of_range_refused = ops->read_diagnostic_register(ops->context, 0x40000, &glue.diagnostic_value) != 0;
+    glue.clock_us = ops->now_us(ops->context);
+    struct polaris_resource_files files = {0};
+    glue.firmware_result = ops->load_firmware(ops->context, 1, &files);
+    ops->release_firmware(ops->context, &files);
+    void *workspace = ops->allocate_workspace(ops->context, 64);
+    glue.workspace_ok = workspace != 0;
+    ops->free_workspace(ops->context, workspace);
+    if (!leave_lease_held) {
+        ops->retire_lease(ops->context);
+        glue.held_after_retire = ops->lease_held(ops->context);
+    }
+    return POLARIS_SELFTEST_OK;
+}
+
+void polaris_selftest_format_hud(char *out, int capacity,
+                                 const struct polaris_selftest_report *report)
+{
+    (void)report;
+    snprintf(out, (size_t)capacity, "stub-hud");
+}
+
+int polaris_selftest_quiesce(const struct polaris_selftest_ops *ops,
+                             struct polaris_selftest_report *report)
+{
+    (void)ops;
+    (void)report;
+    ++selftest_quiesces;
+    return selftest_quiesce_result;
+}
+
+int polaris_selftest_opted_out(void)
+{
+    return 0;
+}
+
+int polaris_resource_files_load(uint16_t device, uint8_t revision, unsigned key,
+                                struct polaris_resource_files *files)
+{
+    (void)files;
+    ++firmware_loads;
+    firmware_device = device;
+    firmware_revision = revision;
+    firmware_key = key;
+    return 0;
+}
+
+void polaris_resource_files_release(struct polaris_resource_files *files)
+{
+    (void)files;
+    ++firmware_releases;
+}
+
+void *kmalloc(size_t bytes)
+{
+    ++workspace_allocs;
+    return malloc(bytes);
+}
+
+void kfree(void *memory)
+{
+    ++workspace_frees;
+    free(memory);
+}
 
 /* The resource implementation has its own real-parser gate. This fixture
  * verifies the boot wrapper passes the actual framebuffer and calls once. */
@@ -98,8 +235,24 @@ uint64_t dev_bar_map(struct device *dev, int bar)
 {
     (void)dev;
     maps++;
+    if (bar == 0) bar0_whole_maps++;
     if (bar5_unmappable) return 0;
     return survey_fixture && bar == 5 ? (uint64_t)(uintptr_t)fake_bar5 : 0;
+}
+/* Mapping part of BAR0 is allowed, and recorded: the self-test must ask for the
+ * arena window and nothing more. */
+uint64_t dev_bar_map_window(struct device *dev, int bar, uint64_t offset, uint64_t bytes)
+{
+    if (bar != 0) return 0;
+    window_maps++;
+    window_offset = offset;
+    window_bytes = bytes;
+    return dev->res[0].start + offset;
+}
+uint32_t pci_cfg_read(uint8_t bus, uint8_t slot, uint8_t func, uint16_t off)
+{
+    (void)bus; (void)slot; (void)func;
+    return 0x00100000u | off;
 }
 int dev_irq_request(struct device *dev, irq_handler_t fn, void *arg, const char *name)
 { (void)dev; (void)fn; (void)arg; (void)name; irqs++; return -1; }
@@ -185,6 +338,18 @@ static void reset_bus(void)
 static int no_takeover(void)
 {
     return cfg_writes == 0 && enables == 0 && maps == 0 && irqs == 0;
+}
+
+/* Unbind D as the device model would and bind it again, so the next call of
+ * amd_bootfb_probe_resources() runs. Leaves the device unbound to the driver
+ * (drv NULL) until the caller sets it. */
+static void remove_and_rebind(struct device *dev)
+{
+    const struct driver *driver = amd_bootfb_driver_for_test();
+    driver->remove(dev);
+    dev->drv = NULL;
+    dev->drvdata = NULL;
+    amd_bootfb_probe(dev);
 }
 
 int main(void)
@@ -367,6 +532,24 @@ int main(void)
     amd_bootfb_probe_resources();
     check(resource_probes == 1, "repeated post-mount hook does not reread all firmware");
 
+    /* Stage B3: the self-test is handed what the probe established, once. */
+    if (SELFTEST_EXPECTED) {
+        check(selftest_runs == 1, "an HWHUD build runs the GPU self-test once per probe");
+        check(selftest_inputs.pci_vendor == 0x1002 && selftest_inputs.pci_device == 0x67df &&
+              selftest_inputs.pci_revision == d.revision,
+              "the self-test is told the PCI identity and revision of the device");
+        check(selftest_inputs.arena_plan == NULL,
+              "a display survey that did not run gives the self-test no arena");
+        check(selftest_inputs.width == screen_w && selftest_inputs.height == screen_h &&
+              selftest_inputs.pitch == lfb_bytes / screen_h &&
+              selftest_inputs.bar0_physical == d.res[0].start,
+              "the self-test gets the boot surface geometry and the BAR0 address");
+    } else {
+        check(selftest_runs == 0, "a build without HWHUD never runs the GPU self-test");
+        check(amd_bootfb_gpu_runtime_hud_line() == NULL,
+              "a build without HWHUD has no gpu-rt HUD line");
+    }
+
     if (SURVEY_EXPECTED) {
         const char *skipped = amd_bootfb_display_hud_line(0);
         check(skipped && !strcmp(skipped,
@@ -403,6 +586,12 @@ int main(void)
               "a build without HWHUD does not even try to map BAR5");
     }
     check(clock_reads == 0, "an unmappable BAR5 does not time the frame counter");
+    if (SELFTEST_EXPECTED) {
+        check(selftest_runs == 2 && selftest_inputs.arena_plan == NULL,
+              "an unmappable BAR5 leaves the self-test without an arena, and it is asked anyway");
+    } else {
+        check(selftest_runs == 0, "a build without HWHUD still runs no self-test here");
+    }
 
     /* The survey glue: real device fields in, the serial/HUD text out. CRTC0
      * scans the Multiboot LFB (BAR0 + 1 MiB) at the MC base + 1 MiB. */
@@ -455,6 +644,83 @@ int main(void)
               "no display survey line in a build without HWHUD");
         check(maps == 0 && clock_reads == 0,
               "a build without HWHUD neither maps BAR5 nor times the frame counter");
+    }
+
+    /* Stage B3 glue: the survey fixture above produced an arena; the self-test
+     * stub now exercises every adapter in the ops table against the stub kernel. */
+    if (SELFTEST_EXPECTED) {
+        check(selftest_runs == 3 && selftest_inputs.arena_plan != NULL &&
+              selftest_inputs.arena_plan->arena.bytes == 0x200000 &&
+              selftest_inputs.arena_plan->arena.base == 0xf40fc00000ull,
+              "the arena the survey chose is the one the self-test is given");
+        check(selftest_inputs.vram.base == 0xf400000000ull &&
+              selftest_inputs.vram.bytes == 0x200000000ull &&
+              selftest_inputs.bar5_physical == 0xf7000000ull &&
+              selftest_inputs.bar5_bytes == 0x40000 &&
+              selftest_inputs.firmware_bundle_bytes == 0x80000,
+              "the self-test is given the MC window, the BAR5 range and the firmware size");
+        const char *runtime_line = amd_bootfb_gpu_runtime_hud_line();
+        check(runtime_line && !strcmp(runtime_line, "stub-hud"),
+              "the gpu-rt HUD line is the self-test's own text");
+
+        const struct driver *driver = amd_bootfb_driver_for_test();
+        check(driver && driver->quiesce && driver->remove, "the driver has quiesce and remove hooks");
+
+        /* Not bound to amd-bootfb: no lease. */
+        exercise_ops = 1;
+        remove_and_rebind(&d);
+        amd_bootfb_probe_resources();
+        check(glue.acquire_result != 0 && glue.held_after_acquire == 0,
+              "a device that is not bound to amd-bootfb cannot be leased");
+        check(window_maps == 0 && bar0_whole_maps == 0,
+              "no BAR0 mapping is requested without the lease");
+
+        /* Bound: every adapter works, and BAR0 is never mapped as a whole. */
+        window_maps = 0;
+        bar0_whole_maps = 0;
+        leave_lease_held = 1;
+        remove_and_rebind(&d);
+        d.drv = driver;
+        amd_bootfb_probe_resources();
+        check(glue.acquire_result == 0 && glue.held_after_acquire == 1,
+              "a device bound to amd-bootfb is leased");
+        check(glue.registers_mapped, "BAR5 is mapped through dev_bar_map");
+        check(glue.window_mapped && window_maps == 1 &&
+              window_offset == 0xfc00000ull && window_bytes == 0x200000ull,
+              "BAR0 is mapped only as the 2 MiB arena window at its planned offset");
+        check(bar0_whole_maps == 0, "BAR0 is never mapped as a whole, so the scanout stays write-combining");
+        check(glue.config_value == (0x00100000u | 0x04u), "PCI config reads reach pci_cfg_read");
+        check(glue.diagnostic_ok && glue.diagnostic_value == 0x12345678u &&
+              glue.diagnostic_unaligned_refused && glue.diagnostic_out_of_range_refused,
+              "diagnostic register reads reach BAR5 and refuse unaligned or out-of-range offsets");
+        check(glue.clock_us > 0, "the clock adapter returns microseconds from the monotonic clock");
+        check(glue.firmware_result == 0 && firmware_loads == 1 && firmware_releases == 1 &&
+              firmware_device == 0x67df && firmware_revision == d.revision && firmware_key == 1,
+              "firmware is loaded for this device, revision and the requested key");
+        check(glue.workspace_ok && workspace_allocs == 1 && workspace_frees == 1,
+              "the workspace comes from and returns to the kernel heap");
+
+        /* Quiesce reports the self-test's verdict for the leased device only. */
+        selftest_quiesces = 0;
+        selftest_quiesce_result = 3;
+        check(driver->quiesce(&d) == 3 && selftest_quiesces == 1,
+              "quiesce of the Polaris device returns the self-test's verdict");
+        selftest_quiesce_result = 0;
+        struct device other = amd_gpu(0x5046);
+        check(driver->quiesce(&other) == 0 && selftest_quiesces == 1,
+              "quiesce of any other AMD device does nothing");
+
+        /* Unbinding a leased device ends the lease for good. */
+        remove_and_rebind(&d);
+        d.drv = driver;
+        amd_bootfb_probe_resources();
+        check(glue.acquire_result != 0 && glue.held_after_acquire == 0,
+              "after the leased device is unbound the lease is never handed out again");
+    } else {
+        const struct driver *driver = amd_bootfb_driver_for_test();
+        check(driver && driver->quiesce, "the driver has a quiesce hook in every build");
+        check(driver->quiesce(&d) == 0 && selftest_quiesces == 0,
+              "a build without HWHUD has nothing to quiesce");
     }
 
     printf("AMD_BOOTFB: %d checks, %d failures\n", checks, failures);

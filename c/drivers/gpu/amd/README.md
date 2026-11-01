@@ -5,7 +5,8 @@
 ```
 amd/
   accel.c                 自动探测与 RV100 桌面接线
-  bootfb.c                已有启动画面的 AMD PCI 归属验证
+  bootfb.c                已有启动画面的 AMD PCI 归属验证；HWHUD 构建里还接线 B3 自检、租约与 quiesce
+  gpu_lease.c             GPU 独占租约（FREE／HELD／RETIRED），寄存器写入之前必须持有
   rv100/engine.c          RV100 2D 引擎
   polaris/
     device.c              67df 的只读探测
@@ -20,7 +21,10 @@ amd/
     memory/gart.c         GMC8 页表编码
     memory/arena.c        显存保留清单与 2 MiB 对齐 arena 选择（只读规划；含完整 GOP 帧缓冲）
     display/crtc.c        六个 CRTC 的只读扫描、GOP 核对与刷新率实测（bootfb 仅在 HWHUD 构建调用）
+    smu/security_key.c    经 SMC 间接端口读 SMU_FIRMWARE 的安全密钥（B3 的第一个寄存器写）
     smu/loader.c          SMU 启动、微码加载与完成等待
+    selftest/selftest.c   B3 自检阶段机：门控、租约、映射、绑定、映射核对、密钥、固件、SMU、SDMA（仅 HWHUD）
+    selftest/opt_out.c    读 \LOGIT\NOGPU[.TXT] 开关（启动模块 nogpu，或加载器的 GPU_OPTOUT 标签）
     smu/mailbox.c         独立 Test 消息传输检查
     smu/toc.c             SMU7 目录编码
     smu/stage.c           两份 SDMA 文件的独立 staging 工具接口
@@ -41,6 +45,21 @@ amd/
 6. 自检完成后安装桌面 hook。全宽连续脏行合并上传，局部区域保留 pitch；每次提交都等待 fence、RPTR 和目标内容读回。
 
 任意不确定提交会保留所有 DMA 内存并锁存隔离状态，桌面返回 `-2` 阻止 CPU 写前台；软件重新初始化不能充当硬件复位。
+
+## 阶段 B3：真机第一次自检运行（只在 HWHUD 镜像里）
+
+`bootfb.c` 在资源探测和只读显示扫描（B2）之后，对 Polaris10 设备调用 `polaris_selftest_run()`。顺序与停止点见 `selftest/selftest.h`：门控（设备 ID、`\LOGIT\NOGPU` 或 `\LOGIT\NOGPU.TXT`、B2 的 arena、固件可计量）→ 取得独占租约 → 只映射 BAR5 和 BAR0 里的 arena 窗口（扫描输出保持 fb_init 给的写合并映射）→ 绑定 native 平台（只读）→ 用平台自己的映射回调核对 arena → 读安全密钥（整个流程第一次寄存器写，一次 SMC 索引写）→ 按密钥加载 SMC 与引擎固件 → 以 `POLARIS_DESKTOP_MODE_SELF_TEST` 启动已有的 runtime（SMU 加载、SDMA0 填充与拷贝读回）。**该模式永远不调用 `fb_set_native_present`**，桌面始终由 CPU 呈现。任何一步失败即停止，之后不再写任何寄存器。
+
+- 每一阶段打一行 `[amd-polaris-runtime] stage=<名> result=<名> …`，HUD 上是 `gpu-rt stage=… result=… key=… smc=… sdma=…`。
+- 关闭开关：在启动 U 盘的 ESP 上建一个空文件 `\LOGIT\NOGPU`，或 `\LOGIT\NOGPU.TXT`（FAT 不区分大小写；Windows 默认隐藏扩展名，在记事本里新建「NOGPU」得到的就是 `NOGPU.TXT`）。加载器在串口打出实际找到的文件，例如 `[efi] opt-out marker found (\LOGIT\NOGPU.TXT): GPU self-test off`。
+- 开关向安全一侧失败：加载器无法确定文件是否存在（取不到 loaded-image / 文件系统协议、卷打不开、查找返回「未找到」以外的错误）或无法把它交给内核（没有页面、模块表满）时，一律按「已关闭」处理，串口打出原因，并发 `LOGIT_BOOT_TAG_GPU_OPTOUT` 标签，内核等同于看到 `nogpu` 模块。只有明确的「未找到」才算没有开关。
+- SMU 加载在第一次写 SMC 之前打一行 `[amd-polaris-runtime] smu-preflight smu-firmware=… smc-clock=… smc-pc=… smc-reset=… smc-flags=… branch=<warm|cold-protected|cold-unprotected|refused>`；若中途卡死，这是最后的证据。HUD 行尾带 `pre=<分支> fw= clk= pc= rst= fl=`（十六进制）。`stage=smu` 行带 `upload-us=`（固件上传耗时，微秒）和 `prev-anomalies=`（发消息前上一条响应不是 1 的次数）。
+- 邮箱消息先等上一条响应，响应不是 1 或等待超时只记录、不失败（Linux v6.12 `smu7_send_msg_to_smc`）；只有对本条消息的响应决定成败。整个加载的 10 s 上限不在 SMC 处于复位的窗口内生效（上传耗时另计），每次等待仍是 1 s。
+- native 平台对每一批（1024 次）寄存器访问重新核对一次 PCI 身份（含能力链），而不是每次访问都核对；阶段边界（`read_identity`、`resolve_mapping`、`sync`）总是完整核对。
+- 所有平台回调都经过租约守卫：没有租约，写寄存器（包括 `sync` 里的 HDP 刷新）会被拒绝。
+- `dev_quiesce_all` 对保持绑定的显示设备调用 `driver.quiesce`：只要 runtime 配置过 SDMA 环（不论成败）就只读确认环空闲；runtime 写过卡之后被隔离（quarantine）则不能确认已停，返回非零；最后结束租约，不写寄存器。
+- 等待上限取自 Linux v6.12：SMU 每次等待 1 s（`hwmgr->usec_timeout`），SDMA 单次传输 100 ms（`adev->usec_timeout`）。
+- 门禁在 `tests/hw-b3.mk`（`make test-hw-b3-host`、`-kernel`、`-guest`）；QEMU 没有 Polaris，只能证明开关和启动不退化。
 
 ## 平台前提与当前边界
 

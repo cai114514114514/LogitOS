@@ -35,4 +35,10 @@ const void *bootmod_find(const char *name, uint64_t *bytes);
 /* How many modules are registered (for the boot log and tests). */
 unsigned bootmod_count(void);
 
+/* Nonzero when the loader sent LOGIT_BOOT_TAG_GPU_OPTOUT (include/abi/
+ * logit_boot.h): it could not tell whether the owner's GPU opt-out marker
+ * exists, or could not build its module, and so asks the kernel to treat the
+ * GPU self-test as switched off. Set by bootmod_init, cleared by the next call. */
+int bootmod_gpu_optout_assumed(void);
+
 #endif

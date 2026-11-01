@@ -28,6 +28,14 @@ static int sync_map(void *p, enum polaris_sdma_sync direction,
 { struct polaris_runtime *r = p; return r->platform.sync(r->platform.opaque, direction, m->range.gpu_base, m->range.bytes); }
 static uint64_t now_us(void *p)
 { struct polaris_runtime *r = p; return r->platform.now_us(r->platform.opaque); }
+/* Why a forwarder: the SMU loader knows only its ops table, and the request that
+ * carries the caller's hook is gone once the start call returns. */
+static void report_preflight(void *p, const struct polaris_smu_preflight *preflight)
+{
+    struct polaris_runtime *r = p;
+    if (r->smu_preflight)
+        r->smu_preflight(r->smu_preflight_context, preflight);
+}
 static int write_wptr(void *p, uint32_t v)
 { return write_reg(p, 0xd210, v); }
 static int read_smc(void *p, uint32_t a, uint32_t *v)
@@ -124,8 +132,10 @@ int polaris_runtime_start(struct polaris_runtime *r,
     }
     if (sync_device(r, fw->range.gpu_base, r->firmware.bytes_used)) goto failed;
     r->stage = POLARIS_RUNTIME_SMU;
+    r->smu_preflight = request->smu_preflight;
+    r->smu_preflight_context = request->smu_preflight_context;
     struct polaris_smu_loader_ops smu_ops = {
-        r, identity, read_reg, write_reg, resolve_byte, sync_device, now_us
+        r, identity, read_reg, write_reg, resolve_byte, sync_device, now_us, report_preflight
     };
     struct polaris_smu_load_request load = {
         &smc, request->smc_security_key,

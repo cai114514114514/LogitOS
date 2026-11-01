@@ -18,11 +18,21 @@ struct polaris_runtime_request {
     uint32_t width, height, pitch;
     uint8_t *workspace; /* Ordinary RAM; >= firmware bundle_plan.bytes_used. */
     size_t workspace_bytes;
+    /* Optional (may be NULL): told what the SMC registers looked like and which
+     * start-up branch the SMU loader chose, before the loader's first write
+     * (smu/loader.h). Called from inside polaris_runtime_start. */
+    void (*smu_preflight)(void *context, const struct polaris_smu_preflight *preflight);
+    void *smu_preflight_context;
 };
 struct polaris_runtime {
     unsigned lock, attempted, quarantined;
     enum polaris_runtime_stage stage, failed_stage;
     int error;
+    /* Copies of the request's preflight hook; the request itself is only
+     * valid during the start call, and the loader reaches the hook through
+     * this context. */
+    void (*smu_preflight)(void *context, const struct polaris_smu_preflight *preflight);
+    void *smu_preflight_context;
     struct polaris_platform platform;
     struct polaris_memory_layout memory;
     struct polaris_fw_bundle_info firmware;

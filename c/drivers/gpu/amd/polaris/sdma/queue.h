@@ -62,7 +62,8 @@ int polaris_sdma_queue_attach(struct polaris_sdma_queue *,
                               const struct polaris_sdma_mapping *ring,
                               const struct polaris_sdma_mapping *fence);
 
-/* Synchronous copy/fill with fixed 5 ms / 100000-poll maximum completion wait.
+/* Synchronous copy/fill with fixed 100 ms (Linux adev->usec_timeout) maximum
+ * completion wait.
  * Each transaction appends a fence and pads to the 16-DWORD fetch boundary.
  * It requires both that fence and RPTR == WPTR, then compares EVERY destination
  * DWORD to source/value. Buffers remain exclusively owned, allocated and mapped
