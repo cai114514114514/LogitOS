@@ -15,6 +15,18 @@ def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def check_shorthand_refusal(exit_code, output):
+    """Require the device launcher's missing-artifact refusal, not a build attempt."""
+    # Shorthand formerly entered the host run driver and reported AS3501.
+    # commands.c:launch_installed_program now dispatches to the installed AEX;
+    # this minimal disk deliberately lacks /usr/as/bin/native.aex. Keep both
+    # the failing exit and the named artifact so a silent refusal cannot pass.
+    assert exit_code == 1, (exit_code, output)
+    assert "as: no compiled A3 program /usr/as/bin/native.aex;" in output, output
+    assert "compile on the host with asc build" in output, output
+    assert "cannot run in the A2 VM" not in output, output
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--build", type=Path, required=True)
@@ -77,8 +89,8 @@ def main() -> None:
                       f"{conflict}:/state/borrow-conflict.as",
                       f"{artifact}:/bin/native-program"])
         # No asc.la/aslex.la, VM library cache or LLVM compiler is packaged.
-        # A3 checking must work; local native build must name its missing host
-        # connection. Neither behavior may silently invoke the old compiler.
+        # A3 checking must work; shorthand must name its missing installed
+        # artifact. Neither behavior may silently invoke the old compiler.
         subprocess.run(["python3", "tools/mkfs.py", str(out / "disk.img"), *files],
                        cwd=ROOT, capture_output=True, text=True, check=True, timeout=60)
         spec = importlib.util.spec_from_file_location("native_cli_guest", ROOT / "tests/boot/run-agent.py")
@@ -109,16 +121,14 @@ def main() -> None:
         assert diagnostic["related"][0]["source_checksum"] == rejected["source_checksum"], diagnostic
         report["checks"].append({"name": "Borrow conflict and origin in guest compiler", "result": rejected})
         output = guest.capture("/bin/native-capture /bin/as /state/native.as")
-        assert guest.last_capture_exit == 1 and "AS3501" in output, output
-        assert "Host LLVM build connection is required" in output, output
-        assert "cannot run in the A2 VM" not in output, output
-        report["checks"].append({"name": "shorthand names missing host connection", "output": output})
+        check_shorthand_refusal(guest.last_capture_exit, output)
+        report["checks"].append({"name": "shorthand names missing compiled artifact", "output": output})
         output = guest.capture("/bin/native-capture /bin/native-program")
         assert guest.last_capture_exit == 0 and output == "native CLI guest\n", output
         report["checks"].append({"name": "same source executes as native AEX", "output": output,
                                  "sha256": digest(artifact)})
         report["passed"] = True
-        print("PASS native CLI guest: A3 check, explicit missing-host diagnostic and native artifact")
+        print("PASS native CLI guest: A3 check, explicit missing-artifact diagnostic and native artifact")
     finally:
         if guest:
             guest.close()

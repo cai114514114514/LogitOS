@@ -173,9 +173,10 @@ int main(int argc, char **argv)
     /* Everything A2 answered here is gone with the engine that answered it:
      * -c (source -> .la bytecode), -dis, -lex, -run and the bare `as script.as`
      * VM execution. A3 sources do NOT fall through to this point -- commands.c
-     * routes `as FILE ARGS` whose first line declares 3.0 into the native
-     * build/run driver before main() ever reaches here, and `--scope` is
-     * REFUSED there by name rather than silently ignored.
+     * routes `as FILE ARGS` whose first line declares 3.0 to its installed
+     * /usr/as/bin/<stem>.aex on device, or the native build/run driver on the
+     * host, before main() ever reaches here. Host shorthand refuses --scope;
+     * on device all ARGS are passed verbatim to the compiled program.
      *
      * So what is left is an A2 source, or a .la, or a flag that only the VM
      * understood. Each gets the same answer, because each has the same cause. */

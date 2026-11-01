@@ -89,6 +89,16 @@ from as_examples import guest_command
 from license_audit import _LogitFS
 FIX = os.path.join(ROOT, "tests", "fixtures")
 
+# The old English-only oracle rejected the current Chinese UI. Keep complete
+# video AND audio refusals in either locale: seeing the codec names alone also
+# matches successful container recognition and proves no refusal at all.
+# Wording comes from preview.c's open_container/load_audio_track diagnostics.
+WEBM_REFUSAL = (
+    r"preview: error clip\.webm: "
+    r"(?:video is vp9 -- no decoder for it here; audio is opus -- no decoder for it here"
+    r"|视频为 vp9 —— 没有可用的解码器; 音频为 opus —— 没有可用的解码器)"
+)
+
 # c/apps/gui/preview/preview.c
 WINW, WINH = 760, 560
 CONTH = WINH - 140
@@ -569,8 +579,7 @@ def main(argv):
                     # A recognized Matroska container is not decoded VP9 or
                     # Opus. The old association label incorrectly claimed
                     # decoding here; require the actual two-codec refusal.
-                    refusal = wait_for(r"preview: error clip\.webm: video is vp9 -- no decoder for it here; "
-                                       r"audio is opus -- no decoder for it here", mark, 30)
+                    refusal = wait_for(WEBM_REFUSAL, mark, 30)
                     ck(refusal is not None, "WebM: refusal identifies both unavailable codecs")
 
                 # A picture, because a claim about a viewer that is not a

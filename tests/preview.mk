@@ -57,6 +57,20 @@ test-as-preview-launchers-negctl: $(BUILD)/asc
 test-as-preview-launchers: test-as-preview-launchers-negctl
 test-as-typed test-preview-assoc: test-as-preview-launchers
 AS_PREVIEW_GUEST_OUT ?= $(BUILD)/preview-native-$(shell date +%Y%m%d-%H%M%S)
+# Makefile's earlier ?= build has already given this a file origin. Merely
+# adding another ?= here leaves that old default in force. Replace that file
+# default before the guest prerequisites expand; keep explicit environment and
+# command-line base selections intact.
+ifeq ($(origin AS_TYPED_GUEST_BASE),file)
+AS_TYPED_GUEST_BASE = $(BUILD)
+endif
+AS_TYPED_GUEST_BASE ?= $(BUILD)
+# The packaged oracle also executes argvlimit and chlaunch. Declare their
+# target programs only after fixing the old guest-base default above: make
+# expands prerequisites immediately, so doing this in the earlier hw fragment
+# captured build/true.aex even with BUILD=build-hw-gates. Stale full-disk
+# artifacts must not hide either dependency on a fresh acceptance build.
+test-as-packaged-guest: $(AS_TYPED_GUEST_BASE)/true.aex $(AS_TYPED_GUEST_BASE)/ch.aex $(BUILD)/as-input-capture.aex
 .PHONY: test-as-preview-guest
 test-as-preview-guest: test-as-preview-launchers as-toolchain $(AS_TYPED_GUEST_BASE)/logit.iso $(AS_TYPED_GUEST_BASE)/preview.aex $(addprefix $(AS_TYPED_GUEST_BASE)/,login.aex sh.aex echo.aex cat.aex)
 	python3 tests/boot/run-as-preview.py --build $(BUILD) --base $(AS_TYPED_GUEST_BASE) --out $(AS_PREVIEW_GUEST_OUT)
