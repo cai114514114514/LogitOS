@@ -14,6 +14,14 @@ int amd_bootfb_probe(struct device *dev);
  * VBIOS and installed firmware; it does not grant a GPU execution lease. */
 void amd_bootfb_probe_resources(void);
 
+/* HUD lines for the read-only display scan and the VRAM arena choice made by
+ * amd_bootfb_probe_resources (index 0: GOP CRTC, or "skipped: <reason>" when
+ * the scan did not run; 1: arena). Returns NULL when the line does not exist,
+ * so a caller can loop until NULL. The text is the serial log line without its
+ * "[amd-dce] " / "[amd-arena] " prefix. The scan runs only in HWHUD builds
+ * (LOGIT_HWHUD): a build without it always returns NULL. */
+const char *amd_bootfb_display_hud_line(unsigned index);
+
 #ifdef LOGIT_HOST_TEST
 /* Lets the host gate pin the declarative match table as well as the probe. */
 const struct dev_match *amd_bootfb_match_table(void);

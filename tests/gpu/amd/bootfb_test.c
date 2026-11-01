@@ -17,11 +17,36 @@ static uint64_t lfb_addr = 0xe0100000ull;
 static uint64_t lfb_bytes = 1280ull * 800 * 4;
 static int have_lfb = 1;
 static unsigned cfg_writes, enables, maps, irqs;
+/* Calls of the monotonic clock: the display survey is the only caller, so zero
+ * proves the frame-counter measurement (the boot stall) never started. */
+static unsigned clock_reads;
+/* Set to make dev_bar_map fail for BAR5, to reach the "BAR5 not mapped" skip. */
+static int bar5_unmappable;
 static unsigned accel_prepares, accel_resets;
 static int accel_result = -1;
 static uint64_t accel_lfb, accel_bytes;
 static uint32_t accel_width, accel_height;
 static unsigned resource_probes;
+/* The display-survey glue gets a report that proves the MC window, plus a fake
+ * BAR5 whose frame counter the stub clock advances (see time_mono_ns). */
+static int survey_fixture;
+static struct polaris_resource_report survey_report;
+
+/* The display survey (stage B2) exists only in HWHUD builds. The test is built
+ * both ways; SURVEY_EXPECTED says which behaviour the production object under
+ * test must show. The negative control builds the HWHUD object while expecting
+ * the plain behaviour, so the plain-build assertions are proven able to fail. */
+#ifdef LOGIT_HWHUD
+#define SURVEY_COMPILED_IN 1
+#else
+#define SURVEY_COMPILED_IN 0
+#endif
+#ifdef AMD_BOOTFB_NEGCTL_EXPECT_NO_SURVEY
+#define SURVEY_EXPECTED 0
+#else
+#define SURVEY_EXPECTED SURVEY_COMPILED_IN
+#endif
+static uint32_t fake_bar5[0x4600];
 static uint64_t resource_lfb, resource_bytes;
 static uint32_t resource_width, resource_height;
 
@@ -37,7 +62,8 @@ int polaris_resources_probe_device(struct device *device, uint64_t lfb,
     resource_bytes = bytes;
     resource_width = width;
     resource_height = height;
-    *report = (struct polaris_resource_report){.ownership_missing = 1};
+    *report = survey_fixture ? survey_report :
+              (struct polaris_resource_report){.ownership_missing = 1};
     return 0;
 }
 
@@ -69,7 +95,12 @@ void pci_cfg_write16(uint8_t b, uint8_t s, uint8_t f, uint16_t o, uint16_t v)
 void dev_enable(struct device *dev, int master)
 { (void)dev; (void)master; enables++; }
 uint64_t dev_bar_map(struct device *dev, int bar)
-{ (void)dev; (void)bar; maps++; return 0; }
+{
+    (void)dev;
+    maps++;
+    if (bar5_unmappable) return 0;
+    return survey_fixture && bar == 5 ? (uint64_t)(uintptr_t)fake_bar5 : 0;
+}
 int dev_irq_request(struct device *dev, irq_handler_t fn, void *arg, const char *name)
 { (void)dev; (void)fn; (void)arg; (void)name; irqs++; return -1; }
 uint32_t fb_width(void) { return screen_w; }
@@ -82,6 +113,25 @@ int fb_boot_lfb_range(uint64_t *addr, uint64_t *bytes)
     return 1;
 }
 void kprintf(const char *fmt, ...) { (void)fmt; }
+int ksnprintf(char *buf, int max, const char *fmt, ...)
+{
+    va_list arguments;
+    va_start(arguments, fmt);
+    int written = vsnprintf(buf, (size_t)max, fmt, arguments);
+    va_end(arguments);
+    return written;
+}
+/* 1 us per call; the CRTC0 frame counter (dword 0x1ba6) ticks every 16.66 ms. */
+uint64_t time_mono_ns(void)
+{
+    static uint64_t now_ns = 1000000;
+    clock_reads++;
+    now_ns += 1000;
+    fake_bar5[0x1ba6] = (uint32_t)(now_ns / 16661185u);
+    return now_ns;
+}
+int time_get_source(void) { return 0; }
+const char *time_source_name(int source) { (void)source; return "stub"; }
 int amd_accel_prepare(struct device *dev, uint64_t lfb, uint64_t bytes,
                       uint32_t width, uint32_t height)
 {
@@ -316,6 +366,96 @@ int main(void)
           "resource discovery receives the actual owned framebuffer");
     amd_bootfb_probe_resources();
     check(resource_probes == 1, "repeated post-mount hook does not reread all firmware");
+
+    if (SURVEY_EXPECTED) {
+        const char *skipped = amd_bootfb_display_hud_line(0);
+        check(skipped && !strcmp(skipped,
+              "skipped: no proven MC window or framebuffer pitch") &&
+              amd_bootfb_display_hud_line(1) == NULL,
+              "a skipped display survey leaves its reason on the HUD line");
+    } else {
+        check(amd_bootfb_display_hud_line(0) == NULL,
+              "no display survey line without a proven MC window");
+    }
+    check(clock_reads == 0, "a skipped display survey does not time the frame counter");
+
+    /* A proven MC window but a BAR5 that cannot be mapped: skipped, with the
+     * reason in the HUD line, and still no clock read. */
+    reset_bus();
+    d = amd_gpu(0x67df);
+    survey_fixture = 1;
+    survey_report = (struct polaris_resource_report){
+        .device = {.result = POLARIS_PROBE_OBSERVED, .layout_covers_vram = 1,
+                   .mc_base = 0xf400000000ull, .vram_bytes = 0x200000000ull,
+                   .cpu_aperture_bytes = 256ull << 20},
+    };
+    bar5_unmappable = 1;
+    check(amd_bootfb_probe(&d) == 0, "unmappable-BAR5 fixture device binds");
+    amd_bootfb_probe_resources();
+    bar5_unmappable = 0;
+    if (SURVEY_EXPECTED) {
+        const char *skipped = amd_bootfb_display_hud_line(0);
+        check(skipped && !strcmp(skipped, "skipped: BAR5 not mapped") &&
+              amd_bootfb_display_hud_line(1) == NULL,
+              "an unmappable BAR5 leaves its reason on the HUD line");
+    } else {
+        check(amd_bootfb_display_hud_line(0) == NULL && maps == 0,
+              "a build without HWHUD does not even try to map BAR5");
+    }
+    check(clock_reads == 0, "an unmappable BAR5 does not time the frame counter");
+
+    /* The survey glue: real device fields in, the serial/HUD text out. CRTC0
+     * scans the Multiboot LFB (BAR0 + 1 MiB) at the MC base + 1 MiB. */
+    reset_bus();
+    d = amd_gpu(0x67df);
+    d.res[5].start = 0xf7000000ull;
+    d.res[5].size = 0x40000;
+    d.res[5].flags = DEV_RES_MEM;
+    survey_fixture = 1;
+    survey_report = (struct polaris_resource_report){
+        .device = {.result = POLARIS_PROBE_OBSERVED, .layout_covers_vram = 1,
+                   .mc_base = 0xf400000000ull, .vram_bytes = 0x200000000ull,
+                   .cpu_aperture_bytes = 256ull << 20},
+        .atom_result = POLARIS_ATOM_OK,
+        .reservations = {
+            .firmware = {0xf400000000ull + 0x1ffff0000ull, 0x10000},
+            .driver_scratch = {0xf400000000ull + 0xff00000ull, 0x100000}
+        },
+        .firmware_bundle_bytes = 0x80000
+    };
+    fake_bar5[0x1b9c] = 1;                          /* CRTC_CONTROL.MASTER_EN */
+    fake_bar5[0x1a00] = 1;                          /* GRPH_ENABLE */
+    fake_bar5[0x1a01] = 2;                          /* GRPH_DEPTH: 32 bpp, linear */
+    fake_bar5[0x1a04] = 0x00100000;                 /* surface low */
+    fake_bar5[0x1a07] = 0xf4;                       /* surface high */
+    fake_bar5[0x1a06] = 1280;                       /* pitch in pixels */
+    fake_bar5[0x1b80] = 1687;                       /* H_TOTAL - 1 */
+    fake_bar5[0x1b81] = 1640 | (360u << 16);        /* H blank start / end */
+    fake_bar5[0x1b87] = 1065;                       /* V_TOTAL - 1 */
+    fake_bar5[0x1b8d] = 841 | (41u << 16);          /* V blank: 800 active lines */
+    fake_bar5[0x1b5d] = (1280u << 16) | 800u;       /* CRTC0 viewport */
+    check(amd_bootfb_probe(&d) == 0, "survey fixture device binds");
+    amd_bootfb_probe_resources();
+    if (SURVEY_EXPECTED) {
+        const char *dce_line = amd_bootfb_display_hud_line(0);
+        check(dce_line && !strncmp(dce_line, "crtc=0 mode=1280x800 refresh=60.0", 33) &&
+              strstr(dce_line, " pitch=5120 surface=0xf400100000 gop bar5=262144B"),
+              "display survey line carries the GOP CRTC, pitch and BAR5 size");
+        const char *arena_line = amd_bootfb_display_hud_line(1);
+        check(arena_line && !strcmp(arena_line,
+              "base=0xf40fc00000 size=0x200000 cpu=0xefc00000 reserved=5"),
+              "display survey line carries the arena");
+        check(amd_bootfb_display_hud_line(2) == NULL, "there are exactly two survey lines");
+        check(clock_reads > 0, "the survey times the frame counter in an HWHUD build");
+    } else {
+        /* A fully valid fixture, and still nothing runs: no HUD line, no BAR5
+         * mapping, no clock read (the measurement is the 0.1 s boot stall). */
+        check(amd_bootfb_display_hud_line(0) == NULL &&
+              amd_bootfb_display_hud_line(1) == NULL,
+              "no display survey line in a build without HWHUD");
+        check(maps == 0 && clock_reads == 0,
+              "a build without HWHUD neither maps BAR5 nor times the frame counter");
+    }
 
     printf("AMD_BOOTFB: %d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

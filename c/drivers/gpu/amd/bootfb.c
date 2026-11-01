@@ -10,8 +10,9 @@
  *
  * Ownership validation is deliberately read-only.  After it succeeds, the
  * exact RV100 1002:5159 path may run amd_accel's isolated fill/copy canary;
- * Polaris10 67df now also samples BAR5 registers without command submission;
- * every other AMD GPU remains passive.  In particular this driver never wakes
+ * Polaris10 67df in an HWHUD=1 build (LOGIT_HWHUD) also samples BAR5 registers
+ * without command submission; every other AMD GPU, and every build without
+ * HWHUD, remains passive.  In particular this driver never wakes
  * D3 hardware or enables BME, DMA, IRQs, clocks, modesetting or 3D.  Desktop
  * rendering remains fb.c's CPU copy into the established aperture.
  */
@@ -24,14 +25,25 @@
 #include "pci.h"
 #include "fb.h"
 #include "kprintf.h"
+#ifdef LOGIT_HWHUD
+#include "amd/polaris/memory/arena.h"
+#include "ktime.h"
+#endif
 
 #define AMD_VENDOR_ID 0x1002u
 #define PCI_CAP_PM     0x01u
 #define PCI_PMCSR      0x04u
+#define POLARIS_REGISTER_BAR 5
+#define DISPLAY_HUD_LINES 2u
+#define DISPLAY_HUD_LINE_BYTES 112
 
 static const char amd_bootfb_name[] = "AMD/ATI firmware framebuffer";
 static struct device *polaris_boot_device;
 static int polaris_resources_probed;
+#ifdef LOGIT_HWHUD
+static struct polaris_survey display_survey;
+static char display_hud_line[DISPLAY_HUD_LINES][DISPLAY_HUD_LINE_BYTES];
+#endif
 
 static int memory_bar_sane(const struct dev_resource *r)
 {
@@ -150,6 +162,122 @@ int amd_bootfb_probe(struct device *dev)
     return 0;
 }
 
+#ifdef LOGIT_HWHUD
+/* The scan's only register access: one 32-bit read of the mapped BAR5. */
+static uint32_t read_register_bar(void *context, uint32_t byte_offset)
+{
+    const uint64_t *base = context;
+    return *(volatile uint32_t *)(uintptr_t)(*base + byte_offset);
+}
+
+/* time_mono_ns is TSC backed once calibrated; the serial line names the
+ * clocksource actually in use so a PIT fallback cannot pass as a TSC reading. */
+static uint64_t monotonic_nanoseconds(void *context)
+{
+    (void)context;
+    return time_mono_ns();
+}
+
+/* A survey that does not run must still say why, in the one place a photo of
+ * the HUD can show it: the serial line and display_hud_line[0] carry the same
+ * text, and line 1 is cleared so the HUD never pairs this reason with an arena
+ * line left over from another device. */
+static void note_survey_skipped(const char *reason)
+{
+    ksnprintf(display_hud_line[0], DISPLAY_HUD_LINE_BYTES, "skipped: %s", reason);
+    display_hud_line[1][0] = '\0';
+    kprintf("[amd-dce] %s\n", display_hud_line[0]);
+}
+
+/* Stage B2: read what the firmware left on the display and pick the VRAM arena
+ * a later stage could use. Strictly read-only: BAR5 reads, a ~0.1 s frame-counter
+ * measurement, and arithmetic. The arena is only evidence here; nothing owns it,
+ * and BAR0 is not mapped, so the WC scanout mapping is left alone. A device whose
+ * MC window could not be proven (layout_covers_vram clear) is not scanned,
+ * because the MC base would be a guess. Called only in HWHUD builds: the
+ * measurement stalls the boot CPU after the first desktop frame, which a normal
+ * boot must not pay (docs/superpowers/plans/2026-11-01-rx580-stage-b.md, global
+ * constraints: stage B is skipped in any build other than HWHUD). */
+static void survey_display(struct device *device,
+                           const struct polaris_resource_report *report,
+                           uint64_t lfb, uint64_t lfb_bytes)
+{
+    uint32_t height = fb_height();
+    if (report->device.result != POLARIS_PROBE_OBSERVED ||
+        !report->device.layout_covers_vram || !height ||
+        lfb_bytes % height) {
+        note_survey_skipped("no proven MC window or framebuffer pitch");
+        return;
+    }
+    uint64_t register_base = dev_bar_map(device, POLARIS_REGISTER_BAR);
+    if (!register_base) {
+        note_survey_skipped("BAR5 not mapped");
+        return;
+    }
+    struct polaris_display_ops ops = {
+        .ctx = &register_base,
+        .read32 = read_register_bar,
+        .now_ns = monotonic_nanoseconds
+    };
+    struct polaris_survey_inputs inputs = {
+        .ops = &ops,
+        .bar5_bytes = device->res[POLARIS_REGISTER_BAR].size,
+#ifdef AMD_BOOTFB_NEGCTL_SURVEY_PITCH
+        /* Watched mutation: the whole framebuffer size passed as the pitch. */
+        .gop = {lfb, device->res[0].start, report->device.mc_base,
+                (uint32_t)lfb_bytes},
+#else
+        .gop = {lfb, device->res[0].start, report->device.mc_base,
+                (uint32_t)(lfb_bytes / height)},
+#endif
+        .lfb_bytes = lfb_bytes,
+        .vbios = report->atom_result == POLARIS_ATOM_OK ?
+                 &report->reservations : 0,
+        .vram = {report->device.mc_base, report->device.vram_bytes},
+        .aperture_bytes = report->device.cpu_aperture_bytes,
+        .aperture_cpu_base = device->res[0].start,
+        .firmware_bytes = report->firmware_bundle_bytes
+    };
+    polaris_arena_survey(&inputs, &display_survey);
+
+    polaris_survey_format_gop(display_hud_line[0], DISPLAY_HUD_LINE_BYTES,
+                              &display_survey);
+    kprintf("[amd-dce] %s clock=%s\n", display_hud_line[0],
+            time_source_name(time_get_source()));
+    for (unsigned index = 0; index < POLARIS_DISPLAY_CRTC_COUNT; ++index) {
+        const struct polaris_crtc_state *crtc = &display_survey.scan.crtc[index];
+        if (display_survey.scan_result != POLARIS_DISPLAY_OK || !crtc->active ||
+            (display_survey.gop_result == POLARIS_GOP_MATCH &&
+             index == display_survey.gop_crtc)) {
+            continue;
+        }
+        char line[DISPLAY_HUD_LINE_BYTES];
+        polaris_display_format_crtc(line, sizeof line, crtc, 0, 0);
+        kprintf("[amd-dce] %s\n", line);
+    }
+    polaris_arena_format(display_hud_line[1], DISPLAY_HUD_LINE_BYTES,
+                         display_survey.arena_result, &display_survey.plan);
+    kprintf("[amd-arena] %s\n", display_hud_line[1]);
+}
+
+/* The HUD reads these after boot; the survey text is kept rather than rebuilt
+ * so the panel cannot show anything the serial log did not. */
+const char *amd_bootfb_display_hud_line(unsigned index)
+{
+    if (index >= DISPLAY_HUD_LINES || !display_hud_line[index][0])
+        return NULL;
+    return display_hud_line[index];
+}
+#else
+/* hwhud.c is linked into every kernel, so the accessor must exist; without
+ * HWHUD no survey ever ran and there is never a line to show. */
+const char *amd_bootfb_display_hud_line(unsigned index)
+{
+    (void)index;
+    return NULL;
+}
+#endif
+
 void amd_bootfb_probe_resources(void)
 {
     if (!polaris_boot_device || polaris_resources_probed)
@@ -184,6 +312,10 @@ void amd_bootfb_probe_resources(void)
                 (unsigned long long)report.reservations.driver_scratch.base,
                 (unsigned long long)report.reservations.driver_scratch.bytes);
     }
+#ifdef LOGIT_HWHUD
+    if (!status)
+        survey_display(polaris_boot_device, &report, lfb, bytes);
+#endif
 }
 
 static void amd_bootfb_remove(struct device *dev)
@@ -191,6 +323,10 @@ static void amd_bootfb_remove(struct device *dev)
     if (dev == polaris_boot_device) {
         polaris_boot_device = NULL;
         polaris_resources_probed = 0;
+#ifdef LOGIT_HWHUD
+        display_hud_line[0][0] = '\0';
+        display_hud_line[1][0] = '\0';
+#endif
     }
     amd_accel_reset();
     if (dev) dev_set_drvdata(dev, NULL);
