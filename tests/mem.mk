@@ -266,8 +266,16 @@ ci-host: test-blk-async
 # what proved it. So the slack below is deliberate: ~60 MiB spare after the hog,
 # which is enough for a 1 MiB program to load and set up mini-libc's arena, and
 # an innocent big enough that it cannot fit in what is left.
+#
+# Remeasured 2026-11-01 (hw/x79-vg4 ed0911fe5, 320 MiB): the desktop and the
+# kernel now hold about 96 MiB, so 57,337 frames are free once the innocent is
+# up (67,821 in August). A 200 MiB hog no longer fits: it reached 46,554 of its
+# 51,200 frames before memory ran out, so it never announced OOMHOG-RESIDENT
+# and the gate failed although the right process was killed. 160 MiB leaves
+# about 16,400 frames (64 MiB) after the hog, the same slack the August sizes
+# had, and the 96 MiB innocent still cannot fit in it.
 OOM_RAM   ?= 320
-OOM_HOG   ?= 200
+OOM_HOG   ?= 160
 OOM_SMALL ?= 96
 
 .PHONY: test-oom test-oom-os
