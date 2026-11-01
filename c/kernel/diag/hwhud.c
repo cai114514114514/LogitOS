@@ -115,6 +115,52 @@ static void par_format(char *out, size_t capacity, const struct smp_present_stat
               (unsigned long)max_wait_us, (unsigned long)stats->missing_mask, state);
 }
 
+/* What the network line shows. A plain struct so the formatter stays pure and
+ * the host gate can pin every character; the collector below fills it from the
+ * live counters. mbps 0 and duplex -1 mean unknown (link down, or a driver that
+ * cannot say), shown as "?" rather than a stale register decode. */
+struct hwhud_net {
+    const char *ifname;
+    int         link_up;
+    unsigned    mbps;
+    int         duplex;             /* 1 full, 0 half, -1 unknown */
+    uint32_t    ip;                 /* host order; 0 = unconfigured */
+    const char *dhcp_state;
+    unsigned    dhcp_retries;
+    unsigned    dhcp_next_seconds;
+    unsigned long rx_frames;
+    unsigned long tx_frames;
+    unsigned long irqs;
+    int         poll_active;
+};
+
+/* One HUD line for the network: link, address, DHCP state with its retry
+ * count and the time to its next transmission, the frame counters, and whether
+ * receive is being served by polling because the NIC interrupt is silent. The
+ * photo of a screen is the only instrument on a machine with no serial cable,
+ * and this is the line that says whether the lease is missing because the
+ * link is down, the router is silent, or receive is deaf. */
+static void net_format(char *out, size_t capacity, const struct hwhud_net *net)
+{
+    char speed[16] = "?";
+    if (net->link_up && net->mbps) {
+        ksnprintf(speed, sizeof speed, "%uMb/s", net->mbps);
+    }
+    const char *duplex = "?";
+    if (net->link_up && net->duplex >= 0) {
+        duplex = net->duplex ? "full" : "half";
+    }
+    ksnprintf(out, capacity,
+              "net %s link %s %s %s ip %u.%u.%u.%u dhcp %s retries %u next %us "
+              "rx %lu tx %lu irqs %lu poll %s",
+              net->ifname, net->link_up ? "up" : "down", speed, duplex,
+              (net->ip >> 24) & 255, (net->ip >> 16) & 255,
+              (net->ip >> 8) & 255, net->ip & 255,
+              net->dhcp_state, net->dhcp_retries, net->dhcp_next_seconds,
+              net->rx_frames, net->tx_frames, net->irqs,
+              net->poll_active ? "on" : "off");
+}
+
 /* Host gates include just the pure formatters above. The production build
  * retains all collectors below; no host stand-in can hide a stale formatter. */
 #ifndef HWHUD_FORMAT_HOST
@@ -134,12 +180,23 @@ static void par_format(char *out, size_t capacity, const struct smp_present_stat
 #include "nct6779.h"
 #include "logit_boot.h"
 #include "amd/bootfb.h"
+#include "net.h"
+#include "netdev.h"
+#include "eth.h"
+#include "dhcp.h"
+#include "../../../include/weaksym.h"
 
 /* 100 columns: the two-line EHCI endpoint rows below run to about 95 with
- * three-digit counters. 48 rows: they are the last rows drawn, so a full
- * panel would silently drop exactly the lines this diagnostic exists for. */
+ * three-digit counters. 50 rows: the EHCI rows are drawn last, and the network
+ * line can wrap to a second row on a long address and counter, so a full panel
+ * would silently drop exactly the lines the USB bring-up reads. */
 #define COLS 100
-#define ROWS 48
+#define ROWS 50
+
+/* The bring-up's NIC interrupt counter (every ISR entry, before the receive
+ * path's own count); absent when the driver is not linked. */
+extern uint64_t rtl8169_irq_count LOGIT_WEAK;
+LOGIT_WEAK_STUB(rtl8169_irq_count);
 
 static struct logit_boot_display_tag g_disp;
 static int g_have_disp;
@@ -478,6 +535,60 @@ static void lines_irq(uint64_t dms)
     addline(out);
 }
 
+/* Whether the bound NIC is the RTL8168/8169 driver. Its ISR counter is a
+ * global that exists whenever the driver is linked, which is every build, so
+ * "the symbol is present" says nothing about which card is in the machine; the
+ * first QEMU capture of this line showed `irqs 0` beside a working e1000. */
+static int nic_is_rtl8169(const struct netdev *dev)
+{
+    const char *want = "rtl8169";
+    const char *name = dev->name;
+    while (*want && *name == *want) {
+        name++;
+        want++;
+    }
+    return *want == 0 && *name == 0;
+}
+
+/* The primary NIC: link, address, DHCP and receive health on one line (wrapped
+ * between fields if it outgrows the panel). Counters are the existing ones --
+ * eth stats for frames, the driver's ISR count for interrupts -- so this adds no
+ * instrumentation of its own. */
+static void lines_net(void)
+{
+    struct hwhud_net net = {0};
+    struct netif *iface = netif_by_index(netdev_primary_ifindex());
+    if (!iface || !iface->dev) {
+        LINE("net: no NIC bound");
+        return;
+    }
+    net.ifname = iface->name;
+    net.link_up = netdev_link_up();
+    net.duplex = -1;
+    unsigned mbps = 0;
+    int full_duplex = 0;
+    if (netdev_link_info(&mbps, &full_duplex)) {
+        net.mbps = mbps;
+        net.duplex = full_duplex;
+    }
+    net.ip = net_cfg.ip;
+    struct dhcp_status dhcp;
+    dhcp_status(&dhcp);
+    net.dhcp_state = dhcp.state;
+    net.dhcp_retries = dhcp.retries;
+    net.dhcp_next_seconds = dhcp.next_seconds;
+    const struct eth_stats *stats = eth_get_stats();
+    net.rx_frames = stats->rx;
+    net.tx_frames = stats->tx;
+    net.irqs = (LOGIT_HAVE(&rtl8169_irq_count) && nic_is_rtl8169(iface->dev))
+                   ? (unsigned long)rtl8169_irq_count
+                   : (unsigned long)net_rx_irq_count();
+    net.poll_active = net_rx_poll_active();
+    char line[256];
+    net_format(line, sizeof line, &net);
+    add_wrapped(line);
+}
+
 /* Package temperature from the digital thermal sensor (IA32_PACKAGE_THERM_STATUS
  * readout below MSR_TEMPERATURE_TARGET's TjMax), and the board's NCT6779. */
 static void lines_thermal(void)
@@ -589,6 +700,7 @@ void hwhud_tick(const struct hwhud_wm *wm)
     par_format(par_line, sizeof par_line, &par);
     add_wrapped(par_line);
     lines_irq(dms);
+    lines_net();
     lines_mtrr();
     lines_thermal();
     lines_hid();
