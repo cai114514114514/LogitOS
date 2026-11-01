@@ -4334,6 +4334,7 @@ void wm_render(void)
         slow.total_ns = frame_finished_ns - frame_started_ns;
         slow.cpu_ns = cpu_finished_ns - cpu_started_ns;
         slow.lockwait_ns = lockwait_ns;
+        wm_slowframe_note(&slow);
         report_slow = wm_slowframe_wanted(slow.total_ns, time_mono_ms(),
                                          &slow_trace_last_ms);
     }

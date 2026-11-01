@@ -99,17 +99,44 @@ static uint32_t read_register(void *opaque, uint64_t base, uint32_t offset)
     return *(volatile uint32_t *)(uintptr_t)(base + offset);
 }
 
-static void discover_vbios(struct device *device,
+/* Read the optional POST-time VRAM copy without remapping the desktop UC.
+ * A missing reservation report is safer than slowing the live GOP scanout. */
+static void discover_vbios(struct device *device, uint64_t lfb, uint64_t lfb_bytes,
                            struct polaris_resource_report *report)
 {
     /* amdgpu_bios.c v6.12 probes the first 256 KiB of BAR0 on an already
      * POSTed dGPU. Here the established boot LFB is required by the caller;
-     * no disabled ROM decode or indirect ROM access is enabled as fallback. */
+     * no disabled ROM decode or indirect ROM access is enabled as fallback.
+     * Correction to the bring-up plan's "BAR0 is the last source": Linux
+     * v6.12 amdgpu_get_bios_dgpu tries ATRM/VFCT before VRAM, but platform/ROM
+     * sources afterwards. BAR0 is only our last supported read-only source.
+     * Source: drivers/gpu/drm/amd/amdgpu/amdgpu_bios.c,
+     * amdgpu_read_bios_from_vram() and amdgpu_get_bios_dgpu():
+     * https://github.com/torvalds/linux/blob/v6.12/drivers/gpu/drm/amd/amdgpu/amdgpu_bios.c
+     * No firmware decode or indirect-port writes are introduced here. */
     if (!report->device.layout_covers_vram ||
         device->res[0].size < POLARIS_VBIOS_COPY_BYTES) {
         return;
     }
+    uint64_t start = device->res[0].start;
+    if (start > UINT64_MAX - POLARIS_VBIOS_COPY_BYTES ||
+        lfb > UINT64_MAX - lfb_bytes) {
+        return;
+    }
+    /* The old whole-BAR UC map overwrote fb_init's WC PTEs on RX 580 while
+     * fb_scanout_wc still reported its boot snapshot. The 256 KiB window is
+     * page-aligned (PCI BAR base and POLARIS_VBIOS_COPY_BYTES), so half-open
+     * byte disjointness also proves no scanout page is remapped. This is a
+     * code-path diagnosis, not verified on X79-VG4 hardware. */
+    if (start < lfb + lfb_bytes && lfb < start + POLARIS_VBIOS_COPY_BYTES) {
+        report->vbios_skipped_scanout = 1;
+        return;
+    }
+#ifdef POLARIS_RESOURCE_NEGCTL_MAP_WHOLE_BAR
     uint64_t mapped = dev_bar_map(device, 0);
+#else
+    uint64_t mapped = dev_bar_map_window(device, 0, 0, POLARIS_VBIOS_COPY_BYTES);
+#endif
     if (!mapped || mapped > UINTPTR_MAX - POLARIS_VBIOS_COPY_BYTES) {
         return;
     }
@@ -186,7 +213,7 @@ int polaris_resources_probe_device(struct device *device, uint64_t lfb,
         return -1;
     }
     out->pci_revision = (uint8_t)class_revision;
-    discover_vbios(device, out);
+    discover_vbios(device, lfb, lfb_bytes, out);
     discover_files(out);
     return 0;
 }

@@ -378,6 +378,34 @@ uint64_t dev_bar_map(struct device *dev, int idx)
     return r->start;
 }
 
+/* A diagnostic reader must not change the cache policy of unrelated bytes
+ * in a shared BAR. In particular, mapping RX 580 BAR0 wholesale after fb_init
+ * silently replaces scanout WC with UC. Leave dev_bar_map's legacy contract
+ * alone; opt bounded readers into this narrower mapping instead. */
+uint64_t dev_bar_map_window(struct device *dev, int idx, uint64_t offset,
+                            uint64_t bytes)
+{
+    if (!dev || idx < 0 || idx >= DEV_NRES || !bytes) {
+        return 0;
+    }
+    const struct dev_resource *resource = &dev->res[idx];
+    if (!(resource->flags & DEV_RES_MEM) || !resource->start ||
+        resource->size > UINT64_MAX - resource->start ||
+        offset >= resource->size || bytes > resource->size - offset ||
+        offset > UINT64_MAX - resource->start) {
+        return 0;
+    }
+    uint64_t start = resource->start + offset;
+    /* vmm_map_range rounds the exclusive end up to a 4 KiB page (Intel SDM
+     * Vol. 3A, section 4.5). Check that addition too: VMM otherwise silently
+     * refuses the map, while returning start here would authorize a read. */
+    if (bytes > UINT64_MAX - start || start + bytes > UINT64_MAX - 0xfff) {
+        return 0;
+    }
+    vmm_map_range(start, start, bytes, VMM_WRITABLE | VMM_NOCACHE);
+    return start;
+}
+
 /* ------------------------------------------------------------------ dump -- */
 static const char *irq_mode_name(uint8_t m)
 {

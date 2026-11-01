@@ -10,6 +10,7 @@ struct polaris_resource_report {
     struct polaris_atom_reservations reservations;
     int atom_result;
     unsigned vbios_bytes_read;
+    unsigned vbios_skipped_scanout; /* Refused a VBIOS window touching live GOP. */
     uint8_t pci_revision;
     unsigned firmware_mask[2]; /* Independently checked key=0/key=1 candidates. */
     int file_result[2][POLARIS_RESOURCE_FILE_SLOTS];

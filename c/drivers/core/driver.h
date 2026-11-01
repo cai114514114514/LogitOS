@@ -245,6 +245,13 @@ void dev_dump(void);
  * its base address, or 0 if that BAR is absent / is an I/O BAR. Idempotent. */
 uint64_t dev_bar_map(struct device *dev, int idx);
 
+/* Map only a byte window of a memory BAR, identity/uncached. Reject empty,
+ * out-of-range or overflowing intervals before VMM sees them. Like VMM,
+ * mappings have page granularity; callers sharing a BAR with scanout must
+ * keep the entire touched pages disjoint from the active framebuffer. */
+uint64_t dev_bar_map_window(struct device *dev, int idx, uint64_t offset,
+                            uint64_t bytes);
+
 /* Enable/disable the device's response to its enumerated BAR spaces and its ability
  * to act as a DMA master (PCI Command register). checked(false) explicitly
  * clears bus mastering, so a driver can map/reset first and grant DMA only

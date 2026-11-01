@@ -42,6 +42,8 @@ static unsigned frees;
 static unsigned allocation_attempts;
 static unsigned fail_allocation;
 static unsigned map_count;
+static unsigned whole_vram_maps;
+static unsigned window_maps;
 static unsigned file_stats;
 static unsigned file_reads;
 static int override_metadata;
@@ -123,6 +125,8 @@ static void reset(void)
     bad_metadata = 0;
     bad_reads = 0;
     map_count = 0;
+    whole_vram_maps = 0;
+    window_maps = 0;
     file_stats = 0;
     file_reads = 0;
     override_metadata = 0;
@@ -155,8 +159,23 @@ uint32_t pci_cfg_read(uint8_t bus, uint8_t slot, uint8_t function, uint16_t offs
 uint64_t dev_bar_map(struct device *device, int bar)
 {
     ++map_count;
+    if (bar == 0) {
+        ++whole_vram_maps;
+    }
     CHECK(device == &gpu && (bar == 0 || bar == 5));
     return (uintptr_t)(bar == 0 ? (void *)vram_copy : (void *)registers);
+}
+
+/* Count the production window request separately: total maps alone let a
+ * whole-BAR remap masquerade as a safe, equally frequent VBIOS read. */
+uint64_t dev_bar_map_window(struct device *device, int bar, uint64_t offset,
+                            uint64_t bytes)
+{
+    ++map_count;
+    ++window_maps;
+    CHECK(device == &gpu && bar == 0 && offset == 0);
+    CHECK(bytes == sizeof vram_copy);
+    return (uintptr_t)vram_copy;
 }
 
 void *kmalloc(size_t bytes)
@@ -345,12 +364,28 @@ static void device_cases(void)
     CHECK(report.vbios_bytes_read == 262144 && report.atom_result == 0);
     CHECK(report.reservations.firmware.base == UINT64_C(0x1200400000));
     CHECK(report.reservations.firmware.bytes == 65536);
+#ifdef RX580DIAG_CASES
+    CHECK(whole_vram_maps == 0);
+    CHECK(window_maps == 1);
+#endif
     CHECK(report.firmware_mask[0] == 0xff && report.firmware_mask[1] == 0xff);
     CHECK(report.ownership_missing == 1 && report.security_key_unknown == 1);
     CHECK(report.device.vram_bytes == UINT64_C(0x200000000));
     CHECK(file_stats == 16 && file_reads == 16 && map_count == 2);
     CHECK(allocations == frees);
     CHECK(!memcmp(saved_registers, registers, sizeof registers));
+
+#ifdef RX580DIAG_CASES
+    /* An overlapping scanout is not a missing ROM: record the deliberate
+     * refusal, and prove no VBIOS read/whole-aperture remap occurred. */
+    reset();
+    CHECK(polaris_resources_probe_device(&gpu, 0x80000000, 640 * 480 * 4,
+        640, 480, &report) == 0);
+    CHECK(report.vbios_skipped_scanout == 1);
+    CHECK(report.vbios_bytes_read == 0);
+    CHECK(window_maps == 0 && whole_vram_maps == 0 && map_count == 1);
+    CHECK(report.firmware_mask[0] == 0xff && report.firmware_mask[1] == 0xff);
+#endif
 
     reset();
     vram_copy[0] = 0;
