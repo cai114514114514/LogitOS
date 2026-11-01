@@ -2,6 +2,7 @@
  * glass_blur.c owns sampling; glass_render.c owns coverage and shading.
  * The optical lookup tables remain in openlogit_glass.c. */
 #include "glass_internal.h"
+#include "../simd/gfx_simd.h"
 
 int glass_panel_edge_width(int width, int height, int radius,
                            const struct ol_glass_material *mat)
@@ -194,6 +195,12 @@ static void liquid_glass_impl(struct ol_display *display,
         return;
     }
 
+    /* P10/S0: exactly three clock reads bracket sampling/blur and rendering.
+     * Scratch failure and Reduce Transparency return above without being
+     * counted as optical work. Timings are wall time across concurrent bands,
+     * not compositor CPU time; not verified on X79-VG4 hardware. */
+    uint64_t started_ns = gfx_now_ns();
+
     /* Zero tint strength selects Clear. Apple's Materials guidance reserves
      * Clear for seeing rich content through the surface, unlike Regular's
      * legibility-oriented blur:
@@ -213,7 +220,11 @@ static void liquid_glass_impl(struct ol_display *display,
     /* Negative control: restore the former zero-strength blur. */
     glass_blur(&panel);
 #endif
+    uint64_t blurred_ns = gfx_now_ns();
     glass_render(&panel, (struct glass_color){red, green, blue}, opacity);
+    uint64_t rendered_ns = gfx_now_ns();
+    gfx_glass_record((uint64_t)panel.width * (uint64_t)panel.height,
+                     blurred_ns - started_ns, rendered_ns - blurred_ns);
 }
 
 void ol_display_liquid_glass_cut(struct ol_display *display,

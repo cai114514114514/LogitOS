@@ -26,6 +26,8 @@
 #include <stdint.h>
 #include <stddef.h>
 #include "wm.h"
+#include "wm_trace.h"
+#include "gfx_simd.h"
 #include "gui_sync.h"
 #include "fb.h"
 #include "text.h"
@@ -368,6 +370,11 @@ static inline long rect_area(const struct drect *r)
 
 static inline uint32_t rgb(uint8_t r, uint8_t g, uint8_t b) { return fb_rgb(r, g, b); }
 static inline int lerp(int a, int b, int n, int d) { return a + (b - a) * n / d; }
+/* P4's inventory called this a scalar copy. Correction from S0 (2026-11-01):
+ * llvm-objdump of the x86-64 -O2 kernel's render_layers shows two movups loads
+ * and two stores per eight pixels. The source loop is scalar, its generated
+ * copy is already vectorized. Keep it intact in this measurement-only stage;
+ * disassembly is not a throughput result or X79-VG4 hardware verification. */
 static inline void blit(uint32_t *d, const uint32_t *s, int n) { for (int i = 0; i < n; i++) d[i] = s[i]; }
 
 static inline int streq(const char *a, const char *b) { while (*a && *a == *b) { a++; b++; } return *a == *b; }
