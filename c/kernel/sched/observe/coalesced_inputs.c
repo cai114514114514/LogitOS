@@ -10,8 +10,10 @@
  * graph, never by guessing.
  *
  * Who owns what.  Every node has a reference count.  The caller that created or
- * acquired a node holds one reference; each parent node holds one on each of
- * its children; and the experiment archive holds one on every published node
+ * acquired a node holds one reference (a "consumer", counted per node as well,
+ * so that a group kept alive only by its archive entry and its parents is not
+ * mistaken for one that somebody is using); each parent node holds one on each
+ * of its children; and the experiment archive holds one on every published node
  * until the INPUT and GROUPS streams have been exported, because the archived
  * graph is the offline evidence of which frame accounted for which input.
  * Releasing a node never recurses: when the count reaches zero the node is put
@@ -29,13 +31,20 @@
 #include "observe_control.h"
 
 /* A freshly published node starts with two references: one for the caller that
- * created it and one for the experiment archive. */
+ * created it (its first consumer) and one for the experiment archive. */
 #define GROUP_INITIAL_REFERENCES 2u
 
-/* The archive reference plus at least one live consumer.  A completion claim
- * needs the group to be in use by the commit being accounted, not merely
- * archived. */
-#define GROUP_REFERENCES_ARCHIVE_ONLY 1u
+/* A group's fully expanded tree has at most this many nodes per member: the
+ * member leaves plus the joins above them, which number one fewer than the
+ * leaves.  Re-route nodes are budgeted separately, one per published node. */
+#define GROUP_WALK_NODES_PER_MEMBER 2ull
+
+/* Words in the heavier-sibling stack of a member walk.  A walk goes into the
+ * lighter child first and leaves the heavier one waiting, so every waiting entry
+ * stands for a subtree at least as big as the one being walked.  The member
+ * count is 32 bits and each stacked entry at least halves what remains to walk,
+ * so 32 entries are enough for any intact graph; more means a damaged one. */
+#define GROUP_WALK_STACK_DEPTH 32u
 
 /* A node has at most two children (a join has two, a re-route one, a leaf none). */
 #define GROUP_MAX_CHILDREN 2u
@@ -45,7 +54,8 @@
 #define COALESCED_RELEASE_BATCH 32u
 
 struct group_node {
-    uint64_t reference_count;
+    uint64_t reference_count;   /* consumers, parents and the archive together */
+    uint64_t consumer_count;    /* only the callers that hold the group for use */
     struct sched_observe_group_record record;
     uint32_t queued_for_release;
 };
@@ -79,7 +89,7 @@ static void count_pool_exhaustion(void)
 
 /* A published group must never change.  Flipped by SCHED_NEGCTL_GROUP_MUTATE,
  * which rewrites the left child after the join (host test: group_immutable). */
-static void negctl_mutate_left_child(struct group_node *left_node,
+static void negative_control_mutate_left_child(struct group_node *left_node,
                                      const struct coalesced_group_info *info)
 {
 #ifdef SCHED_NEGCTL_GROUP_MUTATE
@@ -93,7 +103,7 @@ static void negctl_mutate_left_child(struct group_node *left_node,
 /* Releasing a reference must not free a node that others still hold.  Flipped by
  * SCHED_NEGCTL_GROUP_EARLY_FREE, which zeroes the count (host test:
  * group_live_ref). */
-static void negctl_zero_references(struct group_node *node)
+static void negative_control_zero_references(struct group_node *node)
 {
 #ifdef SCHED_NEGCTL_GROUP_EARLY_FREE
     __atomic_store_n(&node->reference_count, 0, __ATOMIC_SEQ_CST);
@@ -105,12 +115,38 @@ static void negctl_zero_references(struct group_node *node)
 /* Destroying a node must release its children.  Flipped by
  * SCHED_NEGCTL_GROUP_LEAK_CHILD, which keeps them alive (host test:
  * group_refs_drained). */
-static int negctl_keep_children_alive(void)
+static int negative_control_keep_children_alive(void)
 {
 #ifdef SCHED_NEGCTL_GROUP_LEAK_CHILD
     return 1;
 #else
     return 0;
+#endif
+}
+
+/* A completion claim needs a group that a consumer holds for use, not one kept
+ * alive only by the archive and by parent groups.  Flipped by
+ * SCHED_NEGCTL_GROUP_COUNT_ANY_REFERENCE, which counts every reference as a
+ * consumer, as the first version did (host test: group_consumer_required). */
+static int held_by_consumer(const struct group_node *node)
+{
+#ifdef SCHED_NEGCTL_GROUP_COUNT_ANY_REFERENCE
+    return __atomic_load_n(&node->reference_count, __ATOMIC_SEQ_CST) > 1;
+#else
+    return node->consumer_count > 0;
+#endif
+}
+
+/* How many nodes a member walk may visit before it gives up the group lock.
+ * Flipped by SCHED_NEGCTL_GROUP_WALK_UNBOUNDED, which never gives it up, so a
+ * long chain keeps interrupts off for the whole walk (host test:
+ * group_walk_bounded). */
+static unsigned walk_steps_per_lock_hold(void)
+{
+#ifdef SCHED_NEGCTL_GROUP_WALK_UNBOUNDED
+    return UINT32_MAX;
+#else
+    return GROUP_WALK_STEPS_PER_LOCK_HOLD;
 #endif
 }
 
@@ -173,7 +209,7 @@ static void release_node(struct group_node *node);
  * and, recursively, its children on the spot, as an unbounded walk inside an
  * interrupt (host test: group_irq_bounded).  Returns 1 if it destroyed the
  * node, so the caller must not queue it as well. */
-static int negctl_destroy_in_caller(struct group_node *node)
+static int negative_control_destroy_in_caller(struct group_node *node)
 {
 #ifdef SCHED_NEGCTL_GROUP_IRQ_RECURSE
     OBSERVE_TEST_POINT(OBSERVE_POINT_GROUP_NODE_RELEASED);
@@ -205,11 +241,12 @@ static void release_node(struct group_node *node)
     if (references_before != 1) {
         return;
     }
-    if (negctl_destroy_in_caller(node)) {
+    if (negative_control_destroy_in_caller(node)) {
         return;
     }
     node->queued_for_release = 1;
-    g_release_queue[g_queue_tail++ % g_capacity] = (uint32_t)(node - g_nodes);
+    g_release_queue[g_queue_tail % g_capacity] = (uint32_t)(node - g_nodes);
+    g_queue_tail = g_queue_tail + 1;
 }
 
 /* ---- pool life cycle ---------------------------------------------------- */
@@ -248,14 +285,21 @@ int coalesced_groups_allocate_pool(uint64_t capacity)
 /* Free the pool.  Only the run controller calls this, after consumers, the
  * archive and the release queue are all empty.  A caller whose publish failed
  * because the pool was full keeps its own references; nothing is released on
- * its behalf. */
+ * its behalf.  The pointers are taken out under the lock and the memory is
+ * freed after it is dropped, so a timer tick on another CPU that is destroying a
+ * queued node never meets freed memory, and the free itself runs with the lock
+ * released. */
 void coalesced_groups_free_pool(void)
 {
-    observe_free(g_nodes);
-    observe_free(g_release_queue);
+    uint64_t saved_flags = observe_lock_acquire(&g_group_lock);
+    struct group_node *nodes = g_nodes;
+    uint32_t *release_queue = g_release_queue;
     g_nodes = NULL;
     g_release_queue = NULL;
     g_capacity = 0;
+    observe_lock_release(&g_group_lock, saved_flags);
+    observe_free(nodes);
+    observe_free(release_queue);
 }
 
 /* ---- publishing --------------------------------------------------------- */
@@ -293,6 +337,7 @@ static int publish_node(uint64_t input_id, struct group_node *left, struct group
         .input_id = input_id,
         .info = *info,
     };
+    node->consumer_count = 1;
     __atomic_store_n(&node->reference_count, GROUP_INITIAL_REFERENCES, __ATOMIC_SEQ_CST);
     g_published_count++;
     g_live_count++;
@@ -324,7 +369,8 @@ int coalesced_group_create_leaf(uint64_t input_id, struct coalesced_group_handle
     int input_pinned = input_ledger_acquire(input_id);
     saved_flags = observe_lock_acquire(&g_group_lock);
     int result = SCHED_OBSERVE_EINVAL;
-    if (input_pinned && g_nodes && observe_admitting_inputs()) {
+    int pool_open = g_nodes != NULL && observe_admitting_inputs();
+    if (input_pinned && pool_open) {
         const struct coalesced_group_info info = {
             .representative_input_id = input_id,
             .member_count = 1,
@@ -380,7 +426,7 @@ int coalesced_group_join(struct coalesced_group_handle left, struct coalesced_gr
         }
     }
     if (!result) {
-        negctl_mutate_left_child(left_node, info);
+        negative_control_mutate_left_child(left_node, info);
     }
     observe_lock_release(&g_group_lock, saved_flags);
     return result;
@@ -425,6 +471,7 @@ int coalesced_group_acquire(struct coalesced_group_handle group)
     struct group_node *node = find_live_node(group);
     int valid = node && acquire_node(node);
     if (valid) {
+        node->consumer_count = node->consumer_count + 1;
         g_consumer_count++;
     }
     observe_lock_release(&g_group_lock, saved_flags);
@@ -441,10 +488,14 @@ void coalesced_group_release(struct coalesced_group_handle group)
     }
     uint64_t saved_flags = observe_lock_acquire(&g_group_lock);
     struct group_node *node = find_live_node(group);
-    if (node && g_consumer_count) {
+    /* Releasing what this node's consumers never held would take the archive's
+     * or a parent's reference, so it is a bookkeeping error, not a release. */
+    int holds_consumer = node != NULL && node->consumer_count != 0;
+    if (holds_consumer && g_consumer_count) {
+        node->consumer_count = node->consumer_count - 1;
         g_consumer_count--;
         release_node(node);
-        negctl_zero_references(node);
+        negative_control_zero_references(node);
     } else {
         observe_mark_invalid();
     }
@@ -467,53 +518,228 @@ int coalesced_group_describe(struct coalesced_group_handle group, struct coalesc
     return node ? 0 : SCHED_OBSERVE_EINVAL;
 }
 
-/* The input id of member number 'index' (0-based, in arrival order) of a group,
- * or 0 if there is none.  Walks the graph iteratively, using each child's
- * member count to skip whole subtrees; the walk is bounded by the number of
- * published nodes in case the graph were ever damaged.  Export and test callers
- * may use it; the interrupt-time enqueue and release paths never do. */
-static uint64_t member_input_id_at(struct group_node *node, uint32_t index)
+/* ---- walking the members of a group ------------------------------------ */
+
+/* Where a walk over one group's leaves stands.  The walk visits every leaf once
+ * and tells the visitor the leaf's position among the group's members (0 is the
+ * first to arrive), so the order of the visits does not matter.  It goes into
+ * the lighter child of each join and leaves the heavier waiting on a small
+ * fixed stack, which bounds the stack by the bit width of a member count even
+ * for a chain of ten thousand joins.  A walk is resumable: it can give up the
+ * group lock between two stretches, because published nodes never change and
+ * the caller's reference keeps them alive. */
+struct member_walk {
+    uint32_t generation;                /* the pool the slots below belong to */
+    uint32_t current_slot;              /* node being walked; 0 when none */
+    uint64_t current_first_member;      /* position of its first member */
+    uint64_t window_first_member;       /* only positions from here... */
+    uint64_t window_end_member;         /* ...up to (not including) here are wanted */
+    uint32_t waiting_slot[GROUP_WALK_STACK_DEPTH];
+    uint64_t waiting_first_member[GROUP_WALK_STACK_DEPTH];
+    unsigned waiting_count;
+    unsigned steps_in_this_hold;        /* nodes visited since the lock was taken */
+    uint64_t steps_left;                /* total budget; running out means damage */
+};
+
+/* Called for each leaf; returns non-zero to end the walk early. */
+typedef int (*member_visitor)(void *context, uint64_t input_id, uint64_t position);
+
+/* Start a walk at 'root'.  Called with the group lock held and the root known to
+ * be live.  Only members in [window_first, window_end) are wanted; subtrees
+ * outside that window are skipped without being walked.  The step budget is the
+ * size of the group's fully expanded tree plus every route node, so an intact
+ * graph never runs out of it. */
+static void member_walk_begin(struct member_walk *walk, const struct group_node *root,
+                              uint64_t window_first, uint64_t window_end)
 {
-    uint64_t steps_left = g_published_count;
-    while (node && steps_left--) {
-        if (node->record.input_id) {
-            return index == 0 ? node->record.input_id : 0;
-        }
-        struct coalesced_group_handle left_handle = handle_from_group_id(node->record.left_child_id);
-        struct group_node *left_child = find_live_node(left_handle);
-        if (!left_child) {
-            return 0;
-        }
-        if (index < left_child->record.info.member_count) {
-            node = left_child;
-        } else {
-            index -= left_child->record.info.member_count;
-            node = find_live_node(handle_from_group_id(node->record.right_child_id));
-        }
+    *walk = (struct member_walk){0};
+    walk->generation = g_generation;
+    walk->current_slot = (uint32_t)root->record.sequence;
+    walk->window_first_member = window_first;
+    walk->window_end_member = window_end;
+    walk->steps_left = GROUP_WALK_NODES_PER_MEMBER * root->record.info.member_count +
+                       g_published_count;
+}
+
+/* Put the heavier child of a join on the waiting stack.  Returns 0 or -EINVAL
+ * when the stack is full, which no intact graph can cause. */
+static int member_walk_wait_for(struct member_walk *walk, uint32_t slot, uint64_t first_member)
+{
+    if (walk->waiting_count == GROUP_WALK_STACK_DEPTH) {
+        return SCHED_OBSERVE_EINVAL;
     }
+    walk->waiting_slot[walk->waiting_count] = slot;
+    walk->waiting_first_member[walk->waiting_count] = first_member;
+    walk->waiting_count = walk->waiting_count + 1;
     return 0;
 }
 
-/* Member number 'first_member + offset' of a node.  Flipped by
- * SCHED_NEGCTL_GROUP_RANGE, which assumes the members are consecutive input ids
- * (host test: group_exact_leaves). */
-static uint64_t member_for_copy(struct group_node *node, uint32_t first_member, uint32_t offset)
+/* Descend from the current node of a join or re-route, one step.  Called with
+ * the group lock held.  Returns 0 or a negative error for a damaged graph. */
+static int member_walk_descend(struct member_walk *walk, const struct group_node *node)
+{
+    struct coalesced_group_handle left_handle = handle_from_group_id(node->record.left_child_id);
+    const struct group_node *left = find_live_node(left_handle);
+    if (!left) {
+        return SCHED_OBSERVE_EINVAL;
+    }
+    uint64_t first_member = walk->current_first_member;
+    if (!node->record.right_child_id) {
+        /* A re-route: the same members, one child. */
+        walk->current_slot = left_handle.slot;
+        return 0;
+    }
+    struct coalesced_group_handle right_handle = handle_from_group_id(node->record.right_child_id);
+    const struct group_node *right = find_live_node(right_handle);
+    if (!right) {
+        return SCHED_OBSERVE_EINVAL;
+    }
+    uint64_t right_first_member = first_member + left->record.info.member_count;
+    int left_is_lighter = left->record.info.member_count <= right->record.info.member_count;
+    if (left_is_lighter) {
+        walk->current_slot = left_handle.slot;
+        return member_walk_wait_for(walk, right_handle.slot, right_first_member);
+    }
+    walk->current_slot = right_handle.slot;
+    walk->current_first_member = right_first_member;
+    return member_walk_wait_for(walk, left_handle.slot, first_member);
+}
+
+/* Advance a walk to its next leaf.  Called with the group lock held.  Returns 1
+ * with the leaf's input id and position, 0 when the walk is finished, -EAGAIN
+ * when this lock hold has used up its steps (give the lock up and call again),
+ * or -EINVAL for a damaged or stale graph. */
+static int member_walk_next_leaf(struct member_walk *walk, uint64_t *input_id, uint64_t *position)
+{
+    for (;;) {
+        if (!walk->current_slot) {
+            if (!walk->waiting_count) {
+                return 0;
+            }
+            walk->waiting_count = walk->waiting_count - 1;
+            walk->current_slot = walk->waiting_slot[walk->waiting_count];
+            walk->current_first_member = walk->waiting_first_member[walk->waiting_count];
+        }
+        if (walk->steps_in_this_hold >= walk_steps_per_lock_hold()) {
+            return SCHED_OBSERVE_EAGAIN;
+        }
+        if (!walk->steps_left) {
+            return SCHED_OBSERVE_EINVAL;
+        }
+        walk->steps_in_this_hold = walk->steps_in_this_hold + 1;
+        walk->steps_left = walk->steps_left - 1;
+        struct coalesced_group_handle handle = {
+            .slot = walk->current_slot,
+            .generation = walk->generation,
+        };
+        const struct group_node *node = find_live_node(handle);
+        if (!node) {
+            return SCHED_OBSERVE_EINVAL;
+        }
+        uint64_t first_member = walk->current_first_member;
+        uint64_t end_member = first_member + node->record.info.member_count;
+        int outside_window = end_member <= walk->window_first_member ||
+                             first_member >= walk->window_end_member;
+        if (outside_window) {
+            walk->current_slot = 0;
+            continue;
+        }
+        if (node->record.input_id) {
+            walk->current_slot = 0;
+            *input_id = node->record.input_id;
+            *position = first_member;
+            return 1;
+        }
+        int descended = member_walk_descend(walk, node);
+        if (descended) {
+            return descended;
+        }
+    }
+}
+
+/* Run a walk to its end, one bounded stretch at a time.  Each stretch holds the
+ * group lock for at most walk_steps_per_lock_hold() nodes and then lets go, so
+ * a long chain never keeps interrupts off for the whole walk.  The visitor runs
+ * with the lock held and must be short.  Returns 1 if the visitor ended the walk,
+ * 0 if every leaf was visited, or a negative error for a damaged graph. */
+static int member_walk_run(struct member_walk *walk, member_visitor visit, void *context)
+{
+    for (;;) {
+        uint64_t saved_flags = observe_lock_acquire(&g_group_lock);
+        walk->steps_in_this_hold = 0;
+        int result = 0;
+        int visitor_ended_walk = 0;
+        while (!visitor_ended_walk) {
+            uint64_t input_id = 0;
+            uint64_t position = 0;
+            result = member_walk_next_leaf(walk, &input_id, &position);
+            if (result != 1) {
+                break;
+            }
+            visitor_ended_walk = visit(context, input_id, position) != 0;
+        }
+        observe_lock_release(&g_group_lock, saved_flags);
+        if (visitor_ended_walk) {
+            return 1;
+        }
+        if (result != SCHED_OBSERVE_EAGAIN) {
+            return result;
+        }
+        OBSERVE_TEST_POINT(OBSERVE_POINT_GROUP_WALK_LOCK_RELEASED);
+    }
+}
+
+/* What copy_members collects: where the wanted window starts, where each id goes
+ * and how many have arrived. */
+struct member_collection {
+    uint64_t *input_ids;
+    uint64_t first_member;
+    uint32_t wanted;
+    uint32_t collected;
+    int duplicate_position;
+};
+
+/* Store one member at its position.  Two leaves claiming one position would mean
+ * the graph's member counts lie, so the walk is ended and the copy refused. */
+static int collect_member(void *context, uint64_t input_id, uint64_t position)
+{
+    struct member_collection *collection = context;
+    uint64_t index = position - collection->first_member;
+    if (collection->input_ids[index]) {
+        collection->duplicate_position = 1;
+        return 1;
+    }
+    collection->input_ids[index] = input_id;
+    collection->collected = collection->collected + 1;
+    return collection->collected == collection->wanted;
+}
+
+/* The ids must be the group's real leaves, not a range guessed from the first
+ * one.  Flipped by SCHED_NEGCTL_GROUP_RANGE, which fills in consecutive numbers
+ * after the first (host test: group_exact_leaves). */
+static void negative_control_assume_consecutive(uint64_t *input_ids, uint32_t count)
 {
 #ifdef SCHED_NEGCTL_GROUP_RANGE
-    return member_input_id_at(node, 0) + first_member + offset;
+    for (uint32_t index = 1; index < count; index++) {
+        input_ids[index] = input_ids[0] + index;
+    }
 #else
-    return member_input_id_at(node, first_member + offset);
+    (void)input_ids;
+    (void)count;
 #endif
 }
 
 /* The exact members of a group, in order.  They survive the group being popped
- * from a queue and later joined into bigger groups; no interval is guessed. */
+ * from a queue and later joined into bigger groups; no interval is guessed.  A
+ * long group is walked in bounded stretches (see member_walk_run), so the cost is
+ * linear in the group's size, not in size times depth. */
 int coalesced_group_copy_members(struct coalesced_group_handle group, uint32_t first_member,
                                  uint64_t *input_ids, uint32_t count)
 {
     if (!input_ids && count) {
         return SCHED_OBSERVE_EINVAL;
     }
+    struct member_walk walk;
     uint64_t saved_flags = observe_lock_acquire(&g_group_lock);
     struct group_node *node = find_live_node(group);
     if (!node || first_member > node->record.info.member_count) {
@@ -523,67 +749,113 @@ int coalesced_group_copy_members(struct coalesced_group_handle group, uint32_t f
     if (count > node->record.info.member_count - first_member) {
         count = node->record.info.member_count - first_member;
     }
-    for (uint32_t offset = 0; offset < count; offset++) {
-        input_ids[offset] = member_for_copy(node, first_member, offset);
-    }
+    member_walk_begin(&walk, node, first_member, (uint64_t)first_member + count);
     observe_lock_release(&g_group_lock, saved_flags);
+    if (!count) {
+        return 0;
+    }
+    for (uint32_t index = 0; index < count; index++) {
+        input_ids[index] = 0;
+    }
+    struct member_collection collection = {
+        .input_ids = input_ids, .first_member = first_member, .wanted = count,
+    };
+    int walked = member_walk_run(&walk, collect_member, &collection);
+    /* Every wanted position must be filled exactly once; anything else means the
+     * graph's member counts do not match its leaves. */
+    int copy_complete = collection.collected == count && !collection.duplicate_position;
+    if (walked < 0 || !copy_complete) {
+        return SCHED_OBSERVE_EINVAL;
+    }
+    negative_control_assume_consecutive(input_ids, count);
     return count;
 }
 
-/* Completion needs a group that (a) is still held by a consumer beyond the
- * archive, (b) contains this input, and (c) carries exactly the route and merge
- * information the evidence claims.  The receipt code checks the window state and
- * surface before calling the ledger, which calls this. */
+/* What the membership test remembers: the input it looks for. */
+struct member_search {
+    uint64_t input_id;
+};
+
+/* End the walk as soon as the wanted input shows up as a leaf. */
+static int find_member(void *context, uint64_t input_id, uint64_t position)
+{
+    const struct member_search *search = context;
+    (void)position;
+    return input_id == search->input_id;
+}
+
+/* Does the group contain this input?  A full walk in bounded stretches. */
+static int group_contains_input(struct coalesced_group_handle group, uint64_t input_id)
+{
+    struct member_walk walk;
+    uint64_t saved_flags = observe_lock_acquire(&g_group_lock);
+    struct group_node *node = find_live_node(group);
+    if (!node) {
+        observe_lock_release(&g_group_lock, saved_flags);
+        return 0;
+    }
+    member_walk_begin(&walk, node, 0, UINT64_MAX);
+    observe_lock_release(&g_group_lock, saved_flags);
+    struct member_search search = {.input_id = input_id};
+    return member_walk_run(&walk, find_member, &search) == 1;
+}
+
+/* Completion needs a group that (a) is still held by a consumer, not merely kept
+ * by the archive and its parents, (b) contains this input, and (c) carries
+ * exactly the route and merge information the evidence claims.  The receipt code
+ * checks the window state and surface before calling the ledger, which calls
+ * this. */
 int coalesced_group_confirms_completion(uint64_t input_id,
                                         const struct input_completion_evidence *evidence)
 {
+    struct coalesced_group_handle group = handle_from_group_id(evidence->group_id);
     uint64_t saved_flags = observe_lock_acquire(&g_group_lock);
-    struct group_node *node = find_live_node(handle_from_group_id(evidence->group_id));
-    int valid = 0;
+    struct group_node *node = find_live_node(group);
+    int plausible = 0;
     if (node) {
         const struct coalesced_group_info *info = &node->record.info;
-        uint64_t references = __atomic_load_n(&node->reference_count, __ATOMIC_SEQ_CST);
-        int held_by_consumer = references > GROUP_REFERENCES_ARCHIVE_ONLY;
-        int metadata_matches = info->route_generation == evidence->route_generation &&
-                               info->reducer_id == evidence->reducer_id &&
-                               info->reducer_version == evidence->reducer_version &&
-                               info->layer == evidence->layer;
-        if (held_by_consumer && metadata_matches) {
-            for (uint32_t member = 0; member < info->member_count; member++) {
-                if (member_input_id_at(node, member) == input_id) {
-                    valid = 1;
-                    break;
-                }
-            }
-        }
+        /* The route the evidence names, and the merge rule and its version. */
+        int route_matches = info->route_generation == evidence->route_generation;
+        int rule_matches = info->reducer_id == evidence->reducer_id;
+        rule_matches = rule_matches && info->reducer_version == evidence->reducer_version;
+        int layer_matches = info->layer == evidence->layer;
+        int metadata_matches = route_matches && rule_matches;
+        metadata_matches = metadata_matches && layer_matches;
+        plausible = held_by_consumer(node) && metadata_matches;
     }
     observe_lock_release(&g_group_lock, saved_flags);
-    return valid;
+    if (!plausible) {
+        return 0;
+    }
+    return group_contains_input(group, input_id);
 }
 
 /* ---- deferred destruction and archive ----------------------------------- */
 
-/* Destroy queued nodes bottom-up, at most one batch per call.  The ledger pin
- * a leaf holds is given back outside the group lock, so the group lock and the
- * ledger lock are never nested the wrong way round.  The live count drops only
- * after that final pin was returned: otherwise STOP could free and reopen the
- * ledger while this worker still owed a release to the same input id of the
- * previous run. */
-void coalesced_groups_release_queued(void)
+/* Destroy queued nodes bottom-up, at most one batch per call, and say how many
+ * were destroyed.  The ledger pin a leaf holds is given back outside the group
+ * lock, so the group lock and the ledger lock are never nested the wrong way
+ * round.  The live count drops only after that final pin was returned:
+ * otherwise STOP could free and reopen the ledger while this worker still owed a
+ * release to the same input id of the previous run. */
+static unsigned destroy_queued_batch(void)
 {
-    for (unsigned destroyed = 0; destroyed < COALESCED_RELEASE_BATCH; destroyed++) {
+    unsigned destroyed = 0;
+    while (destroyed < COALESCED_RELEASE_BATCH) {
         uint64_t saved_flags = observe_lock_acquire(&g_group_lock);
-        if (g_queue_head == g_queue_tail) {
+        if (!g_nodes || g_queue_head == g_queue_tail) {
             observe_lock_release(&g_group_lock, saved_flags);
-            return;
+            break;
         }
-        struct group_node *node = &g_nodes[g_release_queue[g_queue_head++ % g_capacity]];
+        uint32_t queued_index = g_release_queue[g_queue_head % g_capacity];
+        g_queue_head = g_queue_head + 1;
+        struct group_node *node = &g_nodes[queued_index];
         OBSERVE_TEST_POINT(OBSERVE_POINT_GROUP_NODE_RELEASED);
         uint64_t input_id = node->record.input_id;
         uint64_t child_ids[GROUP_MAX_CHILDREN] = {node->record.left_child_id,
                                                   node->record.right_child_id};
         for (unsigned child = 0; child < GROUP_MAX_CHILDREN; child++) {
-            if (!child_ids[child] || negctl_keep_children_alive()) {
+            if (!child_ids[child] || negative_control_keep_children_alive()) {
                 continue;
             }
             struct group_node *child_node = find_live_node(handle_from_group_id(child_ids[child]));
@@ -598,23 +870,58 @@ void coalesced_groups_release_queued(void)
         saved_flags = observe_lock_acquire(&g_group_lock);
         g_live_count--;
         observe_lock_release(&g_group_lock, saved_flags);
+        destroyed = destroyed + 1;
     }
+    return destroyed;
 }
 
-/* Give back the archive's reference on a batch of nodes.  Called only after the
- * INPUT and GROUPS exports are confirmed.  Freeing groups earlier would let
- * their slots be reused and make the exported completion evidence point at
- * history that no longer exists. */
-void coalesced_groups_drop_archive_references(void)
+/* Destroy queued nodes, a bounded number per call; called from the periodic
+ * timer tick. */
+void coalesced_groups_release_queued(void)
 {
+    (void)destroy_queued_batch();
+}
+
+/* Give back the archive's reference on a batch of nodes, and say how many.
+ * Called only after the INPUT and GROUPS exports are confirmed.  Freeing groups
+ * earlier would let their slots be reused and make the exported completion
+ * evidence point at history that no longer exists. */
+static unsigned drop_archive_batch(void)
+{
+    unsigned dropped = 0;
     uint64_t saved_flags = observe_lock_acquire(&g_group_lock);
-    for (unsigned dropped = 0; dropped < COALESCED_RELEASE_BATCH; dropped++) {
-        if (g_archive_cursor >= g_published_count) {
-            break;
-        }
-        release_node(&g_nodes[g_archive_cursor++]);
+    if (!g_nodes) {
+        observe_lock_release(&g_group_lock, saved_flags);
+        return 0;
+    }
+    while (dropped < COALESCED_RELEASE_BATCH && g_archive_cursor < g_published_count) {
+        struct group_node *node = &g_nodes[g_archive_cursor];
+        g_archive_cursor = g_archive_cursor + 1;
+        release_node(node);
+        dropped = dropped + 1;
     }
     observe_lock_release(&g_group_lock, saved_flags);
+    return dropped;
+}
+
+/* Drop the experiment's own archive reference on a bounded batch of nodes. */
+void coalesced_groups_drop_archive_references(void)
+{
+    (void)drop_archive_batch();
+}
+
+/* Give the whole archive back and destroy everything that becomes unreferenced,
+ * in bounded batches with no lock held between them.  Process context only:
+ * with a million groups this is a long loop.  Returns how many nodes are still
+ * alive, which is zero unless a consumer still holds a group. */
+uint64_t coalesced_groups_drain_archive(void)
+{
+    unsigned progress;
+    do {
+        progress = drop_archive_batch();
+        progress = progress + destroy_queued_batch();
+    } while (progress);
+    return coalesced_groups_live_count();
 }
 
 /* Export one archive row as a private copy.  Reading never consumes a
@@ -623,7 +930,8 @@ int coalesced_groups_read_archive_row(uint64_t sequence, struct sched_observe_gr
 {
     uint64_t saved_flags = observe_lock_acquire(&g_group_lock);
     int valid = 0;
-    if (g_nodes && sequence && sequence <= g_published_count) {
+    int row_in_range = sequence != 0 && sequence <= g_published_count;
+    if (g_nodes && row_in_range) {
         uint64_t references = __atomic_load_n(&g_nodes[sequence - 1].reference_count,
                                               __ATOMIC_SEQ_CST);
         valid = references != 0;

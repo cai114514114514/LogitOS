@@ -281,8 +281,9 @@ void irq_isr_entry(struct registers *r)
     /* Dynamically assigned device vectors do not go through interrupt_handler(),
      * so the scheduler observer timestamps them here: after this entry's
      * register-saving assembly prologue, and before the registry lock is
-     * taken, so lock waiting is not counted as interrupt latency. */
-    flight_interrupt_enter((uint32_t)r->vector, observe_read_tsc());
+     * taken, so lock waiting is not counted as interrupt latency.  The counter
+     * is read only while a run records. */
+    flight_interrupt_enter((uint32_t)r->vector, flight_interrupt_arrival_tsc());
     struct cpu *me = this_cpu();
     /* Entry depth is CPU-local context tracking, never mutual exclusion. */
     int depth = me->in_kernel;

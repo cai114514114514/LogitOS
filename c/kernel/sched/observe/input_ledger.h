@@ -17,9 +17,10 @@ uint64_t input_ledger_record_arrival(uint64_t arrival_ns, uint64_t arrival_tsc,
                                      uint32_t source, uint32_t input_class,
                                      const struct input_payload *payload);
 
-/* Record whether a scheduler token was minted for an input.  Stage S0 has no
- * tokens, so only INPUT_NOT_MINTED is accepted; anything else is refused
- * rather than recorded as a plausible success.  Returns 0, or a negative error. */
+/* Record whether the scheduler issued ("minted") a delivery token for an input:
+ * the ticket a later stage hands to the thread that handles it.  Stage S0 has no
+ * tokens, so only INPUT_NOT_MINTED is accepted; anything else is refused rather
+ * than recorded as a plausible success.  Returns 0, or a negative error. */
 int input_ledger_set_allocation(uint64_t input_id, uint32_t allocation);
 
 /* Give an input its final outcome.  Returns 1 if this call settled it, 0 if it
@@ -52,9 +53,6 @@ void input_ledger_fill_status(struct sched_observe_status *status);
 uint64_t input_ledger_issued_count(void);
 uint64_t input_ledger_pending_count(void);
 uint64_t input_ledger_first_input_id(void);
-
-/* The 1-based manifest position of an input in this run, or 0 if unknown. */
-uint64_t input_ledger_manifest_ordinal(uint64_t input_id);
 
 /* Development-machine harnesses that include scheduler code without the
  * observer get a no-op expiry tick, so they neither link nor measure it. */

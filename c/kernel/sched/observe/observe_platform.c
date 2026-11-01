@@ -4,6 +4,7 @@
  * does not compile this file; it supplies fixtures with the same names. */
 #include "observe_platform.h"
 #include "kheap.h"
+#include "pmm.h"
 #include "ktime.h"
 #include "percpu.h"
 #include "smp.h"
@@ -14,13 +15,32 @@
 #include "sched.h"
 #endif
 
+/* The kernel's own fill and copy routines (c/lib/string.c): word at a time, so
+ * clearing a pool of many megabytes is not a byte loop. */
+void *memset(void *, int, size_t);
+void *memcpy(void *, const void *, size_t);
+
 #ifdef SCHED_OBSERVE_GUEST
 static int g_test_thread_id;
+static size_t g_test_allocation_limit_bytes;
+
+/* A size no machine can supply, one tebibyte: what an allocation above the test
+ * limit is turned into, so the allocator refuses it for real. */
+#define TEST_IMPOSSIBLE_ALLOCATION_BYTES ((size_t)1 << 40)
 
 /* Remember which kernel thread runs the built-in diagnostic program. */
 void observe_platform_set_test_thread(int thread_id)
 {
     g_test_thread_id = thread_id;
+}
+
+/* Pretend the machine has only this much memory to give (0 = no pretence).  A
+ * larger request is not refused by this file: it is replaced by an impossible
+ * one and handed to the real allocation path, so the test sees how the real
+ * kernel behaves when memory runs out. */
+void observe_platform_set_allocation_limit(size_t bytes)
+{
+    g_test_allocation_limit_bytes = bytes;
 }
 
 /* Only the designated test thread may pass kernel-owned request buffers.
@@ -87,20 +107,46 @@ unsigned observe_current_cpu(void)
     return (unsigned)this_cpu()->index;
 }
 
+/* The allocation that decides whether a failure has side effects.  kmalloc()
+ * reports a refusal to the out-of-memory handler, which logs and may kill a
+ * process; a BEGIN that asks for more than the machine has must only be told
+ * no.  So the page allocator is asked first, which spares the heap its own
+ * "grow failed" console line for a request that cannot be met, and what passes
+ * goes to the heap's quiet entry point, which answers a refusal that slips
+ * through (memory too fragmented, or taken meanwhile) with a plain NULL.
+ * Flipped by SCHED_NEGCTL_BEGIN_OOM_HOOK, which allocates through the reporting
+ * path (guest test: begin_failure_no_oom_kill). */
+static void *allocate_without_side_effects(size_t bytes)
+{
+#ifdef SCHED_NEGCTL_BEGIN_OOM_HOOK
+    return kmalloc(bytes);
+#else
+    if (bytes > pmm_free_bytes()) {
+        return NULL;
+    }
+    return kmalloc_quiet(bytes);
+#endif
+}
+
 /* Zeroed, overflow-checked allocation.  Process context only; the interrupt
  * paths never allocate.  How much may be asked for is fixed by the ABI, not by
- * how much heap happens to be free. */
+ * how much heap happens to be free, and a refusal changes nothing else in the
+ * system. */
 void *observe_allocate_zeroed(size_t count, size_t element_size)
 {
-    if (!count || !element_size || count > SIZE_MAX / element_size) {
+    int asks_for_nothing = !count || !element_size;
+    if (asks_for_nothing || count > SIZE_MAX / element_size) {
         return NULL;
     }
     size_t bytes = count * element_size;
-    unsigned char *memory = kmalloc(bytes);
+#ifdef SCHED_OBSERVE_GUEST
+    if (g_test_allocation_limit_bytes && bytes > g_test_allocation_limit_bytes) {
+        bytes = TEST_IMPOSSIBLE_ALLOCATION_BYTES;
+    }
+#endif
+    void *memory = allocate_without_side_effects(bytes);
     if (memory) {
-        for (size_t i = 0; i < bytes; i++) {
-            memory[i] = 0;
-        }
+        memset(memory, 0, bytes);
     }
     return memory;
 }
@@ -119,11 +165,7 @@ void observe_free(void *allocation)
 int observe_copy_from_caller(void *destination, uint64_t caller_address, size_t bytes)
 {
     if (caller_is_test_thread()) {
-        const unsigned char *source = (const unsigned char *)(uintptr_t)caller_address;
-        unsigned char *target = destination;
-        for (size_t i = 0; i < bytes; i++) {
-            target[i] = source[i];
-        }
+        memcpy(destination, (const void *)(uintptr_t)caller_address, bytes);
         return 0;
     }
     return user_copy_from(destination, (const void *)(uintptr_t)caller_address, bytes);
@@ -134,11 +176,7 @@ int observe_copy_from_caller(void *destination, uint64_t caller_address, size_t 
 int observe_copy_to_caller(uint64_t caller_address, const void *source, size_t bytes)
 {
     if (caller_is_test_thread()) {
-        const unsigned char *from = source;
-        unsigned char *target = (unsigned char *)(uintptr_t)caller_address;
-        for (size_t i = 0; i < bytes; i++) {
-            target[i] = from[i];
-        }
+        memcpy((void *)(uintptr_t)caller_address, source, bytes);
         return 0;
     }
     return user_copy_to((void *)(uintptr_t)caller_address, source, bytes);
@@ -166,17 +204,36 @@ void observe_caller_identity(uint32_t *user_id, uint32_t *process_id)
     *process_id = process ? (uint32_t)process->pid : 0;
 }
 
-/* The CPUs that exist now.  This stage never brings CPUs online or offline, so
- * the set is fixed for the length of a run.  With 32 or more CPUs every bit is
- * set, since the recorder follows at most SCHED_OBSERVE_MAX_CPUS. */
-uint32_t observe_online_cpu_mask(void)
+/* How many CPUs run now; at least one, because the boot CPU is running even
+ * before the SMP bring-up has counted anybody. */
+static unsigned running_cpu_count(void)
 {
     unsigned count = smp_cpu_count();
     if (!count) {
         count = 1;
     }
+    return count;
+}
+
+/* The CPUs that exist now.  This stage never brings CPUs online or offline, so
+ * the set is fixed for the length of a run.  With 32 or more CPUs every bit is
+ * set, since the recorder follows at most SCHED_OBSERVE_MAX_CPUS. */
+uint32_t observe_online_cpu_mask(void)
+{
+    unsigned count = running_cpu_count();
     if (count >= SCHED_OBSERVE_MAX_CPUS) {
         return UINT32_MAX;
     }
     return (1u << count) - 1;
+}
+
+/* CPUs past the recorder's limit are running but have no ring, so a run on a
+ * larger machine would otherwise look complete.  The count is reported instead. */
+unsigned observe_unobserved_cpu_count(void)
+{
+    unsigned count = running_cpu_count();
+    if (count <= SCHED_OBSERVE_MAX_CPUS) {
+        return 0;
+    }
+    return count - SCHED_OBSERVE_MAX_CPUS;
 }

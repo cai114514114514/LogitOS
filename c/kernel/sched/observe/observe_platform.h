@@ -39,7 +39,10 @@ uint64_t observe_read_tsc(void);
 unsigned observe_current_cpu(void);
 
 /* Zeroed array allocation with overflow checking.  Only used from process
- * context when a run begins; interrupt paths never allocate. */
+ * context when a run begins; interrupt paths never allocate.  A refusal is only
+ * a NULL return: the sizes come from a system-call request, so asking for too
+ * much must not set off the kernel's out-of-memory handling (which logs and
+ * may kill a process) on behalf of the caller. */
 void *observe_allocate_zeroed(size_t count, size_t element_size);
 void observe_free(void *allocation);
 
@@ -50,8 +53,14 @@ int observe_copy_to_caller(uint64_t caller_address, const void *source, size_t b
 int observe_caller_range_writable(uint64_t caller_address, size_t bytes);
 void observe_caller_identity(uint32_t *user_id, uint32_t *process_id);
 
-/* Bit mask of the CPUs that are running; bit n stands for CPU n. */
+/* Bit mask of the CPUs that are running; bit n stands for CPU n.  Only the first
+ * SCHED_OBSERVE_MAX_CPUS CPUs can be recorded. */
 uint32_t observe_online_cpu_mask(void);
+
+/* How many running CPUs lie beyond SCHED_OBSERVE_MAX_CPUS and so are not
+ * recorded.  Reported with every run so a measurement on a larger machine says
+ * which CPUs it did not see, instead of silently covering only the first 32. */
+unsigned observe_unobserved_cpu_count(void);
 
 /* A small spin lock for the observer's own state.  It deliberately bypasses
  * spin_lock_irqsave() (see observe_irq_save) and never records or prints, so
@@ -87,6 +96,10 @@ static inline void observe_lock_release(struct observe_spinlock *lock, uint64_t 
  * exercise the real system-call dispatcher without a user process.  Every other
  * caller still goes through the checked user-memory copy. */
 void observe_platform_set_test_thread(int thread_id);
+
+/* Test image only: make allocations above this many bytes fail the way a real
+ * out-of-memory does (0 turns the pretence off). */
+void observe_platform_set_allocation_limit(size_t bytes);
 #endif
 
 #ifdef SCHED_OBSERVE_HOST
@@ -94,13 +107,26 @@ void observe_platform_set_test_thread(int thread_id);
  * operation and run another one, to reproduce a specific interleaving
  * deterministically (for example a reader meeting a half-written slot). */
 enum observe_test_point {
-    OBSERVE_POINT_WRITER_SLOT_MARKED_BUSY = 1,  /* slot version is odd; payload not yet written */
-    OBSERVE_POINT_WRITER_HALF_WRITTEN,          /* about half of the payload words are written */
-    OBSERVE_POINT_READER_VERSION_CHECKED,       /* reader saw a complete version; payload not yet copied */
-    OBSERVE_POINT_READER_PAYLOAD_COPIED,        /* reader copied the payload; version not yet rechecked */
-    OBSERVE_POINT_OUTCOME_BEFORE_DEADLINE_CHECK,/* settling an input, just before comparing deadlines */
-    OBSERVE_POINT_IRQ_DISABLED_BEGUN,           /* interrupts-off timing has just started */
-    OBSERVE_POINT_GROUP_NODE_RELEASED           /* one group node was taken off the release queue */
+    /* The slot version is odd; the payload is not yet written. */
+    OBSERVE_POINT_WRITER_SLOT_MARKED_BUSY = 1,
+    /* About half of the payload words are written. */
+    OBSERVE_POINT_WRITER_HALF_WRITTEN,
+    /* The reader saw a complete version; the payload is not yet copied. */
+    OBSERVE_POINT_READER_VERSION_CHECKED,
+    /* The reader copied the payload; the version is not yet rechecked. */
+    OBSERVE_POINT_READER_PAYLOAD_COPIED,
+    /* Settling an input, just before comparing its deadlines. */
+    OBSERVE_POINT_OUTCOME_BEFORE_DEADLINE_CHECK,
+    /* Interrupts-off timing has just started. */
+    OBSERVE_POINT_IRQ_DISABLED_BEGUN,
+    /* One group node was taken off the release queue. */
+    OBSERVE_POINT_GROUP_NODE_RELEASED,
+    /* The run controller took its lock. */
+    OBSERVE_POINT_CONTROL_LOCK_TAKEN,
+    /* The sealed manifest is about to be read. */
+    OBSERVE_POINT_MANIFEST_READ,
+    /* A walk over a group's members gave up the group lock between two stretches. */
+    OBSERVE_POINT_GROUP_WALK_LOCK_RELEASED
 };
 void observe_test_point(unsigned point);
 #define OBSERVE_TEST_POINT(point) observe_test_point(point)

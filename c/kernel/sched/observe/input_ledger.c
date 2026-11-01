@@ -11,10 +11,15 @@
  * deadlines are computed once from the original arrival and never restart.
  * Equal to the outcome deadline still counts as in time; later is EXPIRED.
  *
- * ONE LOCK DECIDES THE OUTCOME.  A single lock (g_ledger_lock), taken before no
- * other lock, serializes the app's receipt against the periodic timer's expiry,
- * so only one of them can win.  The completion evidence is copied in the same critical section as
- * the outcome.  No system call can choose an outcome directly.
+ * ONE LOCK DECIDES THE OUTCOME.  A single lock (g_ledger_lock) serializes the
+ * app's receipt against the periodic timer's expiry, so only one of them can
+ * win.  The completion evidence is copied in the same critical section as the
+ * outcome.  No system call can choose an outcome directly.
+ *
+ * LOCK ORDER.  The ledger lock is a leaf among the observer's locks: code that
+ * holds it takes no other observer lock (only the flight recorder, which masks
+ * interrupts and takes no lock).  Anything that needs the group module is asked
+ * before the ledger lock is taken.
  *
  * Design reference: sections 2.2, 7.4.8 and 10.4 of
  * docs/superpowers/specs/2026-11-01-hetero-interactive-sched-design.md. */
@@ -69,7 +74,7 @@ static uint64_t g_outcome_counts[INPUT_OUTCOME_COUNT];
 /* A new run must continue the input id numbering.  Flipped by
  * SCHED_NEGCTL_INPUT_REUSE_ID, which restarts it at 1 (host and guest test:
  * input_id_no_reuse).  Called with the ledger lock held. */
-static void negctl_restart_input_ids(void)
+static void negative_control_restart_input_ids(void)
 {
 #ifdef SCHED_NEGCTL_INPUT_REUSE_ID
     g_last_input_id = 0;
@@ -79,7 +84,7 @@ static void negctl_restart_input_ids(void)
 /* A full ledger must refuse new inputs and keep every old record.  Flipped by
  * SCHED_NEGCTL_INPUT_OVERWRITE, which damages the first record (host test:
  * input_first_retained).  Called with the ledger lock held. */
-static void negctl_overwrite_first_record(void)
+static void negative_control_overwrite_first_record(void)
 {
 #ifdef SCHED_NEGCTL_INPUT_OVERWRITE
     g_entries[0].record.input_id = g_issued_count + 1;
@@ -99,11 +104,11 @@ static uint64_t outcome_deadline_for(uint64_t arrival_ns, uint64_t frame_period_
 }
 
 /* DONE and COALESCED_DONE need valid evidence.  Flipped by
- * SCHED_NEGCTL_INPUT_DROP_PROOF, which skips the check (host and guest test:
- * input_completion_proof). */
-static int negctl_skip_evidence_check(void)
+ * SCHED_NEGCTL_INPUT_DROP_EVIDENCE, which skips the check (host and guest test:
+ * input_completion_evidence). */
+static int negative_control_skip_evidence_check(void)
 {
-#ifdef SCHED_NEGCTL_INPUT_DROP_PROOF
+#ifdef SCHED_NEGCTL_INPUT_DROP_EVIDENCE
     return 1;
 #else
     return 0;
@@ -137,6 +142,19 @@ static int expiry_skips(const struct input_record *record)
 #endif
 }
 
+/* The comparison with the sealed manifest must happen inside the ledger's
+ * critical section, where the manifest cannot be freed.  Flipped by
+ * SCHED_NEGCTL_MANIFEST_READ_UNLOCKED, which compares before taking the lock,
+ * the way the first version did (host test: manifest_read_under_lock). */
+static int manifest_compared_outside_lock(void)
+{
+#ifdef SCHED_NEGCTL_MANIFEST_READ_UNLOCKED
+    return 1;
+#else
+    return 0;
+#endif
+}
+
 /* ---- pool life cycle ---------------------------------------------------- */
 
 /* Reserve the ledger before the run is published, so the check and the
@@ -151,7 +169,7 @@ int input_ledger_allocate_pool(uint64_t capacity)
         return SCHED_OBSERVE_ENOMEM;
     }
     uint64_t saved_flags = observe_lock_acquire(&g_ledger_lock);
-    negctl_restart_input_ids();
+    negative_control_restart_input_ids();
     if (g_last_input_id >= INPUT_ID_LAST_ALLOWED) {
         observe_lock_release(&g_ledger_lock, saved_flags);
         observe_free(entries);
@@ -266,7 +284,7 @@ uint64_t input_ledger_record_arrival(uint64_t arrival_ns, uint64_t arrival_tsc,
         return 0;
     }
     if (g_issued_count == g_capacity) {
-        negctl_overwrite_first_record();
+        negative_control_overwrite_first_record();
         observe_lock_release(&g_ledger_lock, saved_flags);
         observe_count_lost_record();
         return 0;
@@ -276,8 +294,10 @@ uint64_t input_ledger_record_arrival(uint64_t arrival_ns, uint64_t arrival_tsc,
         observe_mark_invalid();
         return 0;
     }
-    uint64_t input_id = ++g_last_input_id;
-    struct ledger_entry *entry = &g_entries[g_issued_count++];
+    g_last_input_id = g_last_input_id + 1;
+    uint64_t input_id = g_last_input_id;
+    struct ledger_entry *entry = &g_entries[g_issued_count];
+    g_issued_count = g_issued_count + 1;
     entry->record = (struct input_record){
         .input_id = input_id,
         .irq_timestamp_ns = arrival_ns,
@@ -319,9 +339,11 @@ static int input_in_current_run(uint64_t input_id)
     return input_id - g_first_input_id < g_issued_count;
 }
 
-/* Stage S0 mints no tokens, so claiming MINTED or MERGED here would present an
- * unrealistic success and contaminate the baseline measurements.  A later stage
- * that issues tokens must implement issuing before enabling this. */
+/* "Minted" means the scheduler issued a delivery token for the input, the ticket
+ * a later stage hands to the thread that handles it.  Stage S0 issues none, so
+ * claiming MINTED or MERGED here would present an unrealistic success and
+ * contaminate the baseline measurements.  A later stage that issues tokens must
+ * implement issuing before enabling this. */
 int input_ledger_set_allocation(uint64_t input_id, uint32_t allocation)
 {
     if (allocation != INPUT_NOT_MINTED) {
@@ -379,20 +401,26 @@ static int settle_and_unlock(struct input_record *record, uint32_t outcome, uint
 #endif
 }
 
-/* Check that the evidence offered for DONE or COALESCED_DONE really shows that
- * a retained group covers this input.  Runs before the ledger lock is taken:
- * the group lock must never be held while taking the ledger lock, so the
- * checks that need the group module are done first, and the group archive keeps
- * the evidence alive until it has been exported.  Returns 1 if acceptable.
- * The window-manager side (stage S0b) verifies the window state and surface
- * before calling here; this only checks what the ledger can see. */
-static int completion_evidence_acceptable(uint64_t input_id, uint32_t outcome,
-                                          const struct input_completion_evidence *evidence)
+/* First half of the check that the evidence offered for DONE or COALESCED_DONE
+ * really shows that a retained group covers this input.  It asks the group
+ * module, so it runs before the ledger lock is taken (the group lock must never
+ * be held while taking the ledger lock), and it copies the group's description
+ * out for the second half.  The group archive keeps the evidence alive until it
+ * has been exported.  The window-manager side (stage S0b) verifies the window
+ * state and surface before calling here; this only checks what the ledger and
+ * the groups can see.  Returns 1 and fills *info if the group is acceptable. */
+static int describe_covering_group(uint64_t input_id,
+                                   const struct input_completion_evidence *evidence,
+                                   struct coalesced_group_info *info)
 {
     if (!evidence) {
         return 0;
     }
-    if (!evidence->frame_id || !evidence->state_version || !evidence->surface_version) {
+    /* The frame must be named, and so must the window state and surface it was
+     * drawn from. */
+    int frame_named = evidence->frame_id != 0;
+    int versions_named = evidence->state_version != 0 && evidence->surface_version != 0;
+    if (!frame_named || !versions_named) {
         return 0;
     }
     if (!coalesced_group_confirms_completion(input_id, evidence)) {
@@ -402,43 +430,59 @@ static int completion_evidence_acceptable(uint64_t input_id, uint32_t outcome,
         .slot = (uint32_t)evidence->group_id,
         .generation = (uint32_t)(evidence->group_id >> SCHED_OBSERVE_GROUP_ID_GENERATION_SHIFT),
     };
-    struct coalesced_group_info info;
-    if (coalesced_group_describe(group, &info)) {
-        return 0;
-    }
+    return coalesced_group_describe(group, info) == 0;
+}
+
+/* Is this group a real semantic merge, one that really replaces the input? */
+static int group_is_semantic_merge(const struct coalesced_group_info *info)
+{
+    /* A merge applies a rule (reducer) at a layer above plain transport... */
+    int has_layer_and_rule = info->layer != 0 && info->reducer_id != 0;
+    /* ...and says which version of that rule it was. */
+    return has_layer_and_rule && info->reducer_version != 0;
+}
+
+/* Second half of the evidence check: compare the group with the outcome and,
+ * for COALESCED_DONE, with the sealed manifest.  The manifest is freed when the
+ * run is, so this must run inside the ledger's critical section, after the
+ * input was found in the current run (see observe_manifest_entry).  Called with
+ * the ledger lock held. */
+static int group_matches_outcome_locked(uint64_t input_id, uint32_t outcome,
+                                        const struct coalesced_group_info *info)
+{
     if (outcome == INPUT_DONE) {
         /* The input's own delivery was shown, so the group must be represented
          * by this very input. */
-        return info.representative_input_id == input_id;
+        return info->representative_input_id == input_id;
     }
     /* COALESCED_DONE: a later event stands for this input.  Merely carrying the
      * raw input along is not a merge; the group must come from a preregistered
-     * semantic merge (non-zero layer and reducer) matching the manifest's
-     * route, capture and window versions. */
+     * semantic merge matching the manifest's route, capture and window
+     * versions. */
     const struct sched_observe_manifest *entry =
-        observe_manifest_entry(input_ledger_manifest_ordinal(input_id));
+        observe_manifest_entry(input_id - g_first_input_id + 1);
     if (!entry) {
         return 0;
     }
-    if (!info.layer || !info.reducer_id || !info.reducer_version) {
+    if (!group_is_semantic_merge(info)) {
         return 0;
     }
-    if (info.representative_input_id == input_id) {
+    if (info->representative_input_id == input_id) {
         return 0;
     }
-    if (entry->reducer_id != info.reducer_id || entry->reducer_version != info.reducer_version) {
+    if (entry->reducer_id != info->reducer_id || entry->reducer_version != info->reducer_version) {
         return 0;
     }
-    if (entry->route_generation != info.route_generation) {
+    if (entry->route_generation != info->route_generation) {
         return 0;
     }
-    if (entry->capture_generation != info.capture_generation) {
+    if (entry->capture_generation != info->capture_generation) {
         return 0;
     }
-    if (entry->window_generation != info.window_generation) {
+    if (entry->window_generation != info->window_generation) {
         return 0;
     }
-    return entry->window == info.window;
+    return entry->window == info->window;
 }
 
 /* The public way to settle an input (called by the receipt code of stage S0b,
@@ -447,14 +491,19 @@ static int completion_evidence_acceptable(uint64_t input_id, uint32_t outcome,
 int input_ledger_settle(uint64_t input_id, uint32_t outcome, uint64_t now_ns,
                         const struct input_completion_evidence *evidence)
 {
-    if (!input_id || outcome <= INPUT_PENDING || outcome >= INPUT_OUTCOME_COUNT) {
+    int outcome_is_final = outcome > INPUT_PENDING && outcome < INPUT_OUTCOME_COUNT;
+    if (!input_id || !outcome_is_final) {
         return SCHED_OBSERVE_EINVAL;
     }
     int needs_display_evidence = outcome == INPUT_DONE || outcome == INPUT_COALESCED_DONE;
-    if (needs_display_evidence && !negctl_skip_evidence_check()) {
-        if (!completion_evidence_acceptable(input_id, outcome, evidence)) {
-            return SCHED_OBSERVE_EINVAL;
-        }
+    int check_evidence = needs_display_evidence && !negative_control_skip_evidence_check();
+    struct coalesced_group_info group_info = {0};
+    if (check_evidence && !describe_covering_group(input_id, evidence, &group_info)) {
+        return SCHED_OBSERVE_EINVAL;
+    }
+    int compare_before_lock = check_evidence && manifest_compared_outside_lock();
+    if (compare_before_lock && !group_matches_outcome_locked(input_id, outcome, &group_info)) {
+        return SCHED_OBSERVE_EINVAL;
     }
     uint64_t saved_flags = observe_lock_acquire(&g_ledger_lock);
     if (!input_in_current_run(input_id)) {
@@ -463,6 +512,11 @@ int input_ledger_settle(uint64_t input_id, uint32_t outcome, uint64_t now_ns,
     }
     struct input_record *record = &g_entries[input_id - g_first_input_id].record;
     if (app_done_refused(record, outcome)) {
+        observe_lock_release(&g_ledger_lock, saved_flags);
+        return SCHED_OBSERVE_EINVAL;
+    }
+    int compare_now = check_evidence && !compare_before_lock;
+    if (compare_now && !group_matches_outcome_locked(input_id, outcome, &group_info)) {
         observe_lock_release(&g_ledger_lock, saved_flags);
         return SCHED_OBSERVE_EINVAL;
     }
@@ -487,7 +541,8 @@ void input_ledger_expire_overdue(uint64_t now_ns)
         if (g_expiry_scan_cursor >= g_issued_count) {
             g_expiry_scan_cursor = 0;
         }
-        struct input_record *record = &g_entries[g_expiry_scan_cursor++].record;
+        struct input_record *record = &g_entries[g_expiry_scan_cursor].record;
+        g_expiry_scan_cursor = g_expiry_scan_cursor + 1;
         if (expiry_skips(record)) {
             continue;
         }
@@ -587,17 +642,4 @@ uint64_t input_ledger_first_input_id(void)
     uint64_t first = g_first_input_id;
     observe_lock_release(&g_ledger_lock, saved_flags);
     return first;
-}
-
-/* Turn an input id into its 1-based position in this run, which is the key of
- * the sealed manifest. */
-uint64_t input_ledger_manifest_ordinal(uint64_t input_id)
-{
-    uint64_t saved_flags = observe_lock_acquire(&g_ledger_lock);
-    uint64_t ordinal = 0;
-    if (input_in_current_run(input_id)) {
-        ordinal = input_id - g_first_input_id + 1;
-    }
-    observe_lock_release(&g_ledger_lock, saved_flags);
-    return ordinal;
 }

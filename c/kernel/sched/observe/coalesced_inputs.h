@@ -15,6 +15,12 @@
  * group seen by one consumer never changes under it.  See coalesced_inputs.c.
  * Design reference: sections 7.4.8 and 10.4. */
 
+/* Most nodes a walk over a group's members visits while it holds the group
+ * lock (with interrupts off) before it lets go and takes the lock again.  This
+ * bounds how long copy_members and confirms_completion can delay an interrupt,
+ * however long the group's chain of joins is. */
+#define GROUP_WALK_STEPS_PER_LOCK_HOLD 256u
+
 /* Create the leaf group for one raw input.  The leaf pins the input's ledger
  * record.  On success *out holds a handle the caller owns and must release.
  * Returns 0, or a negative error (no active run, no room, unknown input). */
@@ -47,14 +53,19 @@ int coalesced_group_describe(struct coalesced_group_handle group, struct coalesc
 
 /* Copy up to 'count' member input ids, starting at member number 'first_member',
  * in the order the inputs arrived.  Returns how many were copied, or a negative
- * error.  Members need not be consecutive input ids. */
+ * error.  Members need not be consecutive input ids.  The caller must hold a
+ * reference to the group for the length of the call.  Process context: a long
+ * group is walked in stretches of GROUP_WALK_STEPS_PER_LOCK_HOLD nodes with the
+ * lock released in between. */
 int coalesced_group_copy_members(struct coalesced_group_handle group, uint32_t first_member,
                                  uint64_t *input_ids, uint32_t count);
 
 /* Does the evidence name a retained group that contains this input and whose
  * route and merge information match?  The group must still be held by a
- * consumer, not only archived.  Returns 1 if so.  The caller (the window
- * manager's receipt code) has already checked the window state and surface. */
+ * consumer of its own, not only kept alive by the archive and by the groups
+ * built from it.  Returns 1 if so.  The caller (the window manager's receipt
+ * code) has already checked the window state and surface.  Walks the group in
+ * bounded stretches, like copy_members. */
 int coalesced_group_confirms_completion(uint64_t input_id,
                                         const struct input_completion_evidence *evidence);
 
@@ -70,13 +81,19 @@ uint64_t coalesced_groups_consumer_count(void);
 uint64_t coalesced_groups_live_count(void);
 
 /* Destroy queued nodes, a bounded number per call; called from the periodic
- * timer tick and from the shutdown path. */
+ * timer tick. */
 void coalesced_groups_release_queued(void);
 
-/* Drop the experiment's own archive reference on every node (a bounded number
- * per call).  Done only after the exports are confirmed, because the archive is
- * the offline evidence of which input each shown frame accounted for. */
+/* Drop the experiment's own archive reference on a bounded number of nodes per
+ * call.  Done only after the exports are confirmed, because the archive is the
+ * offline evidence of which input each shown frame accounted for. */
 void coalesced_groups_drop_archive_references(void);
+
+/* Give the whole archive back and destroy every node that becomes unreferenced,
+ * in bounded batches with no lock held between them.  Process context only.
+ * Returns how many nodes are still alive: zero unless a consumer still holds a
+ * group. */
+uint64_t coalesced_groups_drain_archive(void);
 
 /* Copy archive row 'sequence' (1-based) for the GROUPS stream.  Returns 1 if the
  * row exists and is still referenced, else 0. */

@@ -13,6 +13,11 @@ void *kmalloc(size_t size);
  * Both domains split/coalesce and are released with kfree; ordinary small
  * blocks alone use the per-CPU magazines. pmm_init must have completed. */
 void *kmalloc_low(size_t size);
+/* Like kmalloc, but a refusal returns NULL and does nothing else: the
+ * out-of-memory handler is not told, so no process is killed and nothing is
+ * logged.  Use it where the size is chosen by a caller who is allowed to be
+ * told no. */
+void *kmalloc_quiet(size_t size);
 void  kfree(void *ptr);
 
 /* ------------------------------------------------------------------ stats --

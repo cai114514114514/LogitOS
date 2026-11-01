@@ -246,7 +246,7 @@ static void bin_remove(struct header *h)
 
 /* --- arenas -------------------------------------------------------------- */
 
-static int grow(size_t need, int low)
+static int grow(size_t need, int low, int report_shortage)
 {
     size_t frames = ARENA_FRAMES;
     while (frames * FRAME_SIZE < need) {
@@ -270,8 +270,11 @@ static int grow(size_t need, int low)
     phys = low ? pmm_alloc_contig(frames) :
         pmm_alloc_contig_masked(frames, UINT64_MAX, FRAME_SIZE, 0);
     if (!phys) {
-        kprintf("[kheap] grow: domain=%s frames=%llu FAILED\n", low ? "low" : "physmap",
-                (unsigned long long)frames);
+        /* A quiet caller (kmalloc_quiet) is told no by the return value alone. */
+        if (report_shortage) {
+            kprintf("[kheap] grow: domain=%s frames=%llu FAILED\n", low ? "low" : "physmap",
+                    (unsigned long long)frames);
+        }
         return 0;
     }
 
@@ -546,7 +549,12 @@ static void mag_drain_all_locked(void)
     }
 }
 
-static void *alloc_domain(size_t size, int low)
+/* report_shortage says whether a refusal is reported to the out-of-memory
+ * handler.  Ordinary callers want that (a machine dying of memory pressure
+ * should name the moment and give the shortage a victim); a caller whose size
+ * comes straight from an unprivileged or untrusted request wants only the NULL
+ * (see kmalloc_quiet). */
+static void *alloc_domain(size_t size, int low, int report_shortage)
 {
     if (size == 0)
         return NULL;
@@ -600,7 +608,7 @@ static void *alloc_domain(size_t size, int low)
                 for (struct fnode *n = list[i]; n; n = n->next)
                     if (blk_size(node_blk(n)) >= size) { b = node_blk(n); break; }
             if (b) break;
-            if (!grow(sizeof(struct header) + size, low)) break;
+            if (!grow(sizeof(struct header) + size, low, report_shortage)) break;
         } else {
             break;
         }
@@ -642,12 +650,19 @@ static void *alloc_domain(size_t size, int low)
      * killing a high-memory user process cannot make its arenas executable or
      * move them below 1 GiB. Report grow failure and let the module loader
      * return NOMEM, with no spill into the ordinary domain. */
-    if (!ret && !low && LOGIT_HAVE(oom_kheap_fail)) oom_kheap_fail(req);
+    if (!ret && !low && report_shortage && LOGIT_HAVE(oom_kheap_fail)) oom_kheap_fail(req);
     return ret;
 }
 
-void *kmalloc(size_t size) { return alloc_domain(size, 0); }
-void *kmalloc_low(size_t size) { return alloc_domain(size, 1); }
+void *kmalloc(size_t size) { return alloc_domain(size, 0, 1); }
+void *kmalloc_low(size_t size) { return alloc_domain(size, 1, 1); }
+
+/* kmalloc whose refusal has no side effect beyond the NULL return: no
+ * oom_kheap_fail() and no "grow FAILED" line, so no log line and no victim.  For a request that is large
+ * only because a caller asked for it (the scheduler observer sizes its pools
+ * from a system-call argument): being told no is the correct answer there, and
+ * killing an innocent process for it would be a worse outcome than the failure. */
+void *kmalloc_quiet(size_t size) { return alloc_domain(size, 0, 0); }
 
 void kfree(void *ptr)
 {

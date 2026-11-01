@@ -2,8 +2,6 @@
 #include <stddef.h>
 #include "sched.h"
 #include "observe/flight_recorder.h"
-#include "observe/input_ledger.h"
-#include "observe/coalesced_inputs.h"
 #include "observe/observe_control.h"
 #include "../cpu/power/cpuidle.h"
 #include "kheap.h"
@@ -388,26 +386,32 @@ static void block_fields_init(struct thread *t, int on_ring)
 
 /* Record one wake: who ran the wake (the current thread), who was woken, why,
  * whether it really made a blocked thread runnable (woke = 1) or did nothing
- * (0), so the two cases are counted apart, and, for a timeout, the time at which
- * the timer fired. */
-static void record_wake(int woken_thread_id, uint32_t reason, int woke, uint64_t timeout_fired_ns)
+ * (0), so the two cases are counted apart, and, for a timeout, the timer tick at
+ * which the timer fired.  With no run recording this returns before looking up
+ * the current CPU, since every wake in the system passes through here. */
+static void record_wake(int woken_thread_id, uint32_t reason, int woke,
+                        uint64_t timer_fired_ticks)
 {
+    if (!flight_recording_active()) {
+        return;
+    }
     flight_record_event(FLIGHT_EVENT_WAKE, sched_thread_id(this_cpu()->current),
-                        woken_thread_id, reason, woke, timeout_fired_ns);
+                        woken_thread_id, reason, woke, timer_fired_ticks);
 }
 
 /* Record a sleep or wait that ended because its deadline passed, as a wake and
  * as a timer event.  Flipped by SCHED_NEGCTL_TRACE_SKIP_TIMEOUT, which records
- * nothing (test: trace_all_paths in tests/sched/observe/assertions.py). */
-static void record_timeout_wake(struct thread *t, uint64_t timer_fired_ns)
+ * nothing (guest test: trace_all_paths, which looks for these two events in the
+ * exported trace). */
+static void record_timeout_wake(struct thread *t, uint64_t timer_fired_ticks)
 {
 #ifndef SCHED_NEGCTL_TRACE_SKIP_TIMEOUT
-    record_wake(t->id, SCHED_WAKE_TIMEOUT, 1, timer_fired_ns);
+    record_wake(t->id, SCHED_WAKE_TIMEOUT, 1, timer_fired_ticks);
     flight_record_event(FLIGHT_EVENT_TIMER, t->id, 0, SCHED_WAKE_TIMEOUT, t->deadline,
-                        timer_fired_ns);
+                        timer_fired_ticks);
 #else
     (void)t;
-    (void)timer_fired_ns;
+    (void)timer_fired_ticks;
 #endif
 }
 
@@ -415,7 +419,7 @@ static void record_timeout_wake(struct thread *t, uint64_t timer_fired_ns)
  * so the recorder can report how long it waited for its first CPU. */
 static void observe_new_thread_runnable(struct thread *t)
 {
-    t->runnable_since_ns = observe_monotonic_ns();
+    t->runnable_since_ns = flight_runnable_stamp_ns();
     record_wake(t->id, SCHED_WAKE_NEW, 1, 0);
 }
 
@@ -910,6 +914,9 @@ static struct thread *pick_min_locked(struct thread *self)
  * which belongs to the existing CPU-time accounting. */
 static void record_incoming_thread_running(void)
 {
+    if (!flight_recording_active()) {
+        return;
+    }
     struct thread *incoming = this_cpu()->current;
     if (incoming) {
         flight_record_run_start(incoming->id, incoming->runnable_since_ns);
@@ -1046,8 +1053,10 @@ __attribute__((noinline)) void schedule(void)
          * a preempted thread is runnable again from this instant, and the
          * recorder closes this CPU's interrupts-off timing before the stack
          * changes (the lock is handed to the incoming stack). */
-        if (!prev->is_idle && prev->alive && prev->state == THREAD_READY) {
-            prev->runnable_since_ns = observe_monotonic_ns();
+        int taken_off_while_runnable = !prev->is_idle && prev->alive;
+        taken_off_while_runnable = taken_off_while_runnable && prev->state == THREAD_READY;
+        if (taken_off_while_runnable) {
+            prev->runnable_since_ns = flight_runnable_stamp_ns();
         }
         flight_record_switch(prev->id, next->id, SCHED_SWITCH_SCHEDULE);
         context_switch(&prev->rsp, next->rsp);
@@ -1314,7 +1323,7 @@ static int wake_locked(struct thread *t)
 {
     if (!t || !t->alive || t->state != THREAD_BLOCKED) return 0;
     t->state = THREAD_READY;
-    t->runnable_since_ns = observe_monotonic_ns();
+    t->runnable_since_ns = flight_runnable_stamp_ns();
     timerlist_remove(t);
     ring_link(t);
     if (g_blocked) g_blocked--;
@@ -1711,10 +1720,9 @@ void sched_timer_expire(void)
      * housekeeping, so no new timer or scheduling decision is introduced: it
      * expires inputs that missed their deadline (including inputs for which no
      * scheduler token exists), destroys queued coalesced groups in a bounded
-     * batch, and lets a stopping measurement run advance. */
-    input_ledger_expire_overdue(time_mono_ns());
-    coalesced_groups_release_queued();
-    observe_advance_shutdown();
+     * batch, and lets a stopping measurement run advance.  With no run
+     * recording it costs one load and a branch. */
+    observe_periodic_tick();
     uint64_t now;
     /* Lock-free early-out: this runs on every tick and the list is empty almost
      * always. A stale read costs at most one tick of latency. */
@@ -1730,7 +1738,7 @@ void sched_timer_expire(void)
             t->on_timer  = 0;
             t->timed_out = 1;
             t->state     = THREAD_READY;
-            t->runnable_since_ns = observe_monotonic_ns();
+            t->runnable_since_ns = flight_runnable_stamp_ns();
             record_timeout_wake(t, now);
             ring_link(t);
             if (g_blocked) g_blocked--;

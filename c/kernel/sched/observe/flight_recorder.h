@@ -18,6 +18,19 @@
 #define FLIGHT_VECTOR_LEGACY_DEVICE_FIRST 33
 #define FLIGHT_VECTOR_LEGACY_DEVICE_LAST 47
 
+/* Is a run recording right now, that is started and not yet sealed on every
+ * CPU?  One atomic load.  The hooks in front of every
+ * interrupt, wake-up and lock release use it (through the two stamp functions
+ * below) to skip clock reads and CPU lookups when nothing records. */
+int flight_recording_active(void);
+
+/* The two clock stamps the scheduler and interrupt hooks keep.  Each returns 0
+ * without touching a clock when no run is recording, so an ordinary image pays
+ * a load and a branch.  The interrupt stamp is the serialized TSC; the runnable
+ * stamp is the kernel monotonic clock in nanoseconds. */
+uint64_t flight_interrupt_arrival_tsc(void);
+uint64_t flight_runnable_stamp_ns(void);
+
 /* Record one event on the calling CPU.  A no-op unless a run is active.  Safe
  * to call with interrupts on or off, and from interrupt context. */
 void flight_record_event(uint16_t kind, uint32_t thread_id, uint32_t peer_thread_id,
@@ -43,7 +56,8 @@ void flight_irq_disabled_end(uint64_t flags_before_disable);
  * thread when the switch is committed; flight_record_run_start() by the
  * incoming thread once it is really running on its own stack, which is the
  * moment its wait for a CPU ends. */
-void flight_record_switch(uint32_t outgoing_thread_id, uint32_t incoming_thread_id, uint32_t reason);
+void flight_record_switch(uint32_t outgoing_thread_id, uint32_t incoming_thread_id,
+                          uint32_t reason);
 void flight_record_run_start(uint32_t thread_id, uint64_t ready_since_ns);
 
 /* Count bytes that reached the console or the serial port while a run is
@@ -101,6 +115,9 @@ void flight_recorder_set_last_sequence_for_test(uint64_t sequence);
 #define flight_record_run_start(...) ((void)0)
 #define flight_count_console_byte() ((void)0)
 #define flight_count_uart_byte() ((void)0)
+#define flight_recording_active() 0
+#define flight_interrupt_arrival_tsc() 0ull
+#define flight_runnable_stamp_ns() 0ull
 #endif
 
 #endif

@@ -87,7 +87,7 @@ struct cpu_ring {
     struct ring_slot slots[FLIGHT_RING_SLOTS];
     uint64_t last_started_sequence;     /* highest sequence whose write has begun */
     uint64_t published_sequence;        /* highest sequence whose write is complete */
-    uint64_t overwritten_count;         /* events that replaced an older, unread one */
+    uint64_t overwritten_count;         /* events that replaced an older one (read or not) */
     uint64_t final_sequence;            /* published_sequence at the moment of sealing */
     uint64_t acknowledged;              /* 1 once this CPU sealed the ring */
 };
@@ -126,6 +126,7 @@ static uint64_t g_session_running;
 static uint64_t g_close_requested;
 static uint64_t g_enabled_cpu_mask;
 static uint64_t g_session_epoch;
+static uint64_t g_run_start_ns;
 static uint64_t g_console_byte_count;
 static uint64_t g_uart_byte_count;
 static uint64_t g_uncovered_interrupts;
@@ -187,6 +188,21 @@ static int recording_switched_off(void)
 #endif
 }
 
+/* Whether a hook may spend time on a clock read.  A read of the serialized TSC
+ * costs a fence pair and the kernel clock a cross-CPU compare-and-swap, and the
+ * hooks sit in front of every interrupt and every wake-up, so with no run
+ * recording nobody may use the value and nothing is read.  Flipped by
+ * SCHED_NEGCTL_IDLE_STAMP_READ, which reads the clocks even then (host test:
+ * idle_hooks_cost_nothing). */
+static int stamp_wanted(void)
+{
+#ifdef SCHED_NEGCTL_IDLE_STAMP_READ
+    return 1;
+#else
+    return flight_recording_active();
+#endif
+}
+
 /* A sequence at the limit must stop and invalidate the run.  Flipped by
  * SCHED_NEGCTL_TRACE_WRAP, which lets it wrap (host test: trace_sequence_no_wrap). */
 static int sequence_exhausted(uint64_t sequence)
@@ -237,10 +253,13 @@ static int version_unchanged_after_copy(const struct ring_slot *slot,
     (void)sequence;
     return 1;
 #else
+    /* The version must be the very one seen before the copy, and that must be
+     * the completed version of this record, not a writer's odd marker. */
     int unchanged = version_after == version_before;
     int complete_for_sequence = version_after == version_complete(sequence);
     int not_being_written = !(version_after & SLOT_VERSION_BUSY_BIT);
-    return unchanged && complete_for_sequence && not_being_written;
+    int stable_and_complete = unchanged && complete_for_sequence;
+    return stable_and_complete && not_being_written;
 #endif
 }
 
@@ -248,7 +267,7 @@ static int version_unchanged_after_copy(const struct ring_slot *slot,
  * recording runs with interrupts off and would measure its own work.  Flipped by
  * SCHED_NEGCTL_IRQOFF_RECURSE, which records one from inside the timing core
  * (host test: irqoff_observer_excluded). */
-static void negctl_record_event_while_timing(void)
+static void negative_control_record_event_while_timing(void)
 {
 #ifdef SCHED_NEGCTL_IRQOFF_RECURSE
     flight_record_event(FLIGHT_EVENT_IRQ_DISABLED, 0, 0, 0, 0, 0);
@@ -307,6 +326,40 @@ static int still_in_session(unsigned cpu, uint64_t epoch)
     }
     uint64_t enabled_cpus = __atomic_load_n(&g_enabled_cpu_mask, __ATOMIC_SEQ_CST);
     return (enabled_cpus & (1ull << cpu)) != 0;
+}
+
+/* One atomic load.  True from the start of a run until the last CPU has sealed
+ * its ring: the enabled-CPU mask is set at the start and each CPU clears its own
+ * bit when it seals, so a run that has stopped and merely waits for its export
+ * is not "recording" and costs the hooks nothing.  Every hook that would
+ * otherwise do work on each interrupt, wake-up or lock release asks this first,
+ * so an ordinary image pays for a load and a branch, not for a CPU lookup or a
+ * clock read. */
+int flight_recording_active(void)
+{
+    return __atomic_load_n(&g_enabled_cpu_mask, __ATOMIC_SEQ_CST) != 0;
+}
+
+/* The arrival stamp an interrupt entry takes as its first act.  Zero means "no
+ * run was recording, so the counter was not read"; flight_interrupt_enter()
+ * takes a late stamp itself if a run started in between. */
+uint64_t flight_interrupt_arrival_tsc(void)
+{
+    if (!stamp_wanted()) {
+        return 0;
+    }
+    return observe_read_tsc();
+}
+
+/* The moment a thread became runnable, kept in the thread until it really runs
+ * so the READY event can say how long it waited.  Zero (no run recording) reads
+ * as "unknown" there, never as a wait of zero. */
+uint64_t flight_runnable_stamp_ns(void)
+{
+    if (!stamp_wanted()) {
+        return 0;
+    }
+    return observe_monotonic_ns();
 }
 
 #ifdef SCHED_OBSERVE_HOST
@@ -381,6 +434,7 @@ void flight_recorder_start(void)
     __atomic_store_n(&g_console_byte_count, 0, __ATOMIC_SEQ_CST);
     __atomic_store_n(&g_uart_byte_count, 0, __ATOMIC_SEQ_CST);
     __atomic_store_n(&g_uncovered_interrupts, 0, __ATOMIC_SEQ_CST);
+    __atomic_store_n(&g_run_start_ns, observe_monotonic_ns(), __ATOMIC_SEQ_CST);
     __atomic_fetch_add(&g_session_epoch, 1, __ATOMIC_SEQ_CST);
     __atomic_store_n(&g_close_requested, 0, __ATOMIC_SEQ_CST);
     __atomic_store_n(&g_enabled_cpu_mask, g_producer_cpu_mask, __ATOMIC_SEQ_CST);
@@ -413,7 +467,7 @@ void flight_recorder_free(void)
 void flight_record_event(uint16_t kind, uint32_t thread_id, uint32_t peer_thread_id,
                          uint32_t reason, uint64_t first_detail, uint64_t second_detail)
 {
-    if (!__atomic_load_n(&g_session_running, __ATOMIC_SEQ_CST)) {
+    if (!flight_recording_active()) {
         return;
     }
     uint64_t saved_flags = commit_irq_save();
@@ -596,6 +650,9 @@ void flight_interrupt_enter(uint32_t vector, uint64_t arrival_tsc)
         __atomic_fetch_add(&g_uncovered_interrupts, 1, __ATOMIC_SEQ_CST);
         return;
     }
+    if (!flight_recording_active()) {
+        return;
+    }
     unsigned cpu = observe_current_cpu();
     struct cpu_state *state = cpu_state_if_recording(cpu);
     if (!state) {
@@ -613,11 +670,18 @@ void flight_interrupt_enter(uint32_t vector, uint64_t arrival_tsc)
         observe_mark_invalid();
         return;
     }
-    state->interrupt_stack[state->interrupt_depth++] = (struct interrupt_origin){
+    if (!arrival_tsc) {
+        /* The entry hook ran before this run started, so it took no stamp; this
+         * one is later than the hardware instant, but it is a real reading. */
+        arrival_tsc = observe_read_tsc();
+    }
+    unsigned slot = state->interrupt_depth;
+    state->interrupt_stack[slot] = (struct interrupt_origin){
         .arrival_tsc = arrival_tsc,
         .arrival_ns = observe_monotonic_ns(),
         .vector = vector,
     };
+    state->interrupt_depth = slot + 1;
     flight_record_event(FLIGHT_EVENT_IRQ, 0, 0, vector, arrival_tsc, state->interrupt_depth);
 }
 
@@ -627,6 +691,9 @@ void flight_interrupt_enter(uint32_t vector, uint64_t arrival_tsc)
  * never labels another thread's input. */
 void flight_interrupt_leave(void)
 {
+    if (!flight_recording_active()) {
+        return;
+    }
     struct cpu_state *state = cpu_state_if_recording(observe_current_cpu());
     if (!state) {
         return;
@@ -664,7 +731,14 @@ uint64_t flight_input_arrival_stamp(uint32_t *source, uint64_t *arrival_tsc)
 {
     uint64_t saved_flags = observe_irq_save();
     struct cpu_state *state = cpu_state_if_recording(observe_current_cpu());
-    if (state && state->interrupt_depth && !state->interrupt_overflow) {
+    /* Inside a tracked interrupt: there is a recording CPU state, at least one
+     * interrupt is on its stack, and the stack did not overflow, which would
+     * leave the innermost entry unknown. */
+    int inside_tracked_interrupt = state != NULL;
+    if (inside_tracked_interrupt) {
+        inside_tracked_interrupt = state->interrupt_depth != 0 && !state->interrupt_overflow;
+    }
+    if (inside_tracked_interrupt) {
         const struct interrupt_origin *origin =
             &state->interrupt_stack[state->interrupt_depth - 1];
         if (vector_is_input_device(origin->vector)) {
@@ -691,18 +765,23 @@ uint64_t flight_input_arrival_stamp(uint32_t *source, uint64_t *arrival_tsc)
 void flight_irq_disabled_begin(uint64_t flags_before_disable, uintptr_t caller_address)
 {
     (void)flags_before_disable;
+    if (!flight_recording_active()) {
+        return;
+    }
     struct cpu_state *state = cpu_state_if_recording(observe_current_cpu());
     if (!state) {
         return;
     }
-    if (!state->irq_disabled_depth++) {
+    unsigned depth_before = state->irq_disabled_depth;
+    state->irq_disabled_depth = depth_before + 1;
+    if (!depth_before) {
         state->irq_disabled_start_tsc = observe_read_tsc();
         state->irq_disabled_start_observer_tsc =
             __atomic_load_n(&state->observer_cost_tsc, __ATOMIC_SEQ_CST);
         state->irq_disabled_caller = caller_address;
     }
     OBSERVE_TEST_POINT(OBSERVE_POINT_IRQ_DISABLED_BEGUN);
-    negctl_record_event_while_timing();
+    negative_control_record_event_while_timing();
 }
 
 /* Finish an interrupts-off interval and record it.  The time spent inside the
@@ -714,6 +793,9 @@ void flight_irq_disabled_begin(uint64_t flags_before_disable, uintptr_t caller_a
  * partial and the maximum is never reported as a whole-kernel maximum. */
 void flight_irq_disabled_end(uint64_t flags_before_disable)
 {
+    if (!flight_recording_active()) {
+        return;
+    }
     struct cpu_state *state = cpu_state_if_recording(observe_current_cpu());
     if (!state || !state->irq_disabled_depth) {
         return;
@@ -749,6 +831,9 @@ void flight_irq_disabled_end(uint64_t flags_before_disable)
  * opened. */
 void flight_record_switch(uint32_t outgoing_thread_id, uint32_t incoming_thread_id, uint32_t reason)
 {
+    if (!flight_recording_active()) {
+        return;
+    }
     unsigned cpu = observe_current_cpu();
     struct cpu_state *state = cpu_state_if_recording(cpu);
     if (!state) {
@@ -779,14 +864,23 @@ void flight_record_switch(uint32_t outgoing_thread_id, uint32_t incoming_thread_
 /* Called by a thread that has just started running on its own stack.  The
  * second event of the switch pair is written here, not at the pick, so what is
  * recorded is the thread that really runs, and the READY event carries how long
- * it waited from becoming runnable (ready_since_ns) to this instant. */
+ * it waited from becoming runnable (ready_since_ns) to this instant.  A thread
+ * that became runnable before this run began, or while nothing recorded, has no
+ * usable stamp (zero, or one left over from an earlier run), so its wait is
+ * reported as unknown rather than as a wait that began in another run. */
 void flight_record_run_start(uint32_t thread_id, uint64_t ready_since_ns)
 {
-    uint64_t now_ns = observe_monotonic_ns();
+    if (!flight_recording_active()) {
+        return;
+    }
     unsigned cpu = observe_current_cpu();
     struct cpu_state *state = cpu_state_if_recording(cpu);
     if (!state) {
         return;
+    }
+    uint64_t now_ns = observe_monotonic_ns();
+    if (ready_since_ns < __atomic_load_n(&g_run_start_ns, __ATOMIC_SEQ_CST)) {
+        ready_since_ns = 0;
     }
     if (state->incoming_thread_id == thread_id) {
         uint64_t epoch = __atomic_load_n(&state->session_epoch, __ATOMIC_SEQ_CST);
@@ -864,5 +958,8 @@ void flight_recorder_fill_status(struct sched_observe_status *status)
         }
         status->observer_cost_tsc +=
             __atomic_load_n(&g_cpu_state[cpu].observer_cost_tsc, __ATOMIC_SEQ_CST);
+    }
+    for (unsigned cpu = 0; cpu < SCHED_OBSERVE_MAX_CPUS; cpu++) {
+        status->observation_lost_count += flight_overwritten_count(cpu);
     }
 }

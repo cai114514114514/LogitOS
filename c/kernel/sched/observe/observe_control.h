@@ -33,11 +33,18 @@ int observe_admitting_inputs(void);     /* 1 while new inputs may still be added
 uint64_t observe_run_id(void);          /* id of the current run, or 0 */
 
 /* Move a stopping run forward as far as it can go without waiting: finish
- * draining, ask the CPUs to seal their rings, and free everything once all
- * exports are confirmed.  Called from places that already run regularly (the
- * scheduler, every interrupt exit, the timer tick), so a CPU that never gets
- * there simply keeps the run from finishing instead of being forced. */
+ * draining and ask the CPUs to seal their rings.  Called from places that
+ * already run regularly (the scheduler, every interrupt exit, the timer tick),
+ * so a CPU that never gets there simply keeps the run from finishing instead of
+ * being forced.  Returns after one load, taking no lock, unless a run is
+ * draining or closing.  It never frees anything: the memory is given back by
+ * the system call that makes the last export final (READ or STOP). */
 void observe_advance_shutdown(void);
+
+/* The scheduler's periodic tick calls this once for all the observer's
+ * housekeeping (expire overdue inputs, destroy queued groups, advance a stopping
+ * run).  With no run recording it reads no clock and takes no lock. */
+void observe_periodic_tick(void);
 
 /* A consistent copy of the counters, for STATUS and the HUD.  Takes the control
  * lock only to copy numbers; formatting happens afterwards. */
@@ -53,6 +60,7 @@ const struct sched_observe_manifest *observe_manifest_entry(uint64_t ordinal);
 #if __STDC_HOSTED__ && !defined(SCHED_OBSERVE_HOST)
 #define observe_control_init() ((void)0)
 #define observe_advance_shutdown() ((void)0)
+#define observe_periodic_tick() ((void)0)
 #define observe_syscall(command, user_request, bytes) ((long)SCHED_OBSERVE_ENOSYS)
 #endif
 

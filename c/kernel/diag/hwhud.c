@@ -886,14 +886,14 @@ void hwhud_tick(const struct hwhud_wm *wm)
     par_format(par_line, sizeof par_line, &par);
     add_wrapped(par_line);
     lines_console(dms);
-#if !__STDC_HOSTED__ || defined(SCHED_OBSERVE_HOST)
     /* The scheduler observation summary.  It is formatted from a copy of the
      * counters before anything is drawn, so no observer lock is held while the
-     * HUD draws. */
+     * HUD draws.  A development-machine harness built without the observer gets
+     * a stand-in (observe_hud.h) that reports no line, so it adds none. */
     char scheduler_line[COLS + 1];
-    observe_hud_format_summary(scheduler_line, sizeof scheduler_line);
-    addline(scheduler_line);
-#endif
+    if (observe_hud_format_summary(scheduler_line, sizeof scheduler_line) > 0) {
+        addline(scheduler_line);
+    }
     lines_irq(dms);
     lines_net();
     lines_mtrr();

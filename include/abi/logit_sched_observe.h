@@ -67,6 +67,7 @@
  * kernel has no shared errno header, so each subsystem names the few it uses
  * (the VFS does the same with its VFS_E* names). */
 #define SCHED_OBSERVE_EPERM (-1)
+#define SCHED_OBSERVE_EAGAIN (-11)
 #define SCHED_OBSERVE_ENOMEM (-12)
 #define SCHED_OBSERVE_EFAULT (-14)
 #define SCHED_OBSERVE_EBUSY (-16)
@@ -96,8 +97,8 @@ enum sched_observe_stream {
  * design document's names for the two measured baselines. */
 enum sched_observe_baseline {
     SCHED_BASELINE_TRACE_ONLY,          /* recorder only; no baseline claim */
-    SCHED_BASELINE_ORIGINAL_WAITING,    /* [B-HEAD] GUI threads wait exactly as before this work */
-    SCHED_BASELINE_UNIFIED_WAITING      /* [B-input] GUI threads wait on one combined event source */
+    SCHED_BASELINE_ORIGINAL_WAITING,    /* [B-HEAD] GUI threads wait as they did before this work */
+    SCHED_BASELINE_UNIFIED_WAITING      /* [B-input] GUI threads wait on one combined source */
 };
 
 /* Optional modules (added by later stages) that can answer PROBE or MODEL
@@ -114,13 +115,16 @@ enum sched_observe_provider {
 };
 
 /* What a flight recorder event is about.  Stage S0 records only events that
- * already exist in the scheduler; events for the future token and lease
- * protocols are not defined yet.  The values are fixed by the stage plan. */
+ * already exist in the scheduler.  Later stages may add a delivery token (a
+ * ticket the scheduler hands to one input so the thread that handles it can be
+ * found) and a lease (a time-limited reservation of a CPU core for one app);
+ * events for those are not defined yet.  The values are fixed by the stage
+ * plan. */
 enum flight_event_kind {
     FLIGHT_EVENT_IRQ = 1,           /* an interrupt entered the kernel */
     FLIGHT_EVENT_WAKE,              /* a thread was made runnable (or the wake did nothing) */
     FLIGHT_EVENT_SWITCH,            /* the CPU changed from one thread to another */
-    FLIGHT_EVENT_READY,             /* a runnable thread finally started running; carries its wait */
+    FLIGHT_EVENT_READY,             /* a runnable thread started running; carries its wait */
     FLIGHT_EVENT_MIGRATE,           /* reserved: thread moved CPUs */
     FLIGHT_EVENT_INPUT,             /* an input was added to the ledger */
     FLIGHT_EVENT_OUTCOME,           /* an input reached its final outcome */
@@ -160,9 +164,11 @@ enum sched_input_source {
     SCHED_INPUT_IRQ
 };
 
-/* Whether the scheduler minted a delivery token for an input.  Stage S0 has no
- * tokens, so every real input is NOT_MINTED; the other values exist for later
- * stages and for fault-injection tests. */
+/* Whether the scheduler issued ("minted") a delivery token for an input, that
+ * is the ticket a later stage will hand to the thread that handles the input.
+ * Stage S0 has no tokens, so every real input is NOT_MINTED and must expire like
+ * any other; MINTED and MERGED (the token was shared with a later input) exist
+ * for later stages and for fault-injection tests. */
 enum input_allocation {
     INPUT_NOT_MINTED,
     INPUT_MINTED,
@@ -233,8 +239,8 @@ struct input_payload {
  * in order, or a re-route of one group to another window or layer. */
 struct coalesced_group_info {
     uint64_t representative_input_id;   /* the input whose delivery stands for the whole group */
-    uint64_t route_generation;          /* version of the routing decision that produced this node */
-    uint64_t capture_generation;        /* version of the pointer-capture state it was merged under */
+    uint64_t route_generation;          /* version of the routing decision for this node */
+    uint64_t capture_generation;        /* version of the pointer-capture state it was merged in */
     uint64_t window_generation;         /* version of the destination window it was merged for */
     uint32_t window;
     uint32_t member_count;              /* exact number of raw inputs in the group */
@@ -267,7 +273,7 @@ struct input_record {
     uint64_t frame_period_ns;           /* display frame period P in force at arrival */
     uint64_t frame_generation;          /* version of the frame clock settings at arrival */
     uint64_t response_deadline_ns;      /* arrival + 2 frame periods */
-    uint64_t outcome_deadline_ns;       /* arrival + 3 frame periods; a later settle expires the input */
+    uint64_t outcome_deadline_ns;       /* arrival + 3 frame periods; settling later expires it */
     uint64_t completed_at_ns;           /* when the final outcome was recorded; 0 while pending */
     uint32_t source;                    /* enum sched_input_source */
     uint32_t input_class;               /* enum input_class */
@@ -337,7 +343,7 @@ struct sched_observe_read {
     uint32_t cpu;                   /* which CPU's ring (TRACE stream only) */
     uint64_t cursor;
     uint64_t user_buffer_address;
-    uint32_t record_capacity;       /* records the buffer holds (at most SCHED_OBSERVE_MAX_READ_RECORDS) */
+    uint32_t record_capacity;       /* records the buffer holds (at most MAX_READ_RECORDS) */
     uint32_t records_copied;        /* result */
     uint64_t next_cursor;           /* result: where to continue */
     uint64_t gap_first_sequence;    /* result: first lost record when SCHED_READ_GAP is set */
@@ -351,7 +357,9 @@ struct sched_observe_read {
  * and moves to DRAINING while the original deadlines of pending inputs run
  * out; then CLOSING while each CPU seals its own ring; then STOPPED, when all
  * records are final and can be exported.  After the exports are confirmed the
- * memory is freed and the state returns to IDLE. */
+ * memory is freed and the state returns to IDLE; that happens inside the READ
+ * that makes the last export final (or the last reader to leave, or a repeated
+ * STOP), never in an interrupt. */
 enum sched_observe_state {
     SCHED_OBSERVE_IDLE,
     SCHED_OBSERVE_ACTIVE,
@@ -361,7 +369,15 @@ enum sched_observe_state {
 };
 
 /* STATUS: a snapshot of the counters.  The four input outcome counts plus
- * inputs_pending always add up to inputs_issued. */
+ * inputs_pending always add up to inputs_issued.
+ *
+ * Two loss counters, and what separates them.  essential_lost_count counts
+ * records the run cannot do without and that are gone for good: an input
+ * refused because the ledger was full, a group node refused because the pool
+ * was full.  Any one of them makes the run invalid.  observation_lost_count is
+ * that number plus every flight event that replaced an older one in a ring,
+ * whether or not a reader had already copied the old one; a ring overwrite
+ * alone does not invalidate a run, because a reader that kept up lost nothing. */
 struct sched_observe_status {
     struct sched_observe_header header;
     uint64_t inputs_issued;
@@ -370,11 +386,11 @@ struct sched_observe_status {
     uint64_t inputs_coalesced_done;
     uint64_t inputs_app_done;
     uint64_t inputs_expired;
-    uint64_t observation_lost_count;    /* records the facility had to drop */
-    uint64_t essential_lost_count;      /* the subset whose loss invalidates the run */
+    uint64_t observation_lost_count;    /* essential losses plus ring overwrites */
+    uint64_t essential_lost_count;      /* refused input and group records */
     uint64_t console_bytes;             /* bytes printed on the console during the run */
     uint64_t uart_bytes;                /* bytes sent to the serial port during the run */
-    uint64_t irq_disabled_max_tsc;      /* longest measured interrupts-off interval (partial coverage) */
+    uint64_t irq_disabled_max_tsc;      /* longest measured interrupts-off interval (partial) */
     uint64_t observer_cost_tsc;         /* TSC cycles spent inside the recorder itself */
     uint64_t groups_live_count;
     uint64_t group_consumer_count;
@@ -386,8 +402,8 @@ struct sched_observe_status {
     uint32_t acknowledged_cpu_mask;     /* CPUs that have sealed their ring */
     uint32_t active_read_count;
     uint32_t baseline;
-    uint32_t irq_disabled_coverage_partial; /* always 1: bare cli/sti outside the lock API is not seen */
-    uint32_t reserved;
+    uint32_t irq_disabled_coverage_partial; /* always 1: bare cli/sti is not seen */
+    uint32_t unobserved_cpu_count;      /* CPUs beyond MAX_CPUS: running, but not recorded */
 };
 
 /* One row of the coalesced-group archive as READ returns it.  The archive keeps
@@ -413,6 +429,7 @@ _Static_assert(sizeof(struct sched_observe_group_record) == 96, "group record wi
 _Static_assert(sizeof(struct sched_observe_manifest) == 80, "manifest wire size");
 _Static_assert(sizeof(struct sched_observe_begin) == 88, "begin wire size");
 _Static_assert(sizeof(struct sched_observe_read) == 88, "read wire size");
+_Static_assert(sizeof(struct sched_observe_status) == 424, "status wire size");
 #endif
 
 #endif

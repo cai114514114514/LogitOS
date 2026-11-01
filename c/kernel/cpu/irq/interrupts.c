@@ -98,10 +98,11 @@ void interrupt_handler(struct registers *r, void *fxarea)
      * in C, after isr_common has saved the registers and FP state
      * (c/boot/isr.asm:95..151).  It is therefore a little later than the CPU's
      * hardware interrupt instant; the test gate disassembles this call path and
-     * exports the instruction offsets so that gap is known.  NMI and machine
-     * check are counted but never recorded, since they can interrupt a
-     * recorder write halfway. */
-    uint64_t arrival_tsc = observe_read_tsc();
+     * exports the instruction offsets so that gap is known.  The counter is read
+     * only while a run records (it costs a pair of fences on every interrupt
+     * otherwise).  NMI and machine check are counted but never recorded, since
+     * they can interrupt a recorder write halfway. */
+    uint64_t arrival_tsc = flight_interrupt_arrival_tsc();
     flight_interrupt_enter((uint32_t)r->vector, arrival_tsc);
     if (r->vector == 255) {        /* LAPIC spurious: no BKL, no EOI, just return */
         flight_interrupt_leave();
