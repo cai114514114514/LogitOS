@@ -168,12 +168,15 @@ void amd_bootfb_probe_resources(void)
                                                 fb_width(), fb_height(), &report);
     kprintf("[amd-resources] pci=%04x status=%d vbios-bytes=%u atom=%d "
             "usage-revision=%u firmware-key0=%x firmware-key1=%x required=%x "
-            "ownership-missing=%u security-key-unknown=%u vbios-skipped-scanout=%u\n",
+            "ownership-missing=%u security-key-unknown=%u vbios-skipped-scanout=%u "
+            "firmware-sources=rootfs:%u,bootmod:%u pinned=%s\n",
             polaris_boot_device->device, status, report.vbios_bytes_read,
             report.atom_result, report.reservations.table_revision,
             report.firmware_mask[0], report.firmware_mask[1], POLARIS_RESOURCE_ALL_FILES,
             report.ownership_missing, report.security_key_unknown,
-            report.vbios_skipped_scanout);
+            report.vbios_skipped_scanout, report.firmware_from_rootfs,
+            report.firmware_from_bootmod,
+            report.firmware_pin_mismatch ? "mismatch" : "ok");
     if (report.atom_result == POLARIS_ATOM_OK) {
         kprintf("[amd-resources] firmware-reserved=%llx/%llu driver-scratch=%llx/%llu\n",
                 (unsigned long long)report.reservations.firmware.base,

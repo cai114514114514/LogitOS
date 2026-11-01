@@ -88,6 +88,9 @@
  * memory the kernel reclaims, so the kernel never follows the address. */
 #define LOGIT_BOOT_TAG_SMBIOS            0x4c420105
 #define LOGIT_BOOT_TAG_DISPLAY           0x4c420106
+/* UEFI only: one boot module, a file the loader read off the boot volume into
+ * EfiLoaderData memory before ExitBootServices. One tag per file. */
+#define LOGIT_BOOT_TAG_MODULE            0x4c420107
 #define LOGIT_BOOT_TAG_END               0x4c42ffff
 #define LOGIT_BOOT_TAG_NAMESPACE_MASK    0xffff0000
 #define LOGIT_BOOT_TAG_NAMESPACE         0x4c420000
@@ -147,6 +150,24 @@ struct logit_boot_framebuffer_tag {
     uint8_t blue_position, blue_mask_size;
 } __attribute__((packed));
 
+/* One boot module, shaped like the Multiboot2 module tag (specification
+ * section 3.6.5: type, size, mod_start, mod_end, NUL-terminated string) with
+ * one deliberate difference: mod_start/mod_end are 64-bit here. The loader asks
+ * the firmware for any free pages, and on a machine with more than 4 GiB those
+ * can lie above 4 GiB, where the specification's 32-bit fields cannot name them.
+ * The range runs from the first byte of the page-aligned allocation to one past
+ * the file's last byte. The memory is ordinary EfiLoaderData RAM that the memory
+ * map reports AVAILABLE, so the kernel must hold it out of the allocator itself
+ * (c/kernel/init/bootmod.c) before pmm_init runs. */
+struct logit_boot_module_tag {
+    struct logit_boot_tag tag;          /* type LOGIT_BOOT_TAG_MODULE */
+    uint64_t mod_start;                 /* physical address of the first byte */
+    uint64_t mod_end;                   /* one past the last byte */
+    /* char name[]; NUL-terminated, tag.size covers it */
+} __attribute__((packed));
+#define LOGIT_BOOT_MODULE_NAME_MAX       64   /* including the NUL */
+#define LOGIT_BOOT_MODULES_MAX           32   /* tags one boot may carry */
+
 /* The guest TCC (0.9.27) does not implement C11 _Static_assert. Keep every
  * wire-layout check active for it: a negative array bound is still a compile
  * error, whereas skipping these checks would let a loader/consumer ABI drift
@@ -169,6 +190,8 @@ _Static_assert(sizeof(struct logit_boot_mmap_tag) == LOGIT_BOOT_MMAP_TAG_HEADER_
                "native memory-map tag header layout drifted");
 _Static_assert(sizeof(struct logit_boot_framebuffer_tag) == LOGIT_BOOT_FRAMEBUFFER_TAG_SIZE,
                "native framebuffer tag layout drifted");
+_Static_assert(sizeof(struct logit_boot_module_tag) == 24,
+               "native module tag layout drifted");
 
 #define LOGIT_BOOT_ASSERT_OFFSET(type, field, expected) \
     _Static_assert(offsetof(type, field) == (expected), \

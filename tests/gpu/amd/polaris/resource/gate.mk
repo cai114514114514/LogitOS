@@ -5,13 +5,16 @@ POLARIS_RESOURCE_SOURCE := tests/gpu/amd/polaris/resource/test.c \
     c/drivers/gpu/amd/polaris/device.c \
     c/drivers/gpu/amd/polaris/firmware.c \
     c/drivers/gpu/amd/polaris/firmware/bundle.c \
-    c/drivers/gpu/amd/polaris/smu/toc.c
+    c/drivers/gpu/amd/polaris/smu/toc.c \
+    c/crypto/hash/sha256.c
 
 # Only headers actually used by this gate; no user libc or hardware stand-ins
 # on the production include path. The kernel services are linked test stubs.
 POLARIS_RESOURCE_FLAGS := -std=c11 -O1 -g -Wall -Wextra -Werror \
     -Ic/drivers/gpu -Ic/drivers/core -Ic/kernel/pci \
-    -Ic/kernel/mm/phys -Ic/fs/vfs -Ic/fs/logitfs
+    -Ic/kernel/mm/phys -Ic/fs/vfs -Ic/fs/logitfs \
+    -Ic/crypto -Ic/kernel/init -DPOLARIS_FW_PIN_HOST_OVERRIDE \
+    -Itests/gpu/amd/polaris/resource/fixture
 
 .PHONY: test-polaris-resources-host test-polaris-resources-negctl
 test-polaris-resources-negctl:

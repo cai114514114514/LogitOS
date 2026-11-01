@@ -13,6 +13,13 @@
 /* Initialise the physical frame allocator from the Multiboot2 info block. */
 void pmm_init(uint64_t mb_info_addr);
 
+/* Keep [base, base + bytes) out of the allocator for the whole boot. Call it
+ * BEFORE pmm_init: the boot loader's data (firmware modules) sits in memory the
+ * firmware map calls plain AVAILABLE RAM, and pmm_init would free it otherwise.
+ * Rounded outward to frames. Returns 0, or -1 for an empty or wrapping range
+ * or a full table (64 ranges), in which case nothing was recorded. */
+int pmm_hold_range(uint64_t base, uint64_t bytes);
+
 /* Allocate / free a single 4 KiB physical frame. Returns 0 on failure.
  * A fresh frame comes back with refcount 1. pmm_free DECREMENTS: the frame
  * returns to the free pool only when the last reference goes. */
