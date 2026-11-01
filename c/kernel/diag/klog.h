@@ -66,7 +66,13 @@
                          * drowning the boot output every harness greps */
 #define KL_NLEVELS 5
 
-#define KLOG_SLOTS 512            /* records retained (power of two) */
+#define KLOG_SLOTS 2048           /* records retained (power of two) */
+/* The first KLOG_BOOT_SLOTS records are also kept in a separate array that is
+ * never overwritten, so the boot log (driver bring-up, firmware, device
+ * discovery) survives however much periodic telemetry follows it. On the real
+ * X79-VG4 the 512-record ring had lost every boot line 77 s after power-on
+ * (2026-11-01), which left a remote ssh session nothing to read. */
+#define KLOG_BOOT_SLOTS 2048
 #define KLOG_TEXT  112            /* bytes of text per record; longer lines are
                                    * TRUNCATED and the loss counted, never split
                                    * and never dropped whole */
@@ -117,6 +123,10 @@ void klog_flush_partial(void);
 
 uint64_t klog_next_seq(void);          /* seq the next record will get */
 uint64_t klog_first_seq(void);         /* oldest seq still in the ring */
+/* One past the last pinned boot record: records [1, klog_boot_end()) can always
+ * be read with klog_get_boot(), even after the ring has overwritten them. */
+uint64_t klog_boot_end(void);
+int      klog_get_boot(uint64_t seq, struct klog_rec *out);   /* 1 = copied, 0 = not a boot record */
 int      klog_get(uint64_t seq, struct klog_rec *out);   /* 1 = copied, 0 = gone */
 void     klog_get_stats(struct klog_stats *out);
 

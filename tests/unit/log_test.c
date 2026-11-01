@@ -245,6 +245,32 @@ static void t_full(void)
     CHECK(g_irq_maxdepth == 1, "interrupt guard nesting depth reached %d", g_irq_maxdepth);
 }
 
+/* The first KLOG_BOOT_SLOTS records are pinned: after the ring has wrapped many
+ * times (t_full ran first), the very first boot record is still readable and
+ * /dev/kmsg's rendering starts with it, followed by an aged-out marker. On the
+ * real X79-VG4 the boot log was gone 77 s after power-on without this. */
+static void t_boot_pinned(void)
+{
+    printf("4b. the boot log is pinned: it survives a wrapped ring\n");
+    struct klog_rec first_ring, pinned;
+    CHECK(klog_first_seq() > KLOG_BOOT_SLOTS + 1, "the ring has wrapped past the boot log");
+    CHECK(!klog_get(1, &first_ring), "record 1 is gone from the ring");
+    CHECK(klog_get_boot(1, &pinned) && pinned.seq == 1, "record 1 is still in the pinned boot log");
+    CHECK(klog_boot_end() == KLOG_BOOT_SLOTS + 1, "the pinned range is exactly the first %d records",
+          KLOG_BOOT_SLOTS);
+    CHECK(!klog_get_boot(KLOG_BOOT_SLOTS + 1, &pinned), "records after the boot range are not pinned");
+    static char rendered[512 * 1024];
+    static char first_line[KLOG_TEXT + 64];
+    struct klog_rec record_one;
+    klog_get_boot(1, &record_one);
+    int first_len = klog_format_rec(&record_one, first_line, (int)sizeof first_line);
+    int n = klog_render(rendered, (int)sizeof rendered);
+    CHECK(n > first_len && memcmp(rendered, first_line, (size_t)first_len) == 0,
+          "the rendered log starts with boot record 1");
+    CHECK(strstr(rendered, "aged out between the boot log and the ring") != NULL,
+          "the rendered log marks the records lost between the boot log and the ring");
+}
+
 static void t_levels(void)
 {
     printf("5. level filtering: debug reaches the ring but not the console\n");
@@ -363,9 +389,15 @@ static void t_render(void)
     CHECK(strstr(big, "disk 1 fell off the bus") != NULL, "render contains the record");
     int lines = 0;
     for (int i = 0; i < total; i++) if (big[i] == '\n') lines++;
-    CHECK(lines == (int)(klog_next_seq() - klog_first_seq()),
-          "render emitted one line per live record (%d vs %llu)", lines,
-          (unsigned long long)(klog_next_seq() - klog_first_seq()));
+    /* One line per live ring record, plus (once the ring has overwritten the
+     * boot log) every pinned boot record and one aged-out marker line. */
+    uint64_t live = klog_next_seq() - klog_first_seq();
+    uint64_t pinned_shown = klog_first_seq() > 1 ?
+        (klog_boot_end() < klog_first_seq() ? klog_boot_end() : klog_first_seq()) - 1 : 0;
+    uint64_t marker = klog_first_seq() > klog_boot_end() ? 1 : 0;
+    CHECK(lines == (int)(live + pinned_shown + marker),
+          "render emitted one line per live record, pinned boot record and marker (%d vs %llu)", lines,
+          (unsigned long long)(live + pinned_shown + marker));
 
     /* Render into a buffer far too small: it must stop cleanly. */
     char small[200];
@@ -435,6 +467,7 @@ int main(void)
     t_truncate();
     t_wrap();
     t_full();
+    t_boot_pinned();
     t_levels();
     t_interleave();
     t_render();
