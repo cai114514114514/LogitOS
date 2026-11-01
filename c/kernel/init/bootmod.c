@@ -29,6 +29,8 @@ struct bootmod {
 /* The loader stops at the same count, so a full registry is a loader bug. */
 static struct bootmod modules[LOGIT_BOOT_MODULES_MAX];
 static unsigned module_count;
+/* The loader's LOGIT_BOOT_TAG_GPU_OPTOUT was present and well formed. */
+static int gpu_optout_assumed;
 
 /* Why a local compare: this file must build in the kernel (no string.h
  * guarantee for the freestanding includes) and in the host test unchanged. */
@@ -120,9 +122,23 @@ static void register_module(const uint8_t *raw, uint32_t size)
     kprintf("[bootmod] %s %llu bytes\n", slot->name, (unsigned long long)bytes);
 }
 
+/* Why the tag is checked for its exact size: it carries no payload, and a tag
+ * of any other size is not the loader's message, so it must not switch the
+ * self-test off by accident (nor be believed as an opt-in by anything). */
+static void register_gpu_optout_tag(uint32_t size)
+{
+    if (size != sizeof(struct logit_boot_tag)) {
+        kprintf("[bootmod] rejected GPU opt-out tag: bad size\n");
+        return;
+    }
+    gpu_optout_assumed = 1;
+    kprintf("[bootmod] GPU opt-out assumed by the loader\n");
+}
+
 void bootmod_init(uint64_t info)
 {
     module_count = 0;
+    gpu_optout_assumed = 0;
     if (!info)
         return;
     const uint8_t *base = (const uint8_t *)mm_p2v(info);
@@ -136,6 +152,8 @@ void bootmod_init(uint64_t info)
             return;
         if (type == LOGIT_BOOT_TAG_MODULE)
             register_module(base + off, size);
+        else if (type == LOGIT_BOOT_TAG_GPU_OPTOUT)
+            register_gpu_optout_tag(size);
         off += (size + 7) & ~7u;
     }
 }
@@ -170,4 +188,9 @@ const void *bootmod_find(const char *name, uint64_t *bytes)
 unsigned bootmod_count(void)
 {
     return module_count;
+}
+
+int bootmod_gpu_optout_assumed(void)
+{
+    return gpu_optout_assumed;
 }

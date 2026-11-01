@@ -259,6 +259,179 @@ static void hid_ctl_format(char *out, size_t capacity, const struct hwhud_hid *h
               hid->ctl_first[6], hid->ctl_first[7], hid->ctl_polls, hid->ctl_fed, hid->ctl_fail);
 }
 
+/* One routed HDA output pin as the panel prints it. The driver publishes the
+ * role and the jack state as short stable words ("line", "hp", "plugged",
+ * "empty", "no-detect"), so this struct stays plain strings and numbers and the
+ * formatter below needs no driver header. */
+#define HWHUD_HDA_PINS_MAX 8
+
+struct hwhud_hda_pin {
+    const char *role;
+    unsigned    nid;
+    const char *jack;
+    int         output_enabled;
+};
+
+/* Everything the two HDA panel lines need about one HD Audio PCI function. */
+struct hwhud_hda {
+    unsigned    bus;
+    unsigned    slot;
+    unsigned    function;
+    int         is_display_function;
+    int         bound;
+    const char *not_bound_reason;
+    int         codec_present;
+    unsigned    codec_vendor;
+    unsigned    codec_device;
+    unsigned    pin_count;
+    struct hwhud_hda_pin pins[HWHUD_HDA_PINS_MAX];
+    int         stream_running;
+    int         position_advancing;
+    unsigned long long bytes_played;
+    unsigned long long interrupts;
+    const char *interrupt_mode;           /* "msix", "msi", "intx", "polled"; NULL = unknown */
+    const char *last_error;               /* "none" or a short name */
+    unsigned    last_error_nid;
+    const char *tone_state;               /* NULL = the build has no tone */
+};
+
+/* A panel row may hold at most this many characters: strictly under the
+ * 100-column panel (COLS below, checked at compile time), so a row is never
+ * clipped by addline() and a photograph shows whole words. */
+#define HWHUD_HDA_ROW_COLUMNS 99
+
+/* Builds one or more panel rows into a single buffer, rows separated by '\n'.
+ * An item (a pin, a counter) is never split: when it would push the current
+ * row past HWHUD_HDA_ROW_COLUMNS the builder starts a new row that repeats the
+ * continuation prefix, so every row still says which controller it belongs to. */
+struct hwhud_row_builder {
+    char       *out;
+    size_t      capacity;
+    size_t      used;
+    size_t      row_start;
+    const char *continuation_prefix;
+};
+
+static size_t hwhud_text_length(const char *text)
+{
+    size_t length = 0;
+
+    while (text[length]) {
+        length++;
+    }
+    return length;
+}
+
+/* Append text to the buffer, truncating at the capacity and keeping it NUL
+ * terminated, the way snprintf would, but tracking the written length. */
+static void row_builder_write(struct hwhud_row_builder *builder, const char *text)
+{
+    for (size_t index = 0; text[index] && builder->used + 1 < builder->capacity; index++) {
+        builder->out[builder->used++] = text[index];
+    }
+    builder->out[builder->used < builder->capacity ? builder->used : builder->capacity - 1] = 0;
+}
+
+static void row_builder_append(struct hwhud_row_builder *builder, const char *item)
+{
+    if (builder->used - builder->row_start + hwhud_text_length(item) > HWHUD_HDA_ROW_COLUMNS) {
+        row_builder_write(builder, "\n");
+        builder->row_start = builder->used;
+        row_builder_write(builder, builder->continuation_prefix);
+    }
+    row_builder_write(builder, item);
+}
+
+/* The first HDA panel row(s) for one function: where it is, whose codec
+ * answered, and for the analog codec every routed output pin as
+ * role@nid:jack:on|off. The GPU's audio function is reported as present-but-
+ * silent on purpose: its output needs display-engine work (GPU stage A), and
+ * saying so beats a pin list that would suggest sound is one plug away. */
+static void hda_identity_format(char *out, size_t capacity, const struct hwhud_hda *hda)
+{
+    char head[64];
+    char prefix[40];
+    char item[64];
+    struct hwhud_row_builder builder = {out, capacity, 0, 0, prefix};
+
+    if (capacity == 0) {
+        return;
+    }
+    out[0] = 0;
+    if (hda->is_display_function) {
+        if (hda->codec_present) {
+            ksnprintf(out, capacity,
+                      "hda %02x:%02x.%x hdmi codec %04x:%04x present, output needs GPU stage A",
+                      hda->bus, hda->slot, hda->function, hda->codec_vendor, hda->codec_device);
+        } else {
+            ksnprintf(out, capacity,
+                      "hda %02x:%02x.%x hdmi codec absent (%s), output needs GPU stage A",
+                      hda->bus, hda->slot, hda->function,
+                      hda->not_bound_reason ? hda->not_bound_reason : "not probed");
+        }
+        return;
+    }
+    if (!hda->bound || !hda->codec_present) {
+        ksnprintf(out, capacity, "hda %02x:%02x.%x not bound: %s",
+                  hda->bus, hda->slot, hda->function,
+                  hda->not_bound_reason ? hda->not_bound_reason : "no reason recorded");
+        return;
+    }
+    ksnprintf(prefix, sizeof prefix, "hda %02x:%02x.%x pins", hda->bus, hda->slot, hda->function);
+    ksnprintf(head, sizeof head, "hda %02x:%02x.%x codec %04x:%04x pins", hda->bus, hda->slot,
+              hda->function, hda->codec_vendor, hda->codec_device);
+    row_builder_write(&builder, head);
+    if (hda->pin_count == 0) {
+        row_builder_write(&builder, " none");
+        return;
+    }
+    for (unsigned index = 0; index < hda->pin_count && index < HWHUD_HDA_PINS_MAX; index++) {
+        const struct hwhud_hda_pin *pin = &hda->pins[index];
+
+        ksnprintf(item, sizeof item, " %s@%02x:%s:%s", pin->role, pin->nid, pin->jack,
+                  pin->output_enabled ? "on" : "off");
+        row_builder_append(&builder, item);
+    }
+}
+
+/* The stream row(s): is the DMA engine running and actually moving (LPIB
+ * advancing since the previous panel update), how many bytes it has played, how
+ * many period interrupts arrived, the last codec error, and the boot test
+ * tone's progress. Together with the pin list this answers "is the silence the
+ * codec's routing, the DMA engine, or a missing interrupt". */
+static void hda_stream_format(char *out, size_t capacity, const struct hwhud_hda *hda)
+{
+    char prefix[40];
+    char item[96];
+    struct hwhud_row_builder builder = {out, capacity, 0, 0, prefix};
+
+    if (capacity == 0) {
+        return;
+    }
+    out[0] = 0;
+    ksnprintf(prefix, sizeof prefix, "hda %02x:%02x.%x", hda->bus, hda->slot, hda->function);
+    row_builder_write(&builder, prefix);
+    ksnprintf(item, sizeof item, " stream %s", hda->stream_running ? "running" : "stopped");
+    row_builder_append(&builder, item);
+    ksnprintf(item, sizeof item, " lpib advancing %s", hda->position_advancing ? "yes" : "no");
+    row_builder_append(&builder, item);
+    ksnprintf(item, sizeof item, " played %lluB", hda->bytes_played);
+    row_builder_append(&builder, item);
+    ksnprintf(item, sizeof item, " irqs %llu (%s)", hda->interrupts,
+              hda->interrupt_mode ? hda->interrupt_mode : "?");
+    row_builder_append(&builder, item);
+    if (hda->last_error_nid && hda->last_error) {
+        ksnprintf(item, sizeof item, " err %s@%02x", hda->last_error, hda->last_error_nid);
+    } else {
+        ksnprintf(item, sizeof item, " err %s", hda->last_error ? hda->last_error : "none");
+    }
+    row_builder_append(&builder, item);
+    if (hda->tone_state) {
+        ksnprintf(item, sizeof item, " tone %s", hda->tone_state);
+        row_builder_append(&builder, item);
+    }
+}
+
 /* Host gates include just the pure formatters above. The production build
  * retains all collectors below; no host stand-in can hide a stale formatter. */
 #ifndef HWHUD_FORMAT_HOST
@@ -286,6 +459,10 @@ static void hid_ctl_format(char *out, size_t capacity, const struct hwhud_hid *h
 #include "eth.h"
 #include "dhcp.h"
 #include "../../../include/weaksym.h"
+#include "hda_status.h"
+#ifdef LOGIT_HWHUD
+#include "boot_test_tone.h"
+#endif
 
 /* 100 columns: the two-line EHCI endpoint rows below run to about 95 with
  * three-digit counters. 61 rows: the EHCI rows are drawn last, the network
@@ -294,11 +471,13 @@ static void hid_ctl_format(char *out, size_t capacity, const struct hwhud_hid *h
  * lines the USB bring-up reads. The HID section grew from one row per bound
  * interface to two (bring-up facts) and, for a keyboard, three (control-pipe
  * fallback): the X79-VG4's keyboard and mouse bind four interfaces, so 51 + 6
- * rows are needed and 4 are headroom for a second composite device. 61 rows
+ * rows are needed. The audio controllers add up to five more (drawn before the
+ * EHCI endpoint rows, which are the ones a full panel cuts first). 61 rows
  * are 976 px of 16 px text plus the 40 px offset, which still fits a 1080-line
  * panel (the 1080 - 40 - 8 pixels left hold at most 64 rows). */
 #define COLS 100
 #define ROWS 61
+_Static_assert(HWHUD_HDA_ROW_COLUMNS < COLS, "HDA rows must fit the panel with room to spare");
 
 /* The panel's own state; touched only by the WM thread (hwhud_tick and
  * hwhud_click both run in its loop), so it needs no lock. */
@@ -382,6 +561,28 @@ static void add_wrapped(const char *text)
         text += length;
         while (*text == ' ') {
             text++;
+        }
+    }
+}
+
+/* Add every '\n'-separated row of a formatter's output as its own panel row.
+ * The HDA formatters already break rows below the panel width at item
+ * boundaries, so unlike add_wrapped() nothing is re-flowed here. */
+static void add_rows(const char *text)
+{
+    char row[COLS + 1];
+    size_t length = 0;
+
+    for (;; text++) {
+        if (*text == '\n' || *text == 0) {
+            row[length] = 0;
+            addline(row);
+            length = 0;
+            if (*text == 0) {
+                return;
+            }
+        } else if (length < COLS) {
+            row[length++] = *text;
         }
     }
 }
@@ -515,6 +716,14 @@ static void lines_display(void)
         char text[COLS * 2];
         ksnprintf(text, sizeof text, "%s%s", display_label[line],
                   amd_bootfb_display_hud_line(line));
+        add_wrapped(text);
+    }
+    /* Stage B3: where the GPU self-test stopped (or that it passed), the
+     * photo-readable twin of the [amd-polaris-runtime] serial lines. */
+    const char *gpu_runtime = amd_bootfb_gpu_runtime_hud_line();
+    if (gpu_runtime) {
+        char text[COLS * 2];
+        ksnprintf(text, sizeof text, "gpu-rt %s", gpu_runtime);
         add_wrapped(text);
     }
     if (!g_have_disp) { LINE("gop: no firmware report"); return; }
@@ -718,6 +927,91 @@ static void lines_net(void)
     add_wrapped(line);
 }
 
+/* Vendor/Device ID layout of codec parameter 00h (HDA 1.0a 7.3.4.1). */
+#define HDA_CODEC_VENDOR_ID_SHIFT 16
+#define HDA_CODEC_DEVICE_ID_MASK  0xffffu
+
+/* Copy the driver's status into the formatter's plain struct. The role and
+ * jack words come from the driver's own name functions so the panel can never
+ * disagree with the boot log about what "hp" or "no-detect" means. */
+static void hda_status_to_panel(const struct hda_controller_status *status, struct hwhud_hda *hda)
+{
+    hda->bus = status->bus;
+    hda->slot = status->slot;
+    hda->function = status->function;
+    hda->is_display_function = status->is_display_function;
+    hda->bound = status->bound;
+    hda->not_bound_reason = status->not_bound_reason;
+    hda->codec_present = status->codec_present;
+    hda->codec_vendor = status->codec_vendor_and_device >> HDA_CODEC_VENDOR_ID_SHIFT;
+    hda->codec_device = status->codec_vendor_and_device & HDA_CODEC_DEVICE_ID_MASK;
+    hda->pin_count = status->pin_count;
+    for (unsigned index = 0; index < status->pin_count && index < HWHUD_HDA_PINS_MAX; index++) {
+        hda->pins[index].role = hda_output_role_name(status->pins[index].role);
+        hda->pins[index].nid = status->pins[index].nid;
+        hda->pins[index].jack = hda_jack_state_name(status->pins[index].jack);
+        hda->pins[index].output_enabled = status->pins[index].output_enabled;
+    }
+    hda->stream_running = status->stream_running;
+    hda->position_advancing = status->position_advancing;
+    hda->bytes_played = status->bytes_played;
+    hda->interrupts = status->interrupts;
+    hda->interrupt_mode = status->interrupt_mode;
+    hda->last_error = hda_codec_error_name(status->last_error);
+    hda->last_error_nid = status->last_error_nid;
+#ifdef LOGIT_HWHUD
+    hda->tone_state = boot_test_tone_state_name();
+#else
+    hda->tone_state = NULL;
+#endif
+}
+
+/* One identity row (wrapped if long) per HD Audio function the driver met, plus
+ * a stream row for the analog codec. With no HDA function at all the panel says
+ * so, since "no line" and "the driver found nothing" are different diagnoses. */
+static void lines_hda(void)
+{
+    struct hda_controller_status status;
+    unsigned shown = 0;
+    int mirror_to_log = 0;
+
+#ifdef LOGIT_HWHUD
+    /* Mirror the rows to the serial log whenever the boot tone changes state,
+     * so a QEMU run (or a cable, when there is one) shows exactly what the
+     * panel shows at the moments that matter: before, during and after the tone.
+     * One log record per state keeps the log from filling with a line a second. */
+    {
+        static const char *last_logged_tone_state;
+        const char *tone_state = boot_test_tone_state_name();
+
+        mirror_to_log = tone_state != last_logged_tone_state;
+        last_logged_tone_state = tone_state;
+    }
+#endif
+    for (unsigned index = 0; hda_status_get(index, &status) == 0; index++) {
+        struct hwhud_hda hda = {0};
+        char line[320];
+
+        hda_status_to_panel(&status, &hda);
+        hda_identity_format(line, sizeof line, &hda);
+        add_rows(line);
+        if (mirror_to_log) {
+            kprintf("[hudhda] %s\n", line);
+        }
+        if (hda.bound && !hda.is_display_function && hda.codec_present) {
+            hda_stream_format(line, sizeof line, &hda);
+            add_rows(line);
+            if (mirror_to_log) {
+                kprintf("[hudhda] %s\n", line);
+            }
+        }
+        shown++;
+    }
+    if (!shown) {
+        LINE("hda: no HD Audio function was offered to the driver");
+    }
+}
+
 /* Package temperature from the digital thermal sensor (IA32_PACKAGE_THERM_STATUS
  * readout below MSR_TEMPERATURE_TARGET's TjMax), and the board's NCT6779. */
 static void lines_thermal(void)
@@ -873,6 +1167,9 @@ void hwhud_tick(const struct hwhud_wm *wm)
     }
     uint64_t dms = p_ms ? ms - p_ms : 0;
     p_ms = ms;
+#ifdef LOGIT_HWHUD
+    boot_test_tone_poll(ms);
+#endif
     probe_cpu();
     g_rows = 0;
     LINE("LogitOS HUD  up %lus  (HWHUD=1 build)", (unsigned long)(ms / 1000));
@@ -896,6 +1193,7 @@ void hwhud_tick(const struct hwhud_wm *wm)
     }
     lines_irq(dms);
     lines_net();
+    lines_hda();
     lines_mtrr();
     lines_thermal();
     lines_hid();
