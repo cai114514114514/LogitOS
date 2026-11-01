@@ -5,7 +5,8 @@
 ```
 amd/
   accel.c                 自动探测与 RV100 桌面接线
-  bootfb.c                已有启动画面的 AMD PCI 归属验证
+  bootfb.c                已有启动画面的 AMD PCI 归属验证；HWHUD 构建里还接线 B3 自检、租约与 quiesce
+  gpu_lease.c             GPU 独占租约（FREE／HELD／RETIRED），寄存器写入之前必须持有
   rv100/engine.c          RV100 2D 引擎
   polaris/
     device.c              67df 的只读探测
@@ -20,7 +21,10 @@ amd/
     memory/gart.c         GMC8 页表编码
     memory/arena.c        显存保留清单与 2 MiB 对齐 arena 选择（只读规划；含完整 GOP 帧缓冲）
     display/crtc.c        六个 CRTC 的只读扫描、GOP 核对与刷新率实测（bootfb 仅在 HWHUD 构建调用）
+    smu/security_key.c    经 SMC 间接端口读 SMU_FIRMWARE 的安全密钥（B3 的第一个寄存器写）
     smu/loader.c          SMU 启动、微码加载与完成等待
+    selftest/selftest.c   B3 自检阶段机：门控、租约、映射、绑定、映射核对、密钥、固件、SMU、SDMA（仅 HWHUD）
+    selftest/opt_out.c    读 \LOGIT\NOGPU 开关（启动模块 nogpu）
     smu/mailbox.c         独立 Test 消息传输检查
     smu/toc.c             SMU7 目录编码
     smu/stage.c           两份 SDMA 文件的独立 staging 工具接口
@@ -41,6 +45,16 @@ amd/
 6. 自检完成后安装桌面 hook。全宽连续脏行合并上传，局部区域保留 pitch；每次提交都等待 fence、RPTR 和目标内容读回。
 
 任意不确定提交会保留所有 DMA 内存并锁存隔离状态，桌面返回 `-2` 阻止 CPU 写前台；软件重新初始化不能充当硬件复位。
+
+## 阶段 B3：真机第一次自检运行（只在 HWHUD 镜像里）
+
+`bootfb.c` 在资源探测和只读显示扫描（B2）之后，对 Polaris10 设备调用 `polaris_selftest_run()`。顺序与停止点见 `selftest/selftest.h`：门控（设备 ID、`\LOGIT\NOGPU`、B2 的 arena、固件可计量）→ 取得独占租约 → 只映射 BAR5 和 BAR0 里的 arena 窗口（扫描输出保持 fb_init 给的写合并映射）→ 绑定 native 平台（只读）→ 用平台自己的映射回调核对 arena → 读安全密钥（整个流程第一次寄存器写，一次 SMC 索引写）→ 按密钥加载 SMC 与引擎固件 → 以 `POLARIS_DESKTOP_MODE_SELF_TEST` 启动已有的 runtime（SMU 加载、SDMA0 填充与拷贝读回）。**该模式永远不调用 `fb_set_native_present`**，桌面始终由 CPU 呈现。任何一步失败即停止，之后不再写任何寄存器。
+
+- 每一阶段打一行 `[amd-polaris-runtime] stage=<名> result=<名> …`，HUD 上是 `gpu-rt stage=… result=… key=… smc=… sdma=…`。
+- 所有平台回调都经过租约守卫：没有租约，写寄存器（包括 `sync` 里的 HDP 刷新）会被拒绝。
+- `dev_quiesce_all` 对保持绑定的显示设备调用 `driver.quiesce`：只读确认 SDMA0 环空闲并结束租约，不写寄存器。
+- 等待上限取自 Linux v6.12：SMU 每次等待 1 s（`hwmgr->usec_timeout`），SDMA 单次传输 100 ms（`adev->usec_timeout`）。
+- 门禁在 `tests/hw-b3.mk`（`make test-hw-b3-host`、`-kernel`、`-guest`）；QEMU 没有 Polaris，只能证明开关和启动不退化。
 
 ## 平台前提与当前边界
 

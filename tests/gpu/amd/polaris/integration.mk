@@ -3,7 +3,7 @@
 POLARIS_INTEGRATION_SRC := tests/gpu/amd/polaris/integration_test.c \
     c/drivers/gpu/amd/accel.c c/drivers/gpu/amd/rv100/engine.c c/drivers/gpu/amd/polaris/device.c
 POLARIS_INTEGRATION_FLAGS := -std=c11 -O1 -g -Wall -Wextra -Werror \
-    -Ic/drivers/gpu -Ic/drivers/core -Ic/kernel/pci -Ic/kernel/core -Ic/kernel/diag -Ic/kernel/gui
+    -Ic/drivers/gpu -Ic/drivers/core -Ic/kernel/pci -Ic/kernel/core -Ic/kernel/diag -Ic/kernel/gui -Ic/kernel/gui/fb
 
 .PHONY: test-polaris-integration-negctl test-polaris-integration-host
 test-polaris-integration-negctl:

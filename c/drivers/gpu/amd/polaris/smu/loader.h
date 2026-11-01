@@ -42,7 +42,8 @@ enum polaris_smu_load_result {
  * All callbacks are bounded. This executes the register protocol: it is not a
  * simulator or a readiness override. Cold boot follows both protected and
  * non-protected Polaris10 branches, without changing power/voltage policies.
- * Every wait is capped at 100000 polls/100 ms; whole operation at 2 seconds.
+ * Every wait is capped at 1 s (Linux hwmgr->usec_timeout) and 1000000 polls;
+ * the whole operation at 10 seconds.
  * Success requires fresh ACKs and the complete SRAM load mask, not just ACK.
  * The directory must include MEC JT1/JT2 even though 0x47e omits their bits.
  */

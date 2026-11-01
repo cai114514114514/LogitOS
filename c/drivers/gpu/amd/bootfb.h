@@ -3,6 +3,7 @@
 
 struct device;
 struct dev_match;
+struct driver;
 
 /* Passive ownership probe for an AMD/ATI firmware framebuffer.  Success means
  * only that the Multiboot LFB belongs to this PCI function; it is not a native
@@ -27,9 +28,19 @@ const char *amd_bootfb_vbios_source(const struct device *dev);
  * (LOGIT_HWHUD): a build without it always returns NULL. */
 const char *amd_bootfb_display_hud_line(unsigned index);
 
+/* The HUD line of the GPU self-test (stage B3), without its "gpu-rt " label:
+ * "stage=... result=... key=... smc=... sdma=...". NULL until the self-test
+ * has run or been skipped, and always NULL in a build without HWHUD. The text
+ * is the serial log's last stage line, shortened, never separately worded. */
+const char *amd_bootfb_gpu_runtime_hud_line(void);
+
 #ifdef LOGIT_HOST_TEST
 /* Lets the host gate pin the declarative match table as well as the probe. */
 const struct dev_match *amd_bootfb_match_table(void);
+
+/* The driver record itself, so the gate can call its remove and quiesce hooks
+ * the way the device model does. */
+const struct driver *amd_bootfb_driver_for_test(void);
 #endif
 
 #endif

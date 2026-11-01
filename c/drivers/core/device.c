@@ -228,7 +228,8 @@ void dev_unbind(struct device *dev)
  * driver can stop is unbound, which runs that driver's ->remove (stop DMA,
  * drop Bus Master). Storage stays bound because the filesystems were drained
  * first and it has nothing in flight; display stays because it shows the
- * shutdown. The read-back Bus Master bit is logged as the evidence.
+ * shutdown, but a display driver that started its GPU (->quiesce) must report
+ * it idle. The read-back Bus Master bit is logged as the evidence.
  * X79-VG4 bring-up, 2026-10-31; QEMU evidence only, not verified on X79-VG4
  * hardware. */
 int dev_quiesce_all(int *failed)
@@ -247,6 +248,19 @@ int dev_quiesce_all(int *failed)
 #ifndef POWER_NEGCTL_STORAGE_TRUSTED
             if (cmd & PCI_CMD_MASTER) {
                 kprintf("[power] quiesce %s %s: storage kept bound, bus master ON (DMA unconfirmed)\n",
+                        d->name, drv->name);
+                bad++;
+            }
+#endif
+            continue;
+        }
+        if (drv && drv->quiesce && d->bus_type == DEV_BUS_PCI && d->class_code == 0x03) {
+            /* A display stays bound, but a GPU the driver started (stage B3
+             * self-test) must be confirmed idle before the platform resets.
+             * Silent when the driver has nothing to report. */
+#ifndef POWER_NEGCTL_NO_DISPLAY_QUIESCE
+            if (drv->quiesce(d)) {
+                kprintf("[power] quiesce %s %s: display kept bound, GPU activity unconfirmed\n",
                         d->name, drv->name);
                 bad++;
             }

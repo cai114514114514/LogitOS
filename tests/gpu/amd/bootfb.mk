@@ -6,20 +6,23 @@
 # name in the [amd-resources] line. The probe itself stays a stub in the test.
 # The VBIOS source and status names bootfb.c prints are static inline in
 # resource/vbios.h, so they need no object file.
-# crtc.c, arena.c and layout.c are the stage B2 display survey (HWHUD builds).
+# crtc.c, arena.c and layout.c are the stage B2 display survey (HWHUD builds);
+# gpu_lease.c is the stage B3 ownership lease. The self-test itself is a stub in
+# the test: its stage machine has its own gate (tests/hw-b3.mk).
 AMD_BOOTFB_SRC := tests/gpu/amd/bootfb_test.c c/drivers/gpu/amd/bootfb.c \
                   c/drivers/gpu/amd/polaris/resource/atom.c \
                   c/drivers/gpu/amd/polaris/display/crtc.c \
                   c/drivers/gpu/amd/polaris/memory/arena.c \
-                  c/drivers/gpu/amd/polaris/memory/layout.c
+                  c/drivers/gpu/amd/polaris/memory/layout.c \
+                  c/drivers/gpu/amd/gpu_lease.c
 AMD_BOOTFB_INC := -Ic/drivers/gpu -Ic/drivers/core -Ic/kernel/pci \
                   $(KGUI_INC) $(KCORE_INC) $(KMM_INC) -Ic/lib/gfx/include
 # Stage B2's display survey is compiled only into HWHUD=1 kernels (LOGIT_HWHUD),
 # so every gate builds the glue both ways. The check counts differ by variant:
 # the plain build asserts that nothing ran, the HWHUD build asserts what ran.
 AMD_BOOTFB_HWHUD := -DLOGIT_HWHUD
-AMD_BOOTFB_CHECKS_PLAIN := 70
-AMD_BOOTFB_CHECKS_HWHUD := 72
+AMD_BOOTFB_CHECKS_PLAIN := 75
+AMD_BOOTFB_CHECKS_HWHUD := 95
 AMD_BOOTFB_EFI := $(BUILD)/amd-bootfb-efi/BOOTX64.EFI
 AMD_BOOTFB_ESP := $(BUILD)/amd-bootfb-esp.img
 
@@ -82,9 +85,13 @@ test-amd-bootfb-negctl:
 	    $(BUILD)/amd-bootfb-neg-survey-pitch.log
 	@grep -q '^FAIL: the survey times the frame counter in an HWHUD build$$' \
 	    $(BUILD)/amd-bootfb-neg-survey-pitch.log
-	@grep -q '^AMD_BOOTFB: $(AMD_BOOTFB_CHECKS_HWHUD) checks, 3 failures$$' \
+	@grep -q '^FAIL: the arena the survey chose is the one the self-test is given$$' \
 	    $(BUILD)/amd-bootfb-neg-survey-pitch.log
-	@echo 'AMD_BOOTFB_NEGCTL: framebuffer size used as pitch refused the GOP CRTC (exactly three failures)'
+	@grep -q '^FAIL: BAR0 is mapped only as the 2 MiB arena window at its planned offset$$' \
+	    $(BUILD)/amd-bootfb-neg-survey-pitch.log
+	@grep -q '^AMD_BOOTFB: $(AMD_BOOTFB_CHECKS_HWHUD) checks, 5 failures$$' \
+	    $(BUILD)/amd-bootfb-neg-survey-pitch.log
+	@echo 'AMD_BOOTFB_NEGCTL: framebuffer size used as pitch refused the GOP CRTC and left the self-test no arena (exactly five failures)'
 	@$(CC) -std=c11 -O1 -Wall -Wextra -Werror -DLOGIT_HOST_TEST $(AMD_BOOTFB_HWHUD) \
 	    -DAMD_BOOTFB_NEGCTL_EXPECT_NO_SURVEY $(AMD_BOOTFB_INC) $(AMD_BOOTFB_SRC) \
 	    -o $(BUILD)/amd-bootfb-neg-no-survey
@@ -98,9 +105,27 @@ test-amd-bootfb-negctl:
 	    $(BUILD)/amd-bootfb-neg-no-survey.log
 	@grep -q '^FAIL: a build without HWHUD does not even try to map BAR5$$' \
 	    $(BUILD)/amd-bootfb-neg-no-survey.log
-	@grep -q '^AMD_BOOTFB: $(AMD_BOOTFB_CHECKS_PLAIN) checks, 4 failures$$' \
+	@grep -q '^FAIL: a build without HWHUD never runs the GPU self-test$$' \
 	    $(BUILD)/amd-bootfb-neg-no-survey.log
-	@echo 'AMD_BOOTFB_NEGCTL: a survey that runs where HWHUD is off is caught by the plain-build assertions'
+	@grep -q '^FAIL: a build without HWHUD has no gpu-rt HUD line$$' \
+	    $(BUILD)/amd-bootfb-neg-no-survey.log
+	@grep -q '^FAIL: a build without HWHUD has nothing to quiesce$$' \
+	    $(BUILD)/amd-bootfb-neg-no-survey.log
+	@grep -q '^AMD_BOOTFB: $(AMD_BOOTFB_CHECKS_PLAIN) checks, 8 failures$$' \
+	    $(BUILD)/amd-bootfb-neg-no-survey.log
+	@echo 'AMD_BOOTFB_NEGCTL: a survey and self-test that run where HWHUD is off are caught by the plain-build assertions'
+	@$(CC) -std=c11 -O1 -Wall -Wextra -Werror -DLOGIT_HOST_TEST \
+	    -DAMD_BOOTFB_NEGCTL_SELFTEST_IN_ANY_BUILD $(AMD_BOOTFB_INC) $(AMD_BOOTFB_SRC) \
+	    -o $(BUILD)/amd-bootfb-neg-selftest-any-build
+	@if $(BUILD)/amd-bootfb-neg-selftest-any-build >$(BUILD)/amd-bootfb-neg-selftest-any-build.log 2>&1; then \
+	    cat $(BUILD)/amd-bootfb-neg-selftest-any-build.log; exit 1; fi
+	@grep -q '^FAIL: a build without HWHUD never runs the GPU self-test$$' \
+	    $(BUILD)/amd-bootfb-neg-selftest-any-build.log
+	@grep -q '^FAIL: a build without HWHUD has nothing to quiesce$$' \
+	    $(BUILD)/amd-bootfb-neg-selftest-any-build.log
+	@grep -q '^AMD_BOOTFB: $(AMD_BOOTFB_CHECKS_PLAIN) checks, 4 failures$$' \
+	    $(BUILD)/amd-bootfb-neg-selftest-any-build.log
+	@echo 'AMD_BOOTFB_NEGCTL: self-test glue compiled into a plain build is caught (exactly four failures)'
 
 test-amd-bootfb-host: test-amd-bootfb-negctl
 	@mkdir -p $(BUILD)

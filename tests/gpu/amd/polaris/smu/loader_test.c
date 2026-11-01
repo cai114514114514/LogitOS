@@ -209,7 +209,9 @@ int main(void)
     CHECK(polaris_smu_load(&c,&o,&r) == POLARIS_SMU_LOAD_INVALID && !f->io); r.image_count=9;
     init(f); memset(&c,0,sizeof(c)); r.scratch_gpu=r.toc_gpu;
     CHECK(polaris_smu_load(&c,&o,&r) == POLARIS_SMU_LOAD_INVALID && !f->io); r.scratch_gpu=UINT64_C(0x800200000);
-    init(f); memset(&c,0,sizeof(c)); f->time_step=100000;
+    /* One second per clock read exceeds the per-wait limit (1 s, Linux
+     * hwmgr->usec_timeout): the load must time out, not run on. */
+    init(f); memset(&c,0,sizeof(c)); f->time_step=1000000;
     CHECK(polaris_smu_load(&c,&o,&r) == POLARIS_SMU_LOAD_TIMEOUT && !c.loaded);
     /* Every transport operation before a successful warm load is independently
      * failed. No injected read/write failure may produce loaded=1. */

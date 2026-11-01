@@ -638,6 +638,49 @@ static UINT64 load_kernel(EFI_HANDLE image)
 }
 
 /* ------------------------------------------------------------------ *
+ *  step 2a: the GPU self-test opt-out marker                          *
+ * ------------------------------------------------------------------ */
+
+/* WHY THIS EXISTS. The first run of the AMD GPU self-test on real hardware
+ * writes to the card (docs/superpowers/plans/2026-11-01-rx580-stage-b.md,
+ * task B3). The owner must be able to switch it off from the boot stick alone,
+ * without rebuilding anything: an empty file \LOGIT\NOGPU on the ESP does it.
+ * Only the loader can read the ESP, so a file that exists becomes a boot module
+ * named "nogpu" (gpu_optout_marker.c has the contract). This runs BEFORE the
+ * firmware files so the marker always has a registry slot: a full registry that
+ * dropped it would silently run the self-test the owner asked not to run. */
+#include "gpu_optout_marker.c"
+
+static struct gpu_optout_slot optout_slot;
+static void load_fw_module_from_slot(const struct gpu_optout_slot *slot);
+
+static void load_optout_marker(EFI_HANDLE image)
+{
+    EFI_GUID li_guid  = EFI_LOADED_IMAGE_PROTOCOL_GUID;
+    EFI_GUID sfs_guid = EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID;
+    EFI_LOADED_IMAGE_PROTOCOL *li = 0;
+    EFI_SIMPLE_FILE_SYSTEM_PROTOCOL *fs = 0;
+    EFI_FILE_PROTOCOL *root = 0;
+    if (BS->HandleProtocol(image, &li_guid, (void **)&li))
+        return;
+    if (BS->HandleProtocol(li->DeviceHandle, &sfs_guid, (void **)&fs))
+        return;
+    if (fs->OpenVolume(fs, &root))
+        return;
+    enum gpu_optout_outcome outcome =
+        gpu_optout_marker_collect(BS, root, &optout_slot, allocated_range_is_loader_data);
+    root->Close(root);
+    if (outcome != GPU_OPTOUT_ABSENT) {
+        say("[efi] ");
+        say(gpu_optout_outcome_name(outcome));
+        say(outcome == GPU_OPTOUT_FOUND ? ": GPU self-test off\n"
+                                        : ": GPU self-test NOT disabled\n");
+    }
+    if (outcome == GPU_OPTOUT_FOUND)
+        load_fw_module_from_slot(&optout_slot);
+}
+
+/* ------------------------------------------------------------------ *
  *  step 2b: firmware modules                                          *
  * ------------------------------------------------------------------ */
 
@@ -670,6 +713,20 @@ struct fw_module {
 static struct fw_module fw_modules[LOGIT_BOOT_MODULES_MAX];
 static UINTN fw_module_count;
 static char fw_index_text[FW_INDEX_BYTES_MAX + 1];
+
+/* Append a module that was built outside load_firmware_modules (the opt-out
+ * marker) to the same list, so the tag builder and the final-map LoaderData
+ * check treat it like every other. The caller has checked the slot's pages. */
+static void load_fw_module_from_slot(const struct gpu_optout_slot *slot)
+{
+    if (fw_module_count == LOGIT_BOOT_MODULES_MAX)
+        return;
+    struct fw_module *module = &fw_modules[fw_module_count++];
+    module->lo = slot->lo;
+    module->hi = slot->hi;
+    module->page_hi = slot->page_hi;
+    mcopy(module->name, slot->name, sizeof module->name);
+}
 
 /* Widen "\LOGIT\FW\<name>" into a UCS-2 path for EFI_FILE_PROTOCOL.Open
  * (UEFI 2.10 sec 13.5). The names are ASCII, validated before this runs. */
@@ -1450,6 +1507,7 @@ void efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *systab)
     /* After the runway: that one needs the four pages directly below the
      * kernel at a FIXED address, which an AllocateAnyPages grab for a module
      * could otherwise take first. */
+    load_optout_marker(image);
     load_firmware_modules(image);
 
     /* Same allocation window as the firmware files, and appended to the same

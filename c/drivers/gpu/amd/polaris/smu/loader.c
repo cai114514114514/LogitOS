@@ -22,9 +22,21 @@
 #define FLAGS 0x3f000u
 #define SOFT_POINTER 0x20030u
 #define LOAD_STATUS_OFFSET 0x6cu
-#define LOAD_TIMEOUT_US 2000000u
-#define POLL_TIMEOUT_US 100000u
-#define POLL_LIMIT 100000u
+/* Wait bounds, from Linux v6.12. Every SMU register wait there (smu7_send_msg_
+ * to_smc's PHM_WAIT_FIELD_UNEQUAL, the SMU_STATUS and interrupt waits in
+ * polaris10_start_smu_in_*_mode, smu7_check_fw_load_finish) runs for
+ * hwmgr->usec_timeout, set in hwmgr_early_init() (pm/powerplay/hwmgr/hwmgr.c)
+ * to AMD_MAX_USEC_TIMEOUT = 1000000 us = 1 s (include/amd_shared.h). The first
+ * version of this loader allowed 100 ms per wait, ten times less than the
+ * kernel driver gives the same firmware, which on a real card could turn a slow
+ * but healthy load into a failure. Linux has no whole-sequence limit; this
+ * driver adds one so a stuck card cannot freeze the boot for good: the ten or so
+ * sequential waits of a load, each at most POLL_TIMEOUT_US, plus margin for the
+ * slow config-space-checked register writes of the firmware upload. */
+#define POLL_TIMEOUT_US 1000000u
+#define LOAD_TIMEOUT_US 10000000u
+/* Only guards a clock that stops; the time bounds above are the real limits. */
+#define POLL_LIMIT 1000000u
 #define RESPONSE_MASK 0xffffu
 
 /* SMU7 mailbox messages; address halves must be sent high before low. */

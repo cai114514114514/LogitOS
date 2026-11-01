@@ -423,6 +423,14 @@ static void lines_display(void)
                   amd_bootfb_display_hud_line(line));
         add_wrapped(text);
     }
+    /* Stage B3: where the GPU self-test stopped (or that it passed), the
+     * photo-readable twin of the [amd-polaris-runtime] serial lines. */
+    const char *gpu_runtime = amd_bootfb_gpu_runtime_hud_line();
+    if (gpu_runtime) {
+        char text[COLS * 2];
+        ksnprintf(text, sizeof text, "gpu-rt %s", gpu_runtime);
+        add_wrapped(text);
+    }
     if (!g_have_disp) { LINE("gop: no firmware report"); return; }
     LINE("gop firmware %ux%u, %u modes, pick by %s%s", g_disp.fw_width, g_disp.fw_height,
          g_disp.mode_count, g_disp.why, g_disp.set_failed ? " SETMODE FAILED" : "");

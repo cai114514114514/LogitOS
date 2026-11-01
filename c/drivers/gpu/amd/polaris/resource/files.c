@@ -23,6 +23,21 @@ unsigned polaris_fw_pin_table_count = POLARIS_FW_PIN_GENERATED_COUNT;
 #define polaris_fw_pin_table_count POLARIS_FW_PIN_GENERATED_COUNT
 #endif
 
+/* Why its own function: this single comparison is the whole difference between
+ * the _sk file and the plain/_k/_k2 ones, and the host gate breaks exactly it.
+ * Linux v6.12 pm/powerplay/smumgr/smu7_smumgr.c smu7_upload_smu_firmware_image()
+ * asks for UCODE_ID_SMU when the security key (SMU_SEL) is 1 and for
+ * UCODE_ID_SMU_SK otherwise; amdgpu_cgs.c amdgpu_cgs_get_firmware_info() maps
+ * UCODE_ID_SMU_SK to polaris10_smc_sk.bin. */
+static int key_selects_sk_file(unsigned key)
+{
+#ifdef POLARIS_RESOURCE_NEGCTL_KEY_INVERTED
+    return key != 0;
+#else
+    return key == 0;
+#endif
+}
+
 const char *polaris_resource_file_path(enum polaris_fw_kind kind, uint16_t device,
                                       uint8_t revision, unsigned key)
 {
@@ -41,7 +56,7 @@ const char *polaris_resource_file_path(enum polaris_fw_kind kind, uint16_t devic
     if (kind != POLARIS_FW_SMC) {
         return paths[kind];
     }
-    if (!key) {
+    if (key_selects_sk_file(key)) {
         return FIRMWARE_DIRECTORY "polaris10_smc_sk.bin";
     }
     if (polaris10_is_p20(device, revision)) {

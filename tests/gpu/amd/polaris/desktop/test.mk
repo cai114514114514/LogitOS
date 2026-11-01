@@ -1,4 +1,4 @@
-AMD_DESKTOP_FLAGS := -std=c11 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined -Ic/drivers/gpu -Ic/kernel/gui -Ic/kernel/core -Ic/kernel/diag
+AMD_DESKTOP_FLAGS := -std=c11 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined -Ic/drivers/gpu -Ic/kernel/gui -Ic/kernel/gui/fb -Ic/kernel/core -Ic/kernel/diag
 AMD_DESKTOP_SRC := c/drivers/gpu/amd/polaris/desktop.c
 AMD_DESKTOP_TEST := tests/gpu/amd/polaris/desktop/test.c
 .PHONY: test-polaris-desktop-host test-polaris-desktop-negctl

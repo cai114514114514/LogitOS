@@ -10,11 +10,20 @@
  *
  * Ownership validation is deliberately read-only.  After it succeeds, the
  * exact RV100 1002:5159 path may run amd_accel's isolated fill/copy canary;
- * Polaris10 67df in an HWHUD=1 build (LOGIT_HWHUD) also samples BAR5 registers
+ * Polaris10 in an HWHUD=1 build (LOGIT_HWHUD) also samples BAR5 registers
  * without command submission; every other AMD GPU, and every build without
  * HWHUD, remains passive.  In particular this driver never wakes
  * D3 hardware or enables BME, DMA, IRQs, clocks, modesetting or 3D.  Desktop
  * rendering remains fb.c's CPU copy into the established aperture.
+ *
+ * Stage B3 (HWHUD builds only) adds one step beyond passive: the Polaris10
+ * self-test (polaris/selftest/selftest.c) may take an exclusive ownership
+ * lease (gpu_lease.h), write registers, load microcode and run a fill and a
+ * copy inside a private 2 MiB window of the VRAM aperture.  It never installs
+ * the present hook, so the desktop stays CPU-composited whatever happens, and
+ * a \LOGIT\NOGPU marker on the boot stick switches it off.  dev_quiesce_all
+ * calls amd_bootfb_quiesce before a reboot or S5, which checks the engine is
+ * idle and ends the lease.
  */
 #include <stddef.h>
 #include <stdint.h>
@@ -25,8 +34,18 @@
 #include "pci.h"
 #include "fb.h"
 #include "kprintf.h"
+#include "amd/gpu_lease.h"
 #ifdef LOGIT_HWHUD
 #include "amd/polaris/memory/arena.h"
+#include "ktime.h"
+#endif
+/* The self-test is compiled in exactly when the HWHUD display survey is. The
+ * watched mutation compiles the self-test glue into a plain build too, so the
+ * host gate can prove its plain-build assertions are able to fail. */
+#if defined(LOGIT_HWHUD) || defined(AMD_BOOTFB_NEGCTL_SELFTEST_IN_ANY_BUILD)
+#define AMD_BOOTFB_SELFTEST_COMPILED 1
+#include "amd/polaris/selftest/selftest.h"
+#include "kheap.h"
 #include "ktime.h"
 #endif
 
@@ -36,6 +55,7 @@
 #define POLARIS_REGISTER_BAR 5
 #define DISPLAY_HUD_LINES 2u
 #define DISPLAY_HUD_LINE_BYTES 112
+#define SELFTEST_HUD_LINE_BYTES 160
 
 static const char amd_bootfb_name[] = "AMD/ATI firmware framebuffer";
 static struct device *polaris_boot_device;
@@ -45,8 +65,21 @@ static int polaris_resources_probed;
 static const char *polaris_vbios_label;
 #ifdef LOGIT_HWHUD
 static struct polaris_survey display_survey;
+/* display_survey is all zero until the survey ran, and zero reads as "arena
+ * selected" (POLARIS_ARENA_OK); this flag keeps that from ever being believed. */
+static int display_survey_ran;
 static char display_hud_line[DISPLAY_HUD_LINES][DISPLAY_HUD_LINE_BYTES];
 #endif
+/* The ownership lease of stage B3. A struct in every build (a few bytes); only
+ * the self-test, which exists in HWHUD builds, ever takes it. */
+static struct amd_gpu_lease gpu_lease;
+#ifdef AMD_BOOTFB_SELFTEST_COMPILED
+static struct polaris_selftest_report selftest_report;
+static char selftest_hud_line[SELFTEST_HUD_LINE_BYTES];
+#endif
+/* Defined with its initializer at the end of the file; the self-test asks it
+ * whether the device is bound to this driver. */
+static struct driver amd_bootfb_driver;
 
 static int memory_bar_sane(const struct dev_resource *r)
 {
@@ -242,6 +275,7 @@ static void survey_display(struct device *device,
         .firmware_bytes = report->firmware_bundle_bytes
     };
     polaris_arena_survey(&inputs, &display_survey);
+    display_survey_ran = 1;
 
     polaris_survey_format_gop(display_hud_line[0], DISPLAY_HUD_LINE_BYTES,
                               &display_survey);
@@ -277,6 +311,218 @@ const char *amd_bootfb_display_hud_line(unsigned index)
 const char *amd_bootfb_display_hud_line(unsigned index)
 {
     (void)index;
+    return NULL;
+}
+#endif
+
+#ifdef AMD_BOOTFB_SELFTEST_COMPILED
+/* ---- stage B3: the GPU self-test, kernel side ------------------------------
+ * polaris/selftest/selftest.c holds the logic and knows nothing about the
+ * kernel; these adapters give it the device, the mappings, the lease, the
+ * clock, the firmware loader and the heap. Host gates replace the whole set
+ * with models (tests/hw/b3), and tests/gpu/amd/bootfb_test.c drives these very
+ * adapters against stub kernel services. */
+
+#define POLARIS_APERTURE_BAR 0
+/* The adapters return this when a kernel service gave nothing back. */
+#define SELFTEST_ENVIRONMENT_FAILED 1
+
+/* Why the NOGPU marker is read through the boot-module registry: see
+ * polaris/selftest/opt_out.c. */
+static int selftest_opted_out(void *context)
+{
+    (void)context;
+    return polaris_selftest_opted_out();
+}
+
+/* Why the binding is part of the lease: the device model hands a device to one
+ * driver only, so "bound to amd-bootfb" is how "no other driver may bind" is
+ * known to hold (c/drivers/core/driver.h). */
+static int selftest_acquire_lease(void *context)
+{
+    struct device *device = context;
+    int bound = device->drv == &amd_bootfb_driver &&
+                dev_get_drvdata(device) == (void *)amd_bootfb_name;
+    int result = amd_gpu_lease_acquire(&gpu_lease, device, bound);
+    if (result) {
+        kprintf("[amd-polaris-runtime] lease refused: %s\n",
+                amd_gpu_lease_result_name(result));
+    }
+    return result;
+}
+
+/* Asked before every register access, so it reads the lease itself and keeps
+ * no copy. */
+static int selftest_lease_held(void *context)
+{
+    return amd_gpu_lease_holds(&gpu_lease, context);
+}
+
+/* Ends the lease for good at quiesce; see amd_gpu_lease_retire. */
+static void selftest_retire_lease(void *context)
+{
+    amd_gpu_lease_retire(&gpu_lease, context);
+}
+
+/* Why dev_bar_map for BAR5 but a window for BAR0: BAR5 holds only registers and
+ * nothing else maps it; BAR0 holds the live scanout, whose write-combining
+ * mapping a whole-BAR map would overwrite (dev_bar_map_window in
+ * c/drivers/core/device.c explains). Both mappings are identity mappings, so
+ * the returned physical address is also the CPU pointer. */
+static int selftest_map_registers(void *context, volatile uint8_t **bar5)
+{
+    uint64_t base = dev_bar_map(context, POLARIS_REGISTER_BAR);
+    if (!base) {
+        return SELFTEST_ENVIRONMENT_FAILED;
+    }
+    *bar5 = (volatile uint8_t *)(uintptr_t)base;
+    return 0;
+}
+
+/* The only BAR0 mapping the self-test ever asks for: the arena window, at its
+ * planned offset. dev_bar_map_window maps whole pages, and the arena sits
+ * megabytes away from the scanout, so no page is shared with it. */
+static int selftest_map_arena_window(void *context, uint64_t bar_offset,
+                                     uint64_t bytes, volatile uint8_t **window)
+{
+    uint64_t base = dev_bar_map_window(context, POLARIS_APERTURE_BAR, bar_offset, bytes);
+    if (!base) {
+        return SELFTEST_ENVIRONMENT_FAILED;
+    }
+    *window = (volatile uint8_t *)(uintptr_t)base;
+    return 0;
+}
+
+/* The native platform re-reads configuration space before every access. */
+static int selftest_read_pci_config(void *context, uint16_t byte_offset, uint32_t *value)
+{
+    const struct device *device = context;
+    *value = pci_cfg_read(device->bus, device->slot, device->func, byte_offset);
+    return 0;
+}
+
+/* A read-only look at BAR5 for the bind-failure line. The mapping is the one the
+ * self-test already holds (dev_bar_map is idempotent); the offset is checked
+ * against the BAR's size before it is dereferenced. */
+static int selftest_read_diagnostic_register(void *context, uint32_t byte_offset,
+                                             uint32_t *value)
+{
+    struct device *device = context;
+    const struct dev_resource *registers = &device->res[POLARIS_REGISTER_BAR];
+    if ((byte_offset & 3u) || registers->size < 4u || byte_offset > registers->size - 4u) {
+        return SELFTEST_ENVIRONMENT_FAILED;
+    }
+    uint64_t base = dev_bar_map(device, POLARIS_REGISTER_BAR);
+    if (!base) {
+        return SELFTEST_ENVIRONMENT_FAILED;
+    }
+    *value = *(volatile uint32_t *)(uintptr_t)(base + byte_offset);
+    return 0;
+}
+
+/* The self-test times its waits in microseconds; the kernel's monotonic clock
+ * is TSC backed once calibrated (ktime.h). */
+static uint64_t selftest_now_us(void *context)
+{
+    (void)context;
+    return time_mono_ns() / 1000u;
+}
+
+/* Loads exactly the file set the key selects, with the pin and ownership checks
+ * of resource/files.c; the probe at boot only tried both candidate sets. */
+static int selftest_load_firmware(void *context, unsigned security_key,
+                                  struct polaris_resource_files *files)
+{
+    const struct device *device = context;
+    return polaris_resource_files_load(device->device, device->revision,
+                                       security_key, files);
+}
+
+/* The runtime copies what it needs onto the card, so the host copies can go. */
+static void selftest_release_firmware(void *context, struct polaris_resource_files *files)
+{
+    (void)context;
+    polaris_resource_files_release(files);
+}
+
+/* The firmware bundle is assembled in ordinary RAM first, then written to the
+ * card with explicit 32-bit stores (runtime.c). */
+static void *selftest_allocate_workspace(void *context, size_t bytes)
+{
+    (void)context;
+    return kmalloc(bytes);
+}
+
+/* Pairs with selftest_allocate_workspace. */
+static void selftest_free_workspace(void *context, void *workspace)
+{
+    (void)context;
+    kfree(workspace);
+}
+
+/* Static storage on purpose: the platform the runtime keeps points back here. */
+static struct polaris_selftest_ops selftest_ops = {
+    .opted_out = selftest_opted_out,
+    .acquire_lease = selftest_acquire_lease,
+    .lease_held = selftest_lease_held,
+    .retire_lease = selftest_retire_lease,
+    .map_registers = selftest_map_registers,
+    .map_arena_window = selftest_map_arena_window,
+    .read_pci_config = selftest_read_pci_config,
+    .read_diagnostic_register = selftest_read_diagnostic_register,
+    .now_us = selftest_now_us,
+    .load_firmware = selftest_load_firmware,
+    .release_firmware = selftest_release_firmware,
+    .allocate_workspace = selftest_allocate_workspace,
+    .free_workspace = selftest_free_workspace
+};
+
+/* Run the self-test on the probed Polaris device and keep its HUD text. The
+ * arena plan comes from the display survey; a survey that did not run or did
+ * not choose an arena hands the self-test NULL, and its gate then says why
+ * nothing was attempted. The inputs outlive the call (static) because the
+ * runtime's memory request points into the plan. */
+static void run_selftest(struct device *device,
+                         const struct polaris_resource_report *report,
+                         uint64_t lfb_bytes)
+{
+    static struct polaris_selftest_inputs inputs;
+    uint32_t height = fb_height();
+    inputs = (struct polaris_selftest_inputs){
+        .pci_vendor = device->vendor,
+        .pci_device = device->device,
+        .pci_revision = device->revision,
+        .vram = {report->device.mc_base, report->device.vram_bytes},
+        .bar0_physical = device->res[POLARIS_APERTURE_BAR].start,
+        .bar5_physical = device->res[POLARIS_REGISTER_BAR].start,
+        .bar5_bytes = device->res[POLARIS_REGISTER_BAR].size,
+        .width = fb_width(),
+        .height = height,
+        .pitch = height ? (uint32_t)(lfb_bytes / height) : 0,
+        .firmware_bundle_bytes = report->firmware_bundle_bytes
+    };
+#ifdef LOGIT_HWHUD
+    if (display_survey_ran && display_survey.arena_result == POLARIS_ARENA_OK) {
+        inputs.arena_plan = &display_survey.plan;
+    }
+#endif
+    selftest_ops.context = device;
+    polaris_selftest_run(&inputs, &selftest_ops, &selftest_report);
+    polaris_selftest_format_hud(selftest_hud_line, sizeof selftest_hud_line,
+                                &selftest_report);
+}
+
+/* The HUD reads this after boot; like the survey lines it is the serial text
+ * rebuilt from the same report, never separately worded. */
+const char *amd_bootfb_gpu_runtime_hud_line(void)
+{
+    return selftest_hud_line[0] ? selftest_hud_line : NULL;
+}
+#else
+/* hwhud.c is linked into every kernel, so the accessor must exist; without the
+ * self-test there is never a line to show. */
+const char *amd_bootfb_gpu_runtime_hud_line(void)
+{
     return NULL;
 }
 #endif
@@ -327,6 +573,10 @@ void amd_bootfb_probe_resources(void)
     if (!status)
         survey_display(polaris_boot_device, &report, lfb, bytes);
 #endif
+#ifdef AMD_BOOTFB_SELFTEST_COMPILED
+    if (!status)
+        run_selftest(polaris_boot_device, &report, bytes);
+#endif
 }
 
 const char *amd_bootfb_vbios_source(const struct device *dev)
@@ -334,15 +584,46 @@ const char *amd_bootfb_vbios_source(const struct device *dev)
     return dev && dev == polaris_boot_device ? polaris_vbios_label : NULL;
 }
 
+/* Why a callback: dev_quiesce_all leaves display devices bound (they show the
+ * shutdown), so it cannot use ->remove to stop a GPU that the self-test had
+ * working. This is the hook it calls instead. Without a lease it does nothing
+ * and prints nothing, so a machine whose GPU was never touched, and QEMU, see
+ * no change. Returns nonzero when the GPU could not be confirmed idle. */
+static int amd_bootfb_quiesce(struct device *dev)
+{
+#ifdef AMD_BOOTFB_SELFTEST_COMPILED
+    if (dev != polaris_boot_device) {
+        return 0;
+    }
+    int unconfirmed = polaris_selftest_quiesce(&selftest_ops, &selftest_report);
+    if (selftest_report.result != POLARIS_SELFTEST_NOT_RUN) {
+        polaris_selftest_format_hud(selftest_hud_line, sizeof selftest_hud_line,
+                                    &selftest_report);
+    }
+    return unconfirmed;
+#else
+    (void)dev;
+    return 0;
+#endif
+}
+
 static void amd_bootfb_remove(struct device *dev)
 {
     if (dev == polaris_boot_device) {
+        if (amd_gpu_lease_holds(&gpu_lease, dev)) {
+            /* The card is in a state only this boot's driver understood; the
+             * lease ends for good rather than letting a rebind trust it. */
+            kprintf("[amd-polaris-runtime] device unbound while leased; "
+                    "GPU is not touched again this boot\n");
+        }
+        amd_gpu_lease_retire(&gpu_lease, dev);
         polaris_boot_device = NULL;
         polaris_resources_probed = 0;
         polaris_vbios_label = NULL;
 #ifdef LOGIT_HWHUD
         display_hud_line[0][0] = '\0';
         display_hud_line[1][0] = '\0';
+        display_survey_ran = 0;
 #endif
     }
     amd_accel_reset();
@@ -367,5 +648,13 @@ static struct driver amd_bootfb_driver = {
     .match = amd_bootfb_ids,
     .probe = amd_bootfb_probe,
     .remove = amd_bootfb_remove,
+    .quiesce = amd_bootfb_quiesce,
 };
 DRIVER_DECLARE(amd_bootfb_driver);
+
+#ifdef LOGIT_HOST_TEST
+const struct driver *amd_bootfb_driver_for_test(void)
+{
+    return &amd_bootfb_driver;
+}
+#endif

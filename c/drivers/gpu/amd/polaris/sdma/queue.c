@@ -17,8 +17,15 @@
 #define REG_DOORBELL     (0x3492u * 4u)
 #define REG_VIRTUAL      (0x34a7u * 4u)
 #define REG_APE1         (0x34a8u * 4u)
-#define WAIT_US          5000u
-#define WAIT_POLLS       100000u
+/* How long one fill or copy may take before the queue gives up and quarantines
+ * itself. Linux v6.12 allows a posted SDMA test write adev->usec_timeout
+ * (sdma_v3_0.c sdma_v3_0_ring_test_ring polls for it), which is
+ * AMDGPU_MAX_USEC_TIMEOUT = 100000 us (amdgpu.h, set in amdgpu_device.c). The
+ * first version waited 5 ms, far less than the kernel driver grants the same
+ * engine, and a spurious timeout on the first real card would have hidden the
+ * result we are after. The poll cap only guards a clock that stops. */
+#define WAIT_US          100000u
+#define WAIT_POLLS       1000000u
 
 static int valid_map(const struct polaris_sdma_mapping *m)
 {
