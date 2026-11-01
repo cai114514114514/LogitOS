@@ -17,6 +17,8 @@ static int keys_seen, last_key, last_key_mods, mouse_seen, mx, my, ml, mm;
 unsigned long usb_reports_total, usb_keys_total, usb_motion_total;
 
 void usb_hid_register(void);
+uint64_t time_mono_ns(void) { return 1000000000ull; }
+int time_ready(void) { return 1; }
 void usb_register_driver(const struct usb_driver *drv) { registered = drv; }
 void *kmalloc(size_t n) { void *p = calloc(1, n); if (p) allocated++; return p; }
 void kfree(void *p) { if (p) { allocated--; free(p); } }
@@ -37,7 +39,10 @@ int usb_control(struct usb_device *d, uint8_t rt, uint8_t req, uint16_t val,
     if (req == HID_REQ_SET_PROTOCOL) {
         protocols++;
         if (refuse_protocol) return -1;
-        checki(val, HID_PROTO_REPORT, "boot-capable parsed HID explicitly selects report protocol");
+        /* Linux's usbhid never sends SET_PROTOCOL for a descriptor-decoded
+         * interface (the device is in report protocol after reset, HID 1.11
+         * 7.2.6); the only request left is the boot fallback's. */
+        checki(val, HID_PROTO_BOOT, "SET_PROTOCOL is only ever the boot fallback's boot request");
     }
     return 0;
 }
@@ -73,7 +78,7 @@ static void composite(void)
     int c0=configured,p0=protocols,k0=keys_seen,m0=mouse_seen;
     checki(usb_bind_interfaces(&d,&registered,1),2,"both composite interfaces bind");
     checki(configured-c0,2,"both transport endpoints configured");
-    checki(protocols-p0,2,"both boot-capable interfaces select report mode");
+    checki(protocols-p0,0,"descriptor-decoded boot-capable interfaces send no SET_PROTOCOL");
     check(d.binding[0].drvdata != d.binding[1].drvdata,"interface private states differ");
     uint8_t k[8]={2,0,4}, m[4]={1,3,0xfe,0};
     inject(&d,1,k,sizeof k); inject(&d,2,m,sizeof m);
@@ -140,9 +145,15 @@ static void tablet_and_nkro(void)
 }
 static void protocol_refusal(void)
 {
-    struct usb_device d={.used=1}; iface(&d,0,kbd_rd,sizeof kbd_rd,1,1);
+    /* The boot fallback is the one path that still selects a protocol: an
+     * unparseable descriptor on a boot-subclass keyboard. A refusal there
+     * leaves the interface unbound rather than trusting an unverified layout. */
+    static const uint8_t unparseable[]={0x75};
+    struct usb_device d={.used=1}; iface(&d,0,unparseable,sizeof unparseable,1,1);
     refuse_protocol=1;
+    int p0=protocols;
     checki(usb_bind_interfaces(&d,&registered,1),0,"refused wire protocol leaves interface unbound");
+    checki(protocols-p0,1,"the boot fallback asks for boot protocol exactly once");
     refuse_protocol=0; checki(allocated,0,"failed protocol probe frees private state");
 }
 int main(void)

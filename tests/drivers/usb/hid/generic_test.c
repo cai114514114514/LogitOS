@@ -24,6 +24,14 @@ static int keys_seen, last_key, last_key_mods, mouse_seen, mx, my, ml, mm, last_
 unsigned long usb_reports_total, usb_keys_total, usb_motion_total;
 
 void usb_hid_register(void);
+uint64_t time_mono_ns(void)
+{
+    return 1000000000ull;
+}
+int time_ready(void)
+{
+    return 1;
+}
 void usb_register_driver(const struct usb_driver *drv)
 {
     registered = drv;
@@ -116,7 +124,9 @@ int usb_control(struct usb_device *d, uint8_t rt, uint8_t req, uint16_t val, uin
         protocols++;
         if (refuse_protocol)
             return -1;
-        checki(val, HID_PROTO_REPORT, "boot-capable parsed HID explicitly selects report protocol");
+        /* usbhid sends no SET_PROTOCOL for a parsed descriptor; only the boot
+         * fallback may select a protocol, and only boot. */
+        checki(val, HID_PROTO_BOOT, "SET_PROTOCOL is only ever the boot fallback's boot request");
     }
     return 0;
 }

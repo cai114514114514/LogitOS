@@ -119,6 +119,7 @@ struct hid_desc {
         uint16_t in_bits;
         uint16_t out_bits;
         uint16_t feature_bits;
+        uint8_t led_out;    /* an Output item of this report uses the LED page */
     } rep[HID_MAX_REPORTS];
 };
 
@@ -129,6 +130,13 @@ int hid_parse_report_desc(const uint8_t *d, int len, struct hid_desc *out);
 
 /* Total INPUT bits for `report_id` (0 when the descriptor uses no IDs). */
 int hid_report_in_bits(const struct hid_desc *hd, uint8_t report_id);
+
+/* The Output report that carries the keyboard LEDs (an Output item on the LED
+ * page, HID Usage Tables 1.12 section 11), the one Linux's
+ * usbhid_set_leds() looks for with hid_find_field_early(HID_UP_LED).
+ * -> 1 and *report_id / *body_bytes (Output bits rounded up, WITHOUT the
+ * report-ID byte) filled, or 0 when the descriptor declares no LED output. */
+int hid_find_led_output(const struct hid_desc *hd, uint8_t *report_id, unsigned *body_bytes);
 int hid_report_feature_bits(const struct hid_desc *descriptor, uint8_t report_id);
 
 /* Extract control `index` of `f` from a report body. `body_bits` bounds the

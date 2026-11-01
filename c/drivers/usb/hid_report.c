@@ -260,6 +260,18 @@ int hid_parse_report_desc(const uint8_t *d, int len, struct hid_desc *out)
             *cursor = (uint16_t)(base + total);
 
             if ((!is_input && !is_feature) || (flags & HID_MAIN_CONSTANT)) {
+                /* An Output item produces no field, but the host must still
+                 * know WHICH Output report holds the keyboard LEDs: a device
+                 * may refuse to report until it has been sent one (see
+                 * usb_hid.c). Record only that fact, per report. */
+                if (!is_input && !is_feature && !(flags & HID_MAIN_CONSTANT)) {
+                    int led = l.have_range == 3 && (l.usage_min >> 16) == HID_PAGE_LED;
+                    for (int i = 0; i < l.n_usage; i++)
+                        if ((l.usage[i] >> 16) == HID_PAGE_LED)
+                            led = 1;
+                    if (led)
+                        out->rep[slot].led_out = 1;
+                }
                 zero(&l, sizeof l);
                 continue; /* padding: consumes bits only */
             }
@@ -354,6 +366,23 @@ int hid_parse_report_desc(const uint8_t *d, int len, struct hid_desc *out)
                 return -1;
     if (out->nfields == 0)
         return -1;
+    return 0;
+}
+
+/* WHY: the keyboard bring-up needs the LED report's ID and size to build a
+ * SET_REPORT that the device's own descriptor calls valid (HID 1.11 7.2.2).
+ * Linux finds the same item in hid_find_field_early(hid, HID_UP_LED, 0x01)
+ * (v6.12 drivers/hid/usbhid/hid-core.c). The first matching report wins, as it
+ * does there. */
+int hid_find_led_output(const struct hid_desc *hd, uint8_t *report_id, unsigned *body_bytes)
+{
+    for (int i = 0; i < hd->nreports; i++) {
+        if (!hd->rep[i].led_out || !hd->rep[i].out_bits)
+            continue;
+        *report_id = hd->rep[i].id;
+        *body_bytes = ((unsigned)hd->rep[i].out_bits + 7u) / 8u;
+        return 1;
+    }
     return 0;
 }
 
