@@ -30,6 +30,7 @@
 #include "gfx_simd.h"
 #include "gui_sync.h"
 #include "fb.h"
+#include "fb_overlay.h"  /* same cursor-plane and present-scratch ceiling */
 #include "text.h"
 #include "icons.h"
 #include "logit_desktop_prefs.h"

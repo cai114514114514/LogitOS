@@ -12,7 +12,7 @@
 # rather than die on a signal.
 
 GAV2_SRC := tests/unit/gui_abi_v2_test.c tests/unit/gui_abi_v2_wire.c \
-            c/kernel/gui/fb/fb.c c/kernel/gui/fb/glass.c \
+            c/kernel/gui/fb/fb.c c/kernel/gui/fb/fb_overlay.c c/kernel/gui/fb/glass.c \
             c/kernel/gui/wm_draw2.c c/kernel/gui/wm_draw2_path.c \
             c/kernel/gui/wm_draw2_state.c c/kernel/gui/wm_draw2_text.c \
             c/kernel/gui/wm_draw2_fx.c c/kernel/gui/wm_backdrop.c

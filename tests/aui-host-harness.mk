@@ -20,7 +20,7 @@ AUIH_OUT      := $(BUILD)/aui_host
 AUIH_GOLD     := tests/golden/aui
 AUIH_SRC      := $(AUIH_DIR)/aui_host.c $(AUIH_DIR)/aui_host_scenes.c $(AUIH_DIR)/aui_host_test.c c/apps/gui/aui.c
 AUIH_V2_SRC   := $(sort $(wildcard $(AUIH_DIR)/v2_*.c))
-AUIH_SCALE_SRC := $(AUIH_DIR)/aui_host_scale_check.c $(AUIH_DIR)/aui_host.c c/kernel/gui/fb/fb.c c/kernel/gui/fb/glass.c
+AUIH_SCALE_SRC := $(AUIH_DIR)/aui_host_scale_check.c $(AUIH_DIR)/aui_host.c c/kernel/gui/fb/fb.c c/kernel/gui/fb/fb_overlay.c c/kernel/gui/fb/glass.c
 AUIH_CFLAGS   := -O1 -g -Wall -Wextra -DLOGIT_SYS_HOOK=aui_host_sys -I$(AUIH_DIR) -Ic/apps/gui -Ic/apps \
                  $(GFX_INC) -Iinclude -Iinclude/abi -Ic/kernel/gui $(KGUI_INC)
 

@@ -9,7 +9,7 @@
 # It must exit 1 and fail ONLY 'FAIL signed' checks. The positive and the
 # control share one source list and flag set and differ only by that -D.
 
-GLS_SRC := tests/unit/gui_legacy_signed_test.c c/kernel/gui/fb/fb.c \
+GLS_SRC := tests/unit/gui_legacy_signed_test.c c/kernel/gui/fb/fb.c c/kernel/gui/fb/fb_overlay.c \
            c/kernel/gui/fb/glass.c
 GLS_FLAGS := -O2 -Wall -Wextra
 

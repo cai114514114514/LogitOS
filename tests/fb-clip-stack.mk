@@ -8,7 +8,7 @@
 # bound display's target. It must exit 1 and fail ONLY 'FAIL rebind' (the clip
 # is lost when fb_sdk() rebinds from the surface).
 
-FCS_SRC := tests/unit/fb_clip_stack_test.c c/kernel/gui/fb/fb.c \
+FCS_SRC := tests/unit/fb_clip_stack_test.c c/kernel/gui/fb/fb.c c/kernel/gui/fb/fb_overlay.c \
            c/kernel/gui/fb/glass.c
 FCS_FLAGS := -O2 -Wall -Wextra -DGFX_NCTX=2
 

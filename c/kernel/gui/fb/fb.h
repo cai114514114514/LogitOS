@@ -93,11 +93,23 @@ void fb_flush_rect(int x, int y, int w, int h);     /* display a rect drawn stra
  * fb_cursor_hw() is the question every caller must ask before relying on the
  * other two: when it is 0 (multiboot LFB, or a virtio-gpu without a cursor
  * queue) the pointer has to be drawn into the frame like any other pixel.
+ * Correction: a plain LFB can now use fb_overlay_available() below and keep
+ * back cursor-free; transports that refuse that overlay still composite it.
  * `argb` is 0xAARRGGBB, and (hot_x,hot_y) is the pixel inside it that sits on
  * the reported pointer position. */
 int  fb_cursor_hw(void);
 int  fb_cursor_image(const uint32_t *argb, int w, int h, int hot_x, int hot_y);
 void fb_cursor_move(int x, int y);
+
+/* CPU scanout overlay for a plain LFB. It keeps the screen back buffer free of
+ * cursor pixels; moving/showing/redefining restores old damage from that RAM.
+ * GPU/native transports must keep their existing cursor/composite path.
+ * The caller serializes these operations on the compositor thread. */
+int fb_overlay_available(void);
+void fb_set_overlay(const uint32_t *argb, int stride, int bw, int bh,
+                    int hot_x, int hot_y);
+void fb_overlay_move(int x, int y);
+void fb_overlay_show(int on);
 
 /* An off-screen drawing target (e.g. an application window's canvas). The clip
  * rectangle is a PROPERTY OF THE TARGET, not a global: app A setting a clip on

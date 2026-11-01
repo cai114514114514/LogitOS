@@ -6,6 +6,8 @@ FB_NATIVE_PRESENT_SRC := tests/unit/fb_native_present_test.c c/kernel/gui/fb/fb.
 # The explicit material list does not discover simd/ like GFX_SRC does. S0's
 # material clock now lives there; leave every existing source in place.
 FB_NATIVE_PRESENT_SRC += c/lib/gfx/simd/gfx_simd.c
+# fb_present_rect now links the cursor-free RAM overlay composer.
+FB_NATIVE_PRESENT_SRC += c/kernel/gui/fb/fb_overlay.c
 FB_NATIVE_PRESENT_INC := $(KGUI_INC) -Ic/drivers/virtio $(KMM_INC) -Ic/lib/text $(GFX_INC)
 .PHONY: test-fb-native-present-negctl test-fb-native-present-host
 
