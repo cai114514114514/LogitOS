@@ -11,6 +11,7 @@
 static const struct usb_driver *registered;
 static const uint8_t *descriptors[USB_MAX_IF];
 static int lengths[USB_MAX_IF], pending[16], allocated, configured, protocols;
+static int report_protocols;
 static int refuse_protocol;
 static uint8_t packets[16][128];
 static int keys_seen, last_key, last_key_mods, mouse_seen, mx, my, ml, mm;
@@ -39,10 +40,13 @@ int usb_control(struct usb_device *d, uint8_t rt, uint8_t req, uint16_t val,
     if (req == HID_REQ_SET_PROTOCOL) {
         protocols++;
         if (refuse_protocol) return -1;
-        /* Linux's usbhid never sends SET_PROTOCOL for a descriptor-decoded
-         * interface (the device is in report protocol after reset, HID 1.11
-         * 7.2.6); the only request left is the boot fallback's. */
-        checki(val, HID_PROTO_BOOT, "SET_PROTOCOL is only ever the boot fallback's boot request");
+        /* A descriptor-decoded keyboard gets no SET_PROTOCOL (Linux usbhid);
+         * the requests left are the boot fallback's boot request and the
+         * report request a boot-capable non-keyboard (the mouse) always got. */
+        if (val == HID_PROTO_REPORT)
+            report_protocols++;
+        else
+            checki(val, HID_PROTO_BOOT, "SET_PROTOCOL is boot (fallback) or report (non-keyboard)");
     }
     return 0;
 }
@@ -75,10 +79,11 @@ static void composite(void)
     struct usb_device d = { .used=1 };
     iface(&d,0,kbd_rd,sizeof kbd_rd,1,1);
     iface(&d,1,mouse_rd,sizeof mouse_rd,1,2);
-    int c0=configured,p0=protocols,k0=keys_seen,m0=mouse_seen;
+    int c0=configured,p0=protocols,r0=report_protocols,k0=keys_seen,m0=mouse_seen;
     checki(usb_bind_interfaces(&d,&registered,1),2,"both composite interfaces bind");
     checki(configured-c0,2,"both transport endpoints configured");
-    checki(protocols-p0,0,"descriptor-decoded boot-capable interfaces send no SET_PROTOCOL");
+    checki(protocols-p0,1,"of two descriptor-decoded boot interfaces only the mouse gets SET_PROTOCOL");
+    checki(report_protocols-r0,1,"the mouse's SET_PROTOCOL is report protocol, the keyboard's none");
     check(d.binding[0].drvdata != d.binding[1].drvdata,"interface private states differ");
     uint8_t k[8]={2,0,4}, m[4]={1,3,0xfe,0};
     inject(&d,1,k,sizeof k); inject(&d,2,m,sizeof m);

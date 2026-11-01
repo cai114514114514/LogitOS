@@ -95,7 +95,6 @@ extern unsigned long usb_reports_total, usb_keys_total, usb_motion_total;
 #define HID_CTL_SILENCE_NS (3 * NS_PER_SEC)
 #define HID_CTL_POLL_NS (16 * NS_PER_MS)
 #define HID_CTL_REPEAT_NS (96 * NS_PER_MS)
-#define HID_CTL_GIVE_UP 8       /* consecutive all-failed passes before giving up */
 #define HID_CTL_MAX_REPORT 64   /* bytes of one GET_REPORT / SET_REPORT body */
 
 /* The common keyboard reader may run on another CPU. Keep snapshots outside
@@ -201,7 +200,6 @@ struct hid_dev {
      * and RETIRED with compare-and-swap: the IRQ callback retires it, the
      * kworker promotes it, and neither may overwrite the other's decision. */
     uint8_t ctl_state;              /* HID_DIAG_CTL_* */
-    uint8_t ctl_fail_run;
     uint8_t ctl_nreports;
     uint64_t armed_ns;              /* when the interrupt endpoint was armed */
     struct hid_ctl_report ctl[HID_MAX_REPORTS];
@@ -606,6 +604,7 @@ static void handle_mouse(struct hid_dev *h, const uint8_t *rep, int len)
  * interface as FAILED and nothing is ever sent again. */
 
 static uint64_t hid_service(struct usb_device *d, int ifno);
+static void hid_ctl_release_keys(struct hid_dev *h, uint64_t now);
 
 /* WHY: one place that changes the state and mirrors it to the panel, so the
  * two cannot disagree. Returns whether this call made the change. */
@@ -651,10 +650,16 @@ static void hid_ctl_retire(struct hid_dev *h)
  * Keyboard-page input are polled: a consumer-control report on the same
  * interface would decode to nothing here. With no descriptor the interface is
  * a boot keyboard and its single input report is the 8-byte Appendix B.1 one. */
-static void hid_ctl_collect(struct hid_dev *h)
+static void hid_ctl_collect(struct hid_dev *h, const struct usb_interface *it)
 {
     h->ctl_nreports = 0;
     if (!(h->role & ROLE_KBD))
+        return;
+    /* Boot keyboard interfaces only (subclass 1, protocol 1, HID 1.11 4.2/4.3).
+     * A keyboard's second (NKRO or media) interface would otherwise be polled
+     * too and could type every key twice, and a mouse's macro interface would
+     * receive the GET_REPORT that Linux never sends to boot mice (NOGET). */
+    if (it->if_subclass != USB_HID_SUB_BOOT || it->if_proto != USB_HID_PROTO_KEYBOARD)
         return;
     if (!h->generic) {
         h->ctl[0].id = 0;
@@ -771,7 +776,6 @@ static uint64_t hid_service(struct usb_device *d, int ifno)
             return h->armed_ns + HID_CTL_SILENCE_NS - now;
     }
 
-    int answered = 0;
     for (unsigned slot = 0; slot < h->ctl_nreports; slot++) {
         struct hid_ctl_report *r = &h->ctl[slot];
         uint8_t report[HID_CTL_MAX_REPORT];
@@ -785,9 +789,12 @@ static uint64_t hid_service(struct usb_device *d, int ifno)
             h->diag->ctl_first[i] = length > i ? report[i] : 0;
         if (!valid) {
             h->diag->ctl_fail++;
-            continue;
+            /* One failure is enough to stop: a STALL repeats every pass (and
+             * costs hub CLEAR_TT_BUFFER traffic each time), and a NAKed data
+             * stage holds the only kworker for the whole 3 s transfer timeout,
+             * long enough to starve acpi-init's 1 s wait (native.c:725). */
+            break;
         }
-        answered = 1;
         now = time_mono_ns();
         int promoted = 0;
         {
@@ -802,15 +809,39 @@ static uint64_t hid_service(struct usb_device *d, int ifno)
             kprintf("[hid] if%d interrupt pipe silent for 3 s; polling GET_REPORT\n", h->ifnum);
     }
 
-    if (answered) {
-        h->ctl_fail_run = 0;
-    } else if (state == HID_DIAG_CTL_WAIT || ++h->ctl_fail_run >= HID_CTL_GIVE_UP) {
-        if (hid_ctl_transition(h, state, HID_DIAG_CTL_FAILED))
+    if (h->diag->ctl_rc == HID_DIAG_REQ_FAILED) {
+        int gave_up = 0;
+        {
+            IO_GUARD(&d->hc->callbacks);
+            uint8_t current = __atomic_load_n(&h->ctl_state, __ATOMIC_ACQUIRE);
+            if (current == HID_DIAG_CTL_POLL)
+                hid_ctl_release_keys(h, now);
+            gave_up = (current == HID_DIAG_CTL_WAIT || current == HID_DIAG_CTL_POLL) &&
+                      hid_ctl_transition(h, current, HID_DIAG_CTL_FAILED);
+        }
+        if (gave_up)
             kprintf("[hid] if%d GET_REPORT fallback unusable; staying on the interrupt pipe\n",
                     h->ifnum);
     }
     state = __atomic_load_n(&h->ctl_state, __ATOMIC_ACQUIRE);
     return state == HID_DIAG_CTL_POLL ? HID_CTL_POLL_NS : 0;
+}
+
+/* WHY: when the fallback stops while a key or modifier is down, the held-key
+ * and modifier snapshots would keep it pressed until unplug (a stuck Shift in
+ * every later keystroke). Feed each polled report an all-zero body, report ID
+ * kept, through the normal path so the release edges are generated. Caller
+ * holds the controller callback lock, as for every other feed. */
+static void hid_ctl_release_keys(struct hid_dev *h, uint64_t now)
+{
+    for (unsigned slot = 0; slot < h->ctl_nreports; slot++) {
+        struct hid_ctl_report *r = &h->ctl[slot];
+        uint8_t released[HID_CTL_MAX_REPORT];
+        memset(released, 0, sizeof released);
+        if (h->generic && h->rd.uses_report_ids)
+            released[0] = r->id;
+        hid_ctl_feed(h, r, released, r->len, now);
+    }
 }
 
 /* ------------------------------------------------------- probe / poll --- */
@@ -939,7 +970,17 @@ static int hid_probe(struct usb_device *d, int ifno)
         }
         probe_log.proto_rc = HID_DIAG_REQ_OK;
     }
-    /* A parsed descriptor sends NO SET_PROTOCOL, as Linux's usbhid does: a
+    if (h->generic && it->if_subclass == USB_HID_SUB_BOOT && !(h->role & ROLE_KBD)) {
+        /* Not a keyboard (the board's working mouse is one): keep the
+         * SET_PROTOCOL(report) these interfaces always received, so the one
+         * input device that works on the X79-VG4 sees no change. Firmware may
+         * leave a boot-capable mouse in boot protocol across reset; HID 1.11
+         * 7.2.6 says the host should set it. */
+        probe_log.proto_sent = HID_DIAG_PROTO_REPORT;
+        probe_log.proto_rc = hid_set_protocol(d, it->num, HID_PROTO_REPORT) < 0 ?
+                             HID_DIAG_REQ_FAILED : HID_DIAG_REQ_OK;
+    }
+    /* A parsed KEYBOARD descriptor sends NO SET_PROTOCOL, as Linux's usbhid does: a
      * device is in report protocol after reset (HID 1.11 7.2.6 says it defaults
      * there when initialised) and usbhid relies on that. The former
      * SET_PROTOCOL(report) to every boot-subclass interface is dropped to match,
@@ -969,7 +1010,7 @@ static int hid_probe(struct usb_device *d, int ifno)
      * possible, as in Linux (the endpoint is submitted when the input device
      * is opened, which is after usbhid_start() returned). */
     (void)hid_send_led_report(d, h, it, &probe_log);
-    hid_ctl_collect(h);
+    hid_ctl_collect(h, it);
 
     h->modifier_slot = -1;
     for (unsigned i = 0; i < USB_MAX_DEVICES * USB_MAX_IF; i++)
