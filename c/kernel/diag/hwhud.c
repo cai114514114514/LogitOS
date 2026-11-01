@@ -130,12 +130,16 @@ static void par_format(char *out, size_t capacity, const struct smp_present_stat
 #include "hardware.h"
 #include "hid_diag.h"
 #include "ehci_diag.h"
+#include "usb_hc.h"
 #include "nct6779.h"
 #include "logit_boot.h"
 #include "amd/bootfb.h"
 
-#define COLS 92
-#define ROWS 36
+/* 100 columns: the two-line EHCI endpoint rows below run to about 95 with
+ * three-digit counters. 48 rows: they are the last rows drawn, so a full
+ * panel would silently drop exactly the lines this diagnostic exists for. */
+#define COLS 100
+#define ROWS 48
 
 static struct logit_boot_display_tag g_disp;
 static int g_have_disp;
@@ -442,6 +446,20 @@ static void lines_wm(const struct hwhud_wm *w, uint64_t dms)
     p_wm = *w;
 }
 
+/* Name the speed an EHCI endpoint was scheduled for. ps.speed carries the
+ * shared USB encoding (usb_hc.h: 1 full, 2 low, 3 high), not the QH's EPS
+ * field (EHCI 1.0 3.6: 0 full, 1 low, 2 high), which is offset by one. */
+static const char *ehci_speed_name(unsigned speed)
+{
+    if (speed == USB_SPEED_HIGH) {
+        return "high";
+    }
+    if (speed == USB_SPEED_LOW) {
+        return "low";
+    }
+    return "full";
+}
+
 static void lines_irq(uint64_t dms)
 {
     char out[COLS + 1];
@@ -531,11 +549,25 @@ static void lines_hid(void)
         if (pci_intx_diag(i, b, sizeof b) != 0) break;
         addline(b);
     }
+    /* Two rows per interrupt endpoint. Row one is the scheduler's view and
+     * the error counters; row two is what the QH holds right now, so one photo
+     * separates "never visited" (reach 0), "visited and NAKed" (ov Active with
+     * CERR intact), a stuck split (SplitXState/MMF in ov) and a toggle or
+     * speed/mask mistake (ov bit 31, ch EPS, cap masks and hub address). */
     struct ehci_ep_diag e;
-    for (int i = 0; ehci_diag_get(i, &e) == 0; i++)
-        LINE("ehci%u dev %u ep %02x period %u phase %u %s done %lu err %lu td %08x qh %08x",
-             e.controller, e.dev_addr, e.ep, e.period, e.phase, e.armed ? "armed" : "idle",
-             (unsigned long)e.done, (unsigned long)e.errors, e.td_token, e.qh_token);
+    for (int i = 0; ehci_diag_get(i, &e) == 0; i++) {
+        LINE("ehci%u dev %u ep %02x %s s %02x c %02x per %u ph %u uf %u done %lu err h%u x%u m%u d%u b%u st%u rearm %u",
+             e.controller, e.dev_addr, e.ep, ehci_speed_name(e.speed), e.smask, e.cmask,
+             e.period, e.phase, e.phase_uf, (unsigned long)e.done,
+             e.err_halt, e.err_xact, e.err_mmf, e.err_dbe, e.err_babble, e.stalls, e.rearms);
+        if (e.live_valid) {
+            LINE("  ov %08x cur %08x nxt %08x td %08x ch %08x cap %08x reach %u",
+                 e.live_overlay, e.live_current, e.live_next, e.live_td_token,
+                 e.ep_chars, e.ep_caps, e.reach);
+        } else {
+            LINE("  live n/a state %u", e.state);
+        }
+    }
 }
 
 void hwhud_tick(const struct hwhud_wm *wm)

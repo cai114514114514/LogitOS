@@ -148,10 +148,102 @@ int ehci_ctrl_diag(unsigned c, uint32_t *sts, uint32_t *intr, unsigned long *err
     return 0;
 }
 
+/* The shared periodic tree is acyclic and holds at most EHCI_ENDPOINTS QHs, so
+ * a longer chain means a corrupt list; stop rather than spin with IRQs off. */
+#define EHCI_REACH_MAX_HOPS 64u
+/* EHCI 1.0 3.1: bits 4:0 of a frame-list/link pointer are T (bit 0), Typ
+ * (bits 2:1) and reserved; the QH address is the upper bits. */
+#define EHCI_LINK_ADDR_MASK (~0x1fu)
+#define EHCI_LINK_TYPE_MASK 6u
+
+/* Map a hardware link target back to the endpoint whose QH lives there. The
+ * schedule holds DMA addresses and the panel needs CPU pointers, so look the
+ * address up in the endpoint table instead of casting. Caller holds gate. */
+static const struct ehci_ep *ep_by_qh_dma(const struct ehci *e, uint32_t qh_dma)
+{
+    for (unsigned i = 0; i < EHCI_ENDPOINTS; i++) {
+        const struct ehci_ep *candidate = &e->ep[i];
+        if (candidate->qh && candidate->qh_dma == qh_dma) {
+            return candidate;
+        }
+    }
+    return NULL;
+}
+
+/* Why: "the HC never visits the keyboard QH" is the first hypothesis for a
+ * silent endpoint, and only the frame list can prove it. Count the slots of
+ * the 1024-entry periodic list (EHCI 3.1) from which target's QH is reachable
+ * by following horizontal link pointers (QH dword 0, EHCI 3.6): a healthy
+ * period-P endpoint is reachable from 1024/P slots, zero means never visited.
+ * A chain ends at T (EHCI 3.1), at a non-QH type (this driver publishes only
+ * QHs) or at an address that no known endpoint owns, and after
+ * EHCI_REACH_MAX_HOPS; all of those just stop that slot's walk. Read-only: no
+ * hardware or schedule state changes. Caller holds gate and has checked up. */
+static unsigned ep_reach(const struct ehci *e, const struct ehci_ep *target)
+{
+    if (!e->frames) {
+        return 0;
+    }
+    unsigned reachable = 0;
+    dma_rmb();
+    for (unsigned frame = 0; frame < EHCI_PERIODIC_FRAMES; frame++) {
+        uint32_t link = e->frames[frame];
+        for (unsigned hop = 0; hop < EHCI_REACH_MAX_HOPS; hop++) {
+            if ((link & EHCI_END) || (link & EHCI_LINK_TYPE_MASK) != EHCI_QH_LINK) {
+                break;
+            }
+            const struct ehci_ep *visited = ep_by_qh_dma(e, link & EHCI_LINK_ADDR_MASK);
+            if (!visited) {
+                break;
+            }
+            if (visited == target) {
+                reachable++;
+                break;
+            }
+            link = visited->qh->link;
+        }
+    }
+    return reachable;
+}
+
+/* Why: td/qh tokens frozen at completion say nothing about an endpoint that
+ * never completes, which is the keyboard case. Sample the QH as hardware has
+ * it now (EHCI 3.6): overlay token (Active, Halted, CERR, SplitXState, MMF),
+ * current/next qTD, the programmed endpoint characteristics and capabilities,
+ * and the token of the qTD the driver armed. Same rule as int_poll: QH DMA
+ * memory is read only under gate, with the controller up and the endpoint
+ * linked, because teardown can free it otherwise (Astra round 7). An unlinked
+ * or unsampled endpoint leaves live_valid zero. Caller holds gate. */
+static void ep_live_sample(const struct ehci *e, const struct ehci_ep *p, struct ehci_ep_diag *out)
+{
+    if (!e->up || e->failed || !p->qh || p->state != EP_LINKED) {
+        return;
+    }
+    dma_rmb();
+    out->ep_chars = p->qh->ep;
+    out->ep_caps = p->qh->caps;
+    out->live_current = p->qh->current;
+    out->live_next = p->qh->next;
+    out->live_overlay = p->qh->token;
+    out->live_td_token = p->q[p->cur]->token;
+    out->reach = (uint16_t)ep_reach(e, p);
+    out->live_valid = 1;
+}
+
+/* The panel calls this from the window-manager thread with no other lock
+ * held. IO_GUARD masks this CPU's interrupts and takes the same gate that
+ * int_poll (IRQ context) and every ehci.c writer take, and nothing else is
+ * acquired beneath it, so the order is trivially respected. The gate is held
+ * across one controller's endpoint scan and, for the matched endpoint, the
+ * reach walk (1024 slots, 2 to 3 hops each on a healthy list; worst case is
+ * bounded by EHCI_REACH_MAX_HOPS), about once a second. The software counters
+ * are copied under the gate too, so a concurrent device_close cannot hand the
+ * panel a half-zeroed row. */
 int ehci_diag_get(int i, struct ehci_ep_diag *out)
 {
     for (unsigned c = 0, seen = 0; c < EHCI_CONTROLLERS; c++) {
         if (!controllers[c].used) continue;
+        IO_GUARD(&controllers[c].gate);
         for (unsigned j = 0; j < EHCI_ENDPOINTS; j++) {
             struct ehci_ep *p = &controllers[c].ep[j];
             if (!p->dev || p->type != USB_XFER_INT || !p->qh) continue;
@@ -166,6 +258,7 @@ int ehci_diag_get(int i, struct ehci_ep_diag *out)
                 .err_xact = p->err_xact, .err_mmf = p->err_mmf, .err_dbe = p->err_dbe,
                 .err_babble = p->err_babble, .stalls = p->stalls,
                 .overlay_status = p->last_qh_token & 255 };
+            ep_live_sample(&controllers[c], p, out);
             return 0;
         }
     }
