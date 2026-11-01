@@ -164,7 +164,8 @@ static void discover_files(struct polaris_resource_report *report)
      * sets instead and retain that uncertainty explicitly. */
     for (unsigned key = 0; key <= 1; ++key) {
         struct polaris_resource_files files = {0};
-        (void)polaris_resource_files_load(report->pci_revision, key, &files);
+        (void)polaris_resource_files_load(report->pci_device, report->pci_revision,
+                                          key, &files);
         report->firmware_mask[key] = files.valid_mask;
         /* The planner needs all seven engine files; a partial set sizes
          * nothing. No MMIO and no allocation: it only reads the held blobs. */
@@ -206,12 +207,13 @@ int polaris_resources_probe_device(struct device *device, uint64_t lfb,
         .security_key_unknown = 1
     };
     if (!device || device->bus_type != DEV_BUS_PCI || device->seg != 0 ||
-        device->vendor != AMD_VENDOR || device->device != POLARIS10_PCI_DEVICE) {
+        device->vendor != AMD_VENDOR || !polaris10_device_known(device->device)) {
         return -1;
     }
     uint32_t identity = read_config(device, PCI_CFG_VENDOR);
     uint32_t class_revision = read_config(device, PCI_CFG_REVISION);
-    if (identity != 0x67df1002u || class_revision == UINT32_MAX ||
+    if (identity != ((uint32_t)device->device << 16 | AMD_VENDOR) ||
+        !polaris10_identity_known(identity) || class_revision == UINT32_MAX ||
         class_revision >> 24 != PCI_CLASS_DISPLAY ||
         ((class_revision >> 16) & 0xffu) != device->subclass ||
         !current_bars_match(device)) {
@@ -232,6 +234,7 @@ int polaris_resources_probe_device(struct device *device, uint64_t lfb,
         return -1;
     }
     out->pci_revision = (uint8_t)class_revision;
+    out->pci_device = device->device;
     discover_vbios(device, out);
     discover_files(out);
     return 0;

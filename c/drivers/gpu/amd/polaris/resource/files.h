@@ -46,10 +46,11 @@ extern const struct polaris_fw_pin *polaris_fw_pin_table;
 extern unsigned polaris_fw_pin_table_count;
 #endif
 
-/* Names follow Linux v6.12 amdgpu_cgs.c and ASICID_IS_P20/P30 for 1002:67df.
- * key must be the actual SMU security selection (0 or 1), not PCI revision.
- * Revision alone selects only the appropriate key=1 candidate. */
-const char *polaris_resource_file_path(enum polaris_fw_kind kind,
+/* Names follow Linux v6.12 amdgpu_cgs.c, which picks the SMU file from
+ * ASICID_IS_P20/P30 (amdgpu.h): device ID and revision together, so 6fdf rev
+ * ef gets polaris10_k_smc.bin like 67df rev ef. key must be the actual SMU
+ * security selection (0 or 1), not PCI revision. */
+const char *polaris_resource_file_path(enum polaris_fw_kind kind, uint16_t device,
                                       uint8_t revision, unsigned key);
 
 /* Read the installed kernel firmware directory through VFS, and fall back to
@@ -67,7 +68,7 @@ const char *polaris_resource_file_path(enum polaris_fw_kind kind,
  * always release it, including failure. Bytes may feed runtime_start while
  * held, then be released after that synchronous call finishes. This function
  * neither selects a GPU arena nor invokes a hardware callback. */
-int polaris_resource_files_load(uint8_t revision, unsigned key,
+int polaris_resource_files_load(uint16_t device, uint8_t revision, unsigned key,
                                 struct polaris_resource_files *);
 void polaris_resource_files_release(struct polaris_resource_files *);
 

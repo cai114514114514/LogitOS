@@ -25,7 +25,7 @@ struct polaris_atom_reservations {
     unsigned driver_allocation_required;
 };
 
-/* Parse a copied, little-endian ATOM image for exactly 1002:67df. Both ranges
+/* Parse a copied, little-endian ATOM image for a Polaris10 device (pci_id.h). Both ranges
  * are GPU MC addresses. Zero-sized ranges are absent. Supports the legacy
  * VRAM_UsageByFirmware 1.4/1.5 tables used after RV770; older tables use a
  * different address unit and are deliberately rejected.

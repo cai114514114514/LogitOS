@@ -3,9 +3,10 @@
 #include <stdint.h>
 struct device;
 
-/* 67df spans several Polaris boards; PCI identity does not establish the
- * marketing model, shader count or VRAM size of an RX 580/2048SP board. */
-#define POLARIS10_PCI_DEVICE 0x67dfu
+/* The accepted Polaris10 PCI IDs live in pci_id.h (polaris10_device_known):
+ * an ID spans several boards and does not establish the marketing model,
+ * shader count or VRAM size of an RX 580/2048SP board. */
+#include "amd/polaris/pci_id.h"
 enum polaris_probe_result {
     POLARIS_PROBE_NONE, POLARIS_PROBE_OBSERVED, POLARIS_PROBE_ID,
     POLARIS_PROBE_POWER, POLARIS_PROBE_DECODE, POLARIS_PROBE_BAR,

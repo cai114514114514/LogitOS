@@ -14,6 +14,7 @@
 #include <stdint.h>
 
 #include "amd/accel.h"
+#include "amd/polaris/pci_id.h"
 #include "driver.h"
 #include "kprintf.h"
 #include "ktime.h"
@@ -50,10 +51,12 @@ enum amd_accel_family amd_accel_family_for_pci(uint16_t vendor,
     if (vendor != AMD_VENDOR_ID || class_code != PCI_CLASS_DISPLAY ||
         (subclass != 0x00u && subclass != 0x02u && subclass != 0x80u))
         return AMD_FAMILY_UNKNOWN;
+    /* Every Polaris10 ID Linux knows (pci_id.h), not only 67df. */
+    if (polaris10_device_known(device)) return AMD_FAMILY_POLARIS;
     switch (device) {
     case RV100_DEVICE_ID: return AMD_FAMILY_RV100;
     case 0x6780u: case 0x6818u: return AMD_FAMILY_GCN;
-    case 0x67dfu: case 0x6987u: return AMD_FAMILY_POLARIS;
+    case 0x6987u: return AMD_FAMILY_POLARIS;
     case 0x6863u: case 0x69afu: return AMD_FAMILY_VEGA;
     case 0x731fu: case 0x73bfu: case 0x744cu: return AMD_FAMILY_RDNA;
     default: return AMD_FAMILY_UNKNOWN;
@@ -235,7 +238,7 @@ static int prepare_locked(struct device *dev, uint64_t lfb_phys,
     active_info.software_fallback = 1;
 
     if (dev && dev->bus_type == DEV_BUS_PCI && dev->vendor == AMD_VENDOR_ID &&
-        dev->device == POLARIS10_PCI_DEVICE && dev->header_type == 0 &&
+        polaris10_device_known(dev->device) && dev->header_type == 0 &&
         dev->class_code == PCI_CLASS_DISPLAY &&
         (dev->subclass == 0 || dev->subclass == 2)) {
         uint16_t command = pci_cfg_read16(dev->bus, dev->slot, dev->func,

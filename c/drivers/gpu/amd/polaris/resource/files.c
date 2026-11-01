@@ -1,5 +1,6 @@
 #include <string.h>
 #include "amd/polaris/resource/files.h"
+#include "amd/polaris/pci_id.h"
 #include "bootmod.h"
 #include "crypto.h"
 #include "vfs.h"
@@ -22,13 +23,7 @@ unsigned polaris_fw_pin_table_count = POLARIS_FW_PIN_GENERATED_COUNT;
 #define polaris_fw_pin_table_count POLARIS_FW_PIN_GENERATED_COUNT
 #endif
 
-static int is_polaris20(uint8_t revision)
-{
-    return revision == 0xe3 || revision == 0xe4 || revision == 0xe5 ||
-           revision == 0xe7 || revision == 0xef;
-}
-
-const char *polaris_resource_file_path(enum polaris_fw_kind kind,
+const char *polaris_resource_file_path(enum polaris_fw_kind kind, uint16_t device,
                                       uint8_t revision, unsigned key)
 {
     static const char *const paths[POLARIS_FW_FILE_COUNT] = {
@@ -49,10 +44,10 @@ const char *polaris_resource_file_path(enum polaris_fw_kind kind,
     if (!key) {
         return FIRMWARE_DIRECTORY "polaris10_smc_sk.bin";
     }
-    if (is_polaris20(revision)) {
+    if (polaris10_is_p20(device, revision)) {
         return FIRMWARE_DIRECTORY "polaris10_k_smc.bin";
     }
-    if (revision == 0xe1 || revision == 0xf7) {
+    if (polaris10_is_p30(device, revision)) {
         return FIRMWARE_DIRECTORY "polaris10_k2_smc.bin";
     }
     return FIRMWARE_DIRECTORY "polaris10_smc.bin";
@@ -187,7 +182,7 @@ static int load_file(const char *path, enum polaris_fw_kind kind,
     return module_result;
 }
 
-int polaris_resource_files_load(uint8_t revision, unsigned key,
+int polaris_resource_files_load(uint16_t device, uint8_t revision, unsigned key,
                                 struct polaris_resource_files *set)
 {
     if (!set || key > 1 || set->valid_mask || set->smc.data || set->smc.bytes) {
@@ -202,7 +197,7 @@ int polaris_resource_files_load(uint8_t revision, unsigned key,
         struct polaris_fw_blob *file = kind == POLARIS_FW_SMC ? &set->smc :
                                        &set->firmware.file[kind];
         set->result[kind] = load_file(polaris_resource_file_path(
-            (enum polaris_fw_kind)kind, revision, key),
+            (enum polaris_fw_kind)kind, device, revision, key),
             (enum polaris_fw_kind)kind, file, &set->source[kind]);
         if (!set->result[kind]) {
             set->valid_mask |= 1u << kind;

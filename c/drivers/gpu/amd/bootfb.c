@@ -151,14 +151,14 @@ int amd_bootfb_probe(struct device *dev)
     else if (dev->device == 0x5159u)
         kprintf("[amd-bootfb] framebuffer retained; RV100 canary blocked, "
                 "desktop remains CPU-composited\n");
-    else if (dev->device == POLARIS10_PCI_DEVICE)
+    else if (polaris10_device_known(dev->device))
         kprintf("[amd-bootfb] framebuffer retained; Polaris read-only probe, "
                 "SMU/GART/ring bring-up pending; desktop remains CPU-composited\n");
     else
         kprintf("[amd-bootfb] framebuffer retained; no modeset, GPU command, "
                 "BAR map, DMA, IRQ or MMIO write on this device\n");
     dev_set_drvdata(dev, (void *)amd_bootfb_name);
-    if (dev->device == POLARIS10_PCI_DEVICE) {
+    if (polaris10_device_known(dev->device)) {
         polaris_boot_device = dev;
         polaris_resources_probed = 0;
     }
