@@ -52,13 +52,17 @@ static io_lock_t hda_gate = IO_LOCK_INIT;
 #include "kprintf.h"
 #include "pit.h"
 #include "hda_route.h"
+#include "hda_output_paths.h"
+#include "hda_status.h"
 /* The existing LOGIT_HOST_TEST register gates compile hda.c as one TU and
  * predate the route module. Include the SAME implementation for that seam;
  * the kernel's recursive source list compiles hda_route.c separately. This
  * avoids either editing another track's fixtures or growing a host-only port
- * that can drift away from the production graph and verb logic. */
+ * that can drift away from the production graph and verb logic. The output
+ * planner is pure and shares the seam for the same reason. */
 #ifdef LOGIT_HOST_TEST
 #include "hda_route.c"
+#include "hda_output_paths.c"
 #endif
 #ifdef HDA_DMA_CAPTURE_CANARY
 #include "sched.h"
@@ -152,6 +156,18 @@ void *memset(void *, int, size_t);
                                         * an input selector) actually listens
                                         * to right now */
 #define VERB_GET_PIN_SENSE    0xF09    /* bit31 = a jack is physically present */
+/* HDA 1.0a 7.3.3.15: a pin whose capabilities set Trigger Required only
+ * measures presence after this verb (Linux hda_jack.c, read_pin_sense()). */
+#define VERB_SET_PIN_SENSE    0x709
+
+/* How often the jack state is re-read. Linux prefers unsolicited responses and
+ * polls only a pin that cannot raise them (hda_jack.c, jackpoll_interval).
+ * This driver does not enable unsolicited responses: codec_cmd treats every
+ * RIRB entry as the answer to its own verb, so an unsolicited entry would be
+ * misread as a reply. A plug event therefore waits at most this long before
+ * the speakers mute: fast enough for a human, and cheap (one sense verb and
+ * one read-back per output pin) for the audio worker that runs the poll. */
+#define HDA_JACK_POLL_INTERVAL_MS  250
 
 #define PARAM_VENDOR          0x00
 #define PARAM_SUBNODE_COUNT   0x04
@@ -246,6 +262,28 @@ struct hda {
     struct snd_capdevice cap;
     uint64_t             cap_irqs;
     int                  has_capture;
+
+    /* --------------------------------------------- output planning -- */
+    /* Every connected analog output pin with its converter path (see
+     * hda_output_paths.h). output_route / pin_nid / dac_nid above always
+     * describe the plan's first path, the one boot has relied on until now. */
+    struct hda_output_plan output_plan;
+    unsigned char     path_usable[HDA_OUTPUT_PATHS_MAX];         /* setup verbs all succeeded */
+    enum hda_jack_state path_jack_state[HDA_OUTPUT_PATHS_MAX];   /* sense at the last poll */
+    unsigned char     path_output_enabled[HDA_OUTPUT_PATHS_MAX]; /* pin control read back */
+    int               jack_poll_running;     /* one poller at a time; a second skips */
+    int               jack_poll_failed;      /* a verb timed out: stop polling for good */
+    int               jack_polled_once;
+    uint64_t          last_jack_poll_ms;
+
+    /* ---------------------------------------------- panel diagnostics -- */
+    uint32_t          codec_vendor_and_device;
+    uint64_t          played_bytes;          /* monotonic, folded from LPIB */
+    uint32_t          last_link_position;    /* LPIB at the last fold */
+    uint64_t          panel_played_bytes;    /* byte count at the previous hda_status_get() */
+    enum hda_codec_error last_error;
+    unsigned          last_error_nid;
+    const char       *bring_up_failure;      /* static text; why the command bus is down */
 };
 
 static void hda_remove(struct device *dev);
@@ -343,6 +381,14 @@ static int codec_cmd(struct hda *h, unsigned cad, unsigned nid,
     unsigned wp;
     uint64_t deadline;
 
+    /* The audio worker polls the jacks on its own schedule, so a verb can
+     * arrive after remove() or a failed probe cleared this instance. Both
+     * clear mmio (or set removing first); refuse instead of touching a ring
+     * that no longer exists. */
+    if (!h->mmio || __atomic_load_n(&h->removing, __ATOMIC_ACQUIRE)) {
+        return -1;
+    }
+
     /* HDA 1.0a section 7.3: a 12-bit verb carries eight payload bits; the
      * Converter Format (2) and Amplifier Gain/Mute (3) verbs carry sixteen.
      * Historical code chose by payload > 0xff and used verb & 0xf. Correction:
@@ -406,10 +452,14 @@ static int codec_cmd(struct hda *h, unsigned cad, unsigned nid,
                         (unsigned)r16(h, CORBRP), (unsigned)r8(h, CORBCTL),
                         (unsigned)r8(h, RIRBCTL));
             g_hda_dbg++;
+            h->last_error = HDA_CODEC_ERROR_COMMAND_TIMEOUT;
+            h->last_error_nid = nid;
             return -1;
         }
         __asm__ volatile ("pause");
     }
+    h->last_error = HDA_CODEC_ERROR_COMMAND_TIMEOUT;
+    h->last_error_nid = nid;
     return -1;
 }
 
@@ -449,6 +499,8 @@ static int hda_power_up(struct hda *h, unsigned nid)
         }
         if (state & HDA_POWER_ERROR) {
             kprintf("[hda] D0 refused: nid %u state %x\n", nid, state);
+            h->last_error = HDA_CODEC_ERROR_POWER_REFUSED;
+            h->last_error_nid = nid;
             return -1;
         }
         if (!(state & HDA_POWER_STATE_MASK)) {
@@ -460,6 +512,8 @@ static int hda_power_up(struct hda *h, unsigned nid)
         __asm__ volatile ("pause");
     }
     kprintf("[hda] D0 transition timed out: nid %u state %x\n", nid, state);
+    h->last_error = HDA_CODEC_ERROR_POWER_TIMEOUT;
+    h->last_error_nid = nid;
     return -1;
 #endif
 }
@@ -504,11 +558,11 @@ static int nid_in(unsigned nid, const unsigned *arr, unsigned n)
 static void hda_report_jack(struct hda *h, const char *label, unsigned nid)
 {
     uint32_t pcap = codec_param(h, nid, PARAM_PIN_CAP);
-    if (pcap & (1u << 2)) {
+    if (pcap & HDA_PIN_CAPABILITY_PRESENCE_DETECT) {
         uint32_t sense = 0;
         codec_cmd(h, h->codec_addr, nid, VERB_GET_PIN_SENSE, 0, &sense);
         kprintf("[hda] %s pin %u: jack %s\n", label, nid,
-                (sense & 0x80000000u) ? "present" : "absent");
+                (sense & HDA_PIN_SENSE_PRESENCE) ? "present" : "absent");
     } else {
         kprintf("[hda] %s pin %u: no presence-detect hardware\n", label, nid);
     }
@@ -691,6 +745,38 @@ static int hda_read_output_caps(struct hda *h, struct hda_widget *widget,
     return 0;
 }
 
+/* Make the plan's first path the driver's primary route and say, one line per
+ * path, what was planned. The first path keeps feeding output_route / pin_nid /
+ * dac_nid, the fields the capture code, the codec string and the older gates
+ * read, so adding the other outputs changes nothing for them. */
+static void hda_adopt_output_plan(struct hda *h)
+{
+    const struct hda_output_plan *plan = &h->output_plan;
+    const struct hda_route *primary = &plan->paths[0].route;
+
+    h->output_route = *primary;
+    h->pin_nid = primary->nodes[0].nid;
+    h->dac_nid = primary->nodes[primary->count - 1].nid;
+    for (unsigned index = 0; index < plan->path_count; index++) {
+        const struct hda_output_path *path = &plan->paths[index];
+        const struct hda_route *route = &path->route;
+
+        if (route->count == HDA_ROUTE_NODES) {
+            kprintf("[hda]   output %s: pin 0x%x -> widget 0x%x -> DAC 0x%x%s, jack-detect %s\n",
+                    hda_output_role_name(path->role), route->nodes[0].nid,
+                    route->nodes[1].nid, route->nodes[2].nid,
+                    path->converter_shared ? " (shared)" : "",
+                    path->jack_detectable ? "yes" : "no");
+        } else {
+            kprintf("[hda]   output %s: pin 0x%x -> DAC 0x%x direct%s, jack-detect %s\n",
+                    hda_output_role_name(path->role), route->nodes[0].nid,
+                    route->nodes[1].nid,
+                    path->converter_shared ? " (shared)" : "",
+                    path->jack_detectable ? "yes" : "no");
+        }
+    }
+}
+
 /* Walk the widget graph and find a DAC that can reach a usable output pin.
  * While it is walking the graph anyway, it also gathers the ADCs and
  * input-capable pins this fg has and hands them to try_capture_path -- one
@@ -713,6 +799,7 @@ static int find_output_path(struct hda *h)
     static struct hda_widget widgets[256];
 
     h->output_route.count = 0;
+    h->output_plan.path_count = 0;
     h->pin_nid = 0;
     h->dac_nid = 0;
 
@@ -831,10 +918,20 @@ static int find_output_path(struct hda *h)
         if (!h->adc_nid)
             try_capture_path(h, adcs, nadc, inpins, ninpin);
 
+        /* Route EVERY connected analog output, the way Linux does, so the
+         * speakers are heard whichever jack they are on. Only when the pin
+         * Configuration Defaults name no line-out, speaker or headphone does
+         * the single best-route search below still decide. */
+        if (hda_output_plan_build(widgets, w_count, &h->output_plan) > 0) {
+            hda_adopt_output_plan(h);
+            return 0;
+        }
+
         /* The previous direct-only search fell back to the first DAC/pin.
          * Correction: QEMU's pin has a real connection-list edge too, while
          * ALC887 needs its summing mixer opened; neither warrants guessing. */
         if (hda_route_find(widgets, w_count, NULL, 0, &h->output_route) == 0) {
+            hda_output_plan_from_single_route(&h->output_route, &h->output_plan);
             h->pin_nid = h->output_route.nodes[0].nid;
             h->dac_nid = h->output_route.nodes[h->output_route.count - 1].nid;
             if (h->output_route.count == 3) {
@@ -851,18 +948,162 @@ static int find_output_path(struct hda *h)
     return -1;
 }
 
+/* ----------------------------------------------- jacks and auto-mute --- */
+
+/* Fold the output stream's Link Position In Buffer into a monotonic byte count.
+ * The register wraps at the cyclic buffer length (HDA 1.0a, Stream Descriptor
+ * LPIB), so a sampler must look at least once per lap of the ring (170 ms for
+ * 32 KiB at 48 kHz stereo); the audio worker's housekeeping does, every couple
+ * of periods. A count that only ever grows is what snd_device.position() has
+ * always promised and what the panel needs to show "bytes played". The caller
+ * holds hda_gate. */
+static void hda_fold_link_position(struct hda *h)
+{
+    uint32_t position;
+    uint32_t advance;
+
+    if (!h->mmio) {
+        return;
+    }
+    position = r32(h, h->out_base + SD_LPIB) % HDA_RING_BYTES;
+    advance = position >= h->last_link_position
+                  ? position - h->last_link_position
+                  : position + HDA_RING_BYTES - h->last_link_position;
+    h->played_bytes += advance;
+    h->last_link_position = position;
+}
+
+/* Read one pin's presence-detect line the way Linux does (hda_jack.c,
+ * read_pin_sense): trigger a measurement first when Pin Capabilities demand it,
+ * then GET_PIN_SENSE bit 31. A pin without usable detection answers NO_DETECT
+ * without any traffic. A verb that does not complete sets *transport_failed so
+ * the caller can stop polling instead of stalling every 250 ms on a dead bus. */
+static enum hda_jack_state hda_read_jack_state(struct hda *h, const struct hda_widget *pin,
+                                               int *transport_failed)
+{
+    uint32_t sense = 0;
+
+    if (!hda_pin_jack_detectable(pin)) {
+        return HDA_JACK_NO_DETECT;
+    }
+    if (pin->pin_caps & HDA_PIN_CAPABILITY_TRIGGER_REQUIRED) {
+        if (codec_cmd(h, h->codec_addr, pin->nid, VERB_SET_PIN_SENSE, 0, NULL) != 0) {
+            *transport_failed = 1;
+            return HDA_JACK_NO_DETECT;
+        }
+    }
+    if (codec_cmd(h, h->codec_addr, pin->nid, VERB_GET_PIN_SENSE, 0, &sense) != 0) {
+        *transport_failed = 1;
+        return HDA_JACK_NO_DETECT;
+    }
+    return (sense & HDA_PIN_SENSE_PRESENCE) ? HDA_JACK_PLUGGED : HDA_JACK_EMPTY;
+}
+
+/* Make one pin drive (or stop driving) and read back what the codec holds.
+ * The read-back is the truth the panel shows; a write that did not stick is
+ * visible there instead of hiding behind a driver variable. Only the output
+ * and headphone enable bits are compared, because a pin's other control bits
+ * (input enable, VREF) are not this code's business. Returns 0, or -1 when a
+ * verb did not complete. */
+static int hda_apply_pin_control(struct hda *h, unsigned index, int enabled)
+{
+    const struct hda_output_path *path = &h->output_plan.paths[index];
+    unsigned pin_nid = path->route.nodes[0].nid;
+    unsigned wanted = enabled ? hda_output_path_pin_control(path) : HDA_PIN_CONTROL_ALL_OUTPUTS_OFF;
+    unsigned compared_bits = HDA_PIN_CONTROL_OUTPUT_ENABLE | HDA_PIN_CONTROL_HEADPHONE_ENABLE;
+    uint32_t current = 0;
+
+    if (codec_cmd(h, h->codec_addr, pin_nid, VERB_GET_PIN_CTL, 0, &current) != 0) {
+        return -1;
+    }
+    if ((current & compared_bits) != (wanted & compared_bits)) {
+        if (codec_cmd(h, h->codec_addr, pin_nid, VERB_SET_PIN_CTL, wanted, NULL) != 0) {
+            return -1;
+        }
+        if (codec_cmd(h, h->codec_addr, pin_nid, VERB_GET_PIN_CTL, 0, &current) != 0) {
+            return -1;
+        }
+    }
+    h->path_output_enabled[index] = (current & HDA_PIN_CONTROL_OUTPUT_ENABLE) != 0;
+    return 0;
+}
+
+/* Re-read every output jack and apply Linux's auto-mute: a plugged headphone
+ * silences the line-outs and speakers (hda_generic.c, snd_hda_gen_update_outputs
+ * and do_automute). Runs from thread context only, because it sends codec
+ * verbs. `force` skips the interval check (used right after the pins are set
+ * up). Two callers may race (audio worker and panel); the second one simply
+ * skips, the first one's answer is as fresh as its own would have been. */
+static void hda_poll_output_jacks(struct hda *h, int force)
+{
+    enum hda_jack_state jack_states[HDA_OUTPUT_PATHS_MAX];
+    unsigned char output_enabled[HDA_OUTPUT_PATHS_MAX];
+    const struct hda_output_plan *plan = &h->output_plan;
+    int transport_failed = 0;
+
+    if (!plan->path_count || h->jack_poll_failed || !h->mmio ||
+        __atomic_load_n(&h->removing, __ATOMIC_ACQUIRE)) {
+        return;
+    }
+    if (!force && h->jack_polled_once &&
+        hda_ms() - h->last_jack_poll_ms < HDA_JACK_POLL_INTERVAL_MS) {
+        return;
+    }
+    if (__atomic_exchange_n(&h->jack_poll_running, 1, __ATOMIC_ACQ_REL)) {
+        return;
+    }
+
+    for (unsigned index = 0; index < plan->path_count; index++) {
+        jack_states[index] = h->path_usable[index]
+                                 ? hda_read_jack_state(h, &plan->paths[index].route.nodes[0],
+                                                       &transport_failed)
+                                 : HDA_JACK_NO_DETECT;
+    }
+    if (transport_failed) {
+        h->jack_poll_failed = 1;
+        kprintf("[hda] jack sense verb timed out: jack polling and auto-mute disabled\n");
+        __atomic_store_n(&h->jack_poll_running, 0, __ATOMIC_RELEASE);
+        return;
+    }
+    hda_output_automute_decide(plan, jack_states, output_enabled);
+    for (unsigned index = 0; index < plan->path_count; index++) {
+        const struct hda_output_path *path = &plan->paths[index];
+
+        if (jack_states[index] != h->path_jack_state[index] || !h->jack_polled_once) {
+            kprintf("[hda] jack %s@0x%x: %s\n", hda_output_role_name(path->role),
+                    path->route.nodes[0].nid, hda_jack_state_name(jack_states[index]));
+        }
+        h->path_jack_state[index] = jack_states[index];
+        if (!h->path_usable[index]) {
+            continue;
+        }
+        if (hda_apply_pin_control(h, index, output_enabled[index]) != 0) {
+            h->jack_poll_failed = 1;
+            kprintf("[hda] pin control verb timed out: jack polling and auto-mute disabled\n");
+            break;
+        }
+    }
+    h->jack_polled_once = 1;
+    h->last_jack_poll_ms = hda_ms();
+    __atomic_store_n(&h->jack_poll_running, 0, __ATOMIC_RELEASE);
+}
+
 /* SDnFMT / converter format: base 48 kHz, x1, /1, 16-bit, 2 channels. */
 #define HDA_FMT_48K_S16_2CH  0x0011
 
-/* Send the shared route compiler's exact verb sequence, stopping on transport
- * or power-state failure rather than registering a silent output. Power verbs
- * are barriers: prove each D0 before the compiler's stream/select/amp writes.
- * hda_route.c documents capability checks and the HDA/Linux sequence sources. */
-static int codec_setup_output(struct hda *h)
+/* Send one planned path's compiled verb sequence, stopping on transport or
+ * power-state failure rather than registering a silent output. Power verbs are
+ * barriers: prove each D0 before the compiler's stream/select/amp writes.
+ * hda_route.c documents capability checks and the HDA/Linux sequence sources.
+ * Every converter in the plan is told the SAME stream tag and first channel, so
+ * all of them play the one stereo stream: a jack with a speaker on it is
+ * audible whichever one it is (Linux would leave the surround converters on
+ * silence when playing two channels; here the point is to be heard). */
+static int hda_run_output_path(struct hda *h, const struct hda_output_path *path)
 {
     struct hda_route_verb verbs[HDA_ROUTE_VERBS];
-    int count = hda_route_verbs(&h->output_route, HDA_FMT_48K_S16_2CH,
-                                HDA_STREAM_TAG, verbs, HDA_ROUTE_VERBS);
+    int count = hda_output_path_verbs(path, HDA_FMT_48K_S16_2CH, HDA_STREAM_TAG,
+                                      verbs, HDA_ROUTE_VERBS);
 
     if (count < 0) {
         return -1;
@@ -881,6 +1122,39 @@ static int codec_setup_output(struct hda *h)
             return -1;
         }
     }
+    return 0;
+}
+
+/* Bring up every planned output path. The first path is the one boot has
+ * always depended on, so its failure fails the setup exactly as before; a later
+ * path that cannot be brought up is logged and left switched off, because one
+ * dead jack must not take the working ones down with it. Afterwards the jacks
+ * are read once so the pins start in their auto-muted state. */
+static int codec_setup_output(struct hda *h)
+{
+    if (h->output_plan.path_count == 0 && h->output_route.count != 0) {
+        hda_output_plan_from_single_route(&h->output_route, &h->output_plan);
+    }
+    if (h->output_plan.path_count == 0) {
+        return -1;
+    }
+    for (unsigned index = 0; index < h->output_plan.path_count; index++) {
+        h->path_usable[index] = 0;
+        if (hda_run_output_path(h, &h->output_plan.paths[index]) == 0) {
+            h->path_usable[index] = 1;
+            continue;
+        }
+        if (index == 0) {
+            return -1;
+        }
+        kprintf("[hda] output %s pin 0x%x could not be set up; left off\n",
+                hda_output_role_name(h->output_plan.paths[index].role),
+                h->output_plan.paths[index].route.nodes[0].nid);
+        h->last_error = HDA_CODEC_ERROR_OUTPUT_SETUP_FAILED;
+        h->last_error_nid = h->output_plan.paths[index].route.nodes[0].nid;
+    }
+    h->jack_polled_once = 0;
+    hda_poll_output_jacks(h, 1);
     return 0;
 }
 
@@ -993,6 +1267,9 @@ static int hda_start(struct snd_device *d)
         kprintf("[hda] stream reset did not clear\n");
         return -1;
     }
+    /* The reset zeroed LPIB; restart the monotonic byte count with it. */
+    h->played_bytes = 0;
+    h->last_link_position = 0;
 
     /* One BDL entry per period, each asking for an interrupt. That is what
      * makes the refill interrupt-driven: the engine tells us it crossed a
@@ -1041,11 +1318,16 @@ static int hda_start(struct snd_device *d)
     return 0;
 }
 
+/* Frames played since start(), as snd_device.position() promises: monotonic.
+ * The raw LPIB register wraps every ring lap (8192 frames), which is useless
+ * for "did the engine move" over more than 170 ms; the folded byte count is
+ * what the boot tone and the panel report. */
 static uint64_t hda_position(struct snd_device *d)
 {
     IO_GUARD(&hda_gate);
     struct hda *h = (struct hda *)d->priv;
-    return r32(h, h->out_base + SD_LPIB) / (HDA_CHANNELS * 2u);
+    hda_fold_link_position(h);
+    return h->played_bytes / (HDA_CHANNELS * 2u);
 }
 
 /* -------------------------------------------------------- capture engine -- */
@@ -1481,27 +1763,155 @@ static void hda_probe_abort(struct hda *h, struct device *dev)
 #endif
 }
 
-static int hda_probe(struct device *dev)
-{
-    struct hda *h = &g_hda;
-    uint64_t bar;
-    uint16_t statests;
-    unsigned i, iss, oss;
+/* One record per HDA PCI function the driver has been offered, kept after the
+ * probe finishes so the panel can say WHY a function is bound or not, even once
+ * the controller instance has been released (the display function is released
+ * right after it has been asked who its codec is). Keyed by PCI location, so a
+ * second attempt on the same function overwrites its first. */
+#define HDA_FUNCTION_RECORDS_MAX     4
 
-    if (!hda_controller_candidate(dev)) {
-        if (hda_display_audio(dev))
-            kprintf("[hda] %s: HDMI/DP audio deferred to phase 3\n", dev->name);
-        else if (hda_pch_onboard_present())
-            kprintf("[hda] %s: deferred to Intel PCH HDA at 00:1b.0\n",
-                    dev->name);
+struct hda_function_record {
+    int attempted;
+    int bound;
+    int is_display_function;
+    unsigned bus;
+    unsigned slot;
+    unsigned function;
+    int codec_present;
+    uint32_t codec_vendor_and_device;
+    unsigned display_pins;               /* display function only: pin widgets found */
+    unsigned display_pins_with_sink;     /* ... of which report a sink attached */
+    const char *failure_reason;          /* static text; NULL while bound */
+};
+
+static struct hda_function_record g_function_records[HDA_FUNCTION_RECORDS_MAX];
+
+/* Does this record describe this PCI function? Segment is ignored: the
+ * panel, like the boot log, names functions as bus:slot.function. */
+static int hda_function_record_matches(const struct hda_function_record *record,
+                                       const struct device *dev)
+{
+    return record->attempted && record->bus == dev->bus &&
+           record->slot == dev->slot && record->function == dev->func;
+}
+
+/* Find the record for this PCI function, or claim a free slot (the last one is
+ * recycled when the table is full: more HDA functions than this are not
+ * expected, and losing the oldest line is better than losing the newest).
+ * The record is reset on every call so a retry starts from a clean slate. */
+static struct hda_function_record *hda_function_record_for(const struct device *dev,
+                                                           int is_display_function)
+{
+    struct hda_function_record *record = &g_function_records[HDA_FUNCTION_RECORDS_MAX - 1];
+
+    for (unsigned index = 0; index < HDA_FUNCTION_RECORDS_MAX; index++) {
+        struct hda_function_record *candidate = &g_function_records[index];
+
+        if (!candidate->attempted || hda_function_record_matches(candidate, dev)) {
+            record = candidate;
+            break;
+        }
+    }
+    memset(record, 0, sizeof *record);
+    record->attempted = 1;
+    record->is_display_function = is_display_function;
+    record->bus = dev->bus;
+    record->slot = dev->slot;
+    record->function = dev->func;
+    return record;
+}
+
+/* The audio worker calls this every few periods (snd_device.housekeeping),
+ * from thread context with the mixer lock held, so it may send codec verbs.
+ * It keeps the played-byte count fresh enough that LPIB never wraps unseen
+ * and re-reads the jacks at most every HDA_JACK_POLL_INTERVAL_MS. */
+static void hda_housekeeping(struct snd_device *device)
+{
+    struct hda *h = (struct hda *)device->priv;
+
+    if (!h || !h->mmio || __atomic_load_n(&h->removing, __ATOMIC_ACQUIRE)) {
+        return;
+    }
+    {
+        IO_GUARD(&hda_gate);
+        hda_fold_link_position(h);
+    }
+    hda_poll_output_jacks(h, 0);
+}
+
+/* GCAP (HDA 1.0a 3.3.2): bit 0 is 64OK, bits 11:8 count input stream
+ * descriptors and bits 15:12 output ones. Stream descriptors are laid out
+ * back to back, SD_STRIDE bytes apart, inputs first (3.3.38 onward). */
+#define GCAP_64BIT_ADDRESSING        0x1u
+#define GCAP_INPUT_STREAMS_SHIFT     8
+#define GCAP_OUTPUT_STREAMS_SHIFT    12
+#define GCAP_STREAM_COUNT_MASK       0xfu
+#define SD_STRIDE                    0x20u
+
+/* The ring base registers come in lower and upper halves (HDA 1.0a 3.3.18,
+ * 3.3.24): the upper dword holds address bits 63:32. */
+#define ADDRESS_UPPER_DWORD_SHIFT    32
+
+/* Parameter 00h, Vendor/Device ID (HDA 1.0a 7.3.4.1): vendor in 31:16, device
+ * in 15:0. */
+#define CODEC_VENDOR_ID_SHIFT        16
+#define CODEC_DEVICE_ID_MASK         0xffffu
+
+/* CORB and RIRB each live in one page-aligned page: 256 x 4 and 256 x 8 bytes
+ * both fit in 4 KiB, and 4 KiB alignment covers the 128-byte alignment the
+ * specification requires of both rings (HDA 1.0a 3.3.18, 3.3.24). */
+#define HDA_COMMAND_RING_BYTES       4096u
+
+/* CORBRP bit 15 resets the read pointer; RIRBWP bit 15 resets the write
+ * pointer (HDA 1.0a 3.3.21, 3.3.26). RINTCNT is set to 0xFF so the response
+ * counter can never reach the point where the controller stops fetching
+ * commands (see the ack note in codec_cmd). */
+#define CORBRP_RESET                 0x8000u
+#define RIRBWP_RESET                 0x8000u
+#define RINTCNT_NEVER_STALLS         0xFFu
+
+/* Controller reset handshakes poll up to this many times, HDA_RESET_POLL_US
+ * apart: ten milliseconds, far above the 521 us the specification allows a
+ * codec to take (HDA 1.0a 4.3) and short enough that a dead controller fails
+ * the probe instead of the boot. */
+#define HDA_RESET_POLL_LIMIT         100u
+#define HDA_RESET_POLL_US            100u
+
+/* After CRST rises, codecs need time on the link before STATESTS says anything:
+ * reading it immediately finds zero codecs on hardware that has several. */
+#define HDA_LINK_SETTLE_US           1000u
+
+/* A display codec can take longer than the analog one to show up in STATESTS
+ * after reset (it sits behind the GPU's own power sequencing). Waiting up to
+ * this many polls of HDA_RESET_POLL_US each, 100 ms in total, costs nothing on
+ * a healthy board: the loop ends on the first poll that sees a codec. */
+#define HDA_CODEC_WAKE_POLL_LIMIT    1000u
+#define HDA_CODEC_ADDRESS_LIMIT      15u
+
+/* Take a mapped-and-memory-only controller from firmware state to "verbs can
+ * flow": quiesce stale DMA, reset, find the first codec, and start CORB and
+ * RIRB with bus mastering restored only after every ring address is
+ * programmed. Shared by the analog probe and the enumerate-only display probe
+ * so both obey the identical ownership rules (the X79 ownership gates pin
+ * them). Returns 0, or -1 with h->bring_up_failure naming the step; the caller
+ * owns the cleanup (hda_probe_abort). `input_streams` receives GCAP's input
+ * stream count. require_output_stream is 0 for a display function, which is
+ * only asked who its codec is. */
+static int hda_start_command_bus(struct hda *h, struct device *dev,
+                                 int require_output_stream, unsigned *input_streams)
+{
+    uint64_t bar = dev_bar_map(dev, 0);
+    uint16_t capabilities;
+    uint16_t codecs_present;
+    unsigned output_streams;
+    uint64_t corb_address;
+    uint64_t rirb_address;
+
+    if (!bar) {
+        kprintf("[hda] %s: no BAR0\n", dev->name);
+        h->bring_up_failure = "BAR0 could not be mapped";
         return -1;
     }
-    if (h->mmio) return -1;          /* one output device; see snd_register_device */
-
-    if (hda_pci_mem_only(dev) != 0) return -1;
-    bar = dev_bar_map(dev, 0);
-    if (!bar) { kprintf("[hda] %s: no BAR0\n", dev->name); goto probe_fail; }
-
     h->mmio = (volatile uint8_t *)(uintptr_t)bar;
     h->dev = dev;
 
@@ -1509,114 +1919,166 @@ static int hda_probe(struct device *dev)
      * PCI BME is confirmed low above, so stale physical pointers cannot fetch
      * while each RUN bit is cleared and read back. CRST is legal only after
      * every engine reports stopped. */
-    if (hda_stop_all_dma(h) != 0) goto probe_fail;
+    if (hda_stop_all_dma(h) != 0) {
+        h->bring_up_failure = "firmware DMA did not stop";
+        return -1;
+    }
 
     /* Controller reset: CRST low, wait for it to read back low, then high and
      * wait for it to read back high. Both directions must be OBSERVED. */
     w32(h, GCTL, 0);
-    for (i = 0; i < 100 && (r32(h, GCTL) & 1); i++) udelay(100);
+    for (unsigned poll = 0; poll < HDA_RESET_POLL_LIMIT && (r32(h, GCTL) & 1); poll++) {
+        udelay(HDA_RESET_POLL_US);
+    }
     if (r32(h, GCTL) & 1) {
         kprintf("[hda] %s: controller did not enter reset\n", dev->name);
-        goto probe_fail;
+        h->bring_up_failure = "controller did not enter reset";
+        return -1;
     }
     w32(h, GCTL, 1);
-    for (i = 0; i < 100 && !(r32(h, GCTL) & 1); i++) udelay(100);
+    for (unsigned poll = 0; poll < HDA_RESET_POLL_LIMIT && !(r32(h, GCTL) & 1); poll++) {
+        udelay(HDA_RESET_POLL_US);
+    }
     if (!(r32(h, GCTL) & 1)) {
         kprintf("[hda] %s: controller did not come out of reset\n", dev->name);
-        goto probe_fail;
+        h->bring_up_failure = "controller did not leave reset";
+        return -1;
     }
-    /* Codecs need time on the link before STATESTS is meaningful. Reading it
-     * immediately finds zero codecs on hardware that has several. */
-    udelay(1000);
+    udelay(HDA_LINK_SETTLE_US);
 
-    {
-        uint16_t cap = r16(h, GCAP);
-        dma_device_init(&h->dma, "hda", (cap & 1) ? DMA_MASK_64 : DMA_MASK_32);
-        iss = (cap >> 8) & 0xF;
-        oss = (cap >> 12) & 0xF;
-        if (!oss) { kprintf("[hda] %s: no output streams\n", dev->name); goto probe_fail; }
-        h->out_base = SD_BASE + iss * 0x20;    /* input descriptors come first */
-        /* Input descriptors occupy [SD_BASE, SD_BASE + iss*0x20); the first
-         * one is capture's, when there is one at all. GCAP reporting 0 input
-         * streams is a real controller shape (an output-only HDA function),
-         * not a bug to work around -- capture is simply impossible on it, and
-         * probe() below says so rather than treating in_base as valid anyway. */
-        h->in_base = SD_BASE;
-        if (!iss)
-            kprintf("[hda] %s: GCAP reports 0 input streams -- capture impossible on this controller\n",
-                    dev->name);
+    capabilities = r16(h, GCAP);
+    dma_device_init(&h->dma, "hda", (capabilities & GCAP_64BIT_ADDRESSING) ? DMA_MASK_64 : DMA_MASK_32);
+    *input_streams = (capabilities >> GCAP_INPUT_STREAMS_SHIFT) & GCAP_STREAM_COUNT_MASK;
+    output_streams = (capabilities >> GCAP_OUTPUT_STREAMS_SHIFT) & GCAP_STREAM_COUNT_MASK;
+    if (!output_streams && require_output_stream) {
+        kprintf("[hda] %s: no output streams\n", dev->name);
+        h->bring_up_failure = "controller has no output stream";
+        return -1;
+    }
+    h->out_base = SD_BASE + *input_streams * SD_STRIDE;    /* input descriptors come first */
+    /* Input descriptors occupy [SD_BASE, SD_BASE + input_streams * SD_STRIDE);
+     * the first one is capture's, when there is one at all. GCAP reporting 0
+     * input streams is a real controller shape (an output-only HDA function),
+     * not a bug to work around -- capture is simply impossible on it, and
+     * probe() says so rather than treating in_base as valid anyway. */
+    h->in_base = SD_BASE;
+    if (!*input_streams) {
+        kprintf("[hda] %s: GCAP reports 0 input streams -- capture impossible on this controller\n",
+                dev->name);
     }
 
-    statests = r16(h, STATESTS);
-    if (!statests) {
+    codecs_present = r16(h, STATESTS);
+    for (unsigned poll = 0; poll < HDA_CODEC_WAKE_POLL_LIMIT && !codecs_present; poll++) {
+        udelay(HDA_RESET_POLL_US);
+        codecs_present = r16(h, STATESTS);
+    }
+    if (!codecs_present) {
         kprintf("[hda] %s: no codec responded (STATESTS=0)\n", dev->name);
-        goto probe_fail;
+        h->bring_up_failure = "no codec responded after reset (STATESTS=0)";
+        return -1;
     }
-    for (i = 0; i < 15; i++) if (statests & (1u << i)) { h->codec_addr = i; break; }
+    for (unsigned address = 0; address < HDA_CODEC_ADDRESS_LIMIT; address++) {
+        if (codecs_present & (1u << address)) {
+            h->codec_addr = address;
+            break;
+        }
+    }
 
-    /* CORB/RIRB. One page each: 256 x 4 and 256 x 8 both fit in 4 KiB, and a
-     * PMM page is 4 KiB-aligned, which covers the 128-byte alignment the spec
-     * requires for both rings. */
-    h->corb_dma = dma_alloc_coherent(&h->dma, 4096, 4096, 0);
-    h->rirb_dma = dma_alloc_coherent(&h->dma, 4096, 4096, 0);
+    h->corb_dma = dma_alloc_coherent(&h->dma, HDA_COMMAND_RING_BYTES, HDA_COMMAND_RING_BYTES, 0);
+    h->rirb_dma = dma_alloc_coherent(&h->dma, HDA_COMMAND_RING_BYTES, HDA_COMMAND_RING_BYTES, 0);
     if (!h->corb_dma || !h->rirb_dma) {
-        kprintf("[hda] no memory for CORB/RIRB\n"); goto probe_fail;
+        kprintf("[hda] no memory for CORB/RIRB\n");
+        h->bring_up_failure = "no memory for the command rings";
+        return -1;
     }
     h->corb = h->corb_dma->cpu;
     h->rirb = h->rirb_dma->cpu;
     if (hda_set_ring_size(h, CORBSIZE, &h->corb_entries) != 0 ||
         hda_set_ring_size(h, RIRBSIZE, &h->rirb_entries) != 0) {
-        kprintf("[hda] %s: no supported/readable CORB or RIRB size\n",
-                dev->name);
-        goto probe_fail;
+        kprintf("[hda] %s: no supported/readable CORB or RIRB size\n", dev->name);
+        h->bring_up_failure = "command ring size not supported";
+        return -1;
     }
-    if (!dma_buffer_submit(h->corb_dma) ||
-        !dma_buffer_submit(h->rirb_dma)) {
+    if (!dma_buffer_submit(h->corb_dma) || !dma_buffer_submit(h->rirb_dma)) {
         kprintf("[hda] %s: CORB/RIRB DMA ownership failed\n", dev->name);
-        goto probe_fail;
+        h->bring_up_failure = "command ring DMA ownership failed";
+        return -1;
     }
     dma_wmb();
-    uint64_t corb_addr = dma_addr_value(h->corb_dma->dma);
-    uint64_t rirb_addr = dma_addr_value(h->rirb_dma->dma);
-    w32(h, CORBLBASE, (uint32_t)corb_addr);
-    w32(h, CORBUBASE, (uint32_t)(corb_addr >> 32));
-    w32(h, RIRBLBASE, (uint32_t)rirb_addr);
-    w32(h, RIRBUBASE, (uint32_t)(rirb_addr >> 32));
+    corb_address = dma_addr_value(h->corb_dma->dma);
+    rirb_address = dma_addr_value(h->rirb_dma->dma);
+    w32(h, CORBLBASE, (uint32_t)corb_address);
+    w32(h, CORBUBASE, (uint32_t)(corb_address >> ADDRESS_UPPER_DWORD_SHIFT));
+    w32(h, RIRBLBASE, (uint32_t)rirb_address);
+    w32(h, RIRBUBASE, (uint32_t)(rirb_address >> ADDRESS_UPPER_DWORD_SHIFT));
 
-    /* Reset the read pointer: set bit 15, wait for it to read back, clear it. */
-    w16(h, CORBRP, 0x8000);
-    udelay(100);
+    /* Reset the read pointer: set the reset bit, wait for it to read back,
+     * clear it. */
+    w16(h, CORBRP, CORBRP_RESET);
+    udelay(HDA_RESET_POLL_US);
     w16(h, CORBRP, 0);
     w16(h, CORBWP, 0);
-    w16(h, RIRBWP, 0x8000);                /* write-1-to-reset, self-clearing */
-    /* 0xFF, not 1: see the ack note in codec_cmd. With RINTCNT=1 the
-     * controller stops fetching after every single response until the driver
-     * acks, which turns a polled command bus into exactly one working verb. */
-    w16(h, RINTCNT, 0xFF);
+    w16(h, RIRBWP, RIRBWP_RESET);          /* write-1-to-reset, self-clearing */
+    w16(h, RINTCNT, RINTCNT_NEVER_STALLS);
     h->corb_wp = 0;
     h->rirb_rp = 0;
 
     /* All DMA addresses and ring geometry are now valid. This is the first
      * point at which PCI bus mastering may be restored. */
-    if (hda_pci_master_enable(dev) != 0) goto probe_fail;
-    w8(h, CORBCTL, HDA_RUN);                /* RUN */
-    w8(h, RIRBCTL, HDA_RUN);                /* RUN, response interrupts off:
-                                            * we poll RIRBWP inside codec_cmd,
-                                            * which is bounded and only runs at
-                                            * probe time. */
-    udelay(100);
+    if (hda_pci_master_enable(dev) != 0) {
+        h->bring_up_failure = "PCI bus-master enable unconfirmed";
+        return -1;
+    }
+    w8(h, CORBCTL, HDA_RUN);
+    w8(h, RIRBCTL, HDA_RUN);               /* RUN, response interrupts off: we
+                                            * poll RIRBWP inside codec_cmd,
+                                            * which is bounded. */
+    udelay(HDA_RESET_POLL_US);
     if (!(r8(h, CORBCTL) & HDA_RUN) || !(r8(h, RIRBCTL) & HDA_RUN)) {
         kprintf("[hda] %s: CORB/RIRB RUN state did not latch\n", dev->name);
+        h->bring_up_failure = "command ring RUN did not latch";
+        return -1;
+    }
+    return 0;
+}
+
+static int hda_probe(struct device *dev)
+{
+    struct hda *h = &g_hda;
+    struct hda_function_record *record;
+    unsigned iss = 0;
+
+    if (!hda_controller_candidate(dev)) {
+        if (hda_display_audio(dev)) {
+            kprintf("[hda] %s: GPU audio function: left to the enumerate-only display driver\n",
+                    dev->name);
+        } else if (hda_pch_onboard_present()) {
+            kprintf("[hda] %s: deferred to Intel PCH HDA at 00:1b.0\n",
+                    dev->name);
+        }
+        return -1;
+    }
+    if (h->mmio) {
+        return -1;          /* one output device; see snd_register_device */
+    }
+    record = hda_function_record_for(dev, 0);
+
+    if (hda_pci_mem_only(dev) != 0) {
+        record->failure_reason = "PCI memory-only state unconfirmed";
+        return -1;
+    }
+
+    if (hda_start_command_bus(h, dev, 1, &iss) != 0) {
         goto probe_fail;
     }
 
     if (find_output_path(h) != 0) {
         kprintf("[hda] %s: codec %u exposes no usable output path\n",
                 dev->name, h->codec_addr);
+        h->bring_up_failure = "codec exposes no usable output path";
         goto probe_fail;
     }
 
-    hda_report_jack(h, "output", h->pin_nid);
     if (h->adc_nid)
         hda_report_jack(h, "capture", h->cap_pin_nid);
     else if (iss)
@@ -1627,6 +2089,7 @@ static int hda_probe(struct device *dev)
     {
         uint32_t vid = codec_param(h, 0, PARAM_VENDOR);
         char *p = h->snd.codec;
+        h->codec_vendor_and_device = vid;
         char *end = h->snd.codec + sizeof h->snd.codec - 1;
         p = put_str(p, end, "codec");
         p = put_dec(p, end, h->codec_addr);
@@ -1659,6 +2122,7 @@ static int hda_probe(struct device *dev)
     }
 
     if (codec_setup_output(h) != 0) {
+        h->bring_up_failure = "output path setup failed";
         goto probe_fail;
     }
     if (h->adc_nid) codec_setup_capture(h);
@@ -1671,7 +2135,9 @@ static int hda_probe(struct device *dev)
         h->ring_dma = dma_alloc_coherent(&h->dma, HDA_RING_BYTES, 4096, 0);
         h->bdl_dma = dma_alloc_coherent(&h->dma, 4096, 4096, 0);
         if (!h->ring_dma || !h->bdl_dma) {
-            kprintf("[hda] no memory for the DMA ring\n"); goto probe_fail;
+            kprintf("[hda] no memory for the DMA ring\n");
+            h->bring_up_failure = "no memory for the playback ring";
+            goto probe_fail;
         }
         h->ring = h->ring_dma->cpu;
         h->bdl = h->bdl_dma->cpu;
@@ -1710,6 +2176,7 @@ static int hda_probe(struct device *dev)
     h->snd.stop = hda_stop;
     h->snd.position = hda_position;
     h->snd.priv = h;
+    h->snd.housekeeping = hda_housekeeping;
 
     if (h->adc_nid && h->cap_ring) {
         h->cap.name = "hda-in";
@@ -1727,7 +2194,10 @@ static int hda_probe(struct device *dev)
 
     dev_set_drvdata(dev, h);
 
-    if (snd_register_device(&h->snd) != 0) goto probe_fail;
+    if (snd_register_device(&h->snd) != 0) {
+        h->bring_up_failure = "sound device registration refused";
+        goto probe_fail;
+    }
     if (h->has_capture && snd_register_capture_device(&h->cap) != 0) {
         /* Registration failing here (format/geometry rejected, or a second
          * capture device already claimed) does not fail the probe -- exactly
@@ -1764,9 +2234,13 @@ static int hda_probe(struct device *dev)
      * driver changes; hda_start() is pure MMIO and is called from wherever the
      * mixer decides it is safe to call it. */
     snd_init();
+    record->bound = 1;
+    record->codec_present = 1;
+    record->codec_vendor_and_device = h->codec_vendor_and_device;
     return 0;
 
 probe_fail:
+    record->failure_reason = h->bring_up_failure ? h->bring_up_failure : "probe failed";
     hda_probe_abort(h, dev);
     return -1;
 }
@@ -1817,6 +2291,12 @@ static void hda_remove(struct device *dev)
     while (h->dma.buffers) {
         if (dma_free_coherent(h->dma.buffers) != 0) break;
     }
+    for (unsigned index = 0; index < HDA_FUNCTION_RECORDS_MAX; index++) {
+        if (hda_function_record_matches(&g_function_records[index], dev)) {
+            g_function_records[index].bound = 0;
+            g_function_records[index].failure_reason = "unbound";
+        }
+    }
     dev_set_drvdata(dev, NULL);
     dev_disable(dev);
     memset(h, 0, sizeof *h);
@@ -1836,3 +2316,261 @@ static struct driver hda_driver = {
     .next     = NULL,
 };
 DRIVER_DECLARE(hda_driver);
+
+/* ------------------------------------------------ GPU audio functions --- */
+
+/* A GPU's HDMI/DP audio function is a second HD Audio controller with its own
+ * codec. It gets its own instance, separate from the analog one, because the
+ * analog controller is a boot-wide singleton that owns the sound device. */
+static struct hda g_hda_display;
+
+/* HDA 1.0a 7.3.4.6: Audio Widget Capabilities bits 23:20 are the widget type. */
+#define AUDIO_WIDGET_CAPABILITY_TYPE_SHIFT   20
+#define AUDIO_WIDGET_CAPABILITY_TYPE_MASK    0xfu
+
+/* Audio Function Group identity (HDA 1.0a 7.3.4.4: function group type 01h). */
+#define FUNCTION_GROUP_TYPE_MASK             0x7fu
+#define FUNCTION_GROUP_TYPE_AUDIO            0x01u
+
+/* Pin Sense on an HDMI/DP pin (HDA 1.0a 7.3.3.15 and the Intel HDMI codec
+ * extension, as used by Linux patch_hdmi.c): bit 31 presence, bit 30 ELD valid
+ * (the sink supplied its capabilities, so audio could be sent to it). */
+#define HDMI_PIN_SENSE_ELD_VALID             (1u << 30)
+
+/* Subordinate Node Count (HDA 1.0a 7.3.4.3): bits 23:16 first node, 7:0 count. */
+#define SUBNODE_COUNT_START_SHIFT            16
+#define SUBNODE_COUNT_FIELD_MASK             0xffu
+
+struct hda_display_survey {
+    unsigned pins;
+    unsigned pins_with_sink;
+    unsigned pins_with_valid_eld;
+};
+
+/* Count the display codec's pin widgets and how many of them report a sink.
+ * Read-only apart from the D0 request the specification requires before a
+ * function group can be read (HDA 1.0a 7.3.3.10); nothing is routed and no
+ * stream is set up. The numbers go to the boot log so the day GPU stage A
+ * programs the display engine, "which pin has the monitor" is already known. */
+static void hda_display_survey_pins(struct hda *h, struct hda_display_survey *survey)
+{
+    uint32_t root = codec_param(h, 0, PARAM_SUBNODE_COUNT);
+    unsigned group_first = (root >> SUBNODE_COUNT_START_SHIFT) & SUBNODE_COUNT_FIELD_MASK;
+    unsigned group_count = root & SUBNODE_COUNT_FIELD_MASK;
+
+    for (unsigned group = group_first; group < group_first + group_count; group++) {
+        uint32_t type = codec_param(h, group, PARAM_FG_TYPE) & FUNCTION_GROUP_TYPE_MASK;
+        uint32_t widgets;
+        unsigned widget_first;
+        unsigned widget_count;
+
+        if (type != FUNCTION_GROUP_TYPE_AUDIO) {
+            continue;
+        }
+        (void)hda_power_up(h, group);
+        widgets = codec_param(h, group, PARAM_SUBNODE_COUNT);
+        widget_first = (widgets >> SUBNODE_COUNT_START_SHIFT) & SUBNODE_COUNT_FIELD_MASK;
+        widget_count = widgets & SUBNODE_COUNT_FIELD_MASK;
+        for (unsigned nid = widget_first; nid < widget_first + widget_count; nid++) {
+            uint32_t capabilities = codec_param(h, nid, PARAM_AUDIO_WIDGET_CAP);
+            uint32_t sense = 0;
+
+            if (((capabilities >> AUDIO_WIDGET_CAPABILITY_TYPE_SHIFT) &
+                 AUDIO_WIDGET_CAPABILITY_TYPE_MASK) != WIDGET_PIN) {
+                continue;
+            }
+            survey->pins++;
+            if (codec_cmd(h, h->codec_addr, nid, VERB_GET_PIN_SENSE, 0, &sense) != 0) {
+                continue;
+            }
+            if (sense & HDA_PIN_SENSE_PRESENCE) {
+                survey->pins_with_sink++;
+            }
+            if (sense & HDMI_PIN_SENSE_ELD_VALID) {
+                survey->pins_with_valid_eld++;
+            }
+        }
+        return;
+    }
+}
+
+/* Bind a GPU's audio function just far enough to learn who its codec is, then
+ * hand the hardware back quiet. WHY NOT PLAY: HDMI/DP audio needs the GPU's
+ * display engine to packetise it (AFMT) and publish the sink's ELD, which is a
+ * later graphics stage ("GPU stage A"); until then any stream the controller
+ * plays goes nowhere. WHY BIND AT ALL: "no HDMI controller" and "HDMI
+ * controller present, codec answers, output not yet possible" are different
+ * facts, and the panel needs to state the second one. The controller is reset
+ * and its DMA released afterwards (hda_probe_abort), so nothing here can touch
+ * memory once the probe returns. Declines every function that is not display
+ * audio; those belong to hda_probe(). */
+static int hda_display_probe(struct device *dev)
+{
+    struct hda *h = &g_hda_display;
+    struct hda_function_record *record;
+    struct hda_display_survey survey = {0};
+    unsigned input_streams = 0;
+    uint32_t vendor_and_device;
+
+    if (!hda_display_audio(dev)) {
+        return -1;
+    }
+    record = hda_function_record_for(dev, 1);
+    if (h->mmio) {
+        record->failure_reason = "another GPU audio function is being enumerated";
+        return -1;
+    }
+    if (hda_pci_mem_only(dev) != 0) {
+        record->failure_reason = "PCI memory-only state unconfirmed";
+        return -1;
+    }
+    if (hda_start_command_bus(h, dev, 0, &input_streams) != 0) {
+        record->failure_reason = h->bring_up_failure;
+        hda_probe_abort(h, dev);
+        return -1;
+    }
+    vendor_and_device = codec_param(h, 0, PARAM_VENDOR);
+    if (vendor_and_device == 0 || vendor_and_device == UINT32_MAX) {
+        record->failure_reason = "codec did not answer its vendor ID";
+        hda_probe_abort(h, dev);
+        return -1;
+    }
+    hda_display_survey_pins(h, &survey);
+    record->codec_present = 1;
+    record->codec_vendor_and_device = vendor_and_device;
+    record->display_pins = survey.pins;
+    record->display_pins_with_sink = survey.pins_with_sink;
+    record->bound = 1;
+    kprintf("[hda] %s: GPU audio function: codec %04x:%04x present, %u pins, %u with a sink, "
+            "%u with a valid ELD; HDMI/DP output needs GPU stage A, controller released\n",
+            dev->name, (unsigned)(vendor_and_device >> CODEC_VENDOR_ID_SHIFT),
+            (unsigned)(vendor_and_device & CODEC_DEVICE_ID_MASK), survey.pins, survey.pins_with_sink,
+            survey.pins_with_valid_eld);
+    hda_probe_abort(h, dev);
+    return 0;
+}
+
+/* The display function was released at the end of its probe, so unbinding only
+ * has to correct the record the panel reads. */
+static void hda_display_remove(struct device *dev)
+{
+    for (unsigned index = 0; index < HDA_FUNCTION_RECORDS_MAX; index++) {
+        if (hda_function_record_matches(&g_function_records[index], dev)) {
+            g_function_records[index].bound = 0;
+            g_function_records[index].failure_reason = "unbound";
+        }
+    }
+}
+
+static struct driver hda_display_driver = {
+    .name     = "hda-display",
+    .bus_type = DEV_BUS_PCI,
+    .match    = hda_ids,
+    .probe    = hda_display_probe,
+    .remove   = hda_display_remove,
+    .next     = NULL,
+};
+DRIVER_DECLARE(hda_display_driver);
+
+/* ------------------------------------------------------ panel status --- */
+
+/* Short words for the panel, kept next to the enum they name. */
+const char *hda_codec_error_name(enum hda_codec_error error)
+{
+    switch (error) {
+    case HDA_CODEC_ERROR_COMMAND_TIMEOUT:
+        return "cmd-timeout";
+    case HDA_CODEC_ERROR_POWER_REFUSED:
+        return "power-refused";
+    case HDA_CODEC_ERROR_POWER_TIMEOUT:
+        return "power-timeout";
+    case HDA_CODEC_ERROR_OUTPUT_SETUP_FAILED:
+        return "setup-failed";
+    case HDA_CODEC_ERROR_NONE:
+        break;
+    }
+    return "none";
+}
+
+/* The word for how the controller's interrupt was wired (DEV_IRQ_*, set from
+ * dev_irq_request()); "polled" means none could be wired. */
+static const char *hda_interrupt_mode_name(unsigned mode)
+{
+    switch (mode) {
+    case DEV_IRQ_MSIX:
+        return "msix";
+    case DEV_IRQ_MSI:
+        return "msi";
+    case DEV_IRQ_INTX:
+        return "intx";
+    default:
+        break;
+    }
+    return "polled";
+}
+
+/* Add what only the live analog controller knows: per-pin jack and drive
+ * state, the DMA engine's state and the counters. Reading refreshes the jacks
+ * (interval-limited) so the panel reflects a plug within a poll period even
+ * when no audio is playing and the audio worker is asleep. */
+static void hda_status_fill_live(struct hda *h, struct hda_controller_status *status)
+{
+    uint64_t played_before_read;
+
+    hda_poll_output_jacks(h, 0);
+    {
+        IO_GUARD(&hda_gate);
+        hda_fold_link_position(h);
+        status->stream_running = (r8(h, h->out_base + SD_CTL) & HDA_RUN) != 0;
+    }
+    status->pin_count = h->output_plan.path_count;
+    for (unsigned index = 0; index < h->output_plan.path_count; index++) {
+        const struct hda_output_path *path = &h->output_plan.paths[index];
+
+        status->pins[index].role = path->role;
+        status->pins[index].nid = path->route.nodes[0].nid;
+        status->pins[index].jack = h->path_jack_state[index];
+        status->pins[index].output_enabled = h->path_output_enabled[index];
+    }
+    played_before_read = h->panel_played_bytes;
+    status->bytes_played = h->played_bytes;
+    status->position_advancing = h->played_bytes != played_before_read;
+    h->panel_played_bytes = h->played_bytes;
+    status->interrupts = h->irqs;
+    status->interrupt_mode = hda_interrupt_mode_name(h->snd.irq_mode);
+    status->last_error = h->last_error;
+    status->last_error_nid = h->last_error_nid;
+}
+
+/* The panel's single entry point into the driver. Controllers are reported in
+ * the order they were offered to the driver, bound or not, so the panel can say
+ * why a function has no sound instead of silently omitting it. */
+int hda_status_get(unsigned index, struct hda_controller_status *status)
+{
+    unsigned seen = 0;
+
+    for (unsigned slot = 0; slot < HDA_FUNCTION_RECORDS_MAX; slot++) {
+        const struct hda_function_record *record = &g_function_records[slot];
+
+        if (!record->attempted) {
+            continue;
+        }
+        if (seen++ != index) {
+            continue;
+        }
+        memset(status, 0, sizeof *status);
+        status->bus = record->bus;
+        status->slot = record->slot;
+        status->function = record->function;
+        status->is_display_function = record->is_display_function;
+        status->bound = record->bound;
+        status->not_bound_reason = record->failure_reason;
+        status->codec_present = record->codec_present;
+        status->codec_vendor_and_device = record->codec_vendor_and_device;
+        if (record->bound && !record->is_display_function && g_hda.mmio) {
+            hda_status_fill_live(&g_hda, status);
+        }
+        return 0;
+    }
+    return -1;
+}

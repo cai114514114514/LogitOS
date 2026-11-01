@@ -25,6 +25,7 @@
 #define SET_STREAM          0x706
 #define SET_AMP             0x300
 #define SET_PIN             0x707
+#define PIN_WIDGET_CONTROL_MAX 0xffu       /* one byte of payload, HDA 1.0a 7.3.3.12 */
 #define SET_EAPD            0x70c
 #define AMP_OUTPUT          0x8000u
 #define AMP_INPUT           0x4000u
@@ -214,15 +215,35 @@ static void append_verb(struct hda_route_verb *verbs, unsigned *count,
     (*count)++;
 }
 
+/* Negative-control hook: reproduces the defect "a pin's output amplifier is
+ * never unmuted" for the ALC887 board gate (the pin amps power up muted).
+ * Production builds never define the macro, so this always returns zero. */
+static int pin_output_amp_unmute_suppressed(const struct hda_widget *node)
+{
+#ifdef HDA_NEGCTL_PIN_AMP_STAYS_MUTED
+    return node->type == HDA_ROUTE_PIN;
+#else
+    (void)node;
+    return 0;
+#endif
+}
+
 /* Emit capability-supported operations in signal-path order: power first,
  * converter stream, selects, amps, then pin enable/EAPD. A mixer SUMS inputs
  * and has no Connection Select; its chosen DAC is enabled with an indexed
  * input amp instead (Linux v6.12 snd_hda_activate_path/activate_amp_in).
  * Other mute-capable mixer inputs are muted to exclude analogue loopback;
- * pin input amps belong to capture and are deliberately left alone. */
-int hda_route_verbs(const struct hda_route *route, unsigned format,
-                    unsigned stream_tag, struct hda_route_verb *verbs,
-                    size_t capacity)
+ * pin input amps belong to capture and are deliberately left alone.
+ *
+ * The pin widget control is either computed from the pin's capabilities
+ * (use_explicit_pin_control == 0, the historical single-output behaviour) or
+ * taken verbatim from the caller, which lets a multi-output planner give a
+ * headphone pin HP_EN and a line-out pin plain OUT_EN as Linux does
+ * (hda_generic.c, get_pin_type / snd_hda_set_pin_ctl_cache). */
+static int compile_route_verbs(const struct hda_route *route, unsigned format,
+                               unsigned stream_tag, int use_explicit_pin_control,
+                               unsigned explicit_pin_control,
+                               struct hda_route_verb *verbs, size_t capacity)
 {
     unsigned count = 0;
     const struct hda_widget *pin;
@@ -266,7 +287,7 @@ int hda_route_verbs(const struct hda_route *route, unsigned format,
         if (i + 1 < route->count && node->type != HDA_ROUTE_MIXER) {
             append_verb(verbs, &count, node->nid, SET_SELECT, route->indices[i]);
         }
-        if (node->caps & WIDGET_AMP_OUT) {
+        if ((node->caps & WIDGET_AMP_OUT) && !pin_output_amp_unmute_suppressed(node)) {
             append_verb(verbs, &count, node->nid, SET_AMP,
                         AMP_OUTPUT | AMP_STEREO | unity_gain(node->amp_out));
         }
@@ -299,9 +320,35 @@ int hda_route_verbs(const struct hda_route *route, unsigned format,
     if (pin->pin_caps & PIN_HEADPHONE) {
         pin_control |= 1u << 7;
     }
+    if (use_explicit_pin_control) {
+        pin_control = explicit_pin_control;
+    }
     append_verb(verbs, &count, pin->nid, SET_PIN, pin_control);
     if (pin->pin_caps & PIN_EAPD) {
         append_verb(verbs, &count, pin->nid, SET_EAPD, 1u << 1);
     }
     return (int)count;
+}
+
+/* The historical entry point: pin control derived from the pin capabilities.
+ * Kept so the single-output fallback and its gates behave exactly as before. */
+int hda_route_verbs(const struct hda_route *route, unsigned format,
+                    unsigned stream_tag, struct hda_route_verb *verbs,
+                    size_t capacity)
+{
+    return compile_route_verbs(route, format, stream_tag, 0, 0, verbs, capacity);
+}
+
+/* Same command stream, but the pin is switched on with exactly the widget
+ * control value the caller computed from the pin's role. Values above one
+ * byte are refused: Pin Widget Control carries eight bits (HDA 1.0a 7.3.3.12). */
+int hda_route_verbs_with_pin_control(const struct hda_route *route, unsigned format,
+                                     unsigned stream_tag, unsigned pin_widget_control,
+                                     struct hda_route_verb *verbs, size_t capacity)
+{
+    if (pin_widget_control > PIN_WIDGET_CONTROL_MAX) {
+        return -1;
+    }
+    return compile_route_verbs(route, format, stream_tag, 1, pin_widget_control,
+                               verbs, capacity);
 }

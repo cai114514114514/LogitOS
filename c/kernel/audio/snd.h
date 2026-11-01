@@ -93,9 +93,28 @@ struct snd_device {
      * position register that lies is a nastier failure than a late refill. */
     uint64_t (*position)(struct snd_device *d);
 
+    /* Optional (NULL = none). Called by the kaudio worker about every
+     * SND_HOUSEKEEPING_PERIODS completed periods while the engine runs, from
+     * thread context with the mixer lock held, never from the ISR. A driver
+     * uses it for slow device chores that need blocking-style access: the HDA
+     * driver re-reads its headphone jacks (auto-mute) and keeps its byte
+     * counter from wrapping unseen. It must not sleep or call back into the
+     * mixer. */
+    void (*housekeeping)(struct snd_device *d);
+
     unsigned irq_mode;                /* DEV_IRQ_* as wired, 0 = polled */
     void    *priv;
 };
+
+/* How many periods pass between housekeeping calls. At the HDA driver's 1024
+ * frame periods this is about 43 ms, a quarter of one lap of its 8-period ring,
+ * so a position counter folded from a wrapping register never misses a lap. */
+#define SND_HOUSEKEEPING_PERIODS 2
+
+/* Frames the registered output device's engine has played since start(), or 0
+ * when there is no device or it cannot say. Used by the boot test tone to show
+ * in the log that the hardware position really advanced. */
+uint64_t snd_device_position_frames(void);
 
 /* Called by a card driver from its probe(). The first device registered wins;
  * a second one is logged and ignored (we have no notion of a default sink to
