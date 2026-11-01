@@ -14,6 +14,7 @@
 #include "intel_imc_smbus.h"
 #include "nct6779.h"
 #include "hwreport.h"
+#include "serial.h"
 
 /* Filled once by board_early(), before any other thread exists, and only
  * read afterwards; that ordering is the synchronization. */
@@ -107,6 +108,9 @@ void board_reset(void)
     const struct pch_lpc *l = lpc();
     if (!l) return;
     kprintf("[power] reboot: PCH 0xCF9 cold reset\n");
+    /* The CF9 write resets the platform (PLTRST#) immediately, UART included:
+     * whatever serial_putc() still has queued must leave first. */
+    serial_flush_blocking();
     pch_reset(l);
     kprintf("[power] reboot: 0xCF9 did not take\n");
 }

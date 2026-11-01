@@ -44,10 +44,11 @@
  *     with no I/O in it -- microseconds, not the milliseconds a UART would add.
  *
  *  5. THE SLOW PART HOLDS NOTHING. Line assembly happens in a PER-CPU buffer,
- *     and the console write (serial_putc busy-waits on the UART: ~87us per
- *     character on real hardware) happens with no lock held at all -- exactly
- *     as it did before. Only the finished line's memcpy into the ring is
- *     serialised. Console byte order is therefore unchanged.
+ *     and the console write (serial_putc used to busy-wait on the UART, ~87us
+ *     per character on real hardware; it now only queues into the serial TX
+ *     ring and never waits on the wire) happens with no lock held at all --
+ *     exactly as it did before. Only the finished line's memcpy into the ring
+ *     is serialised. Console byte order is therefore unchanged.
  *
  *  6. PANIC BREAKS THE LOCK. If the machine died inside the critical section,
  *     waiting for that lock is waiting forever. klog_panic_takeover() forcibly

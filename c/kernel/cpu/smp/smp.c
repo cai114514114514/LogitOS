@@ -29,6 +29,7 @@
 #include "fb.h"
 #include "netdev.h"
 #include "kprintf.h"
+#include "serial.h"
 #include "percpu.h"
 #include "sched.h"
 #include "spinlock.h"
@@ -511,6 +512,7 @@ void smp_init(void)
     int ioapic_status = ioapic_init();
     if (ioapic_status == IOAPIC_ROUTE_UNSAFE) {
         kprintf("[ioapic] initial mask state unsafe; stopping before PIC fallback\n");
+        serial_flush_blocking();    /* fatal stop: IRQs go off, the TX ring must be on the wire */
         for (;;) __asm__ volatile ("cli; hlt");
     }
     if (ioapic_present()) {
@@ -522,6 +524,7 @@ void smp_init(void)
             kprintf("[ioapic] device IRQs routed via I/O APIC\n");
         } else if (route == IOAPIC_ROUTE_UNSAFE) {
             kprintf("[ioapic] unsafe partial legacy route; stopping before PIC fallback\n");
+            serial_flush_blocking();    /* fatal stop: IRQs go off, the TX ring must be on the wire */
             for (;;) __asm__ volatile ("cli; hlt");
         } else {
             kprintf("[ioapic] refusing BSP device routes apic_id=%u; PIC retained\n",
@@ -587,11 +590,13 @@ void smp_init(void)
         if (g_cpus[slot].lapic_id != aid) {
             kprintf("[smp] fatal published CPU slot=%d changed APIC identity %u/%u\n",
                     slot, (unsigned)g_cpus[slot].lapic_id, (unsigned)aid);
+            serial_flush_blocking();    /* fatal stop: IRQs go off, the TX ring must be on the wire */
             for (;;) __asm__ volatile ("cli; hlt");
         }
         if (smp_bsp_commit_online(&g_ap_state[slot], &g_online, slot) != 0) {
             kprintf("[smp] fatal cannot commit published CPU slot=%d count=%d\n",
                     slot, __atomic_load_n(&g_online, __ATOMIC_ACQUIRE));
+            serial_flush_blocking();    /* fatal stop: IRQs go off, the TX ring must be on the wire */
             for (;;) __asm__ volatile ("cli; hlt");
         }
         kprintf("[smp] CPU %d apic_id=%u online\n", slot, (unsigned)aid);

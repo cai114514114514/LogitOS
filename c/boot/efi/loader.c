@@ -106,7 +106,7 @@ static int meq(const void *a, const void *b, UINT64 n)
  * ------------------------------------------------------------------ */
 
 /* Byte-for-byte the same line settings as the kernel's own driver
- * (c/drivers/char/serial.c serial_init: divisor 3 => 38400 baud, 8N1). QEMU
+ * (c/drivers/char/serial.c serial_init: divisor 1 => 115200 baud, 8N1). QEMU
  * does not care; a real machine does, and a mismatch would show up as the
  * loader's banner arriving clean and the kernel's first line arriving as
  * garbage -- a symptom that looks like a kernel fault and is not one. */
@@ -127,7 +127,7 @@ static void serial_init(void)
 {
     outb(COM1 + 1, 0x00);   /* interrupts off */
     outb(COM1 + 3, 0x80);   /* DLAB */
-    outb(COM1 + 0, 0x03);   /* divisor low  = 3 -> 38400 baud */
+    outb(COM1 + 0, 0x01);   /* divisor low  = 1 -> 115200 baud */
     outb(COM1 + 1, 0x00);   /* divisor high */
     outb(COM1 + 3, 0x03);   /* 8 bits, no parity, 1 stop */
     outb(COM1 + 2, 0xC7);   /* FIFO on + cleared, 14-byte trigger */
