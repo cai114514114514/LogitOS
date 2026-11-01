@@ -55,7 +55,7 @@ def packaged_outputs():
                    evqstat=None, capcheck=None, barriers=None, ash=None,
                    argvlimit=None, chlaunch="CHLAUNCH_OK\n", crashme=None,
                    durcheck=None, elfstat=None, mempress=None, mmaudit="0\n",
-                   mmrep="0\n", pcachecheck=None, pcachefill=None, ptracee=None,
+                   mmrep="0\n", oomrep="0\n", pcachecheck=None, pcachefill=None, ptracee=None,
                    ptracer="PTINTRUDE readable 0\n", setcheck="SETCHECK-SELFTEST-OK\n",
                    storgate=None, storprobe=None)
     for name in STARTUP_PROBES:
@@ -67,8 +67,9 @@ def check_packaged_output(name, output, expected):
     """Check effects and refusal results, not merely a program's final marker.
 
     Dynamic addresses/counters are checked by shape; fixed operation results
-    remain literal. In particular the two new mm probes must print zero, so
-    executing the wrong mmctl or returning audit inconsistencies cannot pass.
+    remain literal. In particular the mm probes must print zero, so executing
+    the wrong mmctl or returning audit inconsistencies cannot pass; oomrep
+    returns the kill count, which is zero on this fresh boot.
     """
     if expected is not None:
         assert output == expected, (name, output)

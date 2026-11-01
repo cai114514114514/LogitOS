@@ -51,6 +51,9 @@ MI_FRAMES_FREE = 2
 # with the desktop and this program up, and 16,621 left once the 200 MiB hog is
 # resident. 20,000 sits between those two and nowhere near either, so it fires
 # after the hog has finished and never before it has started.
+# Remeasured 2026-11-01: 57,337 free with this program up and about 16,400
+# once the gate's hog (now 160 MiB, see tests/mem.mk) is resident, so 20,000
+# still sits between the two.
 LOWMARK = 20000
 
 # Bounded, so a run where the hog never fills memory ENDS and says so rather
