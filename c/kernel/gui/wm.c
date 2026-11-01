@@ -129,6 +129,11 @@ static struct wm_lock_stat wm_lock_stats[WM_LOCK_TAG_COUNT];
 static struct wm_lock_hold wm_lock_top[WM_LOCK_TOP_N];
 static struct wm_lock_stat wm_lock_stats_snapshot[WM_LOCK_TAG_COUNT];
 static struct wm_lock_hold wm_lock_top_snapshot[WM_LOCK_TOP_N];
+/* Each tag's calls count as of the previous report: wm_lock_report_emit prints
+ * a tag's line only if its count has moved since, so a report carries the
+ * handful of syscalls that ran in the last second, not one line per tag that
+ * has ever run. */
+static uint64_t wm_lock_calls_reported[WM_LOCK_TAG_COUNT];
 static int wm_lock_report_pending;
 static uint64_t wm_lock_seq;
 static uint64_t wm_lock_render_frames;
@@ -200,13 +205,22 @@ static void wm_lock_report_prepare(void)
     wm_lock_report_pending = 1;
 }
 
+/* Print the snapshot taken by wm_lock_report_prepare. The locktag lines are
+ * CUMULATIVE per tag, so a tag whose calls count has not moved since the last
+ * report would repeat the same numbers: it is skipped, and a reader that keeps
+ * the latest line per tag (tests/qmp/qmp_wm_state_lock.py does) loses nothing.
+ * There is one tag per GUI syscall number (261 of them) and every one that ever
+ * ran used to be re-printed each second -- 2-4 KB of serial that the 38400-baud
+ * UART needed over a second to send. The locktop lines are unchanged: the gate
+ * that reads them wants a fresh rank=1..6 block with every report. */
 static void wm_lock_report_emit(void)
 {
     if (!wm_lock_report_pending) return;
     wm_lock_report_pending = 0;
     for (unsigned tag = 0; tag < WM_LOCK_TAG_COUNT; tag++) {
         const struct wm_lock_stat *s = &wm_lock_stats_snapshot[tag];
-        if (!s->calls) continue;
+        if (s->calls == wm_lock_calls_reported[tag]) continue;
+        wm_lock_calls_reported[tag] = s->calls;
         kprintf("[wm] locktag tag=%s num=%u calls=%lu wall_ns=%lu cpu_ns=%lu "
                 "max_wall_ns=%lu max_cpu_ns=%lu redispatches=%lu\n",
                 wm_lock_tag_name(tag), tag, (unsigned long)s->calls,
@@ -5366,6 +5380,27 @@ static void wm_geom_report(void)
     }
 }
 
+/* Everything one wm perf report prints, captured as a unit so the numbers are a
+ * single consistent cut taken under wm_lock and the printing can happen after
+ * the lock is released. */
+struct wm_perf_sample {
+    uint64_t ms;
+    uint64_t composites, comp_ns, comp_ns_max, motions, cursor_moves, cursor_ns;
+    uint64_t full, rects, cpx, fpx, present_ns;
+    uint64_t torn, defer, late, drawmax;
+    uint64_t evdrop, evevict;
+    struct inputq_stats input;
+    uint64_t openlogit_batches, bgskip;
+    uint64_t swcursor_moves, swcursor_ns, swcursor_px, cursor_damage;
+    uint64_t parframes, serialframes, parbands, parbands_worker;
+    int par_workers;
+#ifdef WM_PAR_VERIFY
+    uint64_t parverified, parmismatch;
+#endif
+    uint64_t par_sum_ns, par_crit_ns;
+    uint64_t lock_calls, lock_ns, lock_max_ns, lock_render_frames;
+};
+
 /* One line per second of ACTIVITY, and silence otherwise.
  *
  * Silence is the load-bearing half. This console is also `/bin/sh`'s stdout --
@@ -5374,13 +5409,19 @@ static void wm_geom_report(void)
  * bytes. An idle desktop composites twice a second to move the clock and moves
  * the pointer never, so "did a hand touch this machine" is a question the
  * counters can answer: report only when the pointer moved, or when composites
- * ran far above the idle 2 Hz floor. */
-static void wm_perf_report(void)
+ * ran far above the idle 2 Hz floor.
+ *
+ * This is the decision and the numbers, under wm_lock; the printing is
+ * wm_perf_report_print's, after the lock is released. Both halves used to be
+ * one function running inside wm_state_lock(WM_LOCK_FRAME_PASS), so every byte
+ * of the report was written to the UART while the whole GUI waited for the
+ * lock. Returns 1 and fills *sample when a report is due. */
+static int wm_perf_report_collect(struct wm_perf_sample *sample)
 {
     static uint64_t next_ms, last_comp, last_mot, last_torn, last_def;
     static uint64_t last_evdrop, last_evevict, last_indrop, last_inevict, last_inback;
     uint64_t ms = time_mono_ms();
-    if (ms < next_ms) return;
+    if (ms < next_ms) return 0;
     next_ms = ms + 1000;
     uint64_t dc = perf_composites - last_comp, dm = perf_motions - last_mot;
     last_comp = perf_composites; last_mot = perf_motions;
@@ -5399,31 +5440,85 @@ static void wm_perf_report(void)
     last_evdrop = evdrop; last_evevict = evevict; last_indrop = indrop;
     last_inevict = iqstats.evicted_motion;
     last_inback = iqstats.batches_with_backlog;
-    if (dm == 0 && dc <= 20 && dt_torn == 0 && dt_def == 0 && !queue_activity) return;
+    if (dm == 0 && dc <= 20 && dt_torn == 0 && dt_def == 0 && !queue_activity) return 0;
+    sample->ms = ms;
+    sample->composites = perf_composites;
+    sample->comp_ns = perf_comp_ns;
+    sample->comp_ns_max = perf_comp_ns_max;
+    sample->motions = perf_motions;
+    sample->cursor_moves = perf_cursor_moves;
+    sample->cursor_ns = perf_cursor_ns;
+    sample->full = perf_full;
+    sample->rects = perf_rects;
+    sample->cpx = perf_cpx;
+    sample->fpx = fb_present_px();
+    sample->present_ns = perf_present_ns;
+    sample->torn = perf_torn;
+    sample->defer = perf_defer;
+    sample->late = perf_late;
+    sample->drawmax = perf_drawmax;
+    sample->evdrop = evdrop;
+    sample->evevict = evevict;
+    sample->input = iqstats;
+    sample->openlogit_batches = fb_openlogit_batches();
+    sample->bgskip = perf_bgskip;
+    sample->swcursor_moves = perf_swcursor_moves;
+    sample->swcursor_ns = perf_swcursor_ns;
+    sample->swcursor_px = perf_swcursor_px;
+    sample->cursor_damage = perf_cursor_damage;
+    sample->parframes = perf_parframes;
+    sample->serialframes = perf_serialframes;
+    sample->parbands = perf_parbands;
+    sample->parbands_worker = perf_parbands_worker;
+    sample->par_workers = par_nw;
+#ifdef WM_PAR_VERIFY
+    sample->parverified = perf_parverified;
+    sample->parmismatch = perf_parmismatch;
+#endif
+    sample->par_sum_ns = __atomic_load_n(&perf_par_sum_ns, __ATOMIC_RELAXED);
+    sample->par_crit_ns = perf_par_crit_ns;
+    sample->lock_calls = wm_lock_calls;
+    sample->lock_ns = wm_lock_ns;
+    sample->lock_max_ns = wm_lock_max_ns;
+    sample->lock_render_frames = wm_lock_render_frames;
+    /* The per-tag table is copied here, under the lock that guards it; its
+     * lines are printed afterwards by wm_lock_report_emit. */
+    wm_lock_report_prepare();
+    return 1;
+}
+
+/* Print what wm_perf_report_collect captured. Runs with NO wm lock held: the
+ * lines go to the serial TX ring (kprintf only queues), and even a full ring
+ * cannot stall the GUI any more. The line order and field sets are unchanged;
+ * qmp_repaint.py parses the perf line by its full field set, and
+ * tests/hw/gfx/guest.py pairs each perf line with the swcursor line after it. */
+static void wm_perf_report_print(const struct wm_perf_sample *sample)
+{
+    const struct inputq_stats *iqstats = &sample->input;
     kprintf("[wm] perf t=%lu composites=%lu ns=%lu max=%lu motions=%lu curmoves=%lu "
             "curns=%lu full=%lu rects=%lu cpx=%lu fpx=%lu presns=%lu "
             "torn=%lu defer=%lu late=%lu drawmax=%lu evdrop=%lu evevict=%lu "
             "inmerge=%lu inevict=%lu indrop=%lu/%lu inback=%lu inhwm=%lu sdk_draws=%lu bgskip=%lu\n",
-            (unsigned long)ms, (unsigned long)perf_composites,
-            (unsigned long)perf_comp_ns, (unsigned long)perf_comp_ns_max,
-            (unsigned long)perf_motions, (unsigned long)perf_cursor_moves,
-            (unsigned long)perf_cursor_ns,
-            (unsigned long)perf_full, (unsigned long)perf_rects,
-            (unsigned long)perf_cpx, (unsigned long)fb_present_px(),
-            (unsigned long)perf_present_ns,
-            (unsigned long)perf_torn, (unsigned long)perf_defer,
-            (unsigned long)perf_late, (unsigned long)perf_drawmax,
-            (unsigned long)evdrop, (unsigned long)evevict,
-            (unsigned long)iqstats.coalesced, (unsigned long)iqstats.evicted_motion,
-            (unsigned long)iqstats.dropped_motion, (unsigned long)iqstats.dropped_semantic,
-            (unsigned long)iqstats.batches_with_backlog,
-            (unsigned long)iqstats.high_watermark, (unsigned long)fb_openlogit_batches(),
-            (unsigned long)perf_bgskip);
+            (unsigned long)sample->ms, (unsigned long)sample->composites,
+            (unsigned long)sample->comp_ns, (unsigned long)sample->comp_ns_max,
+            (unsigned long)sample->motions, (unsigned long)sample->cursor_moves,
+            (unsigned long)sample->cursor_ns,
+            (unsigned long)sample->full, (unsigned long)sample->rects,
+            (unsigned long)sample->cpx, (unsigned long)sample->fpx,
+            (unsigned long)sample->present_ns,
+            (unsigned long)sample->torn, (unsigned long)sample->defer,
+            (unsigned long)sample->late, (unsigned long)sample->drawmax,
+            (unsigned long)sample->evdrop, (unsigned long)sample->evevict,
+            (unsigned long)iqstats->coalesced, (unsigned long)iqstats->evicted_motion,
+            (unsigned long)iqstats->dropped_motion, (unsigned long)iqstats->dropped_semantic,
+            (unsigned long)iqstats->batches_with_backlog,
+            (unsigned long)iqstats->high_watermark, (unsigned long)sample->openlogit_batches,
+            (unsigned long)sample->bgskip);
     /* Cumulative overlay work, separate from compositor pixels/timing. Dock
      * hover may composite content; cursor_damage identifies only cursor work. */
     kprintf("[wm] swcursor moves=%lu ns=%lu box_px=%lu cursor_damage=%lu\n",
-            (unsigned long)perf_swcursor_moves, (unsigned long)perf_swcursor_ns,
-            (unsigned long)perf_swcursor_px, (unsigned long)perf_cursor_damage);
+            (unsigned long)sample->swcursor_moves, (unsigned long)sample->swcursor_ns,
+            (unsigned long)sample->swcursor_px, (unsigned long)sample->cursor_damage);
     /* Band-parallel composition (par_render). A separate line on purpose:
      * qmp_repaint.py parses the perf line above by its full field set. */
     kprintf("[wm] par frames=%lu serial=%lu bands=%lu worker_bands=%lu workers=%d"
@@ -5431,17 +5526,19 @@ static void wm_perf_report(void)
             " verified=%lu mismatch=%lu"
 #endif
             " sum_ns=%lu crit_ns=%lu\n",
-            (unsigned long)perf_parframes, (unsigned long)perf_serialframes,
-            (unsigned long)perf_parbands, (unsigned long)perf_parbands_worker, par_nw
+            (unsigned long)sample->parframes, (unsigned long)sample->serialframes,
+            (unsigned long)sample->parbands, (unsigned long)sample->parbands_worker,
+            sample->par_workers
 #ifdef WM_PAR_VERIFY
-            , (unsigned long)perf_parverified, (unsigned long)perf_parmismatch
+            , (unsigned long)sample->parverified, (unsigned long)sample->parmismatch
 #endif
-            , (unsigned long)__atomic_load_n(&perf_par_sum_ns, __ATOMIC_RELAXED),
-            (unsigned long)perf_par_crit_ns
+            , (unsigned long)sample->par_sum_ns,
+            (unsigned long)sample->par_crit_ns
             );
     kprintf("[wm] locks calls=%lu hold_ns=%lu max_ns=%lu render_locked=%lu\n",
-            wm_lock_calls, wm_lock_ns, wm_lock_max_ns, wm_lock_render_frames);
-    wm_lock_report_prepare();
+            (unsigned long)sample->lock_calls, (unsigned long)sample->lock_ns,
+            (unsigned long)sample->lock_max_ns,
+            (unsigned long)sample->lock_render_frames);
     /* These are live cumulative counters: workers use relaxed atomic adds,
      * so each field needs an atomic load even though this is just telemetry.
      * A report may straddle a call; no cross-field snapshot is promised. */
@@ -5746,9 +5843,14 @@ void wm_run(void)
         wm_state_unlock();
         if (render) wm_render();
         wm_state_lock(WM_LOCK_FRAME_PASS);
-        wm_perf_report();
+        struct wm_perf_sample perf_sample;
+        int perf_due = wm_perf_report_collect(&perf_sample);
         wm_geom_report();     /* window frames, when they stop moving */
         wm_state_unlock();
+        /* Print with the GUI lock released: nothing the WM thread writes to the
+         * console may keep every app waiting for wm_lock. */
+        if (perf_due)
+            wm_perf_report_print(&perf_sample);
         wm_lock_report_emit();
 #ifdef LOGIT_HWHUD
         {

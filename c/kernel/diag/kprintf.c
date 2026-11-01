@@ -9,8 +9,14 @@
 
 /* One formatted diagnostic is indivisible across CPUs. Per-character UART
  * locking preserves bytes but produced unparseable interleaved SMP probes.
- * This lock intentionally covers the UART wait; diagnostics therefore remain
- * a serial, IRQ-off cost. ksnprintf never takes it. Panic stops peers first. */
+ * The lock covers formatting and the hand-over of the finished bytes to the
+ * serial TX ring (c/drivers/char/serial.c), so a whole message enters the ring
+ * contiguously. It does NOT cover any wait for the wire: serial_putc() only
+ * queues, and the 16550 clocks the bytes out on its own, so the IRQ-off window
+ * is the formatting time (microseconds), not the UART time (hundreds of
+ * milliseconds for a few KB at 38400 baud, which froze the real X79-VG4
+ * desktop whenever the WM printed its once-a-second report). ksnprintf never
+ * takes it. Panic stops peers first. */
 static io_lock_t printf_lock = IO_LOCK_INIT;
 static unsigned printf_panicking;
 void kprintf_panic_takeover(void)
@@ -31,13 +37,16 @@ static void printf_leave(uint64_t *flags) { kprintf_console_leave(*flags); }
 /* The formatter writes through a sink so the same code serves the console
  * (VGA + COM1 + the log ring) and a plain memory buffer (ksnprintf). The
  * console sink emits exactly the bytes the old char-by-char loop emitted, in
- * the same order, with no lock held -- serial_putc busy-waits on the UART, and
- * holding a lock across ~87us per character would be a multi-millisecond
- * interrupts-off window on real hardware.
+ * the same order.
  * Correction: each hardware sink now owns its tiny register/cursor update;
- * no sink lock covers formatting, a whole line, or the UART-ready wait.
+ * no sink lock covers formatting or a whole line.
  * Further correction: printf_lock above now owns the whole message to keep
- * simultaneous CPU diagnostics intact, including the bounded UART wait. */
+ * simultaneous CPU diagnostics intact.
+ * Last correction: serial_putc() used to busy-wait on the UART (~87us a byte
+ * at 115200 baud, ~260us at the 38400 the driver was using), so that lock was
+ * held across the wire time of the whole message. serial_putc() now queues and
+ * never waits, which is what makes holding printf_lock across the message
+ * cheap again. */
 /* aligned(8), and every field assigned rather than brace-initialised, ON
  * PURPOSE.
  *

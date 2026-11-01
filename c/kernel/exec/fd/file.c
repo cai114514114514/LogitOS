@@ -154,12 +154,13 @@ static long tty_read(struct file *f, void *vbuf, long len)
 }
 
 /* Bound UART bytes, not input bytes: LF expands to CRLF below. serial_init()
- * in c/drivers/char/serial.c selects 38400 baud, 8N1, so 160 * 10 / 38400
- * is about 41.7 ms of nominal wire time. That is an acceptable diagnostic
- * console tradeoff against interleaving, following diag/kprintf.c's existing
- * printf_lock precedent (one whole message, including the UART wait, IRQ-off).
- * It is NOT a measured latency ceiling: lock contention and serial_putc's
- * bounded not-ready polling add time. Not verified on X79-VG4 hardware. */
+ * in c/drivers/char/serial.c selects 115200 baud, 8N1, so 160 * 10 / 115200
+ * is about 13.9 ms of nominal wire time -- but serial_putc() only queues the
+ * bytes in the serial TX ring and never waits for the wire, so the IRQ-off
+ * hold is the queueing time, far below that. The bound is kept so one chunk
+ * is still a bounded part of the ring and cannot starve the message lock,
+ * following diag/kprintf.c's printf_lock precedent (one whole message, IRQ-off).
+ * Not verified on X79-VG4 hardware. */
 #define CONSOLE_LINE_MAX 160
 
 /* Keep a user line in the same message-lock domain as kprintf: UART byte

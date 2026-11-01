@@ -107,11 +107,27 @@ static void par_format(char *out, size_t capacity, const struct smp_present_stat
               (unsigned long)max_wait_us, (unsigned long)stats->missing_mask, state);
 }
 
+/* One HUD line for the serial console: the rate bytes are queued into the TX
+ * ring, the rate they actually leave on the wire, the bytes lost, and the ring
+ * fill. A photo of the real board shows at a glance that the UART no longer
+ * throttles anything: queued/s follows what the kernel prints, sent/s follows
+ * the 115200-baud wire (at most ~11520), dropped stays 0 and the ring drains
+ * back toward empty. Pure so the host test pins every character. */
+static void console_format(char *out, size_t capacity, uint64_t queued_per_s,
+                           uint64_t sent_per_s, uint64_t dropped,
+                           unsigned ring_used, unsigned ring_size)
+{
+    ksnprintf(out, capacity, "con  queued/s %lu sent/s %lu dropped %lu ring %u/%u",
+              (unsigned long)queued_per_s, (unsigned long)sent_per_s,
+              (unsigned long)dropped, ring_used, ring_size);
+}
+
 /* Host gates include just the pure formatters above. The production build
  * retains all collectors below; no host stand-in can hide a stale formatter. */
 #ifndef HWHUD_FORMAT_HOST
 #include "hwhud.h"
 #include "hwscreen_font.h"
+#include "serial.h"
 #include "fb.h"
 #include "mmhost.h"
 #include "vmm.h"
@@ -126,7 +142,7 @@ static void par_format(char *out, size_t capacity, const struct smp_present_stat
 #include "logit_boot.h"
 
 #define COLS 92
-#define ROWS 36
+#define ROWS 37
 
 static struct logit_boot_display_tag g_disp;
 static int g_have_disp;
@@ -424,6 +440,24 @@ static void lines_wm(const struct hwhud_wm *w, uint64_t dms)
     p_wm = *w;
 }
 
+static uint64_t p_con_queued, p_con_sent;
+
+/* The serial console's throughput line (see console_format), as per-second
+ * rates over the same interval every other HUD rate uses. */
+static void lines_console(uint64_t dms)
+{
+    struct serial_tx_stats stats;
+    serial_tx_stats(&stats);
+    uint64_t queued_per_s = dms ? (stats.queued - p_con_queued) * 1000 / dms : 0;
+    uint64_t sent_per_s = dms ? (stats.sent - p_con_sent) * 1000 / dms : 0;
+    p_con_queued = stats.queued;
+    p_con_sent = stats.sent;
+    char line[COLS + 1];
+    console_format(line, sizeof line, queued_per_s, sent_per_s, stats.dropped,
+                   stats.ring_used, stats.ring_size);
+    addline(line);
+}
+
 static void lines_irq(uint64_t dms)
 {
     char out[COLS + 1];
@@ -538,6 +572,7 @@ void hwhud_tick(const struct hwhud_wm *wm)
     char par_line[256];
     par_format(par_line, sizeof par_line, &par);
     add_wrapped(par_line);
+    lines_console(dms);
     lines_irq(dms);
     lines_mtrr();
     lines_thermal();

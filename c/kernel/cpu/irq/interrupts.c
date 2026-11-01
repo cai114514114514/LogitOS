@@ -2,6 +2,7 @@
 #include "interrupts.h"
 #include "kprintf.h"
 #include "vga.h"
+#include "serial.h"
 #include "pic.h"
 #include "pit.h"
 #include "keyboard.h"
@@ -47,6 +48,9 @@ static void panic_exception(struct registers *r)
     kprintf("  error=%x  rip=%p  rflags=%x cr2=%p cpu=%d cur=%p\n",
             (unsigned)r->error_code, (void *)r->rip, (unsigned)r->rflags,
             (void *)cr2, me->index, (void *)me->current);
+    /* This CPU halts with IRQs off and never ticks again: the exception report
+     * would stay in the serial TX ring, so put it on the wire first. */
+    serial_flush_blocking();
     for (;;)
         __asm__ volatile ("cli; hlt");
 }
@@ -136,6 +140,17 @@ void interrupt_handler(struct registers *r, void *fxarea)
         /* And sample the BKL's holder in the same pre-acquire window, for
          * the same reason: from here the observer is not itself a holder. */
     }
+
+    /* Serial TX ring drain, on EVERY core's timer tick and ahead of the BKL
+     * acquire for the same reason as the tick above: it must never queue
+     * behind anything. serial_putc() only queues, so bytes that arrived while
+     * the 16550's 16-byte FIFO was busy wait for the next producer -- or for
+     * this. Each tick writes at most one FIFO (16 bytes) and only try-locks the
+     * ring, so it cannot wait; with the BSP at 100 Hz and each AP at ~600 Hz
+     * the aggregate rate is on the order of the 115200-baud wire speed
+     * (11.5 KB/s). An empty ring costs two relaxed loads. */
+    if (r->vector == 32)
+        serial_tx_tick();
 
     if (r->vector == 128) {        /* int 0x80 system call */
         sysnr = r->rax;

@@ -53,9 +53,13 @@ static void version_accepted(void)
     serial_puts(line);
 }
 
+/* The refusal text is the only evidence of why the machine stopped. The
+ * serial driver queues, and a CPU halted with interrupts off never runs the
+ * periodic drain, so push the text onto the wire before halting. */
 static __attribute__((noreturn)) void refuse(const char *message)
 {
     serial_puts(message);
+    serial_flush_blocking();
     for (;;) __asm__ volatile ("cli; hlt");
 }
 
@@ -73,6 +77,7 @@ uint64_t logit_boot_normalize(uint64_t info_addr, uint64_t entry_magic)
         refuse("LOGIT BOOT BLOCK MAGIC REFUSED\n");
     if (header->version != LOGIT_BOOT_VERSION) {
         version_refused(header->version);
+        serial_flush_blocking();     /* see refuse(): halting with IRQs off */
         for (;;) __asm__ volatile ("cli; hlt");
     }
     if (header->header_size != LOGIT_BOOT_HEADER_SIZE || header->reserved ||

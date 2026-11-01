@@ -74,6 +74,7 @@
 #include "vfs.h"
 #include "wait.h"
 #include "sched.h"
+#include "serial.h"
 #include "../../drivers/power/acpi/devices.h"
 #include "../../drivers/power/acpi/native.h"
 #include "../../drivers/power/acpi/button.h"
@@ -254,6 +255,10 @@ int kernel_poweroff(void)
      * its keyboard, storage and network (a removed EHCI cannot be safely
      * rebound while a dispatched timer callback may still run). */
     kprintf("[power] entering firmware-evaluated S5\n");
+    /* serial_putc() only queues, so the lines above may still be waiting for
+     * the 16550. S5 removes power within microseconds of the write below: push
+     * them out first, or the log (and any harness that reads it) ends early. */
+    serial_flush_blocking();
     status = power_acpi_enter_off();
     /* A normal return means the machine is still executing. Restore ACPI's
      * working-state event setup before reopening filesystem admission. */
@@ -283,8 +288,12 @@ int kernel_reboot(void)
 
     mutex_lock(&aml_lock);
     int reset_status = initialize_aml_locked();
-    if (!reset_status)
+    if (!reset_status) {
+        /* The reset register write below resets the platform on the spot; the
+         * lines still queued for the UART would die with it. */
+        serial_flush_blocking();
         reset_status = power_acpi_reset();
+    }
     mutex_unlock(&aml_lock);
     kprintf("[power] ACPI reset returned status=%d; trying legacy reset\n",
             reset_status);
@@ -297,6 +306,8 @@ int kernel_reboot(void)
     if (dma_unconfirmed) {
         kprintf("[power] reboot refused: a device could not be stopped and no platform reset took; "
                 "the CPU-only resets would let it keep writing into the next boot. Power the machine off.\n");
+        /* The explanation is the only thing the operator will ever see. */
+        serial_flush_blocking();
         for (;;) __asm__ volatile ("cli; hlt");
     }
 
@@ -304,9 +315,11 @@ int kernel_reboot(void)
      * "pulse output port, drive reset low" command byte. Every PC-compatible
      * platform this kernel targets, real or emulated, still honours it. */
     kprintf("[power] reboot: 8042 pulse\n");
+    serial_flush_blocking();
     outb(0x64, 0xFE);
     spin_ms(50);
     kprintf("[power] reboot: 8042 pulse did not take -- triple fault\n");
+    serial_flush_blocking();
 
     /* Tier 4: load a zero-limit IDT, then fault. With IDTR.limit == 0, EVERY
      * vector lookup is out of bounds -- so int3 takes #GP (its own IDT entry

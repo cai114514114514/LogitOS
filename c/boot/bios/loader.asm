@@ -1104,7 +1104,7 @@ serial_init:
     mov al, 0x80
     out dx, al
     mov dx, COM1
-    mov al, 3
+    mov al, 1                   ; 115,200 baud, matches c/drivers/char/serial.c
     out dx, al
     mov dx, COM1 + 1
     xor al, al

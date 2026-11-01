@@ -1,5 +1,6 @@
 #include <stdint.h>
 #include "kprintf.h"
+#include "serial.h"
 
 #ifdef BOOT_MB2_DUMP
 
@@ -49,6 +50,9 @@ static void finish(int pass, const char *reason)
         kprintf("MB2 RESULT PASS\n");
     else
         kprintf("MB2 RESULT FAIL %s\n", reason);
+    /* The gate treats this serial result as the oracle, and the exit write
+     * below ends the VM: drain the TX ring first. */
+    serial_flush_blocking();
     /* isa-debug-exit returns (value << 1) | 1.  The gate treats the serial
      * result as the oracle because QEMU therefore has a non-zero status even
      * on the successful 0x10 exit. */
