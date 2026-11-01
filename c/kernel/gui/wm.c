@@ -855,6 +855,38 @@ int g_ui_dark;
 /* WM-HOOK 3/6: so kernel chrome drawn from another file follows the system
  * theme instead of carrying its own idea of it. Declared in wm.h. */
 int wm_dark(void) { return __atomic_load_n(&g_ui_dark, __ATOMIC_ACQUIRE); }
+
+/* Whether any system UI is on the screen: the About / power panel, an open
+ * menu, the Cmd+Tab switcher, Expose, a panel window (Spotlight), the input
+ * method's candidate bar or a notification card. The diagnostic panel
+ * (hwhud.c) is painted over the finished frame, so it asks this and stays off
+ * the screen while any of these is up -- it covered the power confirmation and
+ * its Shut Down button. Declared in wm.h. The caller holds the WM state lock;
+ * the answer is only good until it releases it. */
+int wm_system_overlay_visible(void)
+{
+    if (g_overlay != OV_NONE) {
+        return 1;
+    }
+    if (g_menu_open >= 0) {
+        return 1;
+    }
+    if (g_sw.shown) {
+        return 1;
+    }
+    if (ex_state()) {
+        return 1;
+    }
+    for (int i = 0; i < MAXWIN; i++) {
+        if (wm_wins[i].used && wm_wins[i].kind == WK_APP && wm_wins[i].panel && !wm_wins[i].minimized) {
+            return 1;
+        }
+    }
+    if (ime_ui_composing()) {
+        return 1;
+    }
+    return notify_showing() > 0;
+}
 static unsigned g_menus_gen;         /* SYS_GUI_MENU_SET stamps; never reused, unlike a slot */
 
 /* IME-HOOK (the one call in the other direction; declared in wm.h). The
@@ -4852,6 +4884,31 @@ static void wm_process_mouse(const struct inputq_event *in)
         mleft = left; mright = right; mmiddle = middle;
         return;
     }
+#ifdef LOGIT_HWHUD
+    /* The diagnostic panel is painted over everything, so like a notification
+     * it wins the press: its title row collapses and expands it (the only way
+     * to shrink it on a board whose keyboard is not up yet), and the press
+     * must not also raise, drag or click the window under it. The release that
+     * ends such a press is swallowed too, or the window would see an EV_MOUSE_UP
+     * for a press it never saw. */
+    static int hud_mouse_capture;
+    if (hud_mouse_capture) {
+        if (!left) {
+            hud_mouse_capture = 0;
+        }
+        if (moved && !hw_cursor && !sw_cursor) {
+            dirty_cursor(omx, omy);
+            dirty_cursor(x, y);
+        }
+        mleft = left; mright = right; mmiddle = middle;
+        return;
+    }
+    if (left && !mleft && hwhud_click(x, y)) {
+        hud_mouse_capture = 1;
+        mleft = left; mright = right; mmiddle = middle;
+        return;
+    }
+#endif
     static int ime_mouse_capture;
     if (ime_mouse_capture) {
         if (!left) ime_mouse_capture = 0;
@@ -5854,9 +5911,14 @@ void wm_run(void)
         wm_lock_report_emit();
 #ifdef LOGIT_HWHUD
         {
+            /* Ask what is on the screen under the state lock, then draw (or
+             * not) outside it, as the panel always has. */
+            wm_state_lock(WM_LOCK_FRAME_PASS);
+            int system_ui_visible = wm_system_overlay_visible();
+            wm_state_unlock();
             struct hwhud_wm hud = { perf_composites, perf_comp_ns, perf_comp_ns_max,
                                     perf_present_ns, perf_cursor_moves, perf_cursor_ns,
-                                    perf_motions };
+                                    perf_motions, system_ui_visible };
             hwhud_tick(&hud);
         }
 #endif
