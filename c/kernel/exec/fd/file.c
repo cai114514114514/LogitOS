@@ -153,11 +153,55 @@ static long tty_read(struct file *f, void *vbuf, long len)
     return 1;
 }
 
-static long tty_write(struct file *f, const void *vbuf, long len)
+/* Bound UART bytes, not input bytes: LF expands to CRLF below. serial_init()
+ * in c/drivers/char/serial.c selects 38400 baud, 8N1, so 160 * 10 / 38400
+ * is about 41.7 ms of nominal wire time. That is an acceptable diagnostic
+ * console tradeoff against interleaving, following diag/kprintf.c's existing
+ * printf_lock precedent (one whole message, including the UART wait, IRQ-off).
+ * It is NOT a measured latency ceiling: lock contention and serial_putc's
+ * bounded not-ready polling add time. Not verified on X79-VG4 hardware. */
+#define CONSOLE_LINE_MAX 160
+
+/* Keep a user line in the same message-lock domain as kprintf: UART byte
+ * locking alone let [wm] logs split STORGATE-ok and EVENTS-READY mid-word.
+ * Release after each newline, or after a bounded part of an overlong line,
+ * rather than holding IRQs off for an arbitrary write. An expanded CRLF pair
+ * stays together, even when it must move to the next chunk to fit the bound.
+ * A final partial line is written immediately; we deliberately do not buffer
+ * across write calls, which would hide prompts and require per-writer state.
+ * The single-character read/echo path above retains its existing semantics. */
+static long tty_write(struct file *file, const void *vbuf, long len)
 {
-    (void)f;
-    const char *p = (const char *)vbuf;
-    for (long i = 0; i < len; i++) { if (p[i] == '\n') serial_putc('\r'); serial_putc(p[i]); }
+    (void)file;
+    const char *input = (const char *)vbuf;
+    long offset = 0;
+    while (offset < len) {
+        /* The control restores the former unlocked byte stream so the host
+         * model must observe a kernel message splitting a user line. */
+#ifndef CONSOLE_NEGCTL_NO_LINE_LOCK
+        uint64_t flags = kprintf_console_enter();
+#endif
+        unsigned wire_bytes = 0;
+        while (offset < len) {
+            char value = input[offset];
+            unsigned width = value == '\n' ? 2 : 1;
+            if (wire_bytes + width > CONSOLE_LINE_MAX) {
+                break;
+            }
+            if (value == '\n') {
+                serial_putc('\r');
+            }
+            serial_putc(value);
+            offset++;
+            wire_bytes += width;
+            if (value == '\n') {
+                break;
+            }
+        }
+#ifndef CONSOLE_NEGCTL_NO_LINE_LOCK
+        kprintf_console_leave(flags);
+#endif
+    }
     return len;
 }
 
