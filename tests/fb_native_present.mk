@@ -3,6 +3,9 @@
 # that merely calls a hook and then follows the old CPU present unconditionally.
 FB_NATIVE_PRESENT_SRC := tests/unit/fb_native_present_test.c c/kernel/gui/fb/fb.c \
                          c/lib/gfx/adapters/openlogit_display.c $(GFX_MATERIAL_SRC)
+# The explicit material list does not discover simd/ like GFX_SRC does. S0's
+# material clock now lives there; leave every existing source in place.
+FB_NATIVE_PRESENT_SRC += c/lib/gfx/simd/gfx_simd.c
 FB_NATIVE_PRESENT_INC := $(KGUI_INC) -Ic/drivers/virtio $(KMM_INC) -Ic/lib/text $(GFX_INC)
 .PHONY: test-fb-native-present-negctl test-fb-native-present-host
 

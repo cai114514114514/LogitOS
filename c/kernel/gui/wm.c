@@ -810,6 +810,11 @@ struct full_frame_trace {
     unsigned reasons;
 };
 static struct full_frame_trace full_trace;
+/* Only the compositor writes these stage totals, under graphics_lock. Band
+ * timings below have their own atomics; summing worker CPU into cpu_ns here
+ * would hide time the compositor itself spent asleep. */
+static struct wm_slowframe slow_trace;
+static uint64_t slow_trace_last_ms;
 /* ---- and whether a frame was a PICTURE ------------------------------------
  *
  * `torn` is the number of times the compositor has blitted a window whose
@@ -3659,6 +3664,7 @@ static void render_compose(const struct wm_target *t, const struct drect *R)
     int rw = R->x1 - R->x0, rh = R->y1 - R->y0;
     fb_target(NULL);
     fb_set_clip(R->x0, R->y0, rw, rh);
+    uint64_t layers_started_ns = time_mono_ns();
     /* LOCKED: exactly ONE window is composited, it fills the screen, and it is
      * drawn with no frame at all -- no titlebar, so no close button exists to
      * be hit-tested, and no dock and no menu bar. There is nothing behind it
@@ -3669,10 +3675,16 @@ static void render_compose(const struct wm_target *t, const struct drect *R)
         int gw = greeter_win();
         if (gw >= 0 && wm_wins[gw].used && wm_wins[gw].surf.px)
             blit_content(&wm_wins[gw], 0, 0, wm_W, wm_H);
+        uint64_t top_started_ns = time_mono_ns();
+        slow_trace.layers_ns += top_started_ns - layers_started_ns;
         if (!hw_cursor) draw_cursor_back(t, mx, my);
+        slow_trace.top_ns += time_mono_ns() - top_started_ns;
     } else {
         render_layers(t, R);
+        uint64_t top_started_ns = time_mono_ns();
+        slow_trace.layers_ns += top_started_ns - layers_started_ns;
         render_top(t);
+        slow_trace.top_ns += time_mono_ns() - top_started_ns;
     }
     fb_clear_clip();
 }
@@ -3725,11 +3737,13 @@ static struct {
     int n, done;
     unsigned gen;
     struct wm_target tgt;         /* where this frame's bands are composed */
+    uint64_t crit_ns;             /* maximum single-band wall time this frame */
 } g_par;
 static spinlock_t par_lock = SPINLOCK_INIT;
 static struct thread *par_thr[PAR_NW > 0 ? PAR_NW : 1];
 static int par_started, par_nw;
 static uint64_t perf_parframes, perf_parbands, perf_parbands_worker, perf_serialframes;
+static uint64_t perf_par_sum_ns, perf_par_crit_ns;
 #ifdef WM_PAR_VERIFY
 static uint64_t perf_parmismatch, perf_parverified;
 #endif
@@ -3744,14 +3758,27 @@ static void par_band(int i)
     fb_clear_clip();
 }
 
-/* Claim and render bands until none is left. The compositor passes wm=1 and
- * may take a dock band; a worker passes 0 and skips them. */
+/* Claim one band. Publish its measurement before done: once the compositor
+ * observes every completion it must also see the final maximum. The sum is
+ * cumulative; crit_ns is reset per frame and accumulated only after the join.
+ * Wall time includes a band being descheduled, which is precisely what S0
+ * needs to distinguish from glass work on the next hardware run. */
 static int par_try(int i)
 {
     int free_ = 0;
     if (!__atomic_compare_exchange_n(&g_par.state[i], &free_, 1, 0,
                                      __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) return 0;
+    uint64_t started_ns = time_mono_ns();
     par_band(i);
+    uint64_t elapsed_ns = time_mono_ns() - started_ns;
+    __atomic_fetch_add(&perf_par_sum_ns, elapsed_ns, __ATOMIC_RELAXED);
+    uint64_t longest_ns = __atomic_load_n(&g_par.crit_ns, __ATOMIC_RELAXED);
+    while (elapsed_ns > longest_ns) {
+        if (__atomic_compare_exchange_n(&g_par.crit_ns, &longest_ns, elapsed_ns,
+                                        0, __ATOMIC_RELAXED, __ATOMIC_RELAXED)) {
+            break;
+        }
+    }
     __atomic_store_n(&g_par.state[i], 2, __ATOMIC_RELEASE);
     __atomic_fetch_add(&g_par.done, 1, __ATOMIC_ACQ_REL);
     return 1;
@@ -3902,6 +3929,7 @@ static void par_verify(const struct wm_target *t, const struct drect *R)
 static int par_render(const struct wm_target *t, const struct drect *r, int n)
 {
     if (!par_frame_ok()) return 0;
+    uint64_t layers_started_ns = time_mono_ns();
     /* Twice as many bands as participants: a band is claimed whole, so with
      * exactly one each the frame waits for the slowest (the one holding the
      * dock's glass); finer bands let whoever finishes early take another. */
@@ -3929,6 +3957,7 @@ static int par_render(const struct wm_target *t, const struct drect *r, int n)
     if (nb < 2) return 0;
     g_par.n = nb;
     g_par.tgt = *t;
+    __atomic_store_n(&g_par.crit_ns, 0, __ATOMIC_RELAXED);
     __atomic_store_n(&g_par.done, 0, __ATOMIC_RELEASE);
 
     uint64_t f = spin_lock_irqsave(&par_lock);
@@ -3946,6 +3975,8 @@ static int par_render(const struct wm_target *t, const struct drect *r, int n)
     }
     perf_parframes++;
     perf_parbands += (uint64_t)nb;
+    perf_par_crit_ns += __atomic_load_n(&g_par.crit_ns, __ATOMIC_RELAXED);
+    slow_trace.layers_ns += time_mono_ns() - layers_started_ns;
 
     for (int k = 0; k < n; k++) {
 #ifdef WM_PAR_VERIFY
@@ -3953,7 +3984,9 @@ static int par_render(const struct wm_target *t, const struct drect *r, int n)
 #endif
         fb_target(NULL);
         fb_set_clip(r[k].x0, r[k].y0, r[k].x1 - r[k].x0, r[k].y1 - r[k].y0);
+        uint64_t top_started_ns = time_mono_ns();
         render_top(t);
+        slow_trace.top_ns += time_mono_ns() - top_started_ns;
         fb_clear_clip();
         render_present(&r[k]);
     }
@@ -4073,6 +4106,8 @@ static void wm_anim_tick(void)
  * `back` is a correct composite of the ENTIRE screen when this returns -- see
  * the invariant at the top of the file. Nothing else in here is allowed to be
  * true only sometimes. */
+/* Keep RTC/frame setup inside the caller's diagnostic interval: starting at
+ * the pixel pass would silently hide a slow acquisition or setup operation. */
 static void wm_render_locked(void)
 {
     g_frame_ms = time_mono_ms();
@@ -4082,6 +4117,9 @@ static void wm_render_locked(void)
     g_frame_ms = 0;
 }
 
+/* Publish completed-frame counters here; wm_render owns both wall/CPU sample
+ * boundaries so the CPU interval cannot extend beyond the total interval.
+ * All pixel decisions and the historical fullframe interval stay put. */
 static void wm_render_locked_inner(void)
 {
     reap();
@@ -4156,6 +4194,8 @@ static void wm_render_locked_inner(void)
     uint64_t present_px_start = fb_present_px();
     wm_frame_glass_ns = 0;
     wm_frame_glass_px = 0;
+    slow_trace.layers_ns = 0;
+    slow_trace.top_ns = 0;
     /* ---- ORIGIN/MAIN PEELED THE BKL HERE. THIS BRANCH HAS NO BKL TO PEEL. ----
      *
      * The merge of 2026-09-15 brought in ~95 lines from origin/main that
@@ -4183,7 +4223,8 @@ static void wm_render_locked_inner(void)
      * big lock" -- and the way to answer it is to grep for a DECLARATION
      * (`spinlock_t g_bkl` or an extern of it), never for the name. */
     struct wm_target scr = wm_screen_target();
-    if (!par_render(&scr, r, draw_n)) {
+    int parallel = par_render(&scr, r, draw_n);
+    if (!parallel) {
         if (!g_locked) perf_serialframes++;
         for (int k = 0; k < draw_n; k++)
             render_region(&scr, &r[k]);
@@ -4229,8 +4270,23 @@ static void wm_render_locked_inner(void)
         full_trace.present_px = fb_present_px() - present_px_start;
         full_trace.reasons = full_reasons;
     }
+    /* Unlike the historical fullframe total (pixel pass only), slowframe also
+     * includes damage preparation and lock acquisition. Keep the old record's
+     * meaning intact: existing comparisons rely on it. glass_ns is summed
+     * across bands and overlaps layers_ns, so these fields are not additive. */
+    slow_trace.seq++;
+    slow_trace.present_ns = perf_present_ns - present_start;
+    slow_trace.glass_ns = __atomic_load_n(&wm_frame_glass_ns, __ATOMIC_RELAXED);
+    slow_trace.px = perf_cpx - cpx_start;
+    slow_trace.rects = (unsigned)draw_n;
+    slow_trace.par = (unsigned)parallel;
+    slow_trace.full_reasons = full_reasons;
 }
 
+/* Measure the caller's lock wait separately and print stack copies only after
+ * releasing both locks. Serial latency must not become the next frame's
+ * measured graphics hold. CPU time covers this thread, not its band workers;
+ * blocked_us therefore includes sleeping and descheduling, not worker CPU. */
 void wm_render(void)
 {
     /* Copy and clear the trace while graphics_lock still excludes another
@@ -4239,13 +4295,57 @@ void wm_render(void)
      * second renderer overwrite a pending frame; seq=2 disappeared in the
      * first attribution run.  A stack copy preserves both properties. */
     struct full_frame_trace trace = {0};
+    struct wm_slowframe slow = {0};
+    uint64_t frame_started_ns = time_mono_ns();
+    /* Correction: the first version interpreted a zero CPU query as real CPU
+     * time and reported the boot frame as entirely blocked. kmain renders that
+     * frame before sched_init(); sched_cpu_ns_self() returns zero without a
+     * current thread (sched.c). Skip this diagnostic until a thread exists,
+     * without spending the rate-limit slot. A thread's valid counter can be
+     * zero too, so testing the numeric sample would discard legitimate data. */
+    int cpu_available = sched_current_thread() != NULL;
+    uint64_t cpu_started_ns = 0;
+    if (cpu_available) {
+        cpu_started_ns = sched_cpu_ns_self();
+    }
+    /* sched_cpu_ns_self() takes g_sched_lock. It used to sit between these
+     * timestamps, charging scheduler contention to graphics_lock. Keep this
+     * pair tight around graphics acquisition; CPU sampling belongs outside. */
+    uint64_t wait_started_ns = time_mono_ns();
     fb_graphics_lock();
+    uint64_t lockwait_ns = time_mono_ns() - wait_started_ns;
     wm_state_lock(WM_LOCK_FRAME_PASS);
+    uint64_t previous_seq = slow_trace.seq;
     wm_render_locked();
+    /* Correction: wall-end used to precede CPU-end inside the pixel pass.
+     * Scheduler-lock contention at the last CPU query then extended CPU time
+     * beyond total time and hid blocked_us. Wall-start above precedes CPU-start;
+     * CPU-end must precede wall-end here, enclosing both query costs. */
+    uint64_t cpu_finished_ns = 0;
+    if (cpu_available) {
+        cpu_finished_ns = sched_cpu_ns_self();
+    }
+    uint64_t frame_finished_ns = time_mono_ns();
     trace = full_trace;
     full_trace.pending = 0;
+    int report_slow = 0;
+    if (slow_trace.seq != previous_seq && cpu_available) {
+        slow = slow_trace;
+        slow.total_ns = frame_finished_ns - frame_started_ns;
+        slow.cpu_ns = cpu_finished_ns - cpu_started_ns;
+        slow.lockwait_ns = lockwait_ns;
+        report_slow = wm_slowframe_wanted(slow.total_ns, time_mono_ms(),
+                                         &slow_trace_last_ms);
+    }
     wm_state_unlock();
     fb_graphics_unlock();
+    if (report_slow) {
+        /* Thirteen uint64-sized values plus labels fit below 512 bytes even
+         * at UINT64_MAX. The formatter itself still supports smaller buffers. */
+        char line[512];
+        wm_slowframe_format(line, sizeof line, &slow);
+        kprintf("%s", line);
+    }
     if (trace.pending) {
         uint64_t accounted = trace.glass_ns + trace.present_ns;
         uint64_t ordinary = trace.total_ns > accounted ?
@@ -4994,6 +5094,9 @@ static void wm_process_mouse(const struct inputq_event *in)
 /* ---------- init ---------- */
 void wm_init(void)
 {
+    /* Register before the first composite. The shared gfx library has no
+     * kernel dependency and leaves timing disabled in unconfigured apps. */
+    gfx_set_clock(time_mono_ns);
     wm_W = (int)fb_width();
     wm_H = (int)fb_height();
     int count = wm_W * wm_H;
@@ -5244,16 +5347,31 @@ static void wm_perf_report(void)
 #ifdef WM_PAR_VERIFY
             " verified=%lu mismatch=%lu"
 #endif
-            "\n",
+            " sum_ns=%lu crit_ns=%lu\n",
             (unsigned long)perf_parframes, (unsigned long)perf_serialframes,
             (unsigned long)perf_parbands, (unsigned long)perf_parbands_worker, par_nw
 #ifdef WM_PAR_VERIFY
             , (unsigned long)perf_parverified, (unsigned long)perf_parmismatch
 #endif
+            , (unsigned long)__atomic_load_n(&perf_par_sum_ns, __ATOMIC_RELAXED),
+            (unsigned long)perf_par_crit_ns
             );
     kprintf("[wm] locks calls=%lu hold_ns=%lu max_ns=%lu render_locked=%lu\n",
             wm_lock_calls, wm_lock_ns, wm_lock_max_ns, wm_lock_render_frames);
     wm_lock_report_prepare();
+    /* These are live cumulative counters: workers use relaxed atomic adds,
+     * so each field needs an atomic load even though this is just telemetry.
+     * A report may straddle a call; no cross-field snapshot is promised. */
+    const struct gfx_glass_prof *glass = gfx_glass_prof();
+    kprintf("[gfx] glass calls=%lu px=%lu blur_ns=%lu render_ns=%lu "
+            "memo_hit=%lu memo_miss=%lu memo_bypass=%lu\n",
+            (unsigned long)__atomic_load_n(&glass->calls, __ATOMIC_RELAXED),
+            (unsigned long)__atomic_load_n(&glass->px, __ATOMIC_RELAXED),
+            (unsigned long)__atomic_load_n(&glass->blur_ns, __ATOMIC_RELAXED),
+            (unsigned long)__atomic_load_n(&glass->render_ns, __ATOMIC_RELAXED),
+            (unsigned long)__atomic_load_n(&glass->memo_hit, __ATOMIC_RELAXED),
+            (unsigned long)__atomic_load_n(&glass->memo_miss, __ATOMIC_RELAXED),
+            (unsigned long)__atomic_load_n(&glass->memo_bypass, __ATOMIC_RELAXED));
 }
 
 /* The desktop proper. Called at boot on a machine with no accounts, and on the

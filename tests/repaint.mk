@@ -68,6 +68,9 @@ ci-boot: test-wm-cover
 # that tempting intermediate round and must be caught by an actual pixel.
 FB_SCALE_BL_SRC := tests/unit/fb_scale_bl_bench.c c/kernel/gui/fb/fb.c \
                    c/lib/gfx/adapters/openlogit_display.c $(GFX_MATERIAL_SRC)
+# Like the native-present probe, this explicit material list needs S0's clock
+# implementation; it does not use the recursively discovered GFX_SRC.
+FB_SCALE_BL_SRC += c/lib/gfx/simd/gfx_simd.c
 FB_SCALE_BL_INC := $(KGUI_INC) -Ic/drivers/virtio $(KMM_INC) -Ic/lib/text $(GFX_INC)
 
 $(BUILD)/fb_scale_bl_bench: $(FB_SCALE_BL_SRC) tests/repaint.mk
