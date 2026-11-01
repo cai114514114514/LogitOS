@@ -293,9 +293,17 @@ static int oom_choose(int source, int self)
 
     if (best < 0) {
         c_novictim++;
+        /* The old line said "The faulting process dies, as it did before this
+         * existed." A successful fault can now notify stalled reclaim too;
+         * no victim does not make that page absent. Leave fatal-failure policy
+         * with the caller rather than reporting a death we did not choose.
+         * Correction (2026-11-01, Claude's revision): no successful fault
+         * reaches this any more; fault_frame() withholds the frame first. The
+         * caller still decides: mm_fault_in() serves a frame withheld only for
+         * stalled reclaim, and declines a fault that had no frame at all. */
         kprintf("[oom] %s: out of memory and NO eligible victim -- %d processes, "
-                "none holding %d frames it could give back. The faulting process "
-                "dies, as it did before this existed.\n",
+                "none holding %d frames it could give back. No process selected; "
+                "the caller decides whether the failed allocation is fatal.\n",
                 src_name(source), n, OOM_MIN_VICTIM_FRAMES);
         return OOM_NO_VICTIM;
     }
@@ -355,30 +363,44 @@ static int oom_choose(int source, int self)
 
 int oom_fault_retry(void)
 {
+    return oom_fault_decide(0) == OOM_FAULT_RETRY;
+}
+
+int oom_fault_decide(int reserve_ok)
+{
     int d = oom_kill(OOM_SRC_FAULT);
     if (d == OOM_REAPED) {
         /* The frames are already in the allocator -- a dead process's pages
          * were taken back. Retry at once: there is nothing to wait for, and no
          * program died. */
         c_saved++;
-        return 1;
+        return OOM_FAULT_RETRY;
     }
+    if (d == OOM_NO_VICTIM)
+        return OOM_FAULT_NONE;      /* nobody marked: the caller decides */
     if (d != OOM_VICTIM_OTHER)
-        return 0;                   /* we are the victim, or there is none:
-                                     * decline exactly as before */
+        return OOM_FAULT_DECLINE;   /* we are the victim: decline as before */
 
     /* The faulting process is INNOCENT. Wait, bounded, for the victim to reach
      * its next kernel entry and give the frames back. `pmm_reserve()` and not 0
      * is the target because the reserve is not ours to spend (pmm.h) -- a
      * "frame free" that is only the swap-in escape hatch is not a frame this
-     * fault may have. */
-    uint64_t floor = pmm_reserve();
+     * fault may have.
+     * Correction: a swap-in decline IS the escape hatch's caller.
+     * reclaim_swapin() allocates with pmm_alloc_reserve_any(), so a victim
+     * that returns fewer frames than the reserve has already rescued it, and
+     * waiting for frames above the reserve would expire and decline anyway. */
+    uint64_t floor = reserve_ok ? 0 : pmm_reserve();
+#ifdef OOM_NEGCTL_RESCUE_RESERVE_FLOOR
+    /* Mutation control: the old floor for every caller. */
+    floor = pmm_reserve();
+#endif
     for (int i = 0; i < OOM_WAIT_PARKS; i++) {
         if (pmm_free_frames() > floor) {
             c_saved++;
             kprintf("[oom] pid %d survived: %d frames free after %d parks\n",
                     oom_task_self(), (int)pmm_free_frames(), i);
-            return 1;
+            return OOM_FAULT_RETRY;
         }
         park();
         /* AND ASK THE DEAD AGAIN, every park. This is not belt-and-braces: the
@@ -396,7 +418,7 @@ int oom_fault_retry(void)
     c_wait_expired++;
     kprintf("[oom] pid %d waited %d parks and memory did not come back -- "
             "declining, as before\n", oom_task_self(), OOM_WAIT_PARKS);
-    return 0;
+    return OOM_FAULT_DECLINE;
 }
 
 /* ------------------------------------------------ the other two callers -- */
@@ -492,10 +514,21 @@ static uint64_t        h_rss[OOM_MAXTASK];
 static int             h_zombie[OOM_MAXTASK];
 static int             h_n, h_self, h_rss_set, h_nreaped;
 static int             h_killed[OOM_MAXTASK], h_nkilled;
+static int             h_exit_on_kill;
+
+/* Hold the actual chooser exclusion flag as another core would. The host gate
+ * needs this to distinguish a busy policy from selecting the faulting task;
+ * no policy result or allocation is replaced by this fixture operation. */
+void oom_test_set_busy(int busy)
+{
+    __atomic_store_n(&g_busy, busy != 0, __ATOMIC_RELEASE);
+}
 
 void oom_test_reset(void)
 {
+    oom_test_set_busy(0);
     h_n = 0; h_self = 0; h_nkilled = 0; h_rss_set = 0; h_nreaped = 0;
+    h_exit_on_kill = 0;
     for (int i = 0; i < OOM_MAXTASK; i++) { h_rss[i] = 0; h_killed[i] = 0; h_zombie[i] = 0; }
     c_kills = c_kills_self = c_kills_gui = c_novictim = 0;
     c_saved = c_wait_expired = c_kheapfail = 0;
@@ -532,6 +565,10 @@ int oom_test_nkilled(void) { return h_nkilled; }
 int oom_test_killed(int n) { return (n >= 0 && n < h_nkilled) ? h_killed[n] : -1; }
 int oom_test_nreaped(void) { return h_nreaped; }
 
+/* Without a scheduler nothing runs the victim to its exit. This fixture does
+ * that step at the mark, leaving the reap itself to the real code below. */
+void oom_test_set_exit_on_kill(int on) { h_exit_on_kill = on != 0; }
+
 /* A ZOMBIE IS NOT A LIVE PROCESS, and the fixture has to say so the same way
  * the machine does (proc.c's adapter reports only PROC_RUNNING): if a dead
  * process were still a candidate, the killer would "kill" it, report a victim,
@@ -562,6 +599,9 @@ int oom_task_kill(int pid)
         if (h_task[i].pid == pid) {
             if (h_task[i].immune) return -1;
             h_task[i].dying = 1;
+            if (h_exit_on_kill) {
+                h_zombie[i] = 1;
+            }
             if (h_nkilled < OOM_MAXTASK) h_killed[h_nkilled++] = pid;
             return 0;
         }
