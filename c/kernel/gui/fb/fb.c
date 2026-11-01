@@ -22,6 +22,7 @@ void fb_graphics_unlock(void) { gui_mutex_unlock(&graphics_lock); }
 #include "gfx.h"
 #include "gfx_ctx.h"
 #include "glass.h"        /* Open Logit's mask cache -- see corner_mask_for() below */
+#include "gfx_simd.h"
 
 /* --- Multiboot2 framebuffer info tag (type 8) --- */
 struct mb2_tag { uint32_t type, size; };
@@ -603,11 +604,47 @@ void fb_set_present_par(void (*fn)(int, int, int, int)) { g_par_present = fn; }
 
 void fb_present(void) { fb_present_rect(0, 0, (int)fb_w, (int)fb_h); }
 
+#if !__STDC_HOSTED__
+/* S2 boot evidence for the SIMD pixel kernels: run the self-test (a mismatch
+ * pins the library at SCALAR, so a CPU or emulator that disagrees with the
+ * reference never paints wrong pixels), then print the tier line and one
+ * scalar-vs-vec timing line per kernel. It runs before fb_present_bench's early
+ * returns because the kernels draw on every output path, not only the LFB.
+ * The timing is informational and never gates anything; times are x100 so the
+ * log needs no floating point. */
+#define SIMD_BENCH_ROWS 100
+static void fb_simd_boot_report(void)
+{
+    char line[160];
+    gfx_simd_selftest();
+    gfx_simd_describe(line, sizeof line);
+    kprintf("[gfx] simd %s\n", line);
+    const char *failed = gfx_simd_selftest_failure();
+    if (failed) kprintf("[gfx] simd selftest FAIL k=%s\n", failed);
+    uint32_t *scratch = kmalloc(GFX_SIMD_BENCH_WORDS * sizeof(uint32_t));
+    if (!scratch) return;
+    for (unsigned kernel = 0; kernel < GFX_SIMD_KERNELS; kernel++) {
+        uint64_t pixels = (uint64_t)SIMD_BENCH_ROWS * GFX_SIMD_BENCH_PX;
+        uint64_t scalar_ns = gfx_simd_bench_ns(kernel, GFX_SIMD_SCALAR, scratch, time_mono_ns,
+                                               SIMD_BENCH_ROWS);
+        uint64_t vec_ns = gfx_simd_bench_ns(kernel, GFX_SIMD_VEC, scratch, time_mono_ns,
+                                            SIMD_BENCH_ROWS);
+        unsigned scalar_x100 = (unsigned)(scalar_ns * 100 / pixels);
+        unsigned vec_x100 = (unsigned)(vec_ns * 100 / pixels);
+        kprintf("[gfx] bench k=%s tier=scalar ns_px=%u.%02u tier=vec ns_px=%u.%02u\n",
+                gfx_simd_kernel_name(kernel), scalar_x100 / 100, scalar_x100 % 100,
+                vec_x100 / 100, vec_x100 % 100);
+    }
+    kfree(scratch);
+}
+#endif
+
 /* One full-screen copy, timed, before anything else draws: the number that
  * says whether the scanout path is fast on this machine. */
 void fb_present_bench(void)
 {
 #if !__STDC_HOSTED__
+    fb_simd_boot_report();
     /* the label is the mapping read back at fb_init(), not PAT availability */
     if (!g_fbctx[0].screen.px || using_gpu || native_present) return;
     uint64_t t0 = time_mono_ns();

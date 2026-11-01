@@ -5455,6 +5455,14 @@ static void wm_perf_report(void)
             (unsigned long)__atomic_load_n(&glass->memo_hit, __ATOMIC_RELAXED),
             (unsigned long)__atomic_load_n(&glass->memo_miss, __ATOMIC_RELAXED),
             (unsigned long)__atomic_load_n(&glass->memo_bypass, __ATOMIC_RELAXED));
+    /* Only a kernel linked against a GFX_SIMD_VERIFY gfx_simd.o has anything to
+     * report; the ordinary build returns 0 here and prints nothing. */
+    uint64_t verify_calls;
+    uint64_t verify_mismatch;
+    if (gfx_simd_verify_stats(&verify_calls, &verify_mismatch)) {
+        kprintf("[gfx] verify calls=%lu mismatch=%lu\n", (unsigned long)verify_calls,
+                (unsigned long)verify_mismatch);
+    }
 }
 
 /* The desktop proper. Called at boot on a machine with no accounts, and on the
