@@ -1,5 +1,7 @@
 /* Per-endpoint EHCI periodic state, for the hardware panel (hwhud.c).
- * Read without locks: diagnostic values, never decisions. */
+ * The software counters are read without locks: diagnostic values, never
+ * decisions. The live_* / ep_* / reach fields read the QH and frame list in
+ * DMA memory, so ehci_diag_get fills them only under the controller gate. */
 #ifndef EHCI_DIAG_H
 #define EHCI_DIAG_H
 #include <stdint.h>
@@ -13,6 +15,16 @@ struct ehci_ep_diag {
     uint16_t us_s, us_c, us_tt;
     uint32_t rearms, err_halt, err_xact, err_mmf, err_dbe, err_babble, stalls;
     uint32_t overlay_status;       /* copied at completion; never panel DMA */
+    /* Sampled at call time (EHCI 1.0 3.6), meaningful only when live_valid is
+     * set: what the controller sees now, not what the last completion left. */
+    uint32_t live_overlay;         /* QH overlay token: Active/Halted/CERR/SplitXState */
+    uint32_t live_current;         /* QH current qTD pointer (zero: never loaded) */
+    uint32_t live_next;            /* QH next qTD pointer */
+    uint32_t live_td_token;        /* token of the qTD the driver has armed */
+    uint32_t ep_chars;             /* QH dword 1 as programmed: EPS, max packet, dev/ep */
+    uint32_t ep_caps;              /* QH dword 2 as programmed: S/C-mask, hub addr/port */
+    uint16_t reach;                /* of 1024 frame-list slots, those that lead to this QH */
+    uint8_t live_valid;
 };
 struct ehci_sched_diag {
     uint32_t pse_toggles, rearms, unlinks, relinks, refused;
