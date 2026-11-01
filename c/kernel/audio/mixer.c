@@ -117,6 +117,7 @@ static struct snd_device * _Atomic g_dev;
 static struct semaphore   g_period;
 static uint64_t           g_fill;        /* period index kaudio fills next */
 static unsigned           g_dev_underruns;
+static unsigned           g_periods_since_housekeeping;
 static _Atomic uint64_t   g_periods_done;
 static _Atomic int        g_running;
 
@@ -223,6 +224,15 @@ int snd_register_device(struct snd_device *device)
 }
 
 int snd_present(void) { return g_dev != 0; }
+
+uint64_t snd_device_position_frames(void)
+{
+    snd_GUARD;
+    if (!g_dev || !g_dev->position) {
+        return 0;
+    }
+    return g_dev->position(g_dev);
+}
 
 /* The card ISR may hold its own gate. Only event_lock is taken here: its
  * identity/running test and counter update cannot straddle detach/rebind. */
@@ -397,6 +407,17 @@ static void kaudio_thread(void)
             if (g_fill - done < g_dev->periods) {
                 memset(g_dev->ring + (g_fill % g_dev->periods) * g_dev->period_bytes,
                        0, g_dev->period_bytes);
+            }
+
+            /* Slow device chores (the HDA driver re-reads its headphone jacks
+             * and folds its wrapping position register). Run here, in a worker
+             * thread under the same lock that serialises start/stop/unregister,
+             * so the device cannot be torn down mid-call; the ISR never gets
+             * here. */
+            if (g_dev->housekeeping &&
+                ++g_periods_since_housekeeping >= SND_HOUSEKEEPING_PERIODS) {
+                g_periods_since_housekeeping = 0;
+                g_dev->housekeeping(g_dev);
             }
         }
         spin_unlock_irqrestore(&g_snd_lock, fl);
