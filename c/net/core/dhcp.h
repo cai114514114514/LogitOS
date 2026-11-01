@@ -5,9 +5,11 @@
 
 /* Synchronously negotiate a lease (DISCOVER -> OFFER -> REQUEST -> ACK) and
  * fill net_cfg.{ip,mask,gw,dns}. Runs with the stack otherwise unconfigured
- * (net_cfg.ip == 0). The boot attempt first waits up to 6 s for the NIC's
- * link, then spends `timeout_ticks` on the exchange. Returns 0 on success, -1
- * on timeout. -1 does NOT end the client: it carries on from dhcp_poll() with
+ * (net_cfg.ip == 0). The boot attempt has ONE 4 s deadline for everything: it
+ * first waits for the NIC's link, then spends `timeout_ticks` on the exchange,
+ * cut to whatever the deadline has left, so the boot never blocks longer than
+ * the deadline however the time is split. Returns 0 on success, -1 on
+ * timeout. -1 does NOT end the client: it carries on from dhcp_poll() with
  * the RFC 2131 4.1 backoff and restarts on every link-up, applying a late
  * lease exactly as the boot path does. The caller decides only what the
  * address is in the meantime (net_cfg_acquire(): the QEMU SLIRP static

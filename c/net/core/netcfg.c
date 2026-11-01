@@ -53,7 +53,8 @@ LOGIT_WEAK_STUB(netdev_link_up);
 int cpu_has(enum cpu_feat f) LOGIT_WEAK;
 LOGIT_WEAK_STUB(cpu_has);
 
-/* The boot-time exchange: ~3 s at the 100 Hz PIT, after the link wait. */
+/* The boot-time exchange: ~3 s at the 100 Hz PIT after the link wait, cut by
+ * dhcp_run() to what its 4 s boot deadline (link wait + exchange) has left. */
 #define NET_DHCP_BOOT_TICKS 300
 
 /* Whether the kernel runs under a hypervisor: CPUID leaf 1, ECX bit 31, which

@@ -79,7 +79,16 @@ static _Atomic uint32_t rx_n_softirq, rx_n_inline, rx_n_poll, rx_n_irq, rx_frame
  * fine. These counters make the difference visible. A frame is UNANNOUNCED when
  * a drain finds it and no ISR had promised that drain (rx_owed clear); it only
  * counts as proof of a dead interrupt when the route exists (a NIC that was
- * never routed is polled by design) and no ISR has run for NET_IRQ_SILENT_NS. */
+ * never routed is polled by design) and no ISR has run for NET_IRQ_SILENT_NS.
+ *
+ * THE COUNT IS "SINCE THE LAST ISR", NOT "SINCE BOOT". Any interrupt at all
+ * proves the route works, so net_rx_schedule() clears it. Counted since boot, a
+ * slow but working interrupt -- one that lands a few milliseconds after the
+ * 10 ms tick has already drained its frame, on a quiet link where each frame
+ * finds the previous ISR more than NET_IRQ_SILENT_NS behind -- would collect
+ * four such frames over a session and report "polling active" for the rest of
+ * it, a verdict about a dead interrupt on a machine whose interrupt was
+ * delivering. */
 #define NET_IRQ_SILENT_NS (100ull * NS_PER_MS)
 /* Unannounced frames needed before polling is declared the receive path. One
  * frame can beat its own ISR on a healthy NIC (an IF=0 stretch on the core the
@@ -122,6 +131,21 @@ static void net_loopback_drain(void)
     if(local_count)softirq_raise(SOFTIRQ_NET);
 }
 
+/* Whether the NIC's interrupt has been silent for longer than
+ * NET_IRQ_SILENT_NS as of `now_ns`. WHY the base is the LATER of the last ISR
+ * and the first drain that saw the route in place: before any ISR has run the
+ * only honest start of the silence is the moment the route could have
+ * delivered one. WHY `now_ns > base` is checked first: an ISR on another core
+ * can stamp last_irq_ns a moment after this core read the clock, and the
+ * unsigned difference would then wrap into an enormous false silence. */
+static int net_rx_irq_silent_at(uint64_t now_ns)
+{
+    uint64_t base = last_irq_ns > irq_route_seen_ns ? last_irq_ns : irq_route_seen_ns;
+    if (now_ns <= base)
+        return 0;
+    return now_ns - base > NET_IRQ_SILENT_NS;
+}
+
 /* Count `frames` found by a drain that no ISR had asked for, but only when the
  * NIC's interrupt is routed and has been silent for NET_IRQ_SILENT_NS: that is
  * the signature of an interrupt that never arrives, as opposed to a frame that
@@ -133,8 +157,7 @@ static void net_rx_note_unannounced(uint32_t frames)
     if (!netdev_irq_routed()) return;      /* polled by design: nothing to report */
     uint64_t now = time_mono_ns();
     if (!irq_route_seen_ns) irq_route_seen_ns = now;
-    uint64_t base = last_irq_ns > irq_route_seen_ns ? last_irq_ns : irq_route_seen_ns;
-    if (now - base <= NET_IRQ_SILENT_NS) return;
+    if (!net_rx_irq_silent_at(now)) return;
     rx_unannounced += frames;
 }
 
@@ -188,6 +211,14 @@ void net_rx_schedule(void)
 #endif
     rx_n_irq++;
     last_irq_ns = time_mono_ns();
+#ifndef NET_NEGCTL_SINCE_BOOT_POLL_COUNT
+    /* Any interrupt proves the route delivers, so frames the poll path served
+     * before it say nothing about the interrupt any more: the evidence for
+     * "polling is the receive path" starts again from zero. (NEGATIVE CONTROL,
+     * tests/hw-netdhcp.mk: -DNET_NEGCTL_SINCE_BOOT_POLL_COUNT keeps the
+     * since-boot count, and the slow-interrupt host gate MUST go red.) */
+    rx_unannounced = 0;
+#endif
     if (rx_owed) {                     /* the last raise never ran -- see above */
         net_rx_drain(&rx_n_inline);
         return;
@@ -229,11 +260,22 @@ static void irq_poll_report(void)
 
 uint32_t net_rx_irq_count(void) { return rx_n_irq; }
 
-/* 1 when receive is being served by polling: the NIC has no interrupt route at
- * all, or it has one and frames keep arriving without it firing. */
+/* 1 when receive is being served by polling RIGHT NOW: the NIC has no
+ * interrupt route at all, or it has one, has been silent for longer than
+ * NET_IRQ_SILENT_NS, and the poll path has drained NET_IRQ_SILENT_FRAMES
+ * frames since the last ISR. WHY it is the present tense: the HUD shows this
+ * as the machine's receive path, and a verdict taken from a count since boot
+ * would keep saying "polling" long after an interrupt had started
+ * delivering (net_rx_schedule() clears the count for exactly that reason). */
 int net_rx_poll_active(void)
 {
+#ifdef NET_NEGCTL_SINCE_BOOT_POLL_COUNT
     return !netdev_irq_routed() || rx_unannounced >= NET_IRQ_SILENT_FRAMES;
+#else
+    if (!netdev_irq_routed())
+        return 1;
+    return rx_unannounced >= NET_IRQ_SILENT_FRAMES && net_rx_irq_silent_at(time_mono_ns());
+#endif
 }
 
 /* ---------------------------------------------------------------------------
@@ -676,15 +718,28 @@ void net_poll(void)
  * that re-arm from paths nobody has audited, which is not a thing to do while
  * changing something else.
  */
+/* The two instruction sequences net_idle() ends in. WHY they are macros: the
+ * host gates (-DLOGIT_NET_HOST, tests/hw/netdhcp/netrx_test.c includes this
+ * file to drive the receive-path counters) run on the developer's machine,
+ * which is not x86 ring 0 and has no interrupt flag to set or CPU to halt.
+ * There they are no-ops; in the kernel they are exactly the asm they were. */
+#ifdef LOGIT_NET_HOST
+#  define NET_IDLE_STI()      ((void)0)
+#  define NET_IDLE_STI_HLT()  ((void)0)
+#else
+#  define NET_IDLE_STI()      __asm__ volatile ("sti")
+#  define NET_IDLE_STI_HLT()  __asm__ volatile ("sti\n\thlt")
+#endif
+
 void net_idle(void)
 {
     static _Atomic uint32_t seen;
     if (rx_frames != seen) {        /* the network answered; go look at it */
         seen = rx_frames;
-        __asm__ volatile ("sti");
+        NET_IDLE_STI();
         return;
     }
-    __asm__ volatile ("sti\n\thlt");
+    NET_IDLE_STI_HLT();
     /* Deliberately NOT resyncing `seen` here: frames delivered by the interrupt
      * that just woke us have not reached the caller's condition yet, so the
      * next call must also decline to halt and give the caller one more look. */
