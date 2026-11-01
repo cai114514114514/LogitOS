@@ -64,6 +64,7 @@ static struct usb_hc *g_hc[USB_MAX_CONTROLLERS];
 struct usb_hotplug {
     struct usb_hc *hc;
     struct work work;
+    struct work service_work;   /* class drivers' sleepable pass, see service_work() */
     struct ktimer timer;
     int initialized;
 };
@@ -230,6 +231,22 @@ static int get_descriptor_retry(struct usb_device *d, uint8_t type, uint8_t inde
     return -1;
 }
 
+/* WHY: a class driver may need to act on an interface after the fact (the
+ * HID keyboard control-pipe fallback), and that action issues sleeping control
+ * transfers, which the IRQ and timer paths may never do. This asks for the
+ * first callback at once; the class returns when it wants the next one. The
+ * clock reads 0 only before time_ready(), and 0 means "never" below, so clamp. */
+static void service_schedule(struct usb_device *d)
+{
+    for (int i=0;i<d->cfg.n_if;i++) {
+        const struct usb_driver *drv=d->binding[i].drv;
+        if (!drv || !drv->service) continue;
+        uint64_t now=time_mono_ns();
+        __atomic_store_n(&d->service_due_ns,now?now:1,__ATOMIC_RELEASE);
+        return;
+    }
+}
+
 static int enumerate_device(struct usb_device *d)
 {
     struct usb_hc *hc=d->hc;
@@ -289,6 +306,7 @@ static int enumerate_device(struct usb_device *d)
     }
     if (!usb_bind_interfaces(d, g_drv, g_ndrv))
         kprintf("[usb] port %d: no driver for this device (it is enumerated, just idle)\n", port);
+    service_schedule(d);
     __atomic_store_n(&d->callback_ready,1,__ATOMIC_RELEASE);
     return 0;
 
@@ -418,6 +436,66 @@ static void hotplug_work(void *arg)
     }
 }
 
+/* The sleepable class pass. WHY it is shaped like hotplug_work(): removal of a
+ * root subtree (hotplug_work, usb_hc_unregister) runs under the enumeration
+ * domain, so holding the same domain makes "the device vanishes while a class
+ * callback is on the wire" impossible instead of merely unlikely; the controller
+ * reference is taken after the domain, in the same order, for the same reason
+ * (see hotplug_work). A service callback may therefore use usb_control() and
+ * keep its class state across it without any lifetime protocol of its own. It
+ * holds up hotplug for as long as one control transfer takes (EHCI bounds that
+ * at 3 s), which is the price of that guarantee and the reason the class asks for
+ * a pass only while it has work. */
+static void service_work(void *arg)
+{
+    struct usb_hotplug *hp=arg;
+    struct usb_hc *hc=hp?hp->hc:NULL;
+#ifndef USB_SERVICE_NEGCTL_NO_DOMAIN
+    IO_DOMAIN_GUARD(&usb_enumeration);
+#endif
+    USB_REF(hc);
+    if (!ref.hc) return;
+    for (int i=0;i<USB_MAX_DEVICES;i++) {
+        struct usb_device *d=&g_dev[i];
+        if (!d->used || d->hc!=hc || !__atomic_load_n(&d->callback_ready,__ATOMIC_ACQUIRE))
+            continue;
+        uint64_t due=__atomic_load_n(&d->service_due_ns,__ATOMIC_ACQUIRE);
+        if (!due || time_mono_ns()<due) continue;
+        uint64_t next=0;
+        for (int ifno=0;ifno<d->cfg.n_if;ifno++) {
+            const struct usb_driver *drv=d->binding[ifno].drv;
+            if (!drv || !drv->service) continue;
+            uint64_t delay=drv->service(d,ifno);
+            uint64_t now=time_mono_ns();
+            if (delay && (!next || now+delay<next)) next=now+delay;
+        }
+        __atomic_store_n(&d->service_due_ns,next,__ATOMIC_RELEASE);
+    }
+}
+
+/* WHY here: the root-port watcher is already a periodic timer that exists for
+ * every registered controller, so asking it to queue the class pass costs no
+ * second timer and no wakeup when no class wants one. It runs in timer context:
+ * it only compares deadlines and queues the work item, nothing sleeps. The
+ * effective rate is the timer's, 10 ms, so a class asking for 16 ms gets the
+ * next tick after that. */
+static void service_tick(struct usb_hotplug *hp)
+{
+    struct usb_hc *hc=hp->hc;
+    if (!hc) return;
+    uint64_t now=time_mono_ns();
+    for (int i=0;i<USB_MAX_DEVICES;i++) {
+        struct usb_device *d=&g_dev[i];
+        if (!__atomic_load_n(&d->callback_ready,__ATOMIC_ACQUIRE) || !d->used || d->hc!=hc)
+            continue;
+        uint64_t due=__atomic_load_n(&d->service_due_ns,__ATOMIC_ACQUIRE);
+        if (due && now>=due) {
+            work_queue(&hp->service_work);
+            return;
+        }
+    }
+}
+
 /* Port Status Change interrupts are advisory: firmware routing mistakes and
  * an already-asserted MSI edge can lose one.  A bounded timer reuses the same
  * IRQ path so xHCI retires the corresponding event TRB/EHB before a deferred
@@ -426,7 +504,10 @@ static void hotplug_work(void *arg)
 static void hotplug_watch(struct ktimer *timer)
 {
     struct usb_hotplug *hp=timer?timer->arg:NULL;
-    if (hp && hp->hc) usb_hc_irq(hp->hc);
+    if (hp && hp->hc) {
+        usb_hc_irq(hp->hc);
+        service_tick(hp);
+    }
 }
 
 /* The reference spans class decoding of borrowed interrupt-IN DMA buffers.
@@ -465,6 +546,7 @@ int usb_hc_register(struct usb_hc *hc,struct device *pci,const struct usb_hc_ops
     hp->hc=hc;
     if (!hp->initialized) {
         work_item_init(&hp->work,hotplug_work,hp);
+        work_item_init(&hp->service_work,service_work,hp);
         hp->timer.heap_idx=-1;
         hp->initialized=1;
     }

@@ -50,6 +50,11 @@
 #define HID_REQ_SET_PROTOCOL 0x0B
 #define HID_PROTO_BOOT   0
 #define HID_PROTO_REPORT 1
+/* Report types, the high byte of wValue in GET_REPORT / SET_REPORT
+ * (HID 1.11 7.2.1, 7.2.2). */
+#define HID_REPORT_INPUT   1
+#define HID_REPORT_OUTPUT  2
+#define HID_REPORT_FEATURE 3
 
 struct usb_driver;
 
@@ -70,6 +75,10 @@ struct usb_device {
     uint8_t hub_ports, hub_multi_tt, hub_tt_think;
     struct usb_device_desc dd;
     struct usb_config cfg;
+    /* Earliest time (usb_core.c's monotonic clock, ns) a class driver asked to
+     * be called back from the sleepable worker; 0 = no class wants one. Written
+     * only by that worker and by enumeration, read by the root-port timer. */
+    uint64_t service_due_ns;
     /* USB 2.0 9.6.5 binds a driver to each interface. The former single
      * drv/ifno/drvdata tuple silently left a composite receiver's second
      * interface idle even though its descriptor was successfully enumerated. */
@@ -97,6 +106,13 @@ struct usb_driver {
     int  (*probe)(struct usb_device *dev, int ifno);   /* 0 = bound */
     void (*poll)(struct usb_device *dev, int ifno);   /* completion-driven */
     void (*remove)(struct usb_device *dev, int ifno);
+    /* Optional. Runs on the kworker thread (never IRQ or timer context, so it
+     * may issue sleeping control transfers) while the device cannot be removed:
+     * the core holds the enumeration domain and a controller reference, exactly
+     * as hotplug_work() does. Returns how long from now the core should call it
+     * again, in ns, or 0 for never. The class decides what to do with an
+     * interface whose interrupt pipe stays silent; see usb_hid.c hid_service(). */
+    uint64_t (*service)(struct usb_device *dev, int ifno);
 };
 
 /* Class drivers register from their own file at bring-up; usb_core calls each

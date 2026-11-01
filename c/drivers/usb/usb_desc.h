@@ -44,6 +44,8 @@
 #define USB_CLASS_HUB      0x09
 
 #define USB_HID_SUB_BOOT   0x01
+/* HID 1.11 4.3 bInterfaceProtocol of a boot interface: 1 keyboard, 2 mouse. */
+#define USB_HID_PROTO_KEYBOARD 0x01
 #define USB_HID_PROTO_KBD  0x01
 #define USB_HID_PROTO_MOUSE 0x02
 

@@ -176,6 +176,88 @@ static void console_format(char *out, size_t capacity, uint64_t queued_per_s,
               (unsigned long)dropped, ring_used, ring_size);
 }
 
+/* What the two extra HID rows show. A plain struct for the same reason as
+ * hwhud_net: the formatters stay pure, the host gate pins every character, and
+ * neither needs hid_diag.h on its include path. The request states use the same
+ * numbers as HID_DIAG_REQ_* (0 never sent, 1 ok, 2 failed), the decoder 0/1/2
+ * as HID_DIAG_DECODE_* and the control state as HID_DIAG_CTL_*; the collector
+ * below copies them across and a host gate holds the correspondence. */
+struct hwhud_hid {
+    unsigned subclass, protocol;
+    unsigned decoder;                       /* 1 report descriptor, 2 boot */
+    unsigned max_packet, interval;
+    unsigned cfg_state, cfg_value;          /* GET_CONFIGURATION */
+    unsigned idle_state, idle_units;        /* SET_IDLE, 4 ms units */
+    unsigned proto_state, proto_sent;       /* SET_PROTOCOL; 1 boot, 2 report */
+    unsigned rdesc_state, rdesc_len;        /* GET_DESCRIPTOR(report) */
+    unsigned led_state, led_id, led_len;    /* LED SET_REPORT(Output) */
+    unsigned ctl_state;                     /* 0 none .. 4 failed */
+    unsigned ctl_rc, ctl_len;               /* last GET_REPORT(Input) */
+    unsigned char ctl_first[8];
+    unsigned ctl_polls, ctl_fed, ctl_fail;
+};
+
+static const char *hid_req_name(unsigned state)
+{
+    return state == 1 ? "ok" : state == 2 ? "ERR" : "--";
+}
+
+/* The bring-up row: one photo shows what the descriptor says (subclass and
+ * protocol, endpoint size and interval), which decoder was chosen, which
+ * configuration the device reports, and the outcome of every request the probe
+ * sent -- so "keyboard silent" can be told apart from "keyboard refused SET_IDLE"
+ * or "keyboard thinks it is unconfigured" without another hardware round trip.
+ * Typical rows are about 80 columns; with every byte-sized field at 255 and
+ * both 16-bit sizes at 65535 it is 99, still inside COLS. */
+static void hid_state_format(char *out, size_t capacity, const struct hwhud_hid *hid)
+{
+    char cfg[8] = "--";
+    if (hid->cfg_state == 1) {
+        ksnprintf(cfg, sizeof cfg, "%u", hid->cfg_value);
+    } else if (hid->cfg_state == 2) {
+        ksnprintf(cfg, sizeof cfg, "ERR");
+    }
+    char idle[20] = "idle --";
+    if (hid->idle_state) {
+        ksnprintf(idle, sizeof idle, "idle%u %s", hid->idle_units, hid_req_name(hid->idle_state));
+    }
+    char proto[20] = "proto --";
+    if (hid->proto_sent) {
+        ksnprintf(proto, sizeof proto, "proto %s %s", hid->proto_sent == 1 ? "boot" : "rpt",
+                  hid_req_name(hid->proto_state));
+    }
+    char rdesc[20] = "rd --";
+    if (hid->rdesc_state) {
+        ksnprintf(rdesc, sizeof rdesc, "rd %uB %s", hid->rdesc_len, hid_req_name(hid->rdesc_state));
+    }
+    char led[24] = "led --";
+    if (hid->led_state) {
+        ksnprintf(led, sizeof led, "led id%u/%uB %s", hid->led_id, hid->led_len,
+                  hid_req_name(hid->led_state));
+    }
+    ksnprintf(out, capacity, "  sc%u/p%u %s mp%u iv%u cfg %s %s %s %s %s",
+              hid->subclass, hid->protocol,
+              hid->decoder == 1 ? "desc" : hid->decoder == 2 ? "boot" : "dec?",
+              hid->max_packet, hid->interval, cfg, idle, proto, rdesc, led);
+}
+
+/* The control-pipe fallback row, printed only for a keyboard interface that has
+ * one. "poll ctl" is the state in which the control pipe, not the interrupt
+ * endpoint, is delivering this keyboard's keystrokes; every other state means
+ * the interrupt path is (or may yet be) in charge. "get" is the last
+ * GET_REPORT(Input): its outcome, length and first eight bytes, which show
+ * whether the answer was real key data. 98 columns at the largest counters. */
+static void hid_ctl_format(char *out, size_t capacity, const struct hwhud_hid *hid)
+{
+    static const char *const modes[] = {"none", "wait 3s", "poll ctl", "retired", "failed"};
+    const char *mode = hid->ctl_state < 5 ? modes[hid->ctl_state] : "?";
+    ksnprintf(out, capacity,
+              "  ctl %s get %s %uB %02x %02x %02x %02x %02x %02x %02x %02x polls %u fed %u fail %u",
+              mode, hid_req_name(hid->ctl_rc), hid->ctl_len, hid->ctl_first[0], hid->ctl_first[1],
+              hid->ctl_first[2], hid->ctl_first[3], hid->ctl_first[4], hid->ctl_first[5],
+              hid->ctl_first[6], hid->ctl_first[7], hid->ctl_polls, hid->ctl_fed, hid->ctl_fail);
+}
+
 /* Host gates include just the pure formatters above. The production build
  * retains all collectors below; no host stand-in can hide a stale formatter. */
 #ifndef HWHUD_FORMAT_HOST
@@ -204,12 +286,17 @@ static void console_format(char *out, size_t capacity, uint64_t queued_per_s,
 #include "../../../include/weaksym.h"
 
 /* 100 columns: the two-line EHCI endpoint rows below run to about 95 with
- * three-digit counters. 51 rows: the EHCI rows are drawn last, the network
+ * three-digit counters. 61 rows: the EHCI rows are drawn last, the network
  * line can wrap to a second row on a long address and counter, and the serial
  * console line takes one more, so a full panel would silently drop exactly the
- * lines the USB bring-up reads. */
+ * lines the USB bring-up reads. The HID section grew from one row per bound
+ * interface to two (bring-up facts) and, for a keyboard, three (control-pipe
+ * fallback): the X79-VG4's keyboard and mouse bind four interfaces, so 51 + 6
+ * rows are needed and 4 are headroom for a second composite device. 61 rows
+ * are 976 px of 16 px text plus the 40 px offset, which still fits a 1080-line
+ * panel (the 1080 - 40 - 8 pixels left hold at most 64 rows). */
 #define COLS 100
-#define ROWS 51
+#define ROWS 61
 
 /* The bring-up's NIC interrupt counter (every ISR entry, before the receive
  * path's own count); absent when the driver is not linked. */
@@ -684,6 +771,25 @@ static void lines_hid(void)
              (unsigned long)d.reports, (unsigned long)d.kbd_ok, (unsigned long)d.kbd_rej,
              (unsigned long)d.kbd_down, d.last_len, d.last[0], d.last[1], d.last[2], d.last[3],
              d.last[4], d.last[5], d.last[6], d.last[7]);
+        struct hwhud_hid hid = {
+            .subclass = d.subclass, .protocol = d.protocol, .decoder = d.decoder,
+            .max_packet = d.max_packet, .interval = d.interval,
+            .cfg_state = d.cfg_rc, .cfg_value = d.cfg_value,
+            .idle_state = d.idle_rc, .idle_units = d.idle_units,
+            .proto_state = d.proto_rc, .proto_sent = d.proto_sent,
+            .rdesc_state = d.rdesc_rc, .rdesc_len = d.rdesc_len,
+            .led_state = d.led_rc, .led_id = d.led_id, .led_len = d.led_len,
+            .ctl_state = d.ctl_state, .ctl_rc = d.ctl_rc, .ctl_len = d.ctl_len,
+            .ctl_polls = d.ctl_polls, .ctl_fed = d.ctl_fed, .ctl_fail = d.ctl_fail,
+        };
+        for (int k = 0; k < 8; k++) hid.ctl_first[k] = d.ctl_first[k];
+        char row[COLS + 1];
+        hid_state_format(row, sizeof row, &hid);
+        addline(row);
+        if (d.ctl_state != HID_DIAG_CTL_NONE) {
+            hid_ctl_format(row, sizeof row, &hid);
+            addline(row);
+        }
     }
     if (!any) LINE("hid: no interfaces bound");
     for (unsigned c = 0; c < 4; c++) {
