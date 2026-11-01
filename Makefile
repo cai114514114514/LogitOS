@@ -3781,7 +3781,7 @@ test-fb-clip:
 	@# $(GFX_SRC): fb.c rounds its window corners with gfx_mask_corner, so
 	@# linking fb.c without the engine stopped working when that landed. The
 	@# break was invisible because no suite reaches this target.
-	@$(CC) -O2 -Wall -Wextra -o $(BUILD)/fb_clip_test tests/unit/fb_clip_test.c c/kernel/gui/fb/fb.c c/kernel/gui/fb/glass.c $(GFX_SRC) $(HOST_INCDIRS) -lm
+	@$(CC) -O2 -Wall -Wextra -o $(BUILD)/fb_clip_test tests/unit/fb_clip_test.c c/kernel/gui/fb/fb.c c/kernel/gui/fb/fb_overlay.c c/kernel/gui/fb/glass.c $(GFX_SRC) $(HOST_INCDIRS) -lm
 	@$(BUILD)/fb_clip_test
 
 

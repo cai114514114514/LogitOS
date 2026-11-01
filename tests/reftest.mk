@@ -125,7 +125,7 @@ REFT_PIPELINE := c/apps/gui/browser/layout/block.c c/apps/gui/browser/layout/tex
 # since a1c345a76. It was missing from this list, which nothing noticed while
 # REFT_KERNEL was only ever linked together with the rest of the kernel; the
 # ahem_test target below links REFT_KERNEL ALONE and so it failed there first.
-REFT_KERNEL   := c/kernel/gui/fb/fb.c c/lib/text/glyphras.c c/kernel/gui/text.c \
+REFT_KERNEL   := c/kernel/gui/fb/fb.c c/kernel/gui/fb/fb_overlay.c c/lib/text/glyphras.c c/kernel/gui/text.c \
                  c/kernel/gui/fb/glass.c \
                  c/lib/text/ttf.c c/lib/text/cff.c c/lib/text/utf8.c \
                  c/lib/text/shape.c c/lib/text/script.c c/lib/text/bidi.c \

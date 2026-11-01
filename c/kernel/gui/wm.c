@@ -785,6 +785,9 @@ static int next_app_id = 1;
  * its own idea of the interval on every reader. */
 static uint64_t perf_composites, perf_comp_ns, perf_comp_ns_max;
 static uint64_t perf_motions;                  /* pointer-motion samples processed */
+static uint64_t perf_swcursor_ns, perf_swcursor_moves, perf_swcursor_px;
+/* Count cursor-caused damage separately: Dock hover legitimately recomposes. */
+static uint64_t perf_cursor_damage;
 static uint64_t perf_cursor_moves, perf_cursor_ns;   /* host-plane cursor updates */
 /* ---- and WHAT a frame touched ---------------------------------------------
  *
@@ -2926,6 +2929,10 @@ static const char *cursor_bmp[] = {
  * old save-under path is not being undone here. There is still no partial
  * rendering and still no save-under; the pointer simply is not in the frame. */
 static int hw_cursor;
+/* Correction to the old LFB fallback described above: a CPU overlay now keeps
+ * the pointer out of back too. Native/GPU presents retain their existing path;
+ * no save-under or read from the WC aperture is introduced. */
+static int sw_cursor;
 
 /* ---- FIVE pointers, one picture each ---------------------------------------
  *
@@ -2946,7 +2953,7 @@ static int hw_cursor;
  * 45-degree double-headed arrow at four scales is exactly the kind of art that
  * is wrong in one of the corners and nobody notices for a year. */
 enum { CUR_ARROW, CUR_EW, CUR_NS, CUR_NWSE, CUR_NESW, CUR_NSHAPES };
-#define CUR_PLANE 64
+#define CUR_PLANE FB_OVERLAY_SIZE
 static uint32_t cursor_plane[CUR_NSHAPES][CUR_PLANE * CUR_PLANE];
 static int cursor_hot[CUR_NSHAPES][2];
 static int cursor_box[CUR_NSHAPES][2];   /* w,h actually used, from the hotspot */
@@ -3133,6 +3140,7 @@ static void build_cursors(void)
 static void dirty_cursor(int x, int y)
 {
     int s = cur_shape;
+    perf_cursor_damage++;
     dirty_rect(x - cursor_hot[s][0], y - cursor_hot[s][1],
                cursor_box[s][0] + 1, cursor_box[s][1] + 1);
 }
@@ -3195,17 +3203,25 @@ static void draw_cursor_back(const struct wm_target *t, int x, int y)
 /* Adopt a pointer shape. Only ever called when the shape CHANGES: on the plane
  * path a redefine is a 64x64 transfer plus a control-queue round trip, which is
  * nothing once but is not free at pointer rate; on the LFB path it is a repaint
- * of where the old picture was. */
+ * of where the old picture was.
+ * Correction: the software overlay originally redefined its sprite here too.
+ * Input holds only wm_lock, while fb_set_overlay takes graphics_lock. An app
+ * in wm_gui_syscall can hold graphics_lock while waiting for wm_lock, so that
+ * immediate update deadlocks both threads. Keep only cur_shape here; the
+ * compositor's graphics->state section publishes it in wm_pointer_sync. */
 static void set_cursor(int s)
 {
     if (s < 0 || s >= CUR_NSHAPES || s == cur_shape) return;
-    if (!hw_cursor) dirty_cursor(mx, my);        /* erase the outgoing picture */
+    if (!hw_cursor && !sw_cursor) {
+        dirty_cursor(mx, my);                    /* erase the outgoing picture */
+    }
     cur_shape = s;
-    if (hw_cursor)
+    if (hw_cursor) {
         fb_cursor_image(cursor_plane[s], CUR_PLANE, CUR_PLANE,
                         cursor_hot[s][0], cursor_hot[s][1]);
-    else
+    } else if (!sw_cursor) {
         dirty_cursor(mx, my);                    /* ...and draw the incoming one */
+    }
 }
 
 /* The pointer for a set of grabbed edges. A corner names two edges, and the
@@ -3642,7 +3658,7 @@ static void render_top(const struct wm_target *t)
      * when nothing is being composed. */
     ime_ui_compose();
     notify_compose();
-    if (!hw_cursor) draw_cursor_back(t, mx, my);   /* no plane: arrow into the composite */
+    if (!hw_cursor && !sw_cursor) draw_cursor_back(t, mx, my);   /* no plane: arrow into the composite */
 }
 
 static void render_present(const struct drect *R)
@@ -3677,7 +3693,7 @@ static void render_compose(const struct wm_target *t, const struct drect *R)
             blit_content(&wm_wins[gw], 0, 0, wm_W, wm_H);
         uint64_t top_started_ns = time_mono_ns();
         slow_trace.layers_ns += top_started_ns - layers_started_ns;
-        if (!hw_cursor) draw_cursor_back(t, mx, my);
+        if (!hw_cursor && !sw_cursor) draw_cursor_back(t, mx, my);
         slow_trace.top_ns += time_mono_ns() - top_started_ns;
     } else {
         render_layers(t, R);
@@ -4698,7 +4714,10 @@ static void wm_locked_mouse(const struct inputq_event *in)
     set_cursor(CUR_ARROW);
     /* Without a cursor plane the arrow lives in the composite, so a moved
      * pointer is damage -- exactly as on the unlocked path. */
-    if (moved && !hw_cursor) dirty_full(FULL_LOCKED_CURSOR);
+    if (moved && !hw_cursor && !sw_cursor) {
+        perf_cursor_damage++;
+        dirty_full(FULL_LOCKED_CURSOR);
+    }
 }
 
 /* THE CAPTURES' SHARED EDGES. A modal surface (Expose, the About / power
@@ -4740,7 +4759,10 @@ static void wm_expose_capture(const struct inputq_event *in)
     int moved = pointer_move_to(in, &omx, &omy);
     if (moved) {
         wm_expose_pointer(x, y);           /* the hovered thumbnail */
-        if (!hw_cursor) { dirty_cursor(omx, omy); dirty_cursor(x, y); }
+        if (!hw_cursor && !sw_cursor) {
+            dirty_cursor(omx, omy);
+            dirty_cursor(x, y);
+        }
     }
     if (in->left && !mleft) wm_expose_click(x, y, EV_BTN_LEFT);
     pointer_capture_end(in);
@@ -4753,7 +4775,10 @@ static void wm_overlay_capture(const struct inputq_event *in)
 {
     int x = in->x, y = in->y, omx, omy;
     int moved = pointer_move_to(in, &omx, &omy);
-    if (moved && !hw_cursor) { dirty_cursor(omx, omy); dirty_cursor(x, y); }
+    if (moved && !hw_cursor && !sw_cursor) {
+        dirty_cursor(omx, omy);
+        dirty_cursor(x, y);
+    }
     if (moved) wm_overlay_pointer(x, y);   /* the hovered button */
     if (in->left && !mleft) wm_overlay_click(x, y, EV_BTN_LEFT);
     pointer_capture_end(in);
@@ -4768,7 +4793,10 @@ static void wm_menu_capture(const struct inputq_event *in)
 {
     int x = in->x, y = in->y, omx, omy;
     int moved = pointer_move_to(in, &omx, &omy);
-    if (moved && !hw_cursor) { dirty_cursor(omx, omy); dirty_cursor(x, y); }
+    if (moved && !hw_cursor && !sw_cursor) {
+        dirty_cursor(omx, omy);
+        dirty_cursor(x, y);
+    }
     wm_menu_pointer(x, y);                 /* title switch + item hover */
     if (in->left && !mleft) wm_menu_click(x, y, EV_BTN_LEFT);
     pointer_capture_end(in);
@@ -5076,11 +5104,16 @@ static void wm_process_mouse(const struct inputq_event *in)
      * Everything else that a moving pointer can change is already covered: an
      * app that highlights on hover receives EV_MOUSE_MOVE and flushes, and a
      * flush sets `dirty` itself; a titlebar drag moves a window and sets
-     * `content`. Without a plane (LFB fallback) the arrow is still in the frame,
-     * so motion still means a recomposite -- the old behaviour, unchanged. */
+     * `content`. Without a plane (LFB fallback) the arrow was still in the frame.
+     * Correction: the software overlay now takes that same cheap-motion branch;
+     * only transports that refuse both cursor paths retain recomposition. */
     if (moved) {
-        if (!hw_cursor) { dirty_cursor(omx, omy); dirty_cursor(x, y); }
-        else wm_dock_pointer(x, y, omx, omy);   /* the hovered icon, old and new */
+        if (!hw_cursor && !sw_cursor) {
+            dirty_cursor(omx, omy);
+            dirty_cursor(x, y);
+        } else {
+            wm_dock_pointer(x, y, omx, omy);   /* the hovered icon, old and new */
+        }
     }
     /* Last, and after the drag state above has settled, because the shape is a
      * function of that state: asking before the release has been processed
@@ -5149,10 +5182,24 @@ void wm_init(void)
     build_cursors();
     hw_cursor = fb_cursor_image(cursor_plane[CUR_ARROW], CUR_PLANE, CUR_PLANE,
                                 cursor_hot[CUR_ARROW][0], cursor_hot[CUR_ARROW][1]) == 0;
-    if (hw_cursor) fb_cursor_move(mx, my);
+    sw_cursor = !hw_cursor && fb_overlay_available() && !wm_reveal_active();
+#ifdef GFX_NEGCTL_CURSOR_RECOMPOSE
+    /* Guest-only control restores the real dirty_cursor path, including its
+     * pixel rendering. The guest must reject its wallpaper composite count. */
+    sw_cursor = 0;
+#endif
+    if (hw_cursor) {
+        fb_cursor_move(mx, my);
+    } else if (sw_cursor) {
+        fb_set_overlay(cursor_plane[CUR_ARROW], CUR_PLANE,
+                       cursor_box[CUR_ARROW][0], cursor_box[CUR_ARROW][1],
+                       cursor_hot[CUR_ARROW][0], cursor_hot[CUR_ARROW][1]);
+        fb_overlay_move(mx, my);
+    }
     kprintf("[wm] pointer: %s\n",
             hw_cursor ? "display cursor plane (motion does not composite)"
-                      : "composited into the frame (no cursor plane)");
+                      : sw_cursor ? "software overlay (motion does not recompose)"
+                                  : "composited into the frame (no cursor plane)");
 
     scan_apps();                /* prints the `[wm] dock` line -- see there */
 
@@ -5180,6 +5227,29 @@ static void wm_pointer_sync(void)
 {
     static int cx = -1, cy = -1, reported = 1;
     static uint64_t settle_ms;
+    static int overlay_shown = 1;
+    static int overlay_shape = CUR_ARROW;
+    if (sw_cursor) {
+        /* The reveal presents its own off-screen image. Suppress the overlay
+         * for that interval, then restore it even if the pointer stood still.
+         * This and wm_render run sequentially on the compositor thread. */
+        int show = !wm_reveal_active();
+        /* Consume input's latest shape only after graphics->state locking,
+         * even when mx/my did not change. fb_set_overlay remembers the old
+         * dimensions/hotspot and presents both boxes without damaging back.
+         * Coalesce a drained batch to its final shape; reveal keeps pending
+         * shapes hidden until it relinquishes scanout. */
+        if (show && (cur_shape != overlay_shape || !overlay_shown)) {
+            fb_set_overlay(cursor_plane[cur_shape], CUR_PLANE,
+                           cursor_box[cur_shape][0], cursor_box[cur_shape][1],
+                           cursor_hot[cur_shape][0], cursor_hot[cur_shape][1]);
+            overlay_shape = cur_shape;
+        }
+        if (show != overlay_shown) {
+            fb_overlay_show(show);
+            overlay_shown = show;
+        }
+    }
     if (mx != cx || my != cy) {
         cx = mx; cy = my;
         if (hw_cursor) {
@@ -5187,6 +5257,13 @@ static void wm_pointer_sync(void)
             fb_cursor_move(cx, cy);
             perf_cursor_ns += time_mono_ns() - t0;
             perf_cursor_moves++;
+        } else if (sw_cursor) {
+            uint64_t started_ns = time_mono_ns();
+            uint64_t pixels_before = fb_present_px();
+            fb_overlay_move(cx, cy);
+            perf_swcursor_ns += time_mono_ns() - started_ns;
+            perf_swcursor_px += fb_present_px() - pixels_before;
+            perf_swcursor_moves++;
         }
         settle_ms = time_mono_ms();
         reported = 0;
@@ -5341,6 +5418,11 @@ static void wm_perf_report(void)
             (unsigned long)iqstats.batches_with_backlog,
             (unsigned long)iqstats.high_watermark, (unsigned long)fb_openlogit_batches(),
             (unsigned long)perf_bgskip);
+    /* Cumulative overlay work, separate from compositor pixels/timing. Dock
+     * hover may composite content; cursor_damage identifies only cursor work. */
+    kprintf("[wm] swcursor moves=%lu ns=%lu box_px=%lu cursor_damage=%lu\n",
+            (unsigned long)perf_swcursor_moves, (unsigned long)perf_swcursor_ns,
+            (unsigned long)perf_swcursor_px, (unsigned long)perf_cursor_damage);
     /* Band-parallel composition (par_render). A separate line on purpose:
      * qmp_repaint.py parses the perf line above by its full field set. */
     kprintf("[wm] par frames=%lu serial=%lu bands=%lu worker_bands=%lu workers=%d"

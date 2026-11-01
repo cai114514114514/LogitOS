@@ -1,6 +1,6 @@
 # Link the actual compatibility adapter and complete display implementation.
 # A direct ol_display test misses fb_sdk's failed-bind publication bug.
-FB_DISPLAY_SRC := tests/unit/fb_display_test.c c/kernel/gui/fb/fb.c c/kernel/gui/fb/glass.c $(GFX_SRC)
+FB_DISPLAY_SRC := tests/unit/fb_display_test.c c/kernel/gui/fb/fb.c c/kernel/gui/fb/fb_overlay.c c/kernel/gui/fb/glass.c $(GFX_SRC)
 FB_DISPLAY_INC := $(KGUI_INC) $(KMM_INC) -Ic/drivers/virtio -Ic/lib/text $(GFX_INC)
 FB_DISPLAY_FLAGS := -O1 -g -Wall -Wextra $(FB_DISPLAY_INC)
 FB_DISPLAY_DEPS := $(FB_DISPLAY_SRC) $(GFX_HEADERS) c/kernel/gui/fb/fb.h c/kernel/gui/fb/glass.h

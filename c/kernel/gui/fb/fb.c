@@ -2,11 +2,12 @@ static int fb_lfb_wc;   /* the scanout PTE read back as PAT PA1 (WC) */
 int fb_scanout_wc(void) { return fb_lfb_wc; }
 #include "../../cpu/power/pat.h"
 #include "mmhost.h"
-#include "kprintf.h"
-#include "ktime.h"
+#include "../../diag/kprintf.h"
+#include "../../core/ktime.h"
 #include <stdint.h>
 #include <stddef.h>
 #include "fb.h"
+#include "fb_overlay.h"
 #include "openlogit_display.h"
 #include "gui_sync.h"
 /* Shared software-raster scratch is also reached by SVG image decoding.
@@ -45,6 +46,17 @@ static volatile uint8_t *fb_mem;
 static uint32_t fb_pitch, fb_w, fb_h;
 static uint8_t rpos, gpos, bpos;
 static int using_gpu;             /* fb_mem is a virtio-gpu RAM resource, not VGA MMIO */
+/* One sprite, one present. Only the compositor changes overlay; present holds
+ * graphics_lock until every synchronous AP band has finished. Publish scratch
+ * before the present callback sends IPIs, and revoke it before unlocking.
+ * The scratch covers sprite pixels only; dirty_cursor's extra restoration
+ * row/column comes straight from back, so a 64-wide sprite needs no 65th slot.
+ * Oversized sprites are refused, not silently cropped.
+ * Host/QEMU evidence only: not verified on X79-VG4 hardware. */
+static struct fb_overlay overlay;
+static uint32_t overlay_pixels[FB_OVERLAY_SIZE * FB_OVERLAY_SIZE];
+static struct fb_irect overlay_rect;
+static int overlay_prepared;
 /* Physical aperture supplied by a Multiboot2 framebuffer tag.  Virtio-gpu's
  * CPU backing is ordinary RAM and deliberately has no entry here: a passive
  * PCI display observer may use this range to prove that the active scanout
@@ -321,12 +333,17 @@ int fb_init(uint64_t mb_info_addr)
      * real card. MTRR UC + PAT WC is WC (Intel SDM vol. 3A table 11-7). This
      * is the first mapping of the aperture, so there is no UC alias to retire.
      * X79-VG4 bring-up; not verified on X79-VG4 hardware. */
-#ifndef FB_NEGCTL_UC_MAP
+#if __STDC_HOSTED__
+    /* Hosted pixel gates map ordinary allocations through a VMM stub. Do not
+     * call PAT code or read host page tables and call that hardware evidence. */
+    uint64_t cache = VMM_NOCACHE;
+#elif !defined(FB_NEGCTL_UC_MAP)
     uint64_t cache = pat_wc_available() ? VMM_PAT_WC : VMM_NOCACHE;
 #else
     uint64_t cache = VMM_NOCACHE;
 #endif
     vmm_map_range(fb->addr, fb->addr, bytes, VMM_WRITABLE | cache);
+#if !__STDC_HOSTED__
     {
         uint64_t *pte = vmm_pte(mm_read_cr3(), fb->addr);
         uint64_t f = pte ? *pte : 0;
@@ -335,6 +352,11 @@ int fb_init(uint64_t mb_info_addr)
                 (f & 0x18) == 0x08 ? "write-combining" : (f & 0x18) == 0x18 ? "uncached" : "other",
                 (int)((f >> 3) & 1), (int)((f >> 4) & 1));
     }
+#else
+    /* A RAM fixture cannot read CR3 (privileged even on an x86 host) or
+     * establish a PAT fact. Its gate proves pixels, never WC mappings. */
+    fb_lfb_wc = 0;
+#endif
     fb_mem = (volatile uint8_t *)fb->addr;
     boot_lfb_addr = fb->addr;
     boot_lfb_bytes = bytes;
@@ -526,6 +548,23 @@ void fb_blit_surface_scaled_bl(int dx, int dy, int dw, int dh, const struct surf
     ol_display_blit_surface_scaled_bl(fb_sdk() ,dx,dy,dw,dh,&source);
 }
 
+/* Preserve the old row transport for every segment, including those supplied
+ * by the overlay. Non-x86 hosted gates copy ordinary RAM; the kernel keeps
+ * rep movsb into WC scanout (Intel SDM Vol.3A 11.3.1, write combining). */
+static void fb_copy_span(volatile uint32_t *dst, const uint32_t *src, int width)
+{
+#if !defined(FB_NEGCTL_PIXEL_COPY) && defined(__x86_64__)
+    void *dest = (void *)(uintptr_t)dst;
+    const void *source = src;
+    size_t bytes = (size_t)width * 4;
+    __asm__ volatile ("rep movsb" : "+D"(dest), "+S"(source), "+c"(bytes) : : "memory");
+#else
+    for (int col = 0; col < width; col++) {
+        dst[col] = src[col];
+    }
+#endif
+}
+
 void fb_copy_rect(int x, int y, int w, int h)
 {
     if (!g_fbctx[0].screen.px) return;
@@ -539,18 +578,20 @@ void fb_copy_rect(int x, int y, int w, int h)
     for (int yy = 0; yy < h; yy++) {
         volatile uint32_t *dst = (volatile uint32_t *)(mem + (uint32_t)(y + yy) * fb_pitch);
         const uint32_t *src = g_fbctx[0].screen.px + (uint32_t)(y + yy) * fb_w;
-#ifndef FB_NEGCTL_PIXEL_COPY
-        /* One string move per row: with the aperture write-combining, the CPU
-         * merges it into full 64-byte bursts; ERMSB (Ivy Bridge and later)
-         * makes rep movsb the fast form. The old per-pixel volatile loop
-         * forced one bus write per 4 bytes. */
-        void *d = (void *)(uintptr_t)(dst + x);
-        const void *s = src + x;
-        size_t n = (size_t)w * 4;
-        __asm__ volatile ("rep movsb" : "+D"(d), "+S"(s), "+c"(n) : : "memory");
-#else
-        for (int xx = 0; xx < w; xx++) dst[x + xx] = src[x + xx];
-#endif
+        int left = x;
+        int right = x + w;
+        if (overlay_prepared && y + yy >= overlay_rect.y0 && y + yy < overlay_rect.y1) {
+            int begin = overlay_rect.x0 > left ? overlay_rect.x0 : left;
+            int end = overlay_rect.x1 < right ? overlay_rect.x1 : right;
+            if (begin < end) {
+                fb_copy_span(dst + left, src + left, begin - left);
+                const uint32_t *pixels = overlay_pixels +
+                    (y + yy - overlay_rect.y0) * FB_OVERLAY_SIZE + begin - overlay_rect.x0;
+                fb_copy_span(dst + begin, pixels, end - begin);
+                left = end;
+            }
+        }
+        fb_copy_span(dst + left, src + left, right - left);
     }
     fb_front_release();
 }
@@ -566,6 +607,7 @@ void fb_present(void) { fb_present_rect(0, 0, (int)fb_w, (int)fb_h); }
  * says whether the scanout path is fast on this machine. */
 void fb_present_bench(void)
 {
+#if !__STDC_HOSTED__
     /* the label is the mapping read back at fb_init(), not PAT availability */
     if (!g_fbctx[0].screen.px || using_gpu || native_present) return;
     uint64_t t0 = time_mono_ns();
@@ -575,6 +617,10 @@ void fb_present_bench(void)
     unsigned us = (unsigned)(ns / 1000), mbs = ns ? (unsigned)(bytes * 1000 / ns) : 0;
     kprintf("[fb] present bench %ux%u: %u us per frame, %u MB/s (%s)\n", fb_w, fb_h, us, mbs,
             fb_lfb_wc ? "WC" : "not WC");
+#else
+    /* This is explicitly a guest boot benchmark. Host RAM timing would not
+     * measure the scanout mapping or the device and is deliberately absent. */
+#endif
 }
 
 /* Pixels actually pushed to the display since boot, and the number of pushes.
@@ -633,8 +679,30 @@ void fb_present_rect(int x, int y, int w, int h)
     }
     present_px += (uint64_t)w * (uint64_t)h;
     present_calls++;
+    overlay_prepared = 0;
+    if (fb_overlay_available() && fb_overlay_box(&overlay, (int)fb_w, (int)fb_h, &overlay_rect)) {
+        /* Present only the intersection, following the damage-iterator model
+         * in Linux v6.12 drivers/gpu/drm/drm_damage_helper.c,
+         * drm_atomic_helper_damage_iter_next(). Never borrow front pixels:
+         * WC reads are unsuitable save-under storage (SDM Vol.3A 11.3.1).
+         * https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/drivers/gpu/drm/drm_damage_helper.c?h=v6.12 */
+        int64_t sprite_right = (int64_t)overlay.x - overlay.hot_x + overlay.bw;
+        int64_t sprite_bottom = (int64_t)overlay.y - overlay.hot_y + overlay.bh;
+        if (overlay_rect.x1 > sprite_right) overlay_rect.x1 = (int)sprite_right;
+        if (overlay_rect.y1 > sprite_bottom) overlay_rect.y1 = (int)sprite_bottom;
+        if (overlay_rect.x0 < x) overlay_rect.x0 = x;
+        if (overlay_rect.y0 < y) overlay_rect.y0 = y;
+        if (overlay_rect.x1 > x + w) overlay_rect.x1 = x + w;
+        if (overlay_rect.y1 > y + h) overlay_rect.y1 = y + h;
+        if (overlay_rect.x0 < overlay_rect.x1 && overlay_rect.y0 < overlay_rect.y1) {
+            fb_overlay_compose(overlay_pixels, FB_OVERLAY_SIZE, g_fbctx[0].screen.px,
+                               (int)fb_w, &overlay_rect, &overlay, rpos, gpos, bpos);
+            overlay_prepared = 1;
+        }
+    }
     if (g_par_present && h >= 128) g_par_present(x, y, w, h);   /* RAM-to-RAM now (fast) */
     else fb_copy_rect(x, y, w, h);
+    overlay_prepared = 0;
     if (using_gpu) virtio_gpu_flush(x, y, w, h);               /* DMA the rect to the host */
     fb_graphics_unlock();
 }
@@ -665,6 +733,82 @@ int fb_cursor_image(const uint32_t *argb, int w, int h, int hot_x, int hot_y)
 void fb_cursor_move(int x, int y)
 {
     if (fb_cursor_hw()) virtio_gpu_cursor_move(x, y);
+}
+
+/* A GPU present borrows the cursor-free back buffer, so CPU-only overlay
+ * pixels would disappear on its next transfer. Keep that transport's fallback. */
+int fb_overlay_available(void)
+{
+    return !using_gpu && !native_present;
+}
+
+/* Restore a remembered half-open box through the normal clamped accounting
+ * path. The caller holds the recursive graphics mutex across both presents. */
+static void fb_overlay_present_box(const struct fb_irect *box)
+{
+    fb_present_rect(box->x0, box->y0, box->x1 - box->x0, box->y1 - box->y0);
+}
+
+/* Replacing shape/hotspot must restore the outgoing geometry too; otherwise
+ * switching from a large resize sprite to an arrow leaves a permanent tail.
+ * An invalid definition removes the overlay instead of overrunning scratch. */
+void fb_set_overlay(const uint32_t *argb, int stride, int bw, int bh,
+                    int hot_x, int hot_y)
+{
+    fb_graphics_lock();
+    struct fb_irect old_box;
+    int had_box = fb_overlay_box(&overlay, (int)fb_w, (int)fb_h, &old_box);
+    overlay.argb = argb;
+    overlay.stride = stride;
+    overlay.bw = bw;
+    overlay.bh = bh;
+    overlay.hot_x = hot_x;
+    overlay.hot_y = hot_y;
+    overlay.active = argb && bw > 0 && bh > 0 && bw <= FB_OVERLAY_SIZE &&
+        bh <= FB_OVERLAY_SIZE && stride >= bw && fb_overlay_available();
+    if (had_box) fb_overlay_present_box(&old_box);
+    struct fb_irect new_box;
+    if (fb_overlay_box(&overlay, (int)fb_w, (int)fb_h, &new_box)) {
+        fb_overlay_present_box(&new_box);
+    }
+    fb_graphics_unlock();
+}
+
+/* Remember the old box before updating position, then restore from RAM and
+ * paint the new box. No compositor damage or framebuffer readback is needed. */
+void fb_overlay_move(int x, int y)
+{
+    fb_graphics_lock();
+    struct fb_irect old_box;
+    int had_box = fb_overlay_box(&overlay, (int)fb_w, (int)fb_h, &old_box);
+    overlay.x = x;
+    overlay.y = y;
+#ifndef GFX_NEGCTL_OVERLAY_NO_RESTORE
+    if (had_box) fb_overlay_present_box(&old_box);
+#else
+    (void)had_box;
+#endif
+    struct fb_irect new_box;
+    if (fb_overlay_box(&overlay, (int)fb_w, (int)fb_h, &new_box)) {
+        fb_overlay_present_box(&new_box);
+    }
+    fb_graphics_unlock();
+}
+
+/* Hiding restores the cursor-free RAM image; showing reuses the same shape
+ * and position, so a reveal can temporarily own scanout without stale pixels. */
+void fb_overlay_show(int on)
+{
+    fb_graphics_lock();
+    struct fb_irect box;
+    int visible = fb_overlay_box(&overlay, (int)fb_w, (int)fb_h, &box);
+    overlay.active = on && overlay.argb && overlay.bw > 0 && overlay.bh > 0 &&
+        overlay.bw <= FB_OVERLAY_SIZE && overlay.bh <= FB_OVERLAY_SIZE &&
+        overlay.stride >= overlay.bw && fb_overlay_available();
+    if (visible || fb_overlay_box(&overlay, (int)fb_w, (int)fb_h, &box)) {
+        fb_overlay_present_box(&box);
+    }
+    fb_graphics_unlock();
 }
 
 /* Write one pixel straight to the framebuffer (not the back buffer): for the
