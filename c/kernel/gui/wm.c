@@ -4,6 +4,9 @@
  * pointer and the main loop. The surfaces it composites live in their own
  * files (wm_menubar.c, wm_dock.c, ... -- see wm_internal.h). */
 #include "hwhud.h"
+#ifdef LOGIT_HWHUD
+#include "devssh.h"
+#endif
 #include "wm_internal.h"
 
 static int wm_keyboard_focus(void);
@@ -5685,7 +5688,14 @@ void wm_run(void)
      * because this runs before any process exists. It is the same file
      * c/apps/coreutils/accounts.h defines and the kernel is still root here, so
      * the probe cannot be refused. */
+#ifdef LOGIT_HWHUD
+    /* Bring-up build: the key-only "dev" account (c/kernel/init/devssh.h) has no
+     * password, so a store that holds only that row must not hide the desktop of
+     * a board whose keyboard does not work. Any other row locks as before. */
+    g_locked = devssh_desktop_locked();
+#else
     g_locked = (vfs_size("/etc/passwd") > 0);
+#endif
     if (g_locked) {
         kprintf("[wm] LOCKED: /etc/passwd exists, so the desktop waits for a login\n");
         if (vfs_size(GREETER_AEX) <= 0)
@@ -5695,7 +5705,14 @@ void wm_run(void)
                     GREETER_AEX);
         wm_launch(GREETER_AEX, "");
     } else {
+#ifdef LOGIT_HWHUD
+        if (vfs_size("/etc/passwd") > 0)
+            kprintf("[wm] only the key-only dev account (devssh) exists: the desktop starts unauthenticated\n");
+        else
+            kprintf("[wm] no accounts on this machine: the desktop starts unauthenticated\n");
+#else
         kprintf("[wm] no accounts on this machine: the desktop starts unauthenticated\n");
+#endif
         wm_desktop_start();
     }
 

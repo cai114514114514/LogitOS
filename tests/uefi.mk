@@ -101,12 +101,19 @@ $(UEFI_NATIVE_KERNEL): | $(BUILD)/bios-native/
 $(BUILD)/bios-native/:
 	@mkdir -p $@
 
+# HWHUD=1 (the X79-VG4 bring-up build) also tells the LOADER, with -DLOGIT_HWHUD,
+# so it reads \LOGIT\DEVSSH.PUB off the boot volume (c/boot/efi/loader.c,
+# load_devssh_module). A product loader never looks for that file. Like the
+# HWHUD kernel, this image belongs in its own BUILD directory: nothing here
+# notices a flip of HWHUD inside one directory.
+EFI_HWHUD_DEFINE := $(if $(filter 1,$(HWHUD)),-DLOGIT_HWHUD)
+
 $(BOOTX64_EFI): $(EFI_SRC)
 	@test -f c/boot/efi/build.sh || { \
 	    echo "tests/uefi.mk: c/boot/efi/build.sh not found -- see the CONTRACT"; \
 	    echo "  comment at the top of this file for the interface it must provide."; \
 	    exit 1; }
-	EFI_OUT=$(BOOTX64_EFI) EFI_CPPFLAGS= bash c/boot/efi/build.sh
+	EFI_OUT=$(BOOTX64_EFI) EFI_CPPFLAGS="$(EFI_HWHUD_DEFINE)" bash c/boot/efi/build.sh
 
 # The native-only production source is rebuilt under separate names so control
 # objects cannot race the ordinary image.

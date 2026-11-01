@@ -47,6 +47,7 @@
 #include "driver.h"
 #include "amd/bootfb.h"
 #include "bootmod.h"
+#include "devssh.h"
 
 /* TIMER_HZ now lives in pit.h: SYS_MONOTONIC_MS divides by it, so the tick rate
  * is part of a userland-visible answer and cannot be a private constant here. */
@@ -247,6 +248,15 @@ void kernel_main(uint64_t mb_info)
      * state to special-case here that vfs.c does not already handle. */
     pcache_vfs_install();
     bootmark(11);
+
+    /* Bring-up builds only (HWHUD=1; an empty inline function otherwise): if the
+     * USB stick carried \LOGIT\DEVSSH.PUB, create the key-only "dev" account and
+     * the files the installed /bin/login and /bin/sshd already look for. Here
+     * because the root is mounted read-write and init has not started /bin/login,
+     * which is what runs boot_services() and so decides whether sshd starts.
+     * See c/kernel/init/devssh.h. */
+    if (fs_ok)
+        devssh_provision_boot();
 
     /* Load what this machine remembers about its user. Between the mount and
      * net_init/wm_init on purpose: the network configuration and the theme are
