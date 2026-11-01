@@ -74,7 +74,7 @@ set -u
 ISO="${1:?usage: run-oom-test.sh <iso> <disk.img> [ram] [hog] [small]}"
 DISK="${2:?usage: run-oom-test.sh <iso> <disk.img> [ram] [hog] [small]}"
 RAM="${3:-320}"
-HOG="${4:-200}"
+HOG="${4:-160}"
 SMALL="${5:-96}"
 
 QEMU="${QEMU:-qemu-system-x86_64}"
@@ -114,12 +114,13 @@ echo "=== oom killer: ram=${RAM}MiB hog=${HOG}MiB innocent=${SMALL}MiB, no swap 
   printf 'uname\n';                                                       sleep 4
   printf 'echo OOM_ALIVE\n';                                              sleep 2
   # The killer's own counters, from ring 3, through MMCTL_OOM (=5).
-  printf 'echo print(syscall(94,0,5,0)) > /oomrep.as\n';                  sleep 2
-  printf 'as /oomrep.as\n';                                               sleep 8
-  printf 'echo print(syscall(94,0,2,0)) > /oomaud.as\n';                  sleep 2
-  printf 'as /oomaud.as\n';                                               sleep 8
+  # Precompiled probes, as in run-swap-test.sh: the old echo-generated AS2
+  # one-liners cannot run once that engine is gone. oomrep is MMCTL_OOM,
+  # mmaudit is MMCTL_AUDIT (=2); both live in fsroot/as/examples.
+  printf '/usr/as/bin/oomrep.aex\n';                                     sleep 8
+  printf '/usr/as/bin/mmaudit.aex\n';                                    sleep 8
   printf 'echo OOM_DONE\n';                                               sleep 3
-  printf 'rm /oomrep.as\nrm /oomaud.as\nexit\n';                          sleep 2
+  printf 'exit\n';                                                        sleep 2
 } | $QEMU -cpu "${QEMU_CPU:-max}" -cdrom "$ISO" \
       -drive file="$DISK",format=raw,if=none,id=hd0,file.locking=off \
       -device virtio-blk-pci,drive=hd0 -boot d -snapshot \
