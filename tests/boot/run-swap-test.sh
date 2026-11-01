@@ -81,18 +81,20 @@ case "$SIZE" in
     *)     WAIT=300 ;;
 esac
 # ...but the numbers above are a HOST speed as much as a workload size. The
-# fill phase is a ring-3 bytecode interpreter writing a pattern into every word
-# of every page under TCG, and on a slow machine `mid` does not reach the
+# fill phase formerly used a ring-3 bytecode interpreter writing a pattern into
+# every word of every page under TCG, and on a slow machine `mid` did not reach the
 # watermark inside 300 s -- which fails as "the workload did not finish",
 # indistinguishable at a glance from reclaim being broken. It is not the same
 # thing at all, so the budget is overridable rather than something to discover
 # by reading this file: SWAP_WAIT=900 make test-swap.
 WAIT="${SWAP_WAIT:-$WAIT}"
+# 150 seconds for bootwait plus 60 for the post-workload fork/exec and audit
+# commands below. The old fixed 600-second outer cap silently cut SWAP_WAIT=900
+# short. This is a host harness deadline, not a hardware timing measurement.
+RUN_WAIT=$((WAIT + 210))
 
 QEMU="${QEMU:-qemu-system-x86_64}"
-HERE="$(cd "$(dirname "$0")" && pwd)"
-ROOT="$(cd "$HERE/../.." && pwd)"
-SWAPIMG="${SWAPIMG:-$ROOT/build/swap.img}"
+SWAPIMG="${SWAPIMG:-$(dirname "$DISK")/swap.img}"
 SWAPMIB="${SWAPMIB:-384}"
 LOG="${SWAP_LOG:-$(mktemp)}"
 
@@ -110,6 +112,13 @@ mkdir -p "$(dirname "$SWAPIMG")"
 dd if=/dev/zero of="$SWAPIMG" bs=1M count="$SWAPMIB" status=none
 
 SWAPBUS="${SWAPBUS:-nvme}"
+case "$SWAPBUS" in
+    nvme|ahci) ;;
+    *)
+        echo "FAIL: SWAPBUS must be nvme or ahci"
+        exit 1
+        ;;
+esac
 SWAPDEV=""
 SWAPNAME=""
 if [ "$MODE" = "swap" ]; then
@@ -129,37 +138,76 @@ NET="-netdev user,id=n0 -device e1000,netdev=n0"
 
 echo "=== mode=$MODE  ram=${RAM}MiB  workload=$SIZE  swap=${SWAPMIB}MiB ==="
 
+# Wait for the native workload to finish before asking the shell to fork again.
+# MEMPRESS-DONE is after verification AND unmap in mempress.as; an app fault is
+# terminal too, but cannot satisfy MEMPRESS-OK below. The old unconditional
+# sleep delayed short runs and could type follow-up probes into a long run.
+# UART input echo is never completion evidence. A deadline still lets a hung
+# workload fail the original liveness assertions instead of hanging this gate.
+wait_for_pressure()
+{
+    local deadline=$((SECONDS + $1))
+    while true; do
+        if grep -aEq $'^MEMPRESS-DONE\r?$|^\\[fault\\] app exception: .* -- terminating app' "$LOG"; then
+            return 0
+        fi
+        if [ "$SECONDS" -ge "$deadline" ]; then
+            return 1
+        fi
+        # Poll the serial log four times a second: the workload runs for minutes, so
+        # this adds at most 250 ms to a result while keeping the host loop idle.
+        sleep 0.25
+    done
+}
+
 # The shell script fed to the serial console. mempress prints its own markers;
 # the mmctl calls afterwards make the kernel dump its counters and run both
 # audits, so the assertions below are about numbers the kernel keeps rather than
-# about the absence of a crash.
+# about the absence of a crash. Correction: the old echo-generated mmaudit/mmrep
+# were AS2 expressions; that engine is gone. The A3 probes are host-compiled by
+# tests/astyped.mk and packed into /usr/as/bin alongside mempress. Never ask the
+# device launcher to build a pressure workload while memory is exhausted.
 {
-  logit_wait_for_shell "$LOG" 150
-  printf 'echo MEM_BEFORE\n';                                     sleep 1
-  printf 'as /usr/as/examples/mempress.as %s\n' "$SIZE";           sleep "$WAIT"
-  printf 'echo MEM_AFTER\n';                                      sleep 2
+  # The AHCI capture printed "ogitOS shell -- type 'help'": UART output lost
+  # the first banner byte. Its complete ready suffix is enough to identify the
+  # same shell milestone without spending the whole boot timeout on that byte.
+  logit_wait_for_shell "$LOG" 150 "shell -- type 'help'"
+  printf 'echo MEM_BEFORE\n'
+  sleep 1
+  printf '/usr/as/bin/mempress.aex %s\n' "$SIZE"
+  wait_for_pressure "$WAIT"
+  printf 'echo MEM_AFTER\n'
+  sleep 2
   # Still alive? A fork+exec after the pressure is the real liveness test: it
   # needs an address space, a stack and a page fault each, so a kernel that
   # survived by luck fails here.
-  printf 'uname\n';                                               sleep 4
-  printf 'echo MEM_ALIVE\n';                                      sleep 2
-  printf 'echo print(syscall(94,0,2,0)) > /mmaudit.as\n';         sleep 2
-  printf 'as /mmaudit.as\n';                                      sleep 8
-  printf 'echo print(syscall(94,0,1,0)) > /mmrep.as\n';           sleep 2
-  printf 'as /mmrep.as\n';                                        sleep 8
-  printf 'echo MEM_DONE\n';                                       sleep 3
-  printf 'rm /mmaudit.as\nrm /mmrep.as\nexit\n';                  sleep 2
+  printf 'uname\n'
+  sleep 4
+  printf 'echo MEM_ALIVE\n'
+  sleep 2
+  printf '/usr/as/bin/mmaudit.aex\n'
+  sleep 8
+  printf '/usr/as/bin/mmrep.aex\n'
+  sleep 8
+  printf 'echo MEM_DONE\n'
+  sleep 3
+  printf 'exit\n'
+  sleep 2
 } | $QEMU -cpu "${QEMU_CPU:-max}" -cdrom "$ISO" \
       -drive file="$DISK",format=raw,if=none,id=hd0,file.locking=off \
       -device virtio-blk-pci,drive=hd0 -boot d -snapshot \
       $SWAPDEV \
       -m "${RAM}M" ${SWAP_SMP:--smp 4 -accel tcg,thread=multi} \
       -vga none -device virtio-gpu-pci \
-      $NET -serial stdio -display none -no-reboot >"$LOG" 2>/dev/null &
+      $NET -serial stdio -display none -no-reboot >"$LOG" 2>&1 &
 QPID=$!
 
-for _ in $(seq 1 2400); do
-    grep -aq "MEM_DONE" "$LOG" && break
+RUN_DEADLINE=$((SECONDS + RUN_WAIT))
+while [ "$SECONDS" -lt "$RUN_DEADLINE" ]; do
+    # The serial shell echoes input before executing it. An echoed
+    # "echo MEM_DONE" must not terminate QEMU before the final command ran.
+    # The UART uses CRLF, so accept the output with or without its CR byte.
+    grep -aEq $'^MEM_DONE\r?$' "$LOG" && break
     kill -0 "$QPID" 2>/dev/null || break
     sleep 0.25
 done
@@ -173,8 +221,19 @@ echo "----- kernel counters -----"
 grep -a "\[mmstat\]" "$LOG" | tail -2
 echo "-------------------------"
 
-stat_of() {   # stat_of <key> <which-line: 1=first 2=last>
-    grep -a "\[mmstat\]" "$LOG" | sed -n "${2}p" | sed -n "s/.*[^_a-z]$1=\([0-9-]*\).*/\1/p"
+# Read an exact counter key from the requested stats row. Substring matching
+# would confuse swapin with another counter whose name ends in the same text.
+stat_of() {
+    awk -v key="$1=" -v row="$2" '/\[mmstat\]/ {
+        count++
+        if (count == row) {
+            for (i = 1; i <= NF; i++) {
+                if (index($i, key) == 1) {
+                    print substr($i, length(key) + 1)
+                }
+            }
+        }
+    }' "$LOG"
 }
 
 BOOTED=$(grep -ac "LOGIT_BOOT_OK" "$LOG")
@@ -182,15 +241,27 @@ BOOTED=$(grep -ac "LOGIT_BOOT_OK" "$LOG")
 
 # ---------------------------------------------------------------- mode: swap
 if [ "$MODE" = "swap" ]; then
-    grep -aq "^\[swap\] $SWAPNAME: [0-9]* slots" "$LOG" \
+    # The old ^[swap] anchor assumed every kernel message began a fresh line.
+    # In the AHCI serial run the shell printed its unterminated "/ $ " prompt
+    # before swap initialization, hiding a real 98,303-slot device. Accept only
+    # that exact optional prompt, on BOTH device and catastrophic-root checks;
+    # arbitrary preceding text must not turn an echoed command into evidence.
+    grep -aEq '^(/ \$ )?\[swap\] '"$SWAPNAME"': [0-9]+ slots' "$LOG" \
         || bad "swap did not come up on $SWAPNAME"
     # It must NOT have picked the root disk. This is the one mistake in the whole
     # line that destroys data rather than losing it, so it is asserted on the
     # device name and not merely trusted to the rules in swap.c.
-    grep -aq "^\[swap\] vblk0" "$LOG" \
+    grep -aEq '^(/ \$ )?\[swap\] vblk0' "$LOG" \
         && bad "swap selected the ROOT filesystem device -- catastrophic"
 
     if ! grep -aq "MEMPRESS-OK" "$LOG"; then
+        # 2026-11-01 QEMU diagnosis, not verified on X79-VG4 hardware:
+        # DATA readback faults at 0x50000c38 (verify_data's movq (%rax),%rax).
+        # GDB stopped in reclaim_swapin at its failed second reserve allocation
+        # (reclaim.c:701), before swap_read_page, with sw_errors=0 and 22,487
+        # reserve hits. Successful disk transfers therefore do not settle this
+        # failure: mm must provide a frame to restore. Keep the full pressure
+        # and byte-check assertions; shrinking the workload would hide it.
         if grep -aq "MEMPRESS-CORRUPT" "$LOG"; then
             bad "PAGES CAME BACK WRONG -- this is the failure the whole line exists to prevent"
             grep -a "MEMPRESS-BAD" "$LOG" | head -6
@@ -250,6 +321,10 @@ fi
 
 # -------------------------------------------------------------- mode: noswap
 if [ "$MODE" = "noswap" ]; then
+    # Absence of success without a started pressure process is a broken
+    # apparatus, not the no-swap control. Keep the original containment checks.
+    grep -aq '^MEMPRESS-START ' "$LOG" \
+        || bad "the no-swap workload never started"
     grep -aq "\[swap\] no eligible device" "$LOG" \
         || bad "swap was expected to be absent but came up anyway"
 
@@ -260,7 +335,7 @@ if [ "$MODE" = "noswap" ]; then
         echo "      (5th argument) or lower the RAM (4th)."
     else
         say "PASS (control): without swap the workload could not complete, as required"
-        grep -a "MEMPRESS" "$LOG" | tail -2 | sed 's/^/      /'
+        grep -a "MEMPRESS" "$LOG" | tail -2 | awk '{ print "      " $0 }'
     fi
 
     # The control also has to show the machine SURVIVED the failure. Running out

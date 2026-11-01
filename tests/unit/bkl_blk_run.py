@@ -8,6 +8,10 @@ r=Path(__file__).resolve().parents[2];b=a.build.resolve();b.mkdir(parents=True,e
 name='no-medium-lock' if a.negative_only else 'positive';exe=b/name
 cmd=[os.environ.get('CC','clang'),'-O1','-g','-pthread','-fsanitize=address,undefined','-DBLK_HOSTTEST']
 if a.negative_only:cmd+=['-DIO_NO_LOCK']
+# blkdev.c reads the production LogitFS format header to exclude the root
+# medium. Keep that real dependency; a fake format header would erase the
+# safety check from this concurrency test.
+cmd += ['-I' + str(r / 'c/fs/logitfs')]
 cmd+=['-I'+str(r/p) for p in ['tests/unit','c/drivers/block','c/drivers/virtio','c/kernel/core','c/kernel/init','c/kernel/diag','c/kernel/sync','c/kernel/mm','c/kernel/mm/phys','c/kernel/mm/virt','c/kernel/mm/cache','c/kernel/mm/reclaim','c/kernel/mm/phys','c/kernel/mm/virt','c/kernel/mm/cache','c/kernel/mm/reclaim']]
 cmd += [str(r/'tests/unit/bkl_blk_test.c'),str(r/'c/drivers/block/blkdev.c'),'-o',str(exe)]
 subprocess.run(cmd,check=True)

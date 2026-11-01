@@ -22,6 +22,76 @@ void test_write(volatile void *p, unsigned n, uint64_t v);
 #undef memset
 #undef memcpy
 #include "dma_driver.inc"
+#if DRIVER_KIND == 3
+/* Keep this adapter in the delivered test translation unit. Correction: an
+ * ignored dma_driver_stub/rtl.h linked locally but was absent after the
+ * integration harness copied only tests/hw/gates. No new unit-test header is
+ * required now; delivery.py builds with that unshipped header excluded. */
+/* RTL register programming is covered by tests/hw/rtl. This adapter isolates
+ * the existing DMA-address/ownership gate from PHY/OOB protocols; it makes no
+ * hardware claim (not verified on X79-VG4 hardware). Identification stays real
+ * so a new whitelist cannot silently disagree with DMA capability selection. */
+#include "rtl8168_id.c"
+
+/* The DMA gate has no firmware/OOB actor. Acknowledge preparation only with
+ * the production I/O callbacks present, before reset and DMA publication. */
+int rtl8168_prepare(const struct rtl_io *io)
+{
+    return io && io->read8 && io->write8 && io->delay ? 0 : -1;
+}
+
+/* Accept only identified MACs and a complete register interface. Full MAC/PHY
+ * sequence fidelity belongs to the separate RTL hardware-model gates. */
+int rtl8168_start(enum rtl_mac_ver version, const struct rtl_io *io, uint8_t function)
+{
+    (void)function;
+    return version != RTL_MAC_UNKNOWN && io && io->read32 && io->write16 &&
+           io->write32 ? 0 : -1;
+}
+
+static unsigned test_link_flags;
+
+/* Mirror netdev.c:netdev_set_link's registry flags in one model cell; these
+ * flags belong to the interface registry, not struct netdev. Link observation
+ * must not affect DMA address assertions. */
+int netdev_set_link(struct netdev *device, int link_up)
+{
+    if (!device) {
+        return -1;
+    }
+    if (link_up) {
+        test_link_flags |= NETIF_F_RUNNING;
+    } else {
+        test_link_flags &= ~NETIF_F_RUNNING;
+    }
+    return 0;
+}
+
+/* Match dma.c:dma_device_resume's refusal of live/quarantined ownership. A
+ * success-only stub would allow a rebind to erase an unconfirmed DMA stop. */
+int dma_device_resume(struct dma_device *device)
+{
+    if (!device) {
+        return -1;
+    }
+    for (struct dma_buffer *buffer = device->buffers; buffer; buffer = buffer->next) {
+        if (buffer->state != DMA_READY && buffer->state != DMA_COMPLETED &&
+            buffer->state != DMA_QUIESCED) {
+            return -1;
+        }
+    }
+    for (struct dma_mapping *mapping = device->mappings; mapping; mapping = mapping->next) {
+        if (mapping->state != DMA_READY && mapping->state != DMA_COMPLETED &&
+            mapping->state != DMA_QUIESCED) {
+            return -1;
+        }
+    }
+    /* dma.c:mask_ok accepts every nonzero mask of contiguous low address
+     * bits, not just the two masks normally selected by this NIC. */
+    device->blocked = device->mask == 0 || (device->mask & (device->mask + 1)) != 0;
+    return device->blocked ? -1 : 0;
+}
+#endif
 static void check(int yes, const char *why) {
     checks++; if (!yes) { failures++; printf("FAIL %s\n",why); }
 }
@@ -83,6 +153,16 @@ void dma_device_quarantine(struct dma_device *d) {
 void dma_wmb(void) {} void dma_rmb(void) {}
 void kprintf(const char *f,...) {(void)f;}
 uint64_t timer_ms(void) {static uint64_t t;return ++t;}
+/* rtl_delay/rtl_reset and HDA poll a nanosecond deadline. A frozen zero stub
+ * makes stuck-device lifetime controls hang instead of testing quarantine.
+ * Reuse HDA's existing 100,000 ns (0.1 ms) model quantum: enough to advance
+ * polling deadlines without sleeping. This is not a hardware measurement. */
+uint64_t time_mono_ns(void)
+{
+    static uint64_t nanoseconds;
+    nanoseconds += 100000;
+    return nanoseconds;
+}
 #if DRIVER_KIND == 4
 /* xHCI owns PCI Command directly so the DMA test can observe the same
  * MEM-before-BME transaction as the lifecycle gate. */
@@ -137,7 +217,6 @@ void snd_unregister_device(struct snd_device*d) {(void)d;output_detached=1;}
 void snd_unregister_capture_device(struct snd_capdevice*d) {(void)d;input_detached=1;}
 int dev_irq_release(struct device*d) {(void)d;irq_detached=1;return 0;}
 void snd_init(void) {}
-uint64_t time_mono_ns(void) {static uint64_t t;return t+=100000;}
 #endif
 static struct device device;
 int dev_count(void) { return 1; }
@@ -160,8 +239,15 @@ int main(int argc,char **argv) {
 #define REMOVE rtl8169_remove
     device.res[0].flags=DEV_RES_MEM;
     device.vendor=0x10ec;device.device=0x8168;device.cap_pcie=0x40;
-    *(uint32_t*)(test_regs+R_TCR)=0x3c8u<<20;
-    if(mode==52) *(uint32_t*)(test_regs+R_TCR)=0x380u<<20; /* older 8168B */
+    /* The old 3c8/380 fixtures predate the G-family binding whitelist. Use
+     * the real rtl_identify oracle (Linux v6.12 r8169_main.c rtl_get_mac_version,
+     * cited in rtl8168_id.c) for a supported G MAC. Keep the old low-address
+     * modes, but exercise missing PCIe capability instead of an unbindable B.
+     * Mode 52 remains the capability mutation's low-DMA witness. */
+    *(uint32_t *)(test_regs + R_TCR) = 0x5c8u << 20;
+    if (mode == 52) {
+        device.cap_pcie = 0;
+    }
     if(mode==53) {device.device=0x8169;device.cap_pcie=0;} /* conventional PCI */
     if(mode==54) *(uint32_t*)(test_regs+R_TCR)=0x7c0u<<20; /* unknown MAC */
     if(mode==55) device.device=0x8136; /* 8101 stays conservatively low */
@@ -172,6 +258,23 @@ int main(int argc,char **argv) {
     allocation_failure=mode>=2 && mode<52;
 #endif
     if(allocation_failure) fail_at=mode-2;
+#if DRIVER_KIND == 3
+    /* Rebinding must preserve the real DMA ownership boundary, including masks
+     * narrower than the two NIC fixtures (dma.c:mask_ok accepts contiguous
+     * low bits). A success-only resume stub would erase quarantine evidence. */
+    struct dma_device resume_device = {.mask = DMA_MASK_32, .blocked = 1};
+    struct dma_buffer resume_buffer = {.state = DMA_DEVICE_OWNED};
+    resume_device.buffers = &resume_buffer;
+    check(dma_device_resume(&resume_device) < 0 && resume_device.blocked,
+          "resume refuses device-owned DMA");
+    resume_buffer.state = DMA_QUARANTINED;
+    check(dma_device_resume(&resume_device) < 0 && resume_device.blocked,
+          "resume refuses quarantined DMA");
+    resume_buffer.state = DMA_QUIESCED;
+    resume_device.mask = UINT16_MAX;
+    check(dma_device_resume(&resume_device) == 0 && !resume_device.blocked,
+          "resume accepts safe DMA and a contiguous address mask");
+#endif
     int rc=PROBE(&device);
     if(command_reject) {
         check(rc<0,"probe rejects PCI Command failure");
@@ -179,6 +282,15 @@ int main(int argc,char **argv) {
               "PCI Command failure precedes DMA allocation and publication");
     }
     else if(allocation_failure) {check(rc<0,"probe allocation failure");check(live==0,"partial allocation cleanup");}
+#if DRIVER_KIND == 3
+    else if (mode == 54) {
+        /* Unknown silicon used to bind with a low mask. Phase 1 deliberately
+         * refuses it; checking fabricated successful DMA would test a lie. */
+        check(rc < 0, "unknown RTL MAC refuses binding");
+        check(allocations == 0 && published == 0 && live == 0,
+              "unknown RTL MAC never allocates or publishes DMA");
+    }
+#endif
     else {
         check(rc==0,"probe succeeds");check(live>0 && published>0,"persistent buffers submitted");
 #if DRIVER_KIND == 1

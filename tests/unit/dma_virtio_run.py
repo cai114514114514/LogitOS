@@ -8,6 +8,7 @@ named FAIL assertion: compiler errors/signals are apparatus failures, not proof.
 import argparse
 import os
 from pathlib import Path
+import platform
 import shutil
 import subprocess
 import tempfile
@@ -43,6 +44,26 @@ def run(negative=None):
         for p in (ROOT/'c/drivers/virtio').glob('*.[ch]'):
             shutil.copy2(p, out/p.name)
         shutil.copy2(ROOT/'c/kernel/gui/fb/fb.c',out/'fb.c')
+        if platform.machine().lower() not in ('x86_64', 'amd64'):
+            # fb_copy_rect's REP MOVSB is a leaf CPU copy, not the DMA/revoke
+            # protocol this gate exercises. As dma_driver_test.py does for
+            # PAUSE/MFENCE, adapt only that architecture-specific instruction
+            # in the temporary host copy. Preserve forward byte order, every
+            # ownership guard and every mutation below; never define a pixel
+            # negative-control macro just to make the ARM host compile.
+            framebuffer = out / 'fb.c'
+            text = framebuffer.read_text()
+            assembly = '__asm__ volatile ("rep movsb" : "+D"(d), "+S"(s), "+c"(n) : : "memory");'
+            if text.count(assembly) != 1:
+                raise RuntimeError('fb_copy_rect host-copy adapter anchor drift')
+            byte_copy = (
+                'volatile uint8_t *destination = d;\n'
+                '        const uint8_t *source = s;\n'
+                '        for (size_t index = 0; index < n; index++) {\n'
+                '            destination[index] = source[index];\n'
+                '        }'
+            )
+            framebuffer.write_text(text.replace(assembly, byte_copy, 1))
         if negative:
             name, old, new, evidence = CONTROLS[negative]
             p=out/name; text=p.read_text()
@@ -53,9 +74,32 @@ def run(negative=None):
         cmd=[os.environ.get('CC','clang'),'-std=c11','-D_DARWIN_C_SOURCE',
              '-DDMA_HOSTTEST','-DMM_HOSTTEST','-DVIRTIO_HOSTTEST','-DLOGIT_NET_HOST','-DFB_DMA_HOSTTEST',
              '-O1','-g','-Wall','-Wextra','-Wno-unused-parameter','-Wno-unused-variable',
+             '-ffunction-sections','-fdata-sections',
              '-fsanitize=address,undefined','-I'+str(out)]
+        # This fixture enters fb's writer/revoke hooks, not its boot-time PAT,
+        # page-table setup or hardware benchmark. Like dma_driver_test.py, drop
+        # unreachable sections rather than fabricate those kernel services.
+        # Any service reachable from an exercised hook must still really link.
+        if platform.system() == 'Darwin':
+            cmd += ['-Wl,-dead_strip']
+        else:
+            cmd += ['-Wl,--gc-sections']
         cmd += ['-I'+str(ROOT/d) for d in dirs]
-        cmd += [str(ROOT/'tests/unit/dma_virtio_test.c'),str(ROOT/'c/drivers/core/dma.c'),str(out/'fb.c'),str(ROOT/'c/kernel/gui/fb/glass.c'),*[str(p) for p in sorted((ROOT/'c/lib/gfx').glob('*.c'))],'-lm','-o',str(out/'test')]
+        # fb.c now consumes the shared display ABI. Include its authoritative
+        # directory so the real framebuffer TU still reaches every DMA control.
+        graphics = ROOT / 'c/lib/gfx'
+        graphics_directories = sorted({header.parent for header in graphics.rglob('*.h')})
+        cmd += ['-I' + str(directory) for directory in graphics_directories]
+        # Makefile:GFX_SRC recursively discovers this library. After the
+        # graphics split a top-level glob linked zero TUs, leaving every real
+        # framebuffer adapter unresolved. Follow the production discovery rule
+        # instead of inventing success-only stubs for those symbols.
+        graphics_sources = sorted(graphics.rglob('*.c'))
+        # fb_init also contains the firmware-LFB fallback. The fixture has only
+        # a virtio GPU; these hooks abort if that unrelated fallback is reached
+        # instead of manufacturing PAT/page-table success for the host model.
+        cmd += [str(ROOT / 'tests/hw/gates/virtio.c')]
+        cmd += [str(ROOT/'tests/unit/dma_virtio_test.c'),str(ROOT/'c/drivers/core/dma.c'),str(out/'fb.c'),str(ROOT/'c/kernel/gui/fb/glass.c'),*[str(p) for p in graphics_sources],'-lm','-o',str(out/'test')]
         subprocess.run(cmd,check=True,cwd=ROOT)
         env=dict(os.environ);env['ASAN_OPTIONS']='detect_leaks=0'
         r=subprocess.run([str(out/'test')],text=True,capture_output=True,env=env)

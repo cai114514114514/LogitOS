@@ -50,6 +50,25 @@ def parse_events(text, complete=False):
     return events
 
 
+def read_input_capture(guest, path):
+    """Read the fsynced input transcript while the guest disk is paused."""
+    # read_guest_stats uses Guest.capture first, installing its LogitFS reader.
+    # Use the same pause/read/resume boundary; parsing console chatter cannot
+    # recover two byte streams interleaved inside numbers without guessing.
+    guest.qmp("stop", {})
+    try:
+        filesystem = guest._filesystem_reader._LogitFS(guest.disk)
+        try:
+            inode = filesystem.lookup(path)
+            if inode is None:
+                return ""
+            return filesystem.read_file(inode).decode("utf-8")
+        finally:
+            filesystem.close()
+    finally:
+        guest.qmp("cont", {})
+
+
 def check_stats(text):
     event = re.findall(r"^Events (\d+) queued, (\d+) merged, (\d+) evicted-motion, (\d+) dropped\r?$",
                        text, re.M)
@@ -210,15 +229,42 @@ def read_guest_stats(guest, executable):
     return check_stats(output)
 
 
-def run_guest_input(guest, executable, program, output_directory, statistics):
+def run_guest_input(guest, executable, program, output_directory, statistics, capture=None):
     before = read_guest_stats(guest, statistics)
     start = len(guest.log)
     status = "/state/" + program["name"] + "-exit.txt"
-    # Keep stdout on the serial device for acknowledgments during interaction.
-    # At completion require every printed event to match the app's own count;
-    # torn/interleaved serial records must fail rather than disappear silently.
-    guest.serial.sendall((shlex.quote(executable) + "\n/bin/echo $? > " + status + "\n").encode())
-    guest.wait(b"EVENTS-READY", 60, start)
+    transcript = "/state/" + program["name"] + "-events.txt"
+    command = shlex.quote(executable)
+    if capture:
+        # Materialize the directory entry before live disk snapshots begin.
+        # QMP stop can interrupt a filesystem transaction; polling an existing
+        # file avoids observing the middle of its first inode/dirent creation.
+        guest.command("/bin/echo > " + shlex.quote(transcript))
+        command = shlex.join([capture, transcript, executable])
+    # Preserve serial evidence, but the packaged runner supplies a pipe adapter
+    # that fsyncs the same bytes to a file for live acknowledgments and DONE.
+    # The typed runner is outside P5's owned files, so it retains its existing
+    # serial transport; no readiness, interaction or exact-count check is lost.
+    guest.serial.sendall((command + "\n/bin/echo $? > " + status + "\n").encode())
+
+    def output():
+        """Use the selected transport consistently for all event assertions."""
+        if capture:
+            return read_input_capture(guest, transcript)
+        return bytes(guest.log[start:]).decode("utf-8", errors="replace")
+
+    def wait_marker(marker, timeout):
+        """Bound a stuck application without repeating its input or workload."""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if marker in output():
+                return
+            # Poll the host-side capture every 50 ms: well below the 40-60 s guest
+            # budgets used here, and cheap enough not to compete with QEMU for CPU.
+            time.sleep(0.05)
+        raise AssertionError("Missing input application marker: " + marker)
+
+    wait_marker("EVENTS-READY", 60)
     deadline = time.monotonic() + 40
     while True:
         guest.screenshot()
@@ -235,7 +281,7 @@ def run_guest_input(guest, executable, program, output_directory, statistics):
     frame.save(screenshot)
 
     def records():
-        return parse_events(bytes(guest.log[start:]).decode("utf-8", errors="replace"))
+        return parse_events(output())
 
     def send(actions, predicate, label):
         previous = len(records())
@@ -284,10 +330,10 @@ def run_guest_input(guest, executable, program, output_directory, statistics):
     send([key("shift", False), key("x", True), key("x", False)],
          lambda row: row[0] == 1 and row[1] == 120 and row[3] == 0, "modifier release")
     guest.key("q")
-    guest.wait(b"EVENTS-DONE", 30, start)
+    wait_marker("EVENTS-DONE", 30)
     code = guest.capture("/bin/cat " + status, timeout=30)
     assert code.strip() == "0", code
-    text = bytes(guest.log[start:]).decode("utf-8", errors="replace")
+    text = output()
     delivered = parse_events(text, complete=True)
     for row in delivered:
         if row[0] in (2, 4, 6, 7, 8):

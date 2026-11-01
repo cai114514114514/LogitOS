@@ -285,6 +285,57 @@ AsTypedProject *as_typed_check_cli(const char *entry, const AsSourceOverlay *ove
     return as_typed_check_with_library(entry, overlays, count, library);
 }
 
+#if !__STDC_HOSTED__ && !defined(AS_NEGCTL_RUN_DRIVER_ON_DEVICE)
+/* UCFLAGS uses -ffreestanding for /bin/as; asc is hosted. This is the same
+ * boundary used below for the device checker/evaluator. Shipped examples are
+ * compiled by tests/astyped.mk and installed at /usr/as/bin/<stem>.aex.
+ *
+ * Correction: shorthand formerly rewrote to `run FILE -- ARGS` on BOTH hosts
+ * and devices. A device has no host toolchain; that route was reported to
+ * repeatedly fork instead of starting the workload. Correction: the P5 host
+ * control (tests/hw/gates/launch.c) observes zero forks in all three restored
+ * shorthand scenarios: the !__STDC_HOSTED__ evaluator below returns before
+ * execute_program, so that reported recursion is not reproduced by this tree.
+ * The evaluator cannot run the native syscall pressure workload. Replace this
+ * process once and refuse missing/broken artifacts without a compiler or
+ * evaluator fallback. Claude's 2026-11-01 P5 addendum consequently requires
+ * the restored-path control to fail native exec, not to fabricate recursion.
+ * Deliberately do not search PATH: that can resolve back to /bin/as. */
+static int launch_installed_program(int argc, char **argv)
+{
+    const char *basename = strrchr(argv[1], '/');
+    basename = basename ? basename + 1 : argv[1];
+    size_t stem_length = strlen(basename);
+    if (stem_length >= 3 && !strcmp(basename + stem_length - 3, ".as")) {
+        stem_length -= 3;
+    }
+    char executable[1024];
+    if (!stem_length || stem_length > sizeof executable - sizeof "/usr/as/bin/.aex") {
+        return option_error("A3 program basename is empty or too long");
+    }
+    snprintf(executable, sizeof executable, "/usr/as/bin/%.*s.aex", (int)stem_length, basename);
+    if (access(executable, F_OK) != 0) {
+        fprintf(stderr, "as: no compiled A3 program %s; compile on the host with asc build\n",
+                executable);
+        return 1;
+    }
+    char **arguments = calloc((size_t)argc, sizeof *arguments);
+    if (!arguments) {
+        return option_error("Cannot allocate installed program arguments");
+    }
+    arguments[0] = executable;
+    for (int i = 2; i < argc; i++) {
+        arguments[i - 1] = argv[i];
+    }
+    extern char **environ;
+    execve(executable, arguments, environ);
+    int error = errno;
+    free(arguments);
+    fprintf(stderr, "as: cannot execute compiled A3 program %s: %s\n", executable, strerror(error));
+    return 1;
+}
+#endif
+
 int as_typed_command(int argc, char **argv)
 {
     if (argc < 2) {
@@ -305,7 +356,12 @@ int as_typed_command(int argc, char **argv)
         if (!native) {
             return -1;
         }
-        /* Existing launchers use `as FILE ARGS`, including Studio. Route an
+#if !__STDC_HOSTED__ && !defined(AS_NEGCTL_RUN_DRIVER_ON_DEVICE)
+        /* ARGS belong to the compiled program, even when they spell a compiler
+         * option. Host shorthand retains its existing scope refusal below. */
+        return launch_installed_program(argc, argv);
+#endif
+        /* Host launchers use `as FILE ARGS`, including Studio. Route an
          * explicitly native source through exactly the same build/run driver;
          * sending it to the retiring VM cannot execute A3. Everything after
          * FILE stays a program argument, never a compiler flag. */

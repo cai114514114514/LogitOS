@@ -68,7 +68,8 @@ def audit_callers(sources):
         ),
         "c/drivers/net/rtl8169.c": (
             "int rtl8169_probe", ["dev_enable_checked(dev, 0)", "map_mmio_bar(dev)",
-             "R_CR, CR_RST", "while (m8", "dev_enable_checked(dev, 1)",
+             "rtl8168_prepare(&hw_io)", "rtl_reset()", "rtl8168_start(version",
+             "dev_enable_checked(dev, 1)",
              "dma_publish_buffers()", "R_CR, CR_TE | CR_RE"],
         ),
         "c/drivers/virtio/virtio.c": (
@@ -83,6 +84,16 @@ def audit_callers(sources):
             if guard not in text:
                 raise ContractError(f"{path}: checked({master}) result is not a refusal guard")
         ordered(path, text, signature, anchors)
+
+    # The old RTL anchors searched for an inline reset/while loop in probe.
+    # Phase 1 extracted that sequence into rtl_reset. Follow the actual call
+    # chain while retaining the old safety boundary: reset must be acknowledged
+    # before BME and DMA publication. Linux v6.12 r8169_main.c:rtl_hw_reset
+    # likewise waits for CmdReset to clear before the engines are started.
+    ordered("rtl8169 reset acknowledgement", sources["c/drivers/net/rtl8169.c"],
+            "static int rtl_reset(void)",
+            ["w8(R_CR, CR_RST)", "rtl_delay(100)",
+             "if (!(m8(R_CR) & CR_RST)) return 0", "return -1"])
 
     net = sources["c/drivers/virtio/virtio_net.c"]
     if "virtio_init_device(dev, &vnet" not in net or "virtio_init(dev->device, &vnet" in net:
@@ -105,6 +116,28 @@ if not args.negative_only:
     print("PCI caller ordering: 9 production paths PASS")
 
 if not args.positive_only:
+    # Moving reset into a helper must not let its removal or a missing reset
+    # acknowledgement pass the source-order gate. Mutate separate copies so
+    # each control proves one original safety boundary independently.
+    for label, old, new in (
+        ("rtl-skip-reset", "if (rtl_reset() != 0)", "if (0 != 0)"),
+        ("rtl-ignore-reset-ack", "if (!(m8(R_CR) & CR_RST)) return 0",
+         "if (1) return 0"),
+    ):
+        rtl_control = dict(callers)
+        rtl_path = "c/drivers/net/rtl8169.c"
+        if rtl_control[rtl_path].count(old) != 1:
+            raise RuntimeError(f"{label}: control anchor drift")
+        rtl_control[rtl_path] = rtl_control[rtl_path].replace(old, new, 1)
+        try:
+            audit_callers(rtl_control)
+        except ContractError as error:
+            if "rtl8169" not in str(error):
+                raise RuntimeError(f"{label}: unrelated contract failure") from error
+            print(f"EXPECTED-FAIL {label}: reset acknowledgement precedes DMA")
+        else:
+            raise RuntimeError(f"{label}: RTL reset control escaped the source contract")
+
     early_bme = dict(callers)
     early_bme["c/drivers/block/nvme.c"] = early_bme["c/drivers/block/nvme.c"].replace(
         "dev_enable_checked(dev, 0)", "dev_enable_checked(dev, 1)", 1)
