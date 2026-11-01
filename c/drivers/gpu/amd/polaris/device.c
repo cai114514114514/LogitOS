@@ -39,7 +39,7 @@ int polaris_probe_readonly(const struct device *d, uint16_t command,
     if (!out) return -1;
     *out = (struct polaris_info){0};
     if (!d || d->bus_type != DEV_BUS_PCI || d->header_type ||
-        d->vendor != 0x1002u || d->device != POLARIS10_PCI_DEVICE ||
+        d->vendor != 0x1002u || !polaris10_device_known(d->device) ||
         d->class_code != PCI_CLASS_DISPLAY ||
         (d->subclass != 0 && d->subclass != 2))
         return reject(out, POLARIS_PROBE_ID);

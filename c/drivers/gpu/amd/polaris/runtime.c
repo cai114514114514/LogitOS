@@ -1,4 +1,5 @@
 #include "amd/polaris/runtime.h"
+#include "amd/polaris/pci_id.h"
 
 static int overlaps(uintptr_t a, uint64_t n, uintptr_t b, uint64_t m)
 { return a <= b ? b - a < n : a - b < m; }
@@ -83,7 +84,7 @@ int polaris_runtime_start(struct polaris_runtime *r,
     if (polaris_memory_plan(&memory, &r->memory)) goto done;
     r->platform = *platform;
     r->stage = POLARIS_RUNTIME_MEMORY;
-    if (identity(r, &id) || id != 0x67df1002u) goto failed;
+    if (identity(r, &id) || !polaris10_identity_known(id)) goto failed;
     for (unsigned i = 0; i < POLARIS_MEMORY_OBJECTS; i++)
         if (map_allocation(r, i, &mapped[i])) goto failed;
     scanout.range.gpu_base = memory.scanout.base;

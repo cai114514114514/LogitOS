@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "amd/polaris/sdma/queue.h"
+#include "amd/polaris/pci_id.h"
 
 /* Linux v6.12 sdma_v3_0.c: ring_set_wptr uses BYTE pointers, RB_BASE is
  * address >> 8, RB_SIZE is log2(DWORD count), and ring funcs require 16-DWORD
@@ -62,7 +63,7 @@ static int configured(const struct polaris_sdma_queue_ops *ops,
     unsigned order = 0;
     uint64_t words = ring->range.bytes / 4;
     if (ops->read_identity(ops->opaque, &id)) return POLARIS_SDMA_QUEUE_IO;
-    if (id != 0x67df1002u) return POLARIS_SDMA_QUEUE_UNCONFIGURED;
+    if (!polaris10_identity_known(id)) return POLARIS_SDMA_QUEUE_UNCONFIGURED;
     if (reg(ops, 0x0e44u, &select) || reg(ops, 0xd010u, &cntl) ||
         reg(ops, REG_F32, &f32) || reg(ops, REG_RB_CNTL, &control) ||
         reg(ops, REG_RB_BASE, &base) || reg(ops, REG_RB_BASE_HI, &high) ||

@@ -18,6 +18,7 @@ struct polaris_resource_report {
     int vbios_module_status; /* enum polaris_vbios_status, per source, so the */
     int vbios_vfct_status;   /* log can tell "absent" from "present but bad". */
     uint8_t pci_revision;
+    uint16_t pci_device;             /* selects the SMU file with the revision */
     unsigned firmware_mask[2]; /* Independently checked key=0/key=1 candidates. */
     int file_result[2][POLARIS_RESOURCE_FILE_SLOTS];
     /* Where the distinct accepted files came from: every valid key=0 slot plus

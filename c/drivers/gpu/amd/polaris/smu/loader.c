@@ -1,4 +1,5 @@
 #include "loader.h"
+#include "amd/polaris/pci_id.h"
 #include "amd/polaris/memory/layout.h"
 
 /* Register numbers are translated to BYTE offsets once here. SMC indirect
@@ -443,7 +444,7 @@ int polaris_smu_load(struct polaris_smu_loader *loader, const struct polaris_smu
         goto done;
 
     uint32_t identity;
-    if (ops->read_identity(ops->opaque, &identity) || identity != 0x67df1002) {
+    if (ops->read_identity(ops->opaque, &identity) || !polaris10_identity_known(identity)) {
         result = POLARIS_SMU_LOAD_UNSUPPORTED;
         goto done;
     }

@@ -1,4 +1,5 @@
 #include "amd/polaris/resource/atom.h"
+#include "amd/polaris/pci_id.h"
 
 /* Linux v6.12 include/atombios.h: ATOM_ROM_HEADER,
  * ATOM_MASTER_LIST_OF_DATA_TABLES, ATOM_VRAM_USAGE_BY_FIRMWARE[_V1_5]. */
@@ -70,7 +71,7 @@ static int locate_usage(const uint8_t *image, size_t bytes, size_t *usage)
         return POLARIS_ATOM_BAD_IMAGE;
     }
     if (read_le16(image + pcir + 4) != 0x1002 ||
-        read_le16(image + pcir + 6) != 0x67df) {
+        !polaris10_device_known(read_le16(image + pcir + 6))) {
         return POLARIS_ATOM_WRONG_DEVICE;
     }
 

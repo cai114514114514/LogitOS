@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "amd/polaris/sdma/engine.h"
+#include "amd/polaris/pci_id.h"
 
 /* Values and ordering from Linux v6.12 sdma_v3_0.c gfx_stop/enable/gfx_resume,
  * oss_3_0_{d,sh_mask}.h, and gmc_v8_0.c. DWORD register indices are converted
@@ -104,7 +105,7 @@ int polaris_sdma_engine_start(struct polaris_sdma_engine *e,
         rc=POLARIS_SDMA_ENGINE_INVALID;goto done;
     }
     if(ops->queue.read_identity(ops->queue.opaque,&id)){rc=POLARIS_SDMA_ENGINE_IO;goto done;}
-    if(id!=0x67df1002u){rc=POLARIS_SDMA_ENGINE_PREREQUISITE;goto done;}
+    if(!polaris10_identity_known(id)){rc=POLARIS_SDMA_ENGINE_PREREQUISITE;goto done;}
     s.began=s.last=ops->queue.now_us(ops->queue.opaque);
     if((rc=smc(&s,0x20030,&soft))||(rc=smc(&s,0x3f000,&flags))||
        (rc=smc(&s,loader->soft_regs+0x6c,&load)))goto done;

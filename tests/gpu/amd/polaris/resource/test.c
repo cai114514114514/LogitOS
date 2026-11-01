@@ -334,15 +334,24 @@ static void atom_cases(void)
 static void firmware_cases(void)
 {
     reset();
-    CHECK(!strcmp(polaris_resource_file_path(POLARIS_FW_SMC, 0xe7, 1), file_paths[8]));
-    CHECK(!strcmp(polaris_resource_file_path(POLARIS_FW_SMC, 0xe1, 1),
+    CHECK(!strcmp(polaris_resource_file_path(POLARIS_FW_SMC, 0x67df, 0xe7, 1), file_paths[8]));
+    CHECK(!strcmp(polaris_resource_file_path(POLARIS_FW_SMC, 0x67df, 0xe1, 1),
         "/lib/firmware/amdgpu/polaris10_k2_smc.bin"));
-    CHECK(!strcmp(polaris_resource_file_path(POLARIS_FW_SMC, 0xc7, 1),
+    CHECK(!strcmp(polaris_resource_file_path(POLARIS_FW_SMC, 0x67df, 0xc7, 1),
         "/lib/firmware/amdgpu/polaris10_smc.bin"));
-    CHECK(!strcmp(polaris_resource_file_path(POLARIS_FW_SMC, 0xe7, 0), file_paths[7]));
-    CHECK(polaris_resource_file_path(POLARIS_FW_SMC, 0xe7, 2) == NULL);
+    CHECK(!strcmp(polaris_resource_file_path(POLARIS_FW_SMC, 0x67df, 0xe7, 0), file_paths[7]));
+    CHECK(polaris_resource_file_path(POLARIS_FW_SMC, 0x67df, 0xe7, 2) == NULL);
+    /* The real X79-VG4 card is 1002:6fdf rev ef: Linux ASICID_IS_P20 gives it
+     * the kicker SMC file; 6fdf has no P30 revisions, and a non-Polaris10 ID
+     * never matches. */
+    CHECK(!strcmp(polaris_resource_file_path(POLARIS_FW_SMC, 0x6fdf, 0xef, 1), file_paths[8]));
+    CHECK(!strcmp(polaris_resource_file_path(POLARIS_FW_SMC, 0x6fdf, 0xe1, 1),
+                  "/lib/firmware/amdgpu/polaris10_smc.bin"));
+    CHECK(polaris10_device_known(0x6fdf) && polaris10_device_known(0x67df));
+    CHECK(!polaris10_device_known(0x67ef));
+    CHECK(polaris10_identity_known(0x6fdf1002u) && !polaris10_identity_known(0x6fdf10deu));
     struct polaris_resource_files files = {0};
-    CHECK(polaris_resource_files_load(0xe7, 1, &files) == 0);
+    CHECK(polaris_resource_files_load(0x67df, 0xe7, 1, &files) == 0);
     CHECK(files.valid_mask == 0xff && allocations == 8);
     for (unsigned kind = 0; kind < POLARIS_RESOURCE_FILE_SLOTS; ++kind)
         CHECK(files.source[kind] == POLARIS_RESOURCE_SOURCE_ROOTFS);
@@ -351,14 +360,14 @@ static void firmware_cases(void)
     CHECK(polaris_fw_bundle_plan(&files.firmware, 0, &bundle) == 0);
     CHECK(bundle.inventory.present_mask == 0x5fe);
     planned_bundle_bytes = bundle.bytes_used;
-    CHECK(polaris_resource_files_load(0xe7, 1, &files) < 0);
+    CHECK(polaris_resource_files_load(0x67df, 0xe7, 1, &files) < 0);
     polaris_resource_files_release(&files);
     CHECK(allocations == frees && !files.valid_mask);
     missing_files = 1u << 0;
     bad_metadata = 1u << 1;
     bad_reads = 1u << 2;
     file_data[3][12] = 9;
-    CHECK(polaris_resource_files_load(0xe7, 1, &files) < 0);
+    CHECK(polaris_resource_files_load(0x67df, 0xe7, 1, &files) < 0);
     CHECK(files.valid_mask == 0xf0);
     CHECK(files.result[0] == POLARIS_RESOURCE_FILE_MISSING);
     CHECK(files.result[1] == POLARIS_RESOURCE_FILE_METADATA);
@@ -377,20 +386,20 @@ static void firmware_cases(void)
     };
     for (unsigned i = 0; i < sizeof rejected_metadata / sizeof rejected_metadata[0]; ++i) {
         metadata = rejected_metadata[i];
-        CHECK(polaris_resource_files_load(0xe7, 1, &files) < 0);
+        CHECK(polaris_resource_files_load(0x67df, 0xe7, 1, &files) < 0);
         CHECK(!files.valid_mask && allocation_attempts == 0 && file_reads == 0);
         polaris_resource_files_release(&files);
     }
     reset();
     bad_reads = 0x1ff;
     bad_read_delta = 1;
-    CHECK(polaris_resource_files_load(0xe7, 1, &files) < 0);
+    CHECK(polaris_resource_files_load(0x67df, 0xe7, 1, &files) < 0);
     CHECK(!files.valid_mask && files.result[0] == POLARIS_RESOURCE_FILE_READ);
     polaris_resource_files_release(&files);
     CHECK(allocations == frees);
     reset();
     fail_allocation = 1;
-    CHECK(polaris_resource_files_load(0xe7, 0, &files) < 0);
+    CHECK(polaris_resource_files_load(0x67df, 0xe7, 0, &files) < 0);
     CHECK(files.result[0] == POLARIS_RESOURCE_FILE_ALLOC && files.valid_mask == 0xfe);
     polaris_resource_files_release(&files);
     CHECK(allocations == frees);

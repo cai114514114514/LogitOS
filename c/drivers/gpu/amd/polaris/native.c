@@ -1,4 +1,5 @@
 #include "amd/polaris/native.h"
+#include "amd/polaris/pci_id.h"
 
 /* Linux v6.12 gmc_v8_0.c + vi.c, oss_3_0_d.h and bif_5_0_d.h.
  * Offsets below are BYTES; upstream mm registers are DWORD indices. HDP base
@@ -33,7 +34,7 @@ static int pci(struct polaris_native *n,uint16_t at,uint32_t *v)
 static int identity(struct polaris_native *n,uint32_t *value)
 {
     uint32_t id,command,header,classrev,bar0,bar1=0,bar5,caps;
-    if (n->faulted || pci(n,0,&id) || id!=0x67df1002u || pci(n,4,&command) ||
+    if (n->faulted || pci(n,0,&id) || !polaris10_identity_known(id) || pci(n,4,&command) ||
         (command&6u)!=6u || pci(n,0xc,&header) || ((header>>16)&0x7f) ||
         pci(n,8,&classrev) || (classrev>>24)!=3 ||
         pci(n,0x10,&bar0) || pci(n,0x24,&bar5) ||
