@@ -420,6 +420,18 @@ struct sched_observe_group_record {
 };
 
 #if !defined(__cplusplus)
+/* The guest TCC (0.9.27) does not implement C11 _Static_assert, and this header is
+ * published into the guest sysroot, where TCC must still parse it.  A negative array
+ * bound is also a compile error, so the wire-size checks stay active for TCC under
+ * that spelling.  The spelling is undone at the end of this block so includers do not
+ * inherit an assertion macro from this protocol header (logit_boot.h does the same). */
+#ifdef __TINYC__
+#define LOGIT_SCHED_OBSERVE_JOIN_(left, right) left##right
+#define LOGIT_SCHED_OBSERVE_JOIN(left, right) LOGIT_SCHED_OBSERVE_JOIN_(left, right)
+#define _Static_assert(condition, message) \
+    typedef char LOGIT_SCHED_OBSERVE_JOIN(sched_observe_assert_, __LINE__)[(condition) ? 1 : -1]
+#endif
+
 /* Freeze the wire sizes before the receipt and probe stages consume this ABI.
  * Ring storage has its own atomic layout and is deliberately not one of these
  * types. */
@@ -430,6 +442,12 @@ _Static_assert(sizeof(struct sched_observe_manifest) == 80, "manifest wire size"
 _Static_assert(sizeof(struct sched_observe_begin) == 88, "begin wire size");
 _Static_assert(sizeof(struct sched_observe_read) == 88, "read wire size");
 _Static_assert(sizeof(struct sched_observe_status) == 424, "status wire size");
+
+#ifdef __TINYC__
+#undef _Static_assert
+#undef LOGIT_SCHED_OBSERVE_JOIN
+#undef LOGIT_SCHED_OBSERVE_JOIN_
+#endif
 #endif
 
 #endif
