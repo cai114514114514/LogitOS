@@ -6,6 +6,8 @@ A from-scratch x86_64 OS kernel (C + nasm + a little Rust), booted two ways — 
 aiming toward a macOS-style desktop that runs software not written for it. Real
 kernel, not a simulation.
 
+Every agent working here also follows the operating rules in @AGENTS.md (Claude Code loads it through this line).
+
 > **Correction 2026-09-15.** This sentence read "booted two ways — GRUB/Multiboot2
 > and its own UEFI loader", and it was true until that day. GRUB, xorriso and
 > Multiboot2 are gone from the shipped path: `tools/mkiso.py` writes the ISO,
