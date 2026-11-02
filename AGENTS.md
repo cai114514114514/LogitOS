@@ -219,3 +219,16 @@ If any of these cannot be met, **say which and why**. An honest partial result
 with the gap named is worth more than a complete-looking one, and this tree
 would rather have "I could not make the boundary real, so I kept the refusal"
 than a feature that looks finished.
+
+---
+
+## 8. Documentation is for you, and you keep it true
+
+`docs/` holds the developer documentation, written against the source (index: `docs/README.md`).
+
+- Before changing a file you have not read docs for: ask the `logitos-docs` MCP server (`.mcp.json`):
+  `docs_for_source <path>`, then `read_doc` its primary pages. Without MCP, `docs/README.md` and the
+  website's `/docs-index.json` (`by_source`) give the same map.
+- After changing code: `make docs-stale`, fix the pages it lists against the code, then
+  `python3 tools/docs/stale.py --mark <page>`.
+- Task recipes are skills in `.agents/skills/` (Claude Code reads them through `.claude/skills`).

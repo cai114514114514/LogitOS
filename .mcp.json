@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "logitos-docs": {
+      "command": "python3",
+      "args": ["tools/docs/mcp_server.py"]
+    }
+  }
+}

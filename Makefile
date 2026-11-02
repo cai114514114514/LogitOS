@@ -6219,3 +6219,10 @@ include tools/build/product.mk
 -include tests/shebang.mk
 -include tests/fluid_desktop.mk
 -include tests/sched-stages.mk
+
+# Documentation pages that may be out of date: pages naming a file that changed after the commit recorded for
+# them in docs/VERIFIED.json (tools/docs/stale.py; exits 1 when any page is suspect). After checking a page,
+# record it with: python3 tools/docs/stale.py --mark docs/<section>/<page>.md
+.PHONY: docs-stale
+docs-stale:
+	python3 tools/docs/stale.py
