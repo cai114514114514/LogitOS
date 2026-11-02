@@ -1,6 +1,6 @@
 # LogitOS documentation
 
-118 pages about the kernel, drivers, file systems, networking, userland, the browser and the build. Every page was written against the source and checked name by name; the same index is the home page of the website documentation.
+131 pages about the kernel, drivers, file systems, networking, userland, the browser and the build. Every page was written against the source and checked name by name; the same index is the home page of the website documentation.
 
 ## Reading paths
 
@@ -95,6 +95,7 @@
 | [Keyboard, mouse, serial and VGA](drivers/input-and-console.md) | LogitOS provides PS/2 keyboard and mouse input, COM1 serial communication and VGA text output through c/drivers/char. |
 | [Timer hardware](drivers/timers.md) | LogitOS uses PIT interrupts to advance the shared tick counter, TSC or HPET counters to read elapsed time at finer resolution, and the CMOS RTC to establish calendar time. |
 | [Power and platform drivers](drivers/power-and-platform.md) | LogitOS uses uACPI to evaluate firmware methods for batteries, external power, thermal zones, shutdown and reset. |
+| [Board, sensors and SMBIOS](drivers/board-and-sensors.md) | LogitOS combines firmware inventory, Intel chipset discovery and Nuvoton hardware monitoring under c/drivers/board/. |
 
 ## File systems
 
@@ -136,6 +137,10 @@
 | [System services](userland/services.md) | LogitOS provides HTTP and HTTPS serving, SSH access, SFTP file transfer and local logging through user processes in c/apps/services/. |
 | [Desktop applications](userland/desktop-apps.md) | LogitOS provides desktop applications for file management, editing, browsing, media playback, settings and agent tasks. |
 | [Agent runtime](userland/agent-runtime.md) | LogitOS runs application agents through agentd, a userland broker that manages application context, source grants, model requests, document revisions, and persistent tasks. |
+| [Terminal](userland/terminal.md) | Terminal is a graphical frontend for /bin/sh. |
+| [Studio](userland/studio.md) | Code Studio is the desktop editor for UTF-8 files and project directories. |
+| [The ch chat client](userland/chat-client.md) | ch is a native chat application that sends conversation history to a configured model endpoint and displays reply text as Server-Sent Events (SSE) arrive. |
+| [Preview and Files](userland/preview-and-files.md) | Preview displays local images and plays audio and video, with decoding performed in its ring 3 process. |
 
 ## Browser
 
@@ -180,6 +185,14 @@
 | [OpenLogit 3D: the software renderer](libraries/openlogit-3d.md) | OpenLogit 3D renders indexed triangles on the CPU through programmable vertex and fragment stages, clipping, depth testing, texture sampling and blending. |
 | [Using OpenLogit from applications](libraries/openlogit-sdk.md) | OpenLogit provides drawing commands, surfaces, animation, and software 3D rendering for LogitOS applications. |
 | [Text rendering: fonts, shaping and line breaking](libraries/text-rendering.md) | LogitOS shares font parsing, bidirectional text processing, shaping, and glyph rasterization through c/lib/text/. |
+| [Image decoding](libraries/image-decoding.md) | LogitOS provides a shared image library that converts encoded bytes into straight RGBA8 pixels. |
+| [H.264 video decoding](libraries/video-h264.md) | LogitOS’s H.264 decoder converts Annex B byte streams into planar, 8-bit YUV 4:2:0 pictures. |
+| [Audio codecs and processing](libraries/audio-codecs.md) | The audio library in c/lib/audio/ decodes WAV, FLAC, MP3, AAC, and Vorbis files, and provides an Opus packet decoder. |
+| [Media containers and playback clock](libraries/media-containers.md) | The media library converts container bytes into track metadata, codec configuration and timestamped samples. |
+| [WebAssembly engine](libraries/webassembly.md) | LogitOS provides a WebAssembly binary decoder, validator and interpreter under c/lib/wasm/. |
+| [Local neural-network inference](libraries/neural-inference.md) | LogitOS provides CPU transformer inference through c/lib/nn and the lm command-line application. |
+| [logitparserutils: buffers, encodings and input streams](libraries/parser-utils.md) | logitparserutils provides byte buffers, containers, character conversion and chunked input for LibCSS. |
+| [Pinyin input method](libraries/input-method.md) | LogitOS converts Pinyin spelling into Chinese text through the engine in c/lib/ime/pinyin.c. |
 
 ## Reference
 
