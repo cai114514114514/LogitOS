@@ -22,7 +22,7 @@ VERIFIED = os.path.join(DOCS, 'VERIFIED.json')
 
 # Section directories in reading order; the website uses the same list.
 SECTIONS = ['getting-started', 'architecture', 'kernel', 'drivers', 'filesystems', 'networking', 'crypto',
-            'userland', 'browser', 'libraries', 'reference', 'contributing']
+            'userland', 'browser', 'aetherscript', 'libraries', 'reference', 'contributing']
 
 # A backticked token counts as a source path when it starts at a top-level source directory or names one of the
 # root files pages cite. Globs such as c/drivers/usb/*.c are kept: they still tell an agent where to look.
